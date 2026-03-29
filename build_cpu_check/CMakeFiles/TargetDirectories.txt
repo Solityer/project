@@ -1,0 +1,7 @@
+/home/pzh/project/build_cpu_check/CMakeFiles/gatzk_mcl_build.dir
+/home/pzh/project/build_cpu_check/CMakeFiles/gatzkml.dir
+/home/pzh/project/build_cpu_check/CMakeFiles/gatzk_run.dir
+/home/pzh/project/build_cpu_check/CMakeFiles/gatzk_tests.dir
+/home/pzh/project/build_cpu_check/CMakeFiles/test.dir
+/home/pzh/project/build_cpu_check/CMakeFiles/edit_cache.dir
+/home/pzh/project/build_cpu_check/CMakeFiles/rebuild_cache.dir

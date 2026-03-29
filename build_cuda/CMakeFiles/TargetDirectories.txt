@@ -1,0 +1,7 @@
+/home/pzh/project/build_cuda/CMakeFiles/gatzk_mcl_build.dir
+/home/pzh/project/build_cuda/CMakeFiles/gatzkml.dir
+/home/pzh/project/build_cuda/CMakeFiles/gatzk_run.dir
+/home/pzh/project/build_cuda/CMakeFiles/gatzk_tests.dir
+/home/pzh/project/build_cuda/CMakeFiles/test.dir
+/home/pzh/project/build_cuda/CMakeFiles/edit_cache.dir
+/home/pzh/project/build_cuda/CMakeFiles/rebuild_cache.dir

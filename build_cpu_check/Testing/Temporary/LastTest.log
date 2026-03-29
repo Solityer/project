@@ -1,0 +1,27 @@
+Start testing: Mar 26 18:19 CST
+----------------------------------------------------------
+1/1 Testing: gatzk_tests
+1/1 Test: gatzk_tests
+Command: "/home/pzh/project/build_cpu_check/gatzk_tests"
+Directory: /home/pzh/project/build_cpu_check
+"gatzk_tests" start time: Mar 26 18:19 CST
+Output:
+----------------------------------------------------------
+[PASS] full_graph_config_parse
+[PASS] extract_full_graph_fast_path
+[PASS] is_full_dataset_context
+[PASS] selector_padding_consistency
+[PASS] kzg_batch_opening
+[PASS] transcript_order_consistency
+[PASS] agg_witness_commitment_opening_consistency
+[PASS] prove_verify_round_trip
+[PASS] tampered_witness_fails
+<end of output>
+Test time = 104.60 sec
+----------------------------------------------------------
+Test Passed.
+"gatzk_tests" end time: Mar 26 18:21 CST
+"gatzk_tests" time elapsed: 00:01:44
+----------------------------------------------------------
+
+End testing: Mar 26 18:21 CST
