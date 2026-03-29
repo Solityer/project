@@ -18,6 +18,7 @@ struct GraphDataset {
     std::size_t num_nodes = 0;
     std::size_t num_features = 0;
     std::size_t num_classes = 0;
+    std::vector<std::vector<double>> features_fp;
     std::vector<std::vector<algebra::FieldElement>> features;
     std::vector<int> labels;
     std::vector<Edge> edges;
@@ -29,6 +30,7 @@ struct LocalGraph {
     std::size_t num_features = 0;
     std::size_t num_classes = 0;
     std::vector<std::size_t> absolute_ids;
+    std::vector<std::vector<double>> features_fp;
     std::vector<std::vector<algebra::FieldElement>> features;
     std::vector<int> labels;
     std::vector<Edge> edges;

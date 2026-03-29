@@ -160,13 +160,25 @@ std::string context_cache_key(const util::AppConfig& config) {
            << config.dataset << '|'
            << config.data_root << '|'
            << config.cache_root << '|'
+           << config.checkpoint_bundle << '|'
            << config.hidden_dim << '|'
            << config.num_classes << '|'
            << config.range_bits << '|'
            << config.seed << '|'
            << config.local_nodes << '|'
-           << config.center_node;
+           << config.center_node << '|'
+           << (config.allow_synthetic_model ? "synthetic" : "formal");
     return stream.str();
+}
+
+std::filesystem::path resolve_project_path(
+    const std::string& project_root,
+    const std::string& relative_or_absolute) {
+    const std::filesystem::path path(relative_or_absolute);
+    if (path.is_absolute()) {
+        return path;
+    }
+    return std::filesystem::path(project_root) / path;
 }
 
 struct DomainEvaluationWeights {
@@ -1075,11 +1087,31 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
     auto start = Clock::now();
     context.dataset = data::load_dataset(config);
     context.local = data::extract_local_subgraph(context.dataset, config.center_node, config.local_nodes);
-    context.model = model::build_model_parameters(
-        context.local.num_features,
-        config.hidden_dim,
-        context.local.num_classes,
-        config.seed);
+    if (config.allow_synthetic_model) {
+        append_note(metrics, "model_source=synthetic_debug_only");
+        context.model = model::build_model_parameters(
+            context.local.num_features,
+            config.hidden_dim,
+            context.local.num_classes,
+            config.seed);
+    } else {
+        if (config.checkpoint_bundle.empty()) {
+            throw std::runtime_error(
+                "formal model route requires checkpoint_bundle; refusing to fall back to synthetic parameters");
+        }
+        const auto checkpoint_root = resolve_project_path(config.project_root, config.checkpoint_bundle);
+        const auto bundle_info = model::inspect_checkpoint_bundle(checkpoint_root.string());
+        std::string incompatibility_reason;
+        if (!model::checkpoint_bundle_matches_single_head_protocol(bundle_info, &incompatibility_reason)) {
+            throw std::runtime_error(
+                "checkpoint bundle " + checkpoint_root.string()
+                + " is incompatible with the current single-head protocol model: "
+                + incompatibility_reason);
+        }
+        throw std::runtime_error(
+            "checkpoint bundle " + checkpoint_root.string()
+            + " passed compatibility checks, but real single-head parameter loading is not implemented yet");
+    }
     auto end = Clock::now();
     if (metrics != nullptr) {
         metrics->load_static_ms += elapsed_ms(start, end);

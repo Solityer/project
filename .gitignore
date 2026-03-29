@@ -1,0 +1,10 @@
+.venv/
+build/
+build_tmp/
+build_cpu_check/
+build_cuda/
+__pycache__/
+*.pyc
+runs/
+artifacts/
+data/cache/

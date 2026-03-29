@@ -26,7 +26,7 @@ FieldElement barycentric_sum_range(
     return sum;
 }
 
-}  // namespace
+}
 
 std::shared_ptr<RootOfUnityDomain> RootOfUnityDomain::create(const std::string& name, std::size_t size) {
     if (size == 0 || (size & (size - 1U)) != 0U) {
@@ -75,11 +75,6 @@ FieldElement RootOfUnityDomain::lagrange_basis_eval(std::size_t index, const Fie
 }
 
 std::vector<mcl::Fr> RootOfUnityDomain::barycentric_weights_native(const FieldElement& x) const {
-    // This is a low-level evaluation-backend upgrade for the same
-    // root-of-unity interpolation formula already used by the protocol. We
-    // replace O(n) independent inversions with one batch inversion plus O(n)
-    // multiplies, so domain opening / quotient evaluation reuse the exact same
-    // semantics at materially lower cost.
     std::vector<mcl::Fr> denominators(size);
     std::vector<mcl::Fr> prefixes(size);
     mcl::Fr accumulator = 1;
@@ -119,11 +114,7 @@ std::optional<std::size_t> RootOfUnityDomain::rotation_shift(
         return from == to ? std::optional<std::size_t>(0) : std::nullopt;
     }
 
-    // For a multiplicative root-of-unity domain, evaluating at omega^k * x is
-    // the same interpolation problem seen through a cyclic shift of the
-    // barycentric weights. Exposing that shift lets the proving hot path fuse
-    // {z, omega z} and similar point sets into one backend sweep without
-    // changing any opened polynomial semantics.
+    
     const auto ratio = to / from;
     FieldElement power = FieldElement::one();
     for (std::size_t shift = 0; shift < size; ++shift) {
@@ -171,14 +162,7 @@ FieldElement Polynomial::evaluate(const FieldElement& x) const {
         }
     }
     const auto& route2 = util::route2_options();
-    // The backend-upgrade route is intentionally wired into the prover hot
-    // paths (proof-scoped memoization and batched KZG commitments), not into
-    // every generic evaluation call. Verifier-side public polynomial queries
-    // are sparse and low-count; forcing them through the packed-domain weight
-    // materialization path regresses verify latency without changing any proof
-    // semantics. Keeping the generic API on the low-allocation legacy formula
-    // preserves a safe rollback path while the upgraded backend stays focused
-    // on the proving bottlenecks identified in the profiling docs.
+    
     const FieldElement zero_eval = domain->zero_polynomial_eval(x);
     FieldElement sum = FieldElement::zero();
     const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());

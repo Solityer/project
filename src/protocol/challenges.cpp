@@ -238,9 +238,7 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
         return out;
     }
 
-    // The main spec is terse about whether quotient commitments are absorbed
-    // before domain opening points. We absorb them here so z_D binds the
-    // quotient commitments before their openings are sampled.
+    
     for (const auto& label : quotient_commitment_labels()) {
         absorb(transcript, label, quotient_commitments);
     }
@@ -257,5 +255,4 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
     out["rho_ext"] = transcript.challenge("rho_ext");
     return out;
 }
-
-}  // namespace gatzk::protocol
+}

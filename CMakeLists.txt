@@ -8,7 +8,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(GATZK_BUILD_TESTS "Build unit and smoke tests" ON)
-option(GATZK_ENABLE_CUDA_BACKEND "Build the optional CUDA algebra backend shim" OFF)
 option(GATZK_ENABLE_FAST_MSM_DEFAULT "Enable fast MSM / fixed-base batch route by default" ON)
 option(GATZK_ENABLE_PARALLEL_FFT_DEFAULT "Enable parallel domain/FFT route by default" ON)
 option(GATZK_ENABLE_FFT_BACKEND_UPGRADE_DEFAULT "Enable packed domain evaluation backend by default" ON)
@@ -21,13 +20,6 @@ set_property(CACHE GATZK_CRYPTO_BACKEND PROPERTY STRINGS mcl)
 find_package(Threads REQUIRED)
 
 include(cmake/ConfigureMCL.cmake)
-
-if(GATZK_ENABLE_CUDA_BACKEND)
-    enable_language(CUDA)
-    set(CMAKE_CUDA_STANDARD 17)
-    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-    find_package(CUDAToolkit REQUIRED)
-endif()
 
 set(GATZK_SOURCES
     src/algebra/eval_backend.cpp
@@ -52,14 +44,6 @@ set(GATZK_SOURCES
     src/util/route2.cpp
 )
 
-if(GATZK_ENABLE_CUDA_BACKEND)
-    list(APPEND GATZK_SOURCES
-        src/algebra/vector_ops_cuda.cu
-        src/algebra/eval_backend_cuda.cu
-        src/protocol/quotients_cuda.cu
-    )
-endif()
-
 add_library(gatzkml STATIC ${GATZK_SOURCES})
 target_include_directories(gatzkml PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_compile_options(gatzkml PRIVATE -Wall -Wextra -Wpedantic)
@@ -73,7 +57,7 @@ target_compile_definitions(
         GATZK_ENABLE_FFT_KERNEL_UPGRADE_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_FFT_KERNEL_UPGRADE_DEFAULT}>,1,0>
         GATZK_ENABLE_TRACE_LAYOUT_UPGRADE_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_TRACE_LAYOUT_UPGRADE_DEFAULT}>,1,0>
         GATZK_ENABLE_FAST_VERIFY_PAIRING_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_FAST_VERIFY_PAIRING_DEFAULT}>,1,0>
-        GATZK_ENABLE_CUDA_BACKEND=$<IF:$<BOOL:${GATZK_ENABLE_CUDA_BACKEND}>,1,0>
+        GATZK_ENABLE_CUDA_BACKEND=0
 )
 
 if(GATZK_USE_MCL)
@@ -83,9 +67,6 @@ if(GATZK_USE_MCL)
 endif()
 
 target_link_libraries(gatzkml PUBLIC Threads::Threads)
-if(GATZK_ENABLE_CUDA_BACKEND)
-    target_link_libraries(gatzkml PUBLIC CUDA::cudart)
-endif()
 
 add_executable(gatzk_run src/main.cpp)
 target_link_libraries(gatzk_run PRIVATE gatzkml)

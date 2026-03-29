@@ -63,9 +63,6 @@ int main(int argc, char** argv) {
                 benchmark_mode = argv[++i];
             } else if (arg == "--fast-msm" && i + 1 < argc) {
                 route2.fast_msm = parse_switch(argv[++i], "--fast-msm");
-            } else if (arg == "--experimental-cuda-quotients" && i + 1 < argc) {
-                route2.experimental_cuda_quotients =
-                    parse_switch(argv[++i], "--experimental-cuda-quotients");
             } else if (arg == "--parallel-fft" && i + 1 < argc) {
                 route2.parallel_fft = parse_switch(argv[++i], "--parallel-fft");
             } else if (arg == "--fft-backend-upgrade" && i + 1 < argc) {

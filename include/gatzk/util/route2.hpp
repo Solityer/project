@@ -8,7 +8,6 @@ struct Route2Options {
     // These switches only select low-level implementation routes. They must not
     // change transcript order, proof shape or verifier equations.
     bool fast_msm = GATZK_ENABLE_FAST_MSM_DEFAULT != 0;
-    bool experimental_cuda_quotients = false;
     bool parallel_fft = GATZK_ENABLE_PARALLEL_FFT_DEFAULT != 0;
     bool fft_backend_upgrade = GATZK_ENABLE_FFT_BACKEND_UPGRADE_DEFAULT != 0;
     bool fft_kernel_upgrade = GATZK_ENABLE_FFT_KERNEL_UPGRADE_DEFAULT != 0;

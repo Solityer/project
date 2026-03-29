@@ -1,1 +1,0 @@
-/usr/bin/c++ CMakeFiles/gatzk_run.dir/src/main.cpp.o -o gatzk_run  libgatzkml.a /home/pzh/project/third_party/mcl/lib/libmcl.a 

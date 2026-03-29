@@ -14,6 +14,24 @@ namespace {
 
 using algebra::FieldElement;
 
+std::vector<std::vector<double>> row_normalize(
+    const std::vector<std::vector<double>>& raw_features) {
+    std::vector<std::vector<double>> normalized = raw_features;
+    for (auto& row : normalized) {
+        double sum = 0.0;
+        for (const auto value : row) {
+            sum += value;
+        }
+        if (sum == 0.0) {
+            continue;
+        }
+        for (auto& value : row) {
+            value /= sum;
+        }
+    }
+    return normalized;
+}
+
 std::unordered_map<std::string, std::string> read_meta(const std::filesystem::path& path) {
     std::ifstream input(path);
     if (!input) {
@@ -51,6 +69,9 @@ GraphDataset load_cached_dataset(const std::filesystem::path& root) {
     dataset.num_nodes = std::stoull(meta.at("num_nodes"));
     dataset.num_features = std::stoull(meta.at("num_features"));
     dataset.num_classes = std::stoull(meta.at("num_classes"));
+    std::vector<std::vector<double>> raw_features(
+        dataset.num_nodes,
+        std::vector<double>(dataset.num_features, 0.0));
     dataset.features.assign(dataset.num_nodes, std::vector<FieldElement>(dataset.num_features, FieldElement::zero()));
 
     {
@@ -74,8 +95,14 @@ GraphDataset load_cached_dataset(const std::filesystem::path& root) {
                 const auto colon = entry.find(':');
                 const auto index = static_cast<std::size_t>(std::stoull(entry.substr(0, colon)));
                 const auto value = std::stod(entry.substr(colon + 1));
-                dataset.features[row][index] = quantize(value);
+                raw_features[row][index] = value;
             }
+        }
+    }
+    dataset.features_fp = row_normalize(raw_features);
+    for (std::size_t row = 0; row < dataset.num_nodes; ++row) {
+        for (std::size_t col = 0; col < dataset.num_features; ++col) {
+            dataset.features[row][col] = quantize(dataset.features_fp[row][col]);
         }
     }
 
@@ -153,6 +180,7 @@ LocalGraph extract_local_subgraph(const GraphDataset& dataset, std::size_t cente
         local.num_features = dataset.num_features;
         local.num_classes = dataset.num_classes;
         local.absolute_ids.resize(dataset.num_nodes);
+        local.features_fp = dataset.features_fp;
         local.features = dataset.features;
         local.labels = dataset.labels;
         for (std::size_t node = 0; node < dataset.num_nodes; ++node) {
@@ -220,9 +248,11 @@ LocalGraph extract_local_subgraph(const GraphDataset& dataset, std::size_t cente
     local.num_features = dataset.num_features;
     local.num_classes = dataset.num_classes;
     local.absolute_ids = selected;
+    local.features_fp.reserve(local.num_nodes);
     local.features.reserve(local.num_nodes);
     local.labels.reserve(local.num_nodes);
     for (const auto absolute_id : selected) {
+        local.features_fp.push_back(dataset.features_fp[absolute_id]);
         local.features.push_back(dataset.features[absolute_id]);
         local.labels.push_back(dataset.labels[absolute_id]);
     }

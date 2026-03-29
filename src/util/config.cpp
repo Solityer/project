@@ -57,12 +57,15 @@ AppConfig load_config(const std::string& path) {
     if (entries.contains("data_root")) config.data_root = entries["data_root"];
     if (entries.contains("cache_root")) config.cache_root = entries["cache_root"];
     if (entries.contains("export_dir")) config.export_dir = entries["export_dir"];
+    if (entries.contains("checkpoint_bundle")) config.checkpoint_bundle = entries["checkpoint_bundle"];
+    if (entries.contains("reference_output_dir")) config.reference_output_dir = entries["reference_output_dir"];
     if (entries.contains("hidden_dim")) config.hidden_dim = std::stoull(entries["hidden_dim"]);
     if (entries.contains("num_classes")) config.num_classes = std::stoull(entries["num_classes"]);
     if (entries.contains("range_bits")) config.range_bits = std::stoull(entries["range_bits"]);
     if (entries.contains("seed")) config.seed = std::stoull(entries["seed"]);
     if (entries.contains("local_nodes")) config.local_nodes = std::stoull(entries["local_nodes"]);
     if (entries.contains("center_node")) config.center_node = std::stoull(entries["center_node"]);
+    if (entries.contains("allow_synthetic_model")) config.allow_synthetic_model = parse_bool(entries["allow_synthetic_model"]);
     if (entries.contains("dump_trace")) config.dump_trace = parse_bool(entries["dump_trace"]);
     if (entries.contains("auto_prepare_dataset")) config.auto_prepare_dataset = parse_bool(entries["auto_prepare_dataset"]);
     if (entries.contains("prove_enabled")) config.prove_enabled = parse_bool(entries["prove_enabled"]);

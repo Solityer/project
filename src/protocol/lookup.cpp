@@ -36,7 +36,7 @@ std::vector<FieldElement> batch_inverse(
     return out;
 }
 
-}  // namespace
+}
 
 std::vector<algebra::FieldElement> build_selector(std::size_t valid_length, std::size_t domain_size) {
     std::vector<algebra::FieldElement> out(domain_size, algebra::FieldElement::zero());
@@ -91,4 +91,4 @@ std::vector<algebra::FieldElement> build_logup_accumulator(
     return accumulator;
 }
 
-}  // namespace gatzk::protocol
+}

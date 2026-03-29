@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <string>
 #include <vector>
 
 #include "gatzk/algebra/field.hpp"
@@ -18,11 +19,21 @@ struct ModelParameters {
     std::vector<algebra::FieldElement> b;
 };
 
+struct CheckpointBundleInfo {
+    std::string bundle_root;
+    std::size_t hidden_head_count = 0;
+    bool has_output_attention_head = false;
+};
+
 ModelParameters build_model_parameters(
     std::size_t input_dim,
     std::size_t hidden_dim,
     std::size_t num_classes,
     std::uint64_t seed);
+CheckpointBundleInfo inspect_checkpoint_bundle(const std::string& bundle_root);
+bool checkpoint_bundle_matches_single_head_protocol(
+    const CheckpointBundleInfo& info,
+    std::string* reason = nullptr);
 
 Matrix project_features(const Matrix& left, const Matrix& right);
 std::vector<algebra::FieldElement> matvec_projection(const Matrix& matrix, const std::vector<algebra::FieldElement>& vector);

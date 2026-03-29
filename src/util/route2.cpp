@@ -31,12 +31,6 @@ std::string route2_feature_label(const Route2Options& options) {
     if (options.fast_msm) {
         label += "msm";
     }
-    if (options.experimental_cuda_quotients) {
-        if (!label.empty()) {
-            label += "_";
-        }
-        label += "cudaquot";
-    }
     if (options.parallel_fft) {
         if (!label.empty()) {
             label += "_";
@@ -72,8 +66,6 @@ std::string route2_feature_label(const Route2Options& options) {
 
 std::string route2_feature_notes(const Route2Options& options) {
     return "enabled_fast_msm=" + std::string(options.fast_msm ? "true" : "false")
-        + "; enabled_experimental_cuda_quotients="
-        + std::string(options.experimental_cuda_quotients ? "true" : "false")
         + "; enabled_parallel_fft=" + std::string(options.parallel_fft ? "true" : "false")
         + "; enabled_fft_backend_upgrade=" + std::string(options.fft_backend_upgrade ? "true" : "false")
         + "; enabled_fft_kernel_upgrade=" + std::string(options.fft_kernel_upgrade ? "true" : "false")

@@ -1,11 +1,37 @@
 #include "gatzk/model/gat.hpp"
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <future>
+#include <regex>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
 
 namespace gatzk::model {
+namespace {
+
+std::string load_text_file(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    if (!input) {
+        throw std::runtime_error("failed to open checkpoint manifest: " + path.string());
+    }
+    std::ostringstream stream;
+    stream << input.rdbuf();
+    return stream.str();
+}
+
+std::size_t parse_required_size_t(const std::string& text, const std::string& key) {
+    const std::regex pattern("\"" + key + "\"\\s*:\\s*([0-9]+)");
+    std::smatch match;
+    if (!std::regex_search(text, match, pattern)) {
+        throw std::runtime_error("missing numeric key in checkpoint manifest: " + key);
+    }
+    return static_cast<std::size_t>(std::stoull(match[1].str()));
+}
+
+}  // namespace
 
 ModelParameters build_model_parameters(
     std::size_t input_dim,
@@ -51,6 +77,46 @@ ModelParameters build_model_parameters(
         params.b[i] = algebra::FieldElement::from_signed(static_cast<std::int64_t>(i % 3U));
     }
     return params;
+}
+
+CheckpointBundleInfo inspect_checkpoint_bundle(const std::string& bundle_root) {
+    const auto manifest_path = std::filesystem::path(bundle_root) / "manifest.json";
+    const auto manifest = load_text_file(manifest_path);
+
+    CheckpointBundleInfo info;
+    info.bundle_root = bundle_root;
+    info.hidden_head_count = parse_required_size_t(manifest, "hidden_head_count");
+    info.has_output_attention_head = manifest.find("\"output_head\"") != std::string::npos;
+    return info;
+}
+
+bool checkpoint_bundle_matches_single_head_protocol(
+    const CheckpointBundleInfo& info,
+    std::string* reason) {
+    std::vector<std::string> failures;
+    if (info.hidden_head_count != 1) {
+        failures.push_back(
+            "hidden_head_count=" + std::to_string(info.hidden_head_count)
+            + " but the current protocol model expects exactly 1 hidden attention head");
+    }
+    if (info.has_output_attention_head) {
+        failures.push_back(
+            "the exported bundle contains an output attention head, while the current protocol model expects affine output parameters W_out/b");
+    }
+    if (failures.empty()) {
+        return true;
+    }
+    if (reason != nullptr) {
+        std::ostringstream stream;
+        for (std::size_t i = 0; i < failures.size(); ++i) {
+            if (i != 0) {
+                stream << "; ";
+            }
+            stream << failures[i];
+        }
+        *reason = stream.str();
+    }
+    return false;
 }
 
 Matrix project_features(const Matrix& left, const Matrix& right) {

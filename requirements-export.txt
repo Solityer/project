@@ -1,0 +1,4 @@
+numpy
+scipy
+six
+tensorflow-checkpoint-reader
