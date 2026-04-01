@@ -239,4 +239,4 @@ std::vector<FieldElement> flatten_matrix_coefficients(const std::vector<std::vec
     return out;
 }
 
-}  // namespace gatzk::algebra
+}

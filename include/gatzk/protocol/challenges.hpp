@@ -11,8 +11,8 @@
 
 namespace gatzk::protocol {
 
-std::vector<std::string> dynamic_commitment_labels();
-std::vector<std::string> quotient_commitment_labels();
+std::vector<std::string> dynamic_commitment_labels(const ProtocolContext& context);
+std::vector<std::string> quotient_commitment_labels(const ProtocolContext& context);
 
 std::map<std::string, algebra::FieldElement> replay_challenges(
     const ProtocolContext& context,

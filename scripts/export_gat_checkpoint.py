@@ -72,6 +72,16 @@ def build_manifest(tensors: Dict[str, np.ndarray], checkpoint_prefix: str) -> Di
     return manifest
 
 
+def write_text_tensor_dump(path: pathlib.Path, tensors: Dict[str, np.ndarray]) -> None:
+    with path.open("w", encoding="utf-8") as handle:
+        for name, tensor in sorted(tensors.items()):
+            flat = tensor.astype(np.float64, copy=False).reshape(-1)
+            shape = " ".join(str(dim) for dim in tensor.shape)
+            handle.write(f"TENSOR {name} {tensor.ndim} {shape} {flat.size}\n")
+            handle.write(" ".join(format(float(value), ".17g") for value in flat))
+            handle.write("\n")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint-prefix", required=True)
@@ -85,6 +95,7 @@ def main() -> None:
     manifest = build_manifest(tensors, args.checkpoint_prefix)
     arrays = {archive_key(name): tensor for name, tensor in tensors.items()}
     np.savez_compressed(output_dir / "tensors.npz", **arrays)
+    write_text_tensor_dump(output_dir / "tensors.txt", tensors)
     (output_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True),
         encoding="utf-8",

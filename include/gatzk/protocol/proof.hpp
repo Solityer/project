@@ -2,6 +2,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -20,12 +21,19 @@ struct StaticTables {
     std::vector<algebra::FieldElement> range;
 };
 
+struct AttentionHeadDomains {
+    std::shared_ptr<algebra::RootOfUnityDomain> in;
+    std::shared_ptr<algebra::RootOfUnityDomain> d;
+};
+
 struct WorkDomains {
     std::shared_ptr<algebra::RootOfUnityDomain> fh;
     std::shared_ptr<algebra::RootOfUnityDomain> edge;
     std::shared_ptr<algebra::RootOfUnityDomain> in;
     std::shared_ptr<algebra::RootOfUnityDomain> d;
     std::shared_ptr<algebra::RootOfUnityDomain> n;
+    std::vector<AttentionHeadDomains> hidden_heads;
+    std::optional<AttentionHeadDomains> output_head;
 };
 
 struct ProtocolContext {

@@ -22,88 +22,183 @@ void absorb_public(crypto::Transcript& transcript, const ProtocolContext& contex
     transcript.absorb_commitment(label, context.public_commitments.at(label).point);
 }
 
+std::string head_prefix(std::size_t head_index) {
+    return "P_h" + std::to_string(head_index);
+}
+
+std::string output_prefix() {
+    return "P_out";
+}
+
+void append_attention_head_dynamic_labels(std::vector<std::string>& labels, const std::string& prefix) {
+    auto push = [&](const std::string& suffix) { labels.push_back(prefix + "_" + suffix); };
+    push("H_prime");
+    push("a_proj");
+    push("b_proj");
+    push("Acc_proj");
+    push("E_src");
+    push("E_dst");
+    push("H_star");
+    push("a_src");
+    push("b_src");
+    push("Acc_src");
+    push("a_dst");
+    push("b_dst");
+    push("Acc_dst");
+    push("a_star");
+    push("b_star");
+    push("Acc_star");
+    push("E_src_edge");
+    push("H_src_star_edge");
+    push("Table_src");
+    push("Query_src");
+    push("m_src");
+    push("R_src_node");
+    push("R_src");
+    push("S");
+    push("Z");
+    push("Table_L");
+    push("Query_L");
+    push("m_L");
+    push("R_L");
+    push("M");
+    push("M_edge");
+    push("Delta");
+    push("s_max");
+    push("C_max");
+    push("Table_R");
+    push("Query_R");
+    push("m_R");
+    push("R_R");
+    push("U");
+    push("Sum");
+    push("inv");
+    push("alpha");
+    push("Table_exp");
+    push("Query_exp");
+    push("m_exp");
+    push("R_exp");
+    push("H_agg");
+    push("H_agg_star");
+    push("a_agg");
+    push("b_agg");
+    push("Acc_agg");
+    push("E_dst_edge");
+    push("Sum_edge");
+    push("inv_edge");
+    push("H_agg_star_edge");
+    push("Table_dst");
+    push("Query_dst");
+    push("m_dst");
+    push("R_dst_node");
+    push("R_dst");
+    push("v_hat");
+    push("w_psq");
+    push("T_psq_edge");
+    push("PSQ");
+}
+
 }  // namespace
 
-std::vector<std::string> dynamic_commitment_labels() {
-    return {
+std::vector<std::string> dynamic_commitment_labels(const ProtocolContext& context) {
+    if (!context.model.has_real_multihead) {
+        return {
+            "P_H",
+            "P_Table_feat",
+            "P_Query_feat",
+            "P_m_feat",
+            "P_R_feat",
+            "P_H_prime",
+            "P_a_proj",
+            "P_b_proj",
+            "P_Acc_proj",
+            "P_E_src",
+            "P_E_dst",
+            "P_H_star",
+            "P_a_src",
+            "P_b_src",
+            "P_Acc_src",
+            "P_a_dst",
+            "P_b_dst",
+            "P_Acc_dst",
+            "P_a_star",
+            "P_b_star",
+            "P_Acc_star",
+            "P_E_src_edge",
+            "P_H_src_star_edge",
+            "P_Table_src",
+            "P_Query_src",
+            "P_m_src",
+            "P_R_src_node",
+            "P_R_src",
+            "P_S",
+            "P_Z",
+            "P_Table_L",
+            "P_Query_L",
+            "P_m_L",
+            "P_R_L",
+            "P_M",
+            "P_M_edge",
+            "P_Delta",
+            "P_s_max",
+            "P_C_max",
+            "P_Table_R",
+            "P_Query_R",
+            "P_m_R",
+            "P_R_R",
+            "P_U",
+            "P_Sum",
+            "P_inv",
+            "P_alpha",
+            "P_Table_exp",
+            "P_Query_exp",
+            "P_m_exp",
+            "P_R_exp",
+            "P_H_agg",
+            "P_H_agg_star",
+            "P_a_agg",
+            "P_b_agg",
+            "P_Acc_agg",
+            "P_E_dst_edge",
+            "P_Sum_edge",
+            "P_inv_edge",
+            "P_H_agg_star_edge",
+            "P_Table_dst",
+            "P_Query_dst",
+            "P_m_dst",
+            "P_R_dst_node",
+            "P_R_dst",
+            "P_v_hat",
+            "P_w_psq",
+            "P_T_psq_edge",
+            "P_PSQ",
+            "P_Y_lin",
+            "P_Y",
+            "P_a_out",
+            "P_b_out",
+            "P_Acc_out",
+        };
+    }
+
+    std::vector<std::string> labels = {
         "P_H",
         "P_Table_feat",
         "P_Query_feat",
         "P_m_feat",
         "P_R_feat",
-        "P_H_prime",
-        "P_a_proj",
-        "P_b_proj",
-        "P_Acc_proj",
-        "P_E_src",
-        "P_E_dst",
-        "P_H_star",
-        "P_a_src",
-        "P_b_src",
-        "P_Acc_src",
-        "P_a_dst",
-        "P_b_dst",
-        "P_Acc_dst",
-        "P_a_star",
-        "P_b_star",
-        "P_Acc_star",
-        "P_E_src_edge",
-        "P_H_src_star_edge",
-        "P_Table_src",
-        "P_Query_src",
-        "P_m_src",
-        "P_R_src_node",
-        "P_R_src",
-        "P_S",
-        "P_Z",
-        "P_Table_L",
-        "P_Query_L",
-        "P_m_L",
-        "P_R_L",
-        "P_M",
-        "P_M_edge",
-        "P_Delta",
-        "P_s_max",
-        "P_C_max",
-        "P_Table_R",
-        "P_Query_R",
-        "P_m_R",
-        "P_R_R",
-        "P_U",
-        "P_Sum",
-        "P_inv",
-        "P_alpha",
-        "P_Table_exp",
-        "P_Query_exp",
-        "P_m_exp",
-        "P_R_exp",
-        "P_H_agg",
-        "P_H_agg_star",
-        "P_a_agg",
-        "P_b_agg",
-        "P_Acc_agg",
-        "P_E_dst_edge",
-        "P_Sum_edge",
-        "P_inv_edge",
-        "P_H_agg_star_edge",
-        "P_Table_dst",
-        "P_Query_dst",
-        "P_m_dst",
-        "P_R_dst_node",
-        "P_R_dst",
-        "P_v_hat",
-        "P_w_psq",
-        "P_T_psq_edge",
-        "P_PSQ",
-        "P_Y_lin",
-        "P_Y",
-        "P_a_out",
-        "P_b_out",
-        "P_Acc_out",
     };
+    for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index) {
+        append_attention_head_dynamic_labels(labels, head_prefix(head_index));
+    }
+    labels.push_back("P_hidden_concat");
+    append_attention_head_dynamic_labels(labels, output_prefix());
+    labels.push_back("P_Y_lin");
+    labels.push_back("P_Y");
+    return labels;
 }
 
-std::vector<std::string> quotient_commitment_labels() {
+std::vector<std::string> quotient_commitment_labels(const ProtocolContext& context) {
+    (void)context;
     return {"t_FH", "t_edge", "t_in", "t_d", "t_N"};
 }
 
@@ -111,6 +206,11 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
     const ProtocolContext& context,
     const std::unordered_map<std::string, crypto::Commitment>& dynamic_commitments,
     const std::unordered_map<std::string, crypto::Commitment>& quotient_commitments) {
+    if (context.model.has_real_multihead) {
+        throw std::runtime_error(
+            "replay_challenges still expects the legacy single-head transcript; multi-head transcript rewiring is not complete yet");
+    }
+
     crypto::Transcript transcript("gatzkml");
     std::map<std::string, algebra::FieldElement> out;
 
@@ -214,7 +314,7 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
     absorb_static(transcript, context, "V_b");
     out["y_out"] = transcript.challenge("y_out");
 
-    for (const auto& label : dynamic_commitment_labels()) {
+    for (const auto& label : dynamic_commitment_labels(context)) {
         absorb(transcript, label, dynamic_commitments);
     }
     for (const auto& label : {
@@ -239,7 +339,7 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
     }
 
     
-    for (const auto& label : quotient_commitment_labels()) {
+    for (const auto& label : quotient_commitment_labels(context)) {
         absorb(transcript, label, quotient_commitments);
     }
     out["z_FH"] = transcript.challenge("z_FH");

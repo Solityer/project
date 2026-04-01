@@ -1,13 +1,16 @@
 #include "gatzk/model/gat.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <limits>
 #include <regex>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
+#include <unordered_map>
 
 namespace gatzk::model {
 namespace {
@@ -29,6 +32,207 @@ std::size_t parse_required_size_t(const std::string& text, const std::string& ke
         throw std::runtime_error("missing numeric key in checkpoint manifest: " + key);
     }
     return static_cast<std::size_t>(std::stoull(match[1].str()));
+}
+
+std::size_t shape_product(const std::vector<std::size_t>& shape) {
+    std::size_t out = 1;
+    for (const auto dim : shape) {
+        out *= dim;
+    }
+    return out;
+}
+
+std::unordered_map<std::string, DenseTensor> load_text_tensors(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    if (!input) {
+        throw std::runtime_error("failed to open checkpoint tensor dump: " + path.string());
+    }
+
+    std::unordered_map<std::string, DenseTensor> out;
+    std::string marker;
+    while (input >> marker) {
+        if (marker != "TENSOR") {
+            throw std::runtime_error("malformed tensor dump marker in " + path.string());
+        }
+        std::string name;
+        std::size_t rank = 0;
+        input >> name >> rank;
+        DenseTensor tensor;
+        tensor.shape.resize(rank);
+        for (std::size_t i = 0; i < rank; ++i) {
+            input >> tensor.shape[i];
+        }
+        std::size_t count = 0;
+        input >> count;
+        tensor.values.resize(count, 0.0);
+        for (std::size_t i = 0; i < count; ++i) {
+            input >> tensor.values[i];
+        }
+        if (count != shape_product(tensor.shape)) {
+            throw std::runtime_error("tensor dump count mismatch for " + name);
+        }
+        out.emplace(name, std::move(tensor));
+    }
+    return out;
+}
+
+const DenseTensor& require_tensor(
+    const std::unordered_map<std::string, DenseTensor>& tensors,
+    const std::string& name) {
+    const auto it = tensors.find(name);
+    if (it == tensors.end()) {
+        throw std::runtime_error("missing tensor in checkpoint dump: " + name);
+    }
+    return it->second;
+}
+
+FloatMatrix reshape_seq_kernel(const DenseTensor& tensor) {
+    if (tensor.shape.size() != 3 || tensor.shape[0] != 1) {
+        throw std::runtime_error("expected seq kernel tensor shape [1, in, out]");
+    }
+    const auto rows = tensor.shape[1];
+    const auto cols = tensor.shape[2];
+    FloatMatrix out(rows, std::vector<double>(cols, 0.0));
+    for (std::size_t row = 0; row < rows; ++row) {
+        for (std::size_t col = 0; col < cols; ++col) {
+            out[row][col] = tensor.values[row * cols + col];
+        }
+    }
+    return out;
+}
+
+std::vector<double> reshape_attention_kernel(const DenseTensor& tensor) {
+    if (tensor.shape.size() != 3 || tensor.shape[0] != 1 || tensor.shape[2] != 1) {
+        throw std::runtime_error("expected attention kernel tensor shape [1, width, 1]");
+    }
+    return tensor.values;
+}
+
+double reshape_scalar_bias(const DenseTensor& tensor) {
+    if (tensor.shape.size() != 1 || tensor.shape[0] != 1 || tensor.values.size() != 1) {
+        throw std::runtime_error("expected scalar bias tensor shape [1]");
+    }
+    return tensor.values.front();
+}
+
+std::vector<double> reshape_output_bias(const DenseTensor& tensor) {
+    if (tensor.shape.size() != 1) {
+        throw std::runtime_error("expected output bias tensor shape [width]");
+    }
+    return tensor.values;
+}
+
+AttentionHeadParameters load_head_parameters(
+    const std::unordered_map<std::string, DenseTensor>& tensors,
+    const std::string& seq_kernel_name,
+    const std::string& attn_dst_kernel_name,
+    const std::string& attn_dst_bias_name,
+    const std::string& attn_src_kernel_name,
+    const std::string& attn_src_bias_name,
+    const std::string& output_bias_name) {
+    AttentionHeadParameters out;
+    out.seq_kernel_fp = reshape_seq_kernel(require_tensor(tensors, seq_kernel_name));
+    out.attn_dst_kernel_fp = reshape_attention_kernel(require_tensor(tensors, attn_dst_kernel_name));
+    out.attn_dst_bias_fp = reshape_scalar_bias(require_tensor(tensors, attn_dst_bias_name));
+    out.attn_src_kernel_fp = reshape_attention_kernel(require_tensor(tensors, attn_src_kernel_name));
+    out.attn_src_bias_fp = reshape_scalar_bias(require_tensor(tensors, attn_src_bias_name));
+    out.output_bias_fp = reshape_output_bias(require_tensor(tensors, output_bias_name));
+    return out;
+}
+
+std::string hidden_seq_kernel_name(std::size_t head_index) {
+    if (head_index == 0) {
+        return "conv1d/kernel";
+    }
+    return "conv1d_" + std::to_string(head_index * 3) + "/kernel";
+}
+
+std::string hidden_dst_kernel_name(std::size_t head_index) {
+    return "conv1d_" + std::to_string(head_index == 0 ? 1 : head_index * 3 + 1) + "/kernel";
+}
+
+std::string hidden_dst_bias_name(std::size_t head_index) {
+    return "conv1d_" + std::to_string(head_index == 0 ? 1 : head_index * 3 + 1) + "/bias";
+}
+
+std::string hidden_src_kernel_name(std::size_t head_index) {
+    return "conv1d_" + std::to_string(head_index == 0 ? 2 : head_index * 3 + 2) + "/kernel";
+}
+
+std::string hidden_src_bias_name(std::size_t head_index) {
+    return "conv1d_" + std::to_string(head_index == 0 ? 2 : head_index * 3 + 2) + "/bias";
+}
+
+std::string hidden_output_bias_name(std::size_t head_index) {
+    if (head_index == 0) {
+        return "BiasAdd/biases";
+    }
+    return "BiasAdd_" + std::to_string(head_index) + "/biases";
+}
+
+double leaky_relu(double value, double alpha = 0.2) {
+    return value >= 0.0 ? value : alpha * value;
+}
+
+double elu(double value) {
+    return value >= 0.0 ? value : std::expm1(value);
+}
+
+FloatMatrix matmul(const FloatMatrix& left, const FloatMatrix& right) {
+    if (left.empty() || right.empty()) {
+        return {};
+    }
+    const auto shared = left.front().size();
+    if (right.size() != shared) {
+        throw std::runtime_error("float matrix multiply dimension mismatch");
+    }
+    const auto rows = left.size();
+    const auto cols = right.front().size();
+    FloatMatrix out(rows, std::vector<double>(cols, 0.0));
+    for (std::size_t i = 0; i < rows; ++i) {
+        for (std::size_t k = 0; k < shared; ++k) {
+            const auto lhs = left[i][k];
+            for (std::size_t j = 0; j < cols; ++j) {
+                out[i][j] += lhs * right[k][j];
+            }
+        }
+    }
+    return out;
+}
+
+std::vector<double> matvec(const FloatMatrix& matrix, const std::vector<double>& vector, double bias) {
+    std::vector<double> out(matrix.size(), bias);
+    for (std::size_t row = 0; row < matrix.size(); ++row) {
+        for (std::size_t col = 0; col < vector.size(); ++col) {
+            out[row] += matrix[row][col] * vector[col];
+        }
+    }
+    return out;
+}
+
+FloatMatrix concatenate_columns(const std::vector<FloatMatrix>& matrices) {
+    if (matrices.empty()) {
+        return {};
+    }
+    const auto rows = matrices.front().size();
+    std::size_t cols = 0;
+    for (const auto& matrix : matrices) {
+        if (matrix.size() != rows) {
+            throw std::runtime_error("cannot concatenate matrices with different row counts");
+        }
+        cols += matrix.empty() ? 0 : matrix.front().size();
+    }
+
+    FloatMatrix out(rows, std::vector<double>(cols, 0.0));
+    std::size_t offset = 0;
+    for (const auto& matrix : matrices) {
+        const auto width = matrix.empty() ? 0 : matrix.front().size();
+        for (std::size_t row = 0; row < rows; ++row) {
+            std::copy(matrix[row].begin(), matrix[row].end(), out[row].begin() + static_cast<std::ptrdiff_t>(offset));
+        }
+        offset += width;
+    }
+    return out;
 }
 
 }  // namespace
@@ -117,6 +321,161 @@ bool checkpoint_bundle_matches_single_head_protocol(
         *reason = stream.str();
     }
     return false;
+}
+
+ModelParameters load_checkpoint_bundle_parameters(const std::string& bundle_root) {
+    const auto manifest_info = inspect_checkpoint_bundle(bundle_root);
+    const auto tensors = load_text_tensors(std::filesystem::path(bundle_root) / "tensors.txt");
+
+    ModelParameters out;
+    out.has_real_multihead = true;
+    out.hidden_heads.reserve(manifest_info.hidden_head_count);
+    for (std::size_t head_index = 0; head_index < manifest_info.hidden_head_count; ++head_index) {
+        out.hidden_heads.push_back(load_head_parameters(
+            tensors,
+            hidden_seq_kernel_name(head_index),
+            hidden_dst_kernel_name(head_index),
+            hidden_dst_bias_name(head_index),
+            hidden_src_kernel_name(head_index),
+            hidden_src_bias_name(head_index),
+            hidden_output_bias_name(head_index)));
+    }
+    out.output_head = load_head_parameters(
+        tensors,
+        "conv1d_24/kernel",
+        "conv1d_25/kernel",
+        "conv1d_25/bias",
+        "conv1d_26/kernel",
+        "conv1d_26/bias",
+        "BiasAdd_8/biases");
+    return out;
+}
+
+FloatMatrix build_attention_bias_matrix(std::size_t num_nodes, const std::vector<data::Edge>& edges) {
+    FloatMatrix bias(num_nodes, std::vector<double>(num_nodes, -1e9));
+    for (std::size_t node = 0; node < num_nodes; ++node) {
+        bias[node][node] = 0.0;
+    }
+    for (const auto& edge : edges) {
+        if (edge.src >= num_nodes || edge.dst >= num_nodes) {
+            throw std::runtime_error("edge out of bounds while building attention bias");
+        }
+        bias[edge.dst][edge.src] = 0.0;
+    }
+    return bias;
+}
+
+HeadForwardTrace attention_head_forward(
+    const FloatMatrix& features,
+    const std::vector<data::Edge>& edges,
+    const AttentionHeadParameters& parameters) {
+    if (features.empty()) {
+        return {};
+    }
+    const auto node_count = features.size();
+    const auto width = parameters.output_bias_fp.size();
+    for (const auto& edge : edges) {
+        if (edge.src >= node_count || edge.dst >= node_count) {
+            throw std::runtime_error("edge out of bounds while running attention head forward");
+        }
+    }
+
+    HeadForwardTrace trace;
+    trace.H_prime = matmul(features, parameters.seq_kernel_fp);
+    trace.E_dst = matvec(trace.H_prime, parameters.attn_dst_kernel_fp, parameters.attn_dst_bias_fp);
+    trace.E_src = matvec(trace.H_prime, parameters.attn_src_kernel_fp, parameters.attn_src_bias_fp);
+    trace.S.assign(edges.size(), 0.0);
+    trace.Z.assign(edges.size(), 0.0);
+    trace.M.assign(node_count, 0.0);
+    trace.Delta.assign(edges.size(), 0.0);
+    trace.U.assign(edges.size(), 0.0);
+    trace.Sum.assign(node_count, 0.0);
+    trace.inv.assign(node_count, 0.0);
+    trace.alpha.assign(edges.size(), 0.0);
+    trace.H_agg_pre_bias.assign(node_count, std::vector<double>(width, 0.0));
+    trace.H_agg.assign(node_count, std::vector<double>(width, 0.0));
+
+    std::vector<std::vector<std::size_t>> incoming_sources(node_count);
+    for (const auto& edge : edges) {
+        incoming_sources[edge.dst].push_back(edge.src);
+    }
+    for (std::size_t dst = 0; dst < node_count; ++dst) {
+        const auto has_self = std::find(
+                                  incoming_sources[dst].begin(),
+                                  incoming_sources[dst].end(),
+                                  dst)
+            != incoming_sources[dst].end();
+        if (!has_self) {
+            incoming_sources[dst].push_back(dst);
+        }
+    }
+
+    for (std::size_t dst = 0; dst < node_count; ++dst) {
+        trace.M[dst] = -std::numeric_limits<double>::infinity();
+    }
+    for (std::size_t dst = 0; dst < node_count; ++dst) {
+        for (const auto src : incoming_sources[dst]) {
+            trace.M[dst] = std::max(trace.M[dst], leaky_relu(trace.E_dst[dst] + trace.E_src[src]));
+        }
+    }
+    for (std::size_t dst = 0; dst < node_count; ++dst) {
+        for (const auto src : incoming_sources[dst]) {
+            trace.Sum[dst] += std::exp(leaky_relu(trace.E_dst[dst] + trace.E_src[src]) - trace.M[dst]);
+        }
+    }
+    for (std::size_t dst = 0; dst < node_count; ++dst) {
+        trace.inv[dst] = 1.0 / trace.Sum[dst];
+    }
+    for (std::size_t dst = 0; dst < node_count; ++dst) {
+        for (const auto src : incoming_sources[dst]) {
+            const auto alpha = std::exp(leaky_relu(trace.E_dst[dst] + trace.E_src[src]) - trace.M[dst]) * trace.inv[dst];
+            for (std::size_t col = 0; col < width; ++col) {
+                trace.H_agg_pre_bias[dst][col] += alpha * trace.H_prime[src][col];
+            }
+        }
+    }
+    for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
+        const auto& edge = edges[edge_index];
+        trace.S[edge_index] = trace.E_dst[edge.dst] + trace.E_src[edge.src];
+        trace.Z[edge_index] = leaky_relu(trace.S[edge_index]);
+        trace.Delta[edge_index] = trace.M[edge.dst] - trace.Z[edge_index];
+        trace.U[edge_index] = std::exp(trace.Z[edge_index] - trace.M[edge.dst]);
+        trace.alpha[edge_index] = trace.U[edge_index] * trace.inv[edge.dst];
+    }
+    for (std::size_t dst = 0; dst < node_count; ++dst) {
+        for (std::size_t col = 0; col < width; ++col) {
+            trace.H_agg[dst][col] = elu(trace.H_agg_pre_bias[dst][col] + parameters.output_bias_fp[col]);
+        }
+    }
+
+    return trace;
+}
+
+MultiHeadForwardTrace forward_reference_style(
+    const FloatMatrix& features,
+    const std::vector<data::Edge>& edges,
+    const ModelParameters& parameters) {
+    if (!parameters.has_real_multihead) {
+        throw std::runtime_error("forward_reference_style requires real multi-head checkpoint parameters");
+    }
+
+    MultiHeadForwardTrace trace;
+    trace.H = features;
+    trace.bias = build_attention_bias_matrix(features.size(), edges);
+
+    std::vector<FloatMatrix> hidden_outputs;
+    hidden_outputs.reserve(parameters.hidden_heads.size());
+    trace.hidden_head_traces.reserve(parameters.hidden_heads.size());
+    for (const auto& head : parameters.hidden_heads) {
+        auto head_trace = attention_head_forward(features, edges, head);
+        hidden_outputs.push_back(head_trace.H_agg);
+        trace.hidden_head_traces.push_back(std::move(head_trace));
+    }
+    trace.hidden_concat = concatenate_columns(hidden_outputs);
+    trace.output_head_trace = attention_head_forward(trace.hidden_concat, edges, parameters.output_head);
+    trace.Y_lin = trace.output_head_trace.H_prime;
+    trace.Y = trace.output_head_trace.H_agg;
+    return trace;
 }
 
 Matrix project_features(const Matrix& left, const Matrix& right) {

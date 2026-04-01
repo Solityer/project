@@ -1146,6 +1146,8 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
         .in = algebra::RootOfUnityDomain::create("in", in_size),
         .d = algebra::RootOfUnityDomain::create("d", d_size),
         .n = algebra::RootOfUnityDomain::create("N", n_size),
+        .hidden_heads = {},
+        .output_head = std::nullopt,
     };
     end = Clock::now();
     if (metrics != nullptr) {
@@ -1303,7 +1305,7 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
 Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetrics* metrics) {
     const auto prove_start = Clock::now();
     const auto& route2 = util::route2_options();
-    if (trace.commitment_order != dynamic_commitment_labels()) {
+    if (trace.commitment_order != dynamic_commitment_labels(context)) {
         throw std::runtime_error("trace commitment order does not match the protocol commitment order");
     }
 
@@ -1538,10 +1540,10 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
     }
 
     Proof proof;
-    for (const auto& label : dynamic_commitment_labels()) {
+    for (const auto& label : dynamic_commitment_labels(context)) {
         proof.dynamic_commitments.push_back({label, trace.commitments.at(label)});
     }
-    for (const auto& label : quotient_commitment_labels()) {
+    for (const auto& label : quotient_commitment_labels(context)) {
         proof.quotient_commitments.push_back({label, quotient_commitments.at(label)});
     }
     proof.challenges = challenges;
