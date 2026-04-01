@@ -110,6 +110,51 @@ std::vector<FieldElement> make_range_table(std::size_t size) {
     return out;
 }
 
+FieldElement quantize_float_model_value(double value) {
+    return FieldElement::from_signed(static_cast<std::int64_t>(
+        value >= 0.0 ? value * 16.0 + 0.5 : value * 16.0 - 0.5));
+}
+
+std::vector<FieldElement> quantize_model_vector(const std::vector<double>& values) {
+    std::vector<FieldElement> out(values.size(), FieldElement::zero());
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        out[i] = quantize_float_model_value(values[i]);
+    }
+    return out;
+}
+
+model::Matrix quantize_model_matrix(const model::FloatMatrix& matrix) {
+    model::Matrix out(matrix.size());
+    for (std::size_t row = 0; row < matrix.size(); ++row) {
+        out[row] = quantize_model_vector(matrix[row]);
+    }
+    return out;
+}
+
+std::string hidden_weight_label(std::size_t head_index) {
+    return "V_h" + std::to_string(head_index) + "_W";
+}
+
+std::string hidden_src_label(std::size_t head_index) {
+    return "V_h" + std::to_string(head_index) + "_a_src";
+}
+
+std::string hidden_dst_label(std::size_t head_index) {
+    return "V_h" + std::to_string(head_index) + "_a_dst";
+}
+
+std::string output_weight_label() {
+    return "V_out_W";
+}
+
+std::string output_src_label() {
+    return "V_out_a_src";
+}
+
+std::string output_dst_label() {
+    return "V_out_a_dst";
+}
+
 std::vector<std::string> vector_to_lines(const std::vector<FieldElement>& values) {
     std::vector<std::string> lines;
     lines.reserve(values.size());
@@ -173,7 +218,7 @@ std::string context_cache_key(const util::AppConfig& config) {
 
 std::size_t hidden_head_width(const model::ModelParameters& parameters, const util::AppConfig& config) {
     if (parameters.has_real_multihead && !parameters.hidden_heads.empty()) {
-        return parameters.hidden_heads.front().output_bias_fp.size();
+        return model::attention_head_output_width(parameters.hidden_heads.front());
     }
     return config.hidden_dim;
 }
@@ -186,37 +231,7 @@ std::size_t concat_width(const model::ModelParameters& parameters, const util::A
 }
 
 PublicMetadata build_public_metadata(const ProtocolContext& context) {
-    PublicMetadata metadata;
-    metadata.protocol_id = "gatzkml";
-    metadata.model_arch_id = context.model.has_real_multihead
-        ? "single_layer_gat_hidden8_output1"
-        : "legacy_single_head_debug";
-    metadata.model_param_id = context.model.has_real_multihead
-        ? ("checkpoint_bundle:" + context.config.checkpoint_bundle)
-        : ("synthetic_seed:" + std::to_string(context.config.seed));
-    metadata.static_table_id = "tables:lrelu+exp+range";
-    metadata.quant_cfg_id = "range_bits=" + std::to_string(context.config.range_bits);
-    metadata.domain_cfg =
-        "FH=" + context.domains.fh->name + ":" + std::to_string(context.domains.fh->size)
-        + ",edge=" + context.domains.edge->name + ":" + std::to_string(context.domains.edge->size)
-        + ",in=" + context.domains.in->name + ":" + std::to_string(context.domains.in->size)
-        + ",d_h=" + context.domains.d->name + ":" + std::to_string(context.domains.d->size)
-        + ",cat=" + context.domains.cat->name + ":" + std::to_string(context.domains.cat->size)
-        + ",C=" + context.domains.c->name + ":" + std::to_string(context.domains.c->size)
-        + ",N=" + context.domains.n->name + ":" + std::to_string(context.domains.n->size);
-    metadata.dim_cfg =
-        "N=" + std::to_string(context.local.num_nodes)
-        + ",E=" + std::to_string(context.local.edges.size())
-        + ",d_in=" + std::to_string(context.local.num_features)
-        + ",d_h=" + std::to_string(hidden_head_width(context.model, context.config))
-        + ",d_cat=" + std::to_string(concat_width(context.model, context.config))
-        + ",C=" + std::to_string(context.local.num_classes);
-    metadata.encoding_id = "project-fixed-order-v1";
-    metadata.padding_rule_id = "zero-pad+selector-mask";
-    metadata.degree_bound_id = context.model.has_real_multihead
-        ? "note-target:FH,edge,in,d_h,cat,C,N"
-        : "legacy:FH,edge,in,d,N";
-    return metadata;
+    return canonical_public_metadata(context);
 }
 
 std::vector<std::string> fixed_proof_block_order() {
@@ -248,6 +263,34 @@ std::vector<ExternalEvalSpec> multihead_external_specs(const ProtocolContext& co
     specs.push_back({"mu_out_star", "P_out_Y_star", "y_out_star"});
     specs.push_back({"mu_out", "P_Y", "y_out"});
     return specs;
+}
+
+double* domain_open_metric(RunMetrics* metrics, const std::string& bundle_name) {
+    if (metrics == nullptr) {
+        return nullptr;
+    }
+    if (bundle_name == "FH") return &metrics->domain_open_fh_ms;
+    if (bundle_name == "edge") return &metrics->domain_open_edge_ms;
+    if (bundle_name == "in") return &metrics->domain_open_in_ms;
+    if (bundle_name == "d_h") return &metrics->domain_open_d_h_ms;
+    if (bundle_name == "cat") return &metrics->domain_open_cat_ms;
+    if (bundle_name == "C") return &metrics->domain_open_c_ms;
+    if (bundle_name == "N") return &metrics->domain_open_n_ms;
+    return nullptr;
+}
+
+double* quotient_metric(RunMetrics* metrics, const std::string& label) {
+    if (metrics == nullptr) {
+        return nullptr;
+    }
+    if (label == "t_FH") return &metrics->quotient_t_fh_ms;
+    if (label == "t_edge") return &metrics->quotient_t_edge_ms;
+    if (label == "t_in") return &metrics->quotient_t_in_ms;
+    if (label == "t_d_h") return &metrics->quotient_t_d_h_ms;
+    if (label == "t_cat") return &metrics->quotient_t_cat_ms;
+    if (label == "t_C") return &metrics->quotient_t_c_ms;
+    if (label == "t_N") return &metrics->quotient_t_n_ms;
+    return nullptr;
 }
 
 std::filesystem::path resolve_project_path(
@@ -302,6 +345,11 @@ class ProofDomainWeightCache {
     std::mutex mutex_;
     std::unordered_map<std::string, DomainEvaluationWeights> entries_;
 };
+
+std::shared_ptr<ProofDomainWeightCache> shared_proof_domain_weight_cache() {
+    static auto cache = std::make_shared<ProofDomainWeightCache>();
+    return cache;
+}
 
 class ProofEvaluationBackendRegistry {
   public:
@@ -1138,17 +1186,25 @@ DomainOpeningBundle make_bundle(
     const std::vector<std::string>& labels,
     const std::vector<FieldElement>& points,
     const std::string& folding_name,
-    const std::map<std::string, FieldElement>& challenges) {
+    const std::map<std::string, FieldElement>& challenges,
+    double* eval_gather_ms = nullptr,
+    double* witness_open_ms = nullptr) {
     DomainOpeningBundle bundle;
     bundle.points = points;
     const auto commitments = collect_commitments(trace, quotient_commitments, labels);
-    // For CUDA-backed opening gather, keep packed eval / rotated eval results on
-    // device until this PCS boundary, then materialize once for open_batch.
+    const auto gather_start = Clock::now();
     const auto values = memo.collect_named_values(labels, points);
+    if (eval_gather_ms != nullptr) {
+        *eval_gather_ms += elapsed_ms(gather_start, Clock::now());
+    }
     for (std::size_t i = 0; i < labels.size(); ++i) {
         bundle.values.push_back({labels[i], values[i]});
     }
+    const auto witness_start = Clock::now();
     bundle.witness = crypto::KZG::open_batch(commitments, points, values, challenges.at(folding_name), context.kzg);
+    if (witness_open_ms != nullptr) {
+        *witness_open_ms += elapsed_ms(witness_start, Clock::now());
+    }
     return bundle;
 }
 
@@ -1394,7 +1450,38 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
         "V_T_range",
         make_eval_poly("V_T_range", padded(context.tables.range, edge_size), context.domains.edge));
 
-    if (!context.model.has_real_multihead) {
+    if (context.model.has_real_multihead) {
+        for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index) {
+            add_static_commitment(
+                context,
+                hidden_weight_label(head_index),
+                make_coeff_poly(
+                    hidden_weight_label(head_index),
+                    algebra::flatten_matrix_coefficients(quantize_model_matrix(context.model.hidden_heads[head_index].seq_kernel_fp))));
+            add_static_commitment(
+                context,
+                hidden_src_label(head_index),
+                make_coeff_poly(hidden_src_label(head_index), quantize_model_vector(context.model.hidden_heads[head_index].attn_src_kernel_fp)));
+            add_static_commitment(
+                context,
+                hidden_dst_label(head_index),
+                make_coeff_poly(hidden_dst_label(head_index), quantize_model_vector(context.model.hidden_heads[head_index].attn_dst_kernel_fp)));
+        }
+        add_static_commitment(
+            context,
+            output_weight_label(),
+            make_coeff_poly(
+                output_weight_label(),
+                algebra::flatten_matrix_coefficients(quantize_model_matrix(context.model.output_head.seq_kernel_fp))));
+        add_static_commitment(
+            context,
+            output_src_label(),
+            make_coeff_poly(output_src_label(), quantize_model_vector(context.model.output_head.attn_src_kernel_fp)));
+        add_static_commitment(
+            context,
+            output_dst_label(),
+            make_coeff_poly(output_dst_label(), quantize_model_vector(context.model.output_head.attn_dst_kernel_fp)));
+    } else {
         add_static_commitment(
             context,
             "V_W",
@@ -1432,25 +1519,76 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
         if (route2.fft_backend_upgrade) {
             backend_registry = std::make_shared<ProofEvaluationBackendRegistry>(context, trace);
         }
-        auto proof_domain_weight_cache = std::make_shared<ProofDomainWeightCache>();
-        EvaluationMemoization quotient_memo(
-            context,
-            trace,
-            pre_quotient_challenges,
-            backend_registry,
-            proof_domain_weight_cache);
-        const auto eval = [&](const std::string& name, const FieldElement& point) {
-            return quotient_memo.eval_named(name, point);
+        auto proof_domain_weight_cache = shared_proof_domain_weight_cache();
+        struct QuotientEvalResult {
+            std::string label;
+            FieldElement value;
+            double elapsed_ms = 0.0;
         };
-        const std::vector<std::pair<std::string, FieldElement>> named_tau_values = {
-            {"t_FH", evaluate_t_fh(context, pre_quotient_challenges, eval, context.kzg.tau)},
-            {"t_edge", evaluate_t_edge(context, pre_quotient_challenges, trace.witness_scalars, eval, context.kzg.tau)},
-            {"t_in", evaluate_t_in(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.tau)},
-            {"t_d_h", evaluate_t_d(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.tau)},
-            {"t_cat", evaluate_t_cat(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.tau)},
-            {"t_C", evaluate_t_c(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.tau)},
-            {"t_N", evaluate_t_n(context, pre_quotient_challenges, trace.witness_scalars, eval, context.kzg.tau)},
+        auto compute_quotient = [&](const std::string& label) -> QuotientEvalResult {
+            const auto local_start = Clock::now();
+            EvaluationMemoization quotient_memo(
+                context,
+                trace,
+                pre_quotient_challenges,
+                backend_registry,
+                proof_domain_weight_cache);
+            const auto eval = [&](const std::string& name, const FieldElement& point) {
+                return quotient_memo.eval_named(name, point);
+            };
+            FieldElement value = FieldElement::zero();
+            if (label == "t_FH") {
+                value = evaluate_t_fh(context, pre_quotient_challenges, eval, context.kzg.tau);
+            } else if (label == "t_edge") {
+                value = evaluate_t_edge(context, pre_quotient_challenges, trace.witness_scalars, eval, context.kzg.tau);
+            } else if (label == "t_in") {
+                value = evaluate_t_in(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.tau);
+            } else if (label == "t_d_h") {
+                value = evaluate_t_d(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.tau);
+            } else if (label == "t_cat") {
+                value = evaluate_t_cat(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.tau);
+            } else if (label == "t_C") {
+                value = evaluate_t_c(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.tau);
+            } else if (label == "t_N") {
+                value = evaluate_t_n(context, pre_quotient_challenges, trace.witness_scalars, eval, context.kzg.tau);
+            } else {
+                throw std::runtime_error("unknown multi-head quotient label: " + label);
+            }
+            return {label, value, elapsed_ms(local_start, Clock::now())};
         };
+
+        const std::vector<std::string> quotient_labels = {"t_FH", "t_edge", "t_in", "t_d_h", "t_cat", "t_C", "t_N"};
+        std::vector<QuotientEvalResult> quotient_results;
+        quotient_results.reserve(quotient_labels.size());
+        if (std::thread::hardware_concurrency() > 1) {
+            std::vector<std::future<QuotientEvalResult>> futures;
+            futures.reserve(quotient_labels.size());
+            for (const auto& label : quotient_labels) {
+                futures.push_back(std::async(std::launch::async, compute_quotient, label));
+            }
+            for (auto& future : futures) {
+                quotient_results.push_back(future.get());
+            }
+        } else {
+            for (const auto& label : quotient_labels) {
+                quotient_results.push_back(compute_quotient(label));
+            }
+        }
+        std::vector<std::pair<std::string, FieldElement>> named_tau_values;
+        named_tau_values.reserve(quotient_labels.size());
+        for (const auto& label : quotient_labels) {
+            const auto it = std::find_if(
+                quotient_results.begin(),
+                quotient_results.end(),
+                [&](const QuotientEvalResult& result) { return result.label == label; });
+            if (it == quotient_results.end()) {
+                throw std::runtime_error("missing multi-head quotient result for " + label);
+            }
+            named_tau_values.push_back({it->label, it->value});
+            if (auto* metric = quotient_metric(metrics, it->label); metric != nullptr) {
+                *metric += it->elapsed_ms;
+            }
+        }
         const auto quotient_commitments = batch_quotient_commitments(named_tau_values, context.kzg);
         const auto challenges = replay_challenges(context, trace.commitments, quotient_commitments);
         if (metrics != nullptr) {
@@ -1486,30 +1624,74 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             {"N", "N", context.domains.n, "z_N", "v_N", "t_N"},
         };
         stage_start = Clock::now();
-        EvaluationMemoization opening_memo(
-            context,
-            trace,
-            challenges,
-            backend_registry,
-            proof_domain_weight_cache);
-        for (const auto& spec : bundle_specs) {
+        struct BundleBuildResult {
+            std::string bundle_name;
+            DomainOpeningBundle bundle;
+            double gather_ms = 0.0;
+            double witness_ms = 0.0;
+            double total_ms = 0.0;
+        };
+        auto build_bundle = [&](const BundleSpec& spec) -> BundleBuildResult {
+            EvaluationMemoization opening_memo(
+                context,
+                trace,
+                challenges,
+                backend_registry,
+                proof_domain_weight_cache);
             auto labels = domain_opening_labels(context, spec.trace_domain_name);
             labels.push_back(spec.quotient_name);
             const std::vector<FieldElement> points = {
                 challenges.at(spec.z_name),
                 challenges.at(spec.z_name) * spec.domain->omega,
             };
-            proof.domain_openings.push_back(
-                {spec.bundle_name,
-                 make_bundle(
-                     context,
-                     trace,
-                     opening_memo,
-                     quotient_commitments,
-                     labels,
-                     points,
-                     spec.v_name,
-                     challenges)});
+            double gather_ms = 0.0;
+            double witness_ms = 0.0;
+            const auto local_start = Clock::now();
+            auto bundle = make_bundle(
+                context,
+                trace,
+                opening_memo,
+                quotient_commitments,
+                labels,
+                points,
+                spec.v_name,
+                challenges,
+                &gather_ms,
+                &witness_ms);
+            return {spec.bundle_name, std::move(bundle), gather_ms, witness_ms, elapsed_ms(local_start, Clock::now())};
+        };
+        std::vector<BundleBuildResult> bundle_results;
+        bundle_results.reserve(bundle_specs.size());
+        if (std::thread::hardware_concurrency() > 1) {
+            std::vector<std::future<BundleBuildResult>> futures;
+            futures.reserve(bundle_specs.size());
+            for (const auto& spec : bundle_specs) {
+                futures.push_back(std::async(std::launch::async, build_bundle, spec));
+            }
+            for (auto& future : futures) {
+                bundle_results.push_back(future.get());
+            }
+        } else {
+            for (const auto& spec : bundle_specs) {
+                bundle_results.push_back(build_bundle(spec));
+            }
+        }
+        for (const auto& spec : bundle_specs) {
+            const auto it = std::find_if(
+                bundle_results.begin(),
+                bundle_results.end(),
+                [&](const BundleBuildResult& result) { return result.bundle_name == spec.bundle_name; });
+            if (it == bundle_results.end()) {
+                throw std::runtime_error("missing bundle build result for " + spec.bundle_name);
+            }
+            proof.domain_openings.push_back({it->bundle_name, it->bundle});
+            if (metrics != nullptr) {
+                metrics->domain_eval_gather_ms += it->gather_ms;
+                metrics->domain_open_witness_ms += it->witness_ms;
+                if (auto* metric = domain_open_metric(metrics, it->bundle_name); metric != nullptr) {
+                    *metric += it->total_ms;
+                }
+            }
         }
         if (metrics != nullptr) {
             metrics->domain_opening_ms += elapsed_ms(stage_start, Clock::now());
@@ -1549,7 +1731,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
     if (route2.fft_backend_upgrade) {
         backend_registry = std::make_shared<ProofEvaluationBackendRegistry>(context, trace);
     }
-    auto proof_domain_weight_cache = std::make_shared<ProofDomainWeightCache>();
+    auto proof_domain_weight_cache = shared_proof_domain_weight_cache();
     // The quotient identities are unchanged. We only overlap the five domain
     // quotient evaluations, which are independent once the trace commitments
     // and Fiat-Shamir challenges have been fixed for this proof instance.
@@ -1773,7 +1955,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
     }
 
     Proof proof;
-    proof.public_metadata = build_public_metadata(context);
+        proof.public_metadata = canonical_public_metadata(context);
     proof.block_order = fixed_proof_block_order();
     for (const auto& label : dynamic_commitment_labels(context)) {
         proof.dynamic_commitments.push_back({label, trace.commitments.at(label)});
@@ -2077,6 +2259,13 @@ void export_run_artifacts(
         {"fft_plan_ms", format_double(metrics.fft_plan_ms)},
         {"fft_backend_route", metrics.fft_backend_route},
         {"feature_projection_ms", format_double(metrics.feature_projection_ms)},
+        {"hidden_forward_projection_ms", format_double(metrics.hidden_forward_projection_ms)},
+        {"hidden_forward_attention_ms", format_double(metrics.hidden_forward_attention_ms)},
+        {"hidden_forward_activation_ms", format_double(metrics.hidden_forward_activation_ms)},
+        {"hidden_concat_ms", format_double(metrics.hidden_concat_ms)},
+        {"output_forward_projection_ms", format_double(metrics.output_forward_projection_ms)},
+        {"output_forward_attention_ms", format_double(metrics.output_forward_attention_ms)},
+        {"output_forward_activation_ms", format_double(metrics.output_forward_activation_ms)},
         {"forward_ms", format_double(metrics.forward_ms)},
         {"commit_dynamic_ms", format_double(metrics.commit_dynamic_ms)},
         {"dynamic_commit_finalize_ms", format_double(metrics.dynamic_commit_finalize_ms)},
@@ -2092,6 +2281,13 @@ void export_run_artifacts(
         {"proof_size_bytes", std::to_string(metrics.proof_size_bytes)},
         {"prove_time_ms", format_double(metrics.prove_time_ms)},
         {"quotient_build_ms", format_double(metrics.quotient_build_ms)},
+        {"quotient_t_fh_ms", format_double(metrics.quotient_t_fh_ms)},
+        {"quotient_t_edge_ms", format_double(metrics.quotient_t_edge_ms)},
+        {"quotient_t_in_ms", format_double(metrics.quotient_t_in_ms)},
+        {"quotient_t_d_h_ms", format_double(metrics.quotient_t_d_h_ms)},
+        {"quotient_t_cat_ms", format_double(metrics.quotient_t_cat_ms)},
+        {"quotient_t_C_ms", format_double(metrics.quotient_t_c_ms)},
+        {"quotient_t_N_ms", format_double(metrics.quotient_t_n_ms)},
         {"srs_prepare_ms", format_double(metrics.srs_prepare_ms)},
         {"trace_generation_ms", format_double(metrics.trace_generation_ms)},
         {"witness_materialization_ms", format_double(metrics.witness_materialization_ms)},
@@ -2099,8 +2295,29 @@ void export_run_artifacts(
         {"route_trace_ms", format_double(metrics.route_trace_ms)},
         {"psq_trace_ms", format_double(metrics.psq_trace_ms)},
         {"zkmap_trace_ms", format_double(metrics.zkmap_trace_ms)},
+        {"domain_eval_gather_ms", format_double(metrics.domain_eval_gather_ms)},
+        {"domain_open_witness_ms", format_double(metrics.domain_open_witness_ms)},
+        {"domain_open_FH_ms", format_double(metrics.domain_open_fh_ms)},
+        {"domain_open_edge_ms", format_double(metrics.domain_open_edge_ms)},
+        {"domain_open_in_ms", format_double(metrics.domain_open_in_ms)},
+        {"domain_open_d_h_ms", format_double(metrics.domain_open_d_h_ms)},
+        {"domain_open_cat_ms", format_double(metrics.domain_open_cat_ms)},
+        {"domain_open_C_ms", format_double(metrics.domain_open_c_ms)},
+        {"domain_open_N_ms", format_double(metrics.domain_open_n_ms)},
         {"verified", verified ? "true" : "false"},
         {"verify_time_ms", format_double(metrics.verify_time_ms)},
+        {"verify_metadata_ms", format_double(metrics.verify_metadata_ms)},
+        {"verify_transcript_ms", format_double(metrics.verify_transcript_ms)},
+        {"verify_domain_opening_ms", format_double(metrics.verify_domain_opening_ms)},
+        {"verify_quotient_ms", format_double(metrics.verify_quotient_ms)},
+        {"verify_external_fold_ms", format_double(metrics.verify_external_fold_ms)},
+        {"verify_FH_ms", format_double(metrics.verify_fh_ms)},
+        {"verify_edge_ms", format_double(metrics.verify_edge_ms)},
+        {"verify_in_ms", format_double(metrics.verify_in_ms)},
+        {"verify_d_h_ms", format_double(metrics.verify_d_h_ms)},
+        {"verify_cat_ms", format_double(metrics.verify_cat_ms)},
+        {"verify_C_ms", format_double(metrics.verify_c_ms)},
+        {"verify_N_ms", format_double(metrics.verify_n_ms)},
     };
     util::write_key_values(export_root + "/summary.txt", summary);
     util::write_key_values(export_root + "/benchmark.txt", summary);

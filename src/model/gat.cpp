@@ -1,6 +1,7 @@
 #include "gatzk/model/gat.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -235,6 +236,114 @@ FloatMatrix concatenate_columns(const std::vector<FloatMatrix>& matrices) {
     return out;
 }
 
+HeadForwardTrace attention_head_forward_impl(
+    const FloatMatrix& features,
+    const std::vector<data::Edge>& edges,
+    const AttentionHeadParameters& parameters,
+    bool apply_output_bias,
+    bool apply_activation,
+    HeadForwardProfile* profile) {
+    using Clock = std::chrono::steady_clock;
+    auto stage_start = Clock::now();
+    if (features.empty()) {
+        return {};
+    }
+    const auto node_count = features.size();
+    const auto width = attention_head_output_width(parameters);
+    for (const auto& edge : edges) {
+        if (edge.src >= node_count || edge.dst >= node_count) {
+            throw std::runtime_error("edge out of bounds while running attention head forward");
+        }
+    }
+
+    HeadForwardTrace trace;
+    trace.H_prime = matmul(features, parameters.seq_kernel_fp);
+    if (profile != nullptr) {
+        profile->projection_ms += std::chrono::duration<double, std::milli>(Clock::now() - stage_start).count();
+    }
+
+    stage_start = Clock::now();
+    trace.E_dst = matvec(trace.H_prime, parameters.attn_dst_kernel_fp, parameters.attn_dst_bias_fp);
+    trace.E_src = matvec(trace.H_prime, parameters.attn_src_kernel_fp, parameters.attn_src_bias_fp);
+    trace.S.assign(edges.size(), 0.0);
+    trace.Z.assign(edges.size(), 0.0);
+    trace.M.assign(node_count, 0.0);
+    trace.Delta.assign(edges.size(), 0.0);
+    trace.U.assign(edges.size(), 0.0);
+    trace.Sum.assign(node_count, 0.0);
+    trace.inv.assign(node_count, 0.0);
+    trace.alpha.assign(edges.size(), 0.0);
+    trace.H_agg_pre_bias.assign(node_count, std::vector<double>(width, 0.0));
+    trace.H_agg.assign(node_count, std::vector<double>(width, 0.0));
+
+    std::vector<std::vector<std::size_t>> incoming_sources(node_count);
+    for (const auto& edge : edges) {
+        incoming_sources[edge.dst].push_back(edge.src);
+    }
+    for (std::size_t dst = 0; dst < node_count; ++dst) {
+        const auto has_self = std::find(
+                                  incoming_sources[dst].begin(),
+                                  incoming_sources[dst].end(),
+                                  dst)
+            != incoming_sources[dst].end();
+        if (!has_self) {
+            incoming_sources[dst].push_back(dst);
+        }
+    }
+
+    for (std::size_t dst = 0; dst < node_count; ++dst) {
+        trace.M[dst] = -std::numeric_limits<double>::infinity();
+    }
+    for (std::size_t dst = 0; dst < node_count; ++dst) {
+        for (const auto src : incoming_sources[dst]) {
+            trace.M[dst] = std::max(trace.M[dst], leaky_relu(trace.E_dst[dst] + trace.E_src[src]));
+        }
+    }
+    for (std::size_t dst = 0; dst < node_count; ++dst) {
+        for (const auto src : incoming_sources[dst]) {
+            trace.Sum[dst] += std::exp(leaky_relu(trace.E_dst[dst] + trace.E_src[src]) - trace.M[dst]);
+        }
+    }
+    for (std::size_t dst = 0; dst < node_count; ++dst) {
+        trace.inv[dst] = 1.0 / trace.Sum[dst];
+    }
+    for (std::size_t dst = 0; dst < node_count; ++dst) {
+        for (const auto src : incoming_sources[dst]) {
+            const auto alpha = std::exp(leaky_relu(trace.E_dst[dst] + trace.E_src[src]) - trace.M[dst]) * trace.inv[dst];
+            for (std::size_t col = 0; col < width; ++col) {
+                trace.H_agg_pre_bias[dst][col] += alpha * trace.H_prime[src][col];
+            }
+        }
+    }
+    for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
+        const auto& edge = edges[edge_index];
+        trace.S[edge_index] = trace.E_dst[edge.dst] + trace.E_src[edge.src];
+        trace.Z[edge_index] = leaky_relu(trace.S[edge_index]);
+        trace.Delta[edge_index] = trace.M[edge.dst] - trace.Z[edge_index];
+        trace.U[edge_index] = std::exp(trace.Z[edge_index] - trace.M[edge.dst]);
+        trace.alpha[edge_index] = trace.U[edge_index] * trace.inv[edge.dst];
+    }
+    if (profile != nullptr) {
+        profile->attention_ms += std::chrono::duration<double, std::milli>(Clock::now() - stage_start).count();
+    }
+
+    stage_start = Clock::now();
+    for (std::size_t dst = 0; dst < node_count; ++dst) {
+        for (std::size_t col = 0; col < width; ++col) {
+            auto value = trace.H_agg_pre_bias[dst][col];
+            if (apply_output_bias && col < parameters.output_bias_fp.size()) {
+                value += parameters.output_bias_fp[col];
+            }
+            trace.H_agg[dst][col] = apply_activation ? elu(value) : value;
+        }
+    }
+    if (profile != nullptr) {
+        profile->activation_ms += std::chrono::duration<double, std::milli>(Clock::now() - stage_start).count();
+    }
+
+    return trace;
+}
+
 }  // namespace
 
 ModelParameters build_model_parameters(
@@ -351,6 +460,13 @@ ModelParameters load_checkpoint_bundle_parameters(const std::string& bundle_root
     return out;
 }
 
+std::size_t attention_head_output_width(const AttentionHeadParameters& parameters) {
+    if (!parameters.seq_kernel_fp.empty()) {
+        return parameters.seq_kernel_fp.front().size();
+    }
+    return parameters.output_bias_fp.size();
+}
+
 FloatMatrix build_attention_bias_matrix(std::size_t num_nodes, const std::vector<data::Edge>& edges) {
     FloatMatrix bias(num_nodes, std::vector<double>(num_nodes, -1e9));
     for (std::size_t node = 0; node < num_nodes; ++node) {
@@ -368,93 +484,16 @@ FloatMatrix build_attention_bias_matrix(std::size_t num_nodes, const std::vector
 HeadForwardTrace attention_head_forward(
     const FloatMatrix& features,
     const std::vector<data::Edge>& edges,
-    const AttentionHeadParameters& parameters) {
-    if (features.empty()) {
-        return {};
-    }
-    const auto node_count = features.size();
-    const auto width = parameters.output_bias_fp.size();
-    for (const auto& edge : edges) {
-        if (edge.src >= node_count || edge.dst >= node_count) {
-            throw std::runtime_error("edge out of bounds while running attention head forward");
-        }
-    }
-
-    HeadForwardTrace trace;
-    trace.H_prime = matmul(features, parameters.seq_kernel_fp);
-    trace.E_dst = matvec(trace.H_prime, parameters.attn_dst_kernel_fp, parameters.attn_dst_bias_fp);
-    trace.E_src = matvec(trace.H_prime, parameters.attn_src_kernel_fp, parameters.attn_src_bias_fp);
-    trace.S.assign(edges.size(), 0.0);
-    trace.Z.assign(edges.size(), 0.0);
-    trace.M.assign(node_count, 0.0);
-    trace.Delta.assign(edges.size(), 0.0);
-    trace.U.assign(edges.size(), 0.0);
-    trace.Sum.assign(node_count, 0.0);
-    trace.inv.assign(node_count, 0.0);
-    trace.alpha.assign(edges.size(), 0.0);
-    trace.H_agg_pre_bias.assign(node_count, std::vector<double>(width, 0.0));
-    trace.H_agg.assign(node_count, std::vector<double>(width, 0.0));
-
-    std::vector<std::vector<std::size_t>> incoming_sources(node_count);
-    for (const auto& edge : edges) {
-        incoming_sources[edge.dst].push_back(edge.src);
-    }
-    for (std::size_t dst = 0; dst < node_count; ++dst) {
-        const auto has_self = std::find(
-                                  incoming_sources[dst].begin(),
-                                  incoming_sources[dst].end(),
-                                  dst)
-            != incoming_sources[dst].end();
-        if (!has_self) {
-            incoming_sources[dst].push_back(dst);
-        }
-    }
-
-    for (std::size_t dst = 0; dst < node_count; ++dst) {
-        trace.M[dst] = -std::numeric_limits<double>::infinity();
-    }
-    for (std::size_t dst = 0; dst < node_count; ++dst) {
-        for (const auto src : incoming_sources[dst]) {
-            trace.M[dst] = std::max(trace.M[dst], leaky_relu(trace.E_dst[dst] + trace.E_src[src]));
-        }
-    }
-    for (std::size_t dst = 0; dst < node_count; ++dst) {
-        for (const auto src : incoming_sources[dst]) {
-            trace.Sum[dst] += std::exp(leaky_relu(trace.E_dst[dst] + trace.E_src[src]) - trace.M[dst]);
-        }
-    }
-    for (std::size_t dst = 0; dst < node_count; ++dst) {
-        trace.inv[dst] = 1.0 / trace.Sum[dst];
-    }
-    for (std::size_t dst = 0; dst < node_count; ++dst) {
-        for (const auto src : incoming_sources[dst]) {
-            const auto alpha = std::exp(leaky_relu(trace.E_dst[dst] + trace.E_src[src]) - trace.M[dst]) * trace.inv[dst];
-            for (std::size_t col = 0; col < width; ++col) {
-                trace.H_agg_pre_bias[dst][col] += alpha * trace.H_prime[src][col];
-            }
-        }
-    }
-    for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
-        const auto& edge = edges[edge_index];
-        trace.S[edge_index] = trace.E_dst[edge.dst] + trace.E_src[edge.src];
-        trace.Z[edge_index] = leaky_relu(trace.S[edge_index]);
-        trace.Delta[edge_index] = trace.M[edge.dst] - trace.Z[edge_index];
-        trace.U[edge_index] = std::exp(trace.Z[edge_index] - trace.M[edge.dst]);
-        trace.alpha[edge_index] = trace.U[edge_index] * trace.inv[edge.dst];
-    }
-    for (std::size_t dst = 0; dst < node_count; ++dst) {
-        for (std::size_t col = 0; col < width; ++col) {
-            trace.H_agg[dst][col] = elu(trace.H_agg_pre_bias[dst][col] + parameters.output_bias_fp[col]);
-        }
-    }
-
-    return trace;
+    const AttentionHeadParameters& parameters,
+    HeadForwardProfile* profile) {
+    return attention_head_forward_impl(features, edges, parameters, true, true, profile);
 }
 
 MultiHeadForwardTrace forward_reference_style(
     const FloatMatrix& features,
     const std::vector<data::Edge>& edges,
-    const ModelParameters& parameters) {
+    const ModelParameters& parameters,
+    ForwardProfile* profile) {
     if (!parameters.has_real_multihead) {
         throw std::runtime_error("forward_reference_style requires real multi-head checkpoint parameters");
     }
@@ -467,12 +506,78 @@ MultiHeadForwardTrace forward_reference_style(
     hidden_outputs.reserve(parameters.hidden_heads.size());
     trace.hidden_head_traces.reserve(parameters.hidden_heads.size());
     for (const auto& head : parameters.hidden_heads) {
-        auto head_trace = attention_head_forward(features, edges, head);
+        HeadForwardProfile head_profile;
+        auto head_trace = attention_head_forward_impl(features, edges, head, true, true, &head_profile);
+        if (profile != nullptr) {
+            profile->hidden_projection_ms += head_profile.projection_ms;
+            profile->hidden_attention_ms += head_profile.attention_ms;
+            profile->hidden_activation_ms += head_profile.activation_ms;
+        }
         hidden_outputs.push_back(head_trace.H_agg);
         trace.hidden_head_traces.push_back(std::move(head_trace));
     }
-    trace.hidden_concat = concatenate_columns(hidden_outputs);
-    trace.output_head_trace = attention_head_forward(trace.hidden_concat, edges, parameters.output_head);
+    if (profile != nullptr) {
+        const auto concat_start = std::chrono::steady_clock::now();
+        trace.hidden_concat = concatenate_columns(hidden_outputs);
+        profile->hidden_concat_ms += std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - concat_start).count();
+    } else {
+        trace.hidden_concat = concatenate_columns(hidden_outputs);
+    }
+    HeadForwardProfile output_profile;
+    trace.output_head_trace = attention_head_forward_impl(trace.hidden_concat, edges, parameters.output_head, true, true, &output_profile);
+    if (profile != nullptr) {
+        profile->output_projection_ms += output_profile.projection_ms;
+        profile->output_attention_ms += output_profile.attention_ms;
+        profile->output_activation_ms += output_profile.activation_ms;
+    }
+    trace.Y_lin = trace.output_head_trace.H_prime;
+    trace.Y = trace.output_head_trace.H_agg;
+    return trace;
+}
+
+MultiHeadForwardTrace forward_note_style(
+    const FloatMatrix& features,
+    const std::vector<data::Edge>& edges,
+    const ModelParameters& parameters,
+    ForwardProfile* profile) {
+    if (!parameters.has_real_multihead) {
+        throw std::runtime_error("forward_note_style requires real multi-head checkpoint parameters");
+    }
+
+    MultiHeadForwardTrace trace;
+    trace.H = features;
+    trace.bias = build_attention_bias_matrix(features.size(), edges);
+
+    std::vector<FloatMatrix> hidden_outputs;
+    hidden_outputs.reserve(parameters.hidden_heads.size());
+    trace.hidden_head_traces.reserve(parameters.hidden_heads.size());
+    for (const auto& head : parameters.hidden_heads) {
+        HeadForwardProfile head_profile;
+        auto head_trace = attention_head_forward_impl(features, edges, head, false, true, &head_profile);
+        if (profile != nullptr) {
+            profile->hidden_projection_ms += head_profile.projection_ms;
+            profile->hidden_attention_ms += head_profile.attention_ms;
+            profile->hidden_activation_ms += head_profile.activation_ms;
+        }
+        hidden_outputs.push_back(head_trace.H_agg);
+        trace.hidden_head_traces.push_back(std::move(head_trace));
+    }
+    if (profile != nullptr) {
+        const auto concat_start = std::chrono::steady_clock::now();
+        trace.hidden_concat = concatenate_columns(hidden_outputs);
+        profile->hidden_concat_ms += std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - concat_start).count();
+    } else {
+        trace.hidden_concat = concatenate_columns(hidden_outputs);
+    }
+    HeadForwardProfile output_profile;
+    trace.output_head_trace = attention_head_forward_impl(trace.hidden_concat, edges, parameters.output_head, false, false, &output_profile);
+    if (profile != nullptr) {
+        profile->output_projection_ms += output_profile.projection_ms;
+        profile->output_attention_ms += output_profile.attention_ms;
+        profile->output_activation_ms += output_profile.activation_ms;
+    }
     trace.Y_lin = trace.output_head_trace.H_prime;
     trace.Y = trace.output_head_trace.H_agg;
     return trace;

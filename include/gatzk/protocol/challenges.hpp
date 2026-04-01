@@ -6,11 +6,14 @@
 #include <vector>
 
 #include "gatzk/algebra/field.hpp"
+#include "gatzk/crypto/transcript.hpp"
 #include "gatzk/crypto/kzg.hpp"
 #include "gatzk/protocol/proof.hpp"
 
 namespace gatzk::protocol {
 
+PublicMetadata canonical_public_metadata(const ProtocolContext& context);
+void absorb_public_metadata(crypto::Transcript& transcript, const PublicMetadata& metadata);
 std::vector<std::string> dynamic_commitment_labels(const ProtocolContext& context);
 std::vector<std::string> quotient_commitment_labels(const ProtocolContext& context);
 

@@ -42,6 +42,22 @@ struct HeadForwardTrace {
     FloatMatrix H_agg;
 };
 
+struct HeadForwardProfile {
+    double projection_ms = 0.0;
+    double attention_ms = 0.0;
+    double activation_ms = 0.0;
+};
+
+struct ForwardProfile {
+    double hidden_projection_ms = 0.0;
+    double hidden_attention_ms = 0.0;
+    double hidden_activation_ms = 0.0;
+    double hidden_concat_ms = 0.0;
+    double output_projection_ms = 0.0;
+    double output_attention_ms = 0.0;
+    double output_activation_ms = 0.0;
+};
+
 struct ModelParameters {
     Matrix W;
     std::vector<algebra::FieldElement> a_src;
@@ -79,15 +95,23 @@ bool checkpoint_bundle_matches_single_head_protocol(
     const CheckpointBundleInfo& info,
     std::string* reason = nullptr);
 ModelParameters load_checkpoint_bundle_parameters(const std::string& bundle_root);
+std::size_t attention_head_output_width(const AttentionHeadParameters& parameters);
 FloatMatrix build_attention_bias_matrix(std::size_t num_nodes, const std::vector<data::Edge>& edges);
 HeadForwardTrace attention_head_forward(
     const FloatMatrix& features,
     const std::vector<data::Edge>& edges,
-    const AttentionHeadParameters& parameters);
+    const AttentionHeadParameters& parameters,
+    HeadForwardProfile* profile = nullptr);
 MultiHeadForwardTrace forward_reference_style(
     const FloatMatrix& features,
     const std::vector<data::Edge>& edges,
-    const ModelParameters& parameters);
+    const ModelParameters& parameters,
+    ForwardProfile* profile = nullptr);
+MultiHeadForwardTrace forward_note_style(
+    const FloatMatrix& features,
+    const std::vector<data::Edge>& edges,
+    const ModelParameters& parameters,
+    ForwardProfile* profile = nullptr);
 
 Matrix project_features(const Matrix& left, const Matrix& right);
 std::vector<algebra::FieldElement> matvec_projection(const Matrix& matrix, const std::vector<algebra::FieldElement>& vector);

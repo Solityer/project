@@ -1,11 +1,26 @@
 #include "gatzk/protocol/challenges.hpp"
 
+#include <cstdint>
 #include <stdexcept>
+#include <string_view>
 
 #include "gatzk/crypto/transcript.hpp"
 
 namespace gatzk::protocol {
 namespace {
+
+std::uint64_t fnv1a(std::string_view data) {
+    std::uint64_t hash = 1469598103934665603ULL;
+    for (const unsigned char ch : data) {
+        hash ^= ch;
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+void absorb_text_scalar(crypto::Transcript& transcript, const std::string& label, const std::string& value) {
+    transcript.absorb_scalar(label, algebra::FieldElement(fnv1a(label + "=" + value)));
+}
 
 void absorb(
     crypto::Transcript& transcript,
@@ -30,6 +45,44 @@ void absorb_static_if_present(crypto::Transcript& transcript, const ProtocolCont
 
 std::string head_prefix(std::size_t head_index) {
     return "P_h" + std::to_string(head_index);
+}
+
+std::string hidden_weight_label(std::size_t head_index) {
+    return "V_h" + std::to_string(head_index) + "_W";
+}
+
+std::string hidden_src_label(std::size_t head_index) {
+    return "V_h" + std::to_string(head_index) + "_a_src";
+}
+
+std::string hidden_dst_label(std::size_t head_index) {
+    return "V_h" + std::to_string(head_index) + "_a_dst";
+}
+
+std::string output_weight_label() {
+    return "V_out_W";
+}
+
+std::string output_src_label() {
+    return "V_out_a_src";
+}
+
+std::string output_dst_label() {
+    return "V_out_a_dst";
+}
+
+std::size_t hidden_head_width(const model::ModelParameters& parameters, const util::AppConfig& config) {
+    if (parameters.has_real_multihead && !parameters.hidden_heads.empty()) {
+        return model::attention_head_output_width(parameters.hidden_heads.front());
+    }
+    return config.hidden_dim;
+}
+
+std::size_t concat_width(const model::ModelParameters& parameters, const util::AppConfig& config) {
+    if (parameters.has_real_multihead && !parameters.hidden_heads.empty()) {
+        return hidden_head_width(parameters, config) * parameters.hidden_heads.size();
+    }
+    return config.hidden_dim;
 }
 
 void append_attention_head_dynamic_labels(std::vector<std::string>& labels, const std::string& prefix) {
@@ -91,6 +144,53 @@ void append_attention_head_dynamic_labels(std::vector<std::string>& labels, cons
 }
 
 }  // namespace
+
+PublicMetadata canonical_public_metadata(const ProtocolContext& context) {
+    PublicMetadata metadata;
+    metadata.protocol_id = "gatzkml";
+    metadata.model_arch_id = context.model.has_real_multihead
+        ? "single_layer_gat_hidden8_output1"
+        : "legacy_single_head_debug";
+    metadata.model_param_id = context.model.has_real_multihead
+        ? ("checkpoint_bundle:" + context.config.checkpoint_bundle)
+        : ("synthetic_seed:" + std::to_string(context.config.seed));
+    metadata.static_table_id = "tables:lrelu+exp+range";
+    metadata.quant_cfg_id = "range_bits=" + std::to_string(context.config.range_bits);
+    metadata.domain_cfg =
+        "FH=" + context.domains.fh->name + ":" + std::to_string(context.domains.fh->size)
+        + ",edge=" + context.domains.edge->name + ":" + std::to_string(context.domains.edge->size)
+        + ",in=" + context.domains.in->name + ":" + std::to_string(context.domains.in->size)
+        + ",d_h=" + context.domains.d->name + ":" + std::to_string(context.domains.d->size)
+        + ",cat=" + context.domains.cat->name + ":" + std::to_string(context.domains.cat->size)
+        + ",C=" + context.domains.c->name + ":" + std::to_string(context.domains.c->size)
+        + ",N=" + context.domains.n->name + ":" + std::to_string(context.domains.n->size);
+    metadata.dim_cfg =
+        "N=" + std::to_string(context.local.num_nodes)
+        + ",E=" + std::to_string(context.local.edges.size())
+        + ",d_in=" + std::to_string(context.local.num_features)
+        + ",d_h=" + std::to_string(hidden_head_width(context.model, context.config))
+        + ",d_cat=" + std::to_string(concat_width(context.model, context.config))
+        + ",C=" + std::to_string(context.local.num_classes);
+    metadata.encoding_id = "project-fixed-order-v1";
+    metadata.padding_rule_id = "zero-pad+selector-mask";
+    metadata.degree_bound_id = context.model.has_real_multihead
+        ? "note-target:FH,edge,in,d_h,cat,C,N"
+        : "legacy:FH,edge,in,d,N";
+    return metadata;
+}
+
+void absorb_public_metadata(crypto::Transcript& transcript, const PublicMetadata& metadata) {
+    absorb_text_scalar(transcript, "M_pub.protocol_id", metadata.protocol_id);
+    absorb_text_scalar(transcript, "M_pub.model_arch_id", metadata.model_arch_id);
+    absorb_text_scalar(transcript, "M_pub.model_param_id", metadata.model_param_id);
+    absorb_text_scalar(transcript, "M_pub.static_table_id", metadata.static_table_id);
+    absorb_text_scalar(transcript, "M_pub.quant_cfg_id", metadata.quant_cfg_id);
+    absorb_text_scalar(transcript, "M_pub.domain_cfg", metadata.domain_cfg);
+    absorb_text_scalar(transcript, "M_pub.dim_cfg", metadata.dim_cfg);
+    absorb_text_scalar(transcript, "M_pub.encoding_id", metadata.encoding_id);
+    absorb_text_scalar(transcript, "M_pub.padding_rule_id", metadata.padding_rule_id);
+    absorb_text_scalar(transcript, "M_pub.degree_bound_id", metadata.degree_bound_id);
+}
 
 std::vector<std::string> dynamic_commitment_labels(const ProtocolContext& context) {
     if (!context.model.has_real_multihead) {
@@ -254,9 +354,10 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
         crypto::Transcript transcript("gatzkml");
         std::map<std::string, algebra::FieldElement> out;
 
-        const std::size_t d_h = context.model.hidden_heads.front().output_bias_fp.size();
+        const std::size_t d_h = model::attention_head_output_width(context.model.hidden_heads.front());
         const std::size_t d_cat = d_h * context.model.hidden_heads.size();
 
+        absorb_public_metadata(transcript, canonical_public_metadata(context));
         transcript.absorb_scalar("N", algebra::FieldElement(context.local.num_nodes));
         transcript.absorb_scalar("E", algebra::FieldElement(context.local.edges.size()));
         transcript.absorb_scalar("d_in", algebra::FieldElement(context.local.num_features));
@@ -282,14 +383,20 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
 
         for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index) {
             const auto prefix = head_prefix(head_index);
+            absorb(transcript, "P_H", dynamic_commitments);
             absorb(transcript, prefix + "_H_prime", dynamic_commitments);
+            absorb_static(transcript, context, hidden_weight_label(head_index));
             out["y_proj_h" + std::to_string(head_index)] = transcript.challenge("y_proj_h" + std::to_string(head_index));
             out["xi_h" + std::to_string(head_index)] = transcript.challenge("xi_h" + std::to_string(head_index));
 
+            absorb(transcript, prefix + "_H_prime", dynamic_commitments);
             absorb(transcript, prefix + "_E_src", dynamic_commitments);
+            absorb_static(transcript, context, hidden_src_label(head_index));
             out["y_src_h" + std::to_string(head_index)] = transcript.challenge("y_src_h" + std::to_string(head_index));
 
+            absorb(transcript, prefix + "_H_prime", dynamic_commitments);
             absorb(transcript, prefix + "_E_dst", dynamic_commitments);
+            absorb_static(transcript, context, hidden_dst_label(head_index));
             out["y_dst_h" + std::to_string(head_index)] = transcript.challenge("y_dst_h" + std::to_string(head_index));
 
             absorb(transcript, prefix + "_H_star", dynamic_commitments);
@@ -316,12 +423,18 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
         absorb(transcript, "P_H_cat_star", dynamic_commitments);
         out["y_cat"] = transcript.challenge("y_cat");
 
+        absorb(transcript, "P_H_cat", dynamic_commitments);
         absorb(transcript, "P_out_Y_prime", dynamic_commitments);
+        absorb_static(transcript, context, output_weight_label());
         out["y_proj_out"] = transcript.challenge("y_proj_out");
         out["xi_out"] = transcript.challenge("xi_out");
+        absorb(transcript, "P_out_Y_prime", dynamic_commitments);
         absorb(transcript, "P_out_E_src", dynamic_commitments);
+        absorb_static(transcript, context, output_src_label());
         out["y_src_out"] = transcript.challenge("y_src_out");
+        absorb(transcript, "P_out_Y_prime", dynamic_commitments);
         absorb(transcript, "P_out_E_dst", dynamic_commitments);
+        absorb_static(transcript, context, output_dst_label());
         out["y_dst_out"] = transcript.challenge("y_dst_out");
         out["eta_src_out"] = transcript.challenge("eta_src_out");
         out["beta_src_out"] = transcript.challenge("beta_src_out");
@@ -331,6 +444,11 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
         out["y_out_star"] = transcript.challenge("y_out_star");
         out["eta_dst_out"] = transcript.challenge("eta_dst_out");
         out["beta_dst_out"] = transcript.challenge("beta_dst_out");
+        absorb(transcript, "P_out_Y_prime", dynamic_commitments);
+        absorb(transcript, "P_Y", dynamic_commitments);
+        absorb(transcript, "P_out_Y_star", dynamic_commitments);
+        absorb(transcript, "P_out_Table_dst", dynamic_commitments);
+        absorb(transcript, "P_out_Query_dst", dynamic_commitments);
         out["y_out"] = transcript.challenge("y_out");
 
         for (const auto& label : dynamic_commitment_labels(context)) {

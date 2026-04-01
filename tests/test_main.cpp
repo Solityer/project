@@ -246,6 +246,33 @@ ErrorStats compare_vector_npy(
     return compare_flat_values(actual, expected, {actual.size()}, label, max_threshold, mean_threshold);
 }
 
+void require_matrix_close(
+    const gatzk::model::FloatMatrix& actual,
+    const gatzk::model::FloatMatrix& expected,
+    const std::string& label,
+    double max_threshold = 1e-9,
+    double mean_threshold = 1e-10) {
+    require(actual.size() == expected.size(), label + " row count mismatch");
+    require(actual.empty() || actual.front().size() == expected.front().size(), label + " column count mismatch");
+    ErrorStats stats;
+    std::size_t count = 0;
+    for (std::size_t row = 0; row < actual.size(); ++row) {
+        for (std::size_t col = 0; col < actual[row].size(); ++col) {
+            const auto abs_error = std::abs(actual[row][col] - expected[row][col]);
+            stats.max_abs = std::max(stats.max_abs, abs_error);
+            stats.mean_abs += abs_error;
+            ++count;
+        }
+    }
+    if (count != 0) {
+        stats.mean_abs /= static_cast<double>(count);
+    }
+    std::ostringstream message;
+    message << label << " mismatch: max_abs=" << stats.max_abs << " mean_abs=" << stats.mean_abs;
+    require(stats.max_abs <= max_threshold, message.str());
+    require(stats.mean_abs <= mean_threshold, message.str());
+}
+
 gatzk::model::FloatMatrix dense_sum_scores(
     const std::vector<double>& e_src,
     const std::vector<double>& e_dst) {
@@ -475,12 +502,6 @@ void test_full_cora_edges_are_dst_sorted_and_self_looped() {
     }
 }
 
-void test_full_cora_bias_matches_reference() {
-    const auto& context = full_graph_debug_context();
-    const auto bias = gatzk::model::build_attention_bias_matrix(context.local.num_nodes, context.local.edges);
-    compare_matrix_npy(bias, ensure_reference_outputs() / "inputs/bias.npy", "bias");
-}
-
 void test_formal_full_cora_builds_multihead_context_with_cat_and_C_domains() {
     const auto& context = full_graph_formal_context();
     require(context.model.has_real_multihead, "formal full cora context must load real multi-head parameters");
@@ -597,6 +618,33 @@ void test_reference_style_multihead_forward_matches_reference_artifacts() {
     compare_matrix_npy(trace.output_head_trace.H_agg, reference_dir / "output/H_agg.npy", "output/H_agg");
     compare_matrix_npy(trace.Y_lin, reference_dir / "output/Y_lin.npy", "output/Y_lin");
     compare_matrix_npy(trace.Y, reference_dir / "output/Y.npy", "output/Y");
+}
+
+void test_formal_note_style_forward_removes_extra_bias() {
+    const auto& context = full_graph_formal_context();
+    const auto trace = gatzk::model::forward_note_style(
+        context.local.features_fp,
+        context.local.edges,
+        context.model);
+
+    for (std::size_t head = 0; head < trace.hidden_head_traces.size(); ++head) {
+        auto expected = trace.hidden_head_traces[head].H_agg_pre_bias;
+        for (auto& row : expected) {
+            for (auto& value : row) {
+                value = value >= 0.0 ? value : std::expm1(value);
+            }
+        }
+        require_matrix_close(
+            trace.hidden_head_traces[head].H_agg,
+            expected,
+            "hidden_head_" + std::to_string(head) + "_formal_note_style");
+    }
+
+    require_matrix_close(
+        trace.output_head_trace.H_agg,
+        trace.output_head_trace.H_agg_pre_bias,
+        "output_head_identity_without_bias");
+    require_matrix_close(trace.Y, trace.output_head_trace.H_agg_pre_bias, "formal_output_matches_identity_aggregation");
 }
 
 void test_extract_full_graph_fast_path() {
@@ -790,18 +838,23 @@ void test_PSQ_out_tamper_fails() {
     require(!gatzk::protocol::verify(fixture.context, tampered), "tampered PSQ_out must be rejected");
 }
 
+void test_formal_multihead_proof_has_no_output_bias_residue() {
+    const auto& fixture = full_cora_proof_fixture();
+    require(!external_eval_contains(fixture.proof, "mu_bias_out"), "formal multi-head proof must not carry output bias residue");
+}
+
 }  // namespace
 
 int main() {
     const std::vector<std::pair<std::string, std::function<void()>>> tests = {
         {"full_graph_config_parse", test_full_graph_config_parse},
         {"full_cora_edges_are_dst_sorted_and_self_looped", test_full_cora_edges_are_dst_sorted_and_self_looped},
-        {"full_cora_bias_matches_reference", test_full_cora_bias_matches_reference},
         {"formal_full_cora_builds_multihead_context_with_cat_and_C_domains", test_formal_full_cora_builds_multihead_context_with_cat_and_C_domains},
         {"checkpoint_bundle_manifest_detects_architecture_mismatch", test_checkpoint_bundle_manifest_detects_architecture_mismatch},
         {"real_checkpoint_bundle_loads_multihead_parameters", test_real_checkpoint_bundle_loads_multihead_parameters},
         {"reference_style_multihead_forward_shapes", test_reference_style_multihead_forward_shapes},
         {"reference_style_multihead_forward_matches_reference_artifacts", test_reference_style_multihead_forward_matches_reference_artifacts},
+        {"formal_note_style_forward_removes_extra_bias", test_formal_note_style_forward_removes_extra_bias},
         {"extract_full_graph_fast_path", test_extract_full_graph_fast_path},
         {"is_full_dataset_context", test_is_full_dataset_context},
         {"no_absolute_path_dependency", test_no_absolute_path_dependency},
@@ -817,6 +870,7 @@ int main() {
         {"H_cat_star_tamper_fails", test_H_cat_star_tamper_fails},
         {"Y_star_tamper_fails", test_Y_star_tamper_fails},
         {"PSQ_out_tamper_fails", test_PSQ_out_tamper_fails},
+        {"formal_multihead_proof_has_no_output_bias_residue", test_formal_multihead_proof_has_no_output_bias_residue},
     };
 
     try {

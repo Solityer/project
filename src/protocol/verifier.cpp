@@ -1,5 +1,6 @@
 #include "gatzk/protocol/verifier.hpp"
 
+#include <chrono>
 #include <future>
 #include <stdexcept>
 #include <thread>
@@ -14,6 +15,11 @@ namespace {
 
 using algebra::FieldElement;
 using crypto::Commitment;
+using Clock = std::chrono::steady_clock;
+
+double elapsed_ms(const Clock::time_point& start, const Clock::time_point& end) {
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
 
 struct BundleVerificationInput {
     const DomainOpeningBundle* bundle = nullptr;
@@ -82,7 +88,7 @@ std::map<std::string, FieldElement> to_field_map(const std::vector<std::pair<std
 
 std::size_t hidden_head_width(const model::ModelParameters& parameters, const util::AppConfig& config) {
     if (parameters.has_real_multihead && !parameters.hidden_heads.empty()) {
-        return parameters.hidden_heads.front().output_bias_fp.size();
+        return model::attention_head_output_width(parameters.hidden_heads.front());
     }
     return config.hidden_dim;
 }
@@ -95,37 +101,7 @@ std::size_t concat_width(const model::ModelParameters& parameters, const util::A
 }
 
 PublicMetadata build_public_metadata(const ProtocolContext& context) {
-    PublicMetadata metadata;
-    metadata.protocol_id = "gatzkml";
-    metadata.model_arch_id = context.model.has_real_multihead
-        ? "single_layer_gat_hidden8_output1"
-        : "legacy_single_head_debug";
-    metadata.model_param_id = context.model.has_real_multihead
-        ? ("checkpoint_bundle:" + context.config.checkpoint_bundle)
-        : ("synthetic_seed:" + std::to_string(context.config.seed));
-    metadata.static_table_id = "tables:lrelu+exp+range";
-    metadata.quant_cfg_id = "range_bits=" + std::to_string(context.config.range_bits);
-    metadata.domain_cfg =
-        "FH=" + context.domains.fh->name + ":" + std::to_string(context.domains.fh->size)
-        + ",edge=" + context.domains.edge->name + ":" + std::to_string(context.domains.edge->size)
-        + ",in=" + context.domains.in->name + ":" + std::to_string(context.domains.in->size)
-        + ",d_h=" + context.domains.d->name + ":" + std::to_string(context.domains.d->size)
-        + ",cat=" + context.domains.cat->name + ":" + std::to_string(context.domains.cat->size)
-        + ",C=" + context.domains.c->name + ":" + std::to_string(context.domains.c->size)
-        + ",N=" + context.domains.n->name + ":" + std::to_string(context.domains.n->size);
-    metadata.dim_cfg =
-        "N=" + std::to_string(context.local.num_nodes)
-        + ",E=" + std::to_string(context.local.edges.size())
-        + ",d_in=" + std::to_string(context.local.num_features)
-        + ",d_h=" + std::to_string(hidden_head_width(context.model, context.config))
-        + ",d_cat=" + std::to_string(concat_width(context.model, context.config))
-        + ",C=" + std::to_string(context.local.num_classes);
-    metadata.encoding_id = "project-fixed-order-v1";
-    metadata.padding_rule_id = "zero-pad+selector-mask";
-    metadata.degree_bound_id = context.model.has_real_multihead
-        ? "note-target:FH,edge,in,d_h,cat,C,N"
-        : "legacy:FH,edge,in,d,N";
-    return metadata;
+    return canonical_public_metadata(context);
 }
 
 bool metadata_matches(const PublicMetadata& lhs, const PublicMetadata& rhs) {
@@ -172,16 +148,35 @@ std::vector<ExternalEvalSpec> multihead_external_specs(const ProtocolContext& co
     return specs;
 }
 
+double* verify_domain_metric(RunMetrics* metrics, const std::string& bundle_name) {
+    if (metrics == nullptr) {
+        return nullptr;
+    }
+    if (bundle_name == "FH") return &metrics->verify_fh_ms;
+    if (bundle_name == "edge") return &metrics->verify_edge_ms;
+    if (bundle_name == "in") return &metrics->verify_in_ms;
+    if (bundle_name == "d_h") return &metrics->verify_d_h_ms;
+    if (bundle_name == "cat") return &metrics->verify_cat_ms;
+    if (bundle_name == "C") return &metrics->verify_c_ms;
+    if (bundle_name == "N") return &metrics->verify_n_ms;
+    return nullptr;
+}
+
 }  // namespace
 
-bool verify(const ProtocolContext& context, const Proof& proof) {
+bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metrics) {
+    const auto metadata_start = Clock::now();
     if (!metadata_matches(proof.public_metadata, build_public_metadata(context))) {
         return false;
     }
     if (proof.block_order != fixed_proof_block_order()) {
         return false;
     }
+    if (metrics != nullptr) {
+        metrics->verify_metadata_ms += elapsed_ms(metadata_start, Clock::now());
+    }
     if (context.model.has_real_multihead) {
+        const auto transcript_start = Clock::now();
         if (proof.dynamic_commitments.size() != dynamic_commitment_labels(context).size()) {
             return false;
         }
@@ -205,6 +200,9 @@ bool verify(const ProtocolContext& context, const Proof& proof) {
         const auto challenges = replay_challenges(context, dynamic_commitments, quotient_commitments);
         if (proof.challenges != challenges) {
             return false;
+        }
+        if (metrics != nullptr) {
+            metrics->verify_transcript_ms += elapsed_ms(transcript_start, Clock::now());
         }
         for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index) {
             if (!witness_scalars.contains("S_src_h" + std::to_string(head_index))
@@ -237,19 +235,30 @@ bool verify(const ProtocolContext& context, const Proof& proof) {
             {"C", "C", context.domains.c, "z_C", "v_C", "t_C"},
             {"N", "N", context.domains.n, "z_N", "v_N", "t_N"},
         };
+        std::unordered_map<std::string, FieldElement> eval_cache;
         const auto eval = [&](const std::string& name, const FieldElement& point) -> FieldElement {
-            if (const auto it = context.public_polynomials.find(name); it != context.public_polynomials.end()) {
-                return it->second.evaluate(point);
+            const auto cache_key = name + "@" + point.to_string();
+            if (const auto it = eval_cache.find(cache_key); it != eval_cache.end()) {
+                return it->second;
             }
-            for (const auto& spec : bundle_specs) {
-                const auto* bundle = bundle_by_name(proof, spec.bundle_name);
-                for (const auto& [label, _] : bundle->values) {
-                    if (label == name) {
-                        return bundle_value(*bundle, name, point);
+            FieldElement value = FieldElement::zero();
+            if (const auto it = context.public_polynomials.find(name); it != context.public_polynomials.end()) {
+                value = it->second.evaluate(point);
+            } else {
+                for (const auto& spec : bundle_specs) {
+                    const auto* bundle = bundle_by_name(proof, spec.bundle_name);
+                    for (const auto& [label, _] : bundle->values) {
+                        if (label == name) {
+                            value = bundle_value(*bundle, name, point);
+                            eval_cache.emplace(cache_key, value);
+                            return value;
+                        }
                     }
                 }
+                throw std::runtime_error("missing opened value for " + name);
             }
-            throw std::runtime_error("missing opened value for " + name);
+            eval_cache.emplace(cache_key, value);
+            return value;
         };
         auto verify_bundle_spec = [&](const BundleSpec& spec) {
             const auto* bundle = bundle_by_name(proof, spec.bundle_name);
@@ -278,6 +287,7 @@ bool verify(const ProtocolContext& context, const Proof& proof) {
                 }
                 values.push_back(bundle->values[i].second);
             }
+            const auto opening_start = Clock::now();
             if (!crypto::KZG::verify_batch(
                     commitments,
                     bundle->points,
@@ -287,6 +297,10 @@ bool verify(const ProtocolContext& context, const Proof& proof) {
                     context.kzg)) {
                 return false;
             }
+            if (metrics != nullptr) {
+                metrics->verify_domain_opening_ms += elapsed_ms(opening_start, Clock::now());
+            }
+            const auto quotient_start = Clock::now();
             FieldElement expected_t = FieldElement::zero();
             if (spec.quotient_name == "t_FH") {
                 expected_t = evaluate_t_fh(context, challenges, eval, challenges.at(spec.z_name));
@@ -308,6 +322,9 @@ bool verify(const ProtocolContext& context, const Proof& proof) {
             if (bundle_value(*bundle, spec.quotient_name, challenges.at(spec.z_name)) != expected_t) {
                 return false;
             }
+            if (metrics != nullptr) {
+                metrics->verify_quotient_ms += elapsed_ms(quotient_start, Clock::now());
+            }
             return true;
         };
         std::vector<std::pair<Commitment, FieldElement>> external_commitments;
@@ -319,6 +336,7 @@ bool verify(const ProtocolContext& context, const Proof& proof) {
             external_commitments.emplace_back(dynamic_commitments.at(spec.label), external_value(proof, spec.proof_name));
             external_points.push_back(challenges.at(spec.challenge_name));
         }
+        const auto external_fold_start = Clock::now();
         if (!crypto::KZG::verify_external_fold(
                 external_commitments,
                 external_points,
@@ -327,9 +345,19 @@ bool verify(const ProtocolContext& context, const Proof& proof) {
                 context.kzg)) {
             return false;
         }
+        if (metrics != nullptr) {
+            metrics->verify_external_fold_ms += elapsed_ms(external_fold_start, Clock::now());
+        }
         for (const auto& spec : bundle_specs) {
+            const auto bundle_start = Clock::now();
             if (!verify_bundle_spec(spec)) {
                 return false;
+            }
+            if (metrics != nullptr) {
+                const auto elapsed = elapsed_ms(bundle_start, Clock::now());
+                if (auto* metric = verify_domain_metric(metrics, spec.bundle_name); metric != nullptr) {
+                    *metric += elapsed;
+                }
             }
         }
         return true;
