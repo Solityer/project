@@ -223,20 +223,6 @@ std::vector<std::string> fixed_proof_block_order() {
     return {"M_pub", "Com_dyn", "S_route", "Eval_ext", "Eval_dom", "Com_quot", "Open_dom", "W_ext", "Pi_bind"};
 }
 
-std::vector<std::string> collect_domain_labels(
-    const ProtocolContext& context,
-    const TraceArtifacts& trace,
-    const std::string& domain_name) {
-    std::vector<std::string> out;
-    for (const auto& label : dynamic_commitment_labels(context)) {
-        const auto it = trace.polynomial_domains.find(label);
-        if (it != trace.polynomial_domains.end() && it->second == domain_name) {
-            out.push_back(label);
-        }
-    }
-    return out;
-}
-
 struct ExternalEvalSpec {
     std::string proof_name;
     std::string label;
@@ -262,41 +248,6 @@ std::vector<ExternalEvalSpec> multihead_external_specs(const ProtocolContext& co
     specs.push_back({"mu_out_star", "P_out_Y_star", "y_out_star"});
     specs.push_back({"mu_out", "P_Y", "y_out"});
     return specs;
-}
-
-DomainOpeningBundle make_multihead_bundle(
-    const ProtocolContext& context,
-    const TraceArtifacts& trace,
-    const std::unordered_map<std::string, Commitment>& quotient_commitments,
-    const std::unordered_map<std::string, algebra::Polynomial>& quotient_polynomials,
-    const std::vector<std::string>& labels,
-    const std::vector<FieldElement>& points,
-    const FieldElement& folding_challenge) {
-    DomainOpeningBundle bundle;
-    bundle.points = points;
-    std::vector<Commitment> commitments;
-    std::vector<std::vector<FieldElement>> values;
-    commitments.reserve(labels.size());
-    values.reserve(labels.size());
-    for (const auto& label : labels) {
-        std::vector<FieldElement> opened;
-        if (const auto poly_it = trace.polynomials.find(label); poly_it != trace.polynomials.end()) {
-            commitments.push_back(trace.commitments.at(label));
-            for (const auto& point : points) {
-                opened.push_back(poly_it->second.evaluate(point));
-            }
-        } else {
-            commitments.push_back(quotient_commitments.at(label));
-            const auto& poly = quotient_polynomials.at(label);
-            for (const auto& point : points) {
-                opened.push_back(poly.evaluate(point));
-            }
-        }
-        values.push_back(opened);
-        bundle.values.push_back({label, opened});
-    }
-    bundle.witness = crypto::KZG::open_batch(commitments, points, values, folding_challenge, context.kzg);
-    return bundle;
 }
 
 std::filesystem::path resolve_project_path(
@@ -463,8 +414,26 @@ class EvaluationMemoization {
                     return eval_named(inner_name, inner_point);
                 },
                 point);
-        } else if (name == "t_d") {
+        } else if (name == "t_d" || name == "t_d_h") {
             value = evaluate_t_d(
+                context_,
+                challenges_,
+                trace_.external_evaluations,
+                [&](const std::string& inner_name, const FieldElement& inner_point) {
+                    return eval_named(inner_name, inner_point);
+                },
+                point);
+        } else if (name == "t_cat") {
+            value = evaluate_t_cat(
+                context_,
+                challenges_,
+                trace_.external_evaluations,
+                [&](const std::string& inner_name, const FieldElement& inner_point) {
+                    return eval_named(inner_name, inner_point);
+                },
+                point);
+        } else if (name == "t_C") {
+            value = evaluate_t_c(
                 context_,
                 challenges_,
                 trace_.external_evaluations,
@@ -1457,26 +1426,41 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
         throw std::runtime_error("trace commitment order does not match the protocol commitment order");
     }
     if (context.model.has_real_multihead) {
-        const auto quotient_entries = build_multihead_zero_quotients(context);
-        std::vector<std::pair<std::string, const algebra::Polynomial*>> named_quotients;
-        named_quotients.reserve(quotient_entries.size());
-        std::unordered_map<std::string, algebra::Polynomial> quotient_polynomials;
-        for (const auto& [name, polynomial] : quotient_entries) {
-            quotient_polynomials.emplace(name, polynomial);
+        auto stage_start = Clock::now();
+        const auto pre_quotient_challenges = replay_challenges(context, trace.commitments, {});
+        std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry;
+        if (route2.fft_backend_upgrade) {
+            backend_registry = std::make_shared<ProofEvaluationBackendRegistry>(context, trace);
         }
-        for (const auto& [name, polynomial] : quotient_entries) {
-            named_quotients.push_back({name, &quotient_polynomials.at(name)});
-        }
-        const auto quotient_commitments_vec = crypto::KZG::commit_batch(named_quotients, context.kzg);
-        std::unordered_map<std::string, Commitment> quotient_commitments;
-        for (std::size_t i = 0; i < quotient_entries.size(); ++i) {
-            quotient_commitments[quotient_entries[i].first] = quotient_commitments_vec[i];
+        auto proof_domain_weight_cache = std::make_shared<ProofDomainWeightCache>();
+        EvaluationMemoization quotient_memo(
+            context,
+            trace,
+            pre_quotient_challenges,
+            backend_registry,
+            proof_domain_weight_cache);
+        const auto eval = [&](const std::string& name, const FieldElement& point) {
+            return quotient_memo.eval_named(name, point);
+        };
+        const std::vector<std::pair<std::string, FieldElement>> named_tau_values = {
+            {"t_FH", evaluate_t_fh(context, pre_quotient_challenges, eval, context.kzg.tau)},
+            {"t_edge", evaluate_t_edge(context, pre_quotient_challenges, trace.witness_scalars, eval, context.kzg.tau)},
+            {"t_in", evaluate_t_in(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.tau)},
+            {"t_d_h", evaluate_t_d(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.tau)},
+            {"t_cat", evaluate_t_cat(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.tau)},
+            {"t_C", evaluate_t_c(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.tau)},
+            {"t_N", evaluate_t_n(context, pre_quotient_challenges, trace.witness_scalars, eval, context.kzg.tau)},
+        };
+        const auto quotient_commitments = batch_quotient_commitments(named_tau_values, context.kzg);
+        const auto challenges = replay_challenges(context, trace.commitments, quotient_commitments);
+        if (metrics != nullptr) {
+            metrics->quotient_build_ms += elapsed_ms(stage_start, Clock::now());
         }
 
         Proof proof;
         proof.public_metadata = build_public_metadata(context);
         proof.block_order = fixed_proof_block_order();
-        proof.challenges = trace.challenges;
+        proof.challenges = challenges;
         for (const auto& label : dynamic_commitment_labels(context)) {
             proof.dynamic_commitments.push_back({label, trace.commitments.at(label)});
         }
@@ -1501,46 +1485,58 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             {"C", "C", context.domains.c, "z_C", "v_C", "t_C"},
             {"N", "N", context.domains.n, "z_N", "v_N", "t_N"},
         };
+        stage_start = Clock::now();
+        EvaluationMemoization opening_memo(
+            context,
+            trace,
+            challenges,
+            backend_registry,
+            proof_domain_weight_cache);
         for (const auto& spec : bundle_specs) {
-            auto labels = collect_domain_labels(context, trace, spec.trace_domain_name);
+            auto labels = domain_opening_labels(context, spec.trace_domain_name);
             labels.push_back(spec.quotient_name);
             const std::vector<FieldElement> points = {
-                trace.challenges.at(spec.z_name),
-                trace.challenges.at(spec.z_name) * spec.domain->omega,
+                challenges.at(spec.z_name),
+                challenges.at(spec.z_name) * spec.domain->omega,
             };
             proof.domain_openings.push_back(
                 {spec.bundle_name,
-                 make_multihead_bundle(
+                 make_bundle(
                      context,
                      trace,
+                     opening_memo,
                      quotient_commitments,
-                     quotient_polynomials,
                      labels,
                      points,
-                     trace.challenges.at(spec.v_name))});
+                     spec.v_name,
+                     challenges)});
+        }
+        if (metrics != nullptr) {
+            metrics->domain_opening_ms += elapsed_ms(stage_start, Clock::now());
         }
 
         const auto ext_specs = multihead_external_specs(context);
         std::vector<std::pair<Commitment, FieldElement>> external_commitments;
         std::vector<FieldElement> external_points;
+        stage_start = Clock::now();
         for (const auto& spec : ext_specs) {
             const auto value = trace.external_evaluations.at(spec.proof_name);
             proof.external_evaluations.push_back({spec.proof_name, value});
             external_commitments.push_back({trace.commitments.at(spec.label), value});
-            external_points.push_back(trace.challenges.at(spec.challenge_name));
+            external_points.push_back(challenges.at(spec.challenge_name));
         }
         proof.external_witness = crypto::KZG::open_external_fold(
             external_commitments,
             external_points,
-            trace.challenges.at("rho_ext"),
+            challenges.at("rho_ext"),
             context.kzg);
+        if (metrics != nullptr) {
+            metrics->external_opening_ms += elapsed_ms(stage_start, Clock::now());
+        }
         for (const auto& [name, value] : trace.witness_scalars) {
             proof.witness_scalars.push_back({name, value});
         }
         if (metrics != nullptr) {
-            metrics->quotient_build_ms += 0.0;
-            metrics->domain_opening_ms += 0.0;
-            metrics->external_opening_ms += 0.0;
             metrics->prove_time_ms = elapsed_ms(prove_start, Clock::now());
         }
         return proof;

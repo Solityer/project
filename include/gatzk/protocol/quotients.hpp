@@ -13,8 +13,7 @@ namespace gatzk::protocol {
 
 using EvalFn = std::function<algebra::FieldElement(const std::string&, const algebra::FieldElement&)>;
 
-std::vector<std::pair<std::string, algebra::Polynomial>> build_multihead_zero_quotients(
-    const ProtocolContext& context);
+std::vector<std::string> domain_opening_labels(const ProtocolContext& context, const std::string& domain_name);
 
 algebra::FieldElement evaluate_t_fh(
     const ProtocolContext& context,
@@ -44,6 +43,20 @@ algebra::FieldElement evaluate_t_in(
     const algebra::FieldElement& z);
 
 algebra::FieldElement evaluate_t_d(
+    const ProtocolContext& context,
+    const std::map<std::string, algebra::FieldElement>& challenges,
+    const std::map<std::string, algebra::FieldElement>& external_evaluations,
+    const EvalFn& eval,
+    const algebra::FieldElement& z);
+
+algebra::FieldElement evaluate_t_cat(
+    const ProtocolContext& context,
+    const std::map<std::string, algebra::FieldElement>& challenges,
+    const std::map<std::string, algebra::FieldElement>& external_evaluations,
+    const EvalFn& eval,
+    const algebra::FieldElement& z);
+
+algebra::FieldElement evaluate_t_c(
     const ProtocolContext& context,
     const std::map<std::string, algebra::FieldElement>& challenges,
     const std::map<std::string, algebra::FieldElement>& external_evaluations,

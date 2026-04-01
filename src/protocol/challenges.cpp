@@ -2,7 +2,6 @@
 
 #include <stdexcept>
 
-#include "gatzk/protocol/trace.hpp"
 #include "gatzk/crypto/transcript.hpp"
 
 namespace gatzk::protocol {
@@ -21,6 +20,12 @@ void absorb_static(crypto::Transcript& transcript, const ProtocolContext& contex
 
 void absorb_public(crypto::Transcript& transcript, const ProtocolContext& context, const std::string& label) {
     transcript.absorb_commitment(label, context.public_commitments.at(label).point);
+}
+
+void absorb_static_if_present(crypto::Transcript& transcript, const ProtocolContext& context, const std::string& label) {
+    if (const auto it = context.static_commitments.find(label); it != context.static_commitments.end()) {
+        transcript.absorb_commitment(label, it->second.point);
+    }
 }
 
 std::string head_prefix(std::size_t head_index) {
@@ -246,9 +251,126 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
     const std::unordered_map<std::string, crypto::Commitment>& dynamic_commitments,
     const std::unordered_map<std::string, crypto::Commitment>& quotient_commitments) {
     if (context.model.has_real_multihead) {
-        (void)dynamic_commitments;
-        (void)quotient_commitments;
-        return build_trace(context, nullptr).challenges;
+        crypto::Transcript transcript("gatzkml");
+        std::map<std::string, algebra::FieldElement> out;
+
+        const std::size_t d_h = context.model.hidden_heads.front().output_bias_fp.size();
+        const std::size_t d_cat = d_h * context.model.hidden_heads.size();
+
+        transcript.absorb_scalar("N", algebra::FieldElement(context.local.num_nodes));
+        transcript.absorb_scalar("E", algebra::FieldElement(context.local.edges.size()));
+        transcript.absorb_scalar("d_in", algebra::FieldElement(context.local.num_features));
+        transcript.absorb_scalar("d_h", algebra::FieldElement(d_h));
+        transcript.absorb_scalar("d_cat", algebra::FieldElement(d_cat));
+        transcript.absorb_scalar("C", algebra::FieldElement(context.local.num_classes));
+        transcript.absorb_scalar("B", algebra::FieldElement(context.config.range_bits));
+        absorb_public(transcript, context, "P_I");
+        absorb_public(transcript, context, "P_src");
+        absorb_public(transcript, context, "P_dst");
+        absorb_public(transcript, context, "P_Q_new_edge");
+        absorb_public(transcript, context, "P_Q_end_edge");
+        absorb_public(transcript, context, "P_Q_edge_valid");
+        absorb_public(transcript, context, "P_Q_N");
+        absorb_public(transcript, context, "P_Q_proj_valid");
+        absorb_public(transcript, context, "P_Q_d_valid");
+        absorb_public(transcript, context, "P_Q_cat_valid");
+        absorb_public(transcript, context, "P_Q_C_valid");
+        absorb(transcript, "P_H", dynamic_commitments);
+        absorb_static(transcript, context, "V_T_H");
+        out["eta_feat"] = transcript.challenge("eta_feat");
+        out["beta_feat"] = transcript.challenge("beta_feat");
+
+        for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index) {
+            const auto prefix = head_prefix(head_index);
+            absorb(transcript, prefix + "_H_prime", dynamic_commitments);
+            out["y_proj_h" + std::to_string(head_index)] = transcript.challenge("y_proj_h" + std::to_string(head_index));
+            out["xi_h" + std::to_string(head_index)] = transcript.challenge("xi_h" + std::to_string(head_index));
+
+            absorb(transcript, prefix + "_E_src", dynamic_commitments);
+            out["y_src_h" + std::to_string(head_index)] = transcript.challenge("y_src_h" + std::to_string(head_index));
+
+            absorb(transcript, prefix + "_E_dst", dynamic_commitments);
+            out["y_dst_h" + std::to_string(head_index)] = transcript.challenge("y_dst_h" + std::to_string(head_index));
+
+            absorb(transcript, prefix + "_H_star", dynamic_commitments);
+            out["y_star_h" + std::to_string(head_index)] = transcript.challenge("y_star_h" + std::to_string(head_index));
+
+            out["eta_src_h" + std::to_string(head_index)] = transcript.challenge("eta_src_h" + std::to_string(head_index));
+            out["beta_src_h" + std::to_string(head_index)] = transcript.challenge("beta_src_h" + std::to_string(head_index));
+            out["lambda_psq_h" + std::to_string(head_index)] = transcript.challenge("lambda_psq_h" + std::to_string(head_index));
+
+            absorb(transcript, prefix + "_H_agg_pre", dynamic_commitments);
+            absorb(transcript, prefix + "_H_agg_pre_star", dynamic_commitments);
+            out["y_agg_pre_h" + std::to_string(head_index)] = transcript.challenge("y_agg_pre_h" + std::to_string(head_index));
+
+            absorb(transcript, prefix + "_H_agg", dynamic_commitments);
+            absorb(transcript, prefix + "_H_agg_star", dynamic_commitments);
+            out["y_agg_h" + std::to_string(head_index)] = transcript.challenge("y_agg_h" + std::to_string(head_index));
+
+            out["eta_dst_h" + std::to_string(head_index)] = transcript.challenge("eta_dst_h" + std::to_string(head_index));
+            out["beta_dst_h" + std::to_string(head_index)] = transcript.challenge("beta_dst_h" + std::to_string(head_index));
+        }
+
+        absorb(transcript, "P_H_cat", dynamic_commitments);
+        out["xi_cat"] = transcript.challenge("xi_cat");
+        absorb(transcript, "P_H_cat_star", dynamic_commitments);
+        out["y_cat"] = transcript.challenge("y_cat");
+
+        absorb(transcript, "P_out_Y_prime", dynamic_commitments);
+        out["y_proj_out"] = transcript.challenge("y_proj_out");
+        out["xi_out"] = transcript.challenge("xi_out");
+        absorb(transcript, "P_out_E_src", dynamic_commitments);
+        out["y_src_out"] = transcript.challenge("y_src_out");
+        absorb(transcript, "P_out_E_dst", dynamic_commitments);
+        out["y_dst_out"] = transcript.challenge("y_dst_out");
+        out["eta_src_out"] = transcript.challenge("eta_src_out");
+        out["beta_src_out"] = transcript.challenge("beta_src_out");
+        out["lambda_out"] = transcript.challenge("lambda_out");
+        absorb(transcript, "P_Y", dynamic_commitments);
+        absorb(transcript, "P_out_Y_star", dynamic_commitments);
+        out["y_out_star"] = transcript.challenge("y_out_star");
+        out["eta_dst_out"] = transcript.challenge("eta_dst_out");
+        out["beta_dst_out"] = transcript.challenge("beta_dst_out");
+        out["y_out"] = transcript.challenge("y_out");
+
+        for (const auto& label : dynamic_commitment_labels(context)) {
+            absorb(transcript, label, dynamic_commitments);
+        }
+        for (const auto& label : {
+                 std::string("V_T_H"),
+                 std::string("V_T_L_x"),
+                 std::string("V_T_L_y"),
+                 std::string("V_T_exp_x"),
+                 std::string("V_T_exp_y"),
+                 std::string("V_T_range"),
+             }) {
+            absorb_static_if_present(transcript, context, label);
+        }
+        out["alpha_quot"] = transcript.challenge("alpha_quot");
+
+        if (quotient_commitments.empty()) {
+            return out;
+        }
+
+        for (const auto& label : quotient_commitment_labels(context)) {
+            absorb(transcript, label, quotient_commitments);
+        }
+        out["z_FH"] = transcript.challenge("z_FH");
+        out["z_edge"] = transcript.challenge("z_edge");
+        out["z_in"] = transcript.challenge("z_in");
+        out["z_d_h"] = transcript.challenge("z_d_h");
+        out["z_cat"] = transcript.challenge("z_cat");
+        out["z_C"] = transcript.challenge("z_C");
+        out["z_N"] = transcript.challenge("z_N");
+        out["v_FH"] = transcript.challenge("v_FH");
+        out["v_edge"] = transcript.challenge("v_edge");
+        out["v_in"] = transcript.challenge("v_in");
+        out["v_d_h"] = transcript.challenge("v_d_h");
+        out["v_cat"] = transcript.challenge("v_cat");
+        out["v_C"] = transcript.challenge("v_C");
+        out["v_N"] = transcript.challenge("v_N");
+        out["rho_ext"] = transcript.challenge("rho_ext");
+        return out;
     }
 
     crypto::Transcript transcript("gatzkml");

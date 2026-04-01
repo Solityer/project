@@ -1,6 +1,11 @@
 #include "gatzk/protocol/quotients.hpp"
 
+#include <cctype>
+#include <optional>
+#include <string_view>
 #include <vector>
+
+#include "gatzk/protocol/challenges.hpp"
 
 namespace gatzk::protocol {
 namespace {
@@ -40,24 +45,156 @@ FieldElement c_lookup_1(
         + eval("P_Q_qry_" + prefix, z) * (eval("P_Table_" + prefix, z) + beta);
 }
 
+bool starts_with(const std::string& value, std::string_view prefix) {
+    return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
 }
 
-std::vector<std::pair<std::string, algebra::Polynomial>> build_multihead_zero_quotients(const ProtocolContext& context) {
-    auto zero_eval_poly = [](const std::string& name, const std::shared_ptr<algebra::RootOfUnityDomain>& domain) {
-        return algebra::Polynomial::from_evaluations(
-            name,
-            std::vector<FieldElement>(domain->size, FieldElement::zero()),
-            domain);
-    };
-    return {
-        {"t_FH", zero_eval_poly("t_FH", context.domains.fh)},
-        {"t_edge", zero_eval_poly("t_edge", context.domains.edge)},
-        {"t_in", zero_eval_poly("t_in", context.domains.in)},
-        {"t_d_h", zero_eval_poly("t_d_h", context.domains.d)},
-        {"t_cat", zero_eval_poly("t_cat", context.domains.cat)},
-        {"t_C", zero_eval_poly("t_C", context.domains.c)},
-        {"t_N", zero_eval_poly("t_N", context.domains.n)},
-    };
+std::optional<std::string> hidden_head_suffix(const std::string& label) {
+    if (!starts_with(label, "P_h")) {
+        return std::nullopt;
+    }
+    std::size_t pos = 3;
+    while (pos < label.size() && std::isdigit(static_cast<unsigned char>(label[pos]))) {
+        ++pos;
+    }
+    if (pos >= label.size() || label[pos] != '_') {
+        return std::nullopt;
+    }
+    return label.substr(pos + 1);
+}
+
+std::optional<std::string> dynamic_label_domain_name(const ProtocolContext& context, const std::string& label) {
+    if (!context.model.has_real_multihead) {
+        return std::nullopt;
+    }
+    if (label == "P_Table_feat" || label == "P_Query_feat" || label == "P_m_feat" || label == "P_R_feat") {
+        return std::string("FH");
+    }
+    if (label == "P_H_cat_star") {
+        return std::string("N");
+    }
+    if (label == "P_cat_a" || label == "P_cat_b" || label == "P_cat_Acc"
+        || label == "P_out_a_proj" || label == "P_out_b_proj" || label == "P_out_Acc_proj") {
+        return std::string("cat");
+    }
+    if (label == "P_out_a_src" || label == "P_out_b_src" || label == "P_out_Acc_src"
+        || label == "P_out_a_dst" || label == "P_out_b_dst" || label == "P_out_Acc_dst"
+        || label == "P_out_a_y" || label == "P_out_b_y" || label == "P_out_Acc_y") {
+        return std::string("C");
+    }
+    if (label == "P_out_E_src" || label == "P_out_E_dst" || label == "P_out_M"
+        || label == "P_out_Sum" || label == "P_out_inv" || label == "P_out_Y_prime_star"
+        || label == "P_out_Table_src" || label == "P_out_m_src" || label == "P_out_R_src_node"
+        || label == "P_out_Y_star" || label == "P_out_T" || label == "P_out_Table_dst"
+        || label == "P_out_m_dst" || label == "P_out_R_dst_node") {
+        return std::string("N");
+    }
+    if (label == "P_out_E_src_edge" || label == "P_out_E_dst_edge" || label == "P_out_Query_src"
+        || label == "P_out_R_src" || label == "P_out_S" || label == "P_out_Z"
+        || label == "P_out_M_edge" || label == "P_out_Delta" || label == "P_out_U"
+        || label == "P_out_Sum_edge" || label == "P_out_inv_edge" || label == "P_out_alpha"
+        || label == "P_out_Y_prime_star_edge" || label == "P_out_widehat_y_star"
+        || label == "P_out_w" || label == "P_out_T_edge" || label == "P_out_PSQ"
+        || label == "P_out_Y_star_edge" || label == "P_out_Query_dst" || label == "P_out_R_dst") {
+        return std::string("edge");
+    }
+    if (const auto suffix = hidden_head_suffix(label); suffix.has_value()) {
+        const auto& name = *suffix;
+        if (name == "a_proj" || name == "b_proj" || name == "Acc_proj") {
+            return std::string("in");
+        }
+        if (name == "a_src" || name == "b_src" || name == "Acc_src"
+            || name == "a_dst" || name == "b_dst" || name == "Acc_dst"
+            || name == "a_star" || name == "b_star" || name == "Acc_star"
+            || name == "a_agg" || name == "b_agg" || name == "Acc_agg") {
+            return std::string("d");
+        }
+        if (name == "E_src" || name == "E_dst" || name == "M" || name == "Sum" || name == "inv"
+            || name == "H_star" || name == "Table_src" || name == "m_src" || name == "R_src_node"
+            || name == "H_agg_pre_star" || name == "T_psq" || name == "H_agg_star"
+            || name == "Table_dst" || name == "m_dst" || name == "R_dst_node") {
+            return std::string("N");
+        }
+        if (name == "E_src_edge" || name == "E_dst_edge" || name == "H_src_star_edge"
+            || name == "Query_src" || name == "R_src" || name == "S" || name == "Z"
+            || name == "M_edge" || name == "Delta" || name == "U" || name == "Sum_edge"
+            || name == "inv_edge" || name == "alpha" || name == "H_agg_pre_star_edge"
+            || name == "widehat_v_pre_star" || name == "w_psq" || name == "T_psq_edge"
+            || name == "PSQ" || name == "H_agg_star_edge" || name == "Query_dst"
+            || name == "R_dst") {
+            return std::string("edge");
+        }
+    }
+    return std::nullopt;
+}
+
+class QuotientAccumulator {
+  public:
+    explicit QuotientAccumulator(const FieldElement& alpha) : alpha_(alpha) {}
+
+    void add(const FieldElement& term) {
+        sum_ += power_ * term;
+        power_ *= alpha_;
+    }
+
+    FieldElement value() const {
+        return sum_;
+    }
+
+  private:
+    FieldElement alpha_;
+    FieldElement power_ = FieldElement::one();
+    FieldElement sum_ = FieldElement::zero();
+};
+
+FieldElement route_node_step(
+    const FieldElement& next_value,
+    const FieldElement& current_value,
+    const FieldElement& table_value,
+    const FieldElement& beta,
+    const FieldElement& q_valid,
+    const FieldElement& multiplicity) {
+    return (next_value - current_value) * (table_value + beta) - q_valid * multiplicity;
+}
+
+FieldElement route_edge_step(
+    const FieldElement& next_value,
+    const FieldElement& current_value,
+    const FieldElement& query_value,
+    const FieldElement& beta,
+    const FieldElement& q_edge_valid) {
+    return (next_value - current_value) * (query_value + beta) - q_edge_valid;
+}
+
+FieldElement acc_step(
+    const FieldElement& next_value,
+    const FieldElement& current_value,
+    const FieldElement& a_value,
+    const FieldElement& b_value) {
+    return next_value - current_value - a_value * b_value;
+}
+
+FieldElement psq_step(
+    const FieldElement& psq_next,
+    const FieldElement& psq_current,
+    const FieldElement& w_next,
+    const FieldElement& q_valid_next,
+    const FieldElement& q_new_next) {
+    return psq_next
+        - ((FieldElement::one() - q_valid_next) * psq_current
+            + q_valid_next * (q_new_next * w_next + (FieldElement::one() - q_new_next) * (psq_current + w_next)));
+}
+
+}
+
+std::vector<std::string> domain_opening_labels(const ProtocolContext& context, const std::string& domain_name) {
+    std::vector<std::string> labels;
+    for (const auto& label : dynamic_commitment_labels(context)) {
+        if (const auto mapped = dynamic_label_domain_name(context, label); mapped.has_value() && *mapped == domain_name) {
+            labels.push_back(label);
+        }
+    }
+    return labels;
 }
 
 FieldElement evaluate_t_fh(
@@ -85,6 +222,82 @@ FieldElement evaluate_t_edge(
     const std::map<std::string, FieldElement>& witness_scalars,
     const EvalFn& eval,
     const FieldElement& z) {
+    if (context.model.has_real_multihead) {
+        const auto omega_z = z * context.domains.edge->omega;
+        const auto first = lagrange_first(*context.domains.edge, z);
+        const auto last = lagrange_last(*context.domains.edge, z);
+        const auto zero_eval = context.domains.edge->zero_polynomial_eval(z);
+        const auto q_edge = eval("P_Q_edge_valid", z);
+        const auto q_edge_next = eval("P_Q_edge_valid", omega_z);
+        const auto q_new_next = eval("P_Q_new_edge", omega_z);
+        const auto q_end = eval("P_Q_end_edge", z);
+        QuotientAccumulator acc(challenges.at("alpha_quot"));
+
+        for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index) {
+            const auto prefix = "P_h" + std::to_string(head_index) + "_";
+            const auto beta_src = challenges.at("beta_src_h" + std::to_string(head_index));
+            const auto beta_dst = challenges.at("beta_dst_h" + std::to_string(head_index));
+            const auto eta_src = challenges.at("eta_src_h" + std::to_string(head_index));
+            const auto eta_dst = challenges.at("eta_dst_h" + std::to_string(head_index));
+
+            acc.add(first * eval(prefix + "R_src", z));
+            acc.add(route_edge_step(eval(prefix + "R_src", omega_z), eval(prefix + "R_src", z), eval(prefix + "Query_src", z), beta_src, q_edge));
+            acc.add(last * (eval(prefix + "R_src", z) - witness_scalars.at("S_src_h" + std::to_string(head_index))));
+            acc.add(eval(prefix + "Query_src", z)
+                - (eval("P_src", z) + eta_src * eval(prefix + "E_src_edge", z) + eta_src.pow(2) * eval(prefix + "H_src_star_edge", z)));
+
+            acc.add(q_edge * (eval(prefix + "S", z) - eval(prefix + "E_src_edge", z) - eval(prefix + "E_dst_edge", z)));
+            acc.add(q_edge * (eval(prefix + "Delta", z) - eval(prefix + "M_edge", z) + eval(prefix + "Z", z)));
+            acc.add(q_edge * (eval(prefix + "alpha", z) - eval(prefix + "U", z) * eval(prefix + "inv_edge", z)));
+
+            acc.add(first * (eval(prefix + "PSQ", z) - q_edge * eval(prefix + "w_psq", z)));
+            acc.add(psq_step(eval(prefix + "PSQ", omega_z), eval(prefix + "PSQ", z), eval(prefix + "w_psq", omega_z), q_edge_next, q_new_next));
+            acc.add(q_end * (eval(prefix + "PSQ", z) - eval(prefix + "T_psq_edge", z)));
+
+            acc.add(first * eval(prefix + "R_dst", z));
+            acc.add(route_edge_step(eval(prefix + "R_dst", omega_z), eval(prefix + "R_dst", z), eval(prefix + "Query_dst", z), beta_dst, q_edge));
+            acc.add(last * (eval(prefix + "R_dst", z) - witness_scalars.at("S_dst_h" + std::to_string(head_index))));
+            acc.add(eval(prefix + "Query_dst", z)
+                - (eval("P_dst", z)
+                    + eta_dst * eval(prefix + "E_dst_edge", z)
+                    + eta_dst.pow(2) * eval(prefix + "M_edge", z)
+                    + eta_dst.pow(3) * eval(prefix + "Sum_edge", z)
+                    + eta_dst.pow(4) * eval(prefix + "inv_edge", z)
+                    + eta_dst.pow(5) * eval(prefix + "H_agg_star_edge", z)));
+        }
+
+        const auto beta_src_out = challenges.at("beta_src_out");
+        const auto beta_dst_out = challenges.at("beta_dst_out");
+        const auto eta_src_out = challenges.at("eta_src_out");
+        const auto eta_dst_out = challenges.at("eta_dst_out");
+
+        acc.add(first * eval("P_out_R_src", z));
+        acc.add(route_edge_step(eval("P_out_R_src", omega_z), eval("P_out_R_src", z), eval("P_out_Query_src", z), beta_src_out, q_edge));
+        acc.add(last * (eval("P_out_R_src", z) - witness_scalars.at("S_src_out")));
+        acc.add(eval("P_out_Query_src", z) - (eval("P_src", z) + eta_src_out * eval("P_out_E_src_edge", z)));
+
+        acc.add(q_edge * (eval("P_out_S", z) - eval("P_out_E_src_edge", z) - eval("P_out_E_dst_edge", z)));
+        acc.add(q_edge * (eval("P_out_Delta", z) - eval("P_out_M_edge", z) + eval("P_out_Z", z)));
+        acc.add(q_edge * (eval("P_out_alpha", z) - eval("P_out_U", z) * eval("P_out_inv_edge", z)));
+
+        acc.add(first * (eval("P_out_PSQ", z) - q_edge * eval("P_out_w", z)));
+        acc.add(psq_step(eval("P_out_PSQ", omega_z), eval("P_out_PSQ", z), eval("P_out_w", omega_z), q_edge_next, q_new_next));
+        acc.add(q_end * (eval("P_out_PSQ", z) - eval("P_out_T_edge", z)));
+
+        acc.add(first * eval("P_out_R_dst", z));
+        acc.add(route_edge_step(eval("P_out_R_dst", omega_z), eval("P_out_R_dst", z), eval("P_out_Query_dst", z), beta_dst_out, q_edge));
+        acc.add(last * (eval("P_out_R_dst", z) - witness_scalars.at("S_dst_out")));
+        acc.add(eval("P_out_Query_dst", z)
+            - (eval("P_dst", z)
+                + eta_dst_out * eval("P_out_E_dst_edge", z)
+                + eta_dst_out.pow(2) * eval("P_out_M_edge", z)
+                + eta_dst_out.pow(3) * eval("P_out_Sum_edge", z)
+                + eta_dst_out.pow(4) * eval("P_out_inv_edge", z)
+                + eta_dst_out.pow(5) * eval("P_out_Y_star_edge", z)));
+
+        return acc.value() / zero_eval;
+    }
+
     const auto alpha = challenges.at("alpha_quot");
     const auto alpha_powers = powers(alpha, 73);
     const auto omega_z = z * context.domains.edge->omega;
@@ -207,6 +420,63 @@ FieldElement evaluate_t_n(
     const std::map<std::string, FieldElement>& witness_scalars,
     const EvalFn& eval,
     const FieldElement& z) {
+    if (context.model.has_real_multihead) {
+        const auto omega_z = z * context.domains.n->omega;
+        const auto first = lagrange_first(*context.domains.n, z);
+        const auto last = lagrange_last(*context.domains.n, z);
+        const auto zero_eval = context.domains.n->zero_polynomial_eval(z);
+        const auto q_n = eval("P_Q_N", z);
+        QuotientAccumulator acc(challenges.at("alpha_quot"));
+
+        for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index) {
+            const auto prefix = "P_h" + std::to_string(head_index) + "_";
+            const auto beta_src = challenges.at("beta_src_h" + std::to_string(head_index));
+            const auto beta_dst = challenges.at("beta_dst_h" + std::to_string(head_index));
+            const auto eta_src = challenges.at("eta_src_h" + std::to_string(head_index));
+            const auto eta_dst = challenges.at("eta_dst_h" + std::to_string(head_index));
+
+            acc.add(first * eval(prefix + "R_src_node", z));
+            acc.add(route_node_step(eval(prefix + "R_src_node", omega_z), eval(prefix + "R_src_node", z), eval(prefix + "Table_src", z), beta_src, q_n, eval(prefix + "m_src", z)));
+            acc.add(last * (eval(prefix + "R_src_node", z) - witness_scalars.at("S_src_h" + std::to_string(head_index))));
+            acc.add(first * eval(prefix + "R_dst_node", z));
+            acc.add(route_node_step(eval(prefix + "R_dst_node", omega_z), eval(prefix + "R_dst_node", z), eval(prefix + "Table_dst", z), beta_dst, q_n, eval(prefix + "m_dst", z)));
+            acc.add(last * (eval(prefix + "R_dst_node", z) - witness_scalars.at("S_dst_h" + std::to_string(head_index))));
+            acc.add(q_n * (eval(prefix + "Sum", z) * eval(prefix + "inv", z) - FieldElement::one()));
+            acc.add(eval(prefix + "Table_src", z)
+                - (eval("P_I", z) + eta_src * eval(prefix + "E_src", z) + eta_src.pow(2) * eval(prefix + "H_star", z)));
+            acc.add(eval(prefix + "Table_dst", z)
+                - (eval("P_I", z)
+                    + eta_dst * eval(prefix + "E_dst", z)
+                    + eta_dst.pow(2) * eval(prefix + "M", z)
+                    + eta_dst.pow(3) * eval(prefix + "Sum", z)
+                    + eta_dst.pow(4) * eval(prefix + "inv", z)
+                    + eta_dst.pow(5) * eval(prefix + "H_agg_star", z)));
+        }
+
+        const auto beta_src_out = challenges.at("beta_src_out");
+        const auto beta_dst_out = challenges.at("beta_dst_out");
+        const auto eta_src_out = challenges.at("eta_src_out");
+        const auto eta_dst_out = challenges.at("eta_dst_out");
+
+        acc.add(first * eval("P_out_R_src_node", z));
+        acc.add(route_node_step(eval("P_out_R_src_node", omega_z), eval("P_out_R_src_node", z), eval("P_out_Table_src", z), beta_src_out, q_n, eval("P_out_m_src", z)));
+        acc.add(last * (eval("P_out_R_src_node", z) - witness_scalars.at("S_src_out")));
+        acc.add(first * eval("P_out_R_dst_node", z));
+        acc.add(route_node_step(eval("P_out_R_dst_node", omega_z), eval("P_out_R_dst_node", z), eval("P_out_Table_dst", z), beta_dst_out, q_n, eval("P_out_m_dst", z)));
+        acc.add(last * (eval("P_out_R_dst_node", z) - witness_scalars.at("S_dst_out")));
+        acc.add(q_n * (eval("P_out_Sum", z) * eval("P_out_inv", z) - FieldElement::one()));
+        acc.add(eval("P_out_Table_src", z) - (eval("P_I", z) + eta_src_out * eval("P_out_E_src", z)));
+        acc.add(eval("P_out_Table_dst", z)
+            - (eval("P_I", z)
+                + eta_dst_out * eval("P_out_E_dst", z)
+                + eta_dst_out.pow(2) * eval("P_out_M", z)
+                + eta_dst_out.pow(3) * eval("P_out_Sum", z)
+                + eta_dst_out.pow(4) * eval("P_out_inv", z)
+                + eta_dst_out.pow(5) * eval("P_out_Y_star", z)));
+
+        return acc.value() / zero_eval;
+    }
+
     const auto c_inv_0 = eval("P_Q_N", z) * (eval("P_Sum", z) * eval("P_inv", z) - FieldElement::one());
     const auto alpha_powers = powers(challenges.at("alpha_quot"), 69);
     const auto q_n = eval("P_Q_N", z);
@@ -260,6 +530,21 @@ FieldElement evaluate_t_in(
     const std::map<std::string, FieldElement>& external_evaluations,
     const EvalFn& eval,
     const FieldElement& z) {
+    if (context.model.has_real_multihead) {
+        const auto omega_z = z * context.domains.in->omega;
+        const auto first = lagrange_first(*context.domains.in, z);
+        const auto last = lagrange_last(*context.domains.in, z);
+        const auto zero_eval = context.domains.in->zero_polynomial_eval(z);
+        QuotientAccumulator acc(challenges.at("alpha_quot"));
+        for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index) {
+            const auto prefix = "P_h" + std::to_string(head_index) + "_";
+            acc.add(first * eval(prefix + "Acc_proj", z));
+            acc.add(acc_step(eval(prefix + "Acc_proj", omega_z), eval(prefix + "Acc_proj", z), eval(prefix + "a_proj", z), eval(prefix + "b_proj", z)));
+            acc.add(last * (eval(prefix + "Acc_proj", z) - external_evaluations.at("mu_h" + std::to_string(head_index) + "_proj")));
+        }
+        return acc.value() / zero_eval;
+    }
+
     const auto omega_z = z * context.domains.in->omega;
     const auto l0 = lagrange_first(*context.domains.in, z);
     const auto ld = lagrange_at(*context.domains.in, context.local.num_features, z);
@@ -286,6 +571,35 @@ FieldElement evaluate_t_d(
     const std::map<std::string, FieldElement>& external_evaluations,
     const EvalFn& eval,
     const FieldElement& z) {
+    if (context.model.has_real_multihead) {
+        const auto omega_z = z * context.domains.d->omega;
+        const auto first = lagrange_first(*context.domains.d, z);
+        const auto last = lagrange_last(*context.domains.d, z);
+        const auto zero_eval = context.domains.d->zero_polynomial_eval(z);
+        QuotientAccumulator acc(challenges.at("alpha_quot"));
+
+        for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index) {
+            const auto prefix = "P_h" + std::to_string(head_index) + "_";
+            acc.add(first * eval(prefix + "Acc_src", z));
+            acc.add(acc_step(eval(prefix + "Acc_src", omega_z), eval(prefix + "Acc_src", z), eval(prefix + "a_src", z), eval(prefix + "b_src", z)));
+            acc.add(last * (eval(prefix + "Acc_src", z) - external_evaluations.at("mu_h" + std::to_string(head_index) + "_src")));
+
+            acc.add(first * eval(prefix + "Acc_dst", z));
+            acc.add(acc_step(eval(prefix + "Acc_dst", omega_z), eval(prefix + "Acc_dst", z), eval(prefix + "a_dst", z), eval(prefix + "b_dst", z)));
+            acc.add(last * (eval(prefix + "Acc_dst", z) - external_evaluations.at("mu_h" + std::to_string(head_index) + "_dst")));
+
+            acc.add(first * eval(prefix + "Acc_star", z));
+            acc.add(acc_step(eval(prefix + "Acc_star", omega_z), eval(prefix + "Acc_star", z), eval(prefix + "a_star", z), eval(prefix + "b_star", z)));
+            acc.add(last * (eval(prefix + "Acc_star", z) - external_evaluations.at("mu_h" + std::to_string(head_index) + "_star")));
+
+            acc.add(first * eval(prefix + "Acc_agg", z));
+            acc.add(acc_step(eval(prefix + "Acc_agg", omega_z), eval(prefix + "Acc_agg", z), eval(prefix + "a_agg", z), eval(prefix + "b_agg", z)));
+            acc.add(last * (eval(prefix + "Acc_agg", z) - external_evaluations.at("mu_h" + std::to_string(head_index) + "_agg")));
+        }
+
+        return acc.value() / zero_eval;
+    }
+
     const auto omega_z = z * context.domains.d->omega;
     const auto q_valid = eval("P_Q_d_valid", z);
     const auto q_invalid = FieldElement::one() - q_valid;
@@ -326,6 +640,56 @@ FieldElement evaluate_t_d(
     numerator += alpha_powers[52] * c2("P_Acc_out");
     numerator += alpha_powers[53] * c3("P_Acc_out", "mu_Y_lin");
     return numerator / zero_eval;
+}
+
+FieldElement evaluate_t_cat(
+    const ProtocolContext& context,
+    const std::map<std::string, FieldElement>& challenges,
+    const std::map<std::string, FieldElement>& external_evaluations,
+    const EvalFn& eval,
+    const FieldElement& z) {
+    const auto omega_z = z * context.domains.cat->omega;
+    const auto first = lagrange_first(*context.domains.cat, z);
+    const auto last = lagrange_last(*context.domains.cat, z);
+    const auto zero_eval = context.domains.cat->zero_polynomial_eval(z);
+    QuotientAccumulator acc(challenges.at("alpha_quot"));
+
+    acc.add(first * eval("P_cat_Acc", z));
+    acc.add(acc_step(eval("P_cat_Acc", omega_z), eval("P_cat_Acc", z), eval("P_cat_a", z), eval("P_cat_b", z)));
+    acc.add(last * (eval("P_cat_Acc", z) - external_evaluations.at("mu_cat")));
+
+    acc.add(first * eval("P_out_Acc_proj", z));
+    acc.add(acc_step(eval("P_out_Acc_proj", omega_z), eval("P_out_Acc_proj", z), eval("P_out_a_proj", z), eval("P_out_b_proj", z)));
+    acc.add(last * (eval("P_out_Acc_proj", z) - external_evaluations.at("mu_out_proj")));
+
+    return acc.value() / zero_eval;
+}
+
+FieldElement evaluate_t_c(
+    const ProtocolContext& context,
+    const std::map<std::string, FieldElement>& challenges,
+    const std::map<std::string, FieldElement>& external_evaluations,
+    const EvalFn& eval,
+    const FieldElement& z) {
+    const auto omega_z = z * context.domains.c->omega;
+    const auto first = lagrange_first(*context.domains.c, z);
+    const auto last = lagrange_last(*context.domains.c, z);
+    const auto zero_eval = context.domains.c->zero_polynomial_eval(z);
+    QuotientAccumulator acc(challenges.at("alpha_quot"));
+
+    acc.add(first * eval("P_out_Acc_src", z));
+    acc.add(acc_step(eval("P_out_Acc_src", omega_z), eval("P_out_Acc_src", z), eval("P_out_a_src", z), eval("P_out_b_src", z)));
+    acc.add(last * (eval("P_out_Acc_src", z) - external_evaluations.at("mu_out_src")));
+
+    acc.add(first * eval("P_out_Acc_dst", z));
+    acc.add(acc_step(eval("P_out_Acc_dst", omega_z), eval("P_out_Acc_dst", z), eval("P_out_a_dst", z), eval("P_out_b_dst", z)));
+    acc.add(last * (eval("P_out_Acc_dst", z) - external_evaluations.at("mu_out_dst")));
+
+    acc.add(first * eval("P_out_Acc_y", z));
+    acc.add(acc_step(eval("P_out_Acc_y", omega_z), eval("P_out_Acc_y", z), eval("P_out_a_y", z), eval("P_out_b_y", z)));
+    acc.add(last * (eval("P_out_Acc_y", z) - external_evaluations.at("mu_out_star")));
+
+    return acc.value() / zero_eval;
 }
 
 }  // namespace gatzk::protocol

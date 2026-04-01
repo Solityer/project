@@ -489,265 +489,168 @@ $H_{cat,i,r\cdot d_h+j}=H_{agg,i,j}^{(r)}$
 
 参数生成算法输出：
 
-- KZG 证明键
+- KZG 证明键：$PK$
 
-	$PK.$
+- KZG 验证键：$VK_{KZG}$
 
-- KZG 验证键
+- 静态表验证键：$VK_{static}$
 
-	$VK_{KZG}.$
+- 模型验证键：$VK_{model}$
 
-- 静态表验证键
+- 各工作域：$\mathbb H_{FH},\mathbb H_{edge},\mathbb H_{in},\mathbb H_{d_h},\mathbb H_{cat},\mathbb H_C,\mathbb H_N$
 
-	$VK_{static}.$
+- 各工作域零化多项式：$Z_{FH},Z_{edge},Z_{in},Z_{d_h},Z_{cat},Z_C,Z_N$
 
-- 模型验证键
-
-	$VK_{model}.$
-
-- 各工作域
-
-	$\mathbb H_{FH},\mathbb H_{edge},\mathbb H_{in},\mathbb H_{d_h},\mathbb H_{cat},\mathbb H_C,\mathbb H_N.$
-
-- 各工作域零化多项式
-
-	$Z_{FH},Z_{edge},Z_{in},Z_{d_h},Z_{cat},Z_C,Z_N.$
 
 ### 1.3 工作域
 
 #### 1.3.1 特征检索域
 
-取最小二次幂长度 $n_{FH}$ 满足
+取最小二次幂长度 $n_{FH}$ 满足：$n_{FH}\ge \max\{N_{total}d_{in},Nd_{in}\}+2$
 
-$n_{FH}\ge \max\{N_{total}d_{in},Nd_{in}\}+2.$
-
-定义
-
-$\mathbb H_{FH}=\{1,\omega_{FH},\omega_{FH}^2,\ldots,\omega_{FH}^{n_{FH}-1}\}, \qquad Z_{FH}(X)=X^{n_{FH}}-1.$
+定义：$\mathbb H_{FH}=\{1,\omega_{FH},\omega_{FH}^2,\ldots,\omega_{FH}^{n_{FH}-1}\} \quad Z_{FH}(X)=X^{n_{FH}}-1$
 
 #### 1.3.2 边域
 
-取最小二次幂长度 $n_{edge}$ 满足
+取最小二次幂长度 $n_{edge}$ 满足：$n_{edge}\ge \max\{N,E,Nd_h,|T_{LReLU}|,|T_{ELU}|,|T_{exp}|,2^B\}+2$
 
-$n_{edge}\ge \max\{N,E,Nd_h,|T_{LReLU}|,|T_{ELU}|,|T_{exp}|,2^B\}+2.$
-
-定义
-
-$\mathbb H_{edge}=\{1,\omega_{edge},\omega_{edge}^2,\ldots,\omega_{edge}^{n_{edge}-1}\}, \qquad Z_{edge}(X)=X^{n_{edge}}-1.$
+定义：$\mathbb H_{edge}=\{1,\omega_{edge},\omega_{edge}^2,\ldots,\omega_{edge}^{n_{edge}-1}\} \quad Z_{edge}(X)=X^{n_{edge}}-1$
 
 #### 1.3.3 输入共享维域
 
-取最小二次幂长度 $n_{in}$ 满足
+取最小二次幂长度 $n_{in}$ 满足：$n_{in}\ge d_{in}+2$
 
-$n_{in}\ge d_{in}+2.$
-
-定义
-
-$\mathbb H_{in}=\{1,\omega_{in},\omega_{in}^2,\ldots,\omega_{in}^{n_{in}-1}\}, \qquad Z_{in}(X)=X^{n_{in}}-1.$
+定义：$\mathbb H_{in}=\{1,\omega_{in},\omega_{in}^2,\ldots,\omega_{in}^{n_{in}-1}\} \quad Z_{in}(X)=X^{n_{in}}-1$
 
 #### 1.3.4 隐藏层单头共享维域
 
-取最小二次幂长度 $n_{d_h}$ 满足
+取最小二次幂长度 $n_{d_h}$ 满足：$n_{d_h}\ge d_h+2$
 
-$n_{d_h}\ge d_h+2.$
-
-定义
-
-$\mathbb H_{d_h}=\{1,\omega_{d_h},\omega_{d_h}^2,\ldots,\omega_{d_h}^{n_{d_h}-1}\}, \qquad Z_{d_h}(X)=X^{n_{d_h}}-1.$
+定义：$\mathbb H_{d_h}=\{1,\omega_{d_h},\omega_{d_h}^2,\ldots,\omega_{d_h}^{n_{d_h}-1}\} \quad Z_{d_h}(X)=X^{n_{d_h}}-1$
 
 #### 1.3.5 拼接共享维域
 
-取最小二次幂长度 $n_{cat}$ 满足
+取最小二次幂长度 $n_{cat}$ 满足：$n_{cat}\ge d_{cat}+2$
 
-$n_{cat}\ge d_{cat}+2.$
-
-定义
-
-$\mathbb H_{cat}=\{1,\omega_{cat},\omega_{cat}^2,\ldots,\omega_{cat}^{n_{cat}-1}\}, \qquad Z_{cat}(X)=X^{n_{cat}}-1.$
+定义$\mathbb H_{cat}=\{1,\omega_{cat},\omega_{cat}^2,\ldots,\omega_{cat}^{n_{cat}-1}\} \quad Z_{cat}(X)=X^{n_{cat}}-1$
 
 #### 1.3.6 输出层类别共享维域
 
-取最小二次幂长度 $n_C$ 满足
+取最小二次幂长度 $n_C$ 满足：$n_C\ge C+2$
 
-$n_C\ge C+2.$
-
-定义
-
-$\mathbb H_C=\{1,\omega_C,\omega_C^2,\ldots,\omega_C^{n_C-1}\}, \qquad Z_C(X)=X^{n_C}-1.$
+定义：$\mathbb H_C=\{1,\omega_C,\omega_C^2,\ldots,\omega_C^{n_C-1}\} \quad Z_C(X)=X^{n_C}-1$
 
 #### 1.3.7 节点域
 
-取最小二次幂长度 $n_N$ 满足
+取最小二次幂长度 $n_N$ 满足：$n_N\ge N+2$
 
-$n_N\ge N+2.$
-
-定义
-
-$\mathbb H_N=\{1,\omega_N,\omega_N^2,\ldots,\omega_N^{n_N-1}\}, \qquad Z_N(X)=X^{n_N}-1.$
+定义：$\mathbb H_N=\{1,\omega_N,\omega_N^2,\ldots,\omega_N^{n_N-1}\} \quad Z_N(X)=X^{n_N}-1.$
 
 ### 1.4 KZG 初始化
 
-采样隐藏陷门
+采样隐藏陷门：$\tau\xleftarrow{\$}\mathbb F_p$
 
-$\tau\xleftarrow{\$}\mathbb F_p.$
+取次数上界：$D_{max}= \max\{ 3n_{FH}+8,\, 3n_{edge}+8,\, 2n_{in}+8,\, 2n_{d_h}+8,\, 2n_{cat}+8,\, 2n_C+8,\, 2n_N+8,\, Nd_{cat}+C,\, NC+1 \}$
 
-取次数上界
+输出证明键：$PK=\{G_1,\tau G_1,\tau^2G_1,\ldots,\tau^{D_{max}}G_1\}$
 
-$D_{max}= \max\{ 3n_{FH}+8,\, 3n_{edge}+8,\, 2n_{in}+8,\, 2n_{d_h}+8,\, 2n_{cat}+8,\, 2n_C+8,\, 2n_N+8,\, Nd_{cat}+C,\, NC+1 \}.$
-
-输出证明键
-
-$PK=\{G_1,\tau G_1,\tau^2G_1,\ldots,\tau^{D_{max}}G_1\}.$
-
-输出验证键
-
-$VK_{KZG}=\{[1]_2,[\tau]_2\}.$
+输出验证键：$VK_{KZG}=\{[1]_2,[\tau]_2\}$
 
 ### 1.5 静态表与模型承诺
 
 #### 1.5.1 全局特征表多项式
 
-定义
-
-$P_{T_H}(X)=\sum_{v=0}^{N_{total}-1}\sum_{j=0}^{d_{in}-1}T_H[v,j]X^{v\cdot d_{in}+j}.$
+定义：$P_{T_H}(X)=\sum_{v=0}^{N_{total}-1}\sum_{j=0}^{d_{in}-1}T_H[v,j]X^{v\cdot d_{in}+j}$
 
 #### 1.5.2 LeakyReLU 表多项式
 
-设 $T_{LReLU}$ 的第 $t$ 行是 $(T_{LReLU}[t,0],T_{LReLU}[t,1])$，定义
+设 $T_{LReLU}$ 的第 $t$ 行是 $(T_{LReLU}[t,0],T_{LReLU}[t,1])$，定义：
 
-$P_{T_{LReLU},x}(X)=\sum_{t=0}^{|T_{LReLU}|-1}T_{LReLU}[t,0]L_t^{(edge)}(X),$
+$P_{T_{LReLU},x}(X)=\sum_{t=0}^{|T_{LReLU}|-1}T_{LReLU}[t,0]L_t^{(edge)}(X)$
 
-$P_{T_{LReLU},y}(X)=\sum_{t=0}^{|T_{LReLU}|-1}T_{LReLU}[t,1]L_t^{(edge)}(X).$
+$P_{T_{LReLU},y}(X)=\sum_{t=0}^{|T_{LReLU}|-1}T_{LReLU}[t,1]L_t^{(edge)}(X)$
 
 #### 1.5.3 ELU 表多项式
 
-设 $T_{ELU}$ 的第 $t$ 行是 $(T_{ELU}[t,0],T_{ELU}[t,1])$，定义
+设 $T_{ELU}$ 的第 $t$ 行是 $(T_{ELU}[t,0],T_{ELU}[t,1])$，定义：
 
-$P_{T_{ELU},x}(X)=\sum_{t=0}^{|T_{ELU}|-1}T_{ELU}[t,0]L_t^{(edge)}(X),$
+$P_{T_{ELU},x}(X)=\sum_{t=0}^{|T_{ELU}|-1}T_{ELU}[t,0]L_t^{(edge)}(X)$
 
-$P_{T_{ELU},y}(X)=\sum_{t=0}^{|T_{ELU}|-1}T_{ELU}[t,1]L_t^{(edge)}(X).$
+$P_{T_{ELU},y}(X)=\sum_{t=0}^{|T_{ELU}|-1}T_{ELU}[t,1]L_t^{(edge)}(X)$
 
 #### 1.5.4 指数表多项式
 
-设 $T_{exp}$ 的第 $t$ 行是 $(T_{exp}[t,0],T_{exp}[t,1])$，定义
+设 $T_{exp}$ 的第 $t$ 行是 $(T_{exp}[t,0],T_{exp}[t,1])$，定义：
 
-$P_{T_{exp},x}(X)=\sum_{t=0}^{|T_{exp}|-1}T_{exp}[t,0]L_t^{(edge)}(X),$
+$P_{T_{exp},x}(X)=\sum_{t=0}^{|T_{exp}|-1}T_{exp}[t,0]L_t^{(edge)}(X)$
 
-$P_{T_{exp},y}(X)=\sum_{t=0}^{|T_{exp}|-1}T_{exp}[t,1]L_t^{(edge)}(X).$
+$P_{T_{exp},y}(X)=\sum_{t=0}^{|T_{exp}|-1}T_{exp}[t,1]L_t^{(edge)}(X)$
 
 #### 1.5.5 范围表多项式
 
-定义
-
-$P_{T_{range}}(X)=\sum_{t=0}^{2^B-1}t\,L_t^{(edge)}(X).$
+定义：$P_{T_{range}}(X)=\sum_{t=0}^{2^B-1}t\,L_t^{(edge)}(X)$
 
 #### 1.5.6 静态表验证键
 
-定义
-
-$VK_{static} = \{ [V_{T_H}], [V_{T_{LReLU},x}], [V_{T_{LReLU},y}], [V_{T_{ELU},x}], [V_{T_{ELU},y}], [V_{T_{exp},x}], [V_{T_{exp},y}], [V_{T_{range}}] \}.$
+定义：$VK_{static} = \{ [V_{T_H}], [V_{T_{LReLU},x}], [V_{T_{LReLU},y}], [V_{T_{ELU},x}], [V_{T_{ELU},y}], [V_{T_{exp},x}], [V_{T_{exp},y}], [V_{T_{range}}] \}$
 
 #### 1.5.7 模型承诺与模型验证键
 
-对每个 $r\in\{0,1,\ldots,7\}$，承诺
+对每个 $r\in\{0,1,\ldots,7\}$，承诺：$[V_{W^{(r)}}],\quad [V_{a_{src}^{(r)}}],\quad [V_{a_{dst}^{(r)}}]$
 
-$[V_{W^{(r)}}],\quad [V_{a_{src}^{(r)}}],\quad [V_{a_{dst}^{(r)}}].$
+对输出层承诺：$[V_{W^{(out)}}],\quad [V_{a_{src}^{(out)}}],\quad [V_{a_{dst}^{(out)}}]$
 
-对输出层承诺
-
-$[V_{W^{(out)}}],\quad [V_{a_{src}^{(out)}}],\quad [V_{a_{dst}^{(out)}}].$
-
-因此
-
-$VK_{model} = \Big( \{[V_{W^{(r)}}],[V_{a_{src}^{(r)}}],[V_{a_{dst}^{(r)}}]\}_{r=0}^{7}, [V_{W^{(out)}}],[V_{a_{src}^{(out)}}],[V_{a_{dst}^{(out)}}] \Big).$
+因此：$VK_{model} = \Big( \{[V_{W^{(r)}}],[V_{a_{src}^{(r)}}],[V_{a_{dst}^{(r)}}]\}_{r=0}^{7}, [V_{W^{(out)}}],[V_{a_{src}^{(out)}}],[V_{a_{dst}^{(out)}}] \Big)$
 
 ### 1.6 公共拓扑多项式与辅助公开多项式
 
 定义：
 
-1. 源索引多项式
+1. 源索引多项式：$P_{src}(X)=\sum_{k=0}^{E-1}src(k)L_k^{(edge)}(X)$
 
-	$P_{src}(X)=\sum_{k=0}^{E-1}src(k)L_k^{(edge)}(X).$
+2. 目标索引多项式：$P_{dst}(X)=\sum_{k=0}^{E-1}dst(k)L_k^{(edge)}(X)$
 
-2. 目标索引多项式
+3. 组起点选择器多项式：$P_{Q_{new}^{edge}}(X)=\sum_{k=0}^{n_{edge}-1}Q_{new}^{edge}[k]L_k^{(edge)}(X)$
 
-	$P_{dst}(X)=\sum_{k=0}^{E-1}dst(k)L_k^{(edge)}(X).$
+4. 组末尾选择器多项式：$P_{Q_{end}^{edge}}(X)=\sum_{k=0}^{n_{edge}-1}Q_{end}^{edge}[k]L_k^{(edge)}(X)$
 
-3. 组起点选择器多项式
+5. 边域有效区选择器多项式：$P_{Q_{edge}^{valid}}(X)=\sum_{k=0}^{n_{edge}-1}Q_{edge}^{valid}[k]L_k^{(edge)}(X)$
 
-	$P_{Q_{new}^{edge}}(X)=\sum_{k=0}^{n_{edge}-1}Q_{new}^{edge}[k]L_k^{(edge)}(X).$
+6. 节点域有效区选择器多项式：$P_{Q_N}(X)=\sum_{i=0}^{n_N-1}Q_N[i]L_i^{(N)}(X)$
 
-4. 组末尾选择器多项式
+7. 输入共享维有效区选择器多项式：$P_{Q_{in}^{valid}}(X)=\sum_{m=0}^{n_{in}-1}Q_{in}^{valid}[m]L_m^{(in)}(X)$
 
-	$P_{Q_{end}^{edge}}(X)=\sum_{k=0}^{n_{edge}-1}Q_{end}^{edge}[k]L_k^{(edge)}(X).$
+8. 隐藏层共享维有效区选择器多项式：$P_{Q_{d_h}^{valid}}(X)=\sum_{j=0}^{n_{d_h}-1}Q_{d_h}^{valid}[j]L_j^{(d_h)}(X)$
 
-5. 边域有效区选择器多项式
+9. 拼接共享维有效区选择器多项式：$P_{Q_{cat}^{valid}}(X)=\sum_{m=0}^{n_{cat}-1}Q_{cat}^{valid}[m]L_m^{(cat)}(X)$
 
-	$P_{Q_{edge}^{valid}}(X)=\sum_{k=0}^{n_{edge}-1}Q_{edge}^{valid}[k]L_k^{(edge)}(X).$
+10. 输出层类别共享维有效区选择器多项式：$P_{Q_C^{valid}}(X)=\sum_{c=0}^{n_C-1}Q_C^{valid}[c]L_c^{(C)}(X)$
 
-6. 节点域有效区选择器多项式
+11. 节点域枚举多项式：$P_{Idx_N}(X)=\sum_{i=0}^{n_N-1}Idx_N[i]L_i^{(N)}(X)$
 
-	$P_{Q_N}(X)=\sum_{i=0}^{n_N-1}Q_N[i]L_i^{(N)}(X).$
+12. 输入共享维枚举多项式：$P_{Idx_{in}}(X)=\sum_{m=0}^{n_{in}-1}Idx_{in}[m]L_m^{(in)}(X)$
 
-7. 输入共享维有效区选择器多项式
+13. 隐藏层共享维枚举多项式：$P_{Idx_{d_h}}(X)=\sum_{j=0}^{n_{d_h}-1}Idx_{d_h}[j]L_j^{(d_h)}(X)$
 
-	$P_{Q_{in}^{valid}}(X)=\sum_{m=0}^{n_{in}-1}Q_{in}^{valid}[m]L_m^{(in)}(X).$
+14. 拼接共享维枚举多项式：$P_{Idx_{cat}}(X)=\sum_{m=0}^{n_{cat}-1}Idx_{cat}[m]L_m^{(cat)}(X)$
 
-8. 隐藏层共享维有效区选择器多项式
+15. 输出类别枚举多项式：$P_{Idx_C}(X)=\sum_{c=0}^{n_C-1}Idx_C[c]L_c^{(C)}(X)$
 
-	$P_{Q_{d_h}^{valid}}(X)=\sum_{j=0}^{n_{d_h}-1}Q_{d_h}^{valid}[j]L_j^{(d_h)}(X).$
+16. 特征检索表端行列辅助多项式：
 
-9. 拼接共享维有效区选择器多项式
+	$P_{Row_{feat}^{tbl}}(X)=\sum_{u=0}^{n_{FH}-1}Row_{feat}^{tbl}[u]L_u^{(FH)}(X)$
 
-	$P_{Q_{cat}^{valid}}(X)=\sum_{m=0}^{n_{cat}-1}Q_{cat}^{valid}[m]L_m^{(cat)}(X).$
+	$P_{Col_{feat}^{tbl}}(X)=\sum_{u=0}^{n_{FH}-1}Col_{feat}^{tbl}[u]L_u^{(FH)}(X)$
 
-10. 输出层类别共享维有效区选择器多项式
+17. 特征检索查询端局部行列辅助多项式：
 
-	$P_{Q_C^{valid}}(X)=\sum_{c=0}^{n_C-1}Q_C^{valid}[c]L_c^{(C)}(X).$
+	$P_{Row_{feat}^{qry}}(X)=\sum_{q=0}^{n_{FH}-1}Row_{feat}^{qry}[q]L_q^{(FH)}(X)$
 
-11. 节点域枚举多项式
+	$P_{Col_{feat}^{qry}}(X)=\sum_{q=0}^{n_{FH}-1}Col_{feat}^{qry}[q]L_q^{(FH)}(X)$
 
-	$P_{Idx_N}(X)=\sum_{i=0}^{n_N-1}Idx_N[i]L_i^{(N)}(X).$
+18. 特征检索查询端绝对节点编号辅助多项式：
 
-12. 输入共享维枚举多项式
-
-	$P_{Idx_{in}}(X)=\sum_{m=0}^{n_{in}-1}Idx_{in}[m]L_m^{(in)}(X).$
-
-13. 隐藏层共享维枚举多项式
-
-	$P_{Idx_{d_h}}(X)=\sum_{j=0}^{n_{d_h}-1}Idx_{d_h}[j]L_j^{(d_h)}(X).$
-
-14. 拼接共享维枚举多项式
-
-	$P_{Idx_{cat}}(X)=\sum_{m=0}^{n_{cat}-1}Idx_{cat}[m]L_m^{(cat)}(X).$
-
-15. 输出类别枚举多项式
-
-	$P_{Idx_C}(X)=\sum_{c=0}^{n_C-1}Idx_C[c]L_c^{(C)}(X).$
-
-16. 特征检索表端行列辅助多项式
-
-	$P_{Row_{feat}^{tbl}}(X)=\sum_{u=0}^{n_{FH}-1}Row_{feat}^{tbl}[u]L_u^{(FH)}(X),$
-
-	$P_{Col_{feat}^{tbl}}(X)=\sum_{u=0}^{n_{FH}-1}Col_{feat}^{tbl}[u]L_u^{(FH)}(X).$
-
-17. 特征检索查询端局部行列辅助多项式
-
-	$P_{Row_{feat}^{qry}}(X)=\sum_{q=0}^{n_{FH}-1}Row_{feat}^{qry}[q]L_q^{(FH)}(X),$
-
-	$P_{Col_{feat}^{qry}}(X)=\sum_{q=0}^{n_{FH}-1}Col_{feat}^{qry}[q]L_q^{(FH)}(X).$
-
-18. 特征检索查询端绝对节点编号辅助多项式。对每个
-
-$q=i\cdot d_{in}+j$
-
-定义
-
-$I_{feat}^{qry}[q]=I_i,$
-
-然后插值得到
-
-$P_{I_{feat}^{qry}}(X)=\sum_{q=0}^{n_{FH}-1}I_{feat}^{qry}[q]L_q^{(FH)}(X).$
+	对每个 $q=i\cdot d_{in}+j$，定义$I_{feat}^{qry}[q]=I_i$，然后插值得到：$P_{I_{feat}^{qry}}(X)=\sum_{q=0}^{n_{FH}-1}I_{feat}^{qry}[q]L_q^{(FH)}(X)$ 
 
 这些对象全部由验证者根据公共输入本地重建，不属于动态承诺对象。
 
@@ -767,319 +670,200 @@ $P_{I_{feat}^{qry}}(X)=\sum_{q=0}^{n_{FH}-1}I_{feat}^{qry}[q]L_q^{(FH)}(X).$
 
 #### 2.1.1 原始特征
 
-对每个局部节点 $i\in\{0,1,\ldots,N-1\}$ 与每个输入维索引 $j\in\{0,1,\ldots,d_{in}-1\}$，定义
-
-$H_{i,j}=T_H[I_i,j].$
+对每个局部节点 $i\in\{0,1,\ldots,N-1\}$ 与每个输入维索引 $j\in\{0,1,\ldots,d_{in}-1\}$，定义：$H_{i,j}=T_H[I_i,j]$
 
 #### 2.1.2 特征检索表端与查询端
 
-生成挑战
+生成挑战：$\eta_{feat},\beta_{feat}$
 
-$\eta_{feat},\beta_{feat}.$
+对每个全局表端索引：$u=v\cdot d_{in}+j \quad 0\le v\le N_{total}-1 \quad 0\le j\le d_{in}-1$
 
-对每个全局表端索引
+定义表端离散列：$Table^{feat}[u]=v+\eta_{feat}j+\eta_{feat}^2T_H[v,j]$
 
-$u=v\cdot d_{in}+j,\qquad 0\le v\le N_{total}-1,\quad 0\le j\le d_{in}-1,$
+对每个查询索引：$q=i\cdot d_{in}+j \quad 0\le i\le N-1 \quad 0\le j\le d_{in}-1$
 
-定义表端离散列
-
-$Table^{feat}[u]=v+\eta_{feat}j+\eta_{feat}^2T_H[v,j].$
-
-对每个查询索引
-
-$q=i\cdot d_{in}+j,\qquad 0\le i\le N-1,\quad 0\le j\le d_{in}-1,$
-
-定义查询端离散列
-
-$Query^{feat}[q]=I_i+\eta_{feat}j+\eta_{feat}^2H_{i,j}.$
+定义查询端离散列：$Query^{feat}[q]=I_i+\eta_{feat}j+\eta_{feat}^2H_{i,j}$
 
 #### 2.1.3 重数列
 
-对每个全局条目索引 $u=v\cdot d_{in}+j$，定义
-
-$m_{feat}[u]=\#\{i\in\{0,1,\ldots,N-1\}\mid I_i=v\}.$
+对每个全局条目索引 $u=v\cdot d_{in}+j$，定义：$m_{feat}[u]=\#\{i\in\{0,1,\ldots,N-1\}\mid I_i=v\}$
 
 #### 2.1.4 表端与查询端有效区选择器
 
-定义表端有效区选择器
+定义表端有效区选择器：$Q_{tbl}^{feat}[t]= \begin{cases} 1 &0\le t\le N_{total}d_{in}-1 \\ 0 &N_{total}d_{in}\le t\le n_{FH}-1 \end{cases}$
 
-$Q_{tbl}^{feat}[t]= \begin{cases} 1,&0\le t\le N_{total}d_{in}-1,\\ 0,&N_{total}d_{in}\le t\le n_{FH}-1. \end{cases}$
-
-定义查询端有效区选择器
-
-$Q_{qry}^{feat}[t]= \begin{cases} 1,&0\le t\le Nd_{in}-1,\\ 0,&Nd_{in}\le t\le n_{FH}-1. \end{cases}$
+定义查询端有效区选择器：$Q_{qry}^{feat}[t]= \begin{cases} 1 &0\le t\le Nd_{in}-1\ \ 0 &Nd_{in}\le t\le n_{FH}-1 \end{cases}$
 
 #### 2.1.5 特征检索累加器
 
-定义累加器离散列
+定义累加器离散列：$R_{feat}[0]=0$
 
-$R_{feat}[0]=0.$
+对所有 $t\in\{0,1,\ldots,n_{FH}-2\}$，定义：$R_{feat}[t+1] = R_{feat}[t] + Q_{tbl}^{feat}[t]\cdot\frac{m_{feat}[t]}{Table^{feat}[t]+\beta_{feat}} - Q_{qry}^{feat}[t]\cdot\frac{1}{Query^{feat}[t]+\beta_{feat}}$
 
-对所有 $t\in\{0,1,\ldots,n_{FH}-2\}$，定义
-
-$R_{feat}[t+1] = R_{feat}[t] + Q_{tbl}^{feat}[t]\cdot\frac{m_{feat}[t]}{Table^{feat}[t]+\beta_{feat}} - Q_{qry}^{feat}[t]\cdot\frac{1}{Query^{feat}[t]+\beta_{feat}}.$
-
-padding 区保持常值。
+填充区保持常值。
 
 #### 2.1.6 多项式编码
 
 定义：
 
-1. 节点绝对编号多项式
+1. 节点绝对编号多项式：$P_I(X)=\sum_{i=0}^{N-1}I_iL_i^{(N)}(X)$
 
-	$P_I(X)=\sum_{i=0}^{N-1}I_iL_i^{(N)}(X).$
+2. 原始特征系数多项式：$P_H(X)=\sum_{i=0}^{N-1}\sum_{j=0}^{d_{in}-1}H_{i,j}X^{i\cdot d_{in}+j}$
 
-2. 原始特征系数多项式
+3. 表端多项式：$P_{Table^{feat}}(X)=\sum_{t=0}^{n_{FH}-1}Table^{feat}[t]L_t^{(FH)}(X)$
 
-	$P_H(X)=\sum_{i=0}^{N-1}\sum_{j=0}^{d_{in}-1}H_{i,j}X^{i\cdot d_{in}+j}.$
+4. 查询端多项式：$P_{Query^{feat}}(X)=\sum_{t=0}^{n_{FH}-1}Query^{feat}[t]L_t^{(FH)}(X)$
 
-3. 表端多项式
+5. 重数多项式：$P_{m_{feat}}(X)=\sum_{t=0}^{n_{FH}-1}m_{feat}[t]L_t^{(FH)}(X)$
 
-	$P_{Table^{feat}}(X)=\sum_{t=0}^{n_{FH}-1}Table^{feat}[t]L_t^{(FH)}(X).$
+6. 有效区选择器多项式：
 
-4. 查询端多项式
+	$P_{Q_{tbl}^{feat}}(X)=\sum_{t=0}^{n_{FH}-1}Q_{tbl}^{feat}[t]L_t^{(FH)}(X)$
 
-	$P_{Query^{feat}}(X)=\sum_{t=0}^{n_{FH}-1}Query^{feat}[t]L_t^{(FH)}(X).$
+	$P_{Q_{qry}^{feat}}(X)=\sum_{t=0}^{n_{FH}-1}Q_{qry}^{feat}[t]L_t^{(FH)}(X)$
 
-5. 重数多项式
+7. 累加器多项式：$P_{R_{feat}}(X)=\sum_{t=0}^{n_{FH}-1}R_{feat}[t]L_t^{(FH)}(X)$ 
 
-	$P_{m_{feat}}(X)=\sum_{t=0}^{n_{FH}-1}m_{feat}[t]L_t^{(FH)}(X).$
-
-6. 有效区选择器多项式
-
-	$P_{Q_{tbl}^{feat}}(X)=\sum_{t=0}^{n_{FH}-1}Q_{tbl}^{feat}[t]L_t^{(FH)}(X),$
-
-	$P_{Q_{qry}^{feat}}(X)=\sum_{t=0}^{n_{FH}-1}Q_{qry}^{feat}[t]L_t^{(FH)}(X).$
-
-7. 累加器多项式
-
-	$P_{R_{feat}}(X)=\sum_{t=0}^{n_{FH}-1}R_{feat}[t]L_t^{(FH)}(X).$
 
 #### 2.1.7 承诺
 
-证明者提交承诺：
-
-$[P_H],\ [P_{Table^{feat}}],\ [P_{Query^{feat}}],\ [P_{m_{feat}}],\ [P_{Q_{tbl}^{feat}}],\ [P_{Q_{qry}^{feat}}],\ [P_{R_{feat}}].$
+证明者提交承诺：$[P_H],\ [P_{Table^{feat}}],\ [P_{Query^{feat}}],\ [P_{m_{feat}}],\ [P_{Q_{tbl}^{feat}}],\ [P_{Q_{qry}^{feat}}],\ [P_{R_{feat}}]$
 
 其中$[P_I]$不作为动态承诺对象由证明者提交。验证者根据公共输入本地重建$[P_I]$，并在第 3.2.1 节规定的位置将其吸入 transcript。
 
 ### 2.2 第 $r$ 个隐藏层注意力头的完整见证生成
 
-以下步骤对每个 $r\in\{0,1,\ldots,7\}$ 独立执行。
+以下步骤对每个$r\in\{0,1,\ldots,7\}$的隐藏层注意力头分别定义，各头可并行计算；但在证明生成时，Fiat–Shamir 挑战仍须按第 3.2.1 节规定的全局顺序重放。全部隐藏头完成后，再按第 2.3 节进行拼接，并进入输出层。
 
 #### 2.2.1 投影
 
-对每个节点 $i$ 与每个隐藏维索引 $j\in\{0,1,\ldots,d_h-1\}$，定义
+对每个节点 $i$ 与每个隐藏维索引 $j\in\{0,1,\ldots,d_h-1\}$，定义：
 
-$H_{i,j}'^{(r)}=\sum_{m=0}^{d_{in}-1}H_{i,m}W_{m,j}^{(r)}.$
+$H_{i,j}'^{(r)}=\sum_{m=0}^{d_{in}-1}H_{i,m}W_{m,j}^{(r)}$ 
 
-定义输出系数多项式
+定义输出系数多项式：$P_{H'^{(r)}}(X)=\sum_{i=0}^{N-1}\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}X^{i\cdot d_h+j}$
 
-$P_{H'^{(r)}}(X)=\sum_{i=0}^{N-1}\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}X^{i\cdot d_h+j}.$
+对每个共享维索引 $m\in\{0,1,\ldots,d_{in}-1\}$，定义：$A_m^{proj(r)}(X)=\sum_{i=0}^{N-1}H_{i,m}X^{i\cdot d_h} \quad B_m^{proj(r)}(X)=\sum_{j=0}^{d_h-1}W_{m,j}^{(r)}X^j$ 
 
-对每个共享维索引 $m\in\{0,1,\ldots,d_{in}-1\}$，定义
+于是：$P_{H'^{(r)}}(X)=\sum_{m=0}^{d_{in}-1}A_m^{proj(r)}(X)B_m^{proj(r)}(X)$
 
-$A_m^{proj(r)}(X)=\sum_{i=0}^{N-1}H_{i,m}X^{i\cdot d_h},$
-
-$B_m^{proj(r)}(X)=\sum_{j=0}^{d_h-1}W_{m,j}^{(r)}X^j.$
-
-于是
-
-$P_{H'^{(r)}}(X)=\sum_{m=0}^{d_{in}-1}A_m^{proj(r)}(X)B_m^{proj(r)}(X).$
-
-生成挑战
-
-$y_{proj}^{(r)}=H_{FS}(\text{transcript},[P_H],[P_{H'^{(r)}}],[V_{W^{(r)}}]).$
+生成挑战：$y_{proj}^{(r)}=H_{FS}(\text{transcript},[P_H],[P_{H'^{(r)}}],[V_{W^{(r)}}])$
 
 定义折叠向量
 
-$a_m^{proj(r)}=A_m^{proj(r)}(y_{proj}^{(r)})=\sum_{i=0}^{N-1}H_{i,m}(y_{proj}^{(r)})^{i\cdot d_h},$
+$a_m^{proj(r)}=A_m^{proj(r)}(y_{proj}^{(r)})=\sum_{i=0}^{N-1}H_{i,m}(y_{proj}^{(r)})^{i\cdot d_h}$
 
-$b_m^{proj(r)}=B_m^{proj(r)}(y_{proj}^{(r)})=\sum_{j=0}^{d_h-1}W_{m,j}^{(r)}(y_{proj}^{(r)})^j.$
+$b_m^{proj(r)}=B_m^{proj(r)}(y_{proj}^{(r)})=\sum_{j=0}^{d_h-1}W_{m,j}^{(r)}(y_{proj}^{(r)})^j$
 
-定义外点评值
+定义外点评值：$\mu_{proj}^{(r)}=\sum_{m=0}^{d_{in}-1}a_m^{proj(r)}b_m^{proj(r)}$
 
-$\mu_{proj}^{(r)}=\sum_{m=0}^{d_{in}-1}a_m^{proj(r)}b_m^{proj(r)}.$
+要求：$P_{H'^{(r)}}(y_{proj}^{(r)})=\mu_{proj}^{(r)}$
 
-要求
+定义共享维累加器：$Acc_{proj}^{(r)}[0]=0$
 
-$P_{H'^{(r)}}(y_{proj}^{(r)})=\mu_{proj}^{(r)}.$
+$Acc_{proj}^{(r)}[m+1]=Acc_{proj}^{(r)}[m]+a_m^{proj(r)}b_m^{proj(r)} \quad 0\le m\le d_{in}-1$ 
 
-定义共享维累加器
+对 $m\ge d_{in}$ 的 padding 区，统一规定：$a_m^{proj(r)}=0 \quad b_m^{proj(r)}=0 \quad Acc_{proj}^{(r)}[m+1]=Acc_{proj}^{(r)}[m]$
 
-$Acc_{proj}^{(r)}[0]=0,$
+定义多项式：
 
-$Acc_{proj}^{(r)}[m+1]=Acc_{proj}^{(r)}[m]+a_m^{proj(r)}b_m^{proj(r)}, \qquad 0\le m\le d_{in}-1.$
+$P_{a^{proj(r)}}(X)=\sum_{m=0}^{n_{in}-1}a_m^{proj(r)}L_m^{(in)}(X)$
 
-对 $m\ge d_{in}$ 的 padding 区，统一规定
+$P_{b^{proj(r)}}(X)=\sum_{m=0}^{n_{in}-1}b_m^{proj(r)}L_m^{(in)}(X)$
 
-$a_m^{proj(r)}=0,\qquad b_m^{proj(r)}=0,\qquad Acc_{proj}^{(r)}[m+1]=Acc_{proj}^{(r)}[m].$
+$P_{Acc^{proj(r)}}(X)=\sum_{m=0}^{n_{in}-1}Acc_{proj}^{(r)}[m]L_m^{(in)}(X)$
 
-定义多项式
-
-$P_{a^{proj(r)}}(X)=\sum_{m=0}^{n_{in}-1}a_m^{proj(r)}L_m^{(in)}(X),$
-
-$P_{b^{proj(r)}}(X)=\sum_{m=0}^{n_{in}-1}b_m^{proj(r)}L_m^{(in)}(X),$
-
-$P_{Acc^{proj(r)}}(X)=\sum_{m=0}^{n_{in}-1}Acc_{proj}^{(r)}[m]L_m^{(in)}(X).$
-
-提交承诺
-
-$[P_{H'^{(r)}}],\ [P_{a^{proj(r)}}],\ [P_{b^{proj(r)}}],\ [P_{Acc^{proj(r)}}].$
+提交承诺:$[P_{H'^{(r)}}],\ [P_{a^{proj(r)}}],\ [P_{b^{proj(r)}}],\ [P_{Acc^{proj(r)}}]$
 
 #### 2.2.2 源注意力绑定
 
-生成压缩挑战
+生成压缩挑战：$\xi^{(r)}=H_{FS}(\text{transcript},[P_{H'^{(r)}}])$
 
-$\xi^{(r)}=H_{FS}(\text{transcript},[P_{H'^{(r)}}]).$
+对每个节点 $i$，定义：$E_{src,i}^{(r)}=\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}a_{src,j}^{(r)}$
 
-对每个节点 $i$，定义
+把 $E_{src}^{(r)}$ 填充到长度 $n_N$，插值成：$P_{E_{src}^{(r)}}(X)=\sum_{i=0}^{n_N-1}E_{src}^{(r)}[i]L_i^{(N)}(X)$
 
-$E_{src,i}^{(r)}=\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}a_{src,j}^{(r)}.$
-
-把 $E_{src}^{(r)}$ padding 到长度 $n_N$，插值成
-
-$P_{E_{src}^{(r)}}(X)=\sum_{i=0}^{n_N-1}E_{src}^{(r)}[i]L_i^{(N)}(X).$
-
-生成挑战
-
-$y_{src}^{(r)}=H_{FS}(\text{transcript},[P_{H'^{(r)}}],[P_{E_{src}^{(r)}}],[V_{a_{src}^{(r)}}]).$
+生成挑战：$y_{src}^{(r)}=H_{FS}(\text{transcript},[P_{H'^{(r)}}],[P_{E_{src}^{(r)}}],[V_{a_{src}^{(r)}}])$
 
 定义折叠向量
 
-$a_j^{src(r)}=\sum_{i=0}^{N-1}H_{i,j}'^{(r)}L_i^{(N)}(y_{src}^{(r)}),$
+$a_j^{src(r)}=\sum_{i=0}^{N-1}H_{i,j}'^{(r)}L_i^{(N)}(y_{src}^{(r)})$
 
-$b_j^{src(r)}=a_{src,j}^{(r)}.$
+$b_j^{src(r)}=a_{src,j}^{(r)}$
 
-定义外点评值
+定义外点评值：$\mu_{src}^{(r)}=\sum_{j=0}^{d_h-1}a_j^{src(r)}b_j^{src(r)}$
 
-$\mu_{src}^{(r)}=\sum_{j=0}^{d_h-1}a_j^{src(r)}b_j^{src(r)}.$
+要求：$P_{E_{src}^{(r)}}(y_{src}^{(r)})=\mu_{src}^{(r)}$
 
-要求
+定义共享维累加器：$Acc_{src}^{(r)}[0]=0$
 
-$P_{E_{src}^{(r)}}(y_{src}^{(r)})=\mu_{src}^{(r)}.$
+$Acc_{src}^{(r)}[j+1]=Acc_{src}^{(r)}[j]+a_j^{src(r)}b_j^{src(r)} \quad 0\le j\le d_h-1$
 
-定义共享维累加器
+对填充区统一规定：$a_j^{src(r)}=0 \quad b_j^{src(r)}=0 \quad Acc_{src}^{(r)}[j+1]=Acc_{src}^{(r)}[j]$
 
-$Acc_{src}^{(r)}[0]=0,$
+定义：$P_{a^{src(r)}}(X) \quad P_{b^{src(r)}}(X) \quad P_{Acc^{src(r)}}(X)$，分别为其在 $\mathbb H_{d_h}$ 上插值多项式。
 
-$Acc_{src}^{(r)}[j+1]=Acc_{src}^{(r)}[j]+a_j^{src(r)}b_j^{src(r)}, \qquad 0\le j\le d_h-1.$
-
-对 padding 区统一规定
-
-$a_j^{src(r)}=0,\qquad b_j^{src(r)}=0,\qquad Acc_{src}^{(r)}[j+1]=Acc_{src}^{(r)}[j].$
-
-定义
-
-$P_{a^{src(r)}}(X),\quad P_{b^{src(r)}}(X),\quad P_{Acc^{src(r)}}(X)$
-
-分别为其在 $\mathbb H_{d_h}$ 上插值多项式。
-
-提交承诺
-
-$[P_{E_{src}^{(r)}}],\ [P_{a^{src(r)}}],\ [P_{b^{src(r)}}],\ [P_{Acc^{src(r)}}].$
+提交承诺：$[P_{E_{src}^{(r)}}],\ [P_{a^{src(r)}}],\ [P_{b^{src(r)}}],\ [P_{Acc^{src(r)}}]$
 
 #### 2.2.3 目标注意力绑定
 
-对每个节点 $i$，定义
+对每个节点 $i$，定义：$E_{dst,i}^{(r)}=\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}a_{dst,j}^{(r)}$
 
-$E_{dst,i}^{(r)}=\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}a_{dst,j}^{(r)}.$
+把 $E_{dst}^{(r)}$ padding 到长度 $n_N$，插值成：$P_{E_{dst}^{(r)}}(X)=\sum_{i=0}^{n_N-1}E_{dst}^{(r)}[i]L_i^{(N)}(X)$
 
-把 $E_{dst}^{(r)}$ padding 到长度 $n_N$，插值成
-
-$P_{E_{dst}^{(r)}}(X)=\sum_{i=0}^{n_N-1}E_{dst}^{(r)}[i]L_i^{(N)}(X).$
-
-生成挑战
-
-$y_{dst}^{(r)}=H_{FS}(\text{transcript},[P_{H'^{(r)}}],[P_{E_{dst}^{(r)}}],[V_{a_{dst}^{(r)}}]).$
+生成挑战：$y_{dst}^{(r)}=H_{FS}(\text{transcript},[P_{H'^{(r)}}],[P_{E_{dst}^{(r)}}],[V_{a_{dst}^{(r)}}])$
 
 定义折叠向量
 
-$a_j^{dst(r)}=\sum_{i=0}^{N-1}H_{i,j}'^{(r)}L_i^{(N)}(y_{dst}^{(r)}),$
+$a_j^{dst(r)}=\sum_{i=0}^{N-1}H_{i,j}'^{(r)}L_i^{(N)}(y_{dst}^{(r)})$
 
-$b_j^{dst(r)}=a_{dst,j}^{(r)}.$
+$b_j^{dst(r)}=a_{dst,j}^{(r)}$
 
-定义外点评值
+定义外点评值：$\mu_{dst}^{(r)}=\sum_{j=0}^{d_h-1}a_j^{dst(r)}b_j^{dst(r)}$
 
-$\mu_{dst}^{(r)}=\sum_{j=0}^{d_h-1}a_j^{dst(r)}b_j^{dst(r)}.$
+要求：$P_{E_{dst}^{(r)}}(y_{dst}^{(r)})=\mu_{dst}^{(r)}$
 
-要求
+定义共享维累加器：$Acc_{dst}^{(r)}[0]=0$
 
-$P_{E_{dst}^{(r)}}(y_{dst}^{(r)})=\mu_{dst}^{(r)}.$
+$Acc_{dst}^{(r)}[j+1]=Acc_{dst}^{(r)}[j]+a_j^{dst(r)}b_j^{dst(r)} \quad 0\le j\le d_h-1$
 
-定义共享维累加器
+定义：$P_{a^{dst(r)}}(X) \quad P_{b^{dst(r)}}(X) \quad P_{Acc^{dst(r)}}(X)$，分别为其在 $\mathbb H_{d_h}$ 上插值多项式。
 
-$Acc_{dst}^{(r)}[0]=0,$
-
-$Acc_{dst}^{(r)}[j+1]=Acc_{dst}^{(r)}[j]+a_j^{dst(r)}b_j^{dst(r)}, \qquad 0\le j\le d_h-1.$
-
-定义
-
-$P_{a^{dst(r)}}(X),\quad P_{b^{dst(r)}}(X),\quad P_{Acc^{dst(r)}}(X)$
-
-分别为其在 $\mathbb H_{d_h}$ 上插值多项式。
-
-提交承诺
-
-$[P_{E_{dst}^{(r)}}],\ [P_{a^{dst(r)}}],\ [P_{b^{dst(r)}}],\ [P_{Acc^{dst(r)}}].$
+提交承诺：$[P_{E_{dst}^{(r)}}],\ [P_{a^{dst(r)}}],\ [P_{b^{dst(r)}}],\ [P_{Acc^{dst(r)}}]$
 
 #### 2.2.4 压缩特征绑定
 
-对每个节点 $i$，定义
+对每个节点 $i$，定义：$H_i^{\star(r)}=\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}(\xi^{(r)})^j$
 
-$H_i^{\star(r)}=\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}(\xi^{(r)})^j.$
+插值成$P_{H^{\star(r)}}(X)=\sum_{i=0}^{n_N-1}H^{\star(r)}[i]L_i^{(N)}(X)$
 
-插值成
+生成挑战：$y_{\star}^{(r)}=H_{FS}(\text{transcript},[P_{H'^{(r)}}],[P_{H^{\star(r)}}])$
 
-$P_{H^{\star(r)}}(X)=\sum_{i=0}^{n_N-1}H^{\star(r)}[i]L_i^{(N)}(X).$
+定义折叠向量：
 
-生成挑战
+$a_j^{\star(r)}=\sum_{i=0}^{N-1}H_{i,j}'^{(r)}L_i^{(N)}(y_{\star}^{(r)})$
 
-$y_{\star}^{(r)}=H_{FS}(\text{transcript},[P_{H'^{(r)}}],[P_{H^{\star(r)}}]).$
+$b_j^{\star(r)}=(\xi^{(r)})^j$
 
-定义折叠向量
+定义外点评值：$\mu_{\star}^{(r)}=\sum_{j=0}^{d_h-1}a_j^{\star(r)}b_j^{\star(r)}$
 
-$a_j^{\star(r)}=\sum_{i=0}^{N-1}H_{i,j}'^{(r)}L_i^{(N)}(y_{\star}^{(r)}),$
+要求：$P_{H^{\star(r)}}(y_{\star}^{(r)})=\mu_{\star}^{(r)}$
 
-$b_j^{\star(r)}=(\xi^{(r)})^j.$
+定义共享维累加器：$Acc_{\star}^{(r)}[0]=0$
 
-定义外点评值
+$Acc_{\star}^{(r)}[j+1]=Acc_{\star}^{(r)}[j]+a_j^{\star(r)}b_j^{\star(r)}$
 
-$\mu_{\star}^{(r)}=\sum_{j=0}^{d_h-1}a_j^{\star(r)}b_j^{\star(r)}.$
+定义：$P_{a^{\star(r)}}(X) \quad P_{b^{\star(r)}}(X) \quad P_{Acc^{\star(r)}}(X)$，为其在 $\mathbb H_{d_h}$ 上插值多项式。
 
-要求
-
-$P_{H^{\star(r)}}(y_{\star}^{(r)})=\mu_{\star}^{(r)}.$
-
-定义共享维累加器
-
-$Acc_{\star}^{(r)}[0]=0,$
-
-$Acc_{\star}^{(r)}[j+1]=Acc_{\star}^{(r)}[j]+a_j^{\star(r)}b_j^{\star(r)}.$
-
-定义
-
-$P_{a^{\star(r)}}(X),\quad P_{b^{\star(r)}}(X),\quad P_{Acc^{\star(r)}}(X)$
-
-为其在 $\mathbb H_{d_h}$ 上插值多项式。
-
-提交承诺
-
-$[P_{H^{\star(r)}}],\ [P_{a^{\star(r)}}],\ [P_{b^{\star(r)}}],\ [P_{Acc^{\star(r)}}].$
+提交承诺：$[P_{H^{\star(r)}}],\ [P_{a^{\star(r)}}],\ [P_{b^{\star(r)}}],\ [P_{Acc^{\star(r)}}]$
 
 #### 2.2.5 源路由
 
-对每个边索引 $k$，定义
+对每个边索引 $k$，定义：$E_{src,k}^{edge(r)}=E_{src,src(k)}^{(r)} \quad H_{src,k}^{\star,edge(r)}=H_{src(k)}^{\star(r)}$
 
-$E_{src,k}^{edge(r)}=E_{src,src(k)}^{(r)}, \qquad H_{src,k}^{\star,edge(r)}=H_{src(k)}^{\star(r)}.$
+生成挑战：$\eta_{src}^{(r)},\beta_{src}^{(r)}$
 
-生成挑战
-
-$\eta_{src}^{(r)},\beta_{src}^{(r)}.$
-
-对每个节点 $i$，定义表端
-
-$Table^{src(r)}[i] = i+\eta_{src}^{(r)}E_{src,i}^{(r)}+(\eta_{src}^{(r)})^2H_i^{\star(r)}.$
+对每个节点 $i$，定义表端：$Table^{src(r)}[i] = i+\eta_{src}^{(r)}E_{src,i}^{(r)}+(\eta_{src}^{(r)})^2H_i^{\star(r)}$
 
 定义节点重数
 

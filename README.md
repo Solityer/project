@@ -8,7 +8,9 @@
 - The real checkpoint bundle under `artifacts/checkpoints/cora_gat/` is used by the formal `cora_full` path.
 - The official GAT forward semantics are aligned locally against `reference/gat_official/` and `runs/cora_full/reference/`.
 - `gatzk_run --config configs/cora_full.cfg` currently completes and prints `VERIFY_OK`.
-- The current multi-head formal mainline materializes hidden-head, concat, and output-stage objects and runs end-to-end, but the seven-domain quotient layer is still emitted as zero-evaluation placeholder polynomials. The verifier therefore relies on deterministic trace reconstruction plus KZG opening checks rather than a fully note-complete quotient identity system.
+- The formal multi-head mainline now commits non-placeholder `t_FH / t_edge / t_in / t_d_h / t_cat / t_C / t_N`, opens seven work domains, and replays Fiat-Shamir directly from proof commitments instead of rebuilding an expected trace inside the verifier.
+- The repository root keeps only `README.md` plus the immutable note `GAT-ZKML-单层多头.md`.
+- The current system is still not note-complete enough to call the implementation final: the quotient layer only constrains the currently materialized multi-head objects, and the forward path still carries the local checkpoint/reference output-bias route that conflicts with the note's stricter output-head wording.
 
 ## Architecture
 
@@ -121,26 +123,51 @@ Key full-Cora checks:
 
 ## Benchmark
 
-Measured from the formal entry command on the local Linux server:
+Measured from the formal entry command on the local Linux server, using:
 
-- `prove_time_ms = 38006.325`
-- `verify_time_ms = 45746.077`
-- `forward_ms = 871.468`
-- `trace_generation_ms = 38498.351`
-- `commit_dynamic_ms = 7851.770`
+```bash
+./build/gatzk_run --config configs/cora_full.cfg --benchmark-mode both
+```
+
+Cold path:
+
+- `cold_prove_ms = 41659.458`
+- `cold_verify_ms = 5562.720`
+- `forward_ms = 855.550`
+- `trace_generation_ms = 38522.788`
+- `commit_dynamic_ms = 7857.364`
+- `quotient_build_ms = 16986.371`
+- `domain_opening_ms = 24669.891`
+- `external_opening_ms = 2.626`
 - `proof_size_bytes = 25247`
 
-Other measured fields from the same run:
+Warm path:
 
-- `load_static_ms = 7887.845`
-- `fft_plan_ms = 2549.473`
-- `srs_prepare_ms = 9.913`
-- `quotient_build_ms = 0.000`
-- `domain_opening_ms = 0.000`
-- `external_opening_ms = 0.000`
+- `warm_prove_ms = 41909.616`
+- `warm_verify_ms = 5570.337`
+- `forward_ms = 865.645`
+- `trace_generation_ms = 38647.544`
+- `commit_dynamic_ms = 7903.213`
+- `quotient_build_ms = 17213.592`
+- `domain_opening_ms = 24692.801`
+- `external_opening_ms = 2.648`
+- `proof_size_bytes = 25247`
+
+Cold-only initialization fields:
+
+- `load_static_ms = 7837.584`
+- `fft_plan_ms = 2566.497`
+- `srs_prepare_ms = 9.868`
+
+Warm-only initialization fields:
+
+- `load_static_ms = 232.246`
+- `fft_plan_ms = 0.000`
+- `srs_prepare_ms = 0.000`
 
 ## Remaining Gaps
 
-- The multi-head formal mainline runs end-to-end on full Cora, but `t_FH / t_edge / t_in / t_d_h / t_cat / t_C / t_N` are still placeholder zero-evaluation quotient polynomials.
-- The verifier currently reconstructs the expected multi-head trace and checks commitments, openings, metadata, and block order against that reconstruction.
-- Legacy single-head debug code paths still exist for non-formal synthetic tests and have not been fully removed from the codebase.
+- The code no longer uses placeholder quotients or trace-reconstruction verification, but the quotient identities still cover only the currently materialized multi-head columns rather than every note-level table/query/state object.
+- Warm prove/verify are still far from millisecond-scale hot paths. The dominant costs are `trace_generation_ms`, `quotient_build_ms`, and especially `domain_opening_ms`; simple top-level async parallelization did not improve these numbers on this machine and was reverted.
+- Legacy synthetic/single-head debug paths still exist in the codebase for non-formal unit tests and have not been fully deleted yet.
+- The forward path still carries checkpoint/reference output-bias handling, and the repository still contains the full-Cora bias parity test. That is a real remaining conflict with the note's stricter output-layer wording.
