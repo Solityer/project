@@ -380,6 +380,16 @@ const ProofFixture& small_proof_fixture() {
     return fixture;
 }
 
+const ProofFixture& full_cora_proof_fixture() {
+    static const auto fixture = []() {
+        const auto& context = full_graph_formal_context();
+        const auto trace = gatzk::protocol::build_trace(context);
+        const auto proof = gatzk::protocol::prove(context, trace);
+        return ProofFixture{context, trace, proof};
+    }();
+    return fixture;
+}
+
 std::unordered_map<std::string, gatzk::crypto::Commitment> commitment_map(
     const std::vector<std::pair<std::string, gatzk::crypto::Commitment>>& entries) {
     std::unordered_map<std::string, gatzk::crypto::Commitment> out;
@@ -414,6 +424,24 @@ bool external_eval_contains(const Proof& proof, const std::string& label) {
         }
     }
     return false;
+}
+
+gatzk::crypto::Commitment& commitment_by_name(Proof& proof, const std::string& label) {
+    for (auto& [name, commitment] : proof.dynamic_commitments) {
+        if (name == label) {
+            return commitment;
+        }
+    }
+    throw std::runtime_error("missing commitment " + label);
+}
+
+FieldElement& witness_scalar_by_name(Proof& proof, const std::string& label) {
+    for (auto& [name, value] : proof.witness_scalars) {
+        if (name == label) {
+            return value;
+        }
+    }
+    throw std::runtime_error("missing witness scalar " + label);
 }
 
 void test_full_graph_config_parse() {
@@ -709,27 +737,26 @@ void test_agg_witness_commitment_opening_consistency() {
 }
 
 void test_prove_verify_round_trip() {
-    const auto& fixture = small_proof_fixture();
+    const auto& fixture = full_cora_proof_fixture();
     require(gatzk::protocol::verify(fixture.context, fixture.proof), "round-trip prove/verify should accept");
 }
 
 void test_tampered_witness_fails() {
-    const auto& fixture = small_proof_fixture();
+    const auto& fixture = full_cora_proof_fixture();
     auto tampered = fixture.proof;
-    require(!tampered.witness_scalars.empty(), "proof should contain route witness scalars");
-    tampered.witness_scalars.front().second += FieldElement::one();
+    witness_scalar_by_name(tampered, "S_src_out") += FieldElement::one();
     require(!gatzk::protocol::verify(fixture.context, tampered), "tampered witness scalar must be rejected");
 }
 
 void test_metadata_mismatch_fails() {
-    const auto& fixture = small_proof_fixture();
+    const auto& fixture = full_cora_proof_fixture();
     auto tampered = fixture.proof;
     tampered.public_metadata.protocol_id = "broken";
     require(!gatzk::protocol::verify(fixture.context, tampered), "metadata mismatch must be rejected");
 }
 
 void test_proof_block_order_mismatch_fails() {
-    const auto& fixture = small_proof_fixture();
+    const auto& fixture = full_cora_proof_fixture();
     auto tampered = fixture.proof;
     require(!tampered.block_order.empty(), "proof must carry fixed block order");
     std::swap(tampered.block_order.front(), tampered.block_order.back());
@@ -737,9 +764,30 @@ void test_proof_block_order_mismatch_fails() {
 }
 
 void test_wrong_H_C_domain_reuse_fails() {
-    auto tampered_context = small_proof_fixture().context;
+    auto tampered_context = full_cora_proof_fixture().context;
     tampered_context.domains.c = tampered_context.domains.d;
-    require(!gatzk::protocol::verify(tampered_context, small_proof_fixture().proof), "wrong H_C reuse must be rejected");
+    require(!gatzk::protocol::verify(tampered_context, full_cora_proof_fixture().proof), "wrong H_C reuse must be rejected");
+}
+
+void test_H_cat_star_tamper_fails() {
+    const auto& fixture = full_cora_proof_fixture();
+    auto tampered = fixture.proof;
+    commitment_by_name(tampered, "P_H_cat_star").tau_evaluation += FieldElement::one();
+    require(!gatzk::protocol::verify(fixture.context, tampered), "tampered H_cat_star must be rejected");
+}
+
+void test_Y_star_tamper_fails() {
+    const auto& fixture = full_cora_proof_fixture();
+    auto tampered = fixture.proof;
+    commitment_by_name(tampered, "P_out_Y_star").tau_evaluation += FieldElement::one();
+    require(!gatzk::protocol::verify(fixture.context, tampered), "tampered Y_star must be rejected");
+}
+
+void test_PSQ_out_tamper_fails() {
+    const auto& fixture = full_cora_proof_fixture();
+    auto tampered = fixture.proof;
+    commitment_by_name(tampered, "P_out_PSQ").tau_evaluation += FieldElement::one();
+    require(!gatzk::protocol::verify(fixture.context, tampered), "tampered PSQ_out must be rejected");
 }
 
 }  // namespace
@@ -766,6 +814,9 @@ int main() {
         {"metadata_mismatch_fails", test_metadata_mismatch_fails},
         {"proof_block_order_mismatch_fails", test_proof_block_order_mismatch_fails},
         {"wrong_H_C_domain_reuse_fails", test_wrong_H_C_domain_reuse_fails},
+        {"H_cat_star_tamper_fails", test_H_cat_star_tamper_fails},
+        {"Y_star_tamper_fails", test_Y_star_tamper_fails},
+        {"PSQ_out_tamper_fails", test_PSQ_out_tamper_fails},
     };
 
     try {

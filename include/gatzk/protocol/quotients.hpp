@@ -3,6 +3,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <vector>
 
 #include "gatzk/algebra/eval_backend.hpp"
 #include "gatzk/algebra/field.hpp"
@@ -11,6 +12,9 @@
 namespace gatzk::protocol {
 
 using EvalFn = std::function<algebra::FieldElement(const std::string&, const algebra::FieldElement&)>;
+
+std::vector<std::pair<std::string, algebra::Polynomial>> build_multihead_zero_quotients(
+    const ProtocolContext& context);
 
 algebra::FieldElement evaluate_t_fh(
     const ProtocolContext& context,

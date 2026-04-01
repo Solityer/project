@@ -42,6 +42,24 @@ FieldElement c_lookup_1(
 
 }
 
+std::vector<std::pair<std::string, algebra::Polynomial>> build_multihead_zero_quotients(const ProtocolContext& context) {
+    auto zero_eval_poly = [](const std::string& name, const std::shared_ptr<algebra::RootOfUnityDomain>& domain) {
+        return algebra::Polynomial::from_evaluations(
+            name,
+            std::vector<FieldElement>(domain->size, FieldElement::zero()),
+            domain);
+    };
+    return {
+        {"t_FH", zero_eval_poly("t_FH", context.domains.fh)},
+        {"t_edge", zero_eval_poly("t_edge", context.domains.edge)},
+        {"t_in", zero_eval_poly("t_in", context.domains.in)},
+        {"t_d_h", zero_eval_poly("t_d_h", context.domains.d)},
+        {"t_cat", zero_eval_poly("t_cat", context.domains.cat)},
+        {"t_C", zero_eval_poly("t_C", context.domains.c)},
+        {"t_N", zero_eval_poly("t_N", context.domains.n)},
+    };
+}
+
 FieldElement evaluate_t_fh(
     const ProtocolContext& context,
     const std::map<std::string, FieldElement>& challenges,

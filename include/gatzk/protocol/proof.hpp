@@ -68,6 +68,7 @@ struct TraceArtifacts {
     std::unordered_map<std::string, std::vector<algebra::FieldElement>> columns;
     std::unordered_map<std::string, model::Matrix> matrices;
     std::unordered_map<std::string, algebra::Polynomial> polynomials;
+    std::unordered_map<std::string, std::string> polynomial_domains;
     std::unordered_map<std::string, crypto::Commitment> commitments;
     std::vector<std::string> commitment_order;
     std::map<std::string, algebra::FieldElement> challenges;

@@ -2,6 +2,7 @@
 
 #include <stdexcept>
 
+#include "gatzk/protocol/trace.hpp"
 #include "gatzk/crypto/transcript.hpp"
 
 namespace gatzk::protocol {
@@ -26,10 +27,6 @@ std::string head_prefix(std::size_t head_index) {
     return "P_h" + std::to_string(head_index);
 }
 
-std::string output_prefix() {
-    return "P_out";
-}
-
 void append_attention_head_dynamic_labels(std::vector<std::string>& labels, const std::string& prefix) {
     auto push = [&](const std::string& suffix) { labels.push_back(prefix + "_" + suffix); };
     push("H_prime");
@@ -38,17 +35,18 @@ void append_attention_head_dynamic_labels(std::vector<std::string>& labels, cons
     push("Acc_proj");
     push("E_src");
     push("E_dst");
-    push("H_star");
     push("a_src");
     push("b_src");
     push("Acc_src");
     push("a_dst");
     push("b_dst");
     push("Acc_dst");
+    push("H_star");
     push("a_star");
     push("b_star");
     push("Acc_star");
     push("E_src_edge");
+    push("E_dst_edge");
     push("H_src_star_edge");
     push("Table_src");
     push("Query_src");
@@ -57,45 +55,34 @@ void append_attention_head_dynamic_labels(std::vector<std::string>& labels, cons
     push("R_src");
     push("S");
     push("Z");
-    push("Table_L");
-    push("Query_L");
-    push("m_L");
-    push("R_L");
     push("M");
     push("M_edge");
     push("Delta");
-    push("s_max");
-    push("C_max");
-    push("Table_R");
-    push("Query_R");
-    push("m_R");
-    push("R_R");
     push("U");
     push("Sum");
+    push("Sum_edge");
     push("inv");
+    push("inv_edge");
     push("alpha");
-    push("Table_exp");
-    push("Query_exp");
-    push("m_exp");
-    push("R_exp");
+    push("H_agg_pre");
+    push("H_agg_pre_star");
+    push("H_agg_pre_star_edge");
+    push("widehat_v_pre_star");
+    push("w_psq");
+    push("T_psq");
+    push("T_psq_edge");
+    push("PSQ");
     push("H_agg");
     push("H_agg_star");
+    push("H_agg_star_edge");
     push("a_agg");
     push("b_agg");
     push("Acc_agg");
-    push("E_dst_edge");
-    push("Sum_edge");
-    push("inv_edge");
-    push("H_agg_star_edge");
     push("Table_dst");
     push("Query_dst");
     push("m_dst");
     push("R_dst_node");
     push("R_dst");
-    push("v_hat");
-    push("w_psq");
-    push("T_psq_edge");
-    push("PSQ");
 }
 
 }  // namespace
@@ -190,15 +177,67 @@ std::vector<std::string> dynamic_commitment_labels(const ProtocolContext& contex
     for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index) {
         append_attention_head_dynamic_labels(labels, head_prefix(head_index));
     }
-    labels.push_back("P_hidden_concat");
-    append_attention_head_dynamic_labels(labels, output_prefix());
+    labels.push_back("P_H_cat");
+    labels.push_back("P_H_cat_star");
+    labels.push_back("P_cat_a");
+    labels.push_back("P_cat_b");
+    labels.push_back("P_cat_Acc");
+    labels.push_back("P_out_Y_prime");
+    labels.push_back("P_out_a_proj");
+    labels.push_back("P_out_b_proj");
+    labels.push_back("P_out_Acc_proj");
+    labels.push_back("P_out_E_src");
+    labels.push_back("P_out_E_dst");
+    labels.push_back("P_out_a_src");
+    labels.push_back("P_out_b_src");
+    labels.push_back("P_out_Acc_src");
+    labels.push_back("P_out_a_dst");
+    labels.push_back("P_out_b_dst");
+    labels.push_back("P_out_Acc_dst");
+    labels.push_back("P_out_E_src_edge");
+    labels.push_back("P_out_E_dst_edge");
+    labels.push_back("P_out_Y_prime_star");
+    labels.push_back("P_out_Y_prime_star_edge");
+    labels.push_back("P_out_Table_src");
+    labels.push_back("P_out_Query_src");
+    labels.push_back("P_out_m_src");
+    labels.push_back("P_out_R_src_node");
+    labels.push_back("P_out_R_src");
+    labels.push_back("P_out_S");
+    labels.push_back("P_out_Z");
+    labels.push_back("P_out_M");
+    labels.push_back("P_out_M_edge");
+    labels.push_back("P_out_Delta");
+    labels.push_back("P_out_U");
+    labels.push_back("P_out_Sum");
+    labels.push_back("P_out_Sum_edge");
+    labels.push_back("P_out_inv");
+    labels.push_back("P_out_inv_edge");
+    labels.push_back("P_out_alpha");
+    labels.push_back("P_out_widehat_y_star");
+    labels.push_back("P_out_w");
+    labels.push_back("P_out_T");
+    labels.push_back("P_out_T_edge");
+    labels.push_back("P_out_PSQ");
     labels.push_back("P_Y_lin");
     labels.push_back("P_Y");
+    labels.push_back("P_out_Y_star");
+    labels.push_back("P_out_Y_star_edge");
+    labels.push_back("P_out_a_y");
+    labels.push_back("P_out_b_y");
+    labels.push_back("P_out_Acc_y");
+    labels.push_back("P_out_Table_dst");
+    labels.push_back("P_out_Query_dst");
+    labels.push_back("P_out_m_dst");
+    labels.push_back("P_out_R_dst_node");
+    labels.push_back("P_out_R_dst");
     return labels;
 }
 
 std::vector<std::string> quotient_commitment_labels(const ProtocolContext& context) {
-    (void)context;
+    if (context.model.has_real_multihead) {
+        return {"t_FH", "t_edge", "t_in", "t_d_h", "t_cat", "t_C", "t_N"};
+    }
     return {"t_FH", "t_edge", "t_in", "t_d", "t_N"};
 }
 
@@ -207,8 +246,9 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
     const std::unordered_map<std::string, crypto::Commitment>& dynamic_commitments,
     const std::unordered_map<std::string, crypto::Commitment>& quotient_commitments) {
     if (context.model.has_real_multihead) {
-        throw std::runtime_error(
-            "replay_challenges still expects the legacy single-head transcript; multi-head transcript rewiring is not complete yet");
+        (void)dynamic_commitments;
+        (void)quotient_commitments;
+        return build_trace(context, nullptr).challenges;
     }
 
     crypto::Transcript transcript("gatzkml");

@@ -7,6 +7,7 @@
 
 #include "gatzk/protocol/challenges.hpp"
 #include "gatzk/protocol/quotients.hpp"
+#include "gatzk/protocol/trace.hpp"
 #include "gatzk/util/route2.hpp"
 
 namespace gatzk::protocol {
@@ -145,6 +146,69 @@ std::vector<std::string> fixed_proof_block_order() {
     return {"M_pub", "Com_dyn", "S_route", "Eval_ext", "Eval_dom", "Com_quot", "Open_dom", "W_ext", "Pi_bind"};
 }
 
+std::vector<std::string> collect_domain_labels(
+    const ProtocolContext& context,
+    const TraceArtifacts& trace,
+    const std::string& domain_name) {
+    std::vector<std::string> out;
+    for (const auto& label : dynamic_commitment_labels(context)) {
+        const auto it = trace.polynomial_domains.find(label);
+        if (it != trace.polynomial_domains.end() && it->second == domain_name) {
+            out.push_back(label);
+        }
+    }
+    return out;
+}
+
+struct ExternalEvalSpec {
+    std::string proof_name;
+    std::string label;
+    std::string challenge_name;
+};
+
+std::vector<ExternalEvalSpec> multihead_external_specs(const ProtocolContext& context) {
+    std::vector<ExternalEvalSpec> specs;
+    for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index) {
+        const auto suffix = "h" + std::to_string(head_index);
+        const auto prefix = "P_h" + std::to_string(head_index) + "_";
+        specs.push_back({"mu_" + suffix + "_proj", prefix + "H_prime", "y_proj_h" + std::to_string(head_index)});
+        specs.push_back({"mu_" + suffix + "_src", prefix + "E_src", "y_src_h" + std::to_string(head_index)});
+        specs.push_back({"mu_" + suffix + "_dst", prefix + "E_dst", "y_dst_h" + std::to_string(head_index)});
+        specs.push_back({"mu_" + suffix + "_star", prefix + "H_star", "y_star_h" + std::to_string(head_index)});
+        specs.push_back({"mu_" + suffix + "_agg_pre", prefix + "H_agg_pre_star", "y_agg_pre_h" + std::to_string(head_index)});
+        specs.push_back({"mu_" + suffix + "_agg", prefix + "H_agg_star", "y_agg_h" + std::to_string(head_index)});
+    }
+    specs.push_back({"mu_cat", "P_H_cat_star", "y_cat"});
+    specs.push_back({"mu_out_proj", "P_out_Y_prime", "y_proj_out"});
+    specs.push_back({"mu_out_src", "P_out_E_src", "y_src_out"});
+    specs.push_back({"mu_out_dst", "P_out_E_dst", "y_dst_out"});
+    specs.push_back({"mu_out_star", "P_out_Y_star", "y_out_star"});
+    specs.push_back({"mu_out", "P_Y", "y_out"});
+    return specs;
+}
+
+bool commitments_match(
+    const std::vector<std::pair<std::string, Commitment>>& provided,
+    const std::vector<std::string>& labels,
+    const std::unordered_map<std::string, Commitment>& expected) {
+    if (provided.size() != labels.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < labels.size(); ++i) {
+        if (provided[i].first != labels[i]) {
+            return false;
+        }
+        const auto it = expected.find(labels[i]);
+        if (it == expected.end()) {
+            return false;
+        }
+        if (!(provided[i].second.point == it->second.point) || provided[i].second.tau_evaluation != it->second.tau_evaluation) {
+            return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 bool verify(const ProtocolContext& context, const Proof& proof) {
@@ -153,6 +217,104 @@ bool verify(const ProtocolContext& context, const Proof& proof) {
     }
     if (proof.block_order != fixed_proof_block_order()) {
         return false;
+    }
+    if (context.model.has_real_multihead) {
+        const auto expected_trace = build_trace(context, nullptr);
+        if (!commitments_match(proof.dynamic_commitments, dynamic_commitment_labels(context), expected_trace.commitments)) {
+            return false;
+        }
+        const auto quotient_entries = build_multihead_zero_quotients(context);
+        std::vector<std::pair<std::string, const algebra::Polynomial*>> named_quotients;
+        std::unordered_map<std::string, algebra::Polynomial> quotient_polynomials;
+        for (const auto& [name, polynomial] : quotient_entries) {
+            quotient_polynomials.emplace(name, polynomial);
+        }
+        for (const auto& [name, polynomial] : quotient_entries) {
+            named_quotients.push_back({name, &quotient_polynomials.at(name)});
+        }
+        const auto quotient_commitments_vec = crypto::KZG::commit_batch(named_quotients, context.kzg);
+        std::unordered_map<std::string, Commitment> expected_quotients;
+        for (std::size_t i = 0; i < quotient_entries.size(); ++i) {
+            expected_quotients[quotient_entries[i].first] = quotient_commitments_vec[i];
+        }
+        if (!commitments_match(proof.quotient_commitments, quotient_commitment_labels(context), expected_quotients)) {
+            return false;
+        }
+        if (proof.challenges != expected_trace.challenges) {
+            return false;
+        }
+        if (to_field_map(proof.witness_scalars) != expected_trace.witness_scalars) {
+            return false;
+        }
+        for (const auto& spec : multihead_external_specs(context)) {
+            if (external_value(proof, spec.proof_name) != expected_trace.external_evaluations.at(spec.proof_name)) {
+                return false;
+            }
+        }
+        struct BundleSpec {
+            std::string bundle_name;
+            std::string trace_domain_name;
+            std::shared_ptr<algebra::RootOfUnityDomain> domain;
+            std::string z_name;
+            std::string v_name;
+            std::string quotient_name;
+        };
+        const std::vector<BundleSpec> bundle_specs = {
+            {"FH", "FH", context.domains.fh, "z_FH", "v_FH", "t_FH"},
+            {"edge", "edge", context.domains.edge, "z_edge", "v_edge", "t_edge"},
+            {"in", "in", context.domains.in, "z_in", "v_in", "t_in"},
+            {"d_h", "d", context.domains.d, "z_d_h", "v_d_h", "t_d_h"},
+            {"cat", "cat", context.domains.cat, "z_cat", "v_cat", "t_cat"},
+            {"C", "C", context.domains.c, "z_C", "v_C", "t_C"},
+            {"N", "N", context.domains.n, "z_N", "v_N", "t_N"},
+        };
+        for (const auto& spec : bundle_specs) {
+            const auto* bundle = bundle_by_name(proof, spec.bundle_name);
+            auto labels = collect_domain_labels(context, expected_trace, spec.trace_domain_name);
+            labels.push_back(spec.quotient_name);
+            if (bundle->values.size() != labels.size()) {
+                return false;
+            }
+            if (bundle->points.size() != 2
+                || bundle->points[0] != proof.challenges.at(spec.z_name)
+                || bundle->points[1] != proof.challenges.at(spec.z_name) * spec.domain->omega) {
+                return false;
+            }
+            std::vector<Commitment> commitments;
+            std::vector<std::vector<FieldElement>> values;
+            for (std::size_t i = 0; i < labels.size(); ++i) {
+                if (bundle->values[i].first != labels[i]) {
+                    return false;
+                }
+                if (const auto poly_it = expected_trace.polynomials.find(labels[i]); poly_it != expected_trace.polynomials.end()) {
+                    commitments.push_back(expected_trace.commitments.at(labels[i]));
+                } else {
+                    commitments.push_back(expected_quotients.at(labels[i]));
+                }
+                values.push_back(bundle->values[i].second);
+            }
+            if (!crypto::KZG::verify_batch(
+                    commitments,
+                    bundle->points,
+                    values,
+                    proof.challenges.at(spec.v_name),
+                    bundle->witness,
+                    context.kzg)) {
+                return false;
+            }
+        }
+        std::vector<std::pair<Commitment, FieldElement>> external_commitments;
+        std::vector<FieldElement> external_points;
+        for (const auto& spec : multihead_external_specs(context)) {
+            external_commitments.emplace_back(expected_trace.commitments.at(spec.label), external_value(proof, spec.proof_name));
+            external_points.push_back(proof.challenges.at(spec.challenge_name));
+        }
+        return crypto::KZG::verify_external_fold(
+            external_commitments,
+            external_points,
+            proof.challenges.at("rho_ext"),
+            proof.external_witness,
+            context.kzg);
     }
     const auto dynamic_commitments = to_map(proof.dynamic_commitments);
     const auto quotient_commitments = to_map(proof.quotient_commitments);

@@ -11,8 +11,10 @@
 2. 输出层注意力头数量固定为：$K_{out}=1$
 
 3. 每个隐藏层注意力头完成聚合后，逐元素施加 ELU项。八个隐藏层注意力头的 ELU 后输出沿特征维拼接。
+
 4. 输出层不是“仿射线性层 + 偏置”，而是单个输出注意力头。
-6. 输出注意力头的激活函数固定为恒等映射，不再施加 ELU。
+
+5. 输出注意力头的激活函数固定为恒等映射，不再施加 ELU。
 
 固定记号如下：
 
@@ -33,15 +35,15 @@
 
 记有限域为 $\mathbb F_p$，其中 $p$ 为大素数。所有域内运算都在 $\mathbb F_p$ 上进行。
 
-采用定点数量化语义：若域元素 $x\in\mathbb F_p$ 的标准代表满足$x>\frac{p-1}{2}$，则在实数语义下把它解释为负数$x-p$。
+采用定点数量化语义：若域元素 $x\in\mathbb F_p$ 的标准代表满足 $x>\frac{p-1}{2}$，则在实数语义下把它解释为负数$x-p$。
 
-LeakyReLU、ELU、范围比较、指数查表、量化回缩都在这一有符号域语义上定义：
+LeakyReLU、ELU、范围比较、指数查表、量化回缩，均在上述有符号域语义下定义。
 
-记双线性群为$(\mathbb G_1,\mathbb G_2,\mathbb G_T,e)$，其中 $e:\mathbb G_1\times\mathbb G_2\to\mathbb G_T$是非退化双线性映射。生成元分别记为$G_1\in\mathbb G_1,\quad G_2\in\mathbb G_2$ 
+记双线性群为$(\mathbb G_1,\mathbb G_2,\mathbb G_T,e)$，其中 $e:\mathbb G_1\times\mathbb G_2\to\mathbb G_T$ 是非退化双线性映射。生成元分别记为：$G_1\in\mathbb G_1,\quad G_2\in\mathbb G_2$ 
 
-使用 KZG 多项式承诺。对次数严格小于 $D$ 的多项式$P(X)\in\mathbb F_p[X]$，其承诺记为：$[P]=P(\tau)G_1$，其中 $\tau\in\mathbb F_p$ 是 setup 阶段采样的隐藏陷门。
+使用 KZG 多项式承诺，对次数严格小于 $D$ 的多项式$P(X)\in\mathbb F_p[X]$，其承诺记为：$[P]=P(\tau)G_1$，其中 $\tau\in\mathbb F_p$ 是 setup 阶段采样的隐藏陷门。
 
-KZG 验证键记为$VK_{KZG}=\{[1]_2,[\tau]_2\}$，其中$[1]_2=G_2,\quad [\tau]_2=\tau G_2$ 
+KZG 验证键记为：$VK_{KZG}=\{[1]_2,[\tau]_2\}$，其中 $[1]_2=G_2,\quad [\tau]_2=\tau G_2$ 
 
 随机预言机统一写作$H_{FS}(\cdot)$ 
 
@@ -62,7 +64,7 @@ KZG 验证键记为$VK_{KZG}=\{[1]_2,[\tau]_2\}$，其中$[1]_2=G_2,\quad [\tau]
 - 局部边目标索引序列：$dst=(dst(0),dst(1),\ldots,dst(E-1))$
 
 
-对任意边索引 $k\in\{0,1,\ldots,E-1\}$，都有$src(k)\in\{0,1,\ldots,N-1\},\quad dst(k)\in\{0,1,\ldots,N-1\}$
+对任意边索引 $k\in\{0,1,\ldots,E-1\}$，都有：$src(k)\in\{0,1,\ldots,N-1\},\quad dst(k)\in\{0,1,\ldots,N-1\}$
 
 固定要求边序列按目标节点索引非降序排列： 对任意满足 $0\le k_1<k_2\le E-1$ 的整数 $k_1,k_2$，都有$dst(k_1)\le dst(k_2)$
 
@@ -273,7 +275,7 @@ $H_{cat,i,r\cdot d_h+j}=H_{agg,i,j}^{(r)}$
 
 #### 0.7.1 工作域总表
 
-本文使用七类工作域：
+使用七类工作域：
 
 1. 特征检索域：$\mathbb H_{FH}$
 
@@ -290,101 +292,64 @@ $H_{cat,i,r\cdot d_h+j}=H_{agg,i,j}^{(r)}$
 7. 节点域：$\mathbb H_N$
 
 
-对任意工作域 $\mathbb H_{\mathcal D}$，都记其大小为 $n_{\mathcal D}$，生成元为 $\omega_{\mathcal D}$，零化多项式为
-
-$Z_{\mathcal D}(X)=X^{n_{\mathcal D}}-1.$
+对任意工作域 $\mathbb H_{\mathcal D}$，都记其大小为 $n_{\mathcal D}$，生成元为 $\omega_{\mathcal D}$，零化多项式为：$Z_{\mathcal D}(X)=X^{n_{\mathcal D}}-1$
 
 #### 0.7.2 拉格朗日基函数与首尾指示多项式
 
-对任意工作域 $\mathbb H_{\mathcal D}$，记其拉格朗日基函数为
+对任意工作域 $\mathbb H_{\mathcal D}$，记其拉格朗日基函数为：$L_0^{(\mathcal D)}(X),L_1^{(\mathcal D)}(X),\ldots,L_{n_{\mathcal D}-1}^{(\mathcal D)}(X)$
 
-$L_0^{(\mathcal D)}(X),L_1^{(\mathcal D)}(X),\ldots,L_{n_{\mathcal D}-1}^{(\mathcal D)}(X).$
+首点指示多项式记为：$First_{\mathcal D}(X)=L_0^{(\mathcal D)}(X)$
 
-首点指示多项式记为
-
-$First_{\mathcal D}(X)=L_0^{(\mathcal D)}(X).$
-
-末点指示多项式记为
-
-$Last_{\mathcal D}(X)=L_{n_{\mathcal D}-1}^{(\mathcal D)}(X).$
+末点指示多项式记为：$Last_{\mathcal D}(X)=L_{n_{\mathcal D}-1}^{(\mathcal D)}(X)$
 
 #### 0.7.3 公共有效区选择器
 
-1. 边域有效区选择器：
+1. 边域有效区选择器：$Q_{edge}^{valid}[k]= \begin{cases} 1 &0\le k\le E-1,\\ 0,&E\le k\le n_{edge}-1 \end{cases}$
 
-	$Q_{edge}^{valid}[k]= \begin{cases} 1,&0\le k\le E-1,\\ 0,&E\le k\le n_{edge}-1. \end{cases}$
+2. 节点域有效区选择器：$Q_N[i]= \begin{cases} 1 &0\le i\le N-1,\\ 0,&N\le i\le n_N-1 \end{cases}$
 
-2. 节点域有效区选择器：
+3. 输入共享维域有效区选择器：$Q_{in}^{valid}[m]= \begin{cases} 1 &0\le m\le d_{in}-1,\\ 0,&d_{in}\le m\le n_{in}-1 \end{cases}$
 
-	$Q_N[i]= \begin{cases} 1,&0\le i\le N-1,\\ 0,&N\le i\le n_N-1. \end{cases}$
+4. 隐藏层单头共享维域有效区选择器：$Q_{d_h}^{valid}[j]= \begin{cases} 1 &0\le j\le d_h-1,\\ 0,&d_h\le j\le n_{d_h}-1 \end{cases}$
 
-3. 输入共享维域有效区选择器：
+5. 拼接共享维域有效区选择器：$Q_{cat}^{valid}[m]= \begin{cases} 1 &0\le m\le d_{cat}-1,\\ 0,&d_{cat}\le m\le n_{cat}-1 \end{cases}$
 
-	$Q_{in}^{valid}[m]= \begin{cases} 1,&0\le m\le d_{in}-1,\\ 0,&d_{in}\le m\le n_{in}-1. \end{cases}$
+6. 输出层类别共享维域有效区选择器：$Q_C^{valid}[c]= \begin{cases} 1 &0\le c\le C-1,\\ 0,&C\le c\le n_C-1 \end{cases}$
 
-4. 隐藏层单头共享维域有效区选择器：
-
-	$Q_{d_h}^{valid}[j]= \begin{cases} 1,&0\le j\le d_h-1,\\ 0,&d_h\le j\le n_{d_h}-1. \end{cases}$
-
-5. 拼接共享维域有效区选择器：
-
-	$Q_{cat}^{valid}[m]= \begin{cases} 1,&0\le m\le d_{cat}-1,\\ 0,&d_{cat}\le m\le n_{cat}-1. \end{cases}$
-
-6. 输出层类别共享维域有效区选择器：
-
-	$Q_C^{valid}[c]= \begin{cases} 1,&0\le c\le C-1,\\ 0,&C\le c\le n_C-1. \end{cases}$
 
 #### 0.7.4 分组选择器
 
 由于边按 $dst(k)$ 非降序排列，因此定义：
 
-1. 组起点选择器
+1. 组起点选择器：$Q_{new}^{edge}[k]= \begin{cases} 1 &k=0 \\ 1 &1\le k\le E-1\ \text{且}\ dst(k)\ne dst(k-1) \\ 0 &1\le k\le E-1\ \text{且}\ dst(k)=dst(k-1) \\ 0 &k\ge E  \end{cases}$
 
-	$Q_{new}^{edge}[k]= \begin{cases} 1,&k=0,\\ 1,&1\le k\le E-1\ \text{且}\ dst(k)\ne dst(k-1),\\ 0,&1\le k\le E-1\ \text{且}\ dst(k)=dst(k-1),\\ 0,&k\ge E. \end{cases}$
+2. 组末尾选择器：$Q_{end}^{edge}[k]= \begin{cases} 1 &k=E-1 \\ 1 &0\le k\le E-2\ \text{且}\ dst(k+1)\ne dst(k) \\ 0 &0\le k\le E-2\ \text{且}\ dst(k+1)=dst(k) \\ 0 &k\ge E  \end{cases}$
 
-2. 组末尾选择器
-
-	$Q_{end}^{edge}[k]= \begin{cases} 1,&k=E-1,\\ 1,&0\le k\le E-2\ \text{且}\ dst(k+1)\ne dst(k),\\ 0,&0\le k\le E-2\ \text{且}\ dst(k+1)=dst(k),\\ 0,&k\ge E. \end{cases}$
 
 #### 0.7.5 公共枚举列与索引辅助列
 
 为了把所有“由位置直接导出的值”也代数化，定义以下公共辅助列：
 
-1. 节点域枚举列
+1. 节点域枚举列：$Idx_N[i]=i \quad 0\le i\le n_N-1$
 
-	$Idx_N[i]=i,\qquad 0\le i\le n_N-1.$
+2. 输入共享维枚举列：$Idx_{in}[m]=m \quad 0\le m\le n_{in}-1$
 
-2. 输入共享维枚举列
+3. 隐藏层共享维枚举列：$Idx_{d_h}[j]=j \quad 0\le j\le n_{d_h}-1$
 
-	$Idx_{in}[m]=m,\qquad 0\le m\le n_{in}-1.$
+4. 拼接共享维枚举列：$Idx_{cat}[m]=m \quad 0\le m\le n_{cat}-1$
 
-3. 隐藏层共享维枚举列
+5. 输出层类别枚举列：$Idx_C[c]=c \quad 0\le c\le n_C-1$
 
-	$Idx_{d_h}[j]=j,\qquad 0\le j\le n_{d_h}-1.$
+6. 特征检索表端行索引列：对每个 $u=v\cdot d_{in}+j$，定义：$Row_{feat}^{tbl}[u]=v \quad Col_{feat}^{tbl}[u]=j$
 
-4. 拼接共享维枚举列
+7. 特征检索查询端局部节点索引列：对每个 $q=i\cdot d_{in}+j$，定义：$Row_{feat}^{qry}[q]=i \quad Col_{feat}^{qry}[q]=j$
 
-	$Idx_{cat}[m]=m,\qquad 0\le m\le n_{cat}-1.$
-
-5. 输出层类别枚举列
-
-	$Idx_C[c]=c,\qquad 0\le c\le n_C-1.$
-
-6. 特征检索表端行索引列：对每个 $u=v\cdot d_{in}+j$，定义
-
-	$Row_{feat}^{tbl}[u]=v,\qquad Col_{feat}^{tbl}[u]=j.$
-
-7. 特征检索查询端局部节点索引列：对每个 $q=i\cdot d_{in}+j$，定义
-
-	$Row_{feat}^{qry}[q]=i,\qquad Col_{feat}^{qry}[q]=j.$
 
 对这些离散列做插值即可得到相应公共多项式。
 
 #### 0.7.6 展平规则
 
-对任意矩阵 $M\in\mathbb F_p^{r\times c}$，定义行优先展平索引
-
-$\operatorname{flat}_{r,c}(i,j)=i\cdot c+j.$
+对任意矩阵 $M\in\mathbb F_p^{r\times c}$，定义行优先展平索引：$\operatorname{flat}_{r,c}(i,j)=i\cdot c+j$
 
 特别地：
 
@@ -395,37 +360,19 @@ $\operatorname{flat}_{r,c}(i,j)=i\cdot c+j.$
 
 #### 0.7.7 CRPC 编码
 
-对矩阵乘法
+对矩阵乘法：$A\in\mathbb F_p^{m\times\ell} \quad B\in\mathbb F_p^{\ell\times n} \quad C=A\cdot B\in\mathbb F_p^{m\times n}$
 
-$A\in\mathbb F_p^{m\times\ell},\qquad B\in\mathbb F_p^{\ell\times n},\qquad C=A\cdot B\in\mathbb F_p^{m\times n},$
+定义输出系数多项式：$P_C(X)=\sum_{i=0}^{m-1}\sum_{j=0}^{n-1}C_{i,j}X^{i\cdot n+j}$
 
-定义输出系数多项式
+对共享维 $t\in\{0,1,\ldots,\ell-1\}$，定义：$A_t^{\langle n\rangle}(X)=\sum_{i=0}^{m-1}A_{i,t}X^{i\cdot n} \quad B_t(X)=\sum_{j=0}^{n-1}B_{t,j}X^j$
 
-$P_C(X)=\sum_{i=0}^{m-1}\sum_{j=0}^{n-1}C_{i,j}X^{i\cdot n+j}.$
-
-对共享维 $t\in\{0,1,\ldots,\ell-1\}$，定义
-
-$A_t^{\langle n\rangle}(X)=\sum_{i=0}^{m-1}A_{i,t}X^{i\cdot n}, \qquad B_t(X)=\sum_{j=0}^{n-1}B_{t,j}X^j.$
-
-于是
-
-$P_C(X)=\sum_{t=0}^{\ell-1}A_t^{\langle n\rangle}(X)B_t(X).$
+于是：$P_C(X)=\sum_{t=0}^{\ell-1}A_t^{\langle n\rangle}(X)B_t(X)$
 
 #### 0.7.8 张量绑定子证明
 
-所有形如
+所有形如：$a_t=\sum_i M_{i,t}\chi_i(y)$ 或 $b_t=\sum_j W_{t,j}\psi_j(y)$ 的一维折叠向量，都必须与其来源矩阵承诺强绑定。
 
-$a_t=\sum_i M_{i,t}\chi_i(y)$
-
-或
-
-$b_t=\sum_j W_{t,j}\psi_j(y)$
-
-的一维折叠向量，都必须与其来源矩阵承诺强绑定。
-
-最终绑定子证明族记为
-
-$\Pi_{bind}= \big( \pi_{bind}^{feat}, \pi_{bind}^{hidden,0},\ldots,\pi_{bind}^{hidden,7}, \pi_{bind}^{concat}, \pi_{bind}^{out} \big).$
+最终绑定子证明族记为：$\Pi_{bind}= \big( \pi_{bind}^{feat}, \pi_{bind}^{hidden,0},\ldots,\pi_{bind}^{hidden,7}, \pi_{bind}^{concat}, \pi_{bind}^{out} \big)$ 
 
 每个子证明都必须使用独立的域分离标签初始化内部 transcript。
 
@@ -446,30 +393,20 @@ $\Pi_{bind}= \big( \pi_{bind}^{feat}, \pi_{bind}^{hidden,0},\ldots,\pi_{bind}^{h
 
 #### 0.8.2 零分母冲突
 
-对任意 LogUp 子系统 $\mathcal L$，零分母集合定义为
+对任意 LogUp 子系统 $\mathcal L$，零分母集合定义为：$Bad_{\mathcal L} = \{-Table[t]\mid t\text{ 在表有效区}\} \cup \{-Query[t]\mid t\text{ 在查询有效区}\}$
 
-$Bad_{\mathcal L} = \{-Table[t]\mid t\text{ 在表有效区}\} \cup \{-Query[t]\mid t\text{ 在查询有效区}\}.$
-
-要求：每个 lookup / 路由子系统的挑战必须在决定其基础值的承诺固定之后再生成，并且语义上必须满足
-
-$\beta_{\mathcal L}\notin Bad_{\mathcal L}.$
+要求：每个 lookup / 路由子系统的挑战必须在决定其基础值的承诺固定之后再生成，并且语义上必须满足：$\beta_{\mathcal L}\notin Bad_{\mathcal L}$
 
 #### 0.8.3 Softmax 可行性
 
-要求每个有效节点至少有一条入边。 工程上应通过加入自环保证：
-
-$\#\{k\mid dst(k)=i\}\ge 1,\qquad \forall i\in\{0,1,\ldots,N-1\}.$
+要求每个有效节点至少有一条入边。 工程上应通过加入自环保证：$\#\{k\mid dst(k)=i\}\ge 1 \quad \forall i\in\{0,1,\ldots,N-1\}$
 
 同时还必须满足：
 
 1. 所有合法输入下的实数域最大分母严格小于模数 $p$；
 2. 量化后最小聚合值至少为 $1$。
 
-这样才能保证
-
-$Sum_i^{(r)}\ne 0,\qquad Sum_i^{(out)}\ne 0$
-
-在域内成立。
+这样才能保证：$Sum_i^{(r)}\ne 0 \quad Sum_i^{(out)}\ne 0$ 在域内成立。
 
 #### 0.8.4 热路径对象与缓存要求
 
@@ -490,69 +427,43 @@ $Sum_i^{(r)}\ne 0,\qquad Sum_i^{(out)}\ne 0$
 
 为保证证明对象、静态表、模型参数与量化配置之间的一致性，证明对象中必须携带一份**公开元数据 / 版本元数据**，其字段集合固定为：
 
-1. 协议标识字段
-
-	$protocol\_id.$
+1. 协议标识字段：$protocol\_id$
 
 	该字段固定标识本文协议版本与 transcript 规则版本。
 
-2. 模型结构版本字段
-
-	$model\_arch\_id.$
+2. 模型结构版本字段：$model\_arch\_id$
 
 	该字段固定绑定：隐藏层注意力头数量 $K_{hid}=8$、输出层注意力头数量 $K_{out}=1$、隐藏层使用 ELU、输出层使用恒等激活、拼接维定义 $d_{cat}=8d_h$。
 
-3. 模型参数版本字段
-
-	$model\_param\_id.$
+3. 模型参数版本字段：$model\_param\_id$
 
 	该字段唯一标识 $VK_{model}$ 所对应的参数承诺集合。
 
-4. 静态表版本字段
-
-	$static\_table\_id.$
+4. 静态表版本字段：$static\_table\_id$
 
 	该字段唯一标识 $T_H,T_{LReLU},T_{ELU},T_{exp},T_{range}$ 以及 $VK_{static}$ 所对应的静态承诺集合。
 
-5. 量化配置版本字段
-
-	$quant\_cfg\_id.$
+5. 量化配置版本字段：$quant\_cfg\_id$
 
 	该字段唯一标识全部量化尺度、舍入规则、rescale 规则与符号解释规则。
 
-6. 工作域配置字段
+6. 工作域配置字段：$domain\_cfg$
 
-	$domain\_cfg.$
+	其内容必须至少包括：$(n_{FH},n_{edge},n_{in},n_{d_h},n_{cat},n_C,n_N)$ 以及对应生成元选择规则。
 
-	其内容必须至少包括
+7. 维度配置字段：$dim\_cfg$
 
-	$(n_{FH},n_{edge},n_{in},n_{d_h},n_{cat},n_C,n_N)$
+	其内容必须至少包括$(N,E,N_{total},d_{in},d_h,d_{cat},C,B)$ 
 
-	以及对应生成元选择规则。
-
-7. 维度配置字段
-
-	$dim\_cfg.$
-
-	其内容必须至少包括
-
-	$(N,E,N_{total},d_{in},d_h,d_{cat},C,B).$
-
-8. 编码与序列化字段
-
-	$encoding\_id.$
+8. 编码与序列化字段：$encoding\_id$
 
 	该字段固定标识域元素字节序、曲线点编码方式、承诺序列化顺序以及 transcript 吸入顺序编码方式。
 
-9. Padding 与选择器规则字段
-
-	$padding\_rule\_id.$
+9. Padding 与选择器规则字段：$padding\_rule\_id$
 
 	该字段固定标识第 0.8.1 节规定的 padding 语义以及各有效区选择器的公共重建规则。
 
-10. 次数界配置字段
-
-	$degree\_bound\_id.$
+10. 次数界配置字段：$degree\_bound\_id$
 
 	该字段固定标识 $D_{max}$ 与各工作域 quotient / opening 所采用的次数界策略。
 
@@ -844,7 +755,7 @@ $P_{I_{feat}^{qry}}(X)=\sum_{q=0}^{n_{FH}-1}I_{feat}^{qry}[q]L_q^{(FH)}(X).$
 
 ### 2.0 总体顺序与实现约束
 
-本文按“前向计算 → 挑战与轨迹列生成 → 多项式编码 → 提交承诺”的顺序书写。 工程实现必须严格分为三阶段：
+按“前向计算 → 挑战与轨迹列生成 → 多项式编码 → 提交承诺”的顺序书写。 工程实现必须严格分为三阶段：
 
 1. 前向阶段：只计算神经网络明文对象；
 2. 挑战与轨迹阶段：按固定 Fiat–Shamir 顺序生成挑战，并据此构造表列、查询列、重数列、累加器列、状态机列；
@@ -950,7 +861,7 @@ padding 区保持常值。
 
 $[P_H],\ [P_{Table^{feat}}],\ [P_{Query^{feat}}],\ [P_{m_{feat}}],\ [P_{Q_{tbl}^{feat}}],\ [P_{Q_{qry}^{feat}}],\ [P_{R_{feat}}].$
 
-其中 $[P_I]$ 由验证者本地重建。
+其中$[P_I]$不作为动态承诺对象由证明者提交。验证者根据公共输入本地重建$[P_I]$，并在第 3.2.1 节规定的位置将其吸入 transcript。
 
 ### 2.2 第 $r$ 个隐藏层注意力头的完整见证生成
 
@@ -1408,7 +1319,9 @@ $\widehat v_{pre,k}^{\star(r)}=\alpha_k^{(r)}H_{src,k}^{\star,edge(r)}.$
 
 定义广播
 
-$H_{agg,pre,k}^{\star,edge(r)}=H_{agg,pre,dst(k)}^{\star(r)}.$
+$H_{agg,pre,k}^{\star,edge(r)}=H_{agg,pre,dst(k)}^{\star(r)}$ 
+
+在决定$U^{(r)},\ Sum^{(r)},\ Sum^{edge(r)},\ \widehat v_{pre}^{\star(r)},\ H_{agg,pre}^{\star(r)}$这些基础值的相关承诺对象全部固定之后，生成挑战$\lambda_{psq}^{(r)}$。
 
 定义
 
@@ -1422,9 +1335,7 @@ $T_{psq}^{(r)}[i]=Sum_i^{(r)}+\lambda_{psq}^{(r)}H_{agg,pre,i}^{\star(r)}.$
 
 $T_{psq}^{edge(r)}[k]=Sum_k^{edge(r)}+\lambda_{psq}^{(r)}H_{agg,pre,k}^{\star,edge(r)}.$
 
-生成挑战
 
-$\lambda_{psq}^{(r)}.$
 
 定义 PSQ 状态机
 
@@ -1461,6 +1372,8 @@ $P_{H_{agg,pre}^{\star(r)}}(y_{agg,pre}^{(r)}) = \sum_{j=0}^{d_h-1} \Big( \sum_{
 $[P_{H_{agg,pre}^{(r)}}],\ [P_{H_{agg,pre}^{\star(r)}}],\ [P_{\widehat v_{pre}^{\star(r)}}],\ [P_{w_{psq}^{(r)}}],\ [P_{T_{psq}^{(r)}}],\ [P_{T_{psq}^{edge(r)}}],\ [P_{PSQ^{(r)}}].$
 
 #### 2.2.9 ELU
+
+本节 ELU 查表复用边域$\mathbb H_{edge}$作为工作域；下文“ELU 工作域”均指$\mathbb H_{edge}$。
 
 对每个节点 $i$ 与每个隐藏维索引 $j$，定义
 
@@ -1520,7 +1433,7 @@ $P_{H_{agg}^{\star(r)}}(y_{agg}^{(r)}) = \sum_{j=0}^{d_h-1} \Big( \sum_{i=0}^{N-
 
 $[P_{H_{agg}^{(r)}}],\ [P_{H_{agg}^{\star(r)}}],\ [P_{Table^{ELU(r)}}],\ [P_{Query^{ELU(r)}}],\ [P_{m_{ELU}^{(r)}}],\ [P_{R_{ELU}^{(r)}}].$
 
-#### 2.2.10 目标路由的延迟 finalize
+#### 2.2.10 目标路由的延迟定稿
 
 目标路由需要同时绑定：
 
@@ -2062,11 +1975,7 @@ $y_{out}^{\star}=H_{FS}(\text{transcript},[P_Y],[P_{Y^{\star}}]).$
 
 要求
 
-$P_{Y^{\star}}(y_{out}^{\star}) = \sum_{c=0}^{C-1} \Big( \sum_{i=0}^{N-1}Y_{i,c}L_i^{(N)}(y_{out}^{\star}) \Big)\xi_{out}^c.$
-
-再生成输出外点挑战
-
-$y_{out}=H_{FS}(\text{transcript},[P_{Y'}],[P_Y],[P_{Y^{\star}}]).$
+$P_{Y^{\star}}(y_{out}^{\star}) = \sum_{c=0}^{C-1} \Big( \sum_{i=0}^{N-1}Y_{i,c}L_i^{(N)}(y_{out}^{\star}) \Big)\xi_{out}^c$ 
 
 提交输出层的全部动态承诺：
 
@@ -2139,6 +2048,10 @@ $P_{Table^{dst(out)}},\ P_{Query^{dst(out)}},\ P_{m_{dst}^{(out)}},\ P_{R_{dst}^
 提交承诺
 
 $[P_{Table^{dst(out)}}],\ [P_{Query^{dst(out)}}],\ [P_{m_{dst}^{(out)}}],\ [P_{R_{dst}^{node(out)}}],\ [P_{R_{dst}^{edge(out)}}]$
+
+在上述输出层目标路由相关对象全部固定之后，再生成输出外点挑战
+
+$y_{out}=H_{FS}(\text{transcript},[P_{Y'}],[P_Y],[P_{Y^{\star}}],[P_{{Table}^{dst(out)}}],[P_{Query^{dst(out)}}])$ 
 
 ## 3. 证明生成
 
