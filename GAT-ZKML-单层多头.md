@@ -150,109 +150,61 @@ KZG 验证键记为$VK_{KZG}=\{[1]_2,[\tau]_2\}$，其中$[1]_2=G_2,\quad [\tau]
 
 对每个 $r\in\{0,1,\ldots,7\}$，定义：
 
-1. 投影结果
+1. 投影结果：$H'^{(r)}\in\mathbb F_p^{N\times d_h}, \quad H_{i,j}'^{(r)}=\sum_{m=0}^{d_{in}-1}H_{i,m}W_{m,j}^{(r)}$
 
-	$H'^{(r)}\in\mathbb F_p^{N\times d_h}, \quad H_{i,j}'^{(r)}=\sum_{m=0}^{d_{in}-1}H_{i,m}W_{m,j}^{(r)}$
+2. 节点域源注意力：$E_{src,i}^{(r)}=\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}a_{src,j}^{(r)}$
 
-2. 节点域源注意力
+3. 节点域目标注意力：$E_{dst,i}^{(r)}=\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}a_{dst,j}^{(r)}$
 
-	$E_{src,i}^{(r)}=\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}a_{src,j}^{(r)}$
+4. 节点域压缩特征：$H^{\star(r)}\in\mathbb F_p^N, \quad H_i^{\star(r)}=\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}(\xi^{(r)})^j$
 
-3. 节点域目标注意力
+5. 节点域组最大值：$M^{(r)}\in\mathbb F_p^N \quad M_i^{(r)}=\max\{Z_k^{(r)}\mid dst(k)=i\}$
 
-	$E_{dst,i}^{(r)}=\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}a_{dst,j}^{(r)}$
+6. 节点域分母：$Sum^{(r)}\in\mathbb F_p^N \quad Sum_i^{(r)}=\sum_{\{k\mid dst(k)=i\}}U_k^{(r)}$
 
-4. 节点域压缩特征
+7. 节点域逆元：$inv^{(r)}\in\mathbb F_p^N \quad inv_i^{(r)}=(Sum_i^{(r)})^{-1}$
 
-	$H^{\star(r)}\in\mathbb F_p^N, \quad H_i^{\star(r)}=\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}(\xi^{(r)})^j$
+8. 聚合前隐藏矩阵：$H_{agg,pre,i,j}^{(r)}=\sum_{\{k\mid dst(k)=i\}}\alpha_k^{(r)}H_{src(k),j}'^{(r)}$
 
-5. 节点域组最大值
+9. 聚合前压缩特征：$H_{agg,pre,i}^{\star(r)}\in\mathbb F_p^N \quad H_{agg,pre,i}^{\star(r)}=\sum_{j=0}^{d_h-1}H_{agg,pre,i,j}^{(r)}(\xi^{(r)})^j$
 
-	$M^{(r)}\in\mathbb F_p^N \quad M_i^{(r)}=\max\{Z_k^{(r)}\mid dst(k)=i\}$
+10. ELU 后隐藏矩阵：$H_{agg}^{(r)}\in\mathbb F_p^{N\times d_h} \quad H_{agg,i,j}^{(r)}=ELU(H_{agg,pre,i,j}^{(r)})$
 
-6. 节点域分母
+11. ELU 后压缩特征：$H_{agg}^{\star(r)}\in\mathbb F_p^N \quad H_{agg,i}^{\star(r)}=\sum_{j=0}^{d_h-1}H_{agg,i,j}^{(r)}(\xi^{(r)})^j$
 
-	$Sum^{(r)}\in\mathbb F_p^N \quad Sum_i^{(r)}=\sum_{\{k\mid dst(k)=i\}}U_k^{(r)}$
-
-7. 节点域逆元
-
-	$inv^{(r)}\in\mathbb F_p^N \quad inv_i^{(r)}=(Sum_i^{(r)})^{-1}$
-
-8. 聚合前隐藏矩阵
-
-	$H_{agg,pre,i,j}^{(r)}=\sum_{\{k\mid dst(k)=i\}}\alpha_k^{(r)}H_{src(k),j}'^{(r)}$
-
-9. 聚合前压缩特征
-
-	$H_{agg,pre,i}^{\star(r)}\in\mathbb F_p^N \quad H_{agg,pre,i}^{\star(r)}=\sum_{j=0}^{d_h-1}H_{agg,pre,i,j}^{(r)}(\xi^{(r)})^j$
-
-10. ELU 后隐藏矩阵
-
-	$H_{agg}^{(r)}\in\mathbb F_p^{N\times d_h} \quad H_{agg,i,j}^{(r)}=ELU(H_{agg,pre,i,j}^{(r)})$
-
-11. ELU 后压缩特征
-
-	$H_{agg}^{\star(r)}\in\mathbb F_p^N \quad H_{agg,i}^{\star(r)}=\sum_{j=0}^{d_h-1}H_{agg,i,j}^{(r)}(\xi^{(r)})^j$
 
 #### 0.6.3 第 $r$ 个隐藏层注意力头的边域变量
 
 对每个 $r\in\{0,1,\ldots,7\}$，定义：
 
-1. 源注意力广播
+1. 源注意力广播：$E_{src}^{edge(r)}\in\mathbb F_p^E \qquad E_{src,k}^{edge(r)}=E_{src,src(k)}^{(r)}$
 
-	$E_{src}^{edge(r)}\in\mathbb F_p^E \qquad E_{src,k}^{edge(r)}=E_{src,src(k)}^{(r)}$
+2. 目标注意力广播：$E_{dst}^{edge(r)}\in\mathbb F_p^E \qquad E_{dst,k}^{edge(r)}=E_{dst,dst(k)}^{(r)}$
 
-2. 目标注意力广播
+3. 源压缩特征广播：$H_{src}^{\star,edge(r)}\in\mathbb F_p^E \qquad H_{src,k}^{\star,edge(r)}=H_{src(k)}^{\star(r)}$
 
-	$E_{dst}^{edge(r)}\in\mathbb F_p^E \qquad E_{dst,k}^{edge(r)}=E_{dst,dst(k)}^{(r)}$
+4. 聚合前压缩特征广播：$H_{agg,pre}^{\star,edge(r)}\in\mathbb F_p^E \qquad H_{agg,pre,k}^{\star,edge(r)}=H_{agg,pre,dst(k)}^{\star(r)}$
 
-3. 源压缩特征广播
+5. 聚合后压缩特征广播：$H_{agg}^{\star,edge(r)}\in\mathbb F_p^E \qquad H_{agg,k}^{\star,edge(r)}=H_{agg,dst(k)}^{\star(r)}$
 
-	$H_{src}^{\star,edge(r)}\in\mathbb F_p^E \qquad H_{src,k}^{\star,edge(r)}=H_{src(k)}^{\star(r)}$
+6. 线性打分：$S^{(r)}\in\mathbb F_p^E \qquad S_k^{(r)}=E_{src,k}^{edge(r)}+E_{dst,k}^{edge(r)}$
 
-4. 聚合前压缩特征广播
+7. LeakyReLU 后打分：$Z^{(r)}\in\mathbb F_p^E \qquad Z_k^{(r)}=LReLU(S_k^{(r)})$
 
-	$H_{agg,pre}^{\star,edge(r)}\in\mathbb F_p^E \qquad H_{agg,pre,k}^{\star,edge(r)}=H_{agg,pre,dst(k)}^{\star(r)}$
+8. 最大值广播：$M^{edge(r)}\in\mathbb F_p^E \qquad M_k^{edge(r)}=M_{dst(k)}^{(r)}$
 
-5. 聚合后压缩特征广播
+9. 非负差分：$\Delta^{+(r)}\in\mathbb F_p^E \qquad \Delta_k^{+(r)}=M_k^{edge(r)}-Z_k^{(r)}$
 
-	$H_{agg}^{\star,edge(r)}\in\mathbb F_p^E \qquad H_{agg,k}^{\star,edge(r)}=H_{agg,dst(k)}^{\star(r)}$
+10. 指数输出：$U^{(r)}\in\mathbb F_p^E \qquad U_k^{(r)}=ExpMap(\Delta_k^{+(r)})$
 
-6. 线性打分
+11. 分母广播：$Sum^{edge(r)}\in\mathbb F_p^E \qquad Sum_k^{edge(r)}=Sum_{dst(k)}^{(r)}$
 
-	$S^{(r)}\in\mathbb F_p^E \qquad S_k^{(r)}=E_{src,k}^{edge(r)}+E_{dst,k}^{edge(r)}$
+12. 逆元广播：$inv^{edge(r)}\in\mathbb F_p^E \qquad inv_k^{edge(r)}=inv_{dst(k)}^{(r)}$
 
-7. LeakyReLU 后打分
+13. 归一化权重：$\alpha^{(r)}\in\mathbb F_p^E \qquad \alpha_k^{(r)}=U_k^{(r)}\cdot inv_k^{edge(r)}$
 
-	$Z^{(r)}\in\mathbb F_p^E \qquad Z_k^{(r)}=LReLU(S_k^{(r)})$
+14. 聚合前压缩加权特征：$\widehat v_{pre}^{\star(r)}\in\mathbb F_p^E \qquad \widehat v_{pre,k}^{\star(r)}=\alpha_k^{(r)}H_{src,k}^{\star,edge(r)}$
 
-8. 最大值广播
-
-	$M^{edge(r)}\in\mathbb F_p^E \qquad M_k^{edge(r)}=M_{dst(k)}^{(r)}$
-
-9. 非负差分
-
-	$\Delta^{+(r)}\in\mathbb F_p^E \qquad \Delta_k^{+(r)}=M_k^{edge(r)}-Z_k^{(r)}$
-
-10. 指数输出
-
-	$U^{(r)}\in\mathbb F_p^E \qquad U_k^{(r)}=ExpMap(\Delta_k^{+(r)})$
-
-11. 分母广播
-
-	$Sum^{edge(r)}\in\mathbb F_p^E \qquad Sum_k^{edge(r)}=Sum_{dst(k)}^{(r)}$
-
-12. 逆元广播
-
-	$inv^{edge(r)}\in\mathbb F_p^E \qquad inv_k^{edge(r)}=inv_{dst(k)}^{(r)}$
-
-13. 归一化权重
-
-	$\alpha^{(r)}\in\mathbb F_p^E \qquad \alpha_k^{(r)}=U_k^{(r)}\cdot inv_k^{edge(r)}$
-
-14. 聚合前压缩加权特征
-
-	$\widehat v_{pre}^{\star(r)}\in\mathbb F_p^E \qquad \widehat v_{pre,k}^{\star(r)}=\alpha_k^{(r)}H_{src,k}^{\star,edge(r)}$
 
 #### 0.6.4 拼接阶段变量
 
@@ -272,93 +224,50 @@ $H_{cat,i,r\cdot d_h+j}=H_{agg,i,j}^{(r)}$
 
 定义：
 
-1. 输出投影结果
+1. 输出投影结果：$Y'\in\mathbb F_p^{N\times C}, \qquad Y'_{i,c}=\sum_{m=0}^{d_{cat}-1}H_{cat,i,m}W_{m,c}^{(out)}$
 
-	$Y'\in\mathbb F_p^{N\times C}, \qquad Y'_{i,c}=\sum_{m=0}^{d_{cat}-1}H_{cat,i,m}W_{m,c}^{(out)}$
+2. 输出层源注意力：$E_{src}^{(out)}\in\mathbb F_p^N, \qquad E_{src,i}^{(out)}=\sum_{c=0}^{C-1}Y'_{i,c}a_{src,c}^{(out)}$
 
-2. 输出层源注意力
+3. 输出层目标注意力：$E_{dst}^{(out)}\in\mathbb F_p^N, \qquad E_{dst,i}^{(out)}=\sum_{c=0}^{C-1}Y'_{i,c}a_{dst,c}^{(out)}$
 
-	$E_{src}^{(out)}\in\mathbb F_p^N, \qquad E_{src,i}^{(out)}=\sum_{c=0}^{C-1}Y'_{i,c}a_{src,c}^{(out)}$
+4. 输出层源注意力广播：$E_{src}^{edge(out)}\in\mathbb F_p^E, \qquad E_{src,k}^{edge(out)}=E_{src,src(k)}^{(out)}$
 
-3. 输出层目标注意力
+5. 输出层目标注意力广播：$E_{dst}^{edge(out)}\in\mathbb F_p^E, \qquad E_{dst,k}^{edge(out)}=E_{dst,dst(k)}^{(out)}$
 
-	$E_{dst}^{(out)}\in\mathbb F_p^N, \qquad E_{dst,i}^{(out)}=\sum_{c=0}^{C-1}Y'_{i,c}a_{dst,c}^{(out)}$
+6. 输出层线性打分：$S^{(out)}\in\mathbb F_p^E, \qquad S_k^{(out)}=E_{src,k}^{edge(out)}+E_{dst,k}^{edge(out)}$
 
-4. 输出层源注意力广播
+7. 输出层 LeakyReLU 后打分：$Z^{(out)}\in\mathbb F_p^E, \qquad Z_k^{(out)}=LReLU(S_k^{(out)})$
 
-	$E_{src}^{edge(out)}\in\mathbb F_p^E, \qquad E_{src,k}^{edge(out)}=E_{src,src(k)}^{(out)}$
+8. 输出层组最大值：$M^{(out)}\in\mathbb F_p^N, \qquad M_i^{(out)}=\max\{Z_k^{(out)}\mid dst(k)=i\}$
 
-5. 输出层目标注意力广播
+9. 输出层最大值广播：$M^{edge(out)}\in\mathbb F_p^E, \qquad M_k^{edge(out)}=M_{dst(k)}^{(out)}$
 
-	$E_{dst}^{edge(out)}\in\mathbb F_p^E, \qquad E_{dst,k}^{edge(out)}=E_{dst,dst(k)}^{(out)}$
+10. 输出层非负差分：$\Delta^{+(out)}\in\mathbb F_p^E, \qquad \Delta_k^{+(out)}=M_k^{edge(out)}-Z_k^{(out)}$
 
-6. 输出层线性打分
+11. 输出层指数输出：$U^{(out)}\in\mathbb F_p^E, \qquad U_k^{(out)}=ExpMap(\Delta_k^{+(out)})$
 
-	$S^{(out)}\in\mathbb F_p^E, \qquad S_k^{(out)}=E_{src,k}^{edge(out)}+E_{dst,k}^{edge(out)}$
+12. 输出层分母：$Sum^{(out)}\in\mathbb F_p^N, \qquad Sum_i^{(out)}=\sum_{\{k\mid dst(k)=i\}}U_k^{(out)}$
 
-7. 输出层 LeakyReLU 后打分
+13. 输出层分母广播：$Sum^{edge(out)}\in\mathbb F_p^E, \qquad Sum_k^{edge(out)}=Sum_{dst(k)}^{(out)}$
 
-	$Z^{(out)}\in\mathbb F_p^E, \qquad Z_k^{(out)}=LReLU(S_k^{(out)})$
+14. 输出层逆元：$inv^{(out)}\in\mathbb F_p^N, \qquad inv_i^{(out)}=(Sum_i^{(out)})^{-1}$
 
-8. 输出层组最大值
+15. 输出层逆元广播：$inv^{edge(out)}\in\mathbb F_p^E, \qquad inv_k^{edge(out)}=inv_{dst(k)}^{(out)}$
 
-	$M^{(out)}\in\mathbb F_p^N, \qquad M_i^{(out)}=\max\{Z_k^{(out)}\mid dst(k)=i\}$
+16. 输出层归一化权重：$\alpha^{(out)}\in\mathbb F_p^E, \qquad \alpha_k^{(out)}=U_k^{(out)}\cdot inv_k^{edge(out)}$
 
-9. 输出层最大值广播
+17. 输出层投影结果的类别压缩：$Y'^{\star}\in\mathbb F_p^N, \qquad Y_i'^{\star}=\sum_{c=0}^{C-1}Y'_{i,c}\xi_{out}^c$
 
-	$M^{edge(out)}\in\mathbb F_p^E, \qquad M_k^{edge(out)}=M_{dst(k)}^{(out)}$
+18. 输出层投影结果的边域广播压缩：$Y'^{\star,edge}\in\mathbb F_p^E, \qquad Y_{k}'^{\star,edge}=Y_{src(k)}'^{\star}$
 
-10. 输出层非负差分
+19. 输出层压缩加权边特征：$\widehat y^{\star}\in\mathbb F_p^E, \qquad \widehat y_k^{\star}=\alpha_k^{(out)}Y_{k}'^{\star,edge}$
 
-	$\Delta^{+(out)}\in\mathbb F_p^E, \qquad \Delta_k^{+(out)}=M_k^{edge(out)}-Z_k^{(out)}$
+20. 最终输出：$Y\in\mathbb F_p^{N\times C}, \qquad Y_{i,c}=\sum_{\{k\mid dst(k)=i\}}\alpha_k^{(out)}Y'_{src(k),c}$
 
-11. 输出层指数输出
+21. 最终输出的类别压缩：$Y^{\star}\in\mathbb F_p^N, \qquad Y_i^{\star}=\sum_{c=0}^{C-1}Y_{i,c}\xi_{out}^c$
 
-	$U^{(out)}\in\mathbb F_p^E, \qquad U_k^{(out)}=ExpMap(\Delta_k^{+(out)})$
+22. 最终输出压缩广播：$Y^{\star,edge}\in\mathbb F_p^E, \qquad Y_k^{\star,edge}=Y_{dst(k)}^{\star}$
 
-12. 输出层分母
-
-	$Sum^{(out)}\in\mathbb F_p^N, \qquad Sum_i^{(out)}=\sum_{\{k\mid dst(k)=i\}}U_k^{(out)}$
-
-13. 输出层分母广播
-
-	$Sum^{edge(out)}\in\mathbb F_p^E, \qquad Sum_k^{edge(out)}=Sum_{dst(k)}^{(out)}$
-
-14. 输出层逆元
-
-	$inv^{(out)}\in\mathbb F_p^N, \qquad inv_i^{(out)}=(Sum_i^{(out)})^{-1}$
-
-15. 输出层逆元广播
-
-	$inv^{edge(out)}\in\mathbb F_p^E, \qquad inv_k^{edge(out)}=inv_{dst(k)}^{(out)}$
-
-16. 输出层归一化权重
-
-	$\alpha^{(out)}\in\mathbb F_p^E, \qquad \alpha_k^{(out)}=U_k^{(out)}\cdot inv_k^{edge(out)}$
-
-17. 输出层投影结果的类别压缩
-
-	$Y'^{\star}\in\mathbb F_p^N, \qquad Y_i'^{\star}=\sum_{c=0}^{C-1}Y'_{i,c}\xi_{out}^c$
-
-18. 输出层投影结果的边域广播压缩
-
-	$Y'^{\star,edge}\in\mathbb F_p^E, \qquad Y_{k}'^{\star,edge}=Y_{src(k)}'^{\star}$
-
-19. 输出层压缩加权边特征
-
-	$\widehat y^{\star}\in\mathbb F_p^E, \qquad \widehat y_k^{\star}=\alpha_k^{(out)}Y_{k}'^{\star,edge}$
-
-20. 最终输出
-
-	$Y\in\mathbb F_p^{N\times C}, \qquad Y_{i,c}=\sum_{\{k\mid dst(k)=i\}}\alpha_k^{(out)}Y'_{src(k),c}$
-
-21. 最终输出的类别压缩
-
-	$Y^{\star}\in\mathbb F_p^N, \qquad Y_i^{\star}=\sum_{c=0}^{C-1}Y_{i,c}\xi_{out}^c$
-
-22. 最终输出压缩广播
-
-	$Y^{\star,edge}\in\mathbb F_p^E, \qquad Y_k^{\star,edge}=Y_{dst(k)}^{\star}$
 
 ### 0.7 工作域、选择器、辅助公开列与展平规则
 
@@ -2225,11 +2134,11 @@ $R_{dst}^{edge(out)}[k+1] = R_{dst}^{edge(out)}[k] + Q_{edge}^{valid}[k]\cdot\fr
 
 插值得到
 
-$P_{Table^{dst(out)}},\ P_{Query^{dst(out)}},\ P_{m_{dst}^{(out)}},\ P_{R_{dst}^{node(out)}},\ P_{R_{dst}^{edge(out)}}.$
+$P_{Table^{dst(out)}},\ P_{Query^{dst(out)}},\ P_{m_{dst}^{(out)}},\ P_{R_{dst}^{node(out)}},\ P_{R_{dst}^{edge(out)}}$
 
 提交承诺
 
-$[P_{Table^{dst(out)}}],\ [P_{Query^{dst(out)}}],\ [P_{m_{dst}^{(out)}},\ [P_{R_{dst}^{node(out)}}],\ [P_{R_{dst}^{edge(out)}}].$
+$[P_{Table^{dst(out)}}],\ [P_{Query^{dst(out)}}],\ [P_{m_{dst}^{(out)}}],\ [P_{R_{dst}^{node(out)}}],\ [P_{R_{dst}^{edge(out)}}]$
 
 ## 3. 证明生成
 
@@ -2933,7 +2842,7 @@ $C_{out,dst,edge,2}(X)=Last_{edge}(X)\cdot\big(P_{R_{dst}^{edge(out)}}(X)-S_{dst
 
 7. 节点域
 
-	$\begin{aligned} t_N(X) ={}& \frac{1}{Z_N(X)} \Bigg[ \sum_{r=0}^{7} \Big( \alpha_{quot}^{e_{src,node,0,r}}C_{src,node,0}^{(r)}(X) + \alpha_{quot}^{e_{src,node,1,r}}C_{src,node,1}^{(r)}(X) + \alpha_{quot}^{e_{src,node,2,r}}C_{src,node,2}^{(r)}(X)\\ &\qquad + \alpha_{quot}^{e_{dst,node,0,r}}C_{dst,node,0}^{(r)}(X) + \alpha_{quot}^{e_{dst,node,1,r}}C_{dst,node,1}^{(r)}(X) + \alpha_{quot}^{e_{dst,node,2,r}}C_{dst,node,2}^{(r)}(X) + \alpha_{quot}^{e_{inv,r}}C_{inv}^{(r)}(z_N)\\ &\qquad + \alpha_{quot}^{e_{src,tbl,r}}C_{src,tbl}^{(r)}(X) + \alpha_{quot}^{e_{dst,tbl,r}}C_{dst,tbl}^{(r)}(X) \Big)\\ &\qquad + \alpha_{quot}^{e_{out,src,node,0}}C_{out,src,node,0}(X) + \alpha_{quot}^{e_{out,src,node,1}}C_{out,src,node,1}(X) + \alpha_{quot}^{e_{out,src,node,2}}C_{out,src,node,2}(X)\\ &\qquad + \alpha_{quot}^{e_{out,dst,node,0}}C_{out,dst,node,0}(X) + \alpha_{quot}^{e_{out,dst,node,1}}C_{out,dst,node,1}(X) + \alpha_{quot}^{e_{out,dst,node,2}}C_{out,dst,node,2}(X) + \alpha_{quot}^{e_{out,inv}}C_{out,inv}(X)\\ &\qquad + \alpha_{quot}^{e_{out,src,tbl}}C_{out,src,tbl}(X) + \alpha_{quot}^{e_{out,dst,tbl}}C_{out,dst,tbl}(X) \Bigg]. \end{aligned}$
+	$\begin{aligned} t_N(X) ={}& \frac{1}{Z_N(X)} \Bigg[ \sum_{r=0}^{7} \Big( \alpha_{quot}^{e_{src,node,0,r}}C_{src,node,0}^{(r)}(X) + \alpha_{quot}^{e_{src,node,1,r}}C_{src,node,1}^{(r)}(X) + \alpha_{quot}^{e_{src,node,2,r}}C_{src,node,2}^{(r)}(X)\\ &\qquad + \alpha_{quot}^{e_{dst,node,0,r}}C_{dst,node,0}^{(r)}(X) + \alpha_{quot}^{e_{dst,node,1,r}}C_{dst,node,1}^{(r)}(X) + \alpha_{quot}^{e_{dst,node,2,r}}C_{dst,node,2}^{(r)}(X) + \alpha_{quot}^{e_{inv,r}}C_{inv}^{(r)}(X)\\ &\qquad + \alpha_{quot}^{e_{src,tbl,r}}C_{src,tbl}^{(r)}(X) + \alpha_{quot}^{e_{dst,tbl,r}}C_{dst,tbl}^{(r)}(X) \Big)\\ &\qquad + \alpha_{quot}^{e_{out,src,node,0}}C_{out,src,node,0}(X) + \alpha_{quot}^{e_{out,src,node,1}}C_{out,src,node,1}(X) + \alpha_{quot}^{e_{out,src,node,2}}C_{out,src,node,2}(X)\\ &\qquad + \alpha_{quot}^{e_{out,dst,node,0}}C_{out,dst,node,0}(X) + \alpha_{quot}^{e_{out,dst,node,1}}C_{out,dst,node,1}(X) + \alpha_{quot}^{e_{out,dst,node,2}}C_{out,dst,node,2}(X) + \alpha_{quot}^{e_{out,inv}}C_{out,inv}(X)\\ &\qquad + \alpha_{quot}^{e_{out,src,tbl}}C_{out,src,tbl}(X) + \alpha_{quot}^{e_{out,dst,tbl}}C_{out,dst,tbl}(X) \Bigg] \end{aligned}$
 
 ### 3.4 外点评值、域内点评值与开放
 
@@ -3171,159 +3080,11 @@ $M_{pub}.domain\_cfg$
 
 2. 在 $\mathbb H_{edge}$ 上，检查
 
-	$\begin{aligned}
-	t_{edge}(z_{edge})Z_{edge}(z_{edge})
-	={}&
-	\sum_{r=0}^{7}
-	\Big(
-	\alpha_{quot}^{e_{src,edge,0,r}}C_{src,edge,0}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{src,edge,1,r}}C_{src,edge,1}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{src,edge,2,r}}C_{src,edge,2}^{(r)}(z_{edge})\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{L,0,r}}C_{L,0}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{L,1,r}}C_{L,1}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{L,2,r}}C_{L,2}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{L,tbl,r}}C_{L,tbl}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{L,qry,r}}C_{L,qry}^{(r)}(z_{edge})\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{max,bin,r}}C_{max,bin}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{max,zero,r}}C_{max,zero}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{max,0,r}}C_{max,0}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{max,1,r}}C_{max,1}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{max,end,r}}C_{max,end}^{(r)}(z_{edge})\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{R,0,r}}C_{R,0}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{R,1,r}}C_{R,1}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{R,2,r}}C_{R,2}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{R,tbl,r}}C_{R,tbl}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{R,qry,r}}C_{R,qry}^{(r)}(z_{edge})\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{exp,0,r}}C_{exp,0}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{exp,1,r}}C_{exp,1}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{exp,2,r}}C_{exp,2}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{exp,tbl,r}}C_{exp,tbl}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{exp,qry,r}}C_{exp,qry}^{(r)}(z_{edge})\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{psq,0,r}}C_{psq,0}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{psq,1,r}}C_{psq,1}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{psq,end,r}}C_{psq,end}^{(r)}(z_{edge})\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{ELU,0,r}}C_{ELU,0}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{ELU,1,r}}C_{ELU,1}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{ELU,2,r}}C_{ELU,2}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{ELU,tbl,r}}C_{ELU,tbl}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{ELU,qry,r}}C_{ELU,qry}^{(r)}(z_{edge})\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{dst,edge,0,r}}C_{dst,edge,0}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{dst,edge,1,r}}C_{dst,edge,1}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{dst,edge,2,r}}C_{dst,edge,2}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{src,qry,r}}C_{src,qry}^{(r)}(z_{edge})
-	+
-	\alpha_{quot}^{e_{dst,qry,r}}C_{dst,qry}^{(r)}(z_{edge})
-	\Big)\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{out,src,edge,0}}C_{out,src,edge,0}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,src,edge,1}}C_{out,src,edge,1}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,src,edge,2}}C_{out,src,edge,2}(z_{edge})\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{out,L,0}}C_{out,L,0}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,L,1}}C_{out,L,1}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,L,2}}C_{out,L,2}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,L,tbl}}C_{out,L,tbl}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,L,qry}}C_{out,L,qry}(z_{edge})\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{out,max,bin}}C_{out,max,bin}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,max,zero}}C_{out,max,zero}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,max,0}}C_{out,max,0}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,max,1}}C_{out,max,1}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,max,end}}C_{out,max,end}(z_{edge})\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{out,R,0}}C_{out,R,0}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,R,1}}C_{out,R,1}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,R,2}}C_{out,R,2}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,R,tbl}}C_{out,R,tbl}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,R,qry}}C_{out,R,qry}(z_{edge})\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{out,exp,0}}C_{out,exp,0}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,exp,1}}C_{out,exp,1}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,exp,2}}C_{out,exp,2}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,exp,tbl}}C_{out,exp,tbl}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,exp,qry}}C_{out,exp,qry}(z_{edge})\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{out,psq,0}}C_{out,psq,0}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,psq,1}}C_{out,psq,1}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,psq,end}}C_{out,psq,end}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,dst,edge,0}}C_{out,dst,edge,0}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,dst,edge,1}}C_{out,dst,edge,1}(z_{edge})
-	+
-	\alpha_{quot}^{e_{out,dst,edge,2}}C_{out,dst,edge,2}(z_{edge})
-	\end{aligned}$ 
+	$\begin{aligned} t_{edge}(z_{edge})Z_{edge}(z_{edge}) ={}& \sum_{r=0}^{7} \Big( \alpha_{quot}^{e_{src,edge,0,r}}C_{src,edge,0}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{src,edge,1,r}}C_{src,edge,1}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{src,edge,2,r}}C_{src,edge,2}^{(r)}(z_{edge}) \\ &\quad +\alpha_{quot}^{e_{L,0,r}}C_{L,0}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{L,1,r}}C_{L,1}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{L,2,r}}C_{L,2}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{L,tbl,r}}C_{L,tbl}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{L,qry,r}}C_{L,qry}^{(r)}(z_{edge}) \\ &\quad +\alpha_{quot}^{e_{max,bin,r}}C_{max,bin}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{max,zero,r}}C_{max,zero}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{max,0,r}}C_{max,0}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{max,1,r}}C_{max,1}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{max,end,r}}C_{max,end}^{(r)}(z_{edge}) \\ &\quad +\alpha_{quot}^{e_{R,0,r}}C_{R,0}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{R,1,r}}C_{R,1}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{R,2,r}}C_{R,2}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{R,tbl,r}}C_{R,tbl}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{R,qry,r}}C_{R,qry}^{(r)}(z_{edge}) \\ &\quad +\alpha_{quot}^{e_{exp,0,r}}C_{exp,0}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{exp,1,r}}C_{exp,1}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{exp,2,r}}C_{exp,2}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{exp,tbl,r}}C_{exp,tbl}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{exp,qry,r}}C_{exp,qry}^{(r)}(z_{edge}) \\ &\quad +\alpha_{quot}^{e_{psq,0,r}}C_{psq,0}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{psq,1,r}}C_{psq,1}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{psq,end,r}}C_{psq,end}^{(r)}(z_{edge}) \\ &\quad +\alpha_{quot}^{e_{ELU,0,r}}C_{ELU,0}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{ELU,1,r}}C_{ELU,1}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{ELU,2,r}}C_{ELU,2}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{ELU,tbl,r}}C_{ELU,tbl}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{ELU,qry,r}}C_{ELU,qry}^{(r)}(z_{edge}) \\ &\quad +\alpha_{quot}^{e_{dst,edge,0,r}}C_{dst,edge,0}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{dst,edge,1,r}}C_{dst,edge,1}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{dst,edge,2,r}}C_{dst,edge,2}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{src,qry,r}}C_{src,qry}^{(r)}(z_{edge}) +\alpha_{quot}^{e_{dst,qry,r}}C_{dst,qry}^{(r)}(z_{edge}) \Big) \\ &\quad +\alpha_{quot}^{e_{out,src,edge,0}}C_{out,src,edge,0}(z_{edge}) +\alpha_{quot}^{e_{out,src,edge,1}}C_{out,src,edge,1}(z_{edge}) +\alpha_{quot}^{e_{out,src,edge,2}}C_{out,src,edge,2}(z_{edge}) \\ &\quad +\alpha_{quot}^{e_{out,L,0}}C_{out,L,0}(z_{edge}) +\alpha_{quot}^{e_{out,L,1}}C_{out,L,1}(z_{edge}) +\alpha_{quot}^{e_{out,L,2}}C_{out,L,2}(z_{edge}) +\alpha_{quot}^{e_{out,L,tbl}}C_{out,L,tbl}(z_{edge}) +\alpha_{quot}^{e_{out,L,qry}}C_{out,L,qry}(z_{edge}) \\ &\quad +\alpha_{quot}^{e_{out,max,bin}}C_{out,max,bin}(z_{edge}) +\alpha_{quot}^{e_{out,max,zero}}C_{out,max,zero}(z_{edge}) +\alpha_{quot}^{e_{out,max,0}}C_{out,max,0}(z_{edge}) +\alpha_{quot}^{e_{out,max,1}}C_{out,max,1}(z_{edge}) +\alpha_{quot}^{e_{out,max,end}}C_{out,max,end}(z_{edge}) \\ &\quad +\alpha_{quot}^{e_{out,R,0}}C_{out,R,0}(z_{edge}) +\alpha_{quot}^{e_{out,R,1}}C_{out,R,1}(z_{edge}) +\alpha_{quot}^{e_{out,R,2}}C_{out,R,2}(z_{edge}) +\alpha_{quot}^{e_{out,R,tbl}}C_{out,R,tbl}(z_{edge}) +\alpha_{quot}^{e_{out,R,qry}}C_{out,R,qry}(z_{edge}) \\ &\quad +\alpha_{quot}^{e_{out,exp,0}}C_{out,exp,0}(z_{edge}) +\alpha_{quot}^{e_{out,exp,1}}C_{out,exp,1}(z_{edge}) +\alpha_{quot}^{e_{out,exp,2}}C_{out,exp,2}(z_{edge}) +\alpha_{quot}^{e_{out,exp,tbl}}C_{out,exp,tbl}(z_{edge}) +\alpha_{quot}^{e_{out,exp,qry}}C_{out,exp,qry}(z_{edge}) \\ &\quad +\alpha_{quot}^{e_{out,psq,0}}C_{out,psq,0}(z_{edge}) +\alpha_{quot}^{e_{out,psq,1}}C_{out,psq,1}(z_{edge}) +\alpha_{quot}^{e_{out,psq,end}}C_{out,psq,end}(z_{edge}) \\ &\quad +\alpha_{quot}^{e_{out,dst,edge,0}}C_{out,dst,edge,0}(z_{edge}) +\alpha_{quot}^{e_{out,dst,edge,1}}C_{out,dst,edge,1}(z_{edge}) +\alpha_{quot}^{e_{out,dst,edge,2}}C_{out,dst,edge,2}(z_{edge}) \end{aligned}$    
 
 
 
-3. 在 ($\mathbb H_{in}$\) 上，检查
+3. 在$\mathbb H_{in}$上，检查
 
 	$t_{in}(z_{in})Z_{in}(z_{in})
 	=
@@ -3370,7 +3131,7 @@ $M_{pub}.domain\_cfg$
 	\Big)
 	\end{aligned}$      
 
-5. 在 \($\mathbb H_{cat}$) 上，检查
+5. 在 $\mathbb H_{cat}$上，检查
 
 	$t_{cat}(z_{cat})Z_{cat}(z_{cat})
 	=
@@ -3384,7 +3145,7 @@ $M_{pub}.domain\_cfg$
 	+
 	\alpha_{quot}^{e_{outproj,2}}C_{outproj,2}(z_{cat})$    
 
-6. 在 \($\mathbb H_C$\) 上，检查
+6. 在 $\mathbb H_C$上，检查
 
 	$t_C(z_C)Z_C(z_C)
 	=
@@ -3402,101 +3163,9 @@ $M_{pub}.domain\_cfg$
 	+
 	\alpha_{quot}^{e_{outY}}C_{outY}(z_C)$   
 
-7. 在 \($\mathbb H_N$\) 上，检查
+7. 在 $\mathbb H_N$上，检查
 
-	$\begin{aligned}
-	t_N(z_N)Z_N(z_N)
-	={}&
-	\sum_{r=0}^{7}
-	\Big(
-	\alpha_{quot}^{e_{src,node,0,r}}C_{src,node,0}^{(r)}(z_N)
-	+
-	\alpha_{quot}^{e_{src,node,1,r}}C_{src,node,1}^{(r)}(z_N)
-	+
-	\alpha_{quot}^{e_{src,node,2,r}}C_{src,node,2}^{(r)}(z_N)\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{dst,node,0,r}}C_{dst,node,0}^{(r)}(z_N)
-	+
-	\alpha_{quot}^{e_{dst,node,1,r}}C_{dst,node,1}^{(r)}(z_N)
-	+
-	\alpha_{quot}^{e_{dst,node,2,r}}C_{dst,node,2}^{(r)}(z_N)
-	+
-	\alpha_{quot}^{e_{inv,r}}C_{inv}^{(r)}(z_N)\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{src,tbl,r}}C_{src,tbl}^{(r)}(z_N)
-	+
-	\alpha_{quot}^{e_{dst,tbl,r}}C_{dst,tbl}^{(r)}(z_N)
-	\Big)\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{out,src,node,0}}C_{out,src,node,0}(z_N)
-	+
-	\alpha_{quot}^{e_{out,src,node,1}}C_{out,src,node,1}(z_N)
-	+
-	\alpha_{quot}^{e_{out,src,node,2}}C_{out,src,node,2}(z_N)\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{out,dst,node,0}}C_{out,dst,node,0}(z_N)
-	+
-	\alpha_{quot}^{e_{out,dst,node,1}}C_{out,dst,node,1}(z_N)
-	+
-	\alpha_{quot}^{e_{out,dst,node,2}}C_{out,dst,node,2}(z_N)
-	+
-	\alpha_{quot}^{e_{out,inv}}C_{out,inv}(z_N)\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{out,src,tbl}}C_{out,src,tbl}(z_N)
-	+
-	\alpha_{quot}^{e_{out,dst,tbl}}C_{out,dst,tbl}(z_N).
-	\end{aligned}\begin{aligned}
-	t_N(z_N)Z_N(z_N)
-	={}&
-	\sum_{r=0}^{7}
-	\Big(
-	\alpha_{quot}^{e_{src,node,0,r}}C_{src,node,0}^{(r)}(z_N)
-	+
-	\alpha_{quot}^{e_{src,node,1,r}}C_{src,node,1}^{(r)}(z_N)
-	+
-	\alpha_{quot}^{e_{src,node,2,r}}C_{src,node,2}^{(r)}(z_N)\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{dst,node,0,r}}C_{dst,node,0}^{(r)}(z_N)
-	+
-	\alpha_{quot}^{e_{dst,node,1,r}}C_{dst,node,1}^{(r)}(z_N)
-	+
-	\alpha_{quot}^{e_{dst,node,2,r}}C_{dst,node,2}^{(r)}(z_N)
-	+
-	\alpha_{quot}^{e_{inv,r}}C_{inv}^{(r)}(z_N)\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{src,tbl,r}}C_{src,tbl}^{(r)}(z_N)
-	+
-	\alpha_{quot}^{e_{dst,tbl,r}}C_{dst,tbl}^{(r)}(z_N)
-	\Big)\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{out,src,node,0}}C_{out,src,node,0}(z_N)
-	+
-	\alpha_{quot}^{e_{out,src,node,1}}C_{out,src,node,1}(z_N)
-	+
-	\alpha_{quot}^{e_{out,src,node,2}}C_{out,src,node,2}(z_N)\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{out,dst,node,0}}C_{out,dst,node,0}(z_N)
-	+
-	\alpha_{quot}^{e_{out,dst,node,1}}C_{out,dst,node,1}(z_N)
-	+
-	\alpha_{quot}^{e_{out,dst,node,2}}C_{out,dst,node,2}(z_N)
-	+
-	\alpha_{quot}^{e_{out,inv}}C_{out,inv}(z_N)\\
-	&\qquad
-	+
-	\alpha_{quot}^{e_{out,src,tbl}}C_{out,src,tbl}(z_N)
-	+
-	\alpha_{quot}^{e_{out,dst,tbl}}C_{out,dst,tbl}(z_N)
-	\end{aligned}$   
+	$\begin{aligned} t_N(z_N)Z_N(z_N) ={}& \sum_{r=0}^{7}\bigg( \alpha_{\text{quot}}^{e_{\text{src,node},0,r}}C_{\text{src,node},0}^{(r)}(z_N) +\alpha_{\text{quot}}^{e_{\text{src,node},1,r}}C_{\text{src,node},1}^{(r)}(z_N) +\alpha_{\text{quot}}^{e_{\text{src,node},2,r}}C_{\text{src,node},2}^{(r)}(z_N) \\ &\quad +\alpha_{\text{quot}}^{e_{\text{dst,node},0,r}}C_{\text{dst,node},0}^{(r)}(z_N) +\alpha_{\text{quot}}^{e_{\text{dst,node},1,r}}C_{\text{dst,node},1}^{(r)}(z_N) +\alpha_{\text{quot}}^{e_{\text{dst,node},2,r}}C_{\text{dst,node},2}^{(r)}(z_N) +\alpha_{\text{quot}}^{e_{\text{inv},r}}C_{\text{inv}}^{(r)}(z_N) \\ &\quad +\alpha_{\text{quot}}^{e_{\text{src,tbl},r}}C_{\text{src,tbl}}^{(r)}(z_N) +\alpha_{\text{quot}}^{e_{\text{dst,tbl},r}}C_{\text{dst,tbl}}^{(r)}(z_N)\bigg) \\ &\quad +\alpha_{\text{quot}}^{e_{\text{out,src,node},0}}C_{\text{out,src,node},0}(z_N) +\alpha_{\text{quot}}^{e_{\text{out,src,node},1}}C_{\text{out,src,node},1}(z_N) +\alpha_{\text{quot}}^{e_{\text{out,src,node},2}}C_{\text{out,src,node},2}(z_N) \\ &\quad +\alpha_{\text{quot}}^{e_{\text{out,dst,node},0}}C_{\text{out,dst,node},0}(z_N) +\alpha_{\text{quot}}^{e_{\text{out,dst,node},1}}C_{\text{out,dst,node},1}(z_N) +\alpha_{\text{quot}}^{e_{\text{out,dst,node},2}}C_{\text{out,dst,node},2}(z_N) +\alpha_{\text{quot}}^{e_{\text{out,inv}}}C_{\text{out,inv}}(z_N) \\ &\quad +\alpha_{\text{quot}}^{e_{\text{out,src,tbl}}}C_{\text{out,src,tbl}}(z_N) +\alpha_{\text{quot}}^{e_{\text{out,dst,tbl}}}C_{\text{out,dst,tbl}}(z_N) \end{aligned}$       
 
 对每个工作域，都必须在相应点评集合上完成 KZG batch opening 配对检查。
 

@@ -80,9 +80,80 @@ std::map<std::string, FieldElement> to_field_map(const std::vector<std::pair<std
     return out;
 }
 
+std::size_t hidden_head_width(const model::ModelParameters& parameters, const util::AppConfig& config) {
+    if (parameters.has_real_multihead && !parameters.hidden_heads.empty()) {
+        return parameters.hidden_heads.front().output_bias_fp.size();
+    }
+    return config.hidden_dim;
+}
+
+std::size_t concat_width(const model::ModelParameters& parameters, const util::AppConfig& config) {
+    if (parameters.has_real_multihead && !parameters.hidden_heads.empty()) {
+        return hidden_head_width(parameters, config) * parameters.hidden_heads.size();
+    }
+    return config.hidden_dim;
+}
+
+PublicMetadata build_public_metadata(const ProtocolContext& context) {
+    PublicMetadata metadata;
+    metadata.protocol_id = "gatzkml";
+    metadata.model_arch_id = context.model.has_real_multihead
+        ? "single_layer_gat_hidden8_output1"
+        : "legacy_single_head_debug";
+    metadata.model_param_id = context.model.has_real_multihead
+        ? ("checkpoint_bundle:" + context.config.checkpoint_bundle)
+        : ("synthetic_seed:" + std::to_string(context.config.seed));
+    metadata.static_table_id = "tables:lrelu+exp+range";
+    metadata.quant_cfg_id = "range_bits=" + std::to_string(context.config.range_bits);
+    metadata.domain_cfg =
+        "FH=" + context.domains.fh->name + ":" + std::to_string(context.domains.fh->size)
+        + ",edge=" + context.domains.edge->name + ":" + std::to_string(context.domains.edge->size)
+        + ",in=" + context.domains.in->name + ":" + std::to_string(context.domains.in->size)
+        + ",d_h=" + context.domains.d->name + ":" + std::to_string(context.domains.d->size)
+        + ",cat=" + context.domains.cat->name + ":" + std::to_string(context.domains.cat->size)
+        + ",C=" + context.domains.c->name + ":" + std::to_string(context.domains.c->size)
+        + ",N=" + context.domains.n->name + ":" + std::to_string(context.domains.n->size);
+    metadata.dim_cfg =
+        "N=" + std::to_string(context.local.num_nodes)
+        + ",E=" + std::to_string(context.local.edges.size())
+        + ",d_in=" + std::to_string(context.local.num_features)
+        + ",d_h=" + std::to_string(hidden_head_width(context.model, context.config))
+        + ",d_cat=" + std::to_string(concat_width(context.model, context.config))
+        + ",C=" + std::to_string(context.local.num_classes);
+    metadata.encoding_id = "project-fixed-order-v1";
+    metadata.padding_rule_id = "zero-pad+selector-mask";
+    metadata.degree_bound_id = context.model.has_real_multihead
+        ? "note-target:FH,edge,in,d_h,cat,C,N"
+        : "legacy:FH,edge,in,d,N";
+    return metadata;
+}
+
+bool metadata_matches(const PublicMetadata& lhs, const PublicMetadata& rhs) {
+    return lhs.protocol_id == rhs.protocol_id
+        && lhs.model_arch_id == rhs.model_arch_id
+        && lhs.model_param_id == rhs.model_param_id
+        && lhs.static_table_id == rhs.static_table_id
+        && lhs.quant_cfg_id == rhs.quant_cfg_id
+        && lhs.domain_cfg == rhs.domain_cfg
+        && lhs.dim_cfg == rhs.dim_cfg
+        && lhs.encoding_id == rhs.encoding_id
+        && lhs.padding_rule_id == rhs.padding_rule_id
+        && lhs.degree_bound_id == rhs.degree_bound_id;
+}
+
+std::vector<std::string> fixed_proof_block_order() {
+    return {"M_pub", "Com_dyn", "S_route", "Eval_ext", "Eval_dom", "Com_quot", "Open_dom", "W_ext", "Pi_bind"};
+}
+
 }  // namespace
 
 bool verify(const ProtocolContext& context, const Proof& proof) {
+    if (!metadata_matches(proof.public_metadata, build_public_metadata(context))) {
+        return false;
+    }
+    if (proof.block_order != fixed_proof_block_order()) {
+        return false;
+    }
     const auto dynamic_commitments = to_map(proof.dynamic_commitments);
     const auto quotient_commitments = to_map(proof.quotient_commitments);
     const auto witness_scalars = to_field_map(proof.witness_scalars);

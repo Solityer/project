@@ -458,6 +458,12 @@ FieldElement evaluate_bias_fold(
 
 TraceArtifacts build_trace(const ProtocolContext& context, RunMetrics* metrics) {
     const auto trace_start = Clock::now();
+    if (context.model.has_real_multihead) {
+        throw std::runtime_error(
+            "build_trace is still wired to the legacy single-head witness system; "
+            "the formal multi-head objects for hidden heads, H_cat/H_cat_star, H_C, "
+            "Y'_star/Y_star, and PSQ_out are not materialized yet");
+    }
     TraceArtifacts trace;
     crypto::Transcript transcript("gatzkml");
     // The proof object and verifier logic do not depend on whether raw columns

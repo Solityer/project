@@ -1,41 +1,24 @@
-# PROGRESS_LOG
+# Progress Log
 
-## 2026-03-31
+## This round
+- Copied the minimum official GAT reference files into `project/reference/gat_official/` so formal work no longer depends on mutating or importing from `GAT/`.
+- Kept all formal edits inside `project/`; the note file `GAT-ZKML-单层多头.md` was not modified.
+- Tightened full-Cora regression coverage in `tests/test_main.cpp`:
+  - auto-regenerate reference artifacts
+  - check `dst` sorting and self-loops
+  - check bias parity
+  - check real multi-head formal context with explicit `H_cat` and `H_C`
+  - check verifier rejection for metadata mismatch, proof block order mismatch, and wrong `H_C` domain reuse
+- Extended proof metadata and proof-order tracking:
+  - `PublicMetadata`
+  - `Proof::block_order`
+  - verifier checks for both
+- Promoted `H_cat` and `H_C` to explicit work domains in formal context.
+- Removed `project/scripts/__pycache__` as a non-formal runtime residue.
 
-### 已完成
+## Local run results
+- `gatzk_tests`: pass
+- `gatzk_run --config configs/cora_full.cfg`: fail fast in formal multi-head trace construction with an explicit message about missing hidden-head/concat/output formal objects
 
-1. 读取并确认官方 GAT 前向入口：
-   - `GAT/models/gat.py`
-   - `GAT/utils/layers.py`
-2. 读取并确认笔记中的目标结构：
-   - hidden 8 heads
-   - concat
-   - output attention head
-   - `H_cat / H_C / PSQ_out / fixed proof order`
-3. 校正 `project` 的多头明文前向：
-   - 修正 self-loop 参与 attention 聚合
-   - 与 full Cora reference artifact 做 parity
-4. 扩展测试：
-   - `.npy` 读取
-   - full Cora parity
-   - full Cora 排序/self-loop/bias 规则
-5. 给 formal 层加了 context-aware challenge label scaffold
-
-### 本轮涉及文件
-
-- `src/model/gat.cpp`
-- `tests/test_main.cpp`
-- `include/gatzk/protocol/proof.hpp`
-- `include/gatzk/protocol/challenges.hpp`
-- `src/protocol/challenges.cpp`
-- `src/protocol/prover.cpp`
-
-### 当前测试结果
-
-- `gatzk_tests` 全通过
-- full Cora multi-head forward parity 已通过
-
-### 剩余主问题
-
-- formal `trace / quotients / verifier` 仍是单头对象体系
-- `H_cat / H_C / output-specific formal objects` 尚未进入正式 proof pipeline
+## Current blocker
+- `src/protocol/trace.cpp` still materializes legacy single-head witness names, so the real multi-head formal run reaches trace construction and then aborts on missing objects.

@@ -1,46 +1,25 @@
-# FORWARD_ALIGNMENT_REPORT
+# Forward Alignment Report
 
-## 对齐对象
+## Alignment status
+- Reference source inside `project/`: `reference/gat_official/execute_cora.py`, `reference/gat_official/models/gat.py`, `reference/gat_official/utils/layers.py`
+- Real parameter bundle inside `project/`: `artifacts/checkpoints/cora_gat`
+- Full-Cora reference artifacts inside `project/`: `runs/cora_full/reference`
 
-对齐真值：
+## Verified objects on full Cora
+- Hidden heads `0..7`
+  - `H_prime`, `E_src`, `E_dst`, `S`, `Z`, `M`, `Delta`, `U`, `Sum`, `inv`, `alpha`, `H_agg`
+- Hidden concat
+  - `hidden_concat`
+- Output head
+  - `H_prime`, `E_src`, `E_dst`, `S`, `Z`, `M`, `Delta`, `U`, `Sum`, `inv`, `alpha`, `H_agg`, `Y_lin`, `Y`
+- Bias / topology checks
+  - bias matrix, `dst`-sorted edges, explicit self-loops
 
-- 官方语义：`GAT/models/gat.py` + `GAT/utils/layers.py`
-- project reference artifacts：`runs/cora_full/reference`
+## Important semantic fixes already landed
+- Self-loop now enters attention aggregation instead of being treated as a side artifact.
+- Hidden heads are concatenated after ELU; output layer remains a single attention head with identity output.
+- Full-Cora parity is driven from project-local artifacts only; if reference artifacts are missing, tests regenerate them via `scripts/gat_reference.py`.
 
-## 当前结论
-
-`project` 中的真实多头 reference-style 前向，已经与 `runs/cora_full/reference` 对齐。
-
-## 已对齐的关键语义
-
-- hidden 8 个 attention heads
-- hidden head 聚合后 `ELU`
-- 8 个 hidden heads 沿特征维拼接为 `H_cat`
-- output 层是单个 attention head
-- output 激活为恒等
-- self-loop 已纳入 attention 归一化与聚合
-- `bias` 与 reference artifact 一致
-- `dst` 排序与显式 self-loop 工程规则已通过 full Cora 测试
-
-## 已对齐的关键对象
-
-- `H`
-- hidden `H_prime / E_src / E_dst / S / Z / M / Delta / U / Sum / inv / alpha / H_agg`
-- `hidden_concat`
-- output `H_prime / E_src / E_dst / S / Z / M / Delta / U / Sum / inv / alpha / H_agg`
-- `Y_lin`
-- `Y`
-
-## 目前仍未完成的 formal 对齐
-
-- `H_cat` 尚未进入正式协议对象系统
-- `H_cat_star` 尚未显式落地
-- `H_C` 尚未落地
-- output formal 对象 `Y'_star / Y'_star_edge / widehat_y_star / Y_star / Y_star_edge / PSQ_out` 尚未落地
-- verifier / quotients 仍是单头口径
-
-## 误差口径
-
-- reference artifact 是 `float32` 落盘
-- parity 测试按 `float32` artifact 口径比较
-- 当前 full Cora parity 已通过
+## Residual gap
+- The neural forward path is aligned.
+- The formal witness path is not yet aligned to the note for concat/output-stage proof objects, so formal `cora_full` still stops in multi-head trace construction.

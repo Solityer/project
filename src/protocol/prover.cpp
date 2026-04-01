@@ -171,6 +171,58 @@ std::string context_cache_key(const util::AppConfig& config) {
     return stream.str();
 }
 
+std::size_t hidden_head_width(const model::ModelParameters& parameters, const util::AppConfig& config) {
+    if (parameters.has_real_multihead && !parameters.hidden_heads.empty()) {
+        return parameters.hidden_heads.front().output_bias_fp.size();
+    }
+    return config.hidden_dim;
+}
+
+std::size_t concat_width(const model::ModelParameters& parameters, const util::AppConfig& config) {
+    if (parameters.has_real_multihead && !parameters.hidden_heads.empty()) {
+        return hidden_head_width(parameters, config) * parameters.hidden_heads.size();
+    }
+    return config.hidden_dim;
+}
+
+PublicMetadata build_public_metadata(const ProtocolContext& context) {
+    PublicMetadata metadata;
+    metadata.protocol_id = "gatzkml";
+    metadata.model_arch_id = context.model.has_real_multihead
+        ? "single_layer_gat_hidden8_output1"
+        : "legacy_single_head_debug";
+    metadata.model_param_id = context.model.has_real_multihead
+        ? ("checkpoint_bundle:" + context.config.checkpoint_bundle)
+        : ("synthetic_seed:" + std::to_string(context.config.seed));
+    metadata.static_table_id = "tables:lrelu+exp+range";
+    metadata.quant_cfg_id = "range_bits=" + std::to_string(context.config.range_bits);
+    metadata.domain_cfg =
+        "FH=" + context.domains.fh->name + ":" + std::to_string(context.domains.fh->size)
+        + ",edge=" + context.domains.edge->name + ":" + std::to_string(context.domains.edge->size)
+        + ",in=" + context.domains.in->name + ":" + std::to_string(context.domains.in->size)
+        + ",d_h=" + context.domains.d->name + ":" + std::to_string(context.domains.d->size)
+        + ",cat=" + context.domains.cat->name + ":" + std::to_string(context.domains.cat->size)
+        + ",C=" + context.domains.c->name + ":" + std::to_string(context.domains.c->size)
+        + ",N=" + context.domains.n->name + ":" + std::to_string(context.domains.n->size);
+    metadata.dim_cfg =
+        "N=" + std::to_string(context.local.num_nodes)
+        + ",E=" + std::to_string(context.local.edges.size())
+        + ",d_in=" + std::to_string(context.local.num_features)
+        + ",d_h=" + std::to_string(hidden_head_width(context.model, context.config))
+        + ",d_cat=" + std::to_string(concat_width(context.model, context.config))
+        + ",C=" + std::to_string(context.local.num_classes);
+    metadata.encoding_id = "project-fixed-order-v1";
+    metadata.padding_rule_id = "zero-pad+selector-mask";
+    metadata.degree_bound_id = context.model.has_real_multihead
+        ? "note-target:FH,edge,in,d_h,cat,C,N"
+        : "legacy:FH,edge,in,d,N";
+    return metadata;
+}
+
+std::vector<std::string> fixed_proof_block_order() {
+    return {"M_pub", "Com_dyn", "S_route", "Eval_ext", "Eval_dom", "Com_quot", "Open_dom", "W_ext", "Pi_bind"};
+}
+
 std::filesystem::path resolve_project_path(
     const std::string& project_root,
     const std::string& relative_or_absolute) {
@@ -1100,17 +1152,9 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
                 "formal model route requires checkpoint_bundle; refusing to fall back to synthetic parameters");
         }
         const auto checkpoint_root = resolve_project_path(config.project_root, config.checkpoint_bundle);
-        const auto bundle_info = model::inspect_checkpoint_bundle(checkpoint_root.string());
-        std::string incompatibility_reason;
-        if (!model::checkpoint_bundle_matches_single_head_protocol(bundle_info, &incompatibility_reason)) {
-            throw std::runtime_error(
-                "checkpoint bundle " + checkpoint_root.string()
-                + " is incompatible with the current single-head protocol model: "
-                + incompatibility_reason);
-        }
-        throw std::runtime_error(
-            "checkpoint bundle " + checkpoint_root.string()
-            + " passed compatibility checks, but real single-head parameter loading is not implemented yet");
+        context.model = model::load_checkpoint_bundle_parameters(checkpoint_root.string());
+        append_note(metrics, "model_source=checkpoint_bundle");
+        append_note(metrics, "hidden_head_count=" + std::to_string(context.model.hidden_heads.size()));
     }
     auto end = Clock::now();
     if (metrics != nullptr) {
@@ -1137,7 +1181,11 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
             range_size,
         }) + 2);
     const std::size_t in_size = algebra::next_power_of_two(context.local.num_features + 2);
-    const std::size_t d_size = algebra::next_power_of_two(config.hidden_dim + 2);
+    const std::size_t d_h = hidden_head_width(context.model, config);
+    const std::size_t d_cat = concat_width(context.model, config);
+    const std::size_t d_size = algebra::next_power_of_two(d_h + 2);
+    const std::size_t cat_size = algebra::next_power_of_two(d_cat + 2);
+    const std::size_t c_size = algebra::next_power_of_two(context.local.num_classes + 2);
     const std::size_t n_size = algebra::next_power_of_two(context.local.num_nodes + 2);
 
     context.domains = WorkDomains{
@@ -1145,10 +1193,24 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
         .edge = algebra::RootOfUnityDomain::create("edge", edge_size),
         .in = algebra::RootOfUnityDomain::create("in", in_size),
         .d = algebra::RootOfUnityDomain::create("d", d_size),
+        .cat = algebra::RootOfUnityDomain::create("cat", cat_size),
+        .c = algebra::RootOfUnityDomain::create("C", c_size),
         .n = algebra::RootOfUnityDomain::create("N", n_size),
         .hidden_heads = {},
         .output_head = std::nullopt,
     };
+    if (context.model.has_real_multihead) {
+        context.domains.hidden_heads.assign(
+            context.model.hidden_heads.size(),
+            AttentionHeadDomains{
+                .in = context.domains.in,
+                .d = context.domains.d,
+            });
+        context.domains.output_head = AttentionHeadDomains{
+            .in = context.domains.cat,
+            .d = context.domains.c,
+        };
+    }
     end = Clock::now();
     if (metrics != nullptr) {
         metrics->fft_plan_ms += elapsed_ms(start, end);
@@ -1202,7 +1264,15 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
     add_public_poly(
         context,
         "P_Q_d_valid",
-        make_eval_poly("P_Q_d_valid", build_selector(config.hidden_dim, d_size), context.domains.d));
+        make_eval_poly("P_Q_d_valid", build_selector(d_h, d_size), context.domains.d));
+    add_public_poly(
+        context,
+        "P_Q_cat_valid",
+        make_eval_poly("P_Q_cat_valid", build_selector(d_cat, cat_size), context.domains.cat));
+    add_public_poly(
+        context,
+        "P_Q_C_valid",
+        make_eval_poly("P_Q_C_valid", build_selector(context.local.num_classes, c_size), context.domains.c));
     add_public_poly(
         context,
         "P_Q_tbl_feat",
@@ -1279,17 +1349,21 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
         "V_T_range",
         make_eval_poly("V_T_range", padded(context.tables.range, edge_size), context.domains.edge));
 
-    add_static_commitment(
-        context,
-        "V_W",
-        make_coeff_poly("V_W", algebra::flatten_matrix_coefficients(context.model.W)));
-    add_static_commitment(context, "V_a_src", make_coeff_poly("V_a_src", context.model.a_src));
-    add_static_commitment(context, "V_a_dst", make_coeff_poly("V_a_dst", context.model.a_dst));
-    add_static_commitment(
-        context,
-        "V_W_out",
-        make_coeff_poly("V_W_out", algebra::flatten_matrix_coefficients(context.model.W_out)));
-    add_static_commitment(context, "V_b", make_coeff_poly("V_b", context.model.b));
+    if (!context.model.has_real_multihead) {
+        add_static_commitment(
+            context,
+            "V_W",
+            make_coeff_poly("V_W", algebra::flatten_matrix_coefficients(context.model.W)));
+        add_static_commitment(context, "V_a_src", make_coeff_poly("V_a_src", context.model.a_src));
+        add_static_commitment(context, "V_a_dst", make_coeff_poly("V_a_dst", context.model.a_dst));
+        add_static_commitment(
+            context,
+            "V_W_out",
+            make_coeff_poly("V_W_out", algebra::flatten_matrix_coefficients(context.model.W_out)));
+        add_static_commitment(context, "V_b", make_coeff_poly("V_b", context.model.b));
+    } else {
+        append_note(metrics, "multihead_static_keys_pending");
+    }
     end = Clock::now();
     if (metrics != nullptr) {
         metrics->load_static_ms += elapsed_ms(start, end);
@@ -1540,6 +1614,8 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
     }
 
     Proof proof;
+    proof.public_metadata = build_public_metadata(context);
+    proof.block_order = fixed_proof_block_order();
     for (const auto& label : dynamic_commitment_labels(context)) {
         proof.dynamic_commitments.push_back({label, trace.commitments.at(label)});
     }
@@ -1756,7 +1832,20 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
 }
 
 std::size_t proof_size_bytes(const Proof& proof) {
-    std::size_t total = 0;
+    std::size_t total =
+        proof.public_metadata.protocol_id.size()
+        + proof.public_metadata.model_arch_id.size()
+        + proof.public_metadata.model_param_id.size()
+        + proof.public_metadata.static_table_id.size()
+        + proof.public_metadata.quant_cfg_id.size()
+        + proof.public_metadata.domain_cfg.size()
+        + proof.public_metadata.dim_cfg.size()
+        + proof.public_metadata.encoding_id.size()
+        + proof.public_metadata.padding_rule_id.size()
+        + proof.public_metadata.degree_bound_id.size();
+    for (const auto& label : proof.block_order) {
+        total += label.size();
+    }
     for (const auto& [name, commitment] : proof.dynamic_commitments) {
         (void)name;
         total += crypto::serialized_size(commitment);
@@ -1788,6 +1877,21 @@ void export_run_artifacts(
         challenge_strings[name] = value.to_string();
     }
     util::write_key_values(export_root + "/challenges.txt", challenge_strings);
+
+    const std::map<std::string, std::string> metadata = {
+        {"protocol_id", proof.public_metadata.protocol_id},
+        {"model_arch_id", proof.public_metadata.model_arch_id},
+        {"model_param_id", proof.public_metadata.model_param_id},
+        {"static_table_id", proof.public_metadata.static_table_id},
+        {"quant_cfg_id", proof.public_metadata.quant_cfg_id},
+        {"domain_cfg", proof.public_metadata.domain_cfg},
+        {"dim_cfg", proof.public_metadata.dim_cfg},
+        {"encoding_id", proof.public_metadata.encoding_id},
+        {"padding_rule_id", proof.public_metadata.padding_rule_id},
+        {"degree_bound_id", proof.public_metadata.degree_bound_id},
+    };
+    util::write_key_values(export_root + "/metadata.txt", metadata);
+    util::write_lines(export_root + "/proof_block_order.txt", proof.block_order);
 
     auto format_double = [](double value) {
         std::ostringstream stream;

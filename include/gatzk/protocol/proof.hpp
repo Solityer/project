@@ -31,9 +31,24 @@ struct WorkDomains {
     std::shared_ptr<algebra::RootOfUnityDomain> edge;
     std::shared_ptr<algebra::RootOfUnityDomain> in;
     std::shared_ptr<algebra::RootOfUnityDomain> d;
+    std::shared_ptr<algebra::RootOfUnityDomain> cat;
+    std::shared_ptr<algebra::RootOfUnityDomain> c;
     std::shared_ptr<algebra::RootOfUnityDomain> n;
     std::vector<AttentionHeadDomains> hidden_heads;
     std::optional<AttentionHeadDomains> output_head;
+};
+
+struct PublicMetadata {
+    std::string protocol_id;
+    std::string model_arch_id;
+    std::string model_param_id;
+    std::string static_table_id;
+    std::string quant_cfg_id;
+    std::string domain_cfg;
+    std::string dim_cfg;
+    std::string encoding_id;
+    std::string padding_rule_id;
+    std::string degree_bound_id;
 };
 
 struct ProtocolContext {
@@ -67,6 +82,8 @@ struct DomainOpeningBundle {
 };
 
 struct Proof {
+    PublicMetadata public_metadata;
+    std::vector<std::string> block_order;
     std::vector<std::pair<std::string, crypto::Commitment>> dynamic_commitments;
     std::vector<std::pair<std::string, crypto::Commitment>> quotient_commitments;
     std::vector<std::pair<std::string, DomainOpeningBundle>> domain_openings;

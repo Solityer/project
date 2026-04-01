@@ -1,46 +1,33 @@
-# NOTE_TO_CODE_MAP
+# Note To Code Map
 
-## 映射原则
+## Implemented now
+- `0.3 图、局部子图与排序约定` -> `src/data/loader.cpp`, `tests/test_main.cpp`
+  - Full Cora edges are stable-sorted by `dst`, and every node has an explicit self-loop.
+- `0.5 模型参数` -> `scripts/export_gat_checkpoint.py`, `src/model/gat.cpp`
+  - Real checkpoint bundle loads `8` hidden heads and `1` output attention head.
+- `0.6.2/0.6.3 隐藏层变量` -> `src/model/gat.cpp`, `tests/test_main.cpp`
+  - `H_prime`, `E_src`, `E_dst`, `S`, `Z`, `M`, `Delta`, `U`, `Sum`, `inv`, `alpha`, `H_agg` are checked against full-Cora reference artifacts.
+- `0.6.4 拼接阶段变量` -> `src/model/gat.cpp`
+  - Hidden-head ELU outputs are concatenated into `hidden_concat`.
+- `0.6.5 输出层变量` -> `src/model/gat.cpp`, `tests/test_main.cpp`
+  - Output head `H_prime/E_src/E_dst/.../Y_lin/Y` matches the local reference export.
+- `0.7 工作域` -> `src/protocol/prover.cpp`, `include/gatzk/protocol/proof.hpp`
+  - `H_cat` and `H_C` now exist as explicit work domains inside formal context metadata.
+- `0.8.5 元数据字段表` -> `include/gatzk/protocol/proof.hpp`, `src/protocol/prover.cpp`, `src/protocol/verifier.cpp`
+  - `M_pub` is explicit and verifier-checked.
 
-- `GAT/` 提供官方前向语义真值
-- `project/GAT-ZKML-单层多头.md` 提供协议对象、挑战顺序、工作域、证明顺序真值
-- `project/src` 是正式实现落点
+## Added this round but still incomplete
+- `3.5 最终证明对象` -> `include/gatzk/protocol/proof.hpp`, `src/protocol/prover.cpp`
+  - Fixed proof block order is explicit in `Proof::block_order`.
+- `4.2/4.3 公开对象重建与挑战重放` -> `src/protocol/verifier.cpp`, `src/protocol/challenges.cpp`
+  - Metadata and proof-block order checks are live, but multi-head transcript replay is not finished.
 
-## 章节到代码映射
-
-| 笔记章节 | 对象/语义 | project 落点 | 当前状态 |
-| --- | --- | --- | --- |
-| 0.6.2 / 0.6.3 | hidden 8 heads 的 `H' / E_src / E_dst / S / Z / M / U / alpha / H_agg` | `include/gatzk/model/gat.hpp`, `src/model/gat.cpp` | 已实现 |
-| 0.6.4 / 2.3 | `H_cat / H_cat_star` | `src/model/gat.cpp`, `src/protocol/trace.cpp` | `H_cat` 明文已实现，formal 对象仍待实现 |
-| 0.6.5 / 2.4 | output `Y' / E_src(out) / E_dst(out) / Y / Y_star / PSQ_out` | `src/model/gat.cpp`, `src/protocol/trace.cpp`, `src/protocol/quotients.cpp` | 明文 `Y' / Y` 已实现，formal output 对象大部分待实现 |
-| 0.7.1 | 七个工作域 `FH / edge / in / d_h / cat / C / N` | `include/gatzk/protocol/proof.hpp`, `src/protocol/prover.cpp` | `FH / edge / in / d / N` 已有，`cat / C` 待实现 |
-| 2.2.10 | hidden dst-route delayed finalize | `src/protocol/trace.cpp` | 待实现 |
-| 2.3 | concat witness / bind | `src/protocol/trace.cpp`, `src/protocol/verifier.cpp` | 待实现 |
-| 2.4 | output witness / bind / PSQ_out | `src/protocol/trace.cpp`, `src/protocol/verifier.cpp`, `src/protocol/quotients.cpp` | 待实现 |
-| 3.3.11 | `t_cat` | `src/protocol/quotients.cpp` | 待实现 |
-| 3.3.12 | `t_C` | `src/protocol/quotients.cpp` | 待实现 |
-| 3.5 | `M_pub / Com_dyn / S_route / Eval_ext / Eval_dom / Com_quot / Open_dom / W_ext / Pi_bind` | `include/gatzk/protocol/proof.hpp`, `src/protocol/prover.cpp`, `src/protocol/verifier.cpp` | 待实现 |
-
-## 当前单头硬编码点
-
-- `src/protocol/trace.cpp`
-  - 只有单套 `P_H_prime / P_E_src / P_E_dst / P_H_star / P_H_agg_star / P_Y_lin / P_Y`
-- `src/protocol/quotients.cpp`
-  - 只有 `t_FH / t_edge / t_in / t_d / t_N`
-- `src/protocol/verifier.cpp`
-  - 只按单头 bundle label 回放
-
-## 本轮新增
-
-- full Cora multi-head forward parity 测试
-- context-aware dynamic commitment label scaffold
-- attention self-loop aggregation 修正
-
-## 仍待实现
-
-- `H_cat_star`
-- `H_C`
-- `Y'_star / Y'_star_edge / widehat_y_star / Y_star / Y_star_edge`
-- `PSQ_out`
-- `t_cat / t_C`
-- metadata `M_pub`
+## Still pending
+- `2.3 拼接阶段`
+  - Formal `H_cat` and `H_cat_star` witness columns.
+- `2.4 输出层的完整见证生成`
+  - Formal `Y'_star`, `Y'_star_edge`, `widehat_y_star`, `Y_star`, `Y_star_edge`, `PSQ_out`.
+- `3.3.11/3.3.12`
+  - `t_cat` and `t_C`.
+- `4.5/4.6`
+  - Seven-domain quotient verification and tensor binding checks under the multi-head layout.

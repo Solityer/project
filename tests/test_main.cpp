@@ -344,9 +344,21 @@ gatzk::util::AppConfig full_graph_debug_config() {
     return config;
 }
 
+gatzk::util::AppConfig full_graph_formal_config() {
+    return gatzk::util::load_config(repo_path("configs/cora_full.cfg"));
+}
+
 const ProtocolContext& full_graph_debug_context() {
     static const auto context = []() {
         const auto config = full_graph_debug_config();
+        return gatzk::protocol::build_context(config);
+    }();
+    return context;
+}
+
+const ProtocolContext& full_graph_formal_context() {
+    static const auto context = []() {
+        const auto config = full_graph_formal_config();
         return gatzk::protocol::build_context(config);
     }();
     return context;
@@ -439,6 +451,20 @@ void test_full_cora_bias_matches_reference() {
     const auto& context = full_graph_debug_context();
     const auto bias = gatzk::model::build_attention_bias_matrix(context.local.num_nodes, context.local.edges);
     compare_matrix_npy(bias, ensure_reference_outputs() / "inputs/bias.npy", "bias");
+}
+
+void test_formal_full_cora_builds_multihead_context_with_cat_and_C_domains() {
+    const auto& context = full_graph_formal_context();
+    require(context.model.has_real_multihead, "formal full cora context must load real multi-head parameters");
+    require(context.model.hidden_heads.size() == 8, "formal full cora context must expose 8 hidden heads");
+    require(context.domains.cat != nullptr, "formal full cora context must define H_cat");
+    require(context.domains.c != nullptr, "formal full cora context must define H_C");
+    require(context.domains.cat->size >= 64, "H_cat domain must cover d_cat=64");
+    require(context.domains.c->size >= context.local.num_classes, "H_C domain must cover class count");
+    require(context.domains.c.get() != context.domains.d.get(), "H_C must be a distinct domain object");
+    require(context.domains.c->name == "C", "H_C domain must carry the C label");
+    require(context.domains.hidden_heads.size() == 8, "formal full cora context must materialize per-head domain slots");
+    require(context.domains.output_head.has_value(), "formal full cora context must materialize output-head domain slots");
 }
 
 void test_checkpoint_bundle_manifest_detects_architecture_mismatch() {
@@ -695,6 +721,27 @@ void test_tampered_witness_fails() {
     require(!gatzk::protocol::verify(fixture.context, tampered), "tampered witness scalar must be rejected");
 }
 
+void test_metadata_mismatch_fails() {
+    const auto& fixture = small_proof_fixture();
+    auto tampered = fixture.proof;
+    tampered.public_metadata.protocol_id = "broken";
+    require(!gatzk::protocol::verify(fixture.context, tampered), "metadata mismatch must be rejected");
+}
+
+void test_proof_block_order_mismatch_fails() {
+    const auto& fixture = small_proof_fixture();
+    auto tampered = fixture.proof;
+    require(!tampered.block_order.empty(), "proof must carry fixed block order");
+    std::swap(tampered.block_order.front(), tampered.block_order.back());
+    require(!gatzk::protocol::verify(fixture.context, tampered), "proof block order mismatch must be rejected");
+}
+
+void test_wrong_H_C_domain_reuse_fails() {
+    auto tampered_context = small_proof_fixture().context;
+    tampered_context.domains.c = tampered_context.domains.d;
+    require(!gatzk::protocol::verify(tampered_context, small_proof_fixture().proof), "wrong H_C reuse must be rejected");
+}
+
 }  // namespace
 
 int main() {
@@ -702,6 +749,7 @@ int main() {
         {"full_graph_config_parse", test_full_graph_config_parse},
         {"full_cora_edges_are_dst_sorted_and_self_looped", test_full_cora_edges_are_dst_sorted_and_self_looped},
         {"full_cora_bias_matches_reference", test_full_cora_bias_matches_reference},
+        {"formal_full_cora_builds_multihead_context_with_cat_and_C_domains", test_formal_full_cora_builds_multihead_context_with_cat_and_C_domains},
         {"checkpoint_bundle_manifest_detects_architecture_mismatch", test_checkpoint_bundle_manifest_detects_architecture_mismatch},
         {"real_checkpoint_bundle_loads_multihead_parameters", test_real_checkpoint_bundle_loads_multihead_parameters},
         {"reference_style_multihead_forward_shapes", test_reference_style_multihead_forward_shapes},
@@ -715,6 +763,9 @@ int main() {
         {"agg_witness_commitment_opening_consistency", test_agg_witness_commitment_opening_consistency},
         {"prove_verify_round_trip", test_prove_verify_round_trip},
         {"tampered_witness_fails", test_tampered_witness_fails},
+        {"metadata_mismatch_fails", test_metadata_mismatch_fails},
+        {"proof_block_order_mismatch_fails", test_proof_block_order_mismatch_fails},
+        {"wrong_H_C_domain_reuse_fails", test_wrong_H_C_domain_reuse_fails},
     };
 
     try {

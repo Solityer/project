@@ -1,40 +1,28 @@
-# TEST_PLAN
+# Test Plan
 
-## 主测试原则
-
-- 主流程测试必须基于全量真实 Cora
-- 不允许用 toy / mock / sampled graph 替代主验证
-- 小规模 synthetic 只保留纯协议回归和纯函数单测
-
-## 已有测试
-
-### Full Cora
-
-- `full_graph_config_parse`
-  - 目标：验证正式 `cora_full.cfg`
-- `real_checkpoint_bundle_loads_multihead_parameters`
-  - 目标：验证真实 bundle 读取
-- `reference_style_multihead_forward_shapes`
-  - 目标：验证 hidden/output 多头结构 shape
-- `reference_style_multihead_forward_matches_reference_artifacts`
-  - 目标：验证 full Cora 多头前向 parity
+## Full-Cora main tests
 - `full_cora_edges_are_dst_sorted_and_self_looped`
-  - 目标：验证 full Cora 边按 `dst` 排序且每节点有 self-loop
+  - Checks topology ordering and self-loop guarantees on the real Cora graph.
 - `full_cora_bias_matches_reference`
-  - 目标：验证 bias 与 reference 一致
+  - Checks the dense attention mask against the project-local reference export.
+- `formal_full_cora_builds_multihead_context_with_cat_and_C_domains`
+  - Checks real multi-head bundle loading and explicit `H_cat/H_C` domains.
+- `reference_style_multihead_forward_shapes`
+  - Checks hidden/output head shapes on full Cora.
+- `reference_style_multihead_forward_matches_reference_artifacts`
+  - Checks project forward against reference artifacts for hidden heads, concat, and output head.
 
-### 协议回归
-
-- `prove_verify_round_trip`
-- `tampered_witness_fails`
-- `selector_padding_consistency`
+## Formal regression tests
 - `transcript_order_consistency`
 - `agg_witness_commitment_opening_consistency`
+- `prove_verify_round_trip`
+- `tampered_witness_fails`
+- `metadata_mismatch_fails`
+- `proof_block_order_mismatch_fails`
+- `wrong_H_C_domain_reuse_fails`
 
-## 本轮后续待补
-
-- hidden per-head formal object existence tests
-- `H_cat / H_cat_star` object tests
-- `H_C` domain tests
-- output `Y'_star / Y_star / PSQ_out` object tests
-- proof block order tests for `M_pub / Com_dyn / S_route / Eval_ext / Eval_dom / Com_quot / Open_dom / W_ext / Pi_bind`
+## Current missing tests
+- Full-Cora formal `H_cat/H_cat_star` consistency
+- Full-Cora formal `Y/Y_star/PSQ_out` consistency
+- Tamper rejection for `H_cat_star`, `Y_star`, and `PSQ_out`
+- Full-Cora multi-head formal prove/verify round-trip
