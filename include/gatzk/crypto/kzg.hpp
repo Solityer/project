@@ -26,6 +26,12 @@ struct Commitment {
     algebra::FieldElement tau_evaluation = algebra::FieldElement::zero();
 };
 
+struct BatchOpeningProfile {
+    double precompute_ms = 0.0;
+    double fold_commitment_ms = 0.0;
+    double finalize_ms = 0.0;
+};
+
 std::size_t serialized_size(const Commitment& commitment);
 
 class KZG {
@@ -49,7 +55,8 @@ class KZG {
         const std::vector<algebra::FieldElement>& points,
         const std::vector<std::vector<algebra::FieldElement>>& claimed_values,
         const algebra::FieldElement& folding_challenge,
-        const KZGKeyPair& key);
+        const KZGKeyPair& key,
+        BatchOpeningProfile* profile = nullptr);
 
     static bool verify_batch(
         const std::vector<Commitment>& commitments,

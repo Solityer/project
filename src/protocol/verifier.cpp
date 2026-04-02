@@ -2,10 +2,15 @@
 
 #include <chrono>
 #include <future>
+#include <memory>
+#include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 
+#include "gatzk/algebra/eval_backend.hpp"
 #include "gatzk/protocol/challenges.hpp"
 #include "gatzk/protocol/quotients.hpp"
 #include "gatzk/util/route2.hpp"
@@ -20,6 +25,206 @@ using Clock = std::chrono::steady_clock;
 double elapsed_ms(const Clock::time_point& start, const Clock::time_point& end) {
     return std::chrono::duration<double, std::milli>(end - start).count();
 }
+
+std::string point_key(const FieldElement& point) {
+    return point.to_string();
+}
+
+std::string domain_point_key(
+    const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
+    const FieldElement& point) {
+    return domain->name + ":" + std::to_string(domain->size) + ":" + point_key(point);
+}
+
+struct DomainEvaluationWeights {
+    std::optional<std::size_t> direct_index;
+    std::vector<mcl::Fr> native_weights;
+    algebra::PackedFieldBuffer packed_weights;
+};
+
+class VerifierDomainWeightCache {
+  public:
+    const DomainEvaluationWeights& get(
+        const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
+        const FieldElement& point) {
+        const auto cache_key = domain_point_key(domain, point);
+        if (const auto it = entries_.find(cache_key); it != entries_.end()) {
+            return it->second;
+        }
+
+        DomainEvaluationWeights entry;
+        for (std::size_t i = 0; i < domain->points.size(); ++i) {
+            if (domain->points[i] == point) {
+                entry.direct_index = i;
+                break;
+            }
+        }
+        if (!entry.direct_index.has_value()) {
+            entry.native_weights = domain->barycentric_weights_native(point);
+            algebra::pack_native_field_elements_into(entry.native_weights, &entry.packed_weights);
+        }
+
+        auto [it, inserted] = entries_.emplace(cache_key, std::move(entry));
+        (void)inserted;
+        return it->second;
+    }
+
+  private:
+    std::unordered_map<std::string, DomainEvaluationWeights> entries_;
+};
+
+class PublicEvaluationBackendRegistry {
+  public:
+    explicit PublicEvaluationBackendRegistry(const ProtocolContext& context) {
+        std::unordered_map<std::string, PolynomialBatchGroup> groups;
+        for (const auto& [name, polynomial] : context.public_polynomials) {
+            if (polynomial.basis != algebra::PolynomialBasis::Evaluation || polynomial.domain == nullptr) {
+                continue;
+            }
+            const auto domain_key = polynomial.domain->name + ":" + std::to_string(polynomial.domain->size);
+            auto& group = groups[domain_key];
+            if (group.polynomials.empty()) {
+                group.domain = polynomial.domain;
+            }
+            group.polynomials.push_back({name, &polynomial});
+            group.labels.push_back(name);
+        }
+
+        for (auto& [domain_key, group] : groups) {
+            auto [it, inserted] = backends_.emplace(
+                domain_key,
+                algebra::PackedEvaluationBackend(group.domain, std::move(group.polynomials)));
+            (void)inserted;
+            labels_.emplace(domain_key, std::move(group.labels));
+            domain_keys_.emplace(group.domain.get(), domain_key);
+        }
+    }
+
+    const algebra::PackedEvaluationBackend* find(const std::shared_ptr<algebra::RootOfUnityDomain>& domain) const {
+        const auto it = domain_keys_.find(domain.get());
+        if (it == domain_keys_.end()) {
+            return nullptr;
+        }
+        if (const auto backend = backends_.find(it->second); backend != backends_.end()) {
+            return &backend->second;
+        }
+        return nullptr;
+    }
+
+    const std::vector<std::string>* labels(const std::shared_ptr<algebra::RootOfUnityDomain>& domain) const {
+        const auto it = domain_keys_.find(domain.get());
+        if (it == domain_keys_.end()) {
+            return nullptr;
+        }
+        if (const auto labels = labels_.find(it->second); labels != labels_.end()) {
+            return &labels->second;
+        }
+        return nullptr;
+    }
+
+  private:
+    struct PolynomialBatchGroup {
+        std::shared_ptr<algebra::RootOfUnityDomain> domain;
+        std::vector<std::pair<std::string, const algebra::Polynomial*>> polynomials;
+        std::vector<std::string> labels;
+    };
+
+    std::unordered_map<std::string, algebra::PackedEvaluationBackend> backends_;
+    std::unordered_map<std::string, std::vector<std::string>> labels_;
+    std::unordered_map<const algebra::RootOfUnityDomain*, std::string> domain_keys_;
+};
+
+struct OpenedValueView {
+    const std::vector<FieldElement>* points = nullptr;
+    const std::vector<FieldElement>* values = nullptr;
+};
+
+class VerifierEvaluationMemoization {
+  public:
+    VerifierEvaluationMemoization(
+        const ProtocolContext& context,
+        const std::unordered_map<std::string, OpenedValueView>& opened_values,
+        std::shared_ptr<const PublicEvaluationBackendRegistry> backend_registry)
+        : context_(context),
+          opened_values_(opened_values),
+          backend_registry_(std::move(backend_registry)) {}
+
+    FieldElement eval_named(const std::string& name, const FieldElement& point) {
+        const auto cache_key = name + "@" + point_key(point);
+        if (const auto it = value_cache_.find(cache_key); it != value_cache_.end()) {
+            return it->second;
+        }
+
+        FieldElement value = FieldElement::zero();
+        if (const auto it = context_.public_polynomials.find(name); it != context_.public_polynomials.end()) {
+            value = eval_public_polynomial(it->second, point);
+        } else if (const auto it = opened_values_.find(name); it != opened_values_.end()) {
+            value = opened_value(*it->second.points, *it->second.values, name, point);
+        } else {
+            throw std::runtime_error("missing verifier evaluation for " + name);
+        }
+
+        value_cache_.emplace(cache_key, value);
+        return value;
+    }
+
+  private:
+    FieldElement opened_value(
+        const std::vector<FieldElement>& points,
+        const std::vector<FieldElement>& values,
+        const std::string& name,
+        const FieldElement& point) const {
+        for (std::size_t i = 0; i < points.size(); ++i) {
+            if (points[i] == point) {
+                return values[i];
+            }
+        }
+        throw std::runtime_error("missing opened verifier value for " + name);
+    }
+
+    FieldElement eval_public_polynomial(const algebra::Polynomial& polynomial, const FieldElement& point) {
+        if (polynomial.basis == algebra::PolynomialBasis::Coefficient || polynomial.domain == nullptr || backend_registry_ == nullptr) {
+            return polynomial.evaluate(point);
+        }
+
+        const auto* backend = backend_registry_->find(polynomial.domain);
+        const auto* labels = backend_registry_->labels(polynomial.domain);
+        if (backend == nullptr || labels == nullptr) {
+            return polynomial.evaluate(point);
+        }
+
+        const auto domain_cache_key = domain_point_key(polynomial.domain, point);
+        if (!precomputed_domain_points_.contains(domain_cache_key)) {
+            const auto& weight_entry = domain_weight_cache_.get(polynomial.domain, point);
+            std::vector<FieldElement> values;
+            if (weight_entry.direct_index.has_value()) {
+                values = backend->values_at_direct_index(*labels, *weight_entry.direct_index);
+            } else {
+                values = backend->evaluate_with_packed_native_weights(
+                    *labels,
+                    weight_entry.native_weights,
+                    weight_entry.packed_weights);
+            }
+            for (std::size_t i = 0; i < labels->size(); ++i) {
+                value_cache_.emplace((*labels)[i] + "@" + point_key(point), values[i]);
+            }
+            precomputed_domain_points_.emplace(domain_cache_key);
+        }
+
+        const auto cache_key = polynomial.name + "@" + point_key(point);
+        if (const auto it = value_cache_.find(cache_key); it != value_cache_.end()) {
+            return it->second;
+        }
+        return polynomial.evaluate(point);
+    }
+
+    const ProtocolContext& context_;
+    const std::unordered_map<std::string, OpenedValueView>& opened_values_;
+    std::shared_ptr<const PublicEvaluationBackendRegistry> backend_registry_;
+    VerifierDomainWeightCache domain_weight_cache_;
+    std::unordered_map<std::string, FieldElement> value_cache_;
+    std::unordered_set<std::string> precomputed_domain_points_;
+};
 
 struct BundleVerificationInput {
     const DomainOpeningBundle* bundle = nullptr;
@@ -206,11 +411,14 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
         }
         for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index) {
             if (!witness_scalars.contains("S_src_h" + std::to_string(head_index))
-                || !witness_scalars.contains("S_dst_h" + std::to_string(head_index))) {
+                || !witness_scalars.contains("S_dst_h" + std::to_string(head_index))
+                || !witness_scalars.contains("S_t_h" + std::to_string(head_index))) {
                 return false;
             }
         }
-        if (!witness_scalars.contains("S_src_out") || !witness_scalars.contains("S_dst_out")) {
+        if (!witness_scalars.contains("S_src_out")
+            || !witness_scalars.contains("S_dst_out")
+            || !witness_scalars.contains("S_t_out")) {
             return false;
         }
         for (const auto& spec : multihead_external_specs(context)) {
@@ -235,30 +443,23 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
             {"C", "C", context.domains.c, "z_C", "v_C", "t_C"},
             {"N", "N", context.domains.n, "z_N", "v_N", "t_N"},
         };
-        std::unordered_map<std::string, FieldElement> eval_cache;
+        std::unordered_map<std::string, OpenedValueView> opened_values;
+        opened_values.reserve(proof.domain_openings.size() * 16);
+        for (const auto& [bundle_name, bundle] : proof.domain_openings) {
+            (void)bundle_name;
+            for (const auto& [label, values] : bundle.values) {
+                opened_values.emplace(
+                    label,
+                    OpenedValueView{
+                        .points = &bundle.points,
+                        .values = &values,
+                    });
+            }
+        }
+        auto public_backend_registry = std::make_shared<PublicEvaluationBackendRegistry>(context);
+        VerifierEvaluationMemoization eval_memo(context, opened_values, public_backend_registry);
         const auto eval = [&](const std::string& name, const FieldElement& point) -> FieldElement {
-            const auto cache_key = name + "@" + point.to_string();
-            if (const auto it = eval_cache.find(cache_key); it != eval_cache.end()) {
-                return it->second;
-            }
-            FieldElement value = FieldElement::zero();
-            if (const auto it = context.public_polynomials.find(name); it != context.public_polynomials.end()) {
-                value = it->second.evaluate(point);
-            } else {
-                for (const auto& spec : bundle_specs) {
-                    const auto* bundle = bundle_by_name(proof, spec.bundle_name);
-                    for (const auto& [label, _] : bundle->values) {
-                        if (label == name) {
-                            value = bundle_value(*bundle, name, point);
-                            eval_cache.emplace(cache_key, value);
-                            return value;
-                        }
-                    }
-                }
-                throw std::runtime_error("missing opened value for " + name);
-            }
-            eval_cache.emplace(cache_key, value);
-            return value;
+            return eval_memo.eval_named(name, point);
         };
         auto verify_bundle_spec = [&](const BundleSpec& spec) {
             const auto* bundle = bundle_by_name(proof, spec.bundle_name);

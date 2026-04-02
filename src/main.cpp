@@ -21,6 +21,26 @@ int main(int argc, char** argv) {
             stream << std::fixed << std::setprecision(3) << value;
             return stream.str();
         };
+        auto clamp_non_negative = [](double value) {
+            return value < 0.0 ? 0.0 : value;
+        };
+        auto prove_accounted_ms = [](const gatzk::protocol::RunMetrics& metrics) {
+            return metrics.forward_ms
+                + metrics.trace_generation_ms
+                + metrics.commit_dynamic_ms
+                + metrics.quotient_build_ms
+                + metrics.domain_opening_ms
+                + metrics.external_opening_ms
+                + metrics.prove_finalize_ms;
+        };
+        auto verify_accounted_ms = [](const gatzk::protocol::RunMetrics& metrics) {
+            return metrics.verify_metadata_ms
+                + metrics.verify_transcript_ms
+                + metrics.verify_domain_opening_ms
+                + metrics.verify_quotient_ms
+                + metrics.verify_external_fold_ms
+                + metrics.verify_misc_ms;
+        };
         auto append_note = [](gatzk::protocol::RunMetrics& metrics, const std::string& note) {
             if (note.empty()) {
                 return;
@@ -88,7 +108,12 @@ int main(int argc, char** argv) {
         const auto absolute_config_path = std::filesystem::absolute(config_path).string();
         gatzk::util::set_route2_options(route2);
 
-        auto run_once = [&](const gatzk::util::AppConfig& run_config, bool is_cold_run, const std::string& mode_label) {
+        auto run_once = [&](
+                            const gatzk::util::AppConfig& run_config,
+                            bool is_cold_run,
+                            const std::string& mode_label,
+                            bool export_artifacts = true,
+                            bool log_benchmark = true) {
             gatzk::protocol::RunMetrics metrics;
             metrics.backend_name = gatzk::crypto::backend_name();
             metrics.config = absolute_config_path;
@@ -114,7 +139,10 @@ int main(int argc, char** argv) {
                 + " benchmark_mode=" + mode_label
                 + " route2=" + gatzk::util::route2_feature_label(route2));
             gatzk::util::info("building protocol context");
+            const auto context_start = std::chrono::steady_clock::now();
             const auto context = gatzk::protocol::build_context(run_config, &metrics);
+            const auto context_end = std::chrono::steady_clock::now();
+            metrics.context_build_ms = std::chrono::duration<double, std::milli>(context_end - context_start).count();
             metrics.dataset = context.dataset.name;
             metrics.node_count = context.local.num_nodes;
             metrics.edge_count = context.local.edges.size();
@@ -127,90 +155,152 @@ int main(int argc, char** argv) {
             }
 
             gatzk::util::info("building trace");
+            const auto trace_start = std::chrono::steady_clock::now();
             const auto trace = gatzk::protocol::build_trace(context, &metrics);
             gatzk::util::info("proving");
+            const auto pcs_start = std::chrono::steady_clock::now();
             const auto proof = gatzk::protocol::prove(context, trace, &metrics);
+            const auto pcs_end = std::chrono::steady_clock::now();
+            metrics.trace_misc_ms = clamp_non_negative(
+                metrics.trace_generation_ms
+                - metrics.lookup_trace_ms
+                - metrics.route_trace_ms
+                - metrics.zkmap_trace_ms
+                - metrics.state_machine_trace_ms
+                - metrics.padding_selector_trace_ms
+                - metrics.public_poly_trace_ms
+                - metrics.hidden_head_trace_ms
+                - metrics.output_head_trace_ms);
+            const auto prove_core_ms = std::chrono::duration<double, std::milli>(pcs_end - trace_start).count();
+            metrics.prove_time_ms = prove_core_ms;
+            metrics.prove_finalize_ms = clamp_non_negative(
+                metrics.prove_time_ms
+                - metrics.forward_ms
+                - metrics.trace_generation_ms
+                - metrics.commit_dynamic_ms
+                - metrics.quotient_build_ms
+                - metrics.domain_opening_ms
+                - metrics.external_opening_ms);
+            metrics.prove_accounted_ms = prove_accounted_ms(metrics);
+            metrics.prove_accounting_gap_ms = metrics.prove_time_ms - metrics.prove_accounted_ms;
             gatzk::util::info("verifying");
             const auto verify_start = std::chrono::steady_clock::now();
             const auto accepted = gatzk::protocol::verify(context, proof, &metrics);
             const auto verify_end = std::chrono::steady_clock::now();
             metrics.verify_time_ms = std::chrono::duration<double, std::milli>(verify_end - verify_start).count();
+            metrics.verify_misc_ms = clamp_non_negative(
+                metrics.verify_time_ms
+                - metrics.verify_metadata_ms
+                - metrics.verify_transcript_ms
+                - metrics.verify_domain_opening_ms
+                - metrics.verify_quotient_ms
+                - metrics.verify_external_fold_ms);
+            metrics.verify_accounted_ms = verify_accounted_ms(metrics);
+            metrics.verify_accounting_gap_ms = metrics.verify_time_ms - metrics.verify_accounted_ms;
             metrics.proof_size_bytes = gatzk::protocol::proof_size_bytes(proof);
 
-            gatzk::util::info(
-                "benchmark backend_name=" + metrics.backend_name
-                + " config=" + metrics.config
-                + " dataset=" + metrics.dataset
-                + " node_count=" + std::to_string(metrics.node_count)
-                + " edge_count=" + std::to_string(metrics.edge_count)
-                + " enabled_fast_msm=" + std::string(metrics.enabled_fast_msm ? "true" : "false")
-                + " enabled_parallel_fft=" + std::string(metrics.enabled_parallel_fft ? "true" : "false")
-                + " enabled_fft_backend_upgrade=" + std::string(metrics.enabled_fft_backend_upgrade ? "true" : "false")
-                + " enabled_fft_kernel_upgrade=" + std::string(metrics.enabled_fft_kernel_upgrade ? "true" : "false")
-                + " enabled_trace_layout_upgrade=" + std::string(metrics.enabled_trace_layout_upgrade ? "true" : "false")
-                + " fft_backend_route=" + metrics.fft_backend_route
-                + " enabled_fast_verify_pairing=" + std::string(metrics.enabled_fast_verify_pairing ? "true" : "false")
-                + " is_cold_run=" + std::string(metrics.is_cold_run ? "true" : "false")
-                + " is_full_dataset=" + std::string(metrics.is_full_dataset ? "true" : "false")
-                + " load_static_ms=" + format_ms(metrics.load_static_ms)
-                + " fft_plan_ms=" + format_ms(metrics.fft_plan_ms)
-                + " srs_prepare_ms=" + format_ms(metrics.srs_prepare_ms)
-                + " forward_ms=" + format_ms(metrics.forward_ms)
-                + " feature_projection_ms=" + format_ms(metrics.feature_projection_ms)
-                + " hidden_forward_projection_ms=" + format_ms(metrics.hidden_forward_projection_ms)
-                + " hidden_forward_attention_ms=" + format_ms(metrics.hidden_forward_attention_ms)
-                + " hidden_forward_activation_ms=" + format_ms(metrics.hidden_forward_activation_ms)
-                + " hidden_concat_ms=" + format_ms(metrics.hidden_concat_ms)
-                + " output_forward_projection_ms=" + format_ms(metrics.output_forward_projection_ms)
-                + " output_forward_attention_ms=" + format_ms(metrics.output_forward_attention_ms)
-                + " output_forward_activation_ms=" + format_ms(metrics.output_forward_activation_ms)
-                + " trace_generation_ms=" + format_ms(metrics.trace_generation_ms)
-                + " witness_materialization_ms=" + format_ms(metrics.witness_materialization_ms)
-                + " lookup_trace_ms=" + format_ms(metrics.lookup_trace_ms)
-                + " route_trace_ms=" + format_ms(metrics.route_trace_ms)
-                + " psq_trace_ms=" + format_ms(metrics.psq_trace_ms)
-                + " zkmap_trace_ms=" + format_ms(metrics.zkmap_trace_ms)
-                + " commit_dynamic_ms=" + format_ms(metrics.commit_dynamic_ms)
-                + " dynamic_commit_input_ms=" + format_ms(metrics.dynamic_commit_input_ms)
-                + " dynamic_polynomial_materialization_ms=" + format_ms(metrics.dynamic_polynomial_materialization_ms)
-                + " dynamic_commit_msm_ms=" + format_ms(metrics.dynamic_commit_msm_ms)
-                + " dynamic_commit_finalize_ms=" + format_ms(metrics.dynamic_commit_finalize_ms)
-                + " quotient_build_ms=" + format_ms(metrics.quotient_build_ms)
-                + " quotient_t_fh_ms=" + format_ms(metrics.quotient_t_fh_ms)
-                + " quotient_t_edge_ms=" + format_ms(metrics.quotient_t_edge_ms)
-                + " quotient_t_in_ms=" + format_ms(metrics.quotient_t_in_ms)
-                + " quotient_t_d_h_ms=" + format_ms(metrics.quotient_t_d_h_ms)
-                + " quotient_t_cat_ms=" + format_ms(metrics.quotient_t_cat_ms)
-                + " quotient_t_C_ms=" + format_ms(metrics.quotient_t_c_ms)
-                + " quotient_t_N_ms=" + format_ms(metrics.quotient_t_n_ms)
-                + " domain_opening_ms=" + format_ms(metrics.domain_opening_ms)
-                + " domain_eval_gather_ms=" + format_ms(metrics.domain_eval_gather_ms)
-                + " domain_open_witness_ms=" + format_ms(metrics.domain_open_witness_ms)
-                + " domain_open_FH_ms=" + format_ms(metrics.domain_open_fh_ms)
-                + " domain_open_edge_ms=" + format_ms(metrics.domain_open_edge_ms)
-                + " domain_open_in_ms=" + format_ms(metrics.domain_open_in_ms)
-                + " domain_open_d_h_ms=" + format_ms(metrics.domain_open_d_h_ms)
-                + " domain_open_cat_ms=" + format_ms(metrics.domain_open_cat_ms)
-                + " domain_open_C_ms=" + format_ms(metrics.domain_open_c_ms)
-                + " domain_open_N_ms=" + format_ms(metrics.domain_open_n_ms)
-                + " external_opening_ms=" + format_ms(metrics.external_opening_ms)
-                + " prove_time_ms=" + format_ms(metrics.prove_time_ms)
-                + " verify_time_ms=" + format_ms(metrics.verify_time_ms)
-                + " verify_metadata_ms=" + format_ms(metrics.verify_metadata_ms)
-                + " verify_transcript_ms=" + format_ms(metrics.verify_transcript_ms)
-                + " verify_domain_opening_ms=" + format_ms(metrics.verify_domain_opening_ms)
-                + " verify_quotient_ms=" + format_ms(metrics.verify_quotient_ms)
-                + " verify_external_fold_ms=" + format_ms(metrics.verify_external_fold_ms)
-                + " verify_FH_ms=" + format_ms(metrics.verify_fh_ms)
-                + " verify_edge_ms=" + format_ms(metrics.verify_edge_ms)
-                + " verify_in_ms=" + format_ms(metrics.verify_in_ms)
-                + " verify_d_h_ms=" + format_ms(metrics.verify_d_h_ms)
-                + " verify_cat_ms=" + format_ms(metrics.verify_cat_ms)
-                + " verify_C_ms=" + format_ms(metrics.verify_c_ms)
-                + " verify_N_ms=" + format_ms(metrics.verify_n_ms)
-                + " proof_size_bytes=" + std::to_string(metrics.proof_size_bytes)
-                + " notes=\"" + metrics.notes + "\"");
-            gatzk::protocol::export_run_artifacts(context, trace, proof, metrics, accepted);
+            if (log_benchmark) {
+                gatzk::util::info(
+                    "benchmark backend_name=" + metrics.backend_name
+                    + " config=" + metrics.config
+                    + " dataset=" + metrics.dataset
+                    + " node_count=" + std::to_string(metrics.node_count)
+                    + " edge_count=" + std::to_string(metrics.edge_count)
+                    + " enabled_fast_msm=" + std::string(metrics.enabled_fast_msm ? "true" : "false")
+                    + " enabled_parallel_fft=" + std::string(metrics.enabled_parallel_fft ? "true" : "false")
+                    + " enabled_fft_backend_upgrade=" + std::string(metrics.enabled_fft_backend_upgrade ? "true" : "false")
+                    + " enabled_fft_kernel_upgrade=" + std::string(metrics.enabled_fft_kernel_upgrade ? "true" : "false")
+                    + " enabled_trace_layout_upgrade=" + std::string(metrics.enabled_trace_layout_upgrade ? "true" : "false")
+                    + " fft_backend_route=" + metrics.fft_backend_route
+                    + " enabled_fast_verify_pairing=" + std::string(metrics.enabled_fast_verify_pairing ? "true" : "false")
+                    + " is_cold_run=" + std::string(metrics.is_cold_run ? "true" : "false")
+                    + " is_full_dataset=" + std::string(metrics.is_full_dataset ? "true" : "false")
+                    + " context_build_ms=" + format_ms(metrics.context_build_ms)
+                    + " load_static_ms=" + format_ms(metrics.load_static_ms)
+                    + " fft_plan_ms=" + format_ms(metrics.fft_plan_ms)
+                    + " srs_prepare_ms=" + format_ms(metrics.srs_prepare_ms)
+                    + " forward_ms=" + format_ms(metrics.forward_ms)
+                    + " feature_projection_ms=" + format_ms(metrics.feature_projection_ms)
+                    + " hidden_forward_projection_ms=" + format_ms(metrics.hidden_forward_projection_ms)
+                    + " hidden_forward_attention_ms=" + format_ms(metrics.hidden_forward_attention_ms)
+                    + " hidden_forward_activation_ms=" + format_ms(metrics.hidden_forward_activation_ms)
+                    + " hidden_concat_ms=" + format_ms(metrics.hidden_concat_ms)
+                    + " output_forward_projection_ms=" + format_ms(metrics.output_forward_projection_ms)
+                    + " output_forward_attention_ms=" + format_ms(metrics.output_forward_attention_ms)
+                    + " output_forward_activation_ms=" + format_ms(metrics.output_forward_activation_ms)
+                    + " trace_generation_ms=" + format_ms(metrics.trace_generation_ms)
+                    + " trace_misc_ms=" + format_ms(metrics.trace_misc_ms)
+                    + " witness_materialization_ms=" + format_ms(metrics.witness_materialization_ms)
+                    + " lookup_trace_ms=" + format_ms(metrics.lookup_trace_ms)
+                    + " route_trace_ms=" + format_ms(metrics.route_trace_ms)
+                    + " psq_trace_ms=" + format_ms(metrics.psq_trace_ms)
+                    + " zkmap_trace_ms=" + format_ms(metrics.zkmap_trace_ms)
+                    + " state_machine_trace_ms=" + format_ms(metrics.state_machine_trace_ms)
+                    + " padding_selector_trace_ms=" + format_ms(metrics.padding_selector_trace_ms)
+                    + " public_poly_trace_ms=" + format_ms(metrics.public_poly_trace_ms)
+                    + " hidden_head_trace_ms=" + format_ms(metrics.hidden_head_trace_ms)
+                    + " output_head_trace_ms=" + format_ms(metrics.output_head_trace_ms)
+                    + " fh_table_materialization_ms=" + format_ms(metrics.fh_table_materialization_ms)
+                    + " fh_query_materialization_ms=" + format_ms(metrics.fh_query_materialization_ms)
+                    + " fh_multiplicity_build_ms=" + format_ms(metrics.fh_multiplicity_build_ms)
+                    + " fh_accumulator_build_ms=" + format_ms(metrics.fh_accumulator_build_ms)
+                    + " fh_interpolation_ms=" + format_ms(metrics.fh_interpolation_ms)
+                    + " fh_eval_prep_ms=" + format_ms(metrics.fh_eval_prep_ms)
+                    + " fh_public_eval_reuse_ms=" + format_ms(metrics.fh_public_eval_reuse_ms)
+                    + " fh_quotient_assembly_ms=" + format_ms(metrics.fh_quotient_assembly_ms)
+                    + " fh_open_gather_ms=" + format_ms(metrics.fh_open_gather_ms)
+                    + " fh_open_witness_ms=" + format_ms(metrics.fh_open_witness_ms)
+                    + " fh_open_fold_prepare_ms=" + format_ms(metrics.fh_open_fold_prepare_ms)
+                    + " commit_dynamic_ms=" + format_ms(metrics.commit_dynamic_ms)
+                    + " dynamic_commit_input_ms=" + format_ms(metrics.dynamic_commit_input_ms)
+                    + " dynamic_polynomial_materialization_ms=" + format_ms(metrics.dynamic_polynomial_materialization_ms)
+                    + " dynamic_commit_msm_ms=" + format_ms(metrics.dynamic_commit_msm_ms)
+                    + " dynamic_commit_finalize_ms=" + format_ms(metrics.dynamic_commit_finalize_ms)
+                    + " quotient_build_ms=" + format_ms(metrics.quotient_build_ms)
+                    + " quotient_t_fh_ms=" + format_ms(metrics.quotient_t_fh_ms)
+                    + " quotient_t_edge_ms=" + format_ms(metrics.quotient_t_edge_ms)
+                    + " quotient_t_in_ms=" + format_ms(metrics.quotient_t_in_ms)
+                    + " quotient_t_d_h_ms=" + format_ms(metrics.quotient_t_d_h_ms)
+                    + " quotient_t_cat_ms=" + format_ms(metrics.quotient_t_cat_ms)
+                    + " quotient_t_C_ms=" + format_ms(metrics.quotient_t_c_ms)
+                    + " quotient_t_N_ms=" + format_ms(metrics.quotient_t_n_ms)
+                    + " domain_opening_ms=" + format_ms(metrics.domain_opening_ms)
+                    + " domain_eval_gather_ms=" + format_ms(metrics.domain_eval_gather_ms)
+                    + " domain_open_witness_ms=" + format_ms(metrics.domain_open_witness_ms)
+                    + " domain_open_FH_ms=" + format_ms(metrics.domain_open_fh_ms)
+                    + " domain_open_edge_ms=" + format_ms(metrics.domain_open_edge_ms)
+                    + " domain_open_in_ms=" + format_ms(metrics.domain_open_in_ms)
+                    + " domain_open_d_h_ms=" + format_ms(metrics.domain_open_d_h_ms)
+                    + " domain_open_cat_ms=" + format_ms(metrics.domain_open_cat_ms)
+                    + " domain_open_C_ms=" + format_ms(metrics.domain_open_c_ms)
+                    + " domain_open_N_ms=" + format_ms(metrics.domain_open_n_ms)
+                    + " external_opening_ms=" + format_ms(metrics.external_opening_ms)
+                    + " prove_finalize_ms=" + format_ms(metrics.prove_finalize_ms)
+                    + " prove_accounted_ms=" + format_ms(metrics.prove_accounted_ms)
+                    + " prove_accounting_gap_ms=" + format_ms(metrics.prove_accounting_gap_ms)
+                    + " prove_time_ms=" + format_ms(metrics.prove_time_ms)
+                    + " verify_time_ms=" + format_ms(metrics.verify_time_ms)
+                    + " verify_metadata_ms=" + format_ms(metrics.verify_metadata_ms)
+                    + " verify_transcript_ms=" + format_ms(metrics.verify_transcript_ms)
+                    + " verify_domain_opening_ms=" + format_ms(metrics.verify_domain_opening_ms)
+                    + " verify_quotient_ms=" + format_ms(metrics.verify_quotient_ms)
+                    + " verify_external_fold_ms=" + format_ms(metrics.verify_external_fold_ms)
+                    + " verify_misc_ms=" + format_ms(metrics.verify_misc_ms)
+                    + " verify_accounted_ms=" + format_ms(metrics.verify_accounted_ms)
+                    + " verify_accounting_gap_ms=" + format_ms(metrics.verify_accounting_gap_ms)
+                    + " verify_FH_ms=" + format_ms(metrics.verify_fh_ms)
+                    + " verify_edge_ms=" + format_ms(metrics.verify_edge_ms)
+                    + " verify_in_ms=" + format_ms(metrics.verify_in_ms)
+                    + " verify_d_h_ms=" + format_ms(metrics.verify_d_h_ms)
+                    + " verify_cat_ms=" + format_ms(metrics.verify_cat_ms)
+                    + " verify_C_ms=" + format_ms(metrics.verify_c_ms)
+                    + " verify_N_ms=" + format_ms(metrics.verify_n_ms)
+                    + " proof_size_bytes=" + std::to_string(metrics.proof_size_bytes)
+                    + " notes=\"" + metrics.notes + "\"");
+            }
+            if (export_artifacts) {
+                gatzk::protocol::export_run_artifacts(context, trace, proof, metrics, accepted);
+            }
             return accepted;
         };
 
@@ -238,6 +328,12 @@ int main(int argc, char** argv) {
             accepted = run_once(with_export_suffix(loaded_config, segments), true, "cold");
         } else if (benchmark_mode == "warm") {
             warm_up(with_export_suffix(loaded_config, export_segments));
+            run_once(
+                with_export_suffix(loaded_config, export_segments),
+                false,
+                "warm_probe",
+                false,
+                false);
             auto segments = export_segments;
             segments.push_back("warm");
             accepted = run_once(with_export_suffix(loaded_config, segments), false, "warm");
@@ -247,6 +343,12 @@ int main(int argc, char** argv) {
             auto warm_segments = export_segments;
             warm_segments.push_back("warm");
             const auto cold_ok = run_once(with_export_suffix(loaded_config, cold_segments), true, "cold");
+            run_once(
+                with_export_suffix(loaded_config, export_segments),
+                false,
+                "warm_probe",
+                false,
+                false);
             const auto warm_ok = run_once(with_export_suffix(loaded_config, warm_segments), false, "warm");
             accepted = cold_ok && warm_ok;
         }

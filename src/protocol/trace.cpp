@@ -1,8 +1,10 @@
 #include "gatzk/protocol/trace.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <future>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <thread>
@@ -47,6 +49,38 @@ void add_metric(double* metric, const Clock::time_point& start) {
     }
 }
 
+template <typename Fn>
+void parallel_for_ranges(std::size_t item_count, std::size_t min_parallel_items, Fn&& fn) {
+    const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+    const auto task_count =
+        (item_count >= min_parallel_items && cpu_count > 1)
+        ? std::min<std::size_t>(cpu_count, item_count)
+        : 1;
+    if (task_count <= 1) {
+        fn(0, item_count);
+        return;
+    }
+
+    const auto chunk_size = (item_count + task_count - 1) / task_count;
+    std::vector<std::future<void>> futures;
+    futures.reserve(task_count);
+    for (std::size_t task = 0; task < task_count; ++task) {
+        const auto begin = task * chunk_size;
+        const auto end = std::min(item_count, begin + chunk_size);
+        if (begin >= end) {
+            break;
+        }
+        futures.push_back(std::async(
+            std::launch::async,
+            [&fn, begin, end]() {
+                fn(begin, end);
+            }));
+    }
+    for (auto& future : futures) {
+        future.get();
+    }
+}
+
 std::vector<FieldElement> powers(const FieldElement& base, std::size_t count) {
     std::vector<FieldElement> out(count, FieldElement::one());
     for (std::size_t i = 1; i < count; ++i) {
@@ -88,6 +122,98 @@ std::vector<FieldElement> weighted_column_sum(
     std::vector<FieldElement> out(matrix.front().size(), FieldElement::zero());
     for (std::size_t j = 0; j < native_out.size(); ++j) {
         out[j] = FieldElement::from_native(native_out[j]);
+    }
+    return out;
+}
+
+const std::vector<mcl::Fr>& cached_barycentric_weights_native(
+    const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
+    const FieldElement& point) {
+    static std::mutex cache_mutex;
+    static std::unordered_map<std::string, std::shared_ptr<std::vector<mcl::Fr>>> cache;
+    const auto cache_key =
+        domain->name + ":" + std::to_string(domain->size) + ":" + point.to_string();
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        if (const auto it = cache.find(cache_key); it != cache.end()) {
+            return *it->second;
+        }
+    }
+
+    auto weights = std::make_shared<std::vector<mcl::Fr>>(domain->barycentric_weights_native(point));
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        const auto [it, _] = cache.emplace(cache_key, weights);
+        return *it->second;
+    }
+}
+
+std::vector<FieldElement> weighted_column_sum_native(
+    const Matrix& matrix,
+    const std::vector<mcl::Fr>& row_weights,
+    std::size_t row_count) {
+    if (matrix.empty()) {
+        return {};
+    }
+    if (row_count > matrix.size() || row_count > row_weights.size()) {
+        throw std::runtime_error("weighted column sum native input size mismatch");
+    }
+    const auto column_count = matrix.front().size();
+    std::vector<mcl::Fr> native_out(column_count);
+    for (auto& value : native_out) {
+        value.clear();
+    }
+
+    const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+    if (row_count >= 256 && column_count >= 4 && cpu_count > 1) {
+        const auto task_count = std::min<std::size_t>(cpu_count, row_count);
+        const auto chunk_size = (row_count + task_count - 1) / task_count;
+        std::vector<std::future<std::vector<mcl::Fr>>> futures;
+        futures.reserve(task_count);
+        for (std::size_t task = 0; task < task_count; ++task) {
+            const auto begin = task * chunk_size;
+            const auto end = std::min(row_count, begin + chunk_size);
+            if (begin >= end) {
+                break;
+            }
+            futures.push_back(std::async(
+                std::launch::async,
+                [&matrix, &row_weights, begin, end, column_count]() {
+                    std::vector<mcl::Fr> partial(column_count);
+                    for (auto& value : partial) {
+                        value.clear();
+                    }
+                    for (std::size_t row = begin; row < end; ++row) {
+                        const auto& weight = row_weights[row];
+                        for (std::size_t column = 0; column < column_count; ++column) {
+                            mcl::Fr term;
+                            mcl::Fr::mul(term, matrix[row][column].native(), weight);
+                            mcl::Fr::add(partial[column], partial[column], term);
+                        }
+                    }
+                    return partial;
+                }));
+        }
+        for (auto& future : futures) {
+            const auto partial = future.get();
+            for (std::size_t column = 0; column < column_count; ++column) {
+                mcl::Fr::add(native_out[column], native_out[column], partial[column]);
+            }
+        }
+    } else {
+        for (std::size_t row = 0; row < row_count; ++row) {
+            const auto& weight = row_weights[row];
+            for (std::size_t column = 0; column < column_count; ++column) {
+                mcl::Fr term;
+                mcl::Fr::mul(term, matrix[row][column].native(), weight);
+                mcl::Fr::add(native_out[column], native_out[column], term);
+            }
+        }
+    }
+
+    std::vector<FieldElement> out(column_count, FieldElement::zero());
+    for (std::size_t column = 0; column < column_count; ++column) {
+        out[column] = FieldElement::from_native(native_out[column]);
     }
     return out;
 }
@@ -232,17 +358,17 @@ DynamicCommitmentSpec matrix_commitment_only_spec(const std::string& name, const
     return spec;
 }
 
-FieldElement row_polynomial_at_tau(const std::vector<FieldElement>& row, const FieldElement& tau) {
+FieldElement row_polynomial_at_point(const std::vector<FieldElement>& row, const FieldElement& point) {
     mcl::Fr out;
     out.clear();
     for (std::size_t column = row.size(); column-- > 0;) {
-        mcl::Fr::mul(out, out, tau.native());
+        mcl::Fr::mul(out, out, point.native());
         mcl::Fr::add(out, out, row[column].native());
     }
     return FieldElement::from_native(out);
 }
 
-FieldElement matrix_row_major_tau_evaluation(const Matrix& matrix, const FieldElement& tau) {
+FieldElement matrix_row_major_evaluation(const Matrix& matrix, const FieldElement& point) {
     if (matrix.empty()) {
         return FieldElement::zero();
     }
@@ -258,7 +384,8 @@ FieldElement matrix_row_major_tau_evaluation(const Matrix& matrix, const FieldEl
 
     // This preserves the exact coefficient polynomial defined by row-major
     // flattening in the spec. The engineering change is only that we evaluate
-    // each row block directly at tau and then fold rows by tau^cols, so matrix
+    // each row block directly at the evaluation point and then fold rows by
+    // point^cols, so matrix
     // commitments no longer need a temporary flattened coefficient vector.
     if (route2.trace_layout_upgrade && row_count >= 8 && cpu_count > 1) {
         const auto task_count = std::min<std::size_t>(cpu_count, row_count);
@@ -273,9 +400,9 @@ FieldElement matrix_row_major_tau_evaluation(const Matrix& matrix, const FieldEl
             }
             futures.push_back(std::async(
                 std::launch::async,
-                [&matrix, &row_evaluations, &tau, begin, end]() {
+                [&matrix, &row_evaluations, &point, begin, end]() {
                     for (std::size_t row = begin; row < end; ++row) {
-                        row_evaluations[row] = row_polynomial_at_tau(matrix[row], tau);
+                        row_evaluations[row] = row_polynomial_at_point(matrix[row], point);
                     }
                 }));
         }
@@ -284,11 +411,11 @@ FieldElement matrix_row_major_tau_evaluation(const Matrix& matrix, const FieldEl
         }
     } else {
         for (std::size_t row = 0; row < row_count; ++row) {
-            row_evaluations[row] = row_polynomial_at_tau(matrix[row], tau);
+            row_evaluations[row] = row_polynomial_at_point(matrix[row], point);
         }
     }
 
-    const auto row_stride = tau.pow(static_cast<std::uint64_t>(column_count));
+    const auto row_stride = point.pow(static_cast<std::uint64_t>(column_count));
     mcl::Fr out;
     out.clear();
     for (std::size_t row = row_count; row-- > 0;) {
@@ -296,6 +423,60 @@ FieldElement matrix_row_major_tau_evaluation(const Matrix& matrix, const FieldEl
         mcl::Fr::add(out, out, row_evaluations[row].native());
     }
     return FieldElement::from_native(out);
+}
+
+FieldElement matrix_row_major_tau_evaluation(const Matrix& matrix, const FieldElement& tau) {
+    return matrix_row_major_evaluation(matrix, tau);
+}
+
+void fill_feature_lookup_rows(
+    const std::vector<FieldElement>& row_ids,
+    const std::vector<FieldElement>& feature_indices,
+    const Matrix& features,
+    const FieldElement& eta_feature_index,
+    const FieldElement& eta_feature_value,
+    std::vector<FieldElement>& out) {
+    if (features.empty()) {
+        return;
+    }
+    const auto row_count = features.size();
+    const auto row_width = feature_indices.size();
+    parallel_for_ranges(
+        row_count,
+        32,
+        [&](std::size_t begin, std::size_t end) {
+            for (std::size_t row = begin; row < end; ++row) {
+                const auto base = row * row_width;
+                const auto& row_id = row_ids[row];
+                const auto& feature_row = features[row];
+                for (std::size_t column = 0; column < row_width; ++column) {
+                    out[base + column] =
+                        row_id
+                        + eta_feature_index * feature_indices[column]
+                        + eta_feature_value * feature_row[column];
+                }
+            }
+        });
+}
+
+void fill_repeated_row_values(
+    const std::vector<FieldElement>& row_values,
+    std::size_t row_width,
+    std::vector<FieldElement>& out) {
+    if (row_width == 0 || row_values.empty()) {
+        return;
+    }
+    parallel_for_ranges(
+        row_values.size(),
+        32,
+        [&](std::size_t begin, std::size_t end) {
+            for (std::size_t row = begin; row < end; ++row) {
+                std::fill_n(
+                    out.begin() + static_cast<std::ptrdiff_t>(row * row_width),
+                    static_cast<std::ptrdiff_t>(row_width),
+                    row_values[row]);
+            }
+        });
 }
 
 PreparedDynamicCommitment materialize_commitment(
@@ -523,6 +704,23 @@ std::vector<FieldElement> count_by_dst(const std::vector<Edge>& edges, std::size
     return out;
 }
 
+std::vector<std::pair<std::size_t, std::size_t>> dst_edge_groups(const std::vector<Edge>& edges) {
+    std::vector<std::pair<std::size_t, std::size_t>> groups;
+    if (edges.empty()) {
+        return groups;
+    }
+    std::size_t group_begin = 0;
+    while (group_begin < edges.size()) {
+        std::size_t group_end = group_begin;
+        while (group_end + 1 < edges.size() && edges[group_end + 1].dst == edges[group_begin].dst) {
+            ++group_end;
+        }
+        groups.emplace_back(group_begin, group_end + 1);
+        group_begin = group_end + 1;
+    }
+    return groups;
+}
+
 std::vector<FieldElement> build_group_target(
     const std::vector<FieldElement>& node_values,
     const std::vector<Edge>& edges,
@@ -546,12 +744,8 @@ BindingTrace build_binding_trace(
     const std::shared_ptr<algebra::RootOfUnityDomain>& dim_domain,
     std::size_t real_dim_count) {
     BindingTrace out;
-    const auto row_weights_full = row_domain->barycentric_weights(point);
-    std::vector<FieldElement> row_weights(real_row_count, FieldElement::zero());
-    for (std::size_t i = 0; i < real_row_count; ++i) {
-        row_weights[i] = row_weights_full[i];
-    }
-    const auto folded = weighted_column_sum(matrix, row_weights);
+    const auto& row_weights = cached_barycentric_weights_native(row_domain, point);
+    const auto folded = weighted_column_sum_native(matrix, row_weights, real_row_count);
     out.a.assign(dim_domain->size, FieldElement::zero());
     out.b.assign(dim_domain->size, FieldElement::zero());
     out.acc.assign(dim_domain->size, FieldElement::zero());
@@ -597,6 +791,119 @@ RouteTrace build_route_trace(
     return out;
 }
 
+std::uint64_t load_u64_le(const std::uint8_t* bytes) {
+    std::uint64_t value = 0;
+    for (std::size_t i = 0; i < 8; ++i) {
+        value |= static_cast<std::uint64_t>(bytes[i]) << (8U * i);
+    }
+    return value;
+}
+
+struct FieldKey {
+    std::array<std::uint64_t, 4> limbs = {0, 0, 0, 0};
+
+    bool operator==(const FieldKey& other) const {
+        return limbs == other.limbs;
+    }
+};
+
+FieldKey pack_field_key(const FieldElement& value) {
+    std::array<std::uint8_t, 32> bytes{};
+    const auto written = value.native().getLittleEndian(bytes.data(), bytes.size());
+    if (written > bytes.size()) {
+        throw std::runtime_error("field key little-endian serialization overflow");
+    }
+    FieldKey out;
+    for (std::size_t limb = 0; limb < out.limbs.size(); ++limb) {
+        out.limbs[limb] = load_u64_le(bytes.data() + limb * 8U);
+    }
+    return out;
+}
+
+struct FieldPairKey {
+    FieldKey first;
+    FieldKey second;
+
+    bool operator==(const FieldPairKey& other) const {
+        return first == other.first && second == other.second;
+    }
+};
+
+struct FieldPairKeyHash {
+    static std::size_t mix_key(const FieldKey& key) {
+        std::size_t out = 0;
+        for (const auto limb : key.limbs) {
+            out ^= std::hash<std::uint64_t>{}(limb) + 0x9e3779b97f4a7c15ULL + (out << 6U) + (out >> 2U);
+        }
+        return out;
+    }
+
+    std::size_t operator()(const FieldPairKey& key) const {
+        return mix_key(key.first) ^ (mix_key(key.second) << 1U);
+    }
+};
+
+std::unordered_map<std::uint64_t, std::size_t> build_value_index_map(
+    const std::vector<FieldElement>& values,
+    std::size_t valid_count) {
+    std::unordered_map<std::uint64_t, std::size_t> index;
+    index.reserve(valid_count);
+    for (std::size_t i = 0; i < valid_count; ++i) {
+        index.emplace(values[i].value(), i);
+    }
+    return index;
+}
+
+std::unordered_map<FieldPairKey, std::size_t, FieldPairKeyHash> build_pair_index_map(
+    const std::vector<std::pair<FieldElement, FieldElement>>& values) {
+    std::unordered_map<FieldPairKey, std::size_t, FieldPairKeyHash> index;
+    index.reserve(values.size());
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        index.emplace(FieldPairKey{pack_field_key(values[i].first), pack_field_key(values[i].second)}, i);
+    }
+    return index;
+}
+
+std::vector<FieldElement> build_lookup_multiplicity(
+    const std::unordered_map<std::uint64_t, std::size_t>& index_by_value,
+    const std::vector<FieldElement>& query_values,
+    std::size_t domain_size,
+    std::size_t valid_count,
+    const std::string& label) {
+    std::vector<FieldElement> multiplicity(domain_size, FieldElement::zero());
+    for (std::size_t i = 0; i < valid_count; ++i) {
+        const auto it = index_by_value.find(query_values[i].value());
+        if (it == index_by_value.end()) {
+            throw std::runtime_error(
+                "lookup query escaped static table for " + label
+                + " value=" + query_values[i].to_string());
+        }
+        multiplicity[it->second] += FieldElement::one();
+    }
+    return multiplicity;
+}
+
+std::vector<FieldElement> build_pair_lookup_multiplicity(
+    const std::unordered_map<FieldPairKey, std::size_t, FieldPairKeyHash>& index_by_value,
+    const std::vector<FieldElement>& query_left,
+    const std::vector<FieldElement>& query_right,
+    std::size_t domain_size,
+    std::size_t valid_count,
+    const std::string& label) {
+    std::vector<FieldElement> multiplicity(domain_size, FieldElement::zero());
+    for (std::size_t i = 0; i < valid_count; ++i) {
+        const auto it = index_by_value.find(FieldPairKey{pack_field_key(query_left[i]), pack_field_key(query_right[i])});
+        if (it == index_by_value.end()) {
+            throw std::runtime_error(
+                "pair lookup query escaped static table for " + label
+                + " left=" + query_left[i].to_string()
+                + " right=" + query_right[i].to_string());
+        }
+        multiplicity[it->second] += FieldElement::one();
+    }
+    return multiplicity;
+}
+
 std::vector<FieldElement> build_weighted_sum(
     const std::vector<FieldElement>& left,
     const FieldElement& lambda,
@@ -635,6 +942,8 @@ std::string output_dst_label() {
 
 TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics* metrics) {
     const auto trace_start = Clock::now();
+    const auto initial_forward_ms = metrics != nullptr ? metrics->forward_ms : 0.0;
+    const auto initial_commit_dynamic_ms = metrics != nullptr ? metrics->commit_dynamic_ms : 0.0;
     TraceArtifacts trace;
     crypto::Transcript transcript("gatzkml");
     const bool keep_trace_payloads = context.config.dump_trace;
@@ -647,7 +956,21 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     const std::size_t d_h = model::attention_head_output_width(context.model.hidden_heads.front());
     const std::size_t d_cat = d_h * context.model.hidden_heads.size();
     const std::size_t n_classes = local.num_classes;
+    auto metric_value = [&](double RunMetrics::*member) {
+        return metrics != nullptr ? metrics->*member : 0.0;
+    };
+    auto add_residual_metric = [&](double RunMetrics::*member, double total_ms, std::initializer_list<double> accounted) {
+        if (metrics == nullptr) {
+            return;
+        }
+        double accounted_ms = 0.0;
+        for (const auto value : accounted) {
+            accounted_ms += value;
+        }
+        metrics->*member += std::max(0.0, total_ms - accounted_ms);
+    };
 
+    auto stage_start = Clock::now();
     std::vector<FieldElement> feature_index_fields(d_in, FieldElement::zero());
     for (std::size_t j = 0; j < d_in; ++j) {
         feature_index_fields[j] = FieldElement(j);
@@ -660,10 +983,31 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     for (std::size_t i = 0; i < context.dataset.num_nodes; ++i) {
         dataset_index_fields[i] = FieldElement(i);
     }
+    std::vector<FieldElement> edge_src_fields(n_edges, FieldElement::zero());
+    std::vector<FieldElement> edge_dst_fields(n_edges, FieldElement::zero());
+    for (std::size_t edge_index = 0; edge_index < n_edges; ++edge_index) {
+        edge_src_fields[edge_index] = FieldElement(edges[edge_index].src);
+        edge_dst_fields[edge_index] = FieldElement(edges[edge_index].dst);
+    }
+    const auto src_multiplicity_template = count_by_src(edges, n_nodes, domains.n->size);
+    const auto dst_multiplicity_template = count_by_dst(edges, n_nodes, domains.n->size);
+    const auto edge_groups_by_dst = dst_edge_groups(edges);
+    add_metric(metrics != nullptr ? &metrics->public_poly_trace_ms : nullptr, stage_start);
+
+    stage_start = Clock::now();
     const auto q_new = eval_data(context, "P_Q_new_edge");
     const auto q_edge_valid = eval_data(context, "P_Q_edge_valid");
     const auto q_tbl_feat = eval_data(context, "P_Q_tbl_feat");
     const auto q_qry_feat = eval_data(context, "P_Q_qry_feat");
+    const auto q_tbl_l = eval_data(context, "P_Q_tbl_L");
+    const auto q_qry_l = eval_data(context, "P_Q_qry_L");
+    const auto q_tbl_r = eval_data(context, "P_Q_tbl_R");
+    const auto q_qry_r = eval_data(context, "P_Q_qry_R");
+    const auto q_tbl_exp = eval_data(context, "P_Q_tbl_exp");
+    const auto q_qry_exp = eval_data(context, "P_Q_qry_exp");
+    const auto q_tbl_elu = eval_data(context, "P_Q_tbl_ELU");
+    const auto q_qry_elu = eval_data(context, "P_Q_qry_ELU");
+    add_metric(metrics != nullptr ? &metrics->public_poly_trace_ms : nullptr, stage_start);
 
     add_dynamic_commitment_batch(
         trace,
@@ -697,43 +1041,83 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     trace.challenges["beta_feat"] = transcript.challenge("beta_feat");
 
     {
-        std::unordered_map<std::size_t, std::size_t> feat_hits;
-        for (const auto absolute_id : local.absolute_ids) {
-            feat_hits[absolute_id] += 1;
-        }
-        std::vector<FieldElement> feat_hit_fields(context.dataset.num_nodes, FieldElement::zero());
-        for (std::size_t v = 0; v < context.dataset.num_nodes; ++v) {
-            feat_hit_fields[v] = FieldElement(feat_hits[v]);
-        }
         const auto eta_feat_powers = powers(trace.challenges.at("eta_feat"), 3);
         std::vector<FieldElement> table_feat(domains.fh->size, FieldElement::zero());
         std::vector<FieldElement> query_feat(domains.fh->size, FieldElement::zero());
         std::vector<FieldElement> multiplicity_feat(domains.fh->size, FieldElement::zero());
-        for (std::size_t v = 0; v < context.dataset.num_nodes; ++v) {
-            for (std::size_t j = 0; j < d_in; ++j) {
-                const std::size_t index = v * d_in + j;
-                table_feat[index] = dataset_index_fields[v]
-                    + eta_feat_powers[1] * feature_index_fields[j]
-                    + eta_feat_powers[2] * context.dataset.features[v][j];
-                multiplicity_feat[index] = feat_hit_fields[v];
-            }
+        const auto eta_feature_index = eta_feat_powers[1];
+        const auto eta_feature_value = eta_feat_powers[2];
+        bool full_feature_identity = n_nodes == context.dataset.num_nodes;
+        for (std::size_t i = 0; full_feature_identity && i < n_nodes; ++i) {
+            full_feature_identity = local.absolute_ids[i] == i;
         }
-        for (std::size_t i = 0; i < n_nodes; ++i) {
-            for (std::size_t j = 0; j < d_in; ++j) {
-                const std::size_t index = i * d_in + j;
-                query_feat[index] = absolute_id_fields[i]
-                    + eta_feat_powers[1] * feature_index_fields[j]
-                    + eta_feat_powers[2] * local.features[i][j];
+        if (full_feature_identity) {
+            auto fh_stage_start = Clock::now();
+            fill_feature_lookup_rows(
+                dataset_index_fields,
+                feature_index_fields,
+                context.dataset.features,
+                eta_feature_index,
+                eta_feature_value,
+                table_feat);
+            add_metric(metrics != nullptr ? &metrics->fh_table_materialization_ms : nullptr, fh_stage_start);
+            fh_stage_start = Clock::now();
+            query_feat = table_feat;
+            add_metric(metrics != nullptr ? &metrics->fh_query_materialization_ms : nullptr, fh_stage_start);
+            fh_stage_start = Clock::now();
+            std::fill(
+                multiplicity_feat.begin(),
+                multiplicity_feat.begin() + static_cast<std::ptrdiff_t>(context.dataset.num_nodes * d_in),
+                FieldElement::one());
+            add_metric(metrics != nullptr ? &metrics->fh_multiplicity_build_ms : nullptr, fh_stage_start);
+        } else {
+            std::vector<std::size_t> feat_hits(context.dataset.num_nodes, 0);
+            auto fh_stage_start = Clock::now();
+            for (const auto absolute_id : local.absolute_ids) {
+                if (absolute_id < feat_hits.size()) {
+                    feat_hits[absolute_id] += 1;
+                }
             }
+            std::vector<FieldElement> feat_hit_fields(context.dataset.num_nodes, FieldElement::zero());
+            for (std::size_t v = 0; v < context.dataset.num_nodes; ++v) {
+                feat_hit_fields[v] = FieldElement(feat_hits[v]);
+            }
+            add_metric(metrics != nullptr ? &metrics->fh_multiplicity_build_ms : nullptr, fh_stage_start);
+            fh_stage_start = Clock::now();
+            fill_feature_lookup_rows(
+                dataset_index_fields,
+                feature_index_fields,
+                context.dataset.features,
+                eta_feature_index,
+                eta_feature_value,
+                table_feat);
+            add_metric(metrics != nullptr ? &metrics->fh_table_materialization_ms : nullptr, fh_stage_start);
+            fh_stage_start = Clock::now();
+            fill_feature_lookup_rows(
+                absolute_id_fields,
+                feature_index_fields,
+                local.features,
+                eta_feature_index,
+                eta_feature_value,
+                query_feat);
+            add_metric(metrics != nullptr ? &metrics->fh_query_materialization_ms : nullptr, fh_stage_start);
+            fh_stage_start = Clock::now();
+            fill_repeated_row_values(feat_hit_fields, d_in, multiplicity_feat);
+            add_metric(metrics != nullptr ? &metrics->fh_multiplicity_build_ms : nullptr, fh_stage_start);
         }
         auto lookup_stage_start = Clock::now();
-        auto r_feat = build_logup_accumulator(
-            table_feat,
-            query_feat,
-            multiplicity_feat,
-            q_tbl_feat,
-            q_qry_feat,
-            trace.challenges.at("beta_feat"));
+        auto fh_accumulator_start = Clock::now();
+        std::vector<FieldElement> r_feat(domains.fh->size, FieldElement::zero());
+        if (!full_feature_identity) {
+            r_feat = build_logup_accumulator(
+                table_feat,
+                query_feat,
+                multiplicity_feat,
+                q_tbl_feat,
+                q_qry_feat,
+                trace.challenges.at("beta_feat"));
+        }
+        add_metric(metrics != nullptr ? &metrics->fh_accumulator_build_ms : nullptr, fh_accumulator_start);
         add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, lookup_stage_start);
         add_dynamic_commitment_batch(
             trace,
@@ -763,9 +1147,25 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         metrics->output_forward_activation_ms += forward_profile.output_activation_ms;
     }
 
+    stage_start = Clock::now();
+    const auto lrelu_index = build_pair_index_map(context.tables.lrelu);
+    const auto range_index = build_value_index_map(context.tables.range, context.tables.range.size());
+    const auto exp_index = build_pair_index_map(context.tables.exp);
+    const auto elu_index = build_pair_index_map(context.tables.elu);
+    add_metric(metrics != nullptr ? &metrics->public_poly_trace_ms : nullptr, stage_start);
+
     auto commit_hidden_head = [&](std::size_t head_index) {
         const auto prefix = "P_h" + std::to_string(head_index) + "_";
         const auto& fp = forward.hidden_head_traces[head_index];
+        const auto head_trace_start = Clock::now();
+        const auto initial_lookup_ms = metric_value(&RunMetrics::lookup_trace_ms);
+        const auto initial_route_ms = metric_value(&RunMetrics::route_trace_ms);
+        const auto initial_psq_ms = metric_value(&RunMetrics::psq_trace_ms);
+        const auto initial_zkmap_ms = metric_value(&RunMetrics::zkmap_trace_ms);
+        const auto initial_state_machine_ms = metric_value(&RunMetrics::state_machine_trace_ms);
+        const auto initial_padding_selector_ms = metric_value(&RunMetrics::padding_selector_trace_ms);
+        const auto initial_public_poly_ms = metric_value(&RunMetrics::public_poly_trace_ms);
+        const auto initial_commit_dynamic_ms = metric_value(&RunMetrics::commit_dynamic_ms);
         auto stage_start = Clock::now();
         const auto h_prime = quantize_matrix(fp.H_prime);
         const auto e_src = quantize_vector(fp.E_src);
@@ -784,11 +1184,12 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto sum_edge = broadcast_node_values(sum, edges, false, domains.edge->size);
         const auto inv_edge = broadcast_node_values(inv, edges, false, domains.edge->size);
         add_metric(metrics != nullptr ? &metrics->witness_materialization_ms : nullptr, stage_start);
+        add_metric(metrics != nullptr ? &metrics->padding_selector_trace_ms : nullptr, stage_start);
 
         add_dynamic_commitment_batch(
             trace,
             {
-                matrix_spec(prefix + "H_prime", h_prime),
+                matrix_commitment_only_spec(prefix + "H_prime", h_prime),
                 column_spec(prefix + "E_src", padded_column(e_src, domains.n->size), domains.n),
                 column_spec(prefix + "E_dst", padded_column(e_dst, domains.n->size), domains.n),
                 column_spec(prefix + "S", padded_column(s, domains.edge->size), domains.edge),
@@ -802,8 +1203,8 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 column_spec(prefix + "inv", padded_column(inv, domains.n->size), domains.n),
                 column_spec(prefix + "inv_edge", inv_edge, domains.edge),
                 column_spec(prefix + "alpha", padded_column(alpha, domains.edge->size), domains.edge),
-                matrix_spec(prefix + "H_agg_pre", h_agg_pre),
-                matrix_spec(prefix + "H_agg", h_agg),
+                matrix_commitment_only_spec(prefix + "H_agg_pre", h_agg_pre),
+                matrix_commitment_only_spec(prefix + "H_agg", h_agg),
             },
             context.kzg,
             keep_trace_payloads,
@@ -881,13 +1282,96 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             src_table[i] = absolute_id_fields[i] + eta_src_powers[1] * e_src[i];
         }
         for (std::size_t k = 0; k < n_edges; ++k) {
-            src_query[k] = FieldElement(edges[k].src) + eta_src_powers[1] * h_star_edge[k];
+            src_query[k] = edge_src_fields[k] + eta_src_powers[1] * h_star_edge[k];
         }
         add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, stage_start);
         stage_start = Clock::now();
-        const auto src_mult = count_by_src(edges, n_nodes, domains.n->size);
-        auto src_route = build_route_trace(src_table, src_query, src_mult, n_nodes, n_edges, domains.n, domains.edge, beta_src);
+        auto src_route = build_route_trace(
+            src_table,
+            src_query,
+            src_multiplicity_template,
+            n_nodes,
+            n_edges,
+            domains.n,
+            domains.edge,
+            beta_src);
         add_metric(metrics != nullptr ? &metrics->route_trace_ms : nullptr, stage_start);
+
+        transcript.absorb_commitment(prefix + "S", trace.commitments.at(prefix + "S").point);
+        transcript.absorb_commitment(prefix + "Z", trace.commitments.at(prefix + "Z").point);
+        transcript.absorb_commitment("V_T_L_x", context.static_commitments.at("V_T_L_x").point);
+        transcript.absorb_commitment("V_T_L_y", context.static_commitments.at("V_T_L_y").point);
+        const auto eta_l = transcript.challenge("eta_L_h" + std::to_string(head_index));
+        const auto beta_l = transcript.challenge("beta_L_h" + std::to_string(head_index));
+        trace.challenges["eta_L_h" + std::to_string(head_index)] = eta_l;
+        trace.challenges["beta_L_h" + std::to_string(head_index)] = beta_l;
+
+        transcript.absorb_commitment(prefix + "M", trace.commitments.at(prefix + "M").point);
+        transcript.absorb_commitment(prefix + "M_edge", trace.commitments.at(prefix + "M_edge").point);
+        transcript.absorb_commitment(prefix + "Delta", trace.commitments.at(prefix + "Delta").point);
+        transcript.absorb_commitment("V_T_range", context.static_commitments.at("V_T_range").point);
+        const auto beta_r = transcript.challenge("beta_R_h" + std::to_string(head_index));
+        trace.challenges["beta_R_h" + std::to_string(head_index)] = beta_r;
+
+        transcript.absorb_commitment(prefix + "Delta", trace.commitments.at(prefix + "Delta").point);
+        transcript.absorb_commitment(prefix + "U", trace.commitments.at(prefix + "U").point);
+        transcript.absorb_commitment("V_T_exp_x", context.static_commitments.at("V_T_exp_x").point);
+        transcript.absorb_commitment("V_T_exp_y", context.static_commitments.at("V_T_exp_y").point);
+        const auto eta_exp = transcript.challenge("eta_exp_h" + std::to_string(head_index));
+        const auto beta_exp = transcript.challenge("beta_exp_h" + std::to_string(head_index));
+        trace.challenges["eta_exp_h" + std::to_string(head_index)] = eta_exp;
+        trace.challenges["beta_exp_h" + std::to_string(head_index)] = beta_exp;
+
+        stage_start = Clock::now();
+        std::vector<FieldElement> table_l(domains.edge->size, FieldElement::zero());
+        std::vector<FieldElement> query_l(domains.edge->size, FieldElement::zero());
+        for (std::size_t i = 0; i < context.tables.lrelu.size(); ++i) {
+            table_l[i] = context.tables.lrelu[i].first + eta_l * context.tables.lrelu[i].second;
+        }
+        for (std::size_t k = 0; k < n_edges; ++k) {
+            query_l[k] = s[k] + eta_l * z[k];
+        }
+        auto m_l = build_pair_lookup_multiplicity(lrelu_index, s, z, domains.edge->size, n_edges, prefix + "L");
+        auto r_l = build_logup_accumulator(table_l, query_l, m_l, q_tbl_l, q_qry_l, beta_l);
+        add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, stage_start);
+
+        stage_start = Clock::now();
+        std::vector<FieldElement> s_max(domains.edge->size, FieldElement::zero());
+        for (const auto& [group_begin, group_end] : edge_groups_by_dst) {
+            for (std::size_t k = group_begin; k < group_end; ++k) {
+                if (delta[k].is_zero()) {
+                    s_max[k] = FieldElement::one();
+                    break;
+                }
+            }
+        }
+        const auto c_max = build_max_counter_state(s_max, q_new);
+        add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
+        stage_start = Clock::now();
+        std::vector<FieldElement> table_r(domains.edge->size, FieldElement::zero());
+        std::vector<FieldElement> query_r(domains.edge->size, FieldElement::zero());
+        for (std::size_t i = 0; i < context.tables.range.size(); ++i) {
+            table_r[i] = context.tables.range[i];
+        }
+        for (std::size_t k = 0; k < n_edges; ++k) {
+            query_r[k] = delta[k];
+        }
+        auto m_r = build_lookup_multiplicity(range_index, delta, domains.edge->size, n_edges, prefix + "R");
+        auto r_r = build_logup_accumulator(table_r, query_r, m_r, q_tbl_r, q_qry_r, beta_r);
+        add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, stage_start);
+
+        stage_start = Clock::now();
+        std::vector<FieldElement> table_exp(domains.edge->size, FieldElement::zero());
+        std::vector<FieldElement> query_exp(domains.edge->size, FieldElement::zero());
+        for (std::size_t i = 0; i < context.tables.exp.size(); ++i) {
+            table_exp[i] = context.tables.exp[i].first + eta_exp * context.tables.exp[i].second;
+        }
+        for (std::size_t k = 0; k < n_edges; ++k) {
+            query_exp[k] = delta[k] + eta_exp * u[k];
+        }
+        auto m_exp = build_pair_lookup_multiplicity(exp_index, delta, u, domains.edge->size, n_edges, prefix + "exp");
+        auto r_exp = build_logup_accumulator(table_exp, query_exp, m_exp, q_tbl_exp, q_qry_exp, beta_exp);
+        add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, stage_start);
 
         const auto lambda_psq = transcript.challenge("lambda_psq_h" + std::to_string(head_index));
         trace.challenges["lambda_psq_h" + std::to_string(head_index)] = lambda_psq;
@@ -904,6 +1388,33 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto t_psq_edge = build_group_target(t_psq, edges, domains.edge->size);
         auto psq = build_group_prefix_state(w_psq, q_new);
         add_metric(metrics != nullptr ? &metrics->psq_trace_ms : nullptr, stage_start);
+        add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
+        const auto eta_t = transcript.challenge("eta_t_h" + std::to_string(head_index));
+        const auto beta_t = transcript.challenge("beta_t_h" + std::to_string(head_index));
+        trace.challenges["eta_t_h" + std::to_string(head_index)] = eta_t;
+        trace.challenges["beta_t_h" + std::to_string(head_index)] = beta_t;
+        stage_start = Clock::now();
+        const auto eta_t_powers = powers(eta_t, 2);
+        std::vector<FieldElement> t_route_table(n_nodes, FieldElement::zero());
+        std::vector<FieldElement> t_route_query(n_edges, FieldElement::zero());
+        for (std::size_t i = 0; i < n_nodes; ++i) {
+            t_route_table[i] = absolute_id_fields[i] + eta_t_powers[1] * t_psq[i];
+        }
+        for (std::size_t k = 0; k < n_edges; ++k) {
+            t_route_query[k] = edge_dst_fields[k] + eta_t_powers[1] * t_psq_edge[k];
+        }
+        add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, stage_start);
+        stage_start = Clock::now();
+        auto t_route = build_route_trace(
+            t_route_table,
+            t_route_query,
+            dst_multiplicity_template,
+            n_nodes,
+            n_edges,
+            domains.n,
+            domains.edge,
+            beta_t);
+        add_metric(metrics != nullptr ? &metrics->route_trace_ms : nullptr, stage_start);
 
         add_dynamic_commitment_batch(
             trace,
@@ -929,12 +1440,31 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 column_spec(prefix + "m_src", src_route.multiplicity, domains.n),
                 column_spec(prefix + "R_src_node", src_route.node_acc, domains.n),
                 column_spec(prefix + "R_src", src_route.edge_acc, domains.edge),
+                column_spec(prefix + "Table_L", table_l, domains.edge),
+                column_spec(prefix + "Query_L", query_l, domains.edge),
+                column_spec(prefix + "m_L", m_l, domains.edge),
+                column_spec(prefix + "R_L", r_l, domains.edge),
+                column_spec(prefix + "s_max", s_max, domains.edge),
+                column_spec(prefix + "C_max", c_max, domains.edge),
+                column_spec(prefix + "Table_R", table_r, domains.edge),
+                column_spec(prefix + "Query_R", query_r, domains.edge),
+                column_spec(prefix + "m_R", m_r, domains.edge),
+                column_spec(prefix + "R_R", r_r, domains.edge),
+                column_spec(prefix + "Table_exp", table_exp, domains.edge),
+                column_spec(prefix + "Query_exp", query_exp, domains.edge),
+                column_spec(prefix + "m_exp", m_exp, domains.edge),
+                column_spec(prefix + "R_exp", r_exp, domains.edge),
                 column_spec(prefix + "H_agg_pre_star", padded_column(h_agg_pre_star, domains.n->size), domains.n),
                 column_spec(prefix + "H_agg_pre_star_edge", h_agg_pre_star_edge, domains.edge),
                 column_spec(prefix + "widehat_v_pre_star", widehat_v_pre_star, domains.edge),
                 column_spec(prefix + "w_psq", w_psq, domains.edge),
                 column_spec(prefix + "T_psq", padded_column(t_psq, domains.n->size), domains.n),
                 column_spec(prefix + "T_psq_edge", t_psq_edge, domains.edge),
+                column_spec(prefix + "Table_t", t_route.table, domains.n),
+                column_spec(prefix + "Query_t", t_route.query, domains.edge),
+                column_spec(prefix + "m_t", t_route.multiplicity, domains.n),
+                column_spec(prefix + "R_t_node", t_route.node_acc, domains.n),
+                column_spec(prefix + "R_t", t_route.edge_acc, domains.edge),
                 column_spec(prefix + "PSQ", psq, domains.edge),
                 column_spec(prefix + "H_agg_star", padded_column(h_agg_star, domains.n->size), domains.n),
                 column_spec(prefix + "H_agg_star_edge", h_agg_star_edge, domains.edge),
@@ -946,11 +1476,27 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         transcript.absorb_commitment(prefix + "H_agg_pre", trace.commitments.at(prefix + "H_agg_pre").point);
         transcript.absorb_commitment(prefix + "H_agg_pre_star", trace.commitments.at(prefix + "H_agg_pre_star").point);
         trace.challenges["y_agg_pre_h" + std::to_string(head_index)] = transcript.challenge("y_agg_pre_h" + std::to_string(head_index));
+        transcript.absorb_commitment(prefix + "H_agg_pre", trace.commitments.at(prefix + "H_agg_pre").point);
+        transcript.absorb_commitment(prefix + "H_agg", trace.commitments.at(prefix + "H_agg").point);
+        transcript.absorb_commitment("V_T_ELU_x", context.static_commitments.at("V_T_ELU_x").point);
+        transcript.absorb_commitment("V_T_ELU_y", context.static_commitments.at("V_T_ELU_y").point);
+        const auto eta_elu = transcript.challenge("eta_ELU_h" + std::to_string(head_index));
+        const auto beta_elu = transcript.challenge("beta_ELU_h" + std::to_string(head_index));
+        trace.challenges["eta_ELU_h" + std::to_string(head_index)] = eta_elu;
+        trace.challenges["beta_ELU_h" + std::to_string(head_index)] = beta_elu;
         transcript.absorb_commitment(prefix + "H_agg", trace.commitments.at(prefix + "H_agg").point);
         transcript.absorb_commitment(prefix + "H_agg_star", trace.commitments.at(prefix + "H_agg_star").point);
         trace.challenges["y_agg_h" + std::to_string(head_index)] = transcript.challenge("y_agg_h" + std::to_string(head_index));
 
         stage_start = Clock::now();
+        const auto agg_pre_binding = build_binding_trace(
+            h_agg_pre,
+            domains.n,
+            n_nodes,
+            trace.challenges.at("y_agg_pre_h" + std::to_string(head_index)),
+            powers(xi, d_h),
+            domains.d,
+            d_h);
         const auto agg_binding = build_binding_trace(
             h_agg,
             domains.n,
@@ -960,6 +1506,27 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             domains.d,
             d_h);
         add_metric(metrics != nullptr ? &metrics->zkmap_trace_ms : nullptr, stage_start);
+
+        stage_start = Clock::now();
+        std::vector<FieldElement> table_elu(domains.edge->size, FieldElement::zero());
+        std::vector<FieldElement> query_elu(domains.edge->size, FieldElement::zero());
+        std::vector<FieldElement> agg_pre_flat(domains.edge->size, FieldElement::zero());
+        std::vector<FieldElement> agg_flat(domains.edge->size, FieldElement::zero());
+        for (std::size_t i = 0; i < context.tables.elu.size(); ++i) {
+            table_elu[i] = context.tables.elu[i].first + eta_elu * context.tables.elu[i].second;
+        }
+        for (std::size_t node = 0; node < n_nodes; ++node) {
+            for (std::size_t col = 0; col < d_h; ++col) {
+                const auto flat_index = node * d_h + col;
+                agg_pre_flat[flat_index] = h_agg_pre[node][col];
+                agg_flat[flat_index] = h_agg[node][col];
+                query_elu[flat_index] = agg_pre_flat[flat_index] + eta_elu * agg_flat[flat_index];
+            }
+        }
+        auto m_elu = build_pair_lookup_multiplicity(elu_index, agg_pre_flat, agg_flat, domains.edge->size, n_nodes * d_h, prefix + "ELU");
+        auto r_elu = build_logup_accumulator(table_elu, query_elu, m_elu, q_tbl_elu, q_qry_elu, beta_elu);
+        add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, stage_start);
+
         const auto eta_dst = transcript.challenge("eta_dst_h" + std::to_string(head_index));
         const auto beta_dst = transcript.challenge("beta_dst_h" + std::to_string(head_index));
         trace.challenges["eta_dst_h" + std::to_string(head_index)] = eta_dst;
@@ -978,7 +1545,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         }
         const auto e_dst_edge = broadcast_node_values(e_dst, edges, false, domains.edge->size);
         for (std::size_t k = 0; k < n_edges; ++k) {
-            dst_query[k] = FieldElement(edges[k].dst)
+            dst_query[k] = edge_dst_fields[k]
                 + eta_dst_powers[1] * e_dst_edge[k]
                 + eta_dst_powers[2] * m_edge[k]
                 + eta_dst_powers[3] * sum_edge[k]
@@ -987,15 +1554,31 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         }
         add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, stage_start);
         stage_start = Clock::now();
-        const auto dst_mult = count_by_dst(edges, n_nodes, domains.n->size);
-        auto dst_route = build_route_trace(dst_table, dst_query, dst_mult, n_nodes, n_edges, domains.n, domains.edge, beta_dst);
+        auto dst_route = build_route_trace(
+            dst_table,
+            dst_query,
+            dst_multiplicity_template,
+            n_nodes,
+            n_edges,
+            domains.n,
+            domains.edge,
+            beta_dst);
         add_metric(metrics != nullptr ? &metrics->route_trace_ms : nullptr, stage_start);
         add_dynamic_commitment_batch(
             trace,
             {
+                column_spec(prefix + "a_agg_pre", agg_pre_binding.a, domains.d),
+                column_spec(prefix + "b_agg_pre", agg_pre_binding.b, domains.d),
+                column_spec(prefix + "Acc_agg_pre", agg_pre_binding.acc, domains.d),
                 column_spec(prefix + "a_agg", agg_binding.a, domains.d),
                 column_spec(prefix + "b_agg", agg_binding.b, domains.d),
                 column_spec(prefix + "Acc_agg", agg_binding.acc, domains.d),
+                column_spec(prefix + "H_agg_pre_flat", agg_pre_flat, domains.edge),
+                column_spec(prefix + "H_agg_flat", agg_flat, domains.edge),
+                column_spec(prefix + "Table_ELU", table_elu, domains.edge),
+                column_spec(prefix + "Query_ELU", query_elu, domains.edge),
+                column_spec(prefix + "m_ELU", m_elu, domains.edge),
+                column_spec(prefix + "R_ELU", r_elu, domains.edge),
                 column_spec(prefix + "Table_dst", dst_route.table, domains.n),
                 column_spec(prefix + "Query_dst", dst_route.query, domains.edge),
                 column_spec(prefix + "m_dst", dst_route.multiplicity, domains.n),
@@ -1007,8 +1590,9 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             metrics);
         trace.witness_scalars["S_src_h" + std::to_string(head_index)] = src_route.total;
         trace.witness_scalars["S_dst_h" + std::to_string(head_index)] = dst_route.total;
+        trace.witness_scalars["S_t_h" + std::to_string(head_index)] = t_route.total;
         trace.external_evaluations["mu_h" + std::to_string(head_index) + "_proj"] =
-            trace.polynomials.at(prefix + "H_prime").evaluate(trace.challenges.at("y_proj_h" + std::to_string(head_index)));
+            matrix_row_major_evaluation(h_prime, trace.challenges.at("y_proj_h" + std::to_string(head_index)));
         trace.external_evaluations["mu_h" + std::to_string(head_index) + "_src"] =
             trace.polynomials.at(prefix + "E_src").evaluate(trace.challenges.at("y_src_h" + std::to_string(head_index)));
         trace.external_evaluations["mu_h" + std::to_string(head_index) + "_dst"] =
@@ -1019,17 +1603,34 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             trace.polynomials.at(prefix + "H_agg_pre_star").evaluate(trace.challenges.at("y_agg_pre_h" + std::to_string(head_index)));
         trace.external_evaluations["mu_h" + std::to_string(head_index) + "_agg"] =
             trace.polynomials.at(prefix + "H_agg_star").evaluate(trace.challenges.at("y_agg_h" + std::to_string(head_index)));
+        const auto head_total_ms = elapsed_ms(head_trace_start, Clock::now());
+        add_residual_metric(
+            &RunMetrics::hidden_head_trace_ms,
+            head_total_ms - (metric_value(&RunMetrics::commit_dynamic_ms) - initial_commit_dynamic_ms),
+            {
+                metric_value(&RunMetrics::lookup_trace_ms) - initial_lookup_ms,
+                metric_value(&RunMetrics::route_trace_ms) - initial_route_ms,
+                metric_value(&RunMetrics::psq_trace_ms) - initial_psq_ms,
+                metric_value(&RunMetrics::zkmap_trace_ms) - initial_zkmap_ms,
+                metric_value(&RunMetrics::state_machine_trace_ms) - initial_state_machine_ms,
+                metric_value(&RunMetrics::padding_selector_trace_ms) - initial_padding_selector_ms,
+                metric_value(&RunMetrics::public_poly_trace_ms) - initial_public_poly_ms,
+            });
     };
 
     for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index) {
         commit_hidden_head(head_index);
     }
 
-    auto stage_start = Clock::now();
+    stage_start = Clock::now();
+    const auto hidden_stack_start = stage_start;
+    const auto hidden_stack_initial_zkmap_ms = metric_value(&RunMetrics::zkmap_trace_ms);
+    const auto hidden_stack_initial_padding_ms = metric_value(&RunMetrics::padding_selector_trace_ms);
+    const auto hidden_stack_initial_commit_dynamic_ms = metric_value(&RunMetrics::commit_dynamic_ms);
     const auto h_cat = quantize_matrix(forward.hidden_concat);
     add_dynamic_commitment_batch(
         trace,
-        {matrix_spec("P_H_cat", h_cat)},
+        {matrix_commitment_only_spec("P_H_cat", h_cat)},
         context.kzg,
         keep_trace_payloads,
         metrics);
@@ -1037,6 +1638,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     trace.challenges["xi_cat"] = transcript.challenge("xi_cat");
     const auto h_cat_star = compress_rows_with_challenge(h_cat, trace.challenges.at("xi_cat"));
     add_metric(metrics != nullptr ? &metrics->witness_materialization_ms : nullptr, stage_start);
+    add_metric(metrics != nullptr ? &metrics->padding_selector_trace_ms : nullptr, stage_start);
     add_dynamic_commitment_batch(
         trace,
         {column_spec("P_H_cat_star", padded_column(h_cat_star, domains.n->size), domains.n)},
@@ -1066,8 +1668,23 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         keep_trace_payloads,
         metrics);
     trace.external_evaluations["mu_cat"] = trace.polynomials.at("P_H_cat_star").evaluate(trace.challenges.at("y_cat"));
+    add_residual_metric(
+        &RunMetrics::hidden_head_trace_ms,
+        elapsed_ms(hidden_stack_start, Clock::now()) - (metric_value(&RunMetrics::commit_dynamic_ms) - hidden_stack_initial_commit_dynamic_ms),
+        {
+            metric_value(&RunMetrics::zkmap_trace_ms) - hidden_stack_initial_zkmap_ms,
+            metric_value(&RunMetrics::padding_selector_trace_ms) - hidden_stack_initial_padding_ms,
+        });
 
     stage_start = Clock::now();
+    const auto output_trace_start = stage_start;
+    const auto output_initial_lookup_ms = metric_value(&RunMetrics::lookup_trace_ms);
+    const auto output_initial_route_ms = metric_value(&RunMetrics::route_trace_ms);
+    const auto output_initial_psq_ms = metric_value(&RunMetrics::psq_trace_ms);
+    const auto output_initial_zkmap_ms = metric_value(&RunMetrics::zkmap_trace_ms);
+    const auto output_initial_state_machine_ms = metric_value(&RunMetrics::state_machine_trace_ms);
+    const auto output_initial_padding_ms = metric_value(&RunMetrics::padding_selector_trace_ms);
+    const auto output_initial_commit_dynamic_ms = metric_value(&RunMetrics::commit_dynamic_ms);
     const auto y_prime = quantize_matrix(forward.output_head_trace.H_prime);
     const auto out_e_src = quantize_vector(forward.output_head_trace.E_src);
     const auto out_e_dst = quantize_vector(forward.output_head_trace.E_dst);
@@ -1085,10 +1702,11 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     const auto out_sum_edge = broadcast_node_values(out_sum, edges, false, domains.edge->size);
     const auto out_inv_edge = broadcast_node_values(out_inv, edges, false, domains.edge->size);
     add_metric(metrics != nullptr ? &metrics->witness_materialization_ms : nullptr, stage_start);
+    add_metric(metrics != nullptr ? &metrics->padding_selector_trace_ms : nullptr, stage_start);
     add_dynamic_commitment_batch(
         trace,
         {
-            matrix_spec("P_out_Y_prime", y_prime),
+            matrix_commitment_only_spec("P_out_Y_prime", y_prime),
             column_spec("P_out_E_src", padded_column(out_e_src, domains.n->size), domains.n),
             column_spec("P_out_E_dst", padded_column(out_e_dst, domains.n->size), domains.n),
             column_spec("P_out_S", padded_column(out_s, domains.edge->size), domains.edge),
@@ -1102,8 +1720,8 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             column_spec("P_out_inv", padded_column(out_inv, domains.n->size), domains.n),
             column_spec("P_out_inv_edge", out_inv_edge, domains.edge),
             column_spec("P_out_alpha", padded_column(out_alpha, domains.edge->size), domains.edge),
-            matrix_spec("P_Y_lin", y_lin_matrix),
-            matrix_spec("P_Y", y_matrix),
+            matrix_commitment_only_spec("P_Y_lin", y_lin_matrix),
+            matrix_commitment_only_spec("P_Y", y_matrix),
         },
         context.kzg,
         keep_trace_payloads,
@@ -1122,6 +1740,23 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     transcript.absorb_commitment("P_out_E_dst", trace.commitments.at("P_out_E_dst").point);
     transcript.absorb_commitment(output_dst_label(), context.static_commitments.at(output_dst_label()).point);
     trace.challenges["y_dst_out"] = transcript.challenge("y_dst_out");
+    transcript.absorb_commitment("P_out_S", trace.commitments.at("P_out_S").point);
+    transcript.absorb_commitment("P_out_Z", trace.commitments.at("P_out_Z").point);
+    transcript.absorb_commitment("V_T_L_x", context.static_commitments.at("V_T_L_x").point);
+    transcript.absorb_commitment("V_T_L_y", context.static_commitments.at("V_T_L_y").point);
+    trace.challenges["eta_L_out"] = transcript.challenge("eta_L_out");
+    trace.challenges["beta_L_out"] = transcript.challenge("beta_L_out");
+    transcript.absorb_commitment("P_out_M", trace.commitments.at("P_out_M").point);
+    transcript.absorb_commitment("P_out_M_edge", trace.commitments.at("P_out_M_edge").point);
+    transcript.absorb_commitment("P_out_Delta", trace.commitments.at("P_out_Delta").point);
+    transcript.absorb_commitment("V_T_range", context.static_commitments.at("V_T_range").point);
+    trace.challenges["beta_R_out"] = transcript.challenge("beta_R_out");
+    transcript.absorb_commitment("P_out_Delta", trace.commitments.at("P_out_Delta").point);
+    transcript.absorb_commitment("P_out_U", trace.commitments.at("P_out_U").point);
+    transcript.absorb_commitment("V_T_exp_x", context.static_commitments.at("V_T_exp_x").point);
+    transcript.absorb_commitment("V_T_exp_y", context.static_commitments.at("V_T_exp_y").point);
+    trace.challenges["eta_exp_out"] = transcript.challenge("eta_exp_out");
+    trace.challenges["beta_exp_out"] = transcript.challenge("beta_exp_out");
 
     const auto y_prime_star = compress_rows_with_challenge(y_prime, trace.challenges.at("xi_out"));
     const auto y_prime_star_edge = broadcast_node_values(y_prime_star, edges, true, domains.edge->size);
@@ -1139,13 +1774,102 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         out_src_table[i] = absolute_id_fields[i] + eta_src_out_powers[1] * out_e_src[i];
     }
     for (std::size_t k = 0; k < n_edges; ++k) {
-        out_src_query[k] = FieldElement(edges[k].src) + eta_src_out_powers[1] * y_prime_star_edge[k];
+        out_src_query[k] = edge_src_fields[k] + eta_src_out_powers[1] * y_prime_star_edge[k];
     }
     add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, stage_start);
     stage_start = Clock::now();
-    const auto out_src_mult = count_by_src(edges, n_nodes, domains.n->size);
-    auto out_src_route = build_route_trace(out_src_table, out_src_query, out_src_mult, n_nodes, n_edges, domains.n, domains.edge, beta_src_out);
+    auto out_src_route = build_route_trace(
+        out_src_table,
+        out_src_query,
+        src_multiplicity_template,
+        n_nodes,
+        n_edges,
+        domains.n,
+        domains.edge,
+        beta_src_out);
     add_metric(metrics != nullptr ? &metrics->route_trace_ms : nullptr, stage_start);
+
+    stage_start = Clock::now();
+    std::vector<FieldElement> out_table_l(domains.edge->size, FieldElement::zero());
+    std::vector<FieldElement> out_query_l(domains.edge->size, FieldElement::zero());
+    for (std::size_t i = 0; i < context.tables.lrelu.size(); ++i) {
+        out_table_l[i] = context.tables.lrelu[i].first + trace.challenges.at("eta_L_out") * context.tables.lrelu[i].second;
+    }
+    for (std::size_t k = 0; k < n_edges; ++k) {
+        out_query_l[k] = out_s[k] + trace.challenges.at("eta_L_out") * out_z[k];
+    }
+    auto out_m_l = build_pair_lookup_multiplicity(
+        lrelu_index,
+        out_s,
+        out_z,
+        domains.edge->size,
+        n_edges,
+        "P_out_L");
+    auto out_r_l = build_logup_accumulator(
+        out_table_l,
+        out_query_l,
+        out_m_l,
+        q_tbl_l,
+        q_qry_l,
+        trace.challenges.at("beta_L_out"));
+    add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, stage_start);
+
+    stage_start = Clock::now();
+    std::vector<FieldElement> out_s_max(domains.edge->size, FieldElement::zero());
+    for (const auto& [group_begin, group_end] : edge_groups_by_dst) {
+        for (std::size_t k = group_begin; k < group_end; ++k) {
+            if (out_delta[k].is_zero()) {
+                out_s_max[k] = FieldElement::one();
+                break;
+            }
+        }
+    }
+    const auto out_c_max = build_max_counter_state(out_s_max, q_new);
+    add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
+    stage_start = Clock::now();
+    std::vector<FieldElement> out_table_r(domains.edge->size, FieldElement::zero());
+    std::vector<FieldElement> out_query_r(domains.edge->size, FieldElement::zero());
+    for (std::size_t i = 0; i < context.tables.range.size(); ++i) {
+        out_table_r[i] = context.tables.range[i];
+    }
+    for (std::size_t k = 0; k < n_edges; ++k) {
+        out_query_r[k] = out_delta[k];
+    }
+    auto out_m_r = build_lookup_multiplicity(range_index, out_delta, domains.edge->size, n_edges, "P_out_R");
+    auto out_r_r = build_logup_accumulator(
+        out_table_r,
+        out_query_r,
+        out_m_r,
+        q_tbl_r,
+        q_qry_r,
+        trace.challenges.at("beta_R_out"));
+    add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, stage_start);
+
+    stage_start = Clock::now();
+    std::vector<FieldElement> out_table_exp(domains.edge->size, FieldElement::zero());
+    std::vector<FieldElement> out_query_exp(domains.edge->size, FieldElement::zero());
+    for (std::size_t i = 0; i < context.tables.exp.size(); ++i) {
+        out_table_exp[i] = context.tables.exp[i].first + trace.challenges.at("eta_exp_out") * context.tables.exp[i].second;
+    }
+    for (std::size_t k = 0; k < n_edges; ++k) {
+        out_query_exp[k] = out_delta[k] + trace.challenges.at("eta_exp_out") * out_u[k];
+    }
+    auto out_m_exp = build_pair_lookup_multiplicity(
+        exp_index,
+        out_delta,
+        out_u,
+        domains.edge->size,
+        n_edges,
+        "P_out_exp");
+    auto out_r_exp = build_logup_accumulator(
+        out_table_exp,
+        out_query_exp,
+        out_m_exp,
+        q_tbl_exp,
+        q_qry_exp,
+        trace.challenges.at("beta_exp_out"));
+    add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, stage_start);
+
     const auto lambda_out = transcript.challenge("lambda_out");
     trace.challenges["lambda_out"] = lambda_out;
     stage_start = Clock::now();
@@ -1161,6 +1885,33 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     const auto t_out_edge = build_group_target(t_out, edges, domains.edge->size);
     auto psq_out = build_group_prefix_state(w_out, q_new);
     add_metric(metrics != nullptr ? &metrics->psq_trace_ms : nullptr, stage_start);
+    add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
+    const auto eta_t_out = transcript.challenge("eta_t_out");
+    const auto beta_t_out = transcript.challenge("beta_t_out");
+    trace.challenges["eta_t_out"] = eta_t_out;
+    trace.challenges["beta_t_out"] = beta_t_out;
+    stage_start = Clock::now();
+    const auto eta_t_out_powers = powers(eta_t_out, 2);
+    std::vector<FieldElement> out_t_table(n_nodes, FieldElement::zero());
+    std::vector<FieldElement> out_t_query(n_edges, FieldElement::zero());
+    for (std::size_t i = 0; i < n_nodes; ++i) {
+        out_t_table[i] = absolute_id_fields[i] + eta_t_out_powers[1] * t_out[i];
+    }
+    for (std::size_t k = 0; k < n_edges; ++k) {
+        out_t_query[k] = edge_dst_fields[k] + eta_t_out_powers[1] * t_out_edge[k];
+    }
+    add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, stage_start);
+    stage_start = Clock::now();
+    auto out_t_route = build_route_trace(
+        out_t_table,
+        out_t_query,
+        dst_multiplicity_template,
+        n_nodes,
+        n_edges,
+        domains.n,
+        domains.edge,
+        beta_t_out);
+    add_metric(metrics != nullptr ? &metrics->route_trace_ms : nullptr, stage_start);
     add_dynamic_commitment_batch(
         trace,
         {
@@ -1173,10 +1924,29 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             column_spec("P_out_m_src", out_src_route.multiplicity, domains.n),
             column_spec("P_out_R_src_node", out_src_route.node_acc, domains.n),
             column_spec("P_out_R_src", out_src_route.edge_acc, domains.edge),
+            column_spec("P_out_Table_L", out_table_l, domains.edge),
+            column_spec("P_out_Query_L", out_query_l, domains.edge),
+            column_spec("P_out_m_L", out_m_l, domains.edge),
+            column_spec("P_out_R_L", out_r_l, domains.edge),
+            column_spec("P_out_s_max", out_s_max, domains.edge),
+            column_spec("P_out_C_max", out_c_max, domains.edge),
+            column_spec("P_out_Table_R", out_table_r, domains.edge),
+            column_spec("P_out_Query_R", out_query_r, domains.edge),
+            column_spec("P_out_m_R", out_m_r, domains.edge),
+            column_spec("P_out_R_R", out_r_r, domains.edge),
+            column_spec("P_out_Table_exp", out_table_exp, domains.edge),
+            column_spec("P_out_Query_exp", out_query_exp, domains.edge),
+            column_spec("P_out_m_exp", out_m_exp, domains.edge),
+            column_spec("P_out_R_exp", out_r_exp, domains.edge),
             column_spec("P_out_widehat_y_star", widehat_y_star, domains.edge),
             column_spec("P_out_w", w_out, domains.edge),
             column_spec("P_out_T", padded_column(t_out, domains.n->size), domains.n),
             column_spec("P_out_T_edge", t_out_edge, domains.edge),
+            column_spec("P_out_Table_t", out_t_route.table, domains.n),
+            column_spec("P_out_Query_t", out_t_route.query, domains.edge),
+            column_spec("P_out_m_t", out_t_route.multiplicity, domains.n),
+            column_spec("P_out_R_t_node", out_t_route.node_acc, domains.n),
+            column_spec("P_out_R_t", out_t_route.edge_acc, domains.edge),
             column_spec("P_out_PSQ", psq_out, domains.edge),
             column_spec("P_out_Y_star", padded_column(y_star, domains.n->size), domains.n),
             column_spec("P_out_Y_star_edge", y_star_edge, domains.edge),
@@ -1241,7 +2011,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             + eta_dst_out.pow(5) * y_star[i];
     }
     for (std::size_t k = 0; k < n_edges; ++k) {
-        out_dst_query[k] = FieldElement(edges[k].dst)
+        out_dst_query[k] = edge_dst_fields[k]
             + eta_dst_out_powers[1] * out_e_dst_edge[k]
             + eta_dst_out_powers[2] * out_m_edge[k]
             + eta_dst_out_powers[3] * out_sum_edge[k]
@@ -1250,8 +2020,15 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     }
     add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, stage_start);
     stage_start = Clock::now();
-    const auto out_dst_mult = count_by_dst(edges, n_nodes, domains.n->size);
-    auto out_dst_route = build_route_trace(out_dst_table, out_dst_query, out_dst_mult, n_nodes, n_edges, domains.n, domains.edge, beta_dst_out);
+    auto out_dst_route = build_route_trace(
+        out_dst_table,
+        out_dst_query,
+        dst_multiplicity_template,
+        n_nodes,
+        n_edges,
+        domains.n,
+        domains.edge,
+        beta_dst_out);
     add_metric(metrics != nullptr ? &metrics->route_trace_ms : nullptr, stage_start);
     add_dynamic_commitment_batch(
         trace,
@@ -1279,7 +2056,8 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         metrics);
     trace.witness_scalars["S_src_out"] = out_src_route.total;
     trace.witness_scalars["S_dst_out"] = out_dst_route.total;
-    trace.external_evaluations["mu_out_proj"] = trace.polynomials.at("P_out_Y_prime").evaluate(trace.challenges.at("y_proj_out"));
+    trace.witness_scalars["S_t_out"] = out_t_route.total;
+    trace.external_evaluations["mu_out_proj"] = matrix_row_major_evaluation(y_prime, trace.challenges.at("y_proj_out"));
     trace.external_evaluations["mu_out_src"] = trace.polynomials.at("P_out_E_src").evaluate(trace.challenges.at("y_src_out"));
     trace.external_evaluations["mu_out_dst"] = trace.polynomials.at("P_out_E_dst").evaluate(trace.challenges.at("y_dst_out"));
     trace.external_evaluations["mu_out_star"] = trace.polynomials.at("P_out_Y_star").evaluate(trace.challenges.at("y_out_star"));
@@ -1289,7 +2067,18 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     transcript.absorb_commitment("P_out_Table_dst", trace.commitments.at("P_out_Table_dst").point);
     transcript.absorb_commitment("P_out_Query_dst", trace.commitments.at("P_out_Query_dst").point);
     trace.challenges["y_out"] = transcript.challenge("y_out");
-    trace.external_evaluations["mu_out"] = trace.polynomials.at("P_Y").evaluate(trace.challenges.at("y_out"));
+    trace.external_evaluations["mu_out"] = matrix_row_major_evaluation(y_matrix, trace.challenges.at("y_out"));
+    add_residual_metric(
+        &RunMetrics::output_head_trace_ms,
+        elapsed_ms(output_trace_start, Clock::now()) - (metric_value(&RunMetrics::commit_dynamic_ms) - output_initial_commit_dynamic_ms),
+        {
+            metric_value(&RunMetrics::lookup_trace_ms) - output_initial_lookup_ms,
+            metric_value(&RunMetrics::route_trace_ms) - output_initial_route_ms,
+            metric_value(&RunMetrics::psq_trace_ms) - output_initial_psq_ms,
+            metric_value(&RunMetrics::zkmap_trace_ms) - output_initial_zkmap_ms,
+            metric_value(&RunMetrics::state_machine_trace_ms) - output_initial_state_machine_ms,
+            metric_value(&RunMetrics::padding_selector_trace_ms) - output_initial_padding_ms,
+        });
 
     trace.challenges["alpha_quot"] = transcript.challenge("alpha_quot");
     trace.challenges["z_FH"] = transcript.challenge("z_FH");
@@ -1310,7 +2099,10 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
 
     trace.commitment_order = dynamic_commitment_labels(context);
     if (metrics != nullptr) {
-        metrics->trace_generation_ms += elapsed_ms(trace_start, Clock::now());
+        const auto total_trace_ms = elapsed_ms(trace_start, Clock::now());
+        const auto forward_delta = metrics->forward_ms - initial_forward_ms;
+        const auto commit_dynamic_delta = metrics->commit_dynamic_ms - initial_commit_dynamic_ms;
+        metrics->trace_generation_ms += std::max(0.0, total_trace_ms - forward_delta - commit_dynamic_delta);
     }
     return trace;
 }
@@ -1319,6 +2111,8 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
 
 TraceArtifacts build_trace(const ProtocolContext& context, RunMetrics* metrics) {
     const auto trace_start = Clock::now();
+    const auto initial_forward_ms = metrics != nullptr ? metrics->forward_ms : 0.0;
+    const auto initial_commit_dynamic_ms = metrics != nullptr ? metrics->commit_dynamic_ms : 0.0;
     if (context.model.has_real_multihead) {
         return build_multihead_trace(context, metrics);
     }
@@ -2053,7 +2847,10 @@ TraceArtifacts build_trace(const ProtocolContext& context, RunMetrics* metrics) 
     }
     if (metrics != nullptr) {
         metrics->forward_ms = metrics->feature_projection_ms;
-        metrics->trace_generation_ms = elapsed_ms(trace_start, Clock::now());
+        const auto total_trace_ms = elapsed_ms(trace_start, Clock::now());
+        const auto forward_delta = metrics->forward_ms - initial_forward_ms;
+        const auto commit_dynamic_delta = metrics->commit_dynamic_ms - initial_commit_dynamic_ms;
+        metrics->trace_generation_ms += std::max(0.0, total_trace_ms - forward_delta - commit_dynamic_delta);
     }
     return trace;
 }

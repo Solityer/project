@@ -1,5 +1,6 @@
 #include "gatzk/crypto/kzg.hpp"
 
+#include <chrono>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -15,6 +16,11 @@ namespace gatzk::crypto {
 namespace {
 
 using algebra::FieldElement;
+using Clock = std::chrono::steady_clock;
+
+double elapsed_ms(const Clock::time_point& start, const Clock::time_point& end) {
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
 
 std::vector<FieldElement> folding_powers(const FieldElement& challenge, std::size_t count) {
     std::vector<FieldElement> out(count, FieldElement::one());
@@ -87,6 +93,50 @@ struct DomainCommitWeights {
     std::optional<std::size_t> direct_index;
     std::vector<mcl::Fr> native_weights;
 };
+
+DomainCommitWeights load_or_build_domain_commit_weights(
+    const algebra::Polynomial& polynomial,
+    const KZGKeyPair& key) {
+    static std::mutex cache_mutex;
+    static std::unordered_map<std::string, DomainCommitWeights> cache;
+
+    const auto cache_key = polynomial.domain->name + ":" + std::to_string(polynomial.domain->size) + ":"
+        + key.tau.to_string();
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        if (const auto it = cache.find(cache_key); it != cache.end()) {
+            return it->second;
+        }
+    }
+
+    DomainCommitWeights entry;
+    for (std::size_t i = 0; i < polynomial.domain->size; ++i) {
+        if (polynomial.domain->points[i] == key.tau) {
+            entry.direct_index = i;
+            break;
+        }
+    }
+    if (!entry.direct_index.has_value()) {
+        if (util::route2_options().fft_backend_upgrade) {
+            entry.native_weights = polynomial.domain->barycentric_weights_native(key.tau);
+        } else {
+            entry.native_weights.resize(polynomial.domain->size);
+            const auto scale = (polynomial.domain->zero_polynomial_eval(key.tau) * polynomial.domain->inv_size).native();
+            for (std::size_t i = 0; i < polynomial.domain->size; ++i) {
+                mcl::Fr denominator;
+                mcl::Fr::sub(denominator, key.tau.native(), polynomial.domain->points[i].native());
+                mcl::Fr inverse;
+                mcl::Fr::inv(inverse, denominator);
+                mcl::Fr::mul(entry.native_weights[i], scale, polynomial.domain->points[i].native());
+                mcl::Fr::mul(entry.native_weights[i], entry.native_weights[i], inverse);
+            }
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    const auto [it, _] = cache.emplace(cache_key, entry);
+    return it->second;
+}
 
 BatchOpeningPrecompute prepare_batch_opening(
     const std::vector<FieldElement>& points,
@@ -277,35 +327,9 @@ std::vector<Commitment> KZG::commit_batch(
         if (domain_weight_cache.contains(cache_key)) {
             continue;
         }
-
-        DomainCommitWeights entry;
-        for (std::size_t i = 0; i < polynomial->domain->size; ++i) {
-            if (polynomial->domain->points[i] == key.tau) {
-                entry.direct_index = i;
-                break;
-            }
-        }
-        if (!entry.direct_index.has_value()) {
-            if (util::route2_options().fft_backend_upgrade) {
-                // The KZG commitment is still C = [p(tau)]_1. This route only
-                // swaps the low-level evaluation backend used to obtain p(tau)
-                // for evaluation-basis polynomials, and it reuses the same
-                // (domain, tau) barycentric weights across the whole batch.
-                entry.native_weights = polynomial->domain->barycentric_weights_native(key.tau);
-            } else {
-                entry.native_weights.resize(polynomial->domain->size);
-                const auto scale = (polynomial->domain->zero_polynomial_eval(key.tau) * polynomial->domain->inv_size).native();
-                for (std::size_t i = 0; i < polynomial->domain->size; ++i) {
-                    mcl::Fr denominator;
-                    mcl::Fr::sub(denominator, key.tau.native(), polynomial->domain->points[i].native());
-                    mcl::Fr inverse;
-                    mcl::Fr::inv(inverse, denominator);
-                    mcl::Fr::mul(entry.native_weights[i], scale, polynomial->domain->points[i].native());
-                    mcl::Fr::mul(entry.native_weights[i], entry.native_weights[i], inverse);
-                }
-            }
-        }
-        domain_weight_cache.emplace(cache_key, std::move(entry));
+        // The commitment is still C = [p(tau)]_1. We only reuse the exact same
+        // (domain, tau) weights across all commitment batches in this process.
+        domain_weight_cache.emplace(cache_key, load_or_build_domain_commit_weights(*polynomial, key));
     }
 
     auto evaluate_with_cache = [&](const algebra::Polynomial& polynomial) {
@@ -358,14 +382,29 @@ G1Point KZG::open_batch(
     const std::vector<FieldElement>& points,
     const std::vector<std::vector<FieldElement>>& claimed_values,
     const FieldElement& folding_challenge,
-    const KZGKeyPair& key) {
+    const KZGKeyPair& key,
+    BatchOpeningProfile* profile) {
     if (commitments.size() != claimed_values.size()) {
         throw std::runtime_error("batch opening mismatch between commitments and values");
     }
+    const auto precompute_start = Clock::now();
     const auto precompute = prepare_batch_opening(points, folding_challenge, key, commitments.size());
-    return g1_mul(
-        fold_commitments(commitments, claimed_values, precompute, key),
+    if (profile != nullptr) {
+        profile->precompute_ms += elapsed_ms(precompute_start, Clock::now());
+    }
+    const auto fold_start = Clock::now();
+    const auto folded_commitment = fold_commitments(commitments, claimed_values, precompute, key);
+    if (profile != nullptr) {
+        profile->fold_commitment_ms += elapsed_ms(fold_start, Clock::now());
+    }
+    const auto finalize_start = Clock::now();
+    const auto witness = g1_mul(
+        folded_commitment,
         safe_inverse(precompute.vanishing_at_tau, "batch opening"));
+    if (profile != nullptr) {
+        profile->finalize_ms += elapsed_ms(finalize_start, Clock::now());
+    }
+    return witness;
 }
 
 bool KZG::verify_batch(

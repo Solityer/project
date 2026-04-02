@@ -113,8 +113,18 @@ void append_attention_head_dynamic_labels(std::vector<std::string>& labels, cons
     push("R_src");
     push("S");
     push("Z");
+    push("Table_L");
+    push("Query_L");
+    push("m_L");
+    push("R_L");
     push("M");
     push("M_edge");
+    push("s_max");
+    push("C_max");
+    push("Table_R");
+    push("Query_R");
+    push("m_R");
+    push("R_R");
     push("Delta");
     push("U");
     push("Sum");
@@ -122,17 +132,35 @@ void append_attention_head_dynamic_labels(std::vector<std::string>& labels, cons
     push("inv");
     push("inv_edge");
     push("alpha");
+    push("Table_exp");
+    push("Query_exp");
+    push("m_exp");
+    push("R_exp");
     push("H_agg_pre");
+    push("H_agg_pre_flat");
+    push("H_agg_flat");
+    push("Table_ELU");
+    push("Query_ELU");
+    push("m_ELU");
+    push("R_ELU");
     push("H_agg_pre_star");
     push("H_agg_pre_star_edge");
     push("widehat_v_pre_star");
     push("w_psq");
     push("T_psq");
     push("T_psq_edge");
+    push("Table_t");
+    push("Query_t");
+    push("m_t");
+    push("R_t_node");
+    push("R_t");
     push("PSQ");
     push("H_agg");
     push("H_agg_star");
     push("H_agg_star_edge");
+    push("a_agg_pre");
+    push("b_agg_pre");
+    push("Acc_agg_pre");
     push("a_agg");
     push("b_agg");
     push("Acc_agg");
@@ -154,7 +182,7 @@ PublicMetadata canonical_public_metadata(const ProtocolContext& context) {
     metadata.model_param_id = context.model.has_real_multihead
         ? ("checkpoint_bundle:" + context.config.checkpoint_bundle)
         : ("synthetic_seed:" + std::to_string(context.config.seed));
-    metadata.static_table_id = "tables:lrelu+exp+range";
+    metadata.static_table_id = "tables:lrelu+elu+exp+range";
     metadata.quant_cfg_id = "range_bits=" + std::to_string(context.config.range_bits);
     metadata.domain_cfg =
         "FH=" + context.domains.fh->name + ":" + std::to_string(context.domains.fh->size)
@@ -310,8 +338,18 @@ std::vector<std::string> dynamic_commitment_labels(const ProtocolContext& contex
     labels.push_back("P_out_R_src");
     labels.push_back("P_out_S");
     labels.push_back("P_out_Z");
+    labels.push_back("P_out_Table_L");
+    labels.push_back("P_out_Query_L");
+    labels.push_back("P_out_m_L");
+    labels.push_back("P_out_R_L");
     labels.push_back("P_out_M");
     labels.push_back("P_out_M_edge");
+    labels.push_back("P_out_s_max");
+    labels.push_back("P_out_C_max");
+    labels.push_back("P_out_Table_R");
+    labels.push_back("P_out_Query_R");
+    labels.push_back("P_out_m_R");
+    labels.push_back("P_out_R_R");
     labels.push_back("P_out_Delta");
     labels.push_back("P_out_U");
     labels.push_back("P_out_Sum");
@@ -319,10 +357,19 @@ std::vector<std::string> dynamic_commitment_labels(const ProtocolContext& contex
     labels.push_back("P_out_inv");
     labels.push_back("P_out_inv_edge");
     labels.push_back("P_out_alpha");
+    labels.push_back("P_out_Table_exp");
+    labels.push_back("P_out_Query_exp");
+    labels.push_back("P_out_m_exp");
+    labels.push_back("P_out_R_exp");
     labels.push_back("P_out_widehat_y_star");
     labels.push_back("P_out_w");
     labels.push_back("P_out_T");
     labels.push_back("P_out_T_edge");
+    labels.push_back("P_out_Table_t");
+    labels.push_back("P_out_Query_t");
+    labels.push_back("P_out_m_t");
+    labels.push_back("P_out_R_t_node");
+    labels.push_back("P_out_R_t");
     labels.push_back("P_out_PSQ");
     labels.push_back("P_Y_lin");
     labels.push_back("P_Y");
@@ -402,13 +449,43 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
             absorb(transcript, prefix + "_H_star", dynamic_commitments);
             out["y_star_h" + std::to_string(head_index)] = transcript.challenge("y_star_h" + std::to_string(head_index));
 
+            absorb(transcript, prefix + "_S", dynamic_commitments);
+            absorb(transcript, prefix + "_Z", dynamic_commitments);
+            absorb_static(transcript, context, "V_T_L_x");
+            absorb_static(transcript, context, "V_T_L_y");
+            out["eta_L_h" + std::to_string(head_index)] = transcript.challenge("eta_L_h" + std::to_string(head_index));
+            out["beta_L_h" + std::to_string(head_index)] = transcript.challenge("beta_L_h" + std::to_string(head_index));
+
+            absorb(transcript, prefix + "_M", dynamic_commitments);
+            absorb(transcript, prefix + "_M_edge", dynamic_commitments);
+            absorb(transcript, prefix + "_Delta", dynamic_commitments);
+            absorb_static(transcript, context, "V_T_range");
+            out["beta_R_h" + std::to_string(head_index)] = transcript.challenge("beta_R_h" + std::to_string(head_index));
+
+            absorb(transcript, prefix + "_Delta", dynamic_commitments);
+            absorb(transcript, prefix + "_U", dynamic_commitments);
+            absorb_static(transcript, context, "V_T_exp_x");
+            absorb_static(transcript, context, "V_T_exp_y");
+            out["eta_exp_h" + std::to_string(head_index)] = transcript.challenge("eta_exp_h" + std::to_string(head_index));
+            out["beta_exp_h" + std::to_string(head_index)] = transcript.challenge("beta_exp_h" + std::to_string(head_index));
+
             out["eta_src_h" + std::to_string(head_index)] = transcript.challenge("eta_src_h" + std::to_string(head_index));
             out["beta_src_h" + std::to_string(head_index)] = transcript.challenge("beta_src_h" + std::to_string(head_index));
             out["lambda_psq_h" + std::to_string(head_index)] = transcript.challenge("lambda_psq_h" + std::to_string(head_index));
+            absorb(transcript, prefix + "_T_psq", dynamic_commitments);
+            absorb(transcript, prefix + "_T_psq_edge", dynamic_commitments);
+            out["eta_t_h" + std::to_string(head_index)] = transcript.challenge("eta_t_h" + std::to_string(head_index));
+            out["beta_t_h" + std::to_string(head_index)] = transcript.challenge("beta_t_h" + std::to_string(head_index));
 
             absorb(transcript, prefix + "_H_agg_pre", dynamic_commitments);
             absorb(transcript, prefix + "_H_agg_pre_star", dynamic_commitments);
             out["y_agg_pre_h" + std::to_string(head_index)] = transcript.challenge("y_agg_pre_h" + std::to_string(head_index));
+            absorb(transcript, prefix + "_H_agg_pre", dynamic_commitments);
+            absorb(transcript, prefix + "_H_agg", dynamic_commitments);
+            absorb_static(transcript, context, "V_T_ELU_x");
+            absorb_static(transcript, context, "V_T_ELU_y");
+            out["eta_ELU_h" + std::to_string(head_index)] = transcript.challenge("eta_ELU_h" + std::to_string(head_index));
+            out["beta_ELU_h" + std::to_string(head_index)] = transcript.challenge("beta_ELU_h" + std::to_string(head_index));
 
             absorb(transcript, prefix + "_H_agg", dynamic_commitments);
             absorb(transcript, prefix + "_H_agg_star", dynamic_commitments);
@@ -436,9 +513,30 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
         absorb(transcript, "P_out_E_dst", dynamic_commitments);
         absorb_static(transcript, context, output_dst_label());
         out["y_dst_out"] = transcript.challenge("y_dst_out");
+        absorb(transcript, "P_out_S", dynamic_commitments);
+        absorb(transcript, "P_out_Z", dynamic_commitments);
+        absorb_static(transcript, context, "V_T_L_x");
+        absorb_static(transcript, context, "V_T_L_y");
+        out["eta_L_out"] = transcript.challenge("eta_L_out");
+        out["beta_L_out"] = transcript.challenge("beta_L_out");
+        absorb(transcript, "P_out_M", dynamic_commitments);
+        absorb(transcript, "P_out_M_edge", dynamic_commitments);
+        absorb(transcript, "P_out_Delta", dynamic_commitments);
+        absorb_static(transcript, context, "V_T_range");
+        out["beta_R_out"] = transcript.challenge("beta_R_out");
+        absorb(transcript, "P_out_Delta", dynamic_commitments);
+        absorb(transcript, "P_out_U", dynamic_commitments);
+        absorb_static(transcript, context, "V_T_exp_x");
+        absorb_static(transcript, context, "V_T_exp_y");
+        out["eta_exp_out"] = transcript.challenge("eta_exp_out");
+        out["beta_exp_out"] = transcript.challenge("beta_exp_out");
         out["eta_src_out"] = transcript.challenge("eta_src_out");
         out["beta_src_out"] = transcript.challenge("beta_src_out");
         out["lambda_out"] = transcript.challenge("lambda_out");
+        absorb(transcript, "P_out_T", dynamic_commitments);
+        absorb(transcript, "P_out_T_edge", dynamic_commitments);
+        out["eta_t_out"] = transcript.challenge("eta_t_out");
+        out["beta_t_out"] = transcript.challenge("beta_t_out");
         absorb(transcript, "P_Y", dynamic_commitments);
         absorb(transcript, "P_out_Y_star", dynamic_commitments);
         out["y_out_star"] = transcript.challenge("y_out_star");
@@ -458,6 +556,8 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
                  std::string("V_T_H"),
                  std::string("V_T_L_x"),
                  std::string("V_T_L_y"),
+                 std::string("V_T_ELU_x"),
+                 std::string("V_T_ELU_y"),
                  std::string("V_T_exp_x"),
                  std::string("V_T_exp_y"),
                  std::string("V_T_range"),

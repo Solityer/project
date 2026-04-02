@@ -13,13 +13,19 @@ namespace gatzk::protocol {
 
 using EvalFn = std::function<algebra::FieldElement(const std::string&, const algebra::FieldElement&)>;
 
+struct FHQuotientProfile {
+    double dependency_eval_ms = 0.0;
+    double assembly_ms = 0.0;
+};
+
 std::vector<std::string> domain_opening_labels(const ProtocolContext& context, const std::string& domain_name);
 
 algebra::FieldElement evaluate_t_fh(
     const ProtocolContext& context,
     const std::map<std::string, algebra::FieldElement>& challenges,
     const EvalFn& eval,
-    const algebra::FieldElement& z);
+    const algebra::FieldElement& z,
+    FHQuotientProfile* profile = nullptr);
 
 algebra::FieldElement evaluate_t_edge(
     const ProtocolContext& context,

@@ -1,6 +1,7 @@
 #include "gatzk/protocol/prover.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <chrono>
 #include <filesystem>
@@ -84,6 +85,91 @@ std::vector<FieldElement> edge_component(const std::vector<data::Edge>& edges, s
     return out;
 }
 
+std::vector<FieldElement> feature_table_row_indices(
+    std::size_t node_count,
+    std::size_t feature_count,
+    std::size_t size) {
+    std::vector<FieldElement> out(size, FieldElement::zero());
+    for (std::size_t v = 0; v < node_count; ++v) {
+        for (std::size_t j = 0; j < feature_count; ++j) {
+            out[v * feature_count + j] = FieldElement(v);
+        }
+    }
+    return out;
+}
+
+std::vector<FieldElement> feature_table_col_indices(
+    std::size_t node_count,
+    std::size_t feature_count,
+    std::size_t size) {
+    std::vector<FieldElement> out(size, FieldElement::zero());
+    for (std::size_t v = 0; v < node_count; ++v) {
+        for (std::size_t j = 0; j < feature_count; ++j) {
+            out[v * feature_count + j] = FieldElement(j);
+        }
+    }
+    return out;
+}
+
+std::vector<FieldElement> feature_query_row_indices(
+    std::size_t local_node_count,
+    std::size_t feature_count,
+    std::size_t size) {
+    std::vector<FieldElement> out(size, FieldElement::zero());
+    for (std::size_t i = 0; i < local_node_count; ++i) {
+        for (std::size_t j = 0; j < feature_count; ++j) {
+            out[i * feature_count + j] = FieldElement(i);
+        }
+    }
+    return out;
+}
+
+std::vector<FieldElement> feature_query_col_indices(
+    std::size_t local_node_count,
+    std::size_t feature_count,
+    std::size_t size) {
+    return feature_table_col_indices(local_node_count, feature_count, size);
+}
+
+std::vector<FieldElement> feature_query_absolute_ids(
+    const std::vector<std::size_t>& absolute_ids,
+    std::size_t feature_count,
+    std::size_t size) {
+    std::vector<FieldElement> out(size, FieldElement::zero());
+    for (std::size_t i = 0; i < absolute_ids.size(); ++i) {
+        for (std::size_t j = 0; j < feature_count; ++j) {
+            out[i * feature_count + j] = FieldElement(absolute_ids[i]);
+        }
+    }
+    return out;
+}
+
+FieldElement row_polynomial_at_point(const std::vector<FieldElement>& row, const FieldElement& point) {
+    mcl::Fr out;
+    out.clear();
+    for (std::size_t column = row.size(); column-- > 0;) {
+        mcl::Fr::mul(out, out, point.native());
+        mcl::Fr::add(out, out, row[column].native());
+    }
+    return FieldElement::from_native(out);
+}
+
+FieldElement matrix_row_major_evaluation(const model::Matrix& matrix, const FieldElement& point) {
+    if (matrix.empty() || matrix.front().empty()) {
+        return FieldElement::zero();
+    }
+
+    const auto row_stride = point.pow(static_cast<std::uint64_t>(matrix.front().size()));
+    mcl::Fr out;
+    out.clear();
+    for (std::size_t row = matrix.size(); row-- > 0;) {
+        const auto row_eval = row_polynomial_at_point(matrix[row], point);
+        mcl::Fr::mul(out, out, row_stride.native());
+        mcl::Fr::add(out, out, row_eval.native());
+    }
+    return FieldElement::from_native(out);
+}
+
 std::vector<FieldElement> q_new_selector(const std::vector<data::Edge>& edges, std::size_t size) {
     std::vector<FieldElement> out(size, FieldElement::zero());
     for (std::size_t i = 0; i < edges.size(); ++i) {
@@ -110,9 +196,73 @@ std::vector<FieldElement> make_range_table(std::size_t size) {
     return out;
 }
 
+std::int64_t quantize_float_model_value_signed(double value) {
+    return static_cast<std::int64_t>(
+        value >= 0.0 ? value * 16.0 + 0.5 : value * 16.0 - 0.5);
+}
+
 FieldElement quantize_float_model_value(double value) {
-    return FieldElement::from_signed(static_cast<std::int64_t>(
-        value >= 0.0 ? value * 16.0 + 0.5 : value * 16.0 - 0.5));
+    return FieldElement::from_signed(quantize_float_model_value_signed(value));
+}
+
+double dequantize_trace_scalar(std::int64_t value) {
+    return static_cast<double>(value) / 16.0;
+}
+
+std::vector<std::pair<FieldElement, FieldElement>> make_lrelu_table(std::size_t bound) {
+    std::vector<std::pair<FieldElement, FieldElement>> out;
+    out.reserve(bound * 2 + 1);
+    for (std::int64_t raw = -static_cast<std::int64_t>(bound); raw <= static_cast<std::int64_t>(bound); ++raw) {
+        const auto input = dequantize_trace_scalar(raw);
+        const auto output = input >= 0.0 ? input : 0.2 * input;
+        out.push_back({FieldElement::from_signed(raw), quantize_float_model_value(output)});
+    }
+    return out;
+}
+
+std::size_t elu_table_band() {
+    return 1;
+}
+
+std::vector<std::pair<FieldElement, FieldElement>> make_elu_table(std::size_t bound) {
+    std::vector<std::pair<FieldElement, FieldElement>> out;
+    out.reserve((bound * 2 + 1) * (2 * elu_table_band() + 1));
+    for (std::int64_t raw = -static_cast<std::int64_t>(bound); raw <= static_cast<std::int64_t>(bound); ++raw) {
+        const auto input = dequantize_trace_scalar(raw);
+        const auto central_signed = quantize_float_model_value_signed(input >= 0.0 ? input : std::exp(input) - 1.0);
+        for (std::int64_t offset = -static_cast<std::int64_t>(elu_table_band());
+             offset <= static_cast<std::int64_t>(elu_table_band());
+             ++offset) {
+            out.push_back({
+                FieldElement::from_signed(raw),
+                FieldElement::from_signed(central_signed + offset),
+            });
+        }
+    }
+    return out;
+}
+
+std::size_t exp_table_band() {
+    return 2;
+}
+
+std::vector<std::pair<FieldElement, FieldElement>> make_exp_table(std::size_t size) {
+    std::vector<std::pair<FieldElement, FieldElement>> out;
+    out.reserve(size * (2 * exp_table_band() + 1));
+    for (std::size_t i = 0; i < size; ++i) {
+        const auto input = static_cast<std::int64_t>(i);
+        const auto central_signed = quantize_float_model_value_signed(std::exp(-dequantize_trace_scalar(input)));
+        for (std::int64_t offset = -static_cast<std::int64_t>(exp_table_band());
+             offset <= static_cast<std::int64_t>(exp_table_band());
+             ++offset) {
+            const auto candidate = std::max<std::int64_t>(0, central_signed + offset);
+            out.push_back({
+                FieldElement(static_cast<std::uint64_t>(i)),
+                FieldElement::from_signed(candidate),
+            });
+        }
+    }
+    return out;
 }
 
 std::vector<FieldElement> quantize_model_vector(const std::vector<double>& values) {
@@ -351,6 +501,88 @@ std::shared_ptr<ProofDomainWeightCache> shared_proof_domain_weight_cache() {
     return cache;
 }
 
+class SharedFeatureMatrixEvaluationCache {
+  public:
+    FieldElement get_or_compute(
+        const std::string& context_key,
+        const model::Matrix& matrix,
+        const FieldElement& point) {
+        const auto cache_key = context_key + "|P_H@" + point_key(point);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (const auto it = entries_.find(cache_key); it != entries_.end()) {
+                return it->second;
+            }
+        }
+
+        const auto value = matrix_row_major_evaluation(matrix, point);
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto [it, inserted] = entries_.emplace(cache_key, value);
+        (void)inserted;
+        return it->second;
+    }
+
+  private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, FieldElement> entries_;
+};
+
+std::shared_ptr<SharedFeatureMatrixEvaluationCache> shared_feature_matrix_evaluation_cache() {
+    static auto cache = std::make_shared<SharedFeatureMatrixEvaluationCache>();
+    return cache;
+}
+
+std::string labels_cache_key(const std::vector<std::string>& labels) {
+    std::string key;
+    for (const auto& label : labels) {
+        key += label;
+        key.push_back('\x1f');
+    }
+    return key;
+}
+
+class SharedPublicEvaluationCache {
+  public:
+    bool lookup(
+        const std::string& context_key,
+        const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
+        const std::vector<std::string>& labels,
+        const FieldElement& point,
+        std::vector<FieldElement>* values) {
+        const auto cache_key =
+            context_key + "|" + domain_point_key(domain, point) + "|" + labels_cache_key(labels);
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (const auto it = entries_.find(cache_key); it != entries_.end()) {
+            if (values != nullptr) {
+                *values = it->second;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    void store(
+        const std::string& context_key,
+        const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
+        const std::vector<std::string>& labels,
+        const FieldElement& point,
+        std::vector<FieldElement> values) {
+        const auto cache_key =
+            context_key + "|" + domain_point_key(domain, point) + "|" + labels_cache_key(labels);
+        std::lock_guard<std::mutex> lock(mutex_);
+        entries_.emplace(std::move(cache_key), std::move(values));
+    }
+
+  private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, std::vector<FieldElement>> entries_;
+};
+
+std::shared_ptr<SharedPublicEvaluationCache> shared_public_evaluation_cache() {
+    static auto cache = std::make_shared<SharedPublicEvaluationCache>();
+    return cache;
+}
+
 class ProofEvaluationBackendRegistry {
   public:
     ProofEvaluationBackendRegistry(const ProtocolContext& context, const TraceArtifacts& trace) {
@@ -405,12 +637,15 @@ class EvaluationMemoization {
         const TraceArtifacts& trace,
         const std::map<std::string, FieldElement>& challenges,
         std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry = nullptr,
-        std::shared_ptr<ProofDomainWeightCache> domain_weight_cache = nullptr)
+        std::shared_ptr<ProofDomainWeightCache> domain_weight_cache = nullptr,
+        RunMetrics* metrics = nullptr)
         : context_(context),
           trace_(trace),
           challenges_(challenges),
           backend_registry_(std::move(backend_registry)),
-          domain_weight_cache_(std::move(domain_weight_cache)) {
+          domain_weight_cache_(std::move(domain_weight_cache)),
+          context_key_(context_cache_key(context.config)),
+          metrics_(metrics) {
         if (domain_weight_cache_ == nullptr) {
             domain_weight_cache_ = std::make_shared<ProofDomainWeightCache>();
         }
@@ -423,18 +658,28 @@ class EvaluationMemoization {
         }
 
         FieldElement value = FieldElement::zero();
-        if (trace_.polynomials.contains(name)) {
+        if (name == "P_H") {
+            value = shared_feature_matrix_evaluation_cache()->get_or_compute(
+                context_key_,
+                context_.local.features,
+                point);
+        } else if (trace_.polynomials.contains(name)) {
             value = eval_polynomial(trace_.polynomials.at(name), point);
         } else if (context_.public_polynomials.contains(name)) {
             value = eval_polynomial(context_.public_polynomials.at(name), point);
         } else if (name == "t_FH") {
+            FHQuotientProfile fh_profile;
             value = evaluate_t_fh(
                 context_,
                 challenges_,
                 [&](const std::string& inner_name, const FieldElement& inner_point) {
                     return eval_named(inner_name, inner_point);
                 },
-                point);
+                point,
+                metrics_ != nullptr ? &fh_profile : nullptr);
+            if (metrics_ != nullptr) {
+                metrics_->fh_quotient_assembly_ms += fh_profile.assembly_ms;
+            }
         } else if (name == "t_edge") {
             value = evaluate_t_edge(
                 context_,
@@ -652,6 +897,20 @@ class EvaluationMemoization {
         return out;
     }
 
+    std::vector<std::vector<FieldElement>> collect_named_values_from_cache(
+        const std::vector<std::string>& labels,
+        const std::vector<FieldElement>& points) {
+        std::vector<std::vector<FieldElement>> out(
+            labels.size(),
+            std::vector<FieldElement>(points.size(), FieldElement::zero()));
+        for (std::size_t i = 0; i < labels.size(); ++i) {
+            for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
+                out[i][point_index] = eval_named(labels[i], points[point_index]);
+            }
+        }
+        return out;
+    }
+
     void precompute_named(
         const std::vector<std::string>& labels,
         const std::vector<FieldElement>& points) {
@@ -674,6 +933,36 @@ class EvaluationMemoization {
             group.second.push_back(label);
         }
 
+        auto evaluate_group_at_point = [&](
+                                           const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
+                                           const algebra::PackedEvaluationBackend& backend,
+                                           const std::vector<std::string>& group_labels,
+                                           const FieldElement& point,
+                                           bool mark_public_reuse) {
+            const auto prep_start = Clock::now();
+            const auto& weight_entry = domain_weights(domain, point);
+            if (metrics_ != nullptr && domain->name == "FH") {
+                metrics_->fh_eval_prep_ms += elapsed_ms(prep_start, Clock::now());
+            }
+            std::vector<FieldElement> values;
+            const auto eval_start = Clock::now();
+            if (weight_entry.direct_index.has_value()) {
+                values = backend.values_at_direct_index(group_labels, *weight_entry.direct_index);
+            } else {
+                values = backend.evaluate_with_packed_native_weights(
+                    group_labels,
+                    weight_entry.native_weights,
+                    weight_entry.packed_weights);
+            }
+            if (metrics_ != nullptr && domain->name == "FH") {
+                metrics_->fh_interpolation_ms += elapsed_ms(eval_start, Clock::now());
+                if (mark_public_reuse) {
+                    metrics_->fh_public_eval_reuse_ms += elapsed_ms(eval_start, Clock::now());
+                }
+            }
+            return values;
+        };
+
         for (auto& [group_key, group] : groups) {
             (void)group_key;
             if (backend_registry_ == nullptr) {
@@ -683,24 +972,76 @@ class EvaluationMemoization {
             if (backend == nullptr) {
                 continue;
             }
+            std::vector<std::string> public_labels;
+            std::vector<std::string> trace_labels;
+            public_labels.reserve(group.second.size());
+            trace_labels.reserve(group.second.size());
+            for (const auto& label : group.second) {
+                if (context_.public_polynomials.contains(label)) {
+                    public_labels.push_back(label);
+                } else {
+                    trace_labels.push_back(label);
+                }
+            }
+            auto store_group_values = [&](const std::vector<std::string>& group_labels,
+                                          const FieldElement& point,
+                                          const std::vector<FieldElement>& values) {
+                const auto cache_suffix = "@" + point_key(point);
+                for (std::size_t i = 0; i < group_labels.size(); ++i) {
+                    value_cache_.emplace(group_labels[i] + cache_suffix, values[i]);
+                }
+            };
             // The rotated-point kernel is a backend-level proving optimization
             // for large root-of-unity domains. Small toy domains do not amortize
             // its setup cost, so we intentionally keep the legacy packed sweep
             // there while sending real hot-path bundles through the fused route.
+            if (!public_labels.empty() && group.first->name == "FH") {
+                for (const auto& point : points) {
+                    std::vector<FieldElement> values;
+                    const auto reuse_start = Clock::now();
+                    const bool cache_hit = shared_public_evaluation_cache()->lookup(
+                            context_key_,
+                            group.first,
+                            public_labels,
+                            point,
+                            &values);
+                    if (cache_hit) {
+                        if (metrics_ != nullptr) {
+                            metrics_->fh_public_eval_reuse_ms += elapsed_ms(reuse_start, Clock::now());
+                        }
+                    } else {
+                        values = evaluate_group_at_point(group.first, *backend, public_labels, point, false);
+                        shared_public_evaluation_cache()->store(
+                            context_key_,
+                            group.first,
+                            public_labels,
+                            point,
+                            values);
+                    }
+                    store_group_values(public_labels, point, values);
+                }
+            }
+            const auto& eval_labels = group.first->name == "FH" ? trace_labels : group.second;
+            if (eval_labels.empty()) {
+                continue;
+            }
             if (util::route2_options().fft_kernel_upgrade && group.first->size >= 256) {
                 if (const auto shifts = rotated_point_shifts(group.first, points); shifts.has_value()) {
+                    const auto prep_start = Clock::now();
                     const auto& weight_entry = domain_weights(group.first, points.front());
-                    auto cache_suffix = [](const FieldElement& point) {
-                        return "@" + point_key(point);
-                    };
+                    if (metrics_ != nullptr && group.first->name == "FH") {
+                        metrics_->fh_eval_prep_ms += elapsed_ms(prep_start, Clock::now());
+                    }
                     if (weight_entry.direct_index.has_value()) {
+                        const auto eval_start = Clock::now();
                         const auto domain_mask = group.first->size - 1U;
                         for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
                             const auto direct_index = (*weight_entry.direct_index + (*shifts)[point_index]) & domain_mask;
-                            const auto values = backend->values_at_direct_index(group.second, direct_index);
-                            for (std::size_t i = 0; i < group.second.size(); ++i) {
-                                value_cache_.emplace(group.second[i] + cache_suffix(points[point_index]), values[i]);
-                            }
+                            const auto values = backend->values_at_direct_index(eval_labels, direct_index);
+                            store_group_values(eval_labels, points[point_index], values);
+                        }
+                        if (metrics_ != nullptr && group.first->name == "FH") {
+                            metrics_->fh_interpolation_ms += elapsed_ms(eval_start, Clock::now());
                         }
                         continue;
                     }
@@ -712,37 +1053,25 @@ class EvaluationMemoization {
                     // We therefore fuse these rotated points into one packed
                     // sweep without changing which polynomials are opened, at
                     // which points, or what values enter the proof.
+                    const auto eval_start = Clock::now();
                     const auto batched_values =
                         backend->evaluate_with_packed_native_weight_rotations(
-                            group.second,
+                            eval_labels,
                             weight_entry.native_weights,
                             weight_entry.packed_weights,
                             *shifts);
+                    if (metrics_ != nullptr && group.first->name == "FH") {
+                        metrics_->fh_interpolation_ms += elapsed_ms(eval_start, Clock::now());
+                    }
                     for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
-                        for (std::size_t i = 0; i < group.second.size(); ++i) {
-                            value_cache_.emplace(
-                                group.second[i] + cache_suffix(points[point_index]),
-                                batched_values[point_index][i]);
-                        }
+                        store_group_values(eval_labels, points[point_index], batched_values[point_index]);
                     }
                     continue;
                 }
             }
             for (const auto& point : points) {
-                const auto& weight_entry = domain_weights(group.first, point);
-                std::vector<FieldElement> values;
-                if (weight_entry.direct_index.has_value()) {
-                    values = backend->values_at_direct_index(group.second, *weight_entry.direct_index);
-                } else {
-                    values = backend->evaluate_with_packed_native_weights(
-                        group.second,
-                        weight_entry.native_weights,
-                        weight_entry.packed_weights);
-                }
-                const auto cache_suffix = "@" + point_key(point);
-                for (std::size_t i = 0; i < group.second.size(); ++i) {
-                    value_cache_.emplace(group.second[i] + cache_suffix, values[i]);
-                }
+                const auto values = evaluate_group_at_point(group.first, *backend, eval_labels, point, false);
+                store_group_values(eval_labels, point, values);
             }
         }
     }
@@ -779,6 +1108,8 @@ class EvaluationMemoization {
     const std::map<std::string, FieldElement>& challenges_;
     std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry_;
     std::shared_ptr<ProofDomainWeightCache> domain_weight_cache_;
+    std::string context_key_;
+    RunMetrics* metrics_ = nullptr;
     std::unordered_map<std::string, FieldElement> value_cache_;
 };
 
@@ -829,14 +1160,39 @@ std::vector<Commitment> collect_commitments(
 
 const std::vector<std::string>& quotient_dependencies_fh() {
     static const std::vector<std::string> labels = {
+        "P_H",
         "P_R_feat",
         "P_Table_feat",
         "P_Query_feat",
+        "P_T_H",
+        "P_Row_feat_tbl",
+        "P_Col_feat_tbl",
+        "P_Row_feat_qry",
+        "P_Col_feat_qry",
+        "P_I_feat_qry",
         "P_Q_tbl_feat",
         "P_m_feat",
         "P_Q_qry_feat",
     };
     return labels;
+}
+
+bool contains_label(const std::vector<std::string>& labels, const std::string& target) {
+    return std::find(labels.begin(), labels.end(), target) != labels.end();
+}
+
+std::vector<FieldElement> fh_dependency_points(
+    const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
+    const std::vector<FieldElement>& points) {
+    std::vector<FieldElement> out = points;
+    out.reserve(points.size() * 2);
+    for (const auto& point : points) {
+        const auto rotated = point * domain->omega;
+        if (std::find(out.begin(), out.end(), rotated) == out.end()) {
+            out.push_back(rotated);
+        }
+    }
+    return out;
 }
 
 const std::vector<std::string>& quotient_dependencies_edge() {
@@ -1136,7 +1492,8 @@ void debug_compare_cuda_quotients(
         trace,
         challenges,
         nullptr,
-        proof_domain_weight_cache);
+        proof_domain_weight_cache,
+        nullptr);
     memo.precompute_named(
         quotient_dependencies_fh(),
         {context.kzg.tau, context.kzg.tau * context.domains.fh->omega});
@@ -1187,23 +1544,43 @@ DomainOpeningBundle make_bundle(
     const std::vector<FieldElement>& points,
     const std::string& folding_name,
     const std::map<std::string, FieldElement>& challenges,
+    RunMetrics* metrics = nullptr,
     double* eval_gather_ms = nullptr,
     double* witness_open_ms = nullptr) {
     DomainOpeningBundle bundle;
     bundle.points = points;
     const auto commitments = collect_commitments(trace, quotient_commitments, labels);
     const auto gather_start = Clock::now();
-    const auto values = memo.collect_named_values(labels, points);
+    const bool is_fh_bundle = contains_label(labels, "t_FH");
+    std::vector<std::vector<FieldElement>> values;
+    if (is_fh_bundle) {
+        memo.precompute_named(
+            quotient_dependencies_fh(),
+            fh_dependency_points(context.domains.fh, points));
+        values = memo.collect_named_values_from_cache(labels, points);
+    } else {
+        values = memo.collect_named_values(labels, points);
+    }
     if (eval_gather_ms != nullptr) {
         *eval_gather_ms += elapsed_ms(gather_start, Clock::now());
+    }
+    if (metrics != nullptr && is_fh_bundle) {
+        metrics->fh_open_gather_ms += elapsed_ms(gather_start, Clock::now());
     }
     for (std::size_t i = 0; i < labels.size(); ++i) {
         bundle.values.push_back({labels[i], values[i]});
     }
     const auto witness_start = Clock::now();
-    bundle.witness = crypto::KZG::open_batch(commitments, points, values, challenges.at(folding_name), context.kzg);
+    crypto::BatchOpeningProfile batch_profile;
+    bundle.witness =
+        crypto::KZG::open_batch(commitments, points, values, challenges.at(folding_name), context.kzg, &batch_profile);
     if (witness_open_ms != nullptr) {
         *witness_open_ms += elapsed_ms(witness_start, Clock::now());
+    }
+    if (metrics != nullptr && is_fh_bundle) {
+        const auto witness_total_ms = elapsed_ms(witness_start, Clock::now());
+        metrics->fh_open_witness_ms += std::max(0.0, witness_total_ms - batch_profile.precompute_ms);
+        metrics->fh_open_fold_prepare_ms += batch_profile.precompute_ms;
     }
     return bundle;
 }
@@ -1273,17 +1650,24 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
     const std::size_t fh_size = algebra::next_power_of_two(
         std::max(context.dataset.num_nodes * context.dataset.num_features, context.local.num_nodes * context.local.num_features) + 2);
     const std::size_t range_size = (1ULL << config.range_bits);
+    const std::size_t d_h = hidden_head_width(context.model, config);
+    const std::size_t d_cat = concat_width(context.model, config);
     const std::size_t lrelu_bound = std::max<std::size_t>(4096, range_size);
+    const std::size_t elu_bound = lrelu_bound;
+    const std::size_t lrelu_table_size = lrelu_bound * 2 + 1;
+    const std::size_t elu_table_size = (elu_bound * 2 + 1) * (2 * elu_table_band() + 1);
+    const std::size_t exp_table_size = range_size * (2 * exp_table_band() + 1);
     const std::size_t edge_size = algebra::next_power_of_two(
         std::max<std::size_t>({
             context.local.num_nodes,
             context.local.edges.size(),
-            lrelu_bound + 1,
+            context.local.num_nodes * d_h,
+            lrelu_table_size,
+            elu_table_size,
+            exp_table_size,
             range_size,
         }) + 2);
     const std::size_t in_size = algebra::next_power_of_two(context.local.num_features + 2);
-    const std::size_t d_h = hidden_head_width(context.model, config);
-    const std::size_t d_cat = concat_width(context.model, config);
     const std::size_t d_size = algebra::next_power_of_two(d_h + 2);
     const std::size_t cat_size = algebra::next_power_of_two(d_cat + 2);
     const std::size_t c_size = algebra::next_power_of_two(context.local.num_classes + 2);
@@ -1319,14 +1703,9 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
 
     start = Clock::now();
     context.tables.range = make_range_table(range_size);
-    context.tables.exp.reserve(range_size);
-    for (std::size_t i = 0; i < range_size; ++i) {
-        context.tables.exp.push_back({FieldElement(i), FieldElement(range_size - i)});
-    }
-    context.tables.lrelu.reserve(lrelu_bound + 1);
-    for (std::size_t i = 0; i <= lrelu_bound; ++i) {
-        context.tables.lrelu.push_back({FieldElement(i), FieldElement(i)});
-    }
+    context.tables.exp = make_exp_table(range_size);
+    context.tables.lrelu = make_lrelu_table(lrelu_bound);
+    context.tables.elu = make_elu_table(elu_bound);
 
     const auto edge_valid = build_selector(context.local.edges.size(), edge_size);
 
@@ -1384,6 +1763,41 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
         make_eval_poly("P_Q_qry_feat", build_selector(context.local.num_nodes * context.local.num_features, fh_size), context.domains.fh));
     add_public_poly(
         context,
+        "P_Row_feat_tbl",
+        make_eval_poly(
+            "P_Row_feat_tbl",
+            feature_table_row_indices(context.dataset.num_nodes, context.dataset.num_features, fh_size),
+            context.domains.fh));
+    add_public_poly(
+        context,
+        "P_Col_feat_tbl",
+        make_eval_poly(
+            "P_Col_feat_tbl",
+            feature_table_col_indices(context.dataset.num_nodes, context.dataset.num_features, fh_size),
+            context.domains.fh));
+    add_public_poly(
+        context,
+        "P_Row_feat_qry",
+        make_eval_poly(
+            "P_Row_feat_qry",
+            feature_query_row_indices(context.local.num_nodes, context.local.num_features, fh_size),
+            context.domains.fh));
+    add_public_poly(
+        context,
+        "P_Col_feat_qry",
+        make_eval_poly(
+            "P_Col_feat_qry",
+            feature_query_col_indices(context.local.num_nodes, context.local.num_features, fh_size),
+            context.domains.fh));
+    add_public_poly(
+        context,
+        "P_I_feat_qry",
+        make_eval_poly(
+            "P_I_feat_qry",
+            feature_query_absolute_ids(context.local.absolute_ids, context.local.num_features, fh_size),
+            context.domains.fh));
+    add_public_poly(
+        context,
         "P_Q_qry_src",
         make_eval_poly("P_Q_qry_src", edge_valid, context.domains.edge));
     add_public_poly(
@@ -1414,11 +1828,26 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
         context,
         "P_Q_qry_exp",
         make_eval_poly("P_Q_qry_exp", build_selector(context.local.edges.size(), edge_size), context.domains.edge));
+    add_public_poly(
+        context,
+        "P_Q_tbl_ELU",
+        make_eval_poly("P_Q_tbl_ELU", build_selector(context.tables.elu.size(), edge_size), context.domains.edge));
+    add_public_poly(
+        context,
+        "P_Q_qry_ELU",
+        make_eval_poly("P_Q_qry_ELU", build_selector(context.local.num_nodes * d_h, edge_size), context.domains.edge));
 
     add_static_commitment(
         context,
         "V_T_H",
         make_coeff_poly("V_T_H", algebra::flatten_matrix_coefficients(context.dataset.features)));
+    add_public_poly(
+        context,
+        "P_T_H",
+        make_eval_poly(
+            "P_T_H",
+            padded(algebra::flatten_matrix_coefficients(context.dataset.features), fh_size),
+            context.domains.fh));
 
     std::vector<FieldElement> l_x(edge_size, FieldElement::zero());
     std::vector<FieldElement> l_y(edge_size, FieldElement::zero());
@@ -1430,6 +1859,17 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
     add_public_poly(context, "P_T_L_y", make_eval_poly("P_T_L_y", l_y, context.domains.edge));
     add_static_commitment(context, "V_T_L_x", make_eval_poly("V_T_L_x", l_x, context.domains.edge));
     add_static_commitment(context, "V_T_L_y", make_eval_poly("V_T_L_y", l_y, context.domains.edge));
+
+    std::vector<FieldElement> elu_x(edge_size, FieldElement::zero());
+    std::vector<FieldElement> elu_y(edge_size, FieldElement::zero());
+    for (std::size_t i = 0; i < context.tables.elu.size(); ++i) {
+        elu_x[i] = context.tables.elu[i].first;
+        elu_y[i] = context.tables.elu[i].second;
+    }
+    add_public_poly(context, "P_T_ELU_x", make_eval_poly("P_T_ELU_x", elu_x, context.domains.edge));
+    add_public_poly(context, "P_T_ELU_y", make_eval_poly("P_T_ELU_y", elu_y, context.domains.edge));
+    add_static_commitment(context, "V_T_ELU_x", make_eval_poly("V_T_ELU_x", elu_x, context.domains.edge));
+    add_static_commitment(context, "V_T_ELU_y", make_eval_poly("V_T_ELU_y", elu_y, context.domains.edge));
 
     std::vector<FieldElement> exp_x(edge_size, FieldElement::zero());
     std::vector<FieldElement> exp_y(edge_size, FieldElement::zero());
@@ -1524,21 +1964,26 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             std::string label;
             FieldElement value;
             double elapsed_ms = 0.0;
+            RunMetrics local_metrics;
         };
         auto compute_quotient = [&](const std::string& label) -> QuotientEvalResult {
             const auto local_start = Clock::now();
+            RunMetrics local_metrics;
             EvaluationMemoization quotient_memo(
                 context,
                 trace,
                 pre_quotient_challenges,
                 backend_registry,
-                proof_domain_weight_cache);
+                proof_domain_weight_cache,
+                &local_metrics);
             const auto eval = [&](const std::string& name, const FieldElement& point) {
                 return quotient_memo.eval_named(name, point);
             };
             FieldElement value = FieldElement::zero();
             if (label == "t_FH") {
-                value = evaluate_t_fh(context, pre_quotient_challenges, eval, context.kzg.tau);
+                FHQuotientProfile fh_profile;
+                value = evaluate_t_fh(context, pre_quotient_challenges, eval, context.kzg.tau, &fh_profile);
+                local_metrics.fh_quotient_assembly_ms += fh_profile.assembly_ms;
             } else if (label == "t_edge") {
                 value = evaluate_t_edge(context, pre_quotient_challenges, trace.witness_scalars, eval, context.kzg.tau);
             } else if (label == "t_in") {
@@ -1554,7 +1999,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             } else {
                 throw std::runtime_error("unknown multi-head quotient label: " + label);
             }
-            return {label, value, elapsed_ms(local_start, Clock::now())};
+            return {label, value, elapsed_ms(local_start, Clock::now()), std::move(local_metrics)};
         };
 
         const std::vector<std::string> quotient_labels = {"t_FH", "t_edge", "t_in", "t_d_h", "t_cat", "t_C", "t_N"};
@@ -1587,6 +2032,12 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             named_tau_values.push_back({it->label, it->value});
             if (auto* metric = quotient_metric(metrics, it->label); metric != nullptr) {
                 *metric += it->elapsed_ms;
+            }
+            if (metrics != nullptr && it->label == "t_FH") {
+                metrics->fh_eval_prep_ms += it->local_metrics.fh_eval_prep_ms;
+                metrics->fh_interpolation_ms += it->local_metrics.fh_interpolation_ms;
+                metrics->fh_public_eval_reuse_ms += it->local_metrics.fh_public_eval_reuse_ms;
+                metrics->fh_quotient_assembly_ms += it->local_metrics.fh_quotient_assembly_ms;
             }
         }
         const auto quotient_commitments = batch_quotient_commitments(named_tau_values, context.kzg);
@@ -1630,14 +2081,17 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             double gather_ms = 0.0;
             double witness_ms = 0.0;
             double total_ms = 0.0;
+            RunMetrics local_metrics;
         };
         auto build_bundle = [&](const BundleSpec& spec) -> BundleBuildResult {
+            RunMetrics local_metrics;
             EvaluationMemoization opening_memo(
                 context,
                 trace,
                 challenges,
                 backend_registry,
-                proof_domain_weight_cache);
+                proof_domain_weight_cache,
+                &local_metrics);
             auto labels = domain_opening_labels(context, spec.trace_domain_name);
             labels.push_back(spec.quotient_name);
             const std::vector<FieldElement> points = {
@@ -1656,9 +2110,26 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 points,
                 spec.v_name,
                 challenges,
+                &local_metrics,
                 &gather_ms,
                 &witness_ms);
-            return {spec.bundle_name, std::move(bundle), gather_ms, witness_ms, elapsed_ms(local_start, Clock::now())};
+            if (spec.bundle_name == "FH") {
+                const auto nested_ms =
+                    local_metrics.fh_eval_prep_ms
+                    + local_metrics.fh_interpolation_ms
+                    + local_metrics.fh_public_eval_reuse_ms
+                    + local_metrics.fh_quotient_assembly_ms;
+                local_metrics.fh_open_gather_ms =
+                    std::max(0.0, local_metrics.fh_open_gather_ms - nested_ms);
+            }
+            return {
+                spec.bundle_name,
+                std::move(bundle),
+                gather_ms,
+                witness_ms,
+                elapsed_ms(local_start, Clock::now()),
+                std::move(local_metrics),
+            };
         };
         std::vector<BundleBuildResult> bundle_results;
         bundle_results.reserve(bundle_specs.size());
@@ -1690,6 +2161,15 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 metrics->domain_open_witness_ms += it->witness_ms;
                 if (auto* metric = domain_open_metric(metrics, it->bundle_name); metric != nullptr) {
                     *metric += it->total_ms;
+                }
+                if (it->bundle_name == "FH") {
+                    metrics->fh_eval_prep_ms += it->local_metrics.fh_eval_prep_ms;
+                    metrics->fh_interpolation_ms += it->local_metrics.fh_interpolation_ms;
+                    metrics->fh_public_eval_reuse_ms += it->local_metrics.fh_public_eval_reuse_ms;
+                    metrics->fh_quotient_assembly_ms += it->local_metrics.fh_quotient_assembly_ms;
+                    metrics->fh_open_gather_ms += it->local_metrics.fh_open_gather_ms;
+                    metrics->fh_open_witness_ms += it->local_metrics.fh_open_witness_ms;
+                    metrics->fh_open_fold_prepare_ms += it->local_metrics.fh_open_fold_prepare_ms;
                 }
             }
         }
@@ -1743,7 +2223,8 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 trace,
                 challenges,
                 backend_registry,
-                proof_domain_weight_cache);
+                proof_domain_weight_cache,
+                nullptr);
             return evaluator(memo);
         };
     };
@@ -1882,7 +2363,8 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             trace,
             challenges,
             backend_registry,
-            proof_domain_weight_cache);
+            proof_domain_weight_cache,
+            nullptr);
         if (route2.fft_backend_upgrade) {
             quotient_eval.precompute_named(
                 quotient_dependencies_fh(),
@@ -1898,13 +2380,18 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 {context.kzg.tau, context.kzg.tau * context.domains.d->omega});
             quotient_eval.precompute_named(quotient_dependencies_n(), {context.kzg.tau});
         }
+        FHQuotientProfile fh_profile;
         t_fh_tau = evaluate_t_fh(
             context,
             challenges,
             [&](const std::string& name, const FieldElement& point) {
                 return quotient_eval.eval_named(name, point);
             },
-            context.kzg.tau);
+            context.kzg.tau,
+            &fh_profile);
+        if (metrics != nullptr) {
+            metrics->fh_quotient_assembly_ms += fh_profile.assembly_ms;
+        }
         t_edge_tau = evaluate_t_edge(
             context,
             challenges,
@@ -2088,7 +2575,8 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                         trace,
                         challenges,
                         backend_registry,
-                        proof_domain_weight_cache);
+                        proof_domain_weight_cache,
+                        nullptr);
                     return make_bundle(
                         context,
                         trace,
@@ -2097,7 +2585,8 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                         spec.labels,
                         spec.points,
                         spec.folding_name,
-                        challenges);
+                        challenges,
+                        nullptr);
                 }));
         }
         for (std::size_t i = 0; i < futures.size(); ++i) {
@@ -2109,7 +2598,8 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             trace,
             challenges,
             backend_registry,
-            proof_domain_weight_cache);
+            proof_domain_weight_cache,
+            nullptr);
         for (std::size_t i = 0; i < bundle_specs.size(); ++i) {
             bundle_results[i] = make_bundle(
                 context,
@@ -2119,7 +2609,8 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 bundle_specs[i].labels,
                 bundle_specs[i].points,
                 bundle_specs[i].folding_name,
-                challenges);
+                challenges,
+                nullptr);
         }
     }
     for (std::size_t i = 0; i < bundle_specs.size(); ++i) {
@@ -2254,6 +2745,7 @@ void export_run_artifacts(
         {"enabled_fast_verify_pairing", metrics.enabled_fast_verify_pairing ? "true" : "false"},
         {"node_count", std::to_string(metrics.node_count)},
         {"edge_count", std::to_string(metrics.edge_count)},
+        {"context_build_ms", format_double(metrics.context_build_ms)},
         {"domain_opening_ms", format_double(metrics.domain_opening_ms)},
         {"external_opening_ms", format_double(metrics.external_opening_ms)},
         {"fft_plan_ms", format_double(metrics.fft_plan_ms)},
@@ -2279,7 +2771,10 @@ void export_run_artifacts(
         {"load_static_ms", format_double(metrics.load_static_ms)},
         {"notes", metrics.notes},
         {"proof_size_bytes", std::to_string(metrics.proof_size_bytes)},
+        {"prove_accounted_ms", format_double(metrics.prove_accounted_ms)},
+        {"prove_accounting_gap_ms", format_double(metrics.prove_accounting_gap_ms)},
         {"prove_time_ms", format_double(metrics.prove_time_ms)},
+        {"prove_finalize_ms", format_double(metrics.prove_finalize_ms)},
         {"quotient_build_ms", format_double(metrics.quotient_build_ms)},
         {"quotient_t_fh_ms", format_double(metrics.quotient_t_fh_ms)},
         {"quotient_t_edge_ms", format_double(metrics.quotient_t_edge_ms)},
@@ -2290,11 +2785,28 @@ void export_run_artifacts(
         {"quotient_t_N_ms", format_double(metrics.quotient_t_n_ms)},
         {"srs_prepare_ms", format_double(metrics.srs_prepare_ms)},
         {"trace_generation_ms", format_double(metrics.trace_generation_ms)},
+        {"trace_misc_ms", format_double(metrics.trace_misc_ms)},
         {"witness_materialization_ms", format_double(metrics.witness_materialization_ms)},
         {"lookup_trace_ms", format_double(metrics.lookup_trace_ms)},
         {"route_trace_ms", format_double(metrics.route_trace_ms)},
         {"psq_trace_ms", format_double(metrics.psq_trace_ms)},
         {"zkmap_trace_ms", format_double(metrics.zkmap_trace_ms)},
+        {"state_machine_trace_ms", format_double(metrics.state_machine_trace_ms)},
+        {"padding_selector_trace_ms", format_double(metrics.padding_selector_trace_ms)},
+        {"public_poly_trace_ms", format_double(metrics.public_poly_trace_ms)},
+        {"hidden_head_trace_ms", format_double(metrics.hidden_head_trace_ms)},
+        {"output_head_trace_ms", format_double(metrics.output_head_trace_ms)},
+        {"fh_table_materialization_ms", format_double(metrics.fh_table_materialization_ms)},
+        {"fh_query_materialization_ms", format_double(metrics.fh_query_materialization_ms)},
+        {"fh_multiplicity_build_ms", format_double(metrics.fh_multiplicity_build_ms)},
+        {"fh_accumulator_build_ms", format_double(metrics.fh_accumulator_build_ms)},
+        {"fh_interpolation_ms", format_double(metrics.fh_interpolation_ms)},
+        {"fh_eval_prep_ms", format_double(metrics.fh_eval_prep_ms)},
+        {"fh_public_eval_reuse_ms", format_double(metrics.fh_public_eval_reuse_ms)},
+        {"fh_quotient_assembly_ms", format_double(metrics.fh_quotient_assembly_ms)},
+        {"fh_open_gather_ms", format_double(metrics.fh_open_gather_ms)},
+        {"fh_open_witness_ms", format_double(metrics.fh_open_witness_ms)},
+        {"fh_open_fold_prepare_ms", format_double(metrics.fh_open_fold_prepare_ms)},
         {"domain_eval_gather_ms", format_double(metrics.domain_eval_gather_ms)},
         {"domain_open_witness_ms", format_double(metrics.domain_open_witness_ms)},
         {"domain_open_FH_ms", format_double(metrics.domain_open_fh_ms)},
@@ -2311,6 +2823,9 @@ void export_run_artifacts(
         {"verify_domain_opening_ms", format_double(metrics.verify_domain_opening_ms)},
         {"verify_quotient_ms", format_double(metrics.verify_quotient_ms)},
         {"verify_external_fold_ms", format_double(metrics.verify_external_fold_ms)},
+        {"verify_misc_ms", format_double(metrics.verify_misc_ms)},
+        {"verify_accounted_ms", format_double(metrics.verify_accounted_ms)},
+        {"verify_accounting_gap_ms", format_double(metrics.verify_accounting_gap_ms)},
         {"verify_FH_ms", format_double(metrics.verify_fh_ms)},
         {"verify_edge_ms", format_double(metrics.verify_edge_ms)},
         {"verify_in_ms", format_double(metrics.verify_in_ms)},

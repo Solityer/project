@@ -17,6 +17,7 @@ namespace gatzk::protocol {
 
 struct StaticTables {
     std::vector<std::pair<algebra::FieldElement, algebra::FieldElement>> lrelu;
+    std::vector<std::pair<algebra::FieldElement, algebra::FieldElement>> elu;
     std::vector<std::pair<algebra::FieldElement, algebra::FieldElement>> exp;
     std::vector<algebra::FieldElement> range;
 };
@@ -100,6 +101,7 @@ struct RunMetrics {
     std::string dataset;
     std::size_t node_count = 0;
     std::size_t edge_count = 0;
+    double context_build_ms = 0.0;
     double forward_ms = 0.0;
     double feature_projection_ms = 0.0;
     double hidden_forward_projection_ms = 0.0;
@@ -110,11 +112,28 @@ struct RunMetrics {
     double output_forward_attention_ms = 0.0;
     double output_forward_activation_ms = 0.0;
     double trace_generation_ms = 0.0;
+    double trace_misc_ms = 0.0;
     double witness_materialization_ms = 0.0;
     double lookup_trace_ms = 0.0;
     double route_trace_ms = 0.0;
     double psq_trace_ms = 0.0;
     double zkmap_trace_ms = 0.0;
+    double state_machine_trace_ms = 0.0;
+    double padding_selector_trace_ms = 0.0;
+    double public_poly_trace_ms = 0.0;
+    double hidden_head_trace_ms = 0.0;
+    double output_head_trace_ms = 0.0;
+    double fh_table_materialization_ms = 0.0;
+    double fh_query_materialization_ms = 0.0;
+    double fh_multiplicity_build_ms = 0.0;
+    double fh_accumulator_build_ms = 0.0;
+    double fh_interpolation_ms = 0.0;
+    double fh_eval_prep_ms = 0.0;
+    double fh_public_eval_reuse_ms = 0.0;
+    double fh_quotient_assembly_ms = 0.0;
+    double fh_open_gather_ms = 0.0;
+    double fh_open_witness_ms = 0.0;
+    double fh_open_fold_prepare_ms = 0.0;
     double load_static_ms = 0.0;
     double fft_plan_ms = 0.0;
     double srs_prepare_ms = 0.0;
@@ -142,6 +161,9 @@ struct RunMetrics {
     double domain_open_c_ms = 0.0;
     double domain_open_n_ms = 0.0;
     double external_opening_ms = 0.0;
+    double prove_finalize_ms = 0.0;
+    double prove_accounted_ms = 0.0;
+    double prove_accounting_gap_ms = 0.0;
     double prove_time_ms = 0.0;
     double verify_time_ms = 0.0;
     double verify_metadata_ms = 0.0;
@@ -149,6 +171,9 @@ struct RunMetrics {
     double verify_domain_opening_ms = 0.0;
     double verify_quotient_ms = 0.0;
     double verify_external_fold_ms = 0.0;
+    double verify_misc_ms = 0.0;
+    double verify_accounted_ms = 0.0;
+    double verify_accounting_gap_ms = 0.0;
     double verify_fh_ms = 0.0;
     double verify_edge_ms = 0.0;
     double verify_in_ms = 0.0;

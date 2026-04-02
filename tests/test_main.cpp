@@ -19,6 +19,7 @@
 #include "gatzk/model/gat.hpp"
 #include "gatzk/protocol/challenges.hpp"
 #include "gatzk/protocol/prover.hpp"
+#include "gatzk/protocol/quotients.hpp"
 #include "gatzk/protocol/trace.hpp"
 #include "gatzk/protocol/verifier.hpp"
 #include "gatzk/util/config.hpp"
@@ -843,6 +844,28 @@ void test_formal_multihead_proof_has_no_output_bias_residue() {
     require(!external_eval_contains(fixture.proof, "mu_bias_out"), "formal multi-head proof must not carry output bias residue");
 }
 
+void test_fh_feature_binding_objects_are_covered_by_formal_openings() {
+    const auto& fixture = full_cora_proof_fixture();
+    const auto& context = fixture.context;
+    require(context.public_polynomials.contains("P_T_H"), "missing P_T_H public polynomial");
+    require(context.public_polynomials.contains("P_Row_feat_tbl"), "missing P_Row_feat_tbl public polynomial");
+    require(context.public_polynomials.contains("P_Col_feat_tbl"), "missing P_Col_feat_tbl public polynomial");
+    require(context.public_polynomials.contains("P_Row_feat_qry"), "missing P_Row_feat_qry public polynomial");
+    require(context.public_polynomials.contains("P_Col_feat_qry"), "missing P_Col_feat_qry public polynomial");
+    require(context.public_polynomials.contains("P_I_feat_qry"), "missing P_I_feat_qry public polynomial");
+
+    const auto labels = gatzk::protocol::domain_opening_labels(context, "FH");
+    require(std::find(labels.begin(), labels.end(), "P_H") != labels.end(), "FH opening labels must include P_H");
+
+    const auto& bundle = bundle_by_name(fixture.proof, "FH");
+    require(bundle_contains(bundle, "P_H"), "FH bundle must open P_H");
+    require(bundle_contains(bundle, "P_Table_feat"), "FH bundle missing P_Table_feat");
+    require(bundle_contains(bundle, "P_Query_feat"), "FH bundle missing P_Query_feat");
+    require(bundle_contains(bundle, "P_m_feat"), "FH bundle missing P_m_feat");
+    require(bundle_contains(bundle, "P_R_feat"), "FH bundle missing P_R_feat");
+    require(bundle_contains(bundle, "t_FH"), "FH bundle missing t_FH");
+}
+
 }  // namespace
 
 int main() {
@@ -871,6 +894,7 @@ int main() {
         {"Y_star_tamper_fails", test_Y_star_tamper_fails},
         {"PSQ_out_tamper_fails", test_PSQ_out_tamper_fails},
         {"formal_multihead_proof_has_no_output_bias_residue", test_formal_multihead_proof_has_no_output_bias_residue},
+        {"fh_feature_binding_objects_are_covered_by_formal_openings", test_fh_feature_binding_objects_are_covered_by_formal_openings},
     };
 
     try {
