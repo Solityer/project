@@ -161,16 +161,36 @@ int main(int argc, char** argv) {
             const auto pcs_start = std::chrono::steady_clock::now();
             const auto proof = gatzk::protocol::prove(context, trace, &metrics);
             const auto pcs_end = std::chrono::steady_clock::now();
-            metrics.trace_misc_ms = clamp_non_negative(
-                metrics.trace_generation_ms
-                - metrics.lookup_trace_ms
-                - metrics.route_trace_ms
-                - metrics.zkmap_trace_ms
-                - metrics.state_machine_trace_ms
-                - metrics.padding_selector_trace_ms
-                - metrics.public_poly_trace_ms
-                - metrics.hidden_head_trace_ms
-                - metrics.output_head_trace_ms);
+            metrics.lookup_trace_ms =
+                metrics.lookup_table_pack_ms
+                + metrics.lookup_query_pack_ms
+                + metrics.lookup_key_build_ms
+                + metrics.lookup_multiplicity_ms
+                + metrics.lookup_accumulator_ms
+                + metrics.lookup_state_machine_ms
+                + metrics.lookup_selector_mask_ms
+                + metrics.lookup_public_helper_ms
+                + metrics.lookup_copy_convert_ms;
+            metrics.hidden_head_trace_ms =
+                metrics.hidden_projection_trace_ms
+                + metrics.hidden_src_attention_trace_ms
+                + metrics.hidden_dst_attention_trace_ms
+                + metrics.hidden_edge_score_trace_ms
+                + metrics.hidden_softmax_chain_trace_ms
+                + metrics.hidden_h_star_trace_ms
+                + metrics.hidden_h_agg_pre_star_trace_ms
+                + metrics.hidden_h_agg_star_trace_ms
+                + metrics.hidden_route_trace_ms
+                + metrics.hidden_copy_convert_ms;
+            metrics.trace_misc_ms =
+                metrics.route_pack_residual_ms
+                + metrics.selector_padding_residual_ms
+                + metrics.public_poly_residual_ms
+                + metrics.hidden_output_object_residual_ms
+                + metrics.shared_helper_build_ms
+                + metrics.field_conversion_residual_ms
+                + metrics.copy_move_residual_ms
+                + metrics.trace_finalize_ms;
             const auto prove_core_ms = std::chrono::duration<double, std::milli>(pcs_end - trace_start).count();
             metrics.prove_time_ms = prove_core_ms;
             metrics.prove_finalize_ms = clamp_non_negative(
@@ -232,6 +252,15 @@ int main(int argc, char** argv) {
                     + " trace_misc_ms=" + format_ms(metrics.trace_misc_ms)
                     + " witness_materialization_ms=" + format_ms(metrics.witness_materialization_ms)
                     + " lookup_trace_ms=" + format_ms(metrics.lookup_trace_ms)
+                    + " lookup_table_pack_ms=" + format_ms(metrics.lookup_table_pack_ms)
+                    + " lookup_query_pack_ms=" + format_ms(metrics.lookup_query_pack_ms)
+                    + " lookup_key_build_ms=" + format_ms(metrics.lookup_key_build_ms)
+                    + " lookup_multiplicity_ms=" + format_ms(metrics.lookup_multiplicity_ms)
+                    + " lookup_accumulator_ms=" + format_ms(metrics.lookup_accumulator_ms)
+                    + " lookup_state_machine_ms=" + format_ms(metrics.lookup_state_machine_ms)
+                    + " lookup_selector_mask_ms=" + format_ms(metrics.lookup_selector_mask_ms)
+                    + " lookup_public_helper_ms=" + format_ms(metrics.lookup_public_helper_ms)
+                    + " lookup_copy_convert_ms=" + format_ms(metrics.lookup_copy_convert_ms)
                     + " route_trace_ms=" + format_ms(metrics.route_trace_ms)
                     + " psq_trace_ms=" + format_ms(metrics.psq_trace_ms)
                     + " zkmap_trace_ms=" + format_ms(metrics.zkmap_trace_ms)
@@ -239,12 +268,38 @@ int main(int argc, char** argv) {
                     + " padding_selector_trace_ms=" + format_ms(metrics.padding_selector_trace_ms)
                     + " public_poly_trace_ms=" + format_ms(metrics.public_poly_trace_ms)
                     + " hidden_head_trace_ms=" + format_ms(metrics.hidden_head_trace_ms)
+                    + " hidden_projection_trace_ms=" + format_ms(metrics.hidden_projection_trace_ms)
+                    + " hidden_src_attention_trace_ms=" + format_ms(metrics.hidden_src_attention_trace_ms)
+                    + " hidden_dst_attention_trace_ms=" + format_ms(metrics.hidden_dst_attention_trace_ms)
+                    + " hidden_edge_score_trace_ms=" + format_ms(metrics.hidden_edge_score_trace_ms)
+                    + " hidden_softmax_chain_trace_ms=" + format_ms(metrics.hidden_softmax_chain_trace_ms)
+                    + " hidden_h_star_trace_ms=" + format_ms(metrics.hidden_h_star_trace_ms)
+                    + " hidden_h_agg_pre_star_trace_ms=" + format_ms(metrics.hidden_h_agg_pre_star_trace_ms)
+                    + " hidden_h_agg_star_trace_ms=" + format_ms(metrics.hidden_h_agg_star_trace_ms)
+                    + " hidden_route_trace_ms=" + format_ms(metrics.hidden_route_trace_ms)
+                    + " hidden_copy_convert_ms=" + format_ms(metrics.hidden_copy_convert_ms)
                     + " output_head_trace_ms=" + format_ms(metrics.output_head_trace_ms)
+                    + " route_pack_residual_ms=" + format_ms(metrics.route_pack_residual_ms)
+                    + " selector_padding_residual_ms=" + format_ms(metrics.selector_padding_residual_ms)
+                    + " public_poly_residual_ms=" + format_ms(metrics.public_poly_residual_ms)
+                    + " hidden_output_object_residual_ms=" + format_ms(metrics.hidden_output_object_residual_ms)
+                    + " shared_helper_build_ms=" + format_ms(metrics.shared_helper_build_ms)
+                    + " field_conversion_residual_ms=" + format_ms(metrics.field_conversion_residual_ms)
+                    + " copy_move_residual_ms=" + format_ms(metrics.copy_move_residual_ms)
+                    + " trace_finalize_ms=" + format_ms(metrics.trace_finalize_ms)
                     + " fh_table_materialization_ms=" + format_ms(metrics.fh_table_materialization_ms)
                     + " fh_query_materialization_ms=" + format_ms(metrics.fh_query_materialization_ms)
                     + " fh_multiplicity_build_ms=" + format_ms(metrics.fh_multiplicity_build_ms)
                     + " fh_accumulator_build_ms=" + format_ms(metrics.fh_accumulator_build_ms)
                     + " fh_interpolation_ms=" + format_ms(metrics.fh_interpolation_ms)
+                    + " fh_lagrange_eval_ms=" + format_ms(metrics.fh_lagrange_eval_ms)
+                    + " fh_barycentric_weight_fetch_ms=" + format_ms(metrics.fh_barycentric_weight_fetch_ms)
+                    + " fh_point_powers_ms=" + format_ms(metrics.fh_point_powers_ms)
+                    + " fh_public_poly_interp_ms=" + format_ms(metrics.fh_public_poly_interp_ms)
+                    + " fh_feature_poly_interp_ms=" + format_ms(metrics.fh_feature_poly_interp_ms)
+                    + " fh_fold_prep_ms=" + format_ms(metrics.fh_fold_prep_ms)
+                    + " fh_opening_eval_prep_ms=" + format_ms(metrics.fh_opening_eval_prep_ms)
+                    + " fh_copy_convert_ms=" + format_ms(metrics.fh_copy_convert_ms)
                     + " fh_eval_prep_ms=" + format_ms(metrics.fh_eval_prep_ms)
                     + " fh_public_eval_reuse_ms=" + format_ms(metrics.fh_public_eval_reuse_ms)
                     + " fh_quotient_assembly_ms=" + format_ms(metrics.fh_quotient_assembly_ms)
@@ -254,8 +309,13 @@ int main(int argc, char** argv) {
                     + " commit_dynamic_ms=" + format_ms(metrics.commit_dynamic_ms)
                     + " dynamic_commit_input_ms=" + format_ms(metrics.dynamic_commit_input_ms)
                     + " dynamic_polynomial_materialization_ms=" + format_ms(metrics.dynamic_polynomial_materialization_ms)
+                    + " dynamic_commit_pack_ms=" + format_ms(metrics.dynamic_commit_pack_ms)
+                    + " dynamic_fft_ms=" + format_ms(metrics.dynamic_fft_ms)
+                    + " dynamic_domain_convert_ms=" + format_ms(metrics.dynamic_domain_convert_ms)
+                    + " dynamic_copy_convert_ms=" + format_ms(metrics.dynamic_copy_convert_ms)
                     + " dynamic_commit_msm_ms=" + format_ms(metrics.dynamic_commit_msm_ms)
                     + " dynamic_commit_finalize_ms=" + format_ms(metrics.dynamic_commit_finalize_ms)
+                    + " dynamic_bundle_finalize_ms=" + format_ms(metrics.dynamic_bundle_finalize_ms)
                     + " quotient_build_ms=" + format_ms(metrics.quotient_build_ms)
                     + " quotient_t_fh_ms=" + format_ms(metrics.quotient_t_fh_ms)
                     + " quotient_t_edge_ms=" + format_ms(metrics.quotient_t_edge_ms)
@@ -264,6 +324,10 @@ int main(int argc, char** argv) {
                     + " quotient_t_cat_ms=" + format_ms(metrics.quotient_t_cat_ms)
                     + " quotient_t_C_ms=" + format_ms(metrics.quotient_t_c_ms)
                     + " quotient_t_N_ms=" + format_ms(metrics.quotient_t_n_ms)
+                    + " quotient_public_eval_ms=" + format_ms(metrics.quotient_public_eval_ms)
+                    + " quotient_bundle_pack_ms=" + format_ms(metrics.quotient_bundle_pack_ms)
+                    + " quotient_fold_prepare_ms=" + format_ms(metrics.quotient_fold_prepare_ms)
+                    + " quotient_copy_convert_ms=" + format_ms(metrics.quotient_copy_convert_ms)
                     + " domain_opening_ms=" + format_ms(metrics.domain_opening_ms)
                     + " domain_eval_gather_ms=" + format_ms(metrics.domain_eval_gather_ms)
                     + " domain_open_witness_ms=" + format_ms(metrics.domain_open_witness_ms)
@@ -295,6 +359,10 @@ int main(int argc, char** argv) {
                     + " verify_cat_ms=" + format_ms(metrics.verify_cat_ms)
                     + " verify_C_ms=" + format_ms(metrics.verify_c_ms)
                     + " verify_N_ms=" + format_ms(metrics.verify_n_ms)
+                    + " verify_public_eval_ms=" + format_ms(metrics.verify_public_eval_ms)
+                    + " verify_bundle_lookup_ms=" + format_ms(metrics.verify_bundle_lookup_ms)
+                    + " verify_fold_ms=" + format_ms(metrics.verify_fold_ms)
+                    + " verify_copy_convert_ms=" + format_ms(metrics.verify_copy_convert_ms)
                     + " proof_size_bytes=" + std::to_string(metrics.proof_size_bytes)
                     + " notes=\"" + metrics.notes + "\"");
             }

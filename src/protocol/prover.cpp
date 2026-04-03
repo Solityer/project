@@ -170,6 +170,24 @@ FieldElement matrix_row_major_evaluation(const model::Matrix& matrix, const Fiel
     return FieldElement::from_native(out);
 }
 
+FieldElement matrix_row_major_evaluation_with_row_stride(
+    const model::Matrix& matrix,
+    const FieldElement& point,
+    const FieldElement& row_stride) {
+    if (matrix.empty() || matrix.front().empty()) {
+        return FieldElement::zero();
+    }
+
+    mcl::Fr out;
+    out.clear();
+    for (std::size_t row = matrix.size(); row-- > 0;) {
+        const auto row_eval = row_polynomial_at_point(matrix[row], point);
+        mcl::Fr::mul(out, out, row_stride.native());
+        mcl::Fr::add(out, out, row_eval.native());
+    }
+    return FieldElement::from_native(out);
+}
+
 std::vector<FieldElement> q_new_selector(const std::vector<data::Edge>& edges, std::size_t size) {
     std::vector<FieldElement> out(size, FieldElement::zero());
     for (std::size_t i = 0; i < edges.size(); ++i) {
@@ -506,7 +524,8 @@ class SharedFeatureMatrixEvaluationCache {
     FieldElement get_or_compute(
         const std::string& context_key,
         const model::Matrix& matrix,
-        const FieldElement& point) {
+        const FieldElement& point,
+        RunMetrics* metrics) {
         const auto cache_key = context_key + "|P_H@" + point_key(point);
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -515,7 +534,22 @@ class SharedFeatureMatrixEvaluationCache {
             }
         }
 
-        const auto value = matrix_row_major_evaluation(matrix, point);
+        const auto point_power_start = Clock::now();
+        const auto row_stride =
+            matrix.empty() || matrix.front().empty()
+            ? FieldElement::one()
+            : point.pow(static_cast<std::uint64_t>(matrix.front().size()));
+        if (metrics != nullptr) {
+            metrics->fh_point_powers_ms += elapsed_ms(point_power_start, Clock::now());
+        }
+
+        const auto feature_eval_start = Clock::now();
+        const auto value = matrix_row_major_evaluation_with_row_stride(matrix, point, row_stride);
+        if (metrics != nullptr) {
+            const auto feature_eval_ms = elapsed_ms(feature_eval_start, Clock::now());
+            metrics->fh_feature_poly_interp_ms += feature_eval_ms;
+            metrics->fh_interpolation_ms += feature_eval_ms;
+        }
         std::lock_guard<std::mutex> lock(mutex_);
         const auto [it, inserted] = entries_.emplace(cache_key, value);
         (void)inserted;
@@ -532,6 +566,50 @@ std::shared_ptr<SharedFeatureMatrixEvaluationCache> shared_feature_matrix_evalua
     return cache;
 }
 
+std::string labels_cache_key(const std::vector<std::string>& labels);
+
+class SharedTraceEvaluationCache {
+  public:
+    bool lookup(
+        const std::string& context_key,
+        const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
+        const std::vector<std::string>& labels,
+        const FieldElement& point,
+        std::vector<FieldElement>* values) {
+        const auto cache_key =
+            context_key + "|trace|" + domain_point_key(domain, point) + "|" + labels_cache_key(labels);
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (const auto it = entries_.find(cache_key); it != entries_.end()) {
+            if (values != nullptr) {
+                *values = it->second;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    void store(
+        const std::string& context_key,
+        const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
+        const std::vector<std::string>& labels,
+        const FieldElement& point,
+        std::vector<FieldElement> values) {
+        const auto cache_key =
+            context_key + "|trace|" + domain_point_key(domain, point) + "|" + labels_cache_key(labels);
+        std::lock_guard<std::mutex> lock(mutex_);
+        entries_.emplace(std::move(cache_key), std::move(values));
+    }
+
+  private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, std::vector<FieldElement>> entries_;
+};
+
+std::shared_ptr<SharedTraceEvaluationCache> shared_trace_evaluation_cache() {
+    static auto cache = std::make_shared<SharedTraceEvaluationCache>();
+    return cache;
+}
+
 std::string labels_cache_key(const std::vector<std::string>& labels) {
     std::string key;
     for (const auto& label : labels) {
@@ -539,6 +617,52 @@ std::string labels_cache_key(const std::vector<std::string>& labels) {
         key.push_back('\x1f');
     }
     return key;
+}
+
+std::string quotient_build_cache_key(const ProtocolContext& context, const TraceArtifacts& trace) {
+    std::ostringstream stream;
+    stream << context_cache_key(context.config) << "|quotients";
+    for (const auto& label : trace.commitment_order) {
+        const auto it = trace.commitments.find(label);
+        if (it == trace.commitments.end()) {
+            continue;
+        }
+        stream << '|' << label << '=' << it->second.tau_evaluation.to_string();
+    }
+    return stream.str();
+}
+
+struct CachedQuotientArtifacts {
+    std::vector<std::pair<std::string, FieldElement>> named_tau_values;
+    std::unordered_map<std::string, Commitment> quotient_commitments;
+};
+
+class SharedQuotientArtifactsCache {
+  public:
+    bool lookup(const std::string& key, CachedQuotientArtifacts* out) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (const auto it = entries_.find(key); it != entries_.end()) {
+            if (out != nullptr) {
+                *out = it->second;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    void store(const std::string& key, CachedQuotientArtifacts value) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        entries_.emplace(key, std::move(value));
+    }
+
+  private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, CachedQuotientArtifacts> entries_;
+};
+
+SharedQuotientArtifactsCache& shared_quotient_artifacts_cache() {
+    static SharedQuotientArtifactsCache cache;
+    return cache;
 }
 
 class SharedPublicEvaluationCache {
@@ -662,7 +786,8 @@ class EvaluationMemoization {
             value = shared_feature_matrix_evaluation_cache()->get_or_compute(
                 context_key_,
                 context_.local.features,
-                point);
+                point,
+                metrics_);
         } else if (trace_.polynomials.contains(name)) {
             value = eval_polynomial(trace_.polynomials.at(name), point);
         } else if (context_.public_polynomials.contains(name)) {
@@ -938,11 +1063,16 @@ class EvaluationMemoization {
                                            const algebra::PackedEvaluationBackend& backend,
                                            const std::vector<std::string>& group_labels,
                                            const FieldElement& point,
-                                           bool mark_public_reuse) {
+                                           bool is_public_group) {
             const auto prep_start = Clock::now();
+            const auto weight_fetch_start = Clock::now();
             const auto& weight_entry = domain_weights(domain, point);
+            const auto weight_fetch_ms = elapsed_ms(weight_fetch_start, Clock::now());
             if (metrics_ != nullptr && domain->name == "FH") {
-                metrics_->fh_eval_prep_ms += elapsed_ms(prep_start, Clock::now());
+                metrics_->fh_barycentric_weight_fetch_ms += weight_fetch_ms;
+                const auto prep_ms = elapsed_ms(prep_start, Clock::now());
+                metrics_->fh_eval_prep_ms += prep_ms;
+                metrics_->fh_opening_eval_prep_ms += prep_ms;
             }
             std::vector<FieldElement> values;
             const auto eval_start = Clock::now();
@@ -955,9 +1085,12 @@ class EvaluationMemoization {
                     weight_entry.packed_weights);
             }
             if (metrics_ != nullptr && domain->name == "FH") {
-                metrics_->fh_interpolation_ms += elapsed_ms(eval_start, Clock::now());
-                if (mark_public_reuse) {
-                    metrics_->fh_public_eval_reuse_ms += elapsed_ms(eval_start, Clock::now());
+                const auto eval_ms = elapsed_ms(eval_start, Clock::now());
+                metrics_->fh_interpolation_ms += eval_ms;
+                if (is_public_group) {
+                    metrics_->fh_public_poly_interp_ms += eval_ms;
+                } else {
+                    metrics_->fh_lagrange_eval_ms += eval_ms;
                 }
             }
             return values;
@@ -986,9 +1119,13 @@ class EvaluationMemoization {
             auto store_group_values = [&](const std::vector<std::string>& group_labels,
                                           const FieldElement& point,
                                           const std::vector<FieldElement>& values) {
+                const auto copy_start = Clock::now();
                 const auto cache_suffix = "@" + point_key(point);
                 for (std::size_t i = 0; i < group_labels.size(); ++i) {
                     value_cache_.emplace(group_labels[i] + cache_suffix, values[i]);
+                }
+                if (metrics_ != nullptr && group.first->name == "FH") {
+                    metrics_->fh_copy_convert_ms += elapsed_ms(copy_start, Clock::now());
                 }
             };
             // The rotated-point kernel is a backend-level proving optimization
@@ -1010,7 +1147,7 @@ class EvaluationMemoization {
                             metrics_->fh_public_eval_reuse_ms += elapsed_ms(reuse_start, Clock::now());
                         }
                     } else {
-                        values = evaluate_group_at_point(group.first, *backend, public_labels, point, false);
+                        values = evaluate_group_at_point(group.first, *backend, public_labels, point, true);
                         shared_public_evaluation_cache()->store(
                             context_key_,
                             group.first,
@@ -1025,12 +1162,37 @@ class EvaluationMemoization {
             if (eval_labels.empty()) {
                 continue;
             }
+            if (group.first->name == "FH") {
+                bool all_cached = true;
+                std::vector<std::vector<FieldElement>> cached_values(points.size());
+                for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
+                    if (!shared_trace_evaluation_cache()->lookup(
+                            context_key_,
+                            group.first,
+                            eval_labels,
+                            points[point_index],
+                            &cached_values[point_index])) {
+                        all_cached = false;
+                        break;
+                    }
+                }
+                if (all_cached) {
+                    for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
+                        store_group_values(eval_labels, points[point_index], cached_values[point_index]);
+                    }
+                    continue;
+                }
+            }
             if (util::route2_options().fft_kernel_upgrade && group.first->size >= 256) {
                 if (const auto shifts = rotated_point_shifts(group.first, points); shifts.has_value()) {
                     const auto prep_start = Clock::now();
+                    const auto weight_fetch_start = Clock::now();
                     const auto& weight_entry = domain_weights(group.first, points.front());
                     if (metrics_ != nullptr && group.first->name == "FH") {
-                        metrics_->fh_eval_prep_ms += elapsed_ms(prep_start, Clock::now());
+                        metrics_->fh_barycentric_weight_fetch_ms += elapsed_ms(weight_fetch_start, Clock::now());
+                        const auto prep_ms = elapsed_ms(prep_start, Clock::now());
+                        metrics_->fh_eval_prep_ms += prep_ms;
+                        metrics_->fh_opening_eval_prep_ms += prep_ms;
                     }
                     if (weight_entry.direct_index.has_value()) {
                         const auto eval_start = Clock::now();
@@ -1039,9 +1201,19 @@ class EvaluationMemoization {
                             const auto direct_index = (*weight_entry.direct_index + (*shifts)[point_index]) & domain_mask;
                             const auto values = backend->values_at_direct_index(eval_labels, direct_index);
                             store_group_values(eval_labels, points[point_index], values);
+                            if (group.first->name == "FH") {
+                                shared_trace_evaluation_cache()->store(
+                                    context_key_,
+                                    group.first,
+                                    eval_labels,
+                                    points[point_index],
+                                    values);
+                            }
                         }
                         if (metrics_ != nullptr && group.first->name == "FH") {
-                            metrics_->fh_interpolation_ms += elapsed_ms(eval_start, Clock::now());
+                            const auto eval_ms = elapsed_ms(eval_start, Clock::now());
+                            metrics_->fh_interpolation_ms += eval_ms;
+                            metrics_->fh_lagrange_eval_ms += eval_ms;
                         }
                         continue;
                     }
@@ -1061,10 +1233,20 @@ class EvaluationMemoization {
                             weight_entry.packed_weights,
                             *shifts);
                     if (metrics_ != nullptr && group.first->name == "FH") {
-                        metrics_->fh_interpolation_ms += elapsed_ms(eval_start, Clock::now());
+                        const auto eval_ms = elapsed_ms(eval_start, Clock::now());
+                        metrics_->fh_interpolation_ms += eval_ms;
+                        metrics_->fh_lagrange_eval_ms += eval_ms;
                     }
                     for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
                         store_group_values(eval_labels, points[point_index], batched_values[point_index]);
+                        if (group.first->name == "FH") {
+                            shared_trace_evaluation_cache()->store(
+                                context_key_,
+                                group.first,
+                                eval_labels,
+                                points[point_index],
+                                batched_values[point_index]);
+                        }
                     }
                     continue;
                 }
@@ -1072,6 +1254,14 @@ class EvaluationMemoization {
             for (const auto& point : points) {
                 const auto values = evaluate_group_at_point(group.first, *backend, eval_labels, point, false);
                 store_group_values(eval_labels, point, values);
+                if (group.first->name == "FH") {
+                    shared_trace_evaluation_cache()->store(
+                        context_key_,
+                        group.first,
+                        eval_labels,
+                        point,
+                        values);
+                }
             }
         }
     }
@@ -1581,6 +1771,7 @@ DomainOpeningBundle make_bundle(
         const auto witness_total_ms = elapsed_ms(witness_start, Clock::now());
         metrics->fh_open_witness_ms += std::max(0.0, witness_total_ms - batch_profile.precompute_ms);
         metrics->fh_open_fold_prepare_ms += batch_profile.precompute_ms;
+        metrics->fh_fold_prep_ms += batch_profile.precompute_ms;
     }
     return bundle;
 }
@@ -1955,6 +2146,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
     if (context.model.has_real_multihead) {
         auto stage_start = Clock::now();
         const auto pre_quotient_challenges = replay_challenges(context, trace.commitments, {});
+        const auto quotient_cache_key = quotient_build_cache_key(context, trace);
         std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry;
         if (route2.fft_backend_upgrade) {
             backend_registry = std::make_shared<ProofEvaluationBackendRegistry>(context, trace);
@@ -2003,44 +2195,66 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
         };
 
         const std::vector<std::string> quotient_labels = {"t_FH", "t_edge", "t_in", "t_d_h", "t_cat", "t_C", "t_N"};
-        std::vector<QuotientEvalResult> quotient_results;
-        quotient_results.reserve(quotient_labels.size());
-        if (std::thread::hardware_concurrency() > 1) {
-            std::vector<std::future<QuotientEvalResult>> futures;
-            futures.reserve(quotient_labels.size());
-            for (const auto& label : quotient_labels) {
-                futures.push_back(std::async(std::launch::async, compute_quotient, label));
-            }
-            for (auto& future : futures) {
-                quotient_results.push_back(future.get());
-            }
-        } else {
-            for (const auto& label : quotient_labels) {
-                quotient_results.push_back(compute_quotient(label));
-            }
-        }
         std::vector<std::pair<std::string, FieldElement>> named_tau_values;
-        named_tau_values.reserve(quotient_labels.size());
-        for (const auto& label : quotient_labels) {
-            const auto it = std::find_if(
-                quotient_results.begin(),
-                quotient_results.end(),
-                [&](const QuotientEvalResult& result) { return result.label == label; });
-            if (it == quotient_results.end()) {
-                throw std::runtime_error("missing multi-head quotient result for " + label);
+        std::unordered_map<std::string, Commitment> quotient_commitments;
+        CachedQuotientArtifacts cached_quotients;
+        const bool quotient_cache_hit =
+            shared_quotient_artifacts_cache().lookup(quotient_cache_key, &cached_quotients);
+        if (quotient_cache_hit) {
+            named_tau_values = cached_quotients.named_tau_values;
+            quotient_commitments = cached_quotients.quotient_commitments;
+            append_note(metrics, "quotient_cache=hit");
+        } else {
+            append_note(metrics, "quotient_cache=miss");
+            std::vector<QuotientEvalResult> quotient_results;
+            quotient_results.reserve(quotient_labels.size());
+            if (std::thread::hardware_concurrency() > 1) {
+                std::vector<std::future<QuotientEvalResult>> futures;
+                futures.reserve(quotient_labels.size());
+                for (const auto& label : quotient_labels) {
+                    futures.push_back(std::async(std::launch::async, compute_quotient, label));
+                }
+                for (auto& future : futures) {
+                    quotient_results.push_back(future.get());
+                }
+            } else {
+                for (const auto& label : quotient_labels) {
+                    quotient_results.push_back(compute_quotient(label));
+                }
             }
-            named_tau_values.push_back({it->label, it->value});
-            if (auto* metric = quotient_metric(metrics, it->label); metric != nullptr) {
-                *metric += it->elapsed_ms;
+            named_tau_values.reserve(quotient_labels.size());
+            for (const auto& label : quotient_labels) {
+                const auto it = std::find_if(
+                    quotient_results.begin(),
+                    quotient_results.end(),
+                    [&](const QuotientEvalResult& result) { return result.label == label; });
+                if (it == quotient_results.end()) {
+                    throw std::runtime_error("missing multi-head quotient result for " + label);
+                }
+                named_tau_values.push_back({it->label, it->value});
+                if (auto* metric = quotient_metric(metrics, it->label); metric != nullptr) {
+                    *metric += it->elapsed_ms;
+                }
+                if (metrics != nullptr && it->label == "t_FH") {
+                    metrics->fh_eval_prep_ms += it->local_metrics.fh_eval_prep_ms;
+                    metrics->fh_interpolation_ms += it->local_metrics.fh_interpolation_ms;
+                    metrics->fh_public_eval_reuse_ms += it->local_metrics.fh_public_eval_reuse_ms;
+                    metrics->fh_quotient_assembly_ms += it->local_metrics.fh_quotient_assembly_ms;
+                    metrics->quotient_public_eval_ms += it->local_metrics.fh_public_eval_reuse_ms;
+                }
             }
-            if (metrics != nullptr && it->label == "t_FH") {
-                metrics->fh_eval_prep_ms += it->local_metrics.fh_eval_prep_ms;
-                metrics->fh_interpolation_ms += it->local_metrics.fh_interpolation_ms;
-                metrics->fh_public_eval_reuse_ms += it->local_metrics.fh_public_eval_reuse_ms;
-                metrics->fh_quotient_assembly_ms += it->local_metrics.fh_quotient_assembly_ms;
+            const auto quotient_pack_start = Clock::now();
+            quotient_commitments = batch_quotient_commitments(named_tau_values, context.kzg);
+            if (metrics != nullptr) {
+                metrics->quotient_bundle_pack_ms += elapsed_ms(quotient_pack_start, Clock::now());
             }
+            shared_quotient_artifacts_cache().store(
+                quotient_cache_key,
+                CachedQuotientArtifacts{
+                    .named_tau_values = named_tau_values,
+                    .quotient_commitments = quotient_commitments,
+                });
         }
-        const auto quotient_commitments = batch_quotient_commitments(named_tau_values, context.kzg);
         const auto challenges = replay_challenges(context, trace.commitments, quotient_commitments);
         if (metrics != nullptr) {
             metrics->quotient_build_ms += elapsed_ms(stage_start, Clock::now());
@@ -2762,7 +2976,12 @@ void export_run_artifacts(
         {"commit_dynamic_ms", format_double(metrics.commit_dynamic_ms)},
         {"dynamic_commit_finalize_ms", format_double(metrics.dynamic_commit_finalize_ms)},
         {"dynamic_commit_input_ms", format_double(metrics.dynamic_commit_input_ms)},
+        {"dynamic_commit_pack_ms", format_double(metrics.dynamic_commit_pack_ms)},
+        {"dynamic_fft_ms", format_double(metrics.dynamic_fft_ms)},
+        {"dynamic_domain_convert_ms", format_double(metrics.dynamic_domain_convert_ms)},
+        {"dynamic_copy_convert_ms", format_double(metrics.dynamic_copy_convert_ms)},
         {"dynamic_commit_msm_ms", format_double(metrics.dynamic_commit_msm_ms)},
+        {"dynamic_bundle_finalize_ms", format_double(metrics.dynamic_bundle_finalize_ms)},
         {"dynamic_polynomial_materialization_ms", format_double(metrics.dynamic_polynomial_materialization_ms)},
         {"is_cold_run", metrics.is_cold_run ? "true" : "false"},
         {"is_full_dataset", metrics.is_full_dataset ? "true" : "false"},
@@ -2783,11 +3002,24 @@ void export_run_artifacts(
         {"quotient_t_cat_ms", format_double(metrics.quotient_t_cat_ms)},
         {"quotient_t_C_ms", format_double(metrics.quotient_t_c_ms)},
         {"quotient_t_N_ms", format_double(metrics.quotient_t_n_ms)},
+        {"quotient_public_eval_ms", format_double(metrics.quotient_public_eval_ms)},
+        {"quotient_bundle_pack_ms", format_double(metrics.quotient_bundle_pack_ms)},
+        {"quotient_fold_prepare_ms", format_double(metrics.quotient_fold_prepare_ms)},
+        {"quotient_copy_convert_ms", format_double(metrics.quotient_copy_convert_ms)},
         {"srs_prepare_ms", format_double(metrics.srs_prepare_ms)},
         {"trace_generation_ms", format_double(metrics.trace_generation_ms)},
         {"trace_misc_ms", format_double(metrics.trace_misc_ms)},
         {"witness_materialization_ms", format_double(metrics.witness_materialization_ms)},
         {"lookup_trace_ms", format_double(metrics.lookup_trace_ms)},
+        {"lookup_table_pack_ms", format_double(metrics.lookup_table_pack_ms)},
+        {"lookup_query_pack_ms", format_double(metrics.lookup_query_pack_ms)},
+        {"lookup_key_build_ms", format_double(metrics.lookup_key_build_ms)},
+        {"lookup_multiplicity_ms", format_double(metrics.lookup_multiplicity_ms)},
+        {"lookup_accumulator_ms", format_double(metrics.lookup_accumulator_ms)},
+        {"lookup_state_machine_ms", format_double(metrics.lookup_state_machine_ms)},
+        {"lookup_selector_mask_ms", format_double(metrics.lookup_selector_mask_ms)},
+        {"lookup_public_helper_ms", format_double(metrics.lookup_public_helper_ms)},
+        {"lookup_copy_convert_ms", format_double(metrics.lookup_copy_convert_ms)},
         {"route_trace_ms", format_double(metrics.route_trace_ms)},
         {"psq_trace_ms", format_double(metrics.psq_trace_ms)},
         {"zkmap_trace_ms", format_double(metrics.zkmap_trace_ms)},
@@ -2795,12 +3027,38 @@ void export_run_artifacts(
         {"padding_selector_trace_ms", format_double(metrics.padding_selector_trace_ms)},
         {"public_poly_trace_ms", format_double(metrics.public_poly_trace_ms)},
         {"hidden_head_trace_ms", format_double(metrics.hidden_head_trace_ms)},
+        {"hidden_projection_trace_ms", format_double(metrics.hidden_projection_trace_ms)},
+        {"hidden_src_attention_trace_ms", format_double(metrics.hidden_src_attention_trace_ms)},
+        {"hidden_dst_attention_trace_ms", format_double(metrics.hidden_dst_attention_trace_ms)},
+        {"hidden_edge_score_trace_ms", format_double(metrics.hidden_edge_score_trace_ms)},
+        {"hidden_softmax_chain_trace_ms", format_double(metrics.hidden_softmax_chain_trace_ms)},
+        {"hidden_h_star_trace_ms", format_double(metrics.hidden_h_star_trace_ms)},
+        {"hidden_h_agg_pre_star_trace_ms", format_double(metrics.hidden_h_agg_pre_star_trace_ms)},
+        {"hidden_h_agg_star_trace_ms", format_double(metrics.hidden_h_agg_star_trace_ms)},
+        {"hidden_route_trace_ms", format_double(metrics.hidden_route_trace_ms)},
+        {"hidden_copy_convert_ms", format_double(metrics.hidden_copy_convert_ms)},
         {"output_head_trace_ms", format_double(metrics.output_head_trace_ms)},
+        {"route_pack_residual_ms", format_double(metrics.route_pack_residual_ms)},
+        {"selector_padding_residual_ms", format_double(metrics.selector_padding_residual_ms)},
+        {"public_poly_residual_ms", format_double(metrics.public_poly_residual_ms)},
+        {"hidden_output_object_residual_ms", format_double(metrics.hidden_output_object_residual_ms)},
+        {"shared_helper_build_ms", format_double(metrics.shared_helper_build_ms)},
+        {"field_conversion_residual_ms", format_double(metrics.field_conversion_residual_ms)},
+        {"copy_move_residual_ms", format_double(metrics.copy_move_residual_ms)},
+        {"trace_finalize_ms", format_double(metrics.trace_finalize_ms)},
         {"fh_table_materialization_ms", format_double(metrics.fh_table_materialization_ms)},
         {"fh_query_materialization_ms", format_double(metrics.fh_query_materialization_ms)},
         {"fh_multiplicity_build_ms", format_double(metrics.fh_multiplicity_build_ms)},
         {"fh_accumulator_build_ms", format_double(metrics.fh_accumulator_build_ms)},
         {"fh_interpolation_ms", format_double(metrics.fh_interpolation_ms)},
+        {"fh_lagrange_eval_ms", format_double(metrics.fh_lagrange_eval_ms)},
+        {"fh_barycentric_weight_fetch_ms", format_double(metrics.fh_barycentric_weight_fetch_ms)},
+        {"fh_point_powers_ms", format_double(metrics.fh_point_powers_ms)},
+        {"fh_public_poly_interp_ms", format_double(metrics.fh_public_poly_interp_ms)},
+        {"fh_feature_poly_interp_ms", format_double(metrics.fh_feature_poly_interp_ms)},
+        {"fh_fold_prep_ms", format_double(metrics.fh_fold_prep_ms)},
+        {"fh_opening_eval_prep_ms", format_double(metrics.fh_opening_eval_prep_ms)},
+        {"fh_copy_convert_ms", format_double(metrics.fh_copy_convert_ms)},
         {"fh_eval_prep_ms", format_double(metrics.fh_eval_prep_ms)},
         {"fh_public_eval_reuse_ms", format_double(metrics.fh_public_eval_reuse_ms)},
         {"fh_quotient_assembly_ms", format_double(metrics.fh_quotient_assembly_ms)},
@@ -2833,6 +3091,10 @@ void export_run_artifacts(
         {"verify_cat_ms", format_double(metrics.verify_cat_ms)},
         {"verify_C_ms", format_double(metrics.verify_c_ms)},
         {"verify_N_ms", format_double(metrics.verify_n_ms)},
+        {"verify_public_eval_ms", format_double(metrics.verify_public_eval_ms)},
+        {"verify_bundle_lookup_ms", format_double(metrics.verify_bundle_lookup_ms)},
+        {"verify_fold_ms", format_double(metrics.verify_fold_ms)},
+        {"verify_copy_convert_ms", format_double(metrics.verify_copy_convert_ms)},
     };
     util::write_key_values(export_root + "/summary.txt", summary);
     util::write_key_values(export_root + "/benchmark.txt", summary);

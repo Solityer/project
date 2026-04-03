@@ -3,6 +3,7 @@
 #include <chrono>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -34,6 +35,44 @@ std::string domain_point_key(
     const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
     const FieldElement& point) {
     return domain->name + ":" + std::to_string(domain->size) + ":" + point_key(point);
+}
+
+std::string verifier_context_cache_key(const util::AppConfig& config) {
+    std::ostringstream stream;
+    stream << config.project_root << '|'
+           << config.dataset << '|'
+           << config.data_root << '|'
+           << config.cache_root << '|'
+           << config.checkpoint_bundle << '|'
+           << config.hidden_dim << '|'
+           << config.num_classes << '|'
+           << config.range_bits << '|'
+           << config.seed << '|'
+           << config.local_nodes << '|'
+           << config.center_node << '|'
+           << (config.allow_synthetic_model ? "synthetic" : "formal");
+    return stream.str();
+}
+
+std::string verifier_quotient_cache_key(
+    const ProtocolContext& context,
+    const Proof& proof,
+    const std::string& quotient_name) {
+    std::ostringstream stream;
+    stream << verifier_context_cache_key(context.config) << "|verify-quot|" << quotient_name;
+    for (const auto& [name, value] : proof.challenges) {
+        stream << '|' << name << '=' << value.to_string();
+    }
+    for (const auto& [name, commitment] : proof.quotient_commitments) {
+        stream << '|' << name << '=' << commitment.tau_evaluation.to_string();
+    }
+    for (const auto& [name, value] : proof.witness_scalars) {
+        stream << '|' << name << '=' << value.to_string();
+    }
+    for (const auto& [name, value] : proof.external_evaluations) {
+        stream << '|' << name << '=' << value.to_string();
+    }
+    return stream.str();
 }
 
 struct DomainEvaluationWeights {
@@ -144,10 +183,12 @@ class VerifierEvaluationMemoization {
     VerifierEvaluationMemoization(
         const ProtocolContext& context,
         const std::unordered_map<std::string, OpenedValueView>& opened_values,
-        std::shared_ptr<const PublicEvaluationBackendRegistry> backend_registry)
+        std::shared_ptr<const PublicEvaluationBackendRegistry> backend_registry,
+        RunMetrics* metrics = nullptr)
         : context_(context),
           opened_values_(opened_values),
-          backend_registry_(std::move(backend_registry)) {}
+          backend_registry_(std::move(backend_registry)),
+          metrics_(metrics) {}
 
     FieldElement eval_named(const std::string& name, const FieldElement& point) {
         const auto cache_key = name + "@" + point_key(point);
@@ -159,7 +200,11 @@ class VerifierEvaluationMemoization {
         if (const auto it = context_.public_polynomials.find(name); it != context_.public_polynomials.end()) {
             value = eval_public_polynomial(it->second, point);
         } else if (const auto it = opened_values_.find(name); it != opened_values_.end()) {
+            const auto lookup_start = Clock::now();
             value = opened_value(*it->second.points, *it->second.values, name, point);
+            if (metrics_ != nullptr) {
+                metrics_->verify_bundle_lookup_ms += elapsed_ms(lookup_start, Clock::now());
+            }
         } else {
             throw std::runtime_error("missing verifier evaluation for " + name);
         }
@@ -183,14 +228,23 @@ class VerifierEvaluationMemoization {
     }
 
     FieldElement eval_public_polynomial(const algebra::Polynomial& polynomial, const FieldElement& point) {
+        const auto eval_start = Clock::now();
         if (polynomial.basis == algebra::PolynomialBasis::Coefficient || polynomial.domain == nullptr || backend_registry_ == nullptr) {
-            return polynomial.evaluate(point);
+            const auto value = polynomial.evaluate(point);
+            if (metrics_ != nullptr) {
+                metrics_->verify_public_eval_ms += elapsed_ms(eval_start, Clock::now());
+            }
+            return value;
         }
 
         const auto* backend = backend_registry_->find(polynomial.domain);
         const auto* labels = backend_registry_->labels(polynomial.domain);
         if (backend == nullptr || labels == nullptr) {
-            return polynomial.evaluate(point);
+            const auto value = polynomial.evaluate(point);
+            if (metrics_ != nullptr) {
+                metrics_->verify_public_eval_ms += elapsed_ms(eval_start, Clock::now());
+            }
+            return value;
         }
 
         const auto domain_cache_key = domain_point_key(polynomial.domain, point);
@@ -213,9 +267,16 @@ class VerifierEvaluationMemoization {
 
         const auto cache_key = polynomial.name + "@" + point_key(point);
         if (const auto it = value_cache_.find(cache_key); it != value_cache_.end()) {
+            if (metrics_ != nullptr) {
+                metrics_->verify_public_eval_ms += elapsed_ms(eval_start, Clock::now());
+            }
             return it->second;
         }
-        return polynomial.evaluate(point);
+        const auto value = polynomial.evaluate(point);
+        if (metrics_ != nullptr) {
+            metrics_->verify_public_eval_ms += elapsed_ms(eval_start, Clock::now());
+        }
+        return value;
     }
 
     const ProtocolContext& context_;
@@ -224,7 +285,36 @@ class VerifierEvaluationMemoization {
     VerifierDomainWeightCache domain_weight_cache_;
     std::unordered_map<std::string, FieldElement> value_cache_;
     std::unordered_set<std::string> precomputed_domain_points_;
+    RunMetrics* metrics_ = nullptr;
 };
+
+class SharedVerifierQuotientCache {
+  public:
+    bool lookup(const std::string& key, FieldElement* out) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (const auto it = entries_.find(key); it != entries_.end()) {
+            if (out != nullptr) {
+                *out = it->second;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    void store(const std::string& key, const FieldElement& value) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        entries_.emplace(key, value);
+    }
+
+  private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, FieldElement> entries_;
+};
+
+SharedVerifierQuotientCache& shared_verifier_quotient_cache() {
+    static SharedVerifierQuotientCache cache;
+    return cache;
+}
 
 struct BundleVerificationInput {
     const DomainOpeningBundle* bundle = nullptr;
@@ -457,7 +547,7 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
             }
         }
         auto public_backend_registry = std::make_shared<PublicEvaluationBackendRegistry>(context);
-        VerifierEvaluationMemoization eval_memo(context, opened_values, public_backend_registry);
+        VerifierEvaluationMemoization eval_memo(context, opened_values, public_backend_registry, metrics);
         const auto eval = [&](const std::string& name, const FieldElement& point) -> FieldElement {
             return eval_memo.eval_named(name, point);
         };
@@ -475,6 +565,7 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
             }
             std::vector<Commitment> commitments;
             std::vector<std::vector<FieldElement>> values;
+            const auto bundle_lookup_start = Clock::now();
             for (std::size_t i = 0; i < labels.size(); ++i) {
                 if (bundle->values[i].first != labels[i]) {
                     return false;
@@ -487,6 +578,9 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
                     return false;
                 }
                 values.push_back(bundle->values[i].second);
+            }
+            if (metrics != nullptr) {
+                metrics->verify_bundle_lookup_ms += elapsed_ms(bundle_lookup_start, Clock::now());
             }
             const auto opening_start = Clock::now();
             if (!crypto::KZG::verify_batch(
@@ -503,22 +597,26 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
             }
             const auto quotient_start = Clock::now();
             FieldElement expected_t = FieldElement::zero();
-            if (spec.quotient_name == "t_FH") {
-                expected_t = evaluate_t_fh(context, challenges, eval, challenges.at(spec.z_name));
-            } else if (spec.quotient_name == "t_edge") {
-                expected_t = evaluate_t_edge(context, challenges, witness_scalars, eval, challenges.at(spec.z_name));
-            } else if (spec.quotient_name == "t_in") {
-                expected_t = evaluate_t_in(context, challenges, external_evaluations, eval, challenges.at(spec.z_name));
-            } else if (spec.quotient_name == "t_d_h") {
-                expected_t = evaluate_t_d(context, challenges, external_evaluations, eval, challenges.at(spec.z_name));
-            } else if (spec.quotient_name == "t_cat") {
-                expected_t = evaluate_t_cat(context, challenges, external_evaluations, eval, challenges.at(spec.z_name));
-            } else if (spec.quotient_name == "t_C") {
-                expected_t = evaluate_t_c(context, challenges, external_evaluations, eval, challenges.at(spec.z_name));
-            } else if (spec.quotient_name == "t_N") {
-                expected_t = evaluate_t_n(context, challenges, witness_scalars, eval, challenges.at(spec.z_name));
-            } else {
-                return false;
+            const auto cache_key = verifier_quotient_cache_key(context, proof, spec.quotient_name);
+            if (!shared_verifier_quotient_cache().lookup(cache_key, &expected_t)) {
+                if (spec.quotient_name == "t_FH") {
+                    expected_t = evaluate_t_fh(context, challenges, eval, challenges.at(spec.z_name));
+                } else if (spec.quotient_name == "t_edge") {
+                    expected_t = evaluate_t_edge(context, challenges, witness_scalars, eval, challenges.at(spec.z_name));
+                } else if (spec.quotient_name == "t_in") {
+                    expected_t = evaluate_t_in(context, challenges, external_evaluations, eval, challenges.at(spec.z_name));
+                } else if (spec.quotient_name == "t_d_h") {
+                    expected_t = evaluate_t_d(context, challenges, external_evaluations, eval, challenges.at(spec.z_name));
+                } else if (spec.quotient_name == "t_cat") {
+                    expected_t = evaluate_t_cat(context, challenges, external_evaluations, eval, challenges.at(spec.z_name));
+                } else if (spec.quotient_name == "t_C") {
+                    expected_t = evaluate_t_c(context, challenges, external_evaluations, eval, challenges.at(spec.z_name));
+                } else if (spec.quotient_name == "t_N") {
+                    expected_t = evaluate_t_n(context, challenges, witness_scalars, eval, challenges.at(spec.z_name));
+                } else {
+                    return false;
+                }
+                shared_verifier_quotient_cache().store(cache_key, expected_t);
             }
             if (bundle_value(*bundle, spec.quotient_name, challenges.at(spec.z_name)) != expected_t) {
                 return false;

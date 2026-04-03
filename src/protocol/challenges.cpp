@@ -1,8 +1,11 @@
 #include "gatzk/protocol/challenges.hpp"
 
 #include <cstdint>
+#include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <unordered_map>
 
 #include "gatzk/crypto/transcript.hpp"
 
@@ -16,6 +19,37 @@ std::uint64_t fnv1a(std::string_view data) {
         hash *= 1099511628211ULL;
     }
     return hash;
+}
+
+std::string challenge_context_cache_key(const ProtocolContext& context) {
+    std::ostringstream stream;
+    stream << context.config.project_root << '|'
+           << context.config.dataset << '|'
+           << context.config.data_root << '|'
+           << context.config.cache_root << '|'
+           << context.config.checkpoint_bundle << '|'
+           << context.config.hidden_dim << '|'
+           << context.config.num_classes << '|'
+           << context.config.range_bits << '|'
+           << context.config.seed << '|'
+           << context.config.local_nodes << '|'
+           << context.config.center_node << '|'
+           << (context.config.allow_synthetic_model ? "synthetic" : "formal");
+    return stream.str();
+}
+
+std::string commitments_cache_fingerprint(
+    const std::vector<std::string>& labels,
+    const std::unordered_map<std::string, crypto::Commitment>& commitments) {
+    std::ostringstream stream;
+    for (const auto& label : labels) {
+        const auto it = commitments.find(label);
+        if (it == commitments.end()) {
+            continue;
+        }
+        stream << '|' << label << '=' << it->second.tau_evaluation.to_string();
+    }
+    return stream.str();
 }
 
 void absorb_text_scalar(crypto::Transcript& transcript, const std::string& label, const std::string& value) {
@@ -397,6 +431,21 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
     const ProtocolContext& context,
     const std::unordered_map<std::string, crypto::Commitment>& dynamic_commitments,
     const std::unordered_map<std::string, crypto::Commitment>& quotient_commitments) {
+    static std::mutex cache_mutex;
+    static std::unordered_map<std::string, std::map<std::string, algebra::FieldElement>> cache;
+    const auto dynamic_labels = dynamic_commitment_labels(context);
+    const auto quotient_labels = quotient_commitment_labels(context);
+    const auto cache_key =
+        challenge_context_cache_key(context)
+        + "|dyn" + commitments_cache_fingerprint(dynamic_labels, dynamic_commitments)
+        + "|quot" + commitments_cache_fingerprint(quotient_labels, quotient_commitments);
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        if (const auto it = cache.find(cache_key); it != cache.end()) {
+            return it->second;
+        }
+    }
+
     if (context.model.has_real_multihead) {
         crypto::Transcript transcript("gatzkml");
         std::map<std::string, algebra::FieldElement> out;
@@ -549,7 +598,7 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
         absorb(transcript, "P_out_Query_dst", dynamic_commitments);
         out["y_out"] = transcript.challenge("y_out");
 
-        for (const auto& label : dynamic_commitment_labels(context)) {
+        for (const auto& label : dynamic_labels) {
             absorb(transcript, label, dynamic_commitments);
         }
         for (const auto& label : {
@@ -567,10 +616,12 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
         out["alpha_quot"] = transcript.challenge("alpha_quot");
 
         if (quotient_commitments.empty()) {
+            std::lock_guard<std::mutex> lock(cache_mutex);
+            cache.emplace(cache_key, out);
             return out;
         }
 
-        for (const auto& label : quotient_commitment_labels(context)) {
+        for (const auto& label : quotient_labels) {
             absorb(transcript, label, quotient_commitments);
         }
         out["z_FH"] = transcript.challenge("z_FH");
@@ -588,6 +639,10 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
         out["v_C"] = transcript.challenge("v_C");
         out["v_N"] = transcript.challenge("v_N");
         out["rho_ext"] = transcript.challenge("rho_ext");
+        {
+            std::lock_guard<std::mutex> lock(cache_mutex);
+            cache.emplace(cache_key, out);
+        }
         return out;
     }
 
@@ -694,7 +749,7 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
     absorb_static(transcript, context, "V_b");
     out["y_out"] = transcript.challenge("y_out");
 
-    for (const auto& label : dynamic_commitment_labels(context)) {
+    for (const auto& label : dynamic_labels) {
         absorb(transcript, label, dynamic_commitments);
     }
     for (const auto& label : {
@@ -715,11 +770,13 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
     out["alpha_quot"] = transcript.challenge("alpha_quot");
 
     if (quotient_commitments.empty()) {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        cache.emplace(cache_key, out);
         return out;
     }
 
     
-    for (const auto& label : quotient_commitment_labels(context)) {
+    for (const auto& label : quotient_labels) {
         absorb(transcript, label, quotient_commitments);
     }
     out["z_FH"] = transcript.challenge("z_FH");
@@ -733,6 +790,10 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
     out["v_d"] = transcript.challenge("v_d");
     out["v_N"] = transcript.challenge("v_N");
     out["rho_ext"] = transcript.challenge("rho_ext");
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        cache.emplace(cache_key, out);
+    }
     return out;
 }
 }

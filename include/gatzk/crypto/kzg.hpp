@@ -32,6 +32,11 @@ struct BatchOpeningProfile {
     double finalize_ms = 0.0;
 };
 
+struct CommitBatchProfile {
+    double tau_eval_ms = 0.0;
+    double msm_ms = 0.0;
+};
+
 std::size_t serialized_size(const Commitment& commitment);
 
 class KZG {
@@ -45,10 +50,12 @@ class KZG {
     static Commitment commit(const std::string& name, const algebra::Polynomial& polynomial, const KZGKeyPair& key);
     static std::vector<Commitment> commit_tau_evaluation_batch(
         const std::vector<std::pair<std::string, algebra::FieldElement>>& named_tau_evaluations,
-        const KZGKeyPair& key);
+        const KZGKeyPair& key,
+        CommitBatchProfile* profile = nullptr);
     static std::vector<Commitment> commit_batch(
         const std::vector<std::pair<std::string, const algebra::Polynomial*>>& named_polynomials,
-        const KZGKeyPair& key);
+        const KZGKeyPair& key,
+        CommitBatchProfile* profile = nullptr);
 
     static G1Point open_batch(
         const std::vector<Commitment>& commitments,

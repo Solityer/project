@@ -94,11 +94,90 @@ struct DomainCommitWeights {
     std::vector<mcl::Fr> native_weights;
 };
 
-DomainCommitWeights load_or_build_domain_commit_weights(
+std::vector<FieldElement> evaluate_polynomials_with_shared_domain_weights(
+    const std::vector<const algebra::Polynomial*>& polynomials,
+    const DomainCommitWeights& weights) {
+    std::vector<FieldElement> out(polynomials.size(), FieldElement::zero());
+    if (polynomials.empty()) {
+        return out;
+    }
+    if (weights.direct_index.has_value()) {
+        for (std::size_t i = 0; i < polynomials.size(); ++i) {
+            out[i] = polynomials[i]->data.at(*weights.direct_index);
+        }
+        return out;
+    }
+
+    const auto domain_size = weights.native_weights.size();
+    std::vector<mcl::Fr> native_out(polynomials.size());
+    for (auto& value : native_out) {
+        value.clear();
+    }
+
+    const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+    const bool run_parallel = util::route2_options().parallel_fft && domain_size >= 1024 && polynomials.size() >= 4 && cpu_count > 1;
+    if (run_parallel) {
+        const auto task_count = std::min<std::size_t>(cpu_count, domain_size / 512);
+        if (task_count > 1) {
+            std::vector<std::future<std::vector<mcl::Fr>>> futures;
+            futures.reserve(task_count);
+            const auto chunk_size = (domain_size + task_count - 1) / task_count;
+            for (std::size_t task = 0; task < task_count; ++task) {
+                const auto begin = task * chunk_size;
+                const auto end = std::min(domain_size, begin + chunk_size);
+                if (begin >= end) {
+                    break;
+                }
+                futures.push_back(std::async(
+                    std::launch::async,
+                    [begin, end, &weights, &polynomials]() {
+                        std::vector<mcl::Fr> partial(polynomials.size());
+                        for (auto& value : partial) {
+                            value.clear();
+                        }
+                        for (std::size_t index = begin; index < end; ++index) {
+                            const auto& weight = weights.native_weights[index];
+                            for (std::size_t poly_index = 0; poly_index < polynomials.size(); ++poly_index) {
+                                mcl::Fr term;
+                                mcl::Fr::mul(term, polynomials[poly_index]->data[index].native(), weight);
+                                mcl::Fr::add(partial[poly_index], partial[poly_index], term);
+                            }
+                        }
+                        return partial;
+                    }));
+            }
+            for (auto& future : futures) {
+                const auto partial = future.get();
+                for (std::size_t poly_index = 0; poly_index < polynomials.size(); ++poly_index) {
+                    mcl::Fr::add(native_out[poly_index], native_out[poly_index], partial[poly_index]);
+                }
+            }
+            for (std::size_t poly_index = 0; poly_index < polynomials.size(); ++poly_index) {
+                out[poly_index] = FieldElement::from_native(native_out[poly_index]);
+            }
+            return out;
+        }
+    }
+
+    for (std::size_t index = 0; index < domain_size; ++index) {
+        const auto& weight = weights.native_weights[index];
+        for (std::size_t poly_index = 0; poly_index < polynomials.size(); ++poly_index) {
+            mcl::Fr term;
+            mcl::Fr::mul(term, polynomials[poly_index]->data[index].native(), weight);
+            mcl::Fr::add(native_out[poly_index], native_out[poly_index], term);
+        }
+    }
+    for (std::size_t poly_index = 0; poly_index < polynomials.size(); ++poly_index) {
+        out[poly_index] = FieldElement::from_native(native_out[poly_index]);
+    }
+    return out;
+}
+
+std::shared_ptr<const DomainCommitWeights> load_or_build_domain_commit_weights(
     const algebra::Polynomial& polynomial,
     const KZGKeyPair& key) {
     static std::mutex cache_mutex;
-    static std::unordered_map<std::string, DomainCommitWeights> cache;
+    static std::unordered_map<std::string, std::shared_ptr<DomainCommitWeights>> cache;
 
     const auto cache_key = polynomial.domain->name + ":" + std::to_string(polynomial.domain->size) + ":"
         + key.tau.to_string();
@@ -109,26 +188,26 @@ DomainCommitWeights load_or_build_domain_commit_weights(
         }
     }
 
-    DomainCommitWeights entry;
+    auto entry = std::make_shared<DomainCommitWeights>();
     for (std::size_t i = 0; i < polynomial.domain->size; ++i) {
         if (polynomial.domain->points[i] == key.tau) {
-            entry.direct_index = i;
+            entry->direct_index = i;
             break;
         }
     }
-    if (!entry.direct_index.has_value()) {
+    if (!entry->direct_index.has_value()) {
         if (util::route2_options().fft_backend_upgrade) {
-            entry.native_weights = polynomial.domain->barycentric_weights_native(key.tau);
+            entry->native_weights = polynomial.domain->barycentric_weights_native(key.tau);
         } else {
-            entry.native_weights.resize(polynomial.domain->size);
+            entry->native_weights.resize(polynomial.domain->size);
             const auto scale = (polynomial.domain->zero_polynomial_eval(key.tau) * polynomial.domain->inv_size).native();
             for (std::size_t i = 0; i < polynomial.domain->size; ++i) {
                 mcl::Fr denominator;
                 mcl::Fr::sub(denominator, key.tau.native(), polynomial.domain->points[i].native());
                 mcl::Fr inverse;
                 mcl::Fr::inv(inverse, denominator);
-                mcl::Fr::mul(entry.native_weights[i], scale, polynomial.domain->points[i].native());
-                mcl::Fr::mul(entry.native_weights[i], entry.native_weights[i], inverse);
+                mcl::Fr::mul(entry->native_weights[i], scale, polynomial.domain->points[i].native());
+                mcl::Fr::mul(entry->native_weights[i], entry->native_weights[i], inverse);
             }
         }
     }
@@ -278,7 +357,8 @@ Commitment KZG::commit_tau_evaluation(
 
 std::vector<Commitment> KZG::commit_tau_evaluation_batch(
     const std::vector<std::pair<std::string, algebra::FieldElement>>& named_tau_evaluations,
-    const KZGKeyPair& key) {
+    const KZGKeyPair& key,
+    CommitBatchProfile* profile) {
     std::vector<Commitment> out;
     out.reserve(named_tau_evaluations.size());
     if (named_tau_evaluations.empty()) {
@@ -291,7 +371,11 @@ std::vector<Commitment> KZG::commit_tau_evaluation_batch(
         (void)name;
         tau_evaluations.push_back(tau_evaluation);
     }
+    const auto msm_start = Clock::now();
     const auto points = g1_mul_same_base_batch(key.g1_generator, tau_evaluations);
+    if (profile != nullptr) {
+        profile->msm_ms += elapsed_ms(msm_start, Clock::now());
+    }
     for (std::size_t i = 0; i < named_tau_evaluations.size(); ++i) {
         out.push_back(Commitment{
             .name = named_tau_evaluations[i].first,
@@ -304,7 +388,8 @@ std::vector<Commitment> KZG::commit_tau_evaluation_batch(
 
 std::vector<Commitment> KZG::commit_batch(
     const std::vector<std::pair<std::string, const algebra::Polynomial*>>& named_polynomials,
-    const KZGKeyPair& key) {
+    const KZGKeyPair& key,
+    CommitBatchProfile* profile) {
     std::vector<Commitment> out;
     out.reserve(named_polynomials.size());
     if (named_polynomials.empty()) {
@@ -312,61 +397,58 @@ std::vector<Commitment> KZG::commit_batch(
     }
 
     std::vector<FieldElement> tau_evaluations(named_polynomials.size(), FieldElement::zero());
-    std::unordered_map<std::string, DomainCommitWeights> domain_weight_cache;
-    for (const auto& [name, polynomial] : named_polynomials) {
-        (void)name;
+    const auto tau_key = key.tau.to_string();
+    std::unordered_map<std::string, std::shared_ptr<const DomainCommitWeights>> domain_weight_cache;
+    struct DomainBatchGroup {
+        std::vector<std::size_t> indices;
+        std::vector<const algebra::Polynomial*> polynomials;
+        std::shared_ptr<const DomainCommitWeights> weights;
+    };
+    std::unordered_map<std::string, DomainBatchGroup> domain_groups;
+    for (std::size_t i = 0; i < named_polynomials.size(); ++i) {
+        const auto* polynomial = named_polynomials[i].second;
         if (polynomial->basis == algebra::PolynomialBasis::Coefficient) {
             continue;
         }
         if (polynomial->domain == nullptr) {
             throw std::runtime_error("evaluation polynomial is missing its domain");
         }
-
-        const auto cache_key = polynomial->domain->name + ":" + std::to_string(polynomial->domain->size) + ":"
-            + key.tau.to_string();
-        if (domain_weight_cache.contains(cache_key)) {
-            continue;
+        const auto cache_key =
+            polynomial->domain->name + ":" + std::to_string(polynomial->domain->size) + ":" + tau_key;
+        if (!domain_weight_cache.contains(cache_key)) {
+            // The commitment is still C = [p(tau)]_1. We only reuse the exact same
+            // (domain, tau) weights across all commitment batches in this process.
+            domain_weight_cache.emplace(cache_key, load_or_build_domain_commit_weights(*polynomial, key));
         }
-        // The commitment is still C = [p(tau)]_1. We only reuse the exact same
-        // (domain, tau) weights across all commitment batches in this process.
-        domain_weight_cache.emplace(cache_key, load_or_build_domain_commit_weights(*polynomial, key));
+        auto& group = domain_groups[cache_key];
+        group.indices.push_back(i);
+        group.polynomials.push_back(polynomial);
+        group.weights = domain_weight_cache.at(cache_key);
     }
 
-    auto evaluate_with_cache = [&](const algebra::Polynomial& polynomial) {
-        if (polynomial.basis == algebra::PolynomialBasis::Coefficient) {
-            return polynomial.evaluate(key.tau);
-        }
-        const auto cache_key = polynomial.domain->name + ":" + std::to_string(polynomial.domain->size) + ":"
-            + key.tau.to_string();
-        const auto& cached = domain_weight_cache.at(cache_key);
-        if (cached.direct_index.has_value()) {
-            return polynomial.data.at(*cached.direct_index);
-        }
-        return algebra::dot_product_native_weights(polynomial.data, cached.native_weights);
-    };
-
-    const bool run_parallel = named_polynomials.size() >= 2 && std::thread::hardware_concurrency() > 1;
-    if (run_parallel) {
-        std::vector<std::future<FieldElement>> futures;
-        futures.reserve(named_polynomials.size());
-        for (const auto& [name, polynomial] : named_polynomials) {
-            (void)name;
-            futures.push_back(std::async(
-                std::launch::async,
-                [&evaluate_with_cache, polynomial]() {
-                    return evaluate_with_cache(*polynomial);
-                }));
-        }
-        for (std::size_t i = 0; i < futures.size(); ++i) {
-            tau_evaluations[i] = futures[i].get();
-        }
-    } else {
-        for (std::size_t i = 0; i < named_polynomials.size(); ++i) {
-            tau_evaluations[i] = evaluate_with_cache(*named_polynomials[i].second);
+    const auto tau_eval_start = Clock::now();
+    for (std::size_t i = 0; i < named_polynomials.size(); ++i) {
+        const auto* polynomial = named_polynomials[i].second;
+        if (polynomial->basis == algebra::PolynomialBasis::Coefficient) {
+            tau_evaluations[i] = polynomial->evaluate(key.tau);
         }
     }
+    for (const auto& [cache_key, group] : domain_groups) {
+        (void)cache_key;
+        const auto values = evaluate_polynomials_with_shared_domain_weights(group.polynomials, *group.weights);
+        for (std::size_t i = 0; i < group.indices.size(); ++i) {
+            tau_evaluations[group.indices[i]] = values[i];
+        }
+    }
+    if (profile != nullptr) {
+        profile->tau_eval_ms += elapsed_ms(tau_eval_start, Clock::now());
+    }
 
+    const auto msm_start = Clock::now();
     const auto points = g1_mul_same_base_batch(key.g1_generator, tau_evaluations);
+    if (profile != nullptr) {
+        profile->msm_ms += elapsed_ms(msm_start, Clock::now());
+    }
     for (std::size_t i = 0; i < named_polynomials.size(); ++i) {
         out.push_back(Commitment{
             .name = named_polynomials[i].first,
