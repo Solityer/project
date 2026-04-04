@@ -19,7 +19,7 @@ namespace {
 std::string load_text_file(const std::filesystem::path& path) {
     std::ifstream input(path);
     if (!input) {
-        throw std::runtime_error("failed to open checkpoint manifest: " + path.string());
+        throw std::runtime_error("failed to open file: " + path.string());
     }
     std::ostringstream stream;
     stream << input.rdbuf();
@@ -31,15 +31,6 @@ std::size_t parse_required_size_t(const std::string& text, const std::string& ke
     std::smatch match;
     if (!std::regex_search(text, match, pattern)) {
         throw std::runtime_error("missing numeric key in checkpoint manifest: " + key);
-    }
-    return static_cast<std::size_t>(std::stoull(match[1].str()));
-}
-
-std::size_t parse_optional_size_t(const std::string& text, const std::string& key, std::size_t fallback) {
-    const std::regex pattern("\"" + key + "\"\\s*:\\s*([0-9]+)");
-    std::smatch match;
-    if (!std::regex_search(text, match, pattern)) {
-        return fallback;
     }
     return static_cast<std::size_t>(std::stoull(match[1].str()));
 }
@@ -60,6 +51,101 @@ std::vector<std::size_t> parse_optional_size_array(
     while (input >> value) {
         out.push_back(value);
     }
+    return out;
+}
+
+std::string parse_required_string(const std::string& text, const std::string& key) {
+    const std::regex pattern("\"" + key + "\"\\s*:\\s*\"([^\"]+)\"");
+    std::smatch match;
+    if (!std::regex_search(text, match, pattern)) {
+        throw std::runtime_error("missing string key in checkpoint manifest: " + key);
+    }
+    return match[1].str();
+}
+
+std::string extract_array_body(const std::string& text, const std::string& key) {
+    const auto key_pos = text.find("\"" + key + "\"");
+    if (key_pos == std::string::npos) {
+        throw std::runtime_error("missing array key in checkpoint manifest: " + key);
+    }
+    const auto array_begin = text.find('[', key_pos);
+    if (array_begin == std::string::npos) {
+        throw std::runtime_error("malformed array in checkpoint manifest: " + key);
+    }
+    std::size_t depth = 0;
+    for (std::size_t index = array_begin; index < text.size(); ++index) {
+        if (text[index] == '[') {
+            ++depth;
+        } else if (text[index] == ']') {
+            --depth;
+            if (depth == 0) {
+                return text.substr(array_begin + 1, index - array_begin - 1);
+            }
+        }
+    }
+    throw std::runtime_error("unterminated array in checkpoint manifest: " + key);
+}
+
+std::vector<std::string> parse_object_array_entries(const std::string& text, const std::string& key) {
+    const auto body = extract_array_body(text, key);
+    std::vector<std::string> entries;
+    std::size_t depth = 0;
+    std::size_t object_begin = std::string::npos;
+    for (std::size_t index = 0; index < body.size(); ++index) {
+        if (body[index] == '{') {
+            if (depth == 0) {
+                object_begin = index;
+            }
+            ++depth;
+        } else if (body[index] == '}') {
+            if (depth == 0) {
+                throw std::runtime_error("malformed object array in checkpoint manifest: " + key);
+            }
+            --depth;
+            if (depth == 0 && object_begin != std::string::npos) {
+                entries.push_back(body.substr(object_begin, index - object_begin + 1));
+                object_begin = std::string::npos;
+            }
+        }
+    }
+    if (depth != 0) {
+        throw std::runtime_error("unterminated object array in checkpoint manifest: " + key);
+    }
+    return entries;
+}
+
+CheckpointLayerInfo parse_checkpoint_layer_info(const std::string& entry) {
+    CheckpointLayerInfo out;
+    out.layer_index = parse_required_size_t(entry, "layer_index");
+    out.input_dim = parse_required_size_t(entry, "input_dim");
+    out.shape.head_count = parse_required_size_t(entry, "head_count");
+    out.shape.head_dim = parse_required_size_t(entry, "head_dim");
+    return out;
+}
+
+CheckpointHeadSpec parse_checkpoint_head_spec(const std::string& entry) {
+    CheckpointHeadSpec out;
+    out.layer_index = parse_required_size_t(entry, "layer_index");
+    out.local_head_index = parse_required_size_t(entry, "local_head_index");
+    out.global_head_index = parse_required_size_t(entry, "global_head_index");
+    out.seq_kernel = parse_required_string(entry, "seq_kernel");
+    out.attn_dst_kernel = parse_required_string(entry, "attn_dst_kernel");
+    out.attn_dst_bias = parse_required_string(entry, "attn_dst_bias");
+    out.attn_src_kernel = parse_required_string(entry, "attn_src_kernel");
+    out.attn_src_bias = parse_required_string(entry, "attn_src_bias");
+    out.output_bias = parse_required_string(entry, "output_bias");
+    return out;
+}
+
+CheckpointOutputHeadSpec parse_checkpoint_output_head_spec(const std::string& entry) {
+    CheckpointOutputHeadSpec out;
+    out.head_index = parse_required_size_t(entry, "head_index");
+    out.seq_kernel = parse_required_string(entry, "seq_kernel");
+    out.attn_dst_kernel = parse_required_string(entry, "attn_dst_kernel");
+    out.attn_dst_bias = parse_required_string(entry, "attn_dst_bias");
+    out.attn_src_kernel = parse_required_string(entry, "attn_src_kernel");
+    out.attn_src_bias = parse_required_string(entry, "attn_src_bias");
+    out.output_bias = parse_required_string(entry, "output_bias");
     return out;
 }
 
@@ -200,36 +286,6 @@ AttentionHeadParameters build_synthetic_head(
         head.output_bias_fp[i] = static_cast<double>(static_cast<std::int64_t>((i + bias_seed) % 5U) - 2) / 8.0;
     }
     return head;
-}
-
-std::string hidden_seq_kernel_name(std::size_t head_index) {
-    if (head_index == 0) {
-        return "conv1d/kernel";
-    }
-    return "conv1d_" + std::to_string(head_index * 3) + "/kernel";
-}
-
-std::string hidden_dst_kernel_name(std::size_t head_index) {
-    return "conv1d_" + std::to_string(head_index == 0 ? 1 : head_index * 3 + 1) + "/kernel";
-}
-
-std::string hidden_dst_bias_name(std::size_t head_index) {
-    return "conv1d_" + std::to_string(head_index == 0 ? 1 : head_index * 3 + 1) + "/bias";
-}
-
-std::string hidden_src_kernel_name(std::size_t head_index) {
-    return "conv1d_" + std::to_string(head_index == 0 ? 2 : head_index * 3 + 2) + "/kernel";
-}
-
-std::string hidden_src_bias_name(std::size_t head_index) {
-    return "conv1d_" + std::to_string(head_index == 0 ? 2 : head_index * 3 + 2) + "/bias";
-}
-
-std::string hidden_output_bias_name(std::size_t head_index) {
-    if (head_index == 0) {
-        return "BiasAdd/biases";
-    }
-    return "BiasAdd_" + std::to_string(head_index) + "/biases";
 }
 
 double leaky_relu(double value, double alpha = 0.2) {
@@ -549,31 +605,38 @@ ModelParameters build_family_model_parameters(
 }
 
 CheckpointBundleInfo inspect_checkpoint_bundle(const std::string& bundle_root) {
-    const auto manifest_path = std::filesystem::path(bundle_root) / "manifest.json";
+    const auto bundle_path = std::filesystem::path(bundle_root);
+    if (!std::filesystem::exists(bundle_path)) {
+        throw std::runtime_error("checkpoint bundle path does not exist: " + bundle_path.string());
+    }
+    const auto manifest_path = bundle_path / "manifest.json";
+    if (!std::filesystem::exists(manifest_path)) {
+        throw std::runtime_error("checkpoint bundle manifest not found: " + manifest_path.string());
+    }
     const auto manifest = load_text_file(manifest_path);
 
     CheckpointBundleInfo info;
     info.bundle_root = bundle_root;
-    const auto hidden_head_count = parse_required_size_t(manifest, "hidden_head_count");
-    info.layer_count = parse_optional_size_t(manifest, "L", 2);
-    info.output_head_count = parse_optional_size_t(
-        manifest,
-        "K_out",
-        manifest.find("\"output_head\"") != std::string::npos ? 1 : 0);
-    info.class_count = parse_optional_size_t(manifest, "C", 0);
+    info.family_schema_version = parse_required_string(manifest, "family_schema_version");
+    info.output_average_rule = parse_required_string(manifest, "output_average_rule");
+    info.model_arch_id = parse_required_string(manifest, "model_arch_id");
+    info.model_param_id = parse_required_string(manifest, "model_param_id");
+    info.quant_cfg_id = parse_required_string(manifest, "quant_cfg_id");
+    info.static_table_id = parse_required_string(manifest, "static_table_id");
+    info.degree_bound_id = parse_required_string(manifest, "degree_bound_id");
+    info.layer_count = parse_required_size_t(manifest, "L");
+    info.output_head_count = parse_required_size_t(manifest, "K_out");
+    info.class_count = parse_required_size_t(manifest, "C");
     info.d_in_profile = parse_optional_size_array(manifest, "d_in_profile");
-    info.hidden_profile = parse_optional_size_array(manifest, "hidden_profile_k").empty()
-        ? std::vector<HiddenLayerShape>{{hidden_head_count, 0}}
-        : std::vector<HiddenLayerShape>{};
-    if (info.hidden_profile.empty()) {
-        const auto k_values = parse_optional_size_array(manifest, "hidden_profile_k");
-        const auto d_values = parse_optional_size_array(manifest, "hidden_profile_d");
-        if (k_values.size() != d_values.size()) {
-            throw std::runtime_error("checkpoint manifest hidden_profile_k/d mismatch");
-        }
-        for (std::size_t i = 0; i < k_values.size(); ++i) {
-            info.hidden_profile.push_back({k_values[i], d_values[i]});
-        }
+    for (const auto& entry : parse_object_array_entries(manifest, "hidden_layers")) {
+        info.hidden_layers.push_back(parse_checkpoint_layer_info(entry));
+        info.hidden_profile.push_back(info.hidden_layers.back().shape);
+    }
+    for (const auto& entry : parse_object_array_entries(manifest, "hidden_head_specs")) {
+        info.hidden_head_specs.push_back(parse_checkpoint_head_spec(entry));
+    }
+    for (const auto& entry : parse_object_array_entries(manifest, "output_head_specs")) {
+        info.output_head_specs.push_back(parse_checkpoint_output_head_spec(entry));
     }
     info.has_output_attention_head = info.output_head_count > 0;
     return info;
@@ -583,13 +646,24 @@ bool checkpoint_bundle_matches_formal_proof_shape(
     const CheckpointBundleInfo& info,
     std::string* reason) {
     std::vector<std::string> failures;
-    const auto hidden_head_count = info.hidden_profile.empty() ? 0 : info.hidden_profile.front().head_count;
     if (info.layer_count < 2) {
         failures.push_back("L=" + std::to_string(info.layer_count) + " but checkpoint manifest must expose L >= 2");
     }
-    if (hidden_head_count == 0) {
+    if (info.family_schema_version.empty()) {
+        failures.push_back("checkpoint manifest must expose non-empty family_schema_version");
+    }
+    if (info.output_average_rule != "per_head_bias_then_arithmetic_mean") {
         failures.push_back(
-            "hidden_head_count=" + std::to_string(hidden_head_count)
+            "checkpoint manifest output_average_rule="
+            + info.output_average_rule
+            + " but expected per_head_bias_then_arithmetic_mean");
+    }
+    if (info.hidden_layers.empty()) {
+        failures.push_back("checkpoint manifest must expose non-empty hidden_layers");
+    }
+    if (info.hidden_profile.empty()) {
+        failures.push_back(
+            "hidden_profile size=" + std::to_string(info.hidden_profile.size())
             + " but the checkpoint manifest must expose a non-empty hidden_profile");
     }
     if (info.output_head_count == 0) {
@@ -597,10 +671,47 @@ bool checkpoint_bundle_matches_formal_proof_shape(
             "K_out=" + std::to_string(info.output_head_count)
             + " but checkpoint manifest must expose at least one output attention head");
     }
+    if (info.output_head_specs.size() != info.output_head_count) {
+        failures.push_back(
+            "output_head_specs size=" + std::to_string(info.output_head_specs.size())
+            + " conflicts with K_out=" + std::to_string(info.output_head_count));
+    }
     if (!info.d_in_profile.empty() && info.d_in_profile.size() != info.hidden_profile.size()) {
         failures.push_back(
             "d_in_profile size=" + std::to_string(info.d_in_profile.size())
             + " conflicts with hidden_profile size=" + std::to_string(info.hidden_profile.size()));
+    }
+    if (info.model_arch_id.empty()) {
+        failures.push_back("checkpoint manifest must expose non-empty model_arch_id");
+    }
+    if (info.model_param_id.empty()) {
+        failures.push_back("checkpoint manifest must expose non-empty model_param_id");
+    }
+    if (info.quant_cfg_id.empty()) {
+        failures.push_back("checkpoint manifest must expose non-empty quant_cfg_id");
+    }
+    std::size_t flattened_hidden_heads = 0;
+    for (std::size_t layer_index = 0; layer_index < info.hidden_layers.size(); ++layer_index) {
+        const auto& layer = info.hidden_layers[layer_index];
+        if (layer.layer_index != layer_index) {
+            failures.push_back("hidden_layers must use contiguous layer_index values");
+            break;
+        }
+        if (!info.d_in_profile.empty() && info.d_in_profile[layer_index] != layer.input_dim) {
+            failures.push_back(
+                "hidden_layers[" + std::to_string(layer_index) + "].input_dim conflicts with d_in_profile");
+        }
+        if (info.hidden_profile[layer_index].head_count != layer.shape.head_count
+            || info.hidden_profile[layer_index].head_dim != layer.shape.head_dim) {
+            failures.push_back(
+                "hidden_layers[" + std::to_string(layer_index) + "] conflicts with hidden_profile");
+        }
+        flattened_hidden_heads += layer.shape.head_count;
+    }
+    if (flattened_hidden_heads != info.hidden_head_specs.size()) {
+        failures.push_back(
+            "hidden_head_specs size=" + std::to_string(info.hidden_head_specs.size())
+            + " conflicts with hidden_layers head counts=" + std::to_string(flattened_hidden_heads));
     }
     if (failures.empty()) {
         return true;
@@ -620,60 +731,98 @@ bool checkpoint_bundle_matches_formal_proof_shape(
 
 ModelParameters load_checkpoint_bundle_parameters(const std::string& bundle_root) {
     const auto manifest_info = inspect_checkpoint_bundle(bundle_root);
-    const auto tensors = load_text_tensors(std::filesystem::path(bundle_root) / "tensors.txt");
+    std::string manifest_reason;
+    if (!checkpoint_bundle_matches_formal_proof_shape(manifest_info, &manifest_reason)) {
+        throw std::runtime_error("checkpoint bundle family metadata is invalid: " + manifest_reason);
+    }
+    const auto tensor_path = std::filesystem::path(bundle_root) / "tensors.txt";
+    if (!std::filesystem::exists(tensor_path)) {
+        throw std::runtime_error("checkpoint bundle tensor dump not found: " + tensor_path.string());
+    }
+    const auto tensors = load_text_tensors(tensor_path);
 
     ModelParameters out;
     out.has_real_multihead = true;
-    const auto hidden_head_count =
-        manifest_info.hidden_profile.empty() ? 0 : manifest_info.hidden_profile.front().head_count;
-    out.L = manifest_info.layer_count == 0 ? 2 : manifest_info.layer_count;
+    out.L = manifest_info.layer_count;
     out.d_in_profile = manifest_info.d_in_profile;
     out.hidden_profile = manifest_info.hidden_profile;
-    out.K_out = std::max<std::size_t>(1, manifest_info.output_head_count);
-    out.hidden_heads.reserve(hidden_head_count);
-    for (std::size_t head_index = 0; head_index < hidden_head_count; ++head_index) {
-        out.hidden_heads.push_back(load_head_parameters(
-            tensors,
-            hidden_seq_kernel_name(head_index),
-            hidden_dst_kernel_name(head_index),
-            hidden_dst_bias_name(head_index),
-            hidden_src_kernel_name(head_index),
-            hidden_src_bias_name(head_index),
-            hidden_output_bias_name(head_index)));
+    out.K_out = manifest_info.output_head_count;
+    out.hidden_heads.reserve(manifest_info.hidden_head_specs.size());
+    out.hidden_layers.reserve(manifest_info.hidden_layers.size());
+    std::size_t expected_global_head_index = 0;
+    for (const auto& layer_info : manifest_info.hidden_layers) {
+        HiddenLayerParameters layer;
+        layer.layer_index = layer_info.layer_index;
+        layer.input_dim = layer_info.input_dim;
+        layer.shape = layer_info.shape;
+        layer.heads.reserve(layer.shape.head_count);
+        for (const auto& head_spec : manifest_info.hidden_head_specs) {
+            if (head_spec.layer_index != layer.layer_index) {
+                continue;
+            }
+            if (head_spec.global_head_index != expected_global_head_index) {
+                throw std::runtime_error(
+                    "checkpoint manifest hidden_head_specs must use contiguous global_head_index values");
+            }
+            layer.heads.push_back(load_head_parameters(
+                tensors,
+                head_spec.seq_kernel,
+                head_spec.attn_dst_kernel,
+                head_spec.attn_dst_bias,
+                head_spec.attn_src_kernel,
+                head_spec.attn_src_bias,
+                head_spec.output_bias));
+            out.hidden_heads.push_back(layer.heads.back());
+            ++expected_global_head_index;
+        }
+        if (layer.heads.size() != layer.shape.head_count) {
+            throw std::runtime_error(
+                "checkpoint manifest hidden_head_specs do not match hidden_layers head_count for layer "
+                + std::to_string(layer.layer_index));
+        }
+        out.hidden_layers.push_back(std::move(layer));
     }
-    out.output_head = load_head_parameters(
-        tensors,
-        "conv1d_24/kernel",
-        "conv1d_25/kernel",
-        "conv1d_25/bias",
-        "conv1d_26/kernel",
-        "conv1d_26/bias",
-        "BiasAdd_8/biases");
+    out.output_layer.head_count = manifest_info.output_head_count;
+    out.output_layer.heads.reserve(manifest_info.output_head_specs.size());
+    for (const auto& head_spec : manifest_info.output_head_specs) {
+        if (head_spec.head_index != out.output_layer.heads.size()) {
+            throw std::runtime_error("checkpoint manifest output_head_specs must use contiguous head_index values");
+        }
+        out.output_layer.heads.push_back(load_head_parameters(
+            tensors,
+            head_spec.seq_kernel,
+            head_spec.attn_dst_kernel,
+            head_spec.attn_dst_bias,
+            head_spec.attn_src_kernel,
+            head_spec.attn_src_bias,
+            head_spec.output_bias));
+    }
     if (out.hidden_heads.empty()) {
         throw std::runtime_error("checkpoint bundle does not contain hidden attention heads");
     }
+    if (out.output_layer.heads.empty()) {
+        throw std::runtime_error("checkpoint bundle does not contain output attention heads");
+    }
     if (out.d_in_profile.empty()) {
-        out.d_in_profile.push_back(out.hidden_heads.front().seq_kernel_fp.size());
+        for (const auto& layer : out.hidden_layers) {
+            out.d_in_profile.push_back(layer.input_dim);
+        }
     }
     if (out.hidden_profile.empty()) {
-        out.hidden_profile.push_back({hidden_head_count, attention_head_output_width(out.hidden_heads.front())});
+        for (const auto& layer : out.hidden_layers) {
+            out.hidden_profile.push_back(layer.shape);
+        }
     }
-    if (!out.hidden_profile.empty() && out.hidden_profile.front().head_dim == 0) {
-        out.hidden_profile.front().head_dim = attention_head_output_width(out.hidden_heads.front());
+    out.C = manifest_info.class_count;
+    out.output_layer.input_dim = out.hidden_layers.back().shape.head_count * out.hidden_layers.back().shape.head_dim;
+    out.output_layer.output_dim = attention_head_output_width(out.output_layer.heads.front());
+    if (out.C == 0) {
+        out.C = out.output_layer.output_dim;
     }
-    out.C = attention_head_output_width(out.output_head);
-    out.hidden_layers.push_back(HiddenLayerParameters{
-        .layer_index = 0,
-        .input_dim = out.d_in_profile.front(),
-        .shape = out.hidden_profile.front(),
-        .heads = out.hidden_heads,
-    });
-    out.output_layer = OutputLayerParameters{
-        .input_dim = out.hidden_profile.front().head_count * out.hidden_profile.front().head_dim,
-        .output_dim = out.C,
-        .head_count = 1,
-        .heads = {out.output_head},
-    };
+    if (out.output_layer.output_dim != out.C) {
+        throw std::runtime_error("checkpoint manifest C conflicts with output head output_dim");
+    }
+    out.output_head = out.output_layer.heads.front();
     return out;
 }
 

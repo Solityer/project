@@ -155,22 +155,6 @@ FieldElement row_polynomial_at_point(const std::vector<FieldElement>& row, const
     return FieldElement::from_native(out);
 }
 
-FieldElement matrix_row_major_evaluation(const model::Matrix& matrix, const FieldElement& point) {
-    if (matrix.empty() || matrix.front().empty()) {
-        return FieldElement::zero();
-    }
-
-    const auto row_stride = point.pow(static_cast<std::uint64_t>(matrix.front().size()));
-    mcl::Fr out;
-    out.clear();
-    for (std::size_t row = matrix.size(); row-- > 0;) {
-        const auto row_eval = row_polynomial_at_point(matrix[row], point);
-        mcl::Fr::mul(out, out, row_stride.native());
-        mcl::Fr::add(out, out, row_eval.native());
-    }
-    return FieldElement::from_native(out);
-}
-
 FieldElement matrix_row_major_evaluation_with_row_stride(
     const model::Matrix& matrix,
     const FieldElement& point,

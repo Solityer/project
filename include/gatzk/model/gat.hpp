@@ -95,11 +95,49 @@ struct ModelParameters {
     AttentionHeadParameters output_head;
 };
 
+struct CheckpointLayerInfo {
+    std::size_t layer_index = 0;
+    std::size_t input_dim = 0;
+    HiddenLayerShape shape;
+};
+
+struct CheckpointHeadSpec {
+    std::size_t layer_index = 0;
+    std::size_t local_head_index = 0;
+    std::size_t global_head_index = 0;
+    std::string seq_kernel;
+    std::string attn_dst_kernel;
+    std::string attn_dst_bias;
+    std::string attn_src_kernel;
+    std::string attn_src_bias;
+    std::string output_bias;
+};
+
+struct CheckpointOutputHeadSpec {
+    std::size_t head_index = 0;
+    std::string seq_kernel;
+    std::string attn_dst_kernel;
+    std::string attn_dst_bias;
+    std::string attn_src_kernel;
+    std::string attn_src_bias;
+    std::string output_bias;
+};
+
 struct CheckpointBundleInfo {
     std::string bundle_root;
+    std::string family_schema_version;
+    std::string output_average_rule;
+    std::string model_arch_id;
+    std::string model_param_id;
+    std::string quant_cfg_id;
+    std::string static_table_id;
+    std::string degree_bound_id;
     std::size_t layer_count = 0;
     std::vector<std::size_t> d_in_profile;
     std::vector<HiddenLayerShape> hidden_profile;
+    std::vector<CheckpointLayerInfo> hidden_layers;
+    std::vector<CheckpointHeadSpec> hidden_head_specs;
+    std::vector<CheckpointOutputHeadSpec> output_head_specs;
     std::size_t output_head_count = 0;
     std::size_t class_count = 0;
     bool has_output_attention_head = false;

@@ -236,6 +236,181 @@ FieldElement bias_fold_from_output_head(
     return out;
 }
 
+std::string json_escape(const std::string& value) {
+    std::string out;
+    out.reserve(value.size());
+    for (const char ch : value) {
+        switch (ch) {
+            case '\\':
+                out += "\\\\";
+                break;
+            case '"':
+                out += "\\\"";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            default:
+                out.push_back(ch);
+                break;
+        }
+    }
+    return out;
+}
+
+void write_tensor_record(
+    std::ofstream* output,
+    const std::string& name,
+    const std::vector<std::size_t>& shape,
+    const std::vector<double>& values) {
+    *output << "TENSOR " << name << ' ' << shape.size();
+    for (const auto dim : shape) {
+        *output << ' ' << dim;
+    }
+    *output << ' ' << values.size() << '\n';
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) {
+            *output << ' ';
+        }
+        *output << values[i];
+    }
+    *output << '\n';
+}
+
+std::vector<double> flatten_seq_kernel(const FloatMatrix& matrix) {
+    std::vector<double> out;
+    out.reserve(matrix.size() * (matrix.empty() ? 0 : matrix.front().size()));
+    for (const auto& row : matrix) {
+        out.insert(out.end(), row.begin(), row.end());
+    }
+    return out;
+}
+
+std::filesystem::path export_family_checkpoint_bundle(
+    const std::string& bundle_name,
+    const ModelParameters& model) {
+    const auto bundle_root = repo_root() / "runs" / bundle_name;
+    std::filesystem::create_directories(bundle_root);
+
+    std::ofstream tensor_output(bundle_root / "tensors.txt", std::ios::trunc);
+    if (!tensor_output) {
+        throw std::runtime_error("failed to create test checkpoint tensor dump");
+    }
+
+    std::ostringstream manifest;
+    manifest << "{\n";
+    manifest << "  \"C\": " << model.C << ",\n";
+    manifest << "  \"K_out\": " << model.K_out << ",\n";
+    manifest << "  \"L\": " << model.L << ",\n";
+    manifest << "  \"checkpoint_prefix\": \"synthetic:" << json_escape(bundle_name) << "\",\n";
+    manifest << "  \"d_in_profile\": [";
+    for (std::size_t i = 0; i < model.d_in_profile.size(); ++i) {
+        if (i != 0) {
+            manifest << ", ";
+        }
+        manifest << model.d_in_profile[i];
+    }
+    manifest << "],\n";
+    manifest << "  \"family_schema_version\": \"multi_layer_multi_head_v2\",\n";
+    manifest << "  \"degree_bound_id\": \"auto\",\n";
+    manifest << "  \"hidden_profile\": [\n";
+    for (std::size_t i = 0; i < model.hidden_layers.size(); ++i) {
+        const auto& layer = model.hidden_layers[i];
+        manifest << "    {\"head_count\": " << layer.shape.head_count << ", \"head_dim\": " << layer.shape.head_dim << "}";
+        manifest << (i + 1 == model.hidden_layers.size() ? "\n" : ",\n");
+    }
+    manifest << "  ],\n";
+    manifest << "  \"hidden_layers\": [\n";
+    for (std::size_t i = 0; i < model.hidden_layers.size(); ++i) {
+        const auto& layer = model.hidden_layers[i];
+        manifest << "    {\"layer_index\": " << layer.layer_index
+                 << ", \"input_dim\": " << layer.input_dim
+                 << ", \"head_count\": " << layer.shape.head_count
+                 << ", \"head_dim\": " << layer.shape.head_dim << "}";
+        manifest << (i + 1 == model.hidden_layers.size() ? "\n" : ",\n");
+    }
+    manifest << "  ],\n";
+    manifest << "  \"hidden_head_specs\": [\n";
+    std::size_t global_head_index = 0;
+    bool first_hidden_spec = true;
+    for (const auto& layer : model.hidden_layers) {
+        for (std::size_t local_head_index = 0; local_head_index < layer.heads.size(); ++local_head_index, ++global_head_index) {
+            const auto base = "hidden/layer" + std::to_string(layer.layer_index) + "/head" + std::to_string(local_head_index);
+            const auto seq_name = base + "/seq/kernel";
+            const auto dst_kernel_name = base + "/attn_dst/kernel";
+            const auto dst_bias_name = base + "/attn_dst/bias";
+            const auto src_kernel_name = base + "/attn_src/kernel";
+            const auto src_bias_name = base + "/attn_src/bias";
+            const auto out_bias_name = base + "/output_bias";
+            const auto& head = layer.heads[local_head_index];
+            write_tensor_record(&tensor_output, seq_name, {1, layer.input_dim, layer.shape.head_dim}, flatten_seq_kernel(head.seq_kernel_fp));
+            write_tensor_record(&tensor_output, dst_kernel_name, {1, layer.shape.head_dim, 1}, head.attn_dst_kernel_fp);
+            write_tensor_record(&tensor_output, dst_bias_name, {1}, {head.attn_dst_bias_fp});
+            write_tensor_record(&tensor_output, src_kernel_name, {1, layer.shape.head_dim, 1}, head.attn_src_kernel_fp);
+            write_tensor_record(&tensor_output, src_bias_name, {1}, {head.attn_src_bias_fp});
+            write_tensor_record(&tensor_output, out_bias_name, {layer.shape.head_dim}, head.output_bias_fp);
+            if (!first_hidden_spec) {
+                manifest << ",\n";
+            }
+            first_hidden_spec = false;
+            manifest << "    {\"layer_index\": " << layer.layer_index
+                     << ", \"local_head_index\": " << local_head_index
+                     << ", \"global_head_index\": " << global_head_index
+                     << ", \"seq_kernel\": \"" << seq_name
+                     << "\", \"attn_dst_kernel\": \"" << dst_kernel_name
+                     << "\", \"attn_dst_bias\": \"" << dst_bias_name
+                     << "\", \"attn_src_kernel\": \"" << src_kernel_name
+                     << "\", \"attn_src_bias\": \"" << src_bias_name
+                     << "\", \"output_bias\": \"" << out_bias_name << "\"}";
+        }
+    }
+    manifest << "\n  ],\n";
+    manifest << "  \"model_arch_id\": \"gat_family_test_bundle\",\n";
+    manifest << "  \"model_param_id\": \"" << json_escape(bundle_name) << "\",\n";
+    manifest << "  \"output_average_rule\": \"per_head_bias_then_arithmetic_mean\",\n";
+    manifest << "  \"output_head_specs\": [\n";
+    for (std::size_t head_index = 0; head_index < model.output_layer.heads.size(); ++head_index) {
+        const auto base = "output/head" + std::to_string(head_index);
+        const auto seq_name = base + "/seq/kernel";
+        const auto dst_kernel_name = base + "/attn_dst/kernel";
+        const auto dst_bias_name = base + "/attn_dst/bias";
+        const auto src_kernel_name = base + "/attn_src/kernel";
+        const auto src_bias_name = base + "/attn_src/bias";
+        const auto out_bias_name = base + "/output_bias";
+        const auto& head = model.output_layer.heads[head_index];
+        write_tensor_record(&tensor_output, seq_name, {1, model.output_layer.input_dim, model.output_layer.output_dim}, flatten_seq_kernel(head.seq_kernel_fp));
+        write_tensor_record(&tensor_output, dst_kernel_name, {1, model.output_layer.output_dim, 1}, head.attn_dst_kernel_fp);
+        write_tensor_record(&tensor_output, dst_bias_name, {1}, {head.attn_dst_bias_fp});
+        write_tensor_record(&tensor_output, src_kernel_name, {1, model.output_layer.output_dim, 1}, head.attn_src_kernel_fp);
+        write_tensor_record(&tensor_output, src_bias_name, {1}, {head.attn_src_bias_fp});
+        write_tensor_record(&tensor_output, out_bias_name, {model.output_layer.output_dim}, head.output_bias_fp);
+        manifest << "    {\"head_index\": " << head_index
+                 << ", \"seq_kernel\": \"" << seq_name
+                 << "\", \"attn_dst_kernel\": \"" << dst_kernel_name
+                 << "\", \"attn_dst_bias\": \"" << dst_bias_name
+                 << "\", \"attn_src_kernel\": \"" << src_kernel_name
+                 << "\", \"attn_src_bias\": \"" << src_bias_name
+                 << "\", \"output_bias\": \"" << out_bias_name << "\"}";
+        manifest << (head_index + 1 == model.output_layer.heads.size() ? "\n" : ",\n");
+    }
+    manifest << "  ],\n";
+    manifest << "  \"quant_cfg_id\": \"fp32_bundle_export\",\n";
+    manifest << "  \"report_unit\": \"node\",\n";
+    manifest << "  \"static_table_id\": \"tables:lrelu+elu+exp+range\",\n";
+    manifest << "  \"task_type\": \"transductive_node_classification\",\n";
+    manifest << "  \"tensor_count\": " << (global_head_index * 6 + model.output_layer.heads.size() * 6) << ",\n";
+    manifest << "  \"tensor_index\": {},\n";
+    manifest << "  \"output_average_rule_note\": \"final logits are the arithmetic mean of per-head bias-added outputs\"\n";
+    manifest << "}\n";
+
+    std::ofstream manifest_output(bundle_root / "manifest.json", std::ios::trunc);
+    if (!manifest_output) {
+        throw std::runtime_error("failed to create test checkpoint manifest");
+    }
+    manifest_output << manifest.str();
+    return bundle_root;
+}
+
 FieldElement external_eval(const Proof& proof, const std::string& name) {
     for (const auto& [entry_name, value] : proof.external_evaluations) {
         if (entry_name == name) {
@@ -549,6 +724,99 @@ void test_formal_hidden_family_dimension_chain_is_enforced() {
     require(error.find("previous concat width") != std::string::npos, "dimension chain mismatch must fail fast at formal trace build");
 }
 
+const std::filesystem::path& family_checkpoint_bundle_dir() {
+    static const auto bundle_dir = export_family_checkpoint_bundle("test_family_checkpoint_bundle", make_family_model(2));
+    return bundle_dir;
+}
+
+const std::filesystem::path& family_formal_checkpoint_bundle_dir() {
+    static const auto bundle_dir = []() {
+        const auto model = gatzk::model::build_family_model_parameters({1433, 2}, {{2, 1}, {1, 1}}, 2, 7, 17);
+        return export_family_checkpoint_bundle("test_family_formal_checkpoint_bundle", model);
+    }();
+    return bundle_dir;
+}
+
+void test_family_checkpoint_bundle_round_trip() {
+    const auto info = gatzk::model::inspect_checkpoint_bundle(family_checkpoint_bundle_dir().string());
+    require(info.layer_count == 3, "family bundle must preserve L");
+    require(info.hidden_layers.size() == 2, "family bundle must preserve hidden layer count");
+    require(info.hidden_head_specs.size() == 3, "family bundle must preserve flattened hidden head family");
+    require(info.output_head_specs.size() == 2, "family bundle must preserve K_out");
+
+    const auto model = gatzk::model::load_checkpoint_bundle_parameters(family_checkpoint_bundle_dir().string());
+    require(model.L == 3, "loaded family bundle must keep L");
+    require(model.hidden_layers.size() == 2, "loaded family bundle must keep hidden family");
+    require(model.output_layer.heads.size() == 2, "loaded family bundle must keep output family");
+    require(model.output_layer.input_dim == 3, "loaded family bundle must keep final concat width");
+}
+
+void test_family_checkpoint_manifest_contains_required_fields() {
+    std::ifstream input(family_checkpoint_bundle_dir() / "manifest.json");
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    const auto manifest = buffer.str();
+    for (const auto& key : {
+             "\"L\"",
+             "\"hidden_profile\"",
+             "\"hidden_layers\"",
+             "\"hidden_head_specs\"",
+             "\"d_in_profile\"",
+             "\"K_out\"",
+             "\"output_head_specs\"",
+             "\"C\"",
+             "\"output_average_rule\"",
+             "\"model_arch_id\"",
+             "\"model_param_id\"",
+             "\"quant_cfg_id\"",
+         }) {
+        require(manifest.find(key) != std::string::npos, std::string("family checkpoint manifest missing key: ") + key);
+    }
+}
+
+void test_checkpoint_loader_rejects_incomplete_family_metadata() {
+    const auto broken_dir = repo_root() / "runs" / "test_family_checkpoint_bundle_broken";
+    std::filesystem::create_directories(broken_dir);
+    std::filesystem::copy_file(
+        family_checkpoint_bundle_dir() / "tensors.txt",
+        broken_dir / "tensors.txt",
+        std::filesystem::copy_options::overwrite_existing);
+    std::ifstream input(family_checkpoint_bundle_dir() / "manifest.json");
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    auto manifest = buffer.str();
+    const auto begin = manifest.find("\"output_head_specs\"");
+    const auto end = manifest.find("],", begin);
+    require(begin != std::string::npos && end != std::string::npos, "expected output_head_specs in family manifest");
+    manifest.erase(begin, end - begin + 2);
+    std::ofstream output(broken_dir / "manifest.json", std::ios::trunc);
+    output << manifest;
+    output.close();
+    const auto error = require_throws([&]() {
+        (void)gatzk::model::load_checkpoint_bundle_parameters(broken_dir.string());
+    });
+    require(error.find("output_head_specs") != std::string::npos, "incomplete family manifest must fail on missing output_head_specs");
+}
+
+void test_real_or_fixture_checkpoint_backed_family_validation() {
+    const auto model = gatzk::model::load_checkpoint_bundle_parameters(family_formal_checkpoint_bundle_dir().string());
+    require(model.L == 3, "fixture checkpoint-backed family bundle must preserve L");
+    require(model.hidden_layers.size() == 2, "fixture checkpoint-backed family bundle must preserve hidden layers");
+    require(model.K_out == 2, "fixture checkpoint-backed family bundle must preserve K_out");
+    require(gatzk::model::hidden_family_dimension_chain_is_valid(model), "fixture checkpoint-backed family model must remain formally supported");
+
+    FloatMatrix features(2, std::vector<double>(1433, 0.0));
+    features[0][0] = 1.0;
+    features[1][1] = 2.0;
+    const std::vector<gatzk::data::Edge> edges = {
+        {0, 0, 0, 0},
+        {1, 1, 0, 1},
+    };
+    const auto forward = gatzk::model::forward_note_style(features, edges, model);
+    require(forward.hidden_layer_traces.size() == 2, "fixture checkpoint-backed family forward must preserve two hidden layers");
+    require(forward.output_head_traces.size() == 2, "fixture checkpoint-backed family forward must preserve two output heads");
+}
+
 void test_checkpoint_backed_formal_validation() {
     const auto& fixture = full_cora_proof_fixture();
     require(!fixture.context.config.checkpoint_bundle.empty(), "checkpoint-backed validation requires a real checkpoint bundle");
@@ -576,9 +844,39 @@ void test_fail_fast_boundary_matches_actual_supported_family() {
     require(error.find("output_layer input_dim") != std::string::npos, "fail-fast boundary must target the actual unsupported family inconsistency");
 }
 
+void test_ppi_real_checkpoint_validation_or_precise_fail_fast() {
+    const auto config = gatzk::util::load_config(repo_path("configs/ppi_batch_formal.cfg"));
+    const auto bundle_root = repo_root() / config.checkpoint_bundle;
+    if (std::filesystem::exists(bundle_root)) {
+        const auto fixture = build_proof_fixture_with_stage(config);
+        require(gatzk::protocol::verify(fixture.context, fixture.proof), "real PPI checkpoint-backed formal path must verify when checkpoint exists");
+        return;
+    }
+    const auto error = require_throws([&]() {
+        (void)gatzk::protocol::build_context(config);
+    });
+    require(error.find("checkpoint bundle path does not exist") != std::string::npos, "missing real PPI checkpoint must fail fast precisely");
+}
+
+void test_trace_cache_helpers_have_safe_lifetimes() {
+    const auto context = synthetic_multioutput_proof_fixture().context;
+    const auto trace_a = gatzk::protocol::build_trace(context);
+    const auto proof_a = gatzk::protocol::prove(context, trace_a);
+    require(gatzk::protocol::verify(context, proof_a), "first trace build must verify");
+    const auto trace_b = gatzk::protocol::build_trace(context);
+    const auto proof_b = gatzk::protocol::prove(context, trace_b);
+    require(gatzk::protocol::verify(context, proof_b), "second trace build must verify");
+}
+
 void test_no_regression_existing_paths() {
     const auto& full_fixture = full_cora_proof_fixture();
     require(gatzk::protocol::verify(full_fixture.context, full_fixture.proof), "existing cora checkpoint path must remain valid");
+
+    const auto pubmed_bundle = gatzk::model::inspect_checkpoint_bundle(repo_path("artifacts/checkpoints/pubmed_gat"));
+    std::string pubmed_reason;
+    require(
+        gatzk::model::checkpoint_bundle_matches_formal_proof_shape(pubmed_bundle, &pubmed_reason),
+        "existing pubmed checkpoint bundle path must remain loadable: " + pubmed_reason);
 
     const auto config = ppi_batch_config();
     const auto dataset = gatzk::data::load_dataset(config);
@@ -605,9 +903,15 @@ int main(int argc, char** argv) {
         {"formal_k_out_average_is_verified", test_formal_k_out_average_is_verified},
         {"formal_rejects_wrong_output_average", test_formal_rejects_wrong_output_average},
         {"formal_hidden_family_dimension_chain_is_enforced", test_formal_hidden_family_dimension_chain_is_enforced},
+        {"family_checkpoint_bundle_round_trip", test_family_checkpoint_bundle_round_trip},
+        {"family_checkpoint_manifest_contains_required_fields", test_family_checkpoint_manifest_contains_required_fields},
+        {"checkpoint_loader_rejects_incomplete_family_metadata", test_checkpoint_loader_rejects_incomplete_family_metadata},
+        {"real_or_fixture_checkpoint_backed_family_validation", test_real_or_fixture_checkpoint_backed_family_validation},
         {"checkpoint_backed_formal_validation", test_checkpoint_backed_formal_validation},
         {"config_conflict_fails_fast", test_config_conflict_fails_fast},
         {"fail_fast_boundary_matches_actual_supported_family", test_fail_fast_boundary_matches_actual_supported_family},
+        {"ppi_real_checkpoint_validation_or_precise_fail_fast", test_ppi_real_checkpoint_validation_or_precise_fail_fast},
+        {"trace_cache_helpers_have_safe_lifetimes", test_trace_cache_helpers_have_safe_lifetimes},
         {"no_regression_existing_paths", test_no_regression_existing_paths},
     };
 

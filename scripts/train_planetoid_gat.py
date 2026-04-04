@@ -23,22 +23,6 @@ from planetoid_utils import (
 )
 
 
-def hidden_seq_name(head_index: int) -> str:
-    if head_index == 0:
-        return "conv1d/kernel"
-    return f"conv1d_{head_index * 3}/kernel"
-
-
-def hidden_dst_name(head_index: int) -> str:
-    index = 1 if head_index == 0 else head_index * 3 + 1
-    return f"conv1d_{index}"
-
-
-def hidden_src_name(head_index: int) -> str:
-    index = 2 if head_index == 0 else head_index * 3 + 2
-    return f"conv1d_{index}"
-
-
 def parse_cfg(path: pathlib.Path) -> Dict[str, str]:
     values: Dict[str, str] = {}
     for raw_line in path.read_text(encoding="utf-8").splitlines():
@@ -63,6 +47,22 @@ def cfg_bool(cfg: Dict[str, str], key: str, default: bool) -> bool:
     if value is None:
         return default
     return value.lower() in {"1", "true", "yes", "on"}
+
+
+def parse_hidden_profile_expr(raw: str) -> List[Dict[str, int]]:
+    text = raw.strip()
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    entries = [item.strip() for item in text.split(",") if item.strip()]
+    profile: List[Dict[str, int]] = []
+    for entry in entries:
+        if "x" not in entry:
+            raise ValueError(f"invalid hidden_profile entry: {entry}")
+        head_count_text, head_dim_text = entry.split("x", 1)
+        profile.append({"head_count": int(head_count_text), "head_dim": int(head_dim_text)})
+    if not profile:
+        raise ValueError("hidden_profile must be non-empty")
+    return profile
 
 
 def set_seed(seed: int) -> None:
@@ -260,48 +260,54 @@ def load_bundle_state(bundle_dir: pathlib.Path) -> Tuple[Dict[str, object], Dict
     manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
     archive = np.load(bundle_dir / "tensors.npz")
     tensor_index = manifest["tensor_index"]
+    hidden_layers = manifest["hidden_layers"]
+    hidden_head_specs = manifest["hidden_head_specs"]
+    output_head_specs = manifest["output_head_specs"]
+    if len(hidden_layers) != 1:
+        raise ValueError("bundle trace loader currently supports single hidden layer only")
+    if len(output_head_specs) != 1:
+        raise ValueError("bundle trace loader currently supports K_out=1 only")
 
     bundle_meta = {
-        "hidden_dim": int(archive[tensor_index["BiasAdd/biases"]["archive_key"]].shape[0]),
-        "hidden_heads": int(manifest["hidden_head_count"]),
-        "num_classes": int(archive[tensor_index["BiasAdd_8/biases"]["archive_key"]].shape[0]),
+        "hidden_dim": int(hidden_layers[0]["head_dim"]),
+        "hidden_heads": int(hidden_layers[0]["head_count"]),
+        "num_classes": int(manifest["C"]),
     }
 
     state: Dict[str, torch.Tensor] = {}
-    for head_index in range(bundle_meta["hidden_heads"]):
+    for head_index, head in enumerate(hidden_head_specs):
         prefix = f"hidden_heads.{head_index}"
-        seq = archive[tensor_index[hidden_seq_name(head_index)]["archive_key"]]
-        dst_name = hidden_dst_name(head_index)
-        src_name = hidden_src_name(head_index)
+        seq = archive[tensor_index[head["seq_kernel"]]["archive_key"]]
         state[f"{prefix}.seq.weight"] = torch.from_numpy(seq.reshape(seq.shape[1], seq.shape[2]).T.astype(np.float32, copy=False))
         state[f"{prefix}.attn_dst.weight"] = torch.from_numpy(
-            archive[tensor_index[f"{dst_name}/kernel"]["archive_key"]].reshape(1, -1).astype(np.float32, copy=False)
+            archive[tensor_index[head["attn_dst_kernel"]]["archive_key"]].reshape(1, -1).astype(np.float32, copy=False)
         )
         state[f"{prefix}.attn_dst.bias"] = torch.from_numpy(
-            archive[tensor_index[f"{dst_name}/bias"]["archive_key"]].reshape(1).astype(np.float32, copy=False)
+            archive[tensor_index[head["attn_dst_bias"]]["archive_key"]].reshape(1).astype(np.float32, copy=False)
         )
         state[f"{prefix}.attn_src.weight"] = torch.from_numpy(
-            archive[tensor_index[f"{src_name}/kernel"]["archive_key"]].reshape(1, -1).astype(np.float32, copy=False)
+            archive[tensor_index[head["attn_src_kernel"]]["archive_key"]].reshape(1, -1).astype(np.float32, copy=False)
         )
         state[f"{prefix}.attn_src.bias"] = torch.from_numpy(
-            archive[tensor_index[f"{src_name}/bias"]["archive_key"]].reshape(1).astype(np.float32, copy=False)
+            archive[tensor_index[head["attn_src_bias"]]["archive_key"]].reshape(1).astype(np.float32, copy=False)
         )
 
-    output_seq = archive[tensor_index["conv1d_24/kernel"]["archive_key"]]
+    output_head = output_head_specs[0]
+    output_seq = archive[tensor_index[output_head["seq_kernel"]]["archive_key"]]
     state["output_head.seq.weight"] = torch.from_numpy(
         output_seq.reshape(output_seq.shape[1], output_seq.shape[2]).T.astype(np.float32, copy=False)
     )
     state["output_head.attn_dst.weight"] = torch.from_numpy(
-        archive[tensor_index["conv1d_25/kernel"]["archive_key"]].reshape(1, -1).astype(np.float32, copy=False)
+        archive[tensor_index[output_head["attn_dst_kernel"]]["archive_key"]].reshape(1, -1).astype(np.float32, copy=False)
     )
     state["output_head.attn_dst.bias"] = torch.from_numpy(
-        archive[tensor_index["conv1d_25/bias"]["archive_key"]].reshape(1).astype(np.float32, copy=False)
+        archive[tensor_index[output_head["attn_dst_bias"]]["archive_key"]].reshape(1).astype(np.float32, copy=False)
     )
     state["output_head.attn_src.weight"] = torch.from_numpy(
-        archive[tensor_index["conv1d_26/kernel"]["archive_key"]].reshape(1, -1).astype(np.float32, copy=False)
+        archive[tensor_index[output_head["attn_src_kernel"]]["archive_key"]].reshape(1, -1).astype(np.float32, copy=False)
     )
     state["output_head.attn_src.bias"] = torch.from_numpy(
-        archive[tensor_index["conv1d_26/bias"]["archive_key"]].reshape(1).astype(np.float32, copy=False)
+        archive[tensor_index[output_head["attn_src_bias"]]["archive_key"]].reshape(1).astype(np.float32, copy=False)
     )
     return bundle_meta, state
 
@@ -314,12 +320,15 @@ def run_trace_from_checkpoint(
 ) -> Dict[str, object]:
     checkpoint = load_checkpoint(checkpoint_path, device)
     bundle = checkpoint["bundle"]
+    hidden_profile = parse_hidden_profile(bundle)
+    if len(hidden_profile) != 1 or parse_k_out(bundle) != 1:
+        raise ValueError("checkpoint trace runner currently supports one hidden layer and K_out=1 only")
     tensors = load_dataset(data_root, dataset, device)
     model = PlanetoidGAT(
         tensors.num_features,
-        int(bundle["hidden_dim"]),
+        int(hidden_profile[0]["head_dim"]),
         tensors.num_classes,
-        hidden_heads=int(bundle["hidden_heads"]),
+        hidden_heads=int(hidden_profile[0]["head_count"]),
     ).to(device)
     model.load_state_dict(checkpoint["state_dict"])
     model.eval()
@@ -395,8 +404,16 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     seed = cfg_int(cfg, "seed", 11)
-    hidden_dim = cfg_int(cfg, "hidden_dim", 8)
-    hidden_heads = cfg_int(cfg, "hidden_heads", 8)
+    if "hidden_profile" not in cfg:
+        raise ValueError("training config must expose hidden_profile")
+    hidden_profile = parse_hidden_profile_expr(cfg["hidden_profile"])
+    if len(hidden_profile) != 1:
+        raise ValueError("train_planetoid_gat currently supports one hidden layer only")
+    hidden_heads = int(hidden_profile[0]["head_count"])
+    hidden_dim = int(hidden_profile[0]["head_dim"])
+    k_out = cfg_int(cfg, "K_out", 1)
+    if k_out != 1:
+        raise ValueError("train_planetoid_gat currently supports K_out=1 only")
     epochs = cfg_int(cfg, "epochs", 500)
     patience = cfg_int(cfg, "patience", 100)
     lr = cfg_float(cfg, "learning_rate", 0.005)
@@ -478,15 +495,25 @@ def main() -> None:
                 {
                     "bundle": {
                         "dataset": dataset,
-                        "hidden_dim": hidden_dim,
-                        "hidden_heads": hidden_heads,
+                        "L": 2,
+                        "d_in_profile": [tensors.num_features],
+                        "hidden_profile": hidden_profile,
+                        "K_out": k_out,
+                        "C": tensors.num_classes,
                         "num_features": tensors.num_features,
                         "num_classes": tensors.num_classes,
                         "seed": seed,
                         "dropout": dropout,
                         "learning_rate": lr,
                         "weight_decay": weight_decay,
-                        "formal_semantics": "single_layer_hidden8_output1_no_bias_output_attention",
+                        "task_type": "transductive_node_classification",
+                        "report_unit": "node",
+                        "model_arch_id": f"gat_family_L2_hid{hidden_heads}x{hidden_dim}_kout1_c{tensors.num_classes}",
+                        "model_param_id": f"{dataset}_planetoid_seed{seed}",
+                        "quant_cfg_id": "fp32_torch_checkpoint",
+                        "static_table_id": "tables:lrelu+elu+exp+range",
+                        "degree_bound_id": "auto",
+                        "output_average_rule": "per_head_bias_then_arithmetic_mean",
                     },
                     "state_dict": best_state,
                 },

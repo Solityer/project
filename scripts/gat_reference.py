@@ -4,7 +4,8 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
-from typing import Dict, Tuple
+from collections import defaultdict
+from typing import Dict, List, Tuple
 
 import numpy as np
 
@@ -98,46 +99,71 @@ def run_bundle_forward(
     output_apply_output_bias = semantics == "reference_style"
     output_apply_activation = semantics == "reference_style"
 
-    hidden_outputs = []
+    hidden_heads_by_layer: Dict[int, List[Dict[str, object]]] = defaultdict(list)
+    for head in manifest["hidden_head_specs"]:
+        hidden_heads_by_layer[int(head["layer_index"])].append(head)
+    for heads in hidden_heads_by_layer.values():
+        heads.sort(key=lambda item: int(item["local_head_index"]))
+
     hidden_head_traces = []
-    head_summaries = []
-    for head in manifest["hidden_heads"]:
-        head_tensors = head_forward(
-            features,
-            bias,
-            tensors[head["seq_kernel"]],
-            tensors[head["attn_dst_kernel"]],
-            tensors[head["attn_dst_bias"]],
-            tensors[head["attn_src_kernel"]],
-            tensors[head["attn_src_bias"]],
-            tensors[head["output_bias"]],
-            apply_output_bias=hidden_apply_output_bias,
-            apply_activation=hidden_apply_activation,
-        )
-        hidden_outputs.append(head_tensors["H_agg"])
-        hidden_head_traces.append((head["head_index"], head_tensors))
-        head_summaries.append(
+    layer_summaries = []
+    layer_inputs = features
+    hidden_concat = features
+    for layer in manifest["hidden_layers"]:
+        layer_index = int(layer["layer_index"])
+        layer_outputs = []
+        layer_heads = hidden_heads_by_layer[layer_index]
+        if len(layer_heads) != int(layer["head_count"]):
+            raise ValueError(f"hidden layer {layer_index} head_count conflicts with hidden_head_specs")
+        for head in layer_heads:
+            head_tensors = head_forward(
+                layer_inputs,
+                bias,
+                tensors[head["seq_kernel"]],
+                tensors[head["attn_dst_kernel"]],
+                tensors[head["attn_dst_bias"]],
+                tensors[head["attn_src_kernel"]],
+                tensors[head["attn_src_bias"]],
+                tensors[head["output_bias"]],
+                apply_output_bias=hidden_apply_output_bias,
+                apply_activation=hidden_apply_activation,
+            )
+            layer_outputs.append(head_tensors["H_agg"])
+            hidden_head_traces.append((layer_index, int(head["local_head_index"]), head_tensors))
+        hidden_concat = np.concatenate(layer_outputs, axis=1)
+        layer_summaries.append(
             {
-                "head_index": head["head_index"],
-                "node_count": int(head_tensors["H_prime"].shape[0]),
-                "width": int(head_tensors["H_prime"].shape[1]),
+                "layer_index": layer_index,
+                "head_count": len(layer_heads),
+                "input_dim": int(layer["input_dim"]),
+                "concat_width": int(hidden_concat.shape[1]),
             }
         )
+        layer_inputs = hidden_concat
 
-    hidden_concat = np.concatenate(hidden_outputs, axis=1)
-    output_head = manifest["output_head"]
-    output_tensors = head_forward(
-        hidden_concat,
-        bias,
-        tensors[output_head["seq_kernel"]],
-        tensors[output_head["attn_dst_kernel"]],
-        tensors[output_head["attn_dst_bias"]],
-        tensors[output_head["attn_src_kernel"]],
-        tensors[output_head["attn_src_bias"]],
-        tensors[output_head["output_bias"]],
-        apply_output_bias=output_apply_output_bias,
-        apply_activation=output_apply_activation,
-    )
+    output_heads = []
+    for head in sorted(manifest["output_head_specs"], key=lambda item: int(item["head_index"])):
+        output_heads.append(
+            head_forward(
+                hidden_concat,
+                bias,
+                tensors[head["seq_kernel"]],
+                tensors[head["attn_dst_kernel"]],
+                tensors[head["attn_dst_bias"]],
+                tensors[head["attn_src_kernel"]],
+                tensors[head["attn_src_bias"]],
+                tensors[head["output_bias"]],
+                apply_output_bias=output_apply_output_bias,
+                apply_activation=output_apply_activation,
+            )
+        )
+    output_tensors = {
+        key: np.mean(
+            np.stack([head[key].astype(np.float64, copy=False) for head in output_heads], axis=0),
+            axis=0,
+        ).astype(np.float32, copy=False)
+        for key in output_heads[0]
+    }
 
     summary = {
         "dataset": dataset,
@@ -145,8 +171,10 @@ def run_bundle_forward(
         "node_count": int(features.shape[0]),
         "feature_count": int(features.shape[1]),
         "class_count": int(output_tensors["H_agg"].shape[1]),
-        "hidden_head_count": len(manifest["hidden_heads"]),
-        "head_summaries": head_summaries,
+        "hidden_head_count": len(manifest["hidden_head_specs"]),
+        "hidden_layer_count": len(manifest["hidden_layers"]),
+        "output_head_count": len(manifest["output_head_specs"]),
+        "layer_summaries": layer_summaries,
     }
     return {
         "features": features,
@@ -154,6 +182,7 @@ def run_bundle_forward(
         "labels": labels_to_int(labels),
         "hidden_head_traces": hidden_head_traces,
         "hidden_concat": hidden_concat,
+        "output_heads": output_heads,
         "output_tensors": output_tensors,
         "summary": summary,
     }
@@ -182,13 +211,15 @@ def main() -> None:
     save_array(output_dir / "inputs" / "bias.npy", results["bias"])
     save_array(output_dir / "inputs" / "labels.npy", results["labels"])
 
-    for head_index, head_tensors in results["hidden_head_traces"]:
-        export_group(output_dir, f"hidden_head_{head_index}", head_tensors)
+    for layer_index, head_index, head_tensors in results["hidden_head_traces"]:
+        export_group(output_dir, f"hidden_layer_{layer_index}_head_{head_index}", head_tensors)
 
     save_array(output_dir / "hidden_concat.npy", results["hidden_concat"])
     save_array(output_dir / "output" / "Y_lin.npy", results["output_tensors"]["H_prime"])
     save_array(output_dir / "output" / "Y.npy", results["output_tensors"]["H_agg"])
     export_group(output_dir, "output", results["output_tensors"])
+    for head_index, head_tensors in enumerate(results["output_heads"]):
+        export_group(output_dir, f"output_head_{head_index}", head_tensors)
 
     (output_dir / "summary.json").write_text(
         json.dumps(results["summary"], indent=2, sort_keys=True),

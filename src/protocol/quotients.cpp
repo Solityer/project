@@ -57,11 +57,6 @@ bool starts_with(const std::string& value, std::string_view prefix) {
     return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
 }
 
-bool ends_with(const std::string& value, std::string_view suffix) {
-    return value.size() >= suffix.size()
-        && value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
-
 std::optional<std::string> hidden_head_suffix(const std::string& label) {
     if (!starts_with(label, "P_h")) {
         return std::nullopt;

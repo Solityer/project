@@ -414,21 +414,6 @@ std::map<std::string, FieldElement> to_field_map(const std::vector<std::pair<std
     return out;
 }
 
-std::size_t hidden_head_width(const model::ModelParameters& parameters, const util::AppConfig& config) {
-    if (parameters.has_real_multihead && !parameters.hidden_layers.empty()) {
-        return parameters.hidden_layers.front().shape.head_dim;
-    }
-    return config.hidden_dim;
-}
-
-std::size_t concat_width(const model::ModelParameters& parameters, const util::AppConfig& config) {
-    if (parameters.has_real_multihead && !parameters.hidden_layers.empty()) {
-        const auto& shape = parameters.hidden_layers.front().shape;
-        return shape.head_count * shape.head_dim;
-    }
-    return config.hidden_dim;
-}
-
 PublicMetadata build_public_metadata(const ProtocolContext& context) {
     return canonical_public_metadata(context);
 }

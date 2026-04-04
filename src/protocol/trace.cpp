@@ -1116,7 +1116,7 @@ BindingTrace build_binding_trace(
 }
 
 template <typename Builder>
-const BindingTrace& cached_binding_trace(
+std::shared_ptr<const BindingTrace> cached_binding_trace(
     const std::string& cache_key,
     Builder&& builder) {
     static std::mutex cache_mutex;
@@ -1124,7 +1124,7 @@ const BindingTrace& cached_binding_trace(
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
-            return *it->second;
+            return it->second;
         }
     }
 
@@ -1132,7 +1132,7 @@ const BindingTrace& cached_binding_trace(
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         const auto [it, _] = cache.emplace(cache_key, binding);
-        return *it->second;
+        return it->second;
     }
 }
 
@@ -1145,7 +1145,7 @@ struct HiddenCompressedTrace {
     std::vector<FieldElement> h_agg_star_edge;
 };
 
-const HiddenCompressedTrace& cached_hidden_compressed_trace(
+std::shared_ptr<const HiddenCompressedTrace> cached_hidden_compressed_trace(
     const std::string& cache_key,
     const Matrix& h_prime,
     const Matrix& h_agg_pre,
@@ -1158,7 +1158,7 @@ const HiddenCompressedTrace& cached_hidden_compressed_trace(
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
-            return *it->second;
+            return it->second;
         }
     }
 
@@ -1173,7 +1173,7 @@ const HiddenCompressedTrace& cached_hidden_compressed_trace(
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         const auto [it, _] = cache.emplace(cache_key, packed);
-        return *it->second;
+        return it->second;
     }
 }
 
@@ -1187,7 +1187,7 @@ struct RouteTrace {
 };
 
 template <typename Builder>
-const RouteTrace& cached_route_trace(
+std::shared_ptr<const RouteTrace> cached_route_trace(
     const std::string& cache_key,
     Builder&& builder) {
     static std::mutex cache_mutex;
@@ -1195,7 +1195,7 @@ const RouteTrace& cached_route_trace(
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
-            return *it->second;
+            return it->second;
         }
     }
 
@@ -1203,12 +1203,12 @@ const RouteTrace& cached_route_trace(
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         const auto [it, _] = cache.emplace(cache_key, route);
-        return *it->second;
+        return it->second;
     }
 }
 
 template <typename Builder>
-const std::vector<FieldElement>& cached_state_vector(
+std::shared_ptr<const std::vector<FieldElement>> cached_state_vector(
     const std::string& cache_key,
     Builder&& builder) {
     static std::mutex cache_mutex;
@@ -1216,7 +1216,7 @@ const std::vector<FieldElement>& cached_state_vector(
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
-            return *it->second;
+            return it->second;
         }
     }
 
@@ -1224,7 +1224,7 @@ const std::vector<FieldElement>& cached_state_vector(
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         const auto [it, _] = cache.emplace(cache_key, values);
-        return *it->second;
+        return it->second;
     }
 }
 
@@ -1385,7 +1385,7 @@ std::unordered_map<std::uint64_t, std::size_t> build_value_index_map(
     return index;
 }
 
-const std::unordered_map<std::uint64_t, std::size_t>& cached_value_index_map(
+std::shared_ptr<const std::unordered_map<std::uint64_t, std::size_t>> cached_value_index_map(
     const std::string& label,
     const std::vector<FieldElement>& values,
     std::size_t valid_count) {
@@ -1398,7 +1398,7 @@ const std::unordered_map<std::uint64_t, std::size_t>& cached_value_index_map(
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
-            return *it->second;
+            return it->second;
         }
     }
     auto packed = std::make_shared<std::unordered_map<std::uint64_t, std::size_t>>(
@@ -1406,7 +1406,7 @@ const std::unordered_map<std::uint64_t, std::size_t>& cached_value_index_map(
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         const auto [it, _] = cache.emplace(cache_key, packed);
-        return *it->second;
+        return it->second;
     }
 }
 
@@ -1420,7 +1420,7 @@ std::unordered_map<FieldPairKey, std::size_t, FieldPairKeyHash> build_pair_index
     return index;
 }
 
-const std::unordered_map<FieldPairKey, std::size_t, FieldPairKeyHash>& cached_pair_index_map(
+std::shared_ptr<const std::unordered_map<FieldPairKey, std::size_t, FieldPairKeyHash>> cached_pair_index_map(
     const std::string& label,
     const std::vector<std::pair<FieldElement, FieldElement>>& values) {
     static std::mutex cache_mutex;
@@ -1431,7 +1431,7 @@ const std::unordered_map<FieldPairKey, std::size_t, FieldPairKeyHash>& cached_pa
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
-            return *it->second;
+            return it->second;
         }
     }
     auto packed = std::make_shared<std::unordered_map<FieldPairKey, std::size_t, FieldPairKeyHash>>(
@@ -1439,7 +1439,7 @@ const std::unordered_map<FieldPairKey, std::size_t, FieldPairKeyHash>& cached_pa
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         const auto [it, _] = cache.emplace(cache_key, packed);
-        return *it->second;
+        return it->second;
     }
 }
 
@@ -1557,7 +1557,7 @@ struct SingleLookupArtifacts {
 };
 
 template <typename Builder>
-const SingleLookupArtifacts& cached_single_lookup_artifacts(
+std::shared_ptr<const SingleLookupArtifacts> cached_single_lookup_artifacts(
     const std::string& cache_key,
     Builder&& builder) {
     static std::mutex cache_mutex;
@@ -1565,7 +1565,7 @@ const SingleLookupArtifacts& cached_single_lookup_artifacts(
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
-            return *it->second;
+            return it->second;
         }
     }
 
@@ -1573,7 +1573,7 @@ const SingleLookupArtifacts& cached_single_lookup_artifacts(
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         const auto [it, _] = cache.emplace(cache_key, artifacts);
-        return *it->second;
+        return it->second;
     }
 }
 
@@ -1611,7 +1611,7 @@ struct PairLookupArtifacts {
 };
 
 template <typename Builder>
-const PairLookupArtifacts& cached_pair_lookup_artifacts(
+std::shared_ptr<const PairLookupArtifacts> cached_pair_lookup_artifacts(
     const std::string& cache_key,
     Builder&& builder) {
     static std::mutex cache_mutex;
@@ -1619,7 +1619,7 @@ const PairLookupArtifacts& cached_pair_lookup_artifacts(
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
-            return *it->second;
+            return it->second;
         }
     }
 
@@ -1627,7 +1627,7 @@ const PairLookupArtifacts& cached_pair_lookup_artifacts(
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         const auto [it, _] = cache.emplace(cache_key, artifacts);
-        return *it->second;
+        return it->second;
     }
 }
 
@@ -1881,10 +1881,10 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     }
 
     stage_start = Clock::now();
-    const auto& lrelu_index = cached_pair_index_map("lrelu", context.tables.lrelu);
-    const auto& range_index = cached_value_index_map("range", context.tables.range, context.tables.range.size());
-    const auto& exp_index = cached_pair_index_map("exp", context.tables.exp);
-    const auto& elu_index = cached_pair_index_map("elu", context.tables.elu);
+    const auto lrelu_index = cached_pair_index_map("lrelu", context.tables.lrelu);
+    const auto range_index = cached_value_index_map("range", context.tables.range, context.tables.range.size());
+    const auto exp_index = cached_pair_index_map("exp", context.tables.exp);
+    const auto elu_index = cached_pair_index_map("elu", context.tables.elu);
     add_metric(metrics != nullptr ? &metrics->lookup_key_build_ms : nullptr, stage_start);
 
     auto commit_hidden_head = [&](std::size_t head_index) {
@@ -1977,7 +1977,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
 
         stage_start = Clock::now();
         const auto xi = trace.challenges.at("xi_h" + std::to_string(head_index));
-        const auto& compressed = cached_hidden_compressed_trace(
+        const auto compressed = cached_hidden_compressed_trace(
             head_cache_prefix + ":compressed:" + xi.to_string(),
             h_prime,
             h_agg_pre,
@@ -1985,18 +1985,18 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             edges,
             domains.edge->size,
             xi);
-        const auto& h_star = compressed.h_star;
-        const auto& h_star_edge = compressed.h_star_edge;
+        const auto& h_star = compressed->h_star;
+        const auto& h_star_edge = compressed->h_star_edge;
         add_metric(metrics != nullptr ? &metrics->hidden_h_star_trace_ms : nullptr, stage_start);
 
         stage_start = Clock::now();
-        const auto& h_agg_pre_star = compressed.h_agg_pre_star;
-        const auto& h_agg_pre_star_edge = compressed.h_agg_pre_star_edge;
+        const auto& h_agg_pre_star = compressed->h_agg_pre_star;
+        const auto& h_agg_pre_star_edge = compressed->h_agg_pre_star_edge;
         add_metric(metrics != nullptr ? &metrics->hidden_h_agg_pre_star_trace_ms : nullptr, stage_start);
 
         stage_start = Clock::now();
-        const auto& h_agg_star = compressed.h_agg_star;
-        const auto& h_agg_star_edge = compressed.h_agg_star_edge;
+        const auto& h_agg_star = compressed->h_agg_star;
+        const auto& h_agg_star_edge = compressed->h_agg_star_edge;
         add_metric(metrics != nullptr ? &metrics->hidden_h_agg_star_trace_ms : nullptr, stage_start);
 
         add_dynamic_commitment_batch(
@@ -2012,7 +2012,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto y_proj_h = trace.challenges.at("y_proj_h" + std::to_string(head_index));
         const auto y_proj_powers = powers(y_proj_h, head_dim);
         const auto proj_b = linear_form_by_powers(head_w, y_proj_powers);
-        const auto& proj_binding = cached_binding_trace(
+        const auto proj_binding = cached_binding_trace(
             head_cache_prefix + ":proj:" + y_proj_h.to_string(),
             [&]() {
                 return build_binding_trace(
@@ -2028,7 +2028,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
 
         stage_start = Clock::now();
         const auto y_src_h = trace.challenges.at("y_src_h" + std::to_string(head_index));
-        const auto& src_binding = cached_binding_trace(
+        const auto src_binding = cached_binding_trace(
             head_cache_prefix + ":src:" + y_src_h.to_string(),
             [&]() {
                 return build_binding_trace(
@@ -2044,7 +2044,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
 
         stage_start = Clock::now();
         const auto y_dst_h = trace.challenges.at("y_dst_h" + std::to_string(head_index));
-        const auto& dst_binding = cached_binding_trace(
+        const auto dst_binding = cached_binding_trace(
             head_cache_prefix + ":dst:" + y_dst_h.to_string(),
             [&]() {
                 return build_binding_trace(
@@ -2063,7 +2063,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         stage_start = Clock::now();
         const auto xi_powers = powers(xi, head_dim);
         const auto y_star_h = trace.challenges.at("y_star_h" + std::to_string(head_index));
-        const auto& star_binding = cached_binding_trace(
+        const auto star_binding = cached_binding_trace(
             head_cache_prefix + ":star:" + y_star_h.to_string(),
             [&]() {
                 return build_binding_trace(
@@ -2118,11 +2118,11 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         std::vector<FieldElement> table_l =
             cached_pair_lookup_table(prefix + "L", context.tables.lrelu, eta_l, domains.edge->size);
         add_metric(metrics != nullptr ? &metrics->lookup_table_pack_ms : nullptr, stage_start);
-        const auto& lrelu_artifacts = cached_pair_lookup_artifacts(
+        const auto lrelu_artifacts = cached_pair_lookup_artifacts(
             head_cache_prefix + ":lrelu_artifacts:" + eta_l.to_string(),
             [&]() {
                 return build_pair_lookup_artifacts(
-                    lrelu_index,
+                    *lrelu_index,
                     s,
                     z,
                     eta_l,
@@ -2131,8 +2131,8 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                     prefix + "L",
                     metrics);
             });
-        const auto& query_l = lrelu_artifacts.query;
-        const auto& m_l = lrelu_artifacts.multiplicity;
+        const auto& query_l = lrelu_artifacts->query;
+        const auto& m_l = lrelu_artifacts->multiplicity;
         const auto lrelu_acc_start = Clock::now();
         auto r_l = build_logup_accumulator_cached_with_active_count(
             head_cache_prefix + ":lrelu",
@@ -2166,7 +2166,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         }
         add_metric(metrics != nullptr ? &metrics->hidden_edge_score_trace_ms : nullptr, stage_start);
         stage_start = Clock::now();
-        const auto& c_max = cached_state_vector(
+        const auto c_max = cached_state_vector(
             head_cache_prefix + ":cmax",
             [&]() {
 #if GATZK_ENABLE_CUDA_BACKEND
@@ -2185,19 +2185,19 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         std::vector<FieldElement> table_r =
             cached_single_lookup_table(prefix + "R", context.tables.range, domains.edge->size);
         add_metric(metrics != nullptr ? &metrics->lookup_table_pack_ms : nullptr, stage_start);
-        const auto& range_artifacts = cached_single_lookup_artifacts(
+        const auto range_artifacts = cached_single_lookup_artifacts(
             head_cache_prefix + ":range_artifacts",
             [&]() {
                 return build_single_lookup_artifacts(
-                    range_index,
+                    *range_index,
                     delta,
                     domains.edge->size,
                     n_edges,
                     prefix + "R",
                     metrics);
             });
-        const auto& query_r = range_artifacts.query;
-        const auto& m_r = range_artifacts.multiplicity;
+        const auto& query_r = range_artifacts->query;
+        const auto& m_r = range_artifacts->multiplicity;
         const auto range_acc_start = Clock::now();
         auto r_r = build_logup_accumulator_cached_with_active_count(
             head_cache_prefix + ":range",
@@ -2227,11 +2227,11 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         std::vector<FieldElement> table_exp =
             cached_pair_lookup_table(prefix + "exp", context.tables.exp, eta_exp, domains.edge->size);
         add_metric(metrics != nullptr ? &metrics->lookup_table_pack_ms : nullptr, stage_start);
-        const auto& exp_artifacts = cached_pair_lookup_artifacts(
+        const auto exp_artifacts = cached_pair_lookup_artifacts(
             head_cache_prefix + ":exp_artifacts:" + eta_exp.to_string(),
             [&]() {
                 return build_pair_lookup_artifacts(
-                    exp_index,
+                    *exp_index,
                     delta,
                     u,
                     eta_exp,
@@ -2240,8 +2240,8 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                     prefix + "exp",
                     metrics);
             });
-        const auto& query_exp = exp_artifacts.query;
-        const auto& m_exp = exp_artifacts.multiplicity;
+        const auto& query_exp = exp_artifacts->query;
+        const auto& m_exp = exp_artifacts->multiplicity;
         const auto exp_acc_start = Clock::now();
         auto r_exp = build_logup_accumulator_cached_with_active_count(
             head_cache_prefix + ":exp",
@@ -2278,7 +2278,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto t_psq_edge = build_group_target(t_psq, edges, domains.edge->size);
         add_metric(metrics != nullptr ? &metrics->hidden_softmax_chain_trace_ms : nullptr, stage_start);
         stage_start = Clock::now();
-        const auto& psq = cached_state_vector(
+        const auto psq = cached_state_vector(
             head_cache_prefix + ":psq:" + lambda_psq.to_string(),
             [&]() {
                 return build_group_prefix_state(w_psq, q_new);
@@ -2297,7 +2297,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         }
         add_metric(metrics != nullptr ? &metrics->hidden_route_trace_ms : nullptr, stage_start);
         stage_start = Clock::now();
-        const auto& src_route = cached_route_trace(
+        const auto src_route = cached_route_trace(
             head_cache_prefix + ":src_route:" + eta_src.to_string() + ":" + beta_src.to_string(),
             [&]() {
                 return build_route_trace(
@@ -2315,32 +2315,32 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         add_dynamic_commitment_batch(
             trace,
             {
-                column_spec(prefix + "a_proj", proj_binding.a, domains.in),
-                column_spec(prefix + "b_proj", proj_binding.b, domains.in),
-                column_spec(prefix + "Acc_proj", proj_binding.acc, domains.in),
-                column_spec(prefix + "a_src", src_binding.a, domains.d),
-                column_spec(prefix + "b_src", src_binding.b, domains.d),
-                column_spec(prefix + "Acc_src", src_binding.acc, domains.d),
-                column_spec(prefix + "a_dst", dst_binding.a, domains.d),
-                column_spec(prefix + "b_dst", dst_binding.b, domains.d),
-                column_spec(prefix + "Acc_dst", dst_binding.acc, domains.d),
-                column_spec(prefix + "a_star", star_binding.a, domains.d),
-                column_spec(prefix + "b_star", star_binding.b, domains.d),
-                column_spec(prefix + "Acc_star", star_binding.acc, domains.d),
+                column_spec(prefix + "a_proj", proj_binding->a, domains.in),
+                column_spec(prefix + "b_proj", proj_binding->b, domains.in),
+                column_spec(prefix + "Acc_proj", proj_binding->acc, domains.in),
+                column_spec(prefix + "a_src", src_binding->a, domains.d),
+                column_spec(prefix + "b_src", src_binding->b, domains.d),
+                column_spec(prefix + "Acc_src", src_binding->acc, domains.d),
+                column_spec(prefix + "a_dst", dst_binding->a, domains.d),
+                column_spec(prefix + "b_dst", dst_binding->b, domains.d),
+                column_spec(prefix + "Acc_dst", dst_binding->acc, domains.d),
+                column_spec(prefix + "a_star", star_binding->a, domains.d),
+                column_spec(prefix + "b_star", star_binding->b, domains.d),
+                column_spec(prefix + "Acc_star", star_binding->acc, domains.d),
                 column_spec(prefix + "E_src_edge", e_src_edge, domains.edge),
                 column_spec(prefix + "E_dst_edge", e_dst_edge, domains.edge),
                 column_spec(prefix + "H_src_star_edge", h_star_edge, domains.edge),
-                column_spec(prefix + "Table_src", src_route.table, domains.n),
-                column_spec(prefix + "Query_src", src_route.query, domains.edge),
-                column_spec(prefix + "m_src", src_route.multiplicity, domains.n),
-                column_spec(prefix + "R_src_node", src_route.node_acc, domains.n),
-                column_spec(prefix + "R_src", src_route.edge_acc, domains.edge),
+                column_spec(prefix + "Table_src", src_route->table, domains.n),
+                column_spec(prefix + "Query_src", src_route->query, domains.edge),
+                column_spec(prefix + "m_src", src_route->multiplicity, domains.n),
+                column_spec(prefix + "R_src_node", src_route->node_acc, domains.n),
+                column_spec(prefix + "R_src", src_route->edge_acc, domains.edge),
                 column_spec(prefix + "Table_L", table_l, domains.edge),
                 column_spec(prefix + "Query_L", query_l, domains.edge),
                 column_spec(prefix + "m_L", m_l, domains.edge),
                 column_spec(prefix + "R_L", r_l, domains.edge),
                 column_spec(prefix + "s_max", s_max, domains.edge),
-                column_spec(prefix + "C_max", c_max, domains.edge),
+                column_spec(prefix + "C_max", *c_max, domains.edge),
                 column_spec(prefix + "Table_R", table_r, domains.edge),
                 column_spec(prefix + "Query_R", query_r, domains.edge),
                 column_spec(prefix + "m_R", m_r, domains.edge),
@@ -2355,7 +2355,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 column_spec(prefix + "w_psq", w_psq, domains.edge),
                 column_spec(prefix + "T_psq", padded_column(t_psq, domains.n->size), domains.n),
                 column_spec(prefix + "T_psq_edge", t_psq_edge, domains.edge),
-                column_spec(prefix + "PSQ", psq, domains.edge),
+                column_spec(prefix + "PSQ", *psq, domains.edge),
                 column_spec(prefix + "H_agg_star", padded_column(h_agg_star, domains.n->size), domains.n),
                 column_spec(prefix + "H_agg_star_edge", h_agg_star_edge, domains.edge),
             },
@@ -2381,7 +2381,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         }
         add_metric(metrics != nullptr ? &metrics->hidden_route_trace_ms : nullptr, stage_start);
         stage_start = Clock::now();
-        const auto& t_route = cached_route_trace(
+        const auto t_route = cached_route_trace(
             head_cache_prefix + ":t_route:" + eta_t.to_string() + ":" + beta_t.to_string(),
             [&]() {
                 return build_route_trace(
@@ -2417,7 +2417,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
 
         stage_start = Clock::now();
         const auto y_agg_pre_h = trace.challenges.at("y_agg_pre_h" + std::to_string(head_index));
-        const auto& agg_pre_binding = cached_binding_trace(
+        const auto agg_pre_binding = cached_binding_trace(
             head_cache_prefix + ":agg_pre:" + y_agg_pre_h.to_string(),
             [&]() {
                 return build_binding_trace(
@@ -2433,7 +2433,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
 
         stage_start = Clock::now();
         const auto y_agg_h = trace.challenges.at("y_agg_h" + std::to_string(head_index));
-        const auto& agg_binding = cached_binding_trace(
+        const auto agg_binding = cached_binding_trace(
             head_cache_prefix + ":agg:" + y_agg_h.to_string(),
             [&]() {
                 return build_binding_trace(
@@ -2465,11 +2465,11 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                     agg_flat[flat_index] = h_agg[node][col];
                 }
             }
-        const auto& elu_artifacts = cached_pair_lookup_artifacts(
+        const auto elu_artifacts = cached_pair_lookup_artifacts(
             head_cache_prefix + ":elu_artifacts:" + eta_elu.to_string(),
             [&]() {
                 return build_pair_lookup_artifacts(
-                    elu_index,
+                    *elu_index,
                     agg_pre_flat,
                     agg_flat,
                     eta_elu,
@@ -2478,8 +2478,8 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                     prefix + "ELU",
                     metrics);
             });
-        query_elu = elu_artifacts.query;
-        const auto& m_elu = elu_artifacts.multiplicity;
+        query_elu = elu_artifacts->query;
+        const auto& m_elu = elu_artifacts->multiplicity;
         const auto elu_acc_start = Clock::now();
         auto r_elu = build_logup_accumulator_cached_with_active_count(
             head_cache_prefix + ":elu",
@@ -2525,7 +2525,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         }
         add_metric(metrics != nullptr ? &metrics->hidden_route_trace_ms : nullptr, stage_start);
         stage_start = Clock::now();
-        const auto& dst_route = cached_route_trace(
+        const auto dst_route = cached_route_trace(
             head_cache_prefix + ":dst_route:" + eta_dst.to_string() + ":" + beta_dst.to_string(),
             [&]() {
                 return build_route_trace(
@@ -2543,23 +2543,23 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         add_dynamic_commitment_batch(
             trace,
             {
-                column_spec(prefix + "a_agg_pre", agg_pre_binding.a, domains.d),
-                column_spec(prefix + "b_agg_pre", agg_pre_binding.b, domains.d),
-                column_spec(prefix + "Acc_agg_pre", agg_pre_binding.acc, domains.d),
-                column_spec(prefix + "a_agg", agg_binding.a, domains.d),
-                column_spec(prefix + "b_agg", agg_binding.b, domains.d),
-                column_spec(prefix + "Acc_agg", agg_binding.acc, domains.d),
+                column_spec(prefix + "a_agg_pre", agg_pre_binding->a, domains.d),
+                column_spec(prefix + "b_agg_pre", agg_pre_binding->b, domains.d),
+                column_spec(prefix + "Acc_agg_pre", agg_pre_binding->acc, domains.d),
+                column_spec(prefix + "a_agg", agg_binding->a, domains.d),
+                column_spec(prefix + "b_agg", agg_binding->b, domains.d),
+                column_spec(prefix + "Acc_agg", agg_binding->acc, domains.d),
                 column_spec(prefix + "H_agg_pre_flat", agg_pre_flat, domains.edge),
                 column_spec(prefix + "H_agg_flat", agg_flat, domains.edge),
                 column_spec(prefix + "Table_ELU", table_elu, domains.edge),
                 column_spec(prefix + "Query_ELU", query_elu, domains.edge),
                 column_spec(prefix + "m_ELU", m_elu, domains.edge),
                 column_spec(prefix + "R_ELU", r_elu, domains.edge),
-                column_spec(prefix + "Table_t", t_route.table, domains.n),
-                column_spec(prefix + "Query_t", t_route.query, domains.edge),
-                column_spec(prefix + "m_t", t_route.multiplicity, domains.n),
-                column_spec(prefix + "R_t_node", t_route.node_acc, domains.n),
-                column_spec(prefix + "R_t", t_route.edge_acc, domains.edge),
+                column_spec(prefix + "Table_t", t_route->table, domains.n),
+                column_spec(prefix + "Query_t", t_route->query, domains.edge),
+                column_spec(prefix + "m_t", t_route->multiplicity, domains.n),
+                column_spec(prefix + "R_t_node", t_route->node_acc, domains.n),
+                column_spec(prefix + "R_t", t_route->edge_acc, domains.edge),
             },
             context.kzg,
             keep_trace_payloads,
@@ -2567,18 +2567,18 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         add_dynamic_commitment_batch(
             trace,
             {
-                column_spec(prefix + "Table_dst", dst_route.table, domains.n),
-                column_spec(prefix + "Query_dst", dst_route.query, domains.edge),
-                column_spec(prefix + "m_dst", dst_route.multiplicity, domains.n),
-                column_spec(prefix + "R_dst_node", dst_route.node_acc, domains.n),
-                column_spec(prefix + "R_dst", dst_route.edge_acc, domains.edge),
+                column_spec(prefix + "Table_dst", dst_route->table, domains.n),
+                column_spec(prefix + "Query_dst", dst_route->query, domains.edge),
+                column_spec(prefix + "m_dst", dst_route->multiplicity, domains.n),
+                column_spec(prefix + "R_dst_node", dst_route->node_acc, domains.n),
+                column_spec(prefix + "R_dst", dst_route->edge_acc, domains.edge),
             },
             context.kzg,
             keep_trace_payloads,
             metrics);
-        trace.witness_scalars["S_src_h" + std::to_string(head_index)] = src_route.total;
-        trace.witness_scalars["S_dst_h" + std::to_string(head_index)] = dst_route.total;
-        trace.witness_scalars["S_t_h" + std::to_string(head_index)] = t_route.total;
+        trace.witness_scalars["S_src_h" + std::to_string(head_index)] = src_route->total;
+        trace.witness_scalars["S_dst_h" + std::to_string(head_index)] = dst_route->total;
+        trace.witness_scalars["S_t_h" + std::to_string(head_index)] = t_route->total;
         trace.external_evaluations["mu_h" + std::to_string(head_index) + "_proj"] =
             matrix_row_major_evaluation(h_prime, trace.challenges.at("y_proj_h" + std::to_string(head_index)));
         trace.external_evaluations["mu_h" + std::to_string(head_index) + "_src"] =
@@ -2625,7 +2625,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         transcript.absorb_commitment(concat_star_label, trace.commitments.at(concat_star_label).point);
         trace.challenges[y_name] = transcript.challenge(y_name);
         stage_start = Clock::now();
-        const auto& cat_binding = cached_binding_trace(
+        const auto cat_binding = cached_binding_trace(
             cache_prefix + ":cat:" + std::to_string(layer_index) + ":" + trace.challenges.at(y_name).to_string(),
             [&]() {
                 return build_binding_trace(
@@ -2641,9 +2641,9 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         add_dynamic_commitment_batch(
             trace,
             {
-                column_spec(cat_prefix + "_a", cat_binding.a, domains.cat),
-                column_spec(cat_prefix + "_b", cat_binding.b, domains.cat),
-                column_spec(cat_prefix + "_Acc", cat_binding.acc, domains.cat),
+                column_spec(cat_prefix + "_a", cat_binding->a, domains.cat),
+                column_spec(cat_prefix + "_b", cat_binding->b, domains.cat),
+                column_spec(cat_prefix + "_Acc", cat_binding->acc, domains.cat),
             },
             context.kzg,
             keep_trace_payloads,
@@ -2813,7 +2813,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             for (std::size_t k = 0; k < n_edges; ++k) {
                 out_src_query[k] = edge_src_fields[k] + eta_src_out_powers[1] * y_prime_star_edge[k];
             }
-            const auto& out_src_route = cached_route_trace(
+            const auto out_src_route = cached_route_trace(
                 head_cache_prefix + ":src_route:" + eta_src_out.to_string() + ":" + beta_src_out.to_string(),
                 [&]() {
                     return build_route_trace(
@@ -2829,11 +2829,11 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
 
             std::vector<FieldElement> out_table_l =
                 cached_pair_lookup_table(prefix_base + "_L", context.tables.lrelu, trace.challenges.at(output_challenge_name("eta_L_out", head_index, false)), domains.edge->size);
-            const auto& out_l_artifacts = cached_pair_lookup_artifacts(
+            const auto out_l_artifacts = cached_pair_lookup_artifacts(
                 head_cache_prefix + ":lrelu_artifacts:" + trace.challenges.at(output_challenge_name("eta_L_out", head_index, false)).to_string(),
                 [&]() {
                     return build_pair_lookup_artifacts(
-                        lrelu_index,
+                        *lrelu_index,
                         out_s,
                         out_z,
                         trace.challenges.at(output_challenge_name("eta_L_out", head_index, false)),
@@ -2845,8 +2845,8 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             auto out_r_l = build_logup_accumulator_cached_with_active_count(
                 head_cache_prefix + ":lrelu",
                 out_table_l,
-                out_l_artifacts.query,
-                out_l_artifacts.multiplicity,
+                out_l_artifacts->query,
+                out_l_artifacts->multiplicity,
                 q_tbl_l,
                 q_qry_l,
                 trace.challenges.at(output_challenge_name("beta_L_out", head_index, false)),
@@ -2861,7 +2861,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                     }
                 }
             }
-            const auto& out_c_max = cached_state_vector(
+            const auto out_c_max = cached_state_vector(
                 head_cache_prefix + ":cmax",
                 [&]() {
                     return build_max_counter_state(out_s_max, q_new);
@@ -2869,11 +2869,11 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
 
             std::vector<FieldElement> out_table_r =
                 cached_single_lookup_table(prefix_base + "_R", context.tables.range, domains.edge->size);
-            const auto& out_r_artifacts = cached_single_lookup_artifacts(
+            const auto out_r_artifacts = cached_single_lookup_artifacts(
                 head_cache_prefix + ":range_artifacts",
                 [&]() {
                     return build_single_lookup_artifacts(
-                        range_index,
+                        *range_index,
                         out_delta,
                         domains.edge->size,
                         n_edges,
@@ -2883,8 +2883,8 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             auto out_r_r = build_logup_accumulator_cached_with_active_count(
                 head_cache_prefix + ":range",
                 out_table_r,
-                out_r_artifacts.query,
-                out_r_artifacts.multiplicity,
+                out_r_artifacts->query,
+                out_r_artifacts->multiplicity,
                 q_tbl_r,
                 q_qry_r,
                 trace.challenges.at(output_challenge_name("beta_R_out", head_index, false)),
@@ -2892,11 +2892,11 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
 
             std::vector<FieldElement> out_table_exp =
                 cached_pair_lookup_table(prefix_base + "_exp", context.tables.exp, trace.challenges.at(output_challenge_name("eta_exp_out", head_index, false)), domains.edge->size);
-            const auto& out_exp_artifacts = cached_pair_lookup_artifacts(
+            const auto out_exp_artifacts = cached_pair_lookup_artifacts(
                 head_cache_prefix + ":exp_artifacts:" + trace.challenges.at(output_challenge_name("eta_exp_out", head_index, false)).to_string(),
                 [&]() {
                     return build_pair_lookup_artifacts(
-                        exp_index,
+                        *exp_index,
                         out_delta,
                         out_u,
                         trace.challenges.at(output_challenge_name("eta_exp_out", head_index, false)),
@@ -2908,8 +2908,8 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             auto out_r_exp = build_logup_accumulator_cached_with_active_count(
                 head_cache_prefix + ":exp",
                 out_table_exp,
-                out_exp_artifacts.query,
-                out_exp_artifacts.multiplicity,
+                out_exp_artifacts->query,
+                out_exp_artifacts->multiplicity,
                 q_tbl_exp,
                 q_qry_exp,
                 trace.challenges.at(output_challenge_name("beta_exp_out", head_index, false)),
@@ -2927,7 +2927,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 t_out[i] = out_sum[i] + lambda_out * y_star[i];
             }
             const auto t_out_edge = build_group_target(t_out, edges, domains.edge->size);
-            const auto& psq_out = cached_state_vector(
+            const auto psq_out = cached_state_vector(
                 head_cache_prefix + ":psq:" + lambda_out.to_string(),
                 [&]() {
                     return build_group_prefix_state(w_out, q_new);
@@ -2939,30 +2939,30 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                     column_spec(prefix + "E_dst_edge", broadcast_node_values(out_e_dst, edges, false, domains.edge->size), domains.edge),
                     column_spec(prefix + "Y_prime_star", padded_column(y_prime_star, domains.n->size), domains.n),
                     column_spec(prefix + "Y_prime_star_edge", y_prime_star_edge, domains.edge),
-                    column_spec(prefix + "Table_src", out_src_route.table, domains.n),
-                    column_spec(prefix + "Query_src", out_src_route.query, domains.edge),
-                    column_spec(prefix + "m_src", out_src_route.multiplicity, domains.n),
-                    column_spec(prefix + "R_src_node", out_src_route.node_acc, domains.n),
-                    column_spec(prefix + "R_src", out_src_route.edge_acc, domains.edge),
+                    column_spec(prefix + "Table_src", out_src_route->table, domains.n),
+                    column_spec(prefix + "Query_src", out_src_route->query, domains.edge),
+                    column_spec(prefix + "m_src", out_src_route->multiplicity, domains.n),
+                    column_spec(prefix + "R_src_node", out_src_route->node_acc, domains.n),
+                    column_spec(prefix + "R_src", out_src_route->edge_acc, domains.edge),
                     column_spec(prefix + "Table_L", out_table_l, domains.edge),
-                    column_spec(prefix + "Query_L", out_l_artifacts.query, domains.edge),
-                    column_spec(prefix + "m_L", out_l_artifacts.multiplicity, domains.edge),
+                    column_spec(prefix + "Query_L", out_l_artifacts->query, domains.edge),
+                    column_spec(prefix + "m_L", out_l_artifacts->multiplicity, domains.edge),
                     column_spec(prefix + "R_L", out_r_l, domains.edge),
                     column_spec(prefix + "s_max", out_s_max, domains.edge),
-                    column_spec(prefix + "C_max", out_c_max, domains.edge),
+                    column_spec(prefix + "C_max", *out_c_max, domains.edge),
                     column_spec(prefix + "Table_R", out_table_r, domains.edge),
-                    column_spec(prefix + "Query_R", out_r_artifacts.query, domains.edge),
-                    column_spec(prefix + "m_R", out_r_artifacts.multiplicity, domains.edge),
+                    column_spec(prefix + "Query_R", out_r_artifacts->query, domains.edge),
+                    column_spec(prefix + "m_R", out_r_artifacts->multiplicity, domains.edge),
                     column_spec(prefix + "R_R", out_r_r, domains.edge),
                     column_spec(prefix + "Table_exp", out_table_exp, domains.edge),
-                    column_spec(prefix + "Query_exp", out_exp_artifacts.query, domains.edge),
-                    column_spec(prefix + "m_exp", out_exp_artifacts.multiplicity, domains.edge),
+                    column_spec(prefix + "Query_exp", out_exp_artifacts->query, domains.edge),
+                    column_spec(prefix + "m_exp", out_exp_artifacts->multiplicity, domains.edge),
                     column_spec(prefix + "R_exp", out_r_exp, domains.edge),
                     column_spec(prefix + "widehat_y_star", widehat_y_star, domains.edge),
                     column_spec(prefix + "w", w_out, domains.edge),
                     column_spec(prefix + "T", padded_column(t_out, domains.n->size), domains.n),
                     column_spec(prefix + "T_edge", t_out_edge, domains.edge),
-                    column_spec(prefix + "PSQ", psq_out, domains.edge),
+                    column_spec(prefix + "PSQ", *psq_out, domains.edge),
                     column_spec(prefix + "Y_star", padded_column(y_star, domains.n->size), domains.n),
                     column_spec(prefix + "Y_star_edge", y_star_edge, domains.edge),
                 },
@@ -2985,7 +2985,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             for (std::size_t k = 0; k < n_edges; ++k) {
                 out_t_query[k] = edge_dst_fields[k] + eta_t_out_powers[1] * t_out_edge[k];
             }
-            const auto& out_t_route = cached_route_trace(
+            const auto out_t_route = cached_route_trace(
                 head_cache_prefix + ":t_route:" + eta_t_out.to_string() + ":" + beta_t_out.to_string(),
                 [&]() {
                     return build_route_trace(
@@ -3012,7 +3012,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             const auto output_attn_src = quantize_vector(head_params.attn_src_kernel_fp);
             const auto output_attn_dst = quantize_vector(head_params.attn_dst_kernel_fp);
             const auto xi_out_powers = powers(xi_out, context.local.num_classes);
-            const auto& out_proj_binding = cached_binding_trace(
+            const auto out_proj_binding = cached_binding_trace(
                 head_cache_prefix + ":proj:" + y_proj_out.to_string(),
                 [&]() {
                     return build_binding_trace(
@@ -3024,7 +3024,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                         domains.cat,
                         context.model.output_layer.input_dim);
                 });
-            const auto& out_src_binding = cached_binding_trace(
+            const auto out_src_binding = cached_binding_trace(
                 head_cache_prefix + ":src:" + y_src_out.to_string(),
                 [&]() {
                     return build_binding_trace(
@@ -3036,7 +3036,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                         domains.c,
                         context.local.num_classes);
                 });
-            const auto& out_dst_binding = cached_binding_trace(
+            const auto out_dst_binding = cached_binding_trace(
                 head_cache_prefix + ":dst:" + y_dst_out.to_string(),
                 [&]() {
                     return build_binding_trace(
@@ -3048,7 +3048,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                         domains.c,
                         context.local.num_classes);
                 });
-            const auto& out_y_binding = cached_binding_trace(
+            const auto out_y_binding = cached_binding_trace(
                 head_cache_prefix + ":y:" + y_out_star.to_string(),
                 [&]() {
                     return build_binding_trace(
@@ -3084,7 +3084,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                     + eta_dst_out_powers[4] * out_inv_edge[k]
                     + eta_dst_out_powers[5] * y_star_edge[k];
             }
-            const auto& out_dst_route = cached_route_trace(
+            const auto out_dst_route = cached_route_trace(
                 head_cache_prefix + ":dst_route:" + eta_dst_out.to_string() + ":" + beta_dst_out.to_string(),
                 [&]() {
                     return build_route_trace(
@@ -3100,35 +3100,35 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             add_dynamic_commitment_batch(
                 trace,
                 {
-                    column_spec(prefix + "Table_t", out_t_route.table, domains.n),
-                    column_spec(prefix + "Query_t", out_t_route.query, domains.edge),
-                    column_spec(prefix + "m_t", out_t_route.multiplicity, domains.n),
-                    column_spec(prefix + "R_t_node", out_t_route.node_acc, domains.n),
-                    column_spec(prefix + "R_t", out_t_route.edge_acc, domains.edge),
-                    column_spec(prefix + "a_proj", out_proj_binding.a, domains.cat),
-                    column_spec(prefix + "b_proj", out_proj_binding.b, domains.cat),
-                    column_spec(prefix + "Acc_proj", out_proj_binding.acc, domains.cat),
-                    column_spec(prefix + "a_src", out_src_binding.a, domains.c),
-                    column_spec(prefix + "b_src", out_src_binding.b, domains.c),
-                    column_spec(prefix + "Acc_src", out_src_binding.acc, domains.c),
-                    column_spec(prefix + "a_dst", out_dst_binding.a, domains.c),
-                    column_spec(prefix + "b_dst", out_dst_binding.b, domains.c),
-                    column_spec(prefix + "Acc_dst", out_dst_binding.acc, domains.c),
-                    column_spec(prefix + "a_y", out_y_binding.a, domains.c),
-                    column_spec(prefix + "b_y", out_y_binding.b, domains.c),
-                    column_spec(prefix + "Acc_y", out_y_binding.acc, domains.c),
-                    column_spec(prefix + "Table_dst", out_dst_route.table, domains.n),
-                    column_spec(prefix + "Query_dst", out_dst_route.query, domains.edge),
-                    column_spec(prefix + "m_dst", out_dst_route.multiplicity, domains.n),
-                    column_spec(prefix + "R_dst_node", out_dst_route.node_acc, domains.n),
-                    column_spec(prefix + "R_dst", out_dst_route.edge_acc, domains.edge),
+                    column_spec(prefix + "Table_t", out_t_route->table, domains.n),
+                    column_spec(prefix + "Query_t", out_t_route->query, domains.edge),
+                    column_spec(prefix + "m_t", out_t_route->multiplicity, domains.n),
+                    column_spec(prefix + "R_t_node", out_t_route->node_acc, domains.n),
+                    column_spec(prefix + "R_t", out_t_route->edge_acc, domains.edge),
+                    column_spec(prefix + "a_proj", out_proj_binding->a, domains.cat),
+                    column_spec(prefix + "b_proj", out_proj_binding->b, domains.cat),
+                    column_spec(prefix + "Acc_proj", out_proj_binding->acc, domains.cat),
+                    column_spec(prefix + "a_src", out_src_binding->a, domains.c),
+                    column_spec(prefix + "b_src", out_src_binding->b, domains.c),
+                    column_spec(prefix + "Acc_src", out_src_binding->acc, domains.c),
+                    column_spec(prefix + "a_dst", out_dst_binding->a, domains.c),
+                    column_spec(prefix + "b_dst", out_dst_binding->b, domains.c),
+                    column_spec(prefix + "Acc_dst", out_dst_binding->acc, domains.c),
+                    column_spec(prefix + "a_y", out_y_binding->a, domains.c),
+                    column_spec(prefix + "b_y", out_y_binding->b, domains.c),
+                    column_spec(prefix + "Acc_y", out_y_binding->acc, domains.c),
+                    column_spec(prefix + "Table_dst", out_dst_route->table, domains.n),
+                    column_spec(prefix + "Query_dst", out_dst_route->query, domains.edge),
+                    column_spec(prefix + "m_dst", out_dst_route->multiplicity, domains.n),
+                    column_spec(prefix + "R_dst_node", out_dst_route->node_acc, domains.n),
+                    column_spec(prefix + "R_dst", out_dst_route->edge_acc, domains.edge),
                 },
                 context.kzg,
                 keep_trace_payloads,
                 metrics);
-            trace.witness_scalars[output_witness_scalar_name("src", head_index, false)] = out_src_route.total;
-            trace.witness_scalars[output_witness_scalar_name("dst", head_index, false)] = out_dst_route.total;
-            trace.witness_scalars[output_witness_scalar_name("t", head_index, false)] = out_t_route.total;
+            trace.witness_scalars[output_witness_scalar_name("src", head_index, false)] = out_src_route->total;
+            trace.witness_scalars[output_witness_scalar_name("dst", head_index, false)] = out_dst_route->total;
+            trace.witness_scalars[output_witness_scalar_name("t", head_index, false)] = out_t_route->total;
             trace.external_evaluations[output_external_eval_name("proj", head_index, false)] =
                 matrix_row_major_evaluation(y_prime, trace.challenges.at(output_challenge_name("y_proj_out", head_index, false)));
             trace.external_evaluations[output_external_eval_name("src", head_index, false)] =
@@ -3277,7 +3277,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     }
     add_metric(metrics != nullptr ? &metrics->route_pack_residual_ms : nullptr, stage_start);
     stage_start = Clock::now();
-    const auto& out_src_route = cached_route_trace(
+    const auto out_src_route = cached_route_trace(
         output_cache_prefix + ":src_route:" + eta_src_out.to_string() + ":" + beta_src_out.to_string(),
         [&]() {
             return build_route_trace(
@@ -3300,11 +3300,11 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     std::vector<FieldElement> out_table_l =
         cached_pair_lookup_table("P_out_L", context.tables.lrelu, trace.challenges.at("eta_L_out"), domains.edge->size);
     add_metric(metrics != nullptr ? &metrics->lookup_table_pack_ms : nullptr, stage_start);
-    const auto& out_l_artifacts = cached_pair_lookup_artifacts(
+    const auto out_l_artifacts = cached_pair_lookup_artifacts(
         output_cache_prefix + ":lrelu_artifacts:" + trace.challenges.at("eta_L_out").to_string(),
         [&]() {
             return build_pair_lookup_artifacts(
-                lrelu_index,
+                *lrelu_index,
                 out_s,
                 out_z,
                 trace.challenges.at("eta_L_out"),
@@ -3313,8 +3313,8 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 "P_out_L",
                 metrics);
         });
-    const auto& out_query_l = out_l_artifacts.query;
-    const auto& out_m_l = out_l_artifacts.multiplicity;
+    const auto& out_query_l = out_l_artifacts->query;
+    const auto& out_m_l = out_l_artifacts->multiplicity;
     const auto out_l_acc_start = Clock::now();
     auto out_r_l = build_logup_accumulator_cached_with_active_count(
         output_cache_prefix + ":lrelu",
@@ -3346,7 +3346,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             }
         }
     }
-    const auto& out_c_max = cached_state_vector(
+    const auto out_c_max = cached_state_vector(
         output_cache_prefix + ":cmax",
         [&]() {
 #if GATZK_ENABLE_CUDA_BACKEND
@@ -3365,19 +3365,19 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     std::vector<FieldElement> out_table_r =
         cached_single_lookup_table("P_out_R", context.tables.range, domains.edge->size);
     add_metric(metrics != nullptr ? &metrics->lookup_table_pack_ms : nullptr, stage_start);
-    const auto& out_r_artifacts = cached_single_lookup_artifacts(
+    const auto out_r_artifacts = cached_single_lookup_artifacts(
         output_cache_prefix + ":range_artifacts",
         [&]() {
             return build_single_lookup_artifacts(
-                range_index,
+                *range_index,
                 out_delta,
                 domains.edge->size,
                 n_edges,
                 "P_out_R",
                 metrics);
         });
-    const auto& out_query_r = out_r_artifacts.query;
-    const auto& out_m_r = out_r_artifacts.multiplicity;
+    const auto& out_query_r = out_r_artifacts->query;
+    const auto& out_m_r = out_r_artifacts->multiplicity;
     const auto out_r_acc_start = Clock::now();
     auto out_r_r = build_logup_accumulator_cached_with_active_count(
         output_cache_prefix + ":range",
@@ -3407,11 +3407,11 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     std::vector<FieldElement> out_table_exp =
         cached_pair_lookup_table("P_out_exp", context.tables.exp, trace.challenges.at("eta_exp_out"), domains.edge->size);
     add_metric(metrics != nullptr ? &metrics->lookup_table_pack_ms : nullptr, stage_start);
-    const auto& out_exp_artifacts = cached_pair_lookup_artifacts(
+    const auto out_exp_artifacts = cached_pair_lookup_artifacts(
         output_cache_prefix + ":exp_artifacts:" + trace.challenges.at("eta_exp_out").to_string(),
         [&]() {
             return build_pair_lookup_artifacts(
-                exp_index,
+                *exp_index,
                 out_delta,
                 out_u,
                 trace.challenges.at("eta_exp_out"),
@@ -3420,8 +3420,8 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 "P_out_exp",
                 metrics);
         });
-    const auto& out_query_exp = out_exp_artifacts.query;
-    const auto& out_m_exp = out_exp_artifacts.multiplicity;
+    const auto& out_query_exp = out_exp_artifacts->query;
+    const auto& out_m_exp = out_exp_artifacts->multiplicity;
     const auto out_exp_acc_start = Clock::now();
     auto out_r_exp = build_logup_accumulator_cached_with_active_count(
         output_cache_prefix + ":exp",
@@ -3456,7 +3456,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         t_out[i] = out_sum[i] + lambda_out * y_star[i];
     }
     const auto t_out_edge = build_group_target(t_out, edges, domains.edge->size);
-    const auto& psq_out = cached_state_vector(
+    const auto psq_out = cached_state_vector(
         output_cache_prefix + ":psq:" + lambda_out.to_string(),
         [&]() {
             return build_group_prefix_state(w_out, q_new);
@@ -3470,17 +3470,17 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             column_spec("P_out_E_dst_edge", broadcast_node_values(out_e_dst, edges, false, domains.edge->size), domains.edge),
             column_spec("P_out_Y_prime_star", padded_column(y_prime_star, domains.n->size), domains.n),
             column_spec("P_out_Y_prime_star_edge", y_prime_star_edge, domains.edge),
-            column_spec("P_out_Table_src", out_src_route.table, domains.n),
-            column_spec("P_out_Query_src", out_src_route.query, domains.edge),
-            column_spec("P_out_m_src", out_src_route.multiplicity, domains.n),
-            column_spec("P_out_R_src_node", out_src_route.node_acc, domains.n),
-            column_spec("P_out_R_src", out_src_route.edge_acc, domains.edge),
+            column_spec("P_out_Table_src", out_src_route->table, domains.n),
+            column_spec("P_out_Query_src", out_src_route->query, domains.edge),
+            column_spec("P_out_m_src", out_src_route->multiplicity, domains.n),
+            column_spec("P_out_R_src_node", out_src_route->node_acc, domains.n),
+            column_spec("P_out_R_src", out_src_route->edge_acc, domains.edge),
             column_spec("P_out_Table_L", out_table_l, domains.edge),
             column_spec("P_out_Query_L", out_query_l, domains.edge),
             column_spec("P_out_m_L", out_m_l, domains.edge),
             column_spec("P_out_R_L", out_r_l, domains.edge),
             column_spec("P_out_s_max", out_s_max, domains.edge),
-            column_spec("P_out_C_max", out_c_max, domains.edge),
+            column_spec("P_out_C_max", *out_c_max, domains.edge),
             column_spec("P_out_Table_R", out_table_r, domains.edge),
             column_spec("P_out_Query_R", out_query_r, domains.edge),
             column_spec("P_out_m_R", out_m_r, domains.edge),
@@ -3493,7 +3493,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             column_spec("P_out_w", w_out, domains.edge),
             column_spec("P_out_T", padded_column(t_out, domains.n->size), domains.n),
             column_spec("P_out_T_edge", t_out_edge, domains.edge),
-            column_spec("P_out_PSQ", psq_out, domains.edge),
+            column_spec("P_out_PSQ", *psq_out, domains.edge),
             column_spec("P_out_Y_star", padded_column(y_star, domains.n->size), domains.n),
             column_spec("P_out_Y_star_edge", y_star_edge, domains.edge),
         },
@@ -3518,7 +3518,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     }
     add_metric(metrics != nullptr ? &metrics->route_pack_residual_ms : nullptr, stage_start);
     stage_start = Clock::now();
-    const auto& out_t_route = cached_route_trace(
+    const auto out_t_route = cached_route_trace(
         output_cache_prefix + ":t_route:" + eta_t_out.to_string() + ":" + beta_t_out.to_string(),
         [&]() {
             return build_route_trace(
@@ -3545,7 +3545,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     const auto output_attn_src = quantize_vector(context.model.output_head.attn_src_kernel_fp);
     const auto output_attn_dst = quantize_vector(context.model.output_head.attn_dst_kernel_fp);
     const auto xi_out_powers = powers(trace.challenges.at("xi_out"), n_classes);
-    const auto& out_proj_binding = cached_binding_trace(
+    const auto out_proj_binding = cached_binding_trace(
         output_cache_prefix + ":proj:" + y_proj_out.to_string(),
         [&]() {
             return build_binding_trace(
@@ -3557,7 +3557,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 domains.cat,
                 context.model.output_layer.input_dim);
         });
-    const auto& out_src_binding = cached_binding_trace(
+    const auto out_src_binding = cached_binding_trace(
         output_cache_prefix + ":src:" + y_src_out.to_string(),
         [&]() {
             return build_binding_trace(
@@ -3569,7 +3569,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 domains.c,
                 n_classes);
         });
-    const auto& out_dst_binding = cached_binding_trace(
+    const auto out_dst_binding = cached_binding_trace(
         output_cache_prefix + ":dst:" + y_dst_out.to_string(),
         [&]() {
             return build_binding_trace(
@@ -3581,7 +3581,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 domains.c,
                 n_classes);
         });
-    const auto& out_y_binding = cached_binding_trace(
+    const auto out_y_binding = cached_binding_trace(
         output_cache_prefix + ":y:" + y_out_star.to_string(),
         [&]() {
             return build_binding_trace(
@@ -3622,7 +3622,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     }
     add_metric(metrics != nullptr ? &metrics->route_pack_residual_ms : nullptr, stage_start);
     stage_start = Clock::now();
-    const auto& out_dst_route = cached_route_trace(
+    const auto out_dst_route = cached_route_trace(
         output_cache_prefix + ":dst_route:" + eta_dst_out.to_string() + ":" + beta_dst_out.to_string(),
         [&]() {
             return build_route_trace(
@@ -3639,35 +3639,35 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     add_dynamic_commitment_batch(
         trace,
         {
-            column_spec("P_out_Table_t", out_t_route.table, domains.n),
-            column_spec("P_out_Query_t", out_t_route.query, domains.edge),
-            column_spec("P_out_m_t", out_t_route.multiplicity, domains.n),
-            column_spec("P_out_R_t_node", out_t_route.node_acc, domains.n),
-            column_spec("P_out_R_t", out_t_route.edge_acc, domains.edge),
-            column_spec("P_out_a_proj", out_proj_binding.a, domains.cat),
-            column_spec("P_out_b_proj", out_proj_binding.b, domains.cat),
-            column_spec("P_out_Acc_proj", out_proj_binding.acc, domains.cat),
-            column_spec("P_out_a_src", out_src_binding.a, domains.c),
-            column_spec("P_out_b_src", out_src_binding.b, domains.c),
-            column_spec("P_out_Acc_src", out_src_binding.acc, domains.c),
-            column_spec("P_out_a_dst", out_dst_binding.a, domains.c),
-            column_spec("P_out_b_dst", out_dst_binding.b, domains.c),
-            column_spec("P_out_Acc_dst", out_dst_binding.acc, domains.c),
-            column_spec("P_out_a_y", out_y_binding.a, domains.c),
-            column_spec("P_out_b_y", out_y_binding.b, domains.c),
-            column_spec("P_out_Acc_y", out_y_binding.acc, domains.c),
-            column_spec("P_out_Table_dst", out_dst_route.table, domains.n),
-            column_spec("P_out_Query_dst", out_dst_route.query, domains.edge),
-            column_spec("P_out_m_dst", out_dst_route.multiplicity, domains.n),
-            column_spec("P_out_R_dst_node", out_dst_route.node_acc, domains.n),
-            column_spec("P_out_R_dst", out_dst_route.edge_acc, domains.edge),
+            column_spec("P_out_Table_t", out_t_route->table, domains.n),
+            column_spec("P_out_Query_t", out_t_route->query, domains.edge),
+            column_spec("P_out_m_t", out_t_route->multiplicity, domains.n),
+            column_spec("P_out_R_t_node", out_t_route->node_acc, domains.n),
+            column_spec("P_out_R_t", out_t_route->edge_acc, domains.edge),
+            column_spec("P_out_a_proj", out_proj_binding->a, domains.cat),
+            column_spec("P_out_b_proj", out_proj_binding->b, domains.cat),
+            column_spec("P_out_Acc_proj", out_proj_binding->acc, domains.cat),
+            column_spec("P_out_a_src", out_src_binding->a, domains.c),
+            column_spec("P_out_b_src", out_src_binding->b, domains.c),
+            column_spec("P_out_Acc_src", out_src_binding->acc, domains.c),
+            column_spec("P_out_a_dst", out_dst_binding->a, domains.c),
+            column_spec("P_out_b_dst", out_dst_binding->b, domains.c),
+            column_spec("P_out_Acc_dst", out_dst_binding->acc, domains.c),
+            column_spec("P_out_a_y", out_y_binding->a, domains.c),
+            column_spec("P_out_b_y", out_y_binding->b, domains.c),
+            column_spec("P_out_Acc_y", out_y_binding->acc, domains.c),
+            column_spec("P_out_Table_dst", out_dst_route->table, domains.n),
+            column_spec("P_out_Query_dst", out_dst_route->query, domains.edge),
+            column_spec("P_out_m_dst", out_dst_route->multiplicity, domains.n),
+            column_spec("P_out_R_dst_node", out_dst_route->node_acc, domains.n),
+            column_spec("P_out_R_dst", out_dst_route->edge_acc, domains.edge),
         },
         context.kzg,
         keep_trace_payloads,
         metrics);
-    trace.witness_scalars["S_src_out"] = out_src_route.total;
-    trace.witness_scalars["S_dst_out"] = out_dst_route.total;
-    trace.witness_scalars["S_t_out"] = out_t_route.total;
+    trace.witness_scalars["S_src_out"] = out_src_route->total;
+    trace.witness_scalars["S_dst_out"] = out_dst_route->total;
+    trace.witness_scalars["S_t_out"] = out_t_route->total;
     trace.external_evaluations["mu_out_proj"] = matrix_row_major_evaluation(y_prime, trace.challenges.at("y_proj_out"));
     trace.external_evaluations["mu_out_src"] = trace.polynomials.at("P_out_E_src").evaluate(trace.challenges.at("y_src_out"));
     trace.external_evaluations["mu_out_dst"] = trace.polynomials.at("P_out_E_dst").evaluate(trace.challenges.at("y_dst_out"));
