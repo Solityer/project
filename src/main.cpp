@@ -124,6 +124,8 @@ int main(int argc, char** argv) {
             metrics.enabled_fft_kernel_upgrade = route2.fft_kernel_upgrade;
             metrics.enabled_trace_layout_upgrade = route2.trace_layout_upgrade;
             metrics.enabled_fast_verify_pairing = route2.fast_verify_pairing;
+            metrics.benchmark_mode = mode_label;
+            metrics.route2_label = gatzk::util::route2_feature_label(route2);
             if (route2.fft_backend_upgrade && route2.fft_kernel_upgrade) {
                 metrics.fft_backend_route = "packed_rotated_kernel";
             } else if (route2.fft_backend_upgrade) {

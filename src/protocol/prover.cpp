@@ -3050,12 +3050,14 @@ void export_run_artifacts(
         {"model_param_id", proof.public_metadata.model_param_id},
         {"static_table_id", proof.public_metadata.static_table_id},
         {"degree_bound_id", proof.public_metadata.degree_bound_id},
+        {"benchmark_mode", metrics.benchmark_mode},
         {"enabled_fft_backend_upgrade", metrics.enabled_fft_backend_upgrade ? "true" : "false"},
         {"enabled_fft_kernel_upgrade", metrics.enabled_fft_kernel_upgrade ? "true" : "false"},
         {"enabled_fast_msm", metrics.enabled_fast_msm ? "true" : "false"},
         {"enabled_parallel_fft", metrics.enabled_parallel_fft ? "true" : "false"},
         {"enabled_trace_layout_upgrade", metrics.enabled_trace_layout_upgrade ? "true" : "false"},
         {"enabled_fast_verify_pairing", metrics.enabled_fast_verify_pairing ? "true" : "false"},
+        {"route2_label", metrics.route2_label},
         {"node_count", std::to_string(metrics.node_count)},
         {"edge_count", std::to_string(metrics.edge_count)},
         {"context_build_ms", format_double(metrics.context_build_ms)},
@@ -3213,7 +3215,6 @@ void export_run_artifacts(
         {"verify_fold_ms", format_double(metrics.verify_fold_ms)},
         {"verify_copy_convert_ms", format_double(metrics.verify_copy_convert_ms)},
     };
-    util::write_key_values(export_root + "/summary.txt", summary);
     util::write_key_values(export_root + "/benchmark.txt", summary);
     util::write_json_object(export_root + "/run_manifest.json", summary);
 

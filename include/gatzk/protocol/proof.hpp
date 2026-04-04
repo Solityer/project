@@ -252,7 +252,9 @@ struct RunMetrics {
     bool enabled_fast_verify_pairing = false;
     bool is_cold_run = true;
     bool is_full_dataset = false;
+    std::string benchmark_mode = "single";
     std::string fft_backend_route = "legacy";
+    std::string route2_label = "legacy";
     std::string notes;
 };
 

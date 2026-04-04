@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -37,6 +38,19 @@ std::filesystem::path repo_root() {
 
 std::string repo_path(const std::string& relative) {
     return (repo_root() / relative).string();
+}
+
+std::string slurp_file(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    std::ostringstream out;
+    out << input.rdbuf();
+    return out.str();
+}
+
+void write_text(const std::filesystem::path& path, const std::string& text) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path, std::ios::trunc);
+    output << text;
 }
 
 void require(bool condition, const std::string& message) {
@@ -90,6 +104,10 @@ gatzk::util::AppConfig full_graph_formal_config() {
     return gatzk::util::load_config(repo_path("configs/cora_full.cfg"));
 }
 
+gatzk::util::AppConfig full_citeseer_formal_config() {
+    return gatzk::util::load_config(repo_path("configs/citeseer_full.cfg"));
+}
+
 gatzk::util::AppConfig ppi_batch_config() {
     return gatzk::util::load_config(repo_path("configs/ppi_batch.cfg"));
 }
@@ -130,6 +148,15 @@ const ProofFixture& full_cora_proof_fixture() {
     static const auto fixture = []() {
         auto config = full_graph_formal_config();
         config.export_dir = "runs/test_full_cora";
+        return build_proof_fixture_with_stage(config);
+    }();
+    return fixture;
+}
+
+const ProofFixture& full_citeseer_proof_fixture() {
+    static const auto fixture = []() {
+        auto config = full_citeseer_formal_config();
+        config.export_dir = "runs/test_full_citeseer";
         return build_proof_fixture_with_stage(config);
     }();
     return fixture;
@@ -737,6 +764,73 @@ const std::filesystem::path& family_formal_checkpoint_bundle_dir() {
     return bundle_dir;
 }
 
+std::filesystem::path write_benchmark_manifest(
+    const std::string& dataset,
+    const std::string& benchmark_mode,
+    double prove_time_ms,
+    double verify_time_ms,
+    std::size_t proof_size_bytes,
+    std::size_t node_count,
+    std::size_t edge_count) {
+    const auto root = repo_root() / "runs" / "test_benchmark_export" / dataset;
+    std::filesystem::create_directories(root);
+    std::ostringstream manifest;
+    manifest << "{\n"
+             << "  \"dataset\": \"" << dataset << "\",\n"
+             << "  \"dataset_name\": \"" << dataset << "\",\n"
+             << "  \"backend_name\": \"mcl\",\n"
+             << "  \"benchmark_mode\": \"" << benchmark_mode << "\",\n"
+             << "  \"route2_label\": \"msm_fft_packed_kernel_layout_pairing\",\n"
+             << "  \"fft_backend_route\": \"packed_rotated_kernel\",\n"
+             << "  \"prove_time_ms\": \"" << prove_time_ms << "\",\n"
+             << "  \"verify_time_ms\": \"" << verify_time_ms << "\",\n"
+             << "  \"proof_size_bytes\": \"" << proof_size_bytes << "\",\n"
+             << "  \"node_count\": \"" << node_count << "\",\n"
+             << "  \"edge_count\": \"" << edge_count << "\",\n"
+             << "  \"is_full_dataset\": \"true\",\n"
+             << "  \"trace_generation_ms\": \"12.5\",\n"
+             << "  \"commit_dynamic_ms\": \"9.5\",\n"
+             << "  \"quotient_build_ms\": \"15.5\",\n"
+             << "  \"domain_opening_ms\": \"18.5\",\n"
+             << "  \"external_opening_ms\": \"1.0\",\n"
+             << "  \"verify_metadata_ms\": \"0.5\",\n"
+             << "  \"verify_transcript_ms\": \"0.6\",\n"
+             << "  \"verify_domain_opening_ms\": \"4.0\",\n"
+             << "  \"verify_quotient_ms\": \"5.0\",\n"
+             << "  \"verify_external_fold_ms\": \"0.8\",\n"
+             << "  \"verify_misc_ms\": \"0.3\",\n"
+             << "  \"verified\": \"true\",\n"
+             << "  \"model_arch_id\": \"test_arch\",\n"
+             << "  \"model_param_id\": \"test_params\",\n"
+             << "  \"quant_cfg_id\": \"test_quant\",\n"
+             << "  \"notes\": \"benchmark_mode=" << benchmark_mode << "; model_source=checkpoint_bundle\"\n"
+             << "}\n";
+    write_text(root / "run_manifest.json", manifest.str());
+    return root / "run_manifest.json";
+}
+
+int run_benchmark_export_script(const std::vector<std::string>& arguments) {
+    const auto python = repo_root() / ".venv" / "bin" / "python";
+    auto shell_escape = [](const std::string& value) {
+        std::string escaped = "'";
+        for (char ch : value) {
+            if (ch == '\'') {
+                escaped += "'\\''";
+            } else {
+                escaped.push_back(ch);
+            }
+        }
+        escaped += "'";
+        return escaped;
+    };
+    std::ostringstream command;
+    command << shell_escape(python.string()) << ' ' << shell_escape(repo_path("scripts/export_benchmark_table.py"));
+    for (const auto& argument : arguments) {
+        command << ' ' << shell_escape(argument);
+    }
+    return std::system(command.str().c_str());
+}
+
 void test_family_checkpoint_bundle_round_trip() {
     const auto info = gatzk::model::inspect_checkpoint_bundle(family_checkpoint_bundle_dir().string());
     require(info.layer_count == 3, "family bundle must preserve L");
@@ -823,6 +917,12 @@ void test_checkpoint_backed_formal_validation() {
     require(gatzk::protocol::verify(fixture.context, fixture.proof), "checkpoint-backed cora formal prove/verify must pass");
 }
 
+void test_citeseer_checkpoint_backed_formal_validation() {
+    const auto& fixture = full_citeseer_proof_fixture();
+    require(!fixture.context.config.checkpoint_bundle.empty(), "citeseer validation requires a real checkpoint bundle");
+    require(gatzk::protocol::verify(fixture.context, fixture.proof), "checkpoint-backed citeseer formal prove/verify must pass");
+}
+
 void test_config_conflict_fails_fast() {
     auto config = full_graph_formal_config();
     config.K_out = 2;
@@ -868,6 +968,86 @@ void test_trace_cache_helpers_have_safe_lifetimes() {
     require(gatzk::protocol::verify(context, proof_b), "second trace build must verify");
 }
 
+void test_four_dataset_benchmark_table_export() {
+    const auto output_dir = repo_root() / "runs" / "benchmarks_test";
+    std::filesystem::remove_all(output_dir);
+    const auto cora_manifest = write_benchmark_manifest("cora", "single", 10.5, 1.5, 111, 2708, 13264);
+    const auto citeseer_manifest = write_benchmark_manifest("citeseer", "single", 20.5, 2.5, 222, 3327, 12431);
+    const auto pubmed_manifest = write_benchmark_manifest("pubmed", "single", 30.5, 3.5, 333, 19717, 108365);
+    require(
+        run_benchmark_export_script(
+            {
+                "--run", "cora=" + cora_manifest.string(),
+                "--run", "citeseer=" + citeseer_manifest.string(),
+                "--run", "pubmed=" + pubmed_manifest.string(),
+                "--blocked", "ppi=missing real checkpoint bundle",
+                "--output-dir", output_dir.string(),
+            }) == 0,
+        "benchmark export script must succeed");
+    require(std::filesystem::exists(output_dir / "latest.json"), "latest.json must be exported");
+    require(std::filesystem::exists(output_dir / "latest.csv"), "latest.csv must be exported");
+    require(std::filesystem::exists(output_dir / "summary.md"), "summary.md must be exported");
+    const auto summary = slurp_file(output_dir / "summary.md");
+    require(summary.find("| cora | ok | 10.500 | 1.500 | 111 |") != std::string::npos, "summary must include cora row");
+    require(summary.find("| ppi | blocked | n/a | n/a | n/a |") != std::string::npos, "summary must include blocked ppi row");
+}
+
+void test_benchmark_summary_contains_required_metrics() {
+    const auto output_dir = repo_root() / "runs" / "benchmarks_test";
+    const auto json_text = slurp_file(output_dir / "latest.json");
+    require(json_text.find("\"prove_time_ms\"") != std::string::npos, "latest.json must include prove_time_ms");
+    require(json_text.find("\"verify_time_ms\"") != std::string::npos, "latest.json must include verify_time_ms");
+    require(json_text.find("\"proof_size_bytes\"") != std::string::npos, "latest.json must include proof_size_bytes");
+    const auto csv_text = slurp_file(output_dir / "latest.csv");
+    require(csv_text.find("prove_time_ms") != std::string::npos, "latest.csv must include prove_time_ms");
+    require(csv_text.find("verify_time_ms") != std::string::npos, "latest.csv must include verify_time_ms");
+    require(csv_text.find("proof_size_bytes") != std::string::npos, "latest.csv must include proof_size_bytes");
+}
+
+void test_benchmark_mode_consistency() {
+    const auto output_dir = repo_root() / "runs" / "benchmarks_test_inconsistent";
+    std::filesystem::remove_all(output_dir);
+    const auto cora_manifest = write_benchmark_manifest("cora", "single", 10.5, 1.5, 111, 2708, 13264);
+    const auto citeseer_manifest = write_benchmark_manifest("citeseer", "warm", 20.5, 2.5, 222, 3327, 12431);
+    require(
+        run_benchmark_export_script(
+            {
+                "--run", "cora=" + cora_manifest.string(),
+                "--run", "citeseer=" + citeseer_manifest.string(),
+                "--output-dir", output_dir.string(),
+            }) != 0,
+        "mixed benchmark modes must be rejected");
+}
+
+void test_performance_regression_guard_for_existing_paths() {
+    const auto manifest = slurp_file(repo_root() / "runs" / "test_manifest_export" / "run_manifest.json");
+    require(manifest.find("\"benchmark_mode\"") != std::string::npos, "run manifests must expose benchmark_mode");
+    require(manifest.find("\"route2_label\"") != std::string::npos, "run manifests must expose route2_label");
+    require(manifest.find("\"trace_generation_ms\"") != std::string::npos, "run manifests must expose trace_generation_ms");
+    require(manifest.find("\"quotient_build_ms\"") != std::string::npos, "run manifests must expose quotient_build_ms");
+}
+
+void test_no_legacy_benchmark_pipeline_remaining() {
+    const auto& fixture = full_cora_proof_fixture();
+    gatzk::protocol::RunMetrics metrics;
+    metrics.backend_name = "test";
+    metrics.config = repo_path("configs/cora_full.cfg");
+    metrics.dataset = fixture.context.dataset.name;
+    metrics.node_count = fixture.context.local.num_nodes;
+    metrics.edge_count = fixture.context.local.edges.size();
+    metrics.proof_size_bytes = gatzk::protocol::proof_size_bytes(fixture.proof);
+    metrics.benchmark_mode = "single";
+    metrics.route2_label = "msm_fft_packed_kernel_layout_pairing";
+
+    auto export_context = fixture.context;
+    export_context.config.export_dir = "runs/test_benchmark_export_pipeline";
+    std::filesystem::remove_all(repo_root() / export_context.config.export_dir);
+    gatzk::protocol::export_run_artifacts(export_context, fixture.trace, fixture.proof, metrics, true);
+    require(!std::filesystem::exists(repo_root() / export_context.config.export_dir / "summary.txt"), "legacy summary.txt export must be removed");
+    require(std::filesystem::exists(repo_root() / export_context.config.export_dir / "benchmark.txt"), "benchmark.txt export must remain");
+    require(std::filesystem::exists(repo_root() / export_context.config.export_dir / "run_manifest.json"), "run_manifest export must remain");
+}
+
 void test_no_regression_existing_paths() {
     const auto& full_fixture = full_cora_proof_fixture();
     require(gatzk::protocol::verify(full_fixture.context, full_fixture.proof), "existing cora checkpoint path must remain valid");
@@ -908,10 +1088,16 @@ int main(int argc, char** argv) {
         {"checkpoint_loader_rejects_incomplete_family_metadata", test_checkpoint_loader_rejects_incomplete_family_metadata},
         {"real_or_fixture_checkpoint_backed_family_validation", test_real_or_fixture_checkpoint_backed_family_validation},
         {"checkpoint_backed_formal_validation", test_checkpoint_backed_formal_validation},
+        {"citeseer_checkpoint_backed_formal_validation", test_citeseer_checkpoint_backed_formal_validation},
         {"config_conflict_fails_fast", test_config_conflict_fails_fast},
         {"fail_fast_boundary_matches_actual_supported_family", test_fail_fast_boundary_matches_actual_supported_family},
         {"ppi_real_checkpoint_validation_or_precise_fail_fast", test_ppi_real_checkpoint_validation_or_precise_fail_fast},
         {"trace_cache_helpers_have_safe_lifetimes", test_trace_cache_helpers_have_safe_lifetimes},
+        {"four_dataset_benchmark_table_export", test_four_dataset_benchmark_table_export},
+        {"benchmark_summary_contains_required_metrics", test_benchmark_summary_contains_required_metrics},
+        {"benchmark_mode_consistency", test_benchmark_mode_consistency},
+        {"performance_regression_guard_for_existing_paths", test_performance_regression_guard_for_existing_paths},
+        {"no_legacy_benchmark_pipeline_remaining", test_no_legacy_benchmark_pipeline_remaining},
         {"no_regression_existing_paths", test_no_regression_existing_paths},
     };
 
