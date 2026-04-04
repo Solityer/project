@@ -169,6 +169,39 @@ AttentionHeadParameters load_head_parameters(
     return out;
 }
 
+AttentionHeadParameters build_synthetic_head(
+    std::size_t input_dim,
+    std::size_t output_dim,
+    std::uint64_t seed,
+    std::size_t bias_seed) {
+    AttentionHeadParameters head;
+    head.seq_kernel_fp.assign(input_dim, std::vector<double>(output_dim, 0.0));
+    for (std::size_t row = 0; row < input_dim; ++row) {
+        bool has_non_zero = false;
+        for (std::size_t col = 0; col < output_dim; ++col) {
+            const auto enabled = ((row * 17 + col * 31 + seed + bias_seed) % 7U) == 0U;
+            head.seq_kernel_fp[row][col] = enabled ? 1.0 : 0.0;
+            has_non_zero = has_non_zero || enabled;
+        }
+        if (!has_non_zero && output_dim != 0) {
+            head.seq_kernel_fp[row][row % output_dim] = 1.0;
+        }
+    }
+    head.attn_src_kernel_fp.resize(output_dim, 0.0);
+    head.attn_dst_kernel_fp.resize(output_dim, 0.0);
+    for (std::size_t i = 0; i < output_dim; ++i) {
+        head.attn_src_kernel_fp[i] = static_cast<double>(((i + seed + bias_seed) % 3U) + 1U) / 4.0;
+        head.attn_dst_kernel_fp[i] = static_cast<double>(((i + seed + bias_seed + 1U) % 3U) + 1U) / 4.0;
+    }
+    head.attn_src_bias_fp = static_cast<double>(static_cast<std::int64_t>((seed + bias_seed) % 3U) - 1) / 8.0;
+    head.attn_dst_bias_fp = static_cast<double>(static_cast<std::int64_t>((seed + bias_seed + 1U) % 3U) - 1) / 8.0;
+    head.output_bias_fp.resize(output_dim, 0.0);
+    for (std::size_t i = 0; i < output_dim; ++i) {
+        head.output_bias_fp[i] = static_cast<double>(static_cast<std::int64_t>((i + bias_seed) % 5U) - 2) / 8.0;
+    }
+    return head;
+}
+
 std::string hidden_seq_kernel_name(std::size_t head_index) {
     if (head_index == 0) {
         return "conv1d/kernel";
@@ -450,6 +483,71 @@ ModelParameters build_model_parameters(
     return params;
 }
 
+ModelParameters build_family_model_parameters(
+    const std::vector<std::size_t>& d_in_profile,
+    const std::vector<HiddenLayerShape>& hidden_profile,
+    std::size_t k_out,
+    std::size_t num_classes,
+    std::uint64_t seed) {
+    if (hidden_profile.empty()) {
+        throw std::runtime_error("synthetic family model requires at least one hidden layer");
+    }
+    if (d_in_profile.size() != hidden_profile.size()) {
+        throw std::runtime_error("synthetic family model requires d_in_profile size to match hidden_profile size");
+    }
+    if (k_out == 0) {
+        throw std::runtime_error("synthetic family model requires K_out >= 1");
+    }
+
+    ModelParameters out;
+    out.has_real_multihead = true;
+    out.L = hidden_profile.size() + 1;
+    out.d_in_profile = d_in_profile;
+    out.hidden_profile = hidden_profile;
+    out.K_out = k_out;
+    out.C = num_classes;
+
+    std::size_t global_hidden_head_index = 0;
+    out.hidden_layers.reserve(hidden_profile.size());
+    for (std::size_t layer_index = 0; layer_index < hidden_profile.size(); ++layer_index) {
+        const auto& shape = hidden_profile[layer_index];
+        HiddenLayerParameters layer;
+        layer.layer_index = layer_index;
+        layer.input_dim = d_in_profile[layer_index];
+        layer.shape = shape;
+        layer.heads.reserve(shape.head_count);
+        for (std::size_t head_index = 0; head_index < shape.head_count; ++head_index) {
+            layer.heads.push_back(build_synthetic_head(
+                layer.input_dim,
+                shape.head_dim,
+                seed + layer_index,
+                global_hidden_head_index));
+            ++global_hidden_head_index;
+        }
+        out.hidden_layers.push_back(layer);
+    }
+
+    out.hidden_heads.reserve(global_hidden_head_index);
+    for (const auto& layer : out.hidden_layers) {
+        out.hidden_heads.insert(out.hidden_heads.end(), layer.heads.begin(), layer.heads.end());
+    }
+
+    out.output_layer.input_dim =
+        hidden_profile.back().head_count * hidden_profile.back().head_dim;
+    out.output_layer.output_dim = num_classes;
+    out.output_layer.head_count = k_out;
+    out.output_layer.heads.reserve(k_out);
+    for (std::size_t head_index = 0; head_index < k_out; ++head_index) {
+        out.output_layer.heads.push_back(build_synthetic_head(
+            out.output_layer.input_dim,
+            num_classes,
+            seed + 101U,
+            head_index));
+    }
+    out.output_head = out.output_layer.heads.front();
+    return out;
+}
+
 CheckpointBundleInfo inspect_checkpoint_bundle(const std::string& bundle_root) {
     const auto manifest_path = std::filesystem::path(bundle_root) / "manifest.json";
     const auto manifest = load_text_file(manifest_path);
@@ -486,20 +584,23 @@ bool checkpoint_bundle_matches_formal_proof_shape(
     std::string* reason) {
     std::vector<std::string> failures;
     const auto hidden_head_count = info.hidden_profile.empty() ? 0 : info.hidden_profile.front().head_count;
-    if (info.layer_count != 2) {
-        failures.push_back(
-            "L=" + std::to_string(info.layer_count)
-            + " but the current formal proof route only supports L=2");
+    if (info.layer_count < 2) {
+        failures.push_back("L=" + std::to_string(info.layer_count) + " but checkpoint manifest must expose L >= 2");
     }
     if (hidden_head_count == 0) {
         failures.push_back(
             "hidden_head_count=" + std::to_string(hidden_head_count)
             + " but the checkpoint manifest must expose a non-empty hidden_profile");
     }
-    if (info.output_head_count != 1) {
+    if (info.output_head_count == 0) {
         failures.push_back(
             "K_out=" + std::to_string(info.output_head_count)
-            + " but the current formal proof route only supports K_out=1");
+            + " but checkpoint manifest must expose at least one output attention head");
+    }
+    if (!info.d_in_profile.empty() && info.d_in_profile.size() != info.hidden_profile.size()) {
+        failures.push_back(
+            "d_in_profile size=" + std::to_string(info.d_in_profile.size())
+            + " conflicts with hidden_profile size=" + std::to_string(info.hidden_profile.size()));
     }
     if (failures.empty()) {
         return true;
@@ -634,9 +735,7 @@ MultiHeadForwardTrace forward_reference_style(
             }
             hidden_outputs.push_back(head_trace.H_agg);
             layer_trace.head_traces.push_back(head_trace);
-            if (layer.layer_index == 0) {
-                trace.hidden_head_traces.push_back(std::move(head_trace));
-            }
+            trace.hidden_head_traces.push_back(head_trace);
         }
         if (profile != nullptr) {
             const auto concat_start = std::chrono::steady_clock::now();
@@ -731,9 +830,9 @@ MultiHeadForwardTrace forward_note_style(
             profile->output_attention_ms += output_profile.attention_ms;
             profile->output_activation_ms += output_profile.activation_ms;
         }
-        output_pre_bias.push_back(head_trace.H_agg_pre_bias);
-        output_values.push_back(head_trace.H_agg);
-        trace.output_head_traces.push_back(head_trace);
+            output_pre_bias.push_back(head_trace.H_agg_pre_bias);
+            output_values.push_back(head_trace.H_agg);
+            trace.output_head_traces.push_back(head_trace);
     }
     trace.output_head_trace = trace.output_head_traces.front();
     trace.output_head_values = output_values;
@@ -743,10 +842,149 @@ MultiHeadForwardTrace forward_note_style(
 }
 
 bool supports_current_formal_proof_shape(const ModelParameters& parameters) {
-    return parameters.has_real_multihead
-        && parameters.hidden_layers.size() == 1
-        && parameters.output_layer.heads.size() == 1
-        && parameters.L == 2;
+    std::string reason;
+    return parameters.has_real_multihead && hidden_family_dimension_chain_is_valid(parameters, &reason);
+}
+
+bool hidden_family_dimension_chain_is_valid(const ModelParameters& parameters, std::string* reason) {
+    std::vector<std::string> failures;
+    if (!parameters.has_real_multihead) {
+        failures.push_back("formal family proof requires has_real_multihead=true");
+    }
+    if (parameters.L < 2) {
+        failures.push_back("L must be >= 2");
+    }
+    if (parameters.hidden_layers.empty()) {
+        failures.push_back("hidden_layers must be non-empty");
+    }
+    if (parameters.hidden_profile.size() != parameters.hidden_layers.size()) {
+        failures.push_back("hidden_profile size conflicts with hidden_layers size");
+    }
+    if (!parameters.d_in_profile.empty() && parameters.d_in_profile.size() != parameters.hidden_layers.size()) {
+        failures.push_back("d_in_profile size conflicts with hidden_layers size");
+    }
+    std::size_t expected_input_dim = 0;
+    for (std::size_t layer_index = 0; layer_index < parameters.hidden_layers.size(); ++layer_index) {
+        const auto& layer = parameters.hidden_layers[layer_index];
+        if (layer.layer_index != layer_index) {
+            failures.push_back("hidden_layers must use contiguous layer_index values");
+            break;
+        }
+        if (layer.shape.head_count == 0 || layer.shape.head_dim == 0) {
+            failures.push_back("hidden layer shape must have non-zero head_count and head_dim");
+        }
+        if (layer.heads.size() != layer.shape.head_count) {
+            failures.push_back(
+                "hidden layer " + std::to_string(layer_index)
+                + " head_count conflicts with heads.size()");
+        }
+        const auto configured_input =
+            !parameters.d_in_profile.empty() ? parameters.d_in_profile[layer_index] : layer.input_dim;
+        if (layer.input_dim != configured_input) {
+            failures.push_back(
+                "hidden layer " + std::to_string(layer_index)
+                + " input_dim conflicts with d_in_profile");
+        }
+        if (layer_index == 0) {
+            expected_input_dim = configured_input;
+        } else if (layer.input_dim != expected_input_dim) {
+            failures.push_back(
+                "hidden layer " + std::to_string(layer_index)
+                + " input_dim=" + std::to_string(layer.input_dim)
+                + " conflicts with previous concat width=" + std::to_string(expected_input_dim));
+        }
+        for (const auto& head : layer.heads) {
+            if (head.seq_kernel_fp.size() != layer.input_dim) {
+                failures.push_back(
+                    "hidden layer " + std::to_string(layer_index)
+                    + " seq kernel row count conflicts with layer input_dim");
+                break;
+            }
+            if (attention_head_output_width(head) != layer.shape.head_dim) {
+                failures.push_back(
+                    "hidden layer " + std::to_string(layer_index)
+                    + " head output width conflicts with head_dim");
+                break;
+            }
+        }
+        expected_input_dim = layer.shape.head_count * layer.shape.head_dim;
+    }
+    if (parameters.output_layer.head_count == 0 || parameters.output_layer.heads.empty()) {
+        failures.push_back("output_layer must expose at least one output attention head");
+    }
+    if (parameters.output_layer.heads.size() != parameters.output_layer.head_count) {
+        failures.push_back("output_layer head_count conflicts with heads.size()");
+    }
+    if (parameters.K_out != parameters.output_layer.head_count) {
+        failures.push_back("K_out conflicts with output_layer head_count");
+    }
+    if (!parameters.hidden_layers.empty() && parameters.output_layer.input_dim != expected_input_dim) {
+        failures.push_back(
+            "output_layer input_dim=" + std::to_string(parameters.output_layer.input_dim)
+            + " conflicts with final hidden concat width=" + std::to_string(expected_input_dim));
+    }
+    for (const auto& head : parameters.output_layer.heads) {
+        if (head.seq_kernel_fp.size() != parameters.output_layer.input_dim) {
+            failures.push_back("output head seq kernel row count conflicts with output_layer input_dim");
+            break;
+        }
+        if (attention_head_output_width(head) != parameters.output_layer.output_dim) {
+            failures.push_back("output head output width conflicts with output_layer output_dim");
+            break;
+        }
+    }
+    if (parameters.C != parameters.output_layer.output_dim) {
+        failures.push_back("C conflicts with output_layer output_dim");
+    }
+    if (parameters.L != parameters.hidden_layers.size() + 1) {
+        failures.push_back("L conflicts with hidden layer family size");
+    }
+    if (flattened_hidden_head_count(parameters) != parameters.hidden_heads.size()) {
+        failures.push_back("hidden_heads compatibility view must flatten all hidden layers");
+    }
+    if (reason != nullptr && !failures.empty()) {
+        std::ostringstream stream;
+        for (std::size_t i = 0; i < failures.size(); ++i) {
+            if (i != 0) {
+                stream << "; ";
+            }
+            stream << failures[i];
+        }
+        *reason = stream.str();
+    }
+    return failures.empty();
+}
+
+std::size_t flattened_hidden_head_count(const ModelParameters& parameters) {
+    std::size_t count = 0;
+    for (const auto& layer : parameters.hidden_layers) {
+        count += layer.heads.size();
+    }
+    return count;
+}
+
+std::size_t max_hidden_input_dim(const ModelParameters& parameters) {
+    std::size_t value = 0;
+    for (const auto& layer : parameters.hidden_layers) {
+        value = std::max(value, layer.input_dim);
+    }
+    return value;
+}
+
+std::size_t max_hidden_head_dim(const ModelParameters& parameters) {
+    std::size_t value = 0;
+    for (const auto& layer : parameters.hidden_layers) {
+        value = std::max(value, layer.shape.head_dim);
+    }
+    return value;
+}
+
+std::size_t max_hidden_concat_width(const ModelParameters& parameters) {
+    std::size_t value = 0;
+    for (const auto& layer : parameters.hidden_layers) {
+        value = std::max(value, layer.shape.head_count * layer.shape.head_dim);
+    }
+    return value;
 }
 
 Matrix project_features(const Matrix& left, const Matrix& right) {

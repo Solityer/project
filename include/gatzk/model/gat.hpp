@@ -129,6 +129,12 @@ ModelParameters build_model_parameters(
     std::size_t hidden_dim,
     std::size_t num_classes,
     std::uint64_t seed);
+ModelParameters build_family_model_parameters(
+    const std::vector<std::size_t>& d_in_profile,
+    const std::vector<HiddenLayerShape>& hidden_profile,
+    std::size_t k_out,
+    std::size_t num_classes,
+    std::uint64_t seed);
 CheckpointBundleInfo inspect_checkpoint_bundle(const std::string& bundle_root);
 bool checkpoint_bundle_matches_formal_proof_shape(const CheckpointBundleInfo& info, std::string* reason = nullptr);
 ModelParameters load_checkpoint_bundle_parameters(const std::string& bundle_root);
@@ -163,6 +169,11 @@ Matrix output_projection(
     const Matrix& w_out,
     const std::vector<algebra::FieldElement>& bias,
     Matrix* linear_part);
+bool hidden_family_dimension_chain_is_valid(const ModelParameters& parameters, std::string* reason = nullptr);
+std::size_t flattened_hidden_head_count(const ModelParameters& parameters);
+std::size_t max_hidden_input_dim(const ModelParameters& parameters);
+std::size_t max_hidden_head_dim(const ModelParameters& parameters);
+std::size_t max_hidden_concat_width(const ModelParameters& parameters);
 bool supports_current_formal_proof_shape(const ModelParameters& parameters);
 
 }  // namespace gatzk::model

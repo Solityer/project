@@ -300,30 +300,6 @@ model::Matrix quantize_model_matrix(const model::FloatMatrix& matrix) {
     return out;
 }
 
-std::string hidden_weight_label(std::size_t head_index) {
-    return "V_h" + std::to_string(head_index) + "_W";
-}
-
-std::string hidden_src_label(std::size_t head_index) {
-    return "V_h" + std::to_string(head_index) + "_a_src";
-}
-
-std::string hidden_dst_label(std::size_t head_index) {
-    return "V_h" + std::to_string(head_index) + "_a_dst";
-}
-
-std::string output_weight_label() {
-    return "V_out_W";
-}
-
-std::string output_src_label() {
-    return "V_out_a_src";
-}
-
-std::string output_dst_label() {
-    return "V_out_a_dst";
-}
-
 std::vector<std::string> vector_to_lines(const std::vector<FieldElement>& values) {
     std::vector<std::string> lines;
     lines.reserve(values.size());
@@ -402,16 +378,15 @@ std::string context_cache_key(const util::AppConfig& config) {
 }
 
 std::size_t hidden_head_width(const model::ModelParameters& parameters, const util::AppConfig& config) {
-    if (parameters.has_real_multihead && !parameters.hidden_layers.empty() && !parameters.hidden_layers.front().heads.empty()) {
-        return parameters.hidden_layers.front().shape.head_dim;
+    if (parameters.has_real_multihead) {
+        return model::max_hidden_head_dim(parameters);
     }
     return config.hidden_dim;
 }
 
 std::size_t concat_width(const model::ModelParameters& parameters, const util::AppConfig& config) {
-    if (parameters.has_real_multihead && !parameters.hidden_layers.empty()) {
-        const auto& shape = parameters.hidden_layers.front().shape;
-        return shape.head_count * shape.head_dim;
+    if (parameters.has_real_multihead) {
+        return model::max_hidden_concat_width(parameters);
     }
     return config.hidden_dim;
 }
@@ -436,11 +411,42 @@ std::vector<ExternalEvalSpec> multihead_external_specs(const ProtocolContext& co
         specs.push_back({"mu_" + suffix + "_agg_pre", prefix + "H_agg_pre_star", "y_agg_pre_h" + std::to_string(head_index)});
         specs.push_back({"mu_" + suffix + "_agg", prefix + "H_agg_star", "y_agg_h" + std::to_string(head_index)});
     }
-    specs.push_back({"mu_cat", "P_H_cat_star", "y_cat"});
-    specs.push_back({"mu_out_proj", "P_out_Y_prime", "y_proj_out"});
-    specs.push_back({"mu_out_src", "P_out_E_src", "y_src_out"});
-    specs.push_back({"mu_out_dst", "P_out_E_dst", "y_dst_out"});
-    specs.push_back({"mu_out_star", "P_out_Y_star", "y_out_star"});
+    for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index) {
+        const bool is_final_layer = layer_index + 1 == context.model.hidden_layers.size();
+        specs.push_back({
+            is_final_layer ? "mu_cat" : "mu_cat_l" + std::to_string(layer_index),
+            hidden_layer_concat_star_label(layer_index, is_final_layer),
+            hidden_concat_y_name(layer_index, is_final_layer),
+        });
+    }
+    const bool legacy_single_output = context.model.output_layer.heads.size() == 1;
+    for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index) {
+        const auto prefix = output_head_prefix(head_index, legacy_single_output);
+        specs.push_back({
+            legacy_single_output ? "mu_out_proj" : output_external_eval_name("proj", head_index, false),
+            prefix + "_Y_prime",
+            output_challenge_name("y_proj_out", head_index, legacy_single_output),
+        });
+        specs.push_back({
+            legacy_single_output ? "mu_out_src" : output_external_eval_name("src", head_index, false),
+            prefix + "_E_src",
+            output_challenge_name("y_src_out", head_index, legacy_single_output),
+        });
+        specs.push_back({
+            legacy_single_output ? "mu_out_dst" : output_external_eval_name("dst", head_index, false),
+            prefix + "_E_dst",
+            output_challenge_name("y_dst_out", head_index, legacy_single_output),
+        });
+        specs.push_back({
+            legacy_single_output ? "mu_out_star" : output_external_eval_name("star", head_index, false),
+            prefix + "_Y_star",
+            output_challenge_name("y_out_star", head_index, legacy_single_output),
+        });
+        if (!legacy_single_output) {
+            specs.push_back({output_external_eval_name("y_lin", head_index, false), output_y_lin_label(head_index, false), "y_out"});
+            specs.push_back({output_external_eval_name("y", head_index, false), output_y_label(head_index, false), "y_out"});
+        }
+    }
     specs.push_back({"mu_Y_lin", "P_Y_lin", "y_out"});
     specs.push_back({"mu_out", "P_Y", "y_out"});
     return specs;
@@ -1823,9 +1829,17 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
     context.local = data::normalize_graph_input(context.dataset, config);
     if (config.allow_synthetic_model) {
         append_note(metrics, "model_source=synthetic_debug_only");
-        context.model = model::build_model_parameters(
-            context.local.num_features,
-            config.hidden_dim,
+        context.model = model::build_family_model_parameters(
+            config.d_in_profile.empty() ? std::vector<std::size_t>{context.local.num_features} : config.d_in_profile,
+            [&]() {
+                std::vector<model::HiddenLayerShape> shapes;
+                shapes.reserve(config.hidden_profile.size());
+                for (const auto& layer : config.hidden_profile) {
+                    shapes.push_back({layer.head_count, layer.head_dim});
+                }
+                return shapes;
+            }(),
+            config.K_out,
             context.local.num_classes,
             config.seed);
     } else {
@@ -1836,9 +1850,13 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
         const auto checkpoint_root = resolve_project_path(config.project_root, config.checkpoint_bundle);
         context.model = model::load_checkpoint_bundle_parameters(checkpoint_root.string());
         append_note(metrics, "model_source=checkpoint_bundle");
-        append_note(metrics, "hidden_head_count=" + std::to_string(context.model.hidden_profile.front().head_count));
+        append_note(metrics, "hidden_head_count=" + std::to_string(model::flattened_hidden_head_count(context.model)));
     }
     if (context.model.has_real_multihead) {
+        std::string family_reason;
+        if (!model::hidden_family_dimension_chain_is_valid(context.model, &family_reason)) {
+            throw std::runtime_error("formal family shape is invalid: " + family_reason);
+        }
         bool hidden_profile_matches = context.model.hidden_profile.size() == config.hidden_profile.size();
         for (std::size_t i = 0; hidden_profile_matches && i < config.hidden_profile.size(); ++i) {
             hidden_profile_matches =
@@ -1885,6 +1903,9 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
     const std::size_t range_size = (1ULL << config.range_bits);
     const std::size_t d_h = hidden_head_width(context.model, config);
     const std::size_t d_cat = concat_width(context.model, config);
+    const std::size_t max_in = context.model.has_real_multihead
+        ? std::max<std::size_t>(context.local.num_features, model::max_hidden_input_dim(context.model))
+        : context.local.num_features;
     const std::size_t lrelu_bound = std::max<std::size_t>(4096, range_size);
     const std::size_t elu_bound = lrelu_bound;
     const std::size_t lrelu_table_size = lrelu_bound * 2 + 1;
@@ -1900,7 +1921,7 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
             exp_table_size,
             range_size,
         }) + 2);
-    const std::size_t in_size = algebra::next_power_of_two(context.local.num_features + 2);
+    const std::size_t in_size = algebra::next_power_of_two(max_in + 2);
     const std::size_t d_size = algebra::next_power_of_two(d_h + 2);
     const std::size_t cat_size = algebra::next_power_of_two(d_cat + 2);
     const std::size_t c_size = algebra::next_power_of_two(context.local.num_classes + 2);
@@ -1924,10 +1945,7 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
                 .in = context.domains.in,
                 .d = context.domains.d,
             });
-        context.domains.output_head = AttentionHeadDomains{
-            .in = context.domains.cat,
-            .d = context.domains.c,
-        };
+        context.domains.output_head = AttentionHeadDomains{.in = context.domains.cat, .d = context.domains.c};
     }
     end = Clock::now();
     if (metrics != nullptr) {
@@ -1973,7 +1991,7 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
     add_public_poly(
         context,
         "P_Q_proj_valid",
-        make_eval_poly("P_Q_proj_valid", build_selector(context.local.num_features, in_size), context.domains.in));
+        make_eval_poly("P_Q_proj_valid", build_selector(max_in, in_size), context.domains.in));
     add_public_poly(
         context,
         "P_Q_d_valid",
@@ -2140,20 +2158,28 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
                 hidden_dst_label(head_index),
                 make_coeff_poly(hidden_dst_label(head_index), quantize_model_vector(context.model.hidden_heads[head_index].attn_dst_kernel_fp)));
         }
-        add_static_commitment(
-            context,
-            output_weight_label(),
-            make_coeff_poly(
-                output_weight_label(),
-                algebra::flatten_matrix_coefficients(quantize_model_matrix(context.model.output_head.seq_kernel_fp))));
-        add_static_commitment(
-            context,
-            output_src_label(),
-            make_coeff_poly(output_src_label(), quantize_model_vector(context.model.output_head.attn_src_kernel_fp)));
-        add_static_commitment(
-            context,
-            output_dst_label(),
-            make_coeff_poly(output_dst_label(), quantize_model_vector(context.model.output_head.attn_dst_kernel_fp)));
+        const bool legacy_single_output = context.model.output_layer.heads.size() == 1;
+        for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index) {
+            const auto& head = context.model.output_layer.heads[head_index];
+            add_static_commitment(
+                context,
+                output_weight_label(head_index, legacy_single_output),
+                make_coeff_poly(
+                    output_weight_label(head_index, legacy_single_output),
+                    algebra::flatten_matrix_coefficients(quantize_model_matrix(head.seq_kernel_fp))));
+            add_static_commitment(
+                context,
+                output_src_label(head_index, legacy_single_output),
+                make_coeff_poly(
+                    output_src_label(head_index, legacy_single_output),
+                    quantize_model_vector(head.attn_src_kernel_fp)));
+            add_static_commitment(
+                context,
+                output_dst_label(head_index, legacy_single_output),
+                make_coeff_poly(
+                    output_dst_label(head_index, legacy_single_output),
+                    quantize_model_vector(head.attn_dst_kernel_fp)));
+        }
     } else {
         add_static_commitment(
             context,

@@ -4,6 +4,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -106,14 +107,62 @@ struct ProofFixture {
     Proof proof;
 };
 
+ProofFixture build_proof_fixture_with_stage(const gatzk::util::AppConfig& config) {
+    try {
+        auto context = gatzk::protocol::build_context(config);
+        try {
+            auto trace = gatzk::protocol::build_trace(context);
+            try {
+                auto proof = gatzk::protocol::prove(context, trace);
+                return ProofFixture{std::move(context), std::move(trace), std::move(proof)};
+            } catch (const std::exception& error) {
+                throw std::runtime_error(std::string("prove: ") + error.what());
+            }
+        } catch (const std::exception& error) {
+            throw std::runtime_error(std::string("build_trace: ") + error.what());
+        }
+    } catch (const std::exception& error) {
+        throw std::runtime_error(std::string("build_context: ") + error.what());
+    }
+}
+
 const ProofFixture& full_cora_proof_fixture() {
     static const auto fixture = []() {
         auto config = full_graph_formal_config();
         config.export_dir = "runs/test_full_cora";
-        const auto context = gatzk::protocol::build_context(config);
-        const auto trace = gatzk::protocol::build_trace(context);
-        const auto proof = gatzk::protocol::prove(context, trace);
-        return ProofFixture{context, trace, proof};
+        return build_proof_fixture_with_stage(config);
+    }();
+    return fixture;
+}
+
+gatzk::util::AppConfig synthetic_family_formal_config(std::size_t k_out) {
+    auto config = small_debug_config();
+    config.export_dir = "runs/test_synth_family_k" + std::to_string(k_out);
+    config.layer_count = 3;
+    config.hidden_profile = {{2, 1}, {1, 1}};
+    config.d_in_profile = {1433, 2};
+    config.K_out = k_out;
+    config.hidden_dim = 1;
+    config.num_classes = 7;
+    config.local_nodes = 16;
+    config.center_node = 0;
+    config.allow_synthetic_model = true;
+    config.prove_enabled = true;
+    return config;
+}
+
+const ProofFixture& synthetic_multilayer_proof_fixture() {
+    static const auto fixture = []() {
+        const auto config = synthetic_family_formal_config(1);
+        return build_proof_fixture_with_stage(config);
+    }();
+    return fixture;
+}
+
+const ProofFixture& synthetic_multioutput_proof_fixture() {
+    static const auto fixture = []() {
+        const auto config = synthetic_family_formal_config(2);
+        return build_proof_fixture_with_stage(config);
     }();
     return fixture;
 }
@@ -153,7 +202,9 @@ ModelParameters make_family_model(std::size_t k_out) {
             .heads = {make_head(4, 3, 0.0)},
         },
     };
-    model.hidden_heads = model.hidden_layers.front().heads;
+    for (const auto& layer : model.hidden_layers) {
+        model.hidden_heads.insert(model.hidden_heads.end(), layer.heads.begin(), layer.heads.end());
+    }
 
     model.output_layer = {
         .input_dim = 3,
@@ -183,6 +234,25 @@ FieldElement bias_fold_from_output_head(
         }
     }
     return out;
+}
+
+FieldElement external_eval(const Proof& proof, const std::string& name) {
+    for (const auto& [entry_name, value] : proof.external_evaluations) {
+        if (entry_name == name) {
+            return value;
+        }
+    }
+    throw std::runtime_error("missing external evaluation: " + name);
+}
+
+void overwrite_external_eval(Proof* proof, const std::string& name, const FieldElement& value) {
+    for (auto& [entry_name, entry_value] : proof->external_evaluations) {
+        if (entry_name == name) {
+            entry_value = value;
+            return;
+        }
+    }
+    throw std::runtime_error("missing external evaluation for overwrite: " + name);
 }
 
 void test_full_graph_config_parse() {
@@ -413,6 +483,78 @@ void test_formal_output_bias_relation_is_enforced() {
     require(mu_out == mu_y_lin + expected_bias, "final logits must equal pre-bias output plus output-head bias");
 }
 
+void test_formal_multilayer_family_round_trip() {
+    const auto& fixture = synthetic_multilayer_proof_fixture();
+    require(fixture.context.model.hidden_layers.size() == 2, "expected two hidden layers in formal family fixture");
+    require(fixture.context.model.L == 3, "expected L=3 in formal family fixture");
+    if (!gatzk::protocol::verify(fixture.context, fixture.proof)) {
+        const auto y_out = fixture.proof.challenges.at("y_out");
+        const auto expected = external_eval(fixture.proof, "mu_Y_lin")
+            + bias_fold_from_output_head(
+                fixture.context.model.output_layer.heads.front().output_bias_fp,
+                fixture.context.local.num_nodes,
+                y_out);
+        throw std::runtime_error(
+            "multilayer family formal round-trip must verify; mu_out="
+            + external_eval(fixture.proof, "mu_out").to_string()
+            + " mu_Y_lin=" + external_eval(fixture.proof, "mu_Y_lin").to_string()
+            + " expected=" + expected.to_string());
+    }
+}
+
+void test_formal_k_out_average_is_verified() {
+    const auto& fixture = synthetic_multioutput_proof_fixture();
+    require(fixture.context.model.K_out == 2, "expected K_out=2 in formal average fixture");
+    if (!gatzk::protocol::verify(fixture.context, fixture.proof)) {
+        const auto y_out = fixture.proof.challenges.at("y_out");
+        const auto expected0 = external_eval(fixture.proof, "mu_out0_y_lin")
+            + bias_fold_from_output_head(
+                fixture.context.model.output_layer.heads[0].output_bias_fp,
+                fixture.context.local.num_nodes,
+                y_out);
+        const auto expected1 = external_eval(fixture.proof, "mu_out1_y_lin")
+            + bias_fold_from_output_head(
+                fixture.context.model.output_layer.heads[1].output_bias_fp,
+                fixture.context.local.num_nodes,
+                y_out);
+        throw std::runtime_error(
+            "multi-output formal round-trip must verify; mu_out0_y="
+            + external_eval(fixture.proof, "mu_out0_y").to_string()
+            + " expected0=" + expected0.to_string()
+            + " mu_out1_y=" + external_eval(fixture.proof, "mu_out1_y").to_string()
+            + " expected1=" + expected1.to_string());
+    }
+
+    const auto mu_y_lin_0 = external_eval(fixture.proof, "mu_out0_y_lin");
+    const auto mu_y_lin_1 = external_eval(fixture.proof, "mu_out1_y_lin");
+    const auto mu_y_0 = external_eval(fixture.proof, "mu_out0_y");
+    const auto mu_y_1 = external_eval(fixture.proof, "mu_out1_y");
+    require(FieldElement(2) * external_eval(fixture.proof, "mu_Y_lin") == mu_y_lin_0 + mu_y_lin_1, "formal proof must carry averaged pre-bias output");
+    require(FieldElement(2) * external_eval(fixture.proof, "mu_out") == mu_y_0 + mu_y_1, "formal proof must carry averaged final output");
+}
+
+void test_formal_rejects_wrong_output_average() {
+    const auto& fixture = synthetic_multioutput_proof_fixture();
+    auto proof = fixture.proof;
+    overwrite_external_eval(&proof, "mu_out", external_eval(proof, "mu_out") + FieldElement::one());
+    require(!gatzk::protocol::verify(fixture.context, proof), "verifier must reject a witness with wrong final averaged logits");
+}
+
+void test_formal_hidden_family_dimension_chain_is_enforced() {
+    auto context = synthetic_multilayer_proof_fixture().context;
+    context.model.hidden_layers[1].input_dim += 1;
+    const auto error = require_throws([&]() {
+        (void)gatzk::protocol::build_trace(context);
+    });
+    require(error.find("previous concat width") != std::string::npos, "dimension chain mismatch must fail fast at formal trace build");
+}
+
+void test_checkpoint_backed_formal_validation() {
+    const auto& fixture = full_cora_proof_fixture();
+    require(!fixture.context.config.checkpoint_bundle.empty(), "checkpoint-backed validation requires a real checkpoint bundle");
+    require(gatzk::protocol::verify(fixture.context, fixture.proof), "checkpoint-backed cora formal prove/verify must pass");
+}
+
 void test_config_conflict_fails_fast() {
     auto config = full_graph_formal_config();
     config.K_out = 2;
@@ -422,20 +564,33 @@ void test_config_conflict_fails_fast() {
     require(error.find("K_out") != std::string::npos, "config/model K_out conflict must fail fast");
 }
 
-void test_unsupported_formal_family_shape_fails_fast() {
-    auto context = full_graph_formal_context();
-    context.model.K_out = 2;
-    context.model.output_layer.head_count = 2;
-    context.model.output_layer.heads.push_back(context.model.output_layer.heads.front());
+void test_fail_fast_boundary_matches_actual_supported_family() {
+    const auto& supported_fixture = synthetic_multioutput_proof_fixture();
+    require(gatzk::protocol::verify(supported_fixture.context, supported_fixture.proof), "supported family boundary should not be over-rejected");
+
+    auto context = supported_fixture.context;
+    context.model.output_layer.input_dim += 1;
     const auto error = require_throws([&]() {
         (void)gatzk::protocol::build_trace(context);
     });
-    require(error.find("K_out=1") != std::string::npos || error.find("supports only") != std::string::npos, "unsupported formal family must fail fast");
+    require(error.find("output_layer input_dim") != std::string::npos, "fail-fast boundary must target the actual unsupported family inconsistency");
+}
+
+void test_no_regression_existing_paths() {
+    const auto& full_fixture = full_cora_proof_fixture();
+    require(gatzk::protocol::verify(full_fixture.context, full_fixture.proof), "existing cora checkpoint path must remain valid");
+
+    const auto config = ppi_batch_config();
+    const auto dataset = gatzk::data::load_dataset(config);
+    const auto local = gatzk::data::normalize_graph_input(dataset, config);
+    require(local.graph_count == 2, "PPI batch normalization path must remain intact");
+    require(local.node_ptr.size() == 3, "PPI batch node_ptr regression");
+    require(local.edge_ptr.size() == 3, "PPI batch edge_ptr regression");
 }
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     const std::vector<std::pair<std::string, std::function<void()>>> tests = {
         {"full_graph_config_parse", test_full_graph_config_parse},
         {"whole_graph_normalization_has_explicit_ptrs_and_sort", test_whole_graph_normalization_has_explicit_ptrs_and_sort},
@@ -446,15 +601,32 @@ int main() {
         {"metadata_contains_required_profile_fields", test_metadata_contains_required_profile_fields},
         {"formal_proof_round_trip_and_manifest_export", test_formal_proof_round_trip_and_manifest_export},
         {"formal_output_bias_relation_is_enforced", test_formal_output_bias_relation_is_enforced},
+        {"formal_multilayer_family_round_trip", test_formal_multilayer_family_round_trip},
+        {"formal_k_out_average_is_verified", test_formal_k_out_average_is_verified},
+        {"formal_rejects_wrong_output_average", test_formal_rejects_wrong_output_average},
+        {"formal_hidden_family_dimension_chain_is_enforced", test_formal_hidden_family_dimension_chain_is_enforced},
+        {"checkpoint_backed_formal_validation", test_checkpoint_backed_formal_validation},
         {"config_conflict_fails_fast", test_config_conflict_fails_fast},
-        {"unsupported_formal_family_shape_fails_fast", test_unsupported_formal_family_shape_fails_fast},
+        {"fail_fast_boundary_matches_actual_supported_family", test_fail_fast_boundary_matches_actual_supported_family},
+        {"no_regression_existing_paths", test_no_regression_existing_paths},
     };
 
-    try {
+    const auto run_all = [&]() {
+        const std::string filter = argc > 1 ? argv[1] : "";
         for (const auto& [name, test] : tests) {
+            if (!filter.empty() && name.find(filter) == std::string::npos) {
+                continue;
+            }
             test();
             std::cout << "[PASS] " << name << '\n';
         }
+    };
+    if (const char* no_catch = std::getenv("GATZK_TEST_NO_CATCH"); no_catch != nullptr && std::string(no_catch) == "1") {
+        run_all();
+        return 0;
+    }
+    try {
+        run_all();
     } catch (const std::exception& error) {
         std::cerr << "[FAIL] " << error.what() << '\n';
         return 1;

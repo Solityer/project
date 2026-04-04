@@ -8,6 +8,7 @@
 #include <unordered_map>
 
 #include "gatzk/crypto/transcript.hpp"
+#include "gatzk/protocol/schema.hpp"
 
 namespace gatzk::protocol {
 namespace {
@@ -93,45 +94,16 @@ void absorb_static_if_present(crypto::Transcript& transcript, const ProtocolCont
     }
 }
 
-std::string head_prefix(std::size_t head_index) {
-    return "P_h" + std::to_string(head_index);
-}
-
-std::string hidden_weight_label(std::size_t head_index) {
-    return "V_h" + std::to_string(head_index) + "_W";
-}
-
-std::string hidden_src_label(std::size_t head_index) {
-    return "V_h" + std::to_string(head_index) + "_a_src";
-}
-
-std::string hidden_dst_label(std::size_t head_index) {
-    return "V_h" + std::to_string(head_index) + "_a_dst";
-}
-
-std::string output_weight_label() {
-    return "V_out_W";
-}
-
-std::string output_src_label() {
-    return "V_out_a_src";
-}
-
-std::string output_dst_label() {
-    return "V_out_a_dst";
-}
-
 std::size_t hidden_head_width(const model::ModelParameters& parameters, const util::AppConfig& config) {
-    if (parameters.has_real_multihead && !parameters.hidden_layers.empty()) {
-        return parameters.hidden_layers.front().shape.head_dim;
+    if (parameters.has_real_multihead) {
+        return model::max_hidden_head_dim(parameters);
     }
     return config.hidden_dim;
 }
 
 std::size_t concat_width(const model::ModelParameters& parameters, const util::AppConfig& config) {
-    if (parameters.has_real_multihead && !parameters.hidden_layers.empty()) {
-        const auto& shape = parameters.hidden_layers.front().shape;
-        return shape.head_count * shape.head_dim;
+    if (parameters.has_real_multihead) {
+        return model::max_hidden_concat_width(parameters);
     }
     return config.hidden_dim;
 }
@@ -249,6 +221,93 @@ void append_attention_head_dynamic_labels(std::vector<std::string>& labels, cons
     push("m_dst");
     push("R_dst_node");
     push("R_dst");
+}
+
+void append_concat_labels(
+    std::vector<std::string>& labels,
+    const std::string& concat_label,
+    const std::string& concat_star_label,
+    const std::string& cat_prefix) {
+    labels.push_back(concat_label);
+    labels.push_back(concat_star_label);
+    labels.push_back(cat_prefix + "_a");
+    labels.push_back(cat_prefix + "_b");
+    labels.push_back(cat_prefix + "_Acc");
+}
+
+void append_output_head_dynamic_labels(
+    std::vector<std::string>& labels,
+    const std::string& prefix,
+    const std::string& y_lin_label,
+    const std::string& y_label) {
+    labels.push_back(prefix + "_Y_prime");
+    labels.push_back(prefix + "_a_proj");
+    labels.push_back(prefix + "_b_proj");
+    labels.push_back(prefix + "_Acc_proj");
+    labels.push_back(prefix + "_E_src");
+    labels.push_back(prefix + "_E_dst");
+    labels.push_back(prefix + "_a_src");
+    labels.push_back(prefix + "_b_src");
+    labels.push_back(prefix + "_Acc_src");
+    labels.push_back(prefix + "_a_dst");
+    labels.push_back(prefix + "_b_dst");
+    labels.push_back(prefix + "_Acc_dst");
+    labels.push_back(prefix + "_E_src_edge");
+    labels.push_back(prefix + "_E_dst_edge");
+    labels.push_back(prefix + "_Y_prime_star");
+    labels.push_back(prefix + "_Y_prime_star_edge");
+    labels.push_back(prefix + "_Table_src");
+    labels.push_back(prefix + "_Query_src");
+    labels.push_back(prefix + "_m_src");
+    labels.push_back(prefix + "_R_src_node");
+    labels.push_back(prefix + "_R_src");
+    labels.push_back(prefix + "_S");
+    labels.push_back(prefix + "_Z");
+    labels.push_back(prefix + "_Table_L");
+    labels.push_back(prefix + "_Query_L");
+    labels.push_back(prefix + "_m_L");
+    labels.push_back(prefix + "_R_L");
+    labels.push_back(prefix + "_M");
+    labels.push_back(prefix + "_M_edge");
+    labels.push_back(prefix + "_s_max");
+    labels.push_back(prefix + "_C_max");
+    labels.push_back(prefix + "_Table_R");
+    labels.push_back(prefix + "_Query_R");
+    labels.push_back(prefix + "_m_R");
+    labels.push_back(prefix + "_R_R");
+    labels.push_back(prefix + "_Delta");
+    labels.push_back(prefix + "_U");
+    labels.push_back(prefix + "_Sum");
+    labels.push_back(prefix + "_Sum_edge");
+    labels.push_back(prefix + "_inv");
+    labels.push_back(prefix + "_inv_edge");
+    labels.push_back(prefix + "_alpha");
+    labels.push_back(prefix + "_Table_exp");
+    labels.push_back(prefix + "_Query_exp");
+    labels.push_back(prefix + "_m_exp");
+    labels.push_back(prefix + "_R_exp");
+    labels.push_back(prefix + "_widehat_y_star");
+    labels.push_back(prefix + "_w");
+    labels.push_back(prefix + "_T");
+    labels.push_back(prefix + "_T_edge");
+    labels.push_back(prefix + "_Table_t");
+    labels.push_back(prefix + "_Query_t");
+    labels.push_back(prefix + "_m_t");
+    labels.push_back(prefix + "_R_t_node");
+    labels.push_back(prefix + "_R_t");
+    labels.push_back(prefix + "_PSQ");
+    labels.push_back(y_lin_label);
+    labels.push_back(y_label);
+    labels.push_back(prefix + "_Y_star");
+    labels.push_back(prefix + "_Y_star_edge");
+    labels.push_back(prefix + "_a_y");
+    labels.push_back(prefix + "_b_y");
+    labels.push_back(prefix + "_Acc_y");
+    labels.push_back(prefix + "_Table_dst");
+    labels.push_back(prefix + "_Query_dst");
+    labels.push_back(prefix + "_m_dst");
+    labels.push_back(prefix + "_R_dst_node");
+    labels.push_back(prefix + "_R_dst");
 }
 
 }  // namespace
@@ -424,81 +483,28 @@ std::vector<std::string> dynamic_commitment_labels(const ProtocolContext& contex
         "P_R_feat",
     };
     for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index) {
-        append_attention_head_dynamic_labels(labels, head_prefix(head_index));
+        append_attention_head_dynamic_labels(labels, hidden_head_prefix(head_index));
     }
-    labels.push_back("P_H_cat");
-    labels.push_back("P_H_cat_star");
-    labels.push_back("P_cat_a");
-    labels.push_back("P_cat_b");
-    labels.push_back("P_cat_Acc");
-    labels.push_back("P_out_Y_prime");
-    labels.push_back("P_out_a_proj");
-    labels.push_back("P_out_b_proj");
-    labels.push_back("P_out_Acc_proj");
-    labels.push_back("P_out_E_src");
-    labels.push_back("P_out_E_dst");
-    labels.push_back("P_out_a_src");
-    labels.push_back("P_out_b_src");
-    labels.push_back("P_out_Acc_src");
-    labels.push_back("P_out_a_dst");
-    labels.push_back("P_out_b_dst");
-    labels.push_back("P_out_Acc_dst");
-    labels.push_back("P_out_E_src_edge");
-    labels.push_back("P_out_E_dst_edge");
-    labels.push_back("P_out_Y_prime_star");
-    labels.push_back("P_out_Y_prime_star_edge");
-    labels.push_back("P_out_Table_src");
-    labels.push_back("P_out_Query_src");
-    labels.push_back("P_out_m_src");
-    labels.push_back("P_out_R_src_node");
-    labels.push_back("P_out_R_src");
-    labels.push_back("P_out_S");
-    labels.push_back("P_out_Z");
-    labels.push_back("P_out_Table_L");
-    labels.push_back("P_out_Query_L");
-    labels.push_back("P_out_m_L");
-    labels.push_back("P_out_R_L");
-    labels.push_back("P_out_M");
-    labels.push_back("P_out_M_edge");
-    labels.push_back("P_out_s_max");
-    labels.push_back("P_out_C_max");
-    labels.push_back("P_out_Table_R");
-    labels.push_back("P_out_Query_R");
-    labels.push_back("P_out_m_R");
-    labels.push_back("P_out_R_R");
-    labels.push_back("P_out_Delta");
-    labels.push_back("P_out_U");
-    labels.push_back("P_out_Sum");
-    labels.push_back("P_out_Sum_edge");
-    labels.push_back("P_out_inv");
-    labels.push_back("P_out_inv_edge");
-    labels.push_back("P_out_alpha");
-    labels.push_back("P_out_Table_exp");
-    labels.push_back("P_out_Query_exp");
-    labels.push_back("P_out_m_exp");
-    labels.push_back("P_out_R_exp");
-    labels.push_back("P_out_widehat_y_star");
-    labels.push_back("P_out_w");
-    labels.push_back("P_out_T");
-    labels.push_back("P_out_T_edge");
-    labels.push_back("P_out_Table_t");
-    labels.push_back("P_out_Query_t");
-    labels.push_back("P_out_m_t");
-    labels.push_back("P_out_R_t_node");
-    labels.push_back("P_out_R_t");
-    labels.push_back("P_out_PSQ");
-    labels.push_back("P_Y_lin");
-    labels.push_back("P_Y");
-    labels.push_back("P_out_Y_star");
-    labels.push_back("P_out_Y_star_edge");
-    labels.push_back("P_out_a_y");
-    labels.push_back("P_out_b_y");
-    labels.push_back("P_out_Acc_y");
-    labels.push_back("P_out_Table_dst");
-    labels.push_back("P_out_Query_dst");
-    labels.push_back("P_out_m_dst");
-    labels.push_back("P_out_R_dst_node");
-    labels.push_back("P_out_R_dst");
+    for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index) {
+        const bool is_final_layer = layer_index + 1 == context.model.hidden_layers.size();
+        append_concat_labels(
+            labels,
+            hidden_layer_concat_label(layer_index, is_final_layer),
+            hidden_layer_concat_star_label(layer_index, is_final_layer),
+            hidden_layer_cat_prefix(layer_index, is_final_layer));
+    }
+    const bool legacy_single_output = context.model.output_layer.heads.size() == 1;
+    for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index) {
+        append_output_head_dynamic_labels(
+            labels,
+            output_head_prefix(head_index, legacy_single_output),
+            output_y_lin_label(head_index, legacy_single_output),
+            output_y_label(head_index, legacy_single_output));
+    }
+    if (!legacy_single_output) {
+        labels.push_back("P_Y_lin");
+        labels.push_back("P_Y");
+    }
     return labels;
 }
 
@@ -532,8 +538,8 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
         crypto::Transcript transcript("gatzkml");
         std::map<std::string, algebra::FieldElement> out;
 
-        const std::size_t d_h = model::attention_head_output_width(context.model.hidden_heads.front());
-        const std::size_t d_cat = d_h * context.model.hidden_heads.size();
+        const std::size_t d_h = model::max_hidden_head_dim(context.model);
+        const std::size_t d_cat = model::max_hidden_concat_width(context.model);
 
         absorb_public_metadata(transcript, canonical_public_metadata(context));
         transcript.absorb_scalar("N", algebra::FieldElement(context.local.num_nodes));
@@ -559,128 +565,176 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
         out["eta_feat"] = transcript.challenge("eta_feat");
         out["beta_feat"] = transcript.challenge("beta_feat");
 
-        for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index) {
-            const auto prefix = head_prefix(head_index);
-            absorb(transcript, "P_H", dynamic_commitments);
-            absorb(transcript, prefix + "_H_prime", dynamic_commitments);
-            absorb_static(transcript, context, hidden_weight_label(head_index));
-            out["y_proj_h" + std::to_string(head_index)] = transcript.challenge("y_proj_h" + std::to_string(head_index));
-            out["xi_h" + std::to_string(head_index)] = transcript.challenge("xi_h" + std::to_string(head_index));
+        std::size_t global_head_index = 0;
+        for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index) {
+            const bool is_first_layer = layer_index == 0;
+            const auto input_label =
+                is_first_layer
+                ? std::string("P_H")
+                : hidden_layer_concat_label(layer_index - 1, false);
+            for (std::size_t head_index = 0; head_index < context.model.hidden_layers[layer_index].heads.size(); ++head_index, ++global_head_index) {
+                const auto prefix = hidden_head_prefix(global_head_index);
+                absorb(transcript, input_label, dynamic_commitments);
+                absorb(transcript, prefix + "_H_prime", dynamic_commitments);
+                absorb_static(transcript, context, hidden_weight_label(global_head_index));
+                out["y_proj_h" + std::to_string(global_head_index)] = transcript.challenge("y_proj_h" + std::to_string(global_head_index));
+                out["xi_h" + std::to_string(global_head_index)] = transcript.challenge("xi_h" + std::to_string(global_head_index));
 
-            absorb(transcript, prefix + "_H_prime", dynamic_commitments);
+                absorb(transcript, prefix + "_H_prime", dynamic_commitments);
+                absorb(transcript, prefix + "_E_src", dynamic_commitments);
+                absorb_static(transcript, context, hidden_src_label(global_head_index));
+                out["y_src_h" + std::to_string(global_head_index)] = transcript.challenge("y_src_h" + std::to_string(global_head_index));
+
+                absorb(transcript, prefix + "_H_prime", dynamic_commitments);
+                absorb(transcript, prefix + "_E_dst", dynamic_commitments);
+                absorb_static(transcript, context, hidden_dst_label(global_head_index));
+                out["y_dst_h" + std::to_string(global_head_index)] = transcript.challenge("y_dst_h" + std::to_string(global_head_index));
+
+                absorb(transcript, prefix + "_H_star", dynamic_commitments);
+                out["y_star_h" + std::to_string(global_head_index)] = transcript.challenge("y_star_h" + std::to_string(global_head_index));
+
+                absorb(transcript, prefix + "_E_src", dynamic_commitments);
+                absorb(transcript, prefix + "_H_star", dynamic_commitments);
+                out["eta_src_h" + std::to_string(global_head_index)] = transcript.challenge("eta_src_h" + std::to_string(global_head_index));
+                out["beta_src_h" + std::to_string(global_head_index)] = transcript.challenge("beta_src_h" + std::to_string(global_head_index));
+
+                absorb(transcript, prefix + "_S", dynamic_commitments);
+                absorb(transcript, prefix + "_Z", dynamic_commitments);
+                absorb_static(transcript, context, "V_T_L_x");
+                absorb_static(transcript, context, "V_T_L_y");
+                out["eta_L_h" + std::to_string(global_head_index)] = transcript.challenge("eta_L_h" + std::to_string(global_head_index));
+                out["beta_L_h" + std::to_string(global_head_index)] = transcript.challenge("beta_L_h" + std::to_string(global_head_index));
+
+                absorb(transcript, prefix + "_M", dynamic_commitments);
+                absorb(transcript, prefix + "_M_edge", dynamic_commitments);
+                absorb(transcript, prefix + "_Delta", dynamic_commitments);
+                absorb_static(transcript, context, "V_T_range");
+                out["beta_R_h" + std::to_string(global_head_index)] = transcript.challenge("beta_R_h" + std::to_string(global_head_index));
+
+                absorb(transcript, prefix + "_Delta", dynamic_commitments);
+                absorb(transcript, prefix + "_U", dynamic_commitments);
+                absorb_static(transcript, context, "V_T_exp_x");
+                absorb_static(transcript, context, "V_T_exp_y");
+                out["eta_exp_h" + std::to_string(global_head_index)] = transcript.challenge("eta_exp_h" + std::to_string(global_head_index));
+                out["beta_exp_h" + std::to_string(global_head_index)] = transcript.challenge("beta_exp_h" + std::to_string(global_head_index));
+
+                out["lambda_psq_h" + std::to_string(global_head_index)] = transcript.challenge("lambda_psq_h" + std::to_string(global_head_index));
+                absorb(transcript, prefix + "_T_psq", dynamic_commitments);
+                absorb(transcript, prefix + "_T_psq_edge", dynamic_commitments);
+                out["eta_t_h" + std::to_string(global_head_index)] = transcript.challenge("eta_t_h" + std::to_string(global_head_index));
+                out["beta_t_h" + std::to_string(global_head_index)] = transcript.challenge("beta_t_h" + std::to_string(global_head_index));
+
+                absorb(transcript, prefix + "_H_agg_pre", dynamic_commitments);
+                absorb(transcript, prefix + "_H_agg_pre_star", dynamic_commitments);
+                out["y_agg_pre_h" + std::to_string(global_head_index)] = transcript.challenge("y_agg_pre_h" + std::to_string(global_head_index));
+                absorb(transcript, prefix + "_H_agg_pre", dynamic_commitments);
+                absorb(transcript, prefix + "_H_agg", dynamic_commitments);
+                absorb_static(transcript, context, "V_T_ELU_x");
+                absorb_static(transcript, context, "V_T_ELU_y");
+                out["eta_ELU_h" + std::to_string(global_head_index)] = transcript.challenge("eta_ELU_h" + std::to_string(global_head_index));
+                out["beta_ELU_h" + std::to_string(global_head_index)] = transcript.challenge("beta_ELU_h" + std::to_string(global_head_index));
+
+                absorb(transcript, prefix + "_H_agg", dynamic_commitments);
+                absorb(transcript, prefix + "_H_agg_star", dynamic_commitments);
+                out["y_agg_h" + std::to_string(global_head_index)] = transcript.challenge("y_agg_h" + std::to_string(global_head_index));
+
+                out["eta_dst_h" + std::to_string(global_head_index)] = transcript.challenge("eta_dst_h" + std::to_string(global_head_index));
+                out["beta_dst_h" + std::to_string(global_head_index)] = transcript.challenge("beta_dst_h" + std::to_string(global_head_index));
+            }
+
+            const bool is_final_layer = layer_index + 1 == context.model.hidden_layers.size();
+            absorb(transcript, hidden_layer_concat_label(layer_index, is_final_layer), dynamic_commitments);
+            out[hidden_concat_xi_name(layer_index, is_final_layer)] =
+                transcript.challenge(hidden_concat_xi_name(layer_index, is_final_layer));
+            absorb(transcript, hidden_layer_concat_star_label(layer_index, is_final_layer), dynamic_commitments);
+            out[hidden_concat_y_name(layer_index, is_final_layer)] =
+                transcript.challenge(hidden_concat_y_name(layer_index, is_final_layer));
+        }
+
+        const bool legacy_single_output = context.model.output_layer.heads.size() == 1;
+        const auto final_hidden_label =
+            hidden_layer_concat_label(context.model.hidden_layers.size() - 1, true);
+        for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index) {
+            const auto prefix = output_head_prefix(head_index, legacy_single_output);
+            const auto y_label = output_y_label(head_index, legacy_single_output);
+            absorb(transcript, final_hidden_label, dynamic_commitments);
+            absorb(transcript, prefix + "_Y_prime", dynamic_commitments);
+            absorb_static(transcript, context, output_weight_label(head_index, legacy_single_output));
+            out[output_challenge_name("y_proj_out", head_index, legacy_single_output)] =
+                transcript.challenge(output_challenge_name("y_proj_out", head_index, legacy_single_output));
+            out[output_challenge_name("xi_out", head_index, legacy_single_output)] =
+                transcript.challenge(output_challenge_name("xi_out", head_index, legacy_single_output));
+            absorb(transcript, prefix + "_Y_prime", dynamic_commitments);
             absorb(transcript, prefix + "_E_src", dynamic_commitments);
-            absorb_static(transcript, context, hidden_src_label(head_index));
-            out["y_src_h" + std::to_string(head_index)] = transcript.challenge("y_src_h" + std::to_string(head_index));
-
-            absorb(transcript, prefix + "_H_prime", dynamic_commitments);
+            absorb_static(transcript, context, output_src_label(head_index, legacy_single_output));
+            out[output_challenge_name("y_src_out", head_index, legacy_single_output)] =
+                transcript.challenge(output_challenge_name("y_src_out", head_index, legacy_single_output));
+            absorb(transcript, prefix + "_Y_prime", dynamic_commitments);
             absorb(transcript, prefix + "_E_dst", dynamic_commitments);
-            absorb_static(transcript, context, hidden_dst_label(head_index));
-            out["y_dst_h" + std::to_string(head_index)] = transcript.challenge("y_dst_h" + std::to_string(head_index));
-
-            absorb(transcript, prefix + "_H_star", dynamic_commitments);
-            out["y_star_h" + std::to_string(head_index)] = transcript.challenge("y_star_h" + std::to_string(head_index));
-
-            absorb(transcript, prefix + "_E_src", dynamic_commitments);
-            absorb(transcript, prefix + "_H_star", dynamic_commitments);
-            out["eta_src_h" + std::to_string(head_index)] = transcript.challenge("eta_src_h" + std::to_string(head_index));
-            out["beta_src_h" + std::to_string(head_index)] = transcript.challenge("beta_src_h" + std::to_string(head_index));
-
+            absorb_static(transcript, context, output_dst_label(head_index, legacy_single_output));
+            out[output_challenge_name("y_dst_out", head_index, legacy_single_output)] =
+                transcript.challenge(output_challenge_name("y_dst_out", head_index, legacy_single_output));
             absorb(transcript, prefix + "_S", dynamic_commitments);
             absorb(transcript, prefix + "_Z", dynamic_commitments);
             absorb_static(transcript, context, "V_T_L_x");
             absorb_static(transcript, context, "V_T_L_y");
-            out["eta_L_h" + std::to_string(head_index)] = transcript.challenge("eta_L_h" + std::to_string(head_index));
-            out["beta_L_h" + std::to_string(head_index)] = transcript.challenge("beta_L_h" + std::to_string(head_index));
-
+            out[output_challenge_name("eta_L_out", head_index, legacy_single_output)] =
+                transcript.challenge(output_challenge_name("eta_L_out", head_index, legacy_single_output));
+            out[output_challenge_name("beta_L_out", head_index, legacy_single_output)] =
+                transcript.challenge(output_challenge_name("beta_L_out", head_index, legacy_single_output));
             absorb(transcript, prefix + "_M", dynamic_commitments);
             absorb(transcript, prefix + "_M_edge", dynamic_commitments);
             absorb(transcript, prefix + "_Delta", dynamic_commitments);
             absorb_static(transcript, context, "V_T_range");
-            out["beta_R_h" + std::to_string(head_index)] = transcript.challenge("beta_R_h" + std::to_string(head_index));
-
+            out[output_challenge_name("beta_R_out", head_index, legacy_single_output)] =
+                transcript.challenge(output_challenge_name("beta_R_out", head_index, legacy_single_output));
             absorb(transcript, prefix + "_Delta", dynamic_commitments);
             absorb(transcript, prefix + "_U", dynamic_commitments);
             absorb_static(transcript, context, "V_T_exp_x");
             absorb_static(transcript, context, "V_T_exp_y");
-            out["eta_exp_h" + std::to_string(head_index)] = transcript.challenge("eta_exp_h" + std::to_string(head_index));
-            out["beta_exp_h" + std::to_string(head_index)] = transcript.challenge("beta_exp_h" + std::to_string(head_index));
-
-            out["lambda_psq_h" + std::to_string(head_index)] = transcript.challenge("lambda_psq_h" + std::to_string(head_index));
-            absorb(transcript, prefix + "_T_psq", dynamic_commitments);
-            absorb(transcript, prefix + "_T_psq_edge", dynamic_commitments);
-            out["eta_t_h" + std::to_string(head_index)] = transcript.challenge("eta_t_h" + std::to_string(head_index));
-            out["beta_t_h" + std::to_string(head_index)] = transcript.challenge("beta_t_h" + std::to_string(head_index));
-
-            absorb(transcript, prefix + "_H_agg_pre", dynamic_commitments);
-            absorb(transcript, prefix + "_H_agg_pre_star", dynamic_commitments);
-            out["y_agg_pre_h" + std::to_string(head_index)] = transcript.challenge("y_agg_pre_h" + std::to_string(head_index));
-            absorb(transcript, prefix + "_H_agg_pre", dynamic_commitments);
-            absorb(transcript, prefix + "_H_agg", dynamic_commitments);
-            absorb_static(transcript, context, "V_T_ELU_x");
-            absorb_static(transcript, context, "V_T_ELU_y");
-            out["eta_ELU_h" + std::to_string(head_index)] = transcript.challenge("eta_ELU_h" + std::to_string(head_index));
-            out["beta_ELU_h" + std::to_string(head_index)] = transcript.challenge("beta_ELU_h" + std::to_string(head_index));
-
-            absorb(transcript, prefix + "_H_agg", dynamic_commitments);
-            absorb(transcript, prefix + "_H_agg_star", dynamic_commitments);
-            out["y_agg_h" + std::to_string(head_index)] = transcript.challenge("y_agg_h" + std::to_string(head_index));
-
-            out["eta_dst_h" + std::to_string(head_index)] = transcript.challenge("eta_dst_h" + std::to_string(head_index));
-            out["beta_dst_h" + std::to_string(head_index)] = transcript.challenge("beta_dst_h" + std::to_string(head_index));
+            out[output_challenge_name("eta_exp_out", head_index, legacy_single_output)] =
+                transcript.challenge(output_challenge_name("eta_exp_out", head_index, legacy_single_output));
+            out[output_challenge_name("beta_exp_out", head_index, legacy_single_output)] =
+                transcript.challenge(output_challenge_name("beta_exp_out", head_index, legacy_single_output));
+            out[output_challenge_name("eta_src_out", head_index, legacy_single_output)] =
+                transcript.challenge(output_challenge_name("eta_src_out", head_index, legacy_single_output));
+            out[output_challenge_name("beta_src_out", head_index, legacy_single_output)] =
+                transcript.challenge(output_challenge_name("beta_src_out", head_index, legacy_single_output));
+            out[output_challenge_name("lambda_out", head_index, legacy_single_output)] =
+                transcript.challenge(output_challenge_name("lambda_out", head_index, legacy_single_output));
+            absorb(transcript, prefix + "_T", dynamic_commitments);
+            absorb(transcript, prefix + "_T_edge", dynamic_commitments);
+            out[output_challenge_name("eta_t_out", head_index, legacy_single_output)] =
+                transcript.challenge(output_challenge_name("eta_t_out", head_index, legacy_single_output));
+            out[output_challenge_name("beta_t_out", head_index, legacy_single_output)] =
+                transcript.challenge(output_challenge_name("beta_t_out", head_index, legacy_single_output));
+            absorb(transcript, y_label, dynamic_commitments);
+            absorb(transcript, prefix + "_Y_star", dynamic_commitments);
+            out[output_challenge_name("y_out_star", head_index, legacy_single_output)] =
+                transcript.challenge(output_challenge_name("y_out_star", head_index, legacy_single_output));
+            out[output_challenge_name("eta_dst_out", head_index, legacy_single_output)] =
+                transcript.challenge(output_challenge_name("eta_dst_out", head_index, legacy_single_output));
+            out[output_challenge_name("beta_dst_out", head_index, legacy_single_output)] =
+                transcript.challenge(output_challenge_name("beta_dst_out", head_index, legacy_single_output));
         }
 
-        absorb(transcript, "P_H_cat", dynamic_commitments);
-        out["xi_cat"] = transcript.challenge("xi_cat");
-        absorb(transcript, "P_H_cat_star", dynamic_commitments);
-        out["y_cat"] = transcript.challenge("y_cat");
-
-        absorb(transcript, "P_H_cat", dynamic_commitments);
-        absorb(transcript, "P_out_Y_prime", dynamic_commitments);
-        absorb_static(transcript, context, output_weight_label());
-        out["y_proj_out"] = transcript.challenge("y_proj_out");
-        out["xi_out"] = transcript.challenge("xi_out");
-        absorb(transcript, "P_out_Y_prime", dynamic_commitments);
-        absorb(transcript, "P_out_E_src", dynamic_commitments);
-        absorb_static(transcript, context, output_src_label());
-        out["y_src_out"] = transcript.challenge("y_src_out");
-        absorb(transcript, "P_out_Y_prime", dynamic_commitments);
-        absorb(transcript, "P_out_E_dst", dynamic_commitments);
-        absorb_static(transcript, context, output_dst_label());
-        out["y_dst_out"] = transcript.challenge("y_dst_out");
-        absorb(transcript, "P_out_S", dynamic_commitments);
-        absorb(transcript, "P_out_Z", dynamic_commitments);
-        absorb_static(transcript, context, "V_T_L_x");
-        absorb_static(transcript, context, "V_T_L_y");
-        out["eta_L_out"] = transcript.challenge("eta_L_out");
-        out["beta_L_out"] = transcript.challenge("beta_L_out");
-        absorb(transcript, "P_out_M", dynamic_commitments);
-        absorb(transcript, "P_out_M_edge", dynamic_commitments);
-        absorb(transcript, "P_out_Delta", dynamic_commitments);
-        absorb_static(transcript, context, "V_T_range");
-        out["beta_R_out"] = transcript.challenge("beta_R_out");
-        absorb(transcript, "P_out_Delta", dynamic_commitments);
-        absorb(transcript, "P_out_U", dynamic_commitments);
-        absorb_static(transcript, context, "V_T_exp_x");
-        absorb_static(transcript, context, "V_T_exp_y");
-        out["eta_exp_out"] = transcript.challenge("eta_exp_out");
-        out["beta_exp_out"] = transcript.challenge("beta_exp_out");
-        out["eta_src_out"] = transcript.challenge("eta_src_out");
-        out["beta_src_out"] = transcript.challenge("beta_src_out");
-        out["lambda_out"] = transcript.challenge("lambda_out");
-        absorb(transcript, "P_out_T", dynamic_commitments);
-        absorb(transcript, "P_out_T_edge", dynamic_commitments);
-        out["eta_t_out"] = transcript.challenge("eta_t_out");
-        out["beta_t_out"] = transcript.challenge("beta_t_out");
-        absorb(transcript, "P_Y", dynamic_commitments);
-        absorb(transcript, "P_out_Y_star", dynamic_commitments);
-        out["y_out_star"] = transcript.challenge("y_out_star");
-        out["eta_dst_out"] = transcript.challenge("eta_dst_out");
-        out["beta_dst_out"] = transcript.challenge("beta_dst_out");
-        absorb(transcript, "P_out_Y_prime", dynamic_commitments);
-        absorb(transcript, "P_Y", dynamic_commitments);
-        absorb(transcript, "P_out_Y_star", dynamic_commitments);
-        absorb(transcript, "P_out_Table_dst", dynamic_commitments);
-        absorb(transcript, "P_out_Query_dst", dynamic_commitments);
+        if (!legacy_single_output) {
+            for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index) {
+                absorb(transcript, output_y_lin_label(head_index, false), dynamic_commitments);
+                absorb(transcript, output_y_label(head_index, false), dynamic_commitments);
+                absorb(transcript, output_head_prefix(head_index, false) + "_Y_star", dynamic_commitments);
+                absorb(transcript, output_head_prefix(head_index, false) + "_Table_dst", dynamic_commitments);
+                absorb(transcript, output_head_prefix(head_index, false) + "_Query_dst", dynamic_commitments);
+            }
+            absorb(transcript, "P_Y_lin", dynamic_commitments);
+            absorb(transcript, "P_Y", dynamic_commitments);
+        } else {
+            absorb(transcript, "P_out_Y_prime", dynamic_commitments);
+            absorb(transcript, "P_Y", dynamic_commitments);
+            absorb(transcript, "P_out_Y_star", dynamic_commitments);
+            absorb(transcript, "P_out_Table_dst", dynamic_commitments);
+            absorb(transcript, "P_out_Query_dst", dynamic_commitments);
+        }
         out["y_out"] = transcript.challenge("y_out");
 
         for (const auto& label : dynamic_labels) {

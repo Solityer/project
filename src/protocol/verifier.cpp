@@ -478,11 +478,42 @@ std::vector<ExternalEvalSpec> multihead_external_specs(const ProtocolContext& co
         specs.push_back({"mu_" + suffix + "_agg_pre", prefix + "H_agg_pre_star", "y_agg_pre_h" + std::to_string(head_index)});
         specs.push_back({"mu_" + suffix + "_agg", prefix + "H_agg_star", "y_agg_h" + std::to_string(head_index)});
     }
-    specs.push_back({"mu_cat", "P_H_cat_star", "y_cat"});
-    specs.push_back({"mu_out_proj", "P_out_Y_prime", "y_proj_out"});
-    specs.push_back({"mu_out_src", "P_out_E_src", "y_src_out"});
-    specs.push_back({"mu_out_dst", "P_out_E_dst", "y_dst_out"});
-    specs.push_back({"mu_out_star", "P_out_Y_star", "y_out_star"});
+    for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index) {
+        const bool is_final_layer = layer_index + 1 == context.model.hidden_layers.size();
+        specs.push_back({
+            is_final_layer ? "mu_cat" : "mu_cat_l" + std::to_string(layer_index),
+            hidden_layer_concat_star_label(layer_index, is_final_layer),
+            hidden_concat_y_name(layer_index, is_final_layer),
+        });
+    }
+    const bool legacy_single_output = context.model.output_layer.heads.size() == 1;
+    for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index) {
+        const auto prefix = output_head_prefix(head_index, legacy_single_output);
+        specs.push_back({
+            legacy_single_output ? "mu_out_proj" : output_external_eval_name("proj", head_index, false),
+            prefix + "_Y_prime",
+            output_challenge_name("y_proj_out", head_index, legacy_single_output),
+        });
+        specs.push_back({
+            legacy_single_output ? "mu_out_src" : output_external_eval_name("src", head_index, false),
+            prefix + "_E_src",
+            output_challenge_name("y_src_out", head_index, legacy_single_output),
+        });
+        specs.push_back({
+            legacy_single_output ? "mu_out_dst" : output_external_eval_name("dst", head_index, false),
+            prefix + "_E_dst",
+            output_challenge_name("y_dst_out", head_index, legacy_single_output),
+        });
+        specs.push_back({
+            legacy_single_output ? "mu_out_star" : output_external_eval_name("star", head_index, false),
+            prefix + "_Y_star",
+            output_challenge_name("y_out_star", head_index, legacy_single_output),
+        });
+        if (!legacy_single_output) {
+            specs.push_back({output_external_eval_name("y_lin", head_index, false), output_y_lin_label(head_index, false), "y_out"});
+            specs.push_back({output_external_eval_name("y", head_index, false), output_y_label(head_index, false), "y_out"});
+        }
+    }
     specs.push_back({"mu_Y_lin", "P_Y_lin", "y_out"});
     specs.push_back({"mu_out", "P_Y", "y_out"});
     return specs;
@@ -558,27 +589,43 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
                 return fail("missing_hidden_route_scalar");
             }
         }
-        if (!witness_scalars.contains("S_src_out")
-            || !witness_scalars.contains("S_dst_out")
-            || !witness_scalars.contains("S_t_out")) {
-            return fail("missing_output_route_scalar");
+        const bool legacy_single_output = context.model.output_layer.heads.size() == 1;
+        for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index) {
+            if (!witness_scalars.contains(output_witness_scalar_name("src", head_index, legacy_single_output))
+                || !witness_scalars.contains(output_witness_scalar_name("dst", head_index, legacy_single_output))
+                || !witness_scalars.contains(output_witness_scalar_name("t", head_index, legacy_single_output))) {
+                return fail("missing_output_route_scalar");
+            }
         }
         for (const auto& spec : multihead_external_specs(context)) {
             if (!external_evaluations.contains(spec.proof_name)) {
                 return fail("missing_external_eval:" + spec.proof_name);
             }
         }
-        if (context.model.output_layer.heads.size() == 1) {
-            const auto expected = external_evaluations.at("mu_Y_lin")
+        FieldElement summed_y_lin = FieldElement::zero();
+        FieldElement summed_y = FieldElement::zero();
+        for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index) {
+            const auto mu_y_lin_name =
+                legacy_single_output ? std::string("mu_Y_lin") : output_external_eval_name("y_lin", head_index, false);
+            const auto mu_y_name =
+                legacy_single_output ? std::string("mu_out") : output_external_eval_name("y", head_index, false);
+            const auto expected = external_evaluations.at(mu_y_lin_name)
                 + bias_fold_vector(
-                    context.model.output_layer.heads.front().output_bias_fp,
+                    context.model.output_layer.heads[head_index].output_bias_fp,
                     context.local.num_nodes,
                     challenges.at("y_out"));
-            if (external_evaluations.at("mu_out") != expected) {
+            if (external_evaluations.at(mu_y_name) != expected) {
                 return fail("output_bias_relation");
             }
-        } else if (context.model.output_layer.heads.size() > 1) {
-            return fail("unsupported_k_out");
+            summed_y_lin += external_evaluations.at(mu_y_lin_name);
+            summed_y += external_evaluations.at(mu_y_name);
+        }
+        const auto k_out = FieldElement(context.model.output_layer.heads.size());
+        if (k_out * external_evaluations.at("mu_Y_lin") != summed_y_lin) {
+            return fail("output_average_pre_bias_relation");
+        }
+        if (k_out * external_evaluations.at("mu_out") != summed_y) {
+            return fail("output_average_relation");
         }
         struct BundleSpec {
             std::string bundle_name;

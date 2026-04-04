@@ -2,11 +2,13 @@
 
 #include <chrono>
 #include <cctype>
+#include <cstdint>
 #include <optional>
 #include <string_view>
 #include <vector>
 
 #include "gatzk/protocol/challenges.hpp"
+#include "gatzk/protocol/schema.hpp"
 
 namespace gatzk::protocol {
 namespace {
@@ -55,6 +57,11 @@ bool starts_with(const std::string& value, std::string_view prefix) {
     return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
 }
 
+bool ends_with(const std::string& value, std::string_view suffix) {
+    return value.size() >= suffix.size()
+        && value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
 std::optional<std::string> hidden_head_suffix(const std::string& label) {
     if (!starts_with(label, "P_h")) {
         return std::nullopt;
@@ -69,6 +76,48 @@ std::optional<std::string> hidden_head_suffix(const std::string& label) {
     return label.substr(pos + 1);
 }
 
+std::optional<std::string> output_head_suffix(const std::string& label) {
+    if (!starts_with(label, "P_out")) {
+        return std::nullopt;
+    }
+    std::size_t pos = 5;
+    while (pos < label.size() && std::isdigit(static_cast<unsigned char>(label[pos]))) {
+        ++pos;
+    }
+    if (pos >= label.size() || label[pos] != '_') {
+        return std::nullopt;
+    }
+    return label.substr(pos + 1);
+}
+
+bool hidden_concat_binding_label(const ProtocolContext& context, const std::string& label, std::string_view suffix) {
+    for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index) {
+        const bool is_final_layer = layer_index + 1 == context.model.hidden_layers.size();
+        if (label == hidden_layer_cat_prefix(layer_index, is_final_layer) + std::string(suffix)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+FieldElement quantize_bias_value(double value) {
+    const auto scaled = value >= 0.0 ? value * 16.0 + 0.5 : value * 16.0 - 0.5;
+    return FieldElement::from_signed(static_cast<std::int64_t>(scaled));
+}
+
+FieldElement bias_fold_vector(
+    const std::vector<double>& bias,
+    std::size_t node_count,
+    const FieldElement& y_out) {
+    FieldElement out = FieldElement::zero();
+    for (std::size_t row = 0; row < node_count; ++row) {
+        for (std::size_t col = 0; col < bias.size(); ++col) {
+            out += quantize_bias_value(bias[col]) * y_out.pow(static_cast<std::uint64_t>(row * bias.size() + col));
+        }
+    }
+    return out;
+}
+
 std::optional<std::string> dynamic_label_domain_name(const ProtocolContext& context, const std::string& label) {
     if (!context.model.has_real_multihead) {
         return std::nullopt;
@@ -76,39 +125,55 @@ std::optional<std::string> dynamic_label_domain_name(const ProtocolContext& cont
     if (label == "P_H" || label == "P_Table_feat" || label == "P_Query_feat" || label == "P_m_feat" || label == "P_R_feat") {
         return std::string("FH");
     }
+    for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index) {
+        const bool is_final_layer = layer_index + 1 == context.model.hidden_layers.size();
+        if (label == hidden_layer_concat_star_label(layer_index, is_final_layer)) {
+            return std::string("N");
+        }
+    }
+    if (hidden_concat_binding_label(context, label, "_a")
+        || hidden_concat_binding_label(context, label, "_b")
+        || hidden_concat_binding_label(context, label, "_Acc")) {
+        return std::string("cat");
+    }
+    if (const auto suffix = output_head_suffix(label); suffix.has_value()) {
+        const auto& name = *suffix;
+        if (name == "a_proj" || name == "b_proj" || name == "Acc_proj") {
+            return std::string("cat");
+        }
+        if (name == "a_src" || name == "b_src" || name == "Acc_src"
+            || name == "a_dst" || name == "b_dst" || name == "Acc_dst"
+            || name == "a_y" || name == "b_y" || name == "Acc_y") {
+            return std::string("C");
+        }
+        if (name == "E_src" || name == "E_dst" || name == "M"
+            || name == "Sum" || name == "inv" || name == "Y_prime_star"
+            || name == "Table_src" || name == "m_src" || name == "R_src_node"
+            || name == "Y_star" || name == "T" || name == "Table_dst"
+            || name == "m_dst" || name == "R_dst_node"
+            || name == "Table_t" || name == "m_t" || name == "R_t_node") {
+            return std::string("N");
+        }
+        if (name == "E_src_edge" || name == "E_dst_edge" || name == "Query_src"
+            || name == "R_src" || name == "S" || name == "Z"
+            || name == "Table_L" || name == "Query_L" || name == "m_L" || name == "R_L"
+            || name == "M_edge" || name == "Delta" || name == "U"
+            || name == "s_max" || name == "C_max"
+            || name == "Table_R" || name == "Query_R" || name == "m_R" || name == "R_R"
+            || name == "Sum_edge" || name == "inv_edge" || name == "alpha"
+            || name == "Table_exp" || name == "Query_exp" || name == "m_exp" || name == "R_exp"
+            || name == "Y_prime_star_edge" || name == "widehat_y_star"
+            || name == "w" || name == "T_edge" || name == "PSQ"
+            || name == "Y_star_edge" || name == "Query_dst" || name == "R_dst"
+            || name == "Query_t" || name == "R_t") {
+            return std::string("edge");
+        }
+    }
     if (label == "P_H_cat_star") {
         return std::string("N");
     }
-    if (label == "P_cat_a" || label == "P_cat_b" || label == "P_cat_Acc"
-        || label == "P_out_a_proj" || label == "P_out_b_proj" || label == "P_out_Acc_proj") {
+    if (label == "P_cat_a" || label == "P_cat_b" || label == "P_cat_Acc") {
         return std::string("cat");
-    }
-    if (label == "P_out_a_src" || label == "P_out_b_src" || label == "P_out_Acc_src"
-        || label == "P_out_a_dst" || label == "P_out_b_dst" || label == "P_out_Acc_dst"
-        || label == "P_out_a_y" || label == "P_out_b_y" || label == "P_out_Acc_y") {
-        return std::string("C");
-    }
-    if (label == "P_out_E_src" || label == "P_out_E_dst" || label == "P_out_M"
-        || label == "P_out_Sum" || label == "P_out_inv" || label == "P_out_Y_prime_star"
-        || label == "P_out_Table_src" || label == "P_out_m_src" || label == "P_out_R_src_node"
-        || label == "P_out_Y_star" || label == "P_out_T" || label == "P_out_Table_dst"
-        || label == "P_out_m_dst" || label == "P_out_R_dst_node"
-        || label == "P_out_Table_t" || label == "P_out_m_t" || label == "P_out_R_t_node") {
-        return std::string("N");
-    }
-    if (label == "P_out_E_src_edge" || label == "P_out_E_dst_edge" || label == "P_out_Query_src"
-        || label == "P_out_R_src" || label == "P_out_S" || label == "P_out_Z"
-        || label == "P_out_Table_L" || label == "P_out_Query_L" || label == "P_out_m_L" || label == "P_out_R_L"
-        || label == "P_out_M_edge" || label == "P_out_Delta" || label == "P_out_U"
-        || label == "P_out_s_max" || label == "P_out_C_max"
-        || label == "P_out_Table_R" || label == "P_out_Query_R" || label == "P_out_m_R" || label == "P_out_R_R"
-        || label == "P_out_Sum_edge" || label == "P_out_inv_edge" || label == "P_out_alpha"
-        || label == "P_out_Table_exp" || label == "P_out_Query_exp" || label == "P_out_m_exp" || label == "P_out_R_exp"
-        || label == "P_out_Y_prime_star_edge" || label == "P_out_widehat_y_star"
-        || label == "P_out_w" || label == "P_out_T_edge" || label == "P_out_PSQ"
-        || label == "P_out_Y_star_edge" || label == "P_out_Query_dst" || label == "P_out_R_dst"
-        || label == "P_out_Query_t" || label == "P_out_R_t") {
-        return std::string("edge");
     }
     if (const auto suffix = hidden_head_suffix(label); suffix.has_value()) {
         const auto& name = *suffix;
@@ -424,110 +489,114 @@ FieldElement evaluate_t_edge(
             acc.add(zero_on_unselected(q_edge, eval(prefix + "Query_dst", z)));
         }
 
-        const auto beta_src_out = challenges.at("beta_src_out");
-        const auto beta_dst_out = challenges.at("beta_dst_out");
-        const auto eta_src_out = challenges.at("eta_src_out");
-        const auto eta_dst_out = challenges.at("eta_dst_out");
-        const auto beta_l_out = challenges.at("beta_L_out");
-        const auto eta_l_out = challenges.at("eta_L_out");
-        const auto beta_r_out = challenges.at("beta_R_out");
-        const auto beta_exp_out = challenges.at("beta_exp_out");
-        const auto eta_exp_out = challenges.at("eta_exp_out");
-        const auto beta_t_out = challenges.at("beta_t_out");
-        const auto eta_t_out = challenges.at("eta_t_out");
+        const bool legacy_single_output = context.model.output_layer.heads.size() == 1;
+        for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index) {
+            const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
+            const auto beta_src_out = challenges.at(output_challenge_name("beta_src_out", head_index, legacy_single_output));
+            const auto beta_dst_out = challenges.at(output_challenge_name("beta_dst_out", head_index, legacy_single_output));
+            const auto eta_src_out = challenges.at(output_challenge_name("eta_src_out", head_index, legacy_single_output));
+            const auto eta_dst_out = challenges.at(output_challenge_name("eta_dst_out", head_index, legacy_single_output));
+            const auto beta_l_out = challenges.at(output_challenge_name("beta_L_out", head_index, legacy_single_output));
+            const auto eta_l_out = challenges.at(output_challenge_name("eta_L_out", head_index, legacy_single_output));
+            const auto beta_r_out = challenges.at(output_challenge_name("beta_R_out", head_index, legacy_single_output));
+            const auto beta_exp_out = challenges.at(output_challenge_name("beta_exp_out", head_index, legacy_single_output));
+            const auto eta_exp_out = challenges.at(output_challenge_name("eta_exp_out", head_index, legacy_single_output));
+            const auto beta_t_out = challenges.at(output_challenge_name("beta_t_out", head_index, legacy_single_output));
+            const auto eta_t_out = challenges.at(output_challenge_name("eta_t_out", head_index, legacy_single_output));
 
-        acc.add(first * eval("P_out_R_src", z));
-        acc.add(route_edge_step(eval("P_out_R_src", omega_z), eval("P_out_R_src", z), eval("P_out_Query_src", z), beta_src_out, q_edge));
-        acc.add(last * (eval("P_out_R_src", z) - witness_scalars.at("S_src_out")));
-        acc.add(eval("P_out_Query_src", z) - (eval("P_src", z) + eta_src_out * eval("P_out_E_src_edge", z)));
-        acc.add(zero_on_unselected(q_edge, eval("P_out_Query_src", z)));
+            acc.add(first * eval(prefix + "R_src", z));
+            acc.add(route_edge_step(eval(prefix + "R_src", omega_z), eval(prefix + "R_src", z), eval(prefix + "Query_src", z), beta_src_out, q_edge));
+            acc.add(last * (eval(prefix + "R_src", z) - witness_scalars.at(output_witness_scalar_name("src", head_index, legacy_single_output))));
+            acc.add(eval(prefix + "Query_src", z) - (eval("P_src", z) + eta_src_out * eval(prefix + "E_src_edge", z)));
+            acc.add(zero_on_unselected(q_edge, eval(prefix + "Query_src", z)));
 
-        acc.add(q_edge * (eval("P_out_S", z) - eval("P_out_E_src_edge", z) - eval("P_out_E_dst_edge", z)));
-        acc.add(first * eval("P_out_R_L", z));
-        acc.add(lookup_step(
-            eval("P_out_R_L", omega_z),
-            eval("P_out_R_L", z),
-            eval("P_out_Table_L", z),
-            eval("P_out_Query_L", z),
-            eval("P_out_m_L", z),
-            eval("P_Q_tbl_L", z),
-            eval("P_Q_qry_L", z),
-            beta_l_out));
-        acc.add(last * eval("P_out_R_L", z));
-        acc.add(eval("P_out_Table_L", z) - (eval("P_T_L_x", z) + eta_l_out * eval("P_T_L_y", z)));
-        acc.add(eval("P_out_Query_L", z) - (eval("P_out_S", z) + eta_l_out * eval("P_out_Z", z)));
-        acc.add(zero_on_unselected(eval("P_Q_tbl_L", z), eval("P_out_Table_L", z)));
-        acc.add(zero_on_unselected(eval("P_Q_tbl_L", z), eval("P_out_m_L", z)));
-        acc.add(zero_on_unselected(eval("P_Q_qry_L", z), eval("P_out_Query_L", z)));
+            acc.add(q_edge * (eval(prefix + "S", z) - eval(prefix + "E_src_edge", z) - eval(prefix + "E_dst_edge", z)));
+            acc.add(first * eval(prefix + "R_L", z));
+            acc.add(lookup_step(
+                eval(prefix + "R_L", omega_z),
+                eval(prefix + "R_L", z),
+                eval(prefix + "Table_L", z),
+                eval(prefix + "Query_L", z),
+                eval(prefix + "m_L", z),
+                eval("P_Q_tbl_L", z),
+                eval("P_Q_qry_L", z),
+                beta_l_out));
+            acc.add(last * eval(prefix + "R_L", z));
+            acc.add(eval(prefix + "Table_L", z) - (eval("P_T_L_x", z) + eta_l_out * eval("P_T_L_y", z)));
+            acc.add(eval(prefix + "Query_L", z) - (eval(prefix + "S", z) + eta_l_out * eval(prefix + "Z", z)));
+            acc.add(zero_on_unselected(eval("P_Q_tbl_L", z), eval(prefix + "Table_L", z)));
+            acc.add(zero_on_unselected(eval("P_Q_tbl_L", z), eval(prefix + "m_L", z)));
+            acc.add(zero_on_unselected(eval("P_Q_qry_L", z), eval(prefix + "Query_L", z)));
 
-        acc.add(q_edge * (eval("P_out_Delta", z) - eval("P_out_M_edge", z) + eval("P_out_Z", z)));
-        acc.add(eval("P_out_s_max", z) * (eval("P_out_s_max", z) - FieldElement::one()));
-        acc.add(eval("P_out_s_max", z) * eval("P_out_Delta", z));
-        acc.add(zero_on_unselected(q_edge, eval("P_out_s_max", z)));
-        acc.add(first * (eval("P_out_C_max", z) - eval("P_out_s_max", z)));
-        acc.add(
-            q_edge_next
-            * (eval("P_out_C_max", omega_z)
-                - q_new_next * eval("P_out_s_max", omega_z)
-                - (FieldElement::one() - q_new_next) * (eval("P_out_C_max", z) + eval("P_out_s_max", omega_z)))
-            + (FieldElement::one() - q_edge_next) * (eval("P_out_C_max", omega_z) - eval("P_out_C_max", z)));
-        acc.add(q_end * (eval("P_out_C_max", z) - FieldElement::one()));
+            acc.add(q_edge * (eval(prefix + "Delta", z) - eval(prefix + "M_edge", z) + eval(prefix + "Z", z)));
+            acc.add(eval(prefix + "s_max", z) * (eval(prefix + "s_max", z) - FieldElement::one()));
+            acc.add(eval(prefix + "s_max", z) * eval(prefix + "Delta", z));
+            acc.add(zero_on_unselected(q_edge, eval(prefix + "s_max", z)));
+            acc.add(first * (eval(prefix + "C_max", z) - eval(prefix + "s_max", z)));
+            acc.add(
+                q_edge_next
+                * (eval(prefix + "C_max", omega_z)
+                    - q_new_next * eval(prefix + "s_max", omega_z)
+                    - (FieldElement::one() - q_new_next) * (eval(prefix + "C_max", z) + eval(prefix + "s_max", omega_z)))
+                + (FieldElement::one() - q_edge_next) * (eval(prefix + "C_max", omega_z) - eval(prefix + "C_max", z)));
+            acc.add(q_end * (eval(prefix + "C_max", z) - FieldElement::one()));
 
-        acc.add(first * eval("P_out_R_R", z));
-        acc.add(lookup_step(
-            eval("P_out_R_R", omega_z),
-            eval("P_out_R_R", z),
-            eval("P_out_Table_R", z),
-            eval("P_out_Query_R", z),
-            eval("P_out_m_R", z),
-            eval("P_Q_tbl_R", z),
-            eval("P_Q_qry_R", z),
-            beta_r_out));
-        acc.add(last * eval("P_out_R_R", z));
-        acc.add(eval("P_out_Table_R", z) - eval("P_T_range", z));
-        acc.add(eval("P_out_Query_R", z) - eval("P_out_Delta", z));
-        acc.add(zero_on_unselected(eval("P_Q_tbl_R", z), eval("P_out_Table_R", z)));
-        acc.add(zero_on_unselected(eval("P_Q_tbl_R", z), eval("P_out_m_R", z)));
-        acc.add(zero_on_unselected(eval("P_Q_qry_R", z), eval("P_out_Query_R", z)));
+            acc.add(first * eval(prefix + "R_R", z));
+            acc.add(lookup_step(
+                eval(prefix + "R_R", omega_z),
+                eval(prefix + "R_R", z),
+                eval(prefix + "Table_R", z),
+                eval(prefix + "Query_R", z),
+                eval(prefix + "m_R", z),
+                eval("P_Q_tbl_R", z),
+                eval("P_Q_qry_R", z),
+                beta_r_out));
+            acc.add(last * eval(prefix + "R_R", z));
+            acc.add(eval(prefix + "Table_R", z) - eval("P_T_range", z));
+            acc.add(eval(prefix + "Query_R", z) - eval(prefix + "Delta", z));
+            acc.add(zero_on_unselected(eval("P_Q_tbl_R", z), eval(prefix + "Table_R", z)));
+            acc.add(zero_on_unselected(eval("P_Q_tbl_R", z), eval(prefix + "m_R", z)));
+            acc.add(zero_on_unselected(eval("P_Q_qry_R", z), eval(prefix + "Query_R", z)));
 
-        acc.add(q_edge * (eval("P_out_alpha", z) - eval("P_out_U", z) * eval("P_out_inv_edge", z)));
-        acc.add(first * eval("P_out_R_exp", z));
-        acc.add(lookup_step(
-            eval("P_out_R_exp", omega_z),
-            eval("P_out_R_exp", z),
-            eval("P_out_Table_exp", z),
-            eval("P_out_Query_exp", z),
-            eval("P_out_m_exp", z),
-            eval("P_Q_tbl_exp", z),
-            eval("P_Q_qry_exp", z),
-            beta_exp_out));
-        acc.add(last * eval("P_out_R_exp", z));
-        acc.add(eval("P_out_Table_exp", z) - (eval("P_T_exp_x", z) + eta_exp_out * eval("P_T_exp_y", z)));
-        acc.add(eval("P_out_Query_exp", z) - (eval("P_out_Delta", z) + eta_exp_out * eval("P_out_U", z)));
-        acc.add(zero_on_unselected(eval("P_Q_tbl_exp", z), eval("P_out_Table_exp", z)));
-        acc.add(zero_on_unselected(eval("P_Q_tbl_exp", z), eval("P_out_m_exp", z)));
-        acc.add(zero_on_unselected(eval("P_Q_qry_exp", z), eval("P_out_Query_exp", z)));
+            acc.add(q_edge * (eval(prefix + "alpha", z) - eval(prefix + "U", z) * eval(prefix + "inv_edge", z)));
+            acc.add(first * eval(prefix + "R_exp", z));
+            acc.add(lookup_step(
+                eval(prefix + "R_exp", omega_z),
+                eval(prefix + "R_exp", z),
+                eval(prefix + "Table_exp", z),
+                eval(prefix + "Query_exp", z),
+                eval(prefix + "m_exp", z),
+                eval("P_Q_tbl_exp", z),
+                eval("P_Q_qry_exp", z),
+                beta_exp_out));
+            acc.add(last * eval(prefix + "R_exp", z));
+            acc.add(eval(prefix + "Table_exp", z) - (eval("P_T_exp_x", z) + eta_exp_out * eval("P_T_exp_y", z)));
+            acc.add(eval(prefix + "Query_exp", z) - (eval(prefix + "Delta", z) + eta_exp_out * eval(prefix + "U", z)));
+            acc.add(zero_on_unselected(eval("P_Q_tbl_exp", z), eval(prefix + "Table_exp", z)));
+            acc.add(zero_on_unselected(eval("P_Q_tbl_exp", z), eval(prefix + "m_exp", z)));
+            acc.add(zero_on_unselected(eval("P_Q_qry_exp", z), eval(prefix + "Query_exp", z)));
 
-        acc.add(first * (eval("P_out_PSQ", z) - q_edge * eval("P_out_w", z)));
-        acc.add(psq_step(eval("P_out_PSQ", omega_z), eval("P_out_PSQ", z), eval("P_out_w", omega_z), q_edge_next, q_new_next));
-        acc.add(q_end * (eval("P_out_PSQ", z) - eval("P_out_T_edge", z)));
-        acc.add(first * eval("P_out_R_t", z));
-        acc.add(route_edge_step(eval("P_out_R_t", omega_z), eval("P_out_R_t", z), eval("P_out_Query_t", z), beta_t_out, q_edge));
-        acc.add(last * (eval("P_out_R_t", z) - witness_scalars.at("S_t_out")));
-        acc.add(eval("P_out_Query_t", z) - (eval("P_dst", z) + eta_t_out * eval("P_out_T_edge", z)));
-        acc.add(zero_on_unselected(q_edge, eval("P_out_Query_t", z)));
+            acc.add(first * (eval(prefix + "PSQ", z) - q_edge * eval(prefix + "w", z)));
+            acc.add(psq_step(eval(prefix + "PSQ", omega_z), eval(prefix + "PSQ", z), eval(prefix + "w", omega_z), q_edge_next, q_new_next));
+            acc.add(q_end * (eval(prefix + "PSQ", z) - eval(prefix + "T_edge", z)));
+            acc.add(first * eval(prefix + "R_t", z));
+            acc.add(route_edge_step(eval(prefix + "R_t", omega_z), eval(prefix + "R_t", z), eval(prefix + "Query_t", z), beta_t_out, q_edge));
+            acc.add(last * (eval(prefix + "R_t", z) - witness_scalars.at(output_witness_scalar_name("t", head_index, legacy_single_output))));
+            acc.add(eval(prefix + "Query_t", z) - (eval("P_dst", z) + eta_t_out * eval(prefix + "T_edge", z)));
+            acc.add(zero_on_unselected(q_edge, eval(prefix + "Query_t", z)));
 
-        acc.add(first * eval("P_out_R_dst", z));
-        acc.add(route_edge_step(eval("P_out_R_dst", omega_z), eval("P_out_R_dst", z), eval("P_out_Query_dst", z), beta_dst_out, q_edge));
-        acc.add(last * (eval("P_out_R_dst", z) - witness_scalars.at("S_dst_out")));
-        acc.add(eval("P_out_Query_dst", z)
-            - (eval("P_dst", z)
-                + eta_dst_out * eval("P_out_E_dst_edge", z)
-                + eta_dst_out.pow(2) * eval("P_out_M_edge", z)
-                + eta_dst_out.pow(3) * eval("P_out_Sum_edge", z)
-                + eta_dst_out.pow(4) * eval("P_out_inv_edge", z)
-                + eta_dst_out.pow(5) * eval("P_out_Y_star_edge", z)));
-        acc.add(zero_on_unselected(q_edge, eval("P_out_Query_dst", z)));
+            acc.add(first * eval(prefix + "R_dst", z));
+            acc.add(route_edge_step(eval(prefix + "R_dst", omega_z), eval(prefix + "R_dst", z), eval(prefix + "Query_dst", z), beta_dst_out, q_edge));
+            acc.add(last * (eval(prefix + "R_dst", z) - witness_scalars.at(output_witness_scalar_name("dst", head_index, legacy_single_output))));
+            acc.add(eval(prefix + "Query_dst", z)
+                - (eval("P_dst", z)
+                    + eta_dst_out * eval(prefix + "E_dst_edge", z)
+                    + eta_dst_out.pow(2) * eval(prefix + "M_edge", z)
+                    + eta_dst_out.pow(3) * eval(prefix + "Sum_edge", z)
+                    + eta_dst_out.pow(4) * eval(prefix + "inv_edge", z)
+                    + eta_dst_out.pow(5) * eval(prefix + "Y_star_edge", z)));
+            acc.add(zero_on_unselected(q_edge, eval(prefix + "Query_dst", z)));
+        }
 
         return acc.value() / zero_eval;
     }
@@ -710,48 +779,52 @@ FieldElement evaluate_t_n(
             acc.add(zero_on_unselected(q_n, eval(prefix + "m_t", z)));
         }
 
-        const auto beta_src_out = challenges.at("beta_src_out");
-        const auto beta_dst_out = challenges.at("beta_dst_out");
-        const auto eta_src_out = challenges.at("eta_src_out");
-        const auto eta_dst_out = challenges.at("eta_dst_out");
-        const auto beta_t_out = challenges.at("beta_t_out");
-        const auto eta_t_out = challenges.at("eta_t_out");
-        const auto lambda_out = challenges.at("lambda_out");
+        const bool legacy_single_output = context.model.output_layer.heads.size() == 1;
+        for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index) {
+            const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
+            const auto beta_src_out = challenges.at(output_challenge_name("beta_src_out", head_index, legacy_single_output));
+            const auto beta_dst_out = challenges.at(output_challenge_name("beta_dst_out", head_index, legacy_single_output));
+            const auto eta_src_out = challenges.at(output_challenge_name("eta_src_out", head_index, legacy_single_output));
+            const auto eta_dst_out = challenges.at(output_challenge_name("eta_dst_out", head_index, legacy_single_output));
+            const auto beta_t_out = challenges.at(output_challenge_name("beta_t_out", head_index, legacy_single_output));
+            const auto eta_t_out = challenges.at(output_challenge_name("eta_t_out", head_index, legacy_single_output));
+            const auto lambda_out = challenges.at(output_challenge_name("lambda_out", head_index, legacy_single_output));
 
-        acc.add(first * eval("P_out_R_src_node", z));
-        acc.add(route_node_step(eval("P_out_R_src_node", omega_z), eval("P_out_R_src_node", z), eval("P_out_Table_src", z), beta_src_out, q_n, eval("P_out_m_src", z)));
-        acc.add(last * (eval("P_out_R_src_node", z) - witness_scalars.at("S_src_out")));
-        acc.add(first * eval("P_out_R_dst_node", z));
-        acc.add(route_node_step(eval("P_out_R_dst_node", omega_z), eval("P_out_R_dst_node", z), eval("P_out_Table_dst", z), beta_dst_out, q_n, eval("P_out_m_dst", z)));
-        acc.add(last * (eval("P_out_R_dst_node", z) - witness_scalars.at("S_dst_out")));
-        acc.add(first * eval("P_out_R_t_node", z));
-        acc.add(route_node_step(eval("P_out_R_t_node", omega_z), eval("P_out_R_t_node", z), eval("P_out_Table_t", z), beta_t_out, q_n, eval("P_out_m_t", z)));
-        acc.add(last * (eval("P_out_R_t_node", z) - witness_scalars.at("S_t_out")));
-        acc.add(q_n * (eval("P_out_Sum", z) * eval("P_out_inv", z) - FieldElement::one()));
-        acc.add(q_n * (eval("P_out_T", z) - eval("P_out_Sum", z) - lambda_out * eval("P_out_Y_star", z)));
-        acc.add(eval("P_out_Table_src", z) - (eval("P_I", z) + eta_src_out * eval("P_out_E_src", z)));
-        acc.add(eval("P_out_Table_dst", z)
-            - (eval("P_I", z)
-                + eta_dst_out * eval("P_out_E_dst", z)
-                + eta_dst_out.pow(2) * eval("P_out_M", z)
-                + eta_dst_out.pow(3) * eval("P_out_Sum", z)
-                + eta_dst_out.pow(4) * eval("P_out_inv", z)
-                + eta_dst_out.pow(5) * eval("P_out_Y_star", z)));
-        acc.add(eval("P_out_Table_t", z) - (eval("P_I", z) + eta_t_out * eval("P_out_T", z)));
-        acc.add(zero_on_unselected(q_n, eval("P_out_E_src", z)));
-        acc.add(zero_on_unselected(q_n, eval("P_out_E_dst", z)));
-        acc.add(zero_on_unselected(q_n, eval("P_out_M", z)));
-        acc.add(zero_on_unselected(q_n, eval("P_out_Sum", z)));
-        acc.add(zero_on_unselected(q_n, eval("P_out_inv", z)));
-        acc.add(zero_on_unselected(q_n, eval("P_out_Y_prime_star", z)));
-        acc.add(zero_on_unselected(q_n, eval("P_out_Y_star", z)));
-        acc.add(zero_on_unselected(q_n, eval("P_out_T", z)));
-        acc.add(zero_on_unselected(q_n, eval("P_out_Table_src", z)));
-        acc.add(zero_on_unselected(q_n, eval("P_out_m_src", z)));
-        acc.add(zero_on_unselected(q_n, eval("P_out_Table_dst", z)));
-        acc.add(zero_on_unselected(q_n, eval("P_out_m_dst", z)));
-        acc.add(zero_on_unselected(q_n, eval("P_out_Table_t", z)));
-        acc.add(zero_on_unselected(q_n, eval("P_out_m_t", z)));
+            acc.add(first * eval(prefix + "R_src_node", z));
+            acc.add(route_node_step(eval(prefix + "R_src_node", omega_z), eval(prefix + "R_src_node", z), eval(prefix + "Table_src", z), beta_src_out, q_n, eval(prefix + "m_src", z)));
+            acc.add(last * (eval(prefix + "R_src_node", z) - witness_scalars.at(output_witness_scalar_name("src", head_index, legacy_single_output))));
+            acc.add(first * eval(prefix + "R_dst_node", z));
+            acc.add(route_node_step(eval(prefix + "R_dst_node", omega_z), eval(prefix + "R_dst_node", z), eval(prefix + "Table_dst", z), beta_dst_out, q_n, eval(prefix + "m_dst", z)));
+            acc.add(last * (eval(prefix + "R_dst_node", z) - witness_scalars.at(output_witness_scalar_name("dst", head_index, legacy_single_output))));
+            acc.add(first * eval(prefix + "R_t_node", z));
+            acc.add(route_node_step(eval(prefix + "R_t_node", omega_z), eval(prefix + "R_t_node", z), eval(prefix + "Table_t", z), beta_t_out, q_n, eval(prefix + "m_t", z)));
+            acc.add(last * (eval(prefix + "R_t_node", z) - witness_scalars.at(output_witness_scalar_name("t", head_index, legacy_single_output))));
+            acc.add(q_n * (eval(prefix + "Sum", z) * eval(prefix + "inv", z) - FieldElement::one()));
+            acc.add(q_n * (eval(prefix + "T", z) - eval(prefix + "Sum", z) - lambda_out * eval(prefix + "Y_star", z)));
+            acc.add(eval(prefix + "Table_src", z) - (eval("P_I", z) + eta_src_out * eval(prefix + "E_src", z)));
+            acc.add(eval(prefix + "Table_dst", z)
+                - (eval("P_I", z)
+                    + eta_dst_out * eval(prefix + "E_dst", z)
+                    + eta_dst_out.pow(2) * eval(prefix + "M", z)
+                    + eta_dst_out.pow(3) * eval(prefix + "Sum", z)
+                    + eta_dst_out.pow(4) * eval(prefix + "inv", z)
+                    + eta_dst_out.pow(5) * eval(prefix + "Y_star", z)));
+            acc.add(eval(prefix + "Table_t", z) - (eval("P_I", z) + eta_t_out * eval(prefix + "T", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "E_src", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "E_dst", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "M", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "Sum", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "inv", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "Y_prime_star", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "Y_star", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "T", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "Table_src", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "m_src", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "Table_dst", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "m_dst", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "Table_t", z)));
+            acc.add(zero_on_unselected(q_n, eval(prefix + "m_t", z)));
+        }
 
         return acc.value() / zero_eval;
     }
@@ -961,19 +1034,30 @@ FieldElement evaluate_t_cat(
     const auto q_invalid = FieldElement::one() - q_valid;
     QuotientAccumulator acc(challenges.at("alpha_quot"));
 
-    acc.add(first * eval("P_cat_Acc", z));
-    acc.add(q_valid * acc_step(eval("P_cat_Acc", omega_z), eval("P_cat_Acc", z), eval("P_cat_a", z), eval("P_cat_b", z)));
-    acc.add(q_invalid * (eval("P_cat_Acc", omega_z) - eval("P_cat_Acc", z)));
-    acc.add(zero_on_unselected(q_valid, eval("P_cat_a", z)));
-    acc.add(zero_on_unselected(q_valid, eval("P_cat_b", z)));
-    acc.add(last * (eval("P_cat_Acc", z) - external_evaluations.at("mu_cat")));
+    for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index) {
+        const bool is_final_layer = layer_index + 1 == context.model.hidden_layers.size();
+        const auto prefix = hidden_layer_cat_prefix(layer_index, is_final_layer);
+        const auto mu_name = is_final_layer ? std::string("mu_cat") : "mu_cat_l" + std::to_string(layer_index);
+        acc.add(first * eval(prefix + "_Acc", z));
+        acc.add(q_valid * acc_step(eval(prefix + "_Acc", omega_z), eval(prefix + "_Acc", z), eval(prefix + "_a", z), eval(prefix + "_b", z)));
+        acc.add(q_invalid * (eval(prefix + "_Acc", omega_z) - eval(prefix + "_Acc", z)));
+        acc.add(zero_on_unselected(q_valid, eval(prefix + "_a", z)));
+        acc.add(zero_on_unselected(q_valid, eval(prefix + "_b", z)));
+        acc.add(last * (eval(prefix + "_Acc", z) - external_evaluations.at(mu_name)));
+    }
 
-    acc.add(first * eval("P_out_Acc_proj", z));
-    acc.add(q_valid * acc_step(eval("P_out_Acc_proj", omega_z), eval("P_out_Acc_proj", z), eval("P_out_a_proj", z), eval("P_out_b_proj", z)));
-    acc.add(q_invalid * (eval("P_out_Acc_proj", omega_z) - eval("P_out_Acc_proj", z)));
-    acc.add(zero_on_unselected(q_valid, eval("P_out_a_proj", z)));
-    acc.add(zero_on_unselected(q_valid, eval("P_out_b_proj", z)));
-    acc.add(last * (eval("P_out_Acc_proj", z) - external_evaluations.at("mu_out_proj")));
+    const bool legacy_single_output = context.model.output_layer.heads.size() == 1;
+    for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index) {
+        const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
+        const auto mu_name =
+            legacy_single_output ? std::string("mu_out_proj") : output_external_eval_name("proj", head_index, false);
+        acc.add(first * eval(prefix + "Acc_proj", z));
+        acc.add(q_valid * acc_step(eval(prefix + "Acc_proj", omega_z), eval(prefix + "Acc_proj", z), eval(prefix + "a_proj", z), eval(prefix + "b_proj", z)));
+        acc.add(q_invalid * (eval(prefix + "Acc_proj", omega_z) - eval(prefix + "Acc_proj", z)));
+        acc.add(zero_on_unselected(q_valid, eval(prefix + "a_proj", z)));
+        acc.add(zero_on_unselected(q_valid, eval(prefix + "b_proj", z)));
+        acc.add(last * (eval(prefix + "Acc_proj", z) - external_evaluations.at(mu_name)));
+    }
 
     return acc.value() / zero_eval;
 }
@@ -992,26 +1076,59 @@ FieldElement evaluate_t_c(
     const auto q_invalid = FieldElement::one() - q_valid;
     QuotientAccumulator acc(challenges.at("alpha_quot"));
 
-    acc.add(first * eval("P_out_Acc_src", z));
-    acc.add(q_valid * acc_step(eval("P_out_Acc_src", omega_z), eval("P_out_Acc_src", z), eval("P_out_a_src", z), eval("P_out_b_src", z)));
-    acc.add(q_invalid * (eval("P_out_Acc_src", omega_z) - eval("P_out_Acc_src", z)));
-    acc.add(zero_on_unselected(q_valid, eval("P_out_a_src", z)));
-    acc.add(zero_on_unselected(q_valid, eval("P_out_b_src", z)));
-    acc.add(last * (eval("P_out_Acc_src", z) - external_evaluations.at("mu_out_src")));
+    const bool legacy_single_output = context.model.output_layer.heads.size() == 1;
+    for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index) {
+        const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
+        const auto mu_src =
+            legacy_single_output ? std::string("mu_out_src") : output_external_eval_name("src", head_index, false);
+        const auto mu_dst =
+            legacy_single_output ? std::string("mu_out_dst") : output_external_eval_name("dst", head_index, false);
+        const auto mu_star =
+            legacy_single_output ? std::string("mu_out_star") : output_external_eval_name("star", head_index, false);
+        const auto mu_y_lin =
+            legacy_single_output ? std::string("mu_Y_lin") : output_external_eval_name("y_lin", head_index, false);
+        const auto mu_y =
+            legacy_single_output ? std::string("mu_out") : output_external_eval_name("y", head_index, false);
 
-    acc.add(first * eval("P_out_Acc_dst", z));
-    acc.add(q_valid * acc_step(eval("P_out_Acc_dst", omega_z), eval("P_out_Acc_dst", z), eval("P_out_a_dst", z), eval("P_out_b_dst", z)));
-    acc.add(q_invalid * (eval("P_out_Acc_dst", omega_z) - eval("P_out_Acc_dst", z)));
-    acc.add(zero_on_unselected(q_valid, eval("P_out_a_dst", z)));
-    acc.add(zero_on_unselected(q_valid, eval("P_out_b_dst", z)));
-    acc.add(last * (eval("P_out_Acc_dst", z) - external_evaluations.at("mu_out_dst")));
+        acc.add(first * eval(prefix + "Acc_src", z));
+        acc.add(q_valid * acc_step(eval(prefix + "Acc_src", omega_z), eval(prefix + "Acc_src", z), eval(prefix + "a_src", z), eval(prefix + "b_src", z)));
+        acc.add(q_invalid * (eval(prefix + "Acc_src", omega_z) - eval(prefix + "Acc_src", z)));
+        acc.add(zero_on_unselected(q_valid, eval(prefix + "a_src", z)));
+        acc.add(zero_on_unselected(q_valid, eval(prefix + "b_src", z)));
+        acc.add(last * (eval(prefix + "Acc_src", z) - external_evaluations.at(mu_src)));
 
-    acc.add(first * eval("P_out_Acc_y", z));
-    acc.add(q_valid * acc_step(eval("P_out_Acc_y", omega_z), eval("P_out_Acc_y", z), eval("P_out_a_y", z), eval("P_out_b_y", z)));
-    acc.add(q_invalid * (eval("P_out_Acc_y", omega_z) - eval("P_out_Acc_y", z)));
-    acc.add(zero_on_unselected(q_valid, eval("P_out_a_y", z)));
-    acc.add(zero_on_unselected(q_valid, eval("P_out_b_y", z)));
-    acc.add(last * (eval("P_out_Acc_y", z) - external_evaluations.at("mu_out_star")));
+        acc.add(first * eval(prefix + "Acc_dst", z));
+        acc.add(q_valid * acc_step(eval(prefix + "Acc_dst", omega_z), eval(prefix + "Acc_dst", z), eval(prefix + "a_dst", z), eval(prefix + "b_dst", z)));
+        acc.add(q_invalid * (eval(prefix + "Acc_dst", omega_z) - eval(prefix + "Acc_dst", z)));
+        acc.add(zero_on_unselected(q_valid, eval(prefix + "a_dst", z)));
+        acc.add(zero_on_unselected(q_valid, eval(prefix + "b_dst", z)));
+        acc.add(last * (eval(prefix + "Acc_dst", z) - external_evaluations.at(mu_dst)));
+
+        acc.add(first * eval(prefix + "Acc_y", z));
+        acc.add(q_valid * acc_step(eval(prefix + "Acc_y", omega_z), eval(prefix + "Acc_y", z), eval(prefix + "a_y", z), eval(prefix + "b_y", z)));
+        acc.add(q_invalid * (eval(prefix + "Acc_y", omega_z) - eval(prefix + "Acc_y", z)));
+        acc.add(zero_on_unselected(q_valid, eval(prefix + "a_y", z)));
+        acc.add(zero_on_unselected(q_valid, eval(prefix + "b_y", z)));
+        acc.add(last * (eval(prefix + "Acc_y", z) - external_evaluations.at(mu_star)));
+
+        acc.add(first * (external_evaluations.at(mu_y) - external_evaluations.at(mu_y_lin)
+            - bias_fold_vector(
+                context.model.output_layer.heads[head_index].output_bias_fp,
+                context.local.num_nodes,
+                challenges.at("y_out"))));
+    }
+
+    if (!legacy_single_output) {
+        FieldElement summed_y_lin = FieldElement::zero();
+        FieldElement summed_y = FieldElement::zero();
+        for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index) {
+            summed_y_lin += external_evaluations.at(output_external_eval_name("y_lin", head_index, false));
+            summed_y += external_evaluations.at(output_external_eval_name("y", head_index, false));
+        }
+        const auto k_out = FieldElement(context.model.output_layer.heads.size());
+        acc.add(first * (k_out * external_evaluations.at("mu_Y_lin") - summed_y_lin));
+        acc.add(first * (k_out * external_evaluations.at("mu_out") - summed_y));
+    }
 
     return acc.value() / zero_eval;
 }
