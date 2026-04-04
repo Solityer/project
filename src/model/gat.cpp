@@ -35,6 +35,34 @@ std::size_t parse_required_size_t(const std::string& text, const std::string& ke
     return static_cast<std::size_t>(std::stoull(match[1].str()));
 }
 
+std::size_t parse_optional_size_t(const std::string& text, const std::string& key, std::size_t fallback) {
+    const std::regex pattern("\"" + key + "\"\\s*:\\s*([0-9]+)");
+    std::smatch match;
+    if (!std::regex_search(text, match, pattern)) {
+        return fallback;
+    }
+    return static_cast<std::size_t>(std::stoull(match[1].str()));
+}
+
+std::vector<std::size_t> parse_optional_size_array(
+    const std::string& text,
+    const std::string& key) {
+    const std::regex pattern("\"" + key + "\"\\s*:\\s*\\[([^\\]]*)\\]");
+    std::smatch match;
+    if (!std::regex_search(text, match, pattern)) {
+        return {};
+    }
+    std::string body = match[1].str();
+    std::replace(body.begin(), body.end(), ',', ' ');
+    std::vector<std::size_t> out;
+    std::istringstream input(body);
+    std::size_t value = 0;
+    while (input >> value) {
+        out.push_back(value);
+    }
+    return out;
+}
+
 std::size_t shape_product(const std::vector<std::size_t>& shape) {
     std::size_t out = 1;
     for (const auto dim : shape) {
@@ -236,6 +264,31 @@ FloatMatrix concatenate_columns(const std::vector<FloatMatrix>& matrices) {
     return out;
 }
 
+FloatMatrix average_matrices(const std::vector<FloatMatrix>& matrices) {
+    if (matrices.empty()) {
+        return {};
+    }
+    auto out = matrices.front();
+    for (std::size_t matrix_index = 1; matrix_index < matrices.size(); ++matrix_index) {
+        if (matrices[matrix_index].size() != out.size()
+            || (!out.empty() && matrices[matrix_index].front().size() != out.front().size())) {
+            throw std::runtime_error("cannot average matrices with different shapes");
+        }
+        for (std::size_t row = 0; row < out.size(); ++row) {
+            for (std::size_t col = 0; col < out[row].size(); ++col) {
+                out[row][col] += matrices[matrix_index][row][col];
+            }
+        }
+    }
+    const auto scale = 1.0 / static_cast<double>(matrices.size());
+    for (auto& row : out) {
+        for (auto& value : row) {
+            value *= scale;
+        }
+    }
+    return out;
+}
+
 HeadForwardTrace attention_head_forward_impl(
     const FloatMatrix& features,
     const std::vector<data::Edge>& edges,
@@ -389,6 +442,11 @@ ModelParameters build_model_parameters(
     for (std::size_t i = 0; i < num_classes; ++i) {
         params.b[i] = algebra::FieldElement::from_signed(static_cast<std::int64_t>(i % 3U));
     }
+    params.L = 2;
+    params.d_in_profile = {input_dim};
+    params.hidden_profile = {{1, hidden_dim}};
+    params.K_out = 1;
+    params.C = num_classes;
     return params;
 }
 
@@ -398,23 +456,50 @@ CheckpointBundleInfo inspect_checkpoint_bundle(const std::string& bundle_root) {
 
     CheckpointBundleInfo info;
     info.bundle_root = bundle_root;
-    info.hidden_head_count = parse_required_size_t(manifest, "hidden_head_count");
-    info.has_output_attention_head = manifest.find("\"output_head\"") != std::string::npos;
+    const auto hidden_head_count = parse_required_size_t(manifest, "hidden_head_count");
+    info.layer_count = parse_optional_size_t(manifest, "L", 2);
+    info.output_head_count = parse_optional_size_t(
+        manifest,
+        "K_out",
+        manifest.find("\"output_head\"") != std::string::npos ? 1 : 0);
+    info.class_count = parse_optional_size_t(manifest, "C", 0);
+    info.d_in_profile = parse_optional_size_array(manifest, "d_in_profile");
+    info.hidden_profile = parse_optional_size_array(manifest, "hidden_profile_k").empty()
+        ? std::vector<HiddenLayerShape>{{hidden_head_count, 0}}
+        : std::vector<HiddenLayerShape>{};
+    if (info.hidden_profile.empty()) {
+        const auto k_values = parse_optional_size_array(manifest, "hidden_profile_k");
+        const auto d_values = parse_optional_size_array(manifest, "hidden_profile_d");
+        if (k_values.size() != d_values.size()) {
+            throw std::runtime_error("checkpoint manifest hidden_profile_k/d mismatch");
+        }
+        for (std::size_t i = 0; i < k_values.size(); ++i) {
+            info.hidden_profile.push_back({k_values[i], d_values[i]});
+        }
+    }
+    info.has_output_attention_head = info.output_head_count > 0;
     return info;
 }
 
-bool checkpoint_bundle_matches_single_head_protocol(
+bool checkpoint_bundle_matches_formal_proof_shape(
     const CheckpointBundleInfo& info,
     std::string* reason) {
     std::vector<std::string> failures;
-    if (info.hidden_head_count != 1) {
+    const auto hidden_head_count = info.hidden_profile.empty() ? 0 : info.hidden_profile.front().head_count;
+    if (info.layer_count != 2) {
         failures.push_back(
-            "hidden_head_count=" + std::to_string(info.hidden_head_count)
-            + " but the current protocol model expects exactly 1 hidden attention head");
+            "L=" + std::to_string(info.layer_count)
+            + " but the current formal proof route only supports L=2");
     }
-    if (info.has_output_attention_head) {
+    if (hidden_head_count == 0) {
         failures.push_back(
-            "the exported bundle contains an output attention head, while the current protocol model expects affine output parameters W_out/b");
+            "hidden_head_count=" + std::to_string(hidden_head_count)
+            + " but the checkpoint manifest must expose a non-empty hidden_profile");
+    }
+    if (info.output_head_count != 1) {
+        failures.push_back(
+            "K_out=" + std::to_string(info.output_head_count)
+            + " but the current formal proof route only supports K_out=1");
     }
     if (failures.empty()) {
         return true;
@@ -438,8 +523,14 @@ ModelParameters load_checkpoint_bundle_parameters(const std::string& bundle_root
 
     ModelParameters out;
     out.has_real_multihead = true;
-    out.hidden_heads.reserve(manifest_info.hidden_head_count);
-    for (std::size_t head_index = 0; head_index < manifest_info.hidden_head_count; ++head_index) {
+    const auto hidden_head_count =
+        manifest_info.hidden_profile.empty() ? 0 : manifest_info.hidden_profile.front().head_count;
+    out.L = manifest_info.layer_count == 0 ? 2 : manifest_info.layer_count;
+    out.d_in_profile = manifest_info.d_in_profile;
+    out.hidden_profile = manifest_info.hidden_profile;
+    out.K_out = std::max<std::size_t>(1, manifest_info.output_head_count);
+    out.hidden_heads.reserve(hidden_head_count);
+    for (std::size_t head_index = 0; head_index < hidden_head_count; ++head_index) {
         out.hidden_heads.push_back(load_head_parameters(
             tensors,
             hidden_seq_kernel_name(head_index),
@@ -457,6 +548,31 @@ ModelParameters load_checkpoint_bundle_parameters(const std::string& bundle_root
         "conv1d_26/kernel",
         "conv1d_26/bias",
         "BiasAdd_8/biases");
+    if (out.hidden_heads.empty()) {
+        throw std::runtime_error("checkpoint bundle does not contain hidden attention heads");
+    }
+    if (out.d_in_profile.empty()) {
+        out.d_in_profile.push_back(out.hidden_heads.front().seq_kernel_fp.size());
+    }
+    if (out.hidden_profile.empty()) {
+        out.hidden_profile.push_back({hidden_head_count, attention_head_output_width(out.hidden_heads.front())});
+    }
+    if (!out.hidden_profile.empty() && out.hidden_profile.front().head_dim == 0) {
+        out.hidden_profile.front().head_dim = attention_head_output_width(out.hidden_heads.front());
+    }
+    out.C = attention_head_output_width(out.output_head);
+    out.hidden_layers.push_back(HiddenLayerParameters{
+        .layer_index = 0,
+        .input_dim = out.d_in_profile.front(),
+        .shape = out.hidden_profile.front(),
+        .heads = out.hidden_heads,
+    });
+    out.output_layer = OutputLayerParameters{
+        .input_dim = out.hidden_profile.front().head_count * out.hidden_profile.front().head_dim,
+        .output_dim = out.C,
+        .head_count = 1,
+        .heads = {out.output_head},
+    };
     return out;
 }
 
@@ -501,38 +617,58 @@ MultiHeadForwardTrace forward_reference_style(
     MultiHeadForwardTrace trace;
     trace.H = features;
     trace.bias = build_attention_bias_matrix(features.size(), edges);
-
-    std::vector<FloatMatrix> hidden_outputs;
-    hidden_outputs.reserve(parameters.hidden_heads.size());
-    trace.hidden_head_traces.reserve(parameters.hidden_heads.size());
-    for (const auto& head : parameters.hidden_heads) {
-        HeadForwardProfile head_profile;
-        auto head_trace = attention_head_forward_impl(features, edges, head, true, true, &head_profile);
-        if (profile != nullptr) {
-            profile->hidden_projection_ms += head_profile.projection_ms;
-            profile->hidden_attention_ms += head_profile.attention_ms;
-            profile->hidden_activation_ms += head_profile.activation_ms;
+    auto layer_input = features;
+    for (const auto& layer : parameters.hidden_layers) {
+        HiddenLayerForwardTrace layer_trace;
+        layer_trace.input = layer_input;
+        std::vector<FloatMatrix> hidden_outputs;
+        hidden_outputs.reserve(layer.heads.size());
+        layer_trace.head_traces.reserve(layer.heads.size());
+        for (const auto& head : layer.heads) {
+            HeadForwardProfile head_profile;
+            auto head_trace = attention_head_forward_impl(layer_input, edges, head, false, true, &head_profile);
+            if (profile != nullptr) {
+                profile->hidden_projection_ms += head_profile.projection_ms;
+                profile->hidden_attention_ms += head_profile.attention_ms;
+                profile->hidden_activation_ms += head_profile.activation_ms;
+            }
+            hidden_outputs.push_back(head_trace.H_agg);
+            layer_trace.head_traces.push_back(head_trace);
+            if (layer.layer_index == 0) {
+                trace.hidden_head_traces.push_back(std::move(head_trace));
+            }
         }
-        hidden_outputs.push_back(head_trace.H_agg);
-        trace.hidden_head_traces.push_back(std::move(head_trace));
+        if (profile != nullptr) {
+            const auto concat_start = std::chrono::steady_clock::now();
+            layer_trace.concat = concatenate_columns(hidden_outputs);
+            profile->hidden_concat_ms += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - concat_start).count();
+        } else {
+            layer_trace.concat = concatenate_columns(hidden_outputs);
+        }
+        layer_input = layer_trace.concat;
+        trace.hidden_concat = layer_trace.concat;
+        trace.hidden_layer_traces.push_back(std::move(layer_trace));
     }
-    if (profile != nullptr) {
-        const auto concat_start = std::chrono::steady_clock::now();
-        trace.hidden_concat = concatenate_columns(hidden_outputs);
-        profile->hidden_concat_ms += std::chrono::duration<double, std::milli>(
-            std::chrono::steady_clock::now() - concat_start).count();
-    } else {
-        trace.hidden_concat = concatenate_columns(hidden_outputs);
+
+    std::vector<FloatMatrix> output_values;
+    output_values.reserve(parameters.output_layer.heads.size());
+    trace.output_head_traces.reserve(parameters.output_layer.heads.size());
+    for (const auto& head : parameters.output_layer.heads) {
+        HeadForwardProfile output_profile;
+        auto head_trace = attention_head_forward_impl(layer_input, edges, head, true, false, &output_profile);
+        if (profile != nullptr) {
+            profile->output_projection_ms += output_profile.projection_ms;
+            profile->output_attention_ms += output_profile.attention_ms;
+            profile->output_activation_ms += output_profile.activation_ms;
+        }
+        output_values.push_back(head_trace.H_agg);
+        trace.output_head_traces.push_back(head_trace);
     }
-    HeadForwardProfile output_profile;
-    trace.output_head_trace = attention_head_forward_impl(trace.hidden_concat, edges, parameters.output_head, true, true, &output_profile);
-    if (profile != nullptr) {
-        profile->output_projection_ms += output_profile.projection_ms;
-        profile->output_attention_ms += output_profile.attention_ms;
-        profile->output_activation_ms += output_profile.activation_ms;
-    }
-    trace.Y_lin = trace.output_head_trace.H_prime;
-    trace.Y = trace.output_head_trace.H_agg;
+    trace.output_head_trace = trace.output_head_traces.front();
+    trace.output_head_values = output_values;
+    trace.Y_lin = average_matrices(output_values);
+    trace.Y = trace.Y_lin;
     return trace;
 }
 
@@ -548,39 +684,69 @@ MultiHeadForwardTrace forward_note_style(
     MultiHeadForwardTrace trace;
     trace.H = features;
     trace.bias = build_attention_bias_matrix(features.size(), edges);
-
-    std::vector<FloatMatrix> hidden_outputs;
-    hidden_outputs.reserve(parameters.hidden_heads.size());
-    trace.hidden_head_traces.reserve(parameters.hidden_heads.size());
-    for (const auto& head : parameters.hidden_heads) {
-        HeadForwardProfile head_profile;
-        auto head_trace = attention_head_forward_impl(features, edges, head, false, true, &head_profile);
-        if (profile != nullptr) {
-            profile->hidden_projection_ms += head_profile.projection_ms;
-            profile->hidden_attention_ms += head_profile.attention_ms;
-            profile->hidden_activation_ms += head_profile.activation_ms;
+    auto layer_input = features;
+    for (const auto& layer : parameters.hidden_layers) {
+        HiddenLayerForwardTrace layer_trace;
+        layer_trace.input = layer_input;
+        std::vector<FloatMatrix> hidden_outputs;
+        hidden_outputs.reserve(layer.heads.size());
+        layer_trace.head_traces.reserve(layer.heads.size());
+        for (const auto& head : layer.heads) {
+            HeadForwardProfile head_profile;
+            auto head_trace = attention_head_forward_impl(layer_input, edges, head, false, true, &head_profile);
+            if (profile != nullptr) {
+                profile->hidden_projection_ms += head_profile.projection_ms;
+                profile->hidden_attention_ms += head_profile.attention_ms;
+                profile->hidden_activation_ms += head_profile.activation_ms;
+            }
+            hidden_outputs.push_back(head_trace.H_agg);
+            layer_trace.head_traces.push_back(head_trace);
+            if (layer.layer_index == 0) {
+                trace.hidden_head_traces.push_back(std::move(head_trace));
+            }
         }
-        hidden_outputs.push_back(head_trace.H_agg);
-        trace.hidden_head_traces.push_back(std::move(head_trace));
+        if (profile != nullptr) {
+            const auto concat_start = std::chrono::steady_clock::now();
+            layer_trace.concat = concatenate_columns(hidden_outputs);
+            profile->hidden_concat_ms += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - concat_start).count();
+        } else {
+            layer_trace.concat = concatenate_columns(hidden_outputs);
+        }
+        layer_input = layer_trace.concat;
+        trace.hidden_concat = layer_trace.concat;
+        trace.hidden_layer_traces.push_back(std::move(layer_trace));
     }
-    if (profile != nullptr) {
-        const auto concat_start = std::chrono::steady_clock::now();
-        trace.hidden_concat = concatenate_columns(hidden_outputs);
-        profile->hidden_concat_ms += std::chrono::duration<double, std::milli>(
-            std::chrono::steady_clock::now() - concat_start).count();
-    } else {
-        trace.hidden_concat = concatenate_columns(hidden_outputs);
+
+    std::vector<FloatMatrix> output_pre_bias;
+    std::vector<FloatMatrix> output_values;
+    output_pre_bias.reserve(parameters.output_layer.heads.size());
+    output_values.reserve(parameters.output_layer.heads.size());
+    trace.output_head_traces.reserve(parameters.output_layer.heads.size());
+    for (const auto& head : parameters.output_layer.heads) {
+        HeadForwardProfile output_profile;
+        auto head_trace = attention_head_forward_impl(layer_input, edges, head, true, false, &output_profile);
+        if (profile != nullptr) {
+            profile->output_projection_ms += output_profile.projection_ms;
+            profile->output_attention_ms += output_profile.attention_ms;
+            profile->output_activation_ms += output_profile.activation_ms;
+        }
+        output_pre_bias.push_back(head_trace.H_agg_pre_bias);
+        output_values.push_back(head_trace.H_agg);
+        trace.output_head_traces.push_back(head_trace);
     }
-    HeadForwardProfile output_profile;
-    trace.output_head_trace = attention_head_forward_impl(trace.hidden_concat, edges, parameters.output_head, false, false, &output_profile);
-    if (profile != nullptr) {
-        profile->output_projection_ms += output_profile.projection_ms;
-        profile->output_attention_ms += output_profile.attention_ms;
-        profile->output_activation_ms += output_profile.activation_ms;
-    }
-    trace.Y_lin = trace.output_head_trace.H_prime;
-    trace.Y = trace.output_head_trace.H_agg;
+    trace.output_head_trace = trace.output_head_traces.front();
+    trace.output_head_values = output_values;
+    trace.Y_lin = average_matrices(output_pre_bias);
+    trace.Y = average_matrices(output_values);
     return trace;
+}
+
+bool supports_current_formal_proof_shape(const ModelParameters& parameters) {
+    return parameters.has_real_multihead
+        && parameters.hidden_layers.size() == 1
+        && parameters.output_layer.heads.size() == 1
+        && parameters.L == 2;
 }
 
 Matrix project_features(const Matrix& left, const Matrix& right) {

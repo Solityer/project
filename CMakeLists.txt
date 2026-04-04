@@ -44,6 +44,7 @@ set(GATZK_SOURCES
     src/protocol/prover.cpp
     src/protocol/psq.cpp
     src/protocol/quotients.cpp
+    src/protocol/schema.cpp
     src/protocol/trace.cpp
     src/protocol/verifier.cpp
     src/protocol/zkmap.cpp

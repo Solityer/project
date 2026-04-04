@@ -42,10 +42,23 @@ def hidden_head_manifest(head_index: int) -> Dict[str, str]:
 
 
 def build_manifest(tensors: Dict[str, np.ndarray], checkpoint_prefix: str) -> Dict[str, object]:
+    hidden_head_count = 8
+    hidden_head_dim = int(tensors["conv1d/kernel"].shape[2])
+    d_in = int(tensors["conv1d/kernel"].shape[1])
+    c_out = int(tensors["BiasAdd_8/biases"].shape[0])
     manifest: Dict[str, object] = {
         "checkpoint_prefix": checkpoint_prefix,
+        "family_schema_version": "multi_layer_multi_head_v1",
+        "L": 2,
+        "d_in_profile": [d_in],
+        "hidden_profile_k": [hidden_head_count],
+        "hidden_profile_d": [hidden_head_dim],
+        "K_out": 1,
+        "C": c_out,
+        "task_type": "transductive_node_classification",
+        "report_unit": "node",
         "tensor_count": len(tensors),
-        "hidden_head_count": 8,
+        "hidden_head_count": hidden_head_count,
         "hidden_heads": [],
         "output_head": {
             "seq_kernel": "conv1d_24/kernel",
@@ -59,7 +72,7 @@ def build_manifest(tensors: Dict[str, np.ndarray], checkpoint_prefix: str) -> Di
     }
     hidden_heads = manifest["hidden_heads"]
     assert isinstance(hidden_heads, list)
-    for head_index in range(8):
+    for head_index in range(hidden_head_count):
         hidden_heads.append({"head_index": head_index, **hidden_head_manifest(head_index)})
     tensor_index = manifest["tensor_index"]
     assert isinstance(tensor_index, dict)

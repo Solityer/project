@@ -14,6 +14,8 @@
 #include "gatzk/algebra/eval_backend.hpp"
 #include "gatzk/protocol/challenges.hpp"
 #include "gatzk/protocol/quotients.hpp"
+#include "gatzk/protocol/schema.hpp"
+#include "gatzk/util/logging.hpp"
 #include "gatzk/util/route2.hpp"
 
 namespace gatzk::protocol {
@@ -50,7 +52,23 @@ std::string verifier_context_cache_key(const util::AppConfig& config) {
            << config.seed << '|'
            << config.local_nodes << '|'
            << config.center_node << '|'
+           << config.layer_count << '|'
+           << config.K_out << '|'
+           << config.batch_graphs << '|'
+           << config.task_type << '|'
+           << config.report_unit << '|'
+           << config.batching_rule << '|'
+           << config.subgraph_rule << '|'
+           << config.self_loop_rule << '|'
+           << config.edge_sort_rule << '|'
+           << config.chunking_rule << '|'
            << (config.allow_synthetic_model ? "synthetic" : "formal");
+    for (const auto input_dim : config.d_in_profile) {
+        stream << "|din=" << input_dim;
+    }
+    for (const auto& layer : config.hidden_profile) {
+        stream << "|hid=" << layer.head_count << 'x' << layer.head_dim;
+    }
     return stream.str();
 }
 
@@ -365,6 +383,21 @@ FieldElement bias_fold(const ProtocolContext& context, const FieldElement& y_out
     return out;
 }
 
+FieldElement bias_fold_vector(
+    const std::vector<double>& bias,
+    std::size_t node_count,
+    const FieldElement& y_out) {
+    FieldElement out = FieldElement::zero();
+    for (std::size_t i = 0; i < node_count; ++i) {
+        for (std::size_t j = 0; j < bias.size(); ++j) {
+            const auto quantized = FieldElement::from_signed(static_cast<std::int64_t>(
+                bias[j] >= 0.0 ? bias[j] * 16.0 + 0.5 : bias[j] * 16.0 - 0.5));
+            out += quantized * y_out.pow(static_cast<std::uint64_t>(i * bias.size() + j));
+        }
+    }
+    return out;
+}
+
 std::unordered_map<std::string, Commitment> to_map(const std::vector<std::pair<std::string, Commitment>>& entries) {
     std::unordered_map<std::string, Commitment> out;
     for (const auto& [name, commitment] : entries) {
@@ -382,15 +415,16 @@ std::map<std::string, FieldElement> to_field_map(const std::vector<std::pair<std
 }
 
 std::size_t hidden_head_width(const model::ModelParameters& parameters, const util::AppConfig& config) {
-    if (parameters.has_real_multihead && !parameters.hidden_heads.empty()) {
-        return model::attention_head_output_width(parameters.hidden_heads.front());
+    if (parameters.has_real_multihead && !parameters.hidden_layers.empty()) {
+        return parameters.hidden_layers.front().shape.head_dim;
     }
     return config.hidden_dim;
 }
 
 std::size_t concat_width(const model::ModelParameters& parameters, const util::AppConfig& config) {
-    if (parameters.has_real_multihead && !parameters.hidden_heads.empty()) {
-        return hidden_head_width(parameters, config) * parameters.hidden_heads.size();
+    if (parameters.has_real_multihead && !parameters.hidden_layers.empty()) {
+        const auto& shape = parameters.hidden_layers.front().shape;
+        return shape.head_count * shape.head_dim;
     }
     return config.hidden_dim;
 }
@@ -401,6 +435,20 @@ PublicMetadata build_public_metadata(const ProtocolContext& context) {
 
 bool metadata_matches(const PublicMetadata& lhs, const PublicMetadata& rhs) {
     return lhs.protocol_id == rhs.protocol_id
+        && lhs.dataset_name == rhs.dataset_name
+        && lhs.task_type == rhs.task_type
+        && lhs.report_unit == rhs.report_unit
+        && lhs.graph_count == rhs.graph_count
+        && lhs.L == rhs.L
+        && lhs.hidden_profile == rhs.hidden_profile
+        && lhs.d_in_profile == rhs.d_in_profile
+        && lhs.K_out == rhs.K_out
+        && lhs.C == rhs.C
+        && lhs.batching_rule == rhs.batching_rule
+        && lhs.subgraph_rule == rhs.subgraph_rule
+        && lhs.self_loop_rule == rhs.self_loop_rule
+        && lhs.edge_sort_rule == rhs.edge_sort_rule
+        && lhs.chunking_rule == rhs.chunking_rule
         && lhs.model_arch_id == rhs.model_arch_id
         && lhs.model_param_id == rhs.model_param_id
         && lhs.static_table_id == rhs.static_table_id
@@ -410,10 +458,6 @@ bool metadata_matches(const PublicMetadata& lhs, const PublicMetadata& rhs) {
         && lhs.encoding_id == rhs.encoding_id
         && lhs.padding_rule_id == rhs.padding_rule_id
         && lhs.degree_bound_id == rhs.degree_bound_id;
-}
-
-std::vector<std::string> fixed_proof_block_order() {
-    return {"M_pub", "Com_dyn", "S_route", "Eval_ext", "Eval_dom", "Com_quot", "Open_dom", "W_ext", "Pi_bind"};
 }
 
 struct ExternalEvalSpec {
@@ -439,6 +483,7 @@ std::vector<ExternalEvalSpec> multihead_external_specs(const ProtocolContext& co
     specs.push_back({"mu_out_src", "P_out_E_src", "y_src_out"});
     specs.push_back({"mu_out_dst", "P_out_E_dst", "y_dst_out"});
     specs.push_back({"mu_out_star", "P_out_Y_star", "y_out_star"});
+    specs.push_back({"mu_Y_lin", "P_Y_lin", "y_out"});
     specs.push_back({"mu_out", "P_Y", "y_out"});
     return specs;
 }
@@ -460,12 +505,19 @@ double* verify_domain_metric(RunMetrics* metrics, const std::string& bundle_name
 }  // namespace
 
 bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metrics) {
+    const bool debug_verify = std::getenv("GATZK_DEBUG_VERIFY") != nullptr;
+    const auto fail = [&](const std::string& reason) {
+        if (debug_verify) {
+            util::info("verify_fail=" + reason);
+        }
+        return false;
+    };
     const auto metadata_start = Clock::now();
     if (!metadata_matches(proof.public_metadata, build_public_metadata(context))) {
-        return false;
+        return fail("metadata_mismatch");
     }
-    if (proof.block_order != fixed_proof_block_order()) {
-        return false;
+    if (proof.block_order != proof_block_order()) {
+        return fail("block_order_mismatch");
     }
     if (metrics != nullptr) {
         metrics->verify_metadata_ms += elapsed_ms(metadata_start, Clock::now());
@@ -473,19 +525,19 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
     if (context.model.has_real_multihead) {
         const auto transcript_start = Clock::now();
         if (proof.dynamic_commitments.size() != dynamic_commitment_labels(context).size()) {
-            return false;
+            return fail("dynamic_commitment_count");
         }
         for (std::size_t i = 0; i < proof.dynamic_commitments.size(); ++i) {
             if (proof.dynamic_commitments[i].first != dynamic_commitment_labels(context)[i]) {
-                return false;
+                return fail("dynamic_commitment_order");
             }
         }
         if (proof.quotient_commitments.size() != quotient_commitment_labels(context).size()) {
-            return false;
+            return fail("quotient_commitment_count");
         }
         for (std::size_t i = 0; i < proof.quotient_commitments.size(); ++i) {
             if (proof.quotient_commitments[i].first != quotient_commitment_labels(context)[i]) {
-                return false;
+                return fail("quotient_commitment_order");
             }
         }
         const auto dynamic_commitments = to_map(proof.dynamic_commitments);
@@ -494,7 +546,7 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
         const auto external_evaluations = to_field_map(proof.external_evaluations);
         const auto challenges = replay_challenges(context, dynamic_commitments, quotient_commitments);
         if (proof.challenges != challenges) {
-            return false;
+            return fail("challenge_replay_mismatch");
         }
         if (metrics != nullptr) {
             metrics->verify_transcript_ms += elapsed_ms(transcript_start, Clock::now());
@@ -503,18 +555,30 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
             if (!witness_scalars.contains("S_src_h" + std::to_string(head_index))
                 || !witness_scalars.contains("S_dst_h" + std::to_string(head_index))
                 || !witness_scalars.contains("S_t_h" + std::to_string(head_index))) {
-                return false;
+                return fail("missing_hidden_route_scalar");
             }
         }
         if (!witness_scalars.contains("S_src_out")
             || !witness_scalars.contains("S_dst_out")
             || !witness_scalars.contains("S_t_out")) {
-            return false;
+            return fail("missing_output_route_scalar");
         }
         for (const auto& spec : multihead_external_specs(context)) {
             if (!external_evaluations.contains(spec.proof_name)) {
-                return false;
+                return fail("missing_external_eval:" + spec.proof_name);
             }
+        }
+        if (context.model.output_layer.heads.size() == 1) {
+            const auto expected = external_evaluations.at("mu_Y_lin")
+                + bias_fold_vector(
+                    context.model.output_layer.heads.front().output_bias_fp,
+                    context.local.num_nodes,
+                    challenges.at("y_out"));
+            if (external_evaluations.at("mu_out") != expected) {
+                return fail("output_bias_relation");
+            }
+        } else if (context.model.output_layer.heads.size() > 1) {
+            return fail("unsupported_k_out");
         }
         struct BundleSpec {
             std::string bundle_name;
@@ -630,7 +694,7 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
         std::vector<FieldElement> external_points;
         for (const auto& spec : multihead_external_specs(context)) {
             if (!dynamic_commitments.contains(spec.label)) {
-                return false;
+                return fail("missing_external_commitment:" + spec.label);
             }
             external_commitments.emplace_back(dynamic_commitments.at(spec.label), external_value(proof, spec.proof_name));
             external_points.push_back(challenges.at(spec.challenge_name));
@@ -642,7 +706,7 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
                 challenges.at("rho_ext"),
                 proof.external_witness,
                 context.kzg)) {
-            return false;
+            return fail("external_fold");
         }
         if (metrics != nullptr) {
             metrics->verify_external_fold_ms += elapsed_ms(external_fold_start, Clock::now());
@@ -650,7 +714,7 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
         for (const auto& spec : bundle_specs) {
             const auto bundle_start = Clock::now();
             if (!verify_bundle_spec(spec)) {
-                return false;
+                return fail("bundle_verify:" + spec.bundle_name);
             }
             if (metrics != nullptr) {
                 const auto elapsed = elapsed_ms(bundle_start, Clock::now());

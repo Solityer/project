@@ -22,6 +22,7 @@
 #include "gatzk/protocol/challenges.hpp"
 #include "gatzk/protocol/lookup.hpp"
 #include "gatzk/protocol/quotients.hpp"
+#include "gatzk/protocol/schema.hpp"
 #include "gatzk/util/logging.hpp"
 #include "gatzk/util/route2.hpp"
 
@@ -380,31 +381,42 @@ std::string context_cache_key(const util::AppConfig& config) {
            << config.seed << '|'
            << config.local_nodes << '|'
            << config.center_node << '|'
+           << config.layer_count << '|'
+           << config.K_out << '|'
+           << config.batch_graphs << '|'
+           << config.task_type << '|'
+           << config.report_unit << '|'
+           << config.batching_rule << '|'
+           << config.subgraph_rule << '|'
+           << config.self_loop_rule << '|'
+           << config.edge_sort_rule << '|'
+           << config.chunking_rule << '|'
            << (config.allow_synthetic_model ? "synthetic" : "formal");
+    for (const auto input_dim : config.d_in_profile) {
+        stream << "|din=" << input_dim;
+    }
+    for (const auto& layer : config.hidden_profile) {
+        stream << "|hid=" << layer.head_count << 'x' << layer.head_dim;
+    }
     return stream.str();
 }
 
 std::size_t hidden_head_width(const model::ModelParameters& parameters, const util::AppConfig& config) {
-    if (parameters.has_real_multihead && !parameters.hidden_heads.empty()) {
-        return model::attention_head_output_width(parameters.hidden_heads.front());
+    if (parameters.has_real_multihead && !parameters.hidden_layers.empty() && !parameters.hidden_layers.front().heads.empty()) {
+        return parameters.hidden_layers.front().shape.head_dim;
     }
     return config.hidden_dim;
 }
 
 std::size_t concat_width(const model::ModelParameters& parameters, const util::AppConfig& config) {
-    if (parameters.has_real_multihead && !parameters.hidden_heads.empty()) {
-        return hidden_head_width(parameters, config) * parameters.hidden_heads.size();
+    if (parameters.has_real_multihead && !parameters.hidden_layers.empty()) {
+        const auto& shape = parameters.hidden_layers.front().shape;
+        return shape.head_count * shape.head_dim;
     }
     return config.hidden_dim;
 }
 
-PublicMetadata build_public_metadata(const ProtocolContext& context) {
-    return canonical_public_metadata(context);
-}
-
-std::vector<std::string> fixed_proof_block_order() {
-    return {"M_pub", "Com_dyn", "S_route", "Eval_ext", "Eval_dom", "Com_quot", "Open_dom", "W_ext", "Pi_bind"};
-}
+PublicMetadata build_public_metadata(const ProtocolContext& context) { return canonical_public_metadata(context); }
 
 struct ExternalEvalSpec {
     std::string proof_name;
@@ -429,6 +441,7 @@ std::vector<ExternalEvalSpec> multihead_external_specs(const ProtocolContext& co
     specs.push_back({"mu_out_src", "P_out_E_src", "y_src_out"});
     specs.push_back({"mu_out_dst", "P_out_E_dst", "y_dst_out"});
     specs.push_back({"mu_out_star", "P_out_Y_star", "y_out_star"});
+    specs.push_back({"mu_Y_lin", "P_Y_lin", "y_out"});
     specs.push_back({"mu_out", "P_Y", "y_out"});
     return specs;
 }
@@ -1807,7 +1820,7 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
 
     auto start = Clock::now();
     context.dataset = data::load_dataset(config);
-    context.local = data::extract_local_subgraph(context.dataset, config.center_node, config.local_nodes);
+    context.local = data::normalize_graph_input(context.dataset, config);
     if (config.allow_synthetic_model) {
         append_note(metrics, "model_source=synthetic_debug_only");
         context.model = model::build_model_parameters(
@@ -1823,7 +1836,36 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
         const auto checkpoint_root = resolve_project_path(config.project_root, config.checkpoint_bundle);
         context.model = model::load_checkpoint_bundle_parameters(checkpoint_root.string());
         append_note(metrics, "model_source=checkpoint_bundle");
-        append_note(metrics, "hidden_head_count=" + std::to_string(context.model.hidden_heads.size()));
+        append_note(metrics, "hidden_head_count=" + std::to_string(context.model.hidden_profile.front().head_count));
+    }
+    if (context.model.has_real_multihead) {
+        bool hidden_profile_matches = context.model.hidden_profile.size() == config.hidden_profile.size();
+        for (std::size_t i = 0; hidden_profile_matches && i < config.hidden_profile.size(); ++i) {
+            hidden_profile_matches =
+                context.model.hidden_profile[i].head_count == config.hidden_profile[i].head_count
+                && context.model.hidden_profile[i].head_dim == config.hidden_profile[i].head_dim;
+        }
+        if (context.model.L != config.layer_count) {
+            throw std::runtime_error(
+                "config L=" + std::to_string(config.layer_count)
+                + " conflicts with model L=" + std::to_string(context.model.L));
+        }
+        if (!hidden_profile_matches) {
+            throw std::runtime_error("config hidden_profile conflicts with checkpoint manifest hidden_profile");
+        }
+        if (!config.d_in_profile.empty() && context.model.d_in_profile != config.d_in_profile) {
+            throw std::runtime_error("config d_in_profile conflicts with checkpoint manifest d_in_profile");
+        }
+        if (context.model.K_out != config.K_out) {
+            throw std::runtime_error(
+                "config K_out=" + std::to_string(config.K_out)
+                + " conflicts with model K_out=" + std::to_string(context.model.K_out));
+        }
+        if (context.model.C != config.num_classes) {
+            throw std::runtime_error(
+                "config num_classes=" + std::to_string(config.num_classes)
+                + " conflicts with model C=" + std::to_string(context.model.C));
+        }
     }
     auto end = Clock::now();
     if (metrics != nullptr) {
@@ -2262,7 +2304,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
 
         Proof proof;
         proof.public_metadata = build_public_metadata(context);
-        proof.block_order = fixed_proof_block_order();
+        proof.block_order = proof_block_order();
         proof.challenges = challenges;
         for (const auto& label : dynamic_commitment_labels(context)) {
             proof.dynamic_commitments.push_back({label, trace.commitments.at(label)});
@@ -2657,7 +2699,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
 
     Proof proof;
         proof.public_metadata = canonical_public_metadata(context);
-    proof.block_order = fixed_proof_block_order();
+    proof.block_order = proof_block_order();
     for (const auto& label : dynamic_commitment_labels(context)) {
         proof.dynamic_commitments.push_back({label, trace.commitments.at(label)});
     }
@@ -2880,6 +2922,20 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
 std::size_t proof_size_bytes(const Proof& proof) {
     std::size_t total =
         proof.public_metadata.protocol_id.size()
+        + proof.public_metadata.dataset_name.size()
+        + proof.public_metadata.task_type.size()
+        + proof.public_metadata.report_unit.size()
+        + proof.public_metadata.graph_count.size()
+        + proof.public_metadata.L.size()
+        + proof.public_metadata.hidden_profile.size()
+        + proof.public_metadata.d_in_profile.size()
+        + proof.public_metadata.K_out.size()
+        + proof.public_metadata.C.size()
+        + proof.public_metadata.batching_rule.size()
+        + proof.public_metadata.subgraph_rule.size()
+        + proof.public_metadata.self_loop_rule.size()
+        + proof.public_metadata.edge_sort_rule.size()
+        + proof.public_metadata.chunking_rule.size()
         + proof.public_metadata.model_arch_id.size()
         + proof.public_metadata.model_param_id.size()
         + proof.public_metadata.static_table_id.size()
@@ -2926,6 +2982,20 @@ void export_run_artifacts(
 
     const std::map<std::string, std::string> metadata = {
         {"protocol_id", proof.public_metadata.protocol_id},
+        {"dataset_name", proof.public_metadata.dataset_name},
+        {"task_type", proof.public_metadata.task_type},
+        {"report_unit", proof.public_metadata.report_unit},
+        {"graph_count", proof.public_metadata.graph_count},
+        {"L", proof.public_metadata.L},
+        {"hidden_profile", proof.public_metadata.hidden_profile},
+        {"d_in_profile", proof.public_metadata.d_in_profile},
+        {"K_out", proof.public_metadata.K_out},
+        {"C", proof.public_metadata.C},
+        {"batching_rule", proof.public_metadata.batching_rule},
+        {"subgraph_rule", proof.public_metadata.subgraph_rule},
+        {"self_loop_rule", proof.public_metadata.self_loop_rule},
+        {"edge_sort_rule", proof.public_metadata.edge_sort_rule},
+        {"chunking_rule", proof.public_metadata.chunking_rule},
         {"model_arch_id", proof.public_metadata.model_arch_id},
         {"model_param_id", proof.public_metadata.model_param_id},
         {"static_table_id", proof.public_metadata.static_table_id},
@@ -2951,6 +3021,25 @@ void export_run_artifacts(
         {"backend_name", metrics.backend_name},
         {"config", metrics.config},
         {"dataset", metrics.dataset},
+        {"dataset_name", proof.public_metadata.dataset_name},
+        {"task_type", proof.public_metadata.task_type},
+        {"report_unit", proof.public_metadata.report_unit},
+        {"graph_count", proof.public_metadata.graph_count},
+        {"L", proof.public_metadata.L},
+        {"hidden_profile", proof.public_metadata.hidden_profile},
+        {"d_in_profile", proof.public_metadata.d_in_profile},
+        {"K_out", proof.public_metadata.K_out},
+        {"C", proof.public_metadata.C},
+        {"batching_rule", proof.public_metadata.batching_rule},
+        {"subgraph_rule", proof.public_metadata.subgraph_rule},
+        {"self_loop_rule", proof.public_metadata.self_loop_rule},
+        {"edge_sort_rule", proof.public_metadata.edge_sort_rule},
+        {"chunking_rule", proof.public_metadata.chunking_rule},
+        {"quant_cfg_id", proof.public_metadata.quant_cfg_id},
+        {"model_arch_id", proof.public_metadata.model_arch_id},
+        {"model_param_id", proof.public_metadata.model_param_id},
+        {"static_table_id", proof.public_metadata.static_table_id},
+        {"degree_bound_id", proof.public_metadata.degree_bound_id},
         {"enabled_fft_backend_upgrade", metrics.enabled_fft_backend_upgrade ? "true" : "false"},
         {"enabled_fft_kernel_upgrade", metrics.enabled_fft_kernel_upgrade ? "true" : "false"},
         {"enabled_fast_msm", metrics.enabled_fast_msm ? "true" : "false"},
@@ -2987,6 +3076,24 @@ void export_run_artifacts(
         {"is_full_dataset", metrics.is_full_dataset ? "true" : "false"},
         {"local_edges", std::to_string(context.local.edges.size())},
         {"local_nodes", std::to_string(context.local.num_nodes)},
+        {"N_total", std::to_string(context.local.public_input.N_total)},
+        {"G_batch", std::to_string(context.local.public_input.G_batch)},
+        {"node_ptr", [&]() {
+            std::ostringstream out;
+            for (std::size_t i = 0; i < context.local.node_ptr.size(); ++i) {
+                if (i != 0) out << ',';
+                out << context.local.node_ptr[i];
+            }
+            return out.str();
+        }()},
+        {"edge_ptr", [&]() {
+            std::ostringstream out;
+            for (std::size_t i = 0; i < context.local.edge_ptr.size(); ++i) {
+                if (i != 0) out << ',';
+                out << context.local.edge_ptr[i];
+            }
+            return out.str();
+        }()},
         {"load_static_ms", format_double(metrics.load_static_ms)},
         {"notes", metrics.notes},
         {"proof_size_bytes", std::to_string(metrics.proof_size_bytes)},
@@ -3098,6 +3205,7 @@ void export_run_artifacts(
     };
     util::write_key_values(export_root + "/summary.txt", summary);
     util::write_key_values(export_root + "/benchmark.txt", summary);
+    util::write_json_object(export_root + "/run_manifest.json", summary);
 
     if (!context.config.dump_trace) {
         return;

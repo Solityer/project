@@ -8,6 +8,7 @@
 
 #include "gatzk/crypto/curve.hpp"
 #include "gatzk/protocol/prover.hpp"
+#include "gatzk/protocol/challenges.hpp"
 #include "gatzk/protocol/trace.hpp"
 #include "gatzk/protocol/verifier.hpp"
 #include "gatzk/util/config.hpp"
@@ -148,6 +149,19 @@ int main(int argc, char** argv) {
             metrics.edge_count = context.local.edges.size();
             metrics.is_full_dataset = context.local.num_nodes == context.dataset.num_nodes;
             append_note(metrics, metrics.is_full_dataset ? "dataset_scope=full" : "dataset_scope=local_subgraph");
+            const auto run_profile = gatzk::protocol::canonical_public_metadata(context);
+            gatzk::util::info(
+                "profile dataset_name=" + run_profile.dataset_name
+                + " graph_count=" + run_profile.graph_count
+                + " L=" + run_profile.L
+                + " hidden_profile=" + run_profile.hidden_profile
+                + " d_in_profile=" + run_profile.d_in_profile
+                + " K_out=" + run_profile.K_out
+                + " C=" + run_profile.C
+                + " batching_rule=" + run_profile.batching_rule
+                + " subgraph_rule=" + run_profile.subgraph_rule
+                + " self_loop_rule=" + run_profile.self_loop_rule
+                + " edge_sort_rule=" + run_profile.edge_sort_rule);
 
             if (!run_config.prove_enabled) {
                 std::cout << "SMOKE_OK" << '\n';

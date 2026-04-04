@@ -58,6 +58,25 @@ struct ForwardProfile {
     double output_activation_ms = 0.0;
 };
 
+struct HiddenLayerShape {
+    std::size_t head_count = 0;
+    std::size_t head_dim = 0;
+};
+
+struct HiddenLayerParameters {
+    std::size_t layer_index = 0;
+    std::size_t input_dim = 0;
+    HiddenLayerShape shape;
+    std::vector<AttentionHeadParameters> heads;
+};
+
+struct OutputLayerParameters {
+    std::size_t input_dim = 0;
+    std::size_t output_dim = 0;
+    std::size_t head_count = 0;
+    std::vector<AttentionHeadParameters> heads;
+};
+
 struct ModelParameters {
     Matrix W;
     std::vector<algebra::FieldElement> a_src;
@@ -65,21 +84,41 @@ struct ModelParameters {
     Matrix W_out;
     std::vector<algebra::FieldElement> b;
     bool has_real_multihead = false;
+    std::size_t L = 0;
+    std::vector<std::size_t> d_in_profile;
+    std::vector<HiddenLayerShape> hidden_profile;
+    std::size_t K_out = 1;
+    std::size_t C = 0;
+    std::vector<HiddenLayerParameters> hidden_layers;
+    OutputLayerParameters output_layer;
     std::vector<AttentionHeadParameters> hidden_heads;
     AttentionHeadParameters output_head;
 };
 
 struct CheckpointBundleInfo {
     std::string bundle_root;
-    std::size_t hidden_head_count = 0;
+    std::size_t layer_count = 0;
+    std::vector<std::size_t> d_in_profile;
+    std::vector<HiddenLayerShape> hidden_profile;
+    std::size_t output_head_count = 0;
+    std::size_t class_count = 0;
     bool has_output_attention_head = false;
+};
+
+struct HiddenLayerForwardTrace {
+    FloatMatrix input;
+    std::vector<HeadForwardTrace> head_traces;
+    FloatMatrix concat;
 };
 
 struct MultiHeadForwardTrace {
     FloatMatrix H;
     FloatMatrix bias;
+    std::vector<HiddenLayerForwardTrace> hidden_layer_traces;
     std::vector<HeadForwardTrace> hidden_head_traces;
     FloatMatrix hidden_concat;
+    std::vector<HeadForwardTrace> output_head_traces;
+    std::vector<FloatMatrix> output_head_values;
     HeadForwardTrace output_head_trace;
     FloatMatrix Y_lin;
     FloatMatrix Y;
@@ -91,9 +130,7 @@ ModelParameters build_model_parameters(
     std::size_t num_classes,
     std::uint64_t seed);
 CheckpointBundleInfo inspect_checkpoint_bundle(const std::string& bundle_root);
-bool checkpoint_bundle_matches_single_head_protocol(
-    const CheckpointBundleInfo& info,
-    std::string* reason = nullptr);
+bool checkpoint_bundle_matches_formal_proof_shape(const CheckpointBundleInfo& info, std::string* reason = nullptr);
 ModelParameters load_checkpoint_bundle_parameters(const std::string& bundle_root);
 std::size_t attention_head_output_width(const AttentionHeadParameters& parameters);
 FloatMatrix build_attention_bias_matrix(std::size_t num_nodes, const std::vector<data::Edge>& edges);
@@ -126,5 +163,6 @@ Matrix output_projection(
     const Matrix& w_out,
     const std::vector<algebra::FieldElement>& bias,
     Matrix* linear_part);
+bool supports_current_formal_proof_shape(const ModelParameters& parameters);
 
 }  // namespace gatzk::model

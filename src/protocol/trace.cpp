@@ -1664,6 +1664,10 @@ std::string output_dst_label() {
 }
 
 TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics* metrics) {
+    if (!model::supports_current_formal_proof_shape(context.model)) {
+        throw std::runtime_error(
+            "formal multi-head proof currently supports only L=2 with exactly one hidden layer and K_out=1");
+    }
     const auto trace_start = Clock::now();
     const auto initial_forward_ms = metrics != nullptr ? metrics->forward_ms : 0.0;
     const auto initial_commit_dynamic_ms = metrics != nullptr ? metrics->commit_dynamic_ms : 0.0;
@@ -1956,6 +1960,13 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto& h_agg_star_edge = compressed.h_agg_star_edge;
         add_metric(metrics != nullptr ? &metrics->hidden_h_agg_star_trace_ms : nullptr, stage_start);
 
+        add_dynamic_commitment_batch(
+            trace,
+            {column_spec(prefix + "H_star", padded_column(h_star, domains.n->size), domains.n)},
+            context.kzg,
+            keep_trace_payloads,
+            metrics);
+
         stage_start = Clock::now();
         const auto& hidden_parameters = cached_quantized_hidden_head_parameters(context, head_index);
         const auto& head_w = hidden_parameters.seq_kernel;
@@ -2006,7 +2017,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                     domains.d,
                     d_h);
             });
-        transcript.absorb_commitment(prefix + "H_star", crypto::KZG::commit(prefix + "H_star", coeff_poly(prefix + "H_star", h_star), context.kzg).point);
+        transcript.absorb_commitment(prefix + "H_star", trace.commitments.at(prefix + "H_star").point);
         trace.challenges["y_star_h" + std::to_string(head_index)] = transcript.challenge("y_star_h" + std::to_string(head_index));
         add_metric(metrics != nullptr ? &metrics->hidden_dst_attention_trace_ms : nullptr, stage_start);
 
@@ -2027,6 +2038,8 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             });
         add_metric(metrics != nullptr ? &metrics->hidden_h_star_trace_ms : nullptr, stage_start);
 
+        transcript.absorb_commitment(prefix + "E_src", trace.commitments.at(prefix + "E_src").point);
+        transcript.absorb_commitment(prefix + "H_star", trace.commitments.at(prefix + "H_star").point);
         const auto eta_src = transcript.challenge("eta_src_h" + std::to_string(head_index));
         const auto beta_src = transcript.challenge("beta_src_h" + std::to_string(head_index));
         trace.challenges["eta_src_h" + std::to_string(head_index)] = eta_src;
@@ -2233,85 +2246,30 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             });
         add_metric(metrics != nullptr ? &metrics->psq_trace_ms : nullptr, stage_start);
         add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
-        const auto eta_t = transcript.challenge("eta_t_h" + std::to_string(head_index));
-        const auto beta_t = transcript.challenge("beta_t_h" + std::to_string(head_index));
-        trace.challenges["eta_t_h" + std::to_string(head_index)] = eta_t;
-        trace.challenges["beta_t_h" + std::to_string(head_index)] = beta_t;
+
         stage_start = Clock::now();
-        const auto eta_t_powers = powers(eta_t, 2);
-        const auto eta_dst = transcript.challenge("eta_dst_h" + std::to_string(head_index));
-        const auto beta_dst = transcript.challenge("beta_dst_h" + std::to_string(head_index));
-        trace.challenges["eta_dst_h" + std::to_string(head_index)] = eta_dst;
-        trace.challenges["beta_dst_h" + std::to_string(head_index)] = beta_dst;
-        const auto eta_dst_powers = powers(eta_dst, 6);
-        const std::array<FieldElement, 5> eta_dst_terms = {
-            eta_dst_powers[1],
-            eta_dst_powers[2],
-            eta_dst_powers[3],
-            eta_dst_powers[4],
-            eta_dst_powers[5],
-        };
-        auto route_inputs = build_hidden_route_pack_artifacts(
-            absolute_id_fields,
-            edge_src_fields,
-            edge_dst_fields,
-            e_src,
-            e_dst,
-            e_dst_edge,
-            h_star_edge,
-            m,
-            m_edge,
-            sum,
-            sum_edge,
-            inv,
-            inv_edge,
-            h_agg_star,
-            h_agg_star_edge,
-            t_psq,
-            t_psq_edge,
-            eta_src_powers[1],
-            eta_t_powers[1],
-            eta_dst_terms);
+        std::vector<FieldElement> src_table(n_nodes, FieldElement::zero());
+        std::vector<FieldElement> src_query(n_edges, FieldElement::zero());
+        for (std::size_t i = 0; i < n_nodes; ++i) {
+            src_table[i] = absolute_id_fields[i] + eta_src_powers[1] * e_src[i];
+        }
+        for (std::size_t k = 0; k < n_edges; ++k) {
+            src_query[k] = edge_src_fields[k] + eta_src_powers[1] * h_star_edge[k];
+        }
         add_metric(metrics != nullptr ? &metrics->hidden_route_trace_ms : nullptr, stage_start);
         stage_start = Clock::now();
         const auto& src_route = cached_route_trace(
             head_cache_prefix + ":src_route:" + eta_src.to_string() + ":" + beta_src.to_string(),
             [&]() {
                 return build_route_trace(
-                    route_inputs.src_table,
-                    route_inputs.src_query,
+                    src_table,
+                    src_query,
                     src_multiplicity_template,
                     n_nodes,
                     n_edges,
                     domains.n,
                     domains.edge,
                     beta_src);
-            });
-        const auto& t_route = cached_route_trace(
-            head_cache_prefix + ":t_route:" + eta_t.to_string() + ":" + beta_t.to_string(),
-            [&]() {
-                return build_route_trace(
-                    route_inputs.t_table,
-                    route_inputs.t_query,
-                    dst_multiplicity_template,
-                    n_nodes,
-                    n_edges,
-                    domains.n,
-                    domains.edge,
-                    beta_t);
-            });
-        const auto& dst_route = cached_route_trace(
-            head_cache_prefix + ":dst_route:" + eta_dst.to_string() + ":" + beta_dst.to_string(),
-            [&]() {
-                return build_route_trace(
-                    route_inputs.dst_table,
-                    route_inputs.dst_query,
-                    dst_multiplicity_template,
-                    n_nodes,
-                    n_edges,
-                    domains.n,
-                    domains.edge,
-                    beta_dst);
             });
         add_metric(metrics != nullptr ? &metrics->route_trace_ms : nullptr, stage_start);
 
@@ -2327,7 +2285,6 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 column_spec(prefix + "a_dst", dst_binding.a, domains.d),
                 column_spec(prefix + "b_dst", dst_binding.b, domains.d),
                 column_spec(prefix + "Acc_dst", dst_binding.acc, domains.d),
-                column_spec(prefix + "H_star", padded_column(h_star, domains.n->size), domains.n),
                 column_spec(prefix + "a_star", star_binding.a, domains.d),
                 column_spec(prefix + "b_star", star_binding.b, domains.d),
                 column_spec(prefix + "Acc_star", star_binding.acc, domains.d),
@@ -2359,11 +2316,6 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 column_spec(prefix + "w_psq", w_psq, domains.edge),
                 column_spec(prefix + "T_psq", padded_column(t_psq, domains.n->size), domains.n),
                 column_spec(prefix + "T_psq_edge", t_psq_edge, domains.edge),
-                column_spec(prefix + "Table_t", t_route.table, domains.n),
-                column_spec(prefix + "Query_t", t_route.query, domains.edge),
-                column_spec(prefix + "m_t", t_route.multiplicity, domains.n),
-                column_spec(prefix + "R_t_node", t_route.node_acc, domains.n),
-                column_spec(prefix + "R_t", t_route.edge_acc, domains.edge),
                 column_spec(prefix + "PSQ", psq, domains.edge),
                 column_spec(prefix + "H_agg_star", padded_column(h_agg_star, domains.n->size), domains.n),
                 column_spec(prefix + "H_agg_star_edge", h_agg_star_edge, domains.edge),
@@ -2371,6 +2323,39 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             context.kzg,
             keep_trace_payloads,
             metrics);
+
+        transcript.absorb_commitment(prefix + "T_psq", trace.commitments.at(prefix + "T_psq").point);
+        transcript.absorb_commitment(prefix + "T_psq_edge", trace.commitments.at(prefix + "T_psq_edge").point);
+        const auto eta_t = transcript.challenge("eta_t_h" + std::to_string(head_index));
+        const auto beta_t = transcript.challenge("beta_t_h" + std::to_string(head_index));
+        trace.challenges["eta_t_h" + std::to_string(head_index)] = eta_t;
+        trace.challenges["beta_t_h" + std::to_string(head_index)] = beta_t;
+        stage_start = Clock::now();
+        const auto eta_t_powers = powers(eta_t, 2);
+        std::vector<FieldElement> t_table(n_nodes, FieldElement::zero());
+        std::vector<FieldElement> t_query(n_edges, FieldElement::zero());
+        for (std::size_t i = 0; i < n_nodes; ++i) {
+            t_table[i] = absolute_id_fields[i] + eta_t_powers[1] * t_psq[i];
+        }
+        for (std::size_t k = 0; k < n_edges; ++k) {
+            t_query[k] = edge_dst_fields[k] + eta_t_powers[1] * t_psq_edge[k];
+        }
+        add_metric(metrics != nullptr ? &metrics->hidden_route_trace_ms : nullptr, stage_start);
+        stage_start = Clock::now();
+        const auto& t_route = cached_route_trace(
+            head_cache_prefix + ":t_route:" + eta_t.to_string() + ":" + beta_t.to_string(),
+            [&]() {
+                return build_route_trace(
+                    t_table,
+                    t_query,
+                    dst_multiplicity_template,
+                    n_nodes,
+                    n_edges,
+                    domains.n,
+                    domains.edge,
+                    beta_t);
+            });
+        add_metric(metrics != nullptr ? &metrics->route_trace_ms : nullptr, stage_start);
 
         transcript.absorb_commitment(prefix + "H_agg_pre", trace.commitments.at(prefix + "H_agg_pre").point);
         transcript.absorb_commitment(prefix + "H_agg_pre_star", trace.commitments.at(prefix + "H_agg_pre_star").point);
@@ -2386,6 +2371,10 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         transcript.absorb_commitment(prefix + "H_agg", trace.commitments.at(prefix + "H_agg").point);
         transcript.absorb_commitment(prefix + "H_agg_star", trace.commitments.at(prefix + "H_agg_star").point);
         trace.challenges["y_agg_h" + std::to_string(head_index)] = transcript.challenge("y_agg_h" + std::to_string(head_index));
+        const auto eta_dst = transcript.challenge("eta_dst_h" + std::to_string(head_index));
+        const auto beta_dst = transcript.challenge("beta_dst_h" + std::to_string(head_index));
+        trace.challenges["eta_dst_h" + std::to_string(head_index)] = eta_dst;
+        trace.challenges["beta_dst_h" + std::to_string(head_index)] = beta_dst;
 
         stage_start = Clock::now();
         const auto y_agg_pre_h = trace.challenges.at("y_agg_pre_h" + std::to_string(head_index));
@@ -2473,6 +2462,45 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 metric_value(&RunMetrics::lookup_accumulator_ms) - initial_elu_acc_ms,
             });
 
+        stage_start = Clock::now();
+        const auto eta_dst_powers = powers(eta_dst, 6);
+        std::vector<FieldElement> dst_table(n_nodes, FieldElement::zero());
+        std::vector<FieldElement> dst_query(n_edges, FieldElement::zero());
+        for (std::size_t i = 0; i < n_nodes; ++i) {
+            dst_table[i] =
+                absolute_id_fields[i]
+                + eta_dst_powers[1] * e_dst[i]
+                + eta_dst_powers[2] * m[i]
+                + eta_dst_powers[3] * sum[i]
+                + eta_dst_powers[4] * inv[i]
+                + eta_dst_powers[5] * h_agg_star[i];
+        }
+        for (std::size_t k = 0; k < n_edges; ++k) {
+            dst_query[k] =
+                edge_dst_fields[k]
+                + eta_dst_powers[1] * e_dst_edge[k]
+                + eta_dst_powers[2] * m_edge[k]
+                + eta_dst_powers[3] * sum_edge[k]
+                + eta_dst_powers[4] * inv_edge[k]
+                + eta_dst_powers[5] * h_agg_star_edge[k];
+        }
+        add_metric(metrics != nullptr ? &metrics->hidden_route_trace_ms : nullptr, stage_start);
+        stage_start = Clock::now();
+        const auto& dst_route = cached_route_trace(
+            head_cache_prefix + ":dst_route:" + eta_dst.to_string() + ":" + beta_dst.to_string(),
+            [&]() {
+                return build_route_trace(
+                    dst_table,
+                    dst_query,
+                    dst_multiplicity_template,
+                    n_nodes,
+                    n_edges,
+                    domains.n,
+                    domains.edge,
+                    beta_dst);
+            });
+        add_metric(metrics != nullptr ? &metrics->route_trace_ms : nullptr, stage_start);
+
         add_dynamic_commitment_batch(
             trace,
             {
@@ -2488,6 +2516,18 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 column_spec(prefix + "Query_ELU", query_elu, domains.edge),
                 column_spec(prefix + "m_ELU", m_elu, domains.edge),
                 column_spec(prefix + "R_ELU", r_elu, domains.edge),
+                column_spec(prefix + "Table_t", t_route.table, domains.n),
+                column_spec(prefix + "Query_t", t_route.query, domains.edge),
+                column_spec(prefix + "m_t", t_route.multiplicity, domains.n),
+                column_spec(prefix + "R_t_node", t_route.node_acc, domains.n),
+                column_spec(prefix + "R_t", t_route.edge_acc, domains.edge),
+            },
+            context.kzg,
+            keep_trace_payloads,
+            metrics);
+        add_dynamic_commitment_batch(
+            trace,
+            {
                 column_spec(prefix + "Table_dst", dst_route.table, domains.n),
                 column_spec(prefix + "Query_dst", dst_route.query, domains.edge),
                 column_spec(prefix + "m_dst", dst_route.multiplicity, domains.n),
@@ -2608,8 +2648,14 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     const auto out_sum = quantize_vector(forward.output_head_trace.Sum);
     const auto out_inv = quantize_vector(forward.output_head_trace.inv);
     const auto out_alpha = quantize_vector(forward.output_head_trace.alpha);
-    const auto y_matrix = quantize_matrix(forward.Y);
     const auto y_lin_matrix = quantize_matrix(forward.Y_lin);
+    auto y_matrix = y_lin_matrix;
+    const auto output_bias_quantized = quantize_vector(context.model.output_layer.heads.front().output_bias_fp);
+    for (auto& row : y_matrix) {
+        for (std::size_t col = 0; col < row.size() && col < output_bias_quantized.size(); ++col) {
+            row[col] += output_bias_quantized[col];
+        }
+    }
     const auto out_m_edge = broadcast_node_values(out_m, edges, false, domains.edge->size);
     const auto out_sum_edge = broadcast_node_values(out_sum, edges, false, domains.edge->size);
     const auto out_inv_edge = broadcast_node_values(out_inv, edges, false, domains.edge->size);
@@ -2673,7 +2719,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     stage_start = Clock::now();
     const auto y_prime_star = compress_rows_with_challenge(y_prime, trace.challenges.at("xi_out"));
     const auto y_prime_star_edge = broadcast_node_values(y_prime_star, edges, true, domains.edge->size);
-    const auto y_star = compress_rows_with_challenge(y_matrix, trace.challenges.at("xi_out"));
+    const auto y_star = compress_rows_with_challenge(y_lin_matrix, trace.challenges.at("xi_out"));
     const auto y_star_edge = broadcast_node_values(y_star, edges, false, domains.edge->size);
     add_metric(metrics != nullptr ? &metrics->hidden_output_object_residual_ms : nullptr, stage_start);
     const auto eta_src_out = transcript.challenge("eta_src_out");
@@ -2878,36 +2924,6 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         });
     add_metric(metrics != nullptr ? &metrics->psq_trace_ms : nullptr, stage_start);
     add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
-    const auto eta_t_out = transcript.challenge("eta_t_out");
-    const auto beta_t_out = transcript.challenge("beta_t_out");
-    trace.challenges["eta_t_out"] = eta_t_out;
-    trace.challenges["beta_t_out"] = beta_t_out;
-    stage_start = Clock::now();
-    const auto eta_t_out_powers = powers(eta_t_out, 2);
-    std::vector<FieldElement> out_t_table(n_nodes, FieldElement::zero());
-    std::vector<FieldElement> out_t_query(n_edges, FieldElement::zero());
-    for (std::size_t i = 0; i < n_nodes; ++i) {
-        out_t_table[i] = absolute_id_fields[i] + eta_t_out_powers[1] * t_out[i];
-    }
-    for (std::size_t k = 0; k < n_edges; ++k) {
-        out_t_query[k] = edge_dst_fields[k] + eta_t_out_powers[1] * t_out_edge[k];
-    }
-    add_metric(metrics != nullptr ? &metrics->route_pack_residual_ms : nullptr, stage_start);
-    stage_start = Clock::now();
-    const auto& out_t_route = cached_route_trace(
-        output_cache_prefix + ":t_route:" + eta_t_out.to_string() + ":" + beta_t_out.to_string(),
-        [&]() {
-            return build_route_trace(
-                out_t_table,
-                out_t_query,
-                dst_multiplicity_template,
-                n_nodes,
-                n_edges,
-                domains.n,
-                domains.edge,
-                beta_t_out);
-        });
-    add_metric(metrics != nullptr ? &metrics->route_trace_ms : nullptr, stage_start);
     add_dynamic_commitment_batch(
         trace,
         {
@@ -2938,11 +2954,6 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             column_spec("P_out_w", w_out, domains.edge),
             column_spec("P_out_T", padded_column(t_out, domains.n->size), domains.n),
             column_spec("P_out_T_edge", t_out_edge, domains.edge),
-            column_spec("P_out_Table_t", out_t_route.table, domains.n),
-            column_spec("P_out_Query_t", out_t_route.query, domains.edge),
-            column_spec("P_out_m_t", out_t_route.multiplicity, domains.n),
-            column_spec("P_out_R_t_node", out_t_route.node_acc, domains.n),
-            column_spec("P_out_R_t", out_t_route.edge_acc, domains.edge),
             column_spec("P_out_PSQ", psq_out, domains.edge),
             column_spec("P_out_Y_star", padded_column(y_star, domains.n->size), domains.n),
             column_spec("P_out_Y_star_edge", y_star_edge, domains.edge),
@@ -2950,6 +2961,38 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         context.kzg,
         keep_trace_payloads,
         metrics);
+    transcript.absorb_commitment("P_out_T", trace.commitments.at("P_out_T").point);
+    transcript.absorb_commitment("P_out_T_edge", trace.commitments.at("P_out_T_edge").point);
+    const auto eta_t_out = transcript.challenge("eta_t_out");
+    const auto beta_t_out = transcript.challenge("beta_t_out");
+    trace.challenges["eta_t_out"] = eta_t_out;
+    trace.challenges["beta_t_out"] = beta_t_out;
+    stage_start = Clock::now();
+    const auto eta_t_out_powers = powers(eta_t_out, 2);
+    std::vector<FieldElement> out_t_table(n_nodes, FieldElement::zero());
+    std::vector<FieldElement> out_t_query(n_edges, FieldElement::zero());
+    for (std::size_t i = 0; i < n_nodes; ++i) {
+        out_t_table[i] = absolute_id_fields[i] + eta_t_out_powers[1] * t_out[i];
+    }
+    for (std::size_t k = 0; k < n_edges; ++k) {
+        out_t_query[k] = edge_dst_fields[k] + eta_t_out_powers[1] * t_out_edge[k];
+    }
+    add_metric(metrics != nullptr ? &metrics->route_pack_residual_ms : nullptr, stage_start);
+    stage_start = Clock::now();
+    const auto& out_t_route = cached_route_trace(
+        output_cache_prefix + ":t_route:" + eta_t_out.to_string() + ":" + beta_t_out.to_string(),
+        [&]() {
+            return build_route_trace(
+                out_t_table,
+                out_t_query,
+                dst_multiplicity_template,
+                n_nodes,
+                n_edges,
+                domains.n,
+                domains.edge,
+                beta_t_out);
+        });
+    add_metric(metrics != nullptr ? &metrics->route_trace_ms : nullptr, stage_start);
     transcript.absorb_commitment("P_Y", trace.commitments.at("P_Y").point);
     transcript.absorb_commitment("P_out_Y_star", trace.commitments.at("P_out_Y_star").point);
     trace.challenges["y_out_star"] = transcript.challenge("y_out_star");
@@ -3003,7 +3046,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         output_cache_prefix + ":y:" + y_out_star.to_string(),
         [&]() {
             return build_binding_trace(
-                y_matrix,
+                y_lin_matrix,
                 domains.n,
                 n_nodes,
                 y_out_star,
@@ -3057,6 +3100,11 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     add_dynamic_commitment_batch(
         trace,
         {
+            column_spec("P_out_Table_t", out_t_route.table, domains.n),
+            column_spec("P_out_Query_t", out_t_route.query, domains.edge),
+            column_spec("P_out_m_t", out_t_route.multiplicity, domains.n),
+            column_spec("P_out_R_t_node", out_t_route.node_acc, domains.n),
+            column_spec("P_out_R_t", out_t_route.edge_acc, domains.edge),
             column_spec("P_out_a_proj", out_proj_binding.a, domains.cat),
             column_spec("P_out_b_proj", out_proj_binding.b, domains.cat),
             column_spec("P_out_Acc_proj", out_proj_binding.acc, domains.cat),
@@ -3091,6 +3139,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     transcript.absorb_commitment("P_out_Table_dst", trace.commitments.at("P_out_Table_dst").point);
     transcript.absorb_commitment("P_out_Query_dst", trace.commitments.at("P_out_Query_dst").point);
     trace.challenges["y_out"] = transcript.challenge("y_out");
+    trace.external_evaluations["mu_Y_lin"] = matrix_row_major_evaluation(y_lin_matrix, trace.challenges.at("y_out"));
     trace.external_evaluations["mu_out"] = matrix_row_major_evaluation(y_matrix, trace.challenges.at("y_out"));
     add_residual_metric(
         &RunMetrics::output_head_trace_ms,
@@ -3127,6 +3176,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     add_metric(metrics != nullptr ? &metrics->trace_finalize_ms : nullptr, stage_start);
 
     trace.commitment_order = dynamic_commitment_labels(context);
+    trace.challenges["alpha_quot"] = replay_challenges(context, trace.commitments, {}).at("alpha_quot");
     if (metrics != nullptr) {
         const auto total_trace_ms = elapsed_ms(trace_start, Clock::now());
         const auto forward_delta = metrics->forward_ms - initial_forward_ms;

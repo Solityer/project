@@ -34,7 +34,23 @@ std::string challenge_context_cache_key(const ProtocolContext& context) {
            << context.config.seed << '|'
            << context.config.local_nodes << '|'
            << context.config.center_node << '|'
+           << context.config.layer_count << '|'
+           << context.config.K_out << '|'
+           << context.config.batch_graphs << '|'
+           << context.config.task_type << '|'
+           << context.config.report_unit << '|'
+           << context.config.batching_rule << '|'
+           << context.config.subgraph_rule << '|'
+           << context.config.self_loop_rule << '|'
+           << context.config.edge_sort_rule << '|'
+           << context.config.chunking_rule << '|'
            << (context.config.allow_synthetic_model ? "synthetic" : "formal");
+    for (const auto input_dim : context.config.d_in_profile) {
+        stream << "|din=" << input_dim;
+    }
+    for (const auto& layer : context.config.hidden_profile) {
+        stream << "|hid=" << layer.head_count << 'x' << layer.head_dim;
+    }
     return stream.str();
 }
 
@@ -106,17 +122,47 @@ std::string output_dst_label() {
 }
 
 std::size_t hidden_head_width(const model::ModelParameters& parameters, const util::AppConfig& config) {
-    if (parameters.has_real_multihead && !parameters.hidden_heads.empty()) {
-        return model::attention_head_output_width(parameters.hidden_heads.front());
+    if (parameters.has_real_multihead && !parameters.hidden_layers.empty()) {
+        return parameters.hidden_layers.front().shape.head_dim;
     }
     return config.hidden_dim;
 }
 
 std::size_t concat_width(const model::ModelParameters& parameters, const util::AppConfig& config) {
-    if (parameters.has_real_multihead && !parameters.hidden_heads.empty()) {
-        return hidden_head_width(parameters, config) * parameters.hidden_heads.size();
+    if (parameters.has_real_multihead && !parameters.hidden_layers.empty()) {
+        const auto& shape = parameters.hidden_layers.front().shape;
+        return shape.head_count * shape.head_dim;
     }
     return config.hidden_dim;
+}
+
+std::string hidden_profile_string(const model::ModelParameters& parameters, const util::AppConfig& config) {
+    std::ostringstream out;
+    if (parameters.has_real_multihead && !parameters.hidden_profile.empty()) {
+        for (std::size_t i = 0; i < parameters.hidden_profile.size(); ++i) {
+            if (i != 0) {
+                out << ',';
+            }
+            out << parameters.hidden_profile[i].head_count << 'x' << parameters.hidden_profile[i].head_dim;
+        }
+        return out.str();
+    }
+    out << "1x" << config.hidden_dim;
+    return out.str();
+}
+
+std::string d_in_profile_string(const model::ModelParameters& parameters, const ProtocolContext& context) {
+    std::ostringstream out;
+    const auto profile = parameters.has_real_multihead && !parameters.d_in_profile.empty()
+        ? parameters.d_in_profile
+        : std::vector<std::size_t>{context.local.num_features};
+    for (std::size_t i = 0; i < profile.size(); ++i) {
+        if (i != 0) {
+            out << ',';
+        }
+        out << profile[i];
+    }
+    return out.str();
 }
 
 void append_attention_head_dynamic_labels(std::vector<std::string>& labels, const std::string& prefix) {
@@ -210,14 +256,36 @@ void append_attention_head_dynamic_labels(std::vector<std::string>& labels, cons
 PublicMetadata canonical_public_metadata(const ProtocolContext& context) {
     PublicMetadata metadata;
     metadata.protocol_id = "gatzkml";
-    metadata.model_arch_id = context.model.has_real_multihead
-        ? "single_layer_gat_hidden8_output1"
-        : "legacy_single_head_debug";
-    metadata.model_param_id = context.model.has_real_multihead
-        ? ("checkpoint_bundle:" + context.config.checkpoint_bundle)
-        : ("synthetic_seed:" + std::to_string(context.config.seed));
-    metadata.static_table_id = "tables:lrelu+elu+exp+range";
-    metadata.quant_cfg_id = "range_bits=" + std::to_string(context.config.range_bits);
+    metadata.dataset_name = context.dataset.name;
+    metadata.task_type = context.local.task_type;
+    metadata.report_unit = context.local.report_unit;
+    metadata.graph_count = std::to_string(context.local.graph_count);
+    metadata.L = std::to_string(context.model.has_real_multihead ? context.model.L : context.config.layer_count);
+    metadata.hidden_profile = hidden_profile_string(context.model, context.config);
+    metadata.d_in_profile = d_in_profile_string(context.model, context);
+    metadata.K_out = std::to_string(context.model.has_real_multihead ? context.model.K_out : context.config.K_out);
+    metadata.C = std::to_string(context.local.num_classes);
+    metadata.batching_rule = context.local.batching_rule;
+    metadata.subgraph_rule = context.local.subgraph_rule;
+    metadata.self_loop_rule = context.local.self_loop_rule;
+    metadata.edge_sort_rule = context.local.edge_sort_rule;
+    metadata.chunking_rule = context.local.chunking_rule;
+    metadata.model_arch_id = !context.config.model_arch_id.empty()
+        ? context.config.model_arch_id
+        : (context.model.has_real_multihead
+            ? ("L=" + metadata.L + "|hidden=" + metadata.hidden_profile + "|K_out=" + metadata.K_out + "|C=" + metadata.C)
+            : "legacy_single_head_debug");
+    metadata.model_param_id = !context.config.model_param_id.empty()
+        ? context.config.model_param_id
+        : (context.model.has_real_multihead
+            ? ("checkpoint_bundle:" + context.config.checkpoint_bundle)
+            : ("synthetic_seed:" + std::to_string(context.config.seed)));
+    metadata.static_table_id = !context.config.static_table_id.empty()
+        ? context.config.static_table_id
+        : "tables:lrelu+elu+exp+range";
+    metadata.quant_cfg_id = !context.config.quant_cfg_id.empty()
+        ? context.config.quant_cfg_id
+        : ("range_bits=" + std::to_string(context.config.range_bits));
     metadata.domain_cfg =
         "FH=" + context.domains.fh->name + ":" + std::to_string(context.domains.fh->size)
         + ",edge=" + context.domains.edge->name + ":" + std::to_string(context.domains.edge->size)
@@ -235,14 +303,28 @@ PublicMetadata canonical_public_metadata(const ProtocolContext& context) {
         + ",C=" + std::to_string(context.local.num_classes);
     metadata.encoding_id = "project-fixed-order-v1";
     metadata.padding_rule_id = "zero-pad+selector-mask";
-    metadata.degree_bound_id = context.model.has_real_multihead
-        ? "note-target:FH,edge,in,d_h,cat,C,N"
-        : "legacy:FH,edge,in,d,N";
+    metadata.degree_bound_id = !context.config.degree_bound_id.empty()
+        ? context.config.degree_bound_id
+        : (context.model.has_real_multihead ? "note-target:FH,edge,in,d_h,cat,C,N" : "legacy:FH,edge,in,d,N");
     return metadata;
 }
 
 void absorb_public_metadata(crypto::Transcript& transcript, const PublicMetadata& metadata) {
     absorb_text_scalar(transcript, "M_pub.protocol_id", metadata.protocol_id);
+    absorb_text_scalar(transcript, "M_pub.dataset_name", metadata.dataset_name);
+    absorb_text_scalar(transcript, "M_pub.task_type", metadata.task_type);
+    absorb_text_scalar(transcript, "M_pub.report_unit", metadata.report_unit);
+    absorb_text_scalar(transcript, "M_pub.graph_count", metadata.graph_count);
+    absorb_text_scalar(transcript, "M_pub.L", metadata.L);
+    absorb_text_scalar(transcript, "M_pub.hidden_profile", metadata.hidden_profile);
+    absorb_text_scalar(transcript, "M_pub.d_in_profile", metadata.d_in_profile);
+    absorb_text_scalar(transcript, "M_pub.K_out", metadata.K_out);
+    absorb_text_scalar(transcript, "M_pub.C", metadata.C);
+    absorb_text_scalar(transcript, "M_pub.batching_rule", metadata.batching_rule);
+    absorb_text_scalar(transcript, "M_pub.subgraph_rule", metadata.subgraph_rule);
+    absorb_text_scalar(transcript, "M_pub.self_loop_rule", metadata.self_loop_rule);
+    absorb_text_scalar(transcript, "M_pub.edge_sort_rule", metadata.edge_sort_rule);
+    absorb_text_scalar(transcript, "M_pub.chunking_rule", metadata.chunking_rule);
     absorb_text_scalar(transcript, "M_pub.model_arch_id", metadata.model_arch_id);
     absorb_text_scalar(transcript, "M_pub.model_param_id", metadata.model_param_id);
     absorb_text_scalar(transcript, "M_pub.static_table_id", metadata.static_table_id);
@@ -498,6 +580,11 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
             absorb(transcript, prefix + "_H_star", dynamic_commitments);
             out["y_star_h" + std::to_string(head_index)] = transcript.challenge("y_star_h" + std::to_string(head_index));
 
+            absorb(transcript, prefix + "_E_src", dynamic_commitments);
+            absorb(transcript, prefix + "_H_star", dynamic_commitments);
+            out["eta_src_h" + std::to_string(head_index)] = transcript.challenge("eta_src_h" + std::to_string(head_index));
+            out["beta_src_h" + std::to_string(head_index)] = transcript.challenge("beta_src_h" + std::to_string(head_index));
+
             absorb(transcript, prefix + "_S", dynamic_commitments);
             absorb(transcript, prefix + "_Z", dynamic_commitments);
             absorb_static(transcript, context, "V_T_L_x");
@@ -518,8 +605,6 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
             out["eta_exp_h" + std::to_string(head_index)] = transcript.challenge("eta_exp_h" + std::to_string(head_index));
             out["beta_exp_h" + std::to_string(head_index)] = transcript.challenge("beta_exp_h" + std::to_string(head_index));
 
-            out["eta_src_h" + std::to_string(head_index)] = transcript.challenge("eta_src_h" + std::to_string(head_index));
-            out["beta_src_h" + std::to_string(head_index)] = transcript.challenge("beta_src_h" + std::to_string(head_index));
             out["lambda_psq_h" + std::to_string(head_index)] = transcript.challenge("lambda_psq_h" + std::to_string(head_index));
             absorb(transcript, prefix + "_T_psq", dynamic_commitments);
             absorb(transcript, prefix + "_T_psq_edge", dynamic_commitments);

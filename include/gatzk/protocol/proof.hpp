@@ -41,6 +41,20 @@ struct WorkDomains {
 
 struct PublicMetadata {
     std::string protocol_id;
+    std::string dataset_name;
+    std::string task_type;
+    std::string report_unit;
+    std::string graph_count;
+    std::string L;
+    std::string hidden_profile;
+    std::string d_in_profile;
+    std::string K_out;
+    std::string C;
+    std::string batching_rule;
+    std::string subgraph_rule;
+    std::string self_loop_rule;
+    std::string edge_sort_rule;
+    std::string chunking_rule;
     std::string model_arch_id;
     std::string model_param_id;
     std::string static_table_id;
