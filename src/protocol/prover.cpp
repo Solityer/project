@@ -6,6 +6,7 @@
 #include <chrono>
 #include <filesystem>
 #include <future>
+#include <functional>
 #include <iomanip>
 #include <mutex>
 #include <optional>
@@ -753,6 +754,33 @@ class ProofEvaluationBackendRegistry {
 
     std::unordered_map<std::string, algebra::PackedEvaluationBackend> backends_;
 };
+
+class SharedProofEvaluationBackendRegistryCache {
+  public:
+    std::shared_ptr<const ProofEvaluationBackendRegistry> get_or_build(
+        const std::string& key,
+        const std::function<std::shared_ptr<const ProofEvaluationBackendRegistry>()>& build) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (const auto it = entries_.find(key); it != entries_.end()) {
+                return it->second;
+            }
+        }
+        auto registry = build();
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto [it, _] = entries_.emplace(key, std::move(registry));
+        return it->second;
+    }
+
+  private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, std::shared_ptr<const ProofEvaluationBackendRegistry>> entries_;
+};
+
+SharedProofEvaluationBackendRegistryCache& shared_proof_backend_registry_cache() {
+    static SharedProofEvaluationBackendRegistryCache cache;
+    return cache;
+}
 
 // Proof-scoped memoization only caches values derived from the current trace and
 // current Fiat-Shamir challenges. This matches the spec's semantics while
@@ -2201,7 +2229,11 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
         const auto quotient_cache_key = quotient_build_cache_key(context, trace);
         std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry;
         if (route2.fft_backend_upgrade) {
-            backend_registry = std::make_shared<ProofEvaluationBackendRegistry>(context, trace);
+            backend_registry = shared_proof_backend_registry_cache().get_or_build(
+                quotient_cache_key + "|backend_registry",
+                [&]() {
+                    return std::make_shared<ProofEvaluationBackendRegistry>(context, trace);
+                });
         }
         auto proof_domain_weight_cache = shared_proof_domain_weight_cache();
         struct QuotientEvalResult {
@@ -2474,8 +2506,13 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
     auto stage_start = Clock::now();
     auto challenges = replay_challenges(context, trace.commitments, quotient_commitments);
     std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry;
+    const auto legacy_quotient_cache_key = quotient_build_cache_key(context, trace);
     if (route2.fft_backend_upgrade) {
-        backend_registry = std::make_shared<ProofEvaluationBackendRegistry>(context, trace);
+        backend_registry = shared_proof_backend_registry_cache().get_or_build(
+            legacy_quotient_cache_key + "|backend_registry",
+            [&]() {
+                return std::make_shared<ProofEvaluationBackendRegistry>(context, trace);
+            });
     }
     auto proof_domain_weight_cache = shared_proof_domain_weight_cache();
     // The quotient identities are unchanged. We only overlap the five domain

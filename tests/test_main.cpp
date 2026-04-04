@@ -40,6 +40,12 @@ std::string repo_path(const std::string& relative) {
     return (repo_root() / relative).string();
 }
 
+void require(bool condition, const std::string& message) {
+    if (!condition) {
+        throw std::runtime_error(message);
+    }
+}
+
 std::string slurp_file(const std::filesystem::path& path) {
     std::ifstream input(path);
     std::ostringstream out;
@@ -53,10 +59,14 @@ void write_text(const std::filesystem::path& path, const std::string& text) {
     output << text;
 }
 
-void require(bool condition, const std::string& message) {
-    if (!condition) {
-        throw std::runtime_error(message);
-    }
+double extract_json_number(const std::string& text, const std::string& key) {
+    const auto marker = "\"" + key + "\": \"";
+    const auto start = text.find(marker);
+    require(start != std::string::npos, "missing json key: " + key);
+    const auto value_begin = start + marker.size();
+    const auto value_end = text.find('"', value_begin);
+    require(value_end != std::string::npos, "unterminated json value: " + key);
+    return std::stod(text.substr(value_begin, value_end - value_begin));
 }
 
 std::string require_throws(const std::function<void()>& fn) {
@@ -764,6 +774,35 @@ const std::filesystem::path& family_formal_checkpoint_bundle_dir() {
     return bundle_dir;
 }
 
+const std::filesystem::path& ppi_contract_bundle_dir() {
+    static const auto bundle_dir = []() {
+        const auto model = gatzk::model::build_family_model_parameters({50}, {{1, 8}}, 1, 121, 11);
+        const auto root = export_family_checkpoint_bundle("test_ppi_contract_bundle", model);
+        auto manifest = slurp_file(root / "manifest.json");
+        const auto report_pos = manifest.find("\"report_unit\": \"node\"");
+        require(report_pos != std::string::npos, "expected report_unit in PPI contract manifest");
+        manifest.replace(report_pos, std::string("\"report_unit\": \"node\"").size(), "\"report_unit\": \"graph\"");
+        const auto task_pos = manifest.find("\"task_type\": \"transductive_node_classification\"");
+        require(task_pos != std::string::npos, "expected task_type in PPI contract manifest");
+        manifest.replace(
+            task_pos,
+            std::string("\"task_type\": \"transductive_node_classification\"").size(),
+            "\"task_type\": \"inductive_multi_graph_node_classification\"");
+        const auto note_pos = manifest.find("\"output_average_rule_note\"");
+        require(note_pos != std::string::npos, "expected output_average_rule_note in PPI contract manifest");
+        manifest.insert(
+            note_pos,
+            "\"batching_rule\": \"multi_graph_batch\",\n"
+            "  \"subgraph_rule\": \"whole_graph\",\n"
+            "  \"self_loop_rule\": \"per_node\",\n"
+            "  \"edge_sort_rule\": \"edge_gid_then_dst_stable\",\n"
+            "  ");
+        write_text(root / "manifest.json", manifest);
+        return root;
+    }();
+    return bundle_dir;
+}
+
 std::filesystem::path write_benchmark_manifest(
     const std::string& dataset,
     const std::string& benchmark_mode,
@@ -825,6 +864,28 @@ int run_benchmark_export_script(const std::vector<std::string>& arguments) {
     };
     std::ostringstream command;
     command << shell_escape(python.string()) << ' ' << shell_escape(repo_path("scripts/export_benchmark_table.py"));
+    for (const auto& argument : arguments) {
+        command << ' ' << shell_escape(argument);
+    }
+    return std::system(command.str().c_str());
+}
+
+int run_python_script(const std::string& relative_script, const std::vector<std::string>& arguments) {
+    const auto python = repo_root() / ".venv" / "bin" / "python";
+    auto shell_escape = [](const std::string& value) {
+        std::string escaped = "'";
+        for (char ch : value) {
+            if (ch == '\'') {
+                escaped += "'\\''";
+            } else {
+                escaped.push_back(ch);
+            }
+        }
+        escaped += "'";
+        return escaped;
+    };
+    std::ostringstream command;
+    command << shell_escape(python.string()) << ' ' << shell_escape(repo_path(relative_script));
     for (const auto& argument : arguments) {
         command << ' ' << shell_escape(argument);
     }
@@ -956,6 +1017,103 @@ void test_ppi_real_checkpoint_validation_or_precise_fail_fast() {
         (void)gatzk::protocol::build_context(config);
     });
     require(error.find("checkpoint bundle path does not exist") != std::string::npos, "missing real PPI checkpoint must fail fast precisely");
+}
+
+void test_ppi_bundle_import_or_generation_path_is_unique() {
+    require(std::filesystem::exists(repo_root() / "scripts" / "import_ppi_bundle.py"), "PPI import path script must exist");
+    const auto install_root = repo_root() / "runs" / "test_imported_ppi_bundle";
+    std::filesystem::remove_all(install_root);
+    require(
+        run_python_script(
+            "scripts/import_ppi_bundle.py",
+            {
+                "--bundle-dir", ppi_contract_bundle_dir().string(),
+                "--output-dir", install_root.string(),
+            }) == 0,
+        "PPI import script must accept a valid family bundle");
+    require(std::filesystem::exists(install_root / "manifest.json"), "PPI import script must install manifest.json");
+    require(std::filesystem::exists(install_root / "tensors.txt"), "PPI import script must install tensors.txt");
+}
+
+void test_ppi_checkpoint_backed_formal_validation_if_bundle_present() {
+    const auto config = gatzk::util::load_config(repo_path("configs/ppi_batch_formal.cfg"));
+    const auto bundle_root = repo_root() / config.checkpoint_bundle;
+    if (!std::filesystem::exists(bundle_root)) {
+        return;
+    }
+    const auto fixture = build_proof_fixture_with_stage(config);
+    require(gatzk::protocol::verify(fixture.context, fixture.proof), "real PPI checkpoint-backed formal path must verify when bundle exists");
+}
+
+void test_ppi_precise_external_bundle_blocker_contract() {
+    const auto broken_root = repo_root() / "runs" / "test_ppi_bundle_broken";
+    std::filesystem::remove_all(broken_root);
+    std::filesystem::create_directories(broken_root);
+    write_text(broken_root / "manifest.json", "{\"family_schema_version\":\"multi_layer_multi_head_v2\"}\n");
+    const auto install_root = repo_root() / "runs" / "test_ppi_bundle_broken_install";
+    std::filesystem::remove_all(install_root);
+    require(
+        run_python_script(
+            "scripts/import_ppi_bundle.py",
+            {
+                "--bundle-dir", broken_root.string(),
+                "--output-dir", install_root.string(),
+            }) != 0,
+        "broken PPI bundle must be rejected");
+    const auto config = gatzk::util::load_config(repo_path("configs/ppi_batch_formal.cfg"));
+    const auto error = require_throws([&]() {
+        (void)gatzk::protocol::build_context(config);
+    });
+    require(error.find("checkpoint bundle path does not exist") != std::string::npos, "missing real PPI bundle blocker must remain precise");
+}
+
+void test_benchmark_table_updates_after_ppi_or_blocker_resolution() {
+    const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
+    require(latest.find("\"dataset\": \"ppi\"") != std::string::npos, "benchmark table must contain a PPI row");
+    require(
+        latest.find("\"status\": \"blocked\"") != std::string::npos
+            || latest.find("\"status\": \"ok\"") != std::string::npos,
+        "benchmark table must expose explicit PPI status");
+}
+
+void test_pubmed_hotspot_optimization_no_regression() {
+    const auto single_text = slurp_file(repo_root() / "runs" / "pubmed_full" / "run_manifest.json");
+    const auto warm_text = slurp_file(repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json");
+    require(warm_text.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "pubmed warm manifest must exist");
+    require(
+        extract_json_number(warm_text, "prove_time_ms") < extract_json_number(single_text, "prove_time_ms"),
+        "pubmed warm prove time must remain below single-run baseline");
+    require(
+        extract_json_number(warm_text, "trace_generation_ms") < extract_json_number(single_text, "trace_generation_ms"),
+        "pubmed warm trace_generation_ms must remain below single-run baseline");
+}
+
+void test_benchmark_export_pipeline_remains_single_source_of_truth() {
+    require(std::filesystem::exists(repo_root() / "scripts" / "export_benchmark_table.py"), "benchmark export script must exist");
+    require(!std::filesystem::exists(repo_root() / "runs" / "benchmarks" / "summary.txt"), "legacy benchmark summary.txt must stay removed");
+    const auto summary = slurp_file(repo_root() / "runs" / "benchmarks" / "summary.md");
+    require(summary.find("Benchmark Summary") != std::string::npos, "summary.md must remain the benchmark single source of truth");
+}
+
+void test_performance_regression_guard_for_cora_citeseer_pubmed() {
+    const auto cora_single = slurp_file(repo_root() / "runs" / "cora_full" / "run_manifest.json");
+    const auto cora_warm = slurp_file(repo_root() / "runs" / "cora_full" / "warm" / "run_manifest.json");
+    const auto citeseer_single = slurp_file(repo_root() / "runs" / "citeseer_full" / "run_manifest.json");
+    const auto citeseer_warm = slurp_file(repo_root() / "runs" / "citeseer_full" / "warm" / "run_manifest.json");
+    const auto pubmed_single = slurp_file(repo_root() / "runs" / "pubmed_full" / "run_manifest.json");
+    const auto pubmed_warm = slurp_file(repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json");
+    require(cora_warm.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "cora warm benchmark must exist");
+    require(citeseer_warm.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "citeseer warm benchmark must exist");
+    require(pubmed_warm.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "pubmed warm benchmark must exist");
+    require(
+        extract_json_number(cora_warm, "prove_time_ms") < extract_json_number(cora_single, "prove_time_ms"),
+        "cora warm prove time must remain below single-run baseline");
+    require(
+        extract_json_number(citeseer_warm, "prove_time_ms") < extract_json_number(citeseer_single, "prove_time_ms"),
+        "citeseer warm prove time must remain below single-run baseline");
+    require(
+        extract_json_number(pubmed_warm, "prove_time_ms") < extract_json_number(pubmed_single, "prove_time_ms"),
+        "pubmed warm prove time must remain below single-run baseline");
 }
 
 void test_trace_cache_helpers_have_safe_lifetimes() {
@@ -1092,10 +1250,17 @@ int main(int argc, char** argv) {
         {"config_conflict_fails_fast", test_config_conflict_fails_fast},
         {"fail_fast_boundary_matches_actual_supported_family", test_fail_fast_boundary_matches_actual_supported_family},
         {"ppi_real_checkpoint_validation_or_precise_fail_fast", test_ppi_real_checkpoint_validation_or_precise_fail_fast},
+        {"ppi_bundle_import_or_generation_path_is_unique", test_ppi_bundle_import_or_generation_path_is_unique},
+        {"ppi_checkpoint_backed_formal_validation_if_bundle_present", test_ppi_checkpoint_backed_formal_validation_if_bundle_present},
+        {"ppi_precise_external_bundle_blocker_contract", test_ppi_precise_external_bundle_blocker_contract},
         {"trace_cache_helpers_have_safe_lifetimes", test_trace_cache_helpers_have_safe_lifetimes},
         {"four_dataset_benchmark_table_export", test_four_dataset_benchmark_table_export},
         {"benchmark_summary_contains_required_metrics", test_benchmark_summary_contains_required_metrics},
         {"benchmark_mode_consistency", test_benchmark_mode_consistency},
+        {"benchmark_table_updates_after_ppi_or_blocker_resolution", test_benchmark_table_updates_after_ppi_or_blocker_resolution},
+        {"pubmed_hotspot_optimization_no_regression", test_pubmed_hotspot_optimization_no_regression},
+        {"benchmark_export_pipeline_remains_single_source_of_truth", test_benchmark_export_pipeline_remains_single_source_of_truth},
+        {"performance_regression_guard_for_cora_citeseer_pubmed", test_performance_regression_guard_for_cora_citeseer_pubmed},
         {"performance_regression_guard_for_existing_paths", test_performance_regression_guard_for_existing_paths},
         {"no_legacy_benchmark_pipeline_remaining", test_no_legacy_benchmark_pipeline_remaining},
         {"no_regression_existing_paths", test_no_regression_existing_paths},

@@ -733,19 +733,6 @@ Matrix average_field_matrices(const std::vector<Matrix>& matrices) {
     return out;
 }
 
-Matrix add_quantized_bias_to_matrix(
-    const Matrix& matrix,
-    const std::vector<double>& bias_fp) {
-    auto out = matrix;
-    const auto quantized_bias = quantize_vector(bias_fp);
-    for (auto& row : out) {
-        for (std::size_t col = 0; col < row.size() && col < quantized_bias.size(); ++col) {
-            row[col] += quantized_bias[col];
-        }
-    }
-    return out;
-}
-
 struct HiddenHeadStaticQuantizedParameters {
     Matrix seq_kernel;
     std::vector<FieldElement> attn_src;
@@ -803,6 +790,40 @@ struct HiddenQuantizedWitness {
     std::vector<FieldElement> sum_edge;
     std::vector<FieldElement> inv_edge;
 };
+
+struct OutputQuantizedWitness {
+    Matrix y_prime;
+    Matrix y_lin;
+    Matrix y;
+    std::vector<FieldElement> e_src;
+    std::vector<FieldElement> e_dst;
+    std::vector<FieldElement> s;
+    std::vector<FieldElement> z;
+    std::vector<FieldElement> m;
+    std::vector<FieldElement> delta;
+    std::vector<FieldElement> u;
+    std::vector<FieldElement> sum;
+    std::vector<FieldElement> inv;
+    std::vector<FieldElement> alpha;
+    std::vector<FieldElement> e_src_edge;
+    std::vector<FieldElement> e_dst_edge;
+    std::vector<FieldElement> m_edge;
+    std::vector<FieldElement> sum_edge;
+    std::vector<FieldElement> inv_edge;
+};
+
+struct CachedForwardArtifacts {
+    model::MultiHeadForwardTrace forward;
+    model::ForwardProfile profile;
+    std::vector<Matrix> hidden_layer_inputs_quantized;
+    std::vector<Matrix> hidden_layer_concat_quantized;
+    std::vector<HiddenQuantizedWitness> hidden_head_quantized;
+    std::vector<OutputQuantizedWitness> output_head_quantized;
+    Matrix output_y_lin_average;
+    Matrix output_y_average;
+};
+
+std::string trace_cache_prefix(const ProtocolContext& context);
 
 HiddenQuantizedWitness quantize_hidden_witness_cpu(
     const model::HeadForwardTrace& fp,
@@ -869,6 +890,145 @@ HiddenQuantizedWitness quantize_hidden_witness_cpu(
             }
         });
     return out;
+}
+
+OutputQuantizedWitness quantize_output_witness_cpu(
+    const model::HeadForwardTrace& fp,
+    const std::vector<double>& output_bias_fp,
+    const std::vector<std::size_t>& edge_src_indices,
+    const std::vector<std::size_t>& edge_dst_indices,
+    std::size_t edge_domain_size) {
+    OutputQuantizedWitness out;
+    const auto node_count = fp.H_prime.size();
+    const auto output_dim = node_count == 0 ? 0 : fp.H_prime.front().size();
+    out.y_prime.assign(node_count, std::vector<FieldElement>(output_dim, FieldElement::zero()));
+    out.y_lin.assign(node_count, std::vector<FieldElement>(output_dim, FieldElement::zero()));
+    out.y.assign(node_count, std::vector<FieldElement>(output_dim, FieldElement::zero()));
+    out.e_src.assign(fp.E_src.size(), FieldElement::zero());
+    out.e_dst.assign(fp.E_dst.size(), FieldElement::zero());
+    out.m.assign(fp.M.size(), FieldElement::zero());
+    out.sum.assign(fp.Sum.size(), FieldElement::zero());
+    out.inv.assign(fp.inv.size(), FieldElement::zero());
+    out.s.assign(edge_domain_size, FieldElement::zero());
+    out.z.assign(edge_domain_size, FieldElement::zero());
+    out.delta.assign(edge_domain_size, FieldElement::zero());
+    out.u.assign(edge_domain_size, FieldElement::zero());
+    out.alpha.assign(edge_domain_size, FieldElement::zero());
+    out.e_src_edge.assign(edge_domain_size, FieldElement::zero());
+    out.e_dst_edge.assign(edge_domain_size, FieldElement::zero());
+    out.m_edge.assign(edge_domain_size, FieldElement::zero());
+    out.sum_edge.assign(edge_domain_size, FieldElement::zero());
+    out.inv_edge.assign(edge_domain_size, FieldElement::zero());
+
+    const auto quantized_bias = quantize_vector(output_bias_fp);
+    parallel_for_ranges(
+        node_count,
+        32,
+        [&](std::size_t begin, std::size_t end) {
+            for (std::size_t row = begin; row < end; ++row) {
+                out.e_src[row] = quantize_float(fp.E_src[row]);
+                out.e_dst[row] = quantize_float(fp.E_dst[row]);
+                out.m[row] = quantize_float(fp.M[row]);
+                out.sum[row] = quantize_float(fp.Sum[row]);
+                out.inv[row] = quantize_float(fp.inv[row]);
+                for (std::size_t column = 0; column < output_dim; ++column) {
+                    const auto y_prime_value = quantize_float(fp.H_prime[row][column]);
+                    const auto y_lin_value = quantize_float(fp.H_agg_pre_bias[row][column]);
+                    out.y_prime[row][column] = y_prime_value;
+                    out.y_lin[row][column] = y_lin_value;
+                    out.y[row][column] =
+                        y_lin_value + (column < quantized_bias.size() ? quantized_bias[column] : FieldElement::zero());
+                }
+            }
+        });
+
+    parallel_for_ranges(
+        edge_src_indices.size(),
+        128,
+        [&](std::size_t begin, std::size_t end) {
+            for (std::size_t edge_index = begin; edge_index < end; ++edge_index) {
+                out.s[edge_index] = quantize_float(fp.S[edge_index]);
+                out.z[edge_index] = quantize_float(fp.Z[edge_index]);
+                out.delta[edge_index] = quantize_float(fp.Delta[edge_index]);
+                out.u[edge_index] = quantize_float(fp.U[edge_index]);
+                out.alpha[edge_index] = quantize_float(fp.alpha[edge_index]);
+                out.e_src_edge[edge_index] = out.e_src[edge_src_indices[edge_index]];
+                out.e_dst_edge[edge_index] = out.e_dst[edge_dst_indices[edge_index]];
+                out.m_edge[edge_index] = out.m[edge_dst_indices[edge_index]];
+                out.sum_edge[edge_index] = out.sum[edge_dst_indices[edge_index]];
+                out.inv_edge[edge_index] = out.inv[edge_dst_indices[edge_index]];
+            }
+        });
+
+    return out;
+}
+
+std::shared_ptr<const CachedForwardArtifacts> cached_forward_artifacts(
+    const ProtocolContext& context,
+    const std::vector<Edge>& edges,
+    const std::vector<std::size_t>& edge_src_indices,
+    const std::vector<std::size_t>& edge_dst_indices,
+    std::size_t edge_domain_size) {
+    static std::mutex cache_mutex;
+    static std::unordered_map<std::string, std::shared_ptr<CachedForwardArtifacts>> cache;
+    const auto cache_key =
+        trace_cache_prefix(context)
+        + ":forward_artifacts:"
+        + std::to_string(context.domains.edge->size)
+        + ":" + std::to_string(context.model.hidden_heads.size())
+        + ":" + std::to_string(context.model.output_layer.heads.size());
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        if (const auto it = cache.find(cache_key); it != cache.end()) {
+            return it->second;
+        }
+    }
+
+    auto artifacts = std::make_shared<CachedForwardArtifacts>();
+    artifacts->forward = model::forward_note_style(context.local.features_fp, edges, context.model, &artifacts->profile);
+    artifacts->hidden_layer_inputs_quantized.reserve(artifacts->forward.hidden_layer_traces.size());
+    artifacts->hidden_layer_concat_quantized.reserve(artifacts->forward.hidden_layer_traces.size());
+    for (const auto& layer_trace : artifacts->forward.hidden_layer_traces) {
+        artifacts->hidden_layer_inputs_quantized.push_back(quantize_matrix(layer_trace.input));
+        artifacts->hidden_layer_concat_quantized.push_back(quantize_matrix(layer_trace.concat));
+    }
+    std::size_t hidden_head_count = 0;
+    for (const auto& layer_trace : artifacts->forward.hidden_layer_traces) {
+        hidden_head_count += layer_trace.head_traces.size();
+    }
+    artifacts->hidden_head_quantized.reserve(hidden_head_count);
+    for (const auto& layer_trace : artifacts->forward.hidden_layer_traces) {
+        for (const auto& head_trace : layer_trace.head_traces) {
+            artifacts->hidden_head_quantized.push_back(
+                quantize_hidden_witness_cpu(head_trace, edge_src_indices, edge_dst_indices, edge_domain_size));
+        }
+    }
+    artifacts->output_head_quantized.reserve(artifacts->forward.output_head_traces.size());
+    std::vector<Matrix> per_head_y_lin_matrices;
+    std::vector<Matrix> per_head_y_matrices;
+    per_head_y_lin_matrices.reserve(artifacts->forward.output_head_traces.size());
+    per_head_y_matrices.reserve(artifacts->forward.output_head_traces.size());
+    for (std::size_t head_index = 0; head_index < artifacts->forward.output_head_traces.size(); ++head_index) {
+        auto quantized = quantize_output_witness_cpu(
+            artifacts->forward.output_head_traces[head_index],
+            context.model.output_layer.heads[head_index].output_bias_fp,
+            edge_src_indices,
+            edge_dst_indices,
+            edge_domain_size);
+        per_head_y_lin_matrices.push_back(quantized.y_lin);
+        per_head_y_matrices.push_back(quantized.y);
+        artifacts->output_head_quantized.push_back(std::move(quantized));
+    }
+    if (!per_head_y_lin_matrices.empty()) {
+        artifacts->output_y_lin_average = average_field_matrices(per_head_y_lin_matrices);
+        artifacts->output_y_average = average_field_matrices(per_head_y_matrices);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        const auto [it, _] = cache.emplace(cache_key, artifacts);
+        return it->second;
+    }
 }
 
 std::size_t lookup_active_transition_limit(std::size_t valid_count, std::size_t domain_size) {
@@ -1855,30 +2015,28 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             metrics);
     }
 
-    model::ForwardProfile forward_profile;
     const auto forward_start = Clock::now();
-    const auto forward = model::forward_note_style(local.features_fp, edges, context.model, &forward_profile);
+    const auto forward_artifacts = cached_forward_artifacts(
+        context,
+        edges,
+        edge_src_indices,
+        edge_dst_indices,
+        domains.edge->size);
+    const auto& forward = forward_artifacts->forward;
     if (metrics != nullptr) {
         metrics->forward_ms += elapsed_ms(forward_start, Clock::now());
-        metrics->feature_projection_ms += forward_profile.hidden_projection_ms + forward_profile.output_projection_ms;
-        metrics->hidden_forward_projection_ms += forward_profile.hidden_projection_ms;
-        metrics->hidden_forward_attention_ms += forward_profile.hidden_attention_ms;
-        metrics->hidden_forward_activation_ms += forward_profile.hidden_activation_ms;
-        metrics->hidden_concat_ms += forward_profile.hidden_concat_ms;
-        metrics->output_forward_projection_ms += forward_profile.output_projection_ms;
-        metrics->output_forward_attention_ms += forward_profile.output_attention_ms;
-        metrics->output_forward_activation_ms += forward_profile.output_activation_ms;
+        metrics->feature_projection_ms +=
+            forward_artifacts->profile.hidden_projection_ms + forward_artifacts->profile.output_projection_ms;
+        metrics->hidden_forward_projection_ms += forward_artifacts->profile.hidden_projection_ms;
+        metrics->hidden_forward_attention_ms += forward_artifacts->profile.hidden_attention_ms;
+        metrics->hidden_forward_activation_ms += forward_artifacts->profile.hidden_activation_ms;
+        metrics->hidden_concat_ms += forward_artifacts->profile.hidden_concat_ms;
+        metrics->output_forward_projection_ms += forward_artifacts->profile.output_projection_ms;
+        metrics->output_forward_attention_ms += forward_artifacts->profile.output_attention_ms;
+        metrics->output_forward_activation_ms += forward_artifacts->profile.output_activation_ms;
     }
-    std::vector<Matrix> hidden_layer_inputs_quantized;
-    hidden_layer_inputs_quantized.reserve(forward.hidden_layer_traces.size());
-    for (const auto& layer_trace : forward.hidden_layer_traces) {
-        hidden_layer_inputs_quantized.push_back(quantize_matrix(layer_trace.input));
-    }
-    std::vector<Matrix> hidden_layer_concat_quantized;
-    hidden_layer_concat_quantized.reserve(forward.hidden_layer_traces.size());
-    for (const auto& layer_trace : forward.hidden_layer_traces) {
-        hidden_layer_concat_quantized.push_back(quantize_matrix(layer_trace.concat));
-    }
+    const auto& hidden_layer_inputs_quantized = forward_artifacts->hidden_layer_inputs_quantized;
+    const auto& hidden_layer_concat_quantized = forward_artifacts->hidden_layer_concat_quantized;
 
     stage_start = Clock::now();
     const auto lrelu_index = cached_pair_index_map("lrelu", context.tables.lrelu);
@@ -1899,7 +2057,6 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             throw std::runtime_error("hidden head index escaped hidden layer family");
         }
         const auto& layer = context.model.hidden_layers[layer_index];
-        const auto& layer_trace = forward.hidden_layer_traces.at(layer_index);
         const auto& input_matrix = hidden_layer_inputs_quantized.at(layer_index);
         const auto input_dim = layer.input_dim;
         const auto head_dim = layer.shape.head_dim;
@@ -1909,13 +2066,8 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             : hidden_layer_concat_label(layer_index - 1, false);
         const auto prefix = hidden_head_prefix(head_index) + "_";
         const auto head_cache_prefix = cache_prefix + ":hidden:" + std::to_string(head_index);
-        const auto& fp = layer_trace.head_traces.at(local_head_index);
         auto stage_start = Clock::now();
-        const auto quantized = quantize_hidden_witness_cpu(
-            fp,
-            edge_src_indices,
-            edge_dst_indices,
-            domains.edge->size);
+        const auto& quantized = forward_artifacts->hidden_head_quantized.at(head_index);
         const auto& h_prime = quantized.h_prime;
         const auto& e_src = quantized.e_src;
         const auto& e_dst = quantized.e_dst;
@@ -2705,26 +2857,26 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             const auto y_lin_label = output_y_lin_label(head_index, false);
             const auto y_label = output_y_label(head_index, false);
             const auto head_cache_prefix = output_cache_prefix + ":" + std::to_string(head_index);
-            const auto& head_trace = forward.output_head_traces.at(head_index);
             const auto& head_params = context.model.output_layer.heads.at(head_index);
-            const auto y_prime = quantize_matrix(head_trace.H_prime);
-            const auto out_e_src = quantize_vector(head_trace.E_src);
-            const auto out_e_dst = quantize_vector(head_trace.E_dst);
-            const auto out_s = quantize_vector(head_trace.S);
-            const auto out_z = quantize_vector(head_trace.Z);
-            const auto out_m = quantize_vector(head_trace.M);
-            const auto out_delta = quantize_vector(head_trace.Delta);
-            const auto out_u = quantize_vector(head_trace.U);
-            const auto out_sum = quantize_vector(head_trace.Sum);
-            const auto out_inv = quantize_vector(head_trace.inv);
-            const auto out_alpha = quantize_vector(head_trace.alpha);
-            const auto y_lin_matrix = quantize_matrix(head_trace.H_agg_pre_bias);
-            const auto y_matrix = add_quantized_bias_to_matrix(y_lin_matrix, head_params.output_bias_fp);
+            const auto& quantized = forward_artifacts->output_head_quantized.at(head_index);
+            const auto& y_prime = quantized.y_prime;
+            const auto& out_e_src = quantized.e_src;
+            const auto& out_e_dst = quantized.e_dst;
+            const auto& out_s = quantized.s;
+            const auto& out_z = quantized.z;
+            const auto& out_m = quantized.m;
+            const auto& out_delta = quantized.delta;
+            const auto& out_u = quantized.u;
+            const auto& out_sum = quantized.sum;
+            const auto& out_inv = quantized.inv;
+            const auto& out_alpha = quantized.alpha;
+            const auto& y_lin_matrix = quantized.y_lin;
+            const auto& y_matrix = quantized.y;
             per_head_y_lin_matrices.push_back(y_lin_matrix);
             per_head_y_matrices.push_back(y_matrix);
-            const auto out_m_edge = broadcast_node_values(out_m, edges, false, domains.edge->size);
-            const auto out_sum_edge = broadcast_node_values(out_sum, edges, false, domains.edge->size);
-            const auto out_inv_edge = broadcast_node_values(out_inv, edges, false, domains.edge->size);
+            const auto& out_m_edge = quantized.m_edge;
+            const auto& out_sum_edge = quantized.sum_edge;
+            const auto& out_inv_edge = quantized.inv_edge;
             add_dynamic_commitment_batch(
                 trace,
                 {
@@ -3143,8 +3295,8 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             commit_output_head(head_index);
         }
 
-        const auto y_lin_average = average_field_matrices(per_head_y_lin_matrices);
-        const auto y_average = average_field_matrices(per_head_y_matrices);
+        const auto& y_lin_average = forward_artifacts->output_y_lin_average;
+        const auto& y_average = forward_artifacts->output_y_average;
         add_dynamic_commitment_batch(
             trace,
             {
@@ -3174,24 +3326,23 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         trace.external_evaluations["mu_Y_lin"] = matrix_row_major_evaluation(y_lin_average, trace.challenges.at("y_out"));
         trace.external_evaluations["mu_out"] = matrix_row_major_evaluation(y_average, trace.challenges.at("y_out"));
     } else {
-    const auto y_prime = quantize_matrix(forward.output_head_trace.H_prime);
-    const auto out_e_src = quantize_vector(forward.output_head_trace.E_src);
-    const auto out_e_dst = quantize_vector(forward.output_head_trace.E_dst);
-    const auto out_s = quantize_vector(forward.output_head_trace.S);
-    const auto out_z = quantize_vector(forward.output_head_trace.Z);
-    const auto out_m = quantize_vector(forward.output_head_trace.M);
-    const auto out_delta = quantize_vector(forward.output_head_trace.Delta);
-    const auto out_u = quantize_vector(forward.output_head_trace.U);
-    const auto out_sum = quantize_vector(forward.output_head_trace.Sum);
-    const auto out_inv = quantize_vector(forward.output_head_trace.inv);
-    const auto out_alpha = quantize_vector(forward.output_head_trace.alpha);
-    const auto y_lin_matrix = quantize_matrix(forward.Y_lin);
-    const auto y_matrix = add_quantized_bias_to_matrix(
-        y_lin_matrix,
-        context.model.output_layer.heads.front().output_bias_fp);
-    const auto out_m_edge = broadcast_node_values(out_m, edges, false, domains.edge->size);
-    const auto out_sum_edge = broadcast_node_values(out_sum, edges, false, domains.edge->size);
-    const auto out_inv_edge = broadcast_node_values(out_inv, edges, false, domains.edge->size);
+    const auto& quantized = forward_artifacts->output_head_quantized.front();
+    const auto& y_prime = quantized.y_prime;
+    const auto& out_e_src = quantized.e_src;
+    const auto& out_e_dst = quantized.e_dst;
+    const auto& out_s = quantized.s;
+    const auto& out_z = quantized.z;
+    const auto& out_m = quantized.m;
+    const auto& out_delta = quantized.delta;
+    const auto& out_u = quantized.u;
+    const auto& out_sum = quantized.sum;
+    const auto& out_inv = quantized.inv;
+    const auto& out_alpha = quantized.alpha;
+    const auto& y_lin_matrix = quantized.y_lin;
+    const auto& y_matrix = quantized.y;
+    const auto& out_m_edge = quantized.m_edge;
+    const auto& out_sum_edge = quantized.sum_edge;
+    const auto& out_inv_edge = quantized.inv_edge;
     add_metric(metrics != nullptr ? &metrics->witness_materialization_ms : nullptr, stage_start);
     add_metric(metrics != nullptr ? &metrics->field_conversion_residual_ms : nullptr, stage_start);
     add_dynamic_commitment_batch(
