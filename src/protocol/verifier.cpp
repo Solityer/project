@@ -191,6 +191,33 @@ class PublicEvaluationBackendRegistry {
     std::unordered_map<const algebra::RootOfUnityDomain*, std::string> domain_keys_;
 };
 
+class SharedVerifierBackendRegistryCache {
+  public:
+    std::shared_ptr<const PublicEvaluationBackendRegistry> get_or_build(
+        const std::string& key,
+        const std::function<std::shared_ptr<const PublicEvaluationBackendRegistry>()>& build) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (const auto it = entries_.find(key); it != entries_.end()) {
+                return it->second;
+            }
+        }
+        auto registry = build();
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto [it, _] = entries_.emplace(key, std::move(registry));
+        return it->second;
+    }
+
+  private:
+    std::mutex mutex_;
+    std::unordered_map<std::string, std::shared_ptr<const PublicEvaluationBackendRegistry>> entries_;
+};
+
+SharedVerifierBackendRegistryCache& shared_verifier_backend_registry_cache() {
+    static SharedVerifierBackendRegistryCache cache;
+    return cache;
+}
+
 struct OpenedValueView {
     const std::vector<FieldElement>* points = nullptr;
     const std::vector<FieldElement>* values = nullptr;
@@ -341,24 +368,44 @@ struct BundleVerificationInput {
     std::vector<std::vector<FieldElement>> values;
 };
 
-const DomainOpeningBundle* bundle_by_name(const Proof& proof, const std::string& name) {
+struct IndexedBundleView {
+    const DomainOpeningBundle* bundle = nullptr;
+    std::unordered_map<std::string, const std::vector<FieldElement>*> values_by_label;
+};
+
+using IndexedBundleMap = std::unordered_map<std::string, IndexedBundleView>;
+
+IndexedBundleMap index_bundles(const Proof& proof) {
+    IndexedBundleMap index;
+    index.reserve(proof.domain_openings.size());
     for (const auto& [bundle_name, bundle] : proof.domain_openings) {
-        if (bundle_name == name) {
-            return &bundle;
+        IndexedBundleView view;
+        view.bundle = &bundle;
+        view.values_by_label.reserve(bundle.values.size());
+        for (const auto& [label, values] : bundle.values) {
+            view.values_by_label.emplace(label, &values);
         }
+        index.emplace(bundle_name, std::move(view));
+    }
+    return index;
+}
+
+const IndexedBundleView& bundle_by_name(const IndexedBundleMap& index, const std::string& name) {
+    if (const auto it = index.find(name); it != index.end()) {
+        return it->second;
     }
     throw std::runtime_error("missing domain bundle: " + name);
 }
 
-FieldElement bundle_value(const DomainOpeningBundle& bundle, const std::string& label, const FieldElement& point) {
-    for (const auto& [name, values] : bundle.values) {
-        if (name != label) {
-            continue;
-        }
-        for (std::size_t i = 0; i < bundle.points.size(); ++i) {
-            if (bundle.points[i] == point) {
-                return values[i];
-            }
+FieldElement bundle_value(const IndexedBundleView& bundle, const std::string& label, const FieldElement& point) {
+    const auto values_it = bundle.values_by_label.find(label);
+    if (values_it == bundle.values_by_label.end()) {
+        throw std::runtime_error("missing opened value for " + label);
+    }
+    const auto& values = *values_it->second;
+    for (std::size_t i = 0; i < bundle.bundle->points.size(); ++i) {
+        if (bundle.bundle->points[i] == point) {
+            return values[i];
         }
     }
     throw std::runtime_error("missing opened value for " + label);
@@ -375,9 +422,11 @@ FieldElement external_value(const Proof& proof, const std::string& label) {
 
 FieldElement bias_fold(const ProtocolContext& context, const FieldElement& y_out) {
     FieldElement out = FieldElement::zero();
+    FieldElement power = FieldElement::one();
     for (std::size_t i = 0; i < context.local.num_nodes; ++i) {
         for (std::size_t j = 0; j < context.model.b.size(); ++j) {
-            out += context.model.b[j] * y_out.pow(static_cast<std::uint64_t>(i * context.model.b.size() + j));
+            out += context.model.b[j] * power;
+            power *= y_out;
         }
     }
     return out;
@@ -388,11 +437,17 @@ FieldElement bias_fold_vector(
     std::size_t node_count,
     const FieldElement& y_out) {
     FieldElement out = FieldElement::zero();
+    std::vector<FieldElement> quantized_bias;
+    quantized_bias.reserve(bias.size());
+    for (const auto value : bias) {
+        quantized_bias.push_back(FieldElement::from_signed(static_cast<std::int64_t>(
+            value >= 0.0 ? value * 16.0 + 0.5 : value * 16.0 - 0.5)));
+    }
+    FieldElement power = FieldElement::one();
     for (std::size_t i = 0; i < node_count; ++i) {
-        for (std::size_t j = 0; j < bias.size(); ++j) {
-            const auto quantized = FieldElement::from_signed(static_cast<std::int64_t>(
-                bias[j] >= 0.0 ? bias[j] * 16.0 + 0.5 : bias[j] * 16.0 - 0.5));
-            out += quantized * y_out.pow(static_cast<std::uint64_t>(i * bias.size() + j));
+        for (const auto& quantized : quantized_bias) {
+            out += quantized * power;
+            power *= y_out;
         }
     }
     return out;
@@ -629,41 +684,47 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
             {"C", "C", context.domains.c, "z_C", "v_C", "t_C"},
             {"N", "N", context.domains.n, "z_N", "v_N", "t_N"},
         };
+        const auto indexed_bundles = index_bundles(proof);
         std::unordered_map<std::string, OpenedValueView> opened_values;
         opened_values.reserve(proof.domain_openings.size() * 16);
-        for (const auto& [bundle_name, bundle] : proof.domain_openings) {
+        for (const auto& [bundle_name, indexed_bundle] : indexed_bundles) {
             (void)bundle_name;
-            for (const auto& [label, values] : bundle.values) {
+            for (const auto& [label, values] : indexed_bundle.values_by_label) {
                 opened_values.emplace(
                     label,
                     OpenedValueView{
-                        .points = &bundle.points,
-                        .values = &values,
+                        .points = &indexed_bundle.bundle->points,
+                        .values = values,
                     });
             }
         }
-        auto public_backend_registry = std::make_shared<PublicEvaluationBackendRegistry>(context);
+        auto public_backend_registry = shared_verifier_backend_registry_cache().get_or_build(
+            verifier_context_cache_key(context.config),
+            [&]() {
+                return std::make_shared<PublicEvaluationBackendRegistry>(context);
+            });
         VerifierEvaluationMemoization eval_memo(context, opened_values, public_backend_registry, metrics);
         const auto eval = [&](const std::string& name, const FieldElement& point) -> FieldElement {
             return eval_memo.eval_named(name, point);
         };
         auto verify_bundle_spec = [&](const BundleSpec& spec) {
-            const auto* bundle = bundle_by_name(proof, spec.bundle_name);
+            const auto& indexed_bundle = bundle_by_name(indexed_bundles, spec.bundle_name);
+            const auto& bundle = *indexed_bundle.bundle;
             auto labels = domain_opening_labels(context, spec.trace_domain_name);
             labels.push_back(spec.quotient_name);
-            if (bundle->values.size() != labels.size()) {
+            if (bundle.values.size() != labels.size()) {
                 return false;
             }
-            if (bundle->points.size() != 2
-                || bundle->points[0] != challenges.at(spec.z_name)
-                || bundle->points[1] != challenges.at(spec.z_name) * spec.domain->omega) {
+            if (bundle.points.size() != 2
+                || bundle.points[0] != challenges.at(spec.z_name)
+                || bundle.points[1] != challenges.at(spec.z_name) * spec.domain->omega) {
                 return false;
             }
             std::vector<Commitment> commitments;
             std::vector<std::vector<FieldElement>> values;
             const auto bundle_lookup_start = Clock::now();
             for (std::size_t i = 0; i < labels.size(); ++i) {
-                if (bundle->values[i].first != labels[i]) {
+                if (bundle.values[i].first != labels[i]) {
                     return false;
                 }
                 if (dynamic_commitments.contains(labels[i])) {
@@ -673,7 +734,7 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
                 } else {
                     return false;
                 }
-                values.push_back(bundle->values[i].second);
+                values.push_back(bundle.values[i].second);
             }
             if (metrics != nullptr) {
                 metrics->verify_bundle_lookup_ms += elapsed_ms(bundle_lookup_start, Clock::now());
@@ -681,10 +742,10 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
             const auto opening_start = Clock::now();
             if (!crypto::KZG::verify_batch(
                     commitments,
-                    bundle->points,
+                    bundle.points,
                     values,
                     challenges.at(spec.v_name),
-                    bundle->witness,
+                    bundle.witness,
                     context.kzg)) {
                 return false;
             }
@@ -714,7 +775,7 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
                 }
                 shared_verifier_quotient_cache().store(cache_key, expected_t);
             }
-            if (bundle_value(*bundle, spec.quotient_name, challenges.at(spec.z_name)) != expected_t) {
+            if (bundle_value(indexed_bundle, spec.quotient_name, challenges.at(spec.z_name)) != expected_t) {
                 return false;
             }
             if (metrics != nullptr) {
@@ -792,11 +853,12 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
         challenges.at("y_out"),
     };
 
-    const auto* bundle_fh = bundle_by_name(proof, "FH");
-    const auto* bundle_edge = bundle_by_name(proof, "edge");
-    const auto* bundle_in = bundle_by_name(proof, "in");
-    const auto* bundle_d = bundle_by_name(proof, "d");
-    const auto* bundle_n = bundle_by_name(proof, "N");
+    const auto indexed_bundles = index_bundles(proof);
+    const auto* bundle_fh = &bundle_by_name(indexed_bundles, "FH");
+    const auto* bundle_edge = &bundle_by_name(indexed_bundles, "edge");
+    const auto* bundle_in = &bundle_by_name(indexed_bundles, "in");
+    const auto* bundle_d = &bundle_by_name(indexed_bundles, "d");
+    const auto* bundle_n = &bundle_by_name(indexed_bundles, "N");
 
     const auto eval = [&](const std::string& name, const FieldElement& point) -> FieldElement {
         if (context.public_polynomials.contains(name)) {
@@ -935,11 +997,11 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
             context.kzg);
     };
 
-    const auto prepared_fh = prepare_bundle(*bundle_fh, "v_FH");
-    const auto prepared_edge = prepare_bundle(*bundle_edge, "v_edge");
-    const auto prepared_in = prepare_bundle(*bundle_in, "v_in");
-    const auto prepared_d = prepare_bundle(*bundle_d, "v_d");
-    const auto prepared_n = prepare_bundle(*bundle_n, "v_N");
+    const auto prepared_fh = prepare_bundle(*bundle_fh->bundle, "v_FH");
+    const auto prepared_edge = prepare_bundle(*bundle_edge->bundle, "v_edge");
+    const auto prepared_in = prepare_bundle(*bundle_in->bundle, "v_in");
+    const auto prepared_d = prepare_bundle(*bundle_d->bundle, "v_d");
+    const auto prepared_n = prepare_bundle(*bundle_n->bundle, "v_N");
 
     const bool run_parallel_verification = std::thread::hardware_concurrency() > 1;
     if (run_parallel_verification) {

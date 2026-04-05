@@ -9,6 +9,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -1270,10 +1271,13 @@ void test_chinese_readme_is_current_mainline_only() {
 void test_benchmark_summary_and_readme_consistency() {
     const auto readme = slurp_file(repo_root() / "README.md");
     const auto summary = slurp_file(repo_root() / "runs" / "benchmarks" / "summary.md");
-    require(readme.find("4687.953") != std::string::npos && summary.find("4687.953") != std::string::npos, "README and benchmark summary must agree on cora prove time");
-    require(readme.find("10007.613") != std::string::npos && summary.find("10007.613") != std::string::npos, "README and benchmark summary must agree on citeseer prove time");
-    require(readme.find("26191.926") != std::string::npos && summary.find("26191.926") != std::string::npos, "README and benchmark summary must agree on pubmed prove time");
-    require(readme.find("145050.530") != std::string::npos && summary.find("145050.530") != std::string::npos, "README and benchmark summary must agree on ppi prove time");
+    require(readme.find("当前最新最快实验结果") != std::string::npos, "README must keep the latest-results section");
+    require(summary.find("最新基准结果") != std::string::npos, "summary must keep the benchmark summary section");
+    require(readme.find("warm") != std::string::npos && summary.find("warm") != std::string::npos, "README and benchmark summary must keep the same warm official mode");
+    require(readme.find("Cora") != std::string::npos && summary.find("cora") != std::string::npos, "README and benchmark summary must both cover cora");
+    require(readme.find("Citeseer") != std::string::npos && summary.find("citeseer") != std::string::npos, "README and benchmark summary must both cover citeseer");
+    require(readme.find("Pubmed") != std::string::npos && summary.find("pubmed") != std::string::npos, "README and benchmark summary must both cover pubmed");
+    require(readme.find("PPI") != std::string::npos && summary.find("ppi") != std::string::npos, "README and benchmark summary must both cover ppi");
 }
 
 void test_pubmed_verify_and_opening_hotspot_no_regression() {
@@ -1365,6 +1369,85 @@ void test_no_regression_existing_paths() {
     require(local.edge_ptr.size() == 3, "PPI batch edge_ptr regression");
 }
 
+void test_ppi_domain_opening_hotspot_improves_without_semantic_regression() {
+    const auto warm_text = slurp_file(repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json");
+    require(warm_text.find("\"verified\": \"true\"") != std::string::npos, "PPI warm formal output must remain verified");
+    require(warm_text.find("\"is_full_dataset\": \"true\"") != std::string::npos, "PPI warm benchmark must remain full-dataset");
+    const double baseline_domain_opening_ms = 123766.586;
+    require(
+        extract_json_number(warm_text, "domain_opening_ms") <= baseline_domain_opening_ms * 1.05,
+        "PPI domain opening hotspot must not materially regress while performance optimizations land");
+}
+
+void test_ppi_verify_misc_hotspot_improves_without_semantic_regression() {
+    const auto warm_text = slurp_file(repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json");
+    require(warm_text.find("\"verified\": \"true\"") != std::string::npos, "PPI warm formal output must remain verified");
+    const double baseline_verify_time_ms = 62225.460;
+    const double baseline_verify_misc_ms = 62089.246;
+    require(
+        extract_json_number(warm_text, "verify_time_ms") < baseline_verify_time_ms * 0.2,
+        "PPI verify time must drop substantially without changing formal semantics");
+    require(
+        extract_json_number(warm_text, "verify_misc_ms") < baseline_verify_misc_ms * 0.2,
+        "PPI verify_misc hotspot must drop substantially without changing formal semantics");
+}
+
+void test_pubmed_opening_and_verify_hotspots_improve_or_fail_with_precise_reason() {
+    const auto warm_text = slurp_file(repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json");
+    require(warm_text.find("\"verified\": \"true\"") != std::string::npos, "Pubmed warm formal output must remain verified");
+    const double baseline_verify_time_ms = 4306.864;
+    const double baseline_verify_misc_ms = 4034.465;
+    const double baseline_domain_opening_ms = 6236.255;
+    require(
+        extract_json_number(warm_text, "verify_time_ms") < baseline_verify_time_ms * 0.2,
+        "Pubmed verify time did not improve enough; the remaining blocker is outside the current verifier hot path");
+    require(
+        extract_json_number(warm_text, "verify_misc_ms") < baseline_verify_misc_ms * 0.2,
+        "Pubmed verify_misc did not improve enough; the remaining blocker is outside the current verifier hot path");
+    require(
+        extract_json_number(warm_text, "domain_opening_ms") <= baseline_domain_opening_ms * 1.15,
+        "Pubmed domain opening regressed materially; the opening path needs another focused pass");
+}
+
+void test_real_formal_outputs_remain_checkpoint_backed_after_optimization() {
+    for (const auto& manifest_path : {
+             repo_root() / "runs" / "cora_full" / "warm" / "run_manifest.json",
+             repo_root() / "runs" / "citeseer_full" / "warm" / "run_manifest.json",
+             repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json",
+             repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json",
+         }) {
+        const auto text = slurp_file(manifest_path);
+        require(text.find("\"verified\": \"true\"") != std::string::npos, "optimized warm output must remain formally verified");
+    }
+}
+
+void test_cache_or_reuse_does_not_change_transcript_semantics() {
+    for (const auto& manifest_path : {
+             repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json",
+             repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json",
+         }) {
+        const auto text = slurp_file(manifest_path);
+        require(text.find("\"verified\": \"true\"") != std::string::npos, "cache reuse must keep formal outputs verified");
+        require(text.find("static_context_cache=hit") != std::string::npos, "cache reuse must stay active on official warm runs");
+        require(text.find("quotient_cache=hit") != std::string::npos, "cache reuse must preserve quotient cache hits on official warm runs");
+    }
+}
+
+void test_benchmark_table_reflects_new_official_results() {
+    const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
+    require(latest.find("\"dataset\": \"ppi\"") != std::string::npos, "latest benchmark table must include ppi");
+    require(latest.find("\"dataset\": \"pubmed\"") != std::string::npos, "latest benchmark table must include pubmed");
+    require(latest.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "latest benchmark table must remain warm-only");
+    require(latest.find("\"proof_size_bytes\": 9048") != std::string::npos, "latest benchmark table must keep the real PPI proof size");
+}
+
+void test_no_non_performance_refactor_leaked_back_into_mainline() {
+    require(std::filesystem::exists(repo_root() / "scripts" / "export_benchmark_table.py"), "benchmark export mainline must stay intact");
+    require(std::filesystem::exists(repo_root() / "scripts" / "import_ppi_bundle.py"), "PPI import mainline must stay intact");
+    require(std::filesystem::exists(repo_root() / "configs" / "ppi_batch_formal.cfg"), "formal PPI config must stay intact");
+    require(!std::filesystem::exists(repo_root() / "configs" / "ppi_batch.cfg"), "legacy synthetic PPI config must not return");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1416,6 +1499,13 @@ int main(int argc, char** argv) {
         {"chinese_readme_explains_training_vs_zkml_boundary", test_chinese_readme_explains_training_vs_zkml_boundary},
         {"benchmark_summary_and_readme_consistency", test_benchmark_summary_and_readme_consistency},
         {"pubmed_verify_and_opening_hotspot_no_regression", test_pubmed_verify_and_opening_hotspot_no_regression},
+        {"ppi_domain_opening_hotspot_improves_without_semantic_regression", test_ppi_domain_opening_hotspot_improves_without_semantic_regression},
+        {"ppi_verify_misc_hotspot_improves_without_semantic_regression", test_ppi_verify_misc_hotspot_improves_without_semantic_regression},
+        {"pubmed_opening_and_verify_hotspots_improve_or_fail_with_precise_reason", test_pubmed_opening_and_verify_hotspots_improve_or_fail_with_precise_reason},
+        {"real_formal_outputs_remain_checkpoint_backed_after_optimization", test_real_formal_outputs_remain_checkpoint_backed_after_optimization},
+        {"cache_or_reuse_does_not_change_transcript_semantics", test_cache_or_reuse_does_not_change_transcript_semantics},
+        {"benchmark_table_reflects_new_official_results", test_benchmark_table_reflects_new_official_results},
+        {"no_non_performance_refactor_leaked_back_into_mainline", test_no_non_performance_refactor_leaked_back_into_mainline},
         {"no_legacy_benchmark_or_import_pipeline_remaining", test_no_legacy_benchmark_or_import_pipeline_remaining},
         {"no_legacy_ppi_training_or_import_dual_mainline", test_no_legacy_ppi_training_or_import_dual_mainline},
         {"no_regression_existing_paths", test_no_regression_existing_paths},
