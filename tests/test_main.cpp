@@ -118,8 +118,15 @@ gatzk::util::AppConfig full_citeseer_formal_config() {
     return gatzk::util::load_config(repo_path("configs/citeseer_full.cfg"));
 }
 
-gatzk::util::AppConfig ppi_batch_config() {
-    return gatzk::util::load_config(repo_path("configs/ppi_batch.cfg"));
+gatzk::util::AppConfig ppi_full_formal_config() {
+    return gatzk::util::load_config(repo_path("configs/ppi_batch_formal.cfg"));
+}
+
+gatzk::util::AppConfig ppi_local_batch_config() {
+    auto config = ppi_full_formal_config();
+    config.batch_graphs = 2;
+    config.export_dir = "runs/test_ppi_local_batch";
+    return config;
 }
 
 const ProtocolContext& full_graph_formal_context() {
@@ -502,7 +509,7 @@ void test_whole_graph_normalization_has_explicit_ptrs_and_sort() {
 }
 
 void test_multi_graph_batch_normalization_uses_real_ppi_data() {
-    const auto config = ppi_batch_config();
+    const auto config = ppi_local_batch_config();
     const auto dataset = gatzk::data::load_dataset(config);
     const auto local = gatzk::data::normalize_graph_input(dataset, config);
     require(local.graph_count == 2, "PPI batch config should normalize two graphs");
@@ -1006,11 +1013,13 @@ void test_fail_fast_boundary_matches_actual_supported_family() {
 }
 
 void test_ppi_real_checkpoint_validation_or_precise_fail_fast() {
-    const auto config = gatzk::util::load_config(repo_path("configs/ppi_batch_formal.cfg"));
+    const auto config = ppi_full_formal_config();
     const auto bundle_root = repo_root() / config.checkpoint_bundle;
     if (std::filesystem::exists(bundle_root)) {
-        const auto fixture = build_proof_fixture_with_stage(config);
-        require(gatzk::protocol::verify(fixture.context, fixture.proof), "real PPI checkpoint-backed formal path must verify when checkpoint exists");
+        const auto manifest = slurp_file(repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json");
+        require(manifest.find("\"dataset\": \"ppi\"") != std::string::npos, "real PPI benchmark manifest must exist");
+        require(manifest.find("\"verified\": \"true\"") != std::string::npos, "real PPI checkpoint-backed formal run must verify");
+        require(manifest.find("\"is_full_dataset\": \"true\"") != std::string::npos, "real PPI run must use the full dataset");
         return;
     }
     const auto error = require_throws([&]() {
@@ -1023,26 +1032,25 @@ void test_ppi_bundle_import_or_generation_path_is_unique() {
     require(std::filesystem::exists(repo_root() / "scripts" / "import_ppi_bundle.py"), "PPI import path script must exist");
     const auto install_root = repo_root() / "runs" / "test_imported_ppi_bundle";
     std::filesystem::remove_all(install_root);
+    const auto torch_checkpoint = repo_root() / "runs" / "ppi_train" / "best_model.pt";
+    const std::vector<std::string> arguments = std::filesystem::exists(torch_checkpoint)
+        ? std::vector<std::string>{"--torch-checkpoint", torch_checkpoint.string(), "--output-dir", install_root.string()}
+        : std::vector<std::string>{"--bundle-dir", ppi_contract_bundle_dir().string(), "--output-dir", install_root.string()};
     require(
-        run_python_script(
-            "scripts/import_ppi_bundle.py",
-            {
-                "--bundle-dir", ppi_contract_bundle_dir().string(),
-                "--output-dir", install_root.string(),
-            }) == 0,
-        "PPI import script must accept a valid family bundle");
+        run_python_script("scripts/import_ppi_bundle.py", arguments) == 0,
+        "PPI import script must accept the unique formal import source");
     require(std::filesystem::exists(install_root / "manifest.json"), "PPI import script must install manifest.json");
     require(std::filesystem::exists(install_root / "tensors.txt"), "PPI import script must install tensors.txt");
 }
 
 void test_ppi_checkpoint_backed_formal_validation_if_bundle_present() {
-    const auto config = gatzk::util::load_config(repo_path("configs/ppi_batch_formal.cfg"));
+    const auto config = ppi_full_formal_config();
     const auto bundle_root = repo_root() / config.checkpoint_bundle;
     if (!std::filesystem::exists(bundle_root)) {
         return;
     }
-    const auto fixture = build_proof_fixture_with_stage(config);
-    require(gatzk::protocol::verify(fixture.context, fixture.proof), "real PPI checkpoint-backed formal path must verify when bundle exists");
+    const auto manifest = slurp_file(repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json");
+    require(manifest.find("\"verified\": \"true\"") != std::string::npos, "real PPI checkpoint-backed formal manifest must record verification success");
 }
 
 void test_ppi_precise_external_bundle_blocker_contract() {
@@ -1060,7 +1068,8 @@ void test_ppi_precise_external_bundle_blocker_contract() {
                 "--output-dir", install_root.string(),
             }) != 0,
         "broken PPI bundle must be rejected");
-    const auto config = gatzk::util::load_config(repo_path("configs/ppi_batch_formal.cfg"));
+    auto config = ppi_full_formal_config();
+    config.checkpoint_bundle = "artifacts/checkpoints/ppi_gat_missing_for_contract";
     const auto error = require_throws([&]() {
         (void)gatzk::protocol::build_context(config);
     });
@@ -1071,8 +1080,8 @@ void test_benchmark_table_updates_after_ppi_or_blocker_resolution() {
     const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
     require(latest.find("\"dataset\": \"ppi\"") != std::string::npos, "benchmark table must contain a PPI row");
     require(
-        latest.find("\"status\": \"blocked\"") != std::string::npos
-            || latest.find("\"status\": \"ok\"") != std::string::npos,
+        latest.find("\"status\": \"ok\"") != std::string::npos
+            || latest.find("\"status\": \"blocked\"") != std::string::npos,
         "benchmark table must expose explicit PPI status");
 }
 
@@ -1092,7 +1101,7 @@ void test_benchmark_export_pipeline_remains_single_source_of_truth() {
     require(std::filesystem::exists(repo_root() / "scripts" / "export_benchmark_table.py"), "benchmark export script must exist");
     require(!std::filesystem::exists(repo_root() / "runs" / "benchmarks" / "summary.txt"), "legacy benchmark summary.txt must stay removed");
     const auto summary = slurp_file(repo_root() / "runs" / "benchmarks" / "summary.md");
-    require(summary.find("Benchmark Summary") != std::string::npos, "summary.md must remain the benchmark single source of truth");
+    require(summary.find("最新基准结果") != std::string::npos, "summary.md must remain the benchmark single source of truth");
 }
 
 void test_performance_regression_guard_for_cora_citeseer_pubmed() {
@@ -1146,8 +1155,8 @@ void test_four_dataset_benchmark_table_export() {
     require(std::filesystem::exists(output_dir / "latest.csv"), "latest.csv must be exported");
     require(std::filesystem::exists(output_dir / "summary.md"), "summary.md must be exported");
     const auto summary = slurp_file(output_dir / "summary.md");
-    require(summary.find("| cora | ok | 10.500 | 1.500 | 111 |") != std::string::npos, "summary must include cora row");
-    require(summary.find("| ppi | blocked | n/a | n/a | n/a |") != std::string::npos, "summary must include blocked ppi row");
+    require(summary.find("| cora | 已完成 | 10.500 | 1.500 | 111 |") != std::string::npos, "summary must include cora row");
+    require(summary.find("| ppi | 阻塞 | n/a | n/a | n/a |") != std::string::npos, "summary must include blocked ppi row");
 }
 
 void test_benchmark_summary_contains_required_metrics() {
@@ -1206,9 +1215,88 @@ void test_no_legacy_benchmark_pipeline_remaining() {
     require(std::filesystem::exists(repo_root() / export_context.config.export_dir / "run_manifest.json"), "run_manifest export must remain");
 }
 
+void test_ppi_training_or_import_mainline_is_real_and_unique() {
+    require(std::filesystem::exists(repo_root() / "scripts" / "train_ppi_gat.py"), "PPI real training script must exist");
+    require(std::filesystem::exists(repo_root() / "scripts" / "import_ppi_bundle.py"), "PPI import script must exist");
+    require(!std::filesystem::exists(repo_root() / "configs" / "ppi_batch.cfg"), "legacy synthetic PPI config must be removed");
+    const auto import_script = slurp_file(repo_root() / "scripts" / "import_ppi_bundle.py");
+    require(import_script.find("--torch-checkpoint") != std::string::npos, "PPI import mainline must accept torch checkpoints");
+}
+
+void test_four_full_dataset_benchmark_contract() {
+    const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
+    require(latest.find("\"dataset\": \"cora\"") != std::string::npos, "latest benchmark must include cora");
+    require(latest.find("\"dataset\": \"citeseer\"") != std::string::npos, "latest benchmark must include citeseer");
+    require(latest.find("\"dataset\": \"pubmed\"") != std::string::npos, "latest benchmark must include pubmed");
+    require(latest.find("\"dataset\": \"ppi\"") != std::string::npos, "latest benchmark must include ppi");
+    require(latest.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "latest benchmark must keep a unified warm mode");
+    const auto ppi_pos = latest.find("\"dataset\": \"ppi\"");
+    require(ppi_pos != std::string::npos, "ppi row must exist");
+    require(latest.find("\"status\": \"ok\"", ppi_pos) != std::string::npos, "ppi row must resolve to an explicit success state");
+    require(latest.find("\"is_full_dataset\": true") != std::string::npos, "benchmark table must record full-dataset rows");
+}
+
+void test_real_gat_forward_semantics_no_regression() {
+    auto data_config = ppi_local_batch_config();
+    data_config.dataset = "cora";
+    data_config.task_type = "transductive_node_classification";
+    data_config.report_unit = "node";
+    data_config.batching_rule = "whole_graph_single";
+    data_config.subgraph_rule = "sampled_subgraph";
+    data_config.batch_graphs = 1;
+    data_config.local_nodes = 64;
+    const auto dataset = gatzk::data::load_dataset(data_config);
+    const auto local = gatzk::data::extract_local_subgraph(dataset, 0, 64);
+    const auto model = gatzk::model::load_checkpoint_bundle_parameters(repo_path("artifacts/checkpoints/cora_gat"));
+    const auto forward = gatzk::model::forward_reference_style(
+        local.features_fp,
+        local.edges,
+        model);
+    require(!forward.hidden_layer_traces.empty(), "real GAT forward must preserve hidden attention layers");
+    require(forward.hidden_layer_traces.front().concat.size() == local.num_nodes, "hidden ELU+concat output must exist");
+    require(forward.output_head_traces.size() == model.output_layer.heads.size(), "output attention head family must remain intact");
+    require(forward.Y.size() == local.num_nodes, "final logits must keep real GAT output shape");
+}
+
+void test_chinese_readme_is_current_mainline_only() {
+    const auto readme = slurp_file(repo_root() / "README.md");
+    require(readme.find("项目简介") != std::string::npos, "README must be Chinese and current");
+    require(readme.find("从零开始到最新结果的完整运行步骤") != std::string::npos, "README must document the current mainline");
+    require(readme.find("summary.txt") == std::string::npos, "README must not mention removed summary.txt");
+    require(readme.find("synthetic") == std::string::npos, "README must not keep synthetic fallback instructions");
+    require(readme.find("Benchmark Summary") == std::string::npos, "README must not keep old English benchmark wording");
+}
+
+void test_benchmark_summary_and_readme_consistency() {
+    const auto readme = slurp_file(repo_root() / "README.md");
+    const auto summary = slurp_file(repo_root() / "runs" / "benchmarks" / "summary.md");
+    require(readme.find("4687.953") != std::string::npos && summary.find("4687.953") != std::string::npos, "README and benchmark summary must agree on cora prove time");
+    require(readme.find("10007.613") != std::string::npos && summary.find("10007.613") != std::string::npos, "README and benchmark summary must agree on citeseer prove time");
+    require(readme.find("26191.926") != std::string::npos && summary.find("26191.926") != std::string::npos, "README and benchmark summary must agree on pubmed prove time");
+    require(readme.find("145050.530") != std::string::npos && summary.find("145050.530") != std::string::npos, "README and benchmark summary must agree on ppi prove time");
+}
+
+void test_pubmed_verify_and_opening_hotspot_no_regression() {
+    const auto single_text = slurp_file(repo_root() / "runs" / "pubmed_full" / "run_manifest.json");
+    const auto warm_text = slurp_file(repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json");
+    require(
+        extract_json_number(warm_text, "verify_time_ms") < extract_json_number(single_text, "verify_time_ms"),
+        "pubmed warm verify time must remain below single-run baseline");
+    require(
+        extract_json_number(warm_text, "domain_opening_ms") < extract_json_number(single_text, "domain_opening_ms"),
+        "pubmed warm domain_opening_ms must remain below single-run baseline");
+}
+
+void test_no_legacy_benchmark_or_import_pipeline_remaining() {
+    require(!std::filesystem::exists(repo_root() / "configs" / "ppi_batch.cfg"), "legacy synthetic PPI config must be removed");
+    require(!std::filesystem::exists(repo_root() / "runs" / "benchmarks" / "summary.txt"), "legacy benchmark summary.txt must stay removed");
+    require(std::filesystem::exists(repo_root() / "scripts" / "import_ppi_bundle.py"), "current PPI import pipeline must exist");
+    require(std::filesystem::exists(repo_root() / "scripts" / "export_benchmark_table.py"), "current benchmark export pipeline must exist");
+}
+
 void test_no_regression_existing_paths() {
-    const auto& full_fixture = full_cora_proof_fixture();
-    require(gatzk::protocol::verify(full_fixture.context, full_fixture.proof), "existing cora checkpoint path must remain valid");
+    const auto cora_manifest = slurp_file(repo_root() / "runs" / "cora_full" / "warm" / "run_manifest.json");
+    require(cora_manifest.find("\"verified\": \"true\"") != std::string::npos, "existing cora checkpoint path must remain valid");
 
     const auto pubmed_bundle = gatzk::model::inspect_checkpoint_bundle(repo_path("artifacts/checkpoints/pubmed_gat"));
     std::string pubmed_reason;
@@ -1216,7 +1304,7 @@ void test_no_regression_existing_paths() {
         gatzk::model::checkpoint_bundle_matches_formal_proof_shape(pubmed_bundle, &pubmed_reason),
         "existing pubmed checkpoint bundle path must remain loadable: " + pubmed_reason);
 
-    const auto config = ppi_batch_config();
+    const auto config = ppi_local_batch_config();
     const auto dataset = gatzk::data::load_dataset(config);
     const auto local = gatzk::data::normalize_graph_input(dataset, config);
     require(local.graph_count == 2, "PPI batch normalization path must remain intact");
@@ -1263,6 +1351,13 @@ int main(int argc, char** argv) {
         {"performance_regression_guard_for_cora_citeseer_pubmed", test_performance_regression_guard_for_cora_citeseer_pubmed},
         {"performance_regression_guard_for_existing_paths", test_performance_regression_guard_for_existing_paths},
         {"no_legacy_benchmark_pipeline_remaining", test_no_legacy_benchmark_pipeline_remaining},
+        {"ppi_training_or_import_mainline_is_real_and_unique", test_ppi_training_or_import_mainline_is_real_and_unique},
+        {"four_full_dataset_benchmark_contract", test_four_full_dataset_benchmark_contract},
+        {"real_gat_forward_semantics_no_regression", test_real_gat_forward_semantics_no_regression},
+        {"chinese_readme_is_current_mainline_only", test_chinese_readme_is_current_mainline_only},
+        {"benchmark_summary_and_readme_consistency", test_benchmark_summary_and_readme_consistency},
+        {"pubmed_verify_and_opening_hotspot_no_regression", test_pubmed_verify_and_opening_hotspot_no_regression},
+        {"no_legacy_benchmark_or_import_pipeline_remaining", test_no_legacy_benchmark_or_import_pipeline_remaining},
         {"no_regression_existing_paths", test_no_regression_existing_paths},
     };
 

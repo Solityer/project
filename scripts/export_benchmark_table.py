@@ -201,6 +201,15 @@ def markdown_cell(value) -> str:
     return str(value)
 
 
+def status_label(status: object) -> str:
+    text = str(status)
+    if text == "ok":
+        return "已完成"
+    if text == "blocked":
+        return "阻塞"
+    return text
+
+
 def write_outputs(output_dir: pathlib.Path, mode: str, rows: List[Dict[str, object]]) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -239,11 +248,11 @@ def write_outputs(output_dir: pathlib.Path, mode: str, rows: List[Dict[str, obje
             writer.writerow({column: row.get(column) for column in csv_columns})
 
     lines = [
-        "# Benchmark Summary",
+        "# 最新基准结果",
         "",
-        f"- benchmark_mode: `{mode}`",
+        f"- 主表口径：`{mode}`",
         "",
-        "| dataset | status | prove_time_ms | verify_time_ms | proof_size_bytes | node_count | edge_count | route2 | hotspot | blocker |",
+        "| 数据集 | 状态 | prove_time_ms | verify_time_ms | proof_size_bytes | node_count | edge_count | route2 | 主要热点 | 阻塞说明 |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
     ]
     for row in rows:
@@ -252,7 +261,7 @@ def write_outputs(output_dir: pathlib.Path, mode: str, rows: List[Dict[str, obje
             + " | ".join(
                 [
                     markdown_cell(row["dataset"]),
-                    markdown_cell(row["status"]),
+                    markdown_cell(status_label(row["status"])),
                     markdown_cell(row["prove_time_ms"]),
                     markdown_cell(row["verify_time_ms"]),
                     markdown_cell(row["proof_size_bytes"]),
