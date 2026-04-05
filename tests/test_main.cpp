@@ -1385,18 +1385,18 @@ void test_ppi_domain_open_c_hotspot_improves_without_semantic_regression() {
 void test_ppi_trace_generation_improves_or_precisely_reports_blocker() {
     const auto warm_text = slurp_file(repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json");
     require(warm_text.find("\"verified\": \"true\"") != std::string::npos, "PPI warm formal output must remain verified");
-    const double baseline_trace_generation_ms = 17055.879;
+    const double baseline_trace_generation_ms = 17251.771;
     require(
-        extract_json_number(warm_text, "trace_generation_ms") <= baseline_trace_generation_ms * 1.02,
-        "PPI trace generation still exceeds the current official baseline");
+        extract_json_number(warm_text, "trace_generation_ms") < baseline_trace_generation_ms * 0.9,
+        "PPI trace generation hotspot must materially improve on the official warm path");
 }
 
 void test_pubmed_prove_hotspots_improve_without_checkpoint_regression() {
     const auto warm_text = slurp_file(repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json");
     require(warm_text.find("\"verified\": \"true\"") != std::string::npos, "Pubmed warm formal output must remain verified");
-    const double baseline_prove_time_ms = 22007.188;
-    const double baseline_trace_generation_ms = 14018.194;
-    const double baseline_commit_dynamic_ms = 6459.247;
+    const double baseline_prove_time_ms = 21903.990;
+    const double baseline_trace_generation_ms = 13970.637;
+    const double baseline_commit_dynamic_ms = 6411.175;
     require(
         extract_json_number(warm_text, "prove_time_ms") < baseline_prove_time_ms,
         "Pubmed prove time must materially improve on the official warm path");
@@ -1425,10 +1425,10 @@ void test_official_benchmark_table_updates_after_prover_optimization() {
     require(latest.find("\"dataset\": \"pubmed\"") != std::string::npos, "latest benchmark table must include pubmed");
     require(latest.find("\"dataset\": \"ppi\"") != std::string::npos, "latest benchmark table must include ppi");
     require(
-        latest.find("\"prove_time_ms\": 21903.99") != std::string::npos,
+        latest.find("\"prove_time_ms\": 18797.168") != std::string::npos,
         "latest benchmark table must record the current pubmed prove time");
     require(
-        latest.find("\"prove_time_ms\": 23500.322") != std::string::npos,
+        latest.find("\"prove_time_ms\": 15160.07") != std::string::npos,
         "latest benchmark table must record the current ppi prove time");
 }
 
@@ -1436,10 +1436,10 @@ void test_no_verifier_only_refactor_misreported_as_prover_gain() {
     const auto pubmed_text = slurp_file(repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json");
     const auto ppi_text = slurp_file(repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json");
     require(
-        extract_json_number(pubmed_text, "prove_time_ms") < 22007.188,
+        extract_json_number(pubmed_text, "prove_time_ms") < 21903.990,
         "Pubmed official gain must come from prove-side improvements, not verifier-only changes");
     require(
-        extract_json_number(ppi_text, "prove_time_ms") < 33375.431,
+        extract_json_number(ppi_text, "prove_time_ms") < 23500.322,
         "PPI official gain must come from prove-side improvements, not verifier-only changes");
 }
 
@@ -1541,6 +1541,33 @@ void test_prove_side_materialization_or_layout_reuse_does_not_change_transcript(
     test_prove_side_cache_or_layout_reuse_does_not_change_transcript();
 }
 
+void test_ppi_witness_materialization_hotspot_improves_without_semantic_regression() {
+    const auto warm_text = slurp_file(repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json");
+    require(extract_json_number(warm_text, "witness_materialization_ms") < 7535.014 * 0.9, "PPI witness materialization hotspot must materially improve");
+}
+
+void test_ppi_hidden_output_object_residual_improves_without_semantic_regression() {
+    const auto warm_text = slurp_file(repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json");
+    require(extract_json_number(warm_text, "hidden_output_object_residual_ms") < 4450.472 * 0.1, "PPI hidden/output object residual must materially improve");
+}
+
+void test_ppi_route_pack_or_hidden_route_trace_improves_without_transcript_change() {
+    const auto warm_text = slurp_file(repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json");
+    require(warm_text.find("\"verified\": \"true\"") != std::string::npos, "PPI route-pack optimization must remain verified");
+    require(extract_json_number(warm_text, "route_pack_residual_ms") < 2218.146 * 0.1, "PPI route pack residual must materially improve");
+    require(extract_json_number(warm_text, "hidden_route_trace_ms") < 2176.507 * 0.1, "PPI hidden route trace must materially improve");
+}
+
+void test_pubmed_field_conversion_residual_improves_without_checkpoint_regression() {
+    const auto warm_text = slurp_file(repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json");
+    require(extract_json_number(warm_text, "field_conversion_residual_ms") < 11915.533 * 0.9, "Pubmed field conversion residual must materially improve");
+}
+
+void test_pubmed_dynamic_domain_convert_improves_without_checkpoint_regression() {
+    const auto warm_text = slurp_file(repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json");
+    require(extract_json_number(warm_text, "dynamic_domain_convert_ms") < 5904.904, "Pubmed dynamic domain convert must continue improving");
+}
+
 void test_four_dataset_official_table_is_same_build_same_mainline() {
     const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
     for (const auto& dataset : {"cora", "citeseer", "pubmed", "ppi"}) {
@@ -1555,6 +1582,13 @@ void test_four_dataset_official_table_is_same_build_same_mainline() {
 
 void test_official_benchmark_table_updates_after_second_prover_optimization() {
     test_official_benchmark_table_updates_after_prover_optimization();
+}
+
+void test_no_obsolete_domain_open_c_focus_left_in_final_code() {
+    const auto warm_text = slurp_file(repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json");
+    require(
+        extract_json_number(warm_text, "trace_generation_ms") > extract_json_number(warm_text, "domain_open_C_ms") * 100.0,
+        "PPI official hotspot focus must no longer be dominated by domain_open_C");
 }
 
 void test_no_non_performance_refactor_leaked_back_into_mainline() {
@@ -1620,10 +1654,16 @@ int main(int argc, char** argv) {
         {"pubmed_prove_hotspots_improve_without_checkpoint_regression", test_pubmed_prove_hotspots_improve_without_checkpoint_regression},
         {"ppi_trace_generation_hotspot_improves_without_semantic_regression", test_ppi_trace_generation_hotspot_improves_without_semantic_regression},
         {"ppi_domain_open_c_gather_or_eval_improves_without_semantic_regression", test_ppi_domain_open_c_gather_or_eval_improves_without_semantic_regression},
+        {"ppi_witness_materialization_hotspot_improves_without_semantic_regression", test_ppi_witness_materialization_hotspot_improves_without_semantic_regression},
+        {"ppi_hidden_output_object_residual_improves_without_semantic_regression", test_ppi_hidden_output_object_residual_improves_without_semantic_regression},
+        {"ppi_route_pack_or_hidden_route_trace_improves_without_transcript_change", test_ppi_route_pack_or_hidden_route_trace_improves_without_transcript_change},
         {"pubmed_trace_generation_or_commit_dynamic_improves_without_checkpoint_regression", test_pubmed_trace_generation_or_commit_dynamic_improves_without_checkpoint_regression},
+        {"pubmed_field_conversion_residual_improves_without_checkpoint_regression", test_pubmed_field_conversion_residual_improves_without_checkpoint_regression},
+        {"pubmed_dynamic_domain_convert_improves_without_checkpoint_regression", test_pubmed_dynamic_domain_convert_improves_without_checkpoint_regression},
         {"prove_side_materialization_or_layout_reuse_does_not_change_transcript", test_prove_side_materialization_or_layout_reuse_does_not_change_transcript},
         {"four_dataset_official_table_is_same_build_same_mainline", test_four_dataset_official_table_is_same_build_same_mainline},
         {"official_benchmark_table_updates_after_second_prover_optimization", test_official_benchmark_table_updates_after_second_prover_optimization},
+        {"no_obsolete_domain_open_c_focus_left_in_final_code", test_no_obsolete_domain_open_c_focus_left_in_final_code},
         {"prove_side_cache_or_layout_reuse_does_not_change_transcript", test_prove_side_cache_or_layout_reuse_does_not_change_transcript},
         {"official_benchmark_table_updates_after_prover_optimization", test_official_benchmark_table_updates_after_prover_optimization},
         {"no_verifier_only_refactor_misreported_as_prover_gain", test_no_verifier_only_refactor_misreported_as_prover_gain},
