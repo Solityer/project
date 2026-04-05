@@ -682,13 +682,26 @@ FieldElement evaluate_bias_fold(
     const std::vector<FieldElement>& bias,
     std::size_t rows,
     const FieldElement& point) {
-    FieldElement out = FieldElement::zero();
-    for (std::size_t i = 0; i < rows; ++i) {
-        for (std::size_t j = 0; j < bias.size(); ++j) {
-            out += bias[j] * point.pow(static_cast<std::uint64_t>(i * bias.size() + j));
-        }
+    if (bias.empty() || rows == 0) {
+        return FieldElement::zero();
     }
-    return out;
+
+    FieldElement column_fold = FieldElement::zero();
+    FieldElement column_power = FieldElement::one();
+    for (const auto& bias_value : bias) {
+        column_fold += bias_value * column_power;
+        column_power *= point;
+    }
+
+    const auto row_stride = point.pow(static_cast<std::uint64_t>(bias.size()));
+    FieldElement row_sum = FieldElement::zero();
+    if (row_stride == FieldElement::one()) {
+        row_sum = FieldElement(static_cast<std::uint64_t>(rows));
+    } else {
+        row_sum = (row_stride.pow(static_cast<std::uint64_t>(rows)) - FieldElement::one())
+            / (row_stride - FieldElement::one());
+    }
+    return column_fold * row_sum;
 }
 
 FieldElement quantize_float(double value) {

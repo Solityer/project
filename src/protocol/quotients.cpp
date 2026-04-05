@@ -108,20 +108,21 @@ FieldElement bias_fold_vector(
         return FieldElement::zero();
     }
 
-    FieldElement out = FieldElement::zero();
-    std::vector<FieldElement> column_powers(bias.size(), FieldElement::one());
-    for (std::size_t col = 1; col < bias.size(); ++col) {
-        column_powers[col] = column_powers[col - 1] * y_out;
+    FieldElement column_fold = FieldElement::zero();
+    FieldElement column_power = FieldElement::one();
+    for (std::size_t col = 0; col < bias.size(); ++col) {
+        column_fold += quantize_bias_value(bias[col]) * column_power;
+        column_power *= y_out;
     }
     const auto row_stride = y_out.pow(static_cast<std::uint64_t>(bias.size()));
-    auto row_base = FieldElement::one();
-    for (std::size_t row = 0; row < node_count; ++row) {
-        for (std::size_t col = 0; col < bias.size(); ++col) {
-            out += quantize_bias_value(bias[col]) * row_base * column_powers[col];
-        }
-        row_base *= row_stride;
+    FieldElement row_sum = FieldElement::zero();
+    if (row_stride == FieldElement::one()) {
+        row_sum = FieldElement(static_cast<std::uint64_t>(node_count));
+    } else {
+        row_sum = (row_stride.pow(static_cast<std::uint64_t>(node_count)) - FieldElement::one())
+            / (row_stride - FieldElement::one());
     }
-    return out;
+    return column_fold * row_sum;
 }
 
 std::optional<std::string> dynamic_label_domain_name(const ProtocolContext& context, const std::string& label) {
