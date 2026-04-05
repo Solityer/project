@@ -1193,7 +1193,9 @@ class EvaluationMemoization {
             if (eval_labels.empty()) {
                 continue;
             }
-            if (group.first->name == "FH") {
+            const bool allow_shared_trace_reuse =
+                group.first->name == "FH" || group.first->name == "edge";
+            if (allow_shared_trace_reuse) {
                 bool all_cached = true;
                 std::vector<std::vector<FieldElement>> cached_values(points.size());
                 for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
@@ -1232,7 +1234,7 @@ class EvaluationMemoization {
                             const auto direct_index = (*weight_entry.direct_index + (*shifts)[point_index]) & domain_mask;
                             const auto values = backend->values_at_direct_index(eval_labels, direct_index);
                             store_group_values(eval_labels, points[point_index], values);
-                            if (group.first->name == "FH") {
+                            if (allow_shared_trace_reuse) {
                                 shared_trace_evaluation_cache()->store(
                                     context_key_,
                                     group.first,
@@ -1270,7 +1272,7 @@ class EvaluationMemoization {
                     }
                     for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
                         store_group_values(eval_labels, points[point_index], batched_values[point_index]);
-                        if (group.first->name == "FH") {
+                        if (allow_shared_trace_reuse) {
                             shared_trace_evaluation_cache()->store(
                                 context_key_,
                                 group.first,
@@ -1285,7 +1287,7 @@ class EvaluationMemoization {
             for (const auto& point : points) {
                 const auto values = evaluate_group_at_point(group.first, *backend, eval_labels, point, false);
                 store_group_values(eval_labels, point, values);
-                if (group.first->name == "FH") {
+                if (allow_shared_trace_reuse) {
                     shared_trace_evaluation_cache()->store(
                         context_key_,
                         group.first,

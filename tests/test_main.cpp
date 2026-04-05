@@ -1369,6 +1369,86 @@ void test_no_regression_existing_paths() {
     require(local.edge_ptr.size() == 3, "PPI batch edge_ptr regression");
 }
 
+void test_ppi_domain_open_c_hotspot_improves_without_semantic_regression() {
+    const auto warm_text = slurp_file(repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json");
+    require(warm_text.find("\"verified\": \"true\"") != std::string::npos, "PPI warm formal output must remain verified");
+    const double baseline_prove_time_ms = 145256.686;
+    const double baseline_domain_open_c_ms = 123821.189;
+    require(
+        extract_json_number(warm_text, "prove_time_ms") < baseline_prove_time_ms * 0.9,
+        "PPI prove time must materially improve on the official warm path");
+    require(
+        extract_json_number(warm_text, "domain_open_C_ms") < baseline_domain_open_c_ms * 0.9,
+        "PPI domain_open_C hotspot must materially improve without changing semantics");
+}
+
+void test_ppi_trace_generation_improves_or_precisely_reports_blocker() {
+    const auto warm_text = slurp_file(repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json");
+    require(warm_text.find("\"verified\": \"true\"") != std::string::npos, "PPI warm formal output must remain verified");
+    const double baseline_trace_generation_ms = 17418.358;
+    require(
+        extract_json_number(warm_text, "trace_generation_ms") <= baseline_trace_generation_ms,
+        "PPI trace generation still exceeds the current official baseline");
+}
+
+void test_pubmed_prove_hotspots_improve_without_checkpoint_regression() {
+    const auto warm_text = slurp_file(repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json");
+    require(warm_text.find("\"verified\": \"true\"") != std::string::npos, "Pubmed warm formal output must remain verified");
+    const double baseline_prove_time_ms = 26463.240;
+    const double baseline_commit_dynamic_ms = 6463.549;
+    const double baseline_domain_opening_ms = 6219.039;
+    require(
+        extract_json_number(warm_text, "prove_time_ms") < baseline_prove_time_ms * 0.92,
+        "Pubmed prove time must materially improve on the official warm path");
+    require(
+        extract_json_number(warm_text, "commit_dynamic_ms") <= baseline_commit_dynamic_ms,
+        "Pubmed commit_dynamic hotspot must not regress");
+    require(
+        extract_json_number(warm_text, "domain_opening_ms") < baseline_domain_opening_ms * 0.4,
+        "Pubmed domain opening hotspot must materially improve");
+}
+
+void test_prove_side_cache_or_layout_reuse_does_not_change_transcript() {
+    for (const auto& manifest_path : {
+             repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json",
+             repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json",
+         }) {
+        const auto text = slurp_file(manifest_path);
+        require(text.find("\"verified\": \"true\"") != std::string::npos, "prove-side cache reuse must keep formal outputs verified");
+        require(text.find("static_context_cache=hit") != std::string::npos, "prove-side cache reuse must keep static context hits on official warm runs");
+        require(text.find("quotient_cache=hit") != std::string::npos, "prove-side cache reuse must preserve quotient cache hits on official warm runs");
+    }
+}
+
+void test_official_benchmark_table_updates_after_prover_optimization() {
+    const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
+    require(latest.find("\"dataset\": \"pubmed\"") != std::string::npos, "latest benchmark table must include pubmed");
+    require(latest.find("\"dataset\": \"ppi\"") != std::string::npos, "latest benchmark table must include ppi");
+    require(latest.find("\"prove_time_ms\": 22007.188") != std::string::npos, "latest benchmark table must record the new pubmed prove time");
+    require(latest.find("\"prove_time_ms\": 33375.431") != std::string::npos, "latest benchmark table must record the new ppi prove time");
+}
+
+void test_no_verifier_only_refactor_misreported_as_prover_gain() {
+    const auto pubmed_text = slurp_file(repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json");
+    const auto ppi_text = slurp_file(repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json");
+    require(
+        extract_json_number(pubmed_text, "prove_time_ms") < 26463.240,
+        "Pubmed official gain must come from prove-side improvements, not verifier-only changes");
+    require(
+        extract_json_number(ppi_text, "prove_time_ms") < 145256.686,
+        "PPI official gain must come from prove-side improvements, not verifier-only changes");
+}
+
+void test_no_useless_prover_cache_kept_in_final_code() {
+    const auto prover = slurp_file(repo_root() / "src" / "protocol" / "prover.cpp");
+    require(
+        prover.find("group.first->name == \"FH\" || group.first->name == \"edge\"") != std::string::npos,
+        "final prover cache reuse should stay focused on the hot proving domains");
+    require(
+        prover.find("group.first->name == \"FH\" || group.first->name == \"C\"") == std::string::npos,
+        "non-performing C-domain trace cache experiment must not remain in final code");
+}
+
 void test_ppi_domain_opening_hotspot_improves_without_semantic_regression() {
     const auto warm_text = slurp_file(repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json");
     require(warm_text.find("\"verified\": \"true\"") != std::string::npos, "PPI warm formal output must remain verified");
@@ -1499,6 +1579,13 @@ int main(int argc, char** argv) {
         {"chinese_readme_explains_training_vs_zkml_boundary", test_chinese_readme_explains_training_vs_zkml_boundary},
         {"benchmark_summary_and_readme_consistency", test_benchmark_summary_and_readme_consistency},
         {"pubmed_verify_and_opening_hotspot_no_regression", test_pubmed_verify_and_opening_hotspot_no_regression},
+        {"ppi_domain_open_c_hotspot_improves_without_semantic_regression", test_ppi_domain_open_c_hotspot_improves_without_semantic_regression},
+        {"ppi_trace_generation_improves_or_precisely_reports_blocker", test_ppi_trace_generation_improves_or_precisely_reports_blocker},
+        {"pubmed_prove_hotspots_improve_without_checkpoint_regression", test_pubmed_prove_hotspots_improve_without_checkpoint_regression},
+        {"prove_side_cache_or_layout_reuse_does_not_change_transcript", test_prove_side_cache_or_layout_reuse_does_not_change_transcript},
+        {"official_benchmark_table_updates_after_prover_optimization", test_official_benchmark_table_updates_after_prover_optimization},
+        {"no_verifier_only_refactor_misreported_as_prover_gain", test_no_verifier_only_refactor_misreported_as_prover_gain},
+        {"no_useless_prover_cache_kept_in_final_code", test_no_useless_prover_cache_kept_in_final_code},
         {"ppi_domain_opening_hotspot_improves_without_semantic_regression", test_ppi_domain_opening_hotspot_improves_without_semantic_regression},
         {"ppi_verify_misc_hotspot_improves_without_semantic_regression", test_ppi_verify_misc_hotspot_improves_without_semantic_regression},
         {"pubmed_opening_and_verify_hotspots_improve_or_fail_with_precise_reason", test_pubmed_opening_and_verify_hotspots_improve_or_fail_with_precise_reason},
