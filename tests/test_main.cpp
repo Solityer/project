@@ -1591,6 +1591,72 @@ void test_no_obsolete_domain_open_c_focus_left_in_final_code() {
         "PPI official hotspot focus must no longer be dominated by domain_open_C");
 }
 
+void test_cost_drivers_explain_ppi_vs_pubmed_without_size_illusion() {
+    const auto ppi_text = slurp_file(repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json");
+    const auto pubmed_text = slurp_file(repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json");
+    require(extract_json_number(ppi_text, "node_count") > extract_json_number(pubmed_text, "node_count"), "PPI must remain larger than Pubmed in node count");
+    require(extract_json_number(ppi_text, "edge_count") > extract_json_number(pubmed_text, "edge_count"), "PPI must remain larger than Pubmed in edge count");
+    require(ppi_text.find("\"hidden_profile\": \"1x8\"") != std::string::npos, "PPI explanation must use the real hidden profile");
+    require(pubmed_text.find("\"hidden_profile\": \"8x8\"") != std::string::npos, "Pubmed explanation must use the real hidden profile");
+    require(ppi_text.find("\"d_in_profile\": \"50\"") != std::string::npos, "PPI explanation must use the real input profile");
+    require(pubmed_text.find("\"d_in_profile\": \"500\"") != std::string::npos, "Pubmed explanation must use the real input profile");
+    require(extract_json_number(ppi_text, "prove_time_ms") < extract_json_number(pubmed_text, "prove_time_ms"), "PPI should stay faster than Pubmed on the current official path");
+    require(extract_json_number(ppi_text, "trace_generation_ms") < extract_json_number(pubmed_text, "trace_generation_ms"), "PPI must stay cheaper than Pubmed on trace generation");
+    require(extract_json_number(ppi_text, "commit_dynamic_ms") < extract_json_number(pubmed_text, "commit_dynamic_ms"), "PPI must stay cheaper than Pubmed on dynamic commitments");
+    require(extract_json_number(ppi_text, "proof_size_bytes") < extract_json_number(pubmed_text, "proof_size_bytes"), "PPI must keep the smaller proof object that explains part of the runtime gap");
+}
+
+void test_small_graph_proof_floor_is_explained_by_formal_fixed_costs() {
+    const auto cora_text = slurp_file(repo_root() / "runs" / "cora_full" / "warm" / "run_manifest.json");
+    const auto pubmed_text = slurp_file(repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json");
+    const auto prove_time = extract_json_number(cora_text, "prove_time_ms");
+    const auto accounted_floor =
+        extract_json_number(cora_text, "trace_generation_ms")
+        + extract_json_number(cora_text, "commit_dynamic_ms")
+        + extract_json_number(cora_text, "domain_opening_ms")
+        + extract_json_number(cora_text, "quotient_build_ms")
+        + extract_json_number(cora_text, "external_opening_ms");
+    require(prove_time > 4000.0, "Cora must still exhibit the real proving floor");
+    require(accounted_floor > prove_time * 0.95, "Cora proving floor must still be dominated by formal fixed-cost stages");
+    require(
+        std::abs(extract_json_number(cora_text, "proof_size_bytes") - extract_json_number(pubmed_text, "proof_size_bytes")) < 16.0,
+        "Cora and Pubmed must still share nearly identical proof-size floor on the official path");
+}
+
+void test_gpu_hotspot_path_has_positive_gain_or_precise_rejection_reason() {
+    const auto gpu_text = slurp_file(repo_root() / "runs" / "benchmarks" / "gpu_hotspot_eval.json");
+    require(gpu_text.find("\"cuda_build_enabled\": \"true\"") != std::string::npos, "GPU experiment must use a CUDA-enabled build");
+    require(gpu_text.find("\"official_cpu_build_cuda_enabled\": \"false\"") != std::string::npos, "official CPU build must remain the default path");
+    require(gpu_text.find("\"gpu_runtime_present\": \"true\"") != std::string::npos, "GPU rejection must be based on a real runtime");
+    require(extract_json_number(gpu_text, "pubmed_gpu_attempt_exit_code") == 124.0, "Pubmed GPU path must report the precise timeout rejection");
+    require(extract_json_number(gpu_text, "ppi_gpu_attempt_exit_code") == 124.0, "PPI GPU path must report the precise timeout rejection");
+    require(extract_json_number(gpu_text, "pubmed_gpu_attempt_timeout_ms") > extract_json_number(gpu_text, "pubmed_cpu_prove_ms"), "Pubmed GPU rejection must show a real negative-gain comparison");
+    require(extract_json_number(gpu_text, "ppi_gpu_attempt_timeout_ms") > extract_json_number(gpu_text, "ppi_cpu_prove_ms"), "PPI GPU rejection must show a real negative-gain comparison");
+    require(gpu_text.find("dynamic domain convert") != std::string::npos, "GPU rejection reason must name the real hotspot mismatch");
+}
+
+void test_gpu_path_does_not_change_transcript_or_real_gat_semantics() {
+    const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
+    require(latest.find("cudaq") == std::string::npos, "GPU experiment must not silently alter the official transcript route");
+    for (const auto& manifest_path : {
+             repo_root() / "runs" / "cora_full" / "warm" / "run_manifest.json",
+             repo_root() / "runs" / "citeseer_full" / "warm" / "run_manifest.json",
+             repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json",
+             repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json",
+         }) {
+        const auto text = slurp_file(manifest_path);
+        require(text.find("\"verified\": \"true\"") != std::string::npos, "GPU experiment must not disturb verified formal outputs");
+    }
+}
+
+void test_no_useless_gpu_experiment_left_in_final_code() {
+    const auto gpu_text = slurp_file(repo_root() / "runs" / "benchmarks" / "gpu_hotspot_eval.json");
+    require(gpu_text.find("\"cuda_build_enabled\": \"true\"") != std::string::npos, "GPU evaluation artifact must remain available");
+    require(gpu_text.find("\"rejection_reason\":") != std::string::npos, "final code must keep only the precise GPU rejection rationale");
+    const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
+    require(latest.find("\"backend_name\": \"cuda\"") == std::string::npos, "no negative-gain GPU path should leak into the official benchmark table");
+}
+
 void test_no_non_performance_refactor_leaked_back_into_mainline() {
     require(std::filesystem::exists(repo_root() / "scripts" / "export_benchmark_table.py"), "benchmark export mainline must stay intact");
     require(std::filesystem::exists(repo_root() / "scripts" / "import_ppi_bundle.py"), "PPI import mainline must stay intact");
@@ -1664,6 +1730,11 @@ int main(int argc, char** argv) {
         {"four_dataset_official_table_is_same_build_same_mainline", test_four_dataset_official_table_is_same_build_same_mainline},
         {"official_benchmark_table_updates_after_second_prover_optimization", test_official_benchmark_table_updates_after_second_prover_optimization},
         {"no_obsolete_domain_open_c_focus_left_in_final_code", test_no_obsolete_domain_open_c_focus_left_in_final_code},
+        {"cost_drivers_explain_ppi_vs_pubmed_without_size_illusion", test_cost_drivers_explain_ppi_vs_pubmed_without_size_illusion},
+        {"small_graph_proof_floor_is_explained_by_formal_fixed_costs", test_small_graph_proof_floor_is_explained_by_formal_fixed_costs},
+        {"gpu_hotspot_path_has_positive_gain_or_precise_rejection_reason", test_gpu_hotspot_path_has_positive_gain_or_precise_rejection_reason},
+        {"gpu_path_does_not_change_transcript_or_real_gat_semantics", test_gpu_path_does_not_change_transcript_or_real_gat_semantics},
+        {"no_useless_gpu_experiment_left_in_final_code", test_no_useless_gpu_experiment_left_in_final_code},
         {"prove_side_cache_or_layout_reuse_does_not_change_transcript", test_prove_side_cache_or_layout_reuse_does_not_change_transcript},
         {"official_benchmark_table_updates_after_prover_optimization", test_official_benchmark_table_updates_after_prover_optimization},
         {"no_verifier_only_refactor_misreported_as_prover_gain", test_no_verifier_only_refactor_misreported_as_prover_gain},
