@@ -1216,11 +1216,11 @@ void test_no_legacy_benchmark_pipeline_remaining() {
 }
 
 void test_ppi_training_or_import_mainline_is_real_and_unique() {
-    require(std::filesystem::exists(repo_root() / "scripts" / "train_ppi_gat.py"), "PPI real training script must exist");
     require(std::filesystem::exists(repo_root() / "scripts" / "import_ppi_bundle.py"), "PPI import script must exist");
     require(!std::filesystem::exists(repo_root() / "configs" / "ppi_batch.cfg"), "legacy synthetic PPI config must be removed");
     const auto import_script = slurp_file(repo_root() / "scripts" / "import_ppi_bundle.py");
-    require(import_script.find("--torch-checkpoint") != std::string::npos, "PPI import mainline must accept torch checkpoints");
+    require(import_script.find("--tf-checkpoint-prefix") != std::string::npos, "PPI import mainline must accept upstream TensorFlow checkpoints");
+    require(import_script.find("--torch-checkpoint") != std::string::npos, "PPI import mainline must accept real torch checkpoints through the same importer");
 }
 
 void test_four_full_dataset_benchmark_contract() {
@@ -1292,6 +1292,59 @@ void test_no_legacy_benchmark_or_import_pipeline_remaining() {
     require(!std::filesystem::exists(repo_root() / "runs" / "benchmarks" / "summary.txt"), "legacy benchmark summary.txt must stay removed");
     require(std::filesystem::exists(repo_root() / "scripts" / "import_ppi_bundle.py"), "current PPI import pipeline must exist");
     require(std::filesystem::exists(repo_root() / "scripts" / "export_benchmark_table.py"), "current benchmark export pipeline must exist");
+    require(!std::filesystem::exists(repo_root() / "scripts" / "train_ppi_gat.py"), "legacy in-project PPI training mainline must be removed");
+}
+
+void test_upstream_ppi_training_is_only_parameter_source() {
+    require(std::filesystem::exists(std::filesystem::path("/home/pzh/GAT-for-PPI") / "execute_inductive.py"), "upstream GAT-for-PPI training source must exist");
+    const auto readme = slurp_file(repo_root() / "README.md");
+    require(readme.find("上游真实参数来源") != std::string::npos, "README must mark upstream PPI training as parameter source only");
+    require(readme.find("formal / benchmark 运行主线") != std::string::npos, "README must separate upstream training from the formal mainline");
+}
+
+void test_ppi_import_pipeline_is_single_official_path() {
+    const auto import_script = slurp_file(repo_root() / "scripts" / "import_ppi_bundle.py");
+    require(import_script.find("def main()") != std::string::npos, "official PPI importer must exist");
+    require(!std::filesystem::exists(repo_root() / "configs" / "ppi_batch.cfg"), "legacy PPI config must not survive");
+    require(!std::filesystem::exists(repo_root() / "scripts" / "train_ppi_gat.py"), "redundant in-project PPI training path must be removed");
+}
+
+void test_formal_benchmark_excludes_training_time() {
+    const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
+    require(latest.find("wall_time_sec") == std::string::npos, "benchmark table must not include training wall time");
+    require(latest.find("train_loss") == std::string::npos, "benchmark table must not include training metrics");
+    require(latest.find("train_micro_f1") == std::string::npos, "benchmark table must not include training F1 metrics");
+}
+
+void test_all_full_configs_are_real_checkpoint_backed() {
+    for (const auto& path : {
+             repo_root() / "configs" / "cora_full.cfg",
+             repo_root() / "configs" / "citeseer_full.cfg",
+             repo_root() / "configs" / "pubmed_full.cfg",
+             repo_root() / "configs" / "ppi_batch_formal.cfg",
+         }) {
+        const auto text = slurp_file(path);
+        require(text.find("checkpoint_bundle = ") != std::string::npos, "full config must pin a real checkpoint bundle");
+        require(text.find("allow_synthetic_model = true") == std::string::npos, "full config must not allow synthetic fallback");
+    }
+}
+
+void test_real_gat_forward_semantics_preserved_after_import() {
+    test_real_gat_forward_semantics_no_regression();
+}
+
+void test_chinese_readme_explains_training_vs_zkml_boundary() {
+    const auto readme = slurp_file(repo_root() / "README.md");
+    require(readme.find("训练与 ZKML 的职责边界") != std::string::npos, "README must explain the training/ZKML boundary");
+    require(readme.find("训练时间、训练日志、训练超参数调优都不进入 formal benchmark 主表") != std::string::npos, "README must exclude training time from formal benchmark");
+    require(readme.find("当前 project 的正式主线只负责") != std::string::npos, "README must explain the formal mainline scope");
+}
+
+void test_no_legacy_ppi_training_or_import_dual_mainline() {
+    require(!std::filesystem::exists(repo_root() / "scripts" / "train_ppi_gat.py"), "legacy local PPI training mainline must be removed");
+    require(!std::filesystem::exists(repo_root() / "configs" / "ppi_batch.cfg"), "legacy synthetic PPI config must be removed");
+    const auto readme = slurp_file(repo_root() / "README.md");
+    require(readme.find("第二正式主线") == std::string::npos, "README must not describe a dual mainline");
 }
 
 void test_no_regression_existing_paths() {
@@ -1352,12 +1405,19 @@ int main(int argc, char** argv) {
         {"performance_regression_guard_for_existing_paths", test_performance_regression_guard_for_existing_paths},
         {"no_legacy_benchmark_pipeline_remaining", test_no_legacy_benchmark_pipeline_remaining},
         {"ppi_training_or_import_mainline_is_real_and_unique", test_ppi_training_or_import_mainline_is_real_and_unique},
+        {"upstream_ppi_training_is_only_parameter_source", test_upstream_ppi_training_is_only_parameter_source},
+        {"ppi_import_pipeline_is_single_official_path", test_ppi_import_pipeline_is_single_official_path},
+        {"formal_benchmark_excludes_training_time", test_formal_benchmark_excludes_training_time},
+        {"all_full_configs_are_real_checkpoint_backed", test_all_full_configs_are_real_checkpoint_backed},
         {"four_full_dataset_benchmark_contract", test_four_full_dataset_benchmark_contract},
         {"real_gat_forward_semantics_no_regression", test_real_gat_forward_semantics_no_regression},
+        {"real_gat_forward_semantics_preserved_after_import", test_real_gat_forward_semantics_preserved_after_import},
         {"chinese_readme_is_current_mainline_only", test_chinese_readme_is_current_mainline_only},
+        {"chinese_readme_explains_training_vs_zkml_boundary", test_chinese_readme_explains_training_vs_zkml_boundary},
         {"benchmark_summary_and_readme_consistency", test_benchmark_summary_and_readme_consistency},
         {"pubmed_verify_and_opening_hotspot_no_regression", test_pubmed_verify_and_opening_hotspot_no_regression},
         {"no_legacy_benchmark_or_import_pipeline_remaining", test_no_legacy_benchmark_or_import_pipeline_remaining},
+        {"no_legacy_ppi_training_or_import_dual_mainline", test_no_legacy_ppi_training_or_import_dual_mainline},
         {"no_regression_existing_paths", test_no_regression_existing_paths},
     };
 

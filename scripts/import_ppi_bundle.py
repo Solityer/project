@@ -10,7 +10,8 @@ from typing import Dict, Iterable
 
 import numpy as np
 
-from export_gat_checkpoint import archive_key, write_text_tensor_dump
+from checkpoint_reader_compat import read_checkpoint_tensors
+from export_gat_checkpoint import archive_key, build_manifest, write_text_tensor_dump
 from export_torch_gat_bundle import build_tensors_and_manifest_spec
 
 
@@ -148,11 +149,34 @@ def write_bundle_from_torch_checkpoint(checkpoint_path: pathlib.Path, bundle_dir
     )
 
 
+def write_bundle_from_tf_checkpoint(checkpoint_prefix: pathlib.Path, bundle_dir: pathlib.Path) -> None:
+    tensors = read_checkpoint_tensors(str(checkpoint_prefix))
+    manifest = build_manifest(tensors, str(checkpoint_prefix))
+    manifest["task_type"] = "inductive_multi_graph_node_classification"
+    manifest["report_unit"] = "graph"
+    manifest["batching_rule"] = "multi_graph_batch"
+    manifest["subgraph_rule"] = "whole_graph"
+    manifest["self_loop_rule"] = "per_node"
+    manifest["edge_sort_rule"] = "edge_gid_then_dst_stable"
+    manifest["model_param_id"] = pathlib.Path(str(checkpoint_prefix)).name
+    manifest["quant_cfg_id"] = "fp32_bundle_export"
+
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    arrays = {archive_key(name): tensor for name, tensor in tensors.items()}
+    np.savez_compressed(bundle_dir / "tensors.npz", **arrays)
+    write_text_tensor_dump(bundle_dir / "tensors.txt", tensors)
+    (bundle_dir / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--bundle-dir")
     source.add_argument("--torch-checkpoint")
+    source.add_argument("--tf-checkpoint-prefix")
     parser.add_argument("--output-dir", default="artifacts/checkpoints/ppi_gat")
     args = parser.parse_args()
 
@@ -169,12 +193,24 @@ def main() -> None:
         print(str(output_dir))
         return
 
-    checkpoint_path = pathlib.Path(args.torch_checkpoint).resolve()
-    require(checkpoint_path.exists(), f"torch checkpoint 不存在: {checkpoint_path}")
-    require(checkpoint_path.is_file(), f"torch checkpoint 路径不是文件: {checkpoint_path}")
+    if args.torch_checkpoint:
+        checkpoint_path = pathlib.Path(args.torch_checkpoint).resolve()
+        require(checkpoint_path.exists(), f"torch checkpoint 不存在: {checkpoint_path}")
+        require(checkpoint_path.is_file(), f"torch checkpoint 路径不是文件: {checkpoint_path}")
+        with tempfile.TemporaryDirectory(prefix="ppi_bundle_") as tmp_dir:
+            temp_bundle = pathlib.Path(tmp_dir) / "bundle"
+            write_bundle_from_torch_checkpoint(checkpoint_path, temp_bundle)
+            manifest = load_manifest(temp_bundle)
+            validate_ppi_bundle(manifest, temp_bundle)
+            install_bundle(temp_bundle, output_dir)
+        print(str(output_dir))
+        return
+
+    checkpoint_prefix = pathlib.Path(args.tf_checkpoint_prefix).resolve()
+    require(checkpoint_prefix.exists() or checkpoint_prefix.with_suffix(".index").exists(), f"tensorflow checkpoint 前缀不存在: {checkpoint_prefix}")
     with tempfile.TemporaryDirectory(prefix="ppi_bundle_") as tmp_dir:
         temp_bundle = pathlib.Path(tmp_dir) / "bundle"
-        write_bundle_from_torch_checkpoint(checkpoint_path, temp_bundle)
+        write_bundle_from_tf_checkpoint(checkpoint_prefix, temp_bundle)
         manifest = load_manifest(temp_bundle)
         validate_ppi_bundle(manifest, temp_bundle)
         install_bundle(temp_bundle, output_dir)
