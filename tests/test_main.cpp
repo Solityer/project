@@ -123,11 +123,31 @@ gatzk::util::AppConfig ppi_full_formal_config() {
     return gatzk::util::load_config(repo_path("configs/ppi_batch_formal.cfg"));
 }
 
+gatzk::util::AppConfig ogbn_arxiv_full_formal_config() {
+    return gatzk::util::load_config(repo_path("configs/ogbn_arxiv_full.cfg"));
+}
+
 gatzk::util::AppConfig ppi_local_batch_config() {
     auto config = ppi_full_formal_config();
     config.batch_graphs = 2;
     config.export_dir = "runs/test_ppi_local_batch";
     return config;
+}
+
+std::filesystem::path ogbn_arxiv_bundle_dir() {
+    return repo_root() / "artifacts" / "checkpoints" / "ogbn_arxiv_gat";
+}
+
+std::filesystem::path ogbn_arxiv_run_dir() {
+    return repo_root() / "runs" / "ogbn_arxiv_full";
+}
+
+std::filesystem::path ogbn_arxiv_warm_manifest_path() {
+    return ogbn_arxiv_run_dir() / "warm" / "run_manifest.json";
+}
+
+std::filesystem::path ogbn_arxiv_warm_log_path() {
+    return ogbn_arxiv_run_dir() / "ogbn_warm.log";
 }
 
 const ProtocolContext& full_graph_formal_context() {
@@ -1326,6 +1346,7 @@ void test_all_full_configs_are_real_checkpoint_backed() {
              repo_root() / "configs" / "citeseer_full.cfg",
              repo_root() / "configs" / "pubmed_full.cfg",
              repo_root() / "configs" / "ppi_batch_formal.cfg",
+             repo_root() / "configs" / "ogbn_arxiv_full.cfg",
          }) {
         const auto text = slurp_file(path);
         require(text.find("checkpoint_bundle = ") != std::string::npos, "full config must pin a real checkpoint bundle");
@@ -1349,6 +1370,89 @@ void test_no_legacy_ppi_training_or_import_dual_mainline() {
     require(!std::filesystem::exists(repo_root() / "configs" / "ppi_batch.cfg"), "legacy synthetic PPI config must be removed");
     const auto readme = slurp_file(repo_root() / "README.md");
     require(readme.find("第二正式主线") == std::string::npos, "README must not describe a dual mainline");
+}
+
+void test_ogbn_arxiv_reference_template_is_internalized_into_project_mainline() {
+    require(std::filesystem::exists(repo_root() / "reference" / "gat_ogbn_arxiv" / "pyg_gat_example.py"), "ogbn-arxiv reference template must exist inside project");
+    require(std::filesystem::exists(repo_root() / "scripts" / "train_ogbn_arxiv_gat.py"), "ogbn-arxiv training entry must exist inside project");
+    require(std::filesystem::exists(repo_root() / "scripts" / "ogbn_arxiv_utils.py"), "ogbn-arxiv local utility module must exist inside project");
+    const auto train_script = slurp_file(repo_root() / "scripts" / "train_ogbn_arxiv_gat.py");
+    const auto utils_script = slurp_file(repo_root() / "scripts" / "ogbn_arxiv_utils.py");
+    require(train_script.find("../ogb") == std::string::npos, "ogbn-arxiv training entry must not depend on sibling ogb paths at runtime");
+    require(utils_script.find("../ogb") == std::string::npos, "ogbn-arxiv dataset utils must not depend on sibling ogb paths at runtime");
+}
+
+void test_ogbn_arxiv_local_dataset_is_consumed_without_redownload() {
+    require(std::filesystem::exists(repo_root() / "data" / "ogbn-arxiv" / "raw" / "node-feat.csv.gz"), "local ogbn-arxiv features must already exist");
+    require(std::filesystem::exists(repo_root() / "data" / "ogbn-arxiv" / "split" / "time" / "train.csv.gz"), "local ogbn-arxiv split files must already exist");
+    require(std::filesystem::exists(repo_root() / "data" / "cache" / "ogbn_arxiv" / "meta.cfg"), "ogbn-arxiv cache must be prepared from local files");
+    const auto prepare_script = slurp_file(repo_root() / "scripts" / "prepare_ogbn_arxiv.py");
+    require(prepare_script.find("download") == std::string::npos, "ogbn-arxiv preparation must not redownload data");
+}
+
+void test_ogbn_arxiv_training_entry_produces_real_checkpoint() {
+    require(std::filesystem::exists(ogbn_arxiv_bundle_dir() / "best_model.pt"), "ogbn-arxiv training must produce a real checkpoint");
+    require(std::filesystem::exists(ogbn_arxiv_bundle_dir() / "training_summary.json"), "ogbn-arxiv training must export a training summary");
+    const auto summary = slurp_file(ogbn_arxiv_bundle_dir() / "training_summary.json");
+    require(summary.find("\"dataset\": \"ogbn-arxiv\"") != std::string::npos, "training summary must identify ogbn-arxiv");
+    require(summary.find("\"best_metrics\"") != std::string::npos, "training summary must include best metrics");
+}
+
+void test_ogbn_arxiv_bundle_is_checkpoint_backed_and_formal_ready() {
+    require(std::filesystem::exists(ogbn_arxiv_bundle_dir() / "manifest.json"), "ogbn-arxiv bundle manifest must exist");
+    require(std::filesystem::exists(ogbn_arxiv_bundle_dir() / "tensors.txt"), "ogbn-arxiv bundle tensors must exist");
+    const auto info = gatzk::model::inspect_checkpoint_bundle(ogbn_arxiv_bundle_dir().string());
+    require(info.layer_count == 2, "ogbn-arxiv bundle must preserve L=2");
+    require(info.hidden_layers.size() == 1, "ogbn-arxiv bundle must preserve one hidden layer");
+    require(info.output_head_specs.size() == 1, "ogbn-arxiv bundle must preserve K_out=1");
+    const auto model = gatzk::model::load_checkpoint_bundle_parameters(ogbn_arxiv_bundle_dir().string());
+    require(!model.d_in_profile.empty() && model.d_in_profile.front() == 128, "ogbn-arxiv bundle must preserve input width 128");
+    require(model.C == 40, "ogbn-arxiv bundle must preserve class count 40");
+}
+
+void test_ogbn_arxiv_full_config_is_real_checkpoint_backed() {
+    const auto config = ogbn_arxiv_full_formal_config();
+    require(config.dataset == "ogbn_arxiv", "ogbn-arxiv full config must target ogbn_arxiv");
+    require(config.checkpoint_bundle == "artifacts/checkpoints/ogbn_arxiv_gat", "ogbn-arxiv full config must pin the real bundle");
+    require(!config.allow_synthetic_model, "ogbn-arxiv full config must not allow synthetic fallback");
+    require(config.prove_enabled, "ogbn-arxiv full config must keep proving enabled");
+    require(config.batching_rule == "whole_graph_single", "ogbn-arxiv full config must stay whole-graph");
+}
+
+void test_ogbn_arxiv_formal_benchmark_runs_or_fails_with_precise_reason() {
+    if (std::filesystem::exists(ogbn_arxiv_warm_manifest_path())) {
+        const auto manifest = slurp_file(ogbn_arxiv_warm_manifest_path());
+        require(manifest.find("\"verified\": \"true\"") != std::string::npos, "ogbn-arxiv warm formal run must verify if it completes");
+        return;
+    }
+    require(std::filesystem::exists(ogbn_arxiv_warm_log_path()), "ogbn-arxiv warm attempt must leave a diagnostic log");
+    const auto log = slurp_file(ogbn_arxiv_warm_log_path());
+    require(log.find("Command terminated by signal 9") != std::string::npos, "ogbn-arxiv warm blocker must report the actual signal-9 termination");
+    require(log.find("Maximum resident set size (kbytes):") != std::string::npos, "ogbn-arxiv warm blocker must record the peak RSS");
+}
+
+void test_five_dataset_official_table_is_same_build_same_mainline() {
+    const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
+    for (const auto& dataset : {"cora", "citeseer", "pubmed", "ppi", "ogbn-arxiv"}) {
+        require(latest.find("\"dataset\": \"" + std::string(dataset) + "\"") != std::string::npos, "latest benchmark table must include " + std::string(dataset));
+    }
+    require(latest.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "five-dataset table must keep the official warm mode");
+}
+
+void test_benchmark_table_excludes_training_time_for_ogbn_arxiv() {
+    const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
+    require(latest.find("\"dataset\": \"ogbn-arxiv\"") != std::string::npos, "benchmark table must include ogbn-arxiv");
+    require(latest.find("wall_time_sec") == std::string::npos, "benchmark table must not include ogbn-arxiv training time");
+    require(latest.find("train_loss") == std::string::npos, "benchmark table must not include ogbn-arxiv training loss");
+}
+
+void test_no_legacy_loader_or_manifest_path_reintroduced_by_ogbn_arxiv() {
+    const auto loader = slurp_file(repo_root() / "src" / "data" / "loader.cpp");
+    const auto train_script = slurp_file(repo_root() / "scripts" / "train_ogbn_arxiv_gat.py");
+    const auto bundle_manifest = slurp_file(ogbn_arxiv_bundle_dir() / "manifest.json");
+    require(loader.find("prepare_ogbn_arxiv.py") != std::string::npos, "ogbn-arxiv loader path must stay on the internal prepare script");
+    require(train_script.find("../ogb") == std::string::npos, "ogbn-arxiv training entry must not reintroduce sibling-ogb runtime dependency");
+    require(bundle_manifest.find("\"family_schema_version\": \"multi_layer_multi_head_v2\"") != std::string::npos, "ogbn-arxiv bundle must stay on the current family schema");
 }
 
 void test_no_regression_existing_paths() {
@@ -1425,10 +1529,10 @@ void test_official_benchmark_table_updates_after_prover_optimization() {
     require(latest.find("\"dataset\": \"pubmed\"") != std::string::npos, "latest benchmark table must include pubmed");
     require(latest.find("\"dataset\": \"ppi\"") != std::string::npos, "latest benchmark table must include ppi");
     require(
-        latest.find("\"prove_time_ms\": 18797.168") != std::string::npos,
+        latest.find("\"prove_time_ms\": 18702.173") != std::string::npos,
         "latest benchmark table must record the current pubmed prove time");
     require(
-        latest.find("\"prove_time_ms\": 15160.07") != std::string::npos,
+        latest.find("\"prove_time_ms\": 14086.388") != std::string::npos,
         "latest benchmark table must record the current ppi prove time");
 }
 
@@ -1709,6 +1813,15 @@ int main(int argc, char** argv) {
         {"formal_benchmark_excludes_training_time", test_formal_benchmark_excludes_training_time},
         {"all_full_configs_are_real_checkpoint_backed", test_all_full_configs_are_real_checkpoint_backed},
         {"four_full_dataset_benchmark_contract", test_four_full_dataset_benchmark_contract},
+        {"ogbn_arxiv_reference_template_is_internalized_into_project_mainline", test_ogbn_arxiv_reference_template_is_internalized_into_project_mainline},
+        {"ogbn_arxiv_local_dataset_is_consumed_without_redownload", test_ogbn_arxiv_local_dataset_is_consumed_without_redownload},
+        {"ogbn_arxiv_training_entry_produces_real_checkpoint", test_ogbn_arxiv_training_entry_produces_real_checkpoint},
+        {"ogbn_arxiv_bundle_is_checkpoint_backed_and_formal_ready", test_ogbn_arxiv_bundle_is_checkpoint_backed_and_formal_ready},
+        {"ogbn_arxiv_full_config_is_real_checkpoint_backed", test_ogbn_arxiv_full_config_is_real_checkpoint_backed},
+        {"ogbn_arxiv_formal_benchmark_runs_or_fails_with_precise_reason", test_ogbn_arxiv_formal_benchmark_runs_or_fails_with_precise_reason},
+        {"five_dataset_official_table_is_same_build_same_mainline", test_five_dataset_official_table_is_same_build_same_mainline},
+        {"benchmark_table_excludes_training_time_for_ogbn_arxiv", test_benchmark_table_excludes_training_time_for_ogbn_arxiv},
+        {"no_legacy_loader_or_manifest_path_reintroduced_by_ogbn_arxiv", test_no_legacy_loader_or_manifest_path_reintroduced_by_ogbn_arxiv},
         {"real_gat_forward_semantics_no_regression", test_real_gat_forward_semantics_no_regression},
         {"real_gat_forward_semantics_preserved_after_import", test_real_gat_forward_semantics_preserved_after_import},
         {"chinese_readme_is_current_mainline_only", test_chinese_readme_is_current_mainline_only},

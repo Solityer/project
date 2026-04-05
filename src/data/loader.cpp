@@ -349,6 +349,23 @@ void maybe_prepare_ppi_cache(const util::AppConfig& config, const std::filesyste
     }
 }
 
+void maybe_prepare_ogbn_arxiv_cache(const util::AppConfig& config, const std::filesystem::path& cache_root) {
+    if (!config.auto_prepare_dataset || std::filesystem::exists(cache_root / "meta.cfg")) {
+        return;
+    }
+    const std::filesystem::path project_root(config.project_root);
+    const auto python = std::filesystem::exists(project_root / ".venv/bin/python")
+        ? (project_root / ".venv/bin/python").string()
+        : std::string("python3");
+    const auto script = (project_root / "scripts/prepare_ogbn_arxiv.py").string();
+    const auto command = python + " " + script +
+        " --project-root " + project_root.string() +
+        " --data-root " + config.data_root;
+    if (std::system(command.c_str()) != 0) {
+        throw std::runtime_error("failed to prepare ogbn-arxiv cache");
+    }
+}
+
 std::vector<std::size_t> selected_graph_ids(const GraphDataset& dataset, const util::AppConfig& config) {
     const auto batch_graphs = std::max<std::size_t>(1, config.batch_graphs);
     const auto count = std::min(batch_graphs, dataset.graph_count);
@@ -429,6 +446,8 @@ GraphDataset load_dataset(const util::AppConfig& config) {
     const auto cache_root = project_root / config.cache_root / config.dataset;
     if (config.dataset == "ppi") {
         maybe_prepare_ppi_cache(config, cache_root);
+    } else if (config.dataset == "ogbn_arxiv") {
+        maybe_prepare_ogbn_arxiv_cache(config, cache_root);
     } else {
         maybe_prepare_planetoid_cache(config, cache_root);
     }

@@ -282,7 +282,7 @@ def main() -> None:
     parser.add_argument("--run", action="append", default=[], help="dataset=run_manifest.json_or_dir")
     parser.add_argument("--blocked", action="append", default=[], help="dataset=reason")
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--dataset-order", default="cora,citeseer,pubmed,ppi")
+    parser.add_argument("--dataset-order", default="cora,citeseer,pubmed,ppi,ogbn-arxiv")
     parser.add_argument("--blocked-benchmark-mode", default="")
     args = parser.parse_args()
 
