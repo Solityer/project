@@ -49,6 +49,23 @@ std::string subset_cache_key(const std::vector<std::string>& labels) {
     return key;
 }
 
+std::size_t packed_subset_threshold_for(
+    const std::shared_ptr<RootOfUnityDomain>& domain,
+    std::size_t row_count) {
+    constexpr std::size_t kDefaultThreshold = 1U << 21U;
+    if (domain != nullptr
+        && domain->name == "edge"
+        && domain->size <= (1U << 21U)
+        && row_count >= 24) {
+        // The ogbn-arxiv whole-graph edge bundle repeatedly evaluates the same
+        // large edge-domain label set at rotated points. Materializing one
+        // contiguous subset view costs memory, but it removes a much larger
+        // strided gather penalty across quotient and opening hot paths.
+        return 1U << 27U;
+    }
+    return kDefaultThreshold;
+}
+
 }  // namespace
 
 struct PackedEvaluationBackend::SubsetCacheState {
@@ -113,7 +130,7 @@ const PackedEvaluationBackend::SubsetView& PackedEvaluationBackend::subset_for(c
 
     const auto row_count = subset.row_indices.size();
     const auto packed_term_count = domain_->size * row_count;
-    constexpr std::size_t packed_subset_threshold = 1U << 21U;
+    const auto packed_subset_threshold = packed_subset_threshold_for(domain_, row_count);
     if (packed_term_count <= packed_subset_threshold && row_count > 1) {
         subset.packed_values.resize(packed_term_count);
         for (std::size_t column = 0; column < domain_->size; ++column) {

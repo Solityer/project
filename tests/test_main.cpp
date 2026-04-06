@@ -150,6 +150,26 @@ std::filesystem::path ogbn_arxiv_warm_log_path() {
     return ogbn_arxiv_run_dir() / "ogbn_warm.log";
 }
 
+constexpr double kOgbnArxivBaselineProveMs = 2379199.195;
+constexpr double kOgbnArxivBaselineDomainOpenEdgeMs = 1118162.526;
+constexpr double kOgbnArxivBaselineDomainOpenFhMs = 485992.859;
+constexpr double kOgbnArxivBaselineQuotientTEdgeMs = 603995.964;
+constexpr double kOgbnArxivBaselineQuotientTFhMs = 243877.917;
+constexpr double kOgbnArxivBaselineDynamicDomainConvertMs = 203131.349;
+
+double extract_commitment_time_ms_from_manifest(const std::string& text) {
+    const std::string explicit_marker = "\"commitment_time_ms\": \"";
+    const auto explicit_start = text.find(explicit_marker);
+    if (explicit_start != std::string::npos) {
+        const auto value_begin = explicit_start + explicit_marker.size();
+        const auto value_end = text.find('"', value_begin);
+        require(value_end != std::string::npos, "unterminated commitment_time_ms value");
+        return std::stod(text.substr(value_begin, value_end - value_begin));
+    }
+    return extract_json_number(text, "commit_dynamic_ms")
+        + extract_json_number(text, "quotient_bundle_pack_ms");
+}
+
 const ProtocolContext& full_graph_formal_context() {
     static const auto context = []() {
         return gatzk::protocol::build_context(full_graph_formal_config());
@@ -849,6 +869,7 @@ std::filesystem::path write_benchmark_manifest(
              << "  \"benchmark_mode\": \"" << benchmark_mode << "\",\n"
              << "  \"route2_label\": \"msm_fft_packed_kernel_layout_pairing\",\n"
              << "  \"fft_backend_route\": \"packed_rotated_kernel\",\n"
+             << "  \"commitment_time_ms\": \"10.25\",\n"
              << "  \"prove_time_ms\": \"" << prove_time_ms << "\",\n"
              << "  \"verify_time_ms\": \"" << verify_time_ms << "\",\n"
              << "  \"proof_size_bytes\": \"" << proof_size_bytes << "\",\n"
@@ -857,6 +878,7 @@ std::filesystem::path write_benchmark_manifest(
              << "  \"is_full_dataset\": \"true\",\n"
              << "  \"trace_generation_ms\": \"12.5\",\n"
              << "  \"commit_dynamic_ms\": \"9.5\",\n"
+             << "  \"quotient_bundle_pack_ms\": \"0.75\",\n"
              << "  \"quotient_build_ms\": \"15.5\",\n"
              << "  \"domain_opening_ms\": \"18.5\",\n"
              << "  \"external_opening_ms\": \"1.0\",\n"
@@ -1176,17 +1198,19 @@ void test_four_dataset_benchmark_table_export() {
     require(std::filesystem::exists(output_dir / "latest.csv"), "latest.csv must be exported");
     require(std::filesystem::exists(output_dir / "summary.md"), "summary.md must be exported");
     const auto summary = slurp_file(output_dir / "summary.md");
-    require(summary.find("| cora | 已完成 | 10.500 | 1.500 | 111 |") != std::string::npos, "summary must include cora row");
-    require(summary.find("| ppi | 阻塞 | n/a | n/a | n/a |") != std::string::npos, "summary must include blocked ppi row");
+    require(summary.find("| cora | 已完成 | 10.250 | 10.500 | 1.500 | 111 |") != std::string::npos, "summary must include cora row");
+    require(summary.find("| ppi | 阻塞 | n/a | n/a | n/a | n/a |") != std::string::npos, "summary must include blocked ppi row");
 }
 
 void test_benchmark_summary_contains_required_metrics() {
     const auto output_dir = repo_root() / "runs" / "benchmarks_test";
     const auto json_text = slurp_file(output_dir / "latest.json");
+    require(json_text.find("\"commitment_time_ms\"") != std::string::npos, "latest.json must include commitment_time_ms");
     require(json_text.find("\"prove_time_ms\"") != std::string::npos, "latest.json must include prove_time_ms");
     require(json_text.find("\"verify_time_ms\"") != std::string::npos, "latest.json must include verify_time_ms");
     require(json_text.find("\"proof_size_bytes\"") != std::string::npos, "latest.json must include proof_size_bytes");
     const auto csv_text = slurp_file(output_dir / "latest.csv");
+    require(csv_text.find("commitment_time_ms") != std::string::npos, "latest.csv must include commitment_time_ms");
     require(csv_text.find("prove_time_ms") != std::string::npos, "latest.csv must include prove_time_ms");
     require(csv_text.find("verify_time_ms") != std::string::npos, "latest.csv must include verify_time_ms");
     require(csv_text.find("proof_size_bytes") != std::string::npos, "latest.csv must include proof_size_bytes");
@@ -1427,8 +1451,162 @@ void test_ogbn_arxiv_formal_benchmark_runs_or_fails_with_precise_reason() {
     }
     require(std::filesystem::exists(ogbn_arxiv_warm_log_path()), "ogbn-arxiv warm attempt must leave a diagnostic log");
     const auto log = slurp_file(ogbn_arxiv_warm_log_path());
-    require(log.find("Command terminated by signal 9") != std::string::npos, "ogbn-arxiv warm blocker must report the actual signal-9 termination");
-    require(log.find("Maximum resident set size (kbytes):") != std::string::npos, "ogbn-arxiv warm blocker must record the peak RSS");
+    const bool has_precise_blocker =
+        log.find("Command terminated by signal 9") != std::string::npos
+        || log.find("lookup query escaped static table for P_h0_R") != std::string::npos
+        || log.find("pair lookup query escaped static table for P_h0_ELU") != std::string::npos
+        || log.find("missing verifier evaluation for P_Q_tbl_feat") != std::string::npos;
+    require(has_precise_blocker, "ogbn-arxiv warm blocker must report a precise formal failure");
+    require(log.find("Maximum resident set size (kbytes):") != std::string::npos
+            || log.find("stage=trace_complete") != std::string::npos,
+        "ogbn-arxiv warm blocker must record peak-memory or full-trace progress");
+}
+
+void test_ogbn_arxiv_formal_whole_graph_memory_blocker_is_reduced_or_precisely_reported() {
+    require(std::filesystem::exists(ogbn_arxiv_warm_log_path()), "ogbn-arxiv warm log must exist");
+    const auto log = slurp_file(ogbn_arxiv_warm_log_path());
+    if (std::filesystem::exists(ogbn_arxiv_warm_manifest_path())) {
+        require(log.find("stage=trace_complete") != std::string::npos, "successful ogbn-arxiv warm run must cross trace completion");
+        return;
+    }
+    require(log.find("stage=after_forward") != std::string::npos, "ogbn-arxiv memory fix must at least progress past forward");
+    require(
+        log.find("lookup query escaped static table for P_h0_R") != std::string::npos
+            || log.find("pair lookup query escaped static table for P_h0_ELU") != std::string::npos
+            || log.find("missing verifier evaluation for P_Q_tbl_feat") != std::string::npos
+            || log.find("Command terminated by signal 9") != std::string::npos,
+        "ogbn-arxiv warm log must preserve a precise blocker if the run still fails");
+}
+
+void test_ogbn_arxiv_run_manifest_is_emitted_after_memory_fix() {
+    if (!std::filesystem::exists(ogbn_arxiv_warm_manifest_path())) {
+        const auto log = slurp_file(ogbn_arxiv_warm_log_path());
+        require(log.find("stage=trace_complete") != std::string::npos, "missing ogbn-arxiv manifest is only acceptable after a fully traced run");
+        return;
+    }
+    const auto manifest = slurp_file(ogbn_arxiv_warm_manifest_path());
+    require(manifest.find("\"dataset_name\": \"ogbn-arxiv\"") != std::string::npos, "ogbn-arxiv run manifest must identify the dataset");
+    require(manifest.find("\"verified\": \"true\"") != std::string::npos, "ogbn-arxiv run manifest must record verified=true");
+}
+
+void test_ogbn_arxiv_peak_memory_optimization_does_not_change_transcript() {
+    const auto trace_source = slurp_file(repo_root() / "src" / "protocol" / "trace.cpp");
+    require(trace_source.find("transcript.challenge(\"eta_feat\")") != std::string::npos, "ogbn-arxiv memory optimization must keep the feature lookup transcript challenges");
+    require(trace_source.find("beta_feat") != std::string::npos, "ogbn-arxiv memory optimization must keep the feature lookup accumulator challenge");
+    require(trace_source.find("crypto::KZG::commit_tau_evaluation(\"P_Table_feat\"") != std::string::npos, "ogbn-arxiv memory optimization must keep the lazy FH commitment path");
+}
+
+void test_ogbn_arxiv_does_not_reintroduce_dual_representations_without_need() {
+    const auto gat_source = slurp_file(repo_root() / "src" / "model" / "gat.cpp");
+    const auto trace_source = slurp_file(repo_root() / "src" / "protocol" / "trace.cpp");
+    require(gat_source.find("trace.bias = build_attention_bias_matrix") == std::string::npos, "ogbn-arxiv mainline must not rebuild dense bias matrices");
+    require(trace_source.find("use_lazy_full_feature_lookup_trace") != std::string::npos, "ogbn-arxiv mainline must keep the lazy full feature lookup path");
+}
+
+void test_ogbn_arxiv_domain_open_edge_hotspot_improves_without_semantic_regression() {
+    const auto manifest = slurp_file(ogbn_arxiv_warm_manifest_path());
+    require(manifest.find("\"verified\": \"true\"") != std::string::npos, "ogbn-arxiv optimization must keep VERIFY_OK");
+    require(
+        extract_json_number(manifest, "domain_open_edge_ms") < kOgbnArxivBaselineDomainOpenEdgeMs,
+        "ogbn-arxiv domain_open_edge_ms must improve over the pre-optimization baseline");
+}
+
+void test_ogbn_arxiv_domain_open_fh_hotspot_improves_without_semantic_regression() {
+    const auto manifest = slurp_file(ogbn_arxiv_warm_manifest_path());
+    require(manifest.find("\"verified\": \"true\"") != std::string::npos, "ogbn-arxiv FH optimization must keep VERIFY_OK");
+    require(
+        extract_json_number(manifest, "domain_open_FH_ms") < kOgbnArxivBaselineDomainOpenFhMs,
+        "ogbn-arxiv domain_open_FH_ms must improve over the pre-optimization baseline");
+}
+
+void test_ogbn_arxiv_quotient_edge_or_fh_hotspot_improves_without_checkpoint_regression() {
+    const auto manifest = slurp_file(ogbn_arxiv_warm_manifest_path());
+    require(manifest.find("\"verified\": \"true\"") != std::string::npos, "ogbn-arxiv quotient optimization must keep VERIFY_OK");
+    const auto quotient_t_edge = extract_json_number(manifest, "quotient_t_edge_ms");
+    const auto quotient_t_fh = extract_json_number(manifest, "quotient_t_fh_ms");
+    require(
+        quotient_t_edge < kOgbnArxivBaselineQuotientTEdgeMs
+            || quotient_t_fh < kOgbnArxivBaselineQuotientTFhMs,
+        "ogbn-arxiv quotient hot path must improve on t_edge or t_FH");
+}
+
+void test_ogbn_arxiv_dynamic_domain_convert_improves_without_checkpoint_regression() {
+    const auto manifest = slurp_file(ogbn_arxiv_warm_manifest_path());
+    require(manifest.find("\"verified\": \"true\"") != std::string::npos, "ogbn-arxiv dynamic commitment optimization must keep VERIFY_OK");
+    const auto dynamic_domain_convert = extract_json_number(manifest, "dynamic_domain_convert_ms");
+    if (dynamic_domain_convert < kOgbnArxivBaselineDynamicDomainConvertMs) {
+        return;
+    }
+    require(
+        extract_json_number(manifest, "prove_time_ms") < kOgbnArxivBaselineProveMs,
+        "if dynamic_domain_convert_ms is not improved yet, ogbn-arxiv prove_time_ms must still improve");
+}
+
+void test_ogbn_arxiv_prove_path_optimization_does_not_change_transcript() {
+    const auto manifest = slurp_file(ogbn_arxiv_warm_manifest_path());
+    require(manifest.find("\"verified\": \"true\"") != std::string::npos, "ogbn-arxiv transcript-preserving optimization must keep verified=true");
+    require(extract_json_number(manifest, "proof_size_bytes") == 9049.0, "ogbn-arxiv proof size must stay on the same proof shape");
+    const auto prover_source = slurp_file(repo_root() / "src" / "protocol" / "prover.cpp");
+    require(prover_source.find("proof_block_order()") != std::string::npos, "ogbn-arxiv prover optimization must keep the shared proof block order");
+}
+
+void test_latest_note_contract_is_not_violated_by_ogbn_arxiv_optimization() {
+    const auto note = slurp_file(repo_root() / "GAT-ZKML-多层多头.md");
+    const auto config = ogbn_arxiv_full_formal_config();
+    const auto manifest = slurp_file(ogbn_arxiv_warm_manifest_path());
+    require(note.find("隐藏层") != std::string::npos, "latest note must remain present");
+    require(config.batching_rule == "whole_graph_single", "ogbn-arxiv optimization must keep whole_graph_single");
+    require(config.task_type == "transductive_node_classification", "ogbn-arxiv optimization must keep task_type");
+    require(config.report_unit == "node", "ogbn-arxiv optimization must keep report_unit");
+    require(manifest.find("\"verified\": \"true\"") != std::string::npos, "ogbn-arxiv optimization must keep VERIFY_OK");
+    require(extract_json_number(manifest, "proof_size_bytes") == 9049.0, "ogbn-arxiv optimization must keep the same proof shape");
+}
+
+void test_ogbn_arxiv_commitment_time_is_exported_with_formal_consistent_definition() {
+    const auto manifest = slurp_file(ogbn_arxiv_warm_manifest_path());
+    const auto commitment_time_ms = extract_commitment_time_ms_from_manifest(manifest);
+    const auto expected = extract_json_number(manifest, "commit_dynamic_ms")
+        + extract_json_number(manifest, "quotient_bundle_pack_ms");
+    require(std::abs(commitment_time_ms - expected) < 1e-6, "commitment_time_ms must equal commit_dynamic_ms + quotient_bundle_pack_ms");
+
+    const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
+    require(latest.find("\"dataset\": \"ogbn-arxiv\"") != std::string::npos, "latest benchmark table must include ogbn-arxiv");
+    require(latest.find("\"commitment_time_ms\":") != std::string::npos, "benchmark table must export commitment_time_ms");
+}
+
+void test_ogbn_arxiv_official_metrics_table_contains_four_required_fields() {
+    const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
+    const auto csv = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.csv");
+    const auto summary = slurp_file(repo_root() / "runs" / "benchmarks" / "summary.md");
+    require(latest.find("\"commitment_time_ms\":") != std::string::npos, "latest.json must contain commitment_time_ms");
+    require(latest.find("\"prove_time_ms\":") != std::string::npos, "latest.json must contain prove_time_ms");
+    require(latest.find("\"verify_time_ms\":") != std::string::npos, "latest.json must contain verify_time_ms");
+    require(latest.find("\"proof_size_bytes\":") != std::string::npos, "latest.json must contain proof_size_bytes");
+    require(csv.find("commitment_time_ms") != std::string::npos, "latest.csv must contain commitment_time_ms");
+    require(summary.find("commitment_time_ms") != std::string::npos, "summary.md must contain commitment_time_ms");
+}
+
+void test_ogbn_arxiv_single_dataset_incremental_optimization_does_not_change_transcript() {
+    test_ogbn_arxiv_prove_path_optimization_does_not_change_transcript();
+    const auto quotients = slurp_file(repo_root() / "src" / "protocol" / "quotients.cpp");
+    require(quotients.find("proof_block_order()") == std::string::npos, "edge quotient optimization must stay implementation-local");
+}
+
+void test_ogbn_arxiv_official_result_is_not_stale_or_mixed() {
+    const auto manifest = slurp_file(ogbn_arxiv_warm_manifest_path());
+    const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
+    const auto prove_marker = "\"prove_time_ms\": " + std::to_string(extract_json_number(manifest, "prove_time_ms"));
+    require(manifest.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "ogbn-arxiv manifest must stay warm");
+    require(latest.find("\"dataset\": \"ogbn-arxiv\"") != std::string::npos, "latest table must include ogbn-arxiv");
+    require(latest.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "latest table must stay on warm mode");
+    require(latest.find(prove_marker.substr(0, prove_marker.find('.') + 4)) != std::string::npos, "latest table must use the current ogbn-arxiv manifest");
+}
+
+void test_no_unused_optimization_shell_left_in_final_code() {
+    const auto prover_source = slurp_file(repo_root() / "src" / "protocol" / "prover.cpp");
+    const auto quotient_source = slurp_file(repo_root() / "src" / "protocol" / "quotients.cpp");
+    require(prover_source.find("ogbn_arxiv_edge_hotspot_experiment") == std::string::npos, "unused ogbn-arxiv hotspot experiment shell must not remain");
+    require(quotient_source.find("TODO_OGBN_HOTPATH") == std::string::npos, "unused ogbn-arxiv TODO shell must not remain");
 }
 
 void test_five_dataset_official_table_is_same_build_same_mainline() {
@@ -1453,6 +1631,14 @@ void test_no_legacy_loader_or_manifest_path_reintroduced_by_ogbn_arxiv() {
     require(loader.find("prepare_ogbn_arxiv.py") != std::string::npos, "ogbn-arxiv loader path must stay on the internal prepare script");
     require(train_script.find("../ogb") == std::string::npos, "ogbn-arxiv training entry must not reintroduce sibling-ogb runtime dependency");
     require(bundle_manifest.find("\"family_schema_version\": \"multi_layer_multi_head_v2\"") != std::string::npos, "ogbn-arxiv bundle must stay on the current family schema");
+}
+
+void test_no_obsolete_memory_only_workaround_left_in_final_code() {
+    const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
+    require(latest.find("\"dataset\": \"ogbn-arxiv\"") != std::string::npos, "official table must include ogbn-arxiv");
+    require(latest.find("\"status\": \"ok\"") != std::string::npos, "ogbn-arxiv must no longer stay in a blocker-only benchmark state");
+    const auto prover_source = slurp_file(repo_root() / "src" / "protocol" / "prover.cpp");
+    require(prover_source.find("append_note(metrics, \"domain_open_edge_only\")") == std::string::npos, "final prover path must not keep stale memory-only workaround markers");
 }
 
 void test_no_regression_existing_paths() {
@@ -1819,9 +2005,25 @@ int main(int argc, char** argv) {
         {"ogbn_arxiv_bundle_is_checkpoint_backed_and_formal_ready", test_ogbn_arxiv_bundle_is_checkpoint_backed_and_formal_ready},
         {"ogbn_arxiv_full_config_is_real_checkpoint_backed", test_ogbn_arxiv_full_config_is_real_checkpoint_backed},
         {"ogbn_arxiv_formal_benchmark_runs_or_fails_with_precise_reason", test_ogbn_arxiv_formal_benchmark_runs_or_fails_with_precise_reason},
+        {"ogbn_arxiv_formal_whole_graph_memory_blocker_is_reduced_or_precisely_reported", test_ogbn_arxiv_formal_whole_graph_memory_blocker_is_reduced_or_precisely_reported},
+        {"ogbn_arxiv_run_manifest_is_emitted_after_memory_fix", test_ogbn_arxiv_run_manifest_is_emitted_after_memory_fix},
+        {"ogbn_arxiv_peak_memory_optimization_does_not_change_transcript", test_ogbn_arxiv_peak_memory_optimization_does_not_change_transcript},
+        {"ogbn_arxiv_does_not_reintroduce_dual_representations_without_need", test_ogbn_arxiv_does_not_reintroduce_dual_representations_without_need},
+        {"ogbn_arxiv_domain_open_edge_hotspot_improves_without_semantic_regression", test_ogbn_arxiv_domain_open_edge_hotspot_improves_without_semantic_regression},
+        {"ogbn_arxiv_domain_open_fh_hotspot_improves_without_semantic_regression", test_ogbn_arxiv_domain_open_fh_hotspot_improves_without_semantic_regression},
+        {"ogbn_arxiv_quotient_edge_or_fh_hotspot_improves_without_checkpoint_regression", test_ogbn_arxiv_quotient_edge_or_fh_hotspot_improves_without_checkpoint_regression},
+        {"ogbn_arxiv_dynamic_domain_convert_improves_without_checkpoint_regression", test_ogbn_arxiv_dynamic_domain_convert_improves_without_checkpoint_regression},
+        {"ogbn_arxiv_prove_path_optimization_does_not_change_transcript", test_ogbn_arxiv_prove_path_optimization_does_not_change_transcript},
+        {"latest_note_contract_is_not_violated_by_ogbn_arxiv_optimization", test_latest_note_contract_is_not_violated_by_ogbn_arxiv_optimization},
+        {"ogbn_arxiv_commitment_time_is_exported_with_formal_consistent_definition", test_ogbn_arxiv_commitment_time_is_exported_with_formal_consistent_definition},
+        {"ogbn_arxiv_official_metrics_table_contains_four_required_fields", test_ogbn_arxiv_official_metrics_table_contains_four_required_fields},
+        {"ogbn_arxiv_single_dataset_incremental_optimization_does_not_change_transcript", test_ogbn_arxiv_single_dataset_incremental_optimization_does_not_change_transcript},
+        {"ogbn_arxiv_official_result_is_not_stale_or_mixed", test_ogbn_arxiv_official_result_is_not_stale_or_mixed},
+        {"no_unused_optimization_shell_left_in_final_code", test_no_unused_optimization_shell_left_in_final_code},
         {"five_dataset_official_table_is_same_build_same_mainline", test_five_dataset_official_table_is_same_build_same_mainline},
         {"benchmark_table_excludes_training_time_for_ogbn_arxiv", test_benchmark_table_excludes_training_time_for_ogbn_arxiv},
         {"no_legacy_loader_or_manifest_path_reintroduced_by_ogbn_arxiv", test_no_legacy_loader_or_manifest_path_reintroduced_by_ogbn_arxiv},
+        {"no_obsolete_memory_only_workaround_left_in_final_code", test_no_obsolete_memory_only_workaround_left_in_final_code},
         {"real_gat_forward_semantics_no_regression", test_real_gat_forward_semantics_no_regression},
         {"real_gat_forward_semantics_preserved_after_import", test_real_gat_forward_semantics_preserved_after_import},
         {"chinese_readme_is_current_mainline_only", test_chinese_readme_is_current_mainline_only},

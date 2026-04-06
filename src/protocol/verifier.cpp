@@ -93,6 +93,135 @@ std::string verifier_quotient_cache_key(
     return stream.str();
 }
 
+bool lazy_large_fh_public_enabled(const ProtocolContext& context) {
+    return (context.config.dataset == "ogbn_arxiv" || context.config.dataset == "ogbn-arxiv")
+        && context.config.batching_rule == "whole_graph_single";
+}
+
+bool is_lazy_large_fh_public_label(const std::string& name) {
+    return name == "P_T_H"
+        || name == "P_Row_feat_tbl"
+        || name == "P_Col_feat_tbl"
+        || name == "P_Row_feat_qry"
+        || name == "P_Col_feat_qry"
+        || name == "P_I_feat_qry"
+        || name == "P_Q_tbl_feat"
+        || name == "P_Q_qry_feat";
+}
+
+template <typename ValueFn>
+FieldElement evaluate_truncated_domain_polynomial(
+    const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
+    std::size_t valid_count,
+    const FieldElement& point,
+    ValueFn&& value_fn) {
+    if (domain == nullptr) {
+        throw std::runtime_error("lazy verifier public polynomial requires a domain");
+    }
+    if (valid_count == 0) {
+        return FieldElement::zero();
+    }
+    if (const auto shift = domain->rotation_shift(FieldElement::one(), point); shift.has_value()) {
+        return *shift < valid_count ? value_fn(*shift) : FieldElement::zero();
+    }
+    const auto zero_eval = domain->zero_polynomial_eval(point);
+    FieldElement sum = FieldElement::zero();
+    const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+    if (valid_count >= (1ULL << 20) && cpu_count > 1) {
+        const auto task_count = std::min<std::size_t>(cpu_count, (valid_count + (1ULL << 20) - 1) / (1ULL << 20));
+        const auto chunk_size = (valid_count + task_count - 1) / task_count;
+        std::vector<std::future<FieldElement>> futures;
+        futures.reserve(task_count);
+        for (std::size_t task = 0; task < task_count; ++task) {
+            const auto begin = task * chunk_size;
+            const auto end = std::min(valid_count, begin + chunk_size);
+            if (begin >= end) {
+                break;
+            }
+            futures.push_back(std::async(
+                std::launch::async,
+                [&, begin, end]() {
+                    FieldElement partial = FieldElement::zero();
+                    auto omega_power = domain->omega.pow(static_cast<std::uint64_t>(begin));
+                    for (std::size_t index = begin; index < end; ++index) {
+                        partial += value_fn(index) * omega_power / (point - omega_power);
+                        omega_power *= domain->omega;
+                    }
+                    return partial;
+                }));
+        }
+        for (auto& future : futures) {
+            sum += future.get();
+        }
+    } else {
+        FieldElement omega_power = FieldElement::one();
+        for (std::size_t index = 0; index < valid_count; ++index) {
+            sum += value_fn(index) * omega_power / (point - omega_power);
+            omega_power *= domain->omega;
+        }
+    }
+    return zero_eval * domain->inv_size * sum;
+}
+
+FieldElement evaluate_lazy_large_fh_public_poly(
+    const ProtocolContext& context,
+    const std::string& name,
+    const FieldElement& point) {
+    if (!lazy_large_fh_public_enabled(context) || !is_lazy_large_fh_public_label(name)) {
+        throw std::runtime_error("unsupported verifier lazy public polynomial: " + name);
+    }
+    const auto& domain = context.domains.fh;
+    const std::size_t dataset_rows = context.dataset.num_nodes;
+    const std::size_t local_rows = context.local.num_nodes;
+    const std::size_t feature_count = context.local.num_features;
+    const std::size_t dataset_valid = dataset_rows * feature_count;
+    const std::size_t local_valid = local_rows * feature_count;
+    const auto& feature_matrix = !context.dataset.features.empty() ? context.dataset.features : context.local.features;
+    if (name == "P_Q_tbl_feat") {
+        return evaluate_truncated_domain_polynomial(domain, dataset_valid, point, [](std::size_t) {
+            return FieldElement::one();
+        });
+    }
+    if (name == "P_Q_qry_feat") {
+        return evaluate_truncated_domain_polynomial(domain, local_valid, point, [](std::size_t) {
+            return FieldElement::one();
+        });
+    }
+    if (name == "P_Row_feat_tbl") {
+        return evaluate_truncated_domain_polynomial(domain, dataset_valid, point, [&](std::size_t index) {
+            return FieldElement(index / feature_count);
+        });
+    }
+    if (name == "P_Col_feat_tbl") {
+        return evaluate_truncated_domain_polynomial(domain, dataset_valid, point, [&](std::size_t index) {
+            return FieldElement(index % feature_count);
+        });
+    }
+    if (name == "P_Row_feat_qry") {
+        return evaluate_truncated_domain_polynomial(domain, local_valid, point, [&](std::size_t index) {
+            return FieldElement(index / feature_count);
+        });
+    }
+    if (name == "P_Col_feat_qry") {
+        return evaluate_truncated_domain_polynomial(domain, local_valid, point, [&](std::size_t index) {
+            return FieldElement(index % feature_count);
+        });
+    }
+    if (name == "P_I_feat_qry") {
+        return evaluate_truncated_domain_polynomial(domain, local_valid, point, [&](std::size_t index) {
+            return FieldElement(context.local.absolute_ids[index / feature_count]);
+        });
+    }
+    if (name == "P_T_H") {
+        return evaluate_truncated_domain_polynomial(domain, dataset_valid, point, [&](std::size_t index) {
+            const auto row = index / feature_count;
+            const auto column = index % feature_count;
+            return feature_matrix[row][column];
+        });
+    }
+    throw std::runtime_error("unsupported verifier lazy public polynomial label: " + name);
+}
+
 struct DomainEvaluationWeights {
     std::optional<std::size_t> direct_index;
     std::vector<mcl::Fr> native_weights;
@@ -110,11 +239,15 @@ class VerifierDomainWeightCache {
         }
 
         DomainEvaluationWeights entry;
-        for (std::size_t i = 0; i < domain->points.size(); ++i) {
-            if (domain->points[i] == point) {
-                entry.direct_index = i;
-                break;
+        if (domain->points_precomputed) {
+            for (std::size_t i = 0; i < domain->points.size(); ++i) {
+                if (domain->points[i] == point) {
+                    entry.direct_index = i;
+                    break;
+                }
             }
+        } else if (const auto shift = domain->rotation_shift(FieldElement::one(), point); shift.has_value()) {
+            entry.direct_index = *shift;
         }
         if (!entry.direct_index.has_value()) {
             entry.native_weights = domain->barycentric_weights_native(point);
@@ -244,6 +377,8 @@ class VerifierEvaluationMemoization {
         FieldElement value = FieldElement::zero();
         if (const auto it = context_.public_polynomials.find(name); it != context_.public_polynomials.end()) {
             value = eval_public_polynomial(it->second, point);
+        } else if (lazy_large_fh_public_enabled(context_) && is_lazy_large_fh_public_label(name)) {
+            value = evaluate_lazy_large_fh_public_poly(context_, name, point);
         } else if (const auto it = opened_values_.find(name); it != opened_values_.end()) {
             const auto lookup_start = Clock::now();
             value = opened_value(*it->second.points, *it->second.values, name, point);
@@ -861,6 +996,9 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
     const auto* bundle_n = &bundle_by_name(indexed_bundles, "N");
 
     const auto eval = [&](const std::string& name, const FieldElement& point) -> FieldElement {
+        if (lazy_large_fh_public_enabled(context) && is_lazy_large_fh_public_label(name)) {
+            return evaluate_lazy_large_fh_public_poly(context, name, point);
+        }
         if (context.public_polynomials.contains(name)) {
             return context.public_polynomials.at(name).evaluate(point);
         }

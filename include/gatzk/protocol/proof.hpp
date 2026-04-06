@@ -80,9 +80,16 @@ struct ProtocolContext {
 };
 
 struct TraceArtifacts {
+    struct SpilledEvaluationPolynomial {
+        std::string path;
+        std::string domain_name;
+        std::size_t size = 0;
+    };
+
     std::unordered_map<std::string, std::vector<algebra::FieldElement>> columns;
     std::unordered_map<std::string, model::Matrix> matrices;
     std::unordered_map<std::string, algebra::Polynomial> polynomials;
+    std::unordered_map<std::string, SpilledEvaluationPolynomial> spilled_polynomials;
     std::unordered_map<std::string, std::string> polynomial_domains;
     std::unordered_map<std::string, crypto::Commitment> commitments;
     std::vector<std::string> commitment_order;
@@ -196,6 +203,7 @@ struct RunMetrics {
     double dynamic_commit_msm_ms = 0.0;
     double dynamic_commit_finalize_ms = 0.0;
     double dynamic_bundle_finalize_ms = 0.0;
+    double commitment_time_ms = 0.0;
     double quotient_build_ms = 0.0;
     double quotient_t_fh_ms = 0.0;
     double quotient_t_edge_ms = 0.0;

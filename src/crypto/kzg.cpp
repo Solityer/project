@@ -178,10 +178,11 @@ std::shared_ptr<const DomainCommitWeights> load_or_build_domain_commit_weights(
     const KZGKeyPair& key) {
     static std::mutex cache_mutex;
     static std::unordered_map<std::string, std::shared_ptr<DomainCommitWeights>> cache;
+    const bool persist_cache = polynomial.domain != nullptr && polynomial.domain->size < (1ULL << 24);
 
     const auto cache_key = polynomial.domain->name + ":" + std::to_string(polynomial.domain->size) + ":"
         + key.tau.to_string();
-    {
+    if (persist_cache) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
             return it->second;
@@ -189,11 +190,17 @@ std::shared_ptr<const DomainCommitWeights> load_or_build_domain_commit_weights(
     }
 
     auto entry = std::make_shared<DomainCommitWeights>();
-    for (std::size_t i = 0; i < polynomial.domain->size; ++i) {
-        if (polynomial.domain->points[i] == key.tau) {
-            entry->direct_index = i;
-            break;
+    if (polynomial.domain->points_precomputed) {
+        for (std::size_t i = 0; i < polynomial.domain->size; ++i) {
+            if (polynomial.domain->points[i] == key.tau) {
+                entry->direct_index = i;
+                break;
+            }
         }
+    } else if (const auto shift =
+                   polynomial.domain->rotation_shift(algebra::FieldElement::one(), key.tau);
+               shift.has_value()) {
+        entry->direct_index = *shift;
     }
     if (!entry->direct_index.has_value()) {
         if (util::route2_options().fft_backend_upgrade) {
@@ -203,18 +210,22 @@ std::shared_ptr<const DomainCommitWeights> load_or_build_domain_commit_weights(
             const auto scale = (polynomial.domain->zero_polynomial_eval(key.tau) * polynomial.domain->inv_size).native();
             for (std::size_t i = 0; i < polynomial.domain->size; ++i) {
                 mcl::Fr denominator;
-                mcl::Fr::sub(denominator, key.tau.native(), polynomial.domain->points[i].native());
+                const auto point = polynomial.domain->point_at(i);
+                mcl::Fr::sub(denominator, key.tau.native(), point.native());
                 mcl::Fr inverse;
                 mcl::Fr::inv(inverse, denominator);
-                mcl::Fr::mul(entry->native_weights[i], scale, polynomial.domain->points[i].native());
+                mcl::Fr::mul(entry->native_weights[i], scale, point.native());
                 mcl::Fr::mul(entry->native_weights[i], entry->native_weights[i], inverse);
             }
         }
     }
 
-    std::lock_guard<std::mutex> lock(cache_mutex);
-    const auto [it, _] = cache.emplace(cache_key, entry);
-    return it->second;
+    if (persist_cache) {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        const auto [it, _] = cache.emplace(cache_key, entry);
+        return it->second;
+    }
+    return entry;
 }
 
 BatchOpeningPrecompute prepare_batch_opening(

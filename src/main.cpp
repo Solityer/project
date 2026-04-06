@@ -62,6 +62,11 @@ int main(int argc, char** argv) {
             updated.export_dir = export_dir.string();
             return updated;
         };
+        auto memory_safe_warm_required = [](const gatzk::util::AppConfig& config) {
+            return config.dataset == "ogbn_arxiv"
+                && config.batching_rule == "whole_graph_single"
+                && config.subgraph_rule == "whole_graph";
+        };
         auto parse_switch = [](const std::string& value, const std::string& name) {
             if (value == "on" || value == "true" || value == "1") {
                 return true;
@@ -209,6 +214,9 @@ int main(int argc, char** argv) {
                 + metrics.trace_finalize_ms;
             const auto prove_core_ms = std::chrono::duration<double, std::milli>(pcs_end - trace_start).count();
             metrics.prove_time_ms = prove_core_ms;
+            metrics.commitment_time_ms =
+                metrics.commit_dynamic_ms
+                + metrics.quotient_bundle_pack_ms;
             metrics.prove_finalize_ms = clamp_non_negative(
                 metrics.prove_time_ms
                 - metrics.forward_ms
@@ -323,6 +331,7 @@ int main(int argc, char** argv) {
                     + " fh_open_witness_ms=" + format_ms(metrics.fh_open_witness_ms)
                     + " fh_open_fold_prepare_ms=" + format_ms(metrics.fh_open_fold_prepare_ms)
                     + " commit_dynamic_ms=" + format_ms(metrics.commit_dynamic_ms)
+                    + " commitment_time_ms=" + format_ms(metrics.commitment_time_ms)
                     + " dynamic_commit_input_ms=" + format_ms(metrics.dynamic_commit_input_ms)
                     + " dynamic_polynomial_materialization_ms=" + format_ms(metrics.dynamic_polynomial_materialization_ms)
                     + " dynamic_commit_pack_ms=" + format_ms(metrics.dynamic_commit_pack_ms)
@@ -411,13 +420,17 @@ int main(int argc, char** argv) {
             segments.push_back("cold");
             accepted = run_once(with_export_suffix(loaded_config, segments), true, "cold");
         } else if (benchmark_mode == "warm") {
-            warm_up(with_export_suffix(loaded_config, export_segments));
-            run_once(
-                with_export_suffix(loaded_config, export_segments),
-                false,
-                "warm_probe",
-                false,
-                false);
+            if (memory_safe_warm_required(loaded_config)) {
+                gatzk::util::info("using memory-safe warm path without warm_probe");
+            } else {
+                warm_up(with_export_suffix(loaded_config, export_segments));
+                run_once(
+                    with_export_suffix(loaded_config, export_segments),
+                    false,
+                    "warm_probe",
+                    false,
+                    false);
+            }
             auto segments = export_segments;
             segments.push_back("warm");
             accepted = run_once(with_export_suffix(loaded_config, segments), false, "warm");

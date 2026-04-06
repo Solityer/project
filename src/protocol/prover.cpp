@@ -1,10 +1,12 @@
 #include "gatzk/protocol/prover.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <functional>
 #include <iomanip>
@@ -58,11 +60,25 @@ void add_public_poly(
     context.public_commitments[name] = crypto::KZG::commit(name, polynomial, context.kzg);
 }
 
+void add_public_tau_commitment(
+    ProtocolContext& context,
+    const std::string& name,
+    const FieldElement& tau_evaluation) {
+    context.public_commitments[name] = crypto::KZG::commit_tau_evaluation(name, tau_evaluation, context.kzg);
+}
+
 void add_static_commitment(
     ProtocolContext& context,
     const std::string& name,
     const Polynomial& polynomial) {
     context.static_commitments[name] = crypto::KZG::commit(name, polynomial, context.kzg);
+}
+
+void add_static_tau_commitment(
+    ProtocolContext& context,
+    const std::string& name,
+    const FieldElement& tau_evaluation) {
+    context.static_commitments[name] = crypto::KZG::commit_tau_evaluation(name, tau_evaluation, context.kzg);
 }
 
 std::vector<FieldElement> padded(const std::vector<FieldElement>& values, std::size_t size) {
@@ -144,6 +160,212 @@ std::vector<FieldElement> feature_query_absolute_ids(
         }
     }
     return out;
+}
+
+bool lazy_large_fh_public_enabled(const ProtocolContext& context) {
+    return (context.config.dataset == "ogbn_arxiv" || context.config.dataset == "ogbn-arxiv")
+        && context.config.batching_rule == "whole_graph_single";
+}
+
+bool is_lazy_large_fh_public_label(const std::string& name) {
+    return name == "P_T_H"
+        || name == "P_Row_feat_tbl"
+        || name == "P_Col_feat_tbl"
+        || name == "P_Row_feat_qry"
+        || name == "P_Col_feat_qry"
+        || name == "P_I_feat_qry"
+        || name == "P_Q_tbl_feat"
+        || name == "P_Q_qry_feat";
+}
+
+bool lazy_full_feature_lookup_trace_enabled(const ProtocolContext& context) {
+    if (!((context.config.dataset == "ogbn_arxiv" || context.config.dataset == "ogbn-arxiv")
+          && context.config.batching_rule == "whole_graph_single")) {
+        return false;
+    }
+    if (context.local.num_nodes != context.dataset.num_nodes
+        || context.local.num_features != context.dataset.num_features) {
+        return false;
+    }
+    for (std::size_t i = 0; i < context.local.absolute_ids.size(); ++i) {
+        if (context.local.absolute_ids[i] != i) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool is_lazy_full_feature_lookup_trace_label(const std::string& name) {
+    return name == "P_Table_feat"
+        || name == "P_Query_feat"
+        || name == "P_m_feat"
+        || name == "P_R_feat";
+}
+
+std::size_t label_index_or_npos(
+    const std::vector<std::string>& labels,
+    std::string_view target) {
+    for (std::size_t i = 0; i < labels.size(); ++i) {
+        if (labels[i] == target) {
+            return i;
+        }
+    }
+    return labels.size();
+}
+
+template <typename ValueFn>
+FieldElement evaluate_truncated_domain_polynomial(
+    const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
+    std::size_t valid_count,
+    const FieldElement& point,
+    ValueFn&& value_fn) {
+    if (domain == nullptr) {
+        throw std::runtime_error("lazy public polynomial requires a domain");
+    }
+    if (valid_count == 0) {
+        return FieldElement::zero();
+    }
+    if (const auto shift = domain->rotation_shift(FieldElement::one(), point); shift.has_value()) {
+        return *shift < valid_count ? value_fn(*shift) : FieldElement::zero();
+    }
+    const auto zero_eval = domain->zero_polynomial_eval(point);
+    FieldElement sum = FieldElement::zero();
+    const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+    if (valid_count >= (1ULL << 20) && cpu_count > 1) {
+        const auto task_count = std::min<std::size_t>(cpu_count, (valid_count + (1ULL << 20) - 1) / (1ULL << 20));
+        const auto chunk_size = (valid_count + task_count - 1) / task_count;
+        std::vector<std::future<FieldElement>> futures;
+        futures.reserve(task_count);
+        for (std::size_t task = 0; task < task_count; ++task) {
+            const auto begin = task * chunk_size;
+            const auto end = std::min(valid_count, begin + chunk_size);
+            if (begin >= end) {
+                break;
+            }
+            futures.push_back(std::async(
+                std::launch::async,
+                [&, begin, end]() {
+                    FieldElement partial = FieldElement::zero();
+                    auto omega_power = domain->omega.pow(static_cast<std::uint64_t>(begin));
+                    for (std::size_t index = begin; index < end; ++index) {
+                        partial += value_fn(index) * omega_power / (point - omega_power);
+                        omega_power *= domain->omega;
+                    }
+                    return partial;
+                }));
+        }
+        for (auto& future : futures) {
+            sum += future.get();
+        }
+    } else {
+        FieldElement omega_power = FieldElement::one();
+        for (std::size_t index = 0; index < valid_count; ++index) {
+            sum += value_fn(index) * omega_power / (point - omega_power);
+            omega_power *= domain->omega;
+        }
+    }
+    return zero_eval * domain->inv_size * sum;
+}
+
+FieldElement evaluate_lazy_large_fh_public_poly(
+    const ProtocolContext& context,
+    const std::string& name,
+    const FieldElement& point) {
+    if (!lazy_large_fh_public_enabled(context) || !is_lazy_large_fh_public_label(name)) {
+        throw std::runtime_error("unsupported lazy public polynomial: " + name);
+    }
+    const auto& domain = context.domains.fh;
+    const std::size_t dataset_rows = context.dataset.num_nodes;
+    const std::size_t local_rows = context.local.num_nodes;
+    const std::size_t feature_count = context.local.num_features;
+    const std::size_t dataset_valid = dataset_rows * feature_count;
+    const std::size_t local_valid = local_rows * feature_count;
+    const auto& feature_matrix = !context.dataset.features.empty() ? context.dataset.features : context.local.features;
+    if (name == "P_Q_tbl_feat") {
+        return evaluate_truncated_domain_polynomial(
+            domain,
+            dataset_valid,
+            point,
+            [](std::size_t) { return FieldElement::one(); });
+    }
+    if (name == "P_Q_qry_feat") {
+        return evaluate_truncated_domain_polynomial(
+            domain,
+            local_valid,
+            point,
+            [](std::size_t) { return FieldElement::one(); });
+    }
+    if (name == "P_Row_feat_tbl") {
+        return evaluate_truncated_domain_polynomial(
+            domain,
+            dataset_valid,
+            point,
+            [&](std::size_t index) { return FieldElement(index / feature_count); });
+    }
+    if (name == "P_Col_feat_tbl") {
+        return evaluate_truncated_domain_polynomial(
+            domain,
+            dataset_valid,
+            point,
+            [&](std::size_t index) { return FieldElement(index % feature_count); });
+    }
+    if (name == "P_Row_feat_qry") {
+        return evaluate_truncated_domain_polynomial(
+            domain,
+            local_valid,
+            point,
+            [&](std::size_t index) { return FieldElement(index / feature_count); });
+    }
+    if (name == "P_Col_feat_qry") {
+        return evaluate_truncated_domain_polynomial(
+            domain,
+            local_valid,
+            point,
+            [&](std::size_t index) { return FieldElement(index % feature_count); });
+    }
+    if (name == "P_I_feat_qry") {
+        return evaluate_truncated_domain_polynomial(
+            domain,
+            local_valid,
+            point,
+            [&](std::size_t index) { return FieldElement(context.local.absolute_ids[index / feature_count]); });
+    }
+    if (name == "P_T_H") {
+        return evaluate_truncated_domain_polynomial(
+            domain,
+            dataset_valid,
+            point,
+            [&](std::size_t index) {
+                const auto row = index / feature_count;
+                const auto column = index % feature_count;
+                return feature_matrix[row][column];
+            });
+    }
+    throw std::runtime_error("unsupported lazy public polynomial label: " + name);
+}
+
+FieldElement evaluate_lazy_full_feature_lookup_trace_poly(
+    const ProtocolContext& context,
+    const std::map<std::string, FieldElement>& challenges,
+    const std::string& name,
+    const FieldElement& point) {
+    if (!lazy_full_feature_lookup_trace_enabled(context) || !is_lazy_full_feature_lookup_trace_label(name)) {
+        throw std::runtime_error("unsupported lazy feature lookup trace polynomial: " + name);
+    }
+    if (name == "P_R_feat") {
+        return FieldElement::zero();
+    }
+    if (name == "P_m_feat") {
+        return evaluate_lazy_large_fh_public_poly(context, "P_Q_qry_feat", point);
+    }
+
+    const auto eta_feat = challenges.at("eta_feat");
+    const auto row_label = name == "P_Table_feat" ? "P_Row_feat_tbl" : "P_Row_feat_qry";
+    const auto col_label = name == "P_Table_feat" ? "P_Col_feat_tbl" : "P_Col_feat_qry";
+    const auto row_eval = evaluate_lazy_large_fh_public_poly(context, row_label, point);
+    const auto col_eval = evaluate_lazy_large_fh_public_poly(context, col_label, point);
+    const auto feat_eval = evaluate_lazy_large_fh_public_poly(context, "P_T_H", point);
+    return row_eval + eta_feat * col_eval + eta_feat.pow(2) * feat_eval;
 }
 
 FieldElement row_polynomial_at_point(const std::vector<FieldElement>& row, const FieldElement& point) {
@@ -495,11 +717,15 @@ class ProofDomainWeightCache {
         }
 
         DomainEvaluationWeights entry;
-        for (std::size_t i = 0; i < domain->points.size(); ++i) {
-            if (domain->points[i] == point) {
-                entry.direct_index = i;
-                break;
+        if (domain->points_precomputed) {
+            for (std::size_t i = 0; i < domain->points.size(); ++i) {
+                if (domain->points[i] == point) {
+                    entry.direct_index = i;
+                    break;
+                }
             }
+        } else if (const auto shift = domain->rotation_shift(FieldElement::one(), point); shift.has_value()) {
+            entry.direct_index = *shift;
         }
 
         if (!entry.direct_index.has_value()) {
@@ -782,6 +1008,45 @@ SharedProofEvaluationBackendRegistryCache& shared_proof_backend_registry_cache()
     return cache;
 }
 
+FieldElement evaluate_spilled_evaluation_polynomial(
+    const TraceArtifacts::SpilledEvaluationPolynomial& spilled,
+    const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
+    const FieldElement& point,
+    const DomainEvaluationWeights& weight_entry) {
+    if (domain == nullptr) {
+        throw std::runtime_error("spilled polynomial is missing its domain");
+    }
+    constexpr std::size_t kFieldBytes = 32;
+    std::array<std::uint8_t, kFieldBytes> bytes{};
+    std::ifstream stream(spilled.path, std::ios::binary);
+    if (!stream) {
+        throw std::runtime_error("failed to open spilled polynomial file: " + spilled.path);
+    }
+    if (weight_entry.direct_index.has_value()) {
+        const auto offset = static_cast<std::streamoff>(*weight_entry.direct_index * kFieldBytes);
+        stream.seekg(offset);
+        stream.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        if (!stream) {
+            throw std::runtime_error("failed to read direct spilled polynomial entry: " + spilled.path);
+        }
+        return FieldElement::from_little_endian_mod(bytes.data(), bytes.size());
+    }
+
+    mcl::Fr native_sum;
+    native_sum.clear();
+    for (std::size_t index = 0; index < spilled.size; ++index) {
+        stream.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        if (!stream) {
+            throw std::runtime_error("failed to stream spilled polynomial: " + spilled.path);
+        }
+        const auto value = FieldElement::from_little_endian_mod(bytes.data(), bytes.size());
+        mcl::Fr term;
+        mcl::Fr::mul(term, value.native(), weight_entry.native_weights[index]);
+        mcl::Fr::add(native_sum, native_sum, term);
+    }
+    return FieldElement::from_native(native_sum);
+}
+
 // Proof-scoped memoization only caches values derived from the current trace and
 // current Fiat-Shamir challenges. This matches the spec's semantics while
 // avoiding repeated evaluation of the same column or quotient at the same point.
@@ -819,8 +1084,21 @@ class EvaluationMemoization {
                 context_.local.features,
                 point,
                 metrics_);
+        } else if (lazy_full_feature_lookup_trace_enabled(context_)
+                   && is_lazy_full_feature_lookup_trace_label(name)) {
+            value = evaluate_lazy_full_feature_lookup_trace_poly(context_, challenges_, name, point);
         } else if (trace_.polynomials.contains(name)) {
             value = eval_polynomial(trace_.polynomials.at(name), point);
+        } else if (trace_.spilled_polynomials.contains(name)) {
+            const auto& spilled = trace_.spilled_polynomials.at(name);
+            const auto domain = domain_from_name(spilled.domain_name);
+            value = evaluate_spilled_evaluation_polynomial(
+                spilled,
+                domain,
+                point,
+                domain_weights(domain, point));
+        } else if (lazy_large_fh_public_enabled(context_) && is_lazy_large_fh_public_label(name)) {
+            value = evaluate_lazy_large_fh_public_poly(context_, name, point);
         } else if (context_.public_polynomials.contains(name)) {
             value = eval_polynomial(context_.public_polynomials.at(name), point);
         } else if (name == "t_FH") {
@@ -899,6 +1177,17 @@ class EvaluationMemoization {
     }
 
   private:
+    std::shared_ptr<algebra::RootOfUnityDomain> domain_from_name(const std::string& name) const {
+        if (name == "FH") return context_.domains.fh;
+        if (name == "edge") return context_.domains.edge;
+        if (name == "in") return context_.domains.in;
+        if (name == "d") return context_.domains.d;
+        if (name == "cat") return context_.domains.cat;
+        if (name == "C") return context_.domains.c;
+        if (name == "N") return context_.domains.n;
+        throw std::runtime_error("unknown spilled polynomial domain: " + name);
+    }
+
     const Polynomial* lookup_polynomial(const std::string& name) const {
         if (trace_.polynomials.contains(name)) {
             return &trace_.polynomials.at(name);
@@ -924,6 +1213,223 @@ class EvaluationMemoization {
             shifts[i] = *shift;
         }
         return shifts;
+    }
+
+    std::vector<FieldElement> evaluate_lazy_large_fh_public_group(
+        const std::vector<std::string>& labels,
+        const FieldElement& point) {
+        std::vector<FieldElement> out(labels.size(), FieldElement::zero());
+        if (labels.empty()) {
+            return out;
+        }
+
+        const auto& domain = context_.domains.fh;
+        const auto& weight_entry = domain_weights(domain, point);
+        const std::size_t dataset_rows = context_.dataset.num_nodes;
+        const std::size_t local_rows = context_.local.num_nodes;
+        const std::size_t feature_count = context_.local.num_features;
+        const std::size_t dataset_valid = dataset_rows * feature_count;
+        const std::size_t local_valid = local_rows * feature_count;
+        const auto& feature_matrix =
+            !context_.dataset.features.empty() ? context_.dataset.features : context_.local.features;
+
+        const auto q_tbl_index = label_index_or_npos(labels, "P_Q_tbl_feat");
+        const auto q_qry_index = label_index_or_npos(labels, "P_Q_qry_feat");
+        const auto row_tbl_index = label_index_or_npos(labels, "P_Row_feat_tbl");
+        const auto col_tbl_index = label_index_or_npos(labels, "P_Col_feat_tbl");
+        const auto row_qry_index = label_index_or_npos(labels, "P_Row_feat_qry");
+        const auto col_qry_index = label_index_or_npos(labels, "P_Col_feat_qry");
+        const auto abs_qry_index = label_index_or_npos(labels, "P_I_feat_qry");
+        const auto th_index = label_index_or_npos(labels, "P_T_H");
+
+        auto direct_value = [&](std::string_view label, std::size_t index) -> FieldElement {
+            if (label == "P_Q_tbl_feat") {
+                return index < dataset_valid ? FieldElement::one() : FieldElement::zero();
+            }
+            if (label == "P_Q_qry_feat") {
+                return index < local_valid ? FieldElement::one() : FieldElement::zero();
+            }
+            if (label == "P_Row_feat_tbl") {
+                return index < dataset_valid ? FieldElement(index / feature_count) : FieldElement::zero();
+            }
+            if (label == "P_Col_feat_tbl") {
+                return index < dataset_valid ? FieldElement(index % feature_count) : FieldElement::zero();
+            }
+            if (label == "P_Row_feat_qry") {
+                return index < local_valid ? FieldElement(index / feature_count) : FieldElement::zero();
+            }
+            if (label == "P_Col_feat_qry") {
+                return index < local_valid ? FieldElement(index % feature_count) : FieldElement::zero();
+            }
+            if (label == "P_I_feat_qry") {
+                return index < local_valid
+                    ? FieldElement(context_.local.absolute_ids[index / feature_count])
+                    : FieldElement::zero();
+            }
+            if (label == "P_T_H") {
+                if (index >= dataset_valid) {
+                    return FieldElement::zero();
+                }
+                const auto row = index / feature_count;
+                const auto column = index % feature_count;
+                return feature_matrix[row][column];
+            }
+            throw std::runtime_error("unsupported lazy FH public label: " + std::string(label));
+        };
+
+        if (weight_entry.direct_index.has_value()) {
+            const auto direct_index = *weight_entry.direct_index;
+            for (std::size_t i = 0; i < labels.size(); ++i) {
+                out[i] = direct_value(labels[i], direct_index);
+            }
+            return out;
+        }
+
+        std::vector<FieldElement> column_values(feature_count, FieldElement::zero());
+        for (std::size_t column = 0; column < feature_count; ++column) {
+            column_values[column] = FieldElement(column);
+        }
+
+        std::vector<mcl::Fr> accumulators(labels.size());
+        for (auto& accumulator : accumulators) {
+            accumulator.clear();
+        }
+
+        auto add_scaled = [&](std::size_t label_index, const FieldElement& value, const mcl::Fr& weight) {
+            if (label_index >= labels.size()) {
+                return;
+            }
+            mcl::Fr term;
+            mcl::Fr::mul(term, value.native(), weight);
+            mcl::Fr::add(accumulators[label_index], accumulators[label_index], term);
+        };
+        auto add_weight = [&](std::size_t label_index, const mcl::Fr& weight) {
+            if (label_index >= labels.size()) {
+                return;
+            }
+            mcl::Fr::add(accumulators[label_index], accumulators[label_index], weight);
+        };
+
+        std::size_t index = 0;
+        for (std::size_t row = 0; row < dataset_rows; ++row) {
+            const FieldElement row_value(row);
+            const auto& feature_row = feature_matrix[row];
+            for (std::size_t column = 0; column < feature_count; ++column, ++index) {
+                const auto& weight = weight_entry.native_weights[index];
+                add_weight(q_tbl_index, weight);
+                add_scaled(row_tbl_index, row_value, weight);
+                add_scaled(col_tbl_index, column_values[column], weight);
+                add_scaled(th_index, feature_row[column], weight);
+            }
+        }
+
+        index = 0;
+        for (std::size_t row = 0; row < local_rows; ++row) {
+            const FieldElement row_value(row);
+            const FieldElement absolute_id(context_.local.absolute_ids[row]);
+            for (std::size_t column = 0; column < feature_count; ++column, ++index) {
+                const auto& weight = weight_entry.native_weights[index];
+                add_weight(q_qry_index, weight);
+                add_scaled(row_qry_index, row_value, weight);
+                add_scaled(col_qry_index, column_values[column], weight);
+                add_scaled(abs_qry_index, absolute_id, weight);
+            }
+        }
+
+        for (std::size_t i = 0; i < labels.size(); ++i) {
+            out[i] = FieldElement::from_native(accumulators[i]);
+        }
+        return out;
+    }
+
+    std::vector<FieldElement> evaluate_lazy_full_feature_lookup_trace_group(
+        const std::vector<std::string>& labels,
+        const FieldElement& point) {
+        std::vector<FieldElement> out(labels.size(), FieldElement::zero());
+        if (labels.empty()) {
+            return out;
+        }
+        const auto eta_feat = challenges_.at("eta_feat");
+        const auto eta_feature_value = eta_feat.pow(2);
+        const auto table_index = label_index_or_npos(labels, "P_Table_feat");
+        const auto query_index = label_index_or_npos(labels, "P_Query_feat");
+        const auto multiplicity_index = label_index_or_npos(labels, "P_m_feat");
+        const auto accumulator_index = label_index_or_npos(labels, "P_R_feat");
+        const auto cache_suffix = "@" + point_key(point);
+        auto load_cached = [&](const std::string& label, FieldElement* value) -> bool {
+            const auto it = value_cache_.find(label + cache_suffix);
+            if (it == value_cache_.end()) {
+                return false;
+            }
+            *value = it->second;
+            return true;
+        };
+
+        std::vector<std::string> missing_public_labels;
+        auto ensure_public_value = [&](const std::string& label, FieldElement* value) {
+            if (load_cached(label, value)) {
+                return;
+            }
+            if (std::find(missing_public_labels.begin(), missing_public_labels.end(), label)
+                == missing_public_labels.end()) {
+                missing_public_labels.push_back(label);
+            }
+        };
+
+        FieldElement row_tbl = FieldElement::zero();
+        FieldElement col_tbl = FieldElement::zero();
+        FieldElement row_qry = FieldElement::zero();
+        FieldElement col_qry = FieldElement::zero();
+        FieldElement q_qry = FieldElement::zero();
+        FieldElement t_h = FieldElement::zero();
+
+        if (table_index < labels.size()) {
+            ensure_public_value("P_Row_feat_tbl", &row_tbl);
+            ensure_public_value("P_Col_feat_tbl", &col_tbl);
+            ensure_public_value("P_T_H", &t_h);
+        }
+        if (query_index < labels.size()) {
+            ensure_public_value("P_Row_feat_qry", &row_qry);
+            ensure_public_value("P_Col_feat_qry", &col_qry);
+            ensure_public_value("P_T_H", &t_h);
+        }
+        if (multiplicity_index < labels.size()) {
+            ensure_public_value("P_Q_qry_feat", &q_qry);
+        }
+
+        if (!missing_public_labels.empty()) {
+            const auto values = evaluate_lazy_large_fh_public_group(missing_public_labels, point);
+            for (std::size_t i = 0; i < missing_public_labels.size(); ++i) {
+                value_cache_.emplace(missing_public_labels[i] + cache_suffix, values[i]);
+            }
+            if (table_index < labels.size()) {
+                load_cached("P_Row_feat_tbl", &row_tbl);
+                load_cached("P_Col_feat_tbl", &col_tbl);
+                load_cached("P_T_H", &t_h);
+            }
+            if (query_index < labels.size()) {
+                load_cached("P_Row_feat_qry", &row_qry);
+                load_cached("P_Col_feat_qry", &col_qry);
+                load_cached("P_T_H", &t_h);
+            }
+            if (multiplicity_index < labels.size()) {
+                load_cached("P_Q_qry_feat", &q_qry);
+            }
+        }
+
+        if (table_index < labels.size()) {
+            out[table_index] = row_tbl + eta_feat * col_tbl + eta_feature_value * t_h;
+        }
+        if (query_index < labels.size()) {
+            out[query_index] = row_qry + eta_feat * col_qry + eta_feature_value * t_h;
+        }
+        if (multiplicity_index < labels.size()) {
+            out[multiplicity_index] = q_qry;
+        }
+        if (accumulator_index < labels.size()) {
+            out[accumulator_index] = FieldElement::zero();
+        }
+        return out;
     }
 
   public:
@@ -1070,7 +1576,67 @@ class EvaluationMemoization {
     void precompute_named(
         const std::vector<std::string>& labels,
         const std::vector<FieldElement>& points) {
-        if (!util::route2_options().fft_backend_upgrade) {
+        const bool enable_backend_precompute = util::route2_options().fft_backend_upgrade;
+
+        auto cache_group_values = [&](const std::vector<std::string>& group_labels,
+                                      const FieldElement& point,
+                                      const std::vector<FieldElement>& values) {
+            const auto cache_suffix = "@" + point_key(point);
+            for (std::size_t i = 0; i < group_labels.size(); ++i) {
+                value_cache_.emplace(group_labels[i] + cache_suffix, values[i]);
+            }
+        };
+
+        if (lazy_large_fh_public_enabled(context_)) {
+            std::vector<std::string> lazy_public_labels;
+            lazy_public_labels.reserve(labels.size());
+            for (const auto& label : labels) {
+                if (is_lazy_large_fh_public_label(label)) {
+                    lazy_public_labels.push_back(label);
+                }
+            }
+            if (!lazy_public_labels.empty()) {
+                for (const auto& point : points) {
+                    std::vector<FieldElement> values;
+                    const bool cache_hit = shared_public_evaluation_cache()->lookup(
+                        context_key_,
+                        context_.domains.fh,
+                        lazy_public_labels,
+                        point,
+                        &values);
+                    if (!cache_hit) {
+                        values = evaluate_lazy_large_fh_public_group(lazy_public_labels, point);
+                        shared_public_evaluation_cache()->store(
+                            context_key_,
+                            context_.domains.fh,
+                            lazy_public_labels,
+                            point,
+                            values);
+                    }
+                    cache_group_values(lazy_public_labels, point, values);
+                }
+            }
+        }
+
+        if (lazy_full_feature_lookup_trace_enabled(context_)) {
+            std::vector<std::string> lazy_trace_labels;
+            lazy_trace_labels.reserve(labels.size());
+            for (const auto& label : labels) {
+                if (is_lazy_full_feature_lookup_trace_label(label)) {
+                    lazy_trace_labels.push_back(label);
+                }
+            }
+            if (!lazy_trace_labels.empty()) {
+                for (const auto& point : points) {
+                    cache_group_values(
+                        lazy_trace_labels,
+                        point,
+                        evaluate_lazy_full_feature_lookup_trace_group(lazy_trace_labels, point));
+                }
+            }
+        }
+
+        if (!enable_backend_precompute) {
             return;
         }
 
@@ -1151,10 +1717,7 @@ class EvaluationMemoization {
                                           const FieldElement& point,
                                           const std::vector<FieldElement>& values) {
                 const auto copy_start = Clock::now();
-                const auto cache_suffix = "@" + point_key(point);
-                for (std::size_t i = 0; i < group_labels.size(); ++i) {
-                    value_cache_.emplace(group_labels[i] + cache_suffix, values[i]);
-                }
+                cache_group_values(group_labels, point, values);
                 if (metrics_ != nullptr && group.first->name == "FH") {
                     metrics_->fh_copy_convert_ms += elapsed_ms(copy_start, Clock::now());
                 }
@@ -1400,8 +1963,14 @@ const std::vector<std::string>& quotient_dependencies_fh() {
     return labels;
 }
 
-bool contains_label(const std::vector<std::string>& labels, const std::string& target) {
-    return std::find(labels.begin(), labels.end(), target) != labels.end();
+void append_unique_labels(
+    std::vector<std::string>* target,
+    const std::vector<std::string>& labels) {
+    for (const auto& label : labels) {
+        if (std::find(target->begin(), target->end(), label) == target->end()) {
+            target->push_back(label);
+        }
+    }
 }
 
 std::vector<FieldElement> fh_dependency_points(
@@ -1478,6 +2047,65 @@ const std::vector<std::string>& quotient_dependencies_edge() {
     return labels;
 }
 
+std::vector<std::string> multihead_edge_dependencies(const ProtocolContext& context) {
+    std::vector<std::string> labels = domain_opening_labels(context, "edge");
+    append_unique_labels(
+        &labels,
+        {
+            "P_Q_edge_valid",
+            "P_Q_new_edge",
+            "P_Q_end_edge",
+            "P_Q_tbl_L",
+            "P_Q_qry_L",
+            "P_Q_tbl_R",
+            "P_Q_qry_R",
+            "P_Q_tbl_exp",
+            "P_Q_qry_exp",
+            "P_Q_tbl_ELU",
+            "P_Q_qry_ELU",
+            "P_T_L_x",
+            "P_T_L_y",
+            "P_T_range",
+            "P_T_exp_x",
+            "P_T_exp_y",
+            "P_T_ELU_x",
+            "P_T_ELU_y",
+            "P_src",
+            "P_dst",
+        });
+    return labels;
+}
+
+std::vector<std::string> multihead_in_dependencies(const ProtocolContext& context) {
+    std::vector<std::string> labels = domain_opening_labels(context, "in");
+    append_unique_labels(&labels, {"P_Q_proj_valid"});
+    return labels;
+}
+
+std::vector<std::string> multihead_d_dependencies(const ProtocolContext& context) {
+    std::vector<std::string> labels = domain_opening_labels(context, "d");
+    append_unique_labels(&labels, {"P_Q_d_valid"});
+    return labels;
+}
+
+std::vector<std::string> multihead_cat_dependencies(const ProtocolContext& context) {
+    std::vector<std::string> labels = domain_opening_labels(context, "cat");
+    append_unique_labels(&labels, {"P_Q_cat_valid"});
+    return labels;
+}
+
+std::vector<std::string> multihead_c_dependencies(const ProtocolContext& context) {
+    std::vector<std::string> labels = domain_opening_labels(context, "C");
+    append_unique_labels(&labels, {"P_Q_C_valid"});
+    return labels;
+}
+
+std::vector<std::string> multihead_n_dependencies(const ProtocolContext& context) {
+    std::vector<std::string> labels = domain_opening_labels(context, "N");
+    append_unique_labels(&labels, {"P_I", "P_Q_N"});
+    return labels;
+}
+
 const std::vector<std::string>& quotient_dependencies_in() {
     static const std::vector<std::string> labels = {
         "P_Q_proj_valid",
@@ -1529,6 +2157,28 @@ const std::vector<std::string>& quotient_dependencies_n() {
         "P_R_dst_node",
     };
     return labels;
+}
+
+std::vector<std::string> quotient_dependency_labels(
+    const ProtocolContext& context,
+    const std::string& quotient_name) {
+    if (!context.model.has_real_multihead) {
+        if (quotient_name == "t_FH") return quotient_dependencies_fh();
+        if (quotient_name == "t_edge") return quotient_dependencies_edge();
+        if (quotient_name == "t_in") return quotient_dependencies_in();
+        if (quotient_name == "t_d" || quotient_name == "t_d_h") return quotient_dependencies_d();
+        if (quotient_name == "t_N") return quotient_dependencies_n();
+        return {};
+    }
+
+    if (quotient_name == "t_FH") return quotient_dependencies_fh();
+    if (quotient_name == "t_edge") return multihead_edge_dependencies(context);
+    if (quotient_name == "t_in") return multihead_in_dependencies(context);
+    if (quotient_name == "t_d_h" || quotient_name == "t_d") return multihead_d_dependencies(context);
+    if (quotient_name == "t_cat") return multihead_cat_dependencies(context);
+    if (quotient_name == "t_C") return multihead_c_dependencies(context);
+    if (quotient_name == "t_N") return multihead_n_dependencies(context);
+    return {};
 }
 
 #if GATZK_ENABLE_CUDA_BACKEND
@@ -1774,12 +2424,36 @@ DomainOpeningBundle make_bundle(
     bundle.points = points;
     const auto commitments = collect_commitments(trace, quotient_commitments, labels);
     const auto gather_start = Clock::now();
-    const bool is_fh_bundle = contains_label(labels, "t_FH");
+    std::string quotient_name;
+    for (const auto& label : labels) {
+        if (!label.empty() && label[0] == 't') {
+            quotient_name = label;
+            break;
+        }
+    }
+    const bool is_fh_bundle = quotient_name == "t_FH";
     std::vector<std::vector<FieldElement>> values;
-    if (is_fh_bundle) {
-        memo.precompute_named(
-            quotient_dependencies_fh(),
-            fh_dependency_points(context.domains.fh, points));
+    if (!quotient_name.empty()) {
+        const auto dependency_labels = quotient_dependency_labels(context, quotient_name);
+        std::shared_ptr<algebra::RootOfUnityDomain> domain;
+        if (quotient_name == "t_FH") {
+            domain = context.domains.fh;
+        } else if (quotient_name == "t_edge") {
+            domain = context.domains.edge;
+        } else if (quotient_name == "t_in") {
+            domain = context.domains.in;
+        } else if (quotient_name == "t_d" || quotient_name == "t_d_h") {
+            domain = context.domains.d;
+        } else if (quotient_name == "t_cat") {
+            domain = context.domains.cat;
+        } else if (quotient_name == "t_C") {
+            domain = context.domains.c;
+        } else if (quotient_name == "t_N") {
+            domain = context.domains.n;
+        }
+        if (domain != nullptr && !dependency_labels.empty()) {
+            memo.precompute_named(dependency_labels, fh_dependency_points(domain, points));
+        }
         values = memo.collect_named_values_from_cache(labels, points);
     } else {
         values = memo.collect_named_values(labels, points);
@@ -1814,10 +2488,12 @@ DomainOpeningBundle make_bundle(
 ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics) {
     static std::mutex cache_mutex;
     static std::unordered_map<std::string, ProtocolContext> cache;
+    const bool persist_context_cache =
+        config.dataset != "ogbn_arxiv" && config.dataset != "ogbn-arxiv";
 
     const auto cache_lookup_start = Clock::now();
     const auto cache_key = context_cache_key(config);
-    {
+    if (persist_context_cache) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
             // This cache only stores static protocol context material: domains,
@@ -1914,13 +2590,19 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
     start = Clock::now();
     const std::size_t fh_size = algebra::next_power_of_two(
         std::max(context.dataset.num_nodes * context.dataset.num_features, context.local.num_nodes * context.local.num_features) + 2);
-    const std::size_t range_size = (1ULL << config.range_bits);
+    const std::size_t configured_range_size = (1ULL << config.range_bits);
     const std::size_t d_h = hidden_head_width(context.model, config);
     const std::size_t d_cat = concat_width(context.model, config);
     const std::size_t max_in = context.model.has_real_multihead
         ? std::max<std::size_t>(context.local.num_features, model::max_hidden_input_dim(context.model))
         : context.local.num_features;
-    const std::size_t lrelu_bound = std::max<std::size_t>(4096, range_size);
+    const bool large_whole_graph_gat =
+        (config.dataset == "ogbn_arxiv" || config.dataset == "ogbn-arxiv")
+        && config.batching_rule == "whole_graph_single";
+    const std::size_t range_size = std::max<std::size_t>(
+        configured_range_size,
+        large_whole_graph_gat ? (1ULL << 19) : configured_range_size);
+    const std::size_t lrelu_bound = std::max<std::size_t>(large_whole_graph_gat ? (1ULL << 20) : 4096, range_size);
     const std::size_t elu_bound = lrelu_bound;
     const std::size_t lrelu_table_size = lrelu_bound * 2 + 1;
     const std::size_t elu_table_size = (elu_bound * 2 + 1) * (2 * elu_table_band() + 1);
@@ -2018,49 +2700,80 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
         context,
         "P_Q_C_valid",
         make_eval_poly("P_Q_C_valid", build_selector(context.local.num_classes, c_size), context.domains.c));
-    add_public_poly(
-        context,
-        "P_Q_tbl_feat",
-        make_eval_poly("P_Q_tbl_feat", build_selector(context.dataset.num_nodes * context.dataset.num_features, fh_size), context.domains.fh));
-    add_public_poly(
-        context,
-        "P_Q_qry_feat",
-        make_eval_poly("P_Q_qry_feat", build_selector(context.local.num_nodes * context.local.num_features, fh_size), context.domains.fh));
-    add_public_poly(
-        context,
-        "P_Row_feat_tbl",
-        make_eval_poly(
+    if (lazy_large_fh_public_enabled(context)) {
+        add_public_tau_commitment(
+            context,
+            "P_Q_tbl_feat",
+            evaluate_lazy_large_fh_public_poly(context, "P_Q_tbl_feat", context.kzg.tau));
+        add_public_tau_commitment(
+            context,
+            "P_Q_qry_feat",
+            evaluate_lazy_large_fh_public_poly(context, "P_Q_qry_feat", context.kzg.tau));
+        add_public_tau_commitment(
+            context,
             "P_Row_feat_tbl",
-            feature_table_row_indices(context.dataset.num_nodes, context.dataset.num_features, fh_size),
-            context.domains.fh));
-    add_public_poly(
-        context,
-        "P_Col_feat_tbl",
-        make_eval_poly(
+            evaluate_lazy_large_fh_public_poly(context, "P_Row_feat_tbl", context.kzg.tau));
+        add_public_tau_commitment(
+            context,
             "P_Col_feat_tbl",
-            feature_table_col_indices(context.dataset.num_nodes, context.dataset.num_features, fh_size),
-            context.domains.fh));
-    add_public_poly(
-        context,
-        "P_Row_feat_qry",
-        make_eval_poly(
+            evaluate_lazy_large_fh_public_poly(context, "P_Col_feat_tbl", context.kzg.tau));
+        add_public_tau_commitment(
+            context,
             "P_Row_feat_qry",
-            feature_query_row_indices(context.local.num_nodes, context.local.num_features, fh_size),
-            context.domains.fh));
-    add_public_poly(
-        context,
-        "P_Col_feat_qry",
-        make_eval_poly(
+            evaluate_lazy_large_fh_public_poly(context, "P_Row_feat_qry", context.kzg.tau));
+        add_public_tau_commitment(
+            context,
             "P_Col_feat_qry",
-            feature_query_col_indices(context.local.num_nodes, context.local.num_features, fh_size),
-            context.domains.fh));
-    add_public_poly(
-        context,
-        "P_I_feat_qry",
-        make_eval_poly(
+            evaluate_lazy_large_fh_public_poly(context, "P_Col_feat_qry", context.kzg.tau));
+        add_public_tau_commitment(
+            context,
             "P_I_feat_qry",
-            feature_query_absolute_ids(context.local.absolute_ids, context.local.num_features, fh_size),
-            context.domains.fh));
+            evaluate_lazy_large_fh_public_poly(context, "P_I_feat_qry", context.kzg.tau));
+    } else {
+        add_public_poly(
+            context,
+            "P_Q_tbl_feat",
+            make_eval_poly("P_Q_tbl_feat", build_selector(context.dataset.num_nodes * context.dataset.num_features, fh_size), context.domains.fh));
+        add_public_poly(
+            context,
+            "P_Q_qry_feat",
+            make_eval_poly("P_Q_qry_feat", build_selector(context.local.num_nodes * context.local.num_features, fh_size), context.domains.fh));
+        add_public_poly(
+            context,
+            "P_Row_feat_tbl",
+            make_eval_poly(
+                "P_Row_feat_tbl",
+                feature_table_row_indices(context.dataset.num_nodes, context.dataset.num_features, fh_size),
+                context.domains.fh));
+        add_public_poly(
+            context,
+            "P_Col_feat_tbl",
+            make_eval_poly(
+                "P_Col_feat_tbl",
+                feature_table_col_indices(context.dataset.num_nodes, context.dataset.num_features, fh_size),
+                context.domains.fh));
+        add_public_poly(
+            context,
+            "P_Row_feat_qry",
+            make_eval_poly(
+                "P_Row_feat_qry",
+                feature_query_row_indices(context.local.num_nodes, context.local.num_features, fh_size),
+                context.domains.fh));
+        add_public_poly(
+            context,
+            "P_Col_feat_qry",
+            make_eval_poly(
+                "P_Col_feat_qry",
+                feature_query_col_indices(context.local.num_nodes, context.local.num_features, fh_size),
+                context.domains.fh));
+        add_public_poly(
+            context,
+            "P_I_feat_qry",
+            make_eval_poly(
+                "P_I_feat_qry",
+                feature_query_absolute_ids(context.local.absolute_ids, context.local.num_features, fh_size),
+                context.domains.fh));
+    }
     add_public_poly(
         context,
         "P_Q_qry_src",
@@ -2102,17 +2815,34 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
         "P_Q_qry_ELU",
         make_eval_poly("P_Q_qry_ELU", build_selector(context.local.num_nodes * d_h, edge_size), context.domains.edge));
 
-    add_static_commitment(
-        context,
-        "V_T_H",
-        make_coeff_poly("V_T_H", algebra::flatten_matrix_coefficients(context.dataset.features)));
-    add_public_poly(
-        context,
-        "P_T_H",
-        make_eval_poly(
+    const auto& feature_matrix_for_h =
+        !context.dataset.features.empty() ? context.dataset.features : context.local.features;
+    if (lazy_large_fh_public_enabled(context)) {
+        const auto tau_row_stride = context.kzg.tau.pow(static_cast<std::uint64_t>(context.local.num_features));
+        add_static_tau_commitment(
+            context,
+            "V_T_H",
+            matrix_row_major_evaluation_with_row_stride(
+                feature_matrix_for_h,
+                context.kzg.tau,
+                tau_row_stride));
+        add_public_tau_commitment(
+            context,
             "P_T_H",
-            padded(algebra::flatten_matrix_coefficients(context.dataset.features), fh_size),
-            context.domains.fh));
+            evaluate_lazy_large_fh_public_poly(context, "P_T_H", context.kzg.tau));
+    } else {
+        add_static_commitment(
+            context,
+            "V_T_H",
+            make_coeff_poly("V_T_H", algebra::flatten_matrix_coefficients(feature_matrix_for_h)));
+        add_public_poly(
+            context,
+            "P_T_H",
+            make_eval_poly(
+                "P_T_H",
+                padded(algebra::flatten_matrix_coefficients(feature_matrix_for_h), fh_size),
+                context.domains.fh));
+    }
 
     std::vector<FieldElement> l_x(edge_size, FieldElement::zero());
     std::vector<FieldElement> l_y(edge_size, FieldElement::zero());
@@ -2212,7 +2942,21 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
         metrics->load_static_ms += elapsed_ms(start, end);
     }
 
-    {
+    if (config.dataset == "ogbn_arxiv" || config.dataset == "ogbn-arxiv") {
+        bool full_identity = context.local.num_nodes == context.dataset.num_nodes
+            && context.local.num_features == context.dataset.num_features;
+        for (std::size_t i = 0; full_identity && i < context.local.absolute_ids.size(); ++i) {
+            full_identity = context.local.absolute_ids[i] == i;
+        }
+        if (full_identity) {
+            context.dataset.features.clear();
+            context.dataset.features.shrink_to_fit();
+            context.dataset.features_fp.clear();
+            context.dataset.features_fp.shrink_to_fit();
+        }
+    }
+
+    if (persist_context_cache) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         cache[cache_key] = context;
     }
@@ -2254,25 +2998,61 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 backend_registry,
                 proof_domain_weight_cache,
                 &local_metrics);
+            const auto dependency_labels = quotient_dependency_labels(context, label);
             const auto eval = [&](const std::string& name, const FieldElement& point) {
                 return quotient_memo.eval_named(name, point);
             };
             FieldElement value = FieldElement::zero();
             if (label == "t_FH") {
+                if (!dependency_labels.empty()) {
+                    quotient_memo.precompute_named(
+                        dependency_labels,
+                        fh_dependency_points(context.domains.fh, {context.kzg.tau}));
+                }
                 FHQuotientProfile fh_profile;
                 value = evaluate_t_fh(context, pre_quotient_challenges, eval, context.kzg.tau, &fh_profile);
                 local_metrics.fh_quotient_assembly_ms += fh_profile.assembly_ms;
             } else if (label == "t_edge") {
+                if (!dependency_labels.empty()) {
+                    quotient_memo.precompute_named(
+                        dependency_labels,
+                        fh_dependency_points(context.domains.edge, {context.kzg.tau}));
+                }
                 value = evaluate_t_edge(context, pre_quotient_challenges, trace.witness_scalars, eval, context.kzg.tau);
             } else if (label == "t_in") {
+                if (!dependency_labels.empty()) {
+                    quotient_memo.precompute_named(
+                        dependency_labels,
+                        fh_dependency_points(context.domains.in, {context.kzg.tau}));
+                }
                 value = evaluate_t_in(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.tau);
             } else if (label == "t_d_h") {
+                if (!dependency_labels.empty()) {
+                    quotient_memo.precompute_named(
+                        dependency_labels,
+                        fh_dependency_points(context.domains.d, {context.kzg.tau}));
+                }
                 value = evaluate_t_d(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.tau);
             } else if (label == "t_cat") {
+                if (!dependency_labels.empty()) {
+                    quotient_memo.precompute_named(
+                        dependency_labels,
+                        fh_dependency_points(context.domains.cat, {context.kzg.tau}));
+                }
                 value = evaluate_t_cat(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.tau);
             } else if (label == "t_C") {
+                if (!dependency_labels.empty()) {
+                    quotient_memo.precompute_named(
+                        dependency_labels,
+                        fh_dependency_points(context.domains.c, {context.kzg.tau}));
+                }
                 value = evaluate_t_c(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.tau);
             } else if (label == "t_N") {
+                if (!dependency_labels.empty()) {
+                    quotient_memo.precompute_named(
+                        dependency_labels,
+                        fh_dependency_points(context.domains.n, {context.kzg.tau}));
+                }
                 value = evaluate_t_n(context, pre_quotient_challenges, trace.witness_scalars, eval, context.kzg.tau);
             } else {
                 throw std::runtime_error("unknown multi-head quotient label: " + label);
@@ -3114,6 +3894,7 @@ void export_run_artifacts(
         {"output_forward_activation_ms", format_double(metrics.output_forward_activation_ms)},
         {"forward_ms", format_double(metrics.forward_ms)},
         {"commit_dynamic_ms", format_double(metrics.commit_dynamic_ms)},
+        {"commitment_time_ms", format_double(metrics.commitment_time_ms)},
         {"dynamic_commit_finalize_ms", format_double(metrics.dynamic_commit_finalize_ms)},
         {"dynamic_commit_input_ms", format_double(metrics.dynamic_commit_input_ms)},
         {"dynamic_commit_pack_ms", format_double(metrics.dynamic_commit_pack_ms)},

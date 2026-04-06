@@ -47,14 +47,17 @@ std::shared_ptr<RootOfUnityDomain> RootOfUnityDomain::create(const std::string& 
     domain->size = size;
     domain->omega = FieldElement::root_of_unity(size);
     domain->inv_size = FieldElement(static_cast<std::uint64_t>(size)).inv();
-    domain->points.resize(size);
-    domain->points_scaled_by_inv_size.resize(size);
-    domain->points[0] = FieldElement::one();
-    for (std::size_t i = 1; i < size; ++i) {
-        domain->points[i] = domain->points[i - 1] * domain->omega;
-    }
-    for (std::size_t i = 0; i < size; ++i) {
-        domain->points_scaled_by_inv_size[i] = domain->points[i] * domain->inv_size;
+    domain->points_precomputed = size < (1ULL << 24);
+    if (domain->points_precomputed) {
+        domain->points.resize(size);
+        domain->points_scaled_by_inv_size.resize(size);
+        domain->points[0] = FieldElement::one();
+        for (std::size_t i = 1; i < size; ++i) {
+            domain->points[i] = domain->points[i - 1] * domain->omega;
+        }
+        for (std::size_t i = 0; i < size; ++i) {
+            domain->points_scaled_by_inv_size[i] = domain->points[i] * domain->inv_size;
+        }
     }
 
     {
@@ -64,12 +67,26 @@ std::shared_ptr<RootOfUnityDomain> RootOfUnityDomain::create(const std::string& 
     return domain;
 }
 
+FieldElement RootOfUnityDomain::point_at(std::size_t index) const {
+    if (points_precomputed) {
+        return points.at(index);
+    }
+    return omega.pow(static_cast<std::uint64_t>(index));
+}
+
+FieldElement RootOfUnityDomain::point_scaled_by_inv_size_at(std::size_t index) const {
+    if (points_precomputed) {
+        return points_scaled_by_inv_size.at(index);
+    }
+    return point_at(index) * inv_size;
+}
+
 FieldElement RootOfUnityDomain::zero_polynomial_eval(const FieldElement& x) const {
     return x.pow(size) - FieldElement::one();
 }
 
 FieldElement RootOfUnityDomain::lagrange_basis_eval(std::size_t index, const FieldElement& x) const {
-    const FieldElement xi = points.at(index);
+    const FieldElement xi = point_at(index);
     const FieldElement numerator = zero_polynomial_eval(x) * xi;
     return numerator * inv_size / (x - xi);
 }
@@ -78,22 +95,33 @@ std::vector<mcl::Fr> RootOfUnityDomain::barycentric_weights_native(const FieldEl
     std::vector<mcl::Fr> denominators(size);
     std::vector<mcl::Fr> prefixes(size);
     mcl::Fr accumulator = 1;
+    FieldElement point = FieldElement::one();
     for (std::size_t i = 0; i < size; ++i) {
-        mcl::Fr::sub(denominators[i], x.native(), points[i].native());
+        const auto current_point = points_precomputed ? points[i] : point;
+        mcl::Fr::sub(denominators[i], x.native(), current_point.native());
         prefixes[i] = accumulator;
         mcl::Fr::mul(accumulator, accumulator, denominators[i]);
+        if (!points_precomputed) {
+            point *= omega;
+        }
     }
 
     mcl::Fr suffix_inverse;
     mcl::Fr::inv(suffix_inverse, accumulator);
     std::vector<mcl::Fr> weights(size);
     const auto zero_eval = zero_polynomial_eval(x).native();
+    point = points_precomputed ? FieldElement::zero() : omega.pow(static_cast<std::uint64_t>(size - 1));
+    const auto omega_inv = points_precomputed ? FieldElement::one() : omega.inv();
     for (std::size_t i = size; i-- > 0;) {
         mcl::Fr inverse;
         mcl::Fr::mul(inverse, suffix_inverse, prefixes[i]);
-        mcl::Fr::mul(weights[i], zero_eval, points_scaled_by_inv_size[i].native());
+        const auto scaled_point = points_precomputed ? points_scaled_by_inv_size[i] : (point * inv_size);
+        mcl::Fr::mul(weights[i], zero_eval, scaled_point.native());
         mcl::Fr::mul(weights[i], weights[i], inverse);
         mcl::Fr::mul(suffix_inverse, suffix_inverse, denominators[i]);
+        if (!points_precomputed && i > 0) {
+            point *= omega_inv;
+        }
     }
     return weights;
 }
@@ -156,9 +184,15 @@ FieldElement Polynomial::evaluate(const FieldElement& x) const {
     if (domain == nullptr) {
         throw std::runtime_error("evaluation polynomial is missing its domain");
     }
-    for (std::size_t i = 0; i < domain->points.size(); ++i) {
-        if (domain->points[i] == x) {
-            return data[i];
+    if (domain->points_precomputed) {
+        for (std::size_t i = 0; i < domain->points.size(); ++i) {
+            if (domain->points[i] == x) {
+                return data[i];
+            }
+        }
+    } else if (const auto shift = domain->rotation_shift(FieldElement::one(), x); shift.has_value()) {
+        if (*shift < data.size()) {
+            return data[*shift];
         }
     }
     const auto& route2 = util::route2_options();
@@ -166,7 +200,7 @@ FieldElement Polynomial::evaluate(const FieldElement& x) const {
     const FieldElement zero_eval = domain->zero_polynomial_eval(x);
     FieldElement sum = FieldElement::zero();
     const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-    if (route2.parallel_fft && data.size() >= 1024 && cpu_count > 1) {
+    if (domain->points_precomputed && route2.parallel_fft && data.size() >= 1024 && cpu_count > 1) {
         const auto task_count = std::min<std::size_t>(cpu_count, data.size() / 512);
         const auto chunk_size = task_count > 1 ? (data.size() + task_count - 1) / task_count : data.size();
         if (task_count > 1) {
@@ -190,8 +224,13 @@ FieldElement Polynomial::evaluate(const FieldElement& x) const {
             return zero_eval * domain->inv_size * sum;
         }
     }
+    FieldElement point = FieldElement::one();
     for (std::size_t i = 0; i < data.size(); ++i) {
-        sum += data[i] * domain->points[i] / (x - domain->points[i]);
+        const auto current_point = domain->points_precomputed ? domain->points[i] : point;
+        sum += data[i] * current_point / (x - current_point);
+        if (!domain->points_precomputed) {
+            point *= domain->omega;
+        }
     }
     return zero_eval * domain->inv_size * sum;
 }

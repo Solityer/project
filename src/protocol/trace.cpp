@@ -4,9 +4,13 @@
 #include <array>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <mutex>
+#include <numeric>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
@@ -44,6 +48,36 @@ using Clock = std::chrono::steady_clock;
 
 double elapsed_ms(const Clock::time_point& start, const Clock::time_point& end) {
     return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+std::size_t current_rss_kb() {
+    std::ifstream status("/proc/self/status");
+    std::string line;
+    while (std::getline(status, line)) {
+        if (line.rfind("VmRSS:", 0) == 0) {
+            std::istringstream stream(line.substr(6));
+            std::size_t kb = 0;
+            stream >> kb;
+            return kb;
+        }
+    }
+    return 0;
+}
+
+bool enable_ogbn_trace_stage_log(const ProtocolContext& context) {
+    return context.config.dataset == "ogbn_arxiv" || context.config.dataset == "ogbn-arxiv";
+}
+
+void log_ogbn_trace_stage(const ProtocolContext& context, const std::string& stage) {
+    if (!enable_ogbn_trace_stage_log(context)) {
+        return;
+    }
+    std::cerr << "[gatzk][ogbn-arxiv] stage=" << stage << " rss_kb=" << current_rss_kb() << '\n';
+}
+
+bool should_persist_large_trace_cache_key(const std::string& cache_key) {
+    return cache_key.find("ogbn_arxiv") == std::string::npos
+        && cache_key.find("ogbn-arxiv") == std::string::npos;
 }
 
 std::vector<FieldElement> padded_column(const std::vector<FieldElement>& values, std::size_t size) {
@@ -367,6 +401,18 @@ struct PreparedDynamicCommitment {
     crypto::Commitment commitment;
 };
 
+std::size_t estimated_dynamic_commitment_payload_bytes(const DynamicCommitmentSpec& spec) {
+    if (spec.kind == DynamicCommitmentKind::Column) {
+        return spec.column_values.size() * sizeof(FieldElement);
+    }
+    if (spec.matrix == nullptr) {
+        return 0;
+    }
+    std::size_t rows = spec.matrix->size();
+    std::size_t cols = rows == 0 ? 0 : (*spec.matrix)[0].size();
+    return rows * cols * sizeof(FieldElement);
+}
+
 DynamicCommitmentSpec column_spec(
     const std::string& name,
     std::vector<FieldElement> values,
@@ -568,6 +614,59 @@ void record_dynamic_commit_totals(RunMetrics* metrics) {
         metrics->dynamic_copy_convert_ms + metrics->dynamic_bundle_finalize_ms;
 }
 
+bool should_spill_dynamic_polynomial(
+    const std::string& name,
+    const algebra::Polynomial& polynomial,
+    bool keep_trace_payloads) {
+    return !keep_trace_payloads
+        && polynomial.basis == algebra::PolynomialBasis::Evaluation
+        && polynomial.domain != nullptr
+        && polynomial.domain->size >= (1ULL << 20)
+        && (name.rfind("P_", 0) == 0);
+}
+
+std::filesystem::path spill_root_directory() {
+    const auto root = std::filesystem::temp_directory_path() / "gatzk_trace_spill";
+    std::filesystem::create_directories(root);
+    return root;
+}
+
+std::string sanitize_spill_name(const std::string& name) {
+    std::string out = name;
+    for (auto& ch : out) {
+        if (!(std::isalnum(static_cast<unsigned char>(ch)) || ch == '_' || ch == '-')) {
+            ch = '_';
+        }
+    }
+    return out;
+}
+
+TraceArtifacts::SpilledEvaluationPolynomial spill_evaluation_polynomial(
+    const algebra::Polynomial& polynomial) {
+    std::array<std::uint8_t, 32> bytes{};
+    const auto root = spill_root_directory();
+    const auto unique =
+        sanitize_spill_name(polynomial.name) + "_" + std::to_string(std::hash<std::string>{}(polynomial.name + ":" + std::to_string(polynomial.data.size())));
+        ;
+    const auto path = root / (unique + ".bin");
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    if (!stream) {
+        throw std::runtime_error("failed to open spill file for polynomial " + polynomial.name);
+    }
+    for (const auto& value : polynomial.data) {
+        value.write_little_endian(bytes.data(), bytes.size());
+        stream.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    }
+    if (!stream) {
+        throw std::runtime_error("failed to write spill file for polynomial " + polynomial.name);
+    }
+    return TraceArtifacts::SpilledEvaluationPolynomial{
+        .path = path.string(),
+        .domain_name = polynomial.domain != nullptr ? polynomial.domain->name : std::string(),
+        .size = polynomial.data.size(),
+    };
+}
+
 void add_dynamic_commitment_batch(
     TraceArtifacts& trace,
     std::vector<DynamicCommitmentSpec> specs,
@@ -578,12 +677,47 @@ void add_dynamic_commitment_batch(
         return;
     }
 
+    constexpr std::size_t kMaxPreparedPayloadBytes = 96ULL * 1024ULL * 1024ULL;
+    if (specs.size() > 1) {
+        std::size_t total_bytes = 0;
+        for (const auto& spec : specs) {
+            total_bytes += estimated_dynamic_commitment_payload_bytes(spec);
+        }
+        if (total_bytes > kMaxPreparedPayloadBytes) {
+            std::vector<DynamicCommitmentSpec> chunk;
+            chunk.reserve(specs.size());
+            std::size_t chunk_bytes = 0;
+            for (auto& spec : specs) {
+                const auto spec_bytes = estimated_dynamic_commitment_payload_bytes(spec);
+                if (!chunk.empty() && chunk_bytes + spec_bytes > kMaxPreparedPayloadBytes) {
+                    add_dynamic_commitment_batch(trace, std::move(chunk), key, keep_trace_payloads, metrics);
+                    chunk.clear();
+                    chunk_bytes = 0;
+                }
+                chunk_bytes += spec_bytes;
+                chunk.push_back(std::move(spec));
+            }
+            if (!chunk.empty()) {
+                add_dynamic_commitment_batch(trace, std::move(chunk), key, keep_trace_payloads, metrics);
+            }
+            return;
+        }
+    }
+
     // Commitment order is still finalized in the original transcript order.
     // The only optimization here is to batch independent materialization and
     // fixed-base commit work inside one transcript stage. The protocol-visible
     // commitment set and transcript order are unchanged.
     const auto input_start = Clock::now();
-    const bool run_parallel = specs.size() > 1 && std::thread::hardware_concurrency() > 1;
+    const bool run_parallel = specs.size() > 1
+        && std::thread::hardware_concurrency() > 1
+        && std::accumulate(
+               specs.begin(),
+               specs.end(),
+               std::size_t{0},
+               [](std::size_t acc, const DynamicCommitmentSpec& spec) {
+                   return acc + estimated_dynamic_commitment_payload_bytes(spec);
+               }) <= kMaxPreparedPayloadBytes;
     add_metric(metrics != nullptr ? &metrics->dynamic_commit_input_ms : nullptr, input_start);
 
     std::vector<PreparedDynamicCommitment> prepared;
@@ -661,7 +795,11 @@ void add_dynamic_commitment_batch(
             if ((*item.polynomial).domain != nullptr) {
                 trace.polynomial_domains[item.name] = (*item.polynomial).domain->name;
             }
-            trace.polynomials[item.name] = std::move(*item.polynomial);
+            if (should_spill_dynamic_polynomial(item.name, *item.polynomial, keep_trace_payloads)) {
+                trace.spilled_polynomials[item.name] = spill_evaluation_polynomial(*item.polynomial);
+            } else {
+                trace.polynomials[item.name] = std::move(*item.polynomial);
+            }
         }
     }
     add_metric(metrics != nullptr ? &metrics->dynamic_copy_convert_ms : nullptr, copy_start);
@@ -676,6 +814,36 @@ void add_dynamic_commitment_batch(
 }
 
 const std::vector<FieldElement>& eval_data(const ProtocolContext& context, const std::string& name) {
+    if (!context.public_polynomials.contains(name)) {
+        const bool lazy_large_feature_selector =
+            (context.config.dataset == "ogbn_arxiv" || context.config.dataset == "ogbn-arxiv")
+            && (name == "P_Q_tbl_feat" || name == "P_Q_qry_feat");
+        if (lazy_large_feature_selector) {
+            static std::mutex cache_mutex;
+            static std::unordered_map<std::string, std::shared_ptr<std::vector<FieldElement>>> cache;
+            const auto valid_count =
+                name == "P_Q_tbl_feat"
+                ? context.dataset.num_nodes * context.dataset.num_features
+                : context.local.num_nodes * context.local.num_features;
+            const auto cache_key =
+                context.config.checkpoint_bundle + ":" + context.config.dataset
+                + ":selector:" + name + ":" + std::to_string(valid_count)
+                + ":" + std::to_string(context.domains.fh->size);
+            {
+                std::lock_guard<std::mutex> lock(cache_mutex);
+                if (const auto it = cache.find(cache_key); it != cache.end()) {
+                    return *it->second;
+                }
+            }
+            auto values = std::make_shared<std::vector<FieldElement>>(
+                build_selector(valid_count, context.domains.fh->size));
+            {
+                std::lock_guard<std::mutex> lock(cache_mutex);
+                const auto [it, _] = cache.emplace(cache_key, values);
+                return *it->second;
+            }
+        }
+    }
     return context.public_polynomials.at(name).data;
 }
 
@@ -868,7 +1036,6 @@ struct OutputQuantizedWitness {
 };
 
 struct CachedForwardArtifacts {
-    model::MultiHeadForwardTrace forward;
     model::ForwardProfile profile;
     std::vector<Matrix> hidden_layer_inputs_quantized;
     std::vector<Matrix> hidden_layer_concat_quantized;
@@ -1032,7 +1199,8 @@ std::shared_ptr<const CachedForwardArtifacts> cached_forward_artifacts(
         + std::to_string(context.domains.edge->size)
         + ":" + std::to_string(context.model.hidden_heads.size())
         + ":" + std::to_string(context.model.output_layer.heads.size());
-    {
+    const bool persist_cache = should_persist_large_trace_cache_key(cache_key);
+    if (persist_cache) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
             return it->second;
@@ -1040,32 +1208,32 @@ std::shared_ptr<const CachedForwardArtifacts> cached_forward_artifacts(
     }
 
     auto artifacts = std::make_shared<CachedForwardArtifacts>();
-    artifacts->forward = model::forward_note_style(context.local.features_fp, edges, context.model, &artifacts->profile);
-    artifacts->hidden_layer_inputs_quantized.reserve(artifacts->forward.hidden_layer_traces.size());
-    artifacts->hidden_layer_concat_quantized.reserve(artifacts->forward.hidden_layer_traces.size());
-    for (const auto& layer_trace : artifacts->forward.hidden_layer_traces) {
+    auto forward = model::forward_note_style(context.local.features_fp, edges, context.model, &artifacts->profile);
+    artifacts->hidden_layer_inputs_quantized.reserve(forward.hidden_layer_traces.size());
+    artifacts->hidden_layer_concat_quantized.reserve(forward.hidden_layer_traces.size());
+    for (const auto& layer_trace : forward.hidden_layer_traces) {
         artifacts->hidden_layer_inputs_quantized.push_back(quantize_matrix(layer_trace.input));
         artifacts->hidden_layer_concat_quantized.push_back(quantize_matrix(layer_trace.concat));
     }
     std::size_t hidden_head_count = 0;
-    for (const auto& layer_trace : artifacts->forward.hidden_layer_traces) {
+    for (const auto& layer_trace : forward.hidden_layer_traces) {
         hidden_head_count += layer_trace.head_traces.size();
     }
     artifacts->hidden_head_quantized.reserve(hidden_head_count);
-    for (const auto& layer_trace : artifacts->forward.hidden_layer_traces) {
+    for (const auto& layer_trace : forward.hidden_layer_traces) {
         for (const auto& head_trace : layer_trace.head_traces) {
             artifacts->hidden_head_quantized.push_back(
                 quantize_hidden_witness_cpu(head_trace, edge_src_indices, edge_dst_indices, edge_domain_size));
         }
     }
-    artifacts->output_head_quantized.reserve(artifacts->forward.output_head_traces.size());
+    artifacts->output_head_quantized.reserve(forward.output_head_traces.size());
     std::vector<Matrix> per_head_y_lin_matrices;
     std::vector<Matrix> per_head_y_matrices;
-    per_head_y_lin_matrices.reserve(artifacts->forward.output_head_traces.size());
-    per_head_y_matrices.reserve(artifacts->forward.output_head_traces.size());
-    for (std::size_t head_index = 0; head_index < artifacts->forward.output_head_traces.size(); ++head_index) {
+    per_head_y_lin_matrices.reserve(forward.output_head_traces.size());
+    per_head_y_matrices.reserve(forward.output_head_traces.size());
+    for (std::size_t head_index = 0; head_index < forward.output_head_traces.size(); ++head_index) {
         auto quantized = quantize_output_witness_cpu(
-            artifacts->forward.output_head_traces[head_index],
+            forward.output_head_traces[head_index],
             context.model.output_layer.heads[head_index].output_bias_fp,
             edge_src_indices,
             edge_dst_indices,
@@ -1079,11 +1247,12 @@ std::shared_ptr<const CachedForwardArtifacts> cached_forward_artifacts(
         artifacts->output_y_average = average_field_matrices(per_head_y_matrices);
     }
 
-    {
+    if (persist_cache) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         const auto [it, _] = cache.emplace(cache_key, artifacts);
         return it->second;
     }
+    return artifacts;
 }
 
 std::size_t lookup_active_transition_limit(std::size_t valid_count, std::size_t domain_size) {
@@ -1195,6 +1364,16 @@ struct TraceStaticArtifacts {
     bool full_feature_identity = false;
 };
 
+bool use_lazy_full_feature_lookup_trace(
+    const ProtocolContext& context,
+    const TraceStaticArtifacts& static_artifacts,
+    bool keep_trace_payloads) {
+    return !keep_trace_payloads
+        && (context.config.dataset == "ogbn_arxiv" || context.config.dataset == "ogbn-arxiv")
+        && context.config.batching_rule == "whole_graph_single"
+        && static_artifacts.full_feature_identity;
+}
+
 const TraceStaticArtifacts& cached_trace_static_artifacts(const ProtocolContext& context) {
     static std::mutex cache_mutex;
     static std::unordered_map<std::string, std::shared_ptr<TraceStaticArtifacts>> cache;
@@ -1262,7 +1441,7 @@ struct FullFeatureLookupArtifacts {
     std::vector<FieldElement> multiplicity;
 };
 
-const FullFeatureLookupArtifacts& cached_full_feature_lookup_artifacts(
+std::shared_ptr<const FullFeatureLookupArtifacts> cached_full_feature_lookup_artifacts(
     const ProtocolContext& context,
     const TraceStaticArtifacts& static_artifacts,
     const FieldElement& eta_feature_index,
@@ -1275,10 +1454,11 @@ const FullFeatureLookupArtifacts& cached_full_feature_lookup_artifacts(
         + eta_feature_index.to_string()
         + ":" + eta_feature_value.to_string()
         + ":" + std::to_string(context.domains.fh->size);
-    {
+    const bool persist_cache = should_persist_large_trace_cache_key(cache_key);
+    if (persist_cache) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
-            return *it->second;
+            return it->second;
         }
     }
 
@@ -1286,10 +1466,12 @@ const FullFeatureLookupArtifacts& cached_full_feature_lookup_artifacts(
     artifacts->table.assign(context.domains.fh->size, FieldElement::zero());
     artifacts->query.assign(context.domains.fh->size, FieldElement::zero());
     artifacts->multiplicity.assign(context.domains.fh->size, FieldElement::zero());
+    const Matrix& feature_matrix =
+        !context.dataset.features.empty() ? context.dataset.features : context.local.features;
     fill_feature_lookup_rows(
         static_artifacts.dataset_index_fields,
         static_artifacts.feature_index_fields,
-        context.dataset.features,
+        feature_matrix,
         eta_feature_index,
         eta_feature_value,
         artifacts->table);
@@ -1300,11 +1482,12 @@ const FullFeatureLookupArtifacts& cached_full_feature_lookup_artifacts(
             + static_cast<std::ptrdiff_t>(context.dataset.num_nodes * context.local.num_features),
         FieldElement::one());
 
-    {
+    if (persist_cache) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         const auto [it, _] = cache.emplace(cache_key, artifacts);
-        return *it->second;
+        return it->second;
     }
+    return artifacts;
 }
 
 BindingTrace build_binding_trace(
@@ -1341,7 +1524,7 @@ std::shared_ptr<const BindingTrace> cached_binding_trace(
     Builder&& builder) {
     static std::mutex cache_mutex;
     static std::unordered_map<std::string, std::shared_ptr<BindingTrace>> cache;
-    {
+    if (should_persist_large_trace_cache_key(cache_key)) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
             return it->second;
@@ -1349,11 +1532,12 @@ std::shared_ptr<const BindingTrace> cached_binding_trace(
     }
 
     auto binding = std::make_shared<BindingTrace>(builder());
-    {
+    if (should_persist_large_trace_cache_key(cache_key)) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         const auto [it, _] = cache.emplace(cache_key, binding);
         return it->second;
     }
+    return binding;
 }
 
 struct HiddenCompressedTrace {
@@ -1375,7 +1559,7 @@ std::shared_ptr<const HiddenCompressedTrace> cached_hidden_compressed_trace(
     const FieldElement& xi) {
     static std::mutex cache_mutex;
     static std::unordered_map<std::string, std::shared_ptr<HiddenCompressedTrace>> cache;
-    {
+    if (should_persist_large_trace_cache_key(cache_key)) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
             return it->second;
@@ -1390,11 +1574,12 @@ std::shared_ptr<const HiddenCompressedTrace> cached_hidden_compressed_trace(
         broadcast_node_values(packed->h_agg_pre_star, edges, false, edge_domain_size);
     packed->h_agg_star = compress_rows_with_challenge(h_agg, xi);
     packed->h_agg_star_edge = broadcast_node_values(packed->h_agg_star, edges, false, edge_domain_size);
-    {
+    if (should_persist_large_trace_cache_key(cache_key)) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         const auto [it, _] = cache.emplace(cache_key, packed);
         return it->second;
     }
+    return packed;
 }
 
 struct OutputCompressedTrace {
@@ -1413,7 +1598,7 @@ std::shared_ptr<const OutputCompressedTrace> cached_output_compressed_trace(
     const FieldElement& xi) {
     static std::mutex cache_mutex;
     static std::unordered_map<std::string, std::shared_ptr<OutputCompressedTrace>> cache;
-    {
+    if (should_persist_large_trace_cache_key(cache_key)) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
             return it->second;
@@ -1425,11 +1610,12 @@ std::shared_ptr<const OutputCompressedTrace> cached_output_compressed_trace(
     packed->y_prime_star_edge = broadcast_node_values(packed->y_prime_star, edges, true, edge_domain_size);
     packed->y_star = compress_rows_with_challenge(y_lin, xi);
     packed->y_star_edge = broadcast_node_values(packed->y_star, edges, false, edge_domain_size);
-    {
+    if (should_persist_large_trace_cache_key(cache_key)) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         const auto [it, _] = cache.emplace(cache_key, packed);
         return it->second;
     }
+    return packed;
 }
 
 struct RouteTrace {
@@ -1447,7 +1633,7 @@ std::shared_ptr<const RouteTrace> cached_route_trace(
     Builder&& builder) {
     static std::mutex cache_mutex;
     static std::unordered_map<std::string, std::shared_ptr<RouteTrace>> cache;
-    {
+    if (should_persist_large_trace_cache_key(cache_key)) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
             return it->second;
@@ -1455,11 +1641,12 @@ std::shared_ptr<const RouteTrace> cached_route_trace(
     }
 
     auto route = std::make_shared<RouteTrace>(builder());
-    {
+    if (should_persist_large_trace_cache_key(cache_key)) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         const auto [it, _] = cache.emplace(cache_key, route);
         return it->second;
     }
+    return route;
 }
 
 template <typename Builder>
@@ -1468,7 +1655,7 @@ std::shared_ptr<const std::vector<FieldElement>> cached_state_vector(
     Builder&& builder) {
     static std::mutex cache_mutex;
     static std::unordered_map<std::string, std::shared_ptr<std::vector<FieldElement>>> cache;
-    {
+    if (should_persist_large_trace_cache_key(cache_key)) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
             return it->second;
@@ -1476,11 +1663,12 @@ std::shared_ptr<const std::vector<FieldElement>> cached_state_vector(
     }
 
     auto values = std::make_shared<std::vector<FieldElement>>(builder());
-    {
+    if (should_persist_large_trace_cache_key(cache_key)) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         const auto [it, _] = cache.emplace(cache_key, values);
         return it->second;
     }
+    return values;
 }
 
 RouteTrace build_route_trace(
@@ -1635,7 +1823,8 @@ std::shared_ptr<const std::unordered_map<FieldPairKey, std::size_t, FieldPairKey
         if (it == index_by_value.end()) {
             throw std::runtime_error(
                 "lookup query escaped static table for " + label
-                + " value=" + query_values[i].to_string());
+                + " value=" + query_values[i].to_string()
+                + " table_size=" + std::to_string(index_by_value.size()));
         }
         multiplicity[it->second] += FieldElement::one();
     }
@@ -1742,7 +1931,7 @@ std::shared_ptr<const SingleLookupArtifacts> cached_single_lookup_artifacts(
     Builder&& builder) {
     static std::mutex cache_mutex;
     static std::unordered_map<std::string, std::shared_ptr<SingleLookupArtifacts>> cache;
-    {
+    if (should_persist_large_trace_cache_key(cache_key)) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
             return it->second;
@@ -1750,11 +1939,12 @@ std::shared_ptr<const SingleLookupArtifacts> cached_single_lookup_artifacts(
     }
 
     auto artifacts = std::make_shared<SingleLookupArtifacts>(builder());
-    {
+    if (should_persist_large_trace_cache_key(cache_key)) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         const auto [it, _] = cache.emplace(cache_key, artifacts);
         return it->second;
     }
+    return artifacts;
 }
 
 SingleLookupArtifacts build_single_lookup_artifacts(
@@ -1774,7 +1964,8 @@ SingleLookupArtifacts build_single_lookup_artifacts(
         if (it == index_by_value.end()) {
             throw std::runtime_error(
                 "lookup query escaped static table for " + label
-                + " value=" + query_values[i].to_string());
+                + " value=" + query_values[i].to_string()
+                + " table_size=" + std::to_string(index_by_value.size()));
         }
         indices[i] = it->second;
     }
@@ -1796,7 +1987,7 @@ std::shared_ptr<const PairLookupArtifacts> cached_pair_lookup_artifacts(
     Builder&& builder) {
     static std::mutex cache_mutex;
     static std::unordered_map<std::string, std::shared_ptr<PairLookupArtifacts>> cache;
-    {
+    if (should_persist_large_trace_cache_key(cache_key)) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
             return it->second;
@@ -1804,11 +1995,12 @@ std::shared_ptr<const PairLookupArtifacts> cached_pair_lookup_artifacts(
     }
 
     auto artifacts = std::make_shared<PairLookupArtifacts>(builder());
-    {
+    if (should_persist_large_trace_cache_key(cache_key)) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         const auto [it, _] = cache.emplace(cache_key, artifacts);
         return it->second;
     }
+    return artifacts;
 }
 
 PairLookupArtifacts build_pair_lookup_artifacts(
@@ -1950,90 +2142,117 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
 
     {
         const auto eta_feat_powers = powers(trace.challenges.at("eta_feat"), 3);
-        std::vector<FieldElement> table_feat(domains.fh->size, FieldElement::zero());
-        std::vector<FieldElement> query_feat(domains.fh->size, FieldElement::zero());
-        std::vector<FieldElement> multiplicity_feat(domains.fh->size, FieldElement::zero());
         const auto eta_feature_index = eta_feat_powers[1];
         const auto eta_feature_value = eta_feat_powers[2];
         const bool full_feature_identity = static_artifacts.full_feature_identity;
-        if (full_feature_identity) {
-            const auto fh_stage_start = Clock::now();
-            const auto& cached_full_lookup = cached_full_feature_lookup_artifacts(
-                context,
-                static_artifacts,
-                eta_feature_index,
-                eta_feature_value);
-            table_feat = cached_full_lookup.table;
-            add_metric(metrics != nullptr ? &metrics->fh_table_materialization_ms : nullptr, fh_stage_start);
-            const auto query_stage_start = Clock::now();
-            query_feat = cached_full_lookup.query;
-            add_metric(metrics != nullptr ? &metrics->fh_query_materialization_ms : nullptr, query_stage_start);
-            const auto mult_stage_start = Clock::now();
-            multiplicity_feat = cached_full_lookup.multiplicity;
-            add_metric(metrics != nullptr ? &metrics->fh_multiplicity_build_ms : nullptr, mult_stage_start);
+        if (use_lazy_full_feature_lookup_trace(context, static_artifacts, keep_trace_payloads)) {
+            const auto table_tau =
+                context.public_commitments.at("P_Row_feat_tbl").tau_evaluation
+                + eta_feature_index * context.public_commitments.at("P_Col_feat_tbl").tau_evaluation
+                + eta_feature_value * context.static_commitments.at("V_T_H").tau_evaluation;
+            const auto query_tau =
+                context.public_commitments.at("P_I_feat_qry").tau_evaluation
+                + eta_feature_index * context.public_commitments.at("P_Col_feat_qry").tau_evaluation
+                + eta_feature_value * trace.commitments.at("P_H").tau_evaluation;
+            trace.commitments["P_Table_feat"] =
+                crypto::KZG::commit_tau_evaluation("P_Table_feat", table_tau, context.kzg);
+            trace.commitment_order.push_back("P_Table_feat");
+            trace.commitments["P_Query_feat"] =
+                crypto::KZG::commit_tau_evaluation("P_Query_feat", query_tau, context.kzg);
+            trace.commitment_order.push_back("P_Query_feat");
+            trace.commitments["P_m_feat"] = crypto::Commitment{
+                .name = "P_m_feat",
+                .point = context.public_commitments.at("P_Q_tbl_feat").point,
+                .tau_evaluation = context.public_commitments.at("P_Q_tbl_feat").tau_evaluation,
+            };
+            trace.commitment_order.push_back("P_m_feat");
+            trace.commitments["P_R_feat"] =
+                crypto::KZG::commit_tau_evaluation("P_R_feat", FieldElement::zero(), context.kzg);
+            trace.commitment_order.push_back("P_R_feat");
         } else {
-            std::vector<std::size_t> feat_hits(context.dataset.num_nodes, 0);
-            auto fh_stage_start = Clock::now();
-            for (const auto absolute_id : local.absolute_ids) {
-                if (absolute_id < feat_hits.size()) {
-                    feat_hits[absolute_id] += 1;
+            std::vector<FieldElement> table_feat(domains.fh->size, FieldElement::zero());
+            std::vector<FieldElement> query_feat(domains.fh->size, FieldElement::zero());
+            std::vector<FieldElement> multiplicity_feat(domains.fh->size, FieldElement::zero());
+            if (full_feature_identity) {
+                const auto fh_stage_start = Clock::now();
+                const auto cached_full_lookup = cached_full_feature_lookup_artifacts(
+                    context,
+                    static_artifacts,
+                    eta_feature_index,
+                    eta_feature_value);
+                table_feat = cached_full_lookup->table;
+                add_metric(metrics != nullptr ? &metrics->fh_table_materialization_ms : nullptr, fh_stage_start);
+                const auto query_stage_start = Clock::now();
+                query_feat = cached_full_lookup->query;
+                add_metric(metrics != nullptr ? &metrics->fh_query_materialization_ms : nullptr, query_stage_start);
+                const auto mult_stage_start = Clock::now();
+                multiplicity_feat = cached_full_lookup->multiplicity;
+                add_metric(metrics != nullptr ? &metrics->fh_multiplicity_build_ms : nullptr, mult_stage_start);
+            } else {
+                std::vector<std::size_t> feat_hits(context.dataset.num_nodes, 0);
+                auto fh_stage_start = Clock::now();
+                for (const auto absolute_id : local.absolute_ids) {
+                    if (absolute_id < feat_hits.size()) {
+                        feat_hits[absolute_id] += 1;
+                    }
                 }
+                std::vector<FieldElement> feat_hit_fields(context.dataset.num_nodes, FieldElement::zero());
+                for (std::size_t v = 0; v < context.dataset.num_nodes; ++v) {
+                    feat_hit_fields[v] = FieldElement(feat_hits[v]);
+                }
+                add_metric(metrics != nullptr ? &metrics->fh_multiplicity_build_ms : nullptr, fh_stage_start);
+                fh_stage_start = Clock::now();
+                fill_feature_lookup_rows(
+                    dataset_index_fields,
+                    feature_index_fields,
+                    context.dataset.features,
+                    eta_feature_index,
+                    eta_feature_value,
+                    table_feat);
+                add_metric(metrics != nullptr ? &metrics->fh_table_materialization_ms : nullptr, fh_stage_start);
+                fh_stage_start = Clock::now();
+                fill_feature_lookup_rows(
+                    absolute_id_fields,
+                    feature_index_fields,
+                    local.features,
+                    eta_feature_index,
+                    eta_feature_value,
+                    query_feat);
+                add_metric(metrics != nullptr ? &metrics->fh_query_materialization_ms : nullptr, fh_stage_start);
+                fh_stage_start = Clock::now();
+                fill_repeated_row_values(feat_hit_fields, d_in, multiplicity_feat);
+                add_metric(metrics != nullptr ? &metrics->fh_multiplicity_build_ms : nullptr, fh_stage_start);
             }
-            std::vector<FieldElement> feat_hit_fields(context.dataset.num_nodes, FieldElement::zero());
-            for (std::size_t v = 0; v < context.dataset.num_nodes; ++v) {
-                feat_hit_fields[v] = FieldElement(feat_hits[v]);
+            auto lookup_stage_start = Clock::now();
+            auto fh_accumulator_start = Clock::now();
+            std::vector<FieldElement> r_feat(domains.fh->size, FieldElement::zero());
+            if (!full_feature_identity) {
+                r_feat = build_logup_accumulator_cached_with_active_count(
+                    cache_prefix + ":fh_feat",
+                    table_feat,
+                    query_feat,
+                    multiplicity_feat,
+                    q_tbl_feat,
+                    q_qry_feat,
+                    trace.challenges.at("beta_feat"),
+                    lookup_active_transition_limit(n_nodes * d_in, domains.fh->size));
             }
-            add_metric(metrics != nullptr ? &metrics->fh_multiplicity_build_ms : nullptr, fh_stage_start);
-            fh_stage_start = Clock::now();
-            fill_feature_lookup_rows(
-                dataset_index_fields,
-                feature_index_fields,
-                context.dataset.features,
-                eta_feature_index,
-                eta_feature_value,
-                table_feat);
-            add_metric(metrics != nullptr ? &metrics->fh_table_materialization_ms : nullptr, fh_stage_start);
-            fh_stage_start = Clock::now();
-            fill_feature_lookup_rows(
-                absolute_id_fields,
-                feature_index_fields,
-                local.features,
-                eta_feature_index,
-                eta_feature_value,
-                query_feat);
-            add_metric(metrics != nullptr ? &metrics->fh_query_materialization_ms : nullptr, fh_stage_start);
-            fh_stage_start = Clock::now();
-            fill_repeated_row_values(feat_hit_fields, d_in, multiplicity_feat);
-            add_metric(metrics != nullptr ? &metrics->fh_multiplicity_build_ms : nullptr, fh_stage_start);
+            add_metric(metrics != nullptr ? &metrics->fh_accumulator_build_ms : nullptr, fh_accumulator_start);
+            add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, lookup_stage_start);
+            add_dynamic_commitment_batch(
+                trace,
+                {
+                    column_spec("P_Table_feat", std::move(table_feat), domains.fh),
+                    column_spec("P_Query_feat", std::move(query_feat), domains.fh),
+                    column_spec("P_m_feat", std::move(multiplicity_feat), domains.fh),
+                    column_spec("P_R_feat", std::move(r_feat), domains.fh),
+                },
+                context.kzg,
+                keep_trace_payloads,
+                metrics);
         }
-        auto lookup_stage_start = Clock::now();
-        auto fh_accumulator_start = Clock::now();
-        std::vector<FieldElement> r_feat(domains.fh->size, FieldElement::zero());
-        if (!full_feature_identity) {
-            r_feat = build_logup_accumulator_cached_with_active_count(
-                cache_prefix + ":fh_feat",
-                table_feat,
-                query_feat,
-                multiplicity_feat,
-                q_tbl_feat,
-                q_qry_feat,
-                trace.challenges.at("beta_feat"),
-                lookup_active_transition_limit(n_nodes * d_in, domains.fh->size));
-        }
-        add_metric(metrics != nullptr ? &metrics->fh_accumulator_build_ms : nullptr, fh_accumulator_start);
-        add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, lookup_stage_start);
-        add_dynamic_commitment_batch(
-            trace,
-            {
-                column_spec("P_Table_feat", table_feat, domains.fh),
-                column_spec("P_Query_feat", query_feat, domains.fh),
-                column_spec("P_m_feat", multiplicity_feat, domains.fh),
-                column_spec("P_R_feat", r_feat, domains.fh),
-            },
-            context.kzg,
-            keep_trace_payloads,
-            metrics);
     }
+    log_ogbn_trace_stage(context, "after_feature_lookup");
 
     const auto forward_start = Clock::now();
     const auto forward_artifacts = cached_forward_artifacts(
@@ -2054,6 +2273,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         metrics->output_forward_attention_ms += forward_artifacts->profile.output_attention_ms;
         metrics->output_forward_activation_ms += forward_artifacts->profile.output_activation_ms;
     }
+    log_ogbn_trace_stage(context, "after_forward");
     const auto& hidden_layer_inputs_quantized = forward_artifacts->hidden_layer_inputs_quantized;
     const auto& hidden_layer_concat_quantized = forward_artifacts->hidden_layer_concat_quantized;
 
@@ -2882,6 +3102,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             metric_value(&RunMetrics::field_conversion_residual_ms) - hidden_stack_initial_field_conversion_ms,
             metric_value(&RunMetrics::hidden_output_object_residual_ms) - hidden_stack_initial_object_ms,
         });
+    log_ogbn_trace_stage(context, "after_hidden_stack");
 
     stage_start = Clock::now();
     const auto output_trace_start = stage_start;
@@ -3954,6 +4175,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             metric_value(&RunMetrics::field_conversion_residual_ms) - output_initial_field_conversion_ms,
             metric_value(&RunMetrics::hidden_output_object_residual_ms) - output_initial_object_ms,
         });
+    log_ogbn_trace_stage(context, "after_output_head");
     }
 
     stage_start = Clock::now();
@@ -3983,6 +4205,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto commit_dynamic_delta = metrics->commit_dynamic_ms - initial_commit_dynamic_ms;
         metrics->trace_generation_ms += std::max(0.0, total_trace_ms - forward_delta - commit_dynamic_delta);
     }
+    log_ogbn_trace_stage(context, "trace_complete");
     return trace;
 }
 

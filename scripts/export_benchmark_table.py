@@ -93,6 +93,13 @@ def hottest_stage(manifest: Dict[str, object]) -> str:
     return f"{name}:{value:.3f}"
 
 
+def infer_commitment_time_ms(manifest: Dict[str, object]) -> float:
+    explicit = manifest.get("commitment_time_ms")
+    if explicit is not None:
+        return float(explicit)
+    return float(manifest.get("commit_dynamic_ms", 0.0)) + float(manifest.get("quotient_bundle_pack_ms", 0.0))
+
+
 def infer_route2_label(manifest: Dict[str, object]) -> str:
     explicit = str(manifest.get("route2_label", "")).strip()
     if explicit:
@@ -119,6 +126,7 @@ def make_success_row(dataset: str, manifest: Dict[str, object]) -> Dict[str, obj
         "status": "ok",
         "blocker": "",
         "benchmark_mode": infer_benchmark_mode(manifest),
+        "commitment_time_ms": infer_commitment_time_ms(manifest),
         "prove_time_ms": float(manifest["prove_time_ms"]),
         "verify_time_ms": float(manifest["verify_time_ms"]),
         "proof_size_bytes": int(manifest["proof_size_bytes"]),
@@ -153,6 +161,7 @@ def make_blocked_row(dataset: str, benchmark_mode: str, reason: str) -> Dict[str
         "status": "blocked",
         "blocker": reason,
         "benchmark_mode": benchmark_mode,
+        "commitment_time_ms": None,
         "prove_time_ms": None,
         "verify_time_ms": None,
         "proof_size_bytes": None,
@@ -225,6 +234,7 @@ def write_outputs(output_dir: pathlib.Path, mode: str, rows: List[Dict[str, obje
         "status",
         "blocker",
         "benchmark_mode",
+        "commitment_time_ms",
         "prove_time_ms",
         "verify_time_ms",
         "proof_size_bytes",
@@ -252,8 +262,8 @@ def write_outputs(output_dir: pathlib.Path, mode: str, rows: List[Dict[str, obje
         "",
         f"- 主表口径：`{mode}`",
         "",
-        "| 数据集 | 状态 | prove_time_ms | verify_time_ms | proof_size_bytes | node_count | edge_count | route2 | 主要热点 | 阻塞说明 |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
+        "| 数据集 | 状态 | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes | node_count | edge_count | route2 | 主要热点 | 阻塞说明 |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
     ]
     for row in rows:
         lines.append(
@@ -262,6 +272,7 @@ def write_outputs(output_dir: pathlib.Path, mode: str, rows: List[Dict[str, obje
                 [
                     markdown_cell(row["dataset"]),
                     markdown_cell(status_label(row["status"])),
+                    markdown_cell(row["commitment_time_ms"]),
                     markdown_cell(row["prove_time_ms"]),
                     markdown_cell(row["verify_time_ms"]),
                     markdown_cell(row["proof_size_bytes"]),

@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <mutex>
 #include <ostream>
@@ -47,6 +48,12 @@ class FieldElement {
     static FieldElement from_signed(std::int64_t value) {
         FieldElement out;
         out.value_ = static_cast<long long>(value);
+        return out;
+    }
+
+    static FieldElement from_little_endian_mod(const std::uint8_t* bytes, std::size_t size) {
+        FieldElement out;
+        out.value_.setLittleEndianMod(bytes, size);
         return out;
     }
 
@@ -125,6 +132,14 @@ class FieldElement {
 
     std::string to_string() const { return value_.getStr(10); }
     const mcl::Fr& native() const { return value_; }
+
+    std::size_t write_little_endian(std::uint8_t* bytes, std::size_t size) const {
+        if (bytes == nullptr) {
+            throw std::runtime_error("FieldElement::write_little_endian received null output buffer");
+        }
+        std::memset(bytes, 0, size);
+        return value_.getLittleEndian(bytes, size);
+    }
 
   private:
     mcl::Fr value_;

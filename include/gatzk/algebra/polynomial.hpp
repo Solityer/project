@@ -16,8 +16,11 @@ struct RootOfUnityDomain {
     FieldElement inv_size = FieldElement::one();
     std::vector<FieldElement> points;
     std::vector<FieldElement> points_scaled_by_inv_size;
+    bool points_precomputed = true;
 
     static std::shared_ptr<RootOfUnityDomain> create(const std::string& name, std::size_t size);
+    FieldElement point_at(std::size_t index) const;
+    FieldElement point_scaled_by_inv_size_at(std::size_t index) const;
     FieldElement zero_polynomial_eval(const FieldElement& x) const;
     FieldElement lagrange_basis_eval(std::size_t index, const FieldElement& x) const;
     std::vector<mcl::Fr> barycentric_weights_native(const FieldElement& x) const;

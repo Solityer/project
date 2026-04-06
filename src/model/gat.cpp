@@ -866,7 +866,6 @@ MultiHeadForwardTrace forward_reference_style(
 
     MultiHeadForwardTrace trace;
     trace.H = features;
-    trace.bias = build_attention_bias_matrix(features.size(), edges);
     auto layer_input = features;
     for (const auto& layer : parameters.hidden_layers) {
         HiddenLayerForwardTrace layer_trace;
@@ -931,7 +930,6 @@ MultiHeadForwardTrace forward_note_style(
 
     MultiHeadForwardTrace trace;
     trace.H = features;
-    trace.bias = build_attention_bias_matrix(features.size(), edges);
     auto layer_input = features;
     for (const auto& layer : parameters.hidden_layers) {
         HiddenLayerForwardTrace layer_trace;
