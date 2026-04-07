@@ -1379,7 +1379,9 @@ bool use_lazy_full_feature_lookup_trace(
     const TraceStaticArtifacts& static_artifacts,
     bool keep_trace_payloads) {
     return !keep_trace_payloads
-        && (context.config.dataset == "ogbn_arxiv" || context.config.dataset == "ogbn-arxiv")
+        && (context.config.dataset == "cora"
+            || context.config.dataset == "ogbn_arxiv"
+            || context.config.dataset == "ogbn-arxiv")
         && context.config.batching_rule == "whole_graph_single"
         && static_artifacts.full_feature_identity;
 }

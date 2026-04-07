@@ -162,6 +162,27 @@ std::vector<FieldElement> feature_query_absolute_ids(
     return out;
 }
 
+bool full_graph_feature_identity_enabled(const ProtocolContext& context) {
+    if (!(context.config.dataset == "cora"
+          || context.config.dataset == "ogbn_arxiv"
+          || context.config.dataset == "ogbn-arxiv")) {
+        return false;
+    }
+    if (context.config.batching_rule != "whole_graph_single") {
+        return false;
+    }
+    if (context.local.num_nodes != context.dataset.num_nodes
+        || context.local.num_features != context.dataset.num_features) {
+        return false;
+    }
+    for (std::size_t i = 0; i < context.local.absolute_ids.size(); ++i) {
+        if (context.local.absolute_ids[i] != i) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool lazy_large_fh_public_enabled(const ProtocolContext& context) {
     return (context.config.dataset == "ogbn_arxiv" || context.config.dataset == "ogbn-arxiv")
         && context.config.batching_rule == "whole_graph_single";
@@ -179,20 +200,7 @@ bool is_lazy_large_fh_public_label(const std::string& name) {
 }
 
 bool lazy_full_feature_lookup_trace_enabled(const ProtocolContext& context) {
-    if (!((context.config.dataset == "ogbn_arxiv" || context.config.dataset == "ogbn-arxiv")
-          && context.config.batching_rule == "whole_graph_single")) {
-        return false;
-    }
-    if (context.local.num_nodes != context.dataset.num_nodes
-        || context.local.num_features != context.dataset.num_features) {
-        return false;
-    }
-    for (std::size_t i = 0; i < context.local.absolute_ids.size(); ++i) {
-        if (context.local.absolute_ids[i] != i) {
-            return false;
-        }
-    }
-    return true;
+    return full_graph_feature_identity_enabled(context);
 }
 
 bool is_lazy_full_feature_lookup_trace_label(const std::string& name) {
@@ -274,6 +282,34 @@ FieldElement evaluate_lazy_large_fh_public_poly(
     if (!lazy_large_fh_public_enabled(context) || !is_lazy_large_fh_public_label(name)) {
         throw std::runtime_error("unsupported lazy public polynomial: " + name);
     }
+    const bool full_feature_identity = full_graph_feature_identity_enabled(context);
+    std::string canonical_name = name;
+    if (full_feature_identity) {
+        if (canonical_name == "P_Q_qry_feat") {
+            canonical_name = "P_Q_tbl_feat";
+        } else if (canonical_name == "P_Row_feat_qry" || canonical_name == "P_I_feat_qry") {
+            canonical_name = "P_Row_feat_tbl";
+        } else if (canonical_name == "P_Col_feat_qry") {
+            canonical_name = "P_Col_feat_tbl";
+        }
+    }
+
+    static std::mutex cache_mutex;
+    static std::unordered_map<std::string, FieldElement> cache;
+    const auto cache_key =
+        context.config.checkpoint_bundle
+        + ":" + context.config.dataset
+        + ":" + std::to_string(context.dataset.num_nodes)
+        + ":" + std::to_string(context.local.num_features)
+        + ":" + canonical_name
+        + "@" + point.to_string();
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        if (const auto it = cache.find(cache_key); it != cache.end()) {
+            return it->second;
+        }
+    }
+
     const auto& domain = context.domains.fh;
     const std::size_t dataset_rows = context.dataset.num_nodes;
     const std::size_t local_rows = context.local.num_nodes;
@@ -281,57 +317,51 @@ FieldElement evaluate_lazy_large_fh_public_poly(
     const std::size_t dataset_valid = dataset_rows * feature_count;
     const std::size_t local_valid = local_rows * feature_count;
     const auto& feature_matrix = !context.dataset.features.empty() ? context.dataset.features : context.local.features;
-    if (name == "P_Q_tbl_feat") {
-        return evaluate_truncated_domain_polynomial(
+    FieldElement value = FieldElement::zero();
+    if (canonical_name == "P_Q_tbl_feat") {
+        value = evaluate_truncated_domain_polynomial(
             domain,
             dataset_valid,
             point,
             [](std::size_t) { return FieldElement::one(); });
-    }
-    if (name == "P_Q_qry_feat") {
-        return evaluate_truncated_domain_polynomial(
+    } else if (canonical_name == "P_Q_qry_feat") {
+        value = evaluate_truncated_domain_polynomial(
             domain,
             local_valid,
             point,
             [](std::size_t) { return FieldElement::one(); });
-    }
-    if (name == "P_Row_feat_tbl") {
-        return evaluate_truncated_domain_polynomial(
+    } else if (canonical_name == "P_Row_feat_tbl") {
+        value = evaluate_truncated_domain_polynomial(
             domain,
             dataset_valid,
             point,
             [&](std::size_t index) { return FieldElement(index / feature_count); });
-    }
-    if (name == "P_Col_feat_tbl") {
-        return evaluate_truncated_domain_polynomial(
+    } else if (canonical_name == "P_Col_feat_tbl") {
+        value = evaluate_truncated_domain_polynomial(
             domain,
             dataset_valid,
             point,
             [&](std::size_t index) { return FieldElement(index % feature_count); });
-    }
-    if (name == "P_Row_feat_qry") {
-        return evaluate_truncated_domain_polynomial(
+    } else if (canonical_name == "P_Row_feat_qry") {
+        value = evaluate_truncated_domain_polynomial(
             domain,
             local_valid,
             point,
             [&](std::size_t index) { return FieldElement(index / feature_count); });
-    }
-    if (name == "P_Col_feat_qry") {
-        return evaluate_truncated_domain_polynomial(
+    } else if (canonical_name == "P_Col_feat_qry") {
+        value = evaluate_truncated_domain_polynomial(
             domain,
             local_valid,
             point,
             [&](std::size_t index) { return FieldElement(index % feature_count); });
-    }
-    if (name == "P_I_feat_qry") {
-        return evaluate_truncated_domain_polynomial(
+    } else if (canonical_name == "P_I_feat_qry") {
+        value = evaluate_truncated_domain_polynomial(
             domain,
             local_valid,
             point,
             [&](std::size_t index) { return FieldElement(context.local.absolute_ids[index / feature_count]); });
-    }
-    if (name == "P_T_H") {
-        return evaluate_truncated_domain_polynomial(
+    } else if (canonical_name == "P_T_H") {
+        value = evaluate_truncated_domain_polynomial(
             domain,
             dataset_valid,
             point,
@@ -340,8 +370,14 @@ FieldElement evaluate_lazy_large_fh_public_poly(
                 const auto column = index % feature_count;
                 return feature_matrix[row][column];
             });
+    } else {
+        throw std::runtime_error("unsupported lazy public polynomial label: " + canonical_name);
     }
-    throw std::runtime_error("unsupported lazy public polynomial label: " + name);
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        cache.emplace(cache_key, value);
+    }
+    return value;
 }
 
 FieldElement evaluate_lazy_full_feature_lookup_trace_poly(
@@ -355,8 +391,15 @@ FieldElement evaluate_lazy_full_feature_lookup_trace_poly(
     if (name == "P_R_feat") {
         return FieldElement::zero();
     }
+    const bool full_feature_identity = full_graph_feature_identity_enabled(context);
     if (name == "P_m_feat") {
+        if (full_feature_identity) {
+            return evaluate_lazy_large_fh_public_poly(context, "P_Q_tbl_feat", point);
+        }
         return evaluate_lazy_large_fh_public_poly(context, "P_Q_qry_feat", point);
+    }
+    if (name == "P_Query_feat" && full_feature_identity) {
+        return evaluate_lazy_full_feature_lookup_trace_poly(context, challenges, "P_Table_feat", point);
     }
 
     const auto eta_feat = challenges.at("eta_feat");
@@ -1078,7 +1121,9 @@ class EvaluationMemoization {
         }
 
         FieldElement value = FieldElement::zero();
-        if (name == "P_H") {
+        if (name == "P_H" && lazy_full_feature_lookup_trace_enabled(context_)) {
+            value = eval_named("P_T_H", point);
+        } else if (name == "P_H") {
             value = shared_feature_matrix_evaluation_cache()->get_or_compute(
                 context_key_,
                 context_.local.features,
@@ -1230,6 +1275,7 @@ class EvaluationMemoization {
         const std::size_t feature_count = context_.local.num_features;
         const std::size_t dataset_valid = dataset_rows * feature_count;
         const std::size_t local_valid = local_rows * feature_count;
+        const bool full_feature_identity = full_graph_feature_identity_enabled(context_);
         const auto& feature_matrix =
             !context_.dataset.features.empty() ? context_.dataset.features : context_.local.features;
 
@@ -1320,24 +1366,368 @@ class EvaluationMemoization {
                 add_scaled(row_tbl_index, row_value, weight);
                 add_scaled(col_tbl_index, column_values[column], weight);
                 add_scaled(th_index, feature_row[column], weight);
+                if (full_feature_identity) {
+                    add_weight(q_qry_index, weight);
+                    add_scaled(row_qry_index, row_value, weight);
+                    add_scaled(col_qry_index, column_values[column], weight);
+                    add_scaled(abs_qry_index, row_value, weight);
+                }
             }
         }
 
-        index = 0;
-        for (std::size_t row = 0; row < local_rows; ++row) {
-            const FieldElement row_value(row);
-            const FieldElement absolute_id(context_.local.absolute_ids[row]);
-            for (std::size_t column = 0; column < feature_count; ++column, ++index) {
-                const auto& weight = weight_entry.native_weights[index];
-                add_weight(q_qry_index, weight);
-                add_scaled(row_qry_index, row_value, weight);
-                add_scaled(col_qry_index, column_values[column], weight);
-                add_scaled(abs_qry_index, absolute_id, weight);
+        if (!full_feature_identity) {
+            index = 0;
+            for (std::size_t row = 0; row < local_rows; ++row) {
+                const FieldElement row_value(row);
+                const FieldElement absolute_id(context_.local.absolute_ids[row]);
+                for (std::size_t column = 0; column < feature_count; ++column, ++index) {
+                    const auto& weight = weight_entry.native_weights[index];
+                    add_weight(q_qry_index, weight);
+                    add_scaled(row_qry_index, row_value, weight);
+                    add_scaled(col_qry_index, column_values[column], weight);
+                    add_scaled(abs_qry_index, absolute_id, weight);
+                }
             }
         }
 
         for (std::size_t i = 0; i < labels.size(); ++i) {
             out[i] = FieldElement::from_native(accumulators[i]);
+        }
+        return out;
+    }
+
+    std::vector<std::vector<FieldElement>> evaluate_lazy_large_fh_public_group_points(
+        const std::vector<std::string>& labels,
+        const std::vector<FieldElement>& points) {
+        std::vector<std::vector<FieldElement>> out(
+            points.size(),
+            std::vector<FieldElement>(labels.size(), FieldElement::zero()));
+        if (labels.empty() || points.empty()) {
+            return out;
+        }
+
+        const auto& domain = context_.domains.fh;
+        const std::size_t dataset_rows = context_.dataset.num_nodes;
+        const std::size_t local_rows = context_.local.num_nodes;
+        const std::size_t feature_count = context_.local.num_features;
+        const std::size_t dataset_valid = dataset_rows * feature_count;
+        const std::size_t local_valid = local_rows * feature_count;
+        const bool full_feature_identity = full_graph_feature_identity_enabled(context_);
+        const auto& feature_matrix =
+            !context_.dataset.features.empty() ? context_.dataset.features : context_.local.features;
+
+        const auto q_tbl_index = label_index_or_npos(labels, "P_Q_tbl_feat");
+        const auto q_qry_index = label_index_or_npos(labels, "P_Q_qry_feat");
+        const auto row_tbl_index = label_index_or_npos(labels, "P_Row_feat_tbl");
+        const auto col_tbl_index = label_index_or_npos(labels, "P_Col_feat_tbl");
+        const auto row_qry_index = label_index_or_npos(labels, "P_Row_feat_qry");
+        const auto col_qry_index = label_index_or_npos(labels, "P_Col_feat_qry");
+        const auto abs_qry_index = label_index_or_npos(labels, "P_I_feat_qry");
+        const auto th_index = label_index_or_npos(labels, "P_T_H");
+
+        auto direct_value = [&](std::string_view label, std::size_t index) -> FieldElement {
+            if (label == "P_Q_tbl_feat") {
+                return index < dataset_valid ? FieldElement::one() : FieldElement::zero();
+            }
+            if (label == "P_Q_qry_feat") {
+                return index < local_valid ? FieldElement::one() : FieldElement::zero();
+            }
+            if (label == "P_Row_feat_tbl") {
+                return index < dataset_valid ? FieldElement(index / feature_count) : FieldElement::zero();
+            }
+            if (label == "P_Col_feat_tbl") {
+                return index < dataset_valid ? FieldElement(index % feature_count) : FieldElement::zero();
+            }
+            if (label == "P_Row_feat_qry") {
+                return index < local_valid ? FieldElement(index / feature_count) : FieldElement::zero();
+            }
+            if (label == "P_Col_feat_qry") {
+                return index < local_valid ? FieldElement(index % feature_count) : FieldElement::zero();
+            }
+            if (label == "P_I_feat_qry") {
+                return index < local_valid
+                    ? FieldElement(context_.local.absolute_ids[index / feature_count])
+                    : FieldElement::zero();
+            }
+            if (label == "P_T_H") {
+                if (index >= dataset_valid) {
+                    return FieldElement::zero();
+                }
+                const auto row = index / feature_count;
+                const auto column = index % feature_count;
+                return feature_matrix[row][column];
+            }
+            throw std::runtime_error("unsupported lazy FH public label: " + std::string(label));
+        };
+
+        struct PointWeightRef {
+            std::size_t point_index = 0;
+            std::size_t direct_index = 0;
+            const DomainEvaluationWeights* weight_entry = nullptr;
+            bool direct = false;
+        };
+
+        std::vector<PointWeightRef> weighted_points;
+        weighted_points.reserve(points.size());
+        for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
+            const auto& weight_entry = domain_weights(domain, points[point_index]);
+            if (weight_entry.direct_index.has_value()) {
+                const auto direct_index = *weight_entry.direct_index;
+                for (std::size_t label_index = 0; label_index < labels.size(); ++label_index) {
+                    out[point_index][label_index] = direct_value(labels[label_index], direct_index);
+                }
+                continue;
+            }
+            weighted_points.push_back(PointWeightRef{
+                .point_index = point_index,
+                .direct_index = 0,
+                .weight_entry = nullptr,
+                .direct = false,
+            });
+        }
+        if (weighted_points.empty()) {
+            return out;
+        }
+        for (auto& point_ref : weighted_points) {
+            point_ref.weight_entry = &domain_weights(domain, points[point_ref.point_index]);
+        }
+
+        struct FhAccumulatorSet {
+            mcl::Fr q_tbl;
+            mcl::Fr row_tbl;
+            mcl::Fr col_tbl;
+            mcl::Fr th;
+            mcl::Fr q_qry;
+            mcl::Fr row_qry;
+            mcl::Fr col_qry;
+            mcl::Fr abs_qry;
+        };
+        auto clear_accumulators = [](FhAccumulatorSet* accum) {
+            accum->q_tbl.clear();
+            accum->row_tbl.clear();
+            accum->col_tbl.clear();
+            accum->th.clear();
+            accum->q_qry.clear();
+            accum->row_qry.clear();
+            accum->col_qry.clear();
+            accum->abs_qry.clear();
+        };
+
+        const bool need_q_tbl = q_tbl_index < labels.size();
+        const bool need_row_tbl = row_tbl_index < labels.size();
+        const bool need_col_tbl = col_tbl_index < labels.size();
+        const bool need_th = th_index < labels.size();
+        const bool need_q_qry = q_qry_index < labels.size();
+        const bool need_row_qry = row_qry_index < labels.size();
+        const bool need_col_qry = col_qry_index < labels.size();
+        const bool need_abs_qry = abs_qry_index < labels.size();
+
+        std::vector<mcl::Fr> column_values(feature_count);
+        for (std::size_t column = 0; column < feature_count; ++column) {
+            column_values[column] = FieldElement(column).native();
+        }
+
+        auto accumulate_dataset_range = [&](std::size_t begin_row, std::size_t end_row) {
+            std::vector<FhAccumulatorSet> partial(weighted_points.size());
+            for (auto& accum : partial) {
+                clear_accumulators(&accum);
+            }
+            for (std::size_t row = begin_row; row < end_row; ++row) {
+                const auto row_native = FieldElement(row).native();
+                const auto& feature_row = feature_matrix[row];
+                const auto base = row * feature_count;
+                for (std::size_t column = 0; column < feature_count; ++column) {
+                    const auto index = base + column;
+                    for (std::size_t point_offset = 0; point_offset < weighted_points.size(); ++point_offset) {
+                        const auto& weight =
+                            weighted_points[point_offset].weight_entry->native_weights[index];
+                        auto& accum = partial[point_offset];
+                        if (need_q_tbl) {
+                            mcl::Fr::add(accum.q_tbl, accum.q_tbl, weight);
+                        }
+                        if (need_row_tbl) {
+                            mcl::Fr term;
+                            mcl::Fr::mul(term, row_native, weight);
+                            mcl::Fr::add(accum.row_tbl, accum.row_tbl, term);
+                        }
+                        if (need_col_tbl) {
+                            mcl::Fr term;
+                            mcl::Fr::mul(term, column_values[column], weight);
+                            mcl::Fr::add(accum.col_tbl, accum.col_tbl, term);
+                        }
+                        if (need_th) {
+                            mcl::Fr term;
+                            mcl::Fr::mul(term, feature_row[column].native(), weight);
+                            mcl::Fr::add(accum.th, accum.th, term);
+                        }
+                        if (full_feature_identity) {
+                            continue;
+                        }
+                    }
+                }
+            }
+            return partial;
+        };
+
+        auto combine_accumulators = [&](std::vector<FhAccumulatorSet>* target,
+                                        const std::vector<FhAccumulatorSet>& source) {
+            for (std::size_t i = 0; i < target->size(); ++i) {
+                mcl::Fr::add((*target)[i].q_tbl, (*target)[i].q_tbl, source[i].q_tbl);
+                mcl::Fr::add((*target)[i].row_tbl, (*target)[i].row_tbl, source[i].row_tbl);
+                mcl::Fr::add((*target)[i].col_tbl, (*target)[i].col_tbl, source[i].col_tbl);
+                mcl::Fr::add((*target)[i].th, (*target)[i].th, source[i].th);
+                mcl::Fr::add((*target)[i].q_qry, (*target)[i].q_qry, source[i].q_qry);
+                mcl::Fr::add((*target)[i].row_qry, (*target)[i].row_qry, source[i].row_qry);
+                mcl::Fr::add((*target)[i].col_qry, (*target)[i].col_qry, source[i].col_qry);
+                mcl::Fr::add((*target)[i].abs_qry, (*target)[i].abs_qry, source[i].abs_qry);
+            }
+        };
+
+        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+        std::vector<FhAccumulatorSet> accumulators(weighted_points.size());
+        for (auto& accum : accumulators) {
+            clear_accumulators(&accum);
+        }
+        if (dataset_valid >= (1ULL << 20) && cpu_count > 1) {
+            const auto task_count =
+                std::min<std::size_t>(cpu_count, std::max<std::size_t>(1, dataset_rows / 2048));
+            if (task_count > 1) {
+                const auto chunk_size = (dataset_rows + task_count - 1) / task_count;
+                std::vector<std::future<std::vector<FhAccumulatorSet>>> futures;
+                futures.reserve(task_count);
+                for (std::size_t task = 0; task < task_count; ++task) {
+                    const auto begin_row = task * chunk_size;
+                    const auto end_row = std::min(dataset_rows, begin_row + chunk_size);
+                    if (begin_row >= end_row) {
+                        break;
+                    }
+                    futures.push_back(std::async(
+                        std::launch::async,
+                        [&, begin_row, end_row]() {
+                            return accumulate_dataset_range(begin_row, end_row);
+                        }));
+                }
+                for (auto& future : futures) {
+                    combine_accumulators(&accumulators, future.get());
+                }
+            } else {
+                combine_accumulators(&accumulators, accumulate_dataset_range(0, dataset_rows));
+            }
+        } else {
+            combine_accumulators(&accumulators, accumulate_dataset_range(0, dataset_rows));
+        }
+
+        if (!full_feature_identity) {
+            auto accumulate_local_range = [&](std::size_t begin_row, std::size_t end_row) {
+                std::vector<FhAccumulatorSet> partial(weighted_points.size());
+                for (auto& accum : partial) {
+                    clear_accumulators(&accum);
+                }
+                for (std::size_t row = begin_row; row < end_row; ++row) {
+                    const auto row_native = FieldElement(row).native();
+                    const auto absolute_id_native = FieldElement(context_.local.absolute_ids[row]).native();
+                    const auto base = row * feature_count;
+                    for (std::size_t column = 0; column < feature_count; ++column) {
+                        const auto index = base + column;
+                        for (std::size_t point_offset = 0; point_offset < weighted_points.size(); ++point_offset) {
+                            const auto& weight =
+                                weighted_points[point_offset].weight_entry->native_weights[index];
+                            auto& accum = partial[point_offset];
+                            if (need_q_qry) {
+                                mcl::Fr::add(accum.q_qry, accum.q_qry, weight);
+                            }
+                            if (need_row_qry) {
+                                mcl::Fr term;
+                                mcl::Fr::mul(term, row_native, weight);
+                                mcl::Fr::add(accum.row_qry, accum.row_qry, term);
+                            }
+                            if (need_col_qry) {
+                                mcl::Fr term;
+                                mcl::Fr::mul(term, column_values[column], weight);
+                                mcl::Fr::add(accum.col_qry, accum.col_qry, term);
+                            }
+                            if (need_abs_qry) {
+                                mcl::Fr term;
+                                mcl::Fr::mul(term, absolute_id_native, weight);
+                                mcl::Fr::add(accum.abs_qry, accum.abs_qry, term);
+                            }
+                        }
+                    }
+                }
+                return partial;
+            };
+            if (local_valid >= (1ULL << 20) && cpu_count > 1) {
+                const auto task_count =
+                    std::min<std::size_t>(cpu_count, std::max<std::size_t>(1, local_rows / 2048));
+                if (task_count > 1) {
+                    const auto chunk_size = (local_rows + task_count - 1) / task_count;
+                    std::vector<std::future<std::vector<FhAccumulatorSet>>> futures;
+                    futures.reserve(task_count);
+                    for (std::size_t task = 0; task < task_count; ++task) {
+                        const auto begin_row = task * chunk_size;
+                        const auto end_row = std::min(local_rows, begin_row + chunk_size);
+                        if (begin_row >= end_row) {
+                            break;
+                        }
+                        futures.push_back(std::async(
+                            std::launch::async,
+                            [&, begin_row, end_row]() {
+                                return accumulate_local_range(begin_row, end_row);
+                            }));
+                    }
+                    for (auto& future : futures) {
+                        combine_accumulators(&accumulators, future.get());
+                    }
+                } else {
+                    combine_accumulators(&accumulators, accumulate_local_range(0, local_rows));
+                }
+            } else {
+                combine_accumulators(&accumulators, accumulate_local_range(0, local_rows));
+            }
+        }
+
+        for (std::size_t point_offset = 0; point_offset < weighted_points.size(); ++point_offset) {
+            const auto point_index = weighted_points[point_offset].point_index;
+            const auto& accum = accumulators[point_offset];
+            if (q_tbl_index < labels.size()) {
+                out[point_index][q_tbl_index] = FieldElement::from_native(accum.q_tbl);
+            }
+            if (row_tbl_index < labels.size()) {
+                out[point_index][row_tbl_index] = FieldElement::from_native(accum.row_tbl);
+            }
+            if (col_tbl_index < labels.size()) {
+                out[point_index][col_tbl_index] = FieldElement::from_native(accum.col_tbl);
+            }
+            if (th_index < labels.size()) {
+                out[point_index][th_index] = FieldElement::from_native(accum.th);
+            }
+            if (full_feature_identity) {
+                if (q_qry_index < labels.size()) {
+                    out[point_index][q_qry_index] = FieldElement::from_native(accum.q_tbl);
+                }
+                if (row_qry_index < labels.size()) {
+                    out[point_index][row_qry_index] = FieldElement::from_native(accum.row_tbl);
+                }
+                if (col_qry_index < labels.size()) {
+                    out[point_index][col_qry_index] = FieldElement::from_native(accum.col_tbl);
+                }
+                if (abs_qry_index < labels.size()) {
+                    out[point_index][abs_qry_index] = FieldElement::from_native(accum.row_tbl);
+                }
+                continue;
+            }
+            if (q_qry_index < labels.size()) {
+                out[point_index][q_qry_index] = FieldElement::from_native(accum.q_qry);
+            }
+            if (row_qry_index < labels.size()) {
+                out[point_index][row_qry_index] = FieldElement::from_native(accum.row_qry);
+            }
+            if (col_qry_index < labels.size()) {
+                out[point_index][col_qry_index] = FieldElement::from_native(accum.col_qry);
+            }
+            if (abs_qry_index < labels.size()) {
+                out[point_index][abs_qry_index] = FieldElement::from_native(accum.abs_qry);
+            }
         }
         return out;
     }
@@ -1351,6 +1741,7 @@ class EvaluationMemoization {
         }
         const auto eta_feat = challenges_.at("eta_feat");
         const auto eta_feature_value = eta_feat.pow(2);
+        const bool full_feature_identity = full_graph_feature_identity_enabled(context_);
         const auto table_index = label_index_or_npos(labels, "P_Table_feat");
         const auto query_index = label_index_or_npos(labels, "P_Query_feat");
         const auto multiplicity_index = label_index_or_npos(labels, "P_m_feat");
@@ -1389,12 +1780,18 @@ class EvaluationMemoization {
             ensure_public_value("P_T_H", &t_h);
         }
         if (query_index < labels.size()) {
-            ensure_public_value("P_Row_feat_qry", &row_qry);
-            ensure_public_value("P_Col_feat_qry", &col_qry);
-            ensure_public_value("P_T_H", &t_h);
+            if (full_feature_identity) {
+                ensure_public_value("P_Row_feat_tbl", &row_tbl);
+                ensure_public_value("P_Col_feat_tbl", &col_tbl);
+                ensure_public_value("P_T_H", &t_h);
+            } else {
+                ensure_public_value("P_Row_feat_qry", &row_qry);
+                ensure_public_value("P_Col_feat_qry", &col_qry);
+                ensure_public_value("P_T_H", &t_h);
+            }
         }
         if (multiplicity_index < labels.size()) {
-            ensure_public_value("P_Q_qry_feat", &q_qry);
+            ensure_public_value(full_feature_identity ? "P_Q_tbl_feat" : "P_Q_qry_feat", &q_qry);
         }
 
         if (!missing_public_labels.empty()) {
@@ -1408,13 +1805,25 @@ class EvaluationMemoization {
                 load_cached("P_T_H", &t_h);
             }
             if (query_index < labels.size()) {
-                load_cached("P_Row_feat_qry", &row_qry);
-                load_cached("P_Col_feat_qry", &col_qry);
-                load_cached("P_T_H", &t_h);
+                if (full_feature_identity) {
+                    load_cached("P_Row_feat_tbl", &row_tbl);
+                    load_cached("P_Col_feat_tbl", &col_tbl);
+                    row_qry = row_tbl;
+                    col_qry = col_tbl;
+                    load_cached("P_T_H", &t_h);
+                } else {
+                    load_cached("P_Row_feat_qry", &row_qry);
+                    load_cached("P_Col_feat_qry", &col_qry);
+                    load_cached("P_T_H", &t_h);
+                }
             }
             if (multiplicity_index < labels.size()) {
-                load_cached("P_Q_qry_feat", &q_qry);
+                load_cached(full_feature_identity ? "P_Q_tbl_feat" : "P_Q_qry_feat", &q_qry);
             }
+        }
+        if (full_feature_identity && query_index < labels.size()) {
+            row_qry = row_tbl;
+            col_qry = col_tbl;
         }
 
         if (table_index < labels.size()) {
@@ -1596,24 +2005,63 @@ class EvaluationMemoization {
                 }
             }
             if (!lazy_public_labels.empty()) {
-                for (const auto& point : points) {
-                    std::vector<FieldElement> values;
-                    const bool cache_hit = shared_public_evaluation_cache()->lookup(
-                        context_key_,
-                        context_.domains.fh,
-                        lazy_public_labels,
-                        point,
-                        &values);
-                    if (!cache_hit) {
-                        values = evaluate_lazy_large_fh_public_group(lazy_public_labels, point);
+                std::vector<std::size_t> missing_point_indices;
+                std::vector<std::vector<FieldElement>> cached_values(points.size());
+                missing_point_indices.reserve(points.size());
+                for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
+                    if (!shared_public_evaluation_cache()->lookup(
+                            context_key_,
+                            context_.domains.fh,
+                            lazy_public_labels,
+                            points[point_index],
+                            &cached_values[point_index])) {
+                        missing_point_indices.push_back(point_index);
+                    }
+                }
+                if (!missing_point_indices.empty()) {
+                    std::vector<FieldElement> missing_points;
+                    missing_points.reserve(missing_point_indices.size());
+                    for (const auto point_index : missing_point_indices) {
+                        missing_points.push_back(points[point_index]);
+                    }
+                    const auto missing_values =
+                        missing_points.size() == 1
+                        ? std::vector<std::vector<FieldElement>>{
+                              evaluate_lazy_large_fh_public_group(lazy_public_labels, missing_points.front())}
+                        : evaluate_lazy_large_fh_public_group_points(lazy_public_labels, missing_points);
+                    for (std::size_t i = 0; i < missing_point_indices.size(); ++i) {
+                        cached_values[missing_point_indices[i]] = missing_values[i];
                         shared_public_evaluation_cache()->store(
                             context_key_,
                             context_.domains.fh,
                             lazy_public_labels,
-                            point,
-                            values);
+                            points[missing_point_indices[i]],
+                            cached_values[missing_point_indices[i]]);
                     }
+                }
+                for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
+                    const auto& point = points[point_index];
+                    const auto& values = cached_values[point_index];
                     cache_group_values(lazy_public_labels, point, values);
+                    if (full_graph_feature_identity_enabled(context_)) {
+                        const auto cache_suffix = "@" + point_key(point);
+                        auto seed_alias = [&](std::string_view target, std::string_view source) {
+                            if (std::find(lazy_public_labels.begin(), lazy_public_labels.end(), target)
+                                == lazy_public_labels.end()) {
+                                return;
+                            }
+                            const auto it = std::find(lazy_public_labels.begin(), lazy_public_labels.end(), source);
+                            if (it == lazy_public_labels.end()) {
+                                return;
+                            }
+                            const auto source_index = static_cast<std::size_t>(it - lazy_public_labels.begin());
+                            value_cache_.emplace(std::string(target) + cache_suffix, values[source_index]);
+                        };
+                        seed_alias("P_Q_qry_feat", "P_Q_tbl_feat");
+                        seed_alias("P_Row_feat_qry", "P_Row_feat_tbl");
+                        seed_alias("P_Col_feat_qry", "P_Col_feat_tbl");
+                        seed_alias("P_I_feat_qry", "P_Row_feat_tbl");
+                    }
                 }
             }
         }
@@ -1627,6 +2075,49 @@ class EvaluationMemoization {
                 }
             }
             if (!lazy_trace_labels.empty()) {
+                std::vector<std::string> required_public_labels;
+                required_public_labels.reserve(8);
+                auto append_required_public = [&](std::string_view label) {
+                    if (std::find(required_public_labels.begin(), required_public_labels.end(), label)
+                        == required_public_labels.end()) {
+                        required_public_labels.emplace_back(label);
+                    }
+                };
+                if (std::find(lazy_trace_labels.begin(), lazy_trace_labels.end(), "P_Table_feat")
+                    != lazy_trace_labels.end()) {
+                    append_required_public("P_Row_feat_tbl");
+                    append_required_public("P_Col_feat_tbl");
+                    append_required_public("P_T_H");
+                }
+                if (std::find(lazy_trace_labels.begin(), lazy_trace_labels.end(), "P_Query_feat")
+                    != lazy_trace_labels.end()) {
+                    append_required_public("P_Row_feat_qry");
+                    append_required_public("P_Col_feat_qry");
+                    append_required_public("P_T_H");
+                }
+                if (std::find(lazy_trace_labels.begin(), lazy_trace_labels.end(), "P_m_feat")
+                    != lazy_trace_labels.end()) {
+                    append_required_public("P_Q_qry_feat");
+                }
+                if (std::find(labels.begin(), labels.end(), "P_H") != labels.end()) {
+                    append_required_public("P_T_H");
+                }
+                if (!required_public_labels.empty() && !lazy_large_fh_public_enabled(context_)) {
+                    precompute_named(required_public_labels, points);
+                    for (const auto& point : points) {
+                        const auto cache_suffix = "@" + point_key(point);
+                        for (const auto& label : required_public_labels) {
+                            if (value_cache_.find(label + cache_suffix) == value_cache_.end()) {
+                                value_cache_.emplace(label + cache_suffix, eval_named(label, point));
+                            }
+                        }
+                        if (std::find(labels.begin(), labels.end(), "P_H") != labels.end()) {
+                            if (value_cache_.find("P_H" + cache_suffix) == value_cache_.end()) {
+                                value_cache_.emplace("P_H" + cache_suffix, eval_named("P_T_H", point));
+                            }
+                        }
+                    }
+                }
                 for (const auto& point : points) {
                     cache_group_values(
                         lazy_trace_labels,
