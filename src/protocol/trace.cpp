@@ -618,6 +618,16 @@ bool should_spill_dynamic_polynomial(
     const std::string& name,
     const algebra::Polynomial& polynomial,
     bool keep_trace_payloads) {
+    const bool keep_large_edge_hotpath_in_memory =
+        !keep_trace_payloads
+        && polynomial.basis == algebra::PolynomialBasis::Evaluation
+        && polynomial.domain != nullptr
+        && polynomial.domain->name == "edge"
+        && polynomial.domain->size >= (1ULL << 21)
+        && name.rfind("P_", 0) == 0;
+    if (keep_large_edge_hotpath_in_memory) {
+        return false;
+    }
     return !keep_trace_payloads
         && polynomial.basis == algebra::PolynomialBasis::Evaluation
         && polynomial.domain != nullptr

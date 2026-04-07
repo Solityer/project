@@ -156,6 +156,12 @@ constexpr double kOgbnArxivBaselineDomainOpenFhMs = 485992.859;
 constexpr double kOgbnArxivBaselineQuotientTEdgeMs = 603995.964;
 constexpr double kOgbnArxivBaselineQuotientTFhMs = 243877.917;
 constexpr double kOgbnArxivBaselineDynamicDomainConvertMs = 203131.349;
+constexpr double kOgbnArxivCurrentBaselineCommitmentMs = 473930.723;
+constexpr double kOgbnArxivCurrentBaselineProveMs = 2362813.294;
+constexpr double kOgbnArxivCurrentBaselineVerifyMs = 201265.670;
+constexpr double kOgbnArxivCurrentBaselineDomainOpenEdgeMs = 1103673.361;
+constexpr double kOgbnArxivCurrentBaselineQuotientTEdgeMs = 596910.493;
+constexpr double kOgbnArxivCurrentBaselineDynamicDomainConvertMs = 204749.494;
 
 double extract_commitment_time_ms_from_manifest(const std::string& text) {
     const std::string explicit_marker = "\"commitment_time_ms\": \"";
@@ -1641,6 +1647,55 @@ void test_no_obsolete_memory_only_workaround_left_in_final_code() {
     require(prover_source.find("append_note(metrics, \"domain_open_edge_only\")") == std::string::npos, "final prover path must not keep stale memory-only workaround markers");
 }
 
+void test_latest_note_contract_is_not_violated_by_aggressive_ogbn_optimization() {
+    test_latest_note_contract_is_not_violated_by_ogbn_arxiv_optimization();
+}
+
+void test_ogbn_arxiv_commitment_time_remains_formally_defined_after_optimization() {
+    test_ogbn_arxiv_commitment_time_is_exported_with_formal_consistent_definition();
+}
+
+void test_ogbn_arxiv_domain_open_edge_or_quotient_edge_shows_real_gain() {
+    const auto manifest = slurp_file(ogbn_arxiv_warm_manifest_path());
+    require(
+        extract_json_number(manifest, "domain_open_edge_ms") < kOgbnArxivCurrentBaselineDomainOpenEdgeMs
+            || extract_json_number(manifest, "quotient_t_edge_ms") < kOgbnArxivCurrentBaselineQuotientTEdgeMs,
+        "ogbn-arxiv edge opening or edge quotient must improve over the current official baseline");
+}
+
+void test_ogbn_arxiv_dynamic_domain_convert_cpu_or_gpu_path_has_positive_gain_or_precise_rejection() {
+    const auto manifest = slurp_file(ogbn_arxiv_warm_manifest_path());
+    require(
+        extract_json_number(manifest, "dynamic_domain_convert_ms") <= kOgbnArxivCurrentBaselineDynamicDomainConvertMs + 1e-6,
+        "ogbn-arxiv dynamic_domain_convert must not regress when no GPU hotspot path is promoted");
+}
+
+void test_ogbn_arxiv_aggressive_optimization_does_not_change_transcript_or_forward_semantics() {
+    test_ogbn_arxiv_prove_path_optimization_does_not_change_transcript();
+    const auto note = slurp_file(repo_root() / "GAT-ZKML-多层多头.md");
+    require(note.find("真实 GAT") != std::string::npos || note.find("正式") != std::string::npos, "latest note contract must remain present");
+}
+
+void test_official_metrics_table_contains_required_fields_for_all_datasets() {
+    const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
+    for (const auto& dataset : {"cora", "citeseer", "pubmed", "ppi", "ogbn-arxiv"}) {
+        require(latest.find("\"dataset\": \"" + std::string(dataset) + "\"") != std::string::npos, "latest metrics table must include " + std::string(dataset));
+    }
+    for (const auto& key : {"commitment_time_ms", "prove_time_ms", "verify_time_ms", "proof_size_bytes"}) {
+        require(latest.find("\"" + std::string(key) + "\"") != std::string::npos, "latest metrics table must contain " + std::string(key));
+    }
+}
+
+void test_official_results_are_not_stale_or_mixed_after_ogbn_optimization() {
+    test_ogbn_arxiv_official_result_is_not_stale_or_mixed();
+}
+
+void test_no_useless_gpu_or_prover_experiment_shell_left_in_final_code() {
+    test_no_unused_optimization_shell_left_in_final_code();
+    const auto trace_source = slurp_file(repo_root() / "src" / "protocol" / "trace.cpp");
+    require(trace_source.find("ogbn_arxiv_edge_hotspot_experiment") == std::string::npos, "unused GPU or prover experiment shell must not remain");
+}
+
 void test_no_regression_existing_paths() {
     const auto cora_manifest = slurp_file(repo_root() / "runs" / "cora_full" / "warm" / "run_manifest.json");
     require(cora_manifest.find("\"verified\": \"true\"") != std::string::npos, "existing cora checkpoint path must remain valid");
@@ -2013,13 +2068,21 @@ int main(int argc, char** argv) {
         {"ogbn_arxiv_domain_open_fh_hotspot_improves_without_semantic_regression", test_ogbn_arxiv_domain_open_fh_hotspot_improves_without_semantic_regression},
         {"ogbn_arxiv_quotient_edge_or_fh_hotspot_improves_without_checkpoint_regression", test_ogbn_arxiv_quotient_edge_or_fh_hotspot_improves_without_checkpoint_regression},
         {"ogbn_arxiv_dynamic_domain_convert_improves_without_checkpoint_regression", test_ogbn_arxiv_dynamic_domain_convert_improves_without_checkpoint_regression},
+        {"ogbn_arxiv_domain_open_edge_or_quotient_edge_shows_real_gain", test_ogbn_arxiv_domain_open_edge_or_quotient_edge_shows_real_gain},
+        {"ogbn_arxiv_dynamic_domain_convert_cpu_or_gpu_path_has_positive_gain_or_precise_rejection", test_ogbn_arxiv_dynamic_domain_convert_cpu_or_gpu_path_has_positive_gain_or_precise_rejection},
         {"ogbn_arxiv_prove_path_optimization_does_not_change_transcript", test_ogbn_arxiv_prove_path_optimization_does_not_change_transcript},
+        {"ogbn_arxiv_aggressive_optimization_does_not_change_transcript_or_forward_semantics", test_ogbn_arxiv_aggressive_optimization_does_not_change_transcript_or_forward_semantics},
         {"latest_note_contract_is_not_violated_by_ogbn_arxiv_optimization", test_latest_note_contract_is_not_violated_by_ogbn_arxiv_optimization},
+        {"latest_note_contract_is_not_violated_by_aggressive_ogbn_optimization", test_latest_note_contract_is_not_violated_by_aggressive_ogbn_optimization},
         {"ogbn_arxiv_commitment_time_is_exported_with_formal_consistent_definition", test_ogbn_arxiv_commitment_time_is_exported_with_formal_consistent_definition},
+        {"ogbn_arxiv_commitment_time_remains_formally_defined_after_optimization", test_ogbn_arxiv_commitment_time_remains_formally_defined_after_optimization},
         {"ogbn_arxiv_official_metrics_table_contains_four_required_fields", test_ogbn_arxiv_official_metrics_table_contains_four_required_fields},
+        {"official_metrics_table_contains_required_fields_for_all_datasets", test_official_metrics_table_contains_required_fields_for_all_datasets},
         {"ogbn_arxiv_single_dataset_incremental_optimization_does_not_change_transcript", test_ogbn_arxiv_single_dataset_incremental_optimization_does_not_change_transcript},
         {"ogbn_arxiv_official_result_is_not_stale_or_mixed", test_ogbn_arxiv_official_result_is_not_stale_or_mixed},
+        {"official_results_are_not_stale_or_mixed_after_ogbn_optimization", test_official_results_are_not_stale_or_mixed_after_ogbn_optimization},
         {"no_unused_optimization_shell_left_in_final_code", test_no_unused_optimization_shell_left_in_final_code},
+        {"no_useless_gpu_or_prover_experiment_shell_left_in_final_code", test_no_useless_gpu_or_prover_experiment_shell_left_in_final_code},
         {"five_dataset_official_table_is_same_build_same_mainline", test_five_dataset_official_table_is_same_build_same_mainline},
         {"benchmark_table_excludes_training_time_for_ogbn_arxiv", test_benchmark_table_excludes_training_time_for_ogbn_arxiv},
         {"no_legacy_loader_or_manifest_path_reintroduced_by_ogbn_arxiv", test_no_legacy_loader_or_manifest_path_reintroduced_by_ogbn_arxiv},

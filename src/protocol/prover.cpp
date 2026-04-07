@@ -1011,7 +1011,7 @@ SharedProofEvaluationBackendRegistryCache& shared_proof_backend_registry_cache()
 FieldElement evaluate_spilled_evaluation_polynomial(
     const TraceArtifacts::SpilledEvaluationPolynomial& spilled,
     const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
-    const FieldElement& point,
+    const FieldElement& /*point*/,
     const DomainEvaluationWeights& weight_entry) {
     if (domain == nullptr) {
         throw std::runtime_error("spilled polynomial is missing its domain");
