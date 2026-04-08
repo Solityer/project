@@ -1,97 +1,144 @@
 #pragma once
 
 #include <cstdint>
+#include <mcl/bn.hpp>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include <mcl/bn.hpp>
-
 #include "gatzk/algebra/packed_field.hpp"
 #include "gatzk/algebra/polynomial.hpp"
 
-namespace gatzk::algebra {
+// 为多个多项式在单位根域上的求值提供高效计算
+namespace gatzk::algebra
+{
+    // 设备端（如GPU）字段缓冲区
+    struct DeviceFieldBufferLease
+    {
+        std::shared_ptr<void> storage;
+        std::size_t count = 0;
 
-struct DeviceFieldBufferLease {
-    std::shared_ptr<void> storage;
-    std::size_t count = 0;
+        bool empty() const
+        {
+            return storage == nullptr || count == 0;
+        }
+    };
 
-    bool empty() const { return storage == nullptr || count == 0; }
-};
+    // 设备端的评估结果
+    struct PackedEvaluationDeviceResult
+    {
+        DeviceFieldBufferLease buffer;
+        std::size_t row_count = 0;
+        std::size_t point_count = 1;
 
-struct PackedEvaluationDeviceResult {
-    DeviceFieldBufferLease buffer;
-    std::size_t row_count = 0;
-    std::size_t point_count = 1;
+        bool empty() const
+        {
+            return buffer.empty() || row_count == 0 || point_count == 0;
+        }
+    };
 
-    bool empty() const { return buffer.empty() || row_count == 0 || point_count == 0; }
-};
+    // 预计算多个多项式在单位根域上的值
+    class PackedEvaluationBackend
+    {
+    public:
+        PackedEvaluationBackend(
+            std::shared_ptr<RootOfUnityDomain> domain,
+            // polynomials: 多个多项式的标签-指针列表，每个多项式将在此域上求值
+            std::vector<std::pair<std::string, const Polynomial*>> polynomials);
 
-class PackedEvaluationBackend {
-  public:
-    PackedEvaluationBackend(
-        std::shared_ptr<RootOfUnityDomain> domain,
-        std::vector<std::pair<std::string, const Polynomial*>> polynomials);
+        const std::shared_ptr<RootOfUnityDomain>& domain() const
+        {
+            return domain_;
+        }
 
-    const std::shared_ptr<RootOfUnityDomain>& domain() const { return domain_; }
-    const std::vector<std::pair<std::string, const Polynomial*>>& polynomials() const { return polynomials_; }
-    const std::vector<mcl::Fr>& packed_values_native() const { return packed_values_; }
-    std::vector<std::size_t> resolve_row_indices(const std::vector<std::string>& labels) const;
-    std::vector<FieldElement> values_at_direct_index(const std::vector<std::string>& labels, std::size_t index) const;
-    std::vector<FieldElement> evaluate_with_weights(
-        const std::vector<std::string>& labels,
-        const std::vector<FieldElement>& weights) const;
-    std::vector<FieldElement> evaluate_with_native_weights(
-        const std::vector<std::string>& labels,
-        const std::vector<mcl::Fr>& weights) const;
-    std::vector<FieldElement> evaluate_with_packed_native_weights(
-        const std::vector<std::string>& labels,
-        const std::vector<mcl::Fr>& weights,
-        const PackedFieldBuffer& packed_weights) const;
-    PackedEvaluationDeviceResult evaluate_device_with_packed_native_weights(
-        const std::vector<std::string>& labels,
-        const std::vector<mcl::Fr>& weights,
-        const PackedFieldBuffer& packed_weights) const;
-    std::vector<std::vector<FieldElement>> evaluate_with_weight_rotations(
-        const std::vector<std::string>& labels,
-        const std::vector<FieldElement>& representative_weights,
-        const std::vector<std::size_t>& rotations) const;
-    std::vector<std::vector<FieldElement>> evaluate_with_native_weight_rotations(
-        const std::vector<std::string>& labels,
-        const std::vector<mcl::Fr>& representative_weights,
-        const std::vector<std::size_t>& rotations) const;
-    std::vector<std::vector<FieldElement>> evaluate_with_packed_native_weight_rotations(
-        const std::vector<std::string>& labels,
-        const std::vector<mcl::Fr>& representative_weights,
-        const PackedFieldBuffer& representative_weights_packed,
-        const std::vector<std::size_t>& rotations) const;
-    PackedEvaluationDeviceResult evaluate_device_with_packed_native_weight_rotations(
-        const std::vector<std::string>& labels,
-        const std::vector<mcl::Fr>& representative_weights,
-        const PackedFieldBuffer& representative_weights_packed,
-        const std::vector<std::size_t>& rotations) const;
-    std::vector<FieldElement> materialize_device_result(const PackedEvaluationDeviceResult& result) const;
-    std::vector<std::vector<FieldElement>> materialize_device_rotation_result(
-        const PackedEvaluationDeviceResult& result) const;
-    const PackedFieldBuffer& packed_values_device_ready() const;
-    const std::vector<std::size_t>& subset_row_indices(const std::vector<std::string>& labels) const;
-    const std::vector<std::uint32_t>& subset_row_indices_u32(const std::vector<std::string>& labels) const;
-    const PackedFieldBuffer* subset_packed_values_device_ready(const std::vector<std::string>& labels) const;
+        const std::vector<std::pair<std::string, const Polynomial*>>& polynomials() const
+        {
+            return polynomials_;
+        }
 
-  private:
-    struct SubsetView;
-    struct SubsetCacheState;
+        const std::vector<mcl::Fr>& packed_values_native() const
+        {
+            return packed_values_;
+        }
 
-    const SubsetView& subset_for(const std::vector<std::string>& labels) const;
+        // 根据标签列表，解析出这些标签对应的行索引
+        std::vector<std::size_t> resolve_row_indices(const std::vector<std::string>& labels) const;
+        std::vector<FieldElement> values_at_direct_index(const std::vector<std::string>& labels, std::size_t index) const;
+        
+        // 使用普通权重向量计算加权和
+        std::vector<FieldElement> evaluate_with_weights(
+            const std::vector<std::string>& labels,
+            const std::vector<FieldElement>& weights) const;
 
-    std::shared_ptr<RootOfUnityDomain> domain_;
-    std::vector<std::pair<std::string, const Polynomial*>> polynomials_;
-    std::unordered_map<std::string, std::size_t> label_to_index_;
-    std::vector<mcl::Fr> packed_values_;
-    mutable PackedFieldBuffer packed_values_packed_;
-    mutable std::shared_ptr<SubsetCacheState> subset_cache_state_;
-};
+        // 使用原生权重向量（mcl::Fr）计算加权和
+        std::vector<FieldElement> evaluate_with_native_weights(
+            const std::vector<std::string>& labels,
+            const std::vector<mcl::Fr>& weights) const;
+        
+        // 使用打包好的原生权重计算加权和
+        std::vector<FieldElement> evaluate_with_packed_native_weights(
+            const std::vector<std::string>& labels,
+            const std::vector<mcl::Fr>& weights,
+            const PackedFieldBuffer& packed_weights) const;
 
-}  // namespace gatzk::algebra
+        // 设备端计算加权和，结果直接留在设备缓冲区中，返回设备结果句柄
+        PackedEvaluationDeviceResult evaluate_device_with_packed_native_weights(
+            const std::vector<std::string>& labels,
+            const std::vector<mcl::Fr>& weights,
+            const PackedFieldBuffer& packed_weights) const;
+
+
+        std::vector<std::vector<FieldElement>> evaluate_with_weight_rotations(
+            const std::vector<std::string>& labels,
+            const std::vector<FieldElement>& representative_weights,
+            const std::vector<std::size_t>& rotations) const;
+  
+        std::vector<std::vector<FieldElement>> evaluate_with_native_weight_rotations(
+            const std::vector<std::string>& labels,
+            const std::vector<mcl::Fr>& representative_weights,
+            const std::vector<std::size_t>& rotations) const;
+
+        std::vector<std::vector<FieldElement>> evaluate_with_packed_native_weight_rotations(
+            const std::vector<std::string>& labels,
+            const std::vector<mcl::Fr>& representative_weights,
+            const PackedFieldBuffer& representative_weights_packed,
+            const std::vector<std::size_t>& rotations) const;
+
+        PackedEvaluationDeviceResult evaluate_device_with_packed_native_weight_rotations(
+            const std::vector<std::string>& labels,
+            const std::vector<mcl::Fr>& representative_weights,
+            const PackedFieldBuffer& representative_weights_packed,
+            const std::vector<std::size_t>& rotations) const;
+
+        // 将设备端的结果拷贝回主机，展开为一个平面向量
+        std::vector<FieldElement> materialize_device_result(const PackedEvaluationDeviceResult& result) const;
+
+        // 将设备端的旋转结果（多行多列）拷贝回主机，按旋转分组展开为二维向量
+        std::vector<std::vector<FieldElement>> materialize_device_rotation_result(
+            const PackedEvaluationDeviceResult& result) const;
+
+        const PackedFieldBuffer& packed_values_device_ready() const;
+
+        // 返回指定标签子集的行索引
+        const std::vector<std::size_t>& subset_row_indices(const std::vector<std::string>& labels) const;
+        const std::vector<std::uint32_t>& subset_row_indices_u32(const std::vector<std::string>& labels) const;
+
+        const PackedFieldBuffer* subset_packed_values_device_ready(const std::vector<std::string>& labels) const;
+
+    private:
+        struct SubsetView;
+        struct SubsetCacheState;
+
+        const SubsetView& subset_for(const std::vector<std::string>& labels) const;
+
+        std::shared_ptr<RootOfUnityDomain> domain_;
+        std::vector<std::pair<std::string, const Polynomial*>> polynomials_;
+        std::unordered_map<std::string, std::size_t> label_to_index_;
+        std::vector<mcl::Fr> packed_values_;
+        mutable PackedFieldBuffer packed_values_packed_;
+        mutable std::shared_ptr<SubsetCacheState> subset_cache_state_;
+    };
+
+}
