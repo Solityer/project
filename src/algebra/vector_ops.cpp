@@ -9,219 +9,263 @@
 
 #include "gatzk/util/route2.hpp"
 
-namespace gatzk::algebra {
+namespace gatzk::algebra
+{
+// 如果编译时启用了 CUDA 后端，则声明 CUDA 实现的点积函数
 #if GATZK_ENABLE_CUDA_BACKEND
-FieldElement dot_product_cuda(
-    const std::vector<FieldElement>& lhs,
-    const std::vector<FieldElement>& rhs);
-FieldElement dot_product_native_weights_cuda(
-    const std::vector<FieldElement>& lhs,
-    const PackedFieldBuffer& packed_rhs);
-bool cuda_backend_runtime_available();
+    // 使用CUDA计算两个域元素向量的点积
+    FieldElement dot_product_cuda(
+        const std::vector<FieldElement>& lhs,
+        const std::vector<FieldElement>& rhs);
+    // 使用CUDA计算左向量（FieldElement）与右向量（打包的 mcl::Fr）的点积
+    FieldElement dot_product_native_weights_cuda(
+        const std::vector<FieldElement>& lhs,
+        const PackedFieldBuffer& packed_rhs);
+    bool cuda_backend_runtime_available();
 #endif
 
-namespace {
+    namespace
+    {
 
-AlgebraBackend parse_backend_env() {
-    const char* value = std::getenv("GATZK_ALGEBRA_BACKEND");
-    if (value == nullptr) {
-        return AlgebraBackend::Cpu;
-    }
-    const std::string backend(value);
-    if (backend == "cpu") {
-        return AlgebraBackend::Cpu;
-    }
-    if (backend == "cuda") {
-        return AlgebraBackend::Cuda;
-    }
-    throw std::runtime_error("unsupported GATZK_ALGEBRA_BACKEND value: " + backend);
-}
+        AlgebraBackend parse_backend_env()
+        {
+            const char* value = std::getenv("GATZK_ALGEBRA_BACKEND");
+            if (value == nullptr)
+            {
+                // 如果环境变量未设置，默认返回CPU后端
+                return AlgebraBackend::Cpu;
+            }
+            const std::string backend(value);
 
-bool cuda_dot_products_enabled() {
-    const char* value = std::getenv("GATZK_ENABLE_CUDA_DOT_PRODUCTS");
-    return value != nullptr && std::string(value) == "1";
-}
-
-bool should_use_cuda_dot_product(std::size_t size) {
-    return configured_algebra_backend() == AlgebraBackend::Cuda
-        && cuda_dot_products_enabled()
-        && size >= 1024;
-}
-
-FieldElement dot_product_range(
-    const std::vector<FieldElement>& lhs,
-    const std::vector<FieldElement>& rhs,
-    std::size_t begin,
-    std::size_t end) {
-    mcl::Fr sum;
-    sum.clear();
-    for (std::size_t i = begin; i < end; ++i) {
-        mcl::Fr term;
-        mcl::Fr::mul(term, lhs[i].native(), rhs[i].native());
-        mcl::Fr::add(sum, sum, term);
-    }
-    return FieldElement::from_native(sum);
-}
-
-FieldElement dot_product_native_range(
-    const std::vector<FieldElement>& lhs,
-    const std::vector<mcl::Fr>& rhs,
-    std::size_t begin,
-    std::size_t end) {
-    mcl::Fr sum;
-    sum.clear();
-    for (std::size_t i = begin; i < end; ++i) {
-        mcl::Fr term;
-        mcl::Fr::mul(term, lhs[i].native(), rhs[i]);
-        mcl::Fr::add(sum, sum, term);
-    }
-    return FieldElement::from_native(sum);
-}
-
-}  // namespace
-
-AlgebraBackend configured_algebra_backend() {
-    static const auto backend = parse_backend_env();
-    return backend;
-}
-
-std::string configured_algebra_backend_name() {
-    return configured_algebra_backend() == AlgebraBackend::Cuda ? "cuda" : "cpu";
-}
-
-bool cuda_backend_available() {
-#if GATZK_ENABLE_CUDA_BACKEND
-    return cuda_backend_runtime_available();
-#else
-    return false;
-#endif
-}
-
-FieldElement dot_product(
-    const std::vector<FieldElement>& lhs,
-    const std::vector<FieldElement>& rhs) {
-    if (lhs.size() != rhs.size()) {
-        throw std::runtime_error("dot product size mismatch");
-    }
-    if (lhs.empty()) {
-        return FieldElement::zero();
-    }
-
-    if (should_use_cuda_dot_product(lhs.size())) {
-#if GATZK_ENABLE_CUDA_BACKEND
-        return dot_product_cuda(lhs, rhs);
-#else
-        throw std::runtime_error("CUDA algebra backend requested but this build was compiled without CUDA support");
-#endif
-    }
-
-    const auto& route2 = util::route2_options();
-    const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-    if (!route2.parallel_fft || lhs.size() < 1024 || cpu_count == 1) {
-        return dot_product_range(lhs, rhs, 0, lhs.size());
-    }
-
-    // The current protocol pipeline stores many witness polynomials directly in
-    // evaluation form. For this codebase, the safe Route 2 landing point for a
-    // "parallel FFT/NTT" switch is therefore the large domain dot-product and
-    // sweep backend that dominates opening/quotient time, not a protocol-level
-    // change to the domains or polynomial objects.
-    const auto task_count = std::min<std::size_t>(cpu_count, lhs.size() / 512);
-    if (task_count <= 1) {
-        return dot_product_range(lhs, rhs, 0, lhs.size());
-    }
-
-    std::vector<std::future<FieldElement>> futures;
-    futures.reserve(task_count);
-    const auto chunk_size = (lhs.size() + task_count - 1) / task_count;
-    for (std::size_t task = 0; task < task_count; ++task) {
-        const auto begin = task * chunk_size;
-        const auto end = std::min(lhs.size(), begin + chunk_size);
-        if (begin >= end) {
-            break;
+            if (backend == "cpu")
+            {
+                return AlgebraBackend::Cpu;
+            }
+            if (backend == "cuda")
+            {
+                return AlgebraBackend::Cuda;
+            }
+            throw std::runtime_error("unsupported GATZK_ALGEBRA_BACKEND value: " + backend);
         }
-        futures.push_back(std::async(
-            std::launch::async,
-            [&lhs, &rhs, begin, end]() {
-                return dot_product_range(lhs, rhs, begin, end);
-            }));
+
+        // 控制是否在点积中使用CUDA
+        bool cuda_dot_products_enabled()
+        {
+            const char* value = std::getenv("GATZK_ENABLE_CUDA_DOT_PRODUCTS");
+            return value != nullptr && std::string(value) == "1";
+        }
+
+        // 判断是否应该使用CUDA计算点积
+        bool should_use_cuda_dot_product(std::size_t size)
+        {
+            return configured_algebra_backend() == AlgebraBackend::Cuda && cuda_dot_products_enabled() && size >= 1024;
+        }
+
+        // 串行计算两个域元素向量在区间[begin, end)上的点积
+        FieldElement dot_product_range(
+            const std::vector<FieldElement>& lhs,
+            const std::vector<FieldElement>& rhs,
+            std::size_t begin,
+            std::size_t end)
+        {
+            mcl::Fr sum;
+            sum.clear();
+            for (std::size_t i = begin; i < end; ++i)
+            {
+                mcl::Fr term;
+                mcl::Fr::mul(term, lhs[i].native(), rhs[i].native());
+                mcl::Fr::add(sum, sum, term);
+            }
+            return FieldElement::from_native(sum);
+        }
+
+        // 串行计算域元素向量与mcl::Fr向量在区间[begin, end)上的点积
+        FieldElement dot_product_native_range(
+            const std::vector<FieldElement>& lhs,
+            const std::vector<mcl::Fr>& rhs,
+            std::size_t begin,
+            std::size_t end)
+        {
+            mcl::Fr sum;
+            sum.clear();
+            for (std::size_t i = begin; i < end; ++i)
+            {
+                mcl::Fr term;
+                mcl::Fr::mul(term, lhs[i].native(), rhs[i]);
+                mcl::Fr::add(sum, sum, term);
+            }
+            return FieldElement::from_native(sum);
+        }
+
     }
 
-    FieldElement sum = FieldElement::zero();
-    for (auto& future : futures) {
-        sum += future.get();
+    // 返回当前配置的代数后端
+    AlgebraBackend configured_algebra_backend()
+    {
+        static const auto backend = parse_backend_env();
+        return backend;
     }
-    return sum;
-}
 
-FieldElement dot_product_native_weights(
-    const std::vector<FieldElement>& lhs,
-    const std::vector<mcl::Fr>& rhs) {
-    if (should_use_cuda_dot_product(lhs.size())) {
+    // 返回当前后端名称的字符串："cuda" 或 "cpu"
+    std::string configured_algebra_backend_name()
+    {
+        return configured_algebra_backend() == AlgebraBackend::Cuda ? "cuda" : "cpu";
+    }
+
+    bool cuda_backend_available()
+    {
 #if GATZK_ENABLE_CUDA_BACKEND
-        const auto packed_rhs = pack_native_field_elements(rhs);
-        return dot_product_native_weights_cuda(lhs, packed_rhs);
+        return cuda_backend_runtime_available();
 #else
-        throw std::runtime_error("CUDA algebra backend requested but this build was compiled without CUDA support");
+        return false;
 #endif
     }
-    return dot_product_packed_native_weights(lhs, rhs, PackedFieldBuffer());
-}
 
-FieldElement dot_product_packed_native_weights(
-    const std::vector<FieldElement>& lhs,
-    const std::vector<mcl::Fr>& rhs,
-    const PackedFieldBuffer& packed_rhs) {
-    if (lhs.size() != rhs.size()) {
-        throw std::runtime_error("dot product size mismatch");
-    }
-    if (lhs.empty()) {
-        return FieldElement::zero();
-    }
+    // 计算两个域元素向量的点积（自动选择CPU串行、CPU并行或CUDA）
+    FieldElement dot_product(
+        const std::vector<FieldElement>& lhs,
+        const std::vector<FieldElement>& rhs)
+    {
+        if (lhs.size() != rhs.size())
+        {
+            throw std::runtime_error("dot product size mismatch");
+        }
+        if (lhs.empty())
+        {
+            return FieldElement::zero();
+        }
 
-    if (should_use_cuda_dot_product(lhs.size())) {
+        if (should_use_cuda_dot_product(lhs.size()))
+        {
 #if GATZK_ENABLE_CUDA_BACKEND
-        if (packed_rhs.size() != rhs.size()) {
-            throw std::runtime_error("dot product packed weight size mismatch");
-        }
-        return dot_product_native_weights_cuda(lhs, packed_rhs);
+            return dot_product_cuda(lhs, rhs);
 #else
-        throw std::runtime_error("CUDA algebra backend requested but this build was compiled without CUDA support");
+            throw std::runtime_error("CUDA algebra backend requested but this build was compiled without CUDA support");
 #endif
-    }
-
-    const auto& route2 = util::route2_options();
-    const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-    if (!route2.parallel_fft || lhs.size() < 1024 || cpu_count == 1) {
-        return dot_product_native_range(lhs, rhs, 0, lhs.size());
-    }
-
-    const auto task_count = std::min<std::size_t>(cpu_count, lhs.size() / 512);
-    if (task_count <= 1) {
-        return dot_product_native_range(lhs, rhs, 0, lhs.size());
-    }
-
-    std::vector<std::future<FieldElement>> futures;
-    futures.reserve(task_count);
-    const auto chunk_size = (lhs.size() + task_count - 1) / task_count;
-    for (std::size_t task = 0; task < task_count; ++task) {
-        const auto begin = task * chunk_size;
-        const auto end = std::min(lhs.size(), begin + chunk_size);
-        if (begin >= end) {
-            break;
         }
-        futures.push_back(std::async(
-            std::launch::async,
-            [&lhs, &rhs, begin, end]() {
-                return dot_product_native_range(lhs, rhs, begin, end);
-            }));
+
+        const auto& route2 = util::route2_options();
+        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+        if (!route2.parallel_fft || lhs.size() < 1024 || cpu_count == 1)
+        {
+            return dot_product_range(lhs, rhs, 0, lhs.size());
+        }
+
+        // 决定并行任务数：最多cpu_count个，每个任务至少处理512个元素
+        const auto task_count = std::min<std::size_t>(cpu_count, lhs.size() / 512);
+        if (task_count <= 1)
+        {
+            return dot_product_range(lhs, rhs, 0, lhs.size());
+        }
+
+        std::vector<std::future<FieldElement>> futures;
+        futures.reserve(task_count);
+        const auto chunk_size = (lhs.size() + task_count - 1) / task_count;
+        for (std::size_t task = 0; task < task_count; ++task)
+        {
+            const auto begin = task * chunk_size;
+            const auto end = std::min(lhs.size(), begin + chunk_size);
+            if (begin >= end)
+            {
+                break;
+            }
+            futures.push_back(std::async(
+                std::launch::async,
+                [&lhs, &rhs, begin, end]() {
+                    return dot_product_range(lhs, rhs, begin, end);
+                }));
+        }
+
+        FieldElement sum = FieldElement::zero();
+        for (auto& future : futures)
+        {
+            sum += future.get();
+        }
+        return sum;
     }
 
-    FieldElement sum = FieldElement::zero();
-    for (auto& future : futures) {
-        sum += future.get();
+    // 计算左向量（FieldElement）与右向量（mcl::Fr 原生权重）的点积
+    FieldElement dot_product_native_weights(
+        const std::vector<FieldElement>& lhs,
+        const std::vector<mcl::Fr>& rhs)
+    {
+        if (should_use_cuda_dot_product(lhs.size()))
+        {
+#if GATZK_ENABLE_CUDA_BACKEND
+            const auto packed_rhs = pack_native_field_elements(rhs);
+            return dot_product_native_weights_cuda(lhs, packed_rhs);
+#else
+            throw std::runtime_error("CUDA algebra backend requested but this build was compiled without CUDA support");
+#endif
+        }
+        return dot_product_packed_native_weights(lhs, rhs, PackedFieldBuffer());
     }
-    return sum;
+
+    // 计算左向量与右向量的点积，右向量已打包（通常用于GPU计算，但此函数也支持CPU回退）
+    FieldElement dot_product_packed_native_weights(
+        const std::vector<FieldElement>& lhs,
+        const std::vector<mcl::Fr>& rhs,
+        const PackedFieldBuffer& packed_rhs)
+    {
+        if (lhs.size() != rhs.size())
+        {
+            throw std::runtime_error("dot product size mismatch");
+        }
+        if (lhs.empty())
+        {
+            return FieldElement::zero();
+        }
+
+        if (should_use_cuda_dot_product(lhs.size()))
+        {
+#if GATZK_ENABLE_CUDA_BACKEND
+            if (packed_rhs.size() != rhs.size())
+            {
+                throw std::runtime_error("dot product packed weight size mismatch");
+            }
+            return dot_product_native_weights_cuda(lhs, packed_rhs);
+#else
+            throw std::runtime_error("CUDA algebra backend requested but this build was compiled without CUDA support");
+#endif
+        }
+
+        // CPU路径：与dot_product_native_weights逻辑相同，但使用rhs而非打包版本
+        const auto& route2 = util::route2_options();
+        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+        if (!route2.parallel_fft || lhs.size() < 1024 || cpu_count == 1)
+        {
+            return dot_product_native_range(lhs, rhs, 0, lhs.size());
+        }
+
+        const auto task_count = std::min<std::size_t>(cpu_count, lhs.size() / 512);
+        if (task_count <= 1)
+        {
+            return dot_product_native_range(lhs, rhs, 0, lhs.size());
+        }
+
+        std::vector<std::future<FieldElement>> futures;
+        futures.reserve(task_count);
+        const auto chunk_size = (lhs.size() + task_count - 1) / task_count;
+        for (std::size_t task = 0; task < task_count; ++task)
+        {
+            const auto begin = task * chunk_size;
+            const auto end = std::min(lhs.size(), begin + chunk_size);
+            if (begin >= end)
+            {
+                break;
+            }
+            futures.push_back(std::async(
+                std::launch::async,
+                [&lhs, &rhs, begin, end]() {
+                    return dot_product_native_range(lhs, rhs, begin, end);
+                }));
+        }
+
+        FieldElement sum = FieldElement::zero();
+        for (auto& future : futures)
+        {
+            sum += future.get();
+        }
+        return sum;
+    }
 }
-
-}  // namespace gatzk::algebra
