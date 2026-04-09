@@ -94,8 +94,12 @@ std::string verifier_quotient_cache_key(
 }
 
 bool lazy_large_fh_public_enabled(const ProtocolContext& context) {
-    return (context.config.dataset == "ogbn_arxiv" || context.config.dataset == "ogbn-arxiv")
-        && context.config.batching_rule == "whole_graph_single";
+    constexpr std::size_t kMinLazyLargeFhDomainSize = 1ULL << 24;
+    return context.config.batching_rule == "whole_graph_single"
+        && context.local.num_nodes == context.dataset.num_nodes
+        && context.local.num_features == context.dataset.num_features
+        && context.domains.fh != nullptr
+        && context.domains.fh->size >= kMinLazyLargeFhDomainSize;
 }
 
 bool is_lazy_large_fh_public_label(const std::string& name) {

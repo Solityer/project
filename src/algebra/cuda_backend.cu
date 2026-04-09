@@ -67,11 +67,12 @@ std::vector<FieldElement> evaluate_with_weights_cpu(
         if (polynomial == nullptr) {
             throw std::runtime_error("cuda shim evaluation missing polynomial");
         }
+        const auto& values = polynomial->values();
         mcl::Fr sum;
         sum.clear();
         for (std::size_t column = 0; column < weights.size(); ++column) {
             mcl::Fr term;
-            mcl::Fr::mul(term, polynomial->data[column].native(), weights[column]);
+            mcl::Fr::mul(term, values[column].native(), weights[column]);
             mcl::Fr::add(sum, sum, term);
         }
         out[row] = FieldElement::from_native(sum);
@@ -98,12 +99,13 @@ std::vector<std::vector<FieldElement>> evaluate_with_rotations_cpu(
             if (polynomial == nullptr) {
                 throw std::runtime_error("cuda shim rotated evaluation missing polynomial");
             }
+            const auto& values = polynomial->values();
             mcl::Fr sum;
             sum.clear();
             for (std::size_t column = 0; column < representative_weights.size(); ++column) {
                 const auto rotated_column = (column + rotations[point_index]) & domain_mask;
                 mcl::Fr term;
-                mcl::Fr::mul(term, polynomial->data[rotated_column].native(), representative_weights[column]);
+                mcl::Fr::mul(term, values[rotated_column].native(), representative_weights[column]);
                 mcl::Fr::add(sum, sum, term);
             }
             out[point_index][row] = FieldElement::from_native(sum);

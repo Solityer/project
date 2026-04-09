@@ -105,9 +105,11 @@ namespace gatzk::algebra
             {
                 throw std::runtime_error("packed evaluation backend requires same-domain evaluation polynomials");
             }
-            for (std::size_t column = 0; column < domain_->size; ++column)
+            const auto& values = polynomial->values();
+            const auto column_count = std::min(values.size(), domain_->size);
+            for (std::size_t column = 0; column < column_count; ++column)
             {
-                packed_values_[column * row_count + row] = polynomial->data[column].native();
+                packed_values_[column * row_count + row] = values[column].native();
             }
         }
     }
@@ -220,7 +222,8 @@ namespace gatzk::algebra
         out.reserve(labels.size());
         for (const auto row_index : subset_for(labels).row_indices)
         {
-            out.push_back(polynomials_[row_index].second->data.at(index));
+            const auto& values = polynomials_[row_index].second->values();
+            out.push_back(values.at(index));
         }
         return out;
     }

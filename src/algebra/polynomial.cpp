@@ -366,9 +366,9 @@ namespace gatzk::algebra
         std::vector<FieldElement> evaluations,
         const std::shared_ptr<RootOfUnityDomain>& domain)
     {
-        if (domain == nullptr || evaluations.size() != domain->size)
+        if (domain == nullptr || evaluations.size() > domain->size)
         {
-            throw std::runtime_error("evaluation polynomial requires a matching domain");
+            throw std::runtime_error("evaluation polynomial requires a compatible domain");
         }
         Polynomial out;
         out.name = name;
@@ -376,6 +376,38 @@ namespace gatzk::algebra
         out.data = std::move(evaluations);
         out.domain = domain;
         return out;
+    }
+
+    Polynomial Polynomial::from_shared_evaluations(
+        const std::string& name,
+        std::shared_ptr<const std::vector<FieldElement>> evaluations,
+        const std::shared_ptr<RootOfUnityDomain>& domain)
+    {
+        if (domain == nullptr || evaluations == nullptr || evaluations->size() > domain->size)
+        {
+            throw std::runtime_error("evaluation polynomial requires a compatible shared domain");
+        }
+        Polynomial out;
+        out.name = name;
+        out.basis = PolynomialBasis::Evaluation;
+        out.shared_data = std::move(evaluations);
+        out.domain = domain;
+        return out;
+    }
+
+    const std::vector<FieldElement>& Polynomial::values() const
+    {
+        return shared_data != nullptr ? *shared_data : data;
+    }
+
+    std::size_t Polynomial::size() const
+    {
+        return shared_data != nullptr ? shared_data->size() : data.size();
+    }
+
+    const FieldElement& Polynomial::value_at(std::size_t index) const
+    {
+        return shared_data != nullptr ? shared_data->at(index) : data.at(index);
     }
 
     // 计算多项式在 x 处的值
@@ -394,6 +426,8 @@ namespace gatzk::algebra
             throw std::runtime_error("evaluation polynomial is missing its domain");
         }
 
+        const auto& values_ref = values();
+
         // 如果 x 恰好是域上的一个已知点，直接返回对应值
         if (domain->points_precomputed)
         {
@@ -401,15 +435,15 @@ namespace gatzk::algebra
             {
                 if (domain->points[i] == x)
                 {
-                    return data[i];
+                    return i < values_ref.size() ? values_ref[i] : FieldElement::zero();
                 }
             }
         }
         else if (const auto shift = domain->rotation_shift(FieldElement::one(), x); shift.has_value())
         {
-            if (*shift < data.size())
+            if (*shift < values_ref.size())
             {
-                return data[*shift];
+                return values_ref[*shift];
             }
         }
 
@@ -419,10 +453,10 @@ namespace gatzk::algebra
         const FieldElement zero_eval = domain->zero_polynomial_eval(x);
         FieldElement sum = FieldElement::zero();
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-        if (domain->points_precomputed && route2.parallel_fft && data.size() >= 1024 && cpu_count > 1)
+        if (domain->points_precomputed && route2.parallel_fft && values_ref.size() >= 1024 && cpu_count > 1)
         {
-            const auto task_count = std::min<std::size_t>(cpu_count, data.size() / 512);
-            const auto chunk_size = task_count > 1 ? (data.size() + task_count - 1) / task_count : data.size();
+            const auto task_count = std::min<std::size_t>(cpu_count, values_ref.size() / 512);
+            const auto chunk_size = task_count > 1 ? (values_ref.size() + task_count - 1) / task_count : values_ref.size();
             if (task_count > 1)
             {
                 std::vector<std::future<FieldElement>> futures;
@@ -430,7 +464,7 @@ namespace gatzk::algebra
                 for (std::size_t task = 0; task < task_count; ++task)
                 {
                     const auto begin = task * chunk_size;
-                    const auto end = std::min(data.size(), begin + chunk_size);
+                    const auto end = std::min(values_ref.size(), begin + chunk_size);
                     if (begin >= end)
                     {
                         break;
@@ -438,7 +472,7 @@ namespace gatzk::algebra
                     futures.push_back(std::async(
                         std::launch::async,
                         [&, begin, end]() {
-                            return barycentric_sum_range(data, domain->points, x, begin, end);
+                            return barycentric_sum_range(values_ref, domain->points, x, begin, end);
                         }));
                 }
                 for (auto& future : futures)
@@ -449,10 +483,10 @@ namespace gatzk::algebra
             }
         }
         FieldElement point = FieldElement::one();
-        for (std::size_t i = 0; i < data.size(); ++i)
+        for (std::size_t i = 0; i < values_ref.size(); ++i)
         {
             const auto current_point = domain->points_precomputed ? domain->points[i] : point;
-            sum += data[i] * current_point / (x - current_point);
+            sum += values_ref[i] * current_point / (x - current_point);
             if (!domain->points_precomputed)
             {
                 point *= domain->omega;

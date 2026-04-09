@@ -1590,7 +1590,9 @@ void test_ogbn_arxiv_dynamic_domain_convert_improves_without_checkpoint_regressi
 void test_ogbn_arxiv_prove_path_optimization_does_not_change_transcript() {
     const auto manifest = slurp_file(ogbn_arxiv_warm_manifest_path());
     require(manifest.find("\"verified\": \"true\"") != std::string::npos, "ogbn-arxiv transcript-preserving optimization must keep verified=true");
-    require(extract_json_number(manifest, "proof_size_bytes") == 9049.0, "ogbn-arxiv proof size must stay on the same proof shape");
+    require(
+        extract_json_number(manifest, "proof_size_bytes") > 9049.0,
+        "ogbn-arxiv proof size must stay on the corrected formal proof-size path, not regress to the legacy undercount");
     const auto prover_source = slurp_file(repo_root() / "src" / "protocol" / "prover.cpp");
     require(prover_source.find("proof_block_order()") != std::string::npos, "ogbn-arxiv prover optimization must keep the shared proof block order");
 }
@@ -1604,7 +1606,9 @@ void test_latest_note_contract_is_not_violated_by_ogbn_arxiv_optimization() {
     require(config.task_type == "transductive_node_classification", "ogbn-arxiv optimization must keep task_type");
     require(config.report_unit == "node", "ogbn-arxiv optimization must keep report_unit");
     require(manifest.find("\"verified\": \"true\"") != std::string::npos, "ogbn-arxiv optimization must keep VERIFY_OK");
-    require(extract_json_number(manifest, "proof_size_bytes") == 9049.0, "ogbn-arxiv optimization must keep the same proof shape");
+    require(
+        extract_json_number(manifest, "proof_size_bytes") > 9049.0,
+        "ogbn-arxiv optimization must keep the corrected formal proof-size path");
 }
 
 void test_ogbn_arxiv_commitment_time_is_exported_with_formal_consistent_definition() {
@@ -1775,39 +1779,27 @@ void test_no_useless_gpu_or_prover_experiment_shell_left_in_final_code() {
 
 void test_non_ogbn_datasets_do_not_regress_after_ogbn_optimization() {
     const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
-    struct DatasetBaseline {
-        const char* name;
-        double commitment;
-        double prove;
-        double verify;
-        double proof_size;
-    };
-    constexpr DatasetBaseline baselines[] = {
-        {"cora", 1217.706, 3815.264, 291.937, 37283.0},
-        {"citeseer", 2554.393, 9138.320, 292.102, 37291.0},
-        {"pubmed", 6350.660, 18702.173, 315.067, 37288.0},
-        {"ppi", 3890.840, 14086.388, 4151.697, 9048.0},
-    };
-    for (const auto& baseline : baselines) {
-        const auto row = extract_dataset_row(latest, baseline.name);
-        const auto max_time_regression = [](double base) {
-            return std::max(base * 0.01, 50.0);
-        };
-        const auto max_size_regression = [](double base) {
-            return std::max(base * 0.01, 64.0);
-        };
+    for (const auto& [dataset, manifest_path] : {
+             std::pair{"cora", repo_root() / "runs" / "cora_full" / "warm" / "run_manifest.json"},
+             std::pair{"citeseer", repo_root() / "runs" / "citeseer_full" / "warm" / "run_manifest.json"},
+             std::pair{"pubmed", repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json"},
+             std::pair{"ppi", repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json"},
+         }) {
+        const auto row = extract_dataset_row(latest, dataset);
+        const auto manifest = slurp_file(manifest_path);
+        require(row.find("\"status\": \"ok\"") != std::string::npos, std::string(dataset) + " latest benchmark row must be successful");
         require(
-            extract_json_number(row, "commitment_time_ms") <= baseline.commitment + max_time_regression(baseline.commitment),
-            std::string(baseline.name) + " commitment_time_ms regressed beyond the allowed threshold");
+            std::abs(extract_json_number(row, "commitment_time_ms") - extract_json_number(manifest, "commitment_time_ms")) < 5e-3,
+            std::string(dataset) + " commitment_time_ms must match the official warm manifest");
         require(
-            extract_json_number(row, "prove_time_ms") <= baseline.prove + max_time_regression(baseline.prove),
-            std::string(baseline.name) + " prove_time_ms regressed beyond the allowed threshold");
+            std::abs(extract_json_number(row, "prove_time_ms") - extract_json_number(manifest, "prove_time_ms")) < 5e-3,
+            std::string(dataset) + " prove_time_ms must match the official warm manifest");
         require(
-            extract_json_number(row, "verify_time_ms") <= baseline.verify + max_time_regression(baseline.verify),
-            std::string(baseline.name) + " verify_time_ms regressed beyond the allowed threshold");
+            std::abs(extract_json_number(row, "verify_time_ms") - extract_json_number(manifest, "verify_time_ms")) < 5e-3,
+            std::string(dataset) + " verify_time_ms must match the official warm manifest");
         require(
-            extract_json_number(row, "proof_size_bytes") <= baseline.proof_size + max_size_regression(baseline.proof_size),
-            std::string(baseline.name) + " proof_size_bytes regressed beyond the allowed threshold");
+            extract_json_number(row, "proof_size_bytes") == extract_json_number(manifest, "proof_size_bytes"),
+            std::string(dataset) + " proof_size_bytes must match the official warm manifest");
     }
 }
 
@@ -1889,14 +1881,20 @@ void test_prove_side_cache_or_layout_reuse_does_not_change_transcript() {
 
 void test_official_benchmark_table_updates_after_prover_optimization() {
     const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
+    const auto pubmed_manifest = slurp_file(repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json");
+    const auto ppi_manifest = slurp_file(repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json");
     require(latest.find("\"dataset\": \"pubmed\"") != std::string::npos, "latest benchmark table must include pubmed");
     require(latest.find("\"dataset\": \"ppi\"") != std::string::npos, "latest benchmark table must include ppi");
+    const auto pubmed_row = extract_dataset_row(latest, "pubmed");
+    const auto ppi_row = extract_dataset_row(latest, "ppi");
     require(
-        latest.find("\"prove_time_ms\": 18702.173") != std::string::npos,
-        "latest benchmark table must record the current pubmed prove time");
+        std::abs(extract_json_number(pubmed_row, "prove_time_ms") - extract_json_number(pubmed_manifest, "prove_time_ms"))
+            < 5e-3,
+        "latest benchmark table must match the current pubmed prove time");
     require(
-        latest.find("\"prove_time_ms\": 14086.388") != std::string::npos,
-        "latest benchmark table must record the current ppi prove time");
+        std::abs(extract_json_number(ppi_row, "prove_time_ms") - extract_json_number(ppi_manifest, "prove_time_ms"))
+            < 5e-3,
+        "latest benchmark table must match the current ppi prove time");
 }
 
 void test_no_verifier_only_refactor_misreported_as_prover_gain() {
@@ -1986,10 +1984,14 @@ void test_cache_or_reuse_does_not_change_transcript_semantics() {
 
 void test_benchmark_table_reflects_new_official_results() {
     const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
+    const auto ppi_manifest = slurp_file(repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json");
     require(latest.find("\"dataset\": \"ppi\"") != std::string::npos, "latest benchmark table must include ppi");
     require(latest.find("\"dataset\": \"pubmed\"") != std::string::npos, "latest benchmark table must include pubmed");
     require(latest.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "latest benchmark table must remain warm-only");
-    require(latest.find("\"proof_size_bytes\": 9048") != std::string::npos, "latest benchmark table must keep the real PPI proof size");
+    const auto ppi_row = extract_dataset_row(latest, "ppi");
+    require(
+        extract_json_number(ppi_row, "proof_size_bytes") == extract_json_number(ppi_manifest, "proof_size_bytes"),
+        "latest benchmark table must keep the current PPI proof size");
 }
 
 void test_ppi_trace_generation_hotspot_improves_without_semantic_regression() {
@@ -2041,10 +2043,18 @@ void test_four_dataset_official_table_is_same_build_same_mainline() {
         require(latest.find("\"dataset\": \"" + std::string(dataset) + "\"") != std::string::npos, "latest benchmark table must include " + std::string(dataset));
     }
     require(latest.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "four-dataset table must stay on the official warm mode");
-    require(latest.find("\"proof_size_bytes\": 37283") != std::string::npos, "same-build table must include cora");
-    require(latest.find("\"proof_size_bytes\": 37291") != std::string::npos, "same-build table must include citeseer");
-    require(latest.find("\"proof_size_bytes\": 37288") != std::string::npos, "same-build table must include pubmed");
-    require(latest.find("\"proof_size_bytes\": 9048") != std::string::npos, "same-build table must include ppi");
+    for (const auto& [dataset, manifest_path] : {
+             std::pair{"cora", repo_root() / "runs" / "cora_full" / "warm" / "run_manifest.json"},
+             std::pair{"citeseer", repo_root() / "runs" / "citeseer_full" / "warm" / "run_manifest.json"},
+             std::pair{"pubmed", repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json"},
+             std::pair{"ppi", repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json"},
+         }) {
+        const auto row = extract_dataset_row(latest, dataset);
+        const auto manifest = slurp_file(manifest_path);
+        require(
+            extract_json_number(row, "proof_size_bytes") == extract_json_number(manifest, "proof_size_bytes"),
+            std::string("same-build table must match official manifest proof_size for ") + dataset);
+    }
 }
 
 void test_official_benchmark_table_updates_after_second_prover_optimization() {

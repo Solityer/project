@@ -131,16 +131,32 @@ namespace gatzk::crypto
             {
                 return out;
             }
+            std::vector<const std::vector<FieldElement>*> polynomial_values;
+            polynomial_values.reserve(polynomials.size());
+            for (const auto* polynomial : polynomials)
+            {
+                polynomial_values.push_back(&polynomial->values());
+            }
+            const auto valid_count = polynomial_values.front()->size();
+            for (const auto* values : polynomial_values)
+            {
+                if (values->size() != valid_count)
+                {
+                    throw std::runtime_error("shared-domain tau evaluation requires a uniform valid length");
+                }
+            }
             if (weights.direct_index.has_value())
             {
                 for (std::size_t i = 0; i < polynomials.size(); ++i)
                 {
-                    out[i] = polynomials[i]->data.at(*weights.direct_index);
+                    out[i] = *weights.direct_index < valid_count
+                        ? (*polynomial_values[i])[*weights.direct_index]
+                        : FieldElement::zero();
                 }
                 return out;
             }
 
-            const auto domain_size = weights.native_weights.size();
+            const auto domain_size = valid_count;
             std::vector<mcl::Fr> native_out(polynomials.size());
             for (auto& value : native_out)
             {
@@ -168,6 +184,12 @@ namespace gatzk::crypto
                         futures.push_back(std::async(
                             std::launch::async,
                             [begin, end, &weights, &polynomials]() {
+                                std::vector<const std::vector<FieldElement>*> values;
+                                values.reserve(polynomials.size());
+                                for (const auto* polynomial : polynomials)
+                                {
+                                    values.push_back(&polynomial->values());
+                                }
                                 std::vector<mcl::Fr> partial(polynomials.size());
                                 for (auto& value : partial)
                                 {
@@ -179,7 +201,7 @@ namespace gatzk::crypto
                                     for (std::size_t poly_index = 0; poly_index < polynomials.size(); ++poly_index)
                                     {
                                         mcl::Fr term;
-                                        mcl::Fr::mul(term, polynomials[poly_index]->data[index].native(), weight);
+                                        mcl::Fr::mul(term, (*values[poly_index])[index].native(), weight);
                                         mcl::Fr::add(partial[poly_index], partial[poly_index], term);
                                     }
                                 }
@@ -208,7 +230,7 @@ namespace gatzk::crypto
                 for (std::size_t poly_index = 0; poly_index < polynomials.size(); ++poly_index)
                 {
                     mcl::Fr term;
-                    mcl::Fr::mul(term, polynomials[poly_index]->data[index].native(), weight);
+                    mcl::Fr::mul(term, (*polynomial_values[poly_index])[index].native(), weight);
                     mcl::Fr::add(native_out[poly_index], native_out[poly_index], term);
                 }
             }
@@ -514,7 +536,8 @@ namespace gatzk::crypto
             {
                 domain_weight_cache.emplace(cache_key, load_or_build_domain_commit_weights(*polynomial, key));
             }
-            auto& group = domain_groups[cache_key];
+                const auto group_key = cache_key + ":" + std::to_string(polynomial->size());
+                auto& group = domain_groups[group_key];
             group.indices.push_back(i);
             group.polynomials.push_back(polynomial);
             group.weights = domain_weight_cache.at(cache_key);
