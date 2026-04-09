@@ -657,7 +657,6 @@ TraceArtifacts::SpilledEvaluationPolynomial spill_evaluation_polynomial(
     const auto root = spill_root_directory();
     const auto unique =
         sanitize_spill_name(polynomial.name) + "_" + std::to_string(std::hash<std::string>{}(polynomial.name + ":" + std::to_string(polynomial.data.size())));
-        ;
     const auto path = root / (unique + ".bin");
     std::ofstream stream(path, std::ios::binary | std::ios::trunc);
     if (!stream) {
@@ -714,10 +713,6 @@ void add_dynamic_commitment_batch(
         }
     }
 
-    // Commitment order is still finalized in the original transcript order.
-    // The only optimization here is to batch independent materialization and
-    // fixed-base commit work inside one transcript stage. The protocol-visible
-    // commitment set and transcript order are unchanged.
     const auto input_start = Clock::now();
     const bool run_parallel = specs.size() > 1
         && std::thread::hardware_concurrency() > 1
@@ -1821,47 +1816,6 @@ std::shared_ptr<const std::unordered_map<FieldPairKey, std::size_t, FieldPairKey
         const auto [it, _] = cache.emplace(cache_key, packed);
         return it->second;
     }
-}
-
-[[maybe_unused]] std::vector<FieldElement> build_lookup_multiplicity(
-    const std::unordered_map<std::uint64_t, std::size_t>& index_by_value,
-    const std::vector<FieldElement>& query_values,
-    std::size_t domain_size,
-    std::size_t valid_count,
-    const std::string& label) {
-    std::vector<FieldElement> multiplicity(domain_size, FieldElement::zero());
-    for (std::size_t i = 0; i < valid_count; ++i) {
-        const auto it = index_by_value.find(query_values[i].value());
-        if (it == index_by_value.end()) {
-            throw std::runtime_error(
-                "lookup query escaped static table for " + label
-                + " value=" + query_values[i].to_string()
-                + " table_size=" + std::to_string(index_by_value.size()));
-        }
-        multiplicity[it->second] += FieldElement::one();
-    }
-    return multiplicity;
-}
-
-[[maybe_unused]] std::vector<FieldElement> build_pair_lookup_multiplicity(
-    const std::unordered_map<FieldPairKey, std::size_t, FieldPairKeyHash>& index_by_value,
-    const std::vector<FieldElement>& query_left,
-    const std::vector<FieldElement>& query_right,
-    std::size_t domain_size,
-    std::size_t valid_count,
-    const std::string& label) {
-    std::vector<FieldElement> multiplicity(domain_size, FieldElement::zero());
-    for (std::size_t i = 0; i < valid_count; ++i) {
-        const auto it = index_by_value.find(FieldPairKey{pack_field_key(query_left[i]), pack_field_key(query_right[i])});
-        if (it == index_by_value.end()) {
-            throw std::runtime_error(
-                "pair lookup query escaped static table for " + label
-                + " left=" + query_left[i].to_string()
-                + " right=" + query_right[i].to_string());
-        }
-        multiplicity[it->second] += FieldElement::one();
-    }
-    return multiplicity;
 }
 
 std::vector<FieldElement> multiplicity_from_indices(

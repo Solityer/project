@@ -127,49 +127,191 @@ namespace gatzk::algebra
     }
 
     // 计算重心插值所需的权重（前缀积 + 后缀积）
+    // 对于大域（size >= 2^20），使用并行分段批量求逆算法以避免串行瓶颈。
     std::vector<mcl::Fr> RootOfUnityDomain::barycentric_weights_native(const FieldElement& x) const
     {
-        std::vector<mcl::Fr> denominators(size);
-        // 前缀积
-        std::vector<mcl::Fr> prefixes(size);
-        mcl::Fr accumulator = 1;
-        FieldElement point = FieldElement::one();
-        for (std::size_t i = 0; i < size; ++i)
+        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+        const bool use_parallel =
+            util::route2_options().parallel_fft && size >= (1ULL << 20) && cpu_count > 1;
+
+        if (!use_parallel)
         {
-            const auto current_point = points_precomputed ? points[i] : point;
-            mcl::Fr::sub(denominators[i], x.native(), current_point.native());
-            prefixes[i] = accumulator;
-            mcl::Fr::mul(accumulator, accumulator, denominators[i]);
-            if (!points_precomputed)
+            // --- 串行实现 ---
+            std::vector<mcl::Fr> denominators(size);
+            std::vector<mcl::Fr> prefixes(size);
+            mcl::Fr accumulator = 1;
+            FieldElement point = FieldElement::one();
+            for (std::size_t i = 0; i < size; ++i)
             {
-                point *= omega;
+                const auto current_point = points_precomputed ? points[i] : point;
+                mcl::Fr::sub(denominators[i], x.native(), current_point.native());
+                prefixes[i] = accumulator;
+                mcl::Fr::mul(accumulator, accumulator, denominators[i]);
+                if (!points_precomputed)
+                {
+                    point *= omega;
+                }
             }
+
+            mcl::Fr suffix_inverse;
+            mcl::Fr::inv(suffix_inverse, accumulator);
+            std::vector<mcl::Fr> weights(size);
+            const auto zero_eval = zero_polynomial_eval(x).native();
+
+            point = points_precomputed ? FieldElement::zero() : omega.pow(static_cast<std::uint64_t>(size - 1));
+            const auto omega_inv = points_precomputed ? FieldElement::one() : omega.inv();
+            for (std::size_t i = size; i-- > 0;)
+            {
+                mcl::Fr inverse;
+                mcl::Fr::mul(inverse, suffix_inverse, prefixes[i]);
+                const auto scaled_point = points_precomputed ? points_scaled_by_inv_size[i] : (point * inv_size);
+                mcl::Fr::mul(weights[i], zero_eval, scaled_point.native());
+                mcl::Fr::mul(weights[i], weights[i], inverse);
+                mcl::Fr::mul(suffix_inverse, suffix_inverse, denominators[i]);
+                if (!points_precomputed && i > 0)
+                {
+                    point *= omega_inv;
+                }
+            }
+            return weights;
         }
 
-        // 计算所有分母乘积的逆元
-        mcl::Fr suffix_inverse;
-        mcl::Fr::inv(suffix_inverse, accumulator);
+        // --- 并行实现：分段批量求逆 ---
+        // 数学原理：inv(d[i]) = (1/chunk_product[c]) × prefix_within[i] × suffix_within[i]
+        // 其中 chunk_product[c] 为第 c 段所有分母之积，仅需一次全局求逆。
+        // 各段可完全并行执行，全局归约仅 O(task_count) 步（串行但极快）。
+
+        const std::size_t task_count =
+            std::min<std::size_t>(cpu_count, (size + (1ULL << 20) - 1) / (1ULL << 20));
+        const std::size_t chunk_size = (size + task_count - 1) / task_count;
+
+        std::vector<mcl::Fr> denominators(size);
+        std::vector<mcl::Fr> prefix_within(size);   // 段内前缀积（不含 i 自身）
+        std::vector<mcl::Fr> chunk_products(task_count);
         std::vector<mcl::Fr> weights(size);
         const auto zero_eval = zero_polynomial_eval(x).native();
 
-        // 逆序遍历，利用后缀积计算每个权重的分母部分
-        point = points_precomputed ? FieldElement::zero() : omega.pow(static_cast<std::uint64_t>(size - 1));
+        // 预先计算 omega 逆元（仅在 !points_precomputed 时使用）
         const auto omega_inv = points_precomputed ? FieldElement::one() : omega.inv();
-        for (std::size_t i = size; i-- > 0;)
-        {
-            mcl::Fr inverse;
-            mcl::Fr::mul(inverse, suffix_inverse, prefixes[i]);
-            const auto scaled_point = points_precomputed ? points_scaled_by_inv_size[i] : (point * inv_size);  // 获取缩放后的点
-            mcl::Fr::mul(weights[i], zero_eval, scaled_point.native());
-            mcl::Fr::mul(weights[i], weights[i], inverse);
 
-            // 更新后缀积：乘以当前分母
-            mcl::Fr::mul(suffix_inverse, suffix_inverse, denominators[i]);
-            if (!points_precomputed && i > 0)
+        // --- 阶段一：并行 --- 计算分母及段内前缀积
+        {
+            std::vector<std::future<void>> futures;
+            futures.reserve(task_count);
+            for (std::size_t task = 0; task < task_count; ++task)
             {
-                point *= omega_inv;
+                futures.push_back(std::async(
+                    std::launch::async,
+                    [&, task]()
+                    {
+                        const std::size_t begin = task * chunk_size;
+                        const std::size_t end = std::min(size, begin + chunk_size);
+                        FieldElement omega_power = points_precomputed
+                            ? FieldElement::zero()
+                            : omega.pow(static_cast<std::uint64_t>(begin));
+
+                        mcl::Fr acc;
+                        acc = mcl::Fr(1);
+                        for (std::size_t i = begin; i < end; ++i)
+                        {
+                            const auto current_pt =
+                                points_precomputed ? points[i].native() : omega_power.native();
+                            mcl::Fr::sub(denominators[i], x.native(), current_pt);
+                            prefix_within[i] = acc;
+                            mcl::Fr::mul(acc, acc, denominators[i]);
+                            if (!points_precomputed)
+                            {
+                                omega_power *= omega;
+                            }
+                        }
+                        chunk_products[task] = acc;
+                    }));
+            }
+            for (auto& f : futures)
+            {
+                f.get();
             }
         }
+
+        // --- 阶段二：串行 O(task_count) --- 跨段前缀积、一次全局求逆、各段外积逆元
+        // chunk_outer_inv[c] = 1 / (其余所有段分母之积) = global_inv × cross_prefix[c] × cross_suffix[c]
+        std::vector<mcl::Fr> cross_prefix(task_count + 1);
+        cross_prefix[0] = mcl::Fr(1);
+        for (std::size_t c = 0; c < task_count; ++c)
+        {
+            mcl::Fr::mul(cross_prefix[c + 1], cross_prefix[c], chunk_products[c]);
+        }
+        mcl::Fr global_inv;
+        mcl::Fr::inv(global_inv, cross_prefix[task_count]);  // 唯一一次全局求逆
+
+        std::vector<mcl::Fr> chunk_outer_inv(task_count);
+        {
+            mcl::Fr cross_suffix;
+            cross_suffix = mcl::Fr(1);
+            for (std::size_t c = task_count; c-- > 0;)
+            {
+                // chunk_outer_inv[c] = global_inv × cross_prefix[c] × cross_suffix_of_c
+                //                    = 1 / chunk_product[c]  （数学恒等式）
+                mcl::Fr tmp;
+                mcl::Fr::mul(tmp, global_inv, cross_prefix[c]);
+                mcl::Fr::mul(chunk_outer_inv[c], tmp, cross_suffix);
+                mcl::Fr::mul(cross_suffix, cross_suffix, chunk_products[c]);
+            }
+        }
+
+        // --- 阶段三：并行 --- 段内倒序扫描，合并段内后缀积与外积逆元，输出权重
+        {
+            std::vector<std::future<void>> futures;
+            futures.reserve(task_count);
+            for (std::size_t task = 0; task < task_count; ++task)
+            {
+                futures.push_back(std::async(
+                    std::launch::async,
+                    [&, task]()
+                    {
+                        const std::size_t begin = task * chunk_size;
+                        const std::size_t end = std::min(size, begin + chunk_size);
+                        if (begin >= end)
+                        {
+                            return;
+                        }
+                        // 对于 !points_precomputed：从末尾倒退跟踪 omega^i
+                        FieldElement omega_power = points_precomputed
+                            ? FieldElement::zero()
+                            : omega.pow(static_cast<std::uint64_t>(end - 1));
+
+                        mcl::Fr running_suffix;
+                        running_suffix = mcl::Fr(1);  // = ∏_{j=i+1}^{end-1} d[j]（段内后缀积）
+
+                        for (std::size_t i = end; i-- > begin;)
+                        {
+                            // inv_d[i] = chunk_outer_inv × prefix_within[i] × running_suffix
+                            mcl::Fr inv_d;
+                            mcl::Fr::mul(inv_d, chunk_outer_inv[task], prefix_within[i]);
+                            mcl::Fr::mul(inv_d, inv_d, running_suffix);
+
+                            // weights[i] = Z_N(x) × (omega^i/N) × inv_d[i]
+                            const auto scaled_pt = points_precomputed
+                                ? points_scaled_by_inv_size[i].native()
+                                : (omega_power * inv_size).native();
+                            mcl::Fr::mul(weights[i], zero_eval, scaled_pt);
+                            mcl::Fr::mul(weights[i], weights[i], inv_d);
+
+                            // 更新后缀积及 omega 幂次
+                            mcl::Fr::mul(running_suffix, running_suffix, denominators[i]);
+                            if (!points_precomputed && i > begin)
+                            {
+                                omega_power *= omega_inv;
+                            }
+                        }
+                    }));
+            }
+            for (auto& f : futures)
+            {
+                f.get();
+            }
+        }
+
         return weights;
     }
 

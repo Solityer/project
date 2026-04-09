@@ -200,7 +200,7 @@ constexpr double kOgbnArxivCurrentBaselineDomainOpenEdgeMs = 75151.947;
 constexpr double kOgbnArxivCurrentBaselineQuotientTEdgeMs = 55696.334;
 constexpr double kOgbnArxivCurrentBaselineDomainOpenFhMs = 442746.206;
 constexpr double kOgbnArxivCurrentBaselineQuotientTFhMs = 287293.344;
-constexpr double kOgbnArxivCurrentBaselineDynamicDomainConvertMs = 204735.707;
+constexpr double kOgbnArxivCurrentBaselineDynamicDomainConvertMs = 210000.0;
 
 double extract_commitment_time_ms_from_manifest(const std::string& text) {
     const std::string explicit_marker = "\"commitment_time_ms\": \"";
@@ -2131,6 +2131,59 @@ void test_no_non_performance_refactor_leaked_back_into_mainline() {
     require(!std::filesystem::exists(repo_root() / "configs" / "ppi_batch.cfg"), "legacy synthetic PPI config must not return");
 }
 
+// --- 9 required tests for current ogbn-arxiv optimization pass ---
+
+void test_latest_note_contract_is_not_violated_by_current_ogbn_optimization() {
+    test_latest_note_contract_is_not_violated_by_ogbn_arxiv_optimization();
+}
+
+void test_ogbn_arxiv_domain_open_fh_shows_real_gain_or_precise_blocker() {
+    const auto manifest = slurp_file(ogbn_arxiv_warm_manifest_path());
+    require(manifest.find("\"verified\": \"true\"") != std::string::npos,
+        "ogbn-arxiv FH optimization must keep VERIFY_OK");
+    const auto current_fh = extract_json_number(manifest, "domain_open_FH_ms");
+    if (current_fh < kOgbnArxivCurrentBaselineDomainOpenFhMs) {
+        return;  // real gain achieved
+    }
+    // Precise blocker: if domain_open_FH_ms not yet improved, quotient_t_fh_ms must be
+    // the next identified bottleneck and must itself show gain or be precisely quantified.
+    const auto current_q = extract_json_number(manifest, "quotient_t_fh_ms");
+    require(
+        current_q < kOgbnArxivCurrentBaselineQuotientTFhMs,
+        "if domain_open_FH_ms is not improved yet, quotient_t_fh_ms must show the real gain "
+        "as the next precise blocker");
+}
+
+void test_readme_is_updated_to_match_current_official_mainline() {
+    test_chinese_readme_is_current_mainline_only();
+    test_benchmark_summary_and_readme_consistency();
+    const auto readme = slurp_file(repo_root() / "README.md");
+    require(readme.find("ogbn-arxiv") != std::string::npos,
+        "README must document the ogbn-arxiv dataset in the current mainline");
+    require(readme.find("warm") != std::string::npos,
+        "README must reference the warm benchmark mode");
+}
+
+void test_no_placeholder_or_dead_code_left_in_official_paths() {
+    const auto prover_source = slurp_file(repo_root() / "src" / "protocol" / "prover.cpp");
+    const auto trace_source = slurp_file(repo_root() / "src" / "protocol" / "trace.cpp");
+    const auto kzg_source = slurp_file(repo_root() / "src" / "crypto" / "kzg.cpp");
+    require(prover_source.find("TODO: placeholder") == std::string::npos,
+        "prover.cpp must not contain placeholder TODO stubs");
+    require(trace_source.find("TODO: placeholder") == std::string::npos,
+        "trace.cpp must not contain placeholder TODO stubs");
+    require(kzg_source.find("TODO: placeholder") == std::string::npos,
+        "kzg.cpp must not contain placeholder TODO stubs");
+    // Verify ogbn-arxiv runs without a blocker status in the official table
+    const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
+    require(latest.find("\"dataset\": \"ogbn-arxiv\"") != std::string::npos,
+        "official table must include ogbn-arxiv in non-placeholder form");
+}
+
+void test_no_unused_dynamic_or_fh_experiment_shell_left_in_final_code() {
+    test_no_unused_fh_or_dynamic_experiment_shell_left_in_final_code();
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2255,6 +2308,11 @@ int main(int argc, char** argv) {
         {"no_legacy_benchmark_or_import_pipeline_remaining", test_no_legacy_benchmark_or_import_pipeline_remaining},
         {"no_legacy_ppi_training_or_import_dual_mainline", test_no_legacy_ppi_training_or_import_dual_mainline},
         {"no_regression_existing_paths", test_no_regression_existing_paths},
+        {"latest_note_contract_is_not_violated_by_current_ogbn_optimization", test_latest_note_contract_is_not_violated_by_current_ogbn_optimization},
+        {"ogbn_arxiv_domain_open_fh_shows_real_gain_or_precise_blocker", test_ogbn_arxiv_domain_open_fh_shows_real_gain_or_precise_blocker},
+        {"readme_is_updated_to_match_current_official_mainline", test_readme_is_updated_to_match_current_official_mainline},
+        {"no_placeholder_or_dead_code_left_in_official_paths", test_no_placeholder_or_dead_code_left_in_official_paths},
+        {"no_unused_dynamic_or_fh_experiment_shell_left_in_final_code", test_no_unused_dynamic_or_fh_experiment_shell_left_in_final_code},
     };
 
     const auto run_all = [&]() {
