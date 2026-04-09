@@ -14,4 +14,4 @@ void export_run_artifacts(
     const RunMetrics& metrics,
     bool verified);
 
-}  // namespace gatzk::protocol
+}

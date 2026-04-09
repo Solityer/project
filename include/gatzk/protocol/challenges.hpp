@@ -6,20 +6,21 @@
 #include <vector>
 
 #include "gatzk/algebra/field.hpp"
-#include "gatzk/crypto/transcript.hpp"
 #include "gatzk/crypto/kzg.hpp"
+#include "gatzk/crypto/transcript.hpp"
 #include "gatzk/protocol/proof.hpp"
 
-namespace gatzk::protocol {
+namespace gatzk::protocol
+{
 
-PublicMetadata canonical_public_metadata(const ProtocolContext& context);
-void absorb_public_metadata(crypto::Transcript& transcript, const PublicMetadata& metadata);
-std::vector<std::string> dynamic_commitment_labels(const ProtocolContext& context);
-std::vector<std::string> quotient_commitment_labels(const ProtocolContext& context);
+    PublicMetadata canonical_public_metadata(const ProtocolContext& context);
+    void absorb_public_metadata(crypto::Transcript& transcript, const PublicMetadata& metadata);
+    std::vector<std::string> dynamic_commitment_labels(const ProtocolContext& context);
+    std::vector<std::string> quotient_commitment_labels(const ProtocolContext& context);
 
-std::map<std::string, algebra::FieldElement> replay_challenges(
-    const ProtocolContext& context,
-    const std::unordered_map<std::string, crypto::Commitment>& dynamic_commitments,
-    const std::unordered_map<std::string, crypto::Commitment>& quotient_commitments);
+    std::map<std::string, algebra::FieldElement> replay_challenges(
+        const ProtocolContext& context,
+        const std::unordered_map<std::string, crypto::Commitment>& dynamic_commitments,
+        const std::unordered_map<std::string, crypto::Commitment>& quotient_commitments);
 
 }  // namespace gatzk::protocol
