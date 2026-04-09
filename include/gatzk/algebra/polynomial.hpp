@@ -57,6 +57,9 @@ namespace gatzk::algebra
         // 多项式数据：系数形式时是系数列表，求值形式时是域上的点值列表
         std::vector<FieldElement> data;
 
+        // 对于共享求值列，data 可以为空，实际列值保存在 shared_data 中。
+        std::shared_ptr<const std::vector<FieldElement>> shared_data;
+
         // 如果基是求值形式，记录使用的单位根域
         std::shared_ptr<RootOfUnityDomain> domain;
 
@@ -65,6 +68,14 @@ namespace gatzk::algebra
             const std::string& name,
             std::vector<FieldElement> evaluations,
             const std::shared_ptr<RootOfUnityDomain>& domain);
+        static Polynomial from_shared_evaluations(
+            const std::string& name,
+            std::shared_ptr<const std::vector<FieldElement>> evaluations,
+            const std::shared_ptr<RootOfUnityDomain>& domain);
+
+        const std::vector<FieldElement>& values() const;
+        std::size_t size() const;
+        const FieldElement& value_at(std::size_t index) const;
 
         // 计算多项式在 x 处的值（自动根据当前基选择算法：系数形式用霍纳法，求值形式用拉格朗日插值）
         FieldElement evaluate(const FieldElement& x) const;

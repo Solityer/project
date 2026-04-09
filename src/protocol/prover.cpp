@@ -163,11 +163,6 @@ std::vector<FieldElement> feature_query_absolute_ids(
 }
 
 bool full_graph_feature_identity_enabled(const ProtocolContext& context) {
-    if (!(context.config.dataset == "cora"
-          || context.config.dataset == "ogbn_arxiv"
-          || context.config.dataset == "ogbn-arxiv")) {
-        return false;
-    }
     if (context.config.batching_rule != "whole_graph_single") {
         return false;
     }
@@ -184,8 +179,12 @@ bool full_graph_feature_identity_enabled(const ProtocolContext& context) {
 }
 
 bool lazy_large_fh_public_enabled(const ProtocolContext& context) {
-    return (context.config.dataset == "ogbn_arxiv" || context.config.dataset == "ogbn-arxiv")
-        && context.config.batching_rule == "whole_graph_single";
+    constexpr std::size_t kMinLazyLargeFhDomainSize = 1ULL << 24;
+    return context.config.batching_rule == "whole_graph_single"
+        && context.local.num_nodes == context.dataset.num_nodes
+        && context.local.num_features == context.dataset.num_features
+        && context.domains.fh != nullptr
+        && context.domains.fh->size >= kMinLazyLargeFhDomainSize;
 }
 
 bool is_lazy_large_fh_public_label(const std::string& name) {
@@ -1066,6 +1065,9 @@ FieldElement evaluate_spilled_evaluation_polynomial(
         throw std::runtime_error("failed to open spilled polynomial file: " + spilled.path);
     }
     if (weight_entry.direct_index.has_value()) {
+        if (*weight_entry.direct_index >= spilled.size) {
+            return FieldElement::zero();
+        }
         const auto offset = static_cast<std::streamoff>(*weight_entry.direct_index * kFieldBytes);
         stream.seekg(offset);
         stream.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
@@ -2363,13 +2365,14 @@ class EvaluationMemoization {
         }
 
         const auto& weight_entry = domain_weights(polynomial.domain, point);
+        const auto& values = polynomial.values();
         if (weight_entry.direct_index.has_value()) {
-            return polynomial.data.at(*weight_entry.direct_index);
+            return values.at(*weight_entry.direct_index);
         }
         // The route2 parallel FFT flag only changes how the cached domain
         // weights are reduced. The opened values themselves are identical.
         return algebra::dot_product_packed_native_weights(
-            polynomial.data,
+            values,
             weight_entry.native_weights,
             weight_entry.packed_weights);
     }
@@ -3433,18 +3436,11 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
         metrics->load_static_ms += elapsed_ms(start, end);
     }
 
-    if (config.dataset == "ogbn_arxiv" || config.dataset == "ogbn-arxiv") {
-        bool full_identity = context.local.num_nodes == context.dataset.num_nodes
-            && context.local.num_features == context.dataset.num_features;
-        for (std::size_t i = 0; full_identity && i < context.local.absolute_ids.size(); ++i) {
-            full_identity = context.local.absolute_ids[i] == i;
-        }
-        if (full_identity) {
-            context.dataset.features.clear();
-            context.dataset.features.shrink_to_fit();
-            context.dataset.features_fp.clear();
-            context.dataset.features_fp.shrink_to_fit();
-        }
+    if (full_graph_feature_identity_enabled(context)) {
+        context.dataset.features.clear();
+        context.dataset.features.shrink_to_fit();
+        context.dataset.features_fp.clear();
+        context.dataset.features_fp.shrink_to_fit();
     }
 
     if (persist_context_cache) {
@@ -4240,48 +4236,78 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
 }
 
 std::size_t proof_size_bytes(const Proof& proof) {
-    std::size_t total =
-        proof.public_metadata.protocol_id.size()
-        + proof.public_metadata.dataset_name.size()
-        + proof.public_metadata.task_type.size()
-        + proof.public_metadata.report_unit.size()
-        + proof.public_metadata.graph_count.size()
-        + proof.public_metadata.L.size()
-        + proof.public_metadata.hidden_profile.size()
-        + proof.public_metadata.d_in_profile.size()
-        + proof.public_metadata.K_out.size()
-        + proof.public_metadata.C.size()
-        + proof.public_metadata.batching_rule.size()
-        + proof.public_metadata.subgraph_rule.size()
-        + proof.public_metadata.self_loop_rule.size()
-        + proof.public_metadata.edge_sort_rule.size()
-        + proof.public_metadata.chunking_rule.size()
-        + proof.public_metadata.model_arch_id.size()
-        + proof.public_metadata.model_param_id.size()
-        + proof.public_metadata.static_table_id.size()
-        + proof.public_metadata.quant_cfg_id.size()
-        + proof.public_metadata.domain_cfg.size()
-        + proof.public_metadata.dim_cfg.size()
-        + proof.public_metadata.encoding_id.size()
-        + proof.public_metadata.padding_rule_id.size()
-        + proof.public_metadata.degree_bound_id.size();
-    for (const auto& label : proof.block_order) {
-        total += label.size();
+    constexpr std::size_t kLengthPrefixBytes = sizeof(std::uint64_t);
+    constexpr std::size_t kFieldBytes = 32U;
+    auto encoded_string_size = [](const std::string& value) {
+        return sizeof(std::uint64_t) + value.size();
+    };
+
+    std::size_t total = kLengthPrefixBytes;
+    for (const auto* value : {
+             &proof.public_metadata.protocol_id,
+             &proof.public_metadata.dataset_name,
+             &proof.public_metadata.task_type,
+             &proof.public_metadata.report_unit,
+             &proof.public_metadata.graph_count,
+             &proof.public_metadata.L,
+             &proof.public_metadata.hidden_profile,
+             &proof.public_metadata.d_in_profile,
+             &proof.public_metadata.K_out,
+             &proof.public_metadata.C,
+             &proof.public_metadata.batching_rule,
+             &proof.public_metadata.subgraph_rule,
+             &proof.public_metadata.self_loop_rule,
+             &proof.public_metadata.edge_sort_rule,
+             &proof.public_metadata.chunking_rule,
+             &proof.public_metadata.model_arch_id,
+             &proof.public_metadata.model_param_id,
+             &proof.public_metadata.static_table_id,
+             &proof.public_metadata.quant_cfg_id,
+             &proof.public_metadata.domain_cfg,
+             &proof.public_metadata.dim_cfg,
+             &proof.public_metadata.encoding_id,
+             &proof.public_metadata.padding_rule_id,
+             &proof.public_metadata.degree_bound_id,
+         }) {
+        total += encoded_string_size(*value);
     }
+    total += kLengthPrefixBytes;
+    for (const auto& label : proof.block_order) {
+        total += encoded_string_size(label);
+    }
+    total += kLengthPrefixBytes;
     for (const auto& [name, commitment] : proof.dynamic_commitments) {
         (void)name;
         total += crypto::serialized_size(commitment);
     }
+    total += kLengthPrefixBytes;
     for (const auto& [name, commitment] : proof.quotient_commitments) {
         (void)name;
         total += crypto::serialized_size(commitment);
     }
+    total += kLengthPrefixBytes;
     for (const auto& [name, bundle] : proof.domain_openings) {
         (void)name;
+        total += kLengthPrefixBytes;
+        for (const auto& [value_name, values] : bundle.values) {
+            (void)value_name;
+            total += kLengthPrefixBytes + values.size() * kFieldBytes;
+        }
         total += crypto::serialized_size(bundle.witness);
     }
+    total += kLengthPrefixBytes;
+    for (const auto& [name, value] : proof.external_evaluations) {
+        (void)name;
+        (void)value;
+        total += kFieldBytes;
+    }
+    total += kLengthPrefixBytes;
+    for (const auto& [name, value] : proof.witness_scalars) {
+        (void)name;
+        (void)value;
+        total += kFieldBytes;
+    }
     total += crypto::serialized_size(proof.external_witness);
-    total += proof.witness_scalars.size() * 32U;
     return total;
 }
 
