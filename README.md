@@ -41,6 +41,14 @@
 - GPU 主表：runs/benchmarks/cuda_formal/latest.json、runs/benchmarks/cuda_formal/latest.csv、runs/benchmarks/cuda_formal/summary.md
 - CPU per-run manifests：runs/cora_full/warm、runs/citeseer_full/warm、runs/pubmed_full/warm、runs/ppi_full_formal/warm、runs/ogbn_arxiv_full/warm
 - GPU per-run manifests：runs/cora_full/cuda_formal/warm、runs/citeseer_full/cuda_formal/warm、runs/pubmed_full/cuda_formal/warm、runs/ppi_full_formal/cuda_formal/warm、runs/ogbn_arxiv_full/cuda_formal/warm
+- 本轮正式回归证据：runs/tests/cpu_gatzk_tests.log、runs/tests/cpu_gatzk_tests.exit_code、runs/tests/cuda_gatzk_tests.log、runs/tests/cuda_gatzk_tests.exit_code
+
+## 正式结论与测试状态
+
+- 2026-04-10 的 CPU 全量回归使用 `./build/gatzk_tests`，退出码为 `0`。
+- 2026-04-10 的 CUDA 全量回归使用 `./build_cuda/gatzk_tests`，退出码为 `0`。
+- CPU 与 CUDA 的正式 benchmark、README 表格、`latest.json`、`latest.csv`、`summary.md` 与各自 `run_manifest.json` 现在保持一致。
+- GPU formal 主线保持可用，但在五个 full-dataset warm 正式结果上，相对 CPU 的四项指标未形成广义性能收益。
 
 ## 训练与 ZKML 的职责边界
 
