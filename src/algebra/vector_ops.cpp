@@ -11,16 +11,7 @@
 
 namespace gatzk::algebra
 {
-// 如果编译时启用了 CUDA 后端，则声明 CUDA 实现的点积函数
 #if GATZK_ENABLE_CUDA_BACKEND
-    // 使用CUDA计算两个域元素向量的点积
-    FieldElement dot_product_cuda(
-        const std::vector<FieldElement>& lhs,
-        const std::vector<FieldElement>& rhs);
-    // 使用CUDA计算左向量（FieldElement）与右向量（打包的 mcl::Fr）的点积
-    FieldElement dot_product_native_weights_cuda(
-        const std::vector<FieldElement>& lhs,
-        const PackedFieldBuffer& packed_rhs);
     bool cuda_backend_runtime_available();
 #endif
 
@@ -43,22 +34,10 @@ namespace gatzk::algebra
             }
             if (backend == "cuda")
             {
-                return AlgebraBackend::Cuda;
+                throw std::runtime_error(
+                    "legacy GATZK_ALGEBRA_BACKEND=cuda path has been removed; use --compute-backend cuda_hotspots on a CUDA-enabled build");
             }
             throw std::runtime_error("unsupported GATZK_ALGEBRA_BACKEND value: " + backend);
-        }
-
-        // 控制是否在点积中使用CUDA
-        bool cuda_dot_products_enabled()
-        {
-            const char* value = std::getenv("GATZK_ENABLE_CUDA_DOT_PRODUCTS");
-            return value != nullptr && std::string(value) == "1";
-        }
-
-        // 判断是否应该使用CUDA计算点积
-        bool should_use_cuda_dot_product(std::size_t size)
-        {
-            return configured_algebra_backend() == AlgebraBackend::Cuda && cuda_dot_products_enabled() && size >= 1024;
         }
 
         // 串行计算两个域元素向量在区间[begin, end)上的点积
@@ -109,7 +88,17 @@ namespace gatzk::algebra
     // 返回当前后端名称的字符串："cuda" 或 "cpu"
     std::string configured_algebra_backend_name()
     {
-        return configured_algebra_backend() == AlgebraBackend::Cuda ? "cuda" : "cpu";
+        (void)configured_algebra_backend();
+        return "cpu";
+    }
+
+    bool cuda_backend_build_enabled()
+    {
+#if GATZK_ENABLE_CUDA_BACKEND
+        return true;
+#else
+        return false;
+#endif
     }
 
     bool cuda_backend_available()
@@ -133,15 +122,6 @@ namespace gatzk::algebra
         if (lhs.empty())
         {
             return FieldElement::zero();
-        }
-
-        if (should_use_cuda_dot_product(lhs.size()))
-        {
-#if GATZK_ENABLE_CUDA_BACKEND
-            return dot_product_cuda(lhs, rhs);
-#else
-            throw std::runtime_error("CUDA algebra backend requested but this build was compiled without CUDA support");
-#endif
         }
 
         const auto& route2 = util::route2_options();
@@ -189,15 +169,6 @@ namespace gatzk::algebra
         const std::vector<FieldElement>& lhs,
         const std::vector<mcl::Fr>& rhs)
     {
-        if (should_use_cuda_dot_product(lhs.size()))
-        {
-#if GATZK_ENABLE_CUDA_BACKEND
-            const auto packed_rhs = pack_native_field_elements(rhs);
-            return dot_product_native_weights_cuda(lhs, packed_rhs);
-#else
-            throw std::runtime_error("CUDA algebra backend requested but this build was compiled without CUDA support");
-#endif
-        }
         return dot_product_packed_native_weights(lhs, rhs, PackedFieldBuffer());
     }
 
@@ -207,6 +178,7 @@ namespace gatzk::algebra
         const std::vector<mcl::Fr>& rhs,
         const PackedFieldBuffer& packed_rhs)
     {
+        (void)packed_rhs;
         if (lhs.size() != rhs.size())
         {
             throw std::runtime_error("dot product size mismatch");
@@ -214,19 +186,6 @@ namespace gatzk::algebra
         if (lhs.empty())
         {
             return FieldElement::zero();
-        }
-
-        if (should_use_cuda_dot_product(lhs.size()))
-        {
-#if GATZK_ENABLE_CUDA_BACKEND
-            if (packed_rhs.size() != rhs.size())
-            {
-                throw std::runtime_error("dot product packed weight size mismatch");
-            }
-            return dot_product_native_weights_cuda(lhs, packed_rhs);
-#else
-            throw std::runtime_error("CUDA algebra backend requested but this build was compiled without CUDA support");
-#endif
         }
 
         // CPU路径：与dot_product_native_weights逻辑相同，但使用rhs而非打包版本

@@ -69,40 +69,4 @@ algebra::FieldElement evaluate_t_c(
     const EvalFn& eval,
     const algebra::FieldElement& z);
 
-#if GATZK_ENABLE_CUDA_BACKEND
-algebra::FieldElement evaluate_t_fh_device_cuda(
-    const ProtocolContext& context,
-    const std::map<std::string, algebra::FieldElement>& challenges,
-    const algebra::PackedEvaluationDeviceResult& evaluations,
-    const algebra::FieldElement& z);
-
-algebra::FieldElement evaluate_t_edge_device_cuda(
-    const ProtocolContext& context,
-    const std::map<std::string, algebra::FieldElement>& challenges,
-    const std::map<std::string, algebra::FieldElement>& witness_scalars,
-    const algebra::PackedEvaluationDeviceResult& evaluations,
-    const algebra::FieldElement& z);
-
-algebra::FieldElement evaluate_t_n_device_cuda(
-    const ProtocolContext& context,
-    const std::map<std::string, algebra::FieldElement>& challenges,
-    const std::map<std::string, algebra::FieldElement>& witness_scalars,
-    const algebra::PackedEvaluationDeviceResult& evaluations,
-    const algebra::FieldElement& z);
-
-algebra::FieldElement evaluate_t_in_device_cuda(
-    const ProtocolContext& context,
-    const std::map<std::string, algebra::FieldElement>& challenges,
-    const std::map<std::string, algebra::FieldElement>& external_evaluations,
-    const algebra::PackedEvaluationDeviceResult& evaluations,
-    const algebra::FieldElement& z);
-
-algebra::FieldElement evaluate_t_d_device_cuda(
-    const ProtocolContext& context,
-    const std::map<std::string, algebra::FieldElement>& challenges,
-    const std::map<std::string, algebra::FieldElement>& external_evaluations,
-    const algebra::PackedEvaluationDeviceResult& evaluations,
-    const algebra::FieldElement& z);
-#endif
-
 }  // namespace gatzk::protocol

@@ -1850,121 +1850,14 @@ class EvaluationMemoization {
         std::vector<std::vector<FieldElement>> out(
             labels.size(),
             std::vector<FieldElement>(points.size(), FieldElement::zero()));
-        std::vector<bool> filled(labels.size(), false);
         if (labels.empty() || points.empty()) {
             return out;
         }
 
-        const bool use_cuda_bundle_collect =
-            util::route2_options().fft_backend_upgrade
-            && backend_registry_ != nullptr
-            && algebra::configured_algebra_backend() == algebra::AlgebraBackend::Cuda
-            && algebra::cuda_backend_available();
-        if (!use_cuda_bundle_collect) {
-            precompute_named(labels, points);
-            for (std::size_t i = 0; i < labels.size(); ++i) {
-                for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
-                    out[i][point_index] = eval_named(labels[i], points[point_index]);
-                }
-            }
-            return out;
-        }
-
-        using Group = std::pair<std::shared_ptr<algebra::RootOfUnityDomain>, std::vector<std::pair<std::size_t, std::string>>>;
-        std::unordered_map<std::string, Group> groups;
+        precompute_named(labels, points);
         for (std::size_t i = 0; i < labels.size(); ++i) {
-            const auto* polynomial = lookup_polynomial(labels[i]);
-            if (polynomial == nullptr || polynomial->basis != algebra::PolynomialBasis::Evaluation
-                || polynomial->domain == nullptr) {
-                continue;
-            }
-            const auto group_key = polynomial->domain->name + ":" + std::to_string(polynomial->domain->size);
-            auto& group = groups[group_key];
-            if (group.second.empty()) {
-                group.first = polynomial->domain;
-            }
-            group.second.push_back({i, labels[i]});
-        }
-
-        auto cache_value = [&](std::size_t label_index, std::size_t point_index, const FieldElement& value) {
-            out[label_index][point_index] = value;
-            value_cache_.emplace(labels[label_index] + "@" + point_key(points[point_index]), value);
-            filled[label_index] = true;
-        };
-
-        for (auto& [group_key, group] : groups) {
-            (void)group_key;
-            const auto* backend = backend_registry_->find(group.first);
-            if (backend == nullptr) {
-                continue;
-            }
-
-            std::vector<std::string> group_labels;
-            group_labels.reserve(group.second.size());
-            for (const auto& [label_index, label] : group.second) {
-                (void)label_index;
-                group_labels.push_back(label);
-            }
-
-            bool handled_rotated = false;
-            if (util::route2_options().fft_kernel_upgrade && group.first->size >= 256) {
-                if (const auto shifts = rotated_point_shifts(group.first, points); shifts.has_value()) {
-                    const auto& weight_entry = domain_weights(group.first, points.front());
-                    if (weight_entry.direct_index.has_value()) {
-                        const auto domain_mask = group.first->size - 1U;
-                        for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
-                            const auto direct_index =
-                                (*weight_entry.direct_index + (*shifts)[point_index]) & domain_mask;
-                            const auto values = backend->values_at_direct_index(group_labels, direct_index);
-                            for (std::size_t i = 0; i < group.second.size(); ++i) {
-                                cache_value(group.second[i].first, point_index, values[i]);
-                            }
-                        }
-                        handled_rotated = true;
-                    } else {
-                        const auto device_values = backend->evaluate_device_with_packed_native_weight_rotations(
-                            group_labels,
-                            weight_entry.native_weights,
-                            weight_entry.packed_weights,
-                            *shifts);
-                        const auto values = backend->materialize_device_rotation_result(device_values);
-                        for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
-                            for (std::size_t i = 0; i < group.second.size(); ++i) {
-                                cache_value(group.second[i].first, point_index, values[point_index][i]);
-                            }
-                        }
-                        handled_rotated = true;
-                    }
-                }
-            }
-            if (handled_rotated) {
-                continue;
-            }
-
             for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
-                const auto& weight_entry = domain_weights(group.first, points[point_index]);
-                std::vector<FieldElement> values;
-                if (weight_entry.direct_index.has_value()) {
-                    values = backend->values_at_direct_index(group_labels, *weight_entry.direct_index);
-                } else {
-                    const auto device_values = backend->evaluate_device_with_packed_native_weights(
-                        group_labels,
-                        weight_entry.native_weights,
-                        weight_entry.packed_weights);
-                    values = backend->materialize_device_result(device_values);
-                }
-                for (std::size_t i = 0; i < group.second.size(); ++i) {
-                    cache_value(group.second[i].first, point_index, values[i]);
-                }
-            }
-        }
-
-        for (std::size_t label_index = 0; label_index < labels.size(); ++label_index) {
-            if (filled[label_index]) {
-                continue;
-            }
-            for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
-                out[label_index][point_index] = eval_named(labels[label_index], points[point_index]);
+                out[i][point_index] = eval_named(labels[i], points[point_index]);
             }
         }
         return out;
@@ -2674,233 +2567,6 @@ std::vector<std::string> quotient_dependency_labels(
     if (quotient_name == "t_N") return multihead_n_dependencies(context);
     return {};
 }
-
-#if GATZK_ENABLE_CUDA_BACKEND
-struct DeviceQuotientWeights {
-    std::vector<mcl::Fr> native_weights;
-    algebra::PackedFieldBuffer packed_weights;
-};
-
-DeviceQuotientWeights make_device_quotient_weights(
-    const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
-    const FieldElement& point,
-    ProofDomainWeightCache& weight_cache) {
-    const auto& shared = weight_cache.get(domain, point);
-    if (!shared.native_weights.empty()) {
-        return DeviceQuotientWeights{
-            .native_weights = shared.native_weights,
-            .packed_weights = shared.packed_weights,
-        };
-    }
-
-    DeviceQuotientWeights out;
-    out.native_weights.resize(domain->size);
-    out.native_weights[*shared.direct_index] = FieldElement::one().native();
-    algebra::pack_native_field_elements_into(out.native_weights, &out.packed_weights);
-    return out;
-}
-
-algebra::PackedEvaluationDeviceResult evaluate_device_bundle(
-    const algebra::PackedEvaluationBackend& backend,
-    const std::vector<std::string>& labels,
-    const FieldElement& representative_point,
-    const std::vector<std::size_t>& rotations,
-    ProofDomainWeightCache& weight_cache) {
-    const auto weights = make_device_quotient_weights(backend.domain(), representative_point, weight_cache);
-    if (rotations.empty()) {
-        return backend.evaluate_device_with_packed_native_weights(
-            labels,
-            weights.native_weights,
-            weights.packed_weights);
-    }
-    return backend.evaluate_device_with_packed_native_weight_rotations(
-        labels,
-        weights.native_weights,
-        weights.packed_weights,
-        rotations);
-}
-
-bool debug_compare_cuda_quotients_enabled();
-
-bool evaluate_cuda_fused_quotients(
-    const ProtocolContext& context,
-    const TraceArtifacts& trace,
-    const std::map<std::string, FieldElement>& challenges,
-    const ProofEvaluationBackendRegistry& backend_registry,
-    ProofDomainWeightCache& weight_cache,
-    FieldElement* t_fh_tau,
-    FieldElement* t_edge_tau,
-    FieldElement* t_n_tau,
-    FieldElement* t_in_tau,
-    FieldElement* t_d_tau) {
-    const auto* fh_backend = backend_registry.find(context.domains.fh);
-    const auto* edge_backend = backend_registry.find(context.domains.edge);
-    const auto* n_backend = backend_registry.find(context.domains.n);
-    const auto* in_backend = backend_registry.find(context.domains.in);
-    const auto* d_backend = backend_registry.find(context.domains.d);
-    if (fh_backend == nullptr || edge_backend == nullptr || n_backend == nullptr || in_backend == nullptr
-        || d_backend == nullptr) {
-        return false;
-    }
-
-    const auto fh_shift = context.domains.fh->rotation_shift(context.kzg.tau, context.kzg.tau * context.domains.fh->omega);
-    const auto edge_shift =
-        context.domains.edge->rotation_shift(context.kzg.tau, context.kzg.tau * context.domains.edge->omega);
-    const auto in_shift = context.domains.in->rotation_shift(context.kzg.tau, context.kzg.tau * context.domains.in->omega);
-    const auto d_shift = context.domains.d->rotation_shift(context.kzg.tau, context.kzg.tau * context.domains.d->omega);
-    const auto n_shift = context.domains.n->rotation_shift(context.kzg.tau, context.kzg.tau * context.domains.n->omega);
-    if (!fh_shift.has_value() || !edge_shift.has_value() || !n_shift.has_value() || !in_shift.has_value()
-        || !d_shift.has_value()) {
-        return false;
-    }
-
-    const auto fh_evaluations =
-        evaluate_device_bundle(*fh_backend, quotient_dependencies_fh(), context.kzg.tau, {0, *fh_shift}, weight_cache);
-    const auto edge_evaluations =
-        evaluate_device_bundle(*edge_backend, quotient_dependencies_edge(), context.kzg.tau, {0, *edge_shift}, weight_cache);
-    const auto n_evaluations =
-        evaluate_device_bundle(*n_backend, quotient_dependencies_n(), context.kzg.tau, {0, *n_shift}, weight_cache);
-    const auto in_evaluations =
-        evaluate_device_bundle(*in_backend, quotient_dependencies_in(), context.kzg.tau, {0, *in_shift}, weight_cache);
-    const auto d_evaluations =
-        evaluate_device_bundle(*d_backend, quotient_dependencies_d(), context.kzg.tau, {0, *d_shift}, weight_cache);
-
-    *t_fh_tau = evaluate_t_fh_device_cuda(context, challenges, fh_evaluations, context.kzg.tau);
-    *t_edge_tau =
-        evaluate_t_edge_device_cuda(context, challenges, trace.witness_scalars, edge_evaluations, context.kzg.tau);
-    *t_n_tau = evaluate_t_n_device_cuda(context, challenges, trace.witness_scalars, n_evaluations, context.kzg.tau);
-    *t_in_tau =
-        evaluate_t_in_device_cuda(context, challenges, trace.external_evaluations, in_evaluations, context.kzg.tau);
-    *t_d_tau =
-        evaluate_t_d_device_cuda(context, challenges, trace.external_evaluations, d_evaluations, context.kzg.tau);
-    if (debug_compare_cuda_quotients_enabled()) {
-        const auto materialized = d_backend->materialize_device_rotation_result(d_evaluations);
-        const auto& labels = quotient_dependencies_d();
-        std::unordered_map<std::string, std::size_t> row_by_label;
-        row_by_label.reserve(labels.size());
-        for (std::size_t i = 0; i < labels.size(); ++i) {
-            row_by_label.emplace(labels[i], i);
-        }
-        const auto tau_omega = context.kzg.tau * context.domains.d->omega;
-        const auto cpu_from_materialized = evaluate_t_d(
-            context,
-            challenges,
-            trace.external_evaluations,
-            [&](const std::string& name, const FieldElement& point) {
-                const auto it = row_by_label.find(name);
-                if (it == row_by_label.end()) {
-                    throw std::runtime_error("missing materialized d quotient label: " + name);
-                }
-                std::size_t point_index = 0;
-                if (point == tau_omega) {
-                    point_index = 1;
-                } else if (point != context.kzg.tau) {
-                    throw std::runtime_error("unexpected d quotient evaluation point");
-                }
-                return materialized.at(point_index).at(it->second);
-            },
-            context.kzg.tau);
-        if (cpu_from_materialized != *t_d_tau) {
-            std::cerr << "[gatzk][cuda-d-materialized-mismatch] cpu_from_materialized=" << cpu_from_materialized
-                      << " gpu=" << *t_d_tau << '\n';
-        } else {
-            std::cerr << "[gatzk][cuda-d-materialized-match]\n";
-        }
-
-        auto lookup_polynomial = [&](const std::string& name) -> const Polynomial& {
-            if (trace.polynomials.contains(name)) {
-                return trace.polynomials.at(name);
-            }
-            if (context.public_polynomials.contains(name)) {
-                return context.public_polynomials.at(name);
-            }
-            throw std::runtime_error("missing polynomial for d quotient debug: " + name);
-        };
-        for (std::size_t row = 0; row < labels.size(); ++row) {
-            const auto& polynomial = lookup_polynomial(labels[row]);
-            const auto cpu_tau = polynomial.evaluate(context.kzg.tau);
-            const auto cpu_tau_omega = polynomial.evaluate(tau_omega);
-            if (cpu_tau != materialized.at(0).at(row)) {
-                std::cerr << "[gatzk][cuda-d-eval-mismatch] label=" << labels[row]
-                          << " point=tau cpu=" << cpu_tau
-                          << " gpu=" << materialized.at(0).at(row) << '\n';
-            }
-            if (cpu_tau_omega != materialized.at(1).at(row)) {
-                std::cerr << "[gatzk][cuda-d-eval-mismatch] label=" << labels[row]
-                          << " point=tau_omega cpu=" << cpu_tau_omega
-                          << " gpu=" << materialized.at(1).at(row) << '\n';
-            }
-        }
-    }
-    return true;
-}
-
-bool debug_compare_cuda_quotients_enabled() {
-    const char* flag = std::getenv("GATZK_DEBUG_COMPARE_CUDA_QUOTIENTS");
-    return flag != nullptr && std::string(flag) != "0";
-}
-
-void debug_compare_cuda_quotients(
-    const ProtocolContext& context,
-    const TraceArtifacts& trace,
-    const std::map<std::string, FieldElement>& challenges,
-    const std::shared_ptr<ProofDomainWeightCache>& proof_domain_weight_cache,
-    const FieldElement& t_fh_tau,
-    const FieldElement& t_edge_tau,
-    const FieldElement& t_n_tau,
-    const FieldElement& t_in_tau,
-    const FieldElement& t_d_tau) {
-    if (!debug_compare_cuda_quotients_enabled()) {
-        return;
-    }
-
-    EvaluationMemoization memo(
-        context,
-        trace,
-        challenges,
-        nullptr,
-        proof_domain_weight_cache,
-        nullptr);
-    memo.precompute_named(
-        quotient_dependencies_fh(),
-        {context.kzg.tau, context.kzg.tau * context.domains.fh->omega});
-    memo.precompute_named(
-        quotient_dependencies_edge(),
-        {context.kzg.tau, context.kzg.tau * context.domains.edge->omega});
-    memo.precompute_named(quotient_dependencies_n(), {context.kzg.tau});
-    memo.precompute_named(
-        quotient_dependencies_in(),
-        {context.kzg.tau, context.kzg.tau * context.domains.in->omega});
-    memo.precompute_named(
-        quotient_dependencies_d(),
-        {context.kzg.tau, context.kzg.tau * context.domains.d->omega});
-
-    auto eval = [&](const std::string& name, const FieldElement& point) {
-        return memo.eval_named(name, point);
-    };
-    const auto cpu_t_fh = evaluate_t_fh(context, challenges, eval, context.kzg.tau);
-    const auto cpu_t_edge = evaluate_t_edge(context, challenges, trace.witness_scalars, eval, context.kzg.tau);
-    const auto cpu_t_n = evaluate_t_n(context, challenges, trace.witness_scalars, eval, context.kzg.tau);
-    const auto cpu_t_in = evaluate_t_in(context, challenges, trace.external_evaluations, eval, context.kzg.tau);
-    const auto cpu_t_d = evaluate_t_d(context, challenges, trace.external_evaluations, eval, context.kzg.tau);
-
-    auto report = [&](std::string_view label, const FieldElement& cpu_value, const FieldElement& gpu_value) {
-        if (cpu_value != gpu_value) {
-            std::cerr << "[gatzk][cuda-quotient-mismatch] " << label
-                      << " cpu=" << cpu_value
-                      << " gpu=" << gpu_value << '\n';
-        } else {
-            std::cerr << "[gatzk][cuda-quotient-match] " << label << '\n';
-        }
-    };
-
-    report("t_FH", cpu_t_fh, t_fh_tau);
-    report("t_edge", cpu_t_edge, t_edge_tau);
-    report("t_N", cpu_t_n, t_n_tau);
-    report("t_in", cpu_t_in, t_in_tau);
-    report("t_d", cpu_t_d, t_d_tau);
-}
-#endif
 
 DomainOpeningBundle make_bundle(
     const ProtocolContext& context,
@@ -3807,40 +3473,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
     FieldElement t_in_tau = FieldElement::zero();
     FieldElement t_d_tau = FieldElement::zero();
 
-    bool used_cuda_fused_quotients = false;
-#if GATZK_ENABLE_CUDA_BACKEND
-    used_cuda_fused_quotients =
-        route2.experimental_cuda_quotients
-        && route2.fft_backend_upgrade
-        && backend_registry != nullptr
-        && algebra::configured_algebra_backend() == algebra::AlgebraBackend::Cuda
-        && algebra::cuda_backend_available()
-        && evaluate_cuda_fused_quotients(
-            context,
-            trace,
-            challenges,
-            *backend_registry,
-            *proof_domain_weight_cache,
-            &t_fh_tau,
-            &t_edge_tau,
-            &t_n_tau,
-            &t_in_tau,
-            &t_d_tau);
-    if (used_cuda_fused_quotients) {
-        debug_compare_cuda_quotients(
-            context,
-            trace,
-            challenges,
-            proof_domain_weight_cache,
-            t_fh_tau,
-            t_edge_tau,
-            t_n_tau,
-            t_in_tau,
-            t_d_tau);
-    }
-#endif
-
-    if (!used_cuda_fused_quotients && run_parallel) {
+    if (run_parallel) {
         auto fh_future = std::async(
             std::launch::async,
             build_eval([&](EvaluationMemoization& memo) {
@@ -3929,7 +3562,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
         t_n_tau = n_future.get();
         t_in_tau = in_future.get();
         t_d_tau = d_future.get();
-    } else if (!used_cuda_fused_quotients) {
+    } else {
         EvaluationMemoization quotient_eval(
             context,
             trace,
@@ -4365,6 +3998,9 @@ void export_run_artifacts(
     const std::map<std::string, std::string> summary = {
         {"backend", metrics.backend_name},
         {"backend_name", metrics.backend_name},
+        {"crypto_backend_name", metrics.crypto_backend_name},
+        {"algebra_backend_name", metrics.algebra_backend_name},
+        {"compute_backend_name", metrics.compute_backend_name},
         {"config", metrics.config},
         {"dataset", metrics.dataset},
         {"dataset_name", proof.public_metadata.dataset_name},
@@ -4393,9 +4029,11 @@ void export_run_artifacts(
         {"enabled_parallel_fft", metrics.enabled_parallel_fft ? "true" : "false"},
         {"enabled_trace_layout_upgrade", metrics.enabled_trace_layout_upgrade ? "true" : "false"},
         {"enabled_fast_verify_pairing", metrics.enabled_fast_verify_pairing ? "true" : "false"},
+        {"enabled_cuda_trace_hotspots", metrics.enabled_cuda_trace_hotspots ? "true" : "false"},
         {"route2_label", metrics.route2_label},
         {"node_count", std::to_string(metrics.node_count)},
         {"edge_count", std::to_string(metrics.edge_count)},
+        {"gpu_runtime_present", metrics.gpu_runtime_present ? "true" : "false"},
         {"context_build_ms", format_double(metrics.context_build_ms)},
         {"domain_opening_ms", format_double(metrics.domain_opening_ms)},
         {"external_opening_ms", format_double(metrics.external_opening_ms)},

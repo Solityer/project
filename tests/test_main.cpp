@@ -9,6 +9,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -84,6 +85,16 @@ double extract_json_number(const std::string& text, const std::string& key) {
     }
     require(value_end > value_begin, "missing numeric json value: " + key);
     return std::stod(text.substr(value_begin, value_end - value_begin));
+}
+
+std::string extract_json_string(const std::string& text, const std::string& key) {
+    const auto marker = "\"" + key + "\": \"";
+    const auto start = text.find(marker);
+    require(start != std::string::npos, "missing json key: " + key);
+    const auto value_begin = start + marker.size();
+    const auto value_end = text.find('"', value_begin);
+    require(value_end != std::string::npos, "unterminated json value: " + key);
+    return text.substr(value_begin, value_end - value_begin);
 }
 
 std::string extract_dataset_row(const std::string& latest, const std::string& dataset) {
@@ -727,7 +738,10 @@ void test_formal_proof_round_trip_and_manifest_export() {
     require(gatzk::protocol::verify(fixture.context, fixture.proof), "formal prove/verify round-trip must accept");
 
     gatzk::protocol::RunMetrics metrics;
-    metrics.backend_name = "test";
+    metrics.backend_name = "test/cpu";
+    metrics.crypto_backend_name = "test";
+    metrics.algebra_backend_name = "cpu";
+    metrics.compute_backend_name = "cpu";
     metrics.config = repo_path("configs/cora_full.cfg");
     metrics.dataset = fixture.context.dataset.name;
     metrics.node_count = fixture.context.local.num_nodes;
@@ -747,6 +761,9 @@ void test_formal_proof_round_trip_and_manifest_export() {
         return out.str();
     }(manifest_path);
     for (const auto& key : {
+             "backend_name",
+             "crypto_backend_name",
+             "compute_backend_name",
              "dataset_name",
              "task_type",
              "report_unit",
@@ -910,10 +927,15 @@ std::filesystem::path write_benchmark_manifest(
     manifest << "{\n"
              << "  \"dataset\": \"" << dataset << "\",\n"
              << "  \"dataset_name\": \"" << dataset << "\",\n"
-             << "  \"backend_name\": \"mcl\",\n"
+             << "  \"backend_name\": \"mcl/cpu\",\n"
+             << "  \"crypto_backend_name\": \"mcl\",\n"
+             << "  \"algebra_backend_name\": \"cpu\",\n"
+             << "  \"compute_backend_name\": \"cpu\",\n"
              << "  \"benchmark_mode\": \"" << benchmark_mode << "\",\n"
              << "  \"route2_label\": \"msm_fft_packed_kernel_layout_pairing\",\n"
              << "  \"fft_backend_route\": \"packed_rotated_kernel\",\n"
+             << "  \"enabled_cuda_trace_hotspots\": \"false\",\n"
+             << "  \"gpu_runtime_present\": \"false\",\n"
              << "  \"commitment_time_ms\": \"10.25\",\n"
              << "  \"prove_time_ms\": \"" << prove_time_ms << "\",\n"
              << "  \"verify_time_ms\": \"" << verify_time_ms << "\",\n"
@@ -1287,7 +1309,10 @@ void test_performance_regression_guard_for_existing_paths() {
 void test_no_legacy_benchmark_pipeline_remaining() {
     const auto& fixture = full_cora_proof_fixture();
     gatzk::protocol::RunMetrics metrics;
-    metrics.backend_name = "test";
+    metrics.backend_name = "test/cpu";
+    metrics.crypto_backend_name = "test";
+    metrics.algebra_backend_name = "cpu";
+    metrics.compute_backend_name = "cpu";
     metrics.config = repo_path("configs/cora_full.cfg");
     metrics.dataset = fixture.context.dataset.name;
     metrics.node_count = fixture.context.local.num_nodes;
@@ -2100,38 +2125,75 @@ void test_small_graph_proof_floor_is_explained_by_formal_fixed_costs() {
         "Cora and Pubmed must still share nearly identical proof-size floor on the official path");
 }
 
-void test_gpu_hotspot_path_has_positive_gain_or_precise_rejection_reason() {
-    const auto gpu_text = slurp_file(repo_root() / "runs" / "benchmarks" / "gpu_hotspot_eval.json");
-    require(gpu_text.find("\"cuda_build_enabled\": \"true\"") != std::string::npos, "GPU experiment must use a CUDA-enabled build");
-    require(gpu_text.find("\"official_cpu_build_cuda_enabled\": \"false\"") != std::string::npos, "official CPU build must remain the default path");
-    require(gpu_text.find("\"gpu_runtime_present\": \"true\"") != std::string::npos, "GPU rejection must be based on a real runtime");
-    require(extract_json_number(gpu_text, "pubmed_gpu_attempt_exit_code") == 124.0, "Pubmed GPU path must report the precise timeout rejection");
-    require(extract_json_number(gpu_text, "ppi_gpu_attempt_exit_code") == 124.0, "PPI GPU path must report the precise timeout rejection");
-    require(extract_json_number(gpu_text, "pubmed_gpu_attempt_timeout_ms") > extract_json_number(gpu_text, "pubmed_cpu_prove_ms"), "Pubmed GPU rejection must show a real negative-gain comparison");
-    require(extract_json_number(gpu_text, "ppi_gpu_attempt_timeout_ms") > extract_json_number(gpu_text, "ppi_cpu_prove_ms"), "PPI GPU rejection must show a real negative-gain comparison");
-    require(gpu_text.find("dynamic domain convert") != std::string::npos, "GPU rejection reason must name the real hotspot mismatch");
-}
-
-void test_gpu_path_does_not_change_transcript_or_real_gat_semantics() {
-    const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
-    require(latest.find("cudaq") == std::string::npos, "GPU experiment must not silently alter the official transcript route");
+void test_gpu_formal_full_dataset_warm_benchmarks_exist_and_are_verified() {
     for (const auto& manifest_path : {
-             repo_root() / "runs" / "cora_full" / "warm" / "run_manifest.json",
-             repo_root() / "runs" / "citeseer_full" / "warm" / "run_manifest.json",
-             repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json",
-             repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json",
+             repo_root() / "runs" / "cora_full" / "cuda_formal" / "warm" / "run_manifest.json",
+             repo_root() / "runs" / "citeseer_full" / "cuda_formal" / "warm" / "run_manifest.json",
+             repo_root() / "runs" / "pubmed_full" / "cuda_formal" / "warm" / "run_manifest.json",
+             repo_root() / "runs" / "ppi_full_formal" / "cuda_formal" / "warm" / "run_manifest.json",
+             repo_root() / "runs" / "ogbn_arxiv_full" / "cuda_formal" / "warm" / "run_manifest.json",
          }) {
         const auto text = slurp_file(manifest_path);
-        require(text.find("\"verified\": \"true\"") != std::string::npos, "GPU experiment must not disturb verified formal outputs");
+        require(text.find("\"verified\": \"true\"") != std::string::npos, "formal GPU full warm manifest must remain verified");
+        require(text.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "formal GPU full warm manifest must stay on warm mode");
+        require(text.find("\"is_full_dataset\": \"true\"") != std::string::npos, "formal GPU full warm manifest must stay full-dataset");
+        require(text.find("\"backend_name\": \"mcl/cuda_hotspots\"") != std::string::npos, "formal GPU full warm manifest must expose the compute backend");
+        require(text.find("\"compute_backend_name\": \"cuda_hotspots\"") != std::string::npos, "formal GPU full warm manifest must expose compute_backend_name");
+        require(text.find("\"algebra_backend_name\": \"cpu\"") != std::string::npos, "formal GPU full warm manifest must keep the honest algebra backend label");
+        require(text.find("\"enabled_cuda_trace_hotspots\": \"true\"") != std::string::npos, "formal GPU full warm manifest must record the real CUDA hotspot route");
+        require(text.find("\"gpu_runtime_present\": \"true\"") != std::string::npos, "formal GPU full warm manifest must confirm CUDA runtime presence");
+    }
+
+    const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "cuda_formal" / "latest.json");
+    for (const auto& dataset : {"cora", "citeseer", "pubmed", "ppi", "ogbn-arxiv"}) {
+        require(latest.find("\"dataset\": \"" + std::string(dataset) + "\"") != std::string::npos, "formal GPU full warm benchmark table must include " + std::string(dataset));
+    }
+    require(latest.find("\"backend_name\": \"mcl/cuda_hotspots\"") != std::string::npos, "formal GPU full warm benchmark table must expose the official CUDA hotspot backend");
+}
+
+void test_gpu_formal_full_dataset_warm_keeps_proof_contract_equal_to_cpu() {
+    for (const auto& [dataset, cpu_manifest, gpu_manifest] : {
+             std::tuple<std::string, std::filesystem::path, std::filesystem::path>{
+                 "cora",
+                 repo_root() / "runs" / "cora_full" / "warm" / "run_manifest.json",
+                 repo_root() / "runs" / "cora_full" / "cuda_formal" / "warm" / "run_manifest.json"},
+             std::tuple<std::string, std::filesystem::path, std::filesystem::path>{
+                 "citeseer",
+                 repo_root() / "runs" / "citeseer_full" / "warm" / "run_manifest.json",
+                 repo_root() / "runs" / "citeseer_full" / "cuda_formal" / "warm" / "run_manifest.json"},
+             std::tuple<std::string, std::filesystem::path, std::filesystem::path>{
+                 "pubmed",
+                 repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json",
+                 repo_root() / "runs" / "pubmed_full" / "cuda_formal" / "warm" / "run_manifest.json"},
+             std::tuple<std::string, std::filesystem::path, std::filesystem::path>{
+                 "ppi",
+                 repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json",
+                 repo_root() / "runs" / "ppi_full_formal" / "cuda_formal" / "warm" / "run_manifest.json"},
+             std::tuple<std::string, std::filesystem::path, std::filesystem::path>{
+                 "ogbn-arxiv",
+                 repo_root() / "runs" / "ogbn_arxiv_full" / "warm" / "run_manifest.json",
+                 repo_root() / "runs" / "ogbn_arxiv_full" / "cuda_formal" / "warm" / "run_manifest.json"},
+         }) {
+        const auto cpu_text = slurp_file(cpu_manifest);
+        const auto gpu_text = slurp_file(gpu_manifest);
+        require(extract_json_number(cpu_text, "proof_size_bytes") == extract_json_number(gpu_text, "proof_size_bytes"), dataset + " formal GPU route must preserve proof_size_bytes");
+        require(extract_json_string(cpu_text, "hidden_profile") == extract_json_string(gpu_text, "hidden_profile"), dataset + " formal GPU route must preserve hidden_profile");
+        require(extract_json_string(cpu_text, "d_in_profile") == extract_json_string(gpu_text, "d_in_profile"), dataset + " formal GPU route must preserve d_in_profile");
+        require(extract_json_string(gpu_text, "route2_label").find("cuda") != std::string::npos, dataset + " formal GPU route must advertise the real CUDA hotspot label");
     }
 }
 
-void test_no_useless_gpu_experiment_left_in_final_code() {
-    const auto gpu_text = slurp_file(repo_root() / "runs" / "benchmarks" / "gpu_hotspot_eval.json");
-    require(gpu_text.find("\"cuda_build_enabled\": \"true\"") != std::string::npos, "GPU evaluation artifact must remain available");
-    require(gpu_text.find("\"rejection_reason\":") != std::string::npos, "final code must keep only the precise GPU rejection rationale");
+void test_no_fake_gpu_experiment_left_in_final_code() {
+    require(!std::filesystem::exists(repo_root() / "runs" / "benchmarks" / "gpu_hotspot_eval.json"), "legacy GPU rejection artifact must be removed");
+    require(!std::filesystem::exists(repo_root() / "runs" / "benchmarks" / "cuda_formal_smoke"), "legacy GPU smoke benchmark table must be removed");
+    require(!std::filesystem::exists(repo_root() / "runs" / "cora_full" / "cuda_formal_smoke"), "legacy cora GPU smoke artifact must be removed");
+    require(!std::filesystem::exists(repo_root() / "runs" / "citeseer_full" / "cuda_formal_smoke"), "legacy citeseer GPU smoke artifact must be removed");
+    const auto cuda_backend = slurp_file(repo_root() / "src" / "algebra" / "cuda_backend.cu");
+    require(cuda_backend.find("cuda shim") == std::string::npos, "final CUDA backend must not keep shim-labelled code");
+    const auto vector_ops = slurp_file(repo_root() / "src" / "algebra" / "vector_ops.cpp");
+    require(vector_ops.find("GATZK_ENABLE_CUDA_DOT_PRODUCTS") == std::string::npos, "legacy fake CUDA algebra dot-product switch must be removed");
     const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
-    require(latest.find("\"backend_name\": \"cuda\"") == std::string::npos, "no negative-gain GPU path should leak into the official benchmark table");
+    require(latest.find("\"backend_name\": \"mcl/cuda_hotspots\"") == std::string::npos, "GPU formal runs must not overwrite the official CPU benchmark table");
 }
 
 void test_no_non_performance_refactor_leaked_back_into_mainline() {
@@ -2301,9 +2363,9 @@ int main(int argc, char** argv) {
         {"no_obsolete_domain_open_c_focus_left_in_final_code", test_no_obsolete_domain_open_c_focus_left_in_final_code},
         {"cost_drivers_explain_ppi_vs_pubmed_without_size_illusion", test_cost_drivers_explain_ppi_vs_pubmed_without_size_illusion},
         {"small_graph_proof_floor_is_explained_by_formal_fixed_costs", test_small_graph_proof_floor_is_explained_by_formal_fixed_costs},
-        {"gpu_hotspot_path_has_positive_gain_or_precise_rejection_reason", test_gpu_hotspot_path_has_positive_gain_or_precise_rejection_reason},
-        {"gpu_path_does_not_change_transcript_or_real_gat_semantics", test_gpu_path_does_not_change_transcript_or_real_gat_semantics},
-        {"no_useless_gpu_experiment_left_in_final_code", test_no_useless_gpu_experiment_left_in_final_code},
+        {"gpu_formal_full_dataset_warm_benchmarks_exist_and_are_verified", test_gpu_formal_full_dataset_warm_benchmarks_exist_and_are_verified},
+        {"gpu_formal_full_dataset_warm_keeps_proof_contract_equal_to_cpu", test_gpu_formal_full_dataset_warm_keeps_proof_contract_equal_to_cpu},
+        {"no_fake_gpu_experiment_left_in_final_code", test_no_fake_gpu_experiment_left_in_final_code},
         {"prove_side_cache_or_layout_reuse_does_not_change_transcript", test_prove_side_cache_or_layout_reuse_does_not_change_transcript},
         {"official_benchmark_table_updates_after_prover_optimization", test_official_benchmark_table_updates_after_prover_optimization},
         {"no_verifier_only_refactor_misreported_as_prover_gain", test_no_verifier_only_refactor_misreported_as_prover_gain},

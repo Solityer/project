@@ -37,5 +37,4 @@ std::vector<algebra::FieldElement> build_max_counter_state(
     }
     return out;
 }
-
 }
