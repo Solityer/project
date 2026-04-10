@@ -18,6 +18,7 @@ namespace gatzk::algebra
      // 返回当前配置的代数后端
     AlgebraBackend configured_algebra_backend();
     std::string configured_algebra_backend_name();
+    bool cuda_backend_build_enabled();
     bool cuda_backend_available();
 
     // 计算两个域元素向量的点积：sum(lhs[i] * rhs[i])

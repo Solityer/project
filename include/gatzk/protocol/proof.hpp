@@ -118,6 +118,9 @@ struct Proof {
 
 struct RunMetrics {
     std::string backend_name;
+    std::string crypto_backend_name;
+    std::string algebra_backend_name;
+    std::string compute_backend_name;
     std::string config;
     std::string dataset;
     std::size_t node_count = 0;
@@ -258,8 +261,10 @@ struct RunMetrics {
     bool enabled_fft_kernel_upgrade = false;
     bool enabled_trace_layout_upgrade = false;
     bool enabled_fast_verify_pairing = false;
+    bool enabled_cuda_trace_hotspots = false;
     bool is_cold_run = true;
     bool is_full_dataset = false;
+    bool gpu_runtime_present = false;
     std::string benchmark_mode = "single";
     std::string fft_backend_route = "legacy";
     std::string route2_label = "legacy";

@@ -14,33 +14,6 @@
 namespace gatzk::algebra
 {
 
-#if GATZK_ENABLE_CUDA_BACKEND
-    // 使用 CUDA 计算带权重的打包求值（返回主机端结果）
-    std::vector<FieldElement> evaluate_with_packed_native_weights_cuda(
-        const PackedEvaluationBackend& backend,
-        const std::vector<std::string>& labels,
-        const PackedFieldBuffer& weights);
-    PackedEvaluationDeviceResult evaluate_device_with_packed_native_weights_cuda(
-        const PackedEvaluationBackend& backend,
-        const std::vector<std::string>& labels,
-        const PackedFieldBuffer& weights);
-
-    // 使用 CUDA 计算带权重旋转的打包求值（返回主机端结果）
-    std::vector<std::vector<FieldElement>> evaluate_with_packed_native_weight_rotations_cuda(
-        const PackedEvaluationBackend& backend,
-        const std::vector<std::string>& labels,
-        const PackedFieldBuffer& representative_weights,
-        const std::vector<std::size_t>& rotations);
-    PackedEvaluationDeviceResult evaluate_device_with_packed_native_weight_rotations_cuda(
-        const PackedEvaluationBackend& backend,
-        const std::vector<std::string>& labels,
-        const PackedFieldBuffer& representative_weights,
-        const std::vector<std::size_t>& rotations);
-    std::vector<FieldElement> materialize_device_result_cuda(const PackedEvaluationDeviceResult& result);
-    std::vector<std::vector<FieldElement>> materialize_device_rotation_result_cuda(
-        const PackedEvaluationDeviceResult& result);
-#endif
-
     namespace
     {
         // 根据标签列表生成唯一的缓存键（字符串）
@@ -246,15 +219,6 @@ namespace gatzk::algebra
         const std::vector<std::string>& labels,
         const std::vector<mcl::Fr>& weights) const
     {
-        if (configured_algebra_backend() == AlgebraBackend::Cuda)
-        {
-#if GATZK_ENABLE_CUDA_BACKEND
-            const auto packed_weights = pack_native_field_elements(weights);
-            return evaluate_with_packed_native_weights_cuda(*this, labels, packed_weights);
-#else
-            throw std::runtime_error("CUDA algebra backend requested but this build was compiled without CUDA support");
-#endif
-        }
         return evaluate_with_packed_native_weights(labels, weights, PackedFieldBuffer());
     }
 
@@ -263,22 +227,10 @@ namespace gatzk::algebra
         const std::vector<mcl::Fr>& weights,
         const PackedFieldBuffer& packed_weights) const
     {
+        (void)packed_weights;
         if (weights.size() != domain_->size)
         {
             throw std::runtime_error("packed evaluation backend weight size mismatch");
-        }
-
-        if (configured_algebra_backend() == AlgebraBackend::Cuda)
-        {
-#if GATZK_ENABLE_CUDA_BACKEND
-            if (packed_weights.size() != weights.size())
-            {
-                throw std::runtime_error("packed evaluation backend packed weight size mismatch");
-            }
-            return evaluate_with_packed_native_weights_cuda(*this, labels, packed_weights);
-#else
-            throw std::runtime_error("CUDA algebra backend requested but this build was compiled without CUDA support");
-#endif
         }
 
         const auto& subset = subset_for(labels);
@@ -381,25 +333,10 @@ namespace gatzk::algebra
         const std::vector<mcl::Fr>& weights,
         const PackedFieldBuffer& packed_weights) const
     {
-        if (weights.size() != domain_->size)
-        {
-            throw std::runtime_error("packed evaluation backend weight size mismatch");
-        }
-        if (configured_algebra_backend() != AlgebraBackend::Cuda)
-        {
-            throw std::runtime_error("device-side packed evaluation requires CUDA algebra backend");
-        }
-#if GATZK_ENABLE_CUDA_BACKEND
-        if (packed_weights.size() != weights.size())
-        {
-            throw std::runtime_error("packed evaluation backend packed weight size mismatch");
-        }
-        return evaluate_device_with_packed_native_weights_cuda(*this, labels, packed_weights);
-#else
         (void)labels;
+        (void)weights;
         (void)packed_weights;
-        throw std::runtime_error("CUDA algebra backend requested but this build was compiled without CUDA support");
-#endif
+        throw std::runtime_error("device-side packed evaluation is not part of the formal CUDA mainline");
     }
 
     // 使用原生权重的旋转求值
@@ -422,15 +359,6 @@ namespace gatzk::algebra
         const std::vector<mcl::Fr>& representative_weights,
         const std::vector<std::size_t>& rotations) const
     {
-        if (configured_algebra_backend() == AlgebraBackend::Cuda)
-        {
-#if GATZK_ENABLE_CUDA_BACKEND
-            const auto packed_weights = pack_native_field_elements(representative_weights);
-            return evaluate_with_packed_native_weight_rotations_cuda(*this, labels, packed_weights, rotations);
-#else
-            throw std::runtime_error("CUDA algebra backend requested but this build was compiled without CUDA support");
-#endif
-        }
         return evaluate_with_packed_native_weight_rotations(
             labels,
             representative_weights,
@@ -445,6 +373,7 @@ namespace gatzk::algebra
         const PackedFieldBuffer& representative_weights_packed,
         const std::vector<std::size_t>& rotations) const
     {
+        (void)representative_weights_packed;
         if (representative_weights.size() != domain_->size)
         {
             throw std::runtime_error("packed rotated evaluation backend weight size mismatch");
@@ -452,23 +381,6 @@ namespace gatzk::algebra
         if (rotations.empty())
         {
             return {};
-        }
-
-        if (configured_algebra_backend() == AlgebraBackend::Cuda)
-        {
-#if GATZK_ENABLE_CUDA_BACKEND
-            if (representative_weights_packed.size() != representative_weights.size())
-            {
-                throw std::runtime_error("packed rotated evaluation backend packed weight size mismatch");
-            }
-            return evaluate_with_packed_native_weight_rotations_cuda(
-                *this,
-                labels,
-                representative_weights_packed,
-                rotations);
-#else
-            throw std::runtime_error("CUDA algebra backend requested but this build was compiled without CUDA support");
-#endif
         }
 
         const auto& subset = subset_for(labels);
@@ -600,70 +512,26 @@ namespace gatzk::algebra
         const PackedFieldBuffer& representative_weights_packed,
         const std::vector<std::size_t>& rotations) const
     {
-        if (representative_weights.size() != domain_->size)
-        {
-            throw std::runtime_error("packed rotated evaluation backend weight size mismatch");
-        }
-        if (rotations.empty())
-        {
-            return {};
-        }
-        if (configured_algebra_backend() != AlgebraBackend::Cuda)
-        {
-            throw std::runtime_error("device-side packed rotated evaluation requires CUDA algebra backend");
-        }
-#if GATZK_ENABLE_CUDA_BACKEND
-        if (representative_weights_packed.size() != representative_weights.size())
-        {
-            throw std::runtime_error("packed rotated evaluation backend packed weight size mismatch");
-        }
-        return evaluate_device_with_packed_native_weight_rotations_cuda(
-            *this,
-            labels,
-            representative_weights_packed,
-            rotations);
-#else
         (void)labels;
+        (void)representative_weights;
         (void)representative_weights_packed;
-        throw std::runtime_error("CUDA algebra backend requested but this build was compiled without CUDA support");
-#endif
+        (void)rotations;
+        throw std::runtime_error("device-side packed rotated evaluation is not part of the formal CUDA mainline");
     }
 
     // 将设备端结果拷贝回主机并展开为一维域元素向量
     std::vector<FieldElement> PackedEvaluationBackend::materialize_device_result(
         const PackedEvaluationDeviceResult& result) const
     {
-        if (result.empty())
-        {
-            return {};
-        }
-        if (configured_algebra_backend() != AlgebraBackend::Cuda)
-        {
-            throw std::runtime_error("device-side packed evaluation materialization requires CUDA algebra backend");
-        }
-#if GATZK_ENABLE_CUDA_BACKEND
-        return materialize_device_result_cuda(result);
-#else
-        throw std::runtime_error("CUDA algebra backend requested but this build was compiled without CUDA support");
-#endif
+        (void)result;
+        throw std::runtime_error("device-side packed evaluation materialization is not part of the formal CUDA mainline");
     }
 
     // 将设备端旋转结果拷贝回主机并展开为二维向量（每个旋转一行）
     std::vector<std::vector<FieldElement>> PackedEvaluationBackend::materialize_device_rotation_result(
         const PackedEvaluationDeviceResult& result) const
     {
-        if (result.empty())
-        {
-            return {};
-        }
-        if (configured_algebra_backend() != AlgebraBackend::Cuda)
-        {
-            throw std::runtime_error("device-side packed evaluation materialization requires CUDA algebra backend");
-        }
-#if GATZK_ENABLE_CUDA_BACKEND
-        return materialize_device_rotation_result_cuda(result);
-#else
-        throw std::runtime_error("CUDA algebra backend requested but this build was compiled without CUDA support");
-#endif
+        (void)result;
+        throw std::runtime_error("device-side packed rotated materialization is not part of the formal CUDA mainline");
     }
 }

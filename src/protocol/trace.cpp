@@ -97,9 +97,7 @@ void add_metric(double* metric, const Clock::time_point& start) {
 
 bool cuda_lookup_histogram_enabled() {
 #if GATZK_ENABLE_CUDA_BACKEND
-    const char* flag = std::getenv("GATZK_ENABLE_CUDA_LOOKUP_HISTOGRAM");
-    return flag != nullptr
-        && std::string(flag) == "1"
+    return util::route2_options().cuda_trace_hotspots
         && algebra::cuda_backend_available();
 #else
     return false;
@@ -108,9 +106,7 @@ bool cuda_lookup_histogram_enabled() {
 
 [[maybe_unused]] bool cuda_max_counter_enabled() {
 #if GATZK_ENABLE_CUDA_BACKEND
-    const char* flag = std::getenv("GATZK_ENABLE_CUDA_MAX_COUNTER");
-    return flag != nullptr
-        && std::string(flag) == "1"
+    return util::route2_options().cuda_trace_hotspots
         && algebra::cuda_backend_available();
 #else
     return false;

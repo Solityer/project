@@ -13,7 +13,7 @@ struct Route2Options {
     bool fft_kernel_upgrade = GATZK_ENABLE_FFT_KERNEL_UPGRADE_DEFAULT != 0;
     bool trace_layout_upgrade = GATZK_ENABLE_TRACE_LAYOUT_UPGRADE_DEFAULT != 0;
     bool fast_verify_pairing = GATZK_ENABLE_FAST_VERIFY_PAIRING_DEFAULT != 0;
-    bool experimental_cuda_quotients = false;
+    bool cuda_trace_hotspots = false;
 };
 
 const Route2Options& route2_options();

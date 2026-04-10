@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include <chrono>
 #include <filesystem>
 #include <iostream>
@@ -6,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "gatzk/algebra/vector_ops.hpp"
 #include "gatzk/crypto/curve.hpp"
 #include "gatzk/protocol/prover.hpp"
 #include "gatzk/protocol/challenges.hpp"
@@ -76,9 +78,24 @@ int main(int argc, char** argv) {
             }
             throw std::runtime_error("invalid value for " + name + ": " + value);
         };
+        auto normalize_compute_backend = [](const std::string& value) {
+            if (value == "cpu") {
+                return std::string("cpu");
+            }
+            if (value == "cuda_hotspots") {
+                return std::string("cuda_hotspots");
+            }
+            throw std::runtime_error("unsupported --compute-backend: " + value);
+        };
+        auto set_process_env = [](const char* key, const char* value) {
+            if (::setenv(key, value, 1) != 0) {
+                throw std::runtime_error(std::string("failed to set environment override: ") + key);
+            }
+        };
 
         std::string config_path;
         std::string benchmark_mode = "single";
+        std::string compute_backend = "cpu";
         std::string export_tag;
         gatzk::util::Route2Options route2;
         for (int i = 1; i < argc; ++i) {
@@ -87,6 +104,8 @@ int main(int argc, char** argv) {
                 config_path = argv[++i];
             } else if (arg == "--benchmark-mode" && i + 1 < argc) {
                 benchmark_mode = argv[++i];
+            } else if (arg == "--compute-backend" && i + 1 < argc) {
+                compute_backend = normalize_compute_backend(argv[++i]);
             } else if (arg == "--fast-msm" && i + 1 < argc) {
                 route2.fast_msm = parse_switch(argv[++i], "--fast-msm");
             } else if (arg == "--parallel-fft" && i + 1 < argc) {
@@ -109,6 +128,18 @@ int main(int argc, char** argv) {
         if (benchmark_mode != "single" && benchmark_mode != "cold" && benchmark_mode != "warm" && benchmark_mode != "both") {
             throw std::runtime_error("unsupported benchmark mode: " + benchmark_mode);
         }
+        compute_backend = normalize_compute_backend(compute_backend);
+
+        set_process_env("GATZK_ALGEBRA_BACKEND", "cpu");
+        route2.cuda_trace_hotspots = compute_backend == "cuda_hotspots";
+        if (route2.cuda_trace_hotspots) {
+            if (!gatzk::algebra::cuda_backend_build_enabled()) {
+                throw std::runtime_error("compute backend cuda_hotspots requires a CUDA-enabled build");
+            }
+            if (!gatzk::algebra::cuda_backend_available()) {
+                throw std::runtime_error("compute backend cuda_hotspots requires an available CUDA runtime");
+            }
+        }
 
         const auto loaded_config = gatzk::util::load_config(config_path);
         const auto absolute_config_path = std::filesystem::absolute(config_path).string();
@@ -121,7 +152,10 @@ int main(int argc, char** argv) {
                             bool export_artifacts = true,
                             bool log_benchmark = true) {
             gatzk::protocol::RunMetrics metrics;
-            metrics.backend_name = gatzk::crypto::backend_name();
+            metrics.crypto_backend_name = gatzk::crypto::backend_name();
+            metrics.algebra_backend_name = gatzk::algebra::configured_algebra_backend_name();
+            metrics.compute_backend_name = route2.cuda_trace_hotspots ? "cuda_hotspots" : "cpu";
+            metrics.backend_name = metrics.crypto_backend_name + "/" + metrics.compute_backend_name;
             metrics.config = absolute_config_path;
             metrics.enabled_fast_msm = route2.fast_msm;
             metrics.enabled_parallel_fft = route2.parallel_fft;
@@ -129,8 +163,10 @@ int main(int argc, char** argv) {
             metrics.enabled_fft_kernel_upgrade = route2.fft_kernel_upgrade;
             metrics.enabled_trace_layout_upgrade = route2.trace_layout_upgrade;
             metrics.enabled_fast_verify_pairing = route2.fast_verify_pairing;
+            metrics.enabled_cuda_trace_hotspots = route2.cuda_trace_hotspots;
             metrics.benchmark_mode = mode_label;
             metrics.route2_label = gatzk::util::route2_feature_label(route2);
+            metrics.gpu_runtime_present = gatzk::algebra::cuda_backend_available();
             if (route2.fft_backend_upgrade && route2.fft_kernel_upgrade) {
                 metrics.fft_backend_route = "packed_rotated_kernel";
             } else if (route2.fft_backend_upgrade) {
@@ -140,10 +176,13 @@ int main(int argc, char** argv) {
             }
             metrics.is_cold_run = is_cold_run;
             append_note(metrics, "benchmark_mode=" + mode_label);
+            append_note(metrics, "compute_backend=" + metrics.compute_backend_name);
             append_note(metrics, gatzk::util::route2_feature_notes(route2));
 
             gatzk::util::info(
-                "backend_name=" + gatzk::crypto::backend_name()
+                "backend_name=" + metrics.backend_name
+                + " crypto_backend=" + metrics.crypto_backend_name
+                + " algebra_backend=" + metrics.algebra_backend_name
                 + " benchmark_mode=" + mode_label
                 + " route2=" + gatzk::util::route2_feature_label(route2));
             gatzk::util::info("building protocol context");
