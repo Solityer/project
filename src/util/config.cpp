@@ -89,7 +89,52 @@ void fail_if_present(
     }
 }
 
+void validate_supported_keys(const std::unordered_map<std::string, std::string>& entries) {
+    static const std::set<std::string> supported_keys = {
+        "L",
+        "K_out",
+        "allow_synthetic_model",
+        "auto_prepare_dataset",
+        "batch_graphs",
+        "batching_rule",
+        "cache_root",
+        "checkpoint_bundle",
+        "chunking_rule",
+        "d_in_profile",
+        "data_root",
+        "dataset",
+        "deduplicate_edges",
+        "degree_bound_id",
+        "dump_trace",
+        "edge_sort_rule",
+        "export_dir",
+        "hidden_dim",
+        "hidden_profile",
+        "model_arch_id",
+        "model_param_id",
+        "num_classes",
+        "quant_cfg_id",
+        "range_bits",
+        "reference_output_dir",
+        "report_unit",
+        "seed",
+        "self_loop_rule",
+        "static_table_id",
+        "symmetrize_edges",
+        "task_type",
+    };
+    for (const auto& [key, value] : entries) {
+        (void)value;
+        if (!supported_keys.contains(key)) {
+            throw std::runtime_error("unsupported config field: " + key);
+        }
+    }
+}
+
 void validate_config(const AppConfig& config) {
+    if (config.subgraph_rule != "whole_graph") {
+        throw std::runtime_error("formal mainline only supports subgraph_rule=whole_graph");
+    }
     if (config.hidden_profile.empty()) {
         throw std::runtime_error("hidden_profile must be set explicitly");
     }
@@ -164,6 +209,7 @@ AppConfig load_config(const std::string& path) {
 
     AppConfig config;
     fail_if_present(entries, {"hidden_heads", "checkpoint_dir"});
+    validate_supported_keys(entries);
     const auto absolute = std::filesystem::absolute(path);
     config.config_dir = absolute.parent_path().string();
     config.project_root = absolute.parent_path().parent_path().string();
@@ -176,7 +222,6 @@ AppConfig load_config(const std::string& path) {
     if (entries.contains("task_type")) config.task_type = entries["task_type"];
     if (entries.contains("report_unit")) config.report_unit = entries["report_unit"];
     if (entries.contains("batching_rule")) config.batching_rule = entries["batching_rule"];
-    if (entries.contains("subgraph_rule")) config.subgraph_rule = entries["subgraph_rule"];
     if (entries.contains("self_loop_rule")) config.self_loop_rule = entries["self_loop_rule"];
     if (entries.contains("edge_sort_rule")) config.edge_sort_rule = entries["edge_sort_rule"];
     if (entries.contains("chunking_rule")) config.chunking_rule = entries["chunking_rule"];
@@ -189,15 +234,12 @@ AppConfig load_config(const std::string& path) {
     if (entries.contains("num_classes")) config.num_classes = std::stoull(entries["num_classes"]);
     if (entries.contains("range_bits")) config.range_bits = std::stoull(entries["range_bits"]);
     if (entries.contains("seed")) config.seed = std::stoull(entries["seed"]);
-    if (entries.contains("local_nodes")) config.local_nodes = std::stoull(entries["local_nodes"]);
-    if (entries.contains("center_node")) config.center_node = std::stoull(entries["center_node"]);
     if (entries.contains("L")) config.layer_count = std::stoull(entries["L"]);
     if (entries.contains("K_out")) config.K_out = std::stoull(entries["K_out"]);
     if (entries.contains("batch_graphs")) config.batch_graphs = std::stoull(entries["batch_graphs"]);
     if (entries.contains("allow_synthetic_model")) config.allow_synthetic_model = parse_bool(entries["allow_synthetic_model"]);
     if (entries.contains("dump_trace")) config.dump_trace = parse_bool(entries["dump_trace"]);
     if (entries.contains("auto_prepare_dataset")) config.auto_prepare_dataset = parse_bool(entries["auto_prepare_dataset"]);
-    if (entries.contains("prove_enabled")) config.prove_enabled = parse_bool(entries["prove_enabled"]);
     if (entries.contains("symmetrize_edges")) config.symmetrize_edges = parse_bool(entries["symmetrize_edges"]);
     if (entries.contains("deduplicate_edges")) config.deduplicate_edges = parse_bool(entries["deduplicate_edges"]);
     if (entries.contains("hidden_profile")) config.hidden_profile = parse_hidden_profile(entries["hidden_profile"]);

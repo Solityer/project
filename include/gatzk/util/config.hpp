@@ -38,15 +38,12 @@ struct AppConfig {
     std::size_t num_classes = 2;
     std::size_t range_bits = 10;
     std::uint64_t seed = 7;
-    std::size_t local_nodes = 5;
-    std::size_t center_node = 0;
     std::size_t layer_count = 0;
     std::size_t K_out = 1;
     std::size_t batch_graphs = 1;
     bool allow_synthetic_model = false;
     bool dump_trace = true;
     bool auto_prepare_dataset = false;
-    bool prove_enabled = true;
     bool symmetrize_edges = false;
     bool deduplicate_edges = true;
     std::vector<HiddenLayerProfile> hidden_profile;

@@ -717,7 +717,7 @@ bool should_spill_dynamic_polynomial(
         && polynomial.basis == algebra::PolynomialBasis::Evaluation
         && polynomial.domain != nullptr
         && polynomial.domain->name == "edge"
-        && polynomial.domain->size >= (1ULL << 21)
+        && polynomial.domain->size >= (1ULL << 20)
         && name.rfind("P_", 0) == 0;
     if (keep_large_edge_hotpath_in_memory) {
         return false;

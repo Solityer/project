@@ -121,11 +121,18 @@ def infer_route2_label(manifest: Dict[str, object]) -> str:
 
 
 def make_success_row(dataset: str, manifest: Dict[str, object]) -> Dict[str, object]:
+    benchmark_mode = infer_benchmark_mode(manifest)
+    if benchmark_mode != "warm":
+        raise ValueError(f"official benchmark export only supports warm manifests, got {benchmark_mode!r} for {dataset}")
+    if bool(manifest.get("is_full_dataset")) is not True:
+        raise ValueError(f"official benchmark export only supports full-dataset manifests: {dataset}")
+    if bool(manifest.get("verified")) is not True:
+        raise ValueError(f"official benchmark export only supports verified manifests: {dataset}")
     return {
         "dataset": dataset,
         "status": "ok",
         "blocker": "",
-        "benchmark_mode": infer_benchmark_mode(manifest),
+        "benchmark_mode": benchmark_mode,
         "commitment_time_ms": infer_commitment_time_ms(manifest),
         "prove_time_ms": float(manifest["prove_time_ms"]),
         "verify_time_ms": float(manifest["verify_time_ms"]),
@@ -200,10 +207,16 @@ def ensure_consistent_benchmark_mode(rows: List[Dict[str, object]]) -> str:
     modes = {str(row["benchmark_mode"]) for row in rows if row["status"] == "ok"}
     if not modes:
         blocked_modes = {str(row["benchmark_mode"]) for row in rows}
-        return next(iter(blocked_modes)) if blocked_modes else "single"
+        mode = next(iter(blocked_modes)) if blocked_modes else "warm"
+        if mode != "warm":
+            raise ValueError(f"official benchmark export only supports warm mode, got {mode!r}")
+        return mode
     if len(modes) != 1:
         raise ValueError(f"inconsistent benchmark_mode across successful rows: {sorted(modes)}")
-    return next(iter(modes))
+    mode = next(iter(modes))
+    if mode != "warm":
+        raise ValueError(f"official benchmark export only supports warm mode, got {mode!r}")
+    return mode
 
 
 def markdown_cell(value) -> str:

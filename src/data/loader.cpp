@@ -5,7 +5,6 @@
 #include <filesystem>
 #include <fstream>
 #include <numeric>
-#include <queue>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -374,46 +373,6 @@ std::vector<std::size_t> selected_graph_ids(const GraphDataset& dataset, const u
     return out;
 }
 
-std::vector<std::size_t> bfs_pick_nodes(
-    const std::unordered_map<std::size_t, std::vector<std::size_t>>& adjacency,
-    std::size_t center_node,
-    std::size_t target_count,
-    const std::vector<std::size_t>& candidates) {
-    std::vector<std::size_t> selected;
-    std::unordered_set<std::size_t> visited;
-    std::queue<std::size_t> queue;
-    const auto start = std::find(candidates.begin(), candidates.end(), center_node) != candidates.end()
-        ? center_node
-        : candidates.front();
-    queue.push(start);
-    visited.insert(start);
-
-    while (!queue.empty() && selected.size() < target_count) {
-        const auto node = queue.front();
-        queue.pop();
-        selected.push_back(node);
-        if (const auto it = adjacency.find(node); it != adjacency.end()) {
-            for (const auto neighbor : it->second) {
-                if (!visited.contains(neighbor)) {
-                    visited.insert(neighbor);
-                    queue.push(neighbor);
-                }
-            }
-        }
-    }
-
-    for (const auto node : candidates) {
-        if (selected.size() >= target_count) {
-            break;
-        }
-        if (!visited.contains(node)) {
-            visited.insert(node);
-            selected.push_back(node);
-        }
-    }
-    return selected;
-}
-
 void fill_local_features(
     const GraphDataset& dataset,
     const std::vector<std::size_t>& absolute_ids,
@@ -466,7 +425,7 @@ LocalGraph normalize_graph_input(const GraphDataset& dataset, const util::AppCon
     local.task_type = config.task_type.empty() ? dataset.task_type : config.task_type;
     local.report_unit = config.report_unit.empty() ? dataset.report_unit : config.report_unit;
     local.batching_rule = config.batching_rule;
-    local.subgraph_rule = config.subgraph_rule;
+    local.subgraph_rule = "whole_graph";
     local.self_loop_rule = config.self_loop_rule;
     local.edge_sort_rule = config.edge_sort_rule;
     local.chunking_rule = config.chunking_rule;
@@ -475,13 +434,6 @@ LocalGraph normalize_graph_input(const GraphDataset& dataset, const util::AppCon
 
     const auto graph_ids = selected_graph_ids(dataset, config);
     const auto total_batch_graphs = graph_ids.empty() ? 1 : graph_ids.size();
-
-    std::unordered_map<std::size_t, std::vector<std::size_t>> adjacency;
-    adjacency.reserve(dataset.num_nodes);
-    for (const auto& edge : dataset.edges) {
-        adjacency[edge.src].push_back(edge.dst);
-        adjacency[edge.dst].push_back(edge.src);
-    }
 
     std::vector<std::size_t> batch_node_ptr = {0};
     std::vector<std::size_t> batch_edge_ptr = {0};
@@ -495,14 +447,7 @@ LocalGraph normalize_graph_input(const GraphDataset& dataset, const util::AppCon
         std::vector<std::size_t> graph_nodes(node_end - node_begin, 0);
         std::iota(graph_nodes.begin(), graph_nodes.end(), node_begin);
 
-        std::vector<std::size_t> selected_nodes;
-        if (total_batch_graphs == 1
-            && config.subgraph_rule != "whole_graph"
-            && config.local_nodes < graph_nodes.size()) {
-            selected_nodes = bfs_pick_nodes(adjacency, config.center_node, config.local_nodes, graph_nodes);
-        } else {
-            selected_nodes = graph_nodes;
-        }
+        auto selected_nodes = graph_nodes;
         std::sort(selected_nodes.begin(), selected_nodes.end());
         fill_local_features(dataset, selected_nodes, &local);
         const auto local_offset = batch_node_ptr.back();
@@ -591,20 +536,6 @@ LocalGraph normalize_graph_input(const GraphDataset& dataset, const util::AppCon
     local.public_input.src.shrink_to_fit();
     local.public_input.dst.shrink_to_fit();
     return local;
-}
-
-LocalGraph extract_local_subgraph(const GraphDataset& dataset, std::size_t center_node, std::size_t local_nodes) {
-    util::AppConfig config;
-    config.dataset = dataset.name;
-    config.task_type = dataset.task_type;
-    config.report_unit = dataset.report_unit;
-    config.subgraph_rule = local_nodes >= dataset.num_nodes ? "whole_graph" : "sampled_subgraph";
-    config.local_nodes = local_nodes;
-    config.center_node = center_node;
-    config.batch_graphs = 1;
-    config.symmetrize_edges = false;
-    config.deduplicate_edges = true;
-    return normalize_graph_input(dataset, config);
 }
 
 }  // namespace gatzk::data

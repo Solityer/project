@@ -94,7 +94,7 @@ int main(int argc, char** argv) {
         };
 
         std::string config_path;
-        std::string benchmark_mode = "single";
+        std::string benchmark_mode = "warm";
         std::string compute_backend = "cpu";
         std::string export_tag;
         gatzk::util::Route2Options route2;
@@ -125,8 +125,8 @@ int main(int argc, char** argv) {
         if (config_path.empty()) {
             throw std::runtime_error("usage: gatzk_run --config <path>");
         }
-        if (benchmark_mode != "single" && benchmark_mode != "cold" && benchmark_mode != "warm" && benchmark_mode != "both") {
-            throw std::runtime_error("unsupported benchmark mode: " + benchmark_mode);
+        if (benchmark_mode != "warm") {
+            throw std::runtime_error("formal mainline only supports --benchmark-mode warm");
         }
         compute_backend = normalize_compute_backend(compute_backend);
 
@@ -194,7 +194,9 @@ int main(int argc, char** argv) {
             metrics.node_count = context.local.num_nodes;
             metrics.edge_count = context.local.edges.size();
             metrics.is_full_dataset = context.local.num_nodes == context.dataset.num_nodes;
-            append_note(metrics, metrics.is_full_dataset ? "dataset_scope=full" : "dataset_scope=local_subgraph");
+            if (!metrics.is_full_dataset) {
+                throw std::runtime_error("formal mainline only supports full-dataset runs");
+            }
             const auto run_profile = gatzk::protocol::canonical_public_metadata(context);
             gatzk::util::info(
                 "profile dataset_name=" + run_profile.dataset_name
@@ -208,11 +210,6 @@ int main(int argc, char** argv) {
                 + " subgraph_rule=" + run_profile.subgraph_rule
                 + " self_loop_rule=" + run_profile.self_loop_rule
                 + " edge_sort_rule=" + run_profile.edge_sort_rule);
-
-            if (!run_config.prove_enabled) {
-                std::cout << "SMOKE_OK" << '\n';
-                return true;
-            }
 
             gatzk::util::info("building trace");
             const auto trace_start = std::chrono::steady_clock::now();
@@ -439,9 +436,6 @@ int main(int argc, char** argv) {
         auto warm_up = [&](const gatzk::util::AppConfig& run_config) {
             gatzk::util::info("priming process-local caches for warm benchmark");
             const auto context = gatzk::protocol::build_context(run_config, nullptr);
-            if (!run_config.prove_enabled) {
-                return;
-            }
             const auto trace = gatzk::protocol::build_trace(context, nullptr);
             const auto proof = gatzk::protocol::prove(context, trace, nullptr);
             (void)gatzk::protocol::verify(context, proof);
@@ -452,42 +446,14 @@ int main(int argc, char** argv) {
         if (!export_tag.empty()) {
             export_segments.push_back(export_tag);
         }
-        if (benchmark_mode == "single") {
-            accepted = run_once(with_export_suffix(loaded_config, export_segments), true, "single");
-        } else if (benchmark_mode == "cold") {
-            auto segments = export_segments;
-            segments.push_back("cold");
-            accepted = run_once(with_export_suffix(loaded_config, segments), true, "cold");
-        } else if (benchmark_mode == "warm") {
-            if (memory_safe_warm_required(loaded_config)) {
-                gatzk::util::info("using memory-safe warm path without warm_probe");
-            } else {
-                warm_up(with_export_suffix(loaded_config, export_segments));
-                run_once(
-                    with_export_suffix(loaded_config, export_segments),
-                    false,
-                    "warm_probe",
-                    false,
-                    false);
-            }
-            auto segments = export_segments;
-            segments.push_back("warm");
-            accepted = run_once(with_export_suffix(loaded_config, segments), false, "warm");
+        if (memory_safe_warm_required(loaded_config)) {
+            gatzk::util::info("using memory-safe warm path");
         } else {
-            auto cold_segments = export_segments;
-            cold_segments.push_back("cold");
-            auto warm_segments = export_segments;
-            warm_segments.push_back("warm");
-            const auto cold_ok = run_once(with_export_suffix(loaded_config, cold_segments), true, "cold");
-            run_once(
-                with_export_suffix(loaded_config, export_segments),
-                false,
-                "warm_probe",
-                false,
-                false);
-            const auto warm_ok = run_once(with_export_suffix(loaded_config, warm_segments), false, "warm");
-            accepted = cold_ok && warm_ok;
+            warm_up(with_export_suffix(loaded_config, export_segments));
         }
+        auto segments = export_segments;
+        segments.push_back("warm");
+        accepted = run_once(with_export_suffix(loaded_config, segments), false, "warm");
 
         std::cout << (accepted ? "VERIFY_OK" : "VERIFY_FAIL") << '\n';
         return accepted ? 0 : 1;
