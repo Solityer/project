@@ -33,8 +33,6 @@ std::string challenge_context_cache_key(const ProtocolContext& context) {
            << context.config.num_classes << '|'
            << context.config.range_bits << '|'
            << context.config.seed << '|'
-           << context.config.local_nodes << '|'
-           << context.config.center_node << '|'
            << context.config.layer_count << '|'
            << context.config.K_out << '|'
            << context.config.batch_graphs << '|'

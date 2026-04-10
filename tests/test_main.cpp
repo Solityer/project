@@ -137,7 +137,6 @@ gatzk::util::AppConfig small_debug_config() {
     config.task_type = "transductive_node_classification";
     config.report_unit = "node";
     config.batching_rule = "whole_graph_single";
-    config.subgraph_rule = "sampled_subgraph";
     config.self_loop_rule = "per_node";
     config.edge_sort_rule = "edge_gid_then_dst_stable";
     config.chunking_rule = "none";
@@ -145,8 +144,6 @@ gatzk::util::AppConfig small_debug_config() {
     config.num_classes = 7;
     config.range_bits = 12;
     config.seed = 11;
-    config.local_nodes = 32;
-    config.center_node = 0;
     config.layer_count = 2;
     config.hidden_profile = {{1, 4}};
     config.d_in_profile = {1433};
@@ -155,7 +152,6 @@ gatzk::util::AppConfig small_debug_config() {
     config.allow_synthetic_model = true;
     config.dump_trace = false;
     config.auto_prepare_dataset = false;
-    config.prove_enabled = true;
     return config;
 }
 
@@ -175,10 +171,10 @@ gatzk::util::AppConfig ogbn_arxiv_full_formal_config() {
     return gatzk::util::load_config(repo_path("configs/ogbn_arxiv_full.cfg"));
 }
 
-gatzk::util::AppConfig ppi_local_batch_config() {
+gatzk::util::AppConfig ppi_two_graph_batch_config() {
     auto config = ppi_full_formal_config();
     config.batch_graphs = 2;
-    config.export_dir = "runs/test_ppi_local_batch";
+    config.export_dir = "runs/test_ppi_two_graph_batch";
     return config;
 }
 
@@ -212,6 +208,11 @@ constexpr double kOgbnArxivCurrentBaselineQuotientTEdgeMs = 55696.334;
 constexpr double kOgbnArxivCurrentBaselineDomainOpenFhMs = 442746.206;
 constexpr double kOgbnArxivCurrentBaselineQuotientTFhMs = 287293.344;
 constexpr double kOgbnArxivCurrentBaselineDynamicDomainConvertMs = 210000.0;
+constexpr double kCoraLegacyBaselineProveMs = 2546.413;
+constexpr double kCiteseerLegacyBaselineProveMs = 1701.127;
+constexpr double kPubmedLegacyBaselineProveMs = 9607.803;
+constexpr double kPubmedWarmVerifyUpperBoundMs = 360.0;
+constexpr double kPubmedWarmDomainOpeningUpperBoundMs = 440.0;
 
 double extract_commitment_time_ms_from_manifest(const std::string& text) {
     const std::string explicit_marker = "\"commitment_time_ms\": \"";
@@ -285,10 +286,7 @@ gatzk::util::AppConfig synthetic_family_formal_config(std::size_t k_out) {
     config.K_out = k_out;
     config.hidden_dim = 1;
     config.num_classes = 7;
-    config.local_nodes = 16;
-    config.center_node = 0;
     config.allow_synthetic_model = true;
-    config.prove_enabled = true;
     return config;
 }
 
@@ -606,7 +604,7 @@ void test_whole_graph_normalization_has_explicit_ptrs_and_sort() {
 }
 
 void test_multi_graph_batch_normalization_uses_real_ppi_data() {
-    const auto config = ppi_local_batch_config();
+    const auto config = ppi_two_graph_batch_config();
     const auto dataset = gatzk::data::load_dataset(config);
     const auto local = gatzk::data::normalize_graph_input(dataset, config);
     require(local.graph_count == 2, "PPI batch config should normalize two graphs");
@@ -1196,15 +1194,12 @@ void test_benchmark_table_updates_after_ppi_or_blocker_resolution() {
 }
 
 void test_pubmed_hotspot_optimization_no_regression() {
-    const auto single_text = slurp_file(repo_root() / "runs" / "pubmed_full" / "run_manifest.json");
     const auto warm_text = slurp_file(repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json");
     require(warm_text.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "pubmed warm manifest must exist");
+    require(warm_text.find("\"verified\": \"true\"") != std::string::npos, "pubmed warm manifest must remain verified");
     require(
-        extract_json_number(warm_text, "prove_time_ms") < extract_json_number(single_text, "prove_time_ms"),
-        "pubmed warm prove time must remain below single-run baseline");
-    require(
-        extract_json_number(warm_text, "trace_generation_ms") < extract_json_number(single_text, "trace_generation_ms"),
-        "pubmed warm trace_generation_ms must remain below single-run baseline");
+        extract_json_number(warm_text, "prove_time_ms") < kPubmedLegacyBaselineProveMs,
+        "pubmed warm prove time must remain below the legacy formal baseline");
 }
 
 void test_benchmark_export_pipeline_remains_single_source_of_truth() {
@@ -1215,24 +1210,21 @@ void test_benchmark_export_pipeline_remains_single_source_of_truth() {
 }
 
 void test_performance_regression_guard_for_cora_citeseer_pubmed() {
-    const auto cora_single = slurp_file(repo_root() / "runs" / "cora_full" / "run_manifest.json");
     const auto cora_warm = slurp_file(repo_root() / "runs" / "cora_full" / "warm" / "run_manifest.json");
-    const auto citeseer_single = slurp_file(repo_root() / "runs" / "citeseer_full" / "run_manifest.json");
     const auto citeseer_warm = slurp_file(repo_root() / "runs" / "citeseer_full" / "warm" / "run_manifest.json");
-    const auto pubmed_single = slurp_file(repo_root() / "runs" / "pubmed_full" / "run_manifest.json");
     const auto pubmed_warm = slurp_file(repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json");
     require(cora_warm.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "cora warm benchmark must exist");
     require(citeseer_warm.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "citeseer warm benchmark must exist");
     require(pubmed_warm.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "pubmed warm benchmark must exist");
     require(
-        extract_json_number(cora_warm, "prove_time_ms") < extract_json_number(cora_single, "prove_time_ms"),
-        "cora warm prove time must remain below single-run baseline");
+        extract_json_number(cora_warm, "prove_time_ms") < kCoraLegacyBaselineProveMs,
+        "cora warm prove time must remain below the legacy formal baseline");
     require(
-        extract_json_number(citeseer_warm, "prove_time_ms") < extract_json_number(citeseer_single, "prove_time_ms"),
-        "citeseer warm prove time must remain below single-run baseline");
+        extract_json_number(citeseer_warm, "prove_time_ms") < kCiteseerLegacyBaselineProveMs,
+        "citeseer warm prove time must remain below the legacy formal baseline");
     require(
-        extract_json_number(pubmed_warm, "prove_time_ms") < extract_json_number(pubmed_single, "prove_time_ms"),
-        "pubmed warm prove time must remain below single-run baseline");
+        extract_json_number(pubmed_warm, "prove_time_ms") < kPubmedLegacyBaselineProveMs,
+        "pubmed warm prove time must remain below the legacy formal baseline");
 }
 
 void test_trace_cache_helpers_have_safe_lifetimes() {
@@ -1248,9 +1240,9 @@ void test_trace_cache_helpers_have_safe_lifetimes() {
 void test_four_dataset_benchmark_table_export() {
     const auto output_dir = repo_root() / "runs" / "benchmarks_test";
     std::filesystem::remove_all(output_dir);
-    const auto cora_manifest = write_benchmark_manifest("cora", "single", 10.5, 1.5, 111, 2708, 13264);
-    const auto citeseer_manifest = write_benchmark_manifest("citeseer", "single", 20.5, 2.5, 222, 3327, 12431);
-    const auto pubmed_manifest = write_benchmark_manifest("pubmed", "single", 30.5, 3.5, 333, 19717, 108365);
+    const auto cora_manifest = write_benchmark_manifest("cora", "warm", 10.5, 1.5, 111, 2708, 13264);
+    const auto citeseer_manifest = write_benchmark_manifest("citeseer", "warm", 20.5, 2.5, 222, 3327, 12431);
+    const auto pubmed_manifest = write_benchmark_manifest("pubmed", "warm", 30.5, 3.5, 333, 19717, 108365);
     require(
         run_benchmark_export_script(
             {
@@ -1286,8 +1278,8 @@ void test_benchmark_summary_contains_required_metrics() {
 void test_benchmark_mode_consistency() {
     const auto output_dir = repo_root() / "runs" / "benchmarks_test_inconsistent";
     std::filesystem::remove_all(output_dir);
-    const auto cora_manifest = write_benchmark_manifest("cora", "single", 10.5, 1.5, 111, 2708, 13264);
-    const auto citeseer_manifest = write_benchmark_manifest("citeseer", "warm", 20.5, 2.5, 222, 3327, 12431);
+    const auto cora_manifest = write_benchmark_manifest("cora", "warm", 10.5, 1.5, 111, 2708, 13264);
+    const auto citeseer_manifest = write_benchmark_manifest("citeseer", "single", 20.5, 2.5, 222, 3327, 12431);
     require(
         run_benchmark_export_script(
             {
@@ -1318,7 +1310,7 @@ void test_no_legacy_benchmark_pipeline_remaining() {
     metrics.node_count = fixture.context.local.num_nodes;
     metrics.edge_count = fixture.context.local.edges.size();
     metrics.proof_size_bytes = gatzk::protocol::proof_size_bytes(fixture.proof);
-    metrics.benchmark_mode = "single";
+    metrics.benchmark_mode = "warm";
     metrics.route2_label = "msm_fft_packed_kernel_layout_pairing";
 
     auto export_context = fixture.context;
@@ -1352,16 +1344,10 @@ void test_four_full_dataset_benchmark_contract() {
 }
 
 void test_real_gat_forward_semantics_no_regression() {
-    auto data_config = ppi_local_batch_config();
-    data_config.dataset = "cora";
-    data_config.task_type = "transductive_node_classification";
-    data_config.report_unit = "node";
-    data_config.batching_rule = "whole_graph_single";
-    data_config.subgraph_rule = "sampled_subgraph";
-    data_config.batch_graphs = 1;
-    data_config.local_nodes = 64;
+    auto data_config = full_graph_formal_config();
+    data_config.export_dir = "runs/test_real_gat_forward";
     const auto dataset = gatzk::data::load_dataset(data_config);
-    const auto local = gatzk::data::extract_local_subgraph(dataset, 0, 64);
+    const auto local = gatzk::data::normalize_graph_input(dataset, data_config);
     const auto model = gatzk::model::load_checkpoint_bundle_parameters(repo_path("artifacts/checkpoints/cora_gat"));
     const auto forward = gatzk::model::forward_reference_style(
         local.features_fp,
@@ -1376,33 +1362,40 @@ void test_real_gat_forward_semantics_no_regression() {
 void test_chinese_readme_is_current_mainline_only() {
     const auto readme = slurp_file(repo_root() / "README.md");
     require(readme.find("项目简介") != std::string::npos, "README must be Chinese and current");
-    require(readme.find("从零开始到最新结果的完整运行步骤") != std::string::npos, "README must document the current mainline");
+    require(readme.find("正式 warm 结果") != std::string::npos, "README must expose the current official warm results");
     require(readme.find("summary.txt") == std::string::npos, "README must not mention removed summary.txt");
     require(readme.find("synthetic") == std::string::npos, "README must not keep synthetic fallback instructions");
     require(readme.find("Benchmark Summary") == std::string::npos, "README must not keep old English benchmark wording");
+    require(readme.find("smoke") == std::string::npos, "README must not mention smoke paths");
+    require(readme.find("warm_probe") == std::string::npos, "README must not mention warm_probe");
+    require(readme.find("single") == std::string::npos, "README must not mention single-run semantics");
+    require(readme.find("cold") == std::string::npos, "README must not mention cold-run semantics");
+    require(readme.find("subgraph") == std::string::npos, "README must not mention subgraph paths");
+    require(readme.find("local graph") == std::string::npos, "README must not mention local-graph paths");
+    require(readme.find("partial graph") == std::string::npos, "README must not mention partial-graph paths");
 }
 
 void test_benchmark_summary_and_readme_consistency() {
     const auto readme = slurp_file(repo_root() / "README.md");
     const auto summary = slurp_file(repo_root() / "runs" / "benchmarks" / "summary.md");
-    require(readme.find("当前最新最快实验结果") != std::string::npos, "README must keep the latest-results section");
+    require(readme.find("正式 warm 结果") != std::string::npos, "README must keep the official results section");
     require(summary.find("最新基准结果") != std::string::npos, "summary must keep the benchmark summary section");
     require(readme.find("warm") != std::string::npos && summary.find("warm") != std::string::npos, "README and benchmark summary must keep the same warm official mode");
     require(readme.find("Cora") != std::string::npos && summary.find("cora") != std::string::npos, "README and benchmark summary must both cover cora");
     require(readme.find("Citeseer") != std::string::npos && summary.find("citeseer") != std::string::npos, "README and benchmark summary must both cover citeseer");
     require(readme.find("Pubmed") != std::string::npos && summary.find("pubmed") != std::string::npos, "README and benchmark summary must both cover pubmed");
     require(readme.find("PPI") != std::string::npos && summary.find("ppi") != std::string::npos, "README and benchmark summary must both cover ppi");
+    require(readme.find("ogbn-arxiv") != std::string::npos && summary.find("ogbn-arxiv") != std::string::npos, "README and benchmark summary must both cover ogbn-arxiv");
 }
 
 void test_pubmed_verify_and_opening_hotspot_no_regression() {
-    const auto single_text = slurp_file(repo_root() / "runs" / "pubmed_full" / "run_manifest.json");
     const auto warm_text = slurp_file(repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json");
     require(
-        extract_json_number(warm_text, "verify_time_ms") < extract_json_number(single_text, "verify_time_ms"),
-        "pubmed warm verify time must remain below single-run baseline");
+        extract_json_number(warm_text, "verify_time_ms") <= kPubmedWarmVerifyUpperBoundMs,
+        "pubmed warm verify time must remain inside the current formal bound");
     require(
-        extract_json_number(warm_text, "domain_opening_ms") < extract_json_number(single_text, "domain_opening_ms"),
-        "pubmed warm domain_opening_ms must remain below single-run baseline");
+        extract_json_number(warm_text, "domain_opening_ms") <= kPubmedWarmDomainOpeningUpperBoundMs,
+        "pubmed warm domain_opening_ms must remain inside the current formal bound");
 }
 
 void test_no_legacy_benchmark_or_import_pipeline_remaining() {
@@ -1445,6 +1438,10 @@ void test_all_full_configs_are_real_checkpoint_backed() {
         const auto text = slurp_file(path);
         require(text.find("checkpoint_bundle = ") != std::string::npos, "full config must pin a real checkpoint bundle");
         require(text.find("allow_synthetic_model = true") == std::string::npos, "full config must not allow synthetic fallback");
+        require(text.find("subgraph_rule") == std::string::npos, "full config must not keep legacy subgraph_rule fields");
+        require(text.find("local_nodes") == std::string::npos, "full config must not keep legacy local_nodes fields");
+        require(text.find("center_node") == std::string::npos, "full config must not keep legacy center_node fields");
+        require(text.find("prove_enabled") == std::string::npos, "full config must not keep legacy prove_enabled fields");
     }
 }
 
@@ -1509,7 +1506,6 @@ void test_ogbn_arxiv_full_config_is_real_checkpoint_backed() {
     require(config.dataset == "ogbn_arxiv", "ogbn-arxiv full config must target ogbn_arxiv");
     require(config.checkpoint_bundle == "artifacts/checkpoints/ogbn_arxiv_gat", "ogbn-arxiv full config must pin the real bundle");
     require(!config.allow_synthetic_model, "ogbn-arxiv full config must not allow synthetic fallback");
-    require(config.prove_enabled, "ogbn-arxiv full config must keep proving enabled");
     require(config.batching_rule == "whole_graph_single", "ogbn-arxiv full config must stay whole-graph");
 }
 
@@ -1845,7 +1841,7 @@ void test_no_regression_existing_paths() {
         gatzk::model::checkpoint_bundle_matches_formal_proof_shape(pubmed_bundle, &pubmed_reason),
         "existing pubmed checkpoint bundle path must remain loadable: " + pubmed_reason);
 
-    const auto config = ppi_local_batch_config();
+    const auto config = ppi_two_graph_batch_config();
     const auto dataset = gatzk::data::load_dataset(config);
     const auto local = gatzk::data::normalize_graph_input(dataset, config);
     require(local.graph_count == 2, "PPI batch normalization path must remain intact");

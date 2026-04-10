@@ -593,7 +593,7 @@ std::string domain_point_key(
 
 std::string context_cache_key(const util::AppConfig& config) {
     std::ostringstream stream;
-    // export_dir, dump_trace and prove_enabled do not affect protocol objects, so
+    // export_dir and dump_trace do not affect protocol objects, so
     // they are intentionally excluded from the reusable static context key.
     stream << config.project_root << '|'
            << config.dataset << '|'
@@ -604,8 +604,6 @@ std::string context_cache_key(const util::AppConfig& config) {
            << config.num_classes << '|'
            << config.range_bits << '|'
            << config.seed << '|'
-           << config.local_nodes << '|'
-           << config.center_node << '|'
            << config.layer_count << '|'
            << config.K_out << '|'
            << config.batch_graphs << '|'
@@ -842,25 +840,21 @@ std::string labels_cache_key(const std::vector<std::string>& labels);
 
 class SharedTraceEvaluationCache {
   public:
-    bool lookup(
+    std::shared_ptr<const std::vector<FieldElement>> lookup(
         const std::string& context_key,
         const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
         const std::vector<std::string>& labels,
-        const FieldElement& point,
-        std::vector<FieldElement>* values) {
+        const FieldElement& point) {
         const auto cache_key =
             context_key + "|trace|" + domain_point_key(domain, point) + "|" + labels_cache_key(labels);
         std::lock_guard<std::mutex> lock(mutex_);
         if (const auto it = entries_.find(cache_key); it != entries_.end()) {
-            if (values != nullptr) {
-                *values = it->second;
-            }
-            return true;
+            return it->second;
         }
-        return false;
+        return nullptr;
     }
 
-    void store(
+    std::shared_ptr<const std::vector<FieldElement>> store(
         const std::string& context_key,
         const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
         const std::vector<std::string>& labels,
@@ -868,13 +862,16 @@ class SharedTraceEvaluationCache {
         std::vector<FieldElement> values) {
         const auto cache_key =
             context_key + "|trace|" + domain_point_key(domain, point) + "|" + labels_cache_key(labels);
+        auto shared_values = std::make_shared<const std::vector<FieldElement>>(std::move(values));
         std::lock_guard<std::mutex> lock(mutex_);
-        entries_.emplace(std::move(cache_key), std::move(values));
+        const auto [it, inserted] = entries_.emplace(std::move(cache_key), std::move(shared_values));
+        (void)inserted;
+        return it->second;
     }
 
   private:
     std::mutex mutex_;
-    std::unordered_map<std::string, std::vector<FieldElement>> entries_;
+    std::unordered_map<std::string, std::shared_ptr<const std::vector<FieldElement>>> entries_;
 };
 
 std::shared_ptr<SharedTraceEvaluationCache> shared_trace_evaluation_cache() {
@@ -939,25 +936,21 @@ SharedQuotientArtifactsCache& shared_quotient_artifacts_cache() {
 
 class SharedPublicEvaluationCache {
   public:
-    bool lookup(
+    std::shared_ptr<const std::vector<FieldElement>> lookup(
         const std::string& context_key,
         const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
         const std::vector<std::string>& labels,
-        const FieldElement& point,
-        std::vector<FieldElement>* values) {
+        const FieldElement& point) {
         const auto cache_key =
             context_key + "|" + domain_point_key(domain, point) + "|" + labels_cache_key(labels);
         std::lock_guard<std::mutex> lock(mutex_);
         if (const auto it = entries_.find(cache_key); it != entries_.end()) {
-            if (values != nullptr) {
-                *values = it->second;
-            }
-            return true;
+            return it->second;
         }
-        return false;
+        return nullptr;
     }
 
-    void store(
+    std::shared_ptr<const std::vector<FieldElement>> store(
         const std::string& context_key,
         const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
         const std::vector<std::string>& labels,
@@ -965,13 +958,16 @@ class SharedPublicEvaluationCache {
         std::vector<FieldElement> values) {
         const auto cache_key =
             context_key + "|" + domain_point_key(domain, point) + "|" + labels_cache_key(labels);
+        auto shared_values = std::make_shared<const std::vector<FieldElement>>(std::move(values));
         std::lock_guard<std::mutex> lock(mutex_);
-        entries_.emplace(std::move(cache_key), std::move(values));
+        const auto [it, inserted] = entries_.emplace(std::move(cache_key), std::move(shared_values));
+        (void)inserted;
+        return it->second;
     }
 
   private:
     std::mutex mutex_;
-    std::unordered_map<std::string, std::vector<FieldElement>> entries_;
+    std::unordered_map<std::string, std::shared_ptr<const std::vector<FieldElement>>> entries_;
 };
 
 std::shared_ptr<SharedPublicEvaluationCache> shared_public_evaluation_cache() {
@@ -1901,15 +1897,15 @@ class EvaluationMemoization {
             }
             if (!lazy_public_labels.empty()) {
                 std::vector<std::size_t> missing_point_indices;
-                std::vector<std::vector<FieldElement>> cached_values(points.size());
+                std::vector<std::shared_ptr<const std::vector<FieldElement>>> cached_values(points.size());
                 missing_point_indices.reserve(points.size());
                 for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
-                    if (!shared_public_evaluation_cache()->lookup(
-                            context_key_,
-                            context_.domains.fh,
-                            lazy_public_labels,
-                            points[point_index],
-                            &cached_values[point_index])) {
+                    cached_values[point_index] = shared_public_evaluation_cache()->lookup(
+                        context_key_,
+                        context_.domains.fh,
+                        lazy_public_labels,
+                        points[point_index]);
+                    if (cached_values[point_index] == nullptr) {
                         missing_point_indices.push_back(point_index);
                     }
                 }
@@ -1925,18 +1921,17 @@ class EvaluationMemoization {
                               evaluate_lazy_large_fh_public_group(lazy_public_labels, missing_points.front())}
                         : evaluate_lazy_large_fh_public_group_points(lazy_public_labels, missing_points);
                     for (std::size_t i = 0; i < missing_point_indices.size(); ++i) {
-                        cached_values[missing_point_indices[i]] = missing_values[i];
-                        shared_public_evaluation_cache()->store(
+                        cached_values[missing_point_indices[i]] = shared_public_evaluation_cache()->store(
                             context_key_,
                             context_.domains.fh,
                             lazy_public_labels,
                             points[missing_point_indices[i]],
-                            cached_values[missing_point_indices[i]]);
+                            missing_values[i]);
                     }
                 }
                 for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
                     const auto& point = points[point_index];
-                    const auto& values = cached_values[point_index];
+                    const auto& values = *cached_values[point_index];
                     cache_group_values(lazy_public_labels, point, values);
                     if (full_graph_feature_identity_enabled(context_)) {
                         const auto cache_suffix = "@" + point_key(point);
@@ -2114,28 +2109,25 @@ class EvaluationMemoization {
             // there while sending real hot-path bundles through the fused route.
             if (!public_labels.empty() && group.first->name == "FH") {
                 for (const auto& point : points) {
-                    std::vector<FieldElement> values;
                     const auto reuse_start = Clock::now();
-                    const bool cache_hit = shared_public_evaluation_cache()->lookup(
-                            context_key_,
-                            group.first,
-                            public_labels,
-                            point,
-                            &values);
-                    if (cache_hit) {
+                    auto cached_values = shared_public_evaluation_cache()->lookup(
+                        context_key_,
+                        group.first,
+                        public_labels,
+                        point);
+                    if (cached_values != nullptr) {
                         if (metrics_ != nullptr) {
                             metrics_->fh_public_eval_reuse_ms += elapsed_ms(reuse_start, Clock::now());
                         }
                     } else {
-                        values = evaluate_group_at_point(group.first, *backend, public_labels, point, true);
-                        shared_public_evaluation_cache()->store(
+                        cached_values = shared_public_evaluation_cache()->store(
                             context_key_,
                             group.first,
                             public_labels,
                             point,
-                            values);
+                            evaluate_group_at_point(group.first, *backend, public_labels, point, true));
                     }
-                    store_group_values(public_labels, point, values);
+                    store_group_values(public_labels, point, *cached_values);
                 }
             }
             const auto& eval_labels = group.first->name == "FH" ? trace_labels : group.second;
@@ -2146,21 +2138,21 @@ class EvaluationMemoization {
                 group.first->name == "FH" || group.first->name == "edge";
             if (allow_shared_trace_reuse) {
                 bool all_cached = true;
-                std::vector<std::vector<FieldElement>> cached_values(points.size());
+                std::vector<std::shared_ptr<const std::vector<FieldElement>>> cached_values(points.size());
                 for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
-                    if (!shared_trace_evaluation_cache()->lookup(
-                            context_key_,
-                            group.first,
-                            eval_labels,
-                            points[point_index],
-                            &cached_values[point_index])) {
+                    cached_values[point_index] = shared_trace_evaluation_cache()->lookup(
+                        context_key_,
+                        group.first,
+                        eval_labels,
+                        points[point_index]);
+                    if (cached_values[point_index] == nullptr) {
                         all_cached = false;
                         break;
                     }
                 }
                 if (all_cached) {
                     for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
-                        store_group_values(eval_labels, points[point_index], cached_values[point_index]);
+                        store_group_values(eval_labels, points[point_index], *cached_values[point_index]);
                     }
                     continue;
                 }
@@ -4061,8 +4053,6 @@ void export_run_artifacts(
         {"dynamic_polynomial_materialization_ms", format_double(metrics.dynamic_polynomial_materialization_ms)},
         {"is_cold_run", metrics.is_cold_run ? "true" : "false"},
         {"is_full_dataset", metrics.is_full_dataset ? "true" : "false"},
-        {"local_edges", std::to_string(context.local.edges.size())},
-        {"local_nodes", std::to_string(context.local.num_nodes)},
         {"N_total", std::to_string(context.local.public_input.N_total)},
         {"G_batch", std::to_string(context.local.public_input.G_batch)},
         {"node_ptr", [&]() {

@@ -50,8 +50,6 @@ std::string verifier_context_cache_key(const util::AppConfig& config) {
            << config.num_classes << '|'
            << config.range_bits << '|'
            << config.seed << '|'
-           << config.local_nodes << '|'
-           << config.center_node << '|'
            << config.layer_count << '|'
            << config.K_out << '|'
            << config.batch_graphs << '|'
