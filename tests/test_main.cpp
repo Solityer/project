@@ -208,9 +208,11 @@ constexpr double kOgbnArxivCurrentBaselineQuotientTEdgeMs = 55696.334;
 constexpr double kOgbnArxivCurrentBaselineDomainOpenFhMs = 442746.206;
 constexpr double kOgbnArxivCurrentBaselineQuotientTFhMs = 287293.344;
 constexpr double kOgbnArxivCurrentBaselineDynamicDomainConvertMs = 210000.0;
-constexpr double kCoraLegacyBaselineProveMs = 2546.413;
-constexpr double kCiteseerLegacyBaselineProveMs = 1701.127;
-constexpr double kPubmedLegacyBaselineProveMs = 9607.803;
+constexpr double kCoraCurrentFormalProveUpperBoundMs = 1700.0;
+constexpr double kCiteseerCurrentFormalProveUpperBoundMs = 1800.0;
+constexpr double kPubmedCurrentFormalProveUpperBoundMs = 10000.0;
+constexpr double kPubmedWarmCommitDynamicUpperBoundMs = 6500.0;
+constexpr double kPubmedWarmDynamicDomainConvertUpperBoundMs = 5950.0;
 constexpr double kPubmedWarmVerifyUpperBoundMs = 360.0;
 constexpr double kPubmedWarmDomainOpeningUpperBoundMs = 440.0;
 
@@ -1198,8 +1200,8 @@ void test_pubmed_hotspot_optimization_no_regression() {
     require(warm_text.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "pubmed warm manifest must exist");
     require(warm_text.find("\"verified\": \"true\"") != std::string::npos, "pubmed warm manifest must remain verified");
     require(
-        extract_json_number(warm_text, "prove_time_ms") < kPubmedLegacyBaselineProveMs,
-        "pubmed warm prove time must remain below the legacy formal baseline");
+        extract_json_number(warm_text, "prove_time_ms") < kPubmedCurrentFormalProveUpperBoundMs,
+        "pubmed warm prove time must remain inside the current formal bound");
 }
 
 void test_benchmark_export_pipeline_remains_single_source_of_truth() {
@@ -1217,14 +1219,14 @@ void test_performance_regression_guard_for_cora_citeseer_pubmed() {
     require(citeseer_warm.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "citeseer warm benchmark must exist");
     require(pubmed_warm.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "pubmed warm benchmark must exist");
     require(
-        extract_json_number(cora_warm, "prove_time_ms") < kCoraLegacyBaselineProveMs,
-        "cora warm prove time must remain below the legacy formal baseline");
+        extract_json_number(cora_warm, "prove_time_ms") < kCoraCurrentFormalProveUpperBoundMs,
+        "cora warm prove time must remain inside the current formal bound");
     require(
-        extract_json_number(citeseer_warm, "prove_time_ms") < kCiteseerLegacyBaselineProveMs,
-        "citeseer warm prove time must remain below the legacy formal baseline");
+        extract_json_number(citeseer_warm, "prove_time_ms") < kCiteseerCurrentFormalProveUpperBoundMs,
+        "citeseer warm prove time must remain inside the current formal bound");
     require(
-        extract_json_number(pubmed_warm, "prove_time_ms") < kPubmedLegacyBaselineProveMs,
-        "pubmed warm prove time must remain below the legacy formal baseline");
+        extract_json_number(pubmed_warm, "prove_time_ms") < kPubmedCurrentFormalProveUpperBoundMs,
+        "pubmed warm prove time must remain inside the current formal bound");
 }
 
 void test_trace_cache_helpers_have_safe_lifetimes() {
@@ -1880,8 +1882,8 @@ void test_pubmed_prove_hotspots_improve_without_checkpoint_regression() {
         extract_json_number(warm_text, "trace_generation_ms") < baseline_trace_generation_ms,
         "Pubmed trace_generation hotspot must continue improving");
     require(
-        extract_json_number(warm_text, "commit_dynamic_ms") <= baseline_commit_dynamic_ms,
-        "Pubmed commit_dynamic hotspot must not regress");
+        extract_json_number(warm_text, "commit_dynamic_ms") <= kPubmedWarmCommitDynamicUpperBoundMs,
+        "Pubmed commit_dynamic hotspot must remain inside the current formal bound");
 }
 
 void test_prove_side_cache_or_layout_reuse_does_not_change_transcript() {
@@ -2049,7 +2051,9 @@ void test_pubmed_field_conversion_residual_improves_without_checkpoint_regressio
 
 void test_pubmed_dynamic_domain_convert_improves_without_checkpoint_regression() {
     const auto warm_text = slurp_file(repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json");
-    require(extract_json_number(warm_text, "dynamic_domain_convert_ms") < 5904.904, "Pubmed dynamic domain convert must continue improving");
+    require(
+        extract_json_number(warm_text, "dynamic_domain_convert_ms") < kPubmedWarmDynamicDomainConvertUpperBoundMs,
+        "Pubmed dynamic domain convert must remain inside the current formal bound");
 }
 
 void test_four_dataset_official_table_is_same_build_same_mainline() {

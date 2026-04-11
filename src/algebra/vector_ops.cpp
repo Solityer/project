@@ -169,16 +169,6 @@ namespace gatzk::algebra
         const std::vector<FieldElement>& lhs,
         const std::vector<mcl::Fr>& rhs)
     {
-        return dot_product_packed_native_weights(lhs, rhs, PackedFieldBuffer());
-    }
-
-    // 计算左向量与右向量的点积，右向量已打包（通常用于GPU计算，但此函数也支持CPU回退）
-    FieldElement dot_product_packed_native_weights(
-        const std::vector<FieldElement>& lhs,
-        const std::vector<mcl::Fr>& rhs,
-        const PackedFieldBuffer& packed_rhs)
-    {
-        (void)packed_rhs;
         if (lhs.size() != rhs.size())
         {
             throw std::runtime_error("dot product size mismatch");
@@ -188,7 +178,7 @@ namespace gatzk::algebra
             return FieldElement::zero();
         }
 
-        // CPU路径：与dot_product_native_weights逻辑相同，但使用rhs而非打包版本
+        // CPU 路径：按 native 权重做同样的归约
         const auto& route2 = util::route2_options();
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
         if (!route2.parallel_fft || lhs.size() < 1024 || cpu_count == 1)

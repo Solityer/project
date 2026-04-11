@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-option(GATZK_BUILD_TESTS "Build unit and smoke tests" ON)
+option(GATZK_BUILD_TESTS "Build unit and regression tests" ON)
 option(GATZK_ENABLE_CUDA_BACKEND "Enable optional CUDA algebra backend build" OFF)
 option(GATZK_ENABLE_FAST_MSM_DEFAULT "Enable fast MSM / fixed-base batch route by default" ON)
 option(GATZK_ENABLE_PARALLEL_FFT_DEFAULT "Enable parallel domain/FFT route by default" ON)
@@ -31,7 +31,6 @@ endif()
 
 set(GATZK_SOURCES
     src/algebra/eval_backend.cpp
-    src/algebra/packed_field.cpp
     src/algebra/polynomial.cpp
     src/algebra/vector_ops.cpp
     src/crypto/curve.cpp

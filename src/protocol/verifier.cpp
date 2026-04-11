@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "gatzk/algebra/domain_evaluation.hpp"
 #include "gatzk/algebra/eval_backend.hpp"
 #include "gatzk/protocol/challenges.hpp"
 #include "gatzk/protocol/quotients.hpp"
@@ -27,16 +28,6 @@ using Clock = std::chrono::steady_clock;
 
 double elapsed_ms(const Clock::time_point& start, const Clock::time_point& end) {
     return std::chrono::duration<double, std::milli>(end - start).count();
-}
-
-std::string point_key(const FieldElement& point) {
-    return point.to_string();
-}
-
-std::string domain_point_key(
-    const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
-    const FieldElement& point) {
-    return domain->name + ":" + std::to_string(domain->size) + ":" + point_key(point);
 }
 
 std::string verifier_context_cache_key(const util::AppConfig& config) {
@@ -224,47 +215,6 @@ FieldElement evaluate_lazy_large_fh_public_poly(
     throw std::runtime_error("unsupported verifier lazy public polynomial label: " + name);
 }
 
-struct DomainEvaluationWeights {
-    std::optional<std::size_t> direct_index;
-    std::vector<mcl::Fr> native_weights;
-    algebra::PackedFieldBuffer packed_weights;
-};
-
-class VerifierDomainWeightCache {
-  public:
-    const DomainEvaluationWeights& get(
-        const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
-        const FieldElement& point) {
-        const auto cache_key = domain_point_key(domain, point);
-        if (const auto it = entries_.find(cache_key); it != entries_.end()) {
-            return it->second;
-        }
-
-        DomainEvaluationWeights entry;
-        if (domain->points_precomputed) {
-            for (std::size_t i = 0; i < domain->points.size(); ++i) {
-                if (domain->points[i] == point) {
-                    entry.direct_index = i;
-                    break;
-                }
-            }
-        } else if (const auto shift = domain->rotation_shift(FieldElement::one(), point); shift.has_value()) {
-            entry.direct_index = *shift;
-        }
-        if (!entry.direct_index.has_value()) {
-            entry.native_weights = domain->barycentric_weights_native(point);
-            algebra::pack_native_field_elements_into(entry.native_weights, &entry.packed_weights);
-        }
-
-        auto [it, inserted] = entries_.emplace(cache_key, std::move(entry));
-        (void)inserted;
-        return it->second;
-    }
-
-  private:
-    std::unordered_map<std::string, DomainEvaluationWeights> entries_;
-};
-
 class PublicEvaluationBackendRegistry {
   public:
     explicit PublicEvaluationBackendRegistry(const ProtocolContext& context) {
@@ -371,7 +321,7 @@ class VerifierEvaluationMemoization {
           metrics_(metrics) {}
 
     FieldElement eval_named(const std::string& name, const FieldElement& point) {
-        const auto cache_key = name + "@" + point_key(point);
+        const auto cache_key = name + "@" + algebra::point_cache_key(point);
         if (const auto it = value_cache_.find(cache_key); it != value_cache_.end()) {
             return it->second;
         }
@@ -429,25 +379,22 @@ class VerifierEvaluationMemoization {
             return value;
         }
 
-        const auto domain_cache_key = domain_point_key(polynomial.domain, point);
+        const auto domain_cache_key = algebra::domain_point_cache_key(polynomial.domain, point);
         if (!precomputed_domain_points_.contains(domain_cache_key)) {
             const auto& weight_entry = domain_weight_cache_.get(polynomial.domain, point);
             std::vector<FieldElement> values;
             if (weight_entry.direct_index.has_value()) {
                 values = backend->values_at_direct_index(*labels, *weight_entry.direct_index);
             } else {
-                values = backend->evaluate_with_packed_native_weights(
-                    *labels,
-                    weight_entry.native_weights,
-                    weight_entry.packed_weights);
+                values = backend->evaluate_with_native_weights(*labels, weight_entry.native_weights);
             }
             for (std::size_t i = 0; i < labels->size(); ++i) {
-                value_cache_.emplace((*labels)[i] + "@" + point_key(point), values[i]);
+                value_cache_.emplace((*labels)[i] + "@" + algebra::point_cache_key(point), values[i]);
             }
             precomputed_domain_points_.emplace(domain_cache_key);
         }
 
-        const auto cache_key = polynomial.name + "@" + point_key(point);
+        const auto cache_key = polynomial.name + "@" + algebra::point_cache_key(point);
         if (const auto it = value_cache_.find(cache_key); it != value_cache_.end()) {
             if (metrics_ != nullptr) {
                 metrics_->verify_public_eval_ms += elapsed_ms(eval_start, Clock::now());
@@ -464,7 +411,7 @@ class VerifierEvaluationMemoization {
     const ProtocolContext& context_;
     const std::unordered_map<std::string, OpenedValueView>& opened_values_;
     std::shared_ptr<const PublicEvaluationBackendRegistry> backend_registry_;
-    VerifierDomainWeightCache domain_weight_cache_;
+    algebra::DomainEvaluationWeightCache domain_weight_cache_;
     std::unordered_map<std::string, FieldElement> value_cache_;
     std::unordered_set<std::string> precomputed_domain_points_;
     RunMetrics* metrics_ = nullptr;

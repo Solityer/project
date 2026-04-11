@@ -29,8 +29,8 @@ namespace gatzk::algebra
             return key;
         }
 
-        // 返回针对特定域和行数应该使用的打包子集阈值
-        std::size_t packed_subset_threshold_for(
+        // 返回针对特定域和行数应该使用的子集物化阈值
+        std::size_t subset_cache_threshold_for(
             const std::shared_ptr<RootOfUnityDomain>& domain,
             std::size_t row_count)
         {
@@ -54,8 +54,7 @@ namespace gatzk::algebra
     {
         std::vector<std::size_t> row_indices;
         std::vector<std::uint32_t> row_indices_u32;
-        std::vector<mcl::Fr> packed_values;
-        mutable PackedFieldBuffer packed_values_packed;
+        std::vector<mcl::Fr> interleaved_values;
     };
 
     // 预计算所有多项式在单位根域上的值，并建立标签到索引的映射
@@ -66,23 +65,23 @@ namespace gatzk::algebra
     {
         if (domain_ == nullptr)
         {
-            throw std::runtime_error("packed evaluation backend requires a domain");
+            throw std::runtime_error("domain evaluation backend requires a domain");
         }
         const auto row_count = polynomials_.size();
-        packed_values_.resize(domain_->size * row_count);
+        interleaved_values_.resize(domain_->size * row_count);
         for (std::size_t row = 0; row < row_count; ++row)
         {
             label_to_index_.emplace(polynomials_[row].first, row);
             const auto* polynomial = polynomials_[row].second;
             if (polynomial == nullptr || polynomial->basis != PolynomialBasis::Evaluation || polynomial->domain != domain_)
             {
-                throw std::runtime_error("packed evaluation backend requires same-domain evaluation polynomials");
+                throw std::runtime_error("domain evaluation backend requires same-domain evaluation polynomials");
             }
             const auto& values = polynomial->values();
             const auto column_count = std::min(values.size(), domain_->size);
             for (std::size_t column = 0; column < column_count; ++column)
             {
-                packed_values_[column * row_count + row] = values[column].native();
+                interleaved_values_[column * row_count + row] = values[column].native();
             }
         }
     }
@@ -107,26 +106,26 @@ namespace gatzk::algebra
             const auto it = label_to_index_.find(label);
             if (it == label_to_index_.end())
             {
-                throw std::runtime_error("packed evaluation backend is missing label: " + label);
+                throw std::runtime_error("domain evaluation backend is missing label: " + label);
             }
             if (it->second > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()))
             {
-                throw std::runtime_error("packed evaluation backend row index exceeds uint32_t");
+                throw std::runtime_error("domain evaluation backend row index exceeds uint32_t");
             }
             subset.row_indices.push_back(it->second);
             subset.row_indices_u32.push_back(static_cast<std::uint32_t>(it->second));
         }
 
         const auto row_count = subset.row_indices.size();
-        const auto packed_term_count = domain_->size * row_count;
-        const auto packed_subset_threshold = packed_subset_threshold_for(domain_, row_count);
-        if (packed_term_count <= packed_subset_threshold && row_count > 1)
+        const auto interleaved_term_count = domain_->size * row_count;
+        const auto subset_cache_threshold = subset_cache_threshold_for(domain_, row_count);
+        if (interleaved_term_count <= subset_cache_threshold && row_count > 1)
         {
-            subset.packed_values.resize(packed_term_count);
+            subset.interleaved_values.resize(interleaved_term_count);
             for (std::size_t column = 0; column < domain_->size; ++column)
             {
-                const auto* packed_row = &packed_values_[column * polynomials_.size()];
-                auto* subset_row = &subset.packed_values[column * row_count];
+                const auto* packed_row = &interleaved_values_[column * polynomials_.size()];
+                auto* subset_row = &subset.interleaved_values[column * row_count];
                 for (std::size_t row = 0; row < row_count; ++row)
                 {
                     subset_row[row] = packed_row[subset.row_indices[row]];
@@ -160,32 +159,6 @@ namespace gatzk::algebra
         return subset_for(labels).row_indices_u32;
     }
 
-    // 返回所有打包值的设备端就绪缓冲区
-    const PackedFieldBuffer& PackedEvaluationBackend::packed_values_device_ready() const
-    {
-        if (packed_values_packed_.empty() && !packed_values_.empty())
-        {
-            pack_native_field_elements_into(packed_values_, &packed_values_packed_);
-        }
-        return packed_values_packed_;
-    }
-
-    // 返回指定标签子集的设备端就绪打包值缓冲区
-    const PackedFieldBuffer* PackedEvaluationBackend::subset_packed_values_device_ready(
-        const std::vector<std::string>& labels) const
-    {
-        const auto& subset = subset_for(labels);
-        if (subset.packed_values.empty())
-        {
-            return nullptr;
-        }
-        if (subset.packed_values_packed.empty())
-        {
-            pack_native_field_elements_into(subset.packed_values, &subset.packed_values_packed);
-        }
-        return &subset.packed_values_packed;
-    }
-
     // 直接返回指定标签在给定列索引上的多项式值（每个多项式在该点的求值）
     std::vector<FieldElement> PackedEvaluationBackend::values_at_direct_index(
         const std::vector<std::string>& labels,
@@ -196,7 +169,7 @@ namespace gatzk::algebra
         for (const auto row_index : subset_for(labels).row_indices)
         {
             const auto& values = polynomials_[row_index].second->values();
-            out.push_back(values.at(index));
+            out.push_back(index < values.size() ? values[index] : FieldElement::zero());
         }
         return out;
     }
@@ -219,23 +192,14 @@ namespace gatzk::algebra
         const std::vector<std::string>& labels,
         const std::vector<mcl::Fr>& weights) const
     {
-        return evaluate_with_packed_native_weights(labels, weights, PackedFieldBuffer());
-    }
-
-    std::vector<FieldElement> PackedEvaluationBackend::evaluate_with_packed_native_weights(
-        const std::vector<std::string>& labels,
-        const std::vector<mcl::Fr>& weights,
-        const PackedFieldBuffer& packed_weights) const
-    {
-        (void)packed_weights;
         if (weights.size() != domain_->size)
         {
-            throw std::runtime_error("packed evaluation backend weight size mismatch");
+            throw std::runtime_error("domain evaluation backend weight size mismatch");
         }
 
         const auto& subset = subset_for(labels);
         const auto row_count = subset.row_indices.size();
-        const bool use_packed_subset = !subset.packed_values.empty();
+        const bool use_cached_subset = !subset.interleaved_values.empty();
         std::vector<mcl::Fr> native_out(row_count);
         for (auto& value : native_out)
         {
@@ -275,9 +239,9 @@ namespace gatzk::algebra
                                 for (std::size_t row = 0; row < row_count; ++row)
                                 {
                                     mcl::Fr term;
-                                    const auto& value = use_packed_subset
-                                                            ? subset.packed_values[column * row_count + row]
-                                                            : packed_values_[column * polynomials_.size() + subset.row_indices[row]];
+                                    const auto& value = use_cached_subset
+                                                            ? subset.interleaved_values[column * row_count + row]
+                                                            : interleaved_values_[column * polynomials_.size() + subset.row_indices[row]];
                                     mcl::Fr::mul(term, value, weight);
                                     mcl::Fr::add(partial[row], partial[row], term);
                                 }
@@ -310,9 +274,9 @@ namespace gatzk::algebra
             for (std::size_t row = 0; row < row_count; ++row)
             {
                 mcl::Fr term;
-                const auto& value = use_packed_subset
-                                        ? subset.packed_values[column * row_count + row]
-                                        : packed_values_[column * polynomials_.size() + subset.row_indices[row]];
+                const auto& value = use_cached_subset
+                                        ? subset.interleaved_values[column * row_count + row]
+                                        : interleaved_values_[column * polynomials_.size() + subset.row_indices[row]];
                 mcl::Fr::mul(term, value, weight);
                 mcl::Fr::add(native_out[row], native_out[row], term);
             }
@@ -325,18 +289,6 @@ namespace gatzk::algebra
             out.push_back(FieldElement::from_native(value));
         }
         return out;
-    }
-
-    // 设备端求值（仅CUDA）：返回设备结果句柄，结果留在GPU内存中
-    PackedEvaluationDeviceResult PackedEvaluationBackend::evaluate_device_with_packed_native_weights(
-        const std::vector<std::string>& labels,
-        const std::vector<mcl::Fr>& weights,
-        const PackedFieldBuffer& packed_weights) const
-    {
-        (void)labels;
-        (void)weights;
-        (void)packed_weights;
-        throw std::runtime_error("device-side packed evaluation is not part of the formal CUDA mainline");
     }
 
     // 使用原生权重的旋转求值
@@ -359,24 +311,9 @@ namespace gatzk::algebra
         const std::vector<mcl::Fr>& representative_weights,
         const std::vector<std::size_t>& rotations) const
     {
-        return evaluate_with_packed_native_weight_rotations(
-            labels,
-            representative_weights,
-            PackedFieldBuffer(),
-            rotations);
-    }
-
-    // CPU 实现的带权重旋转求值（核心算法）
-    std::vector<std::vector<FieldElement>> PackedEvaluationBackend::evaluate_with_packed_native_weight_rotations(
-        const std::vector<std::string>& labels,
-        const std::vector<mcl::Fr>& representative_weights,
-        const PackedFieldBuffer& representative_weights_packed,
-        const std::vector<std::size_t>& rotations) const
-    {
-        (void)representative_weights_packed;
         if (representative_weights.size() != domain_->size)
         {
-            throw std::runtime_error("packed rotated evaluation backend weight size mismatch");
+            throw std::runtime_error("domain evaluation backend rotation weight size mismatch");
         }
         if (rotations.empty())
         {
@@ -387,7 +324,7 @@ namespace gatzk::algebra
         const auto row_count = subset.row_indices.size();
         const auto point_count = rotations.size();
         const auto domain_mask = domain_->size - 1U;
-        const bool use_packed_subset = !subset.packed_values.empty();
+        const bool use_cached_subset = !subset.interleaved_values.empty();
         std::vector<mcl::Fr> native_out(point_count * row_count);
         for (auto& value : native_out)
         {
@@ -431,9 +368,9 @@ namespace gatzk::algebra
                                     for (std::size_t row = 0; row < row_count; ++row)
                                     {
                                         mcl::Fr term;
-                                        const auto& value = use_packed_subset
-                                                                ? subset.packed_values[rotated_column * row_count + row]
-                                                                : packed_values_[rotated_column * polynomials_.size() + subset.row_indices[row]];
+                                        const auto& value = use_cached_subset
+                                                                ? subset.interleaved_values[rotated_column * row_count + row]
+                                                                : interleaved_values_[rotated_column * polynomials_.size() + subset.row_indices[row]];
                                         mcl::Fr::mul(term, value, weight);
                                         mcl::Fr::add(partial_row[row], partial_row[row], term);
                                     }
@@ -463,9 +400,9 @@ namespace gatzk::algebra
                         for (std::size_t row = 0; row < row_count; ++row)
                         {
                             mcl::Fr term;
-                            const auto& value = use_packed_subset
-                                                    ? subset.packed_values[rotated_column * row_count + row]
-                                                    : packed_values_[rotated_column * polynomials_.size() + subset.row_indices[row]];
+                            const auto& value = use_cached_subset
+                                                    ? subset.interleaved_values[rotated_column * row_count + row]
+                                                    : interleaved_values_[rotated_column * polynomials_.size() + subset.row_indices[row]];
                             mcl::Fr::mul(term, value, weight);
                             mcl::Fr::add(native_row[row], native_row[row], term);
                         }
@@ -485,9 +422,9 @@ namespace gatzk::algebra
                     for (std::size_t row = 0; row < row_count; ++row)
                     {
                         mcl::Fr term;
-                        const auto& value = use_packed_subset
-                                                ? subset.packed_values[rotated_column * row_count + row]
-                                                : packed_values_[rotated_column * polynomials_.size() + subset.row_indices[row]];
+                        const auto& value = use_cached_subset
+                                                ? subset.interleaved_values[rotated_column * row_count + row]
+                                                : interleaved_values_[rotated_column * polynomials_.size() + subset.row_indices[row]];
                         mcl::Fr::mul(term, value, weight);
                         mcl::Fr::add(native_row[row], native_row[row], term);
                     }
@@ -504,34 +441,5 @@ namespace gatzk::algebra
             }
         }
         return out;
-    }
-
-    PackedEvaluationDeviceResult PackedEvaluationBackend::evaluate_device_with_packed_native_weight_rotations(
-        const std::vector<std::string>& labels,
-        const std::vector<mcl::Fr>& representative_weights,
-        const PackedFieldBuffer& representative_weights_packed,
-        const std::vector<std::size_t>& rotations) const
-    {
-        (void)labels;
-        (void)representative_weights;
-        (void)representative_weights_packed;
-        (void)rotations;
-        throw std::runtime_error("device-side packed rotated evaluation is not part of the formal CUDA mainline");
-    }
-
-    // 将设备端结果拷贝回主机并展开为一维域元素向量
-    std::vector<FieldElement> PackedEvaluationBackend::materialize_device_result(
-        const PackedEvaluationDeviceResult& result) const
-    {
-        (void)result;
-        throw std::runtime_error("device-side packed evaluation materialization is not part of the formal CUDA mainline");
-    }
-
-    // 将设备端旋转结果拷贝回主机并展开为二维向量（每个旋转一行）
-    std::vector<std::vector<FieldElement>> PackedEvaluationBackend::materialize_device_rotation_result(
-        const PackedEvaluationDeviceResult& result) const
-    {
-        (void)result;
-        throw std::runtime_error("device-side packed rotated materialization is not part of the formal CUDA mainline");
     }
 }

@@ -4,12 +4,11 @@
 #include <future>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
 
-#include "gatzk/algebra/vector_ops.hpp"
+#include "gatzk/algebra/domain_evaluation.hpp"
 #include "gatzk/util/route2.hpp"
 
 namespace gatzk::crypto
@@ -115,22 +114,60 @@ namespace gatzk::crypto
             std::vector<FieldElement> folding_powers;
         };
 
-        struct DomainCommitWeights
+        // 计算p(tau)
+        std::shared_ptr<const algebra::DomainEvaluationWeights> load_or_build_domain_commit_weights(
+            const algebra::Polynomial& polynomial,
+            const KZGKeyPair& key)
         {
-            std::optional<std::size_t> direct_index;
-            std::vector<mcl::Fr> native_weights;
-        };
+            static std::mutex cache_mutex;
+            static std::unordered_map<std::string, std::shared_ptr<algebra::DomainEvaluationWeights>> cache;
+            const bool persist_cache = polynomial.domain != nullptr && polynomial.domain->size < (1ULL << 24);
 
-        // 批量求tau处的取值
+            const auto cache_key = polynomial.domain->name + ":" + std::to_string(polynomial.domain->size) + ":" + key.tau.to_string();
+            if (persist_cache)
+            {
+                std::lock_guard<std::mutex> lock(cache_mutex);
+                if (const auto it = cache.find(cache_key); it != cache.end())
+                {
+                    return it->second;
+                }
+            }
+
+            auto entry = std::make_shared<algebra::DomainEvaluationWeights>(
+                algebra::build_domain_evaluation_weights(polynomial.domain, key.tau));
+
+            if (persist_cache)
+            {
+                std::lock_guard<std::mutex> lock(cache_mutex);
+                const auto [it, _] = cache.emplace(cache_key, entry);
+                return it->second;
+            }
+            return entry;
+        }
+
+        BatchOpeningPrecompute prepare_batch_opening(
+            const std::vector<FieldElement>& points,
+            const FieldElement& folding_challenge,
+            const KZGKeyPair& key,
+            std::size_t commitment_count)
+        {
+            BatchOpeningPrecompute out;
+            out.vanishing_at_tau = vanishing_eval(points, key.tau);
+            out.interpolation_basis_at_tau = interpolation_basis_at(points, key.tau);
+            out.folding_powers = folding_powers(folding_challenge, commitment_count);
+            return out;
+        }
+
         std::vector<FieldElement> evaluate_polynomials_with_shared_domain_weights(
             const std::vector<const algebra::Polynomial*>& polynomials,
-            const DomainCommitWeights& weights)
+            const algebra::DomainEvaluationWeights& weights)
         {
             std::vector<FieldElement> out(polynomials.size(), FieldElement::zero());
             if (polynomials.empty())
             {
                 return out;
             }
+
             std::vector<const std::vector<FieldElement>*> polynomial_values;
             polynomial_values.reserve(polynomials.size());
             for (const auto* polynomial : polynomials)
@@ -145,6 +182,7 @@ namespace gatzk::crypto
                     throw std::runtime_error("shared-domain tau evaluation requires a uniform valid length");
                 }
             }
+
             if (weights.direct_index.has_value())
             {
                 for (std::size_t i = 0; i < polynomials.size(); ++i)
@@ -164,7 +202,8 @@ namespace gatzk::crypto
             }
 
             const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-            const bool run_parallel = util::route2_options().parallel_fft && domain_size >= 1024 && polynomials.size() >= 4 && cpu_count > 1;
+            const bool run_parallel =
+                util::route2_options().parallel_fft && domain_size >= 1024 && polynomials.size() >= 4 && cpu_count > 1;
             if (run_parallel)
             {
                 const auto task_count = std::min<std::size_t>(cpu_count, domain_size / 512);
@@ -238,88 +277,6 @@ namespace gatzk::crypto
             {
                 out[poly_index] = FieldElement::from_native(native_out[poly_index]);
             }
-            return out;
-        }
-
-        // 计算p(tau)
-        std::shared_ptr<const DomainCommitWeights> load_or_build_domain_commit_weights(
-            const algebra::Polynomial& polynomial,
-            const KZGKeyPair& key)
-        {
-            static std::mutex cache_mutex;
-            static std::unordered_map<std::string, std::shared_ptr<DomainCommitWeights>> cache;
-            const bool persist_cache = polynomial.domain != nullptr && polynomial.domain->size < (1ULL << 24);
-
-            const auto cache_key = polynomial.domain->name + ":" + std::to_string(polynomial.domain->size) + ":" + key.tau.to_string();
-            if (persist_cache)
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                if (const auto it = cache.find(cache_key); it != cache.end())
-                {
-                    return it->second;
-                }
-            }
-
-            auto entry = std::make_shared<DomainCommitWeights>();
-            if (polynomial.domain->points_precomputed)
-            {
-                for (std::size_t i = 0; i < polynomial.domain->size; ++i)
-                {
-                    if (polynomial.domain->points[i] == key.tau)
-                    {
-                        entry->direct_index = i;
-                        break;
-                    }
-                }
-            }
-            else if (const auto shift =
-                         polynomial.domain->rotation_shift(algebra::FieldElement::one(), key.tau);
-                     shift.has_value())
-            {
-                entry->direct_index = *shift;
-            }
-            if (!entry->direct_index.has_value())
-            {
-                if (util::route2_options().fft_backend_upgrade)
-                {
-                    entry->native_weights = polynomial.domain->barycentric_weights_native(key.tau);
-                }
-                else
-                {
-                    entry->native_weights.resize(polynomial.domain->size);
-                    const auto scale = (polynomial.domain->zero_polynomial_eval(key.tau) * polynomial.domain->inv_size).native();
-                    for (std::size_t i = 0; i < polynomial.domain->size; ++i)
-                    {
-                        mcl::Fr denominator;
-                        const auto point = polynomial.domain->point_at(i);
-                        mcl::Fr::sub(denominator, key.tau.native(), point.native());
-                        mcl::Fr inverse;
-                        mcl::Fr::inv(inverse, denominator);
-                        mcl::Fr::mul(entry->native_weights[i], scale, point.native());
-                        mcl::Fr::mul(entry->native_weights[i], entry->native_weights[i], inverse);
-                    }
-                }
-            }
-
-            if (persist_cache)
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                const auto [it, _] = cache.emplace(cache_key, entry);
-                return it->second;
-            }
-            return entry;
-        }
-
-        BatchOpeningPrecompute prepare_batch_opening(
-            const std::vector<FieldElement>& points,
-            const FieldElement& folding_challenge,
-            const KZGKeyPair& key,
-            std::size_t commitment_count)
-        {
-            BatchOpeningPrecompute out;
-            out.vanishing_at_tau = vanishing_eval(points, key.tau);
-            out.interpolation_basis_at_tau = interpolation_basis_at(points, key.tau);
-            out.folding_powers = folding_powers(folding_challenge, commitment_count);
             return out;
         }
 
@@ -511,12 +468,12 @@ namespace gatzk::crypto
 
         std::vector<FieldElement> tau_evaluations(named_polynomials.size(), FieldElement::zero());
         const auto tau_key = key.tau.to_string();
-        std::unordered_map<std::string, std::shared_ptr<const DomainCommitWeights>> domain_weight_cache;
+        std::unordered_map<std::string, std::shared_ptr<const algebra::DomainEvaluationWeights>> domain_weight_cache;
         struct DomainBatchGroup
         {
             std::vector<std::size_t> indices;
             std::vector<const algebra::Polynomial*> polynomials;
-            std::shared_ptr<const DomainCommitWeights> weights;
+            std::shared_ptr<const algebra::DomainEvaluationWeights> weights;
         };
         std::unordered_map<std::string, DomainBatchGroup> domain_groups;
         for (std::size_t i = 0; i < named_polynomials.size(); ++i)
@@ -536,8 +493,8 @@ namespace gatzk::crypto
             {
                 domain_weight_cache.emplace(cache_key, load_or_build_domain_commit_weights(*polynomial, key));
             }
-                const auto group_key = cache_key + ":" + std::to_string(polynomial->size());
-                auto& group = domain_groups[group_key];
+            const auto group_key = cache_key + ":" + std::to_string(polynomial->size());
+            auto& group = domain_groups[group_key];
             group.indices.push_back(i);
             group.polynomials.push_back(polynomial);
             group.weights = domain_weight_cache.at(cache_key);

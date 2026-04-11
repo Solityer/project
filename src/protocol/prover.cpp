@@ -17,6 +17,7 @@
 #include <thread>
 #include <unordered_map>
 
+#include "gatzk/algebra/domain_evaluation.hpp"
 #include "gatzk/algebra/eval_backend.hpp"
 #include "gatzk/algebra/polynomial.hpp"
 #include "gatzk/algebra/vector_ops.hpp"
@@ -581,16 +582,6 @@ void append_note(RunMetrics* metrics, const std::string& note) {
     metrics->notes += note;
 }
 
-std::string point_key(const FieldElement& point) {
-    return point.to_string();
-}
-
-std::string domain_point_key(
-    const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
-    const FieldElement& point) {
-    return domain->name + ":" + std::to_string(domain->size) + ":" + point_key(point);
-}
-
 std::string context_cache_key(const util::AppConfig& config) {
     std::ostringstream stream;
     // export_dir and dump_trace do not affect protocol objects, so
@@ -737,55 +728,8 @@ std::filesystem::path resolve_project_path(
     return std::filesystem::path(project_root) / path;
 }
 
-struct DomainEvaluationWeights {
-    std::optional<std::size_t> direct_index;
-    std::vector<mcl::Fr> native_weights;
-    algebra::PackedFieldBuffer packed_weights;
-};
-
-class ProofDomainWeightCache {
-  public:
-    const DomainEvaluationWeights& get(
-        const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
-        const FieldElement& point) {
-        const auto cache_key = domain_point_key(domain, point);
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (const auto it = entries_.find(cache_key); it != entries_.end()) {
-                return it->second;
-            }
-        }
-
-        DomainEvaluationWeights entry;
-        if (domain->points_precomputed) {
-            for (std::size_t i = 0; i < domain->points.size(); ++i) {
-                if (domain->points[i] == point) {
-                    entry.direct_index = i;
-                    break;
-                }
-            }
-        } else if (const auto shift = domain->rotation_shift(FieldElement::one(), point); shift.has_value()) {
-            entry.direct_index = *shift;
-        }
-
-        if (!entry.direct_index.has_value()) {
-            entry.native_weights = domain->barycentric_weights_native(point);
-            algebra::pack_native_field_elements_into(entry.native_weights, &entry.packed_weights);
-        }
-
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto [it, inserted] = entries_.emplace(cache_key, std::move(entry));
-        (void)inserted;
-        return it->second;
-    }
-
-  private:
-    std::mutex mutex_;
-    std::unordered_map<std::string, DomainEvaluationWeights> entries_;
-};
-
-std::shared_ptr<ProofDomainWeightCache> shared_proof_domain_weight_cache() {
-    static auto cache = std::make_shared<ProofDomainWeightCache>();
+std::shared_ptr<algebra::DomainEvaluationWeightCache> shared_proof_domain_weight_cache() {
+    static auto cache = std::make_shared<algebra::DomainEvaluationWeightCache>();
     return cache;
 }
 
@@ -796,7 +740,7 @@ class SharedFeatureMatrixEvaluationCache {
         const model::Matrix& matrix,
         const FieldElement& point,
         RunMetrics* metrics) {
-        const auto cache_key = context_key + "|P_H@" + point_key(point);
+        const auto cache_key = context_key + "|P_H@" + algebra::point_cache_key(point);
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (const auto it = entries_.find(cache_key); it != entries_.end()) {
@@ -846,7 +790,7 @@ class SharedTraceEvaluationCache {
         const std::vector<std::string>& labels,
         const FieldElement& point) {
         const auto cache_key =
-            context_key + "|trace|" + domain_point_key(domain, point) + "|" + labels_cache_key(labels);
+            context_key + "|trace|" + algebra::domain_point_cache_key(domain, point) + "|" + labels_cache_key(labels);
         std::lock_guard<std::mutex> lock(mutex_);
         if (const auto it = entries_.find(cache_key); it != entries_.end()) {
             return it->second;
@@ -861,7 +805,7 @@ class SharedTraceEvaluationCache {
         const FieldElement& point,
         std::vector<FieldElement> values) {
         const auto cache_key =
-            context_key + "|trace|" + domain_point_key(domain, point) + "|" + labels_cache_key(labels);
+            context_key + "|trace|" + algebra::domain_point_cache_key(domain, point) + "|" + labels_cache_key(labels);
         auto shared_values = std::make_shared<const std::vector<FieldElement>>(std::move(values));
         std::lock_guard<std::mutex> lock(mutex_);
         const auto [it, inserted] = entries_.emplace(std::move(cache_key), std::move(shared_values));
@@ -942,7 +886,7 @@ class SharedPublicEvaluationCache {
         const std::vector<std::string>& labels,
         const FieldElement& point) {
         const auto cache_key =
-            context_key + "|" + domain_point_key(domain, point) + "|" + labels_cache_key(labels);
+            context_key + "|" + algebra::domain_point_cache_key(domain, point) + "|" + labels_cache_key(labels);
         std::lock_guard<std::mutex> lock(mutex_);
         if (const auto it = entries_.find(cache_key); it != entries_.end()) {
             return it->second;
@@ -957,7 +901,7 @@ class SharedPublicEvaluationCache {
         const FieldElement& point,
         std::vector<FieldElement> values) {
         const auto cache_key =
-            context_key + "|" + domain_point_key(domain, point) + "|" + labels_cache_key(labels);
+            context_key + "|" + algebra::domain_point_cache_key(domain, point) + "|" + labels_cache_key(labels);
         auto shared_values = std::make_shared<const std::vector<FieldElement>>(std::move(values));
         std::lock_guard<std::mutex> lock(mutex_);
         const auto [it, inserted] = entries_.emplace(std::move(cache_key), std::move(shared_values));
@@ -1050,7 +994,7 @@ FieldElement evaluate_spilled_evaluation_polynomial(
     const TraceArtifacts::SpilledEvaluationPolynomial& spilled,
     const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
     const FieldElement& /*point*/,
-    const DomainEvaluationWeights& weight_entry) {
+    const algebra::DomainEvaluationWeights& weight_entry) {
     if (domain == nullptr) {
         throw std::runtime_error("spilled polynomial is missing its domain");
     }
@@ -1098,7 +1042,7 @@ class EvaluationMemoization {
         const TraceArtifacts& trace,
         const std::map<std::string, FieldElement>& challenges,
         std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry = nullptr,
-        std::shared_ptr<ProofDomainWeightCache> domain_weight_cache = nullptr,
+        std::shared_ptr<algebra::DomainEvaluationWeightCache> domain_weight_cache = nullptr,
         RunMetrics* metrics = nullptr)
         : context_(context),
           trace_(trace),
@@ -1108,12 +1052,12 @@ class EvaluationMemoization {
           context_key_(context_cache_key(context.config)),
           metrics_(metrics) {
         if (domain_weight_cache_ == nullptr) {
-            domain_weight_cache_ = std::make_shared<ProofDomainWeightCache>();
+            domain_weight_cache_ = std::make_shared<algebra::DomainEvaluationWeightCache>();
         }
     }
 
     FieldElement eval_named(const std::string& name, const FieldElement& point) {
-        const auto cache_key = name + "@" + point_key(point);
+        const auto cache_key = name + "@" + algebra::point_cache_key(point);
         if (const auto it = value_cache_.find(cache_key); it != value_cache_.end()) {
             return it->second;
         }
@@ -1461,7 +1405,7 @@ class EvaluationMemoization {
         struct PointWeightRef {
             std::size_t point_index = 0;
             std::size_t direct_index = 0;
-            const DomainEvaluationWeights* weight_entry = nullptr;
+            const algebra::DomainEvaluationWeights* weight_entry = nullptr;
             bool direct = false;
         };
 
@@ -1744,7 +1688,7 @@ class EvaluationMemoization {
         const auto query_index = label_index_or_npos(labels, "P_Query_feat");
         const auto multiplicity_index = label_index_or_npos(labels, "P_m_feat");
         const auto accumulator_index = label_index_or_npos(labels, "P_R_feat");
-        const auto cache_suffix = "@" + point_key(point);
+        const auto cache_suffix = "@" + algebra::point_cache_key(point);
         auto load_cached = [&](const std::string& label, FieldElement* value) -> bool {
             const auto it = value_cache_.find(label + cache_suffix);
             if (it == value_cache_.end()) {
@@ -1881,7 +1825,7 @@ class EvaluationMemoization {
         auto cache_group_values = [&](const std::vector<std::string>& group_labels,
                                       const FieldElement& point,
                                       const std::vector<FieldElement>& values) {
-            const auto cache_suffix = "@" + point_key(point);
+            const auto cache_suffix = "@" + algebra::point_cache_key(point);
             for (std::size_t i = 0; i < group_labels.size(); ++i) {
                 value_cache_.emplace(group_labels[i] + cache_suffix, values[i]);
             }
@@ -1934,7 +1878,7 @@ class EvaluationMemoization {
                     const auto& values = *cached_values[point_index];
                     cache_group_values(lazy_public_labels, point, values);
                     if (full_graph_feature_identity_enabled(context_)) {
-                        const auto cache_suffix = "@" + point_key(point);
+                        const auto cache_suffix = "@" + algebra::point_cache_key(point);
                         auto seed_alias = [&](std::string_view target, std::string_view source) {
                             if (std::find(lazy_public_labels.begin(), lazy_public_labels.end(), target)
                                 == lazy_public_labels.end()) {
@@ -1995,7 +1939,7 @@ class EvaluationMemoization {
                 if (!required_public_labels.empty() && !lazy_large_fh_public_enabled(context_)) {
                     precompute_named(required_public_labels, points);
                     for (const auto& point : points) {
-                        const auto cache_suffix = "@" + point_key(point);
+                        const auto cache_suffix = "@" + algebra::point_cache_key(point);
                         for (const auto& label : required_public_labels) {
                             if (value_cache_.find(label + cache_suffix) == value_cache_.end()) {
                                 value_cache_.emplace(label + cache_suffix, eval_named(label, point));
@@ -2057,10 +2001,9 @@ class EvaluationMemoization {
             if (weight_entry.direct_index.has_value()) {
                 values = backend.values_at_direct_index(group_labels, *weight_entry.direct_index);
             } else {
-                values = backend.evaluate_with_packed_native_weights(
+                values = backend.evaluate_with_native_weights(
                     group_labels,
-                    weight_entry.native_weights,
-                    weight_entry.packed_weights);
+                    weight_entry.native_weights);
             }
             if (metrics_ != nullptr && domain->name == "FH") {
                 const auto eval_ms = elapsed_ms(eval_start, Clock::now());
@@ -2201,10 +2144,9 @@ class EvaluationMemoization {
                     // which points, or what values enter the proof.
                     const auto eval_start = Clock::now();
                     const auto batched_values =
-                        backend->evaluate_with_packed_native_weight_rotations(
+                        backend->evaluate_with_native_weight_rotations(
                             eval_labels,
                             weight_entry.native_weights,
-                            weight_entry.packed_weights,
                             *shifts);
                     if (metrics_ != nullptr && group.first->name == "FH") {
                         const auto eval_ms = elapsed_ms(eval_start, Clock::now());
@@ -2256,13 +2198,10 @@ class EvaluationMemoization {
         }
         // The route2 parallel FFT flag only changes how the cached domain
         // weights are reduced. The opened values themselves are identical.
-        return algebra::dot_product_packed_native_weights(
-            values,
-            weight_entry.native_weights,
-            weight_entry.packed_weights);
+        return algebra::dot_product_native_weights(values, weight_entry.native_weights);
     }
 
-    const DomainEvaluationWeights& domain_weights(
+    const algebra::DomainEvaluationWeights& domain_weights(
         const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
         const FieldElement& point) {
         return domain_weight_cache_->get(domain, point);
@@ -2272,7 +2211,7 @@ class EvaluationMemoization {
     const TraceArtifacts& trace_;
     const std::map<std::string, FieldElement>& challenges_;
     std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry_;
-    std::shared_ptr<ProofDomainWeightCache> domain_weight_cache_;
+    std::shared_ptr<algebra::DomainEvaluationWeightCache> domain_weight_cache_;
     std::string context_key_;
     RunMetrics* metrics_ = nullptr;
     std::unordered_map<std::string, FieldElement> value_cache_;
