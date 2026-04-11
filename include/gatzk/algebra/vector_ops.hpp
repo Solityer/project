@@ -4,7 +4,6 @@
 #include <vector>
 
 #include "gatzk/algebra/field.hpp"
-#include "gatzk/algebra/packed_field.hpp"
 
 namespace gatzk::algebra
 {
@@ -30,10 +29,4 @@ namespace gatzk::algebra
     FieldElement dot_product_native_weights(
         const std::vector<FieldElement>& lhs,
         const std::vector<mcl::Fr>& rhs);
-    
-    // 计算左向量与右向量的点积，其中右向量已打包为设备端就绪格式（用于 GPU 加速）
-    FieldElement dot_product_packed_native_weights(
-        const std::vector<FieldElement>& lhs,
-        const std::vector<mcl::Fr>& rhs,
-        const PackedFieldBuffer& packed_rhs);
 }
