@@ -1,11 +1,13 @@
 #pragma once
 
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "gatzk/algebra/field.hpp"
@@ -77,23 +79,41 @@ namespace gatzk::algebra
         {
             const auto cache_key = domain_point_cache_key(domain, point);
             {
-                std::lock_guard<std::mutex> lock(mutex_);
+                std::unique_lock<std::mutex> lock(mutex_);
+                // Fast path: already computed.
                 if (const auto it = entries_.find(cache_key); it != entries_.end())
                 {
                     return it->second;
                 }
+                // Avoid thundering herd: if another thread is already computing
+                // the same key, wait for it instead of redundantly computing.
+                while (in_flight_.count(cache_key))
+                {
+                    cv_.wait(lock);
+                    if (const auto it = entries_.find(cache_key); it != entries_.end())
+                    {
+                        return it->second;
+                    }
+                }
+                in_flight_.insert(cache_key);
             }
 
             auto entry = build_domain_evaluation_weights(domain, point);
 
-            std::lock_guard<std::mutex> lock(mutex_);
-            const auto [it, inserted] = entries_.emplace(cache_key, std::move(entry));
-            (void)inserted;
-            return it->second;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                in_flight_.erase(cache_key);
+                const auto [it, inserted] = entries_.emplace(cache_key, std::move(entry));
+                (void)inserted;
+                cv_.notify_all();
+                return it->second;
+            }
         }
 
     private:
         std::mutex mutex_;
+        std::condition_variable cv_;
+        std::unordered_set<std::string> in_flight_;
         std::unordered_map<std::string, DomainEvaluationWeights> entries_;
     };
 }

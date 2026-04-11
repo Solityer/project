@@ -121,7 +121,7 @@ namespace gatzk::crypto
         {
             static std::mutex cache_mutex;
             static std::unordered_map<std::string, std::shared_ptr<algebra::DomainEvaluationWeights>> cache;
-            const bool persist_cache = polynomial.domain != nullptr && polynomial.domain->size < (1ULL << 24);
+            const bool persist_cache = polynomial.domain != nullptr && polynomial.domain->size < (1ULL << 26);
 
             const auto cache_key = polynomial.domain->name + ":" + std::to_string(polynomial.domain->size) + ":" + key.tau.to_string();
             if (persist_cache)
@@ -203,7 +203,8 @@ namespace gatzk::crypto
 
             const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
             const bool run_parallel =
-                util::route2_options().parallel_fft && domain_size >= 1024 && polynomials.size() >= 4 && cpu_count > 1;
+                util::route2_options().parallel_fft && domain_size >= 1024 && cpu_count > 1
+                && (polynomials.size() >= 4 || domain_size >= (1ULL << 18));
             if (run_parallel)
             {
                 const auto task_count = std::min<std::size_t>(cpu_count, domain_size / 512);

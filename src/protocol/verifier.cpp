@@ -330,6 +330,10 @@ class VerifierEvaluationMemoization {
         if (const auto it = context_.public_polynomials.find(name); it != context_.public_polynomials.end()) {
             value = eval_public_polynomial(it->second, point);
         } else if (lazy_large_fh_public_enabled(context_) && is_lazy_large_fh_public_label(name)) {
+            batch_evaluate_lazy_fh_labels(point);
+            if (const auto it2 = value_cache_.find(cache_key); it2 != value_cache_.end()) {
+                return it2->second;
+            }
             value = evaluate_lazy_large_fh_public_poly(context_, name, point);
         } else if (const auto it = opened_values_.find(name); it != opened_values_.end()) {
             const auto lookup_start = Clock::now();
@@ -346,6 +350,167 @@ class VerifierEvaluationMemoization {
     }
 
   private:
+    void batch_evaluate_lazy_fh_labels(const FieldElement& point) {
+        const auto point_key = algebra::point_cache_key(point);
+        const auto batch_key = "lazy_fh_batch_done@" + point_key;
+        if (lazy_fh_batch_done_.contains(batch_key)) {
+            return;
+        }
+        lazy_fh_batch_done_.emplace(batch_key);
+
+        const auto& domain = context_.domains.fh;
+        if (domain == nullptr) {
+            return;
+        }
+        const std::size_t dataset_rows = context_.dataset.num_nodes;
+        const std::size_t local_rows = context_.local.num_nodes;
+        const std::size_t feature_count = context_.local.num_features;
+        const std::size_t dataset_valid = dataset_rows * feature_count;
+        const std::size_t local_valid = local_rows * feature_count;
+        const auto& feature_matrix =
+            !context_.dataset.features.empty() ? context_.dataset.features : context_.local.features;
+
+        if (const auto shift = domain->rotation_shift(FieldElement::one(), point); shift.has_value()) {
+            auto at = [&](const std::string& label_name, std::size_t valid, auto value_fn) {
+                const auto val = *shift < valid ? value_fn(*shift) : FieldElement::zero();
+                value_cache_.emplace(label_name + "@" + point_key, val);
+            };
+            at("P_Q_tbl_feat", dataset_valid, [](std::size_t) { return FieldElement::one(); });
+            at("P_Q_qry_feat", local_valid, [](std::size_t) { return FieldElement::one(); });
+            at("P_Row_feat_tbl", dataset_valid, [&](std::size_t i) { return FieldElement(i / feature_count); });
+            at("P_Col_feat_tbl", dataset_valid, [&](std::size_t i) { return FieldElement(i % feature_count); });
+            at("P_Row_feat_qry", local_valid, [&](std::size_t i) { return FieldElement(i / feature_count); });
+            at("P_Col_feat_qry", local_valid, [&](std::size_t i) { return FieldElement(i % feature_count); });
+            at("P_I_feat_qry", local_valid, [&](std::size_t i) {
+                return FieldElement(context_.local.absolute_ids[i / feature_count]);
+            });
+            at("P_T_H", dataset_valid, [&](std::size_t i) {
+                return feature_matrix[i / feature_count][i % feature_count];
+            });
+            return;
+        }
+
+        const auto max_valid = dataset_valid;
+        const auto weights = domain->barycentric_weights_native(point);
+
+        struct LabelTask {
+            std::string name;
+            std::size_t valid_count;
+        };
+        const std::vector<LabelTask> tasks = {
+            {"P_Q_tbl_feat", dataset_valid},
+            {"P_Q_qry_feat", local_valid},
+            {"P_Row_feat_tbl", dataset_valid},
+            {"P_Col_feat_tbl", dataset_valid},
+            {"P_Row_feat_qry", local_valid},
+            {"P_Col_feat_qry", local_valid},
+            {"P_I_feat_qry", local_valid},
+            {"P_T_H", dataset_valid},
+        };
+
+        std::vector<mcl::Fr> results(tasks.size());
+        for (auto& r : results) { r.clear(); }
+
+        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+        const bool run_parallel = max_valid >= (1ULL << 18) && cpu_count > 1;
+
+        if (run_parallel) {
+            const auto task_count = std::min<std::size_t>(cpu_count, (max_valid + (1ULL << 18) - 1) / (1ULL << 18));
+            const auto chunk_size = (max_valid + task_count - 1) / task_count;
+            std::vector<std::future<std::vector<mcl::Fr>>> futures;
+            futures.reserve(task_count);
+            for (std::size_t t = 0; t < task_count; ++t) {
+                const auto begin = t * chunk_size;
+                const auto end = std::min(max_valid, begin + chunk_size);
+                if (begin >= end) { break; }
+                futures.push_back(std::async(
+                    std::launch::async,
+                    [&, begin, end]() {
+                        std::vector<mcl::Fr> partial(tasks.size());
+                        for (auto& p : partial) { p.clear(); }
+                        for (std::size_t i = begin; i < end; ++i) {
+                            const auto& w = weights[i];
+                            const auto row = i / feature_count;
+                            const auto col = i % feature_count;
+                            mcl::Fr term;
+                            // P_Q_tbl_feat: 1 * w
+                            mcl::Fr::add(partial[0], partial[0], w);
+                            // P_Q_qry_feat: 1 * w (only if i < local_valid)
+                            if (i < local_valid) {
+                                mcl::Fr::add(partial[1], partial[1], w);
+                            }
+                            // P_Row_feat_tbl: (i/fc) * w
+                            { mcl::Fr row_fr; row_fr = static_cast<long long>(row);
+                              mcl::Fr::mul(term, row_fr, w);
+                              mcl::Fr::add(partial[2], partial[2], term); }
+                            // P_Col_feat_tbl: (i%fc) * w
+                            { mcl::Fr col_fr; col_fr = static_cast<long long>(col);
+                              mcl::Fr::mul(term, col_fr, w);
+                              mcl::Fr::add(partial[3], partial[3], term); }
+                            // P_Row_feat_qry: (i/fc) * w (only if i < local_valid)
+                            if (i < local_valid) {
+                                mcl::Fr row_fr; row_fr = static_cast<long long>(row);
+                                mcl::Fr::mul(term, row_fr, w);
+                                mcl::Fr::add(partial[4], partial[4], term);
+                            }
+                            // P_Col_feat_qry: (i%fc) * w (only if i < local_valid)
+                            if (i < local_valid) {
+                                mcl::Fr col_fr; col_fr = static_cast<long long>(col);
+                                mcl::Fr::mul(term, col_fr, w);
+                                mcl::Fr::add(partial[5], partial[5], term);
+                            }
+                            // P_I_feat_qry: abs_id[i/fc] * w (only if i < local_valid)
+                            if (i < local_valid) {
+                                mcl::Fr id_fr; id_fr = static_cast<long long>(context_.local.absolute_ids[row]);
+                                mcl::Fr::mul(term, id_fr, w);
+                                mcl::Fr::add(partial[6], partial[6], term);
+                            }
+                            // P_T_H: features[row][col] * w
+                            mcl::Fr::mul(term, feature_matrix[row][col].native(), w);
+                            mcl::Fr::add(partial[7], partial[7], term);
+                        }
+                        return partial;
+                    }));
+            }
+            for (auto& f : futures) {
+                const auto partial = f.get();
+                for (std::size_t k = 0; k < tasks.size(); ++k) {
+                    mcl::Fr::add(results[k], results[k], partial[k]);
+                }
+            }
+        } else {
+            for (std::size_t i = 0; i < max_valid; ++i) {
+                const auto& w = weights[i];
+                const auto row = i / feature_count;
+                const auto col = i % feature_count;
+                mcl::Fr term;
+                mcl::Fr::add(results[0], results[0], w);
+                if (i < local_valid) {
+                    mcl::Fr::add(results[1], results[1], w);
+                }
+                { mcl::Fr row_fr; row_fr = static_cast<long long>(row);
+                  mcl::Fr::mul(term, row_fr, w); mcl::Fr::add(results[2], results[2], term); }
+                { mcl::Fr col_fr; col_fr = static_cast<long long>(col);
+                  mcl::Fr::mul(term, col_fr, w); mcl::Fr::add(results[3], results[3], term); }
+                if (i < local_valid) {
+                    mcl::Fr row_fr; row_fr = static_cast<long long>(row);
+                    mcl::Fr::mul(term, row_fr, w); mcl::Fr::add(results[4], results[4], term);
+                    mcl::Fr col_fr; col_fr = static_cast<long long>(col);
+                    mcl::Fr::mul(term, col_fr, w); mcl::Fr::add(results[5], results[5], term);
+                    mcl::Fr id_fr; id_fr = static_cast<long long>(context_.local.absolute_ids[row]);
+                    mcl::Fr::mul(term, id_fr, w);
+                    mcl::Fr::add(results[6], results[6], term);
+                }
+                mcl::Fr::mul(term, feature_matrix[row][col].native(), w);
+                mcl::Fr::add(results[7], results[7], term);
+            }
+        }
+
+        for (std::size_t k = 0; k < tasks.size(); ++k) {
+            value_cache_.emplace(tasks[k].name + "@" + point_key, FieldElement::from_native(results[k]));
+        }
+    }
+
     FieldElement opened_value(
         const std::vector<FieldElement>& points,
         const std::vector<FieldElement>& values,
@@ -414,6 +579,7 @@ class VerifierEvaluationMemoization {
     algebra::DomainEvaluationWeightCache domain_weight_cache_;
     std::unordered_map<std::string, FieldElement> value_cache_;
     std::unordered_set<std::string> precomputed_domain_points_;
+    std::unordered_set<std::string> lazy_fh_batch_done_;
     RunMetrics* metrics_ = nullptr;
 };
 
@@ -520,13 +686,45 @@ FieldElement bias_fold_vector(
     const std::vector<double>& bias,
     std::size_t node_count,
     const FieldElement& y_out) {
-    FieldElement out = FieldElement::zero();
     std::vector<FieldElement> quantized_bias;
     quantized_bias.reserve(bias.size());
     for (const auto value : bias) {
         quantized_bias.push_back(FieldElement::from_signed(static_cast<std::int64_t>(
             value >= 0.0 ? value * 16.0 + 0.5 : value * 16.0 - 0.5)));
     }
+    const auto total_iter = node_count * quantized_bias.size();
+    const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+    if (total_iter >= (1ULL << 18) && cpu_count > 1) {
+        const auto step = quantized_bias.size();
+        const auto task_count = std::min<std::size_t>(cpu_count, (node_count + 255) / 256);
+        const auto chunk = (node_count + task_count - 1) / task_count;
+        std::vector<std::future<FieldElement>> futures;
+        futures.reserve(task_count);
+        for (std::size_t t = 0; t < task_count; ++t) {
+            const auto begin = t * chunk;
+            const auto end = std::min(node_count, begin + chunk);
+            if (begin >= end) { break; }
+            futures.push_back(std::async(
+                std::launch::async,
+                [&, begin, end]() {
+                    FieldElement partial = FieldElement::zero();
+                    FieldElement power = y_out.pow(static_cast<std::uint64_t>(begin * step));
+                    for (std::size_t i = begin; i < end; ++i) {
+                        for (const auto& quantized : quantized_bias) {
+                            partial += quantized * power;
+                            power *= y_out;
+                        }
+                    }
+                    return partial;
+                }));
+        }
+        FieldElement out = FieldElement::zero();
+        for (auto& f : futures) {
+            out += f.get();
+        }
+        return out;
+    }
+    FieldElement out = FieldElement::zero();
     FieldElement power = FieldElement::one();
     for (std::size_t i = 0; i < node_count; ++i) {
         for (const auto& quantized : quantized_bias) {
