@@ -441,13 +441,20 @@ int main(int argc, char** argv) {
             (void)gatzk::protocol::verify(context, proof);
         };
 
+        auto lightweight_warm_up = [&](const gatzk::util::AppConfig& run_config) {
+            gatzk::util::info("priming process-local caches (lightweight, prove-only)");
+            const auto context = gatzk::protocol::build_context(run_config, nullptr);
+            const auto trace = gatzk::protocol::build_trace(context, nullptr);
+            (void)gatzk::protocol::prove(context, trace, nullptr);
+        };
+
         bool accepted = false;
         std::vector<std::string> export_segments;
         if (!export_tag.empty()) {
             export_segments.push_back(export_tag);
         }
         if (memory_safe_warm_required(loaded_config)) {
-            gatzk::util::info("using memory-safe warm path");
+            lightweight_warm_up(with_export_suffix(loaded_config, export_segments));
         } else {
             warm_up(with_export_suffix(loaded_config, export_segments));
         }

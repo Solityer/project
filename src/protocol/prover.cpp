@@ -3159,6 +3159,20 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             std::vector<QuotientEvalResult> quotient_results;
             quotient_results.reserve(quotient_labels.size());
             if (std::thread::hardware_concurrency() > 1) {
+                // Pre-warm domain weight caches for the two heaviest domains
+                // sequentially before launching parallel tasks, to avoid
+                // memory-bandwidth contention from simultaneous large
+                // barycentric weight computations.
+                if (route2.fft_backend_upgrade) {
+                    const auto fh_pts = fh_dependency_points(context.domains.fh, {context.kzg.tau});
+                    for (const auto& pt : fh_pts) {
+                        proof_domain_weight_cache->get(context.domains.fh, pt);
+                    }
+                    const auto edge_pts = fh_dependency_points(context.domains.edge, {context.kzg.tau});
+                    for (const auto& pt : edge_pts) {
+                        proof_domain_weight_cache->get(context.domains.edge, pt);
+                    }
+                }
                 std::vector<std::future<QuotientEvalResult>> futures;
                 futures.reserve(quotient_labels.size());
                 for (const auto& label : quotient_labels) {
@@ -3297,7 +3311,22 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
         };
         std::vector<BundleBuildResult> bundle_results;
         bundle_results.reserve(bundle_specs.size());
+        // Pre-warm the barycentric weight cache and lazy FH public evaluation
+        // cache BEFORE launching parallel bundles.  Large domains (FH ≥ 33M)
+        // allocate GB-scale weight vectors; computing them inside 7 parallel
+        // tasks causes severe page-fault and memory-bandwidth contention.
+        // Sequential pre-warming lets each weight computation use all cores
+        // without interference, then the parallel bundles find cached entries.
         if (std::thread::hardware_concurrency() > 1) {
+            // Pre-warm domain weights for the two heaviest domains (FH, edge)
+            // at the challenge points used by domain_opening bundles.
+            for (const auto& spec : bundle_specs) {
+                if (spec.bundle_name == "FH" || spec.bundle_name == "edge") {
+                    const auto z = challenges.at(spec.z_name);
+                    proof_domain_weight_cache->get(spec.domain, z);
+                    proof_domain_weight_cache->get(spec.domain, z * spec.domain->omega);
+                }
+            }
             std::vector<std::future<BundleBuildResult>> futures;
             futures.reserve(bundle_specs.size());
             for (const auto& spec : bundle_specs) {

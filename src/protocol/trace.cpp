@@ -33,9 +33,6 @@ namespace gatzk::protocol {
 std::vector<std::size_t> lookup_histogram_indices_cuda(
     const std::vector<std::size_t>& indices,
     std::size_t domain_size);
-std::vector<algebra::FieldElement> build_max_counter_state_cuda(
-    const std::vector<algebra::FieldElement>& s_max,
-    const std::vector<algebra::FieldElement>& q_new);
 #endif
 
 namespace {
@@ -96,15 +93,6 @@ void add_metric(double* metric, const Clock::time_point& start) {
 }
 
 bool cuda_lookup_histogram_enabled() {
-#if GATZK_ENABLE_CUDA_BACKEND
-    return util::route2_options().cuda_trace_hotspots
-        && algebra::cuda_backend_available();
-#else
-    return false;
-#endif
-}
-
-[[maybe_unused]] bool cuda_max_counter_enabled() {
 #if GATZK_ENABLE_CUDA_BACKEND
     return util::route2_options().cuda_trace_hotspots
         && algebra::cuda_backend_available();
@@ -652,9 +640,6 @@ PreparedDynamicCommitment materialize_commitment(
             : (spec.borrowed_column_values != nullptr ? spec.borrowed_column_values : &spec.owned_column_values);
         const bool use_shared_backing =
             spec.shared_column_values != nullptr && source_values->size() >= kMinSharedColumnLength;
-        // Export payload retention is an engineering choice only. When
-        // dump_trace=false we still commit to the exact same polynomial, but we
-        // skip keeping a second copy of the witness column solely for file dump.
         if (keep_trace_payloads) {
             out.column_export = *source_values;
         }
@@ -712,14 +697,18 @@ bool should_spill_dynamic_polynomial(
     const std::string& name,
     const algebra::Polynomial& polynomial,
     bool keep_trace_payloads) {
-    const bool keep_large_edge_hotpath_in_memory =
+    // Keep evaluation polynomials in memory for domains that sit on the
+    // proving hot path (edge and FH).  Spilling to disk forces sequential
+    // entry-by-entry file reads during domain opening, which is orders of
+    // magnitude slower than the parallel PackedEvaluationBackend sweep.
+    const bool keep_hotpath_in_memory =
         !keep_trace_payloads
         && polynomial.basis == algebra::PolynomialBasis::Evaluation
         && polynomial.domain != nullptr
-        && polynomial.domain->name == "edge"
+        && (polynomial.domain->name == "edge" || polynomial.domain->name == "FH")
         && polynomial.domain->size >= (1ULL << 20)
         && name.rfind("P_", 0) == 0;
-    if (keep_large_edge_hotpath_in_memory) {
+    if (keep_hotpath_in_memory) {
         return false;
     }
     return !keep_trace_payloads
@@ -2632,11 +2621,6 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto c_max = cached_state_vector(
             head_cache_prefix + ":cmax",
             [&]() {
-#if GATZK_ENABLE_CUDA_BACKEND
-                if (cuda_max_counter_enabled()) {
-                    return build_max_counter_state_cuda(s_max, q_new);
-                }
-#endif
                 return build_max_counter_state(s_max, q_new);
             });
         add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
@@ -3888,11 +3872,6 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     const auto out_c_max = cached_state_vector(
         output_cache_prefix + ":cmax",
         [&]() {
-#if GATZK_ENABLE_CUDA_BACKEND
-            if (cuda_max_counter_enabled()) {
-                return build_max_counter_state_cuda(out_s_max, q_new);
-            }
-#endif
             return build_max_counter_state(out_s_max, q_new);
         });
     add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);

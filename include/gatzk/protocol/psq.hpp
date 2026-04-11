@@ -14,10 +14,4 @@ std::vector<algebra::FieldElement> build_max_counter_state(
     const std::vector<algebra::FieldElement>& s_max,
     const std::vector<algebra::FieldElement>& q_new);
 
-#if GATZK_ENABLE_CUDA_BACKEND
-std::vector<algebra::FieldElement> build_max_counter_state_cuda(
-    const std::vector<algebra::FieldElement>& s_max,
-    const std::vector<algebra::FieldElement>& q_new);
-#endif
-
 }  // namespace gatzk::protocol
