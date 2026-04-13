@@ -67,6 +67,12 @@ std::string route2_feature_label(const Route2Options& options) {
         }
         label += "cuda";
     }
+    if (options.cuda_field_hotspots) {
+        if (!label.empty()) {
+            label += "_";
+        }
+        label += "cuda_field";
+    }
     return label.empty() ? "legacy" : label;
 }
 
@@ -77,7 +83,8 @@ std::string route2_feature_notes(const Route2Options& options) {
         + "; enabled_fft_kernel_upgrade=" + std::string(options.fft_kernel_upgrade ? "true" : "false")
         + "; enabled_trace_layout_upgrade=" + std::string(options.trace_layout_upgrade ? "true" : "false")
         + "; enabled_fast_verify_pairing=" + std::string(options.fast_verify_pairing ? "true" : "false")
-        + "; enabled_cuda_trace_hotspots=" + std::string(options.cuda_trace_hotspots ? "true" : "false");
+        + "; enabled_cuda_trace_hotspots=" + std::string(options.cuda_trace_hotspots ? "true" : "false")
+        + "; enabled_cuda_field_hotspots=" + std::string(options.cuda_field_hotspots ? "true" : "false");
 }
 
 }  // namespace gatzk::util

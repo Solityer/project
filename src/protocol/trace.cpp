@@ -1920,10 +1920,13 @@ std::vector<FieldElement> multiplicity_from_indices(
     if (cuda_lookup_histogram_enabled() && indices.size() >= 4096 && domain_size >= 1024) {
 #if GATZK_ENABLE_CUDA_BACKEND
         const auto counts = lookup_histogram_indices_cuda(indices, domain_size);
-        for (std::size_t index = 0; index < domain_size; ++index) {
-            multiplicity[index] = FieldElement(counts[index]);
+        if (!counts.empty()) {
+            for (std::size_t index = 0; index < domain_size; ++index) {
+                multiplicity[index] = FieldElement(counts[index]);
+            }
+            return multiplicity;
         }
-        return multiplicity;
+        // GPU allocation failed; fall through to CPU path
 #endif
     }
     for (const auto index : indices) {

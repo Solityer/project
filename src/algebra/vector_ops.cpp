@@ -13,6 +13,7 @@ namespace gatzk::algebra
 {
 #if GATZK_ENABLE_CUDA_BACKEND
     bool cuda_backend_runtime_available();
+    bool cuda_field_hotspots_available();
 #endif
 
     namespace
@@ -109,6 +110,40 @@ namespace gatzk::algebra
         return false;
 #endif
     }
+
+    bool cuda_field_hotspots_build_enabled()
+    {
+#if GATZK_ENABLE_CUDA_BACKEND
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    bool cuda_field_hotspots_available()
+    {
+#if GATZK_ENABLE_CUDA_BACKEND
+        return cuda_backend_runtime_available();
+#else
+        return false;
+#endif
+    }
+
+#if !GATZK_ENABLE_CUDA_BACKEND
+    // Stubs for non-CUDA builds
+    bool barycentric_weights_gpu(
+        const uint64_t[4], const uint64_t[4], const uint64_t[4], const uint64_t[4],
+        uint64_t*, std::size_t) { return false; }
+    bool weighted_poly_eval_gpu(
+        const uint64_t*, const uint64_t*, uint64_t*,
+        std::size_t, std::size_t) { return false; }
+    bool weighted_poly_eval_gpu_columnar(
+        const uint64_t*, const uint64_t* const*, uint64_t*,
+        std::size_t, std::size_t) { return false; }
+    bool weighted_poly_eval_gpu_multi(
+        const uint64_t*, const uint64_t* const*, uint64_t*,
+        std::size_t, std::size_t) { return false; }
+#endif
 
     // 计算两个域元素向量的点积（自动选择CPU串行、CPU并行或CUDA）
     FieldElement dot_product(

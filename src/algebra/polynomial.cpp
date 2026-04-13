@@ -128,11 +128,43 @@ namespace gatzk::algebra
 
     // 计算重心插值所需的权重（前缀积 + 后缀积）
     // 对于大域（size >= 2^20），使用并行分段批量求逆算法以避免串行瓶颈。
+    // 当 CUDA field hotspots 可用且域足够大时，使用 GPU 加速。
     std::vector<mcl::Fr> RootOfUnityDomain::barycentric_weights_native(const FieldElement& x) const
     {
+        const auto& route2 = util::route2_options();
+
+        // ---- GPU path: use CUDA field hotspots for large domains ----
+        const bool try_gpu = route2.cuda_field_hotspots
+            && cuda_field_hotspots_build_enabled()
+            && cuda_field_hotspots_available()
+            && size >= (1ULL << 16)
+            && !points_precomputed;  // GPU path requires root-of-unity domain (not arbitrary points)
+        if (try_gpu)
+        {
+            const auto zero_eval = zero_polynomial_eval(x);
+            std::vector<mcl::Fr> weights(size);
+            const auto* ou = omega.native().getUnit();
+            const auto* xu = x.native().getUnit();
+            const auto* zu = zero_eval.native().getUnit();
+            const auto* nu = inv_size.native().getUnit();
+            uint64_t omega_limbs[4] = {ou[0], ou[1], ou[2], ou[3]};
+            uint64_t x_limbs[4] = {xu[0], xu[1], xu[2], xu[3]};
+            uint64_t zero_eval_limbs[4] = {zu[0], zu[1], zu[2], zu[3]};
+            uint64_t inv_n_limbs[4] = {nu[0], nu[1], nu[2], nu[3]};
+            const bool gpu_ok = barycentric_weights_gpu(
+                omega_limbs, x_limbs, zero_eval_limbs, inv_n_limbs,
+                reinterpret_cast<uint64_t*>(weights.data()),
+                size);
+            if (gpu_ok)
+            {
+                return weights;
+            }
+            // Fall through to CPU if GPU fails
+        }
+
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
         const bool use_parallel =
-            util::route2_options().parallel_fft && size >= (1ULL << 20) && cpu_count > 1;
+            route2.parallel_fft && size >= (1ULL << 20) && cpu_count > 1;
 
         if (!use_parallel)
         {

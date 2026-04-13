@@ -262,6 +262,7 @@ struct RunMetrics {
     bool enabled_trace_layout_upgrade = false;
     bool enabled_fast_verify_pairing = false;
     bool enabled_cuda_trace_hotspots = false;
+    bool enabled_cuda_field_hotspots = false;
     bool is_cold_run = true;
     bool is_full_dataset = false;
     bool gpu_runtime_present = false;
