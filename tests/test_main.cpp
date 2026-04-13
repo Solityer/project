@@ -254,22 +254,22 @@ constexpr double kOfficialMetricToleranceMs = 5e-3;
 
 const OfficialBenchmarkTable& accepted_cpu_official_table() {
     static const OfficialBenchmarkTable table = {
-        {"cora", "Cora", "282.317", "1214.714", "152.646", "90755"},
-        {"citeseer", "Citeseer", "480.219", "1396.046", "154.533", "90763"},
-        {"pubmed", "Pubmed", "3104.808", "5849.602", "175.702", "90760"},
-        {"ppi", "PPI", "4046.398", "7707.721", "459.909", "21360"},
-        {"ogbn-arxiv", "ogbn-arxiv", "19131.116", "90263.318", "38113.733", "21361"},
+        {"cora", "Cora", "268.107", "1199.014", "153.611", "90755"},
+        {"citeseer", "Citeseer", "449.732", "1401.489", "154.200", "90763"},
+        {"pubmed", "Pubmed", "3103.401", "5767.281", "174.171", "90760"},
+        {"ppi", "PPI", "3557.616", "7081.916", "437.718", "21360"},
+        {"ogbn-arxiv", "ogbn-arxiv", "20762.996", "103111.416", "31313.507", "21361"},
     };
     return table;
 }
 
 const OfficialBenchmarkTable& accepted_gpu_official_table() {
     static const OfficialBenchmarkTable table = {
-        {"cora", "Cora", "282.846", "1206.953", "152.430", "90755"},
-        {"citeseer", "Citeseer", "506.832", "1444.127", "154.263", "90763"},
-        {"pubmed", "Pubmed", "3127.943", "5857.416", "174.754", "90760"},
-        {"ppi", "PPI", "3805.534", "7388.570", "491.354", "21360"},
-        {"ogbn-arxiv", "ogbn-arxiv", "18817.280", "88968.464", "44262.121", "21361"},
+        {"cora", "Cora", "278.745", "1238.114", "153.892", "90755"},
+        {"citeseer", "Citeseer", "481.271", "1411.817", "154.153", "90763"},
+        {"pubmed", "Pubmed", "3047.875", "5764.843", "175.906", "90760"},
+        {"ppi", "PPI", "3928.565", "7471.405", "432.210", "21360"},
+        {"ogbn-arxiv", "ogbn-arxiv", "21551.726", "96259.545", "36088.376", "21361"},
     };
     return table;
 }
@@ -369,19 +369,19 @@ void require_official_latest_json_matches_expected(
     require(
         std::abs(extract_json_number(row, "commitment_time_ms") - official_metric_value(expected.commitment_time_ms))
             < kOfficialMetricToleranceMs,
-        expected.dataset + " latest.json commitment_time_ms must match the retained official baseline");
+        expected.dataset + " latest.json commitment_time_ms must match the final official result");
     require(
         std::abs(extract_json_number(row, "prove_time_ms") - official_metric_value(expected.prove_time_ms))
             < kOfficialMetricToleranceMs,
-        expected.dataset + " latest.json prove_time_ms must match the retained official baseline");
+        expected.dataset + " latest.json prove_time_ms must match the final official result");
     require(
         std::abs(extract_json_number(row, "verify_time_ms") - official_metric_value(expected.verify_time_ms))
             < kOfficialMetricToleranceMs,
-        expected.dataset + " latest.json verify_time_ms must match the retained official baseline");
+        expected.dataset + " latest.json verify_time_ms must match the final official result");
     require(
         std::abs(extract_json_number(row, "proof_size_bytes") - official_proof_size_value(expected.proof_size_bytes))
             < 1e-6,
-        expected.dataset + " latest.json proof_size_bytes must match the retained official baseline");
+        expected.dataset + " latest.json proof_size_bytes must match the final official result");
 }
 
 void require_official_latest_csv_matches_expected(
@@ -400,16 +400,16 @@ void require_official_latest_csv_matches_expected(
         require(fields[3] == "warm", expected.dataset + " latest.csv row must remain warm-only");
         require(
             std::abs(std::stod(fields[4]) - official_metric_value(expected.commitment_time_ms)) < kOfficialMetricToleranceMs,
-            expected.dataset + " latest.csv commitment_time_ms must match the retained official baseline");
+            expected.dataset + " latest.csv commitment_time_ms must match the final official result");
         require(
             std::abs(std::stod(fields[5]) - official_metric_value(expected.prove_time_ms)) < kOfficialMetricToleranceMs,
-            expected.dataset + " latest.csv prove_time_ms must match the retained official baseline");
+            expected.dataset + " latest.csv prove_time_ms must match the final official result");
         require(
             std::abs(std::stod(fields[6]) - official_metric_value(expected.verify_time_ms)) < kOfficialMetricToleranceMs,
-            expected.dataset + " latest.csv verify_time_ms must match the retained official baseline");
+            expected.dataset + " latest.csv verify_time_ms must match the final official result");
         require(
             std::abs(std::stod(fields[7]) - official_proof_size_value(expected.proof_size_bytes)) < 1e-6,
-            expected.dataset + " latest.csv proof_size_bytes must match the retained official baseline");
+            expected.dataset + " latest.csv proof_size_bytes must match the final official result");
         return;
     }
     throw std::runtime_error(expected.dataset + " latest.csv row must exist");
@@ -428,7 +428,7 @@ void require_official_summary_matches_expected(
         + expected.proof_size_bytes + " |";
     require(
         summary.find(fragment) != std::string::npos,
-        expected.dataset + " summary.md row must match the retained official baseline");
+        expected.dataset + " summary.md row must match the final official result");
 }
 
 void require_official_readme_matches_expected(
@@ -442,7 +442,7 @@ void require_official_readme_matches_expected(
         + expected.proof_size_bytes + " |";
     require(
         readme.find(fragment) != std::string::npos,
-        expected.readme_name + " README table row must match the retained official baseline");
+        expected.readme_name + " README table row must match the final official result");
 }
 
 void require_all_official_truth_sources_match_expected(

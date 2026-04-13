@@ -82,6 +82,22 @@ std::string verifier_quotient_cache_key(
     return stream.str();
 }
 
+bool full_graph_feature_identity_enabled(const ProtocolContext& context) {
+    if (context.config.batching_rule != "whole_graph_single") {
+        return false;
+    }
+    if (context.local.num_nodes != context.dataset.num_nodes
+        || context.local.num_features != context.dataset.num_features) {
+        return false;
+    }
+    for (std::size_t i = 0; i < context.local.absolute_ids.size(); ++i) {
+        if (context.local.absolute_ids[i] != i) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool lazy_large_fh_public_enabled(const ProtocolContext& context) {
     constexpr std::size_t kMinLazyLargeFhDomainSize = 1ULL << 24;
     return context.config.batching_rule == "whole_graph_single"
@@ -320,6 +336,72 @@ class VerifierEvaluationMemoization {
           backend_registry_(std::move(backend_registry)),
           metrics_(metrics) {}
 
+    void prefetch_public_domain_points(
+        const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
+        const std::vector<FieldElement>& points) {
+        if (domain == nullptr || points.empty() || backend_registry_ == nullptr) {
+            return;
+        }
+
+        const auto* backend = backend_registry_->find(domain);
+        const auto* labels = backend_registry_->labels(domain);
+        if (backend == nullptr || labels == nullptr) {
+            return;
+        }
+
+        bool all_precomputed = true;
+        for (const auto& point : points) {
+            if (!precomputed_domain_points_.contains(algebra::domain_point_cache_key(domain, point))) {
+                all_precomputed = false;
+                break;
+            }
+        }
+        if (all_precomputed) {
+            return;
+        }
+
+        const auto prefetch_start = Clock::now();
+        std::vector<std::size_t> rotations;
+        rotations.reserve(points.size());
+        bool all_rotations = true;
+        for (const auto& point : points) {
+            const auto shift = domain->rotation_shift(points.front(), point);
+            if (!shift.has_value()) {
+                all_rotations = false;
+                break;
+            }
+            rotations.push_back(*shift);
+        }
+
+        if (all_rotations) {
+            const auto& weight_entry = domain_weight_cache_.get(domain, points.front());
+            if (!weight_entry.direct_index.has_value()) {
+                const auto rotated_values = backend->evaluate_with_native_weight_rotations(
+                    *labels,
+                    weight_entry.native_weights,
+                    rotations);
+                for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
+                    const auto point_key = algebra::point_cache_key(points[point_index]);
+                    for (std::size_t label_index = 0; label_index < labels->size(); ++label_index) {
+                        value_cache_.emplace((*labels)[label_index] + "@" + point_key, rotated_values[point_index][label_index]);
+                    }
+                    precomputed_domain_points_.emplace(algebra::domain_point_cache_key(domain, points[point_index]));
+                }
+                if (metrics_ != nullptr) {
+                    metrics_->verify_public_eval_ms += elapsed_ms(prefetch_start, Clock::now());
+                }
+                return;
+            }
+        }
+
+        for (const auto& point : points) {
+            precompute_public_domain_point(domain, *backend, *labels, point);
+        }
+        if (metrics_ != nullptr) {
+            metrics_->verify_public_eval_ms += elapsed_ms(prefetch_start, Clock::now());
+        }
+    }
+
     FieldElement eval_named(const std::string& name, const FieldElement& point) {
         const auto cache_key = name + "@" + algebra::point_cache_key(point);
         if (const auto it = value_cache_.find(cache_key); it != value_cache_.end()) {
@@ -363,152 +445,160 @@ class VerifierEvaluationMemoization {
             return;
         }
         const std::size_t dataset_rows = context_.dataset.num_nodes;
-        const std::size_t local_rows = context_.local.num_nodes;
         const std::size_t feature_count = context_.local.num_features;
         const std::size_t dataset_valid = dataset_rows * feature_count;
-        const std::size_t local_valid = local_rows * feature_count;
+        const bool full_feature_identity = full_graph_feature_identity_enabled(context_);
         const auto& feature_matrix =
             !context_.dataset.features.empty() ? context_.dataset.features : context_.local.features;
 
         if (const auto shift = domain->rotation_shift(FieldElement::one(), point); shift.has_value()) {
-            auto at = [&](const std::string& label_name, std::size_t valid, auto value_fn) {
-                const auto val = *shift < valid ? value_fn(*shift) : FieldElement::zero();
-                value_cache_.emplace(label_name + "@" + point_key, val);
-            };
-            at("P_Q_tbl_feat", dataset_valid, [](std::size_t) { return FieldElement::one(); });
-            at("P_Q_qry_feat", local_valid, [](std::size_t) { return FieldElement::one(); });
-            at("P_Row_feat_tbl", dataset_valid, [&](std::size_t i) { return FieldElement(i / feature_count); });
-            at("P_Col_feat_tbl", dataset_valid, [&](std::size_t i) { return FieldElement(i % feature_count); });
-            at("P_Row_feat_qry", local_valid, [&](std::size_t i) { return FieldElement(i / feature_count); });
-            at("P_Col_feat_qry", local_valid, [&](std::size_t i) { return FieldElement(i % feature_count); });
-            at("P_I_feat_qry", local_valid, [&](std::size_t i) {
-                return FieldElement(context_.local.absolute_ids[i / feature_count]);
-            });
-            at("P_T_H", dataset_valid, [&](std::size_t i) {
-                return feature_matrix[i / feature_count][i % feature_count];
-            });
+            const bool in_range = *shift < dataset_valid;
+            const auto row = in_range ? *shift / feature_count : 0;
+            const auto column = in_range ? *shift % feature_count : 0;
+            const auto q_value = in_range ? FieldElement::one() : FieldElement::zero();
+            const auto row_value = in_range ? FieldElement(row) : FieldElement::zero();
+            const auto col_value = in_range ? FieldElement(column) : FieldElement::zero();
+            const auto id_value = in_range
+                ? (full_feature_identity ? FieldElement(row) : FieldElement(context_.local.absolute_ids[row]))
+                : FieldElement::zero();
+            const auto feature_value = in_range ? feature_matrix[row][column] : FieldElement::zero();
+            value_cache_.emplace("P_Q_tbl_feat@" + point_key, q_value);
+            value_cache_.emplace("P_Q_qry_feat@" + point_key, q_value);
+            value_cache_.emplace("P_Row_feat_tbl@" + point_key, row_value);
+            value_cache_.emplace("P_Row_feat_qry@" + point_key, row_value);
+            value_cache_.emplace("P_Col_feat_tbl@" + point_key, col_value);
+            value_cache_.emplace("P_Col_feat_qry@" + point_key, col_value);
+            value_cache_.emplace("P_I_feat_qry@" + point_key, id_value);
+            value_cache_.emplace("P_T_H@" + point_key, feature_value);
             return;
         }
 
-        const auto max_valid = dataset_valid;
         const auto weights = domain->barycentric_weights_native(point);
 
-        struct LabelTask {
-            std::string name;
-            std::size_t valid_count;
-        };
-        const std::vector<LabelTask> tasks = {
-            {"P_Q_tbl_feat", dataset_valid},
-            {"P_Q_qry_feat", local_valid},
-            {"P_Row_feat_tbl", dataset_valid},
-            {"P_Col_feat_tbl", dataset_valid},
-            {"P_Row_feat_qry", local_valid},
-            {"P_Col_feat_qry", local_valid},
-            {"P_I_feat_qry", local_valid},
-            {"P_T_H", dataset_valid},
-        };
+        std::vector<mcl::Fr> column_fields(feature_count);
+        for (std::size_t column = 0; column < feature_count; ++column) {
+            column_fields[column] = static_cast<long long>(column);
+        }
 
-        std::vector<mcl::Fr> results(tasks.size());
-        for (auto& r : results) { r.clear(); }
+        constexpr std::size_t kAccumulatorCount = 5;
+        std::vector<mcl::Fr> results(kAccumulatorCount);
+        for (auto& value : results) { value.clear(); }
 
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-        const bool run_parallel = max_valid >= (1ULL << 18) && cpu_count > 1;
+        const bool run_parallel = dataset_valid >= (1ULL << 18) && dataset_rows >= 64 && cpu_count > 1;
+
+        auto accumulate_rows = [&](std::size_t begin_row, std::size_t end_row) {
+            std::vector<mcl::Fr> partial(kAccumulatorCount);
+            for (auto& value : partial) {
+                value.clear();
+            }
+            for (std::size_t row = begin_row; row < end_row; ++row) {
+                mcl::Fr row_weight_sum;
+                mcl::Fr column_weight_sum;
+                mcl::Fr feature_weight_sum;
+                row_weight_sum.clear();
+                column_weight_sum.clear();
+                feature_weight_sum.clear();
+
+                const auto base = row * feature_count;
+                const auto& feature_row = feature_matrix[row];
+                for (std::size_t column = 0; column < feature_count; ++column) {
+                    const auto& weight = weights[base + column];
+                    mcl::Fr::add(row_weight_sum, row_weight_sum, weight);
+
+                    mcl::Fr column_term;
+                    mcl::Fr::mul(column_term, column_fields[column], weight);
+                    mcl::Fr::add(column_weight_sum, column_weight_sum, column_term);
+
+                    mcl::Fr feature_term;
+                    mcl::Fr::mul(feature_term, feature_row[column].native(), weight);
+                    mcl::Fr::add(feature_weight_sum, feature_weight_sum, feature_term);
+                }
+
+                mcl::Fr::add(partial[0], partial[0], row_weight_sum);
+
+                mcl::Fr row_term;
+                row_term = static_cast<long long>(row);
+                mcl::Fr::mul(row_term, row_term, row_weight_sum);
+                mcl::Fr::add(partial[1], partial[1], row_term);
+
+                mcl::Fr::add(partial[2], partial[2], column_weight_sum);
+
+                if (!full_feature_identity) {
+                    mcl::Fr id_term;
+                    id_term = static_cast<long long>(context_.local.absolute_ids[row]);
+                    mcl::Fr::mul(id_term, id_term, row_weight_sum);
+                    mcl::Fr::add(partial[3], partial[3], id_term);
+                }
+
+                mcl::Fr::add(partial[4], partial[4], feature_weight_sum);
+            }
+            return partial;
+        };
 
         if (run_parallel) {
-            const auto task_count = std::min<std::size_t>(cpu_count, (max_valid + (1ULL << 18) - 1) / (1ULL << 18));
-            const auto chunk_size = (max_valid + task_count - 1) / task_count;
+            const auto task_count = std::min<std::size_t>(cpu_count, dataset_rows);
+            const auto chunk_size = (dataset_rows + task_count - 1) / task_count;
             std::vector<std::future<std::vector<mcl::Fr>>> futures;
             futures.reserve(task_count);
             for (std::size_t t = 0; t < task_count; ++t) {
                 const auto begin = t * chunk_size;
-                const auto end = std::min(max_valid, begin + chunk_size);
-                if (begin >= end) { break; }
-                futures.push_back(std::async(
-                    std::launch::async,
-                    [&, begin, end]() {
-                        std::vector<mcl::Fr> partial(tasks.size());
-                        for (auto& p : partial) { p.clear(); }
-                        for (std::size_t i = begin; i < end; ++i) {
-                            const auto& w = weights[i];
-                            const auto row = i / feature_count;
-                            const auto col = i % feature_count;
-                            mcl::Fr term;
-                            // P_Q_tbl_feat: 1 * w
-                            mcl::Fr::add(partial[0], partial[0], w);
-                            // P_Q_qry_feat: 1 * w (only if i < local_valid)
-                            if (i < local_valid) {
-                                mcl::Fr::add(partial[1], partial[1], w);
-                            }
-                            // P_Row_feat_tbl: (i/fc) * w
-                            { mcl::Fr row_fr; row_fr = static_cast<long long>(row);
-                              mcl::Fr::mul(term, row_fr, w);
-                              mcl::Fr::add(partial[2], partial[2], term); }
-                            // P_Col_feat_tbl: (i%fc) * w
-                            { mcl::Fr col_fr; col_fr = static_cast<long long>(col);
-                              mcl::Fr::mul(term, col_fr, w);
-                              mcl::Fr::add(partial[3], partial[3], term); }
-                            // P_Row_feat_qry: (i/fc) * w (only if i < local_valid)
-                            if (i < local_valid) {
-                                mcl::Fr row_fr; row_fr = static_cast<long long>(row);
-                                mcl::Fr::mul(term, row_fr, w);
-                                mcl::Fr::add(partial[4], partial[4], term);
-                            }
-                            // P_Col_feat_qry: (i%fc) * w (only if i < local_valid)
-                            if (i < local_valid) {
-                                mcl::Fr col_fr; col_fr = static_cast<long long>(col);
-                                mcl::Fr::mul(term, col_fr, w);
-                                mcl::Fr::add(partial[5], partial[5], term);
-                            }
-                            // P_I_feat_qry: abs_id[i/fc] * w (only if i < local_valid)
-                            if (i < local_valid) {
-                                mcl::Fr id_fr; id_fr = static_cast<long long>(context_.local.absolute_ids[row]);
-                                mcl::Fr::mul(term, id_fr, w);
-                                mcl::Fr::add(partial[6], partial[6], term);
-                            }
-                            // P_T_H: features[row][col] * w
-                            mcl::Fr::mul(term, feature_matrix[row][col].native(), w);
-                            mcl::Fr::add(partial[7], partial[7], term);
-                        }
-                        return partial;
-                    }));
+                const auto end = std::min(dataset_rows, begin + chunk_size);
+                if (begin >= end) {
+                    break;
+                }
+                futures.push_back(std::async(std::launch::async, accumulate_rows, begin, end));
             }
             for (auto& f : futures) {
                 const auto partial = f.get();
-                for (std::size_t k = 0; k < tasks.size(); ++k) {
+                for (std::size_t k = 0; k < results.size(); ++k) {
                     mcl::Fr::add(results[k], results[k], partial[k]);
                 }
             }
         } else {
-            for (std::size_t i = 0; i < max_valid; ++i) {
-                const auto& w = weights[i];
-                const auto row = i / feature_count;
-                const auto col = i % feature_count;
-                mcl::Fr term;
-                mcl::Fr::add(results[0], results[0], w);
-                if (i < local_valid) {
-                    mcl::Fr::add(results[1], results[1], w);
-                }
-                { mcl::Fr row_fr; row_fr = static_cast<long long>(row);
-                  mcl::Fr::mul(term, row_fr, w); mcl::Fr::add(results[2], results[2], term); }
-                { mcl::Fr col_fr; col_fr = static_cast<long long>(col);
-                  mcl::Fr::mul(term, col_fr, w); mcl::Fr::add(results[3], results[3], term); }
-                if (i < local_valid) {
-                    mcl::Fr row_fr; row_fr = static_cast<long long>(row);
-                    mcl::Fr::mul(term, row_fr, w); mcl::Fr::add(results[4], results[4], term);
-                    mcl::Fr col_fr; col_fr = static_cast<long long>(col);
-                    mcl::Fr::mul(term, col_fr, w); mcl::Fr::add(results[5], results[5], term);
-                    mcl::Fr id_fr; id_fr = static_cast<long long>(context_.local.absolute_ids[row]);
-                    mcl::Fr::mul(term, id_fr, w);
-                    mcl::Fr::add(results[6], results[6], term);
-                }
-                mcl::Fr::mul(term, feature_matrix[row][col].native(), w);
-                mcl::Fr::add(results[7], results[7], term);
-            }
+            results = accumulate_rows(0, dataset_rows);
         }
 
-        for (std::size_t k = 0; k < tasks.size(); ++k) {
-            value_cache_.emplace(tasks[k].name + "@" + point_key, FieldElement::from_native(results[k]));
+        const auto q_value = FieldElement::from_native(results[0]);
+        const auto row_value = FieldElement::from_native(results[1]);
+        const auto col_value = FieldElement::from_native(results[2]);
+        const auto id_value = full_feature_identity
+            ? row_value
+            : FieldElement::from_native(results[3]);
+        const auto feature_value = FieldElement::from_native(results[4]);
+
+        value_cache_.emplace("P_Q_tbl_feat@" + point_key, q_value);
+        value_cache_.emplace("P_Q_qry_feat@" + point_key, q_value);
+        value_cache_.emplace("P_Row_feat_tbl@" + point_key, row_value);
+        value_cache_.emplace("P_Row_feat_qry@" + point_key, row_value);
+        value_cache_.emplace("P_Col_feat_tbl@" + point_key, col_value);
+        value_cache_.emplace("P_Col_feat_qry@" + point_key, col_value);
+        value_cache_.emplace("P_I_feat_qry@" + point_key, id_value);
+        value_cache_.emplace("P_T_H@" + point_key, feature_value);
+    }
+
+    void precompute_public_domain_point(
+        const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
+        const algebra::PackedEvaluationBackend& backend,
+        const std::vector<std::string>& labels,
+        const FieldElement& point) {
+        const auto domain_cache_key = algebra::domain_point_cache_key(domain, point);
+        if (precomputed_domain_points_.contains(domain_cache_key)) {
+            return;
         }
+
+        const auto& weight_entry = domain_weight_cache_.get(domain, point);
+        std::vector<FieldElement> values;
+        if (weight_entry.direct_index.has_value()) {
+            values = backend.values_at_direct_index(labels, *weight_entry.direct_index);
+        } else {
+            values = backend.evaluate_with_native_weights(labels, weight_entry.native_weights);
+        }
+        const auto point_key = algebra::point_cache_key(point);
+        for (std::size_t i = 0; i < labels.size(); ++i) {
+            value_cache_.emplace(labels[i] + "@" + point_key, values[i]);
+        }
+        precomputed_domain_points_.emplace(domain_cache_key);
     }
 
     FieldElement opened_value(
@@ -546,17 +636,7 @@ class VerifierEvaluationMemoization {
 
         const auto domain_cache_key = algebra::domain_point_cache_key(polynomial.domain, point);
         if (!precomputed_domain_points_.contains(domain_cache_key)) {
-            const auto& weight_entry = domain_weight_cache_.get(polynomial.domain, point);
-            std::vector<FieldElement> values;
-            if (weight_entry.direct_index.has_value()) {
-                values = backend->values_at_direct_index(*labels, *weight_entry.direct_index);
-            } else {
-                values = backend->evaluate_with_native_weights(*labels, weight_entry.native_weights);
-            }
-            for (std::size_t i = 0; i < labels->size(); ++i) {
-                value_cache_.emplace((*labels)[i] + "@" + algebra::point_cache_key(point), values[i]);
-            }
-            precomputed_domain_points_.emplace(domain_cache_key);
+            precompute_public_domain_point(polynomial.domain, *backend, *labels, point);
         }
 
         const auto cache_key = polynomial.name + "@" + algebra::point_cache_key(point);
@@ -1035,6 +1115,12 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
                 metrics->verify_domain_opening_ms += elapsed_ms(opening_start, Clock::now());
             }
             const auto quotient_start = Clock::now();
+            if (context.config.batching_rule == "whole_graph_single"
+                && context.local.num_nodes >= (1ULL << 16)
+                && spec.domain != nullptr
+                && spec.domain->size >= (1ULL << 20)) {
+                eval_memo.prefetch_public_domain_points(spec.domain, bundle.points);
+            }
             FieldElement expected_t = FieldElement::zero();
             const auto cache_key = verifier_quotient_cache_key(context, proof, spec.quotient_name);
             if (!shared_verifier_quotient_cache().lookup(cache_key, &expected_t)) {
