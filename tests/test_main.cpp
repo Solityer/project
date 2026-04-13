@@ -1259,8 +1259,8 @@ void test_four_dataset_benchmark_table_export() {
     require(std::filesystem::exists(output_dir / "latest.csv"), "latest.csv must be exported");
     require(std::filesystem::exists(output_dir / "summary.md"), "summary.md must be exported");
     const auto summary = slurp_file(output_dir / "summary.md");
-    require(summary.find("| cora | 已完成 | 10.250 | 10.500 | 1.500 | 111 |") != std::string::npos, "summary must include cora row");
-    require(summary.find("| ppi | 阻塞 | n/a | n/a | n/a | n/a |") != std::string::npos, "summary must include blocked ppi row");
+    require(summary.find("| cora | mcl/cpu | 已完成 | 10.250 | 10.500 | 1.500 | 111 |") != std::string::npos, "summary must include cora row");
+    require(summary.find("| ppi | n/a | 阻塞 | n/a | n/a | n/a | n/a |") != std::string::npos, "summary must include blocked ppi row");
 }
 
 void test_benchmark_summary_contains_required_metrics() {
