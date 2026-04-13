@@ -179,6 +179,10 @@ int main(int argc, char** argv) {
             metrics.is_cold_run = is_cold_run;
             append_note(metrics, "benchmark_mode=" + mode_label);
             append_note(metrics, "compute_backend=" + metrics.compute_backend_name);
+            append_note(metrics, "full_backend=" + std::string(metrics.compute_backend_name == "cuda_hotspots" ? "full_gpu" : "full_cpu"));
+            if (metrics.compute_backend_name == "cuda_hotspots") {
+                append_note(metrics, "cuda_routing=size_aware");
+            }
             append_note(metrics, gatzk::util::route2_feature_notes(route2));
 
             gatzk::util::info(

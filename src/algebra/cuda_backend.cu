@@ -562,16 +562,10 @@ bool weighted_poly_eval_gpu_multi(
     // Detect unified memory: if available, use zero-copy columnar kernel
     // which processes all poly_count polynomials in a SINGLE kernel launch
     // instead of poly_count sequential launches.
-    {
-        int device = 0;
-        cudaGetDevice(&device);
-        int unified = 0;
-        cudaDeviceGetAttribute(&unified, cudaDevAttrUnifiedAddressing, device);
-        if (unified) {
-            return weighted_poly_eval_gpu_columnar(
-                weight_limbs, column_value_ptrs, output_limbs,
-                domain_size, poly_count);
-        }
+    if (cuda_backend_unified_addressing_available()) {
+        return weighted_poly_eval_gpu_columnar(
+            weight_limbs, column_value_ptrs, output_limbs,
+            domain_size, poly_count);
     }
 
     // ---- Discrete GPU fallback: sequential per-polynomial with weight reuse ----

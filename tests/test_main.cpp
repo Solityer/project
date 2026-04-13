@@ -2196,6 +2196,28 @@ void test_no_fake_gpu_experiment_left_in_final_code() {
     require(latest.find("\"backend_name\": \"mcl/cuda_hotspots\"") == std::string::npos, "GPU formal runs must not overwrite the official CPU benchmark table");
 }
 
+void test_full_gpu_uses_single_size_aware_workload_policy() {
+    const auto vector_ops_header = slurp_file(repo_root() / "include" / "gatzk" / "algebra" / "vector_ops.hpp");
+    require(vector_ops_header.find("should_use_cuda_weighted_evaluation") != std::string::npos,
+        "full_gpu must expose a central weighted-evaluation routing policy");
+
+    const auto vector_ops = slurp_file(repo_root() / "src" / "algebra" / "vector_ops.cpp");
+    require(vector_ops.find("cuda_backend_unified_addressing_available") != std::string::npos,
+        "full_gpu routing must consult the actual CUDA runtime memory model");
+
+    const auto kzg = slurp_file(repo_root() / "src" / "crypto" / "kzg.cpp");
+    require(kzg.find("domain_size >= (1ULL << 30)") == std::string::npos,
+        "shared tau-evaluation must not be disabled behind an unrealistic GPU threshold");
+
+    const auto eval_backend = slurp_file(repo_root() / "src" / "algebra" / "eval_backend.cpp");
+    require(eval_backend.find("domain_->size >= (1ULL << 30)") == std::string::npos,
+        "packed evaluation backend must not keep the old near-never GPU threshold");
+
+    const auto readme = slurp_file(repo_root() / "README.md");
+    require(readme.find("size-aware") != std::string::npos,
+        "README must document the size-aware full_gpu routing policy");
+}
+
 void test_no_non_performance_refactor_leaked_back_into_mainline() {
     require(std::filesystem::exists(repo_root() / "scripts" / "export_benchmark_table.py"), "benchmark export mainline must stay intact");
     require(std::filesystem::exists(repo_root() / "scripts" / "import_ppi_bundle.py"), "PPI import mainline must stay intact");
@@ -2366,6 +2388,7 @@ int main(int argc, char** argv) {
         {"gpu_formal_full_dataset_warm_benchmarks_exist_and_are_verified", test_gpu_formal_full_dataset_warm_benchmarks_exist_and_are_verified},
         {"gpu_formal_full_dataset_warm_keeps_proof_contract_equal_to_cpu", test_gpu_formal_full_dataset_warm_keeps_proof_contract_equal_to_cpu},
         {"no_fake_gpu_experiment_left_in_final_code", test_no_fake_gpu_experiment_left_in_final_code},
+        {"full_gpu_uses_single_size_aware_workload_policy", test_full_gpu_uses_single_size_aware_workload_policy},
         {"prove_side_cache_or_layout_reuse_does_not_change_transcript", test_prove_side_cache_or_layout_reuse_does_not_change_transcript},
         {"official_benchmark_table_updates_after_prover_optimization", test_official_benchmark_table_updates_after_prover_optimization},
         {"no_verifier_only_refactor_misreported_as_prover_gain", test_no_verifier_only_refactor_misreported_as_prover_gain},

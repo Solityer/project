@@ -19,7 +19,8 @@ formal / benchmark 运行主线只保留正式 proving、verification、artifact
 
 - 单一 formal semantics：所有证明含义、转录顺序和验证方程只在 `GAT-ZKML-多层多头.md` 中定义一次。
 - full_cpu：`mcl/cpu`，采用多线程 FFT、打包 trace 布局和 CPU 侧 proving/verification 主路径。
-- full_gpu：`mcl/cuda_hotspots`，在不改变 formal semantics 的前提下将 Fr 域热点迁移到 CUDA，包括 barycentric 权重、multi-polynomial evaluation 与 lookup histogram。
+- full_gpu：`mcl/cuda_hotspots`，在不改变 formal semantics 的前提下通过统一的 size-aware 路由策略接管 CUDA 可获益的 Fr 域热点，包括 barycentric 权重、shared weighted evaluation、shared tau-evaluation batch 与 lookup histogram。
+- full_gpu 内部允许按 workload 大小在 GPU 与 CPU 之间选择具体实现，但这种分流只改变执行策略，不改变 transcript、proof shape、verifier equations 或 artifact contract。
 - 两个后端共享同一 protocol、同一 artifact 契约、同一 proof_size_bytes / hidden_profile / d_in_profile 约束。
 
 ## 仓库结构
@@ -97,6 +98,8 @@ cmake --build build_cuda -j
 
 ## 正式 warm 结果
 
+下表是仓库当前保留的已验收 warm artifacts。此次源码重构收敛了 full_gpu 的 size-aware 热点路由，但我没有在编辑过程中重跑五组正式 benchmark，因此数值仍反映最近一次验收导出。
+
 ### CPU 正式结果表
 
 | 数据集 | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes |
@@ -124,7 +127,9 @@ cmake --build build_cuda -j
 - full_cpu 与 full_gpu 共享完全相同的 formal semantics。
 - full_cpu 是默认完整执行路径，适用于所有支持的环境。
 - full_gpu 是完整执行后端，不是辅助伪 GPU 路径；其职责是在不改变证明含义的前提下接管 CUDA 可获益的 Fr 域热点。
-- 当前 full_gpu 已覆盖真实 proving 热点中的部分域运算路径，但不复制也不分叉 protocol 语义。
+- full_gpu 现在通过单一 size-aware workload policy 统一决定 barycentric、shared weighted evaluation、shared tau-evaluation batch 与 lookup histogram 是否进入 CUDA，不再让不同文件各自维护互相矛盾的阈值。
+- 小图或低并行度 workload 在 full_gpu 下仍可能回落到 CPU，这属于同一后端内部的实现策略，不构成第二条 formal logic。
+- 仍以 CPU 为主的阶段主要是 context_build、trace_generation 与 pairing-backed verify_quotient；这些是当前端到端收益继续扩大的剩余瓶颈，而不是协议分叉点。
 
 ## Artifact 真源
 
@@ -133,6 +138,8 @@ cmake --build build_cuda -j
 - CPU per-run manifest：`runs/<dataset>/warm/run_manifest.json`
 - GPU per-run manifest：`runs/<dataset>/cuda_formal/warm/run_manifest.json`
 - 正式测试日志：`runs/tests/cpu_gatzk_tests.log`、`runs/tests/cuda_gatzk_tests.log`
+
+`summary.md` 由 `scripts/export_benchmark_table.py` 自动生成，现会明确展示 backend 列，并在文件顶部声明 backend 只是实现策略标签而不是第二协议语义。
 
 ## 训练与 ZKML 的职责边界
 
@@ -151,6 +158,8 @@ cmake --build build_cuda --target gatzk_tests -j
 
 当前状态：CPU 全量回归通过，GPU 全量回归通过，README、latest.json、latest.csv、summary.md 与 per-run manifest 已同步。
 
+就本次源码编辑而言：我会重新运行可负担的构建与测试，但没有在本次编辑内重跑五组正式 warm benchmark。仓库中保留的 `runs/` 产物仍是最近一次已验收导出；如需按当前实现刷新正式表，请重新执行上面的 CPU/GPU warm 命令与导出脚本。
+
 ## 可复现性说明
 
 - 正式 benchmark 仅基于 `artifacts/checkpoints/` 中的真实 checkpoint bundles。
@@ -160,4 +169,4 @@ cmake --build build_cuda --target gatzk_tests -j
 
 ## 保留限制
 
-在当前硬件与实现边界下，full_gpu 已接管 barycentric 权重、multi-polynomial evaluation 和 lookup histogram 等 Fr 域热点，但 ogbn-arxiv 的 context_build_ms 与 verify_quotient_ms 仍以 CPU 路径为主，因此 full_gpu 在该数据集上的端到端收益仍受这些剩余 CPU 主导阶段限制。
+在当前硬件与实现边界下，full_gpu 已通过统一 size-aware 路由覆盖 barycentric 权重、shared weighted evaluation、shared tau-evaluation batch 与 lookup histogram 等 Fr 域热点，但 ogbn-arxiv 的 context_build_ms、trace_generation_ms 与 pairing-backed verify_quotient_ms 仍以 CPU 路径为主，因此 full_gpu 在该数据集上的端到端收益仍受这些剩余 CPU 主导阶段限制。

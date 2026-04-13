@@ -133,12 +133,7 @@ namespace gatzk::algebra
     {
         const auto& route2 = util::route2_options();
 
-        // ---- GPU path: use CUDA field hotspots for large domains ----
-        const bool try_gpu = route2.cuda_field_hotspots
-            && cuda_field_hotspots_build_enabled()
-            && cuda_field_hotspots_available()
-            && size >= (1ULL << 16)
-            && !points_precomputed;  // GPU path requires root-of-unity domain (not arbitrary points)
+        const bool try_gpu = should_use_cuda_barycentric_weights(size, points_precomputed);
         if (try_gpu)
         {
             const auto zero_eval = zero_polynomial_eval(x);

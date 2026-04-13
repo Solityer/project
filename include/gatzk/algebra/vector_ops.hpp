@@ -20,10 +20,24 @@ namespace gatzk::algebra
     std::string configured_algebra_backend_name();
     bool cuda_backend_build_enabled();
     bool cuda_backend_available();
+    bool cuda_backend_unified_addressing_available();
 
     // GPU field hotspot acceleration (BLS12-381 Fr arithmetic on GPU)
     bool cuda_field_hotspots_build_enabled();
     bool cuda_field_hotspots_available();
+
+    // Centralized, size-aware routing policy for full_gpu. These helpers only
+    // choose an implementation route; they do not change proof semantics.
+    bool should_use_cuda_barycentric_weights(
+        std::size_t domain_size,
+        bool points_precomputed);
+    bool should_use_cuda_weighted_evaluation(
+        std::size_t domain_size,
+        std::size_t vector_count,
+        std::size_t point_count = 1);
+    bool should_use_cuda_lookup_histogram(
+        std::size_t index_count,
+        std::size_t bucket_count);
 
     // GPU barycentric weight computation
     // omega/x/zero_eval/inv_n: 4 × uint64 limbs in Montgomery form (matching mcl::Fr internal)
