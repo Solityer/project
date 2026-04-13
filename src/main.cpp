@@ -132,7 +132,8 @@ int main(int argc, char** argv) {
 
         set_process_env("GATZK_ALGEBRA_BACKEND", "cpu");
         route2.cuda_trace_hotspots = compute_backend == "cuda_hotspots";
-        if (route2.cuda_trace_hotspots) {
+        route2.cuda_field_hotspots = compute_backend == "cuda_hotspots";
+        if (route2.cuda_trace_hotspots || route2.cuda_field_hotspots) {
             if (!gatzk::algebra::cuda_backend_build_enabled()) {
                 throw std::runtime_error("compute backend cuda_hotspots requires a CUDA-enabled build");
             }
@@ -154,7 +155,7 @@ int main(int argc, char** argv) {
             gatzk::protocol::RunMetrics metrics;
             metrics.crypto_backend_name = gatzk::crypto::backend_name();
             metrics.algebra_backend_name = gatzk::algebra::configured_algebra_backend_name();
-            metrics.compute_backend_name = route2.cuda_trace_hotspots ? "cuda_hotspots" : "cpu";
+            metrics.compute_backend_name = (route2.cuda_trace_hotspots || route2.cuda_field_hotspots) ? "cuda_hotspots" : "cpu";
             metrics.backend_name = metrics.crypto_backend_name + "/" + metrics.compute_backend_name;
             metrics.config = absolute_config_path;
             metrics.enabled_fast_msm = route2.fast_msm;
@@ -164,6 +165,7 @@ int main(int argc, char** argv) {
             metrics.enabled_trace_layout_upgrade = route2.trace_layout_upgrade;
             metrics.enabled_fast_verify_pairing = route2.fast_verify_pairing;
             metrics.enabled_cuda_trace_hotspots = route2.cuda_trace_hotspots;
+            metrics.enabled_cuda_field_hotspots = route2.cuda_field_hotspots;
             metrics.benchmark_mode = mode_label;
             metrics.route2_label = gatzk::util::route2_feature_label(route2);
             metrics.gpu_runtime_present = gatzk::algebra::cuda_backend_available();

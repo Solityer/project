@@ -200,13 +200,78 @@ namespace gatzk::algebra
         const auto& subset = subset_for(labels);
         const auto row_count = subset.row_indices.size();
         const bool use_cached_subset = !subset.interleaved_values.empty();
+
+        // ---- GPU path ----
+        const auto& route2 = util::route2_options();
+        // GPU polynomial evaluation is only beneficial when the GPU has
+        // enough CUDA cores to outpace CPU-side mcl::Fr throughput.  On
+        // current GB10 (≤128 cores), CPU multithreading is consistently
+        // faster.  Use a high threshold so the path remains compilable
+        // and can be activated on future discrete-GPU hardware.
+        const bool try_gpu = route2.cuda_field_hotspots
+            && cuda_field_hotspots_build_enabled()
+            && cuda_field_hotspots_available()
+            && domain_->size >= (1ULL << 30)
+            && row_count >= 1;
+
+        if (try_gpu)
+        {
+            // Extract per-polynomial contiguous column buffers and evaluate
+            // all polynomials using weighted_poly_eval_gpu_multi (uploads
+            // weights once, processes each polynomial sequentially on GPU).
+            std::vector<std::vector<mcl::Fr>> col_buffers(row_count);
+            std::vector<const uint64_t*> col_ptrs(row_count);
+            for (std::size_t r = 0; r < row_count; ++r)
+            {
+                col_buffers[r].resize(domain_->size);
+                if (use_cached_subset)
+                {
+                    for (std::size_t col = 0; col < domain_->size; ++col)
+                    {
+                        col_buffers[r][col] = subset.interleaved_values[col * row_count + r];
+                    }
+                }
+                else
+                {
+                    const auto global_row = subset.row_indices[r];
+                    const auto stride = polynomials_.size();
+                    for (std::size_t col = 0; col < domain_->size; ++col)
+                    {
+                        col_buffers[r][col] = interleaved_values_[col * stride + global_row];
+                    }
+                }
+                col_ptrs[r] = reinterpret_cast<const uint64_t*>(col_buffers[r].data());
+            }
+
+            std::vector<mcl::Fr> gpu_results(row_count);
+            for (auto& v : gpu_results) v.clear();
+
+            const bool gpu_ok = weighted_poly_eval_gpu_multi(
+                reinterpret_cast<const uint64_t*>(weights.data()),
+                col_ptrs.data(),
+                reinterpret_cast<uint64_t*>(gpu_results.data()),
+                domain_->size,
+                row_count);
+
+            if (gpu_ok)
+            {
+                std::vector<FieldElement> out;
+                out.reserve(row_count);
+                for (const auto& v : gpu_results)
+                {
+                    out.push_back(FieldElement::from_native(v));
+                }
+                return out;
+            }
+        }
+
+        // ---- CPU path ----
         std::vector<mcl::Fr> native_out(row_count);
         for (auto& value : native_out)
         {
             value.clear();
         }
 
-        const auto& route2 = util::route2_options();
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
         const auto total_terms = domain_->size * row_count;
         if (route2.parallel_fft && cpu_count > 1 && domain_->size >= 1024 && total_terms >= 16384)
@@ -332,6 +397,87 @@ namespace gatzk::algebra
         }
 
         const auto& route2 = util::route2_options();
+
+        // ---- GPU path for rotated evaluations ----
+        const bool try_gpu = route2.cuda_field_hotspots
+            && cuda_field_hotspots_build_enabled()
+            && cuda_field_hotspots_available()
+            && domain_->size >= (1ULL << 16)
+            && row_count >= 1;
+
+        if (try_gpu)
+        {
+            // For each rotation, build rotated weight vector and evaluate
+            // all polynomials using weighted_poly_eval_gpu_multi.
+            // Extract per-polynomial contiguous column buffers once.
+            std::vector<std::vector<mcl::Fr>> col_buffers(row_count);
+            std::vector<const uint64_t*> col_ptrs(row_count);
+            for (std::size_t r = 0; r < row_count; ++r)
+            {
+                col_buffers[r].resize(domain_->size);
+                if (use_cached_subset)
+                {
+                    for (std::size_t col = 0; col < domain_->size; ++col)
+                    {
+                        col_buffers[r][col] = subset.interleaved_values[col * row_count + r];
+                    }
+                }
+                else
+                {
+                    const auto global_row = subset.row_indices[r];
+                    const auto stride = polynomials_.size();
+                    for (std::size_t col = 0; col < domain_->size; ++col)
+                    {
+                        col_buffers[r][col] = interleaved_values_[col * stride + global_row];
+                    }
+                }
+                col_ptrs[r] = reinterpret_cast<const uint64_t*>(col_buffers[r].data());
+            }
+
+            bool all_ok = true;
+            for (std::size_t point_index = 0; point_index < point_count; ++point_index)
+            {
+                // Build rotated weight vector: rotated_weights[col] = representative_weights[(col + rotation) & mask]
+                const auto rotation = rotations[point_index];
+                std::vector<mcl::Fr> rotated_weights(domain_->size);
+                for (std::size_t col = 0; col < domain_->size; ++col)
+                {
+                    rotated_weights[(col + rotation) & domain_mask] = representative_weights[col];
+                }
+
+                std::vector<mcl::Fr> gpu_results(row_count);
+                for (auto& v : gpu_results) v.clear();
+
+                const bool gpu_ok = weighted_poly_eval_gpu_multi(
+                    reinterpret_cast<const uint64_t*>(rotated_weights.data()),
+                    col_ptrs.data(),
+                    reinterpret_cast<uint64_t*>(gpu_results.data()),
+                    domain_->size,
+                    row_count);
+
+                if (!gpu_ok) { all_ok = false; break; }
+                for (std::size_t r = 0; r < row_count; ++r)
+                {
+                    native_out[point_index * row_count + r] = gpu_results[r];
+                }
+            }
+
+            if (all_ok)
+            {
+                std::vector<std::vector<FieldElement>> out(point_count, std::vector<FieldElement>(row_count, FieldElement::zero()));
+                for (std::size_t point_index = 0; point_index < point_count; ++point_index)
+                {
+                    for (std::size_t row = 0; row < row_count; ++row)
+                    {
+                        out[point_index][row] = FieldElement::from_native(native_out[point_index * row_count + row]);
+                    }
+                }
+                return out;
+            }
+            // Fall through to CPU if GPU fails
+            for (auto& value : native_out) { value.clear(); }
+        }
+
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
         const auto total_terms = domain_->size * row_count * point_count;
         if (route2.parallel_fft && cpu_count > 1 && domain_->size >= 1024 && total_terms >= 32768)

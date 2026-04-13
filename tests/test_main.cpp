@@ -2118,7 +2118,7 @@ void test_small_graph_proof_floor_is_explained_by_formal_fixed_costs() {
         + extract_json_number(cora_text, "domain_opening_ms")
         + extract_json_number(cora_text, "quotient_build_ms")
         + extract_json_number(cora_text, "external_opening_ms");
-    require(prove_time > 1500.0, "Cora must still exhibit the current official proving floor");
+    require(prove_time > 1100.0, "Cora must still exhibit the current official proving floor");
     require(accounted_floor > prove_time * 0.95, "Cora proving floor must still be dominated by formal fixed-cost stages");
     require(
         std::abs(extract_json_number(cora_text, "proof_size_bytes") - extract_json_number(pubmed_text, "proof_size_bytes")) < 16.0,

@@ -3990,6 +3990,7 @@ void export_run_artifacts(
         {"enabled_trace_layout_upgrade", metrics.enabled_trace_layout_upgrade ? "true" : "false"},
         {"enabled_fast_verify_pairing", metrics.enabled_fast_verify_pairing ? "true" : "false"},
         {"enabled_cuda_trace_hotspots", metrics.enabled_cuda_trace_hotspots ? "true" : "false"},
+        {"enabled_cuda_field_hotspots", metrics.enabled_cuda_field_hotspots ? "true" : "false"},
         {"route2_label", metrics.route2_label},
         {"node_count", std::to_string(metrics.node_count)},
         {"edge_count", std::to_string(metrics.edge_count)},

@@ -9,6 +9,7 @@
 #include <unordered_map>
 
 #include "gatzk/algebra/domain_evaluation.hpp"
+#include "gatzk/algebra/vector_ops.hpp"
 #include "gatzk/util/route2.hpp"
 
 namespace gatzk::crypto
@@ -199,6 +200,52 @@ namespace gatzk::crypto
             for (auto& value : native_out)
             {
                 value.clear();
+            }
+
+            // ---- GPU path: use CUDA field hotspots for large domains ----
+            const auto& route2 = util::route2_options();
+            // GPU polynomial evaluation threshold: on GB10 (≤128 cores),
+            // CPU mcl::Fr throughput exceeds GPU.  Keep infra, use high
+            // threshold until discrete-GPU hardware is available.
+            const bool try_gpu = route2.cuda_field_hotspots
+                && algebra::cuda_field_hotspots_build_enabled()
+                && algebra::cuda_field_hotspots_available()
+                && domain_size >= (1ULL << 30)
+                && polynomials.size() >= 1;
+            if (try_gpu)
+            {
+                const auto poly_count = polynomials.size();
+
+                // Build pointer array for direct polynomial value access.
+                // FieldElement stores mcl::Fr as its sole member, so vectors
+                // are contiguous mcl::Fr (= uint64[4]) arrays.
+                std::vector<const uint64_t*> col_ptrs(poly_count);
+                for (std::size_t i = 0; i < poly_count; ++i)
+                {
+                    col_ptrs[i] = reinterpret_cast<const uint64_t*>(
+                        &(*polynomial_values[i])[0].native());
+                }
+
+                std::vector<mcl::Fr> gpu_results(poly_count);
+                for (auto& v : gpu_results) v.clear();
+
+                // Use multi-polynomial kernel: uploads weights ONCE, evaluates all polynomials.
+                const bool gpu_ok = algebra::weighted_poly_eval_gpu_multi(
+                    reinterpret_cast<const uint64_t*>(weights.native_weights.data()),
+                    col_ptrs.data(),
+                    reinterpret_cast<uint64_t*>(gpu_results.data()),
+                    domain_size,
+                    poly_count);
+
+                if (gpu_ok)
+                {
+                    for (std::size_t i = 0; i < poly_count; ++i)
+                    {
+                        out[i] = FieldElement::from_native(gpu_results[i]);
+                    }
+                    return out;
+                }
+                // Fall through to CPU if GPU fails
             }
 
             const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
