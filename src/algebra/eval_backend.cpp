@@ -201,18 +201,8 @@ namespace gatzk::algebra
         const auto row_count = subset.row_indices.size();
         const bool use_cached_subset = !subset.interleaved_values.empty();
 
-        // ---- GPU path ----
         const auto& route2 = util::route2_options();
-        // GPU polynomial evaluation is only beneficial when the GPU has
-        // enough CUDA cores to outpace CPU-side mcl::Fr throughput.  On
-        // current GB10 (≤128 cores), CPU multithreading is consistently
-        // faster.  Use a high threshold so the path remains compilable
-        // and can be activated on future discrete-GPU hardware.
-        const bool try_gpu = route2.cuda_field_hotspots
-            && cuda_field_hotspots_build_enabled()
-            && cuda_field_hotspots_available()
-            && domain_->size >= (1ULL << 30)
-            && row_count >= 1;
+        const bool try_gpu = should_use_cuda_weighted_evaluation(domain_->size, row_count);
 
         if (try_gpu)
         {
@@ -399,11 +389,7 @@ namespace gatzk::algebra
         const auto& route2 = util::route2_options();
 
         // ---- GPU path for rotated evaluations ----
-        const bool try_gpu = route2.cuda_field_hotspots
-            && cuda_field_hotspots_build_enabled()
-            && cuda_field_hotspots_available()
-            && domain_->size >= (1ULL << 16)
-            && row_count >= 1;
+        const bool try_gpu = should_use_cuda_weighted_evaluation(domain_->size, row_count, point_count);
 
         if (try_gpu)
         {

@@ -3,11 +3,16 @@
 #include <algorithm>
 #include <cstdlib>
 #include <future>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <thread>
 
 #include "gatzk/util/route2.hpp"
+
+#if GATZK_ENABLE_CUDA_BACKEND
+#include <cuda_runtime_api.h>
+#endif
 
 namespace gatzk::algebra
 {
@@ -18,6 +23,24 @@ namespace gatzk::algebra
 
     namespace
     {
+
+        bool cuda_field_route_enabled()
+        {
+            return util::route2_options().cuda_field_hotspots
+                && cuda_field_hotspots_build_enabled()
+                && cuda_field_hotspots_available();
+        }
+
+        bool cuda_trace_route_enabled()
+        {
+            return util::route2_options().cuda_trace_hotspots
+                && cuda_backend_available();
+        }
+
+        unsigned __int128 multiply_u128(std::size_t lhs, std::size_t rhs)
+        {
+            return static_cast<unsigned __int128>(lhs) * static_cast<unsigned __int128>(rhs);
+        }
 
         AlgebraBackend parse_backend_env()
         {
@@ -111,6 +134,32 @@ namespace gatzk::algebra
 #endif
     }
 
+    bool cuda_backend_unified_addressing_available()
+    {
+#if GATZK_ENABLE_CUDA_BACKEND
+        static const bool available = []() {
+            if (!cuda_backend_runtime_available())
+            {
+                return false;
+            }
+            int device = 0;
+            if (cudaGetDevice(&device) != cudaSuccess)
+            {
+                return false;
+            }
+            int unified = 0;
+            if (cudaDeviceGetAttribute(&unified, cudaDevAttrUnifiedAddressing, device) != cudaSuccess)
+            {
+                return false;
+            }
+            return unified != 0;
+        }();
+        return available;
+#else
+        return false;
+#endif
+    }
+
     bool cuda_field_hotspots_build_enabled()
     {
 #if GATZK_ENABLE_CUDA_BACKEND
@@ -127,6 +176,62 @@ namespace gatzk::algebra
 #else
         return false;
 #endif
+    }
+
+    bool should_use_cuda_barycentric_weights(
+        std::size_t domain_size,
+        bool points_precomputed)
+    {
+        if (!cuda_field_route_enabled() || points_precomputed || domain_size == 0)
+        {
+            return false;
+        }
+
+        const auto min_domain_size =
+            cuda_backend_unified_addressing_available()
+            ? (1ULL << 16)
+            : (1ULL << 18);
+        return domain_size >= min_domain_size;
+    }
+
+    bool should_use_cuda_weighted_evaluation(
+        std::size_t domain_size,
+        std::size_t vector_count,
+        std::size_t point_count)
+    {
+        if (!cuda_field_route_enabled() || domain_size == 0 || vector_count == 0 || point_count == 0)
+        {
+            return false;
+        }
+
+        const bool unified = cuda_backend_unified_addressing_available();
+        const auto min_domain_size = unified ? (1ULL << 15) : (1ULL << 16);
+        const auto min_work_items = unified ? 1ULL : 4ULL;
+        const auto work_items = multiply_u128(vector_count, point_count);
+        const auto total_terms = multiply_u128(domain_size, vector_count) * static_cast<unsigned __int128>(point_count);
+        const auto min_total_terms =
+            unified
+            ? (static_cast<unsigned __int128>(1) << 21)
+            : (static_cast<unsigned __int128>(1) << 24);
+
+        return domain_size >= min_domain_size
+            && work_items >= static_cast<unsigned __int128>(min_work_items)
+            && total_terms >= min_total_terms;
+    }
+
+    bool should_use_cuda_lookup_histogram(
+        std::size_t index_count,
+        std::size_t bucket_count)
+    {
+        if (!cuda_trace_route_enabled() || index_count == 0 || bucket_count == 0)
+        {
+            return false;
+        }
+
+        const bool unified = cuda_backend_unified_addressing_available();
+        const auto min_index_count = unified ? 4096ULL : 16384ULL;
+        const auto min_bucket_count = unified ? 1024ULL : 4096ULL;
+        return index_count >= min_index_count && bucket_count >= min_bucket_count;
     }
 
 #if !GATZK_ENABLE_CUDA_BACKEND

@@ -280,9 +280,10 @@ def write_outputs(output_dir: pathlib.Path, mode: str, rows: List[Dict[str, obje
         "# 最新基准结果",
         "",
         f"- 主表口径：`{mode}`",
+        "- backend 只表示实现策略；formal semantics 始终保持单一主线。",
         "",
-        "| 数据集 | 状态 | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes | node_count | edge_count | route2 | 主要热点 | 阻塞说明 |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
+        "| 数据集 | 后端 | 状态 | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes | node_count | edge_count | route2 | 主要热点 | 阻塞说明 |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
     ]
     for row in rows:
         lines.append(
@@ -290,6 +291,7 @@ def write_outputs(output_dir: pathlib.Path, mode: str, rows: List[Dict[str, obje
             + " | ".join(
                 [
                     markdown_cell(row["dataset"]),
+                    markdown_cell(row["backend_name"]),
                     markdown_cell(status_label(row["status"])),
                     markdown_cell(row["commitment_time_ms"]),
                     markdown_cell(row["prove_time_ms"]),

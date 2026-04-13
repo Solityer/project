@@ -202,16 +202,8 @@ namespace gatzk::crypto
                 value.clear();
             }
 
-            // ---- GPU path: use CUDA field hotspots for large domains ----
             const auto& route2 = util::route2_options();
-            // GPU polynomial evaluation threshold: on GB10 (≤128 cores),
-            // CPU mcl::Fr throughput exceeds GPU.  Keep infra, use high
-            // threshold until discrete-GPU hardware is available.
-            const bool try_gpu = route2.cuda_field_hotspots
-                && algebra::cuda_field_hotspots_build_enabled()
-                && algebra::cuda_field_hotspots_available()
-                && domain_size >= (1ULL << 30)
-                && polynomials.size() >= 1;
+            const bool try_gpu = algebra::should_use_cuda_weighted_evaluation(domain_size, polynomials.size());
             if (try_gpu)
             {
                 const auto poly_count = polynomials.size();

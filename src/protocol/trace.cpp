@@ -92,15 +92,6 @@ void add_metric(double* metric, const Clock::time_point& start) {
     }
 }
 
-bool cuda_lookup_histogram_enabled() {
-#if GATZK_ENABLE_CUDA_BACKEND
-    return util::route2_options().cuda_trace_hotspots
-        && algebra::cuda_backend_available();
-#else
-    return false;
-#endif
-}
-
 template <typename Fn>
 void parallel_for_ranges(std::size_t item_count, std::size_t min_parallel_items, Fn&& fn) {
     const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
@@ -1917,7 +1908,7 @@ std::vector<FieldElement> multiplicity_from_indices(
     const std::vector<std::size_t>& indices,
     std::size_t domain_size) {
     std::vector<FieldElement> multiplicity(domain_size, FieldElement::zero());
-    if (cuda_lookup_histogram_enabled() && indices.size() >= 4096 && domain_size >= 1024) {
+    if (algebra::should_use_cuda_lookup_histogram(indices.size(), domain_size)) {
 #if GATZK_ENABLE_CUDA_BACKEND
         const auto counts = lookup_histogram_indices_cuda(indices, domain_size);
         if (!counts.empty()) {
