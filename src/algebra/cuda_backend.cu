@@ -338,6 +338,15 @@ __global__ void reduce_partials_kernel(
     final_results[row] = acc;
 }
 
+__global__ void accumulate_results_kernel(
+    const gpu::GpuFr* __restrict__ chunk_results,
+    gpu::GpuFr* __restrict__ final_results,
+    std::size_t row_count) {
+    const auto row = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (row >= row_count) return;
+    final_results[row] = gpu::fr_add(final_results[row], chunk_results[row]);
+}
+
 } // anonymous namespace
 
 // Host-callable: GPU weighted polynomial evaluation
@@ -354,7 +363,6 @@ bool weighted_poly_eval_gpu(
     if (domain_size == 0 || row_count == 0) return true;
     
     const auto weight_bytes = domain_size * sizeof(gpu::GpuFr);
-    const auto value_bytes = domain_size * row_count * sizeof(gpu::GpuFr);
     const auto result_bytes = row_count * sizeof(gpu::GpuFr);
     
     // For very large value arrays, process in streaming chunks
@@ -364,14 +372,30 @@ bool weighted_poly_eval_gpu(
         row_count > 0 ? kMaxGpuValueBytes / (row_count * sizeof(gpu::GpuFr)) : domain_size;
     const std::size_t cols_per_chunk = std::min(domain_size, std::max(max_cols_per_chunk, static_cast<std::size_t>(1024)));
     
+    const bool zero_copy = cuda_backend_unified_addressing_available();
+
     gpu::GpuFr* d_weights = nullptr;
     gpu::GpuFr* d_values = nullptr;
     gpu::GpuFr* d_final = nullptr;
-    
-    if (cudaMalloc(&d_weights, weight_bytes) != cudaSuccess) return false;
-    if (cudaMalloc(&d_final, result_bytes) != cudaSuccess) { cudaFree(d_weights); return false; }
-    
-    cudaMemcpy(d_weights, weight_limbs, weight_bytes, cudaMemcpyHostToDevice);
+
+    const auto cleanup = [&]() {
+        if (d_values != nullptr) cudaFree(d_values);
+        if (d_weights != nullptr) cudaFree(d_weights);
+        if (d_final != nullptr) cudaFree(d_final);
+    };
+
+    if (!zero_copy && cudaMalloc(&d_weights, weight_bytes) != cudaSuccess) return false;
+    if (cudaMalloc(&d_final, result_bytes) != cudaSuccess) {
+        cleanup();
+        return false;
+    }
+
+    const auto* weight_ptr =
+        zero_copy ? reinterpret_cast<const gpu::GpuFr*>(weight_limbs) : nullptr;
+    if (!zero_copy) {
+        cudaMemcpy(d_weights, weight_limbs, weight_bytes, cudaMemcpyHostToDevice);
+        weight_ptr = d_weights;
+    }
     cudaMemset(d_final, 0, result_bytes);
     
     // Process domain in chunks to manage GPU memory
@@ -379,16 +403,20 @@ bool weighted_poly_eval_gpu(
         const auto chunk_end = std::min(domain_size, chunk_start + cols_per_chunk);
         const auto chunk_cols = chunk_end - chunk_start;
         const auto chunk_value_bytes = chunk_cols * row_count * sizeof(gpu::GpuFr);
-        
-        if (d_values != nullptr) cudaFree(d_values);
-        if (cudaMalloc(&d_values, chunk_value_bytes) != cudaSuccess) {
-            cudaFree(d_weights); cudaFree(d_final);
-            return false;
+
+        const auto* chunk_values = reinterpret_cast<const gpu::GpuFr*>(interleaved_value_limbs) + chunk_start * row_count;
+        if (!zero_copy) {
+            if (d_values != nullptr) {
+                cudaFree(d_values);
+                d_values = nullptr;
+            }
+            if (cudaMalloc(&d_values, chunk_value_bytes) != cudaSuccess) {
+                cleanup();
+                return false;
+            }
+            cudaMemcpy(d_values, chunk_values, chunk_value_bytes, cudaMemcpyHostToDevice);
+            chunk_values = d_values;
         }
-        
-        // Upload this chunk's values
-        const auto* src = reinterpret_cast<const gpu::GpuFr*>(interleaved_value_limbs) + chunk_start * row_count;
-        cudaMemcpy(d_values, src, chunk_value_bytes, cudaMemcpyHostToDevice);
         
         // Launch evaluation kernel for this chunk
         constexpr unsigned kBlockDim = 128;
@@ -398,7 +426,7 @@ bool weighted_poly_eval_gpu(
         gpu::GpuFr* d_partials = nullptr;
         const auto partial_bytes = num_domain_blocks * row_count * sizeof(gpu::GpuFr);
         if (cudaMalloc(&d_partials, partial_bytes) != cudaSuccess) {
-            cudaFree(d_values); cudaFree(d_weights); cudaFree(d_final);
+            cleanup();
             return false;
         }
         cudaMemset(d_partials, 0, partial_bytes);
@@ -414,7 +442,7 @@ bool weighted_poly_eval_gpu(
         // Actually, we uploaded chunk data starting at d_values[0], so column 0 in the kernel
         // corresponds to chunk_start in the global domain
         weighted_eval_kernel<<<grid, kBlockDim, smem_bytes>>>(
-            d_weights, d_values, d_partials,
+            weight_ptr, chunk_values, d_partials,
             domain_size, row_count, chunk_start, chunk_end);
         
         // Reduce partials into final results
@@ -425,45 +453,31 @@ bool weighted_poly_eval_gpu(
             // First reduce partials for this chunk
             gpu::GpuFr* d_chunk_result = nullptr;
             if (cudaMalloc(&d_chunk_result, result_bytes) != cudaSuccess) {
-                cudaFree(d_partials); cudaFree(d_values); cudaFree(d_weights); cudaFree(d_final);
+                cudaFree(d_partials);
+                cleanup();
                 return false;
             }
             reduce_partials_kernel<<<rGrid, rBlock>>>(d_partials, d_chunk_result, num_domain_blocks, row_count);
-            // Add chunk result to final result (accumulate across chunks)
-            // Simple kernel: d_final[i] += d_chunk_result[i]
-            // We can use reduce_partials with 1 chunk pointing to d_chunk_result + old d_final
-            // Simpler: download, add on CPU, upload. For row_count ≤ few hundred, this is fine.
+            accumulate_results_kernel<<<rGrid, rBlock>>>(d_chunk_result, d_final, row_count);
             if (cudaDeviceSynchronize() != cudaSuccess) {
-                cudaFree(d_chunk_result); cudaFree(d_partials);
-                cudaFree(d_values); cudaFree(d_weights); cudaFree(d_final);
+                cudaFree(d_chunk_result);
+                cudaFree(d_partials);
+                cleanup();
                 return false;
             }
-            // Download and accumulate
-            std::vector<gpu::GpuFr> h_chunk_result(row_count);
-            std::vector<gpu::GpuFr> h_final(row_count);
-            cudaMemcpy(h_chunk_result.data(), d_chunk_result, result_bytes, cudaMemcpyDeviceToHost);
-            cudaMemcpy(h_final.data(), d_final, result_bytes, cudaMemcpyDeviceToHost);
-            // Accumulate using mcl on host (row_count is small)
-            for (std::size_t j = 0; j < row_count; ++j) {
-                mcl::Fr a, b, sum;
-                a.clear(); b.clear();
-                std::memcpy(&a, h_final[j].d, 32);
-                std::memcpy(&b, h_chunk_result[j].d, 32);
-                mcl::Fr::add(sum, a, b);
-                std::memcpy(h_final[j].d, &sum, 32);
-            }
-            cudaMemcpy(d_final, h_final.data(), result_bytes, cudaMemcpyHostToDevice);
             cudaFree(d_chunk_result);
         }
         cudaFree(d_partials);
     }
     
     // Download final results
+    if (cudaDeviceSynchronize() != cudaSuccess) {
+        cleanup();
+        return false;
+    }
     cudaMemcpy(output_limbs, d_final, result_bytes, cudaMemcpyDeviceToHost);
-    
-    if (d_values) cudaFree(d_values);
-    cudaFree(d_weights);
-    cudaFree(d_final);
+
+    cleanup();
     return true;
 }
 

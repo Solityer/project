@@ -206,6 +206,31 @@ namespace gatzk::algebra
 
         if (try_gpu)
         {
+            if (use_cached_subset)
+            {
+                std::vector<mcl::Fr> gpu_results(row_count);
+                for (auto& value : gpu_results)
+                {
+                    value.clear();
+                }
+                const bool gpu_ok = weighted_poly_eval_gpu(
+                    reinterpret_cast<const uint64_t*>(weights.data()),
+                    reinterpret_cast<const uint64_t*>(subset.interleaved_values.data()),
+                    reinterpret_cast<uint64_t*>(gpu_results.data()),
+                    domain_->size,
+                    row_count);
+                if (gpu_ok)
+                {
+                    std::vector<FieldElement> out;
+                    out.reserve(row_count);
+                    for (const auto& value : gpu_results)
+                    {
+                        out.push_back(FieldElement::from_native(value));
+                    }
+                    return out;
+                }
+            }
+
             // Extract per-polynomial contiguous column buffers and evaluate
             // all polynomials using weighted_poly_eval_gpu_multi (uploads
             // weights once, processes each polynomial sequentially on GPU).
@@ -393,6 +418,59 @@ namespace gatzk::algebra
 
         if (try_gpu)
         {
+            if (use_cached_subset)
+            {
+                bool all_ok = true;
+                for (std::size_t point_index = 0; point_index < point_count; ++point_index)
+                {
+                    const auto rotation = rotations[point_index];
+                    std::vector<mcl::Fr> rotated_weights(domain_->size);
+                    for (std::size_t col = 0; col < domain_->size; ++col)
+                    {
+                        rotated_weights[(col + rotation) & domain_mask] = representative_weights[col];
+                    }
+
+                    std::vector<mcl::Fr> gpu_results(row_count);
+                    for (auto& value : gpu_results)
+                    {
+                        value.clear();
+                    }
+
+                    const bool gpu_ok = weighted_poly_eval_gpu(
+                        reinterpret_cast<const uint64_t*>(rotated_weights.data()),
+                        reinterpret_cast<const uint64_t*>(subset.interleaved_values.data()),
+                        reinterpret_cast<uint64_t*>(gpu_results.data()),
+                        domain_->size,
+                        row_count);
+                    if (!gpu_ok)
+                    {
+                        all_ok = false;
+                        break;
+                    }
+                    for (std::size_t row = 0; row < row_count; ++row)
+                    {
+                        native_out[point_index * row_count + row] = gpu_results[row];
+                    }
+                }
+
+                if (all_ok)
+                {
+                    std::vector<std::vector<FieldElement>> out(point_count, std::vector<FieldElement>(row_count, FieldElement::zero()));
+                    for (std::size_t point_index = 0; point_index < point_count; ++point_index)
+                    {
+                        for (std::size_t row = 0; row < row_count; ++row)
+                        {
+                            out[point_index][row] = FieldElement::from_native(native_out[point_index * row_count + row]);
+                        }
+                    }
+                    return out;
+                }
+                for (auto& value : native_out)
+                {
+                    value.clear();
+                }
+            }
+
             // For each rotation, build rotated weight vector and evaluate
             // all polynomials using weighted_poly_eval_gpu_multi.
             // Extract per-polynomial contiguous column buffers once.

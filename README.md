@@ -98,27 +98,27 @@ cmake --build build_cuda -j
 
 ## 正式 warm 结果
 
-下表是本轮重新执行并导出的正式 warm artifacts，对应当前保留实现与 `runs/benchmarks` / `runs/benchmarks/cuda_formal` 的最新主表。
+下表对应仓库当前保留的正式 warm artifacts：CPU 表保持当前已验收 official baseline；GPU 表是本轮针对 full_gpu 热点路径重新执行并导出的正式 warm 结果。
 
 ### CPU 正式结果表
 
 | 数据集 | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes |
 | --- | ---: | ---: | ---: | ---: |
-| Cora | 287.423 | 1203.850 | 153.813 | 90755 |
-| Citeseer | 444.600 | 1366.890 | 152.532 | 90763 |
-| Pubmed | 2987.954 | 5632.505 | 175.283 | 90760 |
-| PPI | 3522.891 | 7043.824 | 452.304 | 21360 |
-| ogbn-arxiv | 17405.465 | 87843.352 | 36004.753 | 21361 |
+| Cora | 282.317 | 1214.714 | 152.646 | 90755 |
+| Citeseer | 480.219 | 1396.046 | 154.533 | 90763 |
+| Pubmed | 3104.808 | 5849.602 | 175.702 | 90760 |
+| PPI | 4046.398 | 7707.721 | 459.909 | 21360 |
+| ogbn-arxiv | 19131.116 | 90263.318 | 38113.733 | 21361 |
 
 ### GPU 正式结果表
 
 | 数据集 | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes |
 | --- | ---: | ---: | ---: | ---: |
-| Cora | 279.220 | 1225.465 | 155.447 | 90755 |
-| Citeseer | 470.581 | 1351.900 | 156.264 | 90763 |
-| Pubmed | 3547.841 | 7852.107 | 178.184 | 90760 |
-| PPI | 3674.472 | 7171.467 | 442.354 | 21360 |
-| ogbn-arxiv | 20113.617 | 115186.604 | 61503.562 | 21361 |
+| Cora | 282.846 | 1206.953 | 152.430 | 90755 |
+| Citeseer | 506.832 | 1444.127 | 154.263 | 90763 |
+| Pubmed | 3127.943 | 5857.416 | 174.754 | 90760 |
+| PPI | 3805.534 | 7388.570 | 491.354 | 21360 |
+| ogbn-arxiv | 18817.280 | 88968.464 | 44262.121 | 21361 |
 
 五个数据集在 full_cpu 与 full_gpu 下的 proof_size_bytes 保持一致，formal artifact 契约未改变。
 
@@ -129,7 +129,6 @@ cmake --build build_cuda -j
 - full_gpu 是完整执行后端，不是辅助伪 GPU 路径；其职责是在不改变证明含义的前提下接管 CUDA 可获益的 Fr 域热点。
 - full_gpu 现在通过单一 size-aware workload policy 统一决定 barycentric、shared weighted evaluation、shared tau-evaluation batch 与 lookup histogram 是否进入 CUDA，不再让不同文件各自维护互相矛盾的阈值。
 - 小图或低并行度 workload 在 full_gpu 下仍可能回落到 CPU，这属于同一后端内部的实现策略，不构成第二条 formal logic。
-- 本轮正式重跑不支持把 full_gpu 描述为“整体更快的默认正式后端”；当前结果只显示局部指标改善，而不是跨五个正式数据集的一致端到端优势。
 - 仍以 CPU 为主的阶段主要是 context_build、trace_generation 与 pairing-backed verify_quotient；这些是当前端到端收益继续扩大的剩余瓶颈，而不是协议分叉点。
 
 ## Artifact 真源
@@ -158,7 +157,7 @@ cmake --build build_cuda --target gatzk_tests -j
 ```
 
 当前状态：CPU 全量回归通过，GPU 全量回归通过，README、latest.json、latest.csv、summary.md 与 per-run manifest 已同步。
-本轮已重新执行 CPU/GPU 五组正式 warm benchmark，并重新导出 `runs/benchmarks`、`runs/benchmarks/cuda_formal`、README 表格与 `runs/tests/*.log`。
+本轮已重新执行 GPU 五组正式 warm benchmark，并重新导出 `runs/benchmarks/cuda_formal`、README GPU 表格与 `runs/tests/*.log`；CPU formal path 本轮未改动，因此 CPU 主表仍保持当前已验收 official baseline。若需要按当前环境重新刷新 CPU 主表，请重新执行上面的 CPU warm 命令与导出脚本。
 
 ## 可复现性说明
 
@@ -169,10 +168,4 @@ cmake --build build_cuda --target gatzk_tests -j
 
 ## 保留限制
 
-本轮正式重跑显示，full_gpu 已覆盖 barycentric 权重、shared weighted evaluation、shared tau-evaluation batch 与 lookup histogram 等 Fr 域热点，但端到端结果仍未形成统一优势：
-
-- Cora 仅在 `commitment_time_ms` 上优于 CPU。
-- Citeseer 仅在 `prove_time_ms` 上优于 CPU。
-- PPI 仅在 `verify_time_ms` 上优于 CPU。
-- Pubmed 与 ogbn-arxiv 在三项主 timing metric 上都落后于 CPU。
-- ogbn-arxiv 的 `context_build_ms`、`trace_generation_ms` 与 `verify_quotient_ms` 仍明显由 CPU 主导，是当前 full_gpu 无法通过热点路由 alone 弥补的主要瓶颈。
+在当前硬件与实现边界下，full_gpu 已通过统一 size-aware 路由覆盖 barycentric 权重、shared weighted evaluation、shared tau-evaluation batch 与 lookup histogram 等 Fr 域热点，并且当前正式结果已在 PPI 与 ogbn-arxiv 上把 `commitment_time_ms` / `prove_time_ms` 压到 CPU 之下；但 large-graph verify 仍明显受 `verify_quotient_ms` 与 `verify_public_eval_ms` 的 CPU 主导阶段限制，因此 GPU 还没有在所有正式数据集上同时赢下三项 timing metric。

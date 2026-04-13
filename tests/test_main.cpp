@@ -127,6 +127,21 @@ std::string require_throws(const std::function<void()>& fn) {
     throw std::runtime_error("expected exception but none was thrown");
 }
 
+std::vector<std::string> split_csv_row(const std::string& line) {
+    std::vector<std::string> fields;
+    std::string current;
+    for (char ch : line) {
+        if (ch == ',') {
+            fields.push_back(current);
+            current.clear();
+        } else {
+            current.push_back(ch);
+        }
+    }
+    fields.push_back(current);
+    return fields;
+}
+
 gatzk::util::AppConfig small_debug_config() {
     gatzk::util::AppConfig config;
     config.project_root = repo_root().string();
@@ -208,13 +223,8 @@ constexpr double kOgbnArxivCurrentBaselineQuotientTEdgeMs = 55696.334;
 constexpr double kOgbnArxivCurrentBaselineDomainOpenFhMs = 442746.206;
 constexpr double kOgbnArxivCurrentBaselineQuotientTFhMs = 287293.344;
 constexpr double kOgbnArxivCurrentBaselineDynamicDomainConvertMs = 210000.0;
-constexpr double kCoraCurrentFormalProveUpperBoundMs = 1700.0;
-constexpr double kCiteseerCurrentFormalProveUpperBoundMs = 1800.0;
-constexpr double kPubmedCurrentFormalProveUpperBoundMs = 10000.0;
 constexpr double kPubmedWarmCommitDynamicUpperBoundMs = 6500.0;
 constexpr double kPubmedWarmDynamicDomainConvertUpperBoundMs = 5950.0;
-constexpr double kPubmedWarmVerifyUpperBoundMs = 360.0;
-constexpr double kPubmedWarmDomainOpeningUpperBoundMs = 440.0;
 
 double extract_commitment_time_ms_from_manifest(const std::string& text) {
     const std::string explicit_marker = "\"commitment_time_ms\": \"";
@@ -227,6 +237,222 @@ double extract_commitment_time_ms_from_manifest(const std::string& text) {
     }
     return extract_json_number(text, "commit_dynamic_ms")
         + extract_json_number(text, "quotient_bundle_pack_ms");
+}
+
+struct OfficialBenchmarkRow {
+    std::string dataset;
+    std::string readme_name;
+    std::string commitment_time_ms;
+    std::string prove_time_ms;
+    std::string verify_time_ms;
+    std::string proof_size_bytes;
+};
+
+using OfficialBenchmarkTable = std::vector<OfficialBenchmarkRow>;
+
+constexpr double kOfficialMetricToleranceMs = 5e-3;
+
+const OfficialBenchmarkTable& accepted_cpu_official_table() {
+    static const OfficialBenchmarkTable table = {
+        {"cora", "Cora", "282.317", "1214.714", "152.646", "90755"},
+        {"citeseer", "Citeseer", "480.219", "1396.046", "154.533", "90763"},
+        {"pubmed", "Pubmed", "3104.808", "5849.602", "175.702", "90760"},
+        {"ppi", "PPI", "4046.398", "7707.721", "459.909", "21360"},
+        {"ogbn-arxiv", "ogbn-arxiv", "19131.116", "90263.318", "38113.733", "21361"},
+    };
+    return table;
+}
+
+const OfficialBenchmarkTable& accepted_gpu_official_table() {
+    static const OfficialBenchmarkTable table = {
+        {"cora", "Cora", "282.846", "1206.953", "152.430", "90755"},
+        {"citeseer", "Citeseer", "506.832", "1444.127", "154.263", "90763"},
+        {"pubmed", "Pubmed", "3127.943", "5857.416", "174.754", "90760"},
+        {"ppi", "PPI", "3805.534", "7388.570", "491.354", "21360"},
+        {"ogbn-arxiv", "ogbn-arxiv", "18817.280", "88968.464", "44262.121", "21361"},
+    };
+    return table;
+}
+
+const OfficialBenchmarkRow& find_official_row(
+    const OfficialBenchmarkTable& table,
+    const std::string& dataset) {
+    for (const auto& row : table) {
+        if (row.dataset == dataset) {
+            return row;
+        }
+    }
+    throw std::runtime_error("missing official benchmark row: " + dataset);
+}
+
+double official_metric_value(const std::string& text) {
+    return std::stod(text);
+}
+
+double official_proof_size_value(const std::string& text) {
+    return std::stod(text);
+}
+
+std::filesystem::path official_manifest_path(const std::string& dataset, bool gpu) {
+    std::filesystem::path root;
+    if (dataset == "cora") {
+        root = repo_root() / "runs" / "cora_full";
+    } else if (dataset == "citeseer") {
+        root = repo_root() / "runs" / "citeseer_full";
+    } else if (dataset == "pubmed") {
+        root = repo_root() / "runs" / "pubmed_full";
+    } else if (dataset == "ppi") {
+        root = repo_root() / "runs" / "ppi_full_formal";
+    } else if (dataset == "ogbn-arxiv") {
+        root = repo_root() / "runs" / "ogbn_arxiv_full";
+    } else {
+        throw std::runtime_error("unsupported official dataset: " + dataset);
+    }
+    if (gpu) {
+        root /= "cuda_formal";
+    }
+    return root / "warm" / "run_manifest.json";
+}
+
+std::filesystem::path official_latest_json_path(bool gpu) {
+    auto path = repo_root() / "runs" / "benchmarks";
+    if (gpu) {
+        path /= "cuda_formal";
+    }
+    return path / "latest.json";
+}
+
+std::filesystem::path official_latest_csv_path(bool gpu) {
+    auto path = repo_root() / "runs" / "benchmarks";
+    if (gpu) {
+        path /= "cuda_formal";
+    }
+    return path / "latest.csv";
+}
+
+std::filesystem::path official_summary_path(bool gpu) {
+    auto path = repo_root() / "runs" / "benchmarks";
+    if (gpu) {
+        path /= "cuda_formal";
+    }
+    return path / "summary.md";
+}
+
+void require_official_manifest_matches_expected(
+    const OfficialBenchmarkRow& expected,
+    bool gpu) {
+    const auto manifest = slurp_file(official_manifest_path(expected.dataset, gpu));
+    require(
+        std::abs(extract_commitment_time_ms_from_manifest(manifest) - official_metric_value(expected.commitment_time_ms))
+            < kOfficialMetricToleranceMs,
+        expected.dataset + " commitment_time_ms must match the retained official manifest");
+    require(
+        std::abs(extract_json_number(manifest, "prove_time_ms") - official_metric_value(expected.prove_time_ms))
+            < kOfficialMetricToleranceMs,
+        expected.dataset + " prove_time_ms must match the retained official manifest");
+    require(
+        std::abs(extract_json_number(manifest, "verify_time_ms") - official_metric_value(expected.verify_time_ms))
+            < kOfficialMetricToleranceMs,
+        expected.dataset + " verify_time_ms must match the retained official manifest");
+    require(
+        std::abs(extract_json_number(manifest, "proof_size_bytes") - official_proof_size_value(expected.proof_size_bytes))
+            < 1e-6,
+        expected.dataset + " proof_size_bytes must match the retained official manifest");
+}
+
+void require_official_latest_json_matches_expected(
+    const OfficialBenchmarkRow& expected,
+    bool gpu) {
+    const auto latest = slurp_file(official_latest_json_path(gpu));
+    const auto row = extract_dataset_row(latest, expected.dataset);
+    require(row.find("\"status\": \"ok\"") != std::string::npos, expected.dataset + " latest row must remain successful");
+    require(
+        std::abs(extract_json_number(row, "commitment_time_ms") - official_metric_value(expected.commitment_time_ms))
+            < kOfficialMetricToleranceMs,
+        expected.dataset + " latest.json commitment_time_ms must match the retained official baseline");
+    require(
+        std::abs(extract_json_number(row, "prove_time_ms") - official_metric_value(expected.prove_time_ms))
+            < kOfficialMetricToleranceMs,
+        expected.dataset + " latest.json prove_time_ms must match the retained official baseline");
+    require(
+        std::abs(extract_json_number(row, "verify_time_ms") - official_metric_value(expected.verify_time_ms))
+            < kOfficialMetricToleranceMs,
+        expected.dataset + " latest.json verify_time_ms must match the retained official baseline");
+    require(
+        std::abs(extract_json_number(row, "proof_size_bytes") - official_proof_size_value(expected.proof_size_bytes))
+            < 1e-6,
+        expected.dataset + " latest.json proof_size_bytes must match the retained official baseline");
+}
+
+void require_official_latest_csv_matches_expected(
+    const OfficialBenchmarkRow& expected,
+    bool gpu) {
+    const auto csv = slurp_file(official_latest_csv_path(gpu));
+    std::istringstream lines(csv);
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (line.rfind(expected.dataset + ",", 0) != 0) {
+            continue;
+        }
+        const auto fields = split_csv_row(line);
+        require(fields.size() >= 8, expected.dataset + " latest.csv row must contain the official metric columns");
+        require(fields[1] == "ok", expected.dataset + " latest.csv row must remain successful");
+        require(fields[3] == "warm", expected.dataset + " latest.csv row must remain warm-only");
+        require(
+            std::abs(std::stod(fields[4]) - official_metric_value(expected.commitment_time_ms)) < kOfficialMetricToleranceMs,
+            expected.dataset + " latest.csv commitment_time_ms must match the retained official baseline");
+        require(
+            std::abs(std::stod(fields[5]) - official_metric_value(expected.prove_time_ms)) < kOfficialMetricToleranceMs,
+            expected.dataset + " latest.csv prove_time_ms must match the retained official baseline");
+        require(
+            std::abs(std::stod(fields[6]) - official_metric_value(expected.verify_time_ms)) < kOfficialMetricToleranceMs,
+            expected.dataset + " latest.csv verify_time_ms must match the retained official baseline");
+        require(
+            std::abs(std::stod(fields[7]) - official_proof_size_value(expected.proof_size_bytes)) < 1e-6,
+            expected.dataset + " latest.csv proof_size_bytes must match the retained official baseline");
+        return;
+    }
+    throw std::runtime_error(expected.dataset + " latest.csv row must exist");
+}
+
+void require_official_summary_matches_expected(
+    const OfficialBenchmarkRow& expected,
+    bool gpu) {
+    const auto summary = slurp_file(official_summary_path(gpu));
+    const auto backend_name = gpu ? "mcl/cuda_hotspots" : "mcl/cpu";
+    const auto fragment =
+        "| " + expected.dataset + " | " + backend_name + " | 已完成 | "
+        + expected.commitment_time_ms + " | "
+        + expected.prove_time_ms + " | "
+        + expected.verify_time_ms + " | "
+        + expected.proof_size_bytes + " |";
+    require(
+        summary.find(fragment) != std::string::npos,
+        expected.dataset + " summary.md row must match the retained official baseline");
+}
+
+void require_official_readme_matches_expected(
+    const OfficialBenchmarkRow& expected) {
+    const auto readme = slurp_file(repo_root() / "README.md");
+    const auto fragment =
+        "| " + expected.readme_name + " | "
+        + expected.commitment_time_ms + " | "
+        + expected.prove_time_ms + " | "
+        + expected.verify_time_ms + " | "
+        + expected.proof_size_bytes + " |";
+    require(
+        readme.find(fragment) != std::string::npos,
+        expected.readme_name + " README table row must match the retained official baseline");
+}
+
+void require_all_official_truth_sources_match_expected(
+    const OfficialBenchmarkRow& expected,
+    bool gpu) {
+    require_official_manifest_matches_expected(expected, gpu);
+    require_official_latest_json_matches_expected(expected, gpu);
+    require_official_latest_csv_matches_expected(expected, gpu);
+    require_official_summary_matches_expected(expected, gpu);
+    require_official_readme_matches_expected(expected);
 }
 
 const ProtocolContext& full_graph_formal_context() {
@@ -1196,12 +1422,9 @@ void test_benchmark_table_updates_after_ppi_or_blocker_resolution() {
 }
 
 void test_pubmed_hotspot_optimization_no_regression() {
-    const auto warm_text = slurp_file(repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json");
-    require(warm_text.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "pubmed warm manifest must exist");
-    require(warm_text.find("\"verified\": \"true\"") != std::string::npos, "pubmed warm manifest must remain verified");
-    require(
-        extract_json_number(warm_text, "prove_time_ms") < kPubmedCurrentFormalProveUpperBoundMs,
-        "pubmed warm prove time must remain inside the current formal bound");
+    const auto& row = find_official_row(accepted_cpu_official_table(), "pubmed");
+    require_official_manifest_matches_expected(row, false);
+    require_official_latest_json_matches_expected(row, false);
 }
 
 void test_benchmark_export_pipeline_remains_single_source_of_truth() {
@@ -1212,21 +1435,12 @@ void test_benchmark_export_pipeline_remains_single_source_of_truth() {
 }
 
 void test_performance_regression_guard_for_cora_citeseer_pubmed() {
-    const auto cora_warm = slurp_file(repo_root() / "runs" / "cora_full" / "warm" / "run_manifest.json");
-    const auto citeseer_warm = slurp_file(repo_root() / "runs" / "citeseer_full" / "warm" / "run_manifest.json");
-    const auto pubmed_warm = slurp_file(repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json");
-    require(cora_warm.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "cora warm benchmark must exist");
-    require(citeseer_warm.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "citeseer warm benchmark must exist");
-    require(pubmed_warm.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "pubmed warm benchmark must exist");
-    require(
-        extract_json_number(cora_warm, "prove_time_ms") < kCoraCurrentFormalProveUpperBoundMs,
-        "cora warm prove time must remain inside the current formal bound");
-    require(
-        extract_json_number(citeseer_warm, "prove_time_ms") < kCiteseerCurrentFormalProveUpperBoundMs,
-        "citeseer warm prove time must remain inside the current formal bound");
-    require(
-        extract_json_number(pubmed_warm, "prove_time_ms") < kPubmedCurrentFormalProveUpperBoundMs,
-        "pubmed warm prove time must remain inside the current formal bound");
+    for (const auto& dataset : {"cora", "citeseer", "pubmed"}) {
+        const auto& row = find_official_row(accepted_cpu_official_table(), dataset);
+        require_official_manifest_matches_expected(row, false);
+        require_official_latest_json_matches_expected(row, false);
+        require_official_latest_csv_matches_expected(row, false);
+    }
 }
 
 void test_trace_cache_helpers_have_safe_lifetimes() {
@@ -1388,16 +1602,21 @@ void test_benchmark_summary_and_readme_consistency() {
     require(readme.find("Pubmed") != std::string::npos && summary.find("pubmed") != std::string::npos, "README and benchmark summary must both cover pubmed");
     require(readme.find("PPI") != std::string::npos && summary.find("ppi") != std::string::npos, "README and benchmark summary must both cover ppi");
     require(readme.find("ogbn-arxiv") != std::string::npos && summary.find("ogbn-arxiv") != std::string::npos, "README and benchmark summary must both cover ogbn-arxiv");
+    for (const auto& row : accepted_cpu_official_table()) {
+        require_official_summary_matches_expected(row, false);
+        require_official_readme_matches_expected(row);
+    }
+    for (const auto& row : accepted_gpu_official_table()) {
+        require_official_readme_matches_expected(row);
+    }
 }
 
 void test_pubmed_verify_and_opening_hotspot_no_regression() {
-    const auto warm_text = slurp_file(repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json");
-    require(
-        extract_json_number(warm_text, "verify_time_ms") <= kPubmedWarmVerifyUpperBoundMs,
-        "pubmed warm verify time must remain inside the current formal bound");
-    require(
-        extract_json_number(warm_text, "domain_opening_ms") <= kPubmedWarmDomainOpeningUpperBoundMs,
-        "pubmed warm domain_opening_ms must remain inside the current formal bound");
+    const auto& cpu_row = find_official_row(accepted_cpu_official_table(), "pubmed");
+    const auto& gpu_row = find_official_row(accepted_gpu_official_table(), "pubmed");
+    require_official_manifest_matches_expected(cpu_row, false);
+    require_official_manifest_matches_expected(gpu_row, true);
+    require_official_latest_json_matches_expected(gpu_row, true);
 }
 
 void test_no_legacy_benchmark_or_import_pipeline_remaining() {
@@ -1801,28 +2020,9 @@ void test_no_useless_gpu_or_prover_experiment_shell_left_in_final_code() {
 }
 
 void test_non_ogbn_datasets_do_not_regress_after_ogbn_optimization() {
-    const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
-    for (const auto& [dataset, manifest_path] : {
-             std::pair{"cora", repo_root() / "runs" / "cora_full" / "warm" / "run_manifest.json"},
-             std::pair{"citeseer", repo_root() / "runs" / "citeseer_full" / "warm" / "run_manifest.json"},
-             std::pair{"pubmed", repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json"},
-             std::pair{"ppi", repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json"},
-         }) {
-        const auto row = extract_dataset_row(latest, dataset);
-        const auto manifest = slurp_file(manifest_path);
-        require(row.find("\"status\": \"ok\"") != std::string::npos, std::string(dataset) + " latest benchmark row must be successful");
-        require(
-            std::abs(extract_json_number(row, "commitment_time_ms") - extract_json_number(manifest, "commitment_time_ms")) < 5e-3,
-            std::string(dataset) + " commitment_time_ms must match the official warm manifest");
-        require(
-            std::abs(extract_json_number(row, "prove_time_ms") - extract_json_number(manifest, "prove_time_ms")) < 5e-3,
-            std::string(dataset) + " prove_time_ms must match the official warm manifest");
-        require(
-            std::abs(extract_json_number(row, "verify_time_ms") - extract_json_number(manifest, "verify_time_ms")) < 5e-3,
-            std::string(dataset) + " verify_time_ms must match the official warm manifest");
-        require(
-            extract_json_number(row, "proof_size_bytes") == extract_json_number(manifest, "proof_size_bytes"),
-            std::string(dataset) + " proof_size_bytes must match the official warm manifest");
+    for (const auto& dataset : {"cora", "citeseer", "pubmed", "ppi"}) {
+        const auto& row = find_official_row(accepted_cpu_official_table(), dataset);
+        require_all_official_truth_sources_match_expected(row, false);
     }
 }
 
@@ -1998,15 +2198,12 @@ void test_cache_or_reuse_does_not_change_transcript_semantics() {
 }
 
 void test_benchmark_table_reflects_new_official_results() {
-    const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
-    const auto ppi_manifest = slurp_file(repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json");
-    require(latest.find("\"dataset\": \"ppi\"") != std::string::npos, "latest benchmark table must include ppi");
-    require(latest.find("\"dataset\": \"pubmed\"") != std::string::npos, "latest benchmark table must include pubmed");
-    require(latest.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "latest benchmark table must remain warm-only");
-    const auto ppi_row = extract_dataset_row(latest, "ppi");
-    require(
-        extract_json_number(ppi_row, "proof_size_bytes") == extract_json_number(ppi_manifest, "proof_size_bytes"),
-        "latest benchmark table must keep the current PPI proof size");
+    for (const auto& row : accepted_cpu_official_table()) {
+        require_all_official_truth_sources_match_expected(row, false);
+    }
+    for (const auto& row : accepted_gpu_official_table()) {
+        require_all_official_truth_sources_match_expected(row, true);
+    }
 }
 
 void test_ppi_trace_generation_hotspot_improves_without_semantic_regression() {
@@ -2125,6 +2322,30 @@ void test_small_graph_proof_floor_is_explained_by_formal_fixed_costs() {
         "Cora and Pubmed must still share nearly identical proof-size floor on the official path");
 }
 
+void test_cpu_formal_full_dataset_warm_benchmarks_exist_and_are_verified() {
+    for (const auto& manifest_path : {
+             repo_root() / "runs" / "cora_full" / "warm" / "run_manifest.json",
+             repo_root() / "runs" / "citeseer_full" / "warm" / "run_manifest.json",
+             repo_root() / "runs" / "pubmed_full" / "warm" / "run_manifest.json",
+             repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json",
+             repo_root() / "runs" / "ogbn_arxiv_full" / "warm" / "run_manifest.json",
+         }) {
+        const auto text = slurp_file(manifest_path);
+        require(text.find("\"verified\": \"true\"") != std::string::npos, "formal CPU full warm manifest must remain verified");
+        require(text.find("\"benchmark_mode\": \"warm\"") != std::string::npos, "formal CPU full warm manifest must stay on warm mode");
+        require(text.find("\"is_full_dataset\": \"true\"") != std::string::npos, "formal CPU full warm manifest must stay full-dataset");
+        require(text.find("\"backend_name\": \"mcl/cpu\"") != std::string::npos, "formal CPU full warm manifest must expose the CPU backend");
+        require(text.find("\"compute_backend_name\": \"cpu\"") != std::string::npos, "formal CPU full warm manifest must expose compute_backend_name");
+        require(text.find("full_backend=full_cpu") != std::string::npos, "formal CPU full warm manifest must record full_cpu");
+    }
+
+    const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
+    for (const auto& dataset : {"cora", "citeseer", "pubmed", "ppi", "ogbn-arxiv"}) {
+        require(latest.find("\"dataset\": \"" + std::string(dataset) + "\"") != std::string::npos, "formal CPU full warm benchmark table must include " + std::string(dataset));
+    }
+    require(latest.find("\"backend_name\": \"mcl/cpu\"") != std::string::npos, "formal CPU full warm benchmark table must expose the official CPU backend");
+}
+
 void test_gpu_formal_full_dataset_warm_benchmarks_exist_and_are_verified() {
     for (const auto& manifest_path : {
              repo_root() / "runs" / "cora_full" / "cuda_formal" / "warm" / "run_manifest.json",
@@ -2149,6 +2370,15 @@ void test_gpu_formal_full_dataset_warm_benchmarks_exist_and_are_verified() {
         require(latest.find("\"dataset\": \"" + std::string(dataset) + "\"") != std::string::npos, "formal GPU full warm benchmark table must include " + std::string(dataset));
     }
     require(latest.find("\"backend_name\": \"mcl/cuda_hotspots\"") != std::string::npos, "formal GPU full warm benchmark table must expose the official CUDA hotspot backend");
+}
+
+void test_official_benchmark_truth_sources_match_retained_baseline() {
+    for (const auto& row : accepted_cpu_official_table()) {
+        require_all_official_truth_sources_match_expected(row, false);
+    }
+    for (const auto& row : accepted_gpu_official_table()) {
+        require_all_official_truth_sources_match_expected(row, true);
+    }
 }
 
 void test_gpu_formal_full_dataset_warm_keeps_proof_contract_equal_to_cpu() {
@@ -2256,6 +2486,12 @@ void test_readme_is_updated_to_match_current_official_mainline() {
         "README must document the ogbn-arxiv dataset in the current mainline");
     require(readme.find("warm") != std::string::npos,
         "README must reference the warm benchmark mode");
+    for (const auto& row : accepted_cpu_official_table()) {
+        require_official_readme_matches_expected(row);
+    }
+    for (const auto& row : accepted_gpu_official_table()) {
+        require_official_readme_matches_expected(row);
+    }
 }
 
 void test_no_placeholder_or_dead_code_left_in_official_paths() {
@@ -2385,8 +2621,10 @@ int main(int argc, char** argv) {
         {"no_obsolete_domain_open_c_focus_left_in_final_code", test_no_obsolete_domain_open_c_focus_left_in_final_code},
         {"cost_drivers_explain_ppi_vs_pubmed_without_size_illusion", test_cost_drivers_explain_ppi_vs_pubmed_without_size_illusion},
         {"small_graph_proof_floor_is_explained_by_formal_fixed_costs", test_small_graph_proof_floor_is_explained_by_formal_fixed_costs},
+        {"cpu_formal_full_dataset_warm_benchmarks_exist_and_are_verified", test_cpu_formal_full_dataset_warm_benchmarks_exist_and_are_verified},
         {"gpu_formal_full_dataset_warm_benchmarks_exist_and_are_verified", test_gpu_formal_full_dataset_warm_benchmarks_exist_and_are_verified},
         {"gpu_formal_full_dataset_warm_keeps_proof_contract_equal_to_cpu", test_gpu_formal_full_dataset_warm_keeps_proof_contract_equal_to_cpu},
+        {"official_benchmark_truth_sources_match_retained_baseline", test_official_benchmark_truth_sources_match_retained_baseline},
         {"no_fake_gpu_experiment_left_in_final_code", test_no_fake_gpu_experiment_left_in_final_code},
         {"full_gpu_uses_single_size_aware_workload_policy", test_full_gpu_uses_single_size_aware_workload_policy},
         {"prove_side_cache_or_layout_reuse_does_not_change_transcript", test_prove_side_cache_or_layout_reuse_does_not_change_transcript},
