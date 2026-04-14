@@ -448,10 +448,11 @@ int main(int argc, char** argv) {
         };
 
         auto lightweight_warm_up = [&](const gatzk::util::AppConfig& run_config) {
-            gatzk::util::info("priming process-local caches (lightweight, prove-only)");
+            gatzk::util::info("priming process-local caches (memory-safe full warm)");
             const auto context = gatzk::protocol::build_context(run_config, nullptr);
             const auto trace = gatzk::protocol::build_trace(context, nullptr);
-            (void)gatzk::protocol::prove(context, trace, nullptr);
+            const auto proof = gatzk::protocol::prove(context, trace, nullptr);
+            (void)gatzk::protocol::verify(context, proof);
         };
 
         bool accepted = false;

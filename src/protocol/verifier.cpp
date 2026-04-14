@@ -1115,15 +1115,17 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
                 metrics->verify_domain_opening_ms += elapsed_ms(opening_start, Clock::now());
             }
             const auto quotient_start = Clock::now();
-            if (context.config.batching_rule == "whole_graph_single"
-                && context.local.num_nodes >= (1ULL << 16)
-                && spec.domain != nullptr
-                && spec.domain->size >= (1ULL << 20)) {
-                eval_memo.prefetch_public_domain_points(spec.domain, bundle.points);
-            }
             FieldElement expected_t = FieldElement::zero();
             const auto cache_key = verifier_quotient_cache_key(context, proof, spec.quotient_name);
-            if (!shared_verifier_quotient_cache().lookup(cache_key, &expected_t)) {
+            const bool quotient_cache_hit =
+                shared_verifier_quotient_cache().lookup(cache_key, &expected_t);
+            if (!quotient_cache_hit) {
+                if (context.config.batching_rule == "whole_graph_single"
+                    && context.local.num_nodes >= (1ULL << 16)
+                    && spec.domain != nullptr
+                    && spec.domain->size >= (1ULL << 20)) {
+                    eval_memo.prefetch_public_domain_points(spec.domain, bundle.points);
+                }
                 if (spec.quotient_name == "t_FH") {
                     expected_t = evaluate_t_fh(context, challenges, eval, challenges.at(spec.z_name));
                 } else if (spec.quotient_name == "t_edge") {
