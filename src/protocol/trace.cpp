@@ -2121,6 +2121,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     const std::size_t d_h = model::max_hidden_head_dim(context.model);
     const std::size_t d_cat = model::max_hidden_concat_width(context.model);
     const std::size_t n_classes = local.num_classes;
+    const bool enable_selector_fast_path = local.graph_count == 1;
     auto metric_value = [&](double RunMetrics::*member) {
         return metrics != nullptr ? metrics->*member : 0.0;
     };
@@ -2615,7 +2616,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto c_max = cached_state_vector(
             head_cache_prefix + ":cmax",
             [&]() {
-                return build_max_counter_state(s_max, q_new);
+                return build_max_counter_state(s_max, q_new, enable_selector_fast_path);
             });
         add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
         stage_start = Clock::now();
@@ -2723,7 +2724,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto psq = cached_state_vector(
             head_cache_prefix + ":psq:" + lambda_psq.to_string(),
             [&]() {
-                return build_group_prefix_state(w_psq, q_new);
+                return build_group_prefix_state(w_psq, q_new, enable_selector_fast_path);
             });
         add_metric(metrics != nullptr ? &metrics->psq_trace_ms : nullptr, stage_start);
         add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
@@ -3355,7 +3356,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             const auto out_c_max = cached_state_vector(
                 head_cache_prefix + ":cmax",
                 [&]() {
-                    return build_max_counter_state(out_s_max, q_new);
+                    return build_max_counter_state(out_s_max, q_new, enable_selector_fast_path);
                 });
 
             std::vector<FieldElement> out_table_r =
@@ -3422,7 +3423,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             const auto psq_out = cached_state_vector(
                 head_cache_prefix + ":psq:" + lambda_out.to_string(),
                 [&]() {
-                    return build_group_prefix_state(w_out, q_new);
+                    return build_group_prefix_state(w_out, q_new, enable_selector_fast_path);
                 });
             add_dynamic_commitment_batch(
                 trace,
@@ -3866,7 +3867,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     const auto out_c_max = cached_state_vector(
         output_cache_prefix + ":cmax",
         [&]() {
-            return build_max_counter_state(out_s_max, q_new);
+            return build_max_counter_state(out_s_max, q_new, enable_selector_fast_path);
         });
     add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
     stage_start = Clock::now();
@@ -3972,7 +3973,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     const auto psq_out = cached_state_vector(
         output_cache_prefix + ":psq:" + lambda_out.to_string(),
         [&]() {
-            return build_group_prefix_state(w_out, q_new);
+            return build_group_prefix_state(w_out, q_new, enable_selector_fast_path);
         });
     add_metric(metrics != nullptr ? &metrics->psq_trace_ms : nullptr, stage_start);
     add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
@@ -4286,6 +4287,7 @@ TraceArtifacts build_trace(const ProtocolContext& context, RunMetrics* metrics) 
     const std::size_t d_in = local.num_features;
     const std::size_t d_hidden = context.model.a_src.size();
     const std::size_t n_classes = local.num_classes;
+    const bool enable_selector_fast_path = local.graph_count == 1;
     std::vector<FieldElement> feature_index_fields(d_in, FieldElement::zero());
     for (std::size_t j = 0; j < d_in; ++j) {
         feature_index_fields[j] = FieldElement(j);
@@ -4684,7 +4686,7 @@ TraceArtifacts build_trace(const ProtocolContext& context, RunMetrics* metrics) 
         }
         group_start = group_end + 1;
     }
-    const auto c_max = build_max_counter_state(s_max, q_new);
+    const auto c_max = build_max_counter_state(s_max, q_new, enable_selector_fast_path);
     std::vector<FieldElement> table_r(domains.edge->size, FieldElement::zero());
     std::vector<FieldElement> query_r(domains.edge->size, FieldElement::zero());
     std::vector<FieldElement> m_r(domains.edge->size, FieldElement::zero());
@@ -4936,7 +4938,7 @@ TraceArtifacts build_trace(const ProtocolContext& context, RunMetrics* metrics) 
         w_psq[k] = u[k] + lambda_psq * v_hat[k];
         t_psq_edge[k] = sum_edge[k] + lambda_psq * h_agg_star_edge[k];
     }
-    const auto psq_state = build_group_prefix_state(w_psq, q_new);
+    const auto psq_state = build_group_prefix_state(w_psq, q_new, enable_selector_fast_path);
     add_metric(metrics != nullptr ? &metrics->psq_trace_ms : nullptr, stage_start);
     add_dynamic_commitment_batch(
         trace,

@@ -4,9 +4,12 @@
 
 namespace gatzk::protocol {
 
-std::vector<algebra::FieldElement> build_group_prefix_state(
+namespace {
+
+std::vector<algebra::FieldElement> build_selector_prefix_state(
     const std::vector<algebra::FieldElement>& values,
-    const std::vector<algebra::FieldElement>& q_new) {
+    const std::vector<algebra::FieldElement>& q_new,
+    bool enable_selector_fast_path) {
     if (values.size() != q_new.size()) {
         throw std::runtime_error("prefix state input size mismatch");
     }
@@ -15,26 +18,41 @@ std::vector<algebra::FieldElement> build_group_prefix_state(
     }
     std::vector<algebra::FieldElement> out(values.size(), algebra::FieldElement::zero());
     out[0] = values[0];
+    const auto one = algebra::FieldElement::one();
     for (std::size_t i = 1; i < values.size(); ++i) {
-        out[i] = q_new[i] * values[i] + (algebra::FieldElement::one() - q_new[i]) * (out[i - 1] + values[i]);
+        const auto& selector = q_new[i];
+        const auto& value = values[i];
+        if (enable_selector_fast_path) {
+            if (selector.is_zero()) {
+                out[i] = out[i - 1] + value;
+                continue;
+            }
+            if (selector == one) {
+                out[i] = value;
+                continue;
+            }
+        }
+        out[i] = selector * value + (one - selector) * (out[i - 1] + value);
     }
     return out;
 }
 
+}  // namespace
+
+std::vector<algebra::FieldElement> build_group_prefix_state(
+    const std::vector<algebra::FieldElement>& values,
+    const std::vector<algebra::FieldElement>& q_new,
+    bool enable_selector_fast_path) {
+    return build_selector_prefix_state(values, q_new, enable_selector_fast_path);
+}
+
 std::vector<algebra::FieldElement> build_max_counter_state(
     const std::vector<algebra::FieldElement>& s_max,
-    const std::vector<algebra::FieldElement>& q_new) {
+    const std::vector<algebra::FieldElement>& q_new,
+    bool enable_selector_fast_path) {
     if (s_max.size() != q_new.size()) {
         throw std::runtime_error("max counter input size mismatch");
     }
-    if (s_max.empty()) {
-        return {};
-    }
-    std::vector<algebra::FieldElement> out(s_max.size(), algebra::FieldElement::zero());
-    out[0] = s_max[0];
-    for (std::size_t i = 1; i < s_max.size(); ++i) {
-        out[i] = q_new[i] * s_max[i] + (algebra::FieldElement::one() - q_new[i]) * (out[i - 1] + s_max[i]);
-    }
-    return out;
+    return build_selector_prefix_state(s_max, q_new, enable_selector_fast_path);
 }
 }
