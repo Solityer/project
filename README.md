@@ -104,21 +104,21 @@ cmake --build build_cuda -j
 
 | 数据集 | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes |
 | --- | ---: | ---: | ---: | ---: |
-| Cora | 262.684 | 1180.803 | 152.155 | 90755 |
-| Citeseer | 445.997 | 1328.127 | 157.549 | 90763 |
-| Pubmed | 2943.694 | 5517.388 | 175.491 | 90760 |
-| PPI | 3542.829 | 7093.409 | 426.642 | 21360 |
-| ogbn-arxiv | 17459.511 | 67405.878 | 398.206 | 21361 |
+| Cora | 262.605 | 1174.454 | 153.686 | 90755 |
+| Citeseer | 445.371 | 1327.556 | 153.984 | 90763 |
+| Pubmed | 2941.120 | 5564.076 | 175.585 | 90760 |
+| PPI | 3510.734 | 7133.975 | 426.190 | 21360 |
+| ogbn-arxiv | 17569.742 | 65329.058 | 398.058 | 21361 |
 
 ### GPU 正式结果表
 
 | 数据集 | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes |
 | --- | ---: | ---: | ---: | ---: |
-| Cora | 275.959 | 1211.055 | 152.090 | 90755 |
-| Citeseer | 461.722 | 1368.291 | 152.326 | 90763 |
-| Pubmed | 2965.513 | 5687.604 | 174.207 | 90760 |
-| PPI | 3573.333 | 7100.877 | 451.128 | 21360 |
-| ogbn-arxiv | 17490.679 | 67975.010 | 397.655 | 21361 |
+| Cora | 287.779 | 1237.908 | 152.254 | 90755 |
+| Citeseer | 472.522 | 1354.367 | 153.856 | 90763 |
+| Pubmed | 2998.093 | 5671.482 | 172.095 | 90760 |
+| PPI | 3572.921 | 7136.396 | 450.268 | 21360 |
+| ogbn-arxiv | 17541.068 | 65736.261 | 431.560 | 21361 |
 
 五个数据集在 full_cpu 与 full_gpu 下的 proof_size_bytes 保持一致，formal artifact 契约未改变。
 
@@ -130,6 +130,7 @@ cmake --build build_cuda -j
 - full_gpu 现在通过单一 size-aware workload policy 统一决定 barycentric、shared weighted evaluation、shared tau-evaluation batch 与 lookup histogram 是否进入 CUDA，不再让不同文件各自维护互相矛盾的阈值。
 - 小图或低并行度 workload 在 full_gpu 下仍可能回落到 CPU，这属于同一后端内部的实现策略，不构成第二条 formal logic。
 - 当前正式主线保留了 `q_new` selector fast path，但只在 `graph_count == 1` 的单图路径启用；这用于保留 ogbn-arxiv 的 60 秒级 proving 收益，同时避免把 PPI 多图 batch 拉回到回退区间。
+- 当前正式主线还保留了 ogbn-arxiv 单图 `volatile_large_trace` 下的 `c_max / PSQ` warm state-vector cache；它只复用 warm-up 与 measured run 之间的执行层状态向量，不改变 transcript、proof shape 或 verifier equations。
 - 当前正式主表里，verify 已经不再是第一主矛盾；剩余主要瓶颈已经回到 `commitment_time_ms` 与 `prove_time_ms`，尤其是 `ppi` / `ogbn-arxiv` 上的 `commit_dynamic_ms`、trace generation 与相关 witness/materialization 路径。
 
 ## Artifact 真源
@@ -168,4 +169,4 @@ cmake --build build_cuda --target gatzk_tests -j
 
 ## 保留限制
 
-在当前硬件与实现边界下，full_gpu 已通过统一 size-aware 路由覆盖 barycentric 权重、shared weighted evaluation、shared tau-evaluation batch 与 lookup histogram 等 Fr 域热点；当前正式 retained state 已经把单图 `q_new` selector fast path 保留下来，因此 ogbn-arxiv 的 `prove_time_ms` 已进入 60 秒级，而 PPI 仍停留在多图基线路径以避免回退。下一阶段真正剩余的硬问题，已经主要收敛到 `ppi` / `ogbn-arxiv` 的 commitment / prove 继续下压，而不是再默认围绕 verify 展开。
+在当前硬件与实现边界下，full_gpu 已通过统一 size-aware 路由覆盖 barycentric 权重、shared weighted evaluation、shared tau-evaluation batch 与 lookup histogram 等 Fr 域热点；当前正式 retained state 既保留了单图 `q_new` selector fast path，也保留了 ogbn-arxiv 单图 `c_max / PSQ` warm state-vector cache，因此 ogbn-arxiv 的 `prove_time_ms` 已进一步压到 65 秒级，而 PPI 仍停留在多图基线路径以避免回退。下一阶段真正剩余的硬问题，已经主要收敛到 `ppi` 的 commitment / prove 继续下压，以及 ogbn-arxiv 的 commitment_time_ms 继续压缩，而不是再默认围绕 verify 展开。
