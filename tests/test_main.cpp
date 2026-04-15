@@ -215,9 +215,9 @@ constexpr double kOgbnArxivBaselineDomainOpenFhMs = 485992.859;
 constexpr double kOgbnArxivBaselineQuotientTEdgeMs = 603995.964;
 constexpr double kOgbnArxivBaselineQuotientTFhMs = 243877.917;
 constexpr double kOgbnArxivBaselineDynamicDomainConvertMs = 203131.349;
-constexpr double kOgbnArxivCurrentBaselineCommitmentMs = 206436.317;
-constexpr double kOgbnArxivCurrentBaselineProveMs = 1141868.307;
-constexpr double kOgbnArxivCurrentBaselineVerifyMs = 201617.601;
+constexpr double kOgbnArxivCurrentBaselineCommitmentMs = 17459.511;
+constexpr double kOgbnArxivCurrentBaselineProveMs = 67405.878;
+constexpr double kOgbnArxivCurrentBaselineVerifyMs = 398.206;
 constexpr double kOgbnArxivCurrentBaselineDomainOpenEdgeMs = 75151.947;
 constexpr double kOgbnArxivCurrentBaselineQuotientTEdgeMs = 55696.334;
 constexpr double kOgbnArxivCurrentBaselineDomainOpenFhMs = 442746.206;
@@ -254,24 +254,35 @@ constexpr double kOfficialMetricToleranceMs = 5e-3;
 
 const OfficialBenchmarkTable& accepted_cpu_official_table() {
     static const OfficialBenchmarkTable table = {
-        {"cora", "Cora", "268.107", "1199.014", "153.611", "90755"},
-        {"citeseer", "Citeseer", "449.732", "1401.489", "154.200", "90763"},
-        {"pubmed", "Pubmed", "3103.401", "5767.281", "174.171", "90760"},
-        {"ppi", "PPI", "3557.616", "7081.916", "437.718", "21360"},
-        {"ogbn-arxiv", "ogbn-arxiv", "20762.996", "103111.416", "31313.507", "21361"},
+        {"cora", "Cora", "262.684", "1180.803", "152.155", "90755"},
+        {"citeseer", "Citeseer", "445.997", "1328.127", "157.549", "90763"},
+        {"pubmed", "Pubmed", "2943.694", "5517.388", "175.491", "90760"},
+        {"ppi", "PPI", "3542.829", "7093.409", "426.642", "21360"},
+        {"ogbn-arxiv", "ogbn-arxiv", "17459.511", "67405.878", "398.206", "21361"},
     };
     return table;
 }
 
 const OfficialBenchmarkTable& accepted_gpu_official_table() {
     static const OfficialBenchmarkTable table = {
-        {"cora", "Cora", "278.745", "1238.114", "153.892", "90755"},
-        {"citeseer", "Citeseer", "481.271", "1411.817", "154.153", "90763"},
-        {"pubmed", "Pubmed", "3047.875", "5764.843", "175.906", "90760"},
-        {"ppi", "PPI", "3928.565", "7471.405", "432.210", "21360"},
-        {"ogbn-arxiv", "ogbn-arxiv", "21551.726", "96259.545", "36088.376", "21361"},
+        {"cora", "Cora", "275.959", "1211.055", "152.090", "90755"},
+        {"citeseer", "Citeseer", "461.722", "1368.291", "152.326", "90763"},
+        {"pubmed", "Pubmed", "2965.513", "5687.604", "174.207", "90760"},
+        {"ppi", "PPI", "3573.333", "7100.877", "451.128", "21360"},
+        {"ogbn-arxiv", "ogbn-arxiv", "17490.679", "67975.010", "397.655", "21361"},
     };
     return table;
+}
+
+void test_psq_selector_fast_path_is_retained_only_for_single_graph() {
+    const auto trace = slurp_file(repo_root() / "src/protocol/trace.cpp");
+    require(
+        trace.find("const bool enable_selector_fast_path = local.graph_count == 1;") != std::string::npos,
+        "selector fast path must stay gated to single-graph formal paths");
+    const auto psq = slurp_file(repo_root() / "src/protocol/psq.cpp");
+    require(
+        psq.find("if (enable_selector_fast_path)") != std::string::npos,
+        "PSQ/state-machine selector fast path must remain present in the retained code path");
 }
 
 const OfficialBenchmarkRow& find_official_row(
@@ -2372,7 +2383,7 @@ void test_gpu_formal_full_dataset_warm_benchmarks_exist_and_are_verified() {
     require(latest.find("\"backend_name\": \"mcl/cuda_hotspots\"") != std::string::npos, "formal GPU full warm benchmark table must expose the official CUDA hotspot backend");
 }
 
-void test_official_benchmark_truth_sources_match_retained_baseline() {
+void test_official_benchmark_truth_sources_match_final_truth() {
     for (const auto& row : accepted_cpu_official_table()) {
         require_all_official_truth_sources_match_expected(row, false);
     }
@@ -2624,7 +2635,8 @@ int main(int argc, char** argv) {
         {"cpu_formal_full_dataset_warm_benchmarks_exist_and_are_verified", test_cpu_formal_full_dataset_warm_benchmarks_exist_and_are_verified},
         {"gpu_formal_full_dataset_warm_benchmarks_exist_and_are_verified", test_gpu_formal_full_dataset_warm_benchmarks_exist_and_are_verified},
         {"gpu_formal_full_dataset_warm_keeps_proof_contract_equal_to_cpu", test_gpu_formal_full_dataset_warm_keeps_proof_contract_equal_to_cpu},
-        {"official_benchmark_truth_sources_match_retained_baseline", test_official_benchmark_truth_sources_match_retained_baseline},
+        {"official_benchmark_truth_sources_match_final_truth", test_official_benchmark_truth_sources_match_final_truth},
+        {"psq_selector_fast_path_is_retained_only_for_single_graph", test_psq_selector_fast_path_is_retained_only_for_single_graph},
         {"no_fake_gpu_experiment_left_in_final_code", test_no_fake_gpu_experiment_left_in_final_code},
         {"full_gpu_uses_single_size_aware_workload_policy", test_full_gpu_uses_single_size_aware_workload_policy},
         {"prove_side_cache_or_layout_reuse_does_not_change_transcript", test_prove_side_cache_or_layout_reuse_does_not_change_transcript},
