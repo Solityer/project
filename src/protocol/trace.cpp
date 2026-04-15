@@ -76,6 +76,14 @@ bool should_persist_large_trace_cache_key(const std::string& cache_key) {
     return cache_key.find(":volatile_large_trace:") == std::string::npos;
 }
 
+bool should_persist_state_vector_cache_key(const std::string& cache_key) {
+    if (should_persist_large_trace_cache_key(cache_key)) {
+        return true;
+    }
+    return cache_key.find(":volatile_large_trace:") != std::string::npos
+        && (cache_key.find(":cmax") != std::string::npos || cache_key.find(":psq:") != std::string::npos);
+}
+
 std::vector<FieldElement> padded_column(const std::vector<FieldElement>& values, std::size_t size) {
     std::vector<FieldElement> out(size, FieldElement::zero());
     std::copy(values.begin(), values.end(), out.begin());
@@ -1748,7 +1756,7 @@ std::shared_ptr<const std::vector<FieldElement>> cached_state_vector(
     Builder&& builder) {
     static std::mutex cache_mutex;
     static std::unordered_map<std::string, std::shared_ptr<std::vector<FieldElement>>> cache;
-    if (should_persist_large_trace_cache_key(cache_key)) {
+    if (should_persist_state_vector_cache_key(cache_key)) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
             return it->second;
@@ -1756,7 +1764,7 @@ std::shared_ptr<const std::vector<FieldElement>> cached_state_vector(
     }
 
     auto values = std::make_shared<std::vector<FieldElement>>(builder());
-    if (should_persist_large_trace_cache_key(cache_key)) {
+    if (should_persist_state_vector_cache_key(cache_key)) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         const auto [it, _] = cache.emplace(cache_key, values);
         return it->second;

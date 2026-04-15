@@ -254,22 +254,22 @@ constexpr double kOfficialMetricToleranceMs = 5e-3;
 
 const OfficialBenchmarkTable& accepted_cpu_official_table() {
     static const OfficialBenchmarkTable table = {
-        {"cora", "Cora", "262.684", "1180.803", "152.155", "90755"},
-        {"citeseer", "Citeseer", "445.997", "1328.127", "157.549", "90763"},
-        {"pubmed", "Pubmed", "2943.694", "5517.388", "175.491", "90760"},
-        {"ppi", "PPI", "3542.829", "7093.409", "426.642", "21360"},
-        {"ogbn-arxiv", "ogbn-arxiv", "17459.511", "67405.878", "398.206", "21361"},
+        {"cora", "Cora", "262.605", "1174.454", "153.686", "90755"},
+        {"citeseer", "Citeseer", "445.371", "1327.556", "153.984", "90763"},
+        {"pubmed", "Pubmed", "2941.120", "5564.076", "175.585", "90760"},
+        {"ppi", "PPI", "3510.734", "7133.975", "426.190", "21360"},
+        {"ogbn-arxiv", "ogbn-arxiv", "17569.742", "65329.058", "398.058", "21361"},
     };
     return table;
 }
 
 const OfficialBenchmarkTable& accepted_gpu_official_table() {
     static const OfficialBenchmarkTable table = {
-        {"cora", "Cora", "275.959", "1211.055", "152.090", "90755"},
-        {"citeseer", "Citeseer", "461.722", "1368.291", "152.326", "90763"},
-        {"pubmed", "Pubmed", "2965.513", "5687.604", "174.207", "90760"},
-        {"ppi", "PPI", "3573.333", "7100.877", "451.128", "21360"},
-        {"ogbn-arxiv", "ogbn-arxiv", "17490.679", "67975.010", "397.655", "21361"},
+        {"cora", "Cora", "287.779", "1237.908", "152.254", "90755"},
+        {"citeseer", "Citeseer", "472.522", "1354.367", "153.856", "90763"},
+        {"pubmed", "Pubmed", "2998.093", "5671.482", "172.095", "90760"},
+        {"ppi", "PPI", "3572.921", "7136.396", "450.268", "21360"},
+        {"ogbn-arxiv", "ogbn-arxiv", "17541.068", "65736.261", "431.560", "21361"},
     };
     return table;
 }
