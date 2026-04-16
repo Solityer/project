@@ -241,6 +241,7 @@ def status_label(status: object) -> str:
 
 def write_outputs(output_dir: pathlib.Path, mode: str, rows: List[Dict[str, object]]) -> None:
     # latest.json / latest.csv / summary.md 必须从同一批 rows 同步导出，避免真源分叉。
+    # 其中 latest.json 保留机器可读的内部字段；latest.csv 与 summary.md 只展示正式四项指标。
     output_dir.mkdir(parents=True, exist_ok=True)
 
     payload = {
@@ -259,18 +260,6 @@ def write_outputs(output_dir: pathlib.Path, mode: str, rows: List[Dict[str, obje
         "prove_time_ms",
         "verify_time_ms",
         "proof_size_bytes",
-        "node_count",
-        "edge_count",
-        "is_full_dataset",
-        "backend_name",
-        "route2_label",
-        "fft_backend_route",
-        "trace_generation_ms",
-        "commit_dynamic_ms",
-        "quotient_build_ms",
-        "domain_opening_ms",
-        "verify_quotient_ms",
-        "hotspot",
     ]
     with (output_dir / "latest.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=csv_columns)
@@ -278,31 +267,41 @@ def write_outputs(output_dir: pathlib.Path, mode: str, rows: List[Dict[str, obje
         for row in rows:
             writer.writerow({column: row.get(column) for column in csv_columns})
 
+    successful_backends = sorted(
+        {
+            str(row["backend_name"])
+            for row in rows
+            if row.get("status") == "ok" and str(row.get("backend_name", "")).strip()
+        }
+    )
     lines = [
-        "# 最新基准结果",
+        "# 最新正式结果",
         "",
         f"- 主表口径：`{mode}`",
-        "- backend 只表示实现策略；formal semantics 始终保持单一主线。",
+        "- 本页只展示正式四项指标；中间时间拆分保留在 `run_manifest.json` 与 `latest.json`。",
+        "- formal 语义始终只有一套；CPU 与 GPU 差异只属于执行后端。",
         "",
-        "| 数据集 | 后端 | 状态 | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes | node_count | edge_count | route2 | 主要热点 | 阻塞说明 |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
     ]
+    if successful_backends:
+        lines.append("- 当前目录后端：" + "、".join(f"`{backend}`" for backend in successful_backends))
+        lines.append("")
+    lines.extend(
+        [
+            "| 数据集 | 状态 | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes | 阻塞说明 |",
+            "| --- | --- | ---: | ---: | ---: | ---: | --- |",
+        ]
+    )
     for row in rows:
         lines.append(
             "| "
             + " | ".join(
                 [
                     markdown_cell(row["dataset"]),
-                    markdown_cell(row["backend_name"]),
                     markdown_cell(status_label(row["status"])),
                     markdown_cell(row["commitment_time_ms"]),
                     markdown_cell(row["prove_time_ms"]),
                     markdown_cell(row["verify_time_ms"]),
                     markdown_cell(row["proof_size_bytes"]),
-                    markdown_cell(row["node_count"]),
-                    markdown_cell(row["edge_count"]),
-                    markdown_cell(row["route2_label"]),
-                    markdown_cell(row["hotspot"]),
                     markdown_cell(row["blocker"]),
                 ]
             )

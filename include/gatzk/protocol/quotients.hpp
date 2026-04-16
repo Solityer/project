@@ -23,6 +23,7 @@ struct FHQuotientProfile {
 };
 
 // 返回某个工作域 opening bundle 中必须出现的标签顺序。
+// 该顺序会同时影响 prover 组包、verifier 取值和 proof_size_bytes 统计。
 std::vector<std::string> domain_opening_labels(const ProtocolContext& context, const std::string& domain_name);
 
 // 下面这些函数分别对应 formal note 中不同工作域的 quotient 组合关系。

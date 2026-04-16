@@ -7,6 +7,7 @@
 namespace gatzk::protocol {
 
 // 构建 proving 主链需要的全部动态 trace 对象。
+// 它会同时产出动态承诺顺序、外点值与 witness 标量，是 prove 的唯一上游。
 TraceArtifacts build_trace(const ProtocolContext& context, RunMetrics* metrics = nullptr);
 
 }  // namespace gatzk::protocol
