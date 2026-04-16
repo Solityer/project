@@ -64,4 +64,4 @@ void info(const std::string& message) {
     std::cout << "[gatzk] " << message << '\n';
 }
 
-}  // namespace gatzk::util
+}
