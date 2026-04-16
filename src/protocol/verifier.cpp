@@ -938,6 +938,7 @@ double* verify_domain_metric(RunMetrics* metrics, const std::string& bundle_name
 }  // namespace
 
 bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metrics) {
+    // verify 必须重放 transcript，并按固定 block 顺序检查公开元数据、quotient 与 opening 关系。
     const bool debug_verify = std::getenv("GATZK_DEBUG_VERIFY") != nullptr;
     const auto fail = [&](const std::string& reason) {
         if (debug_verify) {

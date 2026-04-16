@@ -64,6 +64,7 @@ int main(int argc, char** argv) {
             updated.export_dir = export_dir.string();
             return updated;
         };
+        // ogbn-arxiv 全图实例需要先把大对象初始化和正式测量拆开，避免冷启动污染 warm 主表。
         auto memory_safe_warm_required = [](const gatzk::util::AppConfig& config) {
             return config.dataset == "ogbn_arxiv"
                 && config.batching_rule == "whole_graph_single"
@@ -146,6 +147,7 @@ int main(int argc, char** argv) {
         const auto absolute_config_path = std::filesystem::absolute(config_path).string();
         gatzk::util::set_route2_options(route2);
 
+        // warm-up 与 measured run 共用这条正式执行入口，所有 artifact 与四项指标都从这里汇总。
         auto run_once = [&](
                             const gatzk::util::AppConfig& run_config,
                             bool is_cold_run,

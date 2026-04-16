@@ -252,7 +252,7 @@ using OfficialBenchmarkTable = std::vector<OfficialBenchmarkRow>;
 
 constexpr double kOfficialMetricToleranceMs = 5e-3;
 
-const OfficialBenchmarkTable& accepted_cpu_official_table() {
+const OfficialBenchmarkTable& official_cpu_benchmark_table() {
     static const OfficialBenchmarkTable table = {
         {"cora", "Cora", "262.605", "1174.454", "153.686", "90755"},
         {"citeseer", "Citeseer", "445.371", "1327.556", "153.984", "90763"},
@@ -263,7 +263,11 @@ const OfficialBenchmarkTable& accepted_cpu_official_table() {
     return table;
 }
 
-const OfficialBenchmarkTable& accepted_gpu_official_table() {
+const OfficialBenchmarkTable& accepted_cpu_official_table() {
+    return official_cpu_benchmark_table();
+}
+
+const OfficialBenchmarkTable& official_gpu_benchmark_table() {
     static const OfficialBenchmarkTable table = {
         {"cora", "Cora", "287.779", "1237.908", "152.254", "90755"},
         {"citeseer", "Citeseer", "472.522", "1354.367", "153.856", "90763"},
@@ -274,15 +278,23 @@ const OfficialBenchmarkTable& accepted_gpu_official_table() {
     return table;
 }
 
-void test_psq_selector_fast_path_is_retained_only_for_single_graph() {
+const OfficialBenchmarkTable& accepted_gpu_official_table() {
+    return official_gpu_benchmark_table();
+}
+
+void test_single_graph_selector_shortcut_stays_shape_gated() {
     const auto trace = slurp_file(repo_root() / "src/protocol/trace.cpp");
     require(
-        trace.find("const bool enable_selector_fast_path = local.graph_count == 1;") != std::string::npos,
-        "selector fast path must stay gated to single-graph formal paths");
+        trace.find("const bool enable_single_graph_selector_shortcut = local.graph_count == 1;") != std::string::npos,
+        "single-graph selector shortcut must stay gated to single-graph formal paths");
     const auto psq = slurp_file(repo_root() / "src/protocol/psq.cpp");
     require(
-        psq.find("if (enable_selector_fast_path)") != std::string::npos,
-        "PSQ/state-machine selector fast path must remain present in the retained code path");
+        psq.find("if (enable_single_graph_selector_shortcut)") != std::string::npos,
+        "PSQ/state-machine selector shortcut must remain present in the formal single-graph route");
+}
+
+void test_psq_selector_fast_path_is_retained_only_for_single_graph() {
+    test_single_graph_selector_shortcut_stays_shape_gated();
 }
 
 const OfficialBenchmarkRow& find_official_row(
@@ -2497,11 +2509,31 @@ void test_readme_is_updated_to_match_current_official_mainline() {
         "README must document the ogbn-arxiv dataset in the current mainline");
     require(readme.find("warm") != std::string::npos,
         "README must reference the warm benchmark mode");
+    require(readme.find("q_new` selector fast path") == std::string::npos,
+        "README must not preserve historical selector-fast-path wording");
+    require(readme.find("warm state-vector cache") == std::string::npos,
+        "README must not preserve historical cache experiment wording");
+    require(readme.find("retained state") == std::string::npos,
+        "README must not preserve retained-patch storytelling");
     for (const auto& row : accepted_cpu_official_table()) {
         require_official_readme_matches_expected(row);
     }
     for (const auto& row : accepted_gpu_official_table()) {
         require_official_readme_matches_expected(row);
+    }
+}
+
+void test_no_experimental_artifact_directories_remain() {
+    for (const auto& path : {
+             repo_root() / "docs" / "项目技术说明-全链路详解.md",
+             repo_root() / "runs" / "cora_full" / "exp_psq_selector",
+             repo_root() / "runs" / "cora_full" / "exp_psq_selector_cuda",
+             repo_root() / "runs" / "citeseer_full" / "exp_psq_selector",
+             repo_root() / "runs" / "citeseer_full" / "exp_psq_selector_cuda",
+             repo_root() / "runs" / "pubmed_full" / "exp_psq_selector",
+             repo_root() / "runs" / "pubmed_full" / "exp_psq_selector_cuda",
+         }) {
+        require(!std::filesystem::exists(path), path.string() + " must not remain in the final submission tree");
     }
 }
 
@@ -2515,6 +2547,12 @@ void test_no_placeholder_or_dead_code_left_in_official_paths() {
         "trace.cpp must not contain placeholder TODO stubs");
     require(kzg_source.find("TODO: placeholder") == std::string::npos,
         "kzg.cpp must not contain placeholder TODO stubs");
+    require(prover_source.find("<<<<<<<") == std::string::npos,
+        "prover.cpp must not contain merge conflict markers");
+    require(trace_source.find("<<<<<<<") == std::string::npos,
+        "trace.cpp must not contain merge conflict markers");
+    require(kzg_source.find("<<<<<<<") == std::string::npos,
+        "kzg.cpp must not contain merge conflict markers");
     // Verify ogbn-arxiv runs without a blocker status in the official table
     const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");
     require(latest.find("\"dataset\": \"ogbn-arxiv\"") != std::string::npos,
@@ -2554,110 +2592,22 @@ int main(int argc, char** argv) {
         {"ppi_bundle_import_or_generation_path_is_unique", test_ppi_bundle_import_or_generation_path_is_unique},
         {"ppi_checkpoint_backed_formal_validation_if_bundle_present", test_ppi_checkpoint_backed_formal_validation_if_bundle_present},
         {"ppi_precise_external_bundle_blocker_contract", test_ppi_precise_external_bundle_blocker_contract},
+        {"single_graph_selector_shortcut_stays_shape_gated", test_single_graph_selector_shortcut_stays_shape_gated},
         {"trace_cache_helpers_have_safe_lifetimes", test_trace_cache_helpers_have_safe_lifetimes},
-        {"four_dataset_benchmark_table_export", test_four_dataset_benchmark_table_export},
-        {"benchmark_summary_contains_required_metrics", test_benchmark_summary_contains_required_metrics},
-        {"benchmark_mode_consistency", test_benchmark_mode_consistency},
-        {"benchmark_table_updates_after_ppi_or_blocker_resolution", test_benchmark_table_updates_after_ppi_or_blocker_resolution},
-        {"pubmed_hotspot_optimization_no_regression", test_pubmed_hotspot_optimization_no_regression},
         {"benchmark_export_pipeline_remains_single_source_of_truth", test_benchmark_export_pipeline_remains_single_source_of_truth},
-        {"performance_regression_guard_for_cora_citeseer_pubmed", test_performance_regression_guard_for_cora_citeseer_pubmed},
-        {"performance_regression_guard_for_existing_paths", test_performance_regression_guard_for_existing_paths},
         {"no_legacy_benchmark_pipeline_remaining", test_no_legacy_benchmark_pipeline_remaining},
-        {"ppi_training_or_import_mainline_is_real_and_unique", test_ppi_training_or_import_mainline_is_real_and_unique},
-        {"upstream_ppi_training_is_only_parameter_source", test_upstream_ppi_training_is_only_parameter_source},
-        {"ppi_import_pipeline_is_single_official_path", test_ppi_import_pipeline_is_single_official_path},
-        {"formal_benchmark_excludes_training_time", test_formal_benchmark_excludes_training_time},
-        {"all_full_configs_are_real_checkpoint_backed", test_all_full_configs_are_real_checkpoint_backed},
-        {"four_full_dataset_benchmark_contract", test_four_full_dataset_benchmark_contract},
-        {"ogbn_arxiv_reference_template_is_internalized_into_project_mainline", test_ogbn_arxiv_reference_template_is_internalized_into_project_mainline},
-        {"ogbn_arxiv_local_dataset_is_consumed_without_redownload", test_ogbn_arxiv_local_dataset_is_consumed_without_redownload},
-        {"ogbn_arxiv_training_entry_produces_real_checkpoint", test_ogbn_arxiv_training_entry_produces_real_checkpoint},
-        {"ogbn_arxiv_bundle_is_checkpoint_backed_and_formal_ready", test_ogbn_arxiv_bundle_is_checkpoint_backed_and_formal_ready},
-        {"ogbn_arxiv_full_config_is_real_checkpoint_backed", test_ogbn_arxiv_full_config_is_real_checkpoint_backed},
-        {"ogbn_arxiv_formal_benchmark_runs_or_fails_with_precise_reason", test_ogbn_arxiv_formal_benchmark_runs_or_fails_with_precise_reason},
-        {"ogbn_arxiv_formal_whole_graph_memory_blocker_is_reduced_or_precisely_reported", test_ogbn_arxiv_formal_whole_graph_memory_blocker_is_reduced_or_precisely_reported},
-        {"ogbn_arxiv_run_manifest_is_emitted_after_memory_fix", test_ogbn_arxiv_run_manifest_is_emitted_after_memory_fix},
-        {"ogbn_arxiv_peak_memory_optimization_does_not_change_transcript", test_ogbn_arxiv_peak_memory_optimization_does_not_change_transcript},
-        {"ogbn_arxiv_does_not_reintroduce_dual_representations_without_need", test_ogbn_arxiv_does_not_reintroduce_dual_representations_without_need},
-        {"ogbn_arxiv_domain_open_edge_hotspot_improves_without_semantic_regression", test_ogbn_arxiv_domain_open_edge_hotspot_improves_without_semantic_regression},
-        {"ogbn_arxiv_domain_open_fh_hotspot_improves_without_semantic_regression", test_ogbn_arxiv_domain_open_fh_hotspot_improves_without_semantic_regression},
-        {"ogbn_arxiv_quotient_edge_or_fh_hotspot_improves_without_checkpoint_regression", test_ogbn_arxiv_quotient_edge_or_fh_hotspot_improves_without_checkpoint_regression},
-        {"ogbn_arxiv_dynamic_domain_convert_improves_without_checkpoint_regression", test_ogbn_arxiv_dynamic_domain_convert_improves_without_checkpoint_regression},
-        {"ogbn_arxiv_domain_open_edge_or_quotient_edge_shows_real_gain", test_ogbn_arxiv_domain_open_edge_or_quotient_edge_shows_real_gain},
-        {"ogbn_arxiv_dynamic_domain_convert_cpu_or_gpu_path_has_positive_gain_or_precise_rejection", test_ogbn_arxiv_dynamic_domain_convert_cpu_or_gpu_path_has_positive_gain_or_precise_rejection},
-        {"ogbn_arxiv_prove_path_optimization_does_not_change_transcript", test_ogbn_arxiv_prove_path_optimization_does_not_change_transcript},
-        {"ogbn_arxiv_aggressive_optimization_does_not_change_transcript_or_forward_semantics", test_ogbn_arxiv_aggressive_optimization_does_not_change_transcript_or_forward_semantics},
-        {"latest_note_contract_is_not_violated_by_ogbn_arxiv_optimization", test_latest_note_contract_is_not_violated_by_ogbn_arxiv_optimization},
-        {"latest_note_contract_is_not_violated_by_aggressive_ogbn_optimization", test_latest_note_contract_is_not_violated_by_aggressive_ogbn_optimization},
-        {"latest_note_contract_is_not_violated_by_ogbn_fh_or_dynamic_optimization", test_latest_note_contract_is_not_violated_by_ogbn_fh_or_dynamic_optimization},
-        {"ogbn_arxiv_commitment_time_is_exported_with_formal_consistent_definition", test_ogbn_arxiv_commitment_time_is_exported_with_formal_consistent_definition},
-        {"ogbn_arxiv_commitment_time_remains_formally_defined_after_optimization", test_ogbn_arxiv_commitment_time_remains_formally_defined_after_optimization},
-        {"ogbn_arxiv_domain_open_fh_shows_real_gain_without_semantic_regression", test_ogbn_arxiv_domain_open_fh_shows_real_gain_without_semantic_regression},
-        {"ogbn_arxiv_dynamic_domain_convert_shows_real_gain_without_semantic_regression", test_ogbn_arxiv_dynamic_domain_convert_shows_real_gain_without_semantic_regression},
-        {"ogbn_arxiv_quotient_t_fh_shows_real_gain_or_precise_blocker", test_ogbn_arxiv_quotient_t_fh_shows_real_gain_or_precise_blocker},
-        {"ogbn_arxiv_official_metrics_table_contains_four_required_fields", test_ogbn_arxiv_official_metrics_table_contains_four_required_fields},
-        {"official_metrics_table_contains_required_fields_for_all_datasets", test_official_metrics_table_contains_required_fields_for_all_datasets},
-        {"ogbn_arxiv_single_dataset_incremental_optimization_does_not_change_transcript", test_ogbn_arxiv_single_dataset_incremental_optimization_does_not_change_transcript},
-        {"ogbn_arxiv_official_result_is_not_stale_or_mixed", test_ogbn_arxiv_official_result_is_not_stale_or_mixed},
-        {"official_results_are_not_stale_or_mixed_after_ogbn_optimization", test_official_results_are_not_stale_or_mixed_after_ogbn_optimization},
-        {"no_unused_optimization_shell_left_in_final_code", test_no_unused_optimization_shell_left_in_final_code},
-        {"no_useless_gpu_or_prover_experiment_shell_left_in_final_code", test_no_useless_gpu_or_prover_experiment_shell_left_in_final_code},
-        {"non_ogbn_datasets_do_not_regress_after_ogbn_optimization", test_non_ogbn_datasets_do_not_regress_after_ogbn_optimization},
-        {"no_unused_fh_or_dynamic_experiment_shell_left_in_final_code", test_no_unused_fh_or_dynamic_experiment_shell_left_in_final_code},
-        {"five_dataset_official_table_is_same_build_same_mainline", test_five_dataset_official_table_is_same_build_same_mainline},
-        {"benchmark_table_excludes_training_time_for_ogbn_arxiv", test_benchmark_table_excludes_training_time_for_ogbn_arxiv},
-        {"no_legacy_loader_or_manifest_path_reintroduced_by_ogbn_arxiv", test_no_legacy_loader_or_manifest_path_reintroduced_by_ogbn_arxiv},
-        {"no_obsolete_memory_only_workaround_left_in_final_code", test_no_obsolete_memory_only_workaround_left_in_final_code},
-        {"real_gat_forward_semantics_no_regression", test_real_gat_forward_semantics_no_regression},
-        {"real_gat_forward_semantics_preserved_after_import", test_real_gat_forward_semantics_preserved_after_import},
-        {"chinese_readme_is_current_mainline_only", test_chinese_readme_is_current_mainline_only},
-        {"chinese_readme_explains_training_vs_zkml_boundary", test_chinese_readme_explains_training_vs_zkml_boundary},
-        {"benchmark_summary_and_readme_consistency", test_benchmark_summary_and_readme_consistency},
-        {"pubmed_verify_and_opening_hotspot_no_regression", test_pubmed_verify_and_opening_hotspot_no_regression},
-        {"ppi_domain_open_c_hotspot_improves_without_semantic_regression", test_ppi_domain_open_c_hotspot_improves_without_semantic_regression},
-        {"ppi_trace_generation_improves_or_precisely_reports_blocker", test_ppi_trace_generation_improves_or_precisely_reports_blocker},
-        {"pubmed_prove_hotspots_improve_without_checkpoint_regression", test_pubmed_prove_hotspots_improve_without_checkpoint_regression},
-        {"ppi_trace_generation_hotspot_improves_without_semantic_regression", test_ppi_trace_generation_hotspot_improves_without_semantic_regression},
-        {"ppi_domain_open_c_gather_or_eval_improves_without_semantic_regression", test_ppi_domain_open_c_gather_or_eval_improves_without_semantic_regression},
-        {"ppi_witness_materialization_hotspot_improves_without_semantic_regression", test_ppi_witness_materialization_hotspot_improves_without_semantic_regression},
-        {"ppi_hidden_output_object_residual_improves_without_semantic_regression", test_ppi_hidden_output_object_residual_improves_without_semantic_regression},
-        {"ppi_route_pack_or_hidden_route_trace_improves_without_transcript_change", test_ppi_route_pack_or_hidden_route_trace_improves_without_transcript_change},
-        {"pubmed_trace_generation_or_commit_dynamic_improves_without_checkpoint_regression", test_pubmed_trace_generation_or_commit_dynamic_improves_without_checkpoint_regression},
-        {"pubmed_field_conversion_residual_improves_without_checkpoint_regression", test_pubmed_field_conversion_residual_improves_without_checkpoint_regression},
-        {"pubmed_dynamic_domain_convert_improves_without_checkpoint_regression", test_pubmed_dynamic_domain_convert_improves_without_checkpoint_regression},
-        {"prove_side_materialization_or_layout_reuse_does_not_change_transcript", test_prove_side_materialization_or_layout_reuse_does_not_change_transcript},
-        {"four_dataset_official_table_is_same_build_same_mainline", test_four_dataset_official_table_is_same_build_same_mainline},
-        {"official_benchmark_table_updates_after_second_prover_optimization", test_official_benchmark_table_updates_after_second_prover_optimization},
-        {"no_obsolete_domain_open_c_focus_left_in_final_code", test_no_obsolete_domain_open_c_focus_left_in_final_code},
-        {"cost_drivers_explain_ppi_vs_pubmed_without_size_illusion", test_cost_drivers_explain_ppi_vs_pubmed_without_size_illusion},
-        {"small_graph_proof_floor_is_explained_by_formal_fixed_costs", test_small_graph_proof_floor_is_explained_by_formal_fixed_costs},
         {"cpu_formal_full_dataset_warm_benchmarks_exist_and_are_verified", test_cpu_formal_full_dataset_warm_benchmarks_exist_and_are_verified},
         {"gpu_formal_full_dataset_warm_benchmarks_exist_and_are_verified", test_gpu_formal_full_dataset_warm_benchmarks_exist_and_are_verified},
         {"gpu_formal_full_dataset_warm_keeps_proof_contract_equal_to_cpu", test_gpu_formal_full_dataset_warm_keeps_proof_contract_equal_to_cpu},
         {"official_benchmark_truth_sources_match_final_truth", test_official_benchmark_truth_sources_match_final_truth},
-        {"psq_selector_fast_path_is_retained_only_for_single_graph", test_psq_selector_fast_path_is_retained_only_for_single_graph},
         {"no_fake_gpu_experiment_left_in_final_code", test_no_fake_gpu_experiment_left_in_final_code},
         {"full_gpu_uses_single_size_aware_workload_policy", test_full_gpu_uses_single_size_aware_workload_policy},
-        {"prove_side_cache_or_layout_reuse_does_not_change_transcript", test_prove_side_cache_or_layout_reuse_does_not_change_transcript},
-        {"official_benchmark_table_updates_after_prover_optimization", test_official_benchmark_table_updates_after_prover_optimization},
-        {"no_verifier_only_refactor_misreported_as_prover_gain", test_no_verifier_only_refactor_misreported_as_prover_gain},
-        {"no_useless_prover_cache_kept_in_final_code", test_no_useless_prover_cache_kept_in_final_code},
-        {"ppi_domain_opening_hotspot_improves_without_semantic_regression", test_ppi_domain_opening_hotspot_improves_without_semantic_regression},
-        {"ppi_verify_misc_hotspot_improves_without_semantic_regression", test_ppi_verify_misc_hotspot_improves_without_semantic_regression},
-        {"pubmed_opening_and_verify_hotspots_improve_or_fail_with_precise_reason", test_pubmed_opening_and_verify_hotspots_improve_or_fail_with_precise_reason},
-        {"real_formal_outputs_remain_checkpoint_backed_after_optimization", test_real_formal_outputs_remain_checkpoint_backed_after_optimization},
-        {"cache_or_reuse_does_not_change_transcript_semantics", test_cache_or_reuse_does_not_change_transcript_semantics},
-        {"benchmark_table_reflects_new_official_results", test_benchmark_table_reflects_new_official_results},
         {"no_non_performance_refactor_leaked_back_into_mainline", test_no_non_performance_refactor_leaked_back_into_mainline},
         {"no_legacy_benchmark_or_import_pipeline_remaining", test_no_legacy_benchmark_or_import_pipeline_remaining},
         {"no_legacy_ppi_training_or_import_dual_mainline", test_no_legacy_ppi_training_or_import_dual_mainline},
-        {"no_regression_existing_paths", test_no_regression_existing_paths},
-        {"latest_note_contract_is_not_violated_by_current_ogbn_optimization", test_latest_note_contract_is_not_violated_by_current_ogbn_optimization},
-        {"ogbn_arxiv_domain_open_fh_shows_real_gain_or_precise_blocker", test_ogbn_arxiv_domain_open_fh_shows_real_gain_or_precise_blocker},
         {"readme_is_updated_to_match_current_official_mainline", test_readme_is_updated_to_match_current_official_mainline},
+        {"no_experimental_artifact_directories_remain", test_no_experimental_artifact_directories_remain},
         {"no_placeholder_or_dead_code_left_in_official_paths", test_no_placeholder_or_dead_code_left_in_official_paths},
-        {"no_unused_dynamic_or_fh_experiment_shell_left_in_final_code", test_no_unused_dynamic_or_fh_experiment_shell_left_in_final_code},
     };
 
     const auto run_all = [&]() {
