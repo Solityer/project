@@ -9,11 +9,11 @@ namespace gatzk::protocol {
 std::vector<algebra::FieldElement> build_group_prefix_state(
     const std::vector<algebra::FieldElement>& values,
     const std::vector<algebra::FieldElement>& q_new,
-    bool enable_selector_fast_path = false);
+    bool enable_single_graph_selector_shortcut = false);
 
 std::vector<algebra::FieldElement> build_max_counter_state(
     const std::vector<algebra::FieldElement>& s_max,
     const std::vector<algebra::FieldElement>& q_new,
-    bool enable_selector_fast_path = false);
+    bool enable_single_graph_selector_shortcut = false);
 
 }  // namespace gatzk::protocol

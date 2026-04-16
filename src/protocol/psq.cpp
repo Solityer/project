@@ -9,7 +9,7 @@ namespace {
 std::vector<algebra::FieldElement> build_selector_prefix_state(
     const std::vector<algebra::FieldElement>& values,
     const std::vector<algebra::FieldElement>& q_new,
-    bool enable_selector_fast_path) {
+    bool enable_single_graph_selector_shortcut) {
     if (values.size() != q_new.size()) {
         throw std::runtime_error("prefix state input size mismatch");
     }
@@ -22,7 +22,7 @@ std::vector<algebra::FieldElement> build_selector_prefix_state(
     for (std::size_t i = 1; i < values.size(); ++i) {
         const auto& selector = q_new[i];
         const auto& value = values[i];
-        if (enable_selector_fast_path) {
+        if (enable_single_graph_selector_shortcut) {
             if (selector.is_zero()) {
                 out[i] = out[i - 1] + value;
                 continue;
@@ -42,17 +42,17 @@ std::vector<algebra::FieldElement> build_selector_prefix_state(
 std::vector<algebra::FieldElement> build_group_prefix_state(
     const std::vector<algebra::FieldElement>& values,
     const std::vector<algebra::FieldElement>& q_new,
-    bool enable_selector_fast_path) {
-    return build_selector_prefix_state(values, q_new, enable_selector_fast_path);
+    bool enable_single_graph_selector_shortcut) {
+    return build_selector_prefix_state(values, q_new, enable_single_graph_selector_shortcut);
 }
 
 std::vector<algebra::FieldElement> build_max_counter_state(
     const std::vector<algebra::FieldElement>& s_max,
     const std::vector<algebra::FieldElement>& q_new,
-    bool enable_selector_fast_path) {
+    bool enable_single_graph_selector_shortcut) {
     if (s_max.size() != q_new.size()) {
         throw std::runtime_error("max counter input size mismatch");
     }
-    return build_selector_prefix_state(s_max, q_new, enable_selector_fast_path);
+    return build_selector_prefix_state(s_max, q_new, enable_single_graph_selector_shortcut);
 }
 }

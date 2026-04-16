@@ -2579,6 +2579,7 @@ DomainOpeningBundle make_bundle(
 ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics) {
     static std::mutex cache_mutex;
     static std::unordered_map<std::string, ProtocolContext> cache;
+    // 这里只复用静态上下文对象，见证和挑战相关状态必须按每次正式证明重新生成。
     const bool persist_context_cache =
         config.dataset != "ogbn_arxiv" && config.dataset != "ogbn-arxiv";
 
@@ -3050,6 +3051,7 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
 Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetrics* metrics) {
     const auto prove_start = Clock::now();
     const auto& route2 = util::route2_options();
+    // prove 入口只消费 trace 和固定挑战顺序，不在这里改写 proof schema 或 block 顺序。
     if (trace.commitment_order != dynamic_commitment_labels(context)) {
         throw std::runtime_error("trace commitment order does not match the protocol commitment order");
     }

@@ -129,8 +129,8 @@ cmake --build build_cuda -j
 - full_gpu 是完整执行后端，不是辅助伪 GPU 路径；其职责是在不改变证明含义的前提下接管 CUDA 可获益的 Fr 域热点。
 - full_gpu 现在通过单一 size-aware workload policy 统一决定 barycentric、shared weighted evaluation、shared tau-evaluation batch 与 lookup histogram 是否进入 CUDA，不再让不同文件各自维护互相矛盾的阈值。
 - 小图或低并行度 workload 在 full_gpu 下仍可能回落到 CPU，这属于同一后端内部的实现策略，不构成第二条 formal logic。
-- 当前正式主线保留了 `q_new` selector fast path，但只在 `graph_count == 1` 的单图路径启用；这用于保留 ogbn-arxiv 的 60 秒级 proving 收益，同时避免把 PPI 多图 batch 拉回到回退区间。
-- 当前正式主线还保留了 ogbn-arxiv 单图 `volatile_large_trace` 下的 `c_max / PSQ` warm state-vector cache；它只复用 warm-up 与 measured run 之间的执行层状态向量，不改变 transcript、proof shape 或 verifier equations。
+- 单图与多图路径允许按 shape 和 workload 选择不同的执行层缓存与路由，但这些分流只改变实现策略，不改变 transcript、proof shape 或 verifier equations。
+- 所有执行层复用都必须保持 `proof_size_bytes`、`hidden_profile`、`d_in_profile` 与 per-run manifest 契约一致。
 - 当前正式主表里，verify 已经不再是第一主矛盾；剩余主要瓶颈已经回到 `commitment_time_ms` 与 `prove_time_ms`，尤其是 `ppi` / `ogbn-arxiv` 上的 `commit_dynamic_ms`、trace generation 与相关 witness/materialization 路径。
 
 ## Artifact 真源
@@ -165,8 +165,8 @@ cmake --build build_cuda --target gatzk_tests -j
 - 正式 benchmark 仅基于 `artifacts/checkpoints/` 中的真实 checkpoint bundles。
 - PPI 上游训练仓库只作为上游真实参数来源；本仓库不保留独立训练主线，也不把训练时间或训练日志计入正式 proving / verify 结果。
 - 运行前需准备对应数据集内容到 `data/`；辅助脚本保留在 `scripts/prepare_planetoid.py`、`scripts/prepare_ogbn_arxiv.py`、`scripts/prepare_ppi.py`。
-- `GAT-ZKML-多层多头.md` 是唯一 formal note，本 README 只汇报实现级优化后的 retained state，不引入新的 protocol 语义。
+- `GAT-ZKML-多层多头.md` 是唯一 formal note，本 README 只汇报当前正式实现状态，不引入新的 protocol 语义。
 
 ## 保留限制
 
-在当前硬件与实现边界下，full_gpu 已通过统一 size-aware 路由覆盖 barycentric 权重、shared weighted evaluation、shared tau-evaluation batch 与 lookup histogram 等 Fr 域热点；当前正式 retained state 既保留了单图 `q_new` selector fast path，也保留了 ogbn-arxiv 单图 `c_max / PSQ` warm state-vector cache，因此 ogbn-arxiv 的 `prove_time_ms` 已进一步压到 65 秒级，而 PPI 仍停留在多图基线路径以避免回退。下一阶段真正剩余的硬问题，已经主要收敛到 `ppi` 的 commitment / prove 继续下压，以及 ogbn-arxiv 的 commitment_time_ms 继续压缩，而不是再默认围绕 verify 展开。
+在当前硬件与实现边界下，full_gpu 已通过统一 size-aware 路由覆盖 barycentric 权重、shared weighted evaluation、shared tau-evaluation batch 与 lookup histogram 等 Fr 域热点；正式主线只保留与 accepted truth 对齐的执行策略、artifact 契约和 benchmark 口径，不再维护实验性分支、第二套 benchmark 管线或历史优化叙事。后续如果继续推进，只能在不改变 formal semantics 的前提下继续收紧 `ppi` 与 `ogbn-arxiv` 的 `commitment_time_ms` / `prove_time_ms`。

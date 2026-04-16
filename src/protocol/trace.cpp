@@ -1442,6 +1442,7 @@ std::string trace_cache_prefix(const ProtocolContext& context) {
         && context.domains.fh != nullptr
         && context.domains.fh->size > kMinVolatileLargeTraceFhDomainSize;
 
+    // trace cache key 只区分会影响执行层对象复用的正式维度，避免把实验标签写进主线 key。
     return context.config.checkpoint_bundle
         + ":" + context.config.dataset
         + ":" + std::to_string(context.local.num_nodes)
@@ -2114,6 +2115,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     if (!model::hidden_family_dimension_chain_is_valid(context.model, &shape_reason)) {
         throw std::runtime_error("formal multi-head proof shape is invalid: " + shape_reason);
     }
+    // 多层多头正式 trace 入口：按层序生成公开列、lookup 列和状态机列，不改 transcript 顺序。
     const auto trace_start = Clock::now();
     const auto initial_forward_ms = metrics != nullptr ? metrics->forward_ms : 0.0;
     const auto initial_commit_dynamic_ms = metrics != nullptr ? metrics->commit_dynamic_ms : 0.0;
@@ -2129,7 +2131,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     const std::size_t d_h = model::max_hidden_head_dim(context.model);
     const std::size_t d_cat = model::max_hidden_concat_width(context.model);
     const std::size_t n_classes = local.num_classes;
-    const bool enable_selector_fast_path = local.graph_count == 1;
+    const bool enable_single_graph_selector_shortcut = local.graph_count == 1;
     auto metric_value = [&](double RunMetrics::*member) {
         return metrics != nullptr ? metrics->*member : 0.0;
     };
@@ -2624,7 +2626,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto c_max = cached_state_vector(
             head_cache_prefix + ":cmax",
             [&]() {
-                return build_max_counter_state(s_max, q_new, enable_selector_fast_path);
+                return build_max_counter_state(s_max, q_new, enable_single_graph_selector_shortcut);
             });
         add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
         stage_start = Clock::now();
@@ -2732,7 +2734,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto psq = cached_state_vector(
             head_cache_prefix + ":psq:" + lambda_psq.to_string(),
             [&]() {
-                return build_group_prefix_state(w_psq, q_new, enable_selector_fast_path);
+                return build_group_prefix_state(w_psq, q_new, enable_single_graph_selector_shortcut);
             });
         add_metric(metrics != nullptr ? &metrics->psq_trace_ms : nullptr, stage_start);
         add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
@@ -3364,7 +3366,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             const auto out_c_max = cached_state_vector(
                 head_cache_prefix + ":cmax",
                 [&]() {
-                    return build_max_counter_state(out_s_max, q_new, enable_selector_fast_path);
+                    return build_max_counter_state(out_s_max, q_new, enable_single_graph_selector_shortcut);
                 });
 
             std::vector<FieldElement> out_table_r =
@@ -3431,7 +3433,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             const auto psq_out = cached_state_vector(
                 head_cache_prefix + ":psq:" + lambda_out.to_string(),
                 [&]() {
-                    return build_group_prefix_state(w_out, q_new, enable_selector_fast_path);
+                    return build_group_prefix_state(w_out, q_new, enable_single_graph_selector_shortcut);
                 });
             add_dynamic_commitment_batch(
                 trace,
@@ -3875,7 +3877,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     const auto out_c_max = cached_state_vector(
         output_cache_prefix + ":cmax",
         [&]() {
-            return build_max_counter_state(out_s_max, q_new, enable_selector_fast_path);
+            return build_max_counter_state(out_s_max, q_new, enable_single_graph_selector_shortcut);
         });
     add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
     stage_start = Clock::now();
@@ -3981,7 +3983,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     const auto psq_out = cached_state_vector(
         output_cache_prefix + ":psq:" + lambda_out.to_string(),
         [&]() {
-            return build_group_prefix_state(w_out, q_new, enable_selector_fast_path);
+            return build_group_prefix_state(w_out, q_new, enable_single_graph_selector_shortcut);
         });
     add_metric(metrics != nullptr ? &metrics->psq_trace_ms : nullptr, stage_start);
     add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
@@ -4278,6 +4280,7 @@ TraceArtifacts build_trace(const ProtocolContext& context, RunMetrics* metrics) 
     const auto trace_start = Clock::now();
     const auto initial_forward_ms = metrics != nullptr ? metrics->forward_ms : 0.0;
     const auto initial_commit_dynamic_ms = metrics != nullptr ? metrics->commit_dynamic_ms : 0.0;
+    // 单头兼容路径与多头正式路径共享同一协议顺序；这里只决定走哪条实现入口。
     if (context.model.has_real_multihead) {
         return build_multihead_trace(context, metrics);
     }
@@ -4295,7 +4298,7 @@ TraceArtifacts build_trace(const ProtocolContext& context, RunMetrics* metrics) 
     const std::size_t d_in = local.num_features;
     const std::size_t d_hidden = context.model.a_src.size();
     const std::size_t n_classes = local.num_classes;
-    const bool enable_selector_fast_path = local.graph_count == 1;
+    const bool enable_single_graph_selector_shortcut = local.graph_count == 1;
     std::vector<FieldElement> feature_index_fields(d_in, FieldElement::zero());
     for (std::size_t j = 0; j < d_in; ++j) {
         feature_index_fields[j] = FieldElement(j);
@@ -4694,7 +4697,7 @@ TraceArtifacts build_trace(const ProtocolContext& context, RunMetrics* metrics) 
         }
         group_start = group_end + 1;
     }
-    const auto c_max = build_max_counter_state(s_max, q_new, enable_selector_fast_path);
+    const auto c_max = build_max_counter_state(s_max, q_new, enable_single_graph_selector_shortcut);
     std::vector<FieldElement> table_r(domains.edge->size, FieldElement::zero());
     std::vector<FieldElement> query_r(domains.edge->size, FieldElement::zero());
     std::vector<FieldElement> m_r(domains.edge->size, FieldElement::zero());
@@ -4946,7 +4949,7 @@ TraceArtifacts build_trace(const ProtocolContext& context, RunMetrics* metrics) 
         w_psq[k] = u[k] + lambda_psq * v_hat[k];
         t_psq_edge[k] = sum_edge[k] + lambda_psq * h_agg_star_edge[k];
     }
-    const auto psq_state = build_group_prefix_state(w_psq, q_new, enable_selector_fast_path);
+    const auto psq_state = build_group_prefix_state(w_psq, q_new, enable_single_graph_selector_shortcut);
     add_metric(metrics != nullptr ? &metrics->psq_trace_ms : nullptr, stage_start);
     add_dynamic_commitment_batch(
         trace,

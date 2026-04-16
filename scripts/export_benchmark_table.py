@@ -121,6 +121,7 @@ def infer_route2_label(manifest: Dict[str, object]) -> str:
 
 
 def make_success_row(dataset: str, manifest: Dict[str, object]) -> Dict[str, object]:
+    # 主表只接收正式 warm + full-dataset + verified manifest，避免实验 run 混入 accepted truth。
     benchmark_mode = infer_benchmark_mode(manifest)
     if benchmark_mode != "warm":
         raise ValueError(f"official benchmark export only supports warm manifests, got {benchmark_mode!r} for {dataset}")
@@ -239,6 +240,7 @@ def status_label(status: object) -> str:
 
 
 def write_outputs(output_dir: pathlib.Path, mode: str, rows: List[Dict[str, object]]) -> None:
+    # latest.json / latest.csv / summary.md 必须从同一批 rows 同步导出，避免真源分叉。
     output_dir.mkdir(parents=True, exist_ok=True)
 
     payload = {
@@ -310,6 +312,7 @@ def write_outputs(output_dir: pathlib.Path, mode: str, rows: List[Dict[str, obje
 
 
 def main() -> None:
+    # 数据集顺序只影响展示，不允许改变每行来自正式 manifest 的字段定义。
     parser = argparse.ArgumentParser()
     parser.add_argument("--run", action="append", default=[], help="dataset=run_manifest.json_or_dir")
     parser.add_argument("--blocked", action="append", default=[], help="dataset=reason")
