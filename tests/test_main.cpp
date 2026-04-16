@@ -178,6 +178,18 @@ std::vector<std::string> split_csv_row(const std::string& line) {
     return fields;
 }
 
+std::size_t count_non_empty_lines(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    std::string line;
+    std::size_t count = 0;
+    while (std::getline(input, line)) {
+        if (!line.empty()) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 gatzk::util::AppConfig small_debug_config() {
     gatzk::util::AppConfig config;
     config.project_root = repo_root().string();
@@ -478,9 +490,8 @@ void require_official_summary_matches_expected(
     const OfficialBenchmarkRow& expected,
     bool gpu) {
     const auto summary = slurp_file(official_summary_path(gpu));
-    const auto backend_name = gpu ? "mcl/cuda_hotspots" : "mcl/cpu";
     const auto fragment =
-        "| " + expected.dataset + " | " + backend_name + " | 已完成 | "
+        "| " + expected.dataset + " | 已完成 | "
         + expected.commitment_time_ms + " | "
         + expected.prove_time_ms + " | "
         + expected.verify_time_ms + " | "
@@ -1490,7 +1501,7 @@ void test_benchmark_export_pipeline_remains_single_source_of_truth() {
     require(std::filesystem::exists(repo_root() / "scripts" / "export_benchmark_table.py"), "benchmark export script must exist");
     require(!std::filesystem::exists(repo_root() / "runs" / "benchmarks" / "summary.txt"), "legacy benchmark summary.txt must stay removed");
     const auto summary = slurp_file(repo_root() / "runs" / "benchmarks" / "summary.md");
-    require(summary.find("最新基准结果") != std::string::npos, "summary.md must remain the benchmark single source of truth");
+    require(summary.find("最新正式结果") != std::string::npos, "summary.md must remain the benchmark single source of truth");
 }
 
 void test_performance_regression_guard_for_cora_citeseer_pubmed() {
@@ -1532,8 +1543,8 @@ void test_four_dataset_benchmark_table_export() {
     require(std::filesystem::exists(output_dir / "latest.csv"), "latest.csv must be exported");
     require(std::filesystem::exists(output_dir / "summary.md"), "summary.md must be exported");
     const auto summary = slurp_file(output_dir / "summary.md");
-    require(summary.find("| cora | mcl/cpu | 已完成 | 10.250 | 10.500 | 1.500 | 111 |") != std::string::npos, "summary must include cora row");
-    require(summary.find("| ppi | n/a | 阻塞 | n/a | n/a | n/a | n/a |") != std::string::npos, "summary must include blocked ppi row");
+    require(summary.find("| cora | 已完成 | 10.250 | 10.500 | 1.500 | 111 |") != std::string::npos, "summary must include cora row");
+    require(summary.find("| ppi | 阻塞 | n/a | n/a | n/a | n/a | missing real checkpoint bundle |") != std::string::npos, "summary must include blocked ppi row");
 }
 
 void test_benchmark_summary_contains_required_metrics() {
@@ -1548,6 +1559,17 @@ void test_benchmark_summary_contains_required_metrics() {
     require(csv_text.find("prove_time_ms") != std::string::npos, "latest.csv must include prove_time_ms");
     require(csv_text.find("verify_time_ms") != std::string::npos, "latest.csv must include verify_time_ms");
     require(csv_text.find("proof_size_bytes") != std::string::npos, "latest.csv must include proof_size_bytes");
+    require(csv_text.find("trace_generation_ms") == std::string::npos, "latest.csv must not expose internal timing breakdown");
+    require(csv_text.find("node_count") == std::string::npos, "latest.csv must stay on the four-metric display surface");
+    const auto summary = slurp_file(output_dir / "summary.md");
+    require(summary.find("commitment_time_ms") != std::string::npos, "summary.md must include commitment_time_ms");
+    require(summary.find("prove_time_ms") != std::string::npos, "summary.md must include prove_time_ms");
+    require(summary.find("verify_time_ms") != std::string::npos, "summary.md must include verify_time_ms");
+    require(summary.find("proof_size_bytes") != std::string::npos, "summary.md must include proof_size_bytes");
+    require(summary.find("node_count") == std::string::npos, "summary.md must not expose node_count on the formal display surface");
+    require(summary.find("edge_count") == std::string::npos, "summary.md must not expose edge_count on the formal display surface");
+    require(summary.find("route2") == std::string::npos, "summary.md must not expose route2 detail on the formal display surface");
+    require(summary.find("hotspot") == std::string::npos, "summary.md must not expose hotspot detail on the formal display surface");
 }
 
 void test_benchmark_mode_consistency() {
@@ -1637,7 +1659,7 @@ void test_real_gat_forward_semantics_no_regression() {
 void test_chinese_readme_is_current_mainline_only() {
     const auto readme = slurp_file(repo_root() / "README.md");
     require(readme.find("项目简介") != std::string::npos, "README must be Chinese and current");
-    require(readme.find("正式 warm 结果") != std::string::npos, "README must expose the current official warm results");
+    require(readme.find("正式结果表") != std::string::npos, "README must expose the current official results");
     require(readme.find("summary.txt") == std::string::npos, "README must not mention removed summary.txt");
     require(readme.find("synthetic") == std::string::npos, "README must not keep synthetic fallback instructions");
     require(readme.find("Benchmark Summary") == std::string::npos, "README must not keep old English benchmark wording");
@@ -1653,8 +1675,8 @@ void test_chinese_readme_is_current_mainline_only() {
 void test_benchmark_summary_and_readme_consistency() {
     const auto readme = slurp_file(repo_root() / "README.md");
     const auto summary = slurp_file(repo_root() / "runs" / "benchmarks" / "summary.md");
-    require(readme.find("正式 warm 结果") != std::string::npos, "README must keep the official results section");
-    require(summary.find("最新基准结果") != std::string::npos, "summary must keep the benchmark summary section");
+    require(readme.find("正式结果表") != std::string::npos, "README must keep the official results section");
+    require(summary.find("最新正式结果") != std::string::npos, "summary must keep the benchmark summary section");
     require(readme.find("warm") != std::string::npos && summary.find("warm") != std::string::npos, "README and benchmark summary must keep the same warm official mode");
     require(readme.find("Cora") != std::string::npos && summary.find("cora") != std::string::npos, "README and benchmark summary must both cover cora");
     require(readme.find("Citeseer") != std::string::npos && summary.find("citeseer") != std::string::npos, "README and benchmark summary must both cover citeseer");
@@ -1934,6 +1956,8 @@ void test_ogbn_arxiv_official_metrics_table_contains_four_required_fields() {
     require(latest.find("\"proof_size_bytes\":") != std::string::npos, "latest.json must contain proof_size_bytes");
     require(csv.find("commitment_time_ms") != std::string::npos, "latest.csv must contain commitment_time_ms");
     require(summary.find("commitment_time_ms") != std::string::npos, "summary.md must contain commitment_time_ms");
+    require(csv.find("trace_generation_ms") == std::string::npos, "latest.csv must hide internal timing breakdown");
+    require(summary.find("node_count") == std::string::npos, "summary.md must stay on the four-metric display surface");
 }
 
 void test_ogbn_arxiv_single_dataset_incremental_optimization_does_not_change_transcript() {
@@ -2362,6 +2386,34 @@ void test_cost_drivers_explain_ppi_vs_pubmed_without_size_illusion() {
         extract_json_number(ppi_text, "commit_dynamic_ms") > extract_json_number(pubmed_text, "commit_dynamic_ms"),
         "current official PPI dynamic commitment cost must remain above Pubmed because graph volume dominates the smaller feature profile");
     require(extract_json_number(ppi_text, "proof_size_bytes") < extract_json_number(pubmed_text, "proof_size_bytes"), "PPI must keep the smaller proof object that explains part of the runtime gap");
+}
+
+void test_proof_size_explanation_is_backed_by_family_shape_counts() {
+    const auto cora_manifest = slurp_file(repo_root() / "runs" / "cora_full" / "warm" / "run_manifest.json");
+    const auto ppi_manifest = slurp_file(repo_root() / "runs" / "ppi_full_formal" / "warm" / "run_manifest.json");
+    const auto cora_commitment_count =
+        count_non_empty_lines(repo_root() / "runs" / "cora_full" / "warm" / "commitment_order.txt");
+    const auto ppi_commitment_count =
+        count_non_empty_lines(repo_root() / "runs" / "ppi_full_formal" / "warm" / "commitment_order.txt");
+    require(cora_manifest.find("\"hidden_profile\": \"8x8\"") != std::string::npos, "Cora proof-size explanation must use the 8x8 family");
+    require(ppi_manifest.find("\"hidden_profile\": \"1x8\"") != std::string::npos, "PPI proof-size explanation must use the 1x8 family");
+    require(cora_commitment_count == 734, "Cora dynamic commitment count must stay on the accepted formal family shape");
+    require(ppi_commitment_count == 160, "PPI dynamic commitment count must stay on the accepted formal family shape");
+    require(
+        slurp_file(repo_root() / "runs" / "cora_full" / "warm" / "proof_block_order.txt")
+            == slurp_file(repo_root() / "runs" / "ppi_full_formal" / "warm" / "proof_block_order.txt"),
+        "proof-size explanation must keep the same proof block order across families");
+    require(
+        extract_json_number(cora_manifest, "proof_size_bytes") > extract_json_number(ppi_manifest, "proof_size_bytes"),
+        "the wider 8x8 family must keep the larger proof payload under the accepted contract");
+}
+
+void test_readme_contains_formal_proof_size_explanation() {
+    const auto readme = slurp_file(repo_root() / "README.md");
+    require(readme.find("## 证明尺寸说明") != std::string::npos, "README must contain a proof-size section");
+    require(readme.find("commitment_order.txt") != std::string::npos, "README proof-size section must cite commitment_order.txt as evidence");
+    require(readme.find("734") != std::string::npos, "README proof-size section must document the 8x8 family commitment count");
+    require(readme.find("160") != std::string::npos, "README proof-size section must document the 1x8 family commitment count");
 }
 
 void test_small_graph_proof_floor_is_explained_by_formal_fixed_costs() {

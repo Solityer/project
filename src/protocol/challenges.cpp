@@ -398,6 +398,8 @@ void absorb_public_metadata(crypto::Transcript& transcript, const PublicMetadata
 }
 
 std::vector<std::string> dynamic_commitment_labels(const ProtocolContext& context) {
+    // 这里返回的是 proof 中动态承诺的正式顺序。
+    // family 形状越宽，标签数量越多，最终 proof_size_bytes 也会随之增加。
     if (!context.model.has_real_multihead) {
         return {
             "P_H",

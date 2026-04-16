@@ -305,6 +305,8 @@ FieldElement zero_on_unselected(const FieldElement& selector, const FieldElement
 }
 
 std::vector<std::string> domain_opening_labels(const ProtocolContext& context, const std::string& domain_name) {
+    // opening bundle 的列集合由标签到工作域的映射唯一决定。
+    // 这既约束 prover / verifier 的 bundle 形状，也直接影响 proof_size_bytes。
     std::vector<std::string> labels;
     for (const auto& label : dynamic_commitment_labels(context)) {
         if (const auto mapped = dynamic_label_domain_name(context, label); mapped.has_value() && *mapped == domain_name) {

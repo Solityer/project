@@ -3817,6 +3817,10 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
     return proof;
 }
 
+// `proof_size_bytes` 统计的是 formal proof 的传输口径，
+// 不是运行目录中文件大小，也不是 C++ 对象在内存中的占用。
+// 能由 verifier 通过固定 schema 与 transcript 重建的标签、挑战值和 opening 点不计入；
+// 真正需要随 proof 发送的元数据字符串、承诺点、opening 值、witness 与外点见证才计入。
 std::size_t proof_size_bytes(const Proof& proof) {
     constexpr std::size_t kLengthPrefixBytes = sizeof(std::uint64_t);
     constexpr std::size_t kFieldBytes = 32U;
@@ -3860,6 +3864,7 @@ std::size_t proof_size_bytes(const Proof& proof) {
     total += kLengthPrefixBytes;
     for (const auto& [name, commitment] : proof.dynamic_commitments) {
         (void)name;
+        // 标签顺序由 schema 固定，因此这里只计实际发送的 G1 承诺点。
         total += crypto::serialized_size(commitment);
     }
     total += kLengthPrefixBytes;
@@ -3870,6 +3875,7 @@ std::size_t proof_size_bytes(const Proof& proof) {
     total += kLengthPrefixBytes;
     for (const auto& [name, bundle] : proof.domain_openings) {
         (void)name;
+        // opening 点本身由 transcript challenge 决定；这里仅计每列在这些点上的值和 witness。
         total += kLengthPrefixBytes;
         for (const auto& [value_name, values] : bundle.values) {
             (void)value_name;
@@ -3881,6 +3887,7 @@ std::size_t proof_size_bytes(const Proof& proof) {
     for (const auto& [name, value] : proof.external_evaluations) {
         (void)name;
         (void)value;
+        // 外点标签由 formal schema 重建，真正发送的是域元素值。
         total += kFieldBytes;
     }
     total += kLengthPrefixBytes;
@@ -3889,6 +3896,7 @@ std::size_t proof_size_bytes(const Proof& proof) {
         (void)value;
         total += kFieldBytes;
     }
+    // `rho_ext` 折叠 opening 的 witness 需要单独发送。
     total += crypto::serialized_size(proof.external_witness);
     return total;
 }
