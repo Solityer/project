@@ -12,15 +12,19 @@
 
 namespace gatzk::crypto
 {
+    // 本文件实现 KZG 依赖的群运算、批量 MSM 与序列化，
+    // 是 protocol 层访问曲线后端的唯一实现落点。
+    // 它属于 crypto 执行层，不允许改写承诺含义或 pairing 方程。
+
     namespace
     {
-        // 为同基点乘法生成缓存键：点字符串 + 分隔符 + 标量字符串
+        // 同基点批量乘法会反复命中相同 `(base, scalar)`，这里用字符串键复用结果。
         std::string same_base_cache_key(const G1Point& point, const algebra::FieldElement& scalar)
         {
             return point.to_string() + "|" + scalar.to_string();
         }
 
-        // 同基点乘法缓存类
+        // 仅缓存执行层群乘结果，不跨越协议对象边界。
         class SameBaseMulCache
         {
         public:
@@ -51,14 +55,14 @@ namespace gatzk::crypto
             std::unordered_map<std::string, G1Point> entries_;
         };
 
-        // 获取全局同基点乘法缓存单例
+        // 进程级单例缓存，供 MSM / 承诺等热点复用。
         SameBaseMulCache& same_base_mul_cache()
         {
             static SameBaseMulCache cache;
             return cache;
         }
 
-        // 将椭圆曲线点（G1或G2）序列化为字节向量
+        // 序列化接口同时服务 transcript 吸收与 artifact 导出。
         template <class Point>
         std::vector<std::uint8_t> serialize_impl(const Point& point)
         {
@@ -74,21 +78,20 @@ namespace gatzk::crypto
 
     }
 
-    // 将G1点转换为十六进制字符串
+    // 文本化输出主要服务日志、manifest 与调试，不参与协议运算。
     std::string G1Point::to_string() const
     {
         algebra::ensure_mcl_field_ready();
         return value.serializeToHexStr();
     }
 
-    // 将G2点转换为十六进制字符串
     std::string G2Point::to_string() const
     {
         algebra::ensure_mcl_field_ready();
         return value.serializeToHexStr();
     }
 
-    // 返回当前使用的加密后端名称（编译时宏定义）
+    // backend 名称会进入 artifact，帮助 README 与 manifest 对齐当前实现。
     std::string backend_name()
     {
         return GATZK_CRYPTO_BACKEND_NAME;
@@ -134,7 +137,7 @@ namespace gatzk::crypto
         return out;
     }
 
-    // 批量同基点乘法：对同一个基点point，分别乘以多个标量scalars
+    // 同基点批量乘法是 KZG 承诺与 witness 构造的典型热点。
     std::vector<G1Point> g1_mul_same_base_batch(const G1Point& point, const std::vector<algebra::FieldElement>& scalars)
     {
         algebra::ensure_mcl_field_ready();

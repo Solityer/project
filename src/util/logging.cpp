@@ -4,6 +4,9 @@
 #include <fstream>
 #include <iostream>
 
+// 本文件实现 artifact 导出使用的轻量日志工具。
+// 它不参与 formal 语义，只负责把主链结果写成可核对的文本与 JSON。
+
 namespace gatzk::util {
 namespace {
 
@@ -56,6 +59,7 @@ void write_json_object(const std::string& path, const std::map<std::string, std:
     output << "}\n";
 }
 
+// 统一的控制台输出前缀，方便 formal suite 与 benchmark 日志定位来源。
 void info(const std::string& message) {
     std::cout << "[gatzk] " << message << '\n';
 }

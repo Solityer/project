@@ -1,4 +1,6 @@
 #pragma once
+// 本文件声明 algebra 层的统一执行入口，包括 CPU / CUDA 路由、
+// 热点判定和域元素向量运算，不改变 proof schema 与 transcript。
 
 #include <cstdint>
 #include <string>
@@ -8,26 +10,25 @@
 
 namespace gatzk::algebra
 {
-    // 代数后端类型：CPU计算或GPU计算
+    // 代数实现后端。它只影响执行放置，不引入第二套协议语义。
     enum class AlgebraBackend
     {
         Cpu,
         Cuda,
     };
 
-     // 返回当前配置的代数后端
+    // 返回当前构建与运行环境解析出的代数后端信息。
     AlgebraBackend configured_algebra_backend();
     std::string configured_algebra_backend_name();
     bool cuda_backend_build_enabled();
     bool cuda_backend_available();
     bool cuda_backend_unified_addressing_available();
 
-    // GPU field hotspot acceleration (BLS12-381 Fr arithmetic on GPU)
+    // full_gpu 的 Fr 域热点能力探针。
     bool cuda_field_hotspots_build_enabled();
     bool cuda_field_hotspots_available();
 
-    // Centralized, size-aware routing policy for full_gpu. These helpers only
-    // choose an implementation route; they do not change proof semantics.
+    // full_gpu 的统一 size-aware 路由策略，只决定实现路线，不改变 formal 结果。
     bool should_use_cuda_barycentric_weights(
         std::size_t domain_size,
         bool points_precomputed);
@@ -39,9 +40,7 @@ namespace gatzk::algebra
         std::size_t index_count,
         std::size_t bucket_count);
 
-    // GPU barycentric weight computation
-    // omega/x/zero_eval/inv_n: 4 × uint64 limbs in Montgomery form (matching mcl::Fr internal)
-    // output_weight_limbs: domain_size × 4 uint64 limbs
+    // 在 GPU 上构造重心权重，供 domain opening 与大列求值热点复用。
     bool barycentric_weights_gpu(
         const uint64_t omega_limbs[4],
         const uint64_t x_limbs[4],
@@ -50,10 +49,7 @@ namespace gatzk::algebra
         uint64_t* output_weight_limbs,
         std::size_t domain_size);
 
-    // GPU weighted polynomial evaluation (interleaved layout)
-    // weights: domain_size × 4 uint64 limbs  
-    // interleaved_values: domain_size × row_count × 4 uint64 limbs
-    // output: row_count × 4 uint64 limbs
+    // 使用共享权重对打包列做 GPU 加权求值，是 full_gpu 下 PackedEvaluationBackend 的核心加速入口。
     bool weighted_poly_eval_gpu(
         const uint64_t* weight_limbs,
         const uint64_t* interleaved_value_limbs,
@@ -61,10 +57,7 @@ namespace gatzk::algebra
         std::size_t domain_size,
         std::size_t row_count);
 
-    // GPU weighted polynomial evaluation (columnar / zero-copy for unified memory)
-    // weights: host ptr, domain_size × 4 uint64 limbs
-    // column_ptrs: array of row_count host pointers, each -> domain_size × 4 uint64 limbs
-    // output: host ptr, row_count × 4 uint64 limbs
+    // 列式布局版本，适合统一内存或零拷贝场景下的大列评估。
     bool weighted_poly_eval_gpu_columnar(
         const uint64_t* weight_limbs,
         const uint64_t* const* column_ptrs,
@@ -72,9 +65,7 @@ namespace gatzk::algebra
         std::size_t domain_size,
         std::size_t row_count);
 
-    // GPU multi-polynomial evaluation with shared weights (weight upload once)
-    // column_value_ptrs: array of poly_count host pointers, each -> domain_size × 4 uint64 limbs
-    // output: poly_count × 4 uint64 limbs
+    // 多列共享一次权重上传，减少 prove / verify 热路径中的重复设备传输。
     bool weighted_poly_eval_gpu_multi(
         const uint64_t* weight_limbs,
         const uint64_t* const* column_value_ptrs,
@@ -82,12 +73,12 @@ namespace gatzk::algebra
         std::size_t domain_size,
         std::size_t poly_count);
 
-    // 计算两个域元素向量的点积：sum(lhs[i] * rhs[i])
+    // CPU 侧域元素点积，是小规模 fallback 和校验路径的通用原语。
     FieldElement dot_product(
         const std::vector<FieldElement>& lhs,
         const std::vector<FieldElement>& rhs);
 
-    // 计算左向量（域元素）与右向量（原生 mcl::Fr 权重）的点积
+    // 直接消费原生权重，避免 barycentric 热路径中反复包装 `FieldElement`。
     FieldElement dot_product_native_weights(
         const std::vector<FieldElement>& lhs,
         const std::vector<mcl::Fr>& rhs);

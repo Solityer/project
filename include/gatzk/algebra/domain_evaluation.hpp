@@ -1,4 +1,6 @@
 #pragma once
+// 本文件提供域上求值权重的构造与缓存，是 prove / verify 在
+// domain opening、quotient 复算和批量求值阶段共用的执行层工具。
 
 #include <condition_variable>
 #include <memory>
@@ -15,6 +17,7 @@
 
 namespace gatzk::algebra
 {
+    // 将挑战点编码成缓存键，供不同域上的求值权重复用。
     inline std::string point_cache_key(const FieldElement& point)
     {
         return point.to_string();
@@ -33,6 +36,7 @@ namespace gatzk::algebra
 
     struct DomainEvaluationWeights
     {
+        // 挑战点恰好落在域上时可直接索引，否则走重心权重求值。
         std::optional<std::size_t> direct_index;
         std::vector<mcl::Fr> native_weights;
     };
@@ -73,6 +77,8 @@ namespace gatzk::algebra
     class DomainEvaluationWeightCache
     {
     public:
+        // 线程安全地缓存“域 + 挑战点”对应的求值权重，避免 prove / verify
+        // 在同一 formal run 中重复构造重心权重。
         const DomainEvaluationWeights& get(
             const std::shared_ptr<RootOfUnityDomain>& domain,
             const FieldElement& point)
@@ -80,13 +86,12 @@ namespace gatzk::algebra
             const auto cache_key = domain_point_cache_key(domain, point);
             {
                 std::unique_lock<std::mutex> lock(mutex_);
-                // Fast path: already computed.
+                // 快路径：同一域点权重已经构造完成时直接复用。
                 if (const auto it = entries_.find(cache_key); it != entries_.end())
                 {
                     return it->second;
                 }
-                // Avoid thundering herd: if another thread is already computing
-                // the same key, wait for it instead of redundantly computing.
+                // 避免同一 key 被多线程重复构造，其他线程在这里等待首个构造完成。
                 while (in_flight_.count(cache_key))
                 {
                     cv_.wait(lock);

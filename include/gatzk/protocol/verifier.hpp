@@ -1,9 +1,12 @@
 #pragma once
+// 本文件声明 verifier 入口，
+// 它会重放 transcript、检查 metadata 契约，并复验各域 opening 与 quotient。
 
 #include "gatzk/protocol/proof.hpp"
 
 namespace gatzk::protocol {
 
+// 验证 proof 是否与当前 formal 上下文一致。
 bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metrics = nullptr);
 
 }  // namespace gatzk::protocol

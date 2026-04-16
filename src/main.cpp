@@ -17,6 +17,10 @@
 #include "gatzk/util/logging.hpp"
 #include "gatzk/util/route2.hpp"
 
+// 本文件是正式命令行入口，
+// 负责读取配置、选择 full_cpu / full_gpu 执行路线，并串联 context、trace、prove、verify 与 artifact 导出。
+// 它只汇总正式四项指标与 manifest，不允许在入口层改写 proof contract。
+
 int main(int argc, char** argv) {
     try {
         auto format_ms = [](double value) {
@@ -176,7 +180,7 @@ int main(int argc, char** argv) {
             } else if (route2.fft_backend_upgrade) {
                 metrics.fft_backend_route = "packed_domain";
             } else {
-                metrics.fft_backend_route = "legacy_domain";
+                metrics.fft_backend_route = "plain_domain";
             }
             metrics.is_cold_run = is_cold_run;
             append_note(metrics, "benchmark_mode=" + mode_label);

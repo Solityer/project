@@ -1,4 +1,6 @@
 #pragma once
+// 本文件定义数据层进入 formal 主线后的对象模型，
+// 区分原始数据集、规范化后的局部图，以及需要进入公开元数据的图结构信息。
 
 #include <cstddef>
 #include <string>
@@ -9,12 +11,14 @@
 namespace gatzk::data {
 
 struct Edge {
+    // `graph_id` / `stable_index` 会进入 batch 规范化与稳定排序规则。
     std::size_t src = 0;
     std::size_t dst = 0;
     std::size_t graph_id = 0;
     std::size_t stable_index = 0;
 };
 
+// 公开输入层面的图结构摘要，会被 context / metadata / verifier 一致消费。
 struct NormalizedGraphInput {
     std::size_t N_total = 0;
     std::size_t N = 0;
@@ -27,6 +31,7 @@ struct NormalizedGraphInput {
     std::vector<std::size_t> edge_ptr;
 };
 
+// 原始数据集对象，保存完整图数据与量化前后的特征视图。
 struct GraphDataset {
     std::string name;
     std::size_t num_nodes = 0;
@@ -43,6 +48,8 @@ struct GraphDataset {
     std::string report_unit = "node";
 };
 
+// 规范化后送入 formal prove / verify 主线的局部图对象。
+// 这里同时持有 witness 侧特征、公开输入摘要和 batch 切分信息。
 struct LocalGraph {
     std::string name;
     std::size_t num_nodes = 0;

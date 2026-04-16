@@ -1,4 +1,6 @@
 #pragma once
+// 本文件声明各工作域 quotient 的求值逻辑，
+// verifier 会按同一接口重算这些值来检查 proof 中的 opening 结果。
 
 #include <functional>
 #include <map>
@@ -11,15 +13,19 @@
 
 namespace gatzk::protocol {
 
+// 统一的“按标签在点上取值”回调接口，供 quotient 逻辑屏蔽 prove / verify 的数据来源差异。
 using EvalFn = std::function<algebra::FieldElement(const std::string&, const algebra::FieldElement&)>;
 
+// `t_FH` 额外输出的执行侧剖面。
 struct FHQuotientProfile {
     double dependency_eval_ms = 0.0;
     double assembly_ms = 0.0;
 };
 
+// 返回某个工作域 opening bundle 中必须出现的标签顺序。
 std::vector<std::string> domain_opening_labels(const ProtocolContext& context, const std::string& domain_name);
 
+// 下面这些函数分别对应 formal note 中不同工作域的 quotient 组合关系。
 algebra::FieldElement evaluate_t_fh(
     const ProtocolContext& context,
     const std::map<std::string, algebra::FieldElement>& challenges,

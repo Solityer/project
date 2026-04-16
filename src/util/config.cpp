@@ -9,6 +9,9 @@
 #include <stdexcept>
 #include <unordered_map>
 
+// 本文件实现正式配置解析与约束检查。
+// 它负责拦住过时字段和形状冲突，避免错误配置进入 proving / verifying 主链。
+
 namespace gatzk::util {
 namespace {
 
@@ -181,6 +184,7 @@ void validate_config(const AppConfig& config) {
 
 }  // namespace
 
+// 解析 `.cfg` 文件并补齐工程根路径等派生字段。
 AppConfig load_config(const std::string& path) {
     std::ifstream input(path);
     if (!input) {

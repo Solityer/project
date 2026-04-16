@@ -16,6 +16,9 @@
 
 namespace gatzk::algebra
 {
+    // 本文件统一管理 algebra 层的执行路由，
+    // 包括 CPU / CUDA 可用性探测、size-aware 策略与常见向量算子。
+    // 它位于 proving / verifying 的公共热路径上，但任何路由切换都不能改变 formal 结果。
 #if GATZK_ENABLE_CUDA_BACKEND
     bool cuda_backend_runtime_available();
     bool cuda_field_hotspots_available();
@@ -47,7 +50,7 @@ namespace gatzk::algebra
             const char* value = std::getenv("GATZK_ALGEBRA_BACKEND");
             if (value == nullptr)
             {
-                // 如果环境变量未设置，默认返回CPU后端
+                // 默认正式后端仍是 CPU；GPU 只能经由 compute-backend/route2 显式启用。
                 return AlgebraBackend::Cpu;
             }
             const std::string backend(value);
@@ -102,14 +105,14 @@ namespace gatzk::algebra
 
     }
 
-    // 返回当前配置的代数后端
+    // 返回当前进程生效的代数后端选择。
     AlgebraBackend configured_algebra_backend()
     {
         static const auto backend = parse_backend_env();
         return backend;
     }
 
-    // 返回当前后端名称的字符串："cuda" 或 "cpu"
+    // 当前正式主线只暴露 `"cpu"` 名称；CUDA 只是其中的热点执行策略。
     std::string configured_algebra_backend_name()
     {
         (void)configured_algebra_backend();
@@ -235,7 +238,7 @@ namespace gatzk::algebra
     }
 
 #if !GATZK_ENABLE_CUDA_BACKEND
-    // Stubs for non-CUDA builds
+    // 非 CUDA 构建下保留同签名桩函数，让上层统一走回退逻辑。
     bool barycentric_weights_gpu(
         const uint64_t[4], const uint64_t[4], const uint64_t[4], const uint64_t[4],
         uint64_t*, std::size_t) { return false; }
@@ -250,7 +253,8 @@ namespace gatzk::algebra
         std::size_t, std::size_t) { return false; }
 #endif
 
-    // 计算两个域元素向量的点积（自动选择CPU串行、CPU并行或CUDA）
+    // 点积是 polynomial / KZG / verifier 会反复调用的基础热路径。
+    // 这里根据规模决定串行、并行或 CUDA 执行，但返回值必须完全一致。
     FieldElement dot_product(
         const std::vector<FieldElement>& lhs,
         const std::vector<FieldElement>& rhs)

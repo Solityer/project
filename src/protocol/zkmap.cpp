@@ -2,8 +2,12 @@
 
 #include <stdexcept>
 
+// 本文件实现 zkMaP 风格的绑定累加轨迹。
+// 这些辅助列会进入外点绑定关系与相应的 KZG opening 检查。
+
 namespace gatzk::protocol {
 
+// 构造 `a_values` 与 `b_values` 的前缀乘积和轨迹。
 ZkMapAccumulatorTrace build_zkmap_trace(
     const std::vector<algebra::FieldElement>& a_values,
     const std::vector<algebra::FieldElement>& b_values,

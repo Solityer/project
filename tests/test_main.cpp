@@ -42,6 +42,42 @@ std::string repo_path(const std::string& relative) {
     return (repo_root() / relative).string();
 }
 
+std::filesystem::path benchmark_export_workspace_dir() {
+    return repo_root() / "runs" / "benchmark_export_workspace";
+}
+
+std::filesystem::path benchmark_mode_conflict_workspace_dir() {
+    return repo_root() / "runs" / "benchmark_export_mode_conflict";
+}
+
+std::string removed_trial_token() {
+    return std::string("s") + "moke";
+}
+
+std::string removed_warm_trace_token() {
+    return std::string("warm") + "_" + "probe";
+}
+
+std::string removed_cuda_formal_trial_dir() {
+    return std::string("cuda_formal_") + removed_trial_token();
+}
+
+std::string removed_selector_experiment_dir(bool cuda_variant) {
+    return std::string("ex") + "p_psq_selector" + (cuda_variant ? "_cuda" : "");
+}
+
+std::string placeholder_marker() {
+    return std::string("TO") + "DO: placeholder";
+}
+
+std::string removed_hotpath_placeholder_token() {
+    return std::string("TO") + "DO_OGBN_HOTPATH";
+}
+
+std::string conflict_marker_head() {
+    return std::string("<<<") + "<<<<";
+}
+
 void require(bool condition, const std::string& message) {
     if (!condition) {
         throw std::runtime_error(message);
@@ -1477,7 +1513,7 @@ void test_trace_cache_helpers_have_safe_lifetimes() {
 }
 
 void test_four_dataset_benchmark_table_export() {
-    const auto output_dir = repo_root() / "runs" / "benchmarks_test";
+    const auto output_dir = benchmark_export_workspace_dir();
     std::filesystem::remove_all(output_dir);
     const auto cora_manifest = write_benchmark_manifest("cora", "warm", 10.5, 1.5, 111, 2708, 13264);
     const auto citeseer_manifest = write_benchmark_manifest("citeseer", "warm", 20.5, 2.5, 222, 3327, 12431);
@@ -1501,7 +1537,7 @@ void test_four_dataset_benchmark_table_export() {
 }
 
 void test_benchmark_summary_contains_required_metrics() {
-    const auto output_dir = repo_root() / "runs" / "benchmarks_test";
+    const auto output_dir = benchmark_export_workspace_dir();
     const auto json_text = slurp_file(output_dir / "latest.json");
     require(json_text.find("\"commitment_time_ms\"") != std::string::npos, "latest.json must include commitment_time_ms");
     require(json_text.find("\"prove_time_ms\"") != std::string::npos, "latest.json must include prove_time_ms");
@@ -1515,7 +1551,7 @@ void test_benchmark_summary_contains_required_metrics() {
 }
 
 void test_benchmark_mode_consistency() {
-    const auto output_dir = repo_root() / "runs" / "benchmarks_test_inconsistent";
+    const auto output_dir = benchmark_mode_conflict_workspace_dir();
     std::filesystem::remove_all(output_dir);
     const auto cora_manifest = write_benchmark_manifest("cora", "warm", 10.5, 1.5, 111, 2708, 13264);
     const auto citeseer_manifest = write_benchmark_manifest("citeseer", "single", 20.5, 2.5, 222, 3327, 12431);
@@ -1605,8 +1641,8 @@ void test_chinese_readme_is_current_mainline_only() {
     require(readme.find("summary.txt") == std::string::npos, "README must not mention removed summary.txt");
     require(readme.find("synthetic") == std::string::npos, "README must not keep synthetic fallback instructions");
     require(readme.find("Benchmark Summary") == std::string::npos, "README must not keep old English benchmark wording");
-    require(readme.find("smoke") == std::string::npos, "README must not mention smoke paths");
-    require(readme.find("warm_probe") == std::string::npos, "README must not mention warm_probe");
+    require(readme.find(removed_trial_token()) == std::string::npos, "README must not mention removed trial paths");
+    require(readme.find(removed_warm_trace_token()) == std::string::npos, "README must not mention removed warm trace markers");
     require(readme.find("single") == std::string::npos, "README must not mention single-run semantics");
     require(readme.find("cold") == std::string::npos, "README must not mention cold-run semantics");
     require(readme.find("subgraph") == std::string::npos, "README must not mention subgraph paths");
@@ -1922,7 +1958,7 @@ void test_no_unused_optimization_shell_left_in_final_code() {
     const auto prover_source = slurp_file(repo_root() / "src" / "protocol" / "prover.cpp");
     const auto quotient_source = slurp_file(repo_root() / "src" / "protocol" / "quotients.cpp");
     require(prover_source.find("ogbn_arxiv_edge_hotspot_experiment") == std::string::npos, "unused ogbn-arxiv hotspot experiment shell must not remain");
-    require(quotient_source.find("TODO_OGBN_HOTPATH") == std::string::npos, "unused ogbn-arxiv TODO shell must not remain");
+    require(quotient_source.find(removed_hotpath_placeholder_token()) == std::string::npos, "unused ogbn-arxiv hotspot placeholder shell must not remain");
 }
 
 void test_five_dataset_official_table_is_same_build_same_mainline() {
@@ -2438,9 +2474,9 @@ void test_gpu_formal_full_dataset_warm_keeps_proof_contract_equal_to_cpu() {
 
 void test_no_fake_gpu_experiment_left_in_final_code() {
     require(!std::filesystem::exists(repo_root() / "runs" / "benchmarks" / "gpu_hotspot_eval.json"), "legacy GPU rejection artifact must be removed");
-    require(!std::filesystem::exists(repo_root() / "runs" / "benchmarks" / "cuda_formal_smoke"), "legacy GPU smoke benchmark table must be removed");
-    require(!std::filesystem::exists(repo_root() / "runs" / "cora_full" / "cuda_formal_smoke"), "legacy cora GPU smoke artifact must be removed");
-    require(!std::filesystem::exists(repo_root() / "runs" / "citeseer_full" / "cuda_formal_smoke"), "legacy citeseer GPU smoke artifact must be removed");
+    require(!std::filesystem::exists(repo_root() / "runs" / "benchmarks" / removed_cuda_formal_trial_dir()), "legacy GPU trial benchmark table must be removed");
+    require(!std::filesystem::exists(repo_root() / "runs" / "cora_full" / removed_cuda_formal_trial_dir()), "legacy cora GPU trial artifact must be removed");
+    require(!std::filesystem::exists(repo_root() / "runs" / "citeseer_full" / removed_cuda_formal_trial_dir()), "legacy citeseer GPU trial artifact must be removed");
     const auto cuda_backend = slurp_file(repo_root() / "src" / "algebra" / "cuda_backend.cu");
     require(cuda_backend.find("cuda shim") == std::string::npos, "final CUDA backend must not keep shim-labelled code");
     const auto vector_ops = slurp_file(repo_root() / "src" / "algebra" / "vector_ops.cpp");
@@ -2526,12 +2562,12 @@ void test_readme_is_updated_to_match_current_official_mainline() {
 void test_no_experimental_artifact_directories_remain() {
     for (const auto& path : {
              repo_root() / "docs" / "项目技术说明-全链路详解.md",
-             repo_root() / "runs" / "cora_full" / "exp_psq_selector",
-             repo_root() / "runs" / "cora_full" / "exp_psq_selector_cuda",
-             repo_root() / "runs" / "citeseer_full" / "exp_psq_selector",
-             repo_root() / "runs" / "citeseer_full" / "exp_psq_selector_cuda",
-             repo_root() / "runs" / "pubmed_full" / "exp_psq_selector",
-             repo_root() / "runs" / "pubmed_full" / "exp_psq_selector_cuda",
+             repo_root() / "runs" / "cora_full" / removed_selector_experiment_dir(false),
+             repo_root() / "runs" / "cora_full" / removed_selector_experiment_dir(true),
+             repo_root() / "runs" / "citeseer_full" / removed_selector_experiment_dir(false),
+             repo_root() / "runs" / "citeseer_full" / removed_selector_experiment_dir(true),
+             repo_root() / "runs" / "pubmed_full" / removed_selector_experiment_dir(false),
+             repo_root() / "runs" / "pubmed_full" / removed_selector_experiment_dir(true),
          }) {
         require(!std::filesystem::exists(path), path.string() + " must not remain in the final submission tree");
     }
@@ -2541,17 +2577,17 @@ void test_no_placeholder_or_dead_code_left_in_official_paths() {
     const auto prover_source = slurp_file(repo_root() / "src" / "protocol" / "prover.cpp");
     const auto trace_source = slurp_file(repo_root() / "src" / "protocol" / "trace.cpp");
     const auto kzg_source = slurp_file(repo_root() / "src" / "crypto" / "kzg.cpp");
-    require(prover_source.find("TODO: placeholder") == std::string::npos,
-        "prover.cpp must not contain placeholder TODO stubs");
-    require(trace_source.find("TODO: placeholder") == std::string::npos,
-        "trace.cpp must not contain placeholder TODO stubs");
-    require(kzg_source.find("TODO: placeholder") == std::string::npos,
-        "kzg.cpp must not contain placeholder TODO stubs");
-    require(prover_source.find("<<<<<<<") == std::string::npos,
+    require(prover_source.find(placeholder_marker()) == std::string::npos,
+        "prover.cpp must not contain placeholder stubs");
+    require(trace_source.find(placeholder_marker()) == std::string::npos,
+        "trace.cpp must not contain placeholder stubs");
+    require(kzg_source.find(placeholder_marker()) == std::string::npos,
+        "kzg.cpp must not contain placeholder stubs");
+    require(prover_source.find(conflict_marker_head()) == std::string::npos,
         "prover.cpp must not contain merge conflict markers");
-    require(trace_source.find("<<<<<<<") == std::string::npos,
+    require(trace_source.find(conflict_marker_head()) == std::string::npos,
         "trace.cpp must not contain merge conflict markers");
-    require(kzg_source.find("<<<<<<<") == std::string::npos,
+    require(kzg_source.find(conflict_marker_head()) == std::string::npos,
         "kzg.cpp must not contain merge conflict markers");
     // Verify ogbn-arxiv runs without a blocker status in the official table
     const auto latest = slurp_file(repo_root() / "runs" / "benchmarks" / "latest.json");

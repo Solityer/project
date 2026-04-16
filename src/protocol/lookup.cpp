@@ -5,6 +5,9 @@
 #include <stdexcept>
 #include <unordered_map>
 
+// 本文件实现 lookup 选择器与 LogUp 累加器。
+// 它是特征、激活、range 与 exp 表查询约束的底层公共实现。
+
 namespace gatzk::protocol {
 namespace {
 
@@ -80,6 +83,7 @@ std::vector<algebra::FieldElement> build_selector(std::size_t valid_length, std:
     return out;
 }
 
+// 标准入口：自动按选择器截断到最后一个有效转移。
 std::vector<algebra::FieldElement> build_logup_accumulator(
     const std::vector<algebra::FieldElement>& table,
     const std::vector<algebra::FieldElement>& query,
@@ -97,6 +101,7 @@ std::vector<algebra::FieldElement> build_logup_accumulator(
         active_transition_count(q_table, q_query));
 }
 
+// 真正的 LogUp 递推实现。`active_count` 只裁掉填充区，不改变 formal 递推本身。
 std::vector<algebra::FieldElement> build_logup_accumulator_with_active_count(
     const std::vector<algebra::FieldElement>& table,
     const std::vector<algebra::FieldElement>& query,
@@ -128,9 +133,7 @@ std::vector<algebra::FieldElement> build_logup_accumulator_with_active_count(
     }
     batch_inverse_native(denominators, inverses, "lookup accumulator");
 
-    // This is still the same LogUp recurrence from the main spec. The only
-    // change is engineering-level reuse of a single batch inversion across the
-    // whole row block instead of re-inverting each denominator independently.
+    // 这里仍然是 formal note 中相同的 LogUp 递推，只是把分母求逆合并成批处理。
     mcl::Fr running;
     running.clear();
     accumulator[0] = FieldElement::zero();
@@ -156,6 +159,7 @@ std::vector<algebra::FieldElement> build_logup_accumulator_with_active_count(
     return accumulator;
 }
 
+// 缓存版本只复用执行结果，不改变输入、输出或累加器定义。
 std::vector<algebra::FieldElement> build_logup_accumulator_cached(
     const std::string& cache_key,
     const std::vector<algebra::FieldElement>& table,
@@ -175,6 +179,7 @@ std::vector<algebra::FieldElement> build_logup_accumulator_cached(
         active_transition_count(q_table, q_query));
 }
 
+// 大图热路径常用入口：同时限制有效前缀并允许缓存同形状递推结果。
 std::vector<algebra::FieldElement> build_logup_accumulator_cached_with_active_count(
     const std::string& cache_key,
     const std::vector<algebra::FieldElement>& table,

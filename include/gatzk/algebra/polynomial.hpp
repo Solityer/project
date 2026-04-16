@@ -1,4 +1,6 @@
 #pragma once
+// 本文件定义 formal 主线使用的工作域与多项式表示，
+// 负责把 trace / table / quotient 列统一到 coefficient 或 evaluation 语义上。
 
 #include <memory>
 #include <optional>
@@ -9,7 +11,7 @@
 
 namespace gatzk::algebra
 {
-    // 单位根域结构体，包含FFT的旋转因子和域上的点
+    // 单位根工作域。prove / verify 的每个 bundle 都围绕这些域做插值、opening 和 quotient 检查。
     struct RootOfUnityDomain
     {
         std::string name;
@@ -51,16 +53,16 @@ namespace gatzk::algebra
     {
         std::string name;
 
-        // 当前使用的基（系数或求值）
+        // 当前多项式持有的表示基。
         PolynomialBasis basis = PolynomialBasis::Coefficient;
 
-        // 多项式数据：系数形式时是系数列表，求值形式时是域上的点值列表
+        // 系数形式时是系数列，求值形式时是工作域上的评估值。
         std::vector<FieldElement> data;
 
-        // 对于共享求值列，data 可以为空，实际列值保存在 shared_data 中。
+        // 对于共享 evaluation 列，真实数据可挂在共享缓冲区上，避免复制大列。
         std::shared_ptr<const std::vector<FieldElement>> shared_data;
 
-        // 如果基是求值形式，记录使用的单位根域
+        // evaluation 形式必须绑定具体工作域，否则无法解释旋转与 opening 点。
         std::shared_ptr<RootOfUnityDomain> domain;
 
         static Polynomial from_coefficients(const std::string& name, std::vector<FieldElement> coefficients);
@@ -77,7 +79,7 @@ namespace gatzk::algebra
         std::size_t size() const;
         const FieldElement& value_at(std::size_t index) const;
 
-        // 计算多项式在 x 处的值（自动根据当前基选择算法：系数形式用霍纳法，求值形式用拉格朗日插值）
+        // 按当前基在点 `x` 上求值，是 transcript 重放、quotient 与 verifier 复算的统一入口。
         FieldElement evaluate(const FieldElement& x) const;
     };
 
@@ -87,7 +89,7 @@ namespace gatzk::algebra
         const std::vector<FieldElement>& values,
         const FieldElement& x);
 
-    // 将矩阵（二维向量）展开为一维向量（按行拼接）
+    // 将矩阵按 formal 约定的行主序拍平成多项式系数列。
     std::vector<FieldElement> flatten_matrix_coefficients(const std::vector<std::vector<FieldElement>>& matrix);
 
 }

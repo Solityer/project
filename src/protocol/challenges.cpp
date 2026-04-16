@@ -11,6 +11,10 @@
 #include "gatzk/protocol/schema.hpp"
 
 namespace gatzk::protocol {
+// 本文件负责把 formal note 固定的 transcript 吸收顺序重放为 challenge 集合。
+// 它连接 public metadata、dynamic commitment、quotient commitment 与 prove/verify 共享挑战值。
+// 这里的任何标签顺序变化都会直接改变 proof contract，因此只能做缓存和标签整理，不能改语义。
+
 namespace {
 
 std::uint64_t fnv1a(std::string_view data) {
@@ -331,7 +335,7 @@ PublicMetadata canonical_public_metadata(const ProtocolContext& context) {
         ? context.config.model_arch_id
         : (context.model.has_real_multihead
             ? ("L=" + metadata.L + "|hidden=" + metadata.hidden_profile + "|K_out=" + metadata.K_out + "|C=" + metadata.C)
-            : "legacy_single_head_debug");
+            : "single_output_compat");
     metadata.model_param_id = !context.config.model_param_id.empty()
         ? context.config.model_param_id
         : (context.model.has_real_multihead
@@ -362,7 +366,7 @@ PublicMetadata canonical_public_metadata(const ProtocolContext& context) {
     metadata.padding_rule_id = "zero-pad+selector-mask";
     metadata.degree_bound_id = !context.config.degree_bound_id.empty()
         ? context.config.degree_bound_id
-        : (context.model.has_real_multihead ? "note-target:FH,edge,in,d_h,cat,C,N" : "legacy:FH,edge,in,d,N");
+        : (context.model.has_real_multihead ? "note-target:FH,edge,in,d_h,cat,C,N" : "single_output_compat:FH,edge,in,d,N");
     return metadata;
 }
 
@@ -513,6 +517,8 @@ std::vector<std::string> quotient_commitment_labels(const ProtocolContext& conte
     return {"t_FH", "t_edge", "t_in", "t_d", "t_N"};
 }
 
+// 按正式 transcript 顺序重放 challenge，供 prove 与 verify 共享同一挑战语义。
+// 当 quotient commitment 仍未生成时，函数只返回前半段 challenge，避免在 build_context 阶段改写顺序。
 std::map<std::string, algebra::FieldElement> replay_challenges(
     const ProtocolContext& context,
     const std::unordered_map<std::string, crypto::Commitment>& dynamic_commitments,

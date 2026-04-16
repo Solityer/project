@@ -31,6 +31,10 @@
 #include "gatzk/util/route2.hpp"
 
 namespace gatzk::protocol {
+// 本文件实现 proving 主链的两大阶段：
+// 一是把 config、数据、模型和静态表收束成 ProtocolContext；二是在固定 transcript 顺序下生成 proof。
+// 这里允许做缓存、批量求值和并行，但不得改动 proof schema、serializer 契约或 verifier 可见语义。
+
 namespace {
 
 using algebra::FieldElement;
@@ -584,8 +588,7 @@ void append_note(RunMetrics* metrics, const std::string& note) {
 
 std::string context_cache_key(const util::AppConfig& config) {
     std::ostringstream stream;
-    // export_dir and dump_trace do not affect protocol objects, so
-    // they are intentionally excluded from the reusable static context key.
+    // `export_dir` 与 `dump_trace` 只影响 artifact 侧行为，不影响可复用的正式协议对象。
     stream << config.project_root << '|'
            << config.dataset << '|'
            << config.data_root << '|'
@@ -1032,9 +1035,8 @@ FieldElement evaluate_spilled_evaluation_polynomial(
     return FieldElement::from_native(native_sum);
 }
 
-// Proof-scoped memoization only caches values derived from the current trace and
-// current Fiat-Shamir challenges. This matches the spec's semantics while
-// avoiding repeated evaluation of the same column or quotient at the same point.
+// proof 级 memoization 只缓存“当前 trace + 当前 Fiat-Shamir 挑战”派生出的值。
+// 这样既能避免同一点重复求值，又不会把不同 proof 实例的状态混在一起。
 class EvaluationMemoization {
   public:
     EvaluationMemoization(
@@ -2046,10 +2048,8 @@ class EvaluationMemoization {
                     metrics_->fh_copy_convert_ms += elapsed_ms(copy_start, Clock::now());
                 }
             };
-            // The rotated-point kernel is a backend-level proving optimization
-            // for large root-of-unity domains. Small toy domains do not amortize
-            // its setup cost, so we intentionally keep the legacy packed sweep
-            // there while sending real hot-path bundles through the fused route.
+            // 旋转点 kernel 只是大域 proving 热点的执行层优化。
+            // 小域无法摊薄初始化成本，因此仍保留原始打包扫掠路线。
             if (!public_labels.empty() && group.first->name == "FH") {
                 for (const auto& point : points) {
                     const auto reuse_start = Clock::now();
@@ -2135,13 +2135,9 @@ class EvaluationMemoization {
                         continue;
                     }
 
-                    // This Route 2 kernel upgrade only exploits a root-of-unity
-                    // identity inside the proving backend: for the same domain,
-                    // evaluations at {z, omega z, ...} correspond to cyclic
-                    // shifts of one representative barycentric weight vector.
-                    // We therefore fuse these rotated points into one packed
-                    // sweep without changing which polynomials are opened, at
-                    // which points, or what values enter the proof.
+                    // Route2 这里只利用单位根域上的循环位移恒等式：
+                    // 同一域内 `{z, omega z, ...}` 的权重向量彼此只是循环平移。
+                    // 因此可以把多个点打包求值，而不改变 proof 中实际打开的对象和点位。
                     const auto eval_start = Clock::now();
                     const auto batched_values =
                         backend->evaluate_with_native_weight_rotations(
@@ -2196,8 +2192,7 @@ class EvaluationMemoization {
         if (weight_entry.direct_index.has_value()) {
             return values.at(*weight_entry.direct_index);
         }
-        // The route2 parallel FFT flag only changes how the cached domain
-        // weights are reduced. The opened values themselves are identical.
+        // `parallel_fft` 只改变域权重的归约方式，opened value 本身必须保持不变。
         return algebra::dot_product_native_weights(values, weight_entry.native_weights);
     }
 
@@ -2576,6 +2571,8 @@ DomainOpeningBundle make_bundle(
 
 }  // namespace
 
+// 构建一次 formal run 的静态上下文，产出数据集、模型、工作域、公开列与静态承诺。
+// 这里禁止注入任何依赖单次 proof 的 witness 或挑战状态。
 ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics) {
     static std::mutex cache_mutex;
     static std::unordered_map<std::string, ProtocolContext> cache;
@@ -2588,10 +2585,8 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
     if (persist_context_cache) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
-            // This cache only stores static protocol context material: domains,
-            // SRS, public/static polynomials, static commitments and model data.
-            // Instance-specific witnesses and challenge-derived values are not
-            // shared across proofs.
+            // 这里只缓存静态上下文：工作域、SRS、公开列、静态承诺和模型数据。
+            // 每次 proof 的 witness 与挑战派生值都必须重新生成。
             auto context = it->second;
             context.config = config;
             if (metrics != nullptr) {
@@ -2610,7 +2605,7 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
     context.dataset = data::load_dataset(config);
     context.local = data::normalize_graph_input(context.dataset, config);
     if (config.allow_synthetic_model) {
-        append_note(metrics, "model_source=synthetic_debug_only");
+        append_note(metrics, "model_source=synthetic_model");
         context.model = model::build_family_model_parameters(
             config.d_in_profile.empty() ? std::vector<std::size_t>{context.local.num_features} : config.d_in_profile,
             [&]() {
@@ -3048,6 +3043,7 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
     return context;
 }
 
+// 消费 trace 生成最终 proof，对外保证 commitment 顺序、block 顺序与 opening 结构稳定。
 Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetrics* metrics) {
     const auto prove_start = Clock::now();
     const auto& route2 = util::route2_options();
@@ -3161,10 +3157,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             std::vector<QuotientEvalResult> quotient_results;
             quotient_results.reserve(quotient_labels.size());
             if (std::thread::hardware_concurrency() > 1) {
-                // Pre-warm domain weight caches for the two heaviest domains
-                // sequentially before launching parallel tasks, to avoid
-                // memory-bandwidth contention from simultaneous large
-                // barycentric weight computations.
+                // 先串行预热最重的两个域，避免多个大 barycentric 权重同时构造时争抢带宽。
                 if (route2.fft_backend_upgrade) {
                     const auto fh_pts = fh_dependency_points(context.domains.fh, {context.kzg.tau});
                     for (const auto& pt : fh_pts) {
@@ -3226,6 +3219,8 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             metrics->quotient_build_ms += elapsed_ms(stage_start, Clock::now());
         }
 
+        // 组装 proof 时必须严格按 schema 的 label 顺序回填，
+        // 否则 serializer / parser 与 verifier 会同时失配。
         Proof proof;
         proof.public_metadata = build_public_metadata(context);
         proof.block_order = proof_block_order();
@@ -3313,15 +3308,10 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
         };
         std::vector<BundleBuildResult> bundle_results;
         bundle_results.reserve(bundle_specs.size());
-        // Pre-warm the barycentric weight cache and lazy FH public evaluation
-        // cache BEFORE launching parallel bundles.  Large domains (FH ≥ 33M)
-        // allocate GB-scale weight vectors; computing them inside 7 parallel
-        // tasks causes severe page-fault and memory-bandwidth contention.
-        // Sequential pre-warming lets each weight computation use all cores
-        // without interference, then the parallel bundles find cached entries.
+        // 并行构造 opening bundle 之前先预热 barycentric 权重和 FH 公开值缓存。
+        // 大域权重向量体量极大，若在多个 bundle 中同时构造，会明显放大缺页和带宽争抢。
         if (std::thread::hardware_concurrency() > 1) {
-            // Pre-warm domain weights for the two heaviest domains (FH, edge)
-            // at the challenge points used by domain_opening bundles.
+            // 只预热最重的 FH / edge 两个域，并且只针对正式 opening 用到的挑战点。
             for (const auto& spec : bundle_specs) {
                 if (spec.bundle_name == "FH" || spec.bundle_name == "edge") {
                     const auto z = challenges.at(spec.z_name);
@@ -3403,18 +3393,16 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
     auto stage_start = Clock::now();
     auto challenges = replay_challenges(context, trace.commitments, quotient_commitments);
     std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry;
-    const auto legacy_quotient_cache_key = quotient_build_cache_key(context, trace);
+    const auto quotient_cache_seed = quotient_build_cache_key(context, trace);
     if (route2.fft_backend_upgrade) {
         backend_registry = shared_proof_backend_registry_cache().get_or_build(
-            legacy_quotient_cache_key + "|backend_registry",
+            quotient_cache_seed + "|backend_registry",
             [&]() {
                 return std::make_shared<ProofEvaluationBackendRegistry>(context, trace);
             });
     }
     auto proof_domain_weight_cache = shared_proof_domain_weight_cache();
-    // The quotient identities are unchanged. We only overlap the five domain
-    // quotient evaluations, which are independent once the trace commitments
-    // and Fiat-Shamir challenges have been fixed for this proof instance.
+    // quotient 恒等式本身没有变化；这里只把已经固定挑战后的独立域求值并行化。
     const bool run_parallel = std::thread::hardware_concurrency() > 1;
     auto build_eval = [&](auto evaluator) {
         return [&, evaluator]() {
@@ -3620,9 +3608,8 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
     proof.challenges = challenges;
 
     stage_start = Clock::now();
-    // Domain opening bundles still open the same object set at the same points
-    // as the main spec. The memoizer only reuses identical point evaluations
-    // across columns and quotient terms inside this one proof instance.
+    // domain opening bundle 仍然在正式规范要求的同一对象集与同一点位上打开。
+    // memoizer 只在当前 proof 内复用相同点评估结果，不会改变 opening 内容。
     struct BundleSpec {
         std::string domain_name;
         std::vector<std::string> labels;

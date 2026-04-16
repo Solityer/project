@@ -2,6 +2,9 @@
 
 #include <cstdint>
 
+// 本文件实现 transcript 的状态吸收与挑战派生。
+// prove 与 verify 都依赖相同的标签序列，因此这里只提供纯执行层状态机。
+
 namespace gatzk::crypto
 {
     namespace
@@ -19,6 +22,7 @@ namespace gatzk::crypto
         }
     }
 
+    // 以协议标签初始化 transcript 状态。
     Transcript::Transcript(std::string label) : state_(std::move(label)) {}
 
     // 吸收一个标量（域元素）到Transcript中，附带标签
@@ -44,7 +48,7 @@ namespace gatzk::crypto
         }
     }
 
-    // 生成一个挑战值（随机数）并吸收它，同时缓存该挑战值
+    // 派生挑战后立即回吸，保证后续挑战与前序结果绑定。
     algebra::FieldElement Transcript::challenge(const std::string& label)
     {
         const auto hash = fnv1a(state_ + "|" + label + "|" + std::to_string(challenges_.size()));
@@ -54,7 +58,7 @@ namespace gatzk::crypto
         return challenge;
     }
 
-    // 返回所有已发出的挑战值（标签到挑战值的映射）
+    // 返回已发出的挑战，供 proof 持久化和 verifier 重放比对。
     const std::map<std::string, algebra::FieldElement>& Transcript::issued_challenges() const
     {
         return challenges_;

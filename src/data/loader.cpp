@@ -10,6 +10,9 @@
 #include <unordered_map>
 #include <unordered_set>
 
+// 本文件实现数据加载、缓存准备与局部图规范化。
+// 它把外部数据源整理为 formal 主线一致消费的 dataset / local graph 对象。
+
 namespace gatzk::data {
 namespace {
 
@@ -313,6 +316,7 @@ GraphDataset load_cached_dataset(const std::filesystem::path& root) {
     return dataset;
 }
 
+// Planetoid 数据集允许按需生成 cache，但生成后的缓存才是 formal 主线真正读取的对象。
 void maybe_prepare_planetoid_cache(const util::AppConfig& config, const std::filesystem::path& cache_root) {
     if (!config.auto_prepare_dataset || std::filesystem::exists(cache_root / "meta.cfg")) {
         return;
@@ -331,6 +335,7 @@ void maybe_prepare_planetoid_cache(const util::AppConfig& config, const std::fil
     }
 }
 
+// PPI 多图 batch 同样先落缓存，再进入正式 proving 主线。
 void maybe_prepare_ppi_cache(const util::AppConfig& config, const std::filesystem::path& cache_root) {
     if (!config.auto_prepare_dataset || std::filesystem::exists(cache_root / "meta.cfg")) {
         return;
@@ -348,6 +353,7 @@ void maybe_prepare_ppi_cache(const util::AppConfig& config, const std::filesyste
     }
 }
 
+// ogbn-arxiv 的缓存准备与其他数据集分开处理，因为原始数据布局不同。
 void maybe_prepare_ogbn_arxiv_cache(const util::AppConfig& config, const std::filesystem::path& cache_root) {
     if (!config.auto_prepare_dataset || std::filesystem::exists(cache_root / "meta.cfg")) {
         return;
@@ -413,6 +419,7 @@ GraphDataset load_dataset(const util::AppConfig& config) {
     return load_cached_dataset(cache_root);
 }
 
+// 按 formal 约束补自环、排序、切 batch，并生成公开输入摘要。
 LocalGraph normalize_graph_input(const GraphDataset& dataset, const util::AppConfig& config) {
     if (dataset.num_nodes == 0) {
         throw std::runtime_error("cannot normalize an empty dataset");

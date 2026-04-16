@@ -13,6 +13,9 @@
 
 namespace gatzk::algebra
 {
+    // 本文件把同一工作域上的多列 evaluation 多项式压成共享布局，
+    // 供 quotient、domain opening 与 verifier 复算阶段批量求值复用。
+    // 它属于 algebra 执行层加速，不改变 formal 多项式、challenge 或 opening 契约。
 
     namespace
     {
@@ -231,9 +234,8 @@ namespace gatzk::algebra
                 }
             }
 
-            // Extract per-polynomial contiguous column buffers and evaluate
-            // all polynomials using weighted_poly_eval_gpu_multi (uploads
-            // weights once, processes each polynomial sequentially on GPU).
+            // 先把交织布局拆成按列连续缓冲区，再统一交给 GPU。
+            // 这样权重只上传一次，多个多项式共享同一组 barycentric 权重。
             std::vector<std::vector<mcl::Fr>> col_buffers(row_count);
             std::vector<const uint64_t*> col_ptrs(row_count);
             for (std::size_t r = 0; r < row_count; ++r)
@@ -471,9 +473,8 @@ namespace gatzk::algebra
                 }
             }
 
-            // For each rotation, build rotated weight vector and evaluate
-            // all polynomials using weighted_poly_eval_gpu_multi.
-            // Extract per-polynomial contiguous column buffers once.
+            // 旋转点评估共享同一代表权重，只是在域上做循环平移。
+            // 列缓冲区只构造一次，逐个旋转点复用。
             std::vector<std::vector<mcl::Fr>> col_buffers(row_count);
             std::vector<const uint64_t*> col_ptrs(row_count);
             for (std::size_t r = 0; r < row_count; ++r)
@@ -501,7 +502,7 @@ namespace gatzk::algebra
             bool all_ok = true;
             for (std::size_t point_index = 0; point_index < point_count; ++point_index)
             {
-                // Build rotated weight vector: rotated_weights[col] = representative_weights[(col + rotation) & mask]
+                // `omega` 旋转只会导致权重向量循环位移，不改变 formal 求值点集合。
                 const auto rotation = rotations[point_index];
                 std::vector<mcl::Fr> rotated_weights(domain_->size);
                 for (std::size_t col = 0; col < domain_->size; ++col)
@@ -538,7 +539,7 @@ namespace gatzk::algebra
                 }
                 return out;
             }
-            // Fall through to CPU if GPU fails
+            // GPU 失败时诚实回退到 CPU，同一接口保证结果一致。
             for (auto& value : native_out) { value.clear(); }
         }
 
