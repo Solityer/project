@@ -12,6 +12,10 @@
 #include "gatzk/protocol/schema.hpp"
 
 namespace gatzk::protocol {
+// 本文件集中实现各工作域 quotient 恒等式的求值逻辑，
+// prove 会在 `tau` 或挑战点上构造相应承诺，verify 会按同一公式重算并检查 opening。
+// 它是 formal 约束落到代数等式的核心位置，绝不能改写挑战顺序或等式内容。
+
 namespace {
 
 using algebra::FieldElement;
@@ -41,6 +45,7 @@ FieldElement lagrange_at(const algebra::RootOfUnityDomain& domain, std::size_t i
     return domain.lagrange_basis_eval(index, z);
 }
 
+// 单个 lookup 链的标准 LogUp 约束项，供 feat / range / exp / ELU 等表复用。
 FieldElement c_lookup_1(
     const EvalFn& eval,
     const std::string& prefix,
@@ -96,6 +101,7 @@ bool hidden_concat_binding_label(const ProtocolContext& context, const std::stri
     return false;
 }
 
+// bias 在 quotient 中只以量化后域元素形式出现，这里与 trace / verify 保持同一规则。
 FieldElement quantize_bias_value(double value) {
     const auto scaled = value >= 0.0 ? value * 16.0 + 0.5 : value * 16.0 - 0.5;
     return FieldElement::from_signed(static_cast<std::int64_t>(scaled));

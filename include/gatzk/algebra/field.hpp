@@ -1,4 +1,6 @@
 #pragma once
+// 本文件封装 BLS12-381 Fr 域元素及其常用批处理工具，
+// 是 algebra、crypto、protocol 全链路共享的基础数值语义层。
 
 #include <cstddef>
 #include <cstdint>
@@ -15,7 +17,7 @@
 
 namespace gatzk::algebra
 {
-    // 确保 mcl 库的 BLS12‑381 曲线配对初始化只执行一次
+    // 确保 mcl 的曲线与标量域初始化只做一次，避免静态对象构造顺序干扰 formal 主线。
     inline void ensure_mcl_field_ready()
     {
         static std::once_flag once;
@@ -24,7 +26,7 @@ namespace gatzk::algebra
         });
     }
 
-    // 域元素
+    // Fr 域元素包装。formal 主线中的挑战、系数、查表值与 witness 标量都通过它传递。
     class FieldElement
     {
     public:
@@ -217,7 +219,7 @@ namespace gatzk::algebra
         return stream;
     }
 
-    // 批量计算多个域元素的乘法逆元，使用前缀积和后缀积的方法
+    // 批量求逆是 lookup、route 与 barycentric 权重构造的热点基础操作。
     inline std::vector<FieldElement> batch_invert(const std::vector<FieldElement>& values)
     {
         std::vector<FieldElement> out(values.size(), FieldElement::zero());
@@ -252,7 +254,7 @@ namespace gatzk::algebra
         return out;
     }
 
-    // 计算大于等于给定值的最小 2 的幂
+    // 工作域大小必须是 2 的幂，这个辅助函数服务 context 构建阶段的 domain 规划。
     inline std::size_t next_power_of_two(std::size_t value)
     {
         std::size_t out = 1;

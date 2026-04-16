@@ -14,19 +14,22 @@
 
 namespace gatzk::crypto
 {
+    // 本文件实现 formal 主线中的 KZG 承诺、批量 opening 与 batch verify。
+    // 它位于 prove / verify 核心链路上，因此允许做执行层缓存和并行，但不能改写承诺方程。
+
     namespace
     {
 
         using algebra::FieldElement;
         using Clock = std::chrono::steady_clock;
 
-        // 计算从开始到结束的耗时（毫秒）
+        // 统一记录 KZG 热路径耗时，供 manifest / benchmark 汇总。
         double elapsed_ms(const Clock::time_point& start, const Clock::time_point& end)
         {
             return std::chrono::duration<double, std::milli>(end - start).count();
         }
 
-        // 生成挑战值的幂次序列：1, challenge, challenge^2, ..., challenge^{count-1}
+        // 批量 opening 折叠时需要同一挑战的幂序列。
         std::vector<FieldElement> folding_powers(const FieldElement& challenge, std::size_t count)
         {
             std::vector<FieldElement> out(count, FieldElement::one());
@@ -37,7 +40,7 @@ namespace gatzk::crypto
             return out;
         }
 
-        // 计算零点多项式在x处的值
+        // 批量 opening 需要零点多项式 `∏ (x - point_i)`。
         FieldElement vanishing_eval(const std::vector<FieldElement>& points, const FieldElement& x)
         {
             FieldElement out = FieldElement::one();
@@ -48,7 +51,7 @@ namespace gatzk::crypto
             return out;
         }
 
-        // 域元素求逆
+        // KZG 公式里禁止零分母，这里把错误边界显式化。
         FieldElement safe_inverse(const FieldElement& value, const std::string& label)
         {
             if (value == FieldElement::zero())
@@ -58,13 +61,13 @@ namespace gatzk::crypto
             return value.inv();
         }
 
-        // 计算基点乘以标量（返回G1点）
+        // 统一封装 G1 生成元缩放，避免上层直接接触曲线细节。
         G1Point scaled_generator(const G1Point& generator, const FieldElement& scalar)
         {
             return g1_mul(generator, scalar);
         }
 
-        // 计算拉格朗日插值基函数在x处的值，给定一组点points
+        // 对 opening 点集构造插值基，用于 batch opening 的折叠多项式。
         std::vector<FieldElement> interpolation_basis_at(
             const std::vector<FieldElement>& points,
             const FieldElement& x)
@@ -95,7 +98,7 @@ namespace gatzk::crypto
             return out;
         }
 
-        // 使用预先计算好的基函数值和给定的函数值进行插值，得到插值多项式在x处的值
+        // 用预先算好的拉格朗日基恢复折叠后的插值值。
         FieldElement interpolate_with_basis(
             const std::vector<FieldElement>& basis_at_x,
             const std::vector<FieldElement>& values)
@@ -115,7 +118,7 @@ namespace gatzk::crypto
             std::vector<FieldElement> folding_powers;
         };
 
-        // 计算p(tau)
+        // evaluation 形式多项式在同一 `(domain, tau)` 上可共享权重。
         std::shared_ptr<const algebra::DomainEvaluationWeights> load_or_build_domain_commit_weights(
             const algebra::Polynomial& polynomial,
             const KZGKeyPair& key)
@@ -208,9 +211,8 @@ namespace gatzk::crypto
             {
                 const auto poly_count = polynomials.size();
 
-                // Build pointer array for direct polynomial value access.
-                // FieldElement stores mcl::Fr as its sole member, so vectors
-                // are contiguous mcl::Fr (= uint64[4]) arrays.
+                // 直接组织多项式值指针数组，交给共享权重的批量求值入口。
+                // `FieldElement` 底层只包了一层 `mcl::Fr`，因此这里的内存仍是连续 limb 数组。
                 std::vector<const uint64_t*> col_ptrs(poly_count);
                 for (std::size_t i = 0; i < poly_count; ++i)
                 {
@@ -221,7 +223,7 @@ namespace gatzk::crypto
                 std::vector<mcl::Fr> gpu_results(poly_count);
                 for (auto& v : gpu_results) v.clear();
 
-                // Use multi-polynomial kernel: uploads weights ONCE, evaluates all polynomials.
+                // 多列共享同一组权重时，一次上传权重后统一求值更接近真实热路径。
                 const bool gpu_ok = algebra::weighted_poly_eval_gpu_multi(
                     reinterpret_cast<const uint64_t*>(weights.native_weights.data()),
                     col_ptrs.data(),
@@ -237,7 +239,7 @@ namespace gatzk::crypto
                     }
                     return out;
                 }
-                // Fall through to CPU if GPU fails
+                // GPU 失败时回退 CPU，保证同一 KZG 语义下的可运行性。
             }
 
             const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
@@ -636,9 +638,8 @@ namespace gatzk::crypto
 
         if (util::route2_options().fast_verify_pairing && key.g2_one_prepared != nullptr)
         {
-            // This does not change the KZG verification equation. We only evaluate
-            // the same product of pairings through mcl's mixed precomputed Miller
-            // loop so the static G2 generator side is reused across verifications.
+            // 这里没有改变 KZG 验证方程，只是让 mcl 复用静态 G2 侧的 Miller 预计算结果，
+            // 从而减少重复 pairing 成本。
             const auto dynamic_rhs = g2_mul(key.g2_one, precompute.vanishing_at_tau);
             const auto neg_folded_commitment = g1_sub(g1_zero(), folded_commitment);
             return pairing_product_is_one_mixed_prepared(

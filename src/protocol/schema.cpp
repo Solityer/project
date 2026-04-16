@@ -1,7 +1,11 @@
 #include "gatzk/protocol/schema.hpp"
 
+// 本文件实现正式 proof schema 的命名与顺序规则。
+// 任何标签拼接方式变化都会影响 trace、proof、artifact 与 verifier 的一致性。
+
 namespace gatzk::protocol {
 
+// block 顺序是 proof serializer / parser 与 verifier 共享的固定契约。
 const std::vector<std::string>& proof_block_order() {
     static const std::vector<std::string> order = {
         "M_pub",
@@ -54,64 +58,65 @@ std::string hidden_dst_label(std::size_t global_head_index) {
     return "V_h" + std::to_string(global_head_index) + "_a_dst";
 }
 
-std::string output_head_prefix(std::size_t head_index, bool use_legacy_single_head_labels) {
-    if (use_legacy_single_head_labels) {
+// 输出层允许单头兼容标签，但这只是命名兼容，不是第二套协议。
+std::string output_head_prefix(std::size_t head_index, bool use_single_output_compat_labels) {
+    if (use_single_output_compat_labels) {
         return "P_out";
     }
     return "P_out" + std::to_string(head_index);
 }
 
-std::string output_y_lin_label(std::size_t head_index, bool use_legacy_single_head_labels) {
-    if (use_legacy_single_head_labels) {
+std::string output_y_lin_label(std::size_t head_index, bool use_single_output_compat_labels) {
+    if (use_single_output_compat_labels) {
         return "P_Y_lin";
     }
     return "P_Y_lin_o" + std::to_string(head_index);
 }
 
-std::string output_y_label(std::size_t head_index, bool use_legacy_single_head_labels) {
-    if (use_legacy_single_head_labels) {
+std::string output_y_label(std::size_t head_index, bool use_single_output_compat_labels) {
+    if (use_single_output_compat_labels) {
         return "P_Y";
     }
     return "P_Y_o" + std::to_string(head_index);
 }
 
-std::string output_weight_label(std::size_t head_index, bool use_legacy_single_head_labels) {
-    if (use_legacy_single_head_labels) {
+std::string output_weight_label(std::size_t head_index, bool use_single_output_compat_labels) {
+    if (use_single_output_compat_labels) {
         return "V_out_W";
     }
     return "V_out" + std::to_string(head_index) + "_W";
 }
 
-std::string output_src_label(std::size_t head_index, bool use_legacy_single_head_labels) {
-    if (use_legacy_single_head_labels) {
+std::string output_src_label(std::size_t head_index, bool use_single_output_compat_labels) {
+    if (use_single_output_compat_labels) {
         return "V_out_a_src";
     }
     return "V_out" + std::to_string(head_index) + "_a_src";
 }
 
-std::string output_dst_label(std::size_t head_index, bool use_legacy_single_head_labels) {
-    if (use_legacy_single_head_labels) {
+std::string output_dst_label(std::size_t head_index, bool use_single_output_compat_labels) {
+    if (use_single_output_compat_labels) {
         return "V_out_a_dst";
     }
     return "V_out" + std::to_string(head_index) + "_a_dst";
 }
 
-std::string output_challenge_name(std::string_view base, std::size_t head_index, bool use_legacy_single_head_labels) {
-    if (use_legacy_single_head_labels) {
+std::string output_challenge_name(std::string_view base, std::size_t head_index, bool use_single_output_compat_labels) {
+    if (use_single_output_compat_labels) {
         return std::string(base);
     }
     return std::string(base) + "_o" + std::to_string(head_index);
 }
 
-std::string output_external_eval_name(std::string_view base, std::size_t head_index, bool use_legacy_single_head_labels) {
-    if (use_legacy_single_head_labels) {
+std::string output_external_eval_name(std::string_view base, std::size_t head_index, bool use_single_output_compat_labels) {
+    if (use_single_output_compat_labels) {
         return "mu_" + std::string(base);
     }
     return "mu_out" + std::to_string(head_index) + "_" + std::string(base);
 }
 
-std::string output_witness_scalar_name(std::string_view base, std::size_t head_index, bool use_legacy_single_head_labels) {
-    if (use_legacy_single_head_labels) {
+std::string output_witness_scalar_name(std::string_view base, std::size_t head_index, bool use_single_output_compat_labels) {
+    if (use_single_output_compat_labels) {
         return "S_" + std::string(base) + "_out";
     }
     return "S_" + std::string(base) + "_out" + std::to_string(head_index);

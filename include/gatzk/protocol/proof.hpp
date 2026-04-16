@@ -1,4 +1,6 @@
 #pragma once
+// 本文件定义 protocol 层共享的数据契约，
+// 包括 context、trace、proof 与 benchmark 指标，是 artifact contract 的核心真源。
 
 #include <map>
 #include <memory>
@@ -15,6 +17,7 @@
 
 namespace gatzk::protocol {
 
+// 固定静态查表集合，对应 formal note 中的激活、指数与范围表。
 struct StaticTables {
     std::vector<std::pair<algebra::FieldElement, algebra::FieldElement>> lrelu;
     std::vector<std::pair<algebra::FieldElement, algebra::FieldElement>> elu;
@@ -22,11 +25,13 @@ struct StaticTables {
     std::vector<algebra::FieldElement> range;
 };
 
+// 单个注意力头使用的局部工作域集合。
 struct AttentionHeadDomains {
     std::shared_ptr<algebra::RootOfUnityDomain> in;
     std::shared_ptr<algebra::RootOfUnityDomain> d;
 };
 
+// 一次 formal run 中所有 proving / verifying 工作域的统一持有者。
 struct WorkDomains {
     std::shared_ptr<algebra::RootOfUnityDomain> fh;
     std::shared_ptr<algebra::RootOfUnityDomain> edge;
@@ -39,6 +44,7 @@ struct WorkDomains {
     std::optional<AttentionHeadDomains> output_head;
 };
 
+// 对外公开且会进入 transcript / manifest / verifier 的元数据契约。
 struct PublicMetadata {
     std::string protocol_id;
     std::string dataset_name;
@@ -66,6 +72,8 @@ struct PublicMetadata {
     std::string degree_bound_id;
 };
 
+// 构建一次 formal 证明所需的静态上下文。
+// 这里不保存动态 witness，只保存数据集、模型、SRS、公开列和静态承诺。
 struct ProtocolContext {
     util::AppConfig config;
     data::GraphDataset dataset;
@@ -79,31 +87,40 @@ struct ProtocolContext {
     std::unordered_map<std::string, crypto::Commitment> static_commitments;
 };
 
+// `build_trace` 输出的全部动态对象。
+// 这里的标签、承诺顺序与挑战映射会直接进入 proof 生成阶段。
 struct TraceArtifacts {
+    // 对超大 evaluation 列的临时落盘描述，只是执行层优化，不改变多项式语义。
     struct SpilledEvaluationPolynomial {
         std::string path;
         std::string domain_name;
         std::size_t size = 0;
     };
 
+    // 原始列与矩阵，主要服务 artifact 导出与后续按标签取值。
     std::unordered_map<std::string, std::vector<algebra::FieldElement>> columns;
     std::unordered_map<std::string, model::Matrix> matrices;
+    // 多项式视图与可选落盘信息。
     std::unordered_map<std::string, algebra::Polynomial> polynomials;
     std::unordered_map<std::string, SpilledEvaluationPolynomial> spilled_polynomials;
     std::unordered_map<std::string, std::string> polynomial_domains;
+    // 动态承诺、正式承诺顺序以及挑战重放结果。
     std::unordered_map<std::string, crypto::Commitment> commitments;
     std::vector<std::string> commitment_order;
     std::map<std::string, algebra::FieldElement> challenges;
+    // verifier 直接消费的外点值与 witness 标量。
     std::map<std::string, algebra::FieldElement> external_evaluations;
     std::map<std::string, algebra::FieldElement> witness_scalars;
 };
 
+// 单个工作域 opening bundle 的 proof 载体。
 struct DomainOpeningBundle {
     std::vector<algebra::FieldElement> points;
     std::vector<std::pair<std::string, std::vector<algebra::FieldElement>>> values;
     crypto::G1Point witness;
 };
 
+// 最终 proof 对象，顺序与字段语义必须与 verifier 和 artifact 导出保持一致。
 struct Proof {
     PublicMetadata public_metadata;
     std::vector<std::string> block_order;
@@ -116,6 +133,8 @@ struct Proof {
     std::map<std::string, algebra::FieldElement> challenges;
 };
 
+// 运行期与 benchmark 统一使用的指标表。
+// 这里既记录正式四项指标，也记录热路径拆分，方便 tests / manifests / README 对齐。
 struct RunMetrics {
     std::string backend_name;
     std::string crypto_backend_name;
@@ -267,8 +286,8 @@ struct RunMetrics {
     bool is_full_dataset = false;
     bool gpu_runtime_present = false;
     std::string benchmark_mode = "single";
-    std::string fft_backend_route = "legacy";
-    std::string route2_label = "legacy";
+    std::string fft_backend_route = "plain";
+    std::string route2_label = "baseline";
     std::string notes;
 };
 

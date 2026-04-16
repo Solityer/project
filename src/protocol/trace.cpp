@@ -28,6 +28,9 @@
 #include "gatzk/util/route2.hpp"
 
 namespace gatzk::protocol {
+// 本文件负责把 context 中的静态对象与模型前向结果物化成正式 witness 列，
+// 并按固定 transcript 顺序生成挑战、lookup、route、PSQ、zkMaP 与 dynamic commitment 载体。
+// 它是 proving 主链最重的执行层文件，但所有缓存和路由都只能复用等价对象，不能改变 formal 行为。
 
 #if GATZK_ENABLE_CUDA_BACKEND
 std::vector<std::size_t> lookup_histogram_indices_cuda(
@@ -495,11 +498,9 @@ DynamicCommitmentSpec matrix_spec(const std::string& name, const Matrix& matrix)
 
 DynamicCommitmentSpec matrix_commitment_only_spec(const std::string& name, const Matrix& matrix) {
     auto spec = matrix_spec(name, matrix);
-    // These matrix witnesses are committed and absorbed exactly as before, but
-    // they are never opened again as polynomial objects inside the protocol.
-    // Under the trace-layout route we can therefore keep only the commitment
-    // and tau evaluation, avoiding a transient flattened coefficient buffer
-    // without changing any proof-visible object or verifier check.
+    // 这类矩阵见证仍会像以前一样被承诺并吸收到 transcript 中，
+    // 只是后续不会再以多项式对象形式被打开。
+    // 因此 trace-layout 路线可以只保留承诺与 tau 求值，避免临时扁平化缓冲区。
     spec.retain_polynomial = false;
     return spec;
 }
@@ -528,11 +529,9 @@ FieldElement matrix_row_major_evaluation(const Matrix& matrix, const FieldElemen
     const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
     std::vector<FieldElement> row_evaluations(row_count, FieldElement::zero());
 
-    // This preserves the exact coefficient polynomial defined by row-major
-    // flattening in the spec. The engineering change is only that we evaluate
-    // each row block directly at the evaluation point and then fold rows by
-    // point^cols, so matrix
-    // commitments no longer need a temporary flattened coefficient vector.
+    // 这里保持与 row-major 扁平化完全等价的系数多项式，
+    // 只是工程上改为“逐行在点评估后再按 `point^cols` 折叠”，
+    // 从而避免为矩阵承诺额外构造一次临时扁平系数向量。
     if (route2.trace_layout_upgrade && row_count >= 8 && cpu_count > 1) {
         const auto task_count = std::min<std::size_t>(cpu_count, row_count);
         const auto chunk_size = (row_count + task_count - 1) / task_count;
@@ -696,10 +695,8 @@ bool should_spill_dynamic_polynomial(
     const std::string& name,
     const algebra::Polynomial& polynomial,
     bool keep_trace_payloads) {
-    // Keep evaluation polynomials in memory for domains that sit on the
-    // proving hot path (edge and FH).  Spilling to disk forces sequential
-    // entry-by-entry file reads during domain opening, which is orders of
-    // magnitude slower than the parallel PackedEvaluationBackend sweep.
+    // `edge` 与 `FH` 位于 proving 热路径上，若把 evaluation 多项式落盘，
+    // domain opening 时就会退化成逐项文件读取，远慢于并行 PackedEvaluationBackend 扫掠。
     const bool keep_hotpath_in_memory =
         !keep_trace_payloads
         && polynomial.basis == algebra::PolynomialBasis::Evaluation
@@ -1926,7 +1923,7 @@ std::vector<FieldElement> multiplicity_from_indices(
             }
             return multiplicity;
         }
-        // GPU allocation failed; fall through to CPU path
+        // GPU 申请失败时直接回退 CPU 路线，保证 lookup 语义不变。
 #endif
     }
     for (const auto index : indices) {
@@ -2110,6 +2107,7 @@ std::vector<FieldElement> build_weighted_sum(
     return out;
 }
 
+// 多层多头正式路径：按层序物化隐藏头、输出头与跨层拼接相关的全部 witness 列。
 TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics* metrics) {
     std::string shape_reason;
     if (!model::hidden_family_dimension_chain_is_valid(context.model, &shape_reason)) {
@@ -2182,6 +2180,8 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         keep_trace_payloads,
         metrics);
 
+    // 第一轮 transcript 先吸收公开元数据、图规模和输入特征承诺，
+    // 由此固定后续特征 lookup 的挑战标签。
     absorb_public_metadata(transcript, canonical_public_metadata(context));
     transcript.absorb_scalar("N", FieldElement(n_nodes));
     transcript.absorb_scalar("E", FieldElement(n_edges));
@@ -2207,6 +2207,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     trace.challenges["beta_feat"] = transcript.challenge("beta_feat");
 
     {
+        // 特征 lookup 是全链路最先出现的查表约束，用来把原始输入特征绑定到 formal 主线。
         const auto eta_feat_powers = powers(trace.challenges.at("eta_feat"), 3);
         const auto eta_feature_index = eta_feat_powers[1];
         const auto eta_feature_value = eta_feat_powers[2];
@@ -2350,6 +2351,8 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     const auto elu_index = cached_pair_index_map("elu", context.tables.elu);
     add_metric(metrics != nullptr ? &metrics->lookup_key_build_ms : nullptr, stage_start);
 
+    // 每个隐藏头都独立展开一套 route / lookup / PSQ / binding 约束，
+    // 但最终仍共享同一 transcript 顺序与 proof block 契约。
     auto commit_hidden_head = [&](std::size_t head_index) {
         std::size_t layer_index = 0;
         std::size_t local_head_index = head_index;
@@ -4276,6 +4279,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
 
 }  // namespace
 
+// trace 总入口：根据模型形状在多头正式路径与单头兼容路径之间分派。
 TraceArtifacts build_trace(const ProtocolContext& context, RunMetrics* metrics) {
     const auto trace_start = Clock::now();
     const auto initial_forward_ms = metrics != nullptr ? metrics->forward_ms : 0.0;
@@ -4286,9 +4290,7 @@ TraceArtifacts build_trace(const ProtocolContext& context, RunMetrics* metrics) 
     }
     TraceArtifacts trace;
     crypto::Transcript transcript("gatzkml");
-    // The proof object and verifier logic do not depend on whether raw columns
-    // are exported to disk. This flag only controls whether benchmark runs keep
-    // extra copies of trace payloads for debugging artifacts.
+    // `dump_trace` 只决定是否保留额外调试 artifact，不影响 proof 对象或 verifier 逻辑。
     const bool keep_trace_payloads = context.config.dump_trace;
 
     const auto& local = context.local;

@@ -1,4 +1,6 @@
 #pragma once
+// 本文件定义 formal 主线的运行配置对象，
+// 所有 dataset、artifact、batching 与 proof contract 相关参数都从这里进入系统。
 
 #include <cstddef>
 #include <cstdint>
@@ -8,11 +10,13 @@
 
 namespace gatzk::util {
 
+// 隐层族形状配置，决定每层头数和单头维度。
 struct HiddenLayerProfile {
     std::size_t head_count = 0;
     std::size_t head_dim = 0;
 };
 
+// 一次正式运行的统一配置。这里的字段会被 context、metadata、benchmark 与 tests 共同消费。
 struct AppConfig {
     std::string dataset = "toy";
     std::string data_root = "data";
@@ -50,6 +54,7 @@ struct AppConfig {
     std::vector<std::size_t> d_in_profile;
 };
 
+// 从 `.cfg` 文件解析正式运行配置，并执行字段级约束检查。
 AppConfig load_config(const std::string& path);
 
 }  // namespace gatzk::util

@@ -12,6 +12,10 @@
 
 namespace gatzk::algebra
 {
+    // 本文件实现工作域、多项式基变换与重心插值求值，
+    // 是 trace / quotient / domain opening / verifier 共用的基础代数层。
+    // 这里允许按 CPU / CUDA 路由切换执行策略，但不改变多项式本身的 formal 含义。
+
     namespace
     {
         // 用于并行计算时拆分区间 [begin, end)
@@ -154,7 +158,7 @@ namespace gatzk::algebra
             {
                 return weights;
             }
-            // Fall through to CPU if GPU fails
+            // GPU 求权重失败时直接回退到 CPU，保持结果口径不变。
         }
 
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
@@ -204,9 +208,7 @@ namespace gatzk::algebra
         }
 
         // --- 并行实现：分段批量求逆 ---
-        // 数学原理：inv(d[i]) = (1/chunk_product[c]) × prefix_within[i] × suffix_within[i]
-        // 其中 chunk_product[c] 为第 c 段所有分母之积，仅需一次全局求逆。
-        // 各段可完全并行执行，全局归约仅 O(task_count) 步（串行但极快）。
+        // 数学上仍然是在还原每个 `(x - omega^i)^{-1}`，只是把前后缀乘积拆到多线程执行。
 
         const std::size_t task_count =
             std::min<std::size_t>(cpu_count, (size + (1ULL << 20) - 1) / (1ULL << 20));
@@ -218,7 +220,7 @@ namespace gatzk::algebra
         std::vector<mcl::Fr> weights(size);
         const auto zero_eval = zero_polynomial_eval(x).native();
 
-        // 预先计算 omega 逆元（仅在 !points_precomputed 时使用）
+        // 非预计算域需要显式倒退 `omega^i`，因此提前准备 `omega^{-1}`。
         const auto omega_inv = points_precomputed ? FieldElement::one() : omega.inv();
 
         // --- 阶段一：并行 --- 计算分母及段内前缀积
@@ -260,8 +262,8 @@ namespace gatzk::algebra
             }
         }
 
-        // --- 阶段二：串行 O(task_count) --- 跨段前缀积、一次全局求逆、各段外积逆元
-        // chunk_outer_inv[c] = 1 / (其余所有段分母之积) = global_inv × cross_prefix[c] × cross_suffix[c]
+        // --- 阶段二：串行 O(task_count) ---
+        // 先做跨段前缀积，再只做一次全局求逆，最后恢复每段自己的外积逆元。
         std::vector<mcl::Fr> cross_prefix(task_count + 1);
         cross_prefix[0] = mcl::Fr(1);
         for (std::size_t c = 0; c < task_count; ++c)
@@ -277,8 +279,7 @@ namespace gatzk::algebra
             cross_suffix = mcl::Fr(1);
             for (std::size_t c = task_count; c-- > 0;)
             {
-                // chunk_outer_inv[c] = global_inv × cross_prefix[c] × cross_suffix_of_c
-                //                    = 1 / chunk_product[c]  （数学恒等式）
+                // 数学上等价于 `1 / chunk_product[c]`，只是写成更便于增量计算的形式。
                 mcl::Fr tmp;
                 mcl::Fr::mul(tmp, global_inv, cross_prefix[c]);
                 mcl::Fr::mul(chunk_outer_inv[c], tmp, cross_suffix);
@@ -286,7 +287,8 @@ namespace gatzk::algebra
             }
         }
 
-        // --- 阶段三：并行 --- 段内倒序扫描，合并段内后缀积与外积逆元，输出权重
+        // --- 阶段三：并行 ---
+        // 倒序补齐段内后缀积，并把外积逆元合并回每个位置的最终权重。
         {
             std::vector<std::future<void>> futures;
             futures.reserve(task_count);
@@ -302,29 +304,29 @@ namespace gatzk::algebra
                         {
                             return;
                         }
-                        // 对于 !points_precomputed：从末尾倒退跟踪 omega^i
+                        // 非预计算域需要从段末尾开始倒推 `omega^i`。
                         FieldElement omega_power = points_precomputed
                             ? FieldElement::zero()
                             : omega.pow(static_cast<std::uint64_t>(end - 1));
 
                         mcl::Fr running_suffix;
-                        running_suffix = mcl::Fr(1);  // = ∏_{j=i+1}^{end-1} d[j]（段内后缀积）
+                        running_suffix = mcl::Fr(1);  // 表示段内后缀积 `∏_{j=i+1}^{end-1} d[j]`
 
                         for (std::size_t i = end; i-- > begin;)
                         {
-                            // inv_d[i] = chunk_outer_inv × prefix_within[i] × running_suffix
+                            // 还原当前分母的逆元。
                             mcl::Fr inv_d;
                             mcl::Fr::mul(inv_d, chunk_outer_inv[task], prefix_within[i]);
                             mcl::Fr::mul(inv_d, inv_d, running_suffix);
 
-                            // weights[i] = Z_N(x) × (omega^i/N) × inv_d[i]
+                            // 写出与 formal 主线一致的 barycentric 权重。
                             const auto scaled_pt = points_precomputed
                                 ? points_scaled_by_inv_size[i].native()
                                 : (omega_power * inv_size).native();
                             mcl::Fr::mul(weights[i], zero_eval, scaled_pt);
                             mcl::Fr::mul(weights[i], weights[i], inv_d);
 
-                            // 更新后缀积及 omega 幂次
+                            // 更新段内后缀积和 `omega^i`。
                             mcl::Fr::mul(running_suffix, running_suffix, denominators[i]);
                             if (!points_precomputed && i > begin)
                             {

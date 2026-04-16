@@ -1,4 +1,6 @@
 #pragma once
+// 本文件定义 GAT 模型在本仓库中的参数、前向 trace 与 checkpoint 束接口，
+// 负责把上游 bundle 形状与 formal proving 主线需要的对象对齐。
 
 #include <cstddef>
 #include <string>
@@ -9,15 +11,18 @@
 
 namespace gatzk::model
 {
+    // 量化后的矩阵与浮点矩阵分别服务 formal witness 与参考前向。
     using Matrix = std::vector<std::vector<algebra::FieldElement>>;
     using FloatMatrix = std::vector<std::vector<double>>;
 
+    // 文本导出的稠密张量，用于从 checkpoint bundle 读取真实参数。
     struct DenseTensor
     {
         std::vector<std::size_t> shape;
         std::vector<double> values;
     };
 
+    // 单个注意力头的原始浮点参数，后续会在 trace / context 阶段量化到域元素。
     struct AttentionHeadParameters
     {
         FloatMatrix seq_kernel_fp;
@@ -28,6 +33,7 @@ namespace gatzk::model
         std::vector<double> output_bias_fp;
     };
 
+    // 单头前向过程中需要被 formal 约束的中间量集合。
     struct HeadForwardTrace
     {
         FloatMatrix H_prime;
@@ -45,6 +51,7 @@ namespace gatzk::model
         FloatMatrix H_agg;
     };
 
+    // 单头前向阶段的执行耗时拆分，最终会汇总到 RunMetrics。
     struct HeadForwardProfile
     {
         double projection_ms = 0.0;
@@ -52,6 +59,7 @@ namespace gatzk::model
         double activation_ms = 0.0;
     };
 
+    // 完整模型前向的阶段级耗时拆分。
     struct ForwardProfile
     {
         double hidden_projection_ms = 0.0;
@@ -63,12 +71,14 @@ namespace gatzk::model
         double output_activation_ms = 0.0;
     };
 
+    // 隐层家族形状，直接对应 formal note 中每层 `head_count × head_dim` 配置。
     struct HiddenLayerShape
     {
         std::size_t head_count = 0;
         std::size_t head_dim = 0;
     };
 
+    // 单个隐藏层的参数集合，由 checkpoint manifest 或 synthetic tests 构造。
     struct HiddenLayerParameters
     {
         std::size_t layer_index = 0;
@@ -77,6 +87,7 @@ namespace gatzk::model
         std::vector<AttentionHeadParameters> heads;
     };
 
+    // 输出层多头参数集合。
     struct OutputLayerParameters
     {
         std::size_t input_dim = 0;
@@ -85,6 +96,7 @@ namespace gatzk::model
         std::vector<AttentionHeadParameters> heads;
     };
 
+    // formal 主线消费的统一模型对象，同时兼容正式 checkpoint 与测试用 synthetic 模式。
     struct ModelParameters
     {
         Matrix W;
@@ -104,6 +116,7 @@ namespace gatzk::model
         AttentionHeadParameters output_head;
     };
 
+    // checkpoint manifest 中记录的层级元数据。
     struct CheckpointLayerInfo
     {
         std::size_t layer_index = 0;
@@ -111,6 +124,7 @@ namespace gatzk::model
         HiddenLayerShape shape;
     };
 
+    // checkpoint manifest 中记录的隐藏头张量名。
     struct CheckpointHeadSpec
     {
         std::size_t layer_index = 0;
@@ -124,6 +138,7 @@ namespace gatzk::model
         std::string output_bias;
     };
 
+    // checkpoint manifest 中记录的输出头张量名。
     struct CheckpointOutputHeadSpec
     {
         std::size_t head_index = 0;
@@ -135,6 +150,7 @@ namespace gatzk::model
         std::string output_bias;
     };
 
+    // 上游 bundle 的结构化摘要，用来校验 formal proof shape 与 artifact contract。
     struct CheckpointBundleInfo
     {
         std::string bundle_root;
@@ -156,6 +172,7 @@ namespace gatzk::model
         bool has_output_attention_head = false;
     };
 
+    // 按层聚合的隐藏层前向结果。
     struct HiddenLayerForwardTrace
     {
         FloatMatrix input;
@@ -163,6 +180,7 @@ namespace gatzk::model
         FloatMatrix concat;
     };
 
+    // 参考前向输出，trace 构建会从这里提取 witness、lookup 与 route 所需对象。
     struct MultiHeadForwardTrace
     {
         FloatMatrix H;
@@ -177,38 +195,49 @@ namespace gatzk::model
         FloatMatrix Y;
     };
 
+    // 构造测试用的单头参数，不参与正式 checkpoint 主线。
     ModelParameters build_model_parameters(
         std::size_t input_dim,
         std::size_t hidden_dim,
         std::size_t num_classes,
         std::uint64_t seed);
+    // 构造测试用多层多头参数族，专供 formal suite 的 synthetic 覆盖。
     ModelParameters build_family_model_parameters(
         const std::vector<std::size_t>& d_in_profile,
         const std::vector<HiddenLayerShape>& hidden_profile,
         std::size_t k_out,
         std::size_t num_classes,
         std::uint64_t seed);
+    // 读取 bundle 的 manifest 元数据，不直接加载权重张量。
     CheckpointBundleInfo inspect_checkpoint_bundle(const std::string& bundle_root);
+    // 检查 bundle 是否满足当前 formal 主线要求的层数、hidden_profile、K_out 与输出平均规则。
     bool checkpoint_bundle_matches_formal_proof_shape(const CheckpointBundleInfo& info, std::string* reason = nullptr);
+    // 从真实 checkpoint bundle 载入模型参数，是正式 proving 主线的唯一模型来源。
     ModelParameters load_checkpoint_bundle_parameters(const std::string& bundle_root);
+    // 推出一个注意力头的输出宽度，供 domain 规划与 trace 物化使用。
     std::size_t attention_head_output_width(const AttentionHeadParameters& parameters);
+    // 根据图边构造参考前向使用的偏置矩阵。
     FloatMatrix build_attention_bias_matrix(std::size_t num_nodes, const std::vector<data::Edge>& edges);
+    // 执行单头参考前向，输出会被 trace 层重新量化并约束。
     HeadForwardTrace attention_head_forward(
         const FloatMatrix& features,
         const std::vector<data::Edge>& edges,
         const AttentionHeadParameters& parameters,
         HeadForwardProfile* profile = nullptr);
+    // 保留的参考实现路径，主要用于对照与测试。
     MultiHeadForwardTrace forward_reference_style(
         const FloatMatrix& features,
         const std::vector<data::Edge>& edges,
         const ModelParameters& parameters,
         ForwardProfile* profile = nullptr);
+    // 当前 formal 主线对应的前向实现，trace 构建直接依赖它的输出对象。
     MultiHeadForwardTrace forward_note_style(
         const FloatMatrix& features,
         const std::vector<data::Edge>& edges,
         const ModelParameters& parameters,
         ForwardProfile* profile = nullptr);
 
+    // 下面这些辅助函数将矩阵、向量与边聚合结果转换成 trace / lookup 可消费的对象。
     Matrix project_features(const Matrix& left, const Matrix& right);
     std::vector<algebra::FieldElement> matvec_projection(const Matrix& matrix, const std::vector<algebra::FieldElement>& vector);
     std::vector<algebra::FieldElement> compress_rows(const Matrix& matrix, const algebra::FieldElement& challenge);
@@ -222,7 +251,9 @@ namespace gatzk::model
         const Matrix& w_out,
         const std::vector<algebra::FieldElement>& bias,
         Matrix* linear_part);
+    // 验证多层多头形状链是否自洽，是 context 构建阶段的重要前置约束。
     bool hidden_family_dimension_chain_is_valid(const ModelParameters& parameters, std::string* reason = nullptr);
+    // 下面这些查询函数为 domain 规划、metadata 导出与 tests 提供统一形状信息。
     std::size_t flattened_hidden_head_count(const ModelParameters& parameters);
     std::size_t max_hidden_input_dim(const ModelParameters& parameters);
     std::size_t max_hidden_head_dim(const ModelParameters& parameters);

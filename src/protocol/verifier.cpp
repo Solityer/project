@@ -20,6 +20,10 @@
 #include "gatzk/util/route2.hpp"
 
 namespace gatzk::protocol {
+// 本文件实现 verifier 主链：
+// 它会重放 transcript、检查公开元数据契约、批量校验各域 opening，并重算 quotient 与外点关系。
+// 这里允许做求值缓存和并行检查，但任何优化都不能改变验证方程或公开对象集合。
+
 namespace {
 
 using algebra::FieldElement;
@@ -937,6 +941,7 @@ double* verify_domain_metric(RunMetrics* metrics, const std::string& bundle_name
 
 }  // namespace
 
+// verifier 入口：重放 transcript、批量校验 opening，并确认 quotient / external relation 全部成立。
 bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metrics) {
     // verify 必须重放 transcript，并按固定 block 顺序检查公开元数据、quotient 与 opening 关系。
     const bool debug_verify = std::getenv("GATZK_DEBUG_VERIFY") != nullptr;
@@ -1071,6 +1076,7 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
             return eval_memo.eval_named(name, point);
         };
         auto verify_bundle_spec = [&](const BundleSpec& spec) {
+            // 每个 bundle 都要同时满足：标签集合正确、打开点正确、KZG witness 正确、quotient 重算正确。
             const auto& indexed_bundle = bundle_by_name(indexed_bundles, spec.bundle_name);
             const auto& bundle = *indexed_bundle.bundle;
             auto labels = domain_opening_labels(context, spec.trace_domain_name);
