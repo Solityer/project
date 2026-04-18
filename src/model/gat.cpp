@@ -17,7 +17,7 @@ namespace gatzk::model
 {
     namespace
     {
-        // checkpoint manifest、tensor 文本和 bundle 元数据都经由这里读取和解析
+        // 读取和解析普通文本文件，清单文件和张量文件
         std::string load_text_file(const std::filesystem::path& path)
         {
             std::ifstream input(path);
@@ -104,6 +104,7 @@ namespace gatzk::model
             throw std::runtime_error("unterminated array in checkpoint manifest: " + key);
         }
 
+        // 把一个对象数组拆成多个片段
         std::vector<std::string> parse_object_array_entries(const std::string& text, const std::string& key)
         {
             const auto body = extract_array_body(text, key);
@@ -141,7 +142,7 @@ namespace gatzk::model
             return entries;
         }
 
-        // 解析 checkpoint manifest 中的隐藏层摘要
+        // 解析一层隐藏层的形状信息
         CheckpointLayerInfo parse_checkpoint_layer_info(const std::string& entry)
         {
             CheckpointLayerInfo out;
@@ -152,7 +153,7 @@ namespace gatzk::model
             return out;
         }
 
-        // 解析隐藏头张量名，后续据此定位真实参数文件
+        // 解析隐藏头张量名
         CheckpointHeadSpec parse_checkpoint_head_spec(const std::string& entry)
         {
             CheckpointHeadSpec out;
@@ -182,6 +183,7 @@ namespace gatzk::model
             return out;
         }
 
+        // 把各个维度乘起来
         std::size_t shape_product(const std::vector<std::size_t>& shape)
         {
             std::size_t out = 1;
@@ -192,6 +194,7 @@ namespace gatzk::model
             return out;
         }
 
+        // 读取张量文件，并把每一段张量记录整理成一个稠密张量
         std::unordered_map<std::string, DenseTensor> load_text_tensors(const std::filesystem::path& path)
         {
             std::ifstream input(path);
@@ -233,6 +236,7 @@ namespace gatzk::model
             return out;
         }
 
+        // 取一个必须存在的张量，没找到就直接报错
         const DenseTensor& require_tensor(
             const std::unordered_map<std::string, DenseTensor>& tensors,
             const std::string& name)
@@ -245,6 +249,7 @@ namespace gatzk::model
             return it->second;
         }
 
+        // 这一项导出时是 [1, 输入维, 输出维]，这里还原成二维矩阵
         FloatMatrix reshape_seq_kernel(const DenseTensor& tensor)
         {
             if (tensor.shape.size() != 3 || tensor.shape[0] != 1)
@@ -264,6 +269,7 @@ namespace gatzk::model
             return out;
         }
 
+        // 这一项导出时是 [1, 宽度, 1]，这里直接摊平成向量
         std::vector<double> reshape_attention_kernel(const DenseTensor& tensor)
         {
             if (tensor.shape.size() != 3 || tensor.shape[0] != 1 || tensor.shape[2] != 1)
@@ -291,6 +297,7 @@ namespace gatzk::model
             return tensor.values;
         }
 
+        // 按张量名字把一个注意力头需要的浮点参数封装起来
         AttentionHeadParameters load_head_parameters(
             const std::unordered_map<std::string, DenseTensor>& tensors,
             const std::string& seq_kernel_name,
@@ -328,6 +335,7 @@ namespace gatzk::model
                     head.seq_kernel_fp[row][col] = enabled ? 1.0 : 0.0;
                     has_non_zero = has_non_zero || enabled;
                 }
+                // 保证每一行至少有一个非零，免得整行都空
                 if (!has_non_zero && output_dim != 0)
                 {
                     head.seq_kernel_fp[row][row % output_dim] = 1.0;
@@ -405,7 +413,7 @@ namespace gatzk::model
             return out;
         }
 
-        // 按列拼接多个矩阵（行数必须相同）
+        // 按列拼接多个矩阵，行数必须相同（对应隐藏层的多头拼接）
         FloatMatrix concatenate_columns(const std::vector<FloatMatrix>& matrices)
         {
             if (matrices.empty())
@@ -470,7 +478,7 @@ namespace gatzk::model
             return out;
         }
 
-        // 注意力头前向实现
+        // 注意力头前向实现（单个注意力头的完整前向）
         HeadForwardTrace attention_head_forward_impl(
             const FloatMatrix& features,
             const std::vector<data::Edge>& edges,
@@ -509,6 +517,7 @@ namespace gatzk::model
             // 2、源节点和目标节点的注意力系数向量
             trace.E_dst = matvec(trace.H_prime, parameters.attn_dst_kernel_fp, parameters.attn_dst_bias_fp);
             trace.E_src = matvec(trace.H_prime, parameters.attn_src_kernel_fp, parameters.attn_src_bias_fp);
+            // 约束中间量
             trace.S.assign(edges.size(), 0.0);
             trace.Z.assign(edges.size(), 0.0);
             trace.M.assign(node_count, 0.0);
@@ -551,7 +560,7 @@ namespace gatzk::model
                 }
             }
 
-            // 4、计算分母总和
+            // 4、计算分母总和（每一项减去最大值后再取指数再求和）
             for (std::size_t dst = 0; dst < node_count; ++dst)
             {
                 for (const auto src : incoming_sources[dst])
@@ -565,6 +574,8 @@ namespace gatzk::model
             {
                 trace.inv[dst] = 1.0 / trace.Sum[dst];
             }
+
+            // 6、邻居聚合
             for (std::size_t dst = 0; dst < node_count; ++dst)
             {
                 for (const auto src : incoming_sources[dst])
@@ -593,7 +604,10 @@ namespace gatzk::model
             }
 
             stage_start = Clock::now();
+
             // 7、添加输出偏置并应用ELU激活函数
+            // 隐藏层不加这偏置，但要激活
+            // 输出层要加偏置，但不激活
             for (std::size_t dst = 0; dst < node_count; ++dst)
             {
                 for (std::size_t col = 0; col < width; ++col)
@@ -615,6 +629,7 @@ namespace gatzk::model
         }
     }
 
+    // 单层测试参数，只用于测试
     ModelParameters build_model_parameters(
         std::size_t input_dim,
         std::size_t hidden_dim,
@@ -640,7 +655,7 @@ namespace gatzk::model
             }
         }
 
-        // 注意力向量 a_src 和 a_dst
+        // 两组注意力向量 a_src 和 a_dst
         params.a_src.resize(hidden_dim, algebra::FieldElement::one());
         params.a_dst.resize(hidden_dim, algebra::FieldElement::one());
         for (std::size_t i = 0; i < hidden_dim; ++i)
@@ -672,6 +687,8 @@ namespace gatzk::model
         {
             params.b[i] = algebra::FieldElement::from_signed(static_cast<std::int64_t>(i % 3U));
         }
+
+        // 这套测试参数默认一层隐藏层、一个输出头
         params.L = 2;
         params.d_in_profile = {input_dim};
         params.hidden_profile = {{1, hidden_dim}};
@@ -680,7 +697,7 @@ namespace gatzk::model
         return params;
     }
 
-    // synthetic 多层多头模型只服务测试覆盖，不会进入正式 benchmark 主线。
+    // 构造多层多头的测试模型，主要用来覆盖形状检查
     ModelParameters build_family_model_parameters(
         const std::vector<std::size_t>& d_in_profile,
         const std::vector<HiddenLayerShape>& hidden_profile,
@@ -711,7 +728,7 @@ namespace gatzk::model
 
         std::size_t global_hidden_head_index = 0;
         out.hidden_layers.reserve(hidden_profile.size());
-        // 逐层构造隐藏头参数，使 synthetic 形状与 formal profile 一致。
+        // 逐层构造隐藏头参数
         for (std::size_t layer_index = 0; layer_index < hidden_profile.size(); ++layer_index)
         {
             const auto& shape = hidden_profile[layer_index];
@@ -732,14 +749,14 @@ namespace gatzk::model
             out.hidden_layers.push_back(layer);
         }
 
-        // 保持一个展平视图，方便 trace / domain 规划按全局头索引访问。
+        // 维护一份展开后的隐藏头视图，方便别处按全局编号访问
         out.hidden_heads.reserve(global_hidden_head_index);
         for (const auto& layer : out.hidden_layers)
         {
             out.hidden_heads.insert(out.hidden_heads.end(), layer.heads.begin(), layer.heads.end());
         }
 
-        // 输出层按 `K_out` 独立建头，保持与 checkpoint bundle 同构。
+        // 输出层单独构造，输入宽度等于最后一层拼接后的总宽度
         out.output_layer.input_dim =
             hidden_profile.back().head_count * hidden_profile.back().head_dim;
         out.output_layer.output_dim = num_classes;
@@ -757,7 +774,7 @@ namespace gatzk::model
         return out;
     }
 
-    // 只读取 manifest 元数据，不触碰权重张量本体。
+    // 只读取 manifest 元数据，不触碰权重张量本体
     CheckpointBundleInfo inspect_checkpoint_bundle(const std::string& bundle_root)
     {
         const auto bundle_path = std::filesystem::path(bundle_root);
@@ -785,11 +802,14 @@ namespace gatzk::model
         info.output_head_count = parse_required_size_t(manifest, "K_out");
         info.class_count = parse_required_size_t(manifest, "C");
         info.d_in_profile = parse_optional_size_array(manifest, "d_in_profile");
+        
+        // 每层的形状摘要
         for (const auto& entry : parse_object_array_entries(manifest, "hidden_layers"))
         {
             info.hidden_layers.push_back(parse_checkpoint_layer_info(entry));
             info.hidden_profile.push_back(info.hidden_layers.back().shape);
         }
+        // 每个头对应的张量名字
         for (const auto& entry : parse_object_array_entries(manifest, "hidden_head_specs"))
         {
             info.hidden_head_specs.push_back(parse_checkpoint_head_spec(entry));
@@ -929,7 +949,7 @@ namespace gatzk::model
         out.hidden_layers.reserve(manifest_info.hidden_layers.size());
         std::size_t expected_global_head_index = 0;
 
-        // 按 manifest 声明顺序装入隐藏层头，保持全局头编号连续。
+        // 按清单里写好的顺序，把隐藏层各个头封装进来
         for (const auto& layer_info : manifest_info.hidden_layers)
         {
             HiddenLayerParameters layer;
@@ -967,7 +987,7 @@ namespace gatzk::model
             out.hidden_layers.push_back(std::move(layer));
         }
 
-        // 输出层同样要求索引连续，避免 proof schema 与头顺序分叉。
+        // 输出层同样要求索引连续读取，避免顺序混乱
         out.output_layer.head_count = manifest_info.output_head_count;
         out.output_layer.heads.reserve(manifest_info.output_head_specs.size());
         for (const auto& head_spec : manifest_info.output_head_specs)
@@ -993,6 +1013,8 @@ namespace gatzk::model
         {
             throw std::runtime_error("checkpoint bundle does not contain output attention heads");
         }
+
+        // 如果清单里没写全，就从实际读到的层参数补回去
         if (out.d_in_profile.empty())
         {
             for (const auto& layer : out.hidden_layers)
@@ -1033,6 +1055,7 @@ namespace gatzk::model
     }
 
     // 构建注意力偏置矩阵
+    // 有边和自环的位置记0，没有边的位置给一个很小的负数
     FloatMatrix build_attention_bias_matrix(std::size_t num_nodes, const std::vector<data::Edge>& edges)
     {
         FloatMatrix bias(num_nodes, std::vector<double>(num_nodes, -1e9));
@@ -1051,7 +1074,8 @@ namespace gatzk::model
         return bias;
     }
 
-    // 单头参考前向会输出 formal trace 需要约束的全部中间量。
+    // 单头前向的公开入口
+    // 默认是加输出偏置，并对结果做指数线性单元
     HeadForwardTrace attention_head_forward(
         const FloatMatrix& features,
         const std::vector<data::Edge>& edges,
@@ -1061,7 +1085,7 @@ namespace gatzk::model
         return attention_head_forward_impl(features, edges, parameters, true, true, profile);
     }
 
-    // 参考风格前向主要服务 tests / 对照，不直接作为 formal note 的唯一语义真源。
+    // 这是参考写法的前向，主要拿来做对照和测试
     MultiHeadForwardTrace forward_reference_style(
         const FloatMatrix& features,
         const std::vector<data::Edge>& edges,
@@ -1076,6 +1100,8 @@ namespace gatzk::model
         MultiHeadForwardTrace trace;
         trace.H = features;
         auto layer_input = features;
+
+        // 先遍历所有隐藏层
         for (const auto& layer : parameters.hidden_layers)
         {
             HiddenLayerForwardTrace layer_trace;
@@ -1083,6 +1109,7 @@ namespace gatzk::model
             std::vector<FloatMatrix> hidden_outputs;
             hidden_outputs.reserve(layer.heads.size());
             layer_trace.head_traces.reserve(layer.heads.size());
+            // 这一层里的每个头，都单独跑一次单头前向
             for (const auto& head : layer.heads)
             {
                 HeadForwardProfile head_profile;
@@ -1097,6 +1124,8 @@ namespace gatzk::model
                 layer_trace.head_traces.push_back(head_trace);
                 trace.hidden_head_traces.push_back(head_trace);
             }
+
+            // 把同一层所有头的输出按列拼起来，作为下一层输入
             if (profile != nullptr)
             {
                 const auto concat_start = std::chrono::steady_clock::now();
@@ -1114,6 +1143,7 @@ namespace gatzk::model
             trace.hidden_layer_traces.push_back(std::move(layer_trace));
         }
 
+        // 再遍历输出层的各个头
         std::vector<FloatMatrix> output_values;
         output_values.reserve(parameters.output_layer.heads.size());
         trace.output_head_traces.reserve(parameters.output_layer.heads.size());
@@ -1130,6 +1160,8 @@ namespace gatzk::model
             output_values.push_back(head_trace.H_agg);
             trace.output_head_traces.push_back(head_trace);
         }
+
+        // 这条参考路径里，输出就是把各个输出头直接平均
         trace.output_head_trace = trace.output_head_traces.front();
         trace.output_head_values = output_values;
         trace.Y_lin = average_matrices(output_values);
@@ -1137,7 +1169,7 @@ namespace gatzk::model
         return trace;
     }
 
-    // 前向实现
+    // 真正的主线前向实现
     MultiHeadForwardTrace forward_note_style(
         const FloatMatrix& features,
         const std::vector<data::Edge>& edges,
@@ -1150,8 +1182,12 @@ namespace gatzk::model
         }
 
         MultiHeadForwardTrace trace;
+
+        // 初始输入 H 就是原始特征
         trace.H = features;
         auto layer_input = features;
+
+        // 1、隐藏层：每层都是 多头前向 -> 按列拼接 -> 进入下一层
         for (const auto& layer : parameters.hidden_layers)
         {
             HiddenLayerForwardTrace layer_trace;
@@ -1159,9 +1195,11 @@ namespace gatzk::model
             std::vector<FloatMatrix> hidden_outputs;
             hidden_outputs.reserve(layer.heads.size());
             layer_trace.head_traces.reserve(layer.heads.size());
+            // 1.1 本层每个隐藏头都单独跑一次单头前向函数
             for (const auto& head : layer.heads)
             {
                 HeadForwardProfile head_profile;
+                // 隐藏层不加输出偏置，但要激活
                 auto head_trace = attention_head_forward_impl(layer_input, edges, head, false, true, &head_profile);
                 if (profile != nullptr)
                 {
@@ -1171,11 +1209,13 @@ namespace gatzk::model
                 }
                 hidden_outputs.push_back(head_trace.H_agg);
                 layer_trace.head_traces.push_back(head_trace);
+                // 只把第0层隐藏头的轨迹额外摊平保存
                 if (layer.layer_index == 0)
                 {
                     trace.hidden_head_traces.push_back(std::move(head_trace));
                 }
             }
+            // 1.2 把本层所有头的输出拼成一个大矩阵
             if (profile != nullptr)
             {
                 const auto concat_start = std::chrono::steady_clock::now();
@@ -1188,11 +1228,14 @@ namespace gatzk::model
             {
                 layer_trace.concat = concatenate_columns(hidden_outputs);
             }
+
+            // 1.3 拼接后的结果就是下一层输入
             layer_input = layer_trace.concat;
             trace.hidden_concat = layer_trace.concat;
             trace.hidden_layer_traces.push_back(std::move(layer_trace));
         }
 
+        // 2、输出层：每个输出头独立前向，然后做平均
         std::vector<FloatMatrix> output_pre_bias;
         std::vector<FloatMatrix> output_values;
         output_pre_bias.reserve(parameters.output_layer.heads.size());
@@ -1201,6 +1244,8 @@ namespace gatzk::model
         for (const auto& head : parameters.output_layer.heads)
         {
             HeadForwardProfile output_profile;
+
+            // 输出层加输出偏置，但不激活
             auto head_trace = attention_head_forward_impl(layer_input, edges, head, true, false, &output_profile);
             if (profile != nullptr)
             {
@@ -1208,10 +1253,15 @@ namespace gatzk::model
                 profile->output_attention_ms += output_profile.attention_ms;
                 profile->output_activation_ms += output_profile.activation_ms;
             }
+
+            // 这里同时保留加偏置前和加偏置后的两个版本，因为后面要检查平均前后的对应关系
             output_pre_bias.push_back(head_trace.H_agg_pre_bias);
             output_values.push_back(head_trace.H_agg);
             trace.output_head_traces.push_back(head_trace);
         }
+
+        // 3、最后做输出层多头平均
+        // 这一项表示加偏置前的平均。Y表示加偏置后的平均。
         trace.output_head_trace = trace.output_head_traces.front();
         trace.output_head_values = output_values;
         trace.Y_lin = average_matrices(output_pre_bias);
@@ -1225,6 +1275,7 @@ namespace gatzk::model
         return parameters.has_real_multihead && hidden_family_dimension_chain_is_valid(parameters, &reason);
     }
 
+    // 检查多层多头的维度链是不是前后对得上
     bool hidden_family_dimension_chain_is_valid(const ModelParameters& parameters, std::string* reason)
     {
         std::vector<std::string> failures;
@@ -1273,6 +1324,8 @@ namespace gatzk::model
                 failures.push_back(
                     "hidden layer " + std::to_string(layer_index) + " input_dim conflicts with d_in_profile");
             }
+
+            // 第0层输入就是配置里给的输入宽度，后面每一层输入都应该等于上一层拼接后的总宽度。
             if (layer_index == 0)
             {
                 expected_input_dim = configured_input;
@@ -1282,6 +1335,8 @@ namespace gatzk::model
                 failures.push_back(
                     "hidden layer " + std::to_string(layer_index) + " input_dim=" + std::to_string(layer.input_dim) + " conflicts with previous concat width=" + std::to_string(expected_input_dim));
             }
+
+            // 每个头的参数宽度需要和这一层的输入输出对齐
             for (const auto& head : layer.heads)
             {
                 if (head.seq_kernel_fp.size() != layer.input_dim)
@@ -1299,6 +1354,8 @@ namespace gatzk::model
             }
             expected_input_dim = layer.shape.head_count * layer.shape.head_dim;
         }
+
+        // 输出层也做同样的形状一致性检查
         if (parameters.output_layer.head_count == 0 || parameters.output_layer.heads.empty())
         {
             failures.push_back("output_layer must expose at least one output attention head");
@@ -1357,7 +1414,7 @@ namespace gatzk::model
         return failures.empty();
     }
 
-    // 这些查询函数会进入 domain 规划、metadata 导出与 formal suite 断言。
+    // 把所有层的隐藏头数量加起来
     std::size_t flattened_hidden_head_count(const ModelParameters& parameters)
     {
         std::size_t count = 0;
@@ -1368,6 +1425,7 @@ namespace gatzk::model
         return count;
     }
 
+    // 所有隐藏层里，最大的输入宽度
     std::size_t max_hidden_input_dim(const ModelParameters& parameters)
     {
         std::size_t value = 0;
@@ -1378,6 +1436,7 @@ namespace gatzk::model
         return value;
     }
 
+    // 所有隐藏层里，单个头最大的输出宽度
     std::size_t max_hidden_head_dim(const ModelParameters& parameters)
     {
         std::size_t value = 0;
@@ -1388,6 +1447,7 @@ namespace gatzk::model
         return value;
     }
 
+    // 所有隐藏层里，拼接后的最大总宽度
     std::size_t max_hidden_concat_width(const ModelParameters& parameters)
     {
         std::size_t value = 0;
@@ -1398,7 +1458,8 @@ namespace gatzk::model
         return value;
     }
 
-    // 量化后的矩阵乘法是 trace 中 witness 物化的基础操作。
+    // 域元素版的矩阵乘法。
+    // 前向过程量化以后，后面离散计算的规则
     Matrix project_features(const Matrix& left, const Matrix& right)
     {
         if (left.empty() || right.empty())
@@ -1459,7 +1520,7 @@ namespace gatzk::model
         return out;
     }
 
-    // 向量投影对应注意力核与挑战折叠中的线性形式。
+    // 域元素版矩阵乘向量
     std::vector<algebra::FieldElement> matvec_projection(const Matrix& matrix, const std::vector<algebra::FieldElement>& vector)
     {
         std::vector<algebra::FieldElement> out(matrix.size(), algebra::FieldElement::zero());
@@ -1478,7 +1539,7 @@ namespace gatzk::model
         return out;
     }
 
-    // 行压缩把矩阵对象折叠成单列 witness，后续会进入 route / zkMaP 约束。
+    // 用一个随机挑战把每一行压成一个域元素，后续会进入route / zkMaP约束
     std::vector<algebra::FieldElement> compress_rows(const Matrix& matrix, const algebra::FieldElement& challenge)
     {
         std::vector<algebra::FieldElement> out(matrix.size(), algebra::FieldElement::zero());
@@ -1499,7 +1560,7 @@ namespace gatzk::model
         return out;
     }
 
-    // 边聚合把 `alpha` 与 `H'` 转成目标节点聚合结果，是 GAT 主线的核心一步。
+    // 域元素版的边聚合
     Matrix aggregate_by_edges(
         const Matrix& h_prime,
         const std::vector<algebra::FieldElement>& alpha,
@@ -1536,7 +1597,7 @@ namespace gatzk::model
         return out;
     }
 
-    // 输出投影保留线性部分与加偏置后的结果，供 proof 检查均值与 bias 关系。
+    // 输出层的线性投影：先乘输出矩阵，再按列加偏置
     Matrix output_projection(
         const Matrix& h_agg,
         const Matrix& w_out,
