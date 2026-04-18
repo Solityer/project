@@ -31,8 +31,8 @@
 #include "gatzk/util/route2.hpp"
 
 namespace gatzk::protocol {
-// 本文件实现 proving 主链的两大阶段：
-// 一是把 config、数据、模型和静态表收束成 ProtocolContext；二是在固定 transcript 顺序下生成 proof。
+// 一是把 config、数据、模型和静态表收束成 ProtocolContext；
+// 二是在固定 transcript 顺序下生成 proof。
 // 这里允许做缓存、批量求值和并行，但不得改动 proof schema、serializer 契约或 verifier 可见语义。
 
 namespace {
@@ -2506,6 +2506,9 @@ DomainOpeningBundle make_bundle(
     RunMetrics* metrics = nullptr,
     double* eval_gather_ms = nullptr,
     double* witness_open_ms = nullptr) {
+    // 一个 bundle 对应 formal schema 中某个工作域的一次 opening。
+    // 这里必须严格复用 `domain_opening_labels()` 给出的标签顺序，
+    // 因为 prover 组包、verifier 取值和 proof_size_bytes 统计都依赖同一份 shape。
     DomainOpeningBundle bundle;
     bundle.points = points;
     const auto commitments = collect_commitments(trace, quotient_commitments, labels);
@@ -3916,69 +3919,89 @@ void export_run_artifacts(
     }
     util::write_key_values(export_root + "/challenges.txt", challenge_strings);
 
-    const std::map<std::string, std::string> metadata = {
-        {"protocol_id", proof.public_metadata.protocol_id},
-        {"dataset_name", proof.public_metadata.dataset_name},
-        {"task_type", proof.public_metadata.task_type},
-        {"report_unit", proof.public_metadata.report_unit},
-        {"graph_count", proof.public_metadata.graph_count},
-        {"L", proof.public_metadata.L},
-        {"hidden_profile", proof.public_metadata.hidden_profile},
-        {"d_in_profile", proof.public_metadata.d_in_profile},
-        {"K_out", proof.public_metadata.K_out},
-        {"C", proof.public_metadata.C},
-        {"batching_rule", proof.public_metadata.batching_rule},
-        {"subgraph_rule", proof.public_metadata.subgraph_rule},
-        {"self_loop_rule", proof.public_metadata.self_loop_rule},
-        {"edge_sort_rule", proof.public_metadata.edge_sort_rule},
-        {"chunking_rule", proof.public_metadata.chunking_rule},
-        {"model_arch_id", proof.public_metadata.model_arch_id},
-        {"model_param_id", proof.public_metadata.model_param_id},
-        {"static_table_id", proof.public_metadata.static_table_id},
-        {"quant_cfg_id", proof.public_metadata.quant_cfg_id},
-        {"domain_cfg", proof.public_metadata.domain_cfg},
-        {"dim_cfg", proof.public_metadata.dim_cfg},
-        {"encoding_id", proof.public_metadata.encoding_id},
-        {"padding_rule_id", proof.public_metadata.padding_rule_id},
-        {"degree_bound_id", proof.public_metadata.degree_bound_id},
-    };
-    util::write_key_values(export_root + "/metadata.txt", metadata);
-    util::write_lines(export_root + "/proof_block_order.txt", proof.block_order);
-
     auto format_double = [](double value) {
         std::ostringstream stream;
         stream << std::fixed << std::setprecision(3) << value;
         return stream.str();
     };
+    auto format_index_vector = [](const std::vector<std::size_t>& values) {
+        std::ostringstream out;
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            if (i != 0) {
+                out << ',';
+            }
+            out << values[i];
+        }
+        return out.str();
+    };
+    auto display_config_path = [&]() {
+        const auto project_root = std::filesystem::path(context.config.project_root);
+        const auto configured = std::filesystem::path(metrics.config);
+        const auto relative = std::filesystem::relative(configured, project_root);
+        if (!relative.empty() && *relative.begin() != "..") {
+            return relative.string();
+        }
+        return metrics.config;
+    };
+    auto append_public_metadata = [&](std::map<std::string, std::string>& entries) {
+        entries.insert({
+            {"protocol_id", proof.public_metadata.protocol_id},
+            {"dataset_name", proof.public_metadata.dataset_name},
+            {"task_type", proof.public_metadata.task_type},
+            {"report_unit", proof.public_metadata.report_unit},
+            {"graph_count", proof.public_metadata.graph_count},
+            {"L", proof.public_metadata.L},
+            {"hidden_profile", proof.public_metadata.hidden_profile},
+            {"d_in_profile", proof.public_metadata.d_in_profile},
+            {"K_out", proof.public_metadata.K_out},
+            {"C", proof.public_metadata.C},
+            {"batching_rule", proof.public_metadata.batching_rule},
+            {"subgraph_rule", proof.public_metadata.subgraph_rule},
+            {"self_loop_rule", proof.public_metadata.self_loop_rule},
+            {"edge_sort_rule", proof.public_metadata.edge_sort_rule},
+            {"chunking_rule", proof.public_metadata.chunking_rule},
+            {"model_arch_id", proof.public_metadata.model_arch_id},
+            {"model_param_id", proof.public_metadata.model_param_id},
+            {"static_table_id", proof.public_metadata.static_table_id},
+            {"quant_cfg_id", proof.public_metadata.quant_cfg_id},
+            {"domain_cfg", proof.public_metadata.domain_cfg},
+            {"dim_cfg", proof.public_metadata.dim_cfg},
+            {"encoding_id", proof.public_metadata.encoding_id},
+            {"padding_rule_id", proof.public_metadata.padding_rule_id},
+            {"degree_bound_id", proof.public_metadata.degree_bound_id},
+        });
+    };
+    auto benchmark_backend_label = [&]() {
+        return metrics.compute_backend_name == "cuda_hotspots" ? std::string("gpu") : std::string("cpu");
+    };
+
+    std::map<std::string, std::string> metadata;
+    append_public_metadata(metadata);
+    util::write_key_values(export_root + "/metadata.txt", metadata);
+    util::write_lines(export_root + "/proof_block_order.txt", proof.block_order);
 
     util::write_lines(export_root + "/commitment_order.txt", trace.commitment_order);
-    const std::map<std::string, std::string> summary = {
-        {"backend", metrics.backend_name},
+    // `benchmark.txt` 只保留正式交付面需要的最小结果，避免把内部剖面重新暴露出来。
+    const std::map<std::string, std::string> benchmark_summary = {
+        {"dataset", metrics.dataset},
+        {"config", display_config_path()},
+        {"backend", benchmark_backend_label()},
+        {"status", verified ? "VERIFY_OK" : "VERIFY_FAIL"},
+        {"commitment_time_ms", format_double(metrics.commitment_time_ms)},
+        {"prove_time_ms", format_double(metrics.prove_time_ms)},
+        {"verify_time_ms", format_double(metrics.verify_time_ms)},
+        {"proof_size_bytes", std::to_string(metrics.proof_size_bytes)},
+    };
+    util::write_key_values(export_root + "/benchmark.txt", benchmark_summary);
+
+    // `run_manifest.json` 保留完整内部字段，供 formal suite、artifact 校验和内部分析复核。
+    std::map<std::string, std::string> run_manifest = {
         {"backend_name", metrics.backend_name},
         {"crypto_backend_name", metrics.crypto_backend_name},
         {"algebra_backend_name", metrics.algebra_backend_name},
         {"compute_backend_name", metrics.compute_backend_name},
         {"config", metrics.config},
         {"dataset", metrics.dataset},
-        {"dataset_name", proof.public_metadata.dataset_name},
-        {"task_type", proof.public_metadata.task_type},
-        {"report_unit", proof.public_metadata.report_unit},
-        {"graph_count", proof.public_metadata.graph_count},
-        {"L", proof.public_metadata.L},
-        {"hidden_profile", proof.public_metadata.hidden_profile},
-        {"d_in_profile", proof.public_metadata.d_in_profile},
-        {"K_out", proof.public_metadata.K_out},
-        {"C", proof.public_metadata.C},
-        {"batching_rule", proof.public_metadata.batching_rule},
-        {"subgraph_rule", proof.public_metadata.subgraph_rule},
-        {"self_loop_rule", proof.public_metadata.self_loop_rule},
-        {"edge_sort_rule", proof.public_metadata.edge_sort_rule},
-        {"chunking_rule", proof.public_metadata.chunking_rule},
-        {"quant_cfg_id", proof.public_metadata.quant_cfg_id},
-        {"model_arch_id", proof.public_metadata.model_arch_id},
-        {"model_param_id", proof.public_metadata.model_param_id},
-        {"static_table_id", proof.public_metadata.static_table_id},
-        {"degree_bound_id", proof.public_metadata.degree_bound_id},
         {"benchmark_mode", metrics.benchmark_mode},
         {"enabled_fft_backend_upgrade", metrics.enabled_fft_backend_upgrade ? "true" : "false"},
         {"enabled_fft_kernel_upgrade", metrics.enabled_fft_kernel_upgrade ? "true" : "false"},
@@ -4021,22 +4044,8 @@ void export_run_artifacts(
         {"is_full_dataset", metrics.is_full_dataset ? "true" : "false"},
         {"N_total", std::to_string(context.local.public_input.N_total)},
         {"G_batch", std::to_string(context.local.public_input.G_batch)},
-        {"node_ptr", [&]() {
-            std::ostringstream out;
-            for (std::size_t i = 0; i < context.local.node_ptr.size(); ++i) {
-                if (i != 0) out << ',';
-                out << context.local.node_ptr[i];
-            }
-            return out.str();
-        }()},
-        {"edge_ptr", [&]() {
-            std::ostringstream out;
-            for (std::size_t i = 0; i < context.local.edge_ptr.size(); ++i) {
-                if (i != 0) out << ',';
-                out << context.local.edge_ptr[i];
-            }
-            return out.str();
-        }()},
+        {"node_ptr", format_index_vector(context.local.node_ptr)},
+        {"edge_ptr", format_index_vector(context.local.edge_ptr)},
         {"load_static_ms", format_double(metrics.load_static_ms)},
         {"notes", metrics.notes},
         {"proof_size_bytes", std::to_string(metrics.proof_size_bytes)},
@@ -4146,8 +4155,8 @@ void export_run_artifacts(
         {"verify_fold_ms", format_double(metrics.verify_fold_ms)},
         {"verify_copy_convert_ms", format_double(metrics.verify_copy_convert_ms)},
     };
-    util::write_key_values(export_root + "/benchmark.txt", summary);
-    util::write_json_object(export_root + "/run_manifest.json", summary);
+    append_public_metadata(run_manifest);
+    util::write_json_object(export_root + "/run_manifest.json", run_manifest);
 
     if (!context.config.dump_trace) {
         return;

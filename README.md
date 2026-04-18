@@ -102,6 +102,22 @@ cmake --build build_cuda -j
 ./build_cuda/gatzk_run --config configs/ogbn_arxiv_full.cfg --benchmark-mode warm --compute-backend cuda_hotspots --fast-msm on --parallel-fft on --fft-backend-upgrade on --fft-kernel-upgrade on --trace-layout-upgrade on --fast-verify-pairing on --export-tag cuda_formal
 ```
 
+## 正式控制台输出
+
+正式命令执行完成后，控制台只输出一行最小结果，不再打印过程性阶段日志、profile 字段或 route 细节。
+
+CPU 示例：
+
+```text
+dataset=cora config=configs/cora_full.cfg backend=cpu status=VERIFY_OK commitment_time_ms=283.786 prove_time_ms=1207.818 verify_time_ms=153.379 proof_size_bytes=90755
+```
+
+GPU 示例：
+
+```text
+dataset=ppi config=configs/ppi_batch_formal.cfg backend=gpu status=VERIFY_OK commitment_time_ms=3572.921 prove_time_ms=7136.396 verify_time_ms=450.268 proof_size_bytes=21360
+```
+
 ### benchmark 主表导出命令
 
 ```bash
@@ -135,11 +151,11 @@ cmake --build build_cuda -j
 
 | 数据集 | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes |
 | --- | ---: | ---: | ---: | ---: |
-| Cora | 262.605 | 1174.454 | 153.686 | 90755 |
-| Citeseer | 445.371 | 1327.556 | 153.984 | 90763 |
-| Pubmed | 2941.120 | 5564.076 | 175.585 | 90760 |
-| PPI | 3510.734 | 7133.975 | 426.190 | 21360 |
-| ogbn-arxiv | 17569.742 | 65329.058 | 398.058 | 21361 |
+| Cora | 283.786 | 1207.818 | 153.379 | 90755 |
+| Citeseer | 453.773 | 1418.744 | 153.837 | 90763 |
+| Pubmed | 2962.933 | 5604.074 | 175.454 | 90760 |
+| PPI | 3563.973 | 7111.447 | 424.710 | 21360 |
+| ogbn-arxiv | 18071.562 | 66540.600 | 417.380 | 21361 |
 
 ### GPU 正式结果
 
@@ -153,23 +169,30 @@ cmake --build build_cuda -j
 
 ## truth-source 与正式产物真源
 
-### 正式展示真源
+### 正式展示产物
 
-- CPU：`runs/benchmarks/latest.json`、`runs/benchmarks/latest.csv`、`runs/benchmarks/summary.md`
-- GPU：`runs/benchmarks/cuda_formal/latest.json`、`runs/benchmarks/cuda_formal/latest.csv`、`runs/benchmarks/cuda_formal/summary.md`
+- CPU：`runs/benchmarks/latest.csv`、`runs/benchmarks/summary.md`
+- GPU：`runs/benchmarks/cuda_formal/latest.csv`、`runs/benchmarks/cuda_formal/summary.md`
 
-### per-run 真源
+### 机器复核真源
 
-- CPU：`runs/<dataset>/warm/run_manifest.json`
-- GPU：`runs/<dataset>/cuda_formal/warm/run_manifest.json`
+- CPU：`runs/benchmarks/latest.json`、`runs/<dataset>/warm/run_manifest.json`
+- GPU：`runs/benchmarks/cuda_formal/latest.json`、`runs/<dataset>/cuda_formal/warm/run_manifest.json`
 
 ### formal 回归真源
 
 - `tests/test_main.cpp`
-- `runs/tests/cpu_gatzk_tests.log`
-- `runs/tests/cuda_gatzk_tests.log`
+- `./build/gatzk_tests`
+- `./build_cuda/gatzk_tests`
 
-`latest.csv` 与 `summary.md` 只用于正式展示，因此只公开四项指标。更细的阶段时间仍保留在 `run_manifest.json`、`latest.json` 与 `benchmark.txt`，供 formal 测试、产物校验和内部分析使用。
+`latest.csv` 与 `summary.md` 只用于正式展示，因此只公开四项指标。更细的阶段时间只保留在 `run_manifest.json` 与 `latest.json` 中；`benchmark.txt` 只保留每次运行的最小正式摘要。
+
+## 训练与 ZKML 的职责边界
+
+- 上游真实参数来源：`PPI` 的训练结果只作为 checkpoint bundle 参数来源，不构成当前仓库的第二条正式主线。
+- `formal / benchmark 运行主线` 只负责读取正式配置、真实数据、真实 checkpoint bundle，随后执行 trace、prove、verify 与 artifact 导出。
+- 训练时间、训练日志、训练超参数调优都不进入 formal benchmark 主表。
+- 当前 project 的正式主线只负责证明与校验，不负责在 benchmark 表面复述上游训练过程。
 
 ## 证明尺寸说明
 
@@ -194,7 +217,7 @@ cmake --build build_cuda -j
 - dynamic / quotient / opening 的标签名
 - domain opening 的点值
 
-原因是这些对象可以由 verifier 根据固定 schema 与 transcript 重放得到，不需要重复传输。
+原因是这些对象可以由 verifier 根据固定 schema 与 transcript 重放得到，不需要重复传输。因此 `proof_size_bytes` 统计的是“真正需要随 proof 发送的内容”，不是实现细节对象的总占用。
 
 ### 为什么小图更大，大图更小
 
@@ -222,7 +245,7 @@ cmake --build build_cuda -j
 - `cora` / `citeseer` / `pubmed` 的 `proof_size_bytes` 约为 `90755`
 - `PPI` / `ogbn-arxiv` 的 `proof_size_bytes` 约为 `21360` / `21361`
 
-这是由 family 形状更宽导致的合法 proof 负载差异，不是漏统计、漏序列化，也不是大图走了第二套协议。
+因此小图 family proof 更大、大图 family proof 更小，根因是 proof shape 不同，而不是图规模单独决定传输尺寸。这是合法的 formal proof 负载差异，不是漏统计、漏序列化，也不是大图走了第二套协议。
 
 ## 当前状态说明
 

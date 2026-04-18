@@ -22,9 +22,9 @@ std::string escape_json(const std::string& value) {
         }
     }
     return out;
-}
-
 }  // namespace
+
+}
 
 void ensure_directory(const std::string& path) {
     std::filesystem::create_directories(path);

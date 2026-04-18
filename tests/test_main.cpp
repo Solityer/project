@@ -302,11 +302,11 @@ constexpr double kOfficialMetricToleranceMs = 5e-3;
 
 const OfficialBenchmarkTable& official_cpu_benchmark_table() {
     static const OfficialBenchmarkTable table = {
-        {"cora", "Cora", "262.605", "1174.454", "153.686", "90755"},
-        {"citeseer", "Citeseer", "445.371", "1327.556", "153.984", "90763"},
-        {"pubmed", "Pubmed", "2941.120", "5564.076", "175.585", "90760"},
-        {"ppi", "PPI", "3510.734", "7133.975", "426.190", "21360"},
-        {"ogbn-arxiv", "ogbn-arxiv", "17569.742", "65329.058", "398.058", "21361"},
+        {"cora", "Cora", "283.786", "1207.818", "153.379", "90755"},
+        {"citeseer", "Citeseer", "453.773", "1418.744", "153.837", "90763"},
+        {"pubmed", "Pubmed", "2962.933", "5604.074", "175.454", "90760"},
+        {"ppi", "PPI", "3563.973", "7111.447", "424.710", "21360"},
+        {"ogbn-arxiv", "ogbn-arxiv", "18071.562", "66540.600", "417.380", "21361"},
     };
     return table;
 }
@@ -1617,6 +1617,20 @@ void test_no_legacy_benchmark_pipeline_remaining() {
     require(!std::filesystem::exists(repo_root() / export_context.config.export_dir / "summary.txt"), "legacy summary.txt export must be removed");
     require(std::filesystem::exists(repo_root() / export_context.config.export_dir / "benchmark.txt"), "benchmark.txt export must remain");
     require(std::filesystem::exists(repo_root() / export_context.config.export_dir / "run_manifest.json"), "run_manifest export must remain");
+    const auto benchmark = slurp_file(repo_root() / export_context.config.export_dir / "benchmark.txt");
+    require(benchmark.find("dataset = cora") != std::string::npos, "benchmark.txt must keep dataset");
+    require(benchmark.find("config = configs/cora_full.cfg") != std::string::npos, "benchmark.txt must keep the repo-relative config path");
+    require(benchmark.find("backend = cpu") != std::string::npos, "benchmark.txt must keep the formal backend label");
+    require(benchmark.find("status = VERIFY_OK") != std::string::npos, "benchmark.txt must keep the minimal success marker");
+    require(benchmark.find("commitment_time_ms = ") != std::string::npos, "benchmark.txt must keep commitment_time_ms");
+    require(benchmark.find("prove_time_ms = ") != std::string::npos, "benchmark.txt must keep prove_time_ms");
+    require(benchmark.find("verify_time_ms = ") != std::string::npos, "benchmark.txt must keep verify_time_ms");
+    require(benchmark.find("proof_size_bytes = ") != std::string::npos, "benchmark.txt must keep proof_size_bytes");
+    require(benchmark.find("backend_name") == std::string::npos, "benchmark.txt must not expose internal backend fields");
+    require(benchmark.find("graph_count") == std::string::npos, "benchmark.txt must not expose metadata profile fields");
+    require(benchmark.find("hidden_profile") == std::string::npos, "benchmark.txt must not expose hidden profile details");
+    require(benchmark.find("trace_generation_ms") == std::string::npos, "benchmark.txt must not expose internal timing breakdown");
+    require(benchmark.find("route2_label") == std::string::npos, "benchmark.txt must not expose route2 detail");
 }
 
 void test_ppi_training_or_import_mainline_is_real_and_unique() {
@@ -1677,7 +1691,9 @@ void test_benchmark_summary_and_readme_consistency() {
     const auto summary = slurp_file(repo_root() / "runs" / "benchmarks" / "summary.md");
     require(readme.find("正式结果表") != std::string::npos, "README must keep the official results section");
     require(summary.find("最新正式结果") != std::string::npos, "summary must keep the benchmark summary section");
-    require(readme.find("warm") != std::string::npos && summary.find("warm") != std::string::npos, "README and benchmark summary must keep the same warm official mode");
+    require(readme.find("warm") != std::string::npos, "README must keep the official warm mode");
+    require(summary.find("当前目录后端") == std::string::npos, "summary must not expose backend detail on the formal display surface");
+    require(summary.find("backend_name") == std::string::npos, "summary must not expose internal backend keys");
     require(readme.find("Cora") != std::string::npos && summary.find("cora") != std::string::npos, "README and benchmark summary must both cover cora");
     require(readme.find("Citeseer") != std::string::npos && summary.find("citeseer") != std::string::npos, "README and benchmark summary must both cover citeseer");
     require(readme.find("Pubmed") != std::string::npos && summary.find("pubmed") != std::string::npos, "README and benchmark summary must both cover pubmed");
