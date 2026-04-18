@@ -26,7 +26,7 @@ struct FHQuotientProfile {
 // 该顺序会同时影响 prover 组包、verifier 取值和 proof_size_bytes 统计。
 std::vector<std::string> domain_opening_labels(const ProtocolContext& context, const std::string& domain_name);
 
-// 下面这些函数分别对应 formal note 中不同工作域的 quotient 组合关系。
+// `t_FH` 是特征 lookup 域的总约束，prove / verify 都必须按同一等式重算。
 algebra::FieldElement evaluate_t_fh(
     const ProtocolContext& context,
     const std::map<std::string, algebra::FieldElement>& challenges,
@@ -34,6 +34,8 @@ algebra::FieldElement evaluate_t_fh(
     const algebra::FieldElement& z,
     FHQuotientProfile* profile = nullptr);
 
+// 下面这些函数分别对应 edge / N / in / d / cat / C 等工作域的 quotient 组合关系。
+// 它们只允许更换实现细节，不允许改动 formal note 定下的等式结构。
 algebra::FieldElement evaluate_t_edge(
     const ProtocolContext& context,
     const std::map<std::string, algebra::FieldElement>& challenges,

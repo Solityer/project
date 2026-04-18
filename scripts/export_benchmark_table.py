@@ -80,19 +80,6 @@ def infer_benchmark_mode(manifest: Dict[str, object]) -> str:
     return value
 
 
-def hottest_stage(manifest: Dict[str, object]) -> str:
-    candidates = [
-        ("context_build_ms", float(manifest.get("context_build_ms", 0.0))),
-        ("trace_generation_ms", float(manifest.get("trace_generation_ms", 0.0))),
-        ("commit_dynamic_ms", float(manifest.get("commit_dynamic_ms", 0.0))),
-        ("quotient_build_ms", float(manifest.get("quotient_build_ms", 0.0))),
-        ("domain_opening_ms", float(manifest.get("domain_opening_ms", 0.0))),
-        ("verify_quotient_ms", float(manifest.get("verify_quotient_ms", 0.0))),
-    ]
-    name, value = max(candidates, key=lambda item: item[1])
-    return f"{name}:{value:.3f}"
-
-
 def infer_commitment_time_ms(manifest: Dict[str, object]) -> float:
     explicit = manifest.get("commitment_time_ms")
     if explicit is not None:
@@ -100,28 +87,10 @@ def infer_commitment_time_ms(manifest: Dict[str, object]) -> float:
     return float(manifest.get("commit_dynamic_ms", 0.0)) + float(manifest.get("quotient_bundle_pack_ms", 0.0))
 
 
-def infer_route2_label(manifest: Dict[str, object]) -> str:
-    explicit = str(manifest.get("route2_label", "")).strip()
-    if explicit:
-        return explicit
-    labels: List[str] = []
-    if manifest.get("enabled_fast_msm") is True:
-        labels.append("msm")
-    if manifest.get("enabled_parallel_fft") is True:
-        labels.append("fft")
-    if manifest.get("enabled_fft_backend_upgrade") is True:
-        labels.append("packed")
-    if manifest.get("enabled_fft_backend_upgrade") is True and manifest.get("enabled_fft_kernel_upgrade") is True:
-        labels.append("kernel")
-    if manifest.get("enabled_trace_layout_upgrade") is True:
-        labels.append("layout")
-    if manifest.get("enabled_fast_verify_pairing") is True:
-        labels.append("pairing")
-    return "_".join(labels) if labels else "legacy"
-
-
 def make_success_row(dataset: str, manifest: Dict[str, object]) -> Dict[str, object]:
     # 主表只接收正式 warm + full-dataset + verified manifest，避免实验 run 混入 accepted truth。
+    # `backend_name` 与 `is_full_dataset` 只保留在 latest.json 这类机器复核产物中，
+    # 不会进入 latest.csv / summary.md 的正式展示面。
     benchmark_mode = infer_benchmark_mode(manifest)
     if benchmark_mode != "warm":
         raise ValueError(f"official benchmark export only supports warm manifests, got {benchmark_mode!r} for {dataset}")
@@ -138,31 +107,8 @@ def make_success_row(dataset: str, manifest: Dict[str, object]) -> Dict[str, obj
         "prove_time_ms": float(manifest["prove_time_ms"]),
         "verify_time_ms": float(manifest["verify_time_ms"]),
         "proof_size_bytes": int(manifest["proof_size_bytes"]),
-        "node_count": int(manifest["node_count"]),
-        "edge_count": int(manifest["edge_count"]),
         "is_full_dataset": bool(manifest["is_full_dataset"]),
         "backend_name": str(manifest.get("backend_name", manifest.get("backend", ""))),
-        "crypto_backend_name": str(manifest.get("crypto_backend_name", "")),
-        "algebra_backend_name": str(manifest.get("algebra_backend_name", "")),
-        "compute_backend_name": str(manifest.get("compute_backend_name", "")),
-        "route2_label": infer_route2_label(manifest),
-        "fft_backend_route": str(manifest.get("fft_backend_route", "")),
-        "trace_generation_ms": float(manifest.get("trace_generation_ms", 0.0)),
-        "commit_dynamic_ms": float(manifest.get("commit_dynamic_ms", 0.0)),
-        "quotient_build_ms": float(manifest.get("quotient_build_ms", 0.0)),
-        "domain_opening_ms": float(manifest.get("domain_opening_ms", 0.0)),
-        "external_opening_ms": float(manifest.get("external_opening_ms", 0.0)),
-        "verify_metadata_ms": float(manifest.get("verify_metadata_ms", 0.0)),
-        "verify_transcript_ms": float(manifest.get("verify_transcript_ms", 0.0)),
-        "verify_domain_opening_ms": float(manifest.get("verify_domain_opening_ms", 0.0)),
-        "verify_quotient_ms": float(manifest.get("verify_quotient_ms", 0.0)),
-        "verify_external_fold_ms": float(manifest.get("verify_external_fold_ms", 0.0)),
-        "verify_misc_ms": float(manifest.get("verify_misc_ms", 0.0)),
-        "verified": bool(manifest.get("verified", False)),
-        "model_arch_id": str(manifest.get("model_arch_id", "")),
-        "model_param_id": str(manifest.get("model_param_id", "")),
-        "quant_cfg_id": str(manifest.get("quant_cfg_id", "")),
-        "hotspot": hottest_stage(manifest),
     }
 
 
@@ -176,31 +122,8 @@ def make_blocked_row(dataset: str, benchmark_mode: str, reason: str) -> Dict[str
         "prove_time_ms": None,
         "verify_time_ms": None,
         "proof_size_bytes": None,
-        "node_count": None,
-        "edge_count": None,
         "is_full_dataset": None,
         "backend_name": "",
-        "crypto_backend_name": "",
-        "algebra_backend_name": "",
-        "compute_backend_name": "",
-        "route2_label": "",
-        "fft_backend_route": "",
-        "trace_generation_ms": None,
-        "commit_dynamic_ms": None,
-        "quotient_build_ms": None,
-        "domain_opening_ms": None,
-        "external_opening_ms": None,
-        "verify_metadata_ms": None,
-        "verify_transcript_ms": None,
-        "verify_domain_opening_ms": None,
-        "verify_quotient_ms": None,
-        "verify_external_fold_ms": None,
-        "verify_misc_ms": None,
-        "verified": False,
-        "model_arch_id": "",
-        "model_param_id": "",
-        "quant_cfg_id": "",
-        "hotspot": "",
     }
 
 
@@ -241,7 +164,7 @@ def status_label(status: object) -> str:
 
 def write_outputs(output_dir: pathlib.Path, mode: str, rows: List[Dict[str, object]]) -> None:
     # latest.json / latest.csv / summary.md 必须从同一批 rows 同步导出，避免真源分叉。
-    # 其中 latest.json 保留机器可读的内部字段；latest.csv 与 summary.md 只展示正式四项指标。
+    # 其中 latest.json 保留机器可读的最小内部字段；latest.csv 与 summary.md 只展示正式四项指标。
     output_dir.mkdir(parents=True, exist_ok=True)
 
     payload = {
@@ -267,24 +190,10 @@ def write_outputs(output_dir: pathlib.Path, mode: str, rows: List[Dict[str, obje
         for row in rows:
             writer.writerow({column: row.get(column) for column in csv_columns})
 
-    successful_backends = sorted(
-        {
-            str(row["backend_name"])
-            for row in rows
-            if row.get("status") == "ok" and str(row.get("backend_name", "")).strip()
-        }
-    )
     lines = [
         "# 最新正式结果",
         "",
-        f"- 主表口径：`{mode}`",
-        "- 本页只展示正式四项指标；中间时间拆分保留在 `run_manifest.json` 与 `latest.json`。",
-        "- formal 语义始终只有一套；CPU 与 GPU 差异只属于执行后端。",
-        "",
     ]
-    if successful_backends:
-        lines.append("- 当前目录后端：" + "、".join(f"`{backend}`" for backend in successful_backends))
-        lines.append("")
     lines.extend(
         [
             "| 数据集 | 状态 | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes | 阻塞说明 |",

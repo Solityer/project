@@ -9,17 +9,16 @@
 
 #include "gatzk/algebra/vector_ops.hpp"
 #include "gatzk/crypto/curve.hpp"
-#include "gatzk/protocol/prover.hpp"
-#include "gatzk/protocol/challenges.hpp"
 #include "gatzk/protocol/trace.hpp"
+#include "gatzk/protocol/prover.hpp"
 #include "gatzk/protocol/verifier.hpp"
 #include "gatzk/util/config.hpp"
-#include "gatzk/util/logging.hpp"
 #include "gatzk/util/route2.hpp"
 
 // 本文件是正式命令行入口，
 // 负责读取配置、选择 full_cpu / full_gpu 执行路线，并串联 context、trace、prove、verify 与 artifact 导出。
 // 它只汇总正式四项指标与 manifest，不允许在入口层改写 proof contract。
+// 控制台正式输出必须收口为“每次运行一行”，避免把开发过程日志重新暴露到提交表面。
 
 int main(int argc, char** argv) {
     try {
@@ -97,6 +96,9 @@ int main(int argc, char** argv) {
                 throw std::runtime_error(std::string("failed to set environment override: ") + key);
             }
         };
+        auto console_backend_label = [](const gatzk::protocol::RunMetrics& metrics) {
+            return metrics.compute_backend_name == "cuda_hotspots" ? std::string("gpu") : std::string("cpu");
+        };
 
         std::string config_path;
         std::string benchmark_mode = "warm";
@@ -151,7 +153,8 @@ int main(int argc, char** argv) {
         const auto absolute_config_path = std::filesystem::absolute(config_path).string();
         gatzk::util::set_route2_options(route2);
 
-        // warm-up 与 measured run 共用这条正式执行入口，所有 artifact 与四项指标都从这里汇总。
+        // warm-up 与 measured run 共用这条正式执行入口，
+        // 但只有 measured run 会输出正式单行结果。
         auto run_once = [&](
                             const gatzk::util::AppConfig& run_config,
                             bool is_cold_run,
@@ -191,13 +194,6 @@ int main(int argc, char** argv) {
             }
             append_note(metrics, gatzk::util::route2_feature_notes(route2));
 
-            gatzk::util::info(
-                "backend_name=" + metrics.backend_name
-                + " crypto_backend=" + metrics.crypto_backend_name
-                + " algebra_backend=" + metrics.algebra_backend_name
-                + " benchmark_mode=" + mode_label
-                + " route2=" + gatzk::util::route2_feature_label(route2));
-            gatzk::util::info("building protocol context");
             const auto context_start = std::chrono::steady_clock::now();
             const auto context = gatzk::protocol::build_context(run_config, &metrics);
             const auto context_end = std::chrono::steady_clock::now();
@@ -209,24 +205,9 @@ int main(int argc, char** argv) {
             if (!metrics.is_full_dataset) {
                 throw std::runtime_error("formal mainline only supports full-dataset runs");
             }
-            const auto run_profile = gatzk::protocol::canonical_public_metadata(context);
-            gatzk::util::info(
-                "profile dataset_name=" + run_profile.dataset_name
-                + " graph_count=" + run_profile.graph_count
-                + " L=" + run_profile.L
-                + " hidden_profile=" + run_profile.hidden_profile
-                + " d_in_profile=" + run_profile.d_in_profile
-                + " K_out=" + run_profile.K_out
-                + " C=" + run_profile.C
-                + " batching_rule=" + run_profile.batching_rule
-                + " subgraph_rule=" + run_profile.subgraph_rule
-                + " self_loop_rule=" + run_profile.self_loop_rule
-                + " edge_sort_rule=" + run_profile.edge_sort_rule);
 
-            gatzk::util::info("building trace");
             const auto trace_start = std::chrono::steady_clock::now();
             const auto trace = gatzk::protocol::build_trace(context, &metrics);
-            gatzk::util::info("proving");
             const auto pcs_start = std::chrono::steady_clock::now();
             const auto proof = gatzk::protocol::prove(context, trace, &metrics);
             const auto pcs_end = std::chrono::steady_clock::now();
@@ -275,7 +256,6 @@ int main(int argc, char** argv) {
                 - metrics.external_opening_ms);
             metrics.prove_accounted_ms = prove_accounted_ms(metrics);
             metrics.prove_accounting_gap_ms = metrics.prove_time_ms - metrics.prove_accounted_ms;
-            gatzk::util::info("verifying");
             const auto verify_start = std::chrono::steady_clock::now();
             const auto accepted = gatzk::protocol::verify(context, proof, &metrics);
             const auto verify_end = std::chrono::steady_clock::now();
@@ -292,15 +272,16 @@ int main(int argc, char** argv) {
             metrics.proof_size_bytes = gatzk::protocol::proof_size_bytes(proof);
 
             if (log_benchmark) {
-                gatzk::util::info(
-                    "benchmark dataset=" + metrics.dataset
-                    + " backend_name=" + metrics.backend_name
-                    + " benchmark_mode=" + metrics.benchmark_mode
-                    + " commitment_time_ms=" + format_ms(metrics.commitment_time_ms)
-                    + " prove_time_ms=" + format_ms(metrics.prove_time_ms)
-                    + " verify_time_ms=" + format_ms(metrics.verify_time_ms)
-                    + " proof_size_bytes=" + std::to_string(metrics.proof_size_bytes)
-                    + " verified=" + std::string(accepted ? "true" : "false"));
+                std::cout
+                    << "dataset=" << metrics.dataset
+                    << " config=" << config_path
+                    << " backend=" << console_backend_label(metrics)
+                    << " status=" << (accepted ? "VERIFY_OK" : "VERIFY_FAIL")
+                    << " commitment_time_ms=" << format_ms(metrics.commitment_time_ms)
+                    << " prove_time_ms=" << format_ms(metrics.prove_time_ms)
+                    << " verify_time_ms=" << format_ms(metrics.verify_time_ms)
+                    << " proof_size_bytes=" << std::to_string(metrics.proof_size_bytes)
+                    << '\n';
             }
             if (export_artifacts) {
                 gatzk::protocol::export_run_artifacts(context, trace, proof, metrics, accepted);
@@ -309,7 +290,6 @@ int main(int argc, char** argv) {
         };
 
         auto warm_up = [&](const gatzk::util::AppConfig& run_config) {
-            gatzk::util::info("priming process-local caches for warm benchmark");
             const auto context = gatzk::protocol::build_context(run_config, nullptr);
             const auto trace = gatzk::protocol::build_trace(context, nullptr);
             const auto proof = gatzk::protocol::prove(context, trace, nullptr);
@@ -317,7 +297,6 @@ int main(int argc, char** argv) {
         };
 
         auto lightweight_warm_up = [&](const gatzk::util::AppConfig& run_config) {
-            gatzk::util::info("priming process-local caches (memory-safe full warm)");
             const auto context = gatzk::protocol::build_context(run_config, nullptr);
             const auto trace = gatzk::protocol::build_trace(context, nullptr);
             const auto proof = gatzk::protocol::prove(context, trace, nullptr);
@@ -337,8 +316,6 @@ int main(int argc, char** argv) {
         auto segments = export_segments;
         segments.push_back("warm");
         accepted = run_once(with_export_suffix(loaded_config, segments), false, "warm");
-
-        std::cout << (accepted ? "VERIFY_OK" : "VERIFY_FAIL") << '\n';
         return accepted ? 0 : 1;
     } catch (const std::exception& error) {
         std::cerr << "fatal: " << error.what() << '\n';

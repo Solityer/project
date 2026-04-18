@@ -114,6 +114,7 @@ struct TraceArtifacts {
 };
 
 // 单个工作域 opening bundle 的 proof 载体。
+// 标签顺序由 schema 固定，proof_size_bytes 只统计真正随 proof 发送的点值与 witness。
 struct DomainOpeningBundle {
     std::vector<algebra::FieldElement> points;
     std::vector<std::pair<std::string, std::vector<algebra::FieldElement>>> values;
@@ -135,6 +136,7 @@ struct Proof {
 
 // 运行期与 benchmark 统一使用的指标表。
 // 这里既记录正式四项指标，也记录热路径拆分，方便 tests / manifests / README 对齐。
+// 正式展示面只能读取最小指标；细粒度字段只允许停留在内部 manifest。
 struct RunMetrics {
     std::string backend_name;
     std::string crypto_backend_name;
@@ -273,6 +275,7 @@ struct RunMetrics {
     double verify_bundle_lookup_ms = 0.0;
     double verify_fold_ms = 0.0;
     double verify_copy_convert_ms = 0.0;
+    // formal proof 的传输尺寸，不是对象内存占用，也不是目录大小。
     std::size_t proof_size_bytes = 0;
     bool enabled_fast_msm = false;
     bool enabled_parallel_fft = false;

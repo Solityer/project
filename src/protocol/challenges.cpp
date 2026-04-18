@@ -314,6 +314,8 @@ void append_output_head_dynamic_labels(
 
 }  // namespace
 
+// 统一构造会进入 transcript、proof metadata 与 run manifest 的公开元数据。
+// 这些字段既参与 verifier 重放，也会影响 proof_size_bytes 中被计入的字符串载荷。
 PublicMetadata canonical_public_metadata(const ProtocolContext& context) {
     PublicMetadata metadata;
     metadata.protocol_id = "gatzkml";

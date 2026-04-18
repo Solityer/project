@@ -50,31 +50,6 @@ double elapsed_ms(const Clock::time_point& start, const Clock::time_point& end) 
     return std::chrono::duration<double, std::milli>(end - start).count();
 }
 
-std::size_t current_rss_kb() {
-    std::ifstream status("/proc/self/status");
-    std::string line;
-    while (std::getline(status, line)) {
-        if (line.rfind("VmRSS:", 0) == 0) {
-            std::istringstream stream(line.substr(6));
-            std::size_t kb = 0;
-            stream >> kb;
-            return kb;
-        }
-    }
-    return 0;
-}
-
-bool enable_ogbn_trace_stage_log(const ProtocolContext& context) {
-    return context.config.dataset == "ogbn_arxiv" || context.config.dataset == "ogbn-arxiv";
-}
-
-void log_ogbn_trace_stage(const ProtocolContext& context, const std::string& stage) {
-    if (!enable_ogbn_trace_stage_log(context)) {
-        return;
-    }
-    std::cerr << "[gatzk][ogbn-arxiv] stage=" << stage << " rss_kb=" << current_rss_kb() << '\n';
-}
-
 bool should_persist_large_trace_cache_key(const std::string& cache_key) {
     return cache_key.find(":volatile_large_trace:") == std::string::npos;
 }
@@ -2319,7 +2294,6 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 metrics);
         }
     }
-    log_ogbn_trace_stage(context, "after_feature_lookup");
 
     const auto forward_start = Clock::now();
     const auto forward_artifacts = cached_forward_artifacts(
@@ -2340,7 +2314,6 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         metrics->output_forward_attention_ms += forward_artifacts->profile.output_attention_ms;
         metrics->output_forward_activation_ms += forward_artifacts->profile.output_activation_ms;
     }
-    log_ogbn_trace_stage(context, "after_forward");
     const auto& hidden_layer_inputs_quantized = forward_artifacts->hidden_layer_inputs_quantized;
     const auto& hidden_layer_concat_quantized = forward_artifacts->hidden_layer_concat_quantized;
 
@@ -3166,7 +3139,6 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             metric_value(&RunMetrics::field_conversion_residual_ms) - hidden_stack_initial_field_conversion_ms,
             metric_value(&RunMetrics::hidden_output_object_residual_ms) - hidden_stack_initial_object_ms,
         });
-    log_ogbn_trace_stage(context, "after_hidden_stack");
 
     stage_start = Clock::now();
     const auto output_trace_start = stage_start;
@@ -4243,7 +4215,6 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             metric_value(&RunMetrics::field_conversion_residual_ms) - output_initial_field_conversion_ms,
             metric_value(&RunMetrics::hidden_output_object_residual_ms) - output_initial_object_ms,
         });
-    log_ogbn_trace_stage(context, "after_output_head");
     }
 
     stage_start = Clock::now();
@@ -4273,7 +4244,6 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto commit_dynamic_delta = metrics->commit_dynamic_ms - initial_commit_dynamic_ms;
         metrics->trace_generation_ms += std::max(0.0, total_trace_ms - forward_delta - commit_dynamic_delta);
     }
-    log_ogbn_trace_stage(context, "trace_complete");
     return trace;
 }
 

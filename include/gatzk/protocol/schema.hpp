@@ -8,6 +8,7 @@
 namespace gatzk::protocol {
 
 // 最终 proof 的 block 顺序，任何改变都会影响 serializer / parser 与 verifier。
+// 它也决定哪些标签会进入 proof 的正式传输形状，因此间接影响 proof_size_bytes。
 const std::vector<std::string>& proof_block_order();
 // 下面这些函数负责生成隐藏层、输出层与兼容单头路径使用的正式标签。
 // 它们共同决定 dynamic commitments、opening bundle 与 external evaluation 的命名真源。
