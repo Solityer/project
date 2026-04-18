@@ -15,13 +15,9 @@
 
 namespace gatzk::model
 {
-    // 本文件承接上游 checkpoint bundle 与仓库内部参考前向，
-    // 负责把真实 GAT 参数、层级形状和前向中间量整理成 trace 层可消费的对象。
-    // 它不定义协议语义，但决定 formal 主线看到的模型边界、量化入口与 shape 契约。
-
     namespace
     {
-        // checkpoint manifest、tensor 文本和 bundle 元数据都经由这里读取。
+        // checkpoint manifest、tensor 文本和 bundle 元数据都经由这里读取和解析
         std::string load_text_file(const std::filesystem::path& path)
         {
             std::ifstream input(path);
@@ -33,7 +29,6 @@ namespace gatzk::model
             stream << input.rdbuf();
             return stream.str();
         }
-
         std::size_t parse_required_size_t(const std::string& text, const std::string& key)
         {
             const std::regex pattern("\"" + key + "\"\\s*:\\s*([0-9]+)");
@@ -146,7 +141,7 @@ namespace gatzk::model
             return entries;
         }
 
-        // 解析 checkpoint manifest 中的隐藏层摘要。
+        // 解析 checkpoint manifest 中的隐藏层摘要
         CheckpointLayerInfo parse_checkpoint_layer_info(const std::string& entry)
         {
             CheckpointLayerInfo out;
@@ -157,7 +152,7 @@ namespace gatzk::model
             return out;
         }
 
-        // 解析隐藏头张量名，后续据此定位真实参数文件。
+        // 解析隐藏头张量名，后续据此定位真实参数文件
         CheckpointHeadSpec parse_checkpoint_head_spec(const std::string& entry)
         {
             CheckpointHeadSpec out;
@@ -173,7 +168,7 @@ namespace gatzk::model
             return out;
         }
 
-        // 解析输出头张量名。
+        // 解析输出头张量名
         CheckpointOutputHeadSpec parse_checkpoint_output_head_spec(const std::string& entry)
         {
             CheckpointOutputHeadSpec out;
@@ -807,7 +802,7 @@ namespace gatzk::model
         return info;
     }
 
-    // 这里检查的只是 formal 主线真正依赖的结构约束，超出部分不臆造结论。
+    // 这里检查的只是 formal 主线真正依赖的结构约束
     bool checkpoint_bundle_matches_formal_proof_shape(
         const CheckpointBundleInfo& info,
         std::string* reason)
@@ -1142,7 +1137,7 @@ namespace gatzk::model
         return trace;
     }
 
-    // note 风格前向对应当前 formal 主线的输出平均规则，trace 会直接消费它。
+    // 前向实现
     MultiHeadForwardTrace forward_note_style(
         const FloatMatrix& features,
         const std::vector<data::Edge>& edges,
