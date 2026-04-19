@@ -151,6 +151,7 @@ namespace gatzk::crypto
         std::vector<algebra::FieldElement> miss_scalars;
         miss_indices.reserve(scalars.size());
         miss_scalars.reserve(scalars.size());
+        // 先把缓存命中的 `(base, scalar)` 拿出来，未命中的再交给后面的 mcl 批处理。
         for (std::size_t i = 0; i < scalars.size(); ++i)
         {
             if (!same_base_mul_cache().lookup(point, scalars[i], &out[i]))
@@ -176,7 +177,7 @@ namespace gatzk::crypto
         }
 
         // 快速MSM路径
-        // 准备点数组和原生标量数组
+        // 把未命中的标量收成一次 `mulEach` 输入，尽量让同基点批乘只过一遍曲线后端。
         std::vector<mcl::G1> points(miss_scalars.size(), point.value);
         std::vector<mcl::Fr> native_scalars;
         native_scalars.reserve(miss_scalars.size());
@@ -228,7 +229,7 @@ namespace gatzk::crypto
             }
         }
 
-        // 串行快速MSM：直接调用mcl的mulEach一次性计算所有未命中标量
+        // 串行回退时也保持同一批量接口，避免逐项乘法和缓存写回交错得太碎。
         mcl::G1::mulEach(points.data(), native_scalars.data(), points.size());
         for (std::size_t i = 0; i < points.size(); ++i)
         {

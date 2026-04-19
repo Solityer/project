@@ -20,11 +20,13 @@ ZkMapAccumulatorTrace build_zkmap_trace(
     trace.a_values.assign(domain_size, algebra::FieldElement::zero());
     trace.b_values.assign(domain_size, algebra::FieldElement::zero());
     trace.accumulator.assign(domain_size, algebra::FieldElement::zero());
+    // 先把有效区的原始列拷进去，并顺手求出最终要绑定的整体内积 `mu`。
     for (std::size_t i = 0; i < a_values.size(); ++i) {
         trace.a_values[i] = a_values[i];
         trace.b_values[i] = b_values[i];
         trace.mu += a_values[i] * b_values[i];
     }
+    // 前缀累加从第 1 格开始推进，位置 0 固定为 0，方便 quotient 写首项边界条件。
     for (std::size_t i = 0; i < a_values.size(); ++i) {
         trace.accumulator[i + 1] = trace.accumulator[i] + a_values[i] * b_values[i];
     }

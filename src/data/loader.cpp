@@ -20,6 +20,7 @@ using algebra::FieldElement;
 
 std::vector<std::vector<double>> row_normalize(
     const std::vector<std::vector<double>>& raw_features) {
+    // 先按行归一化输入特征，让数据进入参考前向时保持稳定的节点内尺度。
     std::vector<std::vector<double>> normalized = raw_features;
     for (auto& row : normalized) {
         double sum = 0.0;
@@ -252,6 +253,7 @@ GraphDataset load_cached_dataset(const std::filesystem::path& root) {
         dataset.report_unit = meta.at("report_unit");
     }
 
+    // 先恢复浮点特征，再量化成 formal 主线真正消费的域元素矩阵。
     const auto raw_features = load_features_matrix(root, dataset.num_nodes, dataset.num_features);
     dataset.features_fp = row_normalize(raw_features);
     dataset.features.assign(dataset.num_nodes, std::vector<FieldElement>(dataset.num_features, FieldElement::zero()));
@@ -447,6 +449,7 @@ LocalGraph normalize_graph_input(const GraphDataset& dataset, const util::AppCon
     std::vector<Edge> batch_edges;
     batch_edges.reserve(dataset.edges.size() + dataset.num_nodes);
 
+    // 逐图抽出节点、做局部重编号，并把边改写成当前 batch 下的绝对局部编号。
     for (std::size_t batch_graph_id = 0; batch_graph_id < total_batch_graphs; ++batch_graph_id) {
         const auto dataset_graph_id = graph_ids[batch_graph_id];
         const auto node_begin = dataset.node_ptr.at(dataset_graph_id);
@@ -495,6 +498,7 @@ LocalGraph normalize_graph_input(const GraphDataset& dataset, const util::AppCon
                 append_edge(edge.dst, edge.src);
             }
         }
+        // 自环在规范化阶段统一补齐，后面 softmax 聚合和 route/PSQ 都默认它存在。
         for (std::size_t i = 0; i < selected_nodes.size(); ++i) {
             const auto node_local = local_offset + i;
             const auto key = edge_key(node_local, node_local, batch_graph_id);
@@ -509,6 +513,7 @@ LocalGraph normalize_graph_input(const GraphDataset& dataset, const util::AppCon
             });
         }
 
+        // 最终边序固定为“先 graph_id，再 dst，再稳定索引”，与笔记里的公开排序约定对齐。
         std::stable_sort(graph_edges.begin(), graph_edges.end(), [](const Edge& lhs, const Edge& rhs) {
             if (lhs.graph_id != rhs.graph_id) {
                 return lhs.graph_id < rhs.graph_id;
@@ -536,6 +541,7 @@ LocalGraph normalize_graph_input(const GraphDataset& dataset, const util::AppCon
     local.public_input.edge_ptr = local.edge_ptr;
     local.public_input.src.reserve(local.edges.size());
     local.public_input.dst.reserve(local.edges.size());
+    // 公开输入只保留 verifier 真正需要重放的 src/dst 序列和 batch 指针。
     for (const auto& edge : local.edges) {
         local.public_input.src.push_back(edge.src);
         local.public_input.dst.push_back(edge.dst);

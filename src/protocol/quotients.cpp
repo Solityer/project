@@ -367,6 +367,7 @@ FieldElement evaluate_t_edge(
     const EvalFn& eval,
     const FieldElement& z) {
     if (context.model.has_real_multihead) {
+        // edge 域承载大部分“边上对象”约束：softmax 链、lookup、route 和 PSQ 都在这里闭合。
         const auto omega_z = z * context.domains.edge->omega;
         const auto first = lagrange_first(*context.domains.edge, z);
         const auto last = lagrange_last(*context.domains.edge, z);
@@ -899,6 +900,7 @@ FieldElement evaluate_t_n(
     const EvalFn& eval,
     const FieldElement& z) {
     if (context.model.has_real_multihead) {
+        // N 域负责把边上广播的量重新收回到目标点，并补上分母倒数、PSQ 目标表和 route 节点侧约束。
         const auto omega_z = z * context.domains.n->omega;
         const auto first = lagrange_first(*context.domains.n, z);
         const auto last = lagrange_last(*context.domains.n, z);
@@ -1207,6 +1209,7 @@ FieldElement evaluate_t_cat(
     const auto zero_eval = context.domains.cat->zero_polynomial_eval(z);
     const auto q_valid = eval("P_Q_cat_valid", z);
     const auto q_invalid = FieldElement::one() - q_valid;
+    // cat 域只约束多头拼接与输出投影输入，不重复承担 edge 域上的 softmax/lookup 主链。
     QuotientAccumulator acc(challenges.at("alpha_quot"));
 
     for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index) {
@@ -1249,6 +1252,7 @@ FieldElement evaluate_t_c(
     const auto zero_eval = context.domains.c->zero_polynomial_eval(z);
     const auto q_valid = eval("P_Q_C_valid", z);
     const auto q_invalid = FieldElement::one() - q_valid;
+    // C 域主要对齐输出层每头的源/目标打分绑定，以及 bias 后输出和多头平均的关系。
     QuotientAccumulator acc(challenges.at("alpha_quot"));
 
     const bool legacy_single_output = context.model.output_layer.heads.size() == 1;

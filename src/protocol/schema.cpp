@@ -25,6 +25,7 @@ std::string hidden_head_prefix(std::size_t global_head_index) {
     return "P_h" + std::to_string(global_head_index);
 }
 
+// 隐藏层的 concat 标签按层区分，方便把多层主线和笔记里的“多头拼接”步骤一一对应。
 std::string hidden_layer_concat_label(std::size_t layer_index, bool is_final_layer) {
     if (is_final_layer) {
         return "P_H_cat";
@@ -122,6 +123,7 @@ std::string output_witness_scalar_name(std::string_view base, std::size_t head_i
     return "S_" + std::string(base) + "_out" + std::to_string(head_index);
 }
 
+// 拼接层的挑战名单独保留层号，保证跨层复用时不会和别的头混淆。
 std::string hidden_concat_xi_name(std::size_t layer_index, bool is_final_layer) {
     if (is_final_layer) {
         return "xi_cat";

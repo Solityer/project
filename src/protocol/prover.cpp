@@ -2605,6 +2605,7 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
     context.config = config;
 
     auto start = Clock::now();
+    // 先把数据集和 checkpoint bundle 收束成 formal shape；这一段还不接触任何 challenge 或 witness。
     context.dataset = data::load_dataset(config);
     context.local = data::normalize_graph_input(context.dataset, config);
     if (config.allow_synthetic_model) {
@@ -2678,6 +2679,7 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
     }
 
     start = Clock::now();
+    // 工作域大小一次性按特征表、边域、隐藏维和查表规模展开，后面 trace / quotient / opening 共用这套布局。
     const std::size_t fh_size = algebra::next_power_of_two(
         std::max(context.dataset.num_nodes * context.dataset.num_features, context.local.num_nodes * context.local.num_features) + 2);
     const std::size_t configured_range_size = (1ULL << config.range_bits);
@@ -2739,6 +2741,7 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
     }
 
     start = Clock::now();
+    // 这里开始布置公开列、静态表和静态承诺；它们会直接进入 transcript 与 verifier 的公共视图。
     context.tables.range = make_range_table(range_size);
     context.tables.exp = make_exp_table(range_size);
     context.tables.lrelu = make_lrelu_table(lrelu_bound);
@@ -2976,6 +2979,7 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
         make_eval_poly("V_T_range", padded(context.tables.range, edge_size), context.domains.edge));
 
     if (context.model.has_real_multihead) {
+        // 模型参数在 context 阶段就固定成静态承诺，后面的 trace 只引用标签，不再重复构造权重对象。
         for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index) {
             add_static_commitment(
                 context,
@@ -3056,6 +3060,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
     }
     if (context.model.has_real_multihead) {
         auto stage_start = Clock::now();
+        // 先重放动态承诺之前的 transcript，再在这套固定挑战上构造各工作域 quotient。
         const auto pre_quotient_challenges = replay_challenges(context, trace.commitments, {});
         const auto quotient_cache_key = quotient_build_cache_key(context, trace);
         std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry;

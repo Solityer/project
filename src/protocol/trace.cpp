@@ -2135,6 +2135,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     add_metric(metrics != nullptr ? &metrics->shared_helper_build_ms : nullptr, stage_start);
 
     stage_start = Clock::now();
+    // 这里先把公开选择器列取出来备用；真正的动态 witness 还没开始物化。
     const auto q_new = eval_data(context, "P_Q_new_edge");
     const auto q_tbl_feat = eval_data(context, "P_Q_tbl_feat");
     const auto q_qry_feat = eval_data(context, "P_Q_qry_feat");
@@ -2295,6 +2296,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         }
     }
 
+    // 从这里开始进入“量化入口 / witness 物化入口”：先跑参考前向，再把中间量转成域元素列。
     const auto forward_start = Clock::now();
     const auto forward_artifacts = cached_forward_artifacts(
         context,
@@ -2348,6 +2350,8 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto prefix = hidden_head_prefix(head_index) + "_";
         const auto head_cache_prefix = cache_prefix + ":hidden:" + std::to_string(head_index);
         auto stage_start = Clock::now();
+        // 这一组量已经对应笔记里的单头前向主线：特征投影、源点打分、目标点打分、
+        // 稳定化最大值、分母和、分母倒数、注意力权重，以及按边聚合后的隐藏表示。
         const auto& quantized = forward_artifacts->hidden_head_quantized.at(head_index);
         const auto& h_prime = quantized.h_prime;
         const auto& e_src = quantized.e_src;
@@ -2691,6 +2695,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 metric_value(&RunMetrics::lookup_accumulator_ms) - initial_exp_acc_ms,
             });
 
+        // 从这里开始不再只是普通前向，而是在把 softmax 聚合链改写成 PSQ / state-machine 轨迹。
         const auto lambda_psq = transcript.challenge("lambda_psq_h" + std::to_string(head_index));
         trace.challenges["lambda_psq_h" + std::to_string(head_index)] = lambda_psq;
         stage_start = Clock::now();
@@ -3064,6 +3069,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto concat_width =
             context.model.hidden_layers[layer_index].shape.head_count * context.model.hidden_layers[layer_index].shape.head_dim;
         const auto& h_cat_layer = hidden_layer_concat_quantized.at(layer_index);
+        // 隐藏层这里走的是多头拼接，把每个头的结果收成下一层唯一输入表示。
         add_dynamic_commitment_batch(
             trace,
             {matrix_commitment_only_spec(concat_label, h_cat_layer)},
@@ -3153,6 +3159,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     const auto output_initial_field_conversion_ms = metric_value(&RunMetrics::field_conversion_residual_ms);
     const auto output_initial_object_ms = metric_value(&RunMetrics::hidden_output_object_residual_ms);
     const auto output_initial_commit_dynamic_ms = metric_value(&RunMetrics::commit_dynamic_ms);
+    // 输出层保持“每头先各算各的”，最后再单独物化平均关系和 bias 后关系。
     const bool legacy_single_output = context.model.output_layer.heads.size() == 1;
     if (!legacy_single_output) {
         std::vector<Matrix> per_head_y_lin_matrices;
@@ -3660,6 +3667,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         trace.external_evaluations["mu_Y_lin"] = matrix_row_major_evaluation(y_lin_average, trace.challenges.at("y_out"));
         trace.external_evaluations["mu_out"] = matrix_row_major_evaluation(y_average, trace.challenges.at("y_out"));
     } else {
+    // 单输出头时仍走兼容标签，但语义上还是输出 attention 头，不是另一条协议分支。
     const auto& quantized = forward_artifacts->output_head_quantized.front();
     const auto& y_prime = quantized.y_prime;
     const auto& out_e_src = quantized.e_src;

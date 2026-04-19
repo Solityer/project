@@ -105,6 +105,7 @@ int main(int argc, char** argv) {
         std::string compute_backend = "cpu";
         std::string export_tag;
         gatzk::util::Route2Options route2;
+        // 入口层只解析 formal 主线允许暴露的执行层开关，不在这里分叉协议语义。
         for (int i = 1; i < argc; ++i) {
             const std::string arg = argv[i];
             if (arg == "--config" && i + 1 < argc) {
@@ -137,6 +138,7 @@ int main(int argc, char** argv) {
         }
         compute_backend = normalize_compute_backend(compute_backend);
 
+        // 先确定执行层落点，再把 route2 选项整体交给后续 prove / verify 共用。
         set_process_env("GATZK_ALGEBRA_BACKEND", "cpu");
         route2.cuda_trace_hotspots = compute_backend == "cuda_hotspots";
         route2.cuda_field_hotspots = compute_backend == "cuda_hotspots";
@@ -194,6 +196,7 @@ int main(int argc, char** argv) {
             }
             append_note(metrics, gatzk::util::route2_feature_notes(route2));
 
+            // 正式主线从这里开始：先构静态上下文，再物化 trace、生成 proof，最后复验并导出产物。
             const auto context_start = std::chrono::steady_clock::now();
             const auto context = gatzk::protocol::build_context(run_config, &metrics);
             const auto context_end = std::chrono::steady_clock::now();
@@ -308,6 +311,7 @@ int main(int argc, char** argv) {
         if (!export_tag.empty()) {
             export_segments.push_back(export_tag);
         }
+        // warm-up 只预热执行层缓存和大对象初始化，不写正式 benchmark 结论。
         if (memory_safe_warm_required(loaded_config)) {
             lightweight_warm_up(with_export_suffix(loaded_config, export_segments));
         } else {
@@ -315,6 +319,7 @@ int main(int argc, char** argv) {
         }
         auto segments = export_segments;
         segments.push_back("warm");
+        // measured run 固定写到 warm 目录下，作为 formal 主表与 manifest 的真源。
         accepted = run_once(with_export_suffix(loaded_config, segments), false, "warm");
         return accepted ? 0 : 1;
     } catch (const std::exception& error) {
