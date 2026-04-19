@@ -13,6 +13,10 @@
 #include <thread>
 #include <unordered_map>
 
+// 本文件实现两类模型层逻辑：
+// 一类是 checkpoint bundle 的读取与形状校验；
+// 另一类是和 formal note 对齐的 GAT 参考前向，用来产出后续 trace 要量化的中间量。
+
 namespace gatzk::model
 {
     namespace
@@ -1260,7 +1264,8 @@ namespace gatzk::model
             trace.output_head_traces.push_back(head_trace);
         }
 
-        // 3、最后做输出层多头平均
+        // 3、最后做输出层多头平均。
+        // 这里保留 bias 前和 bias 后两个平均版本，正好对应笔记里的“输出整理”和 bias 关系检查。
         // 这一项表示加偏置前的平均。Y表示加偏置后的平均。
         trace.output_head_trace = trace.output_head_traces.front();
         trace.output_head_values = output_values;

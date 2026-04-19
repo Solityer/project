@@ -16,6 +16,7 @@ using algebra::FieldElement;
 std::size_t active_transition_count(
     const std::vector<FieldElement>& q_table,
     const std::vector<FieldElement>& q_query) {
+    // 只把最后一个仍有真实 table/query 活动的位置算进来，后面全视为填充区。
     const auto n = q_table.size();
     if (q_query.size() != n) {
         throw std::runtime_error("lookup selector size mismatch");
@@ -41,6 +42,7 @@ void batch_inverse_native(
         return;
     }
 
+    // 把同一批分母统一做前缀积和一次逆元，减少 LogUp 热路径里的逐项求逆。
     thread_local std::vector<mcl::Fr> prefix;
     prefix.resize(values.size());
     mcl::Fr product = 1;
@@ -77,6 +79,7 @@ std::string logup_cache_key(
 
 std::vector<algebra::FieldElement> build_selector(std::size_t valid_length, std::size_t domain_size) {
     std::vector<algebra::FieldElement> out(domain_size, algebra::FieldElement::zero());
+    // 选择器只标记有效前缀，剩余位置全部留给 padding 与零约束处理。
     for (std::size_t i = 0; i < valid_length && i < domain_size; ++i) {
         out[i] = algebra::FieldElement::one();
     }

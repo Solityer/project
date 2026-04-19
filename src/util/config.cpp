@@ -93,6 +93,7 @@ void fail_if_present(
 }
 
 void validate_supported_keys(const std::unordered_map<std::string, std::string>& entries) {
+    // formal 主线显式列出允许字段，未收敛的历史键直接拒绝进入运行时。
     static const std::set<std::string> supported_keys = {
         "L",
         "K_out",
@@ -193,6 +194,7 @@ AppConfig load_config(const std::string& path) {
 
     std::unordered_map<std::string, std::string> entries;
     std::string line;
+    // 配置文件按 `key = value` 读取，注释与空行都在这一层先剔掉。
     while (std::getline(input, line)) {
         const auto hash = line.find('#');
         if (hash != std::string::npos) {
@@ -263,6 +265,7 @@ AppConfig load_config(const std::string& path) {
     if (config.degree_bound_id.empty()) {
         config.degree_bound_id = "auto";
     }
+    // 这里最后做一次 shape 和 formal 约束校验，保证 prover / verifier 看到的是同一套配置含义。
     validate_config(config);
     return config;
 }

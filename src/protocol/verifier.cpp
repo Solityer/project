@@ -1017,6 +1017,7 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
                 legacy_single_output ? std::string("mu_Y_lin") : output_external_eval_name("y_lin", head_index, false);
             const auto mu_y_name =
                 legacy_single_output ? std::string("mu_out") : output_external_eval_name("y", head_index, false);
+            // 先检查每个输出头自己的 bias-add 关系，再继续检查多头平均关系。
             const auto expected = external_evaluations.at(mu_y_lin_name)
                 + bias_fold_vector(
                     context.model.output_layer.heads[head_index].output_bias_fp,
@@ -1043,6 +1044,7 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
             std::string v_name;
             std::string quotient_name;
         };
+        // 每个 bundle 都对应一个工作域的 opening 子证明；名字、点顺序和标签集合都必须与 schema 完全一致。
         const std::vector<BundleSpec> bundle_specs = {
             {"FH", "FH", context.domains.fh, "z_FH", "v_FH", "t_FH"},
             {"edge", "edge", context.domains.edge, "z_edge", "v_edge", "t_edge"},
@@ -1195,6 +1197,7 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
         }
         return true;
     }
+    // 下面保留旧单头兼容验证路径，只是标签兼容层；正式多头主线优先走上面的分支。
     const auto dynamic_commitments = to_map(proof.dynamic_commitments);
     const auto quotient_commitments = to_map(proof.quotient_commitments);
     const auto witness_scalars = to_field_map(proof.witness_scalars);

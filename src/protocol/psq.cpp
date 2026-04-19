@@ -27,6 +27,7 @@ std::vector<algebra::FieldElement> build_selector_prefix_state(
         const auto& selector = q_new[i];
         const auto& value = values[i];
         if (enable_single_graph_selector_shortcut) {
+            // 单图时 `q_new` 实际上只会落在 0/1，上面这两个分支与正式递推完全等价。
             if (selector.is_zero()) {
                 out[i] = out[i - 1] + value;
                 continue;
