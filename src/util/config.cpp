@@ -9,8 +9,8 @@
 #include <stdexcept>
 #include <unordered_map>
 
-// 本文件实现正式配置解析与约束检查。
-// 它负责拦住过时字段和形状冲突，避免错误配置进入 proving / verifying 主链。
+// 实现正式配置解析与约束检查
+// 负责拦截过时字段和形状冲突，避免错误配置进入 proving / verifying 主链
 
 namespace gatzk::util {
 namespace {
@@ -93,7 +93,7 @@ void fail_if_present(
 }
 
 void validate_supported_keys(const std::unordered_map<std::string, std::string>& entries) {
-    // formal 主线显式列出允许字段，未收敛的历史键直接拒绝进入运行时。
+    // formal 主线显式列出允许字段，未收敛的历史键直接拒绝进入运行时
     static const std::set<std::string> supported_keys = {
         "L",
         "K_out",
@@ -183,9 +183,9 @@ void validate_config(const AppConfig& config) {
     }
 }
 
-}  // namespace
+}
 
-// 解析 `.cfg` 文件并补齐工程根路径等派生字段。
+// 解析 `.cfg` 文件并补齐工程根路径等派生字段
 AppConfig load_config(const std::string& path) {
     std::ifstream input(path);
     if (!input) {
@@ -270,4 +270,4 @@ AppConfig load_config(const std::string& path) {
     return config;
 }
 
-}  // namespace gatzk::util
+}

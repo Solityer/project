@@ -11,9 +11,9 @@
 #include "gatzk/protocol/schema.hpp"
 
 namespace gatzk::protocol {
-// 本文件负责把 formal note 固定的 transcript 吸收顺序重放为 challenge 集合。
-// 它连接 public metadata、dynamic commitment、quotient commitment 与 prove/verify 共享挑战值。
-// 这里的任何标签顺序变化都会直接改变 proof contract，因此只能做缓存和标签整理，不能改语义。
+// 负责把 formal note 固定的 transcript 吸收顺序重放为 challenge 集合
+// 连接 public metadata、dynamic commitment、quotient commitment 与 prove/verify 共享挑战值
+// 这里的任何标签顺序变化都会直接改变 proof contract，因此只能做缓存和标签整理，不能改语义
 
 namespace {
 
@@ -312,7 +312,7 @@ void append_output_head_dynamic_labels(
     labels.push_back(prefix + "_R_dst");
 }
 
-}  // namespace
+}
 
 // 统一构造会进入 transcript、proof metadata 与 run manifest 的公开元数据。
 // 这些字段既参与 verifier 重放，也会影响 proof_size_bytes 中被计入的字符串载荷。

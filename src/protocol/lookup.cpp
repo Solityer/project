@@ -5,8 +5,8 @@
 #include <stdexcept>
 #include <unordered_map>
 
-// 本文件实现 lookup 选择器与 LogUp 累加器。
-// 它是特征、激活、range 与 exp 表查询约束的底层公共实现。
+// lookup 选择器与 LogUp 累加器
+// 特征、激活、range 与 exp 表查询约束的底层公共实现
 
 namespace gatzk::protocol {
 namespace {
