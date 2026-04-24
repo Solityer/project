@@ -96,7 +96,7 @@ Each step writes its own log into the dataset run directory, and `pipeline_summa
 
 The active formal proving rule is:
 
-`prove_logrows = 25` when `public_io.minimum_public_logrows <= 25`. The wrapper first probes `num_inner_cols = 32` to fast-reject datasets that still exceed `k=25` at the largest allowed inner-column layout; otherwise it chooses the smallest `num_inner_cols` in `[2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32]` whose row bound fits `prove_logrows`.
+`prove_logrows = 25` when `public_io.minimum_public_logrows <= 25`. The wrapper first probes `num_inner_cols = 32` to fast-reject datasets that still exceed `k=25` at the largest allowed inner-column layout; otherwise it chooses the smallest `num_inner_cols` in `[2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32]` whose row bound fits `prove_logrows` and whose Halo2 extended-k/domain bound is feasible.
 
 This keeps the public I/O semantics unchanged while moving only the proving-layout adaptation into the `ezkl`-specific layer. If `public_io.minimum_public_logrows > 25`, or no candidate `num_inner_cols` fits `k=25`, the dataset is reported as blocked rather than silently falling back to a different formal route.
 

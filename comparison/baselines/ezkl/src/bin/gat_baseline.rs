@@ -1,4 +1,6 @@
 use clap::{Args, Parser, Subcommand};
+use halo2_proofs::plonk::{Circuit, ConstraintSystem};
+use halo2curves::{bn256, ff::PrimeField};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -24,6 +26,8 @@ struct Cli {
 enum Command {
     Export(CommonArgs),
     Pipeline(PipelineArgs),
+    #[command(hide = true)]
+    DomainCheck(DomainCheckArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -44,6 +48,12 @@ struct PipelineArgs {
     prove: bool,
     #[arg(long)]
     debug_build: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DomainCheckArgs {
+    #[arg(long)]
+    settings: PathBuf,
 }
 
 const FORMAL_SETUP_LOGROWS_CAP: u32 = 25;
@@ -190,6 +200,12 @@ struct SettingsSelectionAttempt {
     num_blinding_factors: Option<u64>,
     required_logrows: u32,
     fits_target_logrows: bool,
+    halo2_degree: Option<usize>,
+    halo2_quotient_poly_degree: Option<u64>,
+    halo2_extended_k: Option<u32>,
+    halo2_domain_bound: Option<u32>,
+    fits_domain_bound: bool,
+    domain_check_error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -351,6 +367,63 @@ fn row_logrows_bound(num_rows: u64, num_blinding_factors: u64) -> u32 {
     ceil_log2(required_rows)
 }
 
+#[derive(Debug)]
+struct DomainBoundCheck {
+    degree: usize,
+    quotient_poly_degree: u64,
+    extended_k: u32,
+    domain_bound: u32,
+    fits: bool,
+}
+
+fn inspect_domain_bound(settings_path: &Path) -> Result<DomainBoundCheck, String> {
+    let settings = ezkl::graph::GraphSettings::load(&settings_path.to_path_buf())
+        .map_err(|err| format!("failed to load {}: {err}", settings_path.display()))?;
+    let logrows = settings.run_args.logrows;
+    let mut cs = ConstraintSystem::default();
+    ezkl::graph::GraphCircuit::configure_with_params(&mut cs, settings);
+    #[cfg(feature = "mv-lookup")]
+    let cs = cs.chunk_lookups();
+    let degree = cs.degree();
+    let quotient_poly_degree = degree.saturating_sub(1) as u64;
+    let domain_bound = bn256::Fr::S;
+    let mut extended_k = logrows;
+    let n = 1u128 << logrows;
+    let quotient_size = n.saturating_mul(quotient_poly_degree as u128);
+
+    while (1u128 << extended_k) < quotient_size {
+        extended_k += 1;
+        if extended_k > domain_bound {
+            break;
+        }
+    }
+
+    Ok(DomainBoundCheck {
+        degree,
+        quotient_poly_degree,
+        extended_k,
+        domain_bound,
+        fits: extended_k <= domain_bound,
+    })
+}
+
+fn write_domain_check(args: &DomainCheckArgs) -> Result<(), String> {
+    let check = inspect_domain_bound(&args.settings)?;
+    let report = json!({
+        "settings": args.settings,
+        "halo2_degree": check.degree,
+        "halo2_quotient_poly_degree": check.quotient_poly_degree,
+        "halo2_extended_k": check.extended_k,
+        "halo2_domain_bound": check.domain_bound,
+        "fits_domain_bound": check.fits
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+    );
+    Ok(())
+}
+
 fn inspect_settings(
     settings_path: &Path,
     phase: &str,
@@ -379,6 +452,14 @@ fn inspect_settings(
         .map(|row_min| row_min.max(public_min_logrows))
         .unwrap_or(public_min_logrows);
     let fits_target_logrows = required_logrows <= target_logrows;
+    let (domain_check, domain_check_error) = match inspect_domain_bound(settings_path) {
+        Ok(value) => (Some(value), None),
+        Err(err) => (None, Some(err)),
+    };
+    let fits_domain_bound = domain_check
+        .as_ref()
+        .map(|value| value.fits)
+        .unwrap_or(false);
 
     Ok(SettingsSelectionAttempt {
         phase: phase.to_string(),
@@ -393,6 +474,14 @@ fn inspect_settings(
         num_blinding_factors: settings.num_blinding_factors,
         required_logrows,
         fits_target_logrows,
+        halo2_degree: domain_check.as_ref().map(|value| value.degree),
+        halo2_quotient_poly_degree: domain_check
+            .as_ref()
+            .map(|value| value.quotient_poly_degree),
+        halo2_extended_k: domain_check.as_ref().map(|value| value.extended_k),
+        halo2_domain_bound: domain_check.as_ref().map(|value| value.domain_bound),
+        fits_domain_bound,
+        domain_check_error,
     })
 }
 
@@ -419,7 +508,7 @@ fn write_settings_selection(
         settings_path: spec.output_root.join("settings.json").display().to_string(),
         calibration_enabled: false,
         selection_rule: format!(
-            "formal proving route fixes public/public/fixed visibility, baseline-local EZKL cache, baseline-local exact-k SRS, and no mock on the proving path; proving logrows is fixed to {} when public_io.minimum_public_logrows <= {}; first probe the largest num_inner_cols candidate to fast-reject blocked datasets, otherwise choose the smallest num_inner_cols in {:?} whose row bound fits that target",
+            "formal proving route fixes public/public/fixed visibility, baseline-local EZKL cache, baseline-local exact-k SRS, and no mock on the proving path; proving logrows is fixed to {} when public_io.minimum_public_logrows <= {}; first probe the largest num_inner_cols candidate to fast-reject blocked datasets, otherwise choose the smallest num_inner_cols in {:?} whose row bound fits that target and whose Halo2 extended-k/domain bound is feasible",
             FORMAL_SETUP_LOGROWS_CAP,
             FORMAL_SETUP_LOGROWS_CAP,
             FORMAL_NUM_INNER_COL_CANDIDATES
@@ -583,6 +672,7 @@ fn select_settings(
         .configured_num_inner_cols
         .unwrap_or(max_num_inner_cols);
     let max_fits_target_logrows = max_attempt.fits_target_logrows;
+    let max_fits_domain_bound = max_attempt.fits_domain_bound;
     let max_required_logrows = max_attempt.required_logrows;
     let max_num_rows = max_attempt.num_rows;
     let max_total_assignments = max_attempt.total_assignments;
@@ -628,9 +718,10 @@ fn select_settings(
             .configured_num_inner_cols
             .unwrap_or(num_inner_cols);
         let fits_target_logrows = selection.fits_target_logrows;
+        let fits_domain_bound = selection.fits_domain_bound;
         attempts.push(selection);
 
-        if !fits_target_logrows {
+        if !fits_target_logrows || !fits_domain_bound {
             continue;
         }
 
@@ -653,6 +744,22 @@ fn select_settings(
             steps: vec![canonical_gen_settings_step(&step, &spec.output_root)],
             selected,
         });
+    }
+
+    if !max_fits_domain_bound {
+        let failure_reason = format!(
+            "blocked: all row-fitting num_inner_cols candidates up to {} fail Halo2 extended-k/domain bound at k={}",
+            max_selected_num_inner_cols, target_logrows
+        );
+        write_settings_selection(
+            spec,
+            public_io,
+            Some(target_logrows),
+            &attempts,
+            None,
+            Some(failure_reason.clone()),
+        )?;
+        return Err(failure_reason);
     }
 
     let selected = SelectedSettings {
@@ -975,6 +1082,7 @@ fn main() {
                 }
             })
         }
+        Command::DomainCheck(args) => write_domain_check(&args),
     };
 
     if let Err(err) = result {
