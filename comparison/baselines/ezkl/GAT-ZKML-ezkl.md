@@ -1,6 +1,6 @@
 # GAT-ZKML（EZKL 方案）
 
-本文给出 GAT-ZKML 的 EZKL 方案规约。证明系统采用 **EZKL → ONNX → Halo2 → zkSNARK** 路线，并固定模型语义、图输入语义、量化语义、参数族定义、前向中间对象定义、参数生成、见证生成、证明生成与验证规则。
+证明系统采用 **EZKL → ONNX → Halo2 → zkSNARK** 路线，并固定模型语义、图输入语义、量化语义、参数族定义、前向中间对象定义、参数生成、见证生成、证明生成与验证规则。
 
 ---
 
@@ -45,18 +45,18 @@ $$d_{in}^{(\ell)}=d_{cat}^{(\ell-1)}.$$
 
 采用定点数量化语义：若域元素 $x\in\mathbb F_p$ 的标准代表满足 $x>\frac{p-1}{2}$，则在实数语义下将其解释为负数 $x-p$。
 
-本文证明系统采用论文《Verifiable evaluations of machine learning models using zkSNARKs》中给出的 ezkl 通用 zkML 路线：
+证明系统采用ezkl 通用 zkML 路线：
 
 1. 先将模型导出为 ONNX 计算图；
 2. 再将 ONNX 计算图编译为 Halo2 电路；
 3. 再由 Halo2 后端生成 zkSNARK 推理证明；
-4. 证明公开绑定输入、输出与模型权重哈希 $H(W)$；
-5. 只有在同一已冻结的 $onnx\_graph\_id$、同一输入形状、同一公开预处理口径、同一编译设置与同一量化配置下，才可复用同一组 $(pk,vk)$ 进行重复推理证明；
+4. strict route 公开绑定输入、输出与模型权重哈希 $H(W)$；timing route 公开绑定输出、route metadata 与固定模型身份，完整输入作为 witness 参与电路满足性证明；
+5. 只有在同一已冻结的 $onnx\_graph\_id$、同一输入形状、同一预处理口径、同一编译设置、同一量化配置与同一 $proof\_route\_id / visibility\_id$ 下，才可复用同一组 $(pk,vk)$ 进行重复推理证明；
 6. 多个单样本推理证明可进一步组织为 evaluation attestation。
 
 记 KZG 型 proving setup 的证明键和验证键分别为 $pk$ 与 $vk$。其底层依赖结构化参考字符串与多项式承诺，但本文不再把每个中间多项式对象单独暴露为 proof object，而只把最终电路 satisfiability proof 暴露给验证者。
 
-随机预言机统一记作 $H_{FS}(\cdot)$。对电路内部承诺吸入、挑战派生、folding 与 opening 次序，本文不重新定义 ezkl / Halo2 后端的内部 transcript，而统一以对应 backend 实现为准；本文仅固定外部公开对象 $M_{pub}$、公开输入、公开输出与 $h_W$ 的绑定语义。
+随机预言机统一记作 $H_{FS}(\cdot)$。对电路内部承诺吸入、挑战派生、folding 与 opening 次序，本文不重新定义 ezkl / Halo2 后端的内部 transcript，而统一以对应 backend 实现为准；本文仅固定外部公开对象 $M_{pub}$、公开输出、$h_W$、$proof\_route\_id$、$visibility\_id$，以及在 strict route 中公开输入的绑定语义。
 
 ### 0.3 图、局部子图、多图批处理与排序
 
@@ -87,6 +87,8 @@ $$d_{in}^{(\ell)}=d_{cat}^{(\ell-1)}.$$
 - 必要时显式加入自环。
 
 实现必须严格继承主仓库 cfg 中的 `batching_rule / subgraph_rule / self_loop_rule / edge_sort_rule / chunking_rule`，不得自行定义第二套预处理语义。
+
+当前 comparison/ezkl 正式计时主线必须使用与主仓库一致的全量正式数据集口径；文中的 `subgraph_rule` / 局部子图术语仅表示继承主仓库 cfg 字段语义，不得被实现为 toy、sample、smoke、抽样或降规模替代路线。
 
 ### 0.4 静态表与量化尺度
 
@@ -309,9 +311,11 @@ $$(u_i,v_i)\in T_\phi\quad \forall i.$$
 
 $$M_i = \max\{Z_k\mid dst(k)=i\}.$$
 
-### 0.8 公共输入、私有输入与见证
+### 0.8 strict route 下的公共输入、私有输入与见证
 
-对单个样本证明，公开输入和私有输入固定如下：
+本节定义 `ezkl_strict_public_input_full` 路线下的公开输入、私有输入与见证；`ezkl_timing_private_input_public_output_full` 的可见性差异见 0.9 节。
+
+对单个样本证明，strict route 的公开输入和私有输入固定如下：
 
 - 公开元数据：
   $$M_{pub}.$$
@@ -340,6 +344,54 @@ $$R_{GAT\text{-}ezkl}(M_{pub},\tilde x,\tilde y,h_W;W)=1.$$
 更具体地，若把 ONNX 编译后的 Halo2 电路记为 $\mathcal C_{GAT}$，则要求
 
 $$\mathcal C_{GAT}(M_{pub},\tilde x,\tilde y,h_W;\omega)=1,\qquad H(W)=h_W,\qquad f_{GAT}^{quant}(\tilde x;W)=\tilde y.$$
+
+### 0.9 对比实验路线分层：strict 证明路线与 runnable timing route
+
+0.8 节定义的是本文的 **strict public-input equivalence route**，其路线标识固定为：
+
+$$proof\_route\_id=ezkl\_strict\_public\_input\_full.$$
+
+在该路线中，$\tilde x=(I,src,dst,node\_ptr,edge\_ptr,H,quant\_cfg,model\_arch\_id)$ 必须作为公开输入绑定到 proof / verify 过程；$\tilde y$、$h_W$ 与 $M_{pub}$ 也必须公开绑定。该路线是本文与主仓库证明语义最严格对齐的证明路线，也是默认协议语义。除非显式声明 $proof\_route\_id$ 为其它值，后续第 1--4 节均按该 strict route 理解。
+
+#### 0.9.1 strict route 与 timing route 的使用边界
+
+`ezkl_strict_public_input_full` 是本文默认的严格证明路线，用于表达“公开输入、公开输出与模型身份均被 proof / verify 直接绑定”的证明语义。
+
+若在具体 ezkl / Halo2 后端实现中，strict route 因 public instance 规模、domain 约束、setup 资源或 backend 能力边界无法覆盖全部正式 benchmark，则 comparison 实验允许启用 `ezkl_timing_private_input_public_output_full` 作为独立的 runnable timing route。
+
+timing route 的目的仅是获得 ezkl 在相同模型、相同 checkpoint、相同数据集、相同图规则与相同 benchmark 口径下的运行时间开销。它不得被解释为 strict public-input route 的成功替代，也不得被用于声称完整公开输入绑定已经跑通。
+
+两条路线必须在 metadata、结果表和最终报告中通过 `proof_route_id` 与 `visibility_id` 明确区分。
+
+
+#### 0.9.2 runnable timing route
+
+为了获得五个全量正式数据集在 ezkl 后端上的可运行时间开销，本文在不改变主仓库模型、数据、图规则、checkpoint、量化语义和 benchmark 口径的前提下，额外定义一条 **runnable timing route**。该路线仅用于 runtime / cost measurement，不得冒充 0.8 节 strict public-input equivalence route 的成功结果。
+
+该路线标识固定为：
+
+$$proof\_route\_id=ezkl\_timing\_private\_input\_public\_output\_full.$$
+
+该路线采用以下 ezkl visibility 适配：
+
+1. $input\_visibility=private$：$\tilde x=(I,src,dst,node\_ptr,edge\_ptr,H,quant\_cfg,model\_arch\_id)$ 作为 witness input 进入电路，不再作为 public instance 暴露；
+2. $output\_visibility=public$：量化 logits 与 graph consistency checks 仍作为公开输出绑定；
+
+   其中，graph consistency checks 至少应覆盖由主仓库正式预处理规则导出的图结构一致性校验摘要，包括节点数、边数、batch 指针、排序规则、自环规则与当前 $preprocess\_id$ 的一致性；其具体字段必须由实现中的正式 metadata 固定，且不得替代或修改主仓库图预处理语义。
+3. $param\_visibility=fixed$：权重参数仍由同一 checkpoint 导出并固定到当前 ONNX / ezkl compiled circuit；
+4. $h_W$ 与 $M_{pub}$ 仍公开记录，用于绑定模型身份、配置身份、route 身份与 artifact 身份；
+5. 输入图、节点顺序、边顺序、batch 规则、自环规则、checkpoint、GAT 前向语义、输出层多头平均语义与主仓库保持一致。
+
+在 timing route 中，$\tilde x$ 的可见性变化属于 ezkl 证明接口 / witness organization 的必要适配；它不改变 $f_{GAT}^{quant}(\tilde x;W)=\tilde y$ 的计算语义，也不改变任一数据集、图结构、权重或 benchmark 口径。
+
+#### 0.9.3 结果解释规则
+
+comparison 结果必须区分两类路线：
+
+1. `ezkl_strict_public_input_full`：用于判断原始公开输入绑定证明方案是否能完整替换主证明方案；若未跑通，只能报告为 strict route capability boundary；
+2. `ezkl_timing_private_input_public_output_full`：用于获得 ezkl 在同一模型、同一数据、同一图规则与同一 checkpoint 下的 full-dataset runtime cost。
+
+最终 timing 表必须显式记录 $proof\_route\_id$、$input\_visibility$、$output\_visibility$、$param\_visibility$、$final\_K$、`num_inner_cols`、SRS 策略、setup / prove / verify 时间与 proof size。任何 timing route 结果都不得被写成 strict public-input route 的成功结果。
 
 ## 1. 参数生成
 
@@ -381,7 +433,7 @@ $$\mathcal C_{GAT}(M_{pub},\tilde x,\tilde y,h_W;\omega)=1,\qquad H(W)=h_W,\qqua
 
 公共元数据固定为
 
-$$M_{pub}=(protocol\_id,model\_arch\_id,model\_param\_id,onnx\_graph\_id,quant\_cfg\_id,preprocess\_id,attestation\_mode,encoding\_id,degree\_bound\_id,proof\_system\_tag,ezkl\_version).$$
+$$M_{pub}=(protocol\_id,model\_arch\_id,model\_param\_id,onnx\_graph\_id,quant\_cfg\_id,preprocess\_id,attestation\_mode,encoding\_id,degree\_bound\_id,proof\_system\_tag,ezkl\_version,proof\_route\_id,visibility\_id).$$
 
 其中：
 
@@ -396,6 +448,8 @@ $$M_{pub}=(protocol\_id,model\_arch\_id,model\_param\_id,onnx\_graph\_id,quant\_
 - $degree\_bound\_id$：标识后端 proving system 的相关配置
 - $proof\_system\_tag$：固定标识当前 proving backend，本文最终版固定为 ezkl / Halo2 / KZG 路线
 - $ezkl\_version$：固定标识当前 comparison 实验所使用的 ezkl 版本
+- $proof\_route\_id$：在 comparison artifact / metadata 中额外记录当前证明 / 计时路线，取值必须为 `ezkl_strict_public_input_full` 或 `ezkl_timing_private_input_public_output_full`
+- $visibility\_id$：在 comparison artifact / metadata 中额外记录 ezkl 输入、输出和参数可见性，例如 `public_public_fixed` 或 `private_public_fixed`
 
 ### 1.5 模型权重哈希绑定
 
@@ -403,11 +457,11 @@ $$M_{pub}=(protocol\_id,model\_arch\_id,model\_param\_id,onnx\_graph\_id,quant\_
 
 $$H(W)=h_W.$$
 
-因此，单样本证明同时绑定：
+因此，单样本证明的绑定对象必须按 $proof\_route\_id$ 区分：
 
-1. 公开输入张量；
-2. 公开输出张量；
-3. 模型权重哈希。
+1. 在 `ezkl_strict_public_input_full` 中，证明同时绑定公开输入张量、公开输出张量与模型权重哈希；
+2. 在 `ezkl_timing_private_input_public_output_full` 中，证明公开绑定输出张量、模型身份、$proof\_route\_id$、$visibility\_id$ 与相关公共元数据；完整输入张量作为 witness input 参与电路约束，但不作为 public instance 暴露；
+3. 两条路线都必须绑定同一 checkpoint 导出的固定权重身份，且不得改变模型、图规则、数据集或量化语义。
 
 ### 1.6 校准与 trusted setup
 
@@ -417,7 +471,7 @@ $$\|\tilde y-y^{fp}\|\le \varepsilon_{quant}$$
 
 其中阈值 $\varepsilon_{quant}$ 必须由实验配置预先固定。
 
-trusted setup 阶段为 proving system 生成结构化参考字符串，之后得到 $(pk,vk)$。只有在同一冻结后的 $onnx\_graph\_id$、同一输入形状、同一公开预处理口径、同一编译设置与同一量化配置下，才允许对不同样本重复使用相同的 $(pk,vk)$。一旦其中任一项发生变化，必须重新执行对应 setup。
+trusted setup 阶段为 proving system 生成结构化参考字符串，之后得到 $(pk,vk)$。只有在同一冻结后的 $onnx\_graph\_id$、同一输入形状、同一预处理口径、同一编译设置、同一量化配置、同一 $proof\_route\_id$ 与同一 $visibility\_id$ 下，才允许对不同样本重复使用同一组 $(pk,vk)$。一旦其中任一项发生变化，必须重新执行对应 setup。
 
 ## 2. 见证生成
 
@@ -425,11 +479,11 @@ trusted setup 阶段为 proving system 生成结构化参考字符串，之后�
 
 工程实现必须按以下顺序执行：
 
-1. 公开预处理：图抽取、重编号、加自环、排序、batch 构造；
+1. 按公开固定的预处理规则完成图抽取、重编号、加自环、排序、batch 构造；
 2. 明文推理：在普通推理路径上运行 GAT，得到输入输出对 $(x_i,y_i)$；
 3. 量化与 witness 生成：将 $(x_i,y_i)$ 量化为 $(\tilde x_i,\tilde y_i)$，并构造全部中间张量见证；
-4. 用 $(pk,\tilde x_i,\tilde y_i,h_W)$ 和私有权重 $W$ 生成单样本 zkSNARK 证明；
-5. 将全体单样本证明打包为 evaluation attestation。
+4. 按 $proof\_route\_id$ 生成单样本 zkSNARK 证明：strict route 将 $\tilde x_i$ 与 $\tilde y_i$ 作为 public instance 绑定；timing route 将 $\tilde x_i$ 写入 witness 文件，仅将 $\tilde y_i$ 与 route metadata 作为 public instance 绑定；
+5. 将全体单样本证明打包为与当前 route 匹配的 evaluation attestation。
 
 ### 2.1 数据加载与特征检索
 
@@ -567,19 +621,29 @@ $$Y_{i,c}=K_{out}^{-1}\cdot Y_{i,c}^{sum}.$$
 
 $$\omega_i=(W,\text{全部中间张量},\tilde x_i,\tilde y_i,h_W).$$
 
-然后生成单样本证明：
+然后生成单样本证明。协议层可统一记为：
 
-$$\pi_i \leftarrow \mathrm{Prove}(pk,W,\tilde x_i,\tilde y_i),$$
+$$\pi_i \leftarrow \mathrm{Prove}_{proof\_route\_id}(pk,W,\tilde x_i,\tilde y_i),$$
 
-这里的 $\mathrm{Prove}(pk,W,\tilde x_i,\tilde y_i)$ 是**协议层抽象记号**，用于表达“使用与当前冻结模型图对应的 proving key、私有权重与该样本的公开输入输出生成单样本推理证明”的语义。实际 ezkl 工程实现中，prove 阶段的直接输入应落实为：编译后的电路 / settings、与该样本对应的 witness 文件，以及 proving key $pk$；而不是把上述四元组机械理解为某个固定外部 API 的字面形参列表。
+这里的 $\mathrm{Prove}_{proof\_route\_id}(pk,W,\tilde x_i,\tilde y_i)$ 是**协议层抽象记号**，用于表达“使用与当前冻结模型图、route 与 visibility 对应的 proving key、私有权重、该样本输入输出和 witness 文件生成单样本推理证明”的语义。实际 ezkl 工程实现中，prove 阶段的直接输入应落实为：编译后的电路 / settings、与该样本对应的 witness 文件，以及 proving key $pk$；而不是把上述四元组机械理解为某个固定外部 API 的字面形参列表。
+
+在 strict route 中，$\tilde x_i$ 与 $\tilde y_i$ 均作为 public instance 绑定；在 timing route 中，$\tilde x_i$ 位于 witness，$\tilde y_i$、$proof\_route\_id$ 与 $visibility\_id$ 作为公开对象绑定。
 
 并要求
 
-$$\pi_i \supset \{h_W,\tilde y_i\}.$$
+$$\pi_i \supset \{h_W,\tilde y_i,proof\_route\_id,visibility\_id\}.$$
 
-等价地，单样本证明满足：
+等价地，单样本证明满足如下 route-aware 验证关系：
 
-$$\mathrm{Verify}(vk,\tilde x_i,\tilde y_i,h_W,\pi_i)=1.$$
+strict route 中：
+
+$$\mathrm{Verify}_{strict}(vk,\tilde x_i,\tilde y_i,h_W,\pi_i)=1.$$
+
+timing route 中：
+
+$$\mathrm{Verify}_{time}(vk,\tilde y_i,h_W,proof\_route\_id,visibility\_id,\pi_i)=1.$$
+
+其中 timing route 的 $\tilde x_i$ 不是 verifier 接收的 public instance，而是 witness satisfiability 中被约束的输入。
 
 ### 2.6 evaluation attestation 生成
 
@@ -587,17 +651,21 @@ $$\mathrm{Verify}(vk,\tilde x_i,\tilde y_i,h_W,\pi_i)=1.$$
 
 #### 2.6.1 直接打包模式
 
-定义直接打包 attestation：
+定义 strict route 的直接打包 attestation：
 
-$$\Pi_{eval}^{bundle}=\Big(M_{pub},h_W,\{(\tilde x_i,\tilde y_i,\pi_i)\}_{i=1}^{N_{eval}}\Big).$$
+$$\Pi_{eval}^{bundle}=\Big(M_{pub},h_W,proof\_route\_id,visibility\_id,\{(\tilde x_i,\tilde y_i,\pi_i)\}_{i=1}^{N_{eval}}\Big).$$
 
-该模式最接近逐样本基线，验证者可逐个验证全部 proof，并自行计算 accuracy、bias metric 或其他公开指标。
+定义 timing route 的直接打包 attestation：
+
+$$\Pi_{eval,time}^{bundle}=\Big(M_{pub},h_W,proof\_route\_id,visibility\_id,\{(\tilde y_i,\pi_i)\}_{i=1}^{N_{eval}}\Big).$$
+
+在 timing route 中，$\tilde x_i$ 不作为 public instance 打包；它只作为 witness input 参与每个证明的电路满足性验证。上述两类直接打包模式都最接近逐样本基线，验证者可逐个验证全部 proof，并自行计算 accuracy、bias metric 或其他公开指标。
 
 #### 2.6.2 Attestation 边界
 
-虽然论文同时讨论了 proof aggregation 与 metric-only aggregation 两类更进一步的组织方式，但它们都会额外引入第二层聚合电路、额外 setup 与额外审计负担。proof aggregation 与 metric-only aggregation 都会额外引入第二层聚合电路、额外 setup 与额外审计负担，因此本文不把这两类 aggregation 机制纳入协议主线，也不纳入 benchmark 主表。
+虽然论文同时讨论了 proof aggregation 与 metric-only aggregation 两类更进一步的组织方式，但它们都会额外引入第二层聚合电路、额外 setup 与额外审计负担，因此本文不把这两类 aggregation 机制纳入协议主线，也不纳入 benchmark 主表。
 
-因此，本文后续凡提及 evaluation attestation，若无特别声明，均一律指 $\Pi_{eval}^{bundle}$。
+本文后续凡提及 evaluation attestation，若无特别声明，均指与当前 $proof\_route\_id$ 对应的直接打包模式：strict route 使用 $\Pi_{eval}^{bundle}$，timing route 使用 $\Pi_{eval,time}^{bundle}$。
 
 ## 3. 证明生成
 
@@ -606,9 +674,9 @@ $$\Pi_{eval}^{bundle}=\Big(M_{pub},h_W,\{(\tilde x_i,\tilde y_i,\pi_i)\}_{i=1}^{
 证明算法输入为：
 
 - 编译后的电路与参数 $(\mathcal C_{GAT},pk,vk)$
-- 公共输入与公共元数据 $(M_{pub},\tilde x,\tilde y,h_W)$
+- 与 $proof\_route\_id$ 匹配的公开对象：strict route 使用 $(M_{pub},\tilde x,\tilde y,h_W)$；timing route 使用 $(M_{pub},\tilde y,h_W,proof\_route\_id,visibility\_id)$
 - 私有权重 $W$
-- 全部 witness 张量
+- 全部 witness 张量；timing route 中 $\tilde x$ 也包含在 witness 张量中
 
 输出为单样本 zkSNARK 证明 $\pi$；evaluation attestation 在本文最终 comparison 实验中固定采用直接打包模式，不额外生成 aggregation proof。
 
@@ -619,10 +687,12 @@ $$\Pi_{eval}^{bundle}=\Big(M_{pub},h_W,\{(\tilde x_i,\tilde y_i,\pi_i)\}_{i=1}^{
 本文只固定以下外部绑定语义：
 
 1. 单样本证明必须绑定公共元数据块 $M_{pub}$；
-2. 单样本证明必须绑定公开输入 $\tilde x$；
-3. 单样本证明必须绑定公开输出 $\tilde y$；
-4. 单样本证明必须绑定模型权重哈希 $h_W$；
-5. evaluation attestation 中全部单样本 proof 必须绑定到同一 $M_{pub}$ 与同一 $h_W$。
+2. 单样本证明必须绑定 $proof\_route\_id$ 与 $visibility\_id$；
+3. strict route 的单样本证明必须绑定公开输入 $\tilde x$；
+4. timing route 的单样本证明不把完整 $\tilde x$ 作为 public instance，而要求 $\tilde x$ 作为 witness input 满足当前冻结电路；
+5. 单样本证明必须绑定公开输出 $\tilde y$；
+6. 单样本证明必须绑定模型权重哈希 $h_W$；
+7. evaluation attestation 中全部单样本 proof 必须绑定到同一 $M_{pub}$、同一 $h_W$、同一 $proof\_route\_id$ 与同一 $visibility\_id$。
 
 ### 3.3 电路约束族
 
@@ -704,19 +774,24 @@ $$H(W)=h_W.$$
 
 #### 3.3.8 单样本推理关系
 
-综合全部约束后，单样本电路满足以下关系：
+综合全部约束后，strict route 的单样本电路满足以下关系：
 
-$$R_{GAT\text{-}ezkl}(M_{pub},\tilde x,\tilde y,h_W;W)=1$$
+$$R_{GAT\text{-}ezkl}^{strict}(M_{pub},\tilde x,\tilde y,h_W;W)=1$$
 
-当且仅当：
+timing route 的单样本电路满足以下关系：
+
+$$R_{GAT\text{-}ezkl}^{time}(M_{pub},\tilde y,h_W,proof\_route\_id,visibility\_id;W,\tilde x)=1.$$
+
+两条路线当且仅当以下条件成立：
 
 1. 权重哈希满足 $H(W)=h_W$；
 2. 量化 GAT 前向满足 $f_{GAT}^{quant}(\tilde x;W)=\tilde y$；
-3. 全部中间张量满足隐藏层、输出层、softmax、非线性与量化一致性约束。
+3. 全部中间张量满足隐藏层、输出层、softmax、非线性与量化一致性约束；
+4. 两条路线的差异只在 $\tilde x$ 的 public instance / witness 可见性，而不在模型、数据、图规则或前向语义。
 
 ### 3.4 单样本 proof object
 
-单样本证明对象固定记为
+strict route 的单样本证明对象固定记为
 
 $$\pi=(M_{pub},h_W,\tilde x,\tilde y,\Pi_{snark}).$$
 
@@ -728,13 +803,27 @@ $$\pi=(M_{pub},h_W,\tilde x,\tilde y,\Pi_{snark}).$$
 - $\tilde y$ 是公开输出张量
 - $\Pi_{snark}$ 是 Halo2/ezkl 后端给出的 succinct proof
 
+上述 $\pi=(M_{pub},h_W,\tilde x,\tilde y,\Pi_{snark})$ 是 `ezkl_strict_public_input_full` 的单样本 proof object。
+
+对 `ezkl_timing_private_input_public_output_full`，单样本 timing proof object 固定记为：
+
+$$\pi^{time}=(M_{pub},h_W,\tilde y,proof\_route\_id,visibility\_id,\Pi_{snark}).$$
+
+其中 $\tilde x$ 不再作为 public instance 暴露，而是作为 witness input 参与电路满足性证明。该对象只用于 ezkl timing baseline，不得解释为 strict public-input proof object。
+
 ### 3.5 evaluation attestation object
 
-本文只定义直接打包模式：
+本文只定义直接打包模式。
 
-$$\Pi_{eval}^{bundle}=\Big(M_{pub},h_W,\{(\tilde x_i,\tilde y_i,\pi_i)\}_{i=1}^{N_{eval}}\Big).$$
+strict route 的 evaluation attestation object 为：
 
-其中每个 $\pi_i$ 都是单样本推理证明，且全部证明共享同一公开元数据 $M_{pub}$ 与同一模型权重哈希 $h_W$。
+$$\Pi_{eval}^{bundle}=\Big(M_{pub},h_W,proof\_route\_id,visibility\_id,\{(\tilde x_i,\tilde y_i,\pi_i)\}_{i=1}^{N_{eval}}\Big).$$
+
+timing route 的 evaluation attestation object 为：
+
+$$\Pi_{eval,time}^{bundle}=\Big(M_{pub},h_W,proof\_route\_id,visibility\_id,\{(\tilde y_i,\pi_i)\}_{i=1}^{N_{eval}}\Big).$$
+
+其中每个 $\pi_i$ 都是单样本推理证明，且全部证明共享同一公开元数据 $M_{pub}$、同一模型权重哈希 $h_W$、同一 $proof\_route\_id$ 与同一 $visibility\_id$。timing route 的 object 不包含 public $\tilde x_i$，不得解释为 strict public-input attestation。
 
 ## 4. 验证
 
@@ -742,49 +831,70 @@ $$\Pi_{eval}^{bundle}=\Big(M_{pub},h_W,\{(\tilde x_i,\tilde y_i,\pi_i)\}_{i=1}^{
 
 验证者首先检查：
 
-1. $protocol\_id$、$model\_arch\_id$、$model\_param\_id$、$onnx\_graph\_id$、$quant\_cfg\_id$、$preprocess\_id$、$proof\_system\_tag$ 与 $ezkl\_version$ 与本地期望一致；
-2. 输入图的排序、自环和 batch 规则与公开预处理规则一致；
-3. proof 对象中的公开输入输出张量维度与模型结构一致；
+1. $protocol\_id$、$model\_arch\_id$、$model\_param\_id$、$onnx\_graph\_id$、$quant\_cfg\_id$、$preprocess\_id$、$proof\_system\_tag$、$ezkl\_version$、$proof\_route\_id$ 与 $visibility\_id$ 与本地期望一致；
+2. strict route 中，验证者直接检查公开输入图的排序、自环和 batch 规则与公开固定的预处理规则一致；timing route 中，输入图作为 witness input 进入电路，其排序、自环、batch 规则由编译电路、公开 metadata、公开 graph consistency checks 与 witness satisfiability 共同约束；
+3. strict route 中，proof 对象中的公开输入输出张量维度与模型结构一致；timing route 中，proof 对象中的公开输出张量、route metadata 与模型结构一致，完整输入张量维度由 witness / compiled circuit 约束；
 4. 模型权重哈希 $h_W$ 与目标 attestation 声称的模型身份一致。
 
 ### 4.2 单样本证明验证
 
-对任意单样本证明 $\pi_i$，验证者执行：
+对任意单样本证明 $\pi_i$，验证者按当前 $proof\_route\_id$ 执行对应验证。
 
-$$\mathrm{Verify}(vk,\tilde x_i,\tilde y_i,h_W,\pi_i)=1?$$
+strict route 验证为：
+
+$$\mathrm{Verify}_{strict}(vk,\tilde x_i,\tilde y_i,h_W,\pi_i)=1?$$
+
+timing route 验证为：
+
+$$\mathrm{Verify}_{time}(vk,\tilde y_i,h_W,proof\_route\_id,visibility\_id,\pi_i)=1?$$
+
+其中 timing route 的 $\tilde x_i$ 仅存在于 witness / circuit satisfiability 中，不作为 verifier 的 public input。
 
 若验证成功，则接受以下事实：
 
 1. 存在一组私有权重 $W$，满足 $H(W)=h_W$；
 2. 存在一组 witness 中间张量，使得编译后的 GAT 电路约束全部成立；
-3. 公开输出 $\tilde y_i$ 确实是输入 $\tilde x_i$ 在该权重下的量化推理结果。
+3. 公开输出 $\tilde y_i$ 确实是某个满足当前 route、visibility 与 witness 约束的输入 $\tilde x_i$ 在该权重下的量化推理结果；
+4. 只有 strict route 可进一步解释为“验证者给定的公开输入 $\tilde x_i$ 被 proof 直接绑定”。
+
+### 4.2.1 timing route 的验证语义边界
+
+对于 `ezkl_timing_private_input_public_output_full`，验证者执行的是 ezkl 后端对 public output、fixed params 与 witness satisfiability 的验证。此时 public instance 不包含完整 $\tilde x$；因此 timing route 的验证结论只能解释为：存在某个 witness input $\tilde x$ 与固定权重 / 固定电路，使得公开输出 $\tilde y$ 满足当前 ONNX / Halo2 电路约束。它不等价于 0.8 节 strict route 中“公开输入 $\tilde x$ 被 proof 直接绑定”的语义。
 
 ### 4.3 直接打包 attestation 验证
 
-对 $\Pi_{eval}^{bundle}$，验证者逐个验证所有样本证明：
+对 strict route 的 $\Pi_{eval}^{bundle}$，验证者逐个验证所有样本证明：
 
-$$\forall i\in\{1,\ldots,N_{eval}\},\qquad \mathrm{Verify}(vk,\tilde x_i,\tilde y_i,h_W,\pi_i)=1.$$
+$$\forall i\in\{1,\ldots,N_{eval}\},\qquad \mathrm{Verify}_{strict}(vk,\tilde x_i,\tilde y_i,h_W,\pi_i)=1.$$
+
+对 timing route 的 $\Pi_{eval,time}^{bundle}$，验证者逐个验证所有样本证明：
+
+$$\forall i\in\{1,\ldots,N_{eval}\},\qquad \mathrm{Verify}_{time}(vk,\tilde y_i,h_W,proof\_route\_id,visibility\_id,\pi_i)=1.$$
 
 全部通过后，再根据公开标签 $\hat y_i$ 计算公开指标：
 
 $$Acc = \frac{1}{N_{eval}}\sum_{i=1}^{N_{eval}}\mathbf 1\{\operatorname{argmax}(\tilde y_i)=\hat y_i\}.$$
 
-若需要 fairness、precision、recall 或其他统计量，则同理直接在公开输出上计算。
+若需要 fairness、precision、recall 或其他统计量，则同理直接在公开输出上计算。timing route 的公开指标可用于 runtime / cost comparison，但不得解释为 strict public-input route 的成功证明。
 
 ### 4.4 未来推理挑战验证（扩展语义）
 
-对未来用户给定的输入 $x^*$ 和模型提供者返回的输出 $y^*$，模型提供者需重新生成单样本证明：
+对未来用户给定的输入 $x^*$ 和模型提供者返回的输出 $y^*$，模型提供者需按当前 $proof\_route\_id$ 重新生成单样本证明：
 
-$$\pi^*\leftarrow \mathrm{Prove}(pk,W,\tilde x^*,\tilde y^*).$$
+$$\pi^*\leftarrow \mathrm{Prove}_{proof\_route\_id}(pk,W,\tilde x^*,\tilde y^*).$$
 
-这里的 $\mathrm{Prove}(pk,W,\tilde x^*,\tilde y^*)$ 同样只是协议层抽象记号。实际工程中，应理解为：在与当前冻结配置一致的编译电路 / settings 下，使用 proving key $pk$ 与该次 future inference 对应的 witness 文件生成新的单样本证明。
+这里的 $\mathrm{Prove}_{proof\_route\_id}(pk,W,\tilde x^*,\tilde y^*)$ 同样只是协议层抽象记号。实际工程中，应理解为：在与当前冻结配置、route 与 visibility 一致的编译电路 / settings 下，使用 proving key $pk$ 与该次 future inference 对应的 witness 文件生成新的单样本证明。
 
-验证者执行：
+strict route 中，验证者执行：
 
-$$\mathrm{Verify}(vk,\tilde x^*,\tilde y^*,h_W,\pi^*)=1.$$
+$$\mathrm{Verify}_{strict}(vk,\tilde x^*,\tilde y^*,h_W,\pi^*)=1.$$
 
-若验证成功，则说明当前输出与之前发布 evaluation attestation 的模型身份一致，即它来自同一 $h_W$ 对应的模型。
+timing route 中，验证者执行：
+
+$$\mathrm{Verify}_{time}(vk,\tilde y^*,h_W,proof\_route\_id,visibility\_id,\pi^*)=1.$$
+
+若验证成功，则说明当前输出与之前发布 evaluation attestation 的模型身份一致，即它来自同一 $h_W$ 对应的模型；但 timing route 不提供公开输入 $\tilde x^*$ 被直接绑定的 strict 语义。
 
 ### 4.5 验证结论
 
-若元数据一致、单样本 proof 全部通过、直接打包 attestation 中全部样本证明都绑定到同一模型权重哈希 $h_W$，且公开统计指标与公开标签计算结果一致，则接受证明；否则拒绝。
+若元数据一致、单样本 proof 全部通过、直接打包 attestation 中全部样本证明都绑定到同一模型权重哈希 $h_W$、同一 $proof\_route\_id$ 与同一 $visibility\_id$，且公开统计指标与公开标签计算结果一致，则接受当前 route 下的证明；否则拒绝。对 timing route，接受结论仅限于 runtime / cost comparison 所定义的 private-input/public-output 证明接口，不得提升解释为 strict public-input route 成功。
