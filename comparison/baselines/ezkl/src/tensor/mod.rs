@@ -316,8 +316,8 @@ impl<T: Clone + TensorType + PrimeField> Tensor<T> {
 
     /// load from a file
     pub fn load(path: &PathBuf) -> Result<Self, TensorError> {
-        let reader =
-            std::fs::File::open(path).map_err(|e| TensorError::FileLoadError(e.to_string()))?;
+        let reader = std::fs::File::open(path)
+            .map_err(|e| TensorError::FileLoadError(format!("{}: {}", path.display(), e)))?;
         let mut buf_reader = std::io::BufReader::new(reader);
 
         let mut inner = Vec::new();

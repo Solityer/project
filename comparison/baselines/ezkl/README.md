@@ -105,6 +105,7 @@ Blocked runs also write both `settings_selection.json` and `pipeline_summary.jso
 The wrapper also fixes:
 
 - `EZKL_REPO_PATH=/home/pzh/project/comparison/baselines/ezkl/.ezkl_local`
+- baseline-local `.ezkl_local` as the default cache root for the local `ezkl` binary
 - baseline-local exact-k SRS generation/reuse
 - `public/public/fixed` visibility
 - no `mock` step on the formal proving path
