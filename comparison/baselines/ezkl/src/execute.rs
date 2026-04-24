@@ -73,10 +73,13 @@ lazy_static! {
     #[derive(Debug)]
     /// The path to the ezkl related data.
     pub static ref EZKL_REPO_PATH: String =
-        std::env::var("EZKL_REPO_PATH").unwrap_or_else(|_|
-            // $HOME/.ezkl/
-            format!("{}/.ezkl", std::env::var("HOME").unwrap())
-        );
+        std::env::var("EZKL_REPO_PATH").unwrap_or_else(|_| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|path| path.parent().and_then(|path| path.parent()).and_then(|path| path.parent()).map(|path| path.join(".ezkl_local")))
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| ".ezkl_local".to_string())
+        });
 
     /// The path to the ezkl related data (SRS)
     pub static ref EZKL_SRS_REPO_PATH: String = format!("{}/srs", *EZKL_REPO_PATH);
