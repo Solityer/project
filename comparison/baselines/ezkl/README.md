@@ -7,6 +7,26 @@ This repository is the `ezkl`-based baseline for the GAT-ZKML comparison experim
 3. build a fixed-shape ONNX graph from the staged graph tensors and staged checkpoint tensors;
 4. run the `ezkl` pipeline on that ONNX graph inside this repository only.
 
+## Active Proof Route
+
+The active baseline uses `ezkl_timing_private_input_public_output_full`:
+
+- `proof_route_id = ezkl_timing_private_input_public_output_full`
+- `visibility_id = private_public_fixed`
+- `input_visibility = private`, `output_visibility = public`, `param_visibility = fixed`
+
+This route is the sole runnable path for all five full-scale datasets. The strict public-input route (`ezkl_strict_public_input_full`, `input_visibility=public`) was attempted first on all five datasets and was found infeasible at the full formal scale under Halo2/KZG constraints:
+
+| Dataset | Strict Route Failure Reason |
+|---|---|
+| cora_full | setup OOM (signal 9) at k=25 after ~37 min; peak RSS 123 GB |
+| citeseer_full | Halo2 domain bound exceeded at k=25: all row-fitting layouts have quotient_poly_degree > BN254 S=28 |
+| pubmed_full | row capacity exceeded: num_inner_cols=32 requires row_min_logrows=27 at k=25 |
+| ppi_full_formal | gen-settings did not complete after 17 min; high-CPU timeout before row-bound result |
+| ogbn_arxiv_full | gen-settings did not complete after 10 min; high-CPU timeout before row-bound result |
+
+The timing route keeps the same model, checkpoint, graph rules, and benchmark口径 as the main repo. Only the ezkl visibility interface is adapted: inputs become private witness rather than public instances. This does not change the GAT forward computation, quantization semantics, or output binding. Per `GAT-ZKML-ezkl.md` §0.9.1–§0.9.3, timing route results must not be interpreted as strict public-input route success.
+
 ## Scope
 
 The baseline keeps only the formal full-dataset comparison line:
@@ -96,9 +116,9 @@ Each step writes its own log into the dataset run directory, and `pipeline_summa
 
 The active formal proving rule is:
 
-`prove_logrows = 25` when `public_io.minimum_public_logrows <= 25`. The wrapper first probes `num_inner_cols = 32` to fast-reject datasets that still exceed `k=25` at the largest allowed inner-column layout; otherwise it chooses the smallest `num_inner_cols` in `[2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32]` whose row bound fits `prove_logrows` and whose Halo2 extended-k/domain bound is feasible.
+`prove_logrows = 25` when `public_output.minimum_logrows <= 25`. For the timing route, `minimum_public_logrows` is derived from public output count only (inputs are private witness). The wrapper first probes `num_inner_cols = 32` to fast-reject datasets that still exceed `k=25` at the largest allowed inner-column layout; otherwise it chooses the smallest `num_inner_cols` in `[2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32]` whose row bound fits `prove_logrows` and whose Halo2 extended-k/domain bound is feasible.
 
-This keeps the public I/O semantics unchanged while moving only the proving-layout adaptation into the `ezkl`-specific layer. If `public_io.minimum_public_logrows > 25`, or no candidate `num_inner_cols` fits `k=25`, the dataset is reported as blocked rather than silently falling back to a different formal route.
+This keeps the public output semantics unchanged while moving only the proving-layout adaptation into the `ezkl`-specific layer. If no candidate `num_inner_cols` fits `k=25`, the dataset is reported as blocked rather than silently falling back.
 
 Blocked runs also write both `settings_selection.json` and `pipeline_summary.json`, so the formal run directory records the failure reason without opening a second route.
 
@@ -107,11 +127,12 @@ The wrapper also fixes:
 - `EZKL_REPO_PATH=/home/pzh/project/comparison/baselines/ezkl/.ezkl_local`
 - baseline-local `.ezkl_local` as the default cache root for the local `ezkl` binary
 - baseline-local exact-k SRS generation/reuse
-- `public/public/fixed` visibility
+- `private/public/fixed` visibility (timing route)
 - no `mock` step on the formal proving path
 
 ## Notes
 
 - The baseline reads datasets, checkpoint bundles, configs, and reference run manifests from repo-local copies under this directory.
 - All generated artifacts stay under this baseline repository.
-- Large datasets produce large fixed-shape ONNX graphs and large public I/O JSON files. That is expected for the strict full-dataset comparison path.
+- Large datasets produce large fixed-shape ONNX graphs. That is expected for the full-dataset comparison path.
+- Timing route results (`proof_route_id=ezkl_timing_private_input_public_output_full`) must not be interpreted as strict public-input route success. See `GAT-ZKML-ezkl.md` §0.9.3.

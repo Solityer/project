@@ -59,6 +59,8 @@ struct DomainCheckArgs {
 const FORMAL_SETUP_LOGROWS_CAP: u32 = 25;
 const FORMAL_EZKL_REPO_DIR: &str = ".ezkl_local";
 const FORMAL_NUM_INNER_COL_CANDIDATES: &[usize] = &[2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32];
+const TIMING_ROUTE_PROOF_ROUTE_ID: &str = "ezkl_timing_private_input_public_output_full";
+const TIMING_ROUTE_VISIBILITY_ID: &str = "private_public_fixed";
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -144,15 +146,19 @@ struct StageManifest {
     #[serde(default)]
     public_io: Option<PublicIoPlan>,
     node_count: usize,
+    #[allow(dead_code)]
     edge_count: usize,
+    #[allow(dead_code)]
     graph_count: usize,
     num_classes: usize,
     #[serde(default)]
+    #[allow(dead_code)]
     hidden_layers: Vec<HiddenLayerSpec>,
 }
 
 #[derive(Debug, Deserialize)]
 struct HiddenLayerSpec {
+    #[allow(dead_code)]
     input_dim: usize,
 }
 
@@ -264,24 +270,17 @@ fn load_stage_manifest(spec: &ResolvedDatasetSpec) -> Result<StageManifest, Stri
 }
 
 fn minimum_public_logrows(spec: &ResolvedDatasetSpec) -> Result<u32, String> {
-    let manifest_path = spec.output_root.join("staged/stage_manifest.json");
     let manifest = load_stage_manifest(spec)?;
     if let Some(public_io) = &manifest.public_io {
-        return Ok(u32::max(17, public_io.minimum_public_logrows));
+        // timing route: only public outputs (inputs are private witness)
+        let timing_total = public_io.public_output_count + public_io.safety_margin;
+        return Ok(u32::max(17, ceil_log2(timing_total as u64)));
     }
 
-    let first_hidden = manifest
-        .hidden_layers
-        .first()
-        .ok_or_else(|| format!("{} does not declare hidden_layers", manifest_path.display()))?;
-
-    let public_input_count = (manifest.node_count * first_hidden.input_dim)
-        + (2 * manifest.edge_count)
-        + (2 * (manifest.graph_count + 1));
+    // fallback (no public_io field in manifest): compute from node_count and num_classes
     let public_output_count = (manifest.node_count * manifest.num_classes) + 4;
     let safety_margin = 64usize;
-    let total_public_instances = public_input_count + public_output_count + safety_margin;
-
+    let total_public_instances = public_output_count + safety_margin;
     Ok(u32::max(17, ceil_log2(total_public_instances as u64)))
 }
 
@@ -508,7 +507,9 @@ fn write_settings_selection(
         settings_path: spec.output_root.join("settings.json").display().to_string(),
         calibration_enabled: false,
         selection_rule: format!(
-            "formal proving route fixes public/public/fixed visibility, baseline-local EZKL cache, baseline-local exact-k SRS, and no mock on the proving path; proving logrows is fixed to {} when public_io.minimum_public_logrows <= {}; first probe the largest num_inner_cols candidate to fast-reject blocked datasets, otherwise choose the smallest num_inner_cols in {:?} whose row bound fits that target and whose Halo2 extended-k/domain bound is feasible",
+            "timing route (proof_route_id={}, visibility_id={}) fixes private/public/fixed visibility, baseline-local EZKL cache, baseline-local exact-k SRS, and no mock on the proving path; minimum_public_logrows is derived from public output count only (inputs are private witness); proving logrows is fixed to {} when public_output.minimum_logrows <= {}; first probe the largest num_inner_cols candidate to fast-reject blocked datasets, otherwise choose the smallest num_inner_cols in {:?} whose row bound fits that target and whose Halo2 extended-k/domain bound is feasible",
+            TIMING_ROUTE_PROOF_ROUTE_ID,
+            TIMING_ROUTE_VISIBILITY_ID,
             FORMAL_SETUP_LOGROWS_CAP,
             FORMAL_SETUP_LOGROWS_CAP,
             FORMAL_NUM_INNER_COL_CANDIDATES
@@ -555,7 +556,7 @@ fn run_settings_attempt(
             "-N".to_string(),
             num_inner_cols.to_string(),
             "--input-visibility".to_string(),
-            "public".to_string(),
+            "private".to_string(),
             "--output-visibility".to_string(),
             "public".to_string(),
             "--param-visibility".to_string(),
@@ -1025,7 +1026,9 @@ fn write_pipeline_summary(
         "pipeline_error": pipeline_error,
         "formal_logrows": formal_logrows,
         "formal_route": {
-            "input_visibility": "public",
+            "proof_route_id": TIMING_ROUTE_PROOF_ROUTE_ID,
+            "visibility_id": TIMING_ROUTE_VISIBILITY_ID,
+            "input_visibility": "private",
             "output_visibility": "public",
             "param_visibility": "fixed",
             "setup_logrows_cap": FORMAL_SETUP_LOGROWS_CAP,
