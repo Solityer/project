@@ -654,6 +654,8 @@ def export_dataset(spec: ResolvedDatasetSpec) -> dict[str, object]:
         "task_type": spec.task_type,
         "report_unit": spec.report_unit,
         "protocol_id": spec.protocol_id,
+        "proof_route_id": "ezkl_timing_private_input_public_output_full",
+        "visibility_id": "private_public_fixed",
         "model_arch_id": checkpoint.model_arch_id,
         "model_param_id": checkpoint.model_param_id,
         "onnx_graph_id": onnx_graph_id,
