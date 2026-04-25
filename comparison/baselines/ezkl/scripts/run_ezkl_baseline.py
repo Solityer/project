@@ -18,10 +18,11 @@ if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from export_full_dataset import export_dataset, load_dataset_specs, load_routes
+from output_binding import choose_binding_plan, verify_binding_files
 
 
 ALLOWED_DATASETS = ["cora_full", "citeseer_full", "pubmed_full", "ppi_full_formal", "ogbn_arxiv_full"]
-FORBIDDEN_MODES = {"smoke", "toy", "subset", "subgraph", "scaled", "shard", "debug"}
+FORBIDDEN_MODES = {"smoke", "toy", "mini", "sample", "subset", "subgraph", "scaled", "shard", "partial", "debug", "debug-small"}
 DEFAULT_ROUTE = json.loads((BASE_DIR / "configs" / "ezkl_routes.json").read_text())["default_route"]
 
 
@@ -127,6 +128,8 @@ def manifest_from_steps(
     run_dir: Path,
 ) -> dict[str, Any]:
     model_info = load_json(run_dir / "model_info.json")
+    output_binding = load_json(run_dir / "output_binding.json")
+    binding_check = load_json(run_dir / "binding_check.json")
     settings = load_json(run_dir / "settings.json")
     run_args = settings.get("run_args", {})
     proof_path = run_dir / "proof.json"
@@ -150,6 +153,20 @@ def manifest_from_steps(
         "input_visibility": model_info.get("input_visibility"),
         "output_visibility": model_info.get("output_visibility"),
         "param_visibility": model_info.get("param_visibility"),
+        "binding_backend": model_info.get("binding_backend"),
+        "binding_security": model_info.get("binding_security"),
+        "binding_note": model_info.get("binding_note"),
+        "output_binding_path": model_info.get("output_binding_path"),
+        "output_logits_path": model_info.get("output_logits_path"),
+        "output_artifact_hash": model_info.get("output_artifact_hash"),
+        "metadata_hash": model_info.get("metadata_hash"),
+        "shape_hash": model_info.get("shape_hash"),
+        "public_output_element_count_before": model_info.get("public_output_element_count_before"),
+        "public_output_element_count_after": model_info.get("public_output_element_count_after"),
+        "public_reduction_ratio": model_info.get("public_reduction_ratio"),
+        "reads_full_logits_input": model_info.get("reads_full_logits_input"),
+        "binding_computed_inside_onnx": model_info.get("binding_computed_inside_onnx"),
+        "output_binding_verified": binding_check.get("output_binding_verified"),
         "k": run_args.get("logrows"),
         "num_inner_cols": run_args.get("num_inner_cols"),
         "gen_settings_ms": steps.get("gen-settings", {}).get("duration_ms"),
@@ -181,6 +198,14 @@ def manifest_from_steps(
             "verify.json": artifact_size(run_dir / "verify.json"),
             "model_info.json": artifact_size(run_dir / "model_info.json"),
             "onnx_stats.json": artifact_size(run_dir / "onnx_stats.json"),
+            "output_logits.bin": artifact_size(run_dir / "output_logits.bin"),
+            "output_binding.json": artifact_size(run_dir / "output_binding.json"),
+            "binding_check.json": artifact_size(run_dir / "binding_check.json"),
+        },
+        "output_binding": {
+            "fold_values": output_binding.get("fold_values"),
+            "digest_values": output_binding.get("digest_values"),
+            "challenge_values": output_binding.get("challenge_values"),
         },
         "steps": steps,
     }
@@ -201,18 +226,50 @@ def write_verify_json(run_dir: Path, record: dict[str, Any]) -> bool:
 
 
 def validate_route(route_id: str) -> None:
+    if route_id == "auto":
+        return
     routes = load_routes()
     if route_id not in routes:
         known = ", ".join(sorted(routes))
         raise SystemExit(f"illegal route '{route_id}'. Allowed by note: {known}")
-    if route_id != DEFAULT_ROUTE:
-        raise SystemExit(f"route '{route_id}' is allowed by the note but is not the runnable full timing route")
+    runnable = {"ezkl_timing_private_input_public_output_full", "ezkl_timing_private_input_digest_output_full"}
+    if route_id not in runnable:
+        raise SystemExit(f"route '{route_id}' is allowed by the note but is not a runnable full timing route")
 
 
-def run_one(dataset_id: str, route_id: str, *, clean: bool, run: bool, resume: bool) -> dict[str, Any] | None:
+def run_one(
+    dataset_id: str,
+    route_id: str,
+    *,
+    binding_backend: str,
+    clean: bool,
+    run: bool,
+    resume: bool,
+    verify_binding_only: bool,
+) -> dict[str, Any] | None:
     specs = load_dataset_specs()
     spec = specs[dataset_id]
+    plan = choose_binding_plan(dataset_id, binding_backend, route_id)
+    route_id = plan.route_id
+    binding_backend = plan.binding_backend
     run_dir = spec.run_dir
+    if verify_binding_only:
+        binding_check = verify_binding_files(
+            logits_path=run_dir / "output_logits.bin",
+            binding_path=run_dir / "output_binding.json",
+            model_info_path=run_dir / "model_info.json",
+            input_json_path=run_dir / "input.json",
+        )
+        (run_dir / "binding_check.json").write_text(json.dumps(binding_check, indent=2))
+        manifest_path = run_dir / "run_manifest.json"
+        if manifest_path.exists():
+            manifest = load_json(manifest_path)
+            manifest["output_binding_verified"] = binding_check["output_binding_verified"]
+            manifest["artifacts"] = manifest.get("artifacts", {})
+            manifest["artifacts"]["binding_check.json"] = artifact_size(run_dir / "binding_check.json")
+            manifest_path.write_text(json.dumps(manifest, indent=2))
+        print(json.dumps({"dataset": dataset_id, **binding_check}, indent=2))
+        return binding_check
     if clean:
         clean_run_dir(run_dir)
     if not run:
@@ -239,6 +296,7 @@ def run_one(dataset_id: str, route_id: str, *, clean: bool, run: bool, resume: b
         if (
             existing.get("dataset") == dataset_id
             and existing.get("route_id") == route_id
+            and existing.get("binding_backend") == binding_backend
             and existing.get("status") == "verified"
             and all((run_dir / name).exists() for name in expected_artifacts)
         ):
@@ -252,7 +310,7 @@ def run_one(dataset_id: str, route_id: str, *, clean: bool, run: bool, resume: b
             export_status = "resumed"
             export_ms = 0.0
         else:
-            export_info = export_dataset(dataset_id, route_id)
+            export_info = export_dataset(dataset_id, route_id, binding_backend)
             export_status = "ok"
             export_ms = (time.perf_counter() - export_started) * 1000.0
         steps["export"] = {
@@ -264,6 +322,8 @@ def run_one(dataset_id: str, route_id: str, *, clean: bool, run: bool, resume: b
                 dataset_id,
                 "--route",
                 route_id,
+                "--binding-backend",
+                binding_backend,
             ],
             "exit_code": 0,
             "status": export_status,
@@ -272,12 +332,17 @@ def run_one(dataset_id: str, route_id: str, *, clean: bool, run: bool, resume: b
                 "input.json": artifact_size(run_dir / "input.json"),
                 "model_info.json": artifact_size(run_dir / "model_info.json"),
                 "onnx_stats.json": artifact_size(run_dir / "onnx_stats.json"),
+                "output_logits.bin": artifact_size(run_dir / "output_logits.bin"),
+                "output_binding.json": artifact_size(run_dir / "output_binding.json"),
             },
         }
 
         ezkl = find_ezkl_binary()
-        output_elements = int(export_info["node_count"]) * int(export_info["num_classes"])
-        logrows = max(17, ceil_log2(output_elements + 64))
+        onnx_stats = load_json(run_dir / "onnx_stats.json")
+        public_outputs = int(export_info["public_output_element_count_after"])
+        num_inner_cols = 32 if binding_backend == "field_folding" else 2
+        row_estimate = int(onnx_stats.get("estimated_rows_after") or public_outputs)
+        logrows = max(17, ceil_log2(max(public_outputs + 64, row_estimate + 64)))
         srs_path = run_dir / f"kzg{logrows}.srs"
         settings_path = run_dir / "settings.json"
         model_path = run_dir / "network.onnx"
@@ -287,33 +352,51 @@ def run_one(dataset_id: str, route_id: str, *, clean: bool, run: bool, resume: b
         vk_path = run_dir / "vk.key"
         proof_path = run_dir / "proof.json"
 
+        gen_settings_command = [
+            str(ezkl),
+            "gen-settings",
+            "-M",
+            str(model_path),
+            "-O",
+            str(settings_path),
+            "-K",
+            str(logrows),
+            "-N",
+            str(num_inner_cols),
+            "--input-visibility",
+            "private",
+            "--output-visibility",
+            "public",
+            "--param-visibility",
+            "fixed",
+            "--check-mode",
+            "unsafe",
+            "--ignore-range-check-inputs-outputs",
+        ]
         steps["gen-settings"] = run_step(
             step="gen-settings",
-            command=[
-                str(ezkl),
-                "gen-settings",
-                "-M",
-                str(model_path),
-                "-O",
-                str(settings_path),
-                "-K",
-                str(logrows),
-                "-N",
-                "2",
-                "--input-visibility",
-                "private",
-                "--output-visibility",
-                "public",
-                "--param-visibility",
-                "fixed",
-                "--check-mode",
-                "unsafe",
-                "--ignore-range-check-inputs-outputs",
-            ],
+            command=gen_settings_command,
             cwd=run_dir,
             artifact_paths=[settings_path],
             resume=resume,
         )
+        generated_settings = load_json(settings_path)
+        actual_rows = int(generated_settings.get("num_rows") or 0)
+        required_logrows = ceil_log2(actual_rows + 64)
+        if actual_rows and required_logrows > logrows:
+            logrows = required_logrows
+            srs_path = run_dir / f"kzg{logrows}.srs"
+            gen_settings_command = [
+                item if previous != "-K" else str(logrows)
+                for previous, item in zip(["", *gen_settings_command[:-1]], gen_settings_command)
+            ]
+            steps["gen-settings"] = run_step(
+                step="gen-settings",
+                command=gen_settings_command,
+                cwd=run_dir,
+                artifact_paths=[settings_path],
+                resume=False,
+            )
         steps["compile-circuit"] = run_step(
             step="compile-circuit",
             command=[
@@ -413,8 +496,16 @@ def run_one(dataset_id: str, route_id: str, *, clean: bool, run: bool, resume: b
         )
         verify_passed = write_verify_json(run_dir, verify_record)
         steps["verify"] = verify_record
-        status = "verified" if verify_passed else "failed"
-        block_reason = None if verify_passed else "verify_failed"
+        binding_check = verify_binding_files(
+            logits_path=run_dir / "output_logits.bin",
+            binding_path=run_dir / "output_binding.json",
+            model_info_path=run_dir / "model_info.json",
+            input_json_path=run_dir / "input.json",
+        )
+        (run_dir / "binding_check.json").write_text(json.dumps(binding_check, indent=2))
+        binding_passed = bool(binding_check["output_binding_verified"])
+        status = "verified" if verify_passed and binding_passed else "failed"
+        block_reason = None if status == "verified" else "verify_or_binding_failed"
     except StepError as error:
         steps[error.step] = error.record
         status, block_reason = classify_failure(error.step, error.record)
@@ -443,17 +534,26 @@ def main() -> None:
     parser.add_argument("--dataset", required=True, choices=[*ALLOWED_DATASETS, "all"])
     parser.add_argument("--route", default=DEFAULT_ROUTE)
     parser.add_argument("--mode", required=True)
+    parser.add_argument("--binding-backend", default="auto", choices=["auto", "cryptographic_hash", "field_folding", "identity_public_logits"])
     parser.add_argument("--clean", action="store_true")
     parser.add_argument("--run", action="store_true")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--verify-binding-only", action="store_true")
     args = parser.parse_args()
 
     if args.mode in FORBIDDEN_MODES or args.mode != "full":
         raise SystemExit("Only --mode full is allowed; smoke/toy/subset/subgraph/scaled/shard/debug routes are rejected")
-    validate_route(args.route)
     datasets = ALLOWED_DATASETS if args.dataset == "all" else [args.dataset]
     for dataset_id in datasets:
-        run_one(dataset_id, args.route, clean=args.clean, run=args.run, resume=args.resume)
+        run_one(
+            dataset_id,
+            args.route,
+            binding_backend=args.binding_backend,
+            clean=args.clean,
+            run=args.run,
+            resume=args.resume,
+            verify_binding_only=args.verify_binding_only,
+        )
 
 
 if __name__ == "__main__":
