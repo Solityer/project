@@ -41,6 +41,17 @@ def artifact_size(path: Path) -> int | None:
     return path.stat().st_size if path.exists() else None
 
 
+def process_rss_bytes(pid: int) -> int:
+    status_path = Path("/proc") / str(pid) / "status"
+    try:
+        for line in status_path.read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                return int(line.split()[1]) * 1024
+    except FileNotFoundError:
+        return 0
+    return 0
+
+
 def find_ezkl_binary() -> Path:
     env_bin = os.environ.get("EZKL_BIN")
     candidates = []
@@ -60,9 +71,30 @@ def ceil_log2(value: int) -> int:
     return int(math.ceil(math.log2(max(1, value))))
 
 
-def command_record(command: list[str], cwd: Path, artifact_paths: list[Path]) -> dict[str, Any]:
+def command_record(
+    command: list[str],
+    cwd: Path,
+    artifact_paths: list[Path],
+    *,
+    rss_limit_bytes: int | None = None,
+) -> dict[str, Any]:
     started = time.perf_counter()
-    result = subprocess.run(command, cwd=cwd, capture_output=True, text=True)
+    max_rss_bytes = 0
+    resource_guard_triggered = False
+    if rss_limit_bytes is None:
+        result = subprocess.run(command, cwd=cwd, capture_output=True, text=True)
+    else:
+        process = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        while process.poll() is None:
+            rss = process_rss_bytes(process.pid)
+            max_rss_bytes = max(max_rss_bytes, rss)
+            if rss > rss_limit_bytes:
+                resource_guard_triggered = True
+                process.kill()
+                break
+            time.sleep(0.5)
+        stdout, stderr = process.communicate()
+        result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
     duration_ms = (time.perf_counter() - started) * 1000.0
     record = {
         "duration_ms": duration_ms,
@@ -72,6 +104,9 @@ def command_record(command: list[str], cwd: Path, artifact_paths: list[Path]) ->
         "artifacts": {path.name: artifact_size(path) for path in artifact_paths},
         "stdout_tail": result.stdout[-4000:],
         "stderr_tail": result.stderr[-4000:],
+        "max_rss_bytes": max_rss_bytes if rss_limit_bytes is not None else None,
+        "rss_limit_bytes": rss_limit_bytes,
+        "resource_guard_triggered": resource_guard_triggered,
     }
     if result.returncode != 0:
         record["signal"] = -result.returncode if result.returncode < 0 else None
@@ -86,6 +121,7 @@ def run_step(
     artifact_paths: list[Path],
     resume: bool,
     required_existing: list[Path] | None = None,
+    rss_limit_bytes: int | None = None,
 ) -> dict[str, Any]:
     required = required_existing if required_existing is not None else artifact_paths
     if resume and required and all(path.exists() for path in required):
@@ -98,7 +134,7 @@ def run_step(
             "stdout_tail": "",
             "stderr_tail": "",
         }
-    record = command_record(command, cwd, artifact_paths)
+    record = command_record(command, cwd, artifact_paths, rss_limit_bytes=rss_limit_bytes)
     if record["exit_code"] != 0:
         raise StepError(step, record)
     return record
@@ -112,7 +148,7 @@ def clean_run_dir(run_dir: Path) -> None:
 def classify_failure(step: str, record: dict[str, Any]) -> tuple[str, str]:
     text = (record.get("stdout_tail", "") + "\n" + record.get("stderr_tail", "")).lower()
     signal = record.get("signal")
-    if signal in {9, 6} or "out of memory" in text or "cannot allocate memory" in text or "killed" in text:
+    if record.get("resource_guard_triggered") or signal in {9, 6} or "out of memory" in text or "cannot allocate memory" in text or "killed" in text:
         return "blocked", f"{step}_resource_failure"
     return "failed", f"{step}_failed"
 
@@ -340,9 +376,10 @@ def run_one(
         ezkl = find_ezkl_binary()
         onnx_stats = load_json(run_dir / "onnx_stats.json")
         public_outputs = int(export_info["public_output_element_count_after"])
-        num_inner_cols = 32 if binding_backend == "field_folding" else 2
+        num_inner_cols = 512 if binding_backend == "field_folding" else 2
         row_estimate = int(onnx_stats.get("estimated_rows_after") or public_outputs)
-        logrows = max(17, ceil_log2(max(public_outputs + 64, row_estimate + 64)))
+        min_logrows = 15 if binding_backend == "field_folding" else 17
+        logrows = max(min_logrows, ceil_log2(max(public_outputs + 64, row_estimate + 64)))
         srs_path = run_dir / f"kzg{logrows}.srs"
         settings_path = run_dir / "settings.json"
         model_path = run_dir / "network.onnx"
@@ -382,7 +419,7 @@ def run_one(
         )
         generated_settings = load_json(settings_path)
         actual_rows = int(generated_settings.get("num_rows") or 0)
-        required_logrows = ceil_log2(actual_rows + 64)
+        required_logrows = max(min_logrows, ceil_log2(actual_rows + 64))
         if actual_rows and required_logrows > logrows:
             logrows = required_logrows
             srs_path = run_dir / f"kzg{logrows}.srs"
@@ -420,6 +457,8 @@ def run_one(
             artifact_paths=[srs_path],
             resume=resume,
         )
+        setup_rss_limit_gib = float(os.environ.get("EZKL_SETUP_RSS_LIMIT_GIB", "48")) if binding_backend == "field_folding" else 0.0
+        setup_rss_limit_bytes = int(setup_rss_limit_gib * (1024**3)) if setup_rss_limit_gib > 0 else None
         steps["setup"] = run_step(
             step="setup",
             command=[
@@ -437,6 +476,7 @@ def run_one(
             cwd=run_dir,
             artifact_paths=[pk_path, vk_path],
             resume=resume,
+            rss_limit_bytes=setup_rss_limit_bytes,
         )
         steps["gen-witness"] = run_step(
             step="gen-witness",

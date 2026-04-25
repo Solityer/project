@@ -36,9 +36,12 @@ ROUTES_PATH = BASE_DIR / "configs" / "ezkl_routes.json"
 
 from output_binding import (
     DIGEST_ROUTE_ID,
+    FIELD_FOLD_BLOCK_SIZE,
     IDENTITY_ROUTE_ID,
     build_binding,
     choose_binding_plan,
+    padded_element_count,
+    padded_logits_for_folding,
 )
 
 
@@ -243,9 +246,10 @@ def build_identity_output_binding_onnx(output_shape: tuple[int, int]) -> onnx.Mo
 def build_field_folding_onnx(output_shape: tuple[int, int], public_tail: np.ndarray, challenge_values: np.ndarray) -> onnx.ModelProto:
     element_count = int(np.prod(output_shape))
     block_size = int(challenge_values.shape[0])
-    block_count = element_count // block_size
+    padded_count = padded_element_count(element_count, block_size)
+    block_count = padded_count // block_size
     public_count = int(challenge_values.shape[1] + public_tail.size)
-    input_info = helper.make_tensor_value_info("logits_witness", TensorProto.FLOAT, list(output_shape))
+    input_info = helper.make_tensor_value_info("logits_witness", TensorProto.FLOAT, [1, padded_count])
     output_info = helper.make_tensor_value_info("output_binding", TensorProto.FLOAT, [1, public_count])
     block_shape = numpy_helper.from_array(np.asarray([block_count, block_size], dtype=np.int64), name="block_shape")
     challenge_tensor = numpy_helper.from_array(challenge_values.astype(np.float32, copy=False), name="fold_challenges")
@@ -253,8 +257,8 @@ def build_field_folding_onnx(output_shape: tuple[int, int], public_tail: np.ndar
     tail_tensor = numpy_helper.from_array(tail_values, name="public_hash_tail")
     nodes = [
         helper.make_node("Reshape", ["logits_witness", "block_shape"], ["blocked_logits"]),
-        helper.make_node("MatMul", ["blocked_logits", "fold_challenges"], ["fold_values_by_block"]),
-        helper.make_node("ReduceSum", ["fold_values_by_block"], ["fold_values"], axes=[0], keepdims=1),
+        helper.make_node("ReduceSum", ["blocked_logits"], ["column_sums"], axes=[0], keepdims=1),
+        helper.make_node("MatMul", ["column_sums", "fold_challenges"], ["fold_values"]),
         helper.make_node("Concat", ["fold_values", "public_hash_tail"], ["output_binding"], axis=1),
     ]
     initializers = [block_shape, challenge_tensor, tail_tensor]
@@ -311,6 +315,9 @@ def onnx_stats(
     route_id: str,
     binding_backend: str,
     public_output_element_count: int,
+    private_input_element_count: int,
+    fold_block_size: int | None,
+    fold_padding_element_count: int,
 ) -> dict[str, Any]:
     model = onnx.load(model_path)
     initializer_bytes = sum(len(init.raw_data) for init in model.graph.initializer)
@@ -326,7 +333,7 @@ def onnx_stats(
         int(features.shape[1]),
     )
     if binding_backend == "field_folding":
-        estimated_after = int(logits.size * 1.2 + public_output_element_count + 4096)
+        estimated_after = int(math.ceil(logits.size / FIELD_FOLD_BLOCK_SIZE) + public_output_element_count + 4096)
     else:
         estimated_after = int(logits.size + 1024)
     return {
@@ -341,12 +348,14 @@ def onnx_stats(
         "input_count": len(model.graph.input),
         "output_count": len(model.graph.output),
         "public_input_element_count": 0,
-        "private_input_element_count": int(logits.size),
+        "private_input_element_count": int(private_input_element_count),
         "public_output_element_count": int(public_output_element_count),
         "estimated_rows_before": estimated_before,
         "estimated_rows_after": estimated_after,
         "public_instances_before": int(logits.size),
         "public_instances_after": int(public_output_element_count),
+        "fold_block_size": fold_block_size,
+        "fold_padding_element_count": int(fold_padding_element_count),
         "reads_full_logits_input": True,
         "binding_computed_inside_onnx": True,
         "largest_tensor_shapes": dict(sorted(tensor_shapes.items(), key=lambda item: int(np.prod(item[1])), reverse=True)[:8]),
@@ -440,15 +449,17 @@ def export_dataset(dataset_id: str, route_id: str = "auto", binding_backend: str
             raise RuntimeError("field_folding selected without challenge values")
         public_tail = public_output.reshape(1, -1)[:, int(challenge_values.shape[1]) :]
         model = build_field_folding_onnx(tuple(int(v) for v in logits.shape), public_tail, challenge_values)
+        private_input, _ = padded_logits_for_folding(logits, int(challenge_values.shape[0]))
     else:
         model = build_identity_output_binding_onnx(tuple(int(v) for v in logits.shape))
+        private_input = logits
 
     model_path = spec.run_dir / "network.onnx"
     onnx.save(model, model_path)
 
     input_path = spec.run_dir / "input.json"
-    write_input_json(input_path, logits, public_output)
-    validation = validate_output_binding(model_path, logits, public_output)
+    write_input_json(input_path, private_input, public_output)
+    validation = validate_output_binding(model_path, private_input, public_output)
 
     output_binding_path = spec.run_dir / "output_binding.json"
     output_binding_path.write_text(json.dumps(output_binding, indent=2))
@@ -476,6 +487,9 @@ def export_dataset(dataset_id: str, route_id: str = "auto", binding_backend: str
         route_id=route_id,
         binding_backend=binding_backend,
         public_output_element_count=int(public_output.size),
+        private_input_element_count=int(private_input.size),
+        fold_block_size=output_binding.get("fold_block_size"),
+        fold_padding_element_count=int(output_binding.get("fold_padding_element_count") or 0),
     )
     stats_path = spec.run_dir / "onnx_stats.json"
     stats_path.write_text(json.dumps(stats, indent=2))
@@ -521,6 +535,10 @@ def export_dataset(dataset_id: str, route_id: str = "auto", binding_backend: str
         "public_output_element_count_before": output_binding["public_output_element_count_before"],
         "public_output_element_count_after": output_binding["public_output_element_count_after"],
         "public_reduction_ratio": output_binding["public_reduction_ratio"],
+        "fold_block_size": output_binding.get("fold_block_size"),
+        "fold_padded_element_count": output_binding.get("fold_padded_element_count"),
+        "fold_padding_element_count": output_binding.get("fold_padding_element_count"),
+        "circuit_private_input_shape": list(private_input.shape),
         "reads_full_logits_input": True,
         "binding_computed_inside_onnx": True,
         "output_binding_path": output_binding_path.as_posix(),

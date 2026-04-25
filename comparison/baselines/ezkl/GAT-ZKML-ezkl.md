@@ -898,3 +898,11 @@ $$\mathrm{Verify}_{time}(vk,\tilde y^*,h_W,proof\_route\_id,visibility\_id,\pi^*
 ### 4.5 验证结论
 
 若元数据一致、单样本 proof 全部通过、直接打包 attestation 中全部样本证明都绑定到同一模型权重哈希 $h_W$、同一 $proof\_route\_id$ 与同一 $visibility\_id$，且公开统计指标与公开标签计算结果一致，则接受当前 route 下的证明；否则拒绝。对 timing route，接受结论仅限于 runtime / cost comparison 所定义的 private-input/public-output 证明接口，不得提升解释为 strict public-input route 成功。
+
+## 4.6 Full-output digest binding adaptation
+
+`ezkl_timing_private_input_digest_output_full` 是 full-dataset output-binding timing route 的 public-instance 压缩适配。它不改变 full dataset、checkpoint、model identity、preprocessing、self-loop rule、edge sort rule、batching rule、chunking rule、full graph semantics 或 full logits artifact；只改变 Halo2 public instance 中对 full output 的表示方式。
+
+该适配中，完整 logits 文件仍由 full-dataset C++ stage 生成并保存，可用于与主仓库输出逐元素比较。ezkl 电路的 private witness 包含完整 logits 的确定性 row-major 表示及必要 padding，public output 包含由该 private witness 在电路内计算得到的 digest/fold binding values、shape hash、metadata hash 与 output artifact hash。checkpoint、graph、feature、edge order、self-loop、quantization 与 C++ stage output artifact 仍通过公开 metadata hash 绑定。
+
+若 backend 为 `field_folding`，其安全语义是 `random_linear_folding_not_collision_resistant`，不得称为 cryptographic commitment。只有后端在 ezkl/ONNX 电路内实际计算 cryptographic hash 时，才可使用 `cryptographic_digest_inside_ezkl_circuit` 语义。

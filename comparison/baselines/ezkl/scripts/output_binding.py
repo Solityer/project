@@ -11,7 +11,8 @@ import numpy as np
 
 
 FIELD_FOLD_COUNT = 4
-FOLD_BLOCK_CANDIDATES = (1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1)
+FIELD_FOLD_BLOCK_SIZE = 1024
+FOLD_BLOCK_CANDIDATES = (FIELD_FOLD_BLOCK_SIZE, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1)
 HASH_LIMB_BITS = 16
 HASH_LIMB_COUNT = 16
 SUPPORTED_BACKENDS = {"auto", "cryptographic_hash", "field_folding", "identity_public_logits"}
@@ -120,10 +121,21 @@ def challenge_seed(route_id: str, dataset_id: str, metadata_digest: str, artifac
 
 
 def choose_fold_block_size(element_count: int) -> int:
-    for candidate in FOLD_BLOCK_CANDIDATES:
-        if element_count % candidate == 0:
-            return candidate
-    return 1
+    del element_count
+    return FIELD_FOLD_BLOCK_SIZE
+
+
+def padded_element_count(element_count: int, block_size: int) -> int:
+    return int(((element_count + block_size - 1) // block_size) * block_size)
+
+
+def padded_logits_for_folding(logits: np.ndarray, block_size: int) -> tuple[np.ndarray, int]:
+    flat = np.asarray(logits, dtype=np.float32, order="C").reshape(-1)
+    padded_count = padded_element_count(int(flat.size), block_size)
+    padding_count = padded_count - int(flat.size)
+    if padding_count:
+        flat = np.pad(flat, (0, padding_count), mode="constant", constant_values=0.0)
+    return flat.reshape(1, padded_count).astype(np.float32, copy=False), padding_count
 
 
 def challenge_matrix(
@@ -137,8 +149,6 @@ def challenge_matrix(
     block_size: int | None = None,
 ) -> tuple[np.ndarray, list[str], int]:
     block_size = choose_fold_block_size(element_count) if block_size is None else block_size
-    if element_count % block_size != 0:
-        raise ValueError(f"element_count={element_count} is not divisible by fold block size {block_size}")
     matrix = np.empty((block_size, fold_count), dtype=np.float32)
     seeds: list[str] = []
     for fold_index in range(fold_count):
@@ -156,7 +166,8 @@ def public_hash_limb_values(shape_digest: str, metadata_digest: str, artifact_di
 
 def field_fold_values(logits: np.ndarray, challenge_values: np.ndarray) -> np.ndarray:
     block_size = int(challenge_values.shape[0])
-    flat = np.asarray(logits, dtype=np.float32, order="C").reshape(-1, block_size)
+    padded_logits, _ = padded_logits_for_folding(logits, block_size)
+    flat = padded_logits.reshape(-1, block_size)
     column_sums = np.sum(flat, axis=0, dtype=np.float32).reshape(1, block_size)
     return (column_sums @ challenge_values.astype(np.float32, copy=False)).astype(np.float32, copy=False)
 
@@ -193,6 +204,8 @@ def build_binding(
             metadata_digest=metadata_digest,
             artifact_digest=artifact_digest,
         )
+        padded_count = padded_element_count(element_count, fold_block_size)
+        padding_count = padded_count - element_count
         folds = field_fold_values(logits32, challenge_values)
         public_values = np.concatenate(
             [folds, public_hash_limb_values(shape_digest, metadata_digest, artifact_digest)],
@@ -210,6 +223,8 @@ def build_binding(
         raise ValueError(f"unsupported binding backend: {binding_backend}")
     if binding_backend != "field_folding":
         fold_block_size = None
+        padded_count = element_count
+        padding_count = 0
 
     after_count = int(public_values.size)
     binding = {
@@ -229,6 +244,8 @@ def build_binding(
         "digest_values": [],
         "challenge_values": challenge_seeds,
         "fold_block_size": fold_block_size,
+        "fold_padded_element_count": padded_count,
+        "fold_padding_element_count": padding_count,
         "canonical_serialization_rule": {
             "artifact_file": "raw float32 little-endian tensor in row-major order",
             "hash_payload": "uint64_le(header_len) || stable_json(header) || raw_float32_le_row_major_logits",
