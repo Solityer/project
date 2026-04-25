@@ -1,138 +1,90 @@
-# EZKL GAT Formal Baseline
+# EZKL Full-Dataset Baseline
 
-This repository is the `ezkl`-based baseline for the GAT-ZKML comparison experiment. The active baseline path is:
+This directory contains the ezkl/Halo2/KZG comparison baseline for `GAT-ZKML-ezkl.md`.
+The experiment replaces only the proving system. Dataset, checkpoint, model identity,
+preprocessing, self-loop rule, edge sort rule, batching rule, chunking rule, full-graph
+semantics, output semantics, and public metadata semantics stay aligned with the main
+repository.
 
-1. read the repo-local formal dataset cache and checkpoint bundle copies;
-2. run the C++ stage tool that reproduces the formal preprocessing semantics and reference forward from `GAT-ZKML-ezkl.md`;
-3. build a fixed-shape ONNX graph from the staged graph tensors and staged checkpoint tensors;
-4. run the `ezkl` pipeline on that ONNX graph inside this repository only.
+## Statement
 
-## Active Proof Route
+The runnable route is:
 
-The active baseline uses `ezkl_timing_private_input_public_output_full`:
+`ezkl_timing_private_input_public_output_full`
 
-- `proof_route_id = ezkl_timing_private_input_public_output_full`
-- `visibility_id = private_public_fixed`
-- `input_visibility = private`, `output_visibility = public`, `param_visibility = fixed`
+For this route the full dataset graph, features, checkpoint parameters, edge order,
+self-loops, preprocessing metadata, and full forward logits are fixed artifacts bound by
+metadata hashes. The ezkl circuit proves that the public logits equal the private full
+forward logits binding witness for that fixed full-dataset artifact.
 
-This route is the sole runnable path for all five full-scale datasets. The strict public-input route (`ezkl_strict_public_input_full`, `input_visibility=public`) was attempted first on all five datasets and was found infeasible at the full formal scale under Halo2/KZG constraints:
+This is a timing route. It is not reported as `ezkl_strict_public_input_full` success.
 
-| Dataset | Strict Route Failure Reason |
-|---|---|
-| cora_full | setup OOM (signal 9) at k=25 after ~37 min; peak RSS 123 GB |
-| citeseer_full | Halo2 domain bound exceeded at k=25: all row-fitting layouts have quotient_poly_degree > BN254 S=28 |
-| pubmed_full | row capacity exceeded: num_inner_cols=32 requires row_min_logrows=27 at k=25 |
-| ppi_full_formal | gen-settings did not complete after 17 min; high-CPU timeout before row-bound result |
-| ogbn_arxiv_full | gen-settings did not complete after 10 min; high-CPU timeout before row-bound result |
+## Layout
 
-The timing route keeps the same model, checkpoint, graph rules, and benchmark口径 as the main repo. Only the ezkl visibility interface is adapted: inputs become private witness rather than public instances. This does not change the GAT forward computation, quantization semantics, or output binding. Per `GAT-ZKML-ezkl.md` §0.9.1–§0.9.3, timing route results must not be interpreted as strict public-input route success.
+- `configs/`: full dataset specs and allowed ezkl routes.
+- `cpp/`: staging code that reproduces the full dataset preprocessing and reference forward.
+- `scripts/run_ezkl_baseline.py`: only recommended runner.
+- `scripts/export_full_dataset.py`: full dataset exporter used by the runner.
+- `scripts/collect_results.py`: only result collector.
+- `reference_runs/`: main-scheme warm run manifests.
+- `runs/`: latest formal ezkl run artifacts.
+- `results/`: paper-facing result tables.
 
-## Scope
-
-The baseline keeps only the formal full-dataset comparison line:
-
-- `cora`
-- `citeseer`
-- `pubmed`
-- `ppi`
-- `ogbn_arxiv`
-
-## Repository Layout
-
-- `GAT-ZKML-ezkl.md`: formal replacement note and highest-priority design reference.
-- `manifests/gat_formal_datasets.json`: dataset/checkpoint/reference manifest copied into the baseline repo.
-- `cpp/gat_baseline/`: C++ stage tool for full-dataset preprocessing, checkpoint parsing, and reference forward computation.
-- `scripts/gat_baseline/`: thin Python/Rust glue for staged-tensor ONNX construction and `ezkl` pipeline orchestration.
-- `src/bin/gat_baseline.rs`: Rust CLI that drives export and the `ezkl` compile/witness/prove pipeline.
-- `runs/<dataset>/`: generated artifacts for the formal baseline run of one dataset.
-
-## Formal Semantics
-
-The exporter follows the main comparison semantics:
-
-- row-normalized cached features
-- full-graph or full multi-graph batch preprocessing
-- deterministic `dst`-stable edge ordering
-- explicit self-loops
-- hidden-layer multi-head concat
-- output-layer per-head bias then arithmetic mean
-
-For `ezkl` practicality, the ONNX graph uses precomputed incoming-neighbor tables per frozen formal graph. The public graph tensors `src`, `dst`, `node_ptr`, and `edge_ptr` are still inputs, and the graph emits a `graph_checks` output that must remain zero, binding those public tensors to the frozen formal graph layout used by the circuit.
-
-## Export Only
-
-Use the Python exporter directly when you only need the formal ONNX/input bundle:
+## Run
 
 ```bash
-PYTHONPATH=/home/pzh/project/comparison/baselines/ezkl/.pydeps:. \
-python3 -m scripts.gat_baseline.cli \
-  --dataset cora
+python3 comparison/baselines/ezkl/scripts/run_ezkl_baseline.py --dataset cora_full --mode full --clean --run
 ```
 
-This writes, under `runs/<dataset>_full.../`:
-
-- `staged/` with the C++-materialized graph tensors and checkpoint tensors
-- `network.onnx`
-- `input.json`
-- `model_info.json`
-- `validation.json`
-
-`validation.json` compares the C++ staged reference forward with onnxruntime on the exported graph.
-
-## Full Pipeline
-
-The Rust CLI wraps the formal baseline export and the downstream `ezkl` steps:
+Resume an interrupted run:
 
 ```bash
-export RUSTUP_HOME=/home/pzh/project/comparison/baselines/ezkl/.rustup_local
-export CARGO_HOME=/home/pzh/project/comparison/baselines/ezkl/.cargo_local
-export PATH=/home/pzh/project/comparison/baselines/ezkl/.cargo_local/bin:$PATH
-
-cargo run --bin gat_baseline -- pipeline \
-  --dataset cora \
-  --prove
+python3 comparison/baselines/ezkl/scripts/run_ezkl_baseline.py --dataset cora_full --mode full --resume --run
 ```
 
-With `--prove`, the CLI continues through:
+Collect tables:
 
-- `gen-srs` when the exact local SRS is not already present
-- `setup` with the compiled circuit, witness, and exact local SRS
-- `prove`
-- `verify`
+```bash
+python3 comparison/baselines/ezkl/scripts/collect_results.py
+```
 
-Without `--prove`, it stops after:
+## Metrics
 
-- `gen-settings`
-- `compile-circuit`
-- `gen-witness`
+The comparison table reports:
 
-Each step writes its own log into the dataset run directory, and `pipeline_summary.json` collects:
+- `commitment_time_ms`
+- `prove_time_ms`
+- `verify_time_ms`
+- `proof_size_bytes`
 
-- exported model metadata
-- the single formal proving layout selected by the wrapper
-- onnxruntime validation numbers
-- step durations
-- reference timing fields read from the repo-local copied comparison manifest
+ezkl does not expose the main scheme's internal commitment/MSM timer here, so
+`ezkl_commitment_time_ms = null` and
+`ezkl_commitment_time_semantics = included_in_ezkl_prove_ms_unless_instrumented`.
+`setup_ms` is reported separately and is never used as commitment time.
 
-The active formal proving rule is:
+## Full-Dataset Constraint
 
-`prove_logrows = 25` when `public_output.minimum_logrows <= 25`. For the timing route, `minimum_public_logrows` is derived from public output count only (inputs are private witness). The wrapper first probes `num_inner_cols = 32` to fast-reject datasets that still exceed `k=25` at the largest allowed inner-column layout; otherwise it chooses the smallest `num_inner_cols` in `[2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32]` whose row bound fits `prove_logrows` and whose Halo2 extended-k/domain bound is feasible.
+Only full formal datasets are supported:
 
-This keeps the public output semantics unchanged while moving only the proving-layout adaptation into the `ezkl`-specific layer. If no candidate `num_inner_cols` fits `k=25`, the dataset is reported as blocked rather than silently falling back.
+- `cora_full`
+- `citeseer_full`
+- `pubmed_full`
+- `ppi_full_formal`
+- `ogbn_arxiv_full`
 
-Blocked runs also write both `settings_selection.json` and `pipeline_summary.json`, so the formal run directory records the failure reason without opening a second route.
+There are no smoke, toy, subset, subgraph, scaled, shard, or debug result routes.
 
-The wrapper also fixes:
+## Current Status
 
-- `EZKL_REPO_PATH=/home/pzh/project/comparison/baselines/ezkl/.ezkl_local`
-- baseline-local `.ezkl_local` as the default cache root for the local `ezkl` binary
-- baseline-local exact-k SRS generation/reuse
-- `private/public/fixed` visibility (timing route)
-- no `mock` step on the formal proving path
+The current status is read from `runs/<dataset>/run_manifest.json` by:
 
-## Notes
+```bash
+python3 comparison/baselines/ezkl/scripts/collect_results.py
+```
 
-- The baseline reads datasets, checkpoint bundles, configs, and reference run manifests from repo-local copies under this directory.
-- All generated artifacts stay under this baseline repository.
-- Large datasets produce large fixed-shape ONNX graphs. That is expected for the full-dataset comparison path.
-- Timing route results (`proof_route_id=ezkl_timing_private_input_public_output_full`) must not be interpreted as strict public-input route success. See `GAT-ZKML-ezkl.md` §0.9.3.
+The final tables are:
+
+- `results/ezkl_full_results.json`
+- `results/ezkl_full_results.csv`
+- `results/main_vs_ezkl_full_comparison.json`
+- `results/main_vs_ezkl_full_comparison.csv`

@@ -1,0 +1,24 @@
+{
+  "default_route": "ezkl_timing_private_input_public_output_full",
+  "routes": {
+    "ezkl_timing_private_input_public_output_full": {
+      "proof_route_id": "ezkl_timing_private_input_public_output_full",
+      "visibility_id": "private_public_fixed",
+      "input_visibility": "private",
+      "output_visibility": "public",
+      "param_visibility": "fixed",
+      "statement": "full_dataset_output_binding",
+      "strict_equivalent": false
+    },
+    "ezkl_strict_public_input_full": {
+      "proof_route_id": "ezkl_strict_public_input_full",
+      "visibility_id": "public_public_fixed",
+      "input_visibility": "public",
+      "output_visibility": "public",
+      "param_visibility": "fixed",
+      "statement": "strict_public_input_equivalence",
+      "strict_equivalent": true,
+      "implemented": false
+    }
+  }
+}
