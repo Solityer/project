@@ -260,7 +260,7 @@ mod matmul_col_ultra_overflow_double_col {
         multiopen::{ProverSHPLONK, VerifierSHPLONK},
         strategy::SingleStrategy,
     };
-    use snark_verifier::system::halo2::transcript::evm::EvmTranscript;
+    use halo2_proofs::transcript::{Blake2bRead, Blake2bWrite, Challenge255};
 
     use super::*;
 
@@ -350,8 +350,8 @@ mod matmul_col_ultra_overflow_double_col {
             VerifierSHPLONK<_>,
             SingleStrategy<_>,
             _,
-            EvmTranscript<_, _, _, _>,
-            EvmTranscript<_, _, _, _>,
+            Blake2bWrite<Vec<u8>, _, Challenge255<_>>,
+            Blake2bRead<std::io::Cursor<Vec<u8>>, _, Challenge255<_>>,
         >(
             circuit.clone(),
             vec![],
@@ -380,7 +380,7 @@ mod matmul_col_ultra_overflow {
         strategy::SingleStrategy,
     };
     use itertools::Itertools;
-    use snark_verifier::system::halo2::transcript::evm::EvmTranscript;
+    use halo2_proofs::transcript::{Blake2bRead, Blake2bWrite, Challenge255};
 
     use super::*;
 
@@ -469,8 +469,8 @@ mod matmul_col_ultra_overflow {
             VerifierSHPLONK<_>,
             SingleStrategy<_>,
             _,
-            EvmTranscript<_, _, _, _>,
-            EvmTranscript<_, _, _, _>,
+            Blake2bWrite<Vec<u8>, _, Challenge255<_>>,
+            Blake2bRead<std::io::Cursor<Vec<u8>>, _, Challenge255<_>>,
         >(
             circuit.clone(),
             vec![],
@@ -1172,7 +1172,7 @@ mod conv_col_ultra_overflow {
             multiopen::{ProverSHPLONK, VerifierSHPLONK},
         },
     };
-    use snark_verifier::system::halo2::transcript::evm::EvmTranscript;
+    use halo2_proofs::transcript::{Blake2bRead, Blake2bWrite, Challenge255};
 
     use super::*;
 
@@ -1285,8 +1285,8 @@ mod conv_col_ultra_overflow {
             VerifierSHPLONK<_>,
             SingleStrategy<_>,
             _,
-            EvmTranscript<_, _, _, _>,
-            EvmTranscript<_, _, _, _>,
+            Blake2bWrite<Vec<u8>, _, Challenge255<_>>,
+            Blake2bRead<std::io::Cursor<Vec<u8>>, _, Challenge255<_>>,
         >(
             circuit.clone(),
             vec![],
@@ -1315,7 +1315,7 @@ mod conv_relu_col_ultra_overflow {
         multiopen::{ProverSHPLONK, VerifierSHPLONK},
         strategy::SingleStrategy,
     };
-    use snark_verifier::system::halo2::transcript::evm::EvmTranscript;
+    use halo2_proofs::transcript::{Blake2bRead, Blake2bWrite, Challenge255};
 
     use super::*;
 
@@ -1453,8 +1453,8 @@ mod conv_relu_col_ultra_overflow {
             VerifierSHPLONK<_>,
             SingleStrategy<_>,
             _,
-            EvmTranscript<_, _, _, _>,
-            EvmTranscript<_, _, _, _>,
+            Blake2bWrite<Vec<u8>, _, Challenge255<_>>,
+            Blake2bRead<std::io::Cursor<Vec<u8>>, _, Challenge255<_>>,
         >(
             circuit.clone(),
             vec![],
@@ -2532,7 +2532,7 @@ mod lookup_ultra_overflow {
             strategy::SingleStrategy,
         },
     };
-    use snark_verifier::system::halo2::transcript::evm::EvmTranscript;
+    use halo2_proofs::transcript::{Blake2bRead, Blake2bWrite, Challenge255};
 
     #[derive(Clone)]
     struct SigmoidCircuit<F: PrimeField + TensorType + PartialOrd> {
@@ -2626,8 +2626,8 @@ mod lookup_ultra_overflow {
             VerifierSHPLONK<_>,
             SingleStrategy<_>,
             _,
-            EvmTranscript<_, _, _, _>,
-            EvmTranscript<_, _, _, _>,
+            Blake2bWrite<Vec<u8>, _, Challenge255<_>>,
+            Blake2bRead<std::io::Cursor<Vec<u8>>, _, Challenge255<_>>,
         >(
             circuit.clone(),
             vec![],

@@ -14,7 +14,9 @@ use crate::pfsys::{
     create_keys, load_pk, load_vk, save_params, save_pk, swap_proof_commitments, Snark,
 };
 use crate::pfsys::{create_proof_circuit, verify_proof_circuit, ProofSplitCommit};
-use crate::pfsys::{encode_calldata, save_vk, srs::*};
+#[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
+use crate::pfsys::encode_calldata;
+use crate::pfsys::{save_vk, srs::*};
 use crate::tensor::TensorError;
 use crate::RunArgs;
 use crate::EZKL_BUF_CAPACITY;
@@ -35,7 +37,9 @@ use halo2_proofs::poly::kzg::{
     commitment::ParamsKZG, strategy::SingleStrategy as KZGSingleStrategy,
 };
 use halo2_proofs::poly::VerificationStrategy;
-use halo2_proofs::transcript::{EncodedChallenge, TranscriptReadBuffer};
+use halo2_proofs::transcript::{
+    Blake2bRead, Blake2bWrite, Challenge255, EncodedChallenge, TranscriptReadBuffer,
+};
 #[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
 use halo2_solidity_verifier;
 use halo2curves::bn256::{Bn256, Fr, G1Affine};
@@ -51,7 +55,6 @@ use log::debug;
 use log::{info, trace, warn};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use snark_verifier::system::halo2::transcript::evm::EvmTranscript;
 #[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
 use std::fs::File;
 use std::io::BufWriter;
@@ -132,6 +135,48 @@ pub async fn run(command: Commands) -> Result<String, EZKLError> {
             logrows,
         } => get_srs_cmd(srs_path, settings_path, logrows).await,
         Commands::Table { model, args } => table(model.unwrap_or(DEFAULT_MODEL.into()), args),
+        Commands::GraphGatGenSettings {
+            spec_path,
+            csr_layout_path,
+            settings_path,
+            max_logrows,
+        } => crate::native_gat::graph_gat_gen_settings(
+            spec_path,
+            csr_layout_path,
+            settings_path,
+            max_logrows,
+        ),
+        Commands::GraphGatCompile {
+            spec_path,
+            csr_layout_path,
+            settings_path,
+            compiled_circuit,
+            max_logrows,
+        } => crate::native_gat::graph_gat_compile(
+            spec_path,
+            csr_layout_path,
+            settings_path,
+            compiled_circuit,
+            max_logrows,
+        ),
+        Commands::GraphGatSetup {
+            compiled_circuit,
+            vk_path,
+            pk_path,
+        } => crate::native_gat::graph_gat_setup(compiled_circuit, vk_path, pk_path),
+        Commands::GraphGatGenWitness {
+            compiled_circuit,
+            output,
+        } => crate::native_gat::graph_gat_gen_witness(compiled_circuit, output),
+        Commands::GraphGatProve {
+            compiled_circuit,
+            proof_path,
+        } => crate::native_gat::graph_gat_prove(compiled_circuit, proof_path),
+        Commands::GraphGatVerify {
+            proof_path,
+            settings_path,
+            vk_path,
+        } => crate::native_gat::graph_gat_verify(proof_path, settings_path, vk_path),
         Commands::GenSettings {
             model,
             settings_path,
@@ -1605,8 +1650,8 @@ pub(crate) fn prove(
         VerifierSHPLONK<_>,
         KZGSingleStrategy<_>,
         _,
-        EvmTranscript<_, _, _, _>,
-        EvmTranscript<_, _, _, _>,
+        Blake2bWrite<Vec<u8>, _, Challenge255<_>>,
+        Blake2bRead<Cursor<Vec<u8>>, _, Challenge255<_>>,
     >(
         circuit,
         vec![public_inputs],
@@ -1637,7 +1682,7 @@ pub(crate) fn swap_proof_commitments_cmd(
     let snark_new = swap_proof_commitments::<
         KZGCommitmentScheme<Bn256>,
         _,
-        EvmTranscript<G1Affine, _, _, _>,
+        Blake2bWrite<Vec<u8>, G1Affine, Challenge255<G1Affine>>,
     >(&snark, &commitments)?;
 
     if snark_new.proof != *snark.proof {
@@ -1671,7 +1716,7 @@ pub(crate) fn verify(
         VerifierSHPLONK<'_, Bn256>,
         _,
         KZGSingleStrategy<_>,
-        EvmTranscript<G1Affine, _, _, _>,
+        Blake2bRead<Cursor<Vec<u8>>, G1Affine, Challenge255<G1Affine>>,
         GraphCircuit,
         _,
     >(proof_path, circuit_settings, vk_path, &params, logrows)

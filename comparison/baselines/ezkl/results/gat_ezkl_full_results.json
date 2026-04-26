@@ -1,0 +1,64 @@
+{
+  "rows": [
+    {
+      "block_reason": "ezkl_native_csr_compile_resource_boundary",
+      "commitment_time_ms": null,
+      "dataset": "cora_full",
+      "display_dataset": "Cora",
+      "proof_size_bytes": null,
+      "prove_time_ms": null,
+      "route_id": "ezkl_gat_native_csr_segment_attention_full",
+      "status": "blocked",
+      "strict_public_input_equivalent": false,
+      "verify_time_ms": null
+    },
+    {
+      "block_reason": "ezkl_native_csr_compile_resource_boundary",
+      "commitment_time_ms": null,
+      "dataset": "citeseer_full",
+      "display_dataset": "Citeseer",
+      "proof_size_bytes": null,
+      "prove_time_ms": null,
+      "route_id": "ezkl_gat_native_csr_segment_attention_full",
+      "status": "blocked",
+      "strict_public_input_equivalent": false,
+      "verify_time_ms": null
+    },
+    {
+      "block_reason": "ezkl_native_csr_compile_resource_boundary",
+      "commitment_time_ms": null,
+      "dataset": "pubmed_full",
+      "display_dataset": "Pubmed",
+      "proof_size_bytes": null,
+      "prove_time_ms": null,
+      "route_id": "ezkl_gat_native_csr_segment_attention_full",
+      "status": "blocked",
+      "strict_public_input_equivalent": false,
+      "verify_time_ms": null
+    },
+    {
+      "block_reason": "ezkl_native_csr_compile_resource_boundary",
+      "commitment_time_ms": null,
+      "dataset": "ppi_full_formal",
+      "display_dataset": "PPI",
+      "proof_size_bytes": null,
+      "prove_time_ms": null,
+      "route_id": "ezkl_gat_native_csr_segment_attention_full",
+      "status": "blocked",
+      "strict_public_input_equivalent": false,
+      "verify_time_ms": null
+    },
+    {
+      "block_reason": "ezkl_native_csr_compile_resource_boundary",
+      "commitment_time_ms": null,
+      "dataset": "ogbn_arxiv_full",
+      "display_dataset": "ogbn-arxiv",
+      "proof_size_bytes": null,
+      "prove_time_ms": null,
+      "route_id": "ezkl_gat_native_csr_segment_attention_full",
+      "status": "blocked",
+      "strict_public_input_equivalent": false,
+      "verify_time_ms": null
+    }
+  ]
+}
