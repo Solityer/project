@@ -137,6 +137,16 @@ def collect() -> tuple[list[dict], list[dict]]:
             "preflight_quantized_sum_scale16": preflight.get("quantized_sum_scale16"),
             "preflight_quantized_inv_scale16": preflight.get("quantized_inv_scale16"),
             "preflight_quantized_product": preflight.get("quantized_product"),
+            "preflight_inverse_policy": preflight.get("inverse_policy"),
+            "preflight_expected_inv_q": preflight.get("expected_inv_q"),
+            "preflight_inverse_scale_product": preflight.get("inverse_scale_product"),
+            "preflight_inverse_band": preflight.get("inverse_band"),
+            "preflight_alpha_rescale_policy": preflight.get("alpha_rescale_policy"),
+            "preflight_alpha_rescale_divisor": preflight.get("alpha_rescale_divisor"),
+            "preflight_alpha_rounding_rule": preflight.get("alpha_rounding_rule"),
+            "preflight_inverse_table_hash": preflight.get("inverse_table_hash"),
+            "preflight_inverse_accepted": preflight.get("inverse_all_nodes_accepted"),
+            "preflight_alpha_accepted": preflight.get("alpha_all_edges_accepted"),
         }
         for metric in METRICS:
             ezkl_row[metric] = manifest.get(metric)
@@ -231,9 +241,13 @@ def write_summary(ezkl_rows: list[dict], comparison_rows: list[dict]) -> None:
                     f"; node={row.get('preflight_node_index')}; degree={row.get('preflight_degree')}; "
                     f"sum_fp32={row.get('preflight_sum_fp32_reference')}; "
                     f"inv_fp32={row.get('preflight_inv_fp32_reference')}; "
+                    f"policy={row.get('preflight_inverse_policy')}; "
                     f"sum_q={row.get('preflight_quantized_sum_scale16')}; "
                     f"inv_q={row.get('preflight_quantized_inv_scale16')}; "
-                    f"product={row.get('preflight_quantized_product')}"
+                    f"expected_inv_q={row.get('preflight_expected_inv_q')}; "
+                    f"product={row.get('preflight_quantized_product')}; "
+                    f"inverse_ok={row.get('preflight_inverse_accepted')}; "
+                    f"alpha_ok={row.get('preflight_alpha_accepted')}"
                 )
             lines.append(
                 f"- {row['display_dataset']}: {row['status']} / {row.get('block_reason', '')}; "
@@ -284,7 +298,7 @@ def write_native_csr_report() -> None:
     lines.append("")
     lines.append("- Legacy report retained for continuity; rows below reflect the latest native route manifest for each dataset.")
     lines.append("- Layout: CSR/ragged dst segments over `src[E]`, `dst[E]`, `segment_ptr[N+1]`, `edge_ptr[G+1]`, and `node_ptr[G+1]`.")
-    lines.append("- Exact inverse attempt: native witness inverse column with `Sum_i * Inv_i = 1`; no epsilon reciprocal is used.")
+    lines.append("- Inverse policy: native witness inverse column is checked against deterministic scale-16 `T_inv`; alpha uses quantized product rescale metadata.")
     lines.append("")
     lines.append("| Dataset | route_id | primitive | status | block_reason | failure_step | rows | required_logrows | max_logrows |")
     lines.append("| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: |")
@@ -339,7 +353,7 @@ def write_native_compressed_csr_report() -> None:
     lines.append("")
     lines.append("- Route: `ezkl_gat_native_compressed_csr_attention_full`")
     lines.append("- Native primitive: `GraphSegmentAttentionCompressedCSR` / `csr_segment_attention_compressed_v1`")
-    lines.append("- Row model: CSR edge rows, row-compressed projection and aggregation, segment max selector/state machine, exact `Sum_i * Inv_i = 1`, and batched formal lookup table accounting.")
+    lines.append("- Row model: CSR edge rows, row-compressed projection and aggregation, segment max selector/state machine, quantized inverse lookup, alpha rescale, and batched formal lookup table accounting.")
     lines.append("- Formal tables: deterministic from `range_bits`, `quant_cfg_id`, and `static_table_id`; no witness-specific table is generated.")
     lines.append("")
     lines.append("| Dataset | status | block_reason | previous rows | compressed rows | reduction | required_logrows | feasible | table_hash |")
@@ -425,17 +439,19 @@ def write_native_constraint_debug_report() -> None:
         lines.append(f"- attempted_fix: {failure.get('attempted_fix', '')}")
         lines.append(f"- remaining_blocker: {failure.get('remaining_blocker', '')}")
     lines.append("")
-    lines.append("## Full-Dataset Preflight Evidence")
+    lines.append("## Full-Dataset Quantized Inverse Preflight Evidence")
     lines.append("")
-    lines.append("| Dataset | node | degree | sum_fp32 | inv_fp32 | sum_q | inv_q | product |")
-    lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+    lines.append("| Dataset | node | degree | policy | sum_fp32 | inv_fp32 | sum_q | inv_q | expected_inv_q | product | inverse_ok | alpha_ok |")
+    lines.append("| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |")
     for _run_id, _main_key, display, run_dir in DATASETS:
         preflight = preflight_for_run(run_dir)
         lines.append(
             f"| {display} | {preflight.get('node_index', '')} | {preflight.get('degree', '')} | "
+            f"{preflight.get('inverse_policy', '')} | "
             f"{preflight.get('sum_fp32_reference', '')} | {preflight.get('inv_fp32_reference', '')} | "
             f"{preflight.get('quantized_sum_scale16', '')} | {preflight.get('quantized_inv_scale16', '')} | "
-            f"{preflight.get('quantized_product', '')} |"
+            f"{preflight.get('expected_inv_q', '')} | {preflight.get('quantized_product', '')} | "
+            f"{preflight.get('inverse_all_nodes_accepted', '')} | {preflight.get('alpha_all_edges_accepted', '')} |"
         )
     (RESULTS / "native_constraint_debug_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -455,17 +471,19 @@ def write_native_full_experiment_report(ezkl_rows: list[dict]) -> None:
     lines.append("")
     lines.append("No output-binding workaround, no precomputed logits, no subset, no shard, and no sample route was used.")
     lines.append("")
-    lines.append("## Exact-Inverse Preflight Evidence")
+    lines.append("## Quantized Inverse Preflight Evidence")
     lines.append("")
-    lines.append("| Dataset | step | gate | region | node | degree | sum_q | inv_q | product | relation |")
-    lines.append("| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |")
+    lines.append("| Dataset | step | gate | region | node | degree | policy | sum_q | inv_q | expected_inv_q | product | inverse_ok | alpha_ok | relation |")
+    lines.append("| --- | --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- | --- | --- |")
     for row in ezkl_rows:
         lines.append(
             f"| {row['display_dataset']} | {row.get('failure_step', '')} | {row.get('failure_gate', '')} | "
             f"{row.get('failure_region', '')} | {row.get('preflight_node_index', '')} | "
-            f"{row.get('preflight_degree', '')} | {row.get('preflight_quantized_sum_scale16', '')} | "
-            f"{row.get('preflight_quantized_inv_scale16', '')} | {row.get('preflight_quantized_product', '')} | "
-            f"{row.get('failure_relation', '')} |"
+            f"{row.get('preflight_degree', '')} | {row.get('preflight_inverse_policy', '')} | "
+            f"{row.get('preflight_quantized_sum_scale16', '')} | "
+            f"{row.get('preflight_quantized_inv_scale16', '')} | {row.get('preflight_expected_inv_q', '')} | "
+            f"{row.get('preflight_quantized_product', '')} | {row.get('preflight_inverse_accepted', '')} | "
+            f"{row.get('preflight_alpha_accepted', '')} | {row.get('failure_relation', '')} |"
         )
     (RESULTS / "native_full_experiment_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -499,6 +517,16 @@ def main() -> int:
             "preflight_quantized_sum_scale16",
             "preflight_quantized_inv_scale16",
             "preflight_quantized_product",
+            "preflight_inverse_policy",
+            "preflight_expected_inv_q",
+            "preflight_inverse_scale_product",
+            "preflight_inverse_band",
+            "preflight_alpha_rescale_policy",
+            "preflight_alpha_rescale_divisor",
+            "preflight_alpha_rounding_rule",
+            "preflight_inverse_table_hash",
+            "preflight_inverse_accepted",
+            "preflight_alpha_accepted",
         ]
         + METRICS,
     )

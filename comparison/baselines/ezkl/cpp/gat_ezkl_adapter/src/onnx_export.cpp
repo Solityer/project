@@ -88,11 +88,9 @@ ExportDecision export_or_block_strict_segment_gat_onnx(
             << ", padded_edge_slots=" << segment_report.total_packed_slots
             << ", padding_ratio=" << segment_report.padding_ratio
             << ") and verified the invalid-slot ReduceMax sentinel bound. "
-            << "The remaining exact lowering requires alpha_k = U_k * inv(Sum_dst(k)) with a variable per-dst denominator. "
-            << "This ezkl revision exposes ONNX Div only for constant denominators, and its Recip path is an approximate gadget governed by settings epsilon rather than a quant_cfg_id-bound formal Sum inverse. "
-            << "Because quant_cfg_id=" << config.quant_cfg_id
-            << " does not specify a verifier-reproducible finite-field or quantized inverse mapping for Sum_i, the adapter cannot claim strict equivalence. "
-            << "ReduceMax/ReduceSum/Gather are not the decisive blocker; the blocker is exact inverse semantics after segment lowering. "
+            << "The remaining ONNX lowering requires alpha_k = rescale(U_k * Inv_dst(k)) with the quant_cfg_id-bound scale-16 inverse lookup policy. "
+            << "This ezkl revision exposes ONNX Div only for constant denominators, and its Recip path is an approximate gadget governed by settings epsilon rather than the deterministic T_inv table emitted for the native route. "
+            << "ReduceMax/ReduceSum/Gather are not the decisive blocker; the blocker is preserving the quantized inverse lookup and alpha rescale semantics in ordinary ONNX. "
             << "No precomputed logits, dense NxN attention, output binding, identity, digest, folding, subset, shard, or sample route was used. "
             << "heads=" << summary.total_attention_head_count
             << ", estimated_total_attention_elements=" << segment_report.estimate.estimated_total_attention_elements
@@ -161,7 +159,7 @@ ExportDecision export_native_csr_segment_attention_gat(
         << "\",\n"
         << "  \"route_id\": \"" << decision.route_id << "\",\n"
         << "  \"status\": \"ready\",\n"
-        << "  \"note\": \"native graph route uses graph_attention_spec.json and csr_segment_layout.bin, not ordinary ONNX ops\"\n"
+        << "  \"note\": \"native graph route uses graph_attention_spec.json, csr_segment_layout.bin, and quant_cfg-derived inverse/alpha policy metadata, not ordinary ONNX ops\"\n"
         << "}\n";
     write_text_file(output_dir / "network.onnx", marker.str());
     write_text_file(output_dir / "network.native.json", marker.str());

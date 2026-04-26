@@ -194,19 +194,38 @@ std::string native_full_witness_preflight_json(
     const AppConfig& config,
     const NormalizedGraph& graph,
     const CheckpointBundle& bundle,
-    const CsrSegmentLayout& layout) {
+    const CsrSegmentLayout& layout,
+    const FormalTablesSummary* formal_tables) {
     std::ostringstream out;
     out << std::setprecision(17);
+    const auto policy = formal_tables != nullptr ? formal_tables->inverse : derive_inverse_quant_policy(config);
+    const auto inverse_table_hash = formal_tables != nullptr ? formal_tables->hashes.inv_hash : std::string();
+    const auto inverse_policy_hash = formal_tables != nullptr ? formal_tables->hashes.inverse_policy_hash : policy.policy_hash;
+    auto write_policy_fields = [&]() {
+        out << "  \"sum_scale\": " << policy.sum_scale << ",\n"
+            << "  \"inv_scale\": " << policy.inv_scale << ",\n"
+            << "  \"alpha_scale\": " << policy.alpha_scale << ",\n"
+            << "  \"inverse_policy\": \"" << json_escape(policy.inverse_policy) << "\",\n"
+            << "  \"inverse_scale_product\": " << policy.inverse_scale_product << ",\n"
+            << "  \"inverse_band\": " << policy.inverse_band << ",\n"
+            << "  \"alpha_rescale_policy\": \"" << json_escape(policy.alpha_rescale_policy) << "\",\n"
+            << "  \"alpha_rescale_divisor\": " << policy.alpha_rescale_divisor << ",\n"
+            << "  \"alpha_rounding_rule\": \"" << json_escape(policy.rounding_rule) << "\",\n"
+            << "  \"alpha_band\": " << policy.alpha_band << ",\n"
+            << "  \"inverse_table_hash\": \"" << json_escape(inverse_table_hash) << "\",\n"
+            << "  \"inverse_policy_hash\": \"" << json_escape(inverse_policy_hash) << "\",\n";
+    };
     out << "{\n"
         << "  \"preflight_kind\": \"native_full_gat_witness_semantic_preflight_v1\",\n"
         << "  \"route_id\": \"" << json_escape(route_id) << "\",\n"
         << "  \"dataset\": \"" << json_escape(config.dataset) << "\",\n"
         << "  \"full_dataset\": true,\n"
-        << "  \"component\": \"full_model.layer_0.hidden_head_0.exact_inverse\",\n"
+        << "  \"component\": \"full_model.layer_0.hidden_head_0.quantized_inverse_and_alpha\",\n"
         << "  \"full_model_reference_forward_attempted\": true,\n"
         << "  \"full_model_witness_complete\": false,\n"
         << "  \"full_model_circuit_complete\": false,\n"
         << "  \"public_output_binding_implemented\": false,\n";
+    write_policy_fields();
 
     if (bundle.hidden_heads.empty()) {
         out << "  \"status\": \"blocked\",\n"
@@ -225,16 +244,28 @@ std::string native_full_witness_preflight_json(
             head,
             false,
             true);
+        std::size_t sample_node = 0;
+        std::int64_t sample_sum_q = 0;
+        std::int64_t sample_inv_q = 0;
+        std::int64_t sample_expected_inv_q = 0;
+        std::int64_t sample_product = 0;
         for (std::size_t node = 0; node < trace.sum.size(); ++node) {
-            const auto quantized_sum = quantize_to_i64(trace.sum[node], 16.0);
-            const auto quantized_inv = quantize_to_i64(trace.inv[node], 16.0);
+            const auto quantized_sum = quantize_to_i64(trace.sum[node], static_cast<double>(policy.sum_scale));
+            const auto quantized_inv = quantize_to_i64(trace.inv[node], static_cast<double>(policy.inv_scale));
             const auto product = quantized_sum * quantized_inv;
-            if (product != 1) {
+            std::int64_t expected_inv = 0;
+            if (node == 0) {
+                sample_sum_q = quantized_sum;
+                sample_inv_q = quantized_inv;
+                sample_expected_inv_q = quantized_inverse_for_sum(quantized_sum, policy);
+                sample_product = product;
+            }
+            if (!validate_inverse_witness_against_policy(quantized_sum, quantized_inv, policy, &expected_inv)) {
                 out << "  \"status\": \"blocked\",\n"
-                    << "  \"block_reason\": \"native_full_exact_inverse_quantization_conflict\",\n"
+                    << "  \"block_reason\": \"quantized_inverse_lookup_mismatch\",\n"
                     << "  \"failure_step\": \"graph-gat-gen-witness\",\n"
-                    << "  \"failure_gate\": \"native.exact_inverse\",\n"
-                    << "  \"failure_region\": \"native.full_model.layer_0.head_0.softmax.exact_inverse\",\n"
+                    << "  \"failure_gate\": \"native.quantized_inverse_lookup\",\n"
+                    << "  \"failure_region\": \"native.full_model.layer_0.head_0.softmax.quantized_inverse_lookup\",\n"
                     << "  \"failure_row\": " << node << ",\n"
                     << "  \"layer_index\": 0,\n"
                     << "  \"head_index\": 0,\n"
@@ -247,14 +278,59 @@ std::string native_full_witness_preflight_json(
                     << "  \"quantized_sum_scale16\": " << quantized_sum << ",\n"
                     << "  \"quantized_inv_scale16\": " << quantized_inv << ",\n"
                     << "  \"quantized_product\": " << product << ",\n"
-                    << "  \"expected_relation\": \"strict native route requires exact finite-field Sum_i * Inv_i = 1, but fp32_bundle_export supplies a scale-16 rounded reciprocal witness\",\n"
+                    << "  \"expected_inv_q\": " << expected_inv << ",\n"
+                    << "  \"target_q\": " << policy.inverse_scale_product << ",\n"
+                    << "  \"accepted\": false,\n"
+                    << "  \"expected_relation\": \"quantized inverse lookup requires inv_q = round(sum_scale * inv_scale / sum_q) under quant_cfg_id-derived scale-16 policy\",\n"
                     << "  \"actual_values\": [\"sum_q=" << quantized_sum
                     << "\", \"inv_q=" << quantized_inv
+                    << "\", \"expected_inv_q=" << expected_inv
                     << "\", \"sum_q_times_inv_q=" << product
                     << "\", \"quant_cfg_id=" << json_escape(config.quant_cfg_id)
                     << "\"],\n"
-                    << "  \"attempted_fix\": \"C++ adapter now executes the real full-dataset first hidden attention head and checks the formal exact inverse relation before Rust witness assignment\",\n"
-                    << "  \"remaining_blocker\": \"A compliant strict route needs a quant_cfg_id that defines exact inverse-compatible downstream alpha/aggregation/ELU semantics; replacing this with rounded fp32 reciprocal or output binding would violate the formal route\"\n"
+                    << "  \"attempted_fix\": \"derived deterministic T_inv from trace scalar scale 16 and validated full-dataset inverse witness against that table before Rust assignment\",\n"
+                    << "  \"remaining_blocker\": \"the quantized inverse witness is outside the deterministic inverse lookup table for this quant_cfg_id\"\n"
+                    << "}\n";
+                return out.str();
+            }
+        }
+        for (std::size_t edge_index = 0; edge_index < graph.edges.size(); ++edge_index) {
+            const auto dst = graph.edges[edge_index].dst;
+            const auto u_q = quantize_to_i64(trace.u[edge_index], static_cast<double>(policy.alpha_scale));
+            const auto inv_q = quantize_to_i64(trace.inv[dst], static_cast<double>(policy.inv_scale));
+            const auto alpha_q = quantize_to_i64(trace.alpha[edge_index], static_cast<double>(policy.alpha_scale));
+            std::int64_t expected_alpha = 0;
+            if (!validate_alpha_rescale(u_q, inv_q, alpha_q, policy, &expected_alpha)) {
+                out << "  \"status\": \"blocked\",\n"
+                    << "  \"block_reason\": \"alpha_rescale_mismatch\",\n"
+                    << "  \"failure_step\": \"graph-gat-gen-witness\",\n"
+                    << "  \"failure_gate\": \"native.alpha_rescale\",\n"
+                    << "  \"failure_region\": \"native.full_model.layer_0.head_0.softmax.alpha_rescale\",\n"
+                    << "  \"failure_row\": " << edge_index << ",\n"
+                    << "  \"layer_index\": 0,\n"
+                    << "  \"head_index\": 0,\n"
+                    << "  \"edge_index\": " << edge_index << ",\n"
+                    << "  \"node_index\": " << dst << ",\n"
+                    << "  \"segment_begin\": " << layout.segment_ptr.at(dst) << ",\n"
+                    << "  \"segment_end\": " << layout.segment_ptr.at(dst + 1) << ",\n"
+                    << "  \"degree\": " << (layout.segment_ptr.at(dst + 1) - layout.segment_ptr.at(dst)) << ",\n"
+                    << "  \"u_q\": " << u_q << ",\n"
+                    << "  \"inv_q\": " << inv_q << ",\n"
+                    << "  \"alpha_q\": " << alpha_q << ",\n"
+                    << "  \"expected_alpha_q\": " << expected_alpha << ",\n"
+                    << "  \"alpha_product_q\": " << (u_q * inv_q) << ",\n"
+                    << "  \"accepted\": false,\n"
+                    << "  \"expected_relation\": \"alpha_q must match rounded U_q * Inv_q / alpha_rescale_divisor within the quant_cfg_id-derived alpha band\",\n"
+                    << "  \"actual_values\": [\"edge_index=" << edge_index
+                    << "\", \"dst=" << dst
+                    << "\", \"u_q=" << u_q
+                    << "\", \"inv_q=" << inv_q
+                    << "\", \"alpha_q=" << alpha_q
+                    << "\", \"expected_alpha_q=" << expected_alpha
+                    << "\", \"alpha_band=" << policy.alpha_band
+                    << "\"],\n"
+                    << "  \"attempted_fix\": \"validated alpha_q against the same scale-16 quantized inverse policy used for T_inv\",\n"
+                    << "  \"remaining_blocker\": \"alpha witness does not fit the quant_cfg_id-derived rescale relation\"\n"
                     << "}\n";
                 return out.str();
             }
@@ -262,7 +338,24 @@ std::string native_full_witness_preflight_json(
         out << "  \"status\": \"ready\",\n"
             << "  \"block_reason\": \"\",\n"
             << "  \"failure_step\": null,\n"
-            << "  \"checked_nodes\": " << trace.sum.size() << "\n"
+            << "  \"layer_index\": 0,\n"
+            << "  \"head_index\": 0,\n"
+            << "  \"node_index\": " << sample_node << ",\n"
+            << "  \"segment_begin\": " << layout.segment_ptr.at(sample_node) << ",\n"
+            << "  \"segment_end\": " << layout.segment_ptr.at(sample_node + 1) << ",\n"
+            << "  \"degree\": " << (layout.segment_ptr.at(sample_node + 1) - layout.segment_ptr.at(sample_node)) << ",\n"
+            << "  \"sum_fp32_reference\": " << trace.sum[sample_node] << ",\n"
+            << "  \"inv_fp32_reference\": " << trace.inv[sample_node] << ",\n"
+            << "  \"quantized_sum_scale16\": " << sample_sum_q << ",\n"
+            << "  \"quantized_inv_scale16\": " << sample_inv_q << ",\n"
+            << "  \"quantized_product\": " << sample_product << ",\n"
+            << "  \"expected_inv_q\": " << sample_expected_inv_q << ",\n"
+            << "  \"target_q\": " << policy.inverse_scale_product << ",\n"
+            << "  \"accepted\": true,\n"
+            << "  \"inverse_all_nodes_accepted\": true,\n"
+            << "  \"alpha_all_edges_accepted\": true,\n"
+            << "  \"checked_nodes\": " << trace.sum.size() << ",\n"
+            << "  \"checked_edges\": " << graph.edges.size() << "\n"
             << "}\n";
         return out.str();
     } catch (const std::exception& error) {
@@ -686,7 +779,7 @@ void write_native_csr_graph_artifacts(
     write_text_file(output_dir / "tensor_payloads.json", tensor_manifest.str());
     write_text_file(
         output_dir / "native_full_witness_preflight.json",
-        native_full_witness_preflight_json(route_id, config, graph, bundle, layout));
+        native_full_witness_preflight_json(route_id, config, graph, bundle, layout, formal_tables));
 
     std::ostringstream spec;
     spec << "{\n"
@@ -712,7 +805,8 @@ void write_native_csr_graph_artifacts(
         << "  \"hidden_heads\": " << hidden_heads_json(bundle) << ",\n"
         << "  \"output_heads\": " << output_heads_json(bundle) << ",\n"
         << "  \"gat_semantics\": {\"projection\":true,\"edge_scores\":true,\"lrelu_lookup_required\":true,"
-        << "\"segment_max\":true,\"exp_map_lookup_required\":true,\"exact_inverse\":\"sum_times_inv_equals_one\","
+        << "\"segment_max\":true,\"exp_map_lookup_required\":true,\"inverse_policy\":\"quantized_inverse_lookup\","
+        << "\"alpha_rescale_policy\":\"rounded_product_div_scale_with_quantization_band\","
         << "\"aggregation\":true,\"hidden_activation\":\"elu_lookup_required\",\"output_average_rule\":\""
         << json_escape(bundle.output_average_rule) << "\"},\n"
         << "  \"batching_rule\": \"" << json_escape(config.batching_rule) << "\",\n"

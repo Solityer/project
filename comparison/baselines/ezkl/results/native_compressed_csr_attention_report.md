@@ -2,16 +2,16 @@
 
 - Route: `ezkl_gat_native_compressed_csr_attention_full`
 - Native primitive: `GraphSegmentAttentionCompressedCSR` / `csr_segment_attention_compressed_v1`
-- Row model: CSR edge rows, row-compressed projection and aggregation, segment max selector/state machine, exact `Sum_i * Inv_i = 1`, and batched formal lookup table accounting.
+- Row model: CSR edge rows, row-compressed projection and aggregation, segment max selector/state machine, quantized inverse lookup, alpha rescale, and batched formal lookup table accounting.
 - Formal tables: deterministic from `range_bits`, `quant_cfg_id`, and `static_table_id`; no witness-specific table is generated.
 
 | Dataset | status | block_reason | previous rows | compressed rows | reduction | required_logrows | feasible | table_hash |
 | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |
-| Cora | blocked | native_full_exact_inverse_quantization_conflict | 252496464 | 2117846 | 119.22324097219533 | 22 | True | fnv1a64:f2933ff0aa727bba |
-| Citeseer | blocked | native_full_exact_inverse_quantization_conflict | 792557483 | 2218463 | 357.25521813976616 | 22 | True | fnv1a64:f2933ff0aa727bba |
-| Pubmed | blocked | native_full_exact_inverse_quantization_conflict | 657323900 | 16143874 | 40.71661485960557 | 24 | True | fnv1a64:f2933ff0aa727bba |
-| PPI | blocked | native_full_exact_inverse_quantization_conflict | 315476272 | 43372416 | 7.273661490289127 | 26 | True | fnv1a64:f2933ff0aa727bba |
-| ogbn-arxiv | blocked | native_full_exact_inverse_quantization_conflict | 381668318 | 59159176 | 6.451548919477851 | 26 | True | fnv1a64:dca099df18983198 |
+| Cora | blocked | native_full_gat_forward_constraints_incomplete | 252496464 | 2117846 | 119.22324097219533 | 22 | True | fnv1a64:89bb68268073848a |
+| Citeseer | blocked | native_full_gat_forward_constraints_incomplete | 792557483 | 2218463 | 357.25521813976616 | 22 | True | fnv1a64:89bb68268073848a |
+| Pubmed | blocked | native_full_gat_forward_constraints_incomplete | 657323900 | 16143874 | 40.71661485960557 | 24 | True | fnv1a64:89bb68268073848a |
+| PPI | blocked | native_keygen_resource_failure | 315476272 | 43372416 | 7.273661490289127 | 26 | True | fnv1a64:89bb68268073848a |
+| ogbn-arxiv | blocked | native_keygen_resource_failure | 381668318 | 59159176 | 6.451548919477851 | 26 | True | fnv1a64:08c90fe141fea976 |
 
 ## Required Artifacts
 
