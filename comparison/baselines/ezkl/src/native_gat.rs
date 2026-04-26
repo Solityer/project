@@ -1,9 +1,9 @@
+use crate::EZKLError;
 use crate::circuit::CheckMode;
 use crate::pfsys::{
-    create_keys, create_proof_circuit, load_pk, load_vk, save_params, save_pk, save_vk,
-    verify_proof_circuit, Snark,
+    Snark, create_keys, create_proof_circuit, load_pk, load_vk, save_params, save_pk, save_vk,
+    verify_proof_circuit,
 };
-use crate::EZKLError;
 use halo2_proofs::circuit::{AssignedCell, Layouter, SimpleFloorPlanner, Value};
 use halo2_proofs::dev::MockProver;
 use halo2_proofs::plonk::{
@@ -34,6 +34,9 @@ const TINY_NATIVE_BACKEND_VERSION: &str = "tiny_native_backend_levels_0_6_v1";
 const TINY_NATIVE_LOGROWS: u32 = 9;
 const DEFAULT_NATIVE_DEBUG_SCOPE: &str = "full_model";
 const NATIVE_DIAGNOSTIC_BACKEND_VERSION: &str = "native_full_diagnostic_scopes_v1";
+const TRACE_SCALAR_SCALE_I64: i64 = 16;
+const QUANTIZED_INVERSE_POLICY: &str = "quantized_inverse_lookup";
+const ALPHA_RESCALE_POLICY: &str = "rounded_product_div_scale_with_quantization_band";
 const NATIVE_DEBUG_SCOPES: [&str; 14] = [
     "level0_mul",
     "inverse_only",
@@ -135,6 +138,32 @@ struct FormalTableBinding {
     #[serde(default)]
     inv_hash: String,
     #[serde(default)]
+    inverse_policy: String,
+    #[serde(default)]
+    range_size: u64,
+    #[serde(default)]
+    sum_scale: i64,
+    #[serde(default)]
+    inv_scale: i64,
+    #[serde(default)]
+    alpha_scale: i64,
+    #[serde(default)]
+    inverse_scale_product: i64,
+    #[serde(default)]
+    inverse_band: i64,
+    #[serde(default)]
+    alpha_rescale_policy: String,
+    #[serde(default)]
+    alpha_rescale_divisor: i64,
+    #[serde(default)]
+    alpha_rounding_rule: String,
+    #[serde(default)]
+    alpha_band: i64,
+    #[serde(default)]
+    inverse_table_hash: String,
+    #[serde(default)]
+    inverse_policy_hash: String,
+    #[serde(default)]
     table_hash: String,
     #[serde(default)]
     bin_hash: String,
@@ -164,6 +193,32 @@ struct FormalTableHashesFile {
     exp_hash: String,
     #[serde(default)]
     inv_hash: String,
+    #[serde(default)]
+    inverse_policy: String,
+    #[serde(default)]
+    range_size: u64,
+    #[serde(default)]
+    sum_scale: i64,
+    #[serde(default)]
+    inv_scale: i64,
+    #[serde(default)]
+    alpha_scale: i64,
+    #[serde(default)]
+    inverse_scale_product: i64,
+    #[serde(default)]
+    inverse_band: i64,
+    #[serde(default)]
+    alpha_rescale_policy: String,
+    #[serde(default)]
+    alpha_rescale_divisor: i64,
+    #[serde(default)]
+    alpha_rounding_rule: String,
+    #[serde(default)]
+    alpha_band: i64,
+    #[serde(default)]
+    inverse_table_hash: String,
+    #[serde(default)]
+    inverse_policy_hash: String,
     #[serde(default)]
     table_hash: String,
     #[serde(default)]
@@ -276,6 +331,30 @@ struct InverseSemantics {
     witness_column: String,
     nonzero_argument: String,
     approximate_reciprocal_used: bool,
+    #[serde(default)]
+    policy: String,
+    #[serde(default)]
+    sum_scale: i64,
+    #[serde(default)]
+    inv_scale: i64,
+    #[serde(default)]
+    alpha_scale: i64,
+    #[serde(default)]
+    inverse_scale_product: i64,
+    #[serde(default)]
+    inverse_band: i64,
+    #[serde(default)]
+    alpha_rescale_policy: String,
+    #[serde(default)]
+    alpha_rescale_divisor: i64,
+    #[serde(default)]
+    alpha_rounding_rule: String,
+    #[serde(default)]
+    alpha_band: i64,
+    #[serde(default)]
+    inverse_table_hash: String,
+    #[serde(default)]
+    inverse_policy_hash: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -451,11 +530,9 @@ impl NativeDebugScope {
             Self::SegmentSumInverse | Self::SegmentMaxOnly => {
                 u128::from(plan.node_count.max(1)).saturating_mul(2)
             }
-            Self::SingleHeadFirstLayer => {
-                u128::from(plan.node_count.max(1))
-                    .saturating_add(u128::from(plan.edge_count.max(1)))
-                    .saturating_add(1024)
-            }
+            Self::SingleHeadFirstLayer => u128::from(plan.node_count.max(1))
+                .saturating_add(u128::from(plan.edge_count.max(1)))
+                .saturating_add(1024),
             Self::FirstHiddenLayerAllHeads | Self::HiddenOnly => {
                 let heads = total_hidden_heads_from_plan(plan).max(1);
                 u128::from(plan.node_count.max(1))
@@ -463,11 +540,9 @@ impl NativeDebugScope {
                     .saturating_mul(u128::from(heads))
                     .saturating_add(4096)
             }
-            Self::OutputOnly => {
-                u128::from(plan.node_count.max(1))
-                    .saturating_mul(u128::from(plan.class_count.max(1)))
-                    .saturating_add(4096)
-            }
+            Self::OutputOnly => u128::from(plan.node_count.max(1))
+                .saturating_mul(u128::from(plan.class_count.max(1)))
+                .saturating_add(4096),
             Self::FullModel => plan.estimate.total_rows.max(4096),
         };
         ceil_log2(diagnostic_rows.saturating_add(64)).clamp(9, plan.estimate.max_logrows)
@@ -531,6 +606,192 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), EZKLError> {
     let text = serde_json::to_string_pretty(value)?;
     fs::write(path, format!("{text}\n"))?;
     Ok(())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct QuantizedInversePolicy {
+    inverse_policy: String,
+    sum_scale: i64,
+    inv_scale: i64,
+    alpha_scale: i64,
+    inverse_scale_product: i64,
+    inverse_band: i64,
+    alpha_rescale_policy: String,
+    alpha_rescale_divisor: i64,
+    alpha_rounding_rule: String,
+    alpha_band: i64,
+    inverse_policy_hash: String,
+}
+
+fn fnv1a64_hex(text: &str) -> String {
+    let mut state = 1_469_598_103_934_665_603u64;
+    for byte in text.as_bytes() {
+        state ^= u64::from(*byte);
+        state = state.wrapping_mul(0x100000001b3);
+    }
+    format!("fnv1a64:{state:016x}")
+}
+
+fn default_quantized_inverse_policy() -> QuantizedInversePolicy {
+    let mut policy = QuantizedInversePolicy {
+        inverse_policy: QUANTIZED_INVERSE_POLICY.to_string(),
+        sum_scale: TRACE_SCALAR_SCALE_I64,
+        inv_scale: TRACE_SCALAR_SCALE_I64,
+        alpha_scale: TRACE_SCALAR_SCALE_I64,
+        inverse_scale_product: TRACE_SCALAR_SCALE_I64 * TRACE_SCALAR_SCALE_I64,
+        inverse_band: 0,
+        alpha_rescale_policy: ALPHA_RESCALE_POLICY.to_string(),
+        alpha_rescale_divisor: TRACE_SCALAR_SCALE_I64,
+        alpha_rounding_rule: "half_away_from_zero".to_string(),
+        alpha_band: 2,
+        inverse_policy_hash: String::new(),
+    };
+    let serialized = format!(
+        "quantized_inverse_lookup_v1\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+        policy.sum_scale,
+        policy.inv_scale,
+        policy.alpha_scale,
+        policy.inverse_scale_product,
+        policy.inverse_band,
+        policy.alpha_rounding_rule,
+        policy.alpha_rescale_policy,
+        policy.alpha_rescale_divisor,
+        policy.alpha_band,
+    );
+    policy.inverse_policy_hash = fnv1a64_hex(&serialized);
+    policy
+}
+
+fn inverse_policy_from_binding(binding: &FormalTableBinding) -> QuantizedInversePolicy {
+    let default = default_quantized_inverse_policy();
+    QuantizedInversePolicy {
+        inverse_policy: if binding.inverse_policy.is_empty() {
+            default.inverse_policy
+        } else {
+            binding.inverse_policy.clone()
+        },
+        sum_scale: if binding.sum_scale == 0 {
+            default.sum_scale
+        } else {
+            binding.sum_scale
+        },
+        inv_scale: if binding.inv_scale == 0 {
+            default.inv_scale
+        } else {
+            binding.inv_scale
+        },
+        alpha_scale: if binding.alpha_scale == 0 {
+            default.alpha_scale
+        } else {
+            binding.alpha_scale
+        },
+        inverse_scale_product: if binding.inverse_scale_product == 0 {
+            default.inverse_scale_product
+        } else {
+            binding.inverse_scale_product
+        },
+        inverse_band: binding.inverse_band,
+        alpha_rescale_policy: if binding.alpha_rescale_policy.is_empty() {
+            default.alpha_rescale_policy
+        } else {
+            binding.alpha_rescale_policy.clone()
+        },
+        alpha_rescale_divisor: if binding.alpha_rescale_divisor == 0 {
+            default.alpha_rescale_divisor
+        } else {
+            binding.alpha_rescale_divisor
+        },
+        alpha_rounding_rule: if binding.alpha_rounding_rule.is_empty() {
+            default.alpha_rounding_rule
+        } else {
+            binding.alpha_rounding_rule.clone()
+        },
+        alpha_band: if binding.alpha_band == 0 {
+            default.alpha_band
+        } else {
+            binding.alpha_band
+        },
+        inverse_policy_hash: if binding.inverse_policy_hash.is_empty() {
+            default.inverse_policy_hash
+        } else {
+            binding.inverse_policy_hash.clone()
+        },
+    }
+}
+
+fn round_div_half_away_from_zero(numerator: i128, denominator: i128) -> i64 {
+    let denominator = denominator.max(1);
+    let sign = if numerator < 0 { -1 } else { 1 };
+    let abs = numerator.abs();
+    let rounded = (abs.saturating_mul(2).saturating_add(denominator)) / (denominator * 2);
+    (rounded * sign) as i64
+}
+
+fn quantized_inverse_for_sum_q(sum_q: i64, policy: &QuantizedInversePolicy) -> i64 {
+    if sum_q <= 0 {
+        return 0;
+    }
+    round_div_half_away_from_zero(policy.inverse_scale_product as i128, sum_q as i128)
+}
+
+fn quantized_inverse_interval_for_sum_q(sum_q: i64, policy: &QuantizedInversePolicy) -> (i64, i64) {
+    if sum_q <= 0 {
+        return (0, 0);
+    }
+    let doubled_numerator = i128::from(policy.inverse_scale_product) * 2;
+    let lower_denominator = i128::from(sum_q) * 2 - 1;
+    let upper_denominator = i128::from(sum_q) * 2 + 1;
+    let max_inv = round_div_half_away_from_zero(doubled_numerator, lower_denominator);
+    let min_inv = round_div_half_away_from_zero(doubled_numerator, upper_denominator);
+    (min_inv, max_inv)
+}
+
+fn validate_inverse_witness_against_policy(
+    sum_q: i64,
+    inv_q: i64,
+    policy: &QuantizedInversePolicy,
+) -> bool {
+    let (min_inv, max_inv) = quantized_inverse_interval_for_sum_q(sum_q, policy);
+    inv_q >= min_inv && inv_q <= max_inv
+}
+
+fn validate_alpha_rescale(
+    u_q: i64,
+    inv_q: i64,
+    alpha_q: i64,
+    policy: &QuantizedInversePolicy,
+) -> bool {
+    let expected = round_div_half_away_from_zero(
+        i128::from(u_q) * i128::from(inv_q),
+        i128::from(policy.alpha_rescale_divisor.max(1)),
+    );
+    (alpha_q - expected).abs() <= policy.alpha_band
+}
+
+fn rust_policy_matches_binding(binding: &FormalTableBinding) -> bool {
+    let default = default_quantized_inverse_policy();
+    let policy = inverse_policy_from_binding(binding);
+    policy.inverse_policy == default.inverse_policy
+        && policy.sum_scale == default.sum_scale
+        && policy.inv_scale == default.inv_scale
+        && policy.alpha_scale == default.alpha_scale
+        && policy.inverse_scale_product == default.inverse_scale_product
+        && policy.inverse_band == default.inverse_band
+        && policy.alpha_rescale_policy == default.alpha_rescale_policy
+        && policy.alpha_rescale_divisor == default.alpha_rescale_divisor
+        && policy.alpha_rounding_rule == default.alpha_rounding_rule
+        && policy.alpha_band == default.alpha_band
+        && policy.inverse_policy_hash == default.inverse_policy_hash
+}
+
+fn inverse_table_range_size(binding: &FormalTableBinding) -> usize {
+    if binding.range_size > 0 {
+        return binding.range_size as usize;
+    }
+    if binding.range_bits > 0 && binding.range_bits < usize::BITS as u64 {
+        return 1usize << binding.range_bits;
+    }
+    1usize << 12
 }
 
 fn fr_i64(value: i64) -> Fr {
@@ -1237,12 +1498,25 @@ fn binding_from_hashes(table: &FormalTableHashesFile) -> FormalTableBinding {
         quant_cfg_id: table.quant_cfg_id.clone(),
         static_table_id: table.static_table_id.clone(),
         range_bits: table.range_bits,
+        range_size: table.range_size,
         signed_bound: table.signed_bound,
         range_hash: table.range_hash.clone(),
         lrelu_hash: table.lrelu_hash.clone(),
         elu_hash: table.elu_hash.clone(),
         exp_hash: table.exp_hash.clone(),
         inv_hash: table.inv_hash.clone(),
+        inverse_policy: table.inverse_policy.clone(),
+        sum_scale: table.sum_scale,
+        inv_scale: table.inv_scale,
+        alpha_scale: table.alpha_scale,
+        inverse_scale_product: table.inverse_scale_product,
+        inverse_band: table.inverse_band,
+        alpha_rescale_policy: table.alpha_rescale_policy.clone(),
+        alpha_rescale_divisor: table.alpha_rescale_divisor,
+        alpha_rounding_rule: table.alpha_rounding_rule.clone(),
+        alpha_band: table.alpha_band,
+        inverse_table_hash: table.inverse_table_hash.clone(),
+        inverse_policy_hash: table.inverse_policy_hash.clone(),
         table_hash: table.table_hash.clone(),
         bin_hash: table.bin_hash.clone(),
     }
@@ -1269,6 +1543,10 @@ fn formal_table_binding_valid(spec: &GraphAttentionSpec, binding: &FormalTableBi
         && binding.quant_cfg_id == spec.quant_cfg_id
         && (spec.static_table_id.is_empty() || binding.static_table_id == spec.static_table_id)
         && (spec.formal_table_hash.is_empty() || binding.table_hash == spec.formal_table_hash)
+        && binding.inverse_policy == QUANTIZED_INVERSE_POLICY
+        && !binding.inv_hash.is_empty()
+        && binding.inverse_table_hash == binding.inv_hash
+        && rust_policy_matches_binding(binding)
 }
 
 fn lookup_semantics(spec: &GraphAttentionSpec, binding: &FormalTableBinding) -> LookupSemantics {
@@ -1292,14 +1570,72 @@ fn lookup_semantics(spec: &GraphAttentionSpec, binding: &FormalTableBinding) -> 
     }
 }
 
-fn inverse_semantics() -> InverseSemantics {
+fn inverse_policy_hash_mismatch(
+    spec_path: &Path,
+    spec: &GraphAttentionSpec,
+    binding: &FormalTableBinding,
+) -> bool {
+    if binding.table_hash.is_empty() || binding.inv_hash.is_empty() {
+        return false;
+    }
+    if !rust_policy_matches_binding(binding) {
+        return true;
+    }
+    if binding.inverse_table_hash != binding.inv_hash {
+        return true;
+    }
+    if let Some(spec_binding) = &spec.formal_tables {
+        if !spec_binding.inverse_policy_hash.is_empty()
+            && spec_binding.inverse_policy_hash != binding.inverse_policy_hash
+        {
+            return true;
+        }
+        if !spec_binding.inv_hash.is_empty() && spec_binding.inv_hash != binding.inv_hash {
+            return true;
+        }
+    }
+    let Some(run_dir) = spec_path.parent() else {
+        return false;
+    };
+    let hashes_path = run_dir.join("formal_table_hashes.json");
+    let Ok(table) = read_json::<FormalTableHashesFile>(&hashes_path) else {
+        return false;
+    };
+    if !table.inverse_policy_hash.is_empty()
+        && table.inverse_policy_hash != binding.inverse_policy_hash
+    {
+        return true;
+    }
+    if !table.inv_hash.is_empty() && table.inv_hash != binding.inv_hash {
+        return true;
+    }
+    if !table.table_hash.is_empty() && table.table_hash != binding.table_hash {
+        return true;
+    }
+    false
+}
+
+fn inverse_semantics(binding: &FormalTableBinding) -> InverseSemantics {
+    let policy = inverse_policy_from_binding(binding);
     InverseSemantics {
-        mode: "native_witness_inverse_constraint".to_string(),
-        constraint: "for every dst segment and attention head: Sum_i * Inv_i = 1".to_string(),
+        mode: "quant_cfg_bound_inverse_policy".to_string(),
+        constraint: "for every dst segment and attention head: (Sum_q, Inv_q) is in deterministic T_inv and Alpha_q matches rounded U_q * Inv_q / scale within the quantized alpha band".to_string(),
         witness_column: "segment_inverse".to_string(),
         nonzero_argument: "self_loop plus positive ExpMap semantics makes every Sum_i nonzero"
             .to_string(),
         approximate_reciprocal_used: false,
+        policy: policy.inverse_policy,
+        sum_scale: policy.sum_scale,
+        inv_scale: policy.inv_scale,
+        alpha_scale: policy.alpha_scale,
+        inverse_scale_product: policy.inverse_scale_product,
+        inverse_band: policy.inverse_band,
+        alpha_rescale_policy: policy.alpha_rescale_policy,
+        alpha_rescale_divisor: policy.alpha_rescale_divisor,
+        alpha_rounding_rule: policy.alpha_rounding_rule,
+        alpha_band: policy.alpha_band,
+        inverse_table_hash: binding.inv_hash.clone(),
+        inverse_policy_hash: policy.inverse_policy_hash,
     }
 }
 
@@ -1434,7 +1770,7 @@ pub(crate) fn graph_gat_gen_settings(
         metadata_hash: spec.metadata_hash.clone(),
         shape_hash: spec.shape_hash.clone(),
         lookup_semantics: lookup,
-        inverse_semantics: inverse_semantics(),
+        inverse_semantics: inverse_semantics(&formal_table_binding),
         formal_table_binding,
         estimate,
         compressed_row_estimate: compressed_estimate,
@@ -1473,7 +1809,7 @@ pub(crate) fn graph_gat_compile(
         .unwrap_or(previous_estimate);
     let formal_table_binding = load_formal_table_binding(&spec_path, &spec);
     let lookup = lookup_semantics(&spec, &formal_table_binding);
-    let inverse = inverse_semantics();
+    let inverse = inverse_semantics(&formal_table_binding);
     let mut status = "compiled".to_string();
     let mut block_reason = String::new();
     if !estimate.within_public_srs {
@@ -1483,6 +1819,9 @@ pub(crate) fn graph_gat_compile(
         } else {
             "ezkl_native_csr_compile_resource_boundary".to_string()
         };
+    } else if inverse_policy_hash_mismatch(&spec_path, &spec, &formal_table_binding) {
+        status = "blocked".to_string();
+        block_reason = "inverse_policy_hash_mismatch".to_string();
     } else if lookup.formal_status != "derived_formal_tables_bound" {
         status = "blocked".to_string();
         block_reason = "ezkl_native_lookup_tables_missing_from_quant_cfg".to_string();
@@ -1703,6 +2042,8 @@ struct FullNativeConfig {
     table_exp_y: TableColumn,
     table_elu_x: TableColumn,
     table_elu_y: TableColumn,
+    table_inv_sum: TableColumn,
+    table_inv_inv: TableColumn,
 }
 
 #[allow(dead_code)]
@@ -1715,14 +2056,22 @@ struct FullNativeCircuit {
 }
 
 impl FullNativeCircuit {
-    fn new(plan: NativeCompiledPlan, run_dir: &Path, witness_source_path: String) -> Result<Self, EZKLError> {
+    fn new(
+        plan: NativeCompiledPlan,
+        run_dir: &Path,
+        witness_source_path: String,
+    ) -> Result<Self, EZKLError> {
         let scope = NativeDebugScope::parse(&plan.native_debug_scope)?;
         let params = FullNativeParams {
             scope: scope.as_str().to_string(),
             logrows: scope.logrows(&plan),
         };
         let csr = read_csr_payload(&run_dir.join("csr_segment_layout.bin")).unwrap_or_else(|_| {
-            synthetic_csr_payload(plan.node_count.max(1), plan.edge_count.max(1), plan.graph_count.max(1))
+            synthetic_csr_payload(
+                plan.node_count.max(1),
+                plan.edge_count.max(1),
+                plan.graph_count.max(1),
+            )
         });
         Ok(Self {
             params,
@@ -1733,7 +2082,11 @@ impl FullNativeCircuit {
     }
 
     fn without_values(plan: NativeCompiledPlan, scope: NativeDebugScope, logrows: u32) -> Self {
-        let csr = synthetic_csr_payload(plan.node_count.max(1), plan.edge_count.max(1), plan.graph_count.max(1));
+        let csr = synthetic_csr_payload(
+            plan.node_count.max(1),
+            plan.edge_count.max(1),
+            plan.graph_count.max(1),
+        );
         Self {
             params: FullNativeParams {
                 scope: scope.as_str().to_string(),
@@ -1792,11 +2145,19 @@ impl FullNativeCircuit {
         layouter.assign_region(
             || region_name,
             |mut region| {
-                let sum = Fr::from(sum.max(1));
+                let policy = inverse_policy_from_binding(&self.plan.formal_table_binding);
+                let sum_q = (sum.max(1) as i64).saturating_mul(policy.sum_scale);
+                let inv_q = quantized_inverse_for_sum_q(sum_q, &policy);
                 config.q_inverse.enable(&mut region, 0)?;
-                Self::assign_advice(&mut region, config.left, 0, "segment sum", sum)?;
-                Self::assign_advice(&mut region, config.right, 0, "segment inverse", sum.invert().unwrap())?;
-                Self::assign_advice(&mut region, config.out, 0, "one", Fr::ONE)?;
+                Self::assign_advice(&mut region, config.left, 0, "segment sum_q", fr_i64(sum_q))?;
+                Self::assign_advice(&mut region, config.right, 0, "segment inv_q", fr_i64(inv_q))?;
+                Self::assign_advice(
+                    &mut region,
+                    config.out,
+                    0,
+                    "inverse scale product",
+                    fr_i64(policy.inverse_scale_product),
+                )?;
                 Self::assign_advice(&mut region, config.aux, 0, "inverse aux", Fr::ZERO)?;
                 Ok(())
             },
@@ -1814,6 +2175,7 @@ impl FullNativeCircuit {
             || region_name,
             |mut region| {
                 let mut offset = 0usize;
+                let policy = inverse_policy_from_binding(&self.plan.formal_table_binding);
                 let segment_count = self
                     .csr
                     .segment_ptr
@@ -1825,18 +2187,67 @@ impl FullNativeCircuit {
                     let end = self.csr.segment_ptr[segment + 1];
                     let count = end.saturating_sub(begin).max(1);
                     config.q_segment_sum.enable(&mut region, offset)?;
-                    Self::assign_advice(&mut region, config.left, offset, "segment begin", Fr::from(begin))?;
-                    Self::assign_advice(&mut region, config.right, offset, "segment edge count", Fr::from(count))?;
-                    Self::assign_advice(&mut region, config.out, offset, "segment end", Fr::from(begin.saturating_add(count)))?;
-                    Self::assign_advice(&mut region, config.aux, offset, "segment id", Fr::from(segment as u64))?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.left,
+                        offset,
+                        "segment begin",
+                        Fr::from(begin),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.right,
+                        offset,
+                        "segment edge count",
+                        Fr::from(count),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.out,
+                        offset,
+                        "segment end",
+                        Fr::from(begin.saturating_add(count)),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.aux,
+                        offset,
+                        "segment id",
+                        Fr::from(segment as u64),
+                    )?;
                     offset += 1;
 
-                    let sum = Fr::from(count);
+                    let sum_q = (count as i64).saturating_mul(policy.sum_scale);
+                    let inv_q = quantized_inverse_for_sum_q(sum_q, &policy);
                     config.q_inverse.enable(&mut region, offset)?;
-                    Self::assign_advice(&mut region, config.left, offset, "segment sum", sum)?;
-                    Self::assign_advice(&mut region, config.right, offset, "segment inverse", sum.invert().unwrap())?;
-                    Self::assign_advice(&mut region, config.out, offset, "one", Fr::ONE)?;
-                    Self::assign_advice(&mut region, config.aux, offset, "segment id", Fr::from(segment as u64))?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.left,
+                        offset,
+                        "segment sum_q",
+                        fr_i64(sum_q),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.right,
+                        offset,
+                        "segment inv_q",
+                        fr_i64(inv_q),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.out,
+                        offset,
+                        "inverse scale product",
+                        fr_i64(policy.inverse_scale_product),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.aux,
+                        offset,
+                        "segment id",
+                        Fr::from(segment as u64),
+                    )?;
                     offset += 1;
                 }
                 Ok(())
@@ -1865,8 +2276,20 @@ impl FullNativeCircuit {
                     let selector = u64::from(score == max_score);
                     let diff = (max_score - score) as u64;
                     config.q_max.enable(&mut region, offset)?;
-                    Self::assign_advice(&mut region, config.left, offset, "max selector", Fr::from(selector))?;
-                    Self::assign_advice(&mut region, config.right, offset, "max diff", Fr::from(diff))?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.left,
+                        offset,
+                        "max selector",
+                        Fr::from(selector),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.right,
+                        offset,
+                        "max diff",
+                        Fr::from(diff),
+                    )?;
                     Self::assign_advice(&mut region, config.out, offset, "score", fr_i64(score))?;
                     Self::assign_advice(&mut region, config.aux, offset, "dst", Fr::from(dst))?;
                     offset += 1;
@@ -1894,15 +2317,33 @@ impl FullNativeCircuit {
                 };
                 for (offset, (x, y)) in samples.iter().copied().enumerate() {
                     match lookup_kind {
-                        NativeDebugScope::LreluLookupOnly => config.q_lrelu_lookup.enable(&mut region, offset)?,
-                        NativeDebugScope::ExpLookupOnly => config.q_exp_lookup.enable(&mut region, offset)?,
-                        NativeDebugScope::EluLookupOnly => config.q_elu_lookup.enable(&mut region, offset)?,
+                        NativeDebugScope::LreluLookupOnly => {
+                            config.q_lrelu_lookup.enable(&mut region, offset)?
+                        }
+                        NativeDebugScope::ExpLookupOnly => {
+                            config.q_exp_lookup.enable(&mut region, offset)?
+                        }
+                        NativeDebugScope::EluLookupOnly => {
+                            config.q_elu_lookup.enable(&mut region, offset)?
+                        }
                         _ => {}
                     }
                     Self::assign_advice(&mut region, config.left, offset, "lookup x", fr_i64(x))?;
                     Self::assign_advice(&mut region, config.right, offset, "lookup y", fr_i64(y))?;
-                    Self::assign_advice(&mut region, config.out, offset, "lookup unused", Fr::ZERO)?;
-                    Self::assign_advice(&mut region, config.aux, offset, "lookup row", Fr::from(offset as u64))?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.out,
+                        offset,
+                        "lookup unused",
+                        Fr::ZERO,
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.aux,
+                        offset,
+                        "lookup row",
+                        Fr::from(offset as u64),
+                    )?;
                 }
                 Ok(())
             },
@@ -1930,10 +2371,7 @@ impl FullNativeCircuit {
                 let lhs = h[0] * weights[0][0]
                     + h[1] * weights[1][0]
                     + h[2] * weights[2][0]
-                    + rho
-                        * (h[0] * weights[0][1]
-                            + h[1] * weights[1][1]
-                            + h[2] * weights[2][1]);
+                    + rho * (h[0] * weights[0][1] + h[1] * weights[1][1] + h[2] * weights[2][1]);
                 let rhs: i64 = (0..h.len())
                     .map(|idx| h[idx] * (weights[idx][0] + weights[idx][1] * rho))
                     .sum();
@@ -1941,7 +2379,13 @@ impl FullNativeCircuit {
                 Self::assign_advice(&mut region, config.left, 0, "projection lhs", fr_i64(lhs))?;
                 Self::assign_advice(&mut region, config.right, 0, "projection rhs", fr_i64(rhs))?;
                 Self::assign_advice(&mut region, config.out, 0, "projection rho", fr_i64(rho))?;
-                Self::assign_advice(&mut region, config.aux, 0, "projection head", Fr::from(head_index))?;
+                Self::assign_advice(
+                    &mut region,
+                    config.aux,
+                    0,
+                    "projection head",
+                    Fr::from(head_index),
+                )?;
                 Ok(())
             },
         )
@@ -1975,7 +2419,13 @@ impl FullNativeCircuit {
                 Self::assign_advice(&mut region, config.left, 0, "aggregation lhs", fr_i64(lhs))?;
                 Self::assign_advice(&mut region, config.right, 0, "aggregation rhs", fr_i64(rhs))?;
                 Self::assign_advice(&mut region, config.out, 0, "aggregation rho", fr_i64(rho))?;
-                Self::assign_advice(&mut region, config.aux, 0, "aggregation head", Fr::from(head_index))?;
+                Self::assign_advice(
+                    &mut region,
+                    config.aux,
+                    0,
+                    "aggregation head",
+                    Fr::from(head_index),
+                )?;
                 Ok(())
             },
         )
@@ -1995,9 +2445,21 @@ impl FullNativeCircuit {
                 let avg = sum / head_count;
                 config.q_output_average.enable(&mut region, 0)?;
                 Self::assign_advice(&mut region, config.left, 0, "output sum", Fr::from(sum))?;
-                Self::assign_advice(&mut region, config.right, 0, "output head count", Fr::from(head_count))?;
+                Self::assign_advice(
+                    &mut region,
+                    config.right,
+                    0,
+                    "output head count",
+                    Fr::from(head_count),
+                )?;
                 Self::assign_advice(&mut region, config.out, 0, "output average", Fr::from(avg))?;
-                Self::assign_advice(&mut region, config.aux, 0, "output class count", Fr::from(self.plan.class_count))?;
+                Self::assign_advice(
+                    &mut region,
+                    config.aux,
+                    0,
+                    "output class count",
+                    Fr::from(self.plan.class_count),
+                )?;
                 Ok(())
             },
         )
@@ -2015,9 +2477,16 @@ impl FullNativeCircuit {
                 let mut cells = Vec::with_capacity(values.len());
                 for (offset, value) in values.iter().copied().enumerate() {
                     config.q_public_binding.enable(&mut region, offset)?;
-                    let cell = Self::assign_advice(&mut region, config.left, offset, "public lhs", value)?;
+                    let cell =
+                        Self::assign_advice(&mut region, config.left, offset, "public lhs", value)?;
                     Self::assign_advice(&mut region, config.right, offset, "public rhs", value)?;
-                    Self::assign_advice(&mut region, config.out, offset, "public index", Fr::from(offset as u64))?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.out,
+                        offset,
+                        "public index",
+                        Fr::from(offset as u64),
+                    )?;
                     Self::assign_advice(&mut region, config.aux, offset, "public aux", Fr::ZERO)?;
                     cells.push(cell);
                 }
@@ -2037,7 +2506,8 @@ impl Circuit<Fr> for FullNativeCircuit {
     type Params = FullNativeParams;
 
     fn without_witnesses(&self) -> Self {
-        let scope = NativeDebugScope::parse(&self.params.scope).unwrap_or(NativeDebugScope::FullModel);
+        let scope =
+            NativeDebugScope::parse(&self.params.scope).unwrap_or(NativeDebugScope::FullModel);
         Self::without_values(self.plan.clone(), scope, self.params.logrows)
     }
 
@@ -2064,7 +2534,7 @@ impl Circuit<Fr> for FullNativeCircuit {
         meta.enable_equality(instance);
 
         let q_mul = meta.selector();
-        let q_inverse = meta.selector();
+        let q_inverse = meta.complex_selector();
         let q_segment_sum = meta.selector();
         let q_max = meta.selector();
         let q_projection = meta.selector();
@@ -2080,6 +2550,8 @@ impl Circuit<Fr> for FullNativeCircuit {
         let table_exp_y = meta.lookup_table_column();
         let table_elu_x = meta.lookup_table_column();
         let table_elu_y = meta.lookup_table_column();
+        let table_inv_sum = meta.lookup_table_column();
+        let table_inv_inv = meta.lookup_table_column();
 
         meta.create_gate("native.level0.mul", |meta| {
             let q = meta.query_selector(q_mul);
@@ -2088,12 +2560,11 @@ impl Circuit<Fr> for FullNativeCircuit {
             let out_expr = meta.query_advice(out, halo2_proofs::poly::Rotation::cur());
             vec![q * (left_expr * right_expr - out_expr)]
         });
-        meta.create_gate("native.inverse", |meta| {
+        meta.lookup("native.lookup.inverse", |meta| {
             let q = meta.query_selector(q_inverse);
             let sum = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
             let inv = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
-            let one = meta.query_advice(out, halo2_proofs::poly::Rotation::cur());
-            vec![q * (sum * inv - one)]
+            vec![(q.clone() * sum, table_inv_sum), (q * inv, table_inv_inv)]
         });
         meta.create_gate("native.segment_sum", |meta| {
             let q = meta.query_selector(q_segment_sum);
@@ -2178,6 +2649,8 @@ impl Circuit<Fr> for FullNativeCircuit {
             table_exp_y,
             table_elu_x,
             table_elu_y,
+            table_inv_sum,
+            table_inv_inv,
         }
     }
 
@@ -2187,10 +2660,64 @@ impl Circuit<Fr> for FullNativeCircuit {
         mut layouter: impl Layouter<Fr>,
     ) -> Result<(), Error> {
         layouter.assign_table(
+            || "native.lookup.inverse.table",
+            |mut table| {
+                let policy = inverse_policy_from_binding(&self.plan.formal_table_binding);
+                let capacity = (1usize << self.params.logrows).saturating_sub(1);
+                let mut offset = 0usize;
+                let range_size = inverse_table_range_size(&self.plan.formal_table_binding);
+                for sum_q in 0..range_size {
+                    if offset >= capacity {
+                        break;
+                    }
+                    let (min_inv, max_inv) =
+                        quantized_inverse_interval_for_sum_q(sum_q as i64, &policy);
+                    for inv_q in min_inv..=max_inv {
+                        if offset >= capacity {
+                            break;
+                        }
+                        table.assign_cell(
+                            || "inv sum_q",
+                            config.table_inv_sum,
+                            offset,
+                            || Value::known(Fr::from(sum_q as u64)),
+                        )?;
+                        table.assign_cell(
+                            || "inv inv_q",
+                            config.table_inv_inv,
+                            offset,
+                            || Value::known(fr_i64(inv_q)),
+                        )?;
+                        offset += 1;
+                    }
+                }
+                if offset == 0 {
+                    table.assign_cell(
+                        || "inv sum_q",
+                        config.table_inv_sum,
+                        0,
+                        || Value::known(Fr::ZERO),
+                    )?;
+                    table.assign_cell(
+                        || "inv inv_q",
+                        config.table_inv_inv,
+                        0,
+                        || Value::known(Fr::ZERO),
+                    )?;
+                }
+                Ok(())
+            },
+        )?;
+        layouter.assign_table(
             || "native.lookup.lrelu.table",
             |mut table| {
                 for (offset, raw) in (-8i64..=8).enumerate() {
-                    table.assign_cell(|| "lrelu x", config.table_lrelu_x, offset, || Value::known(fr_i64(raw)))?;
+                    table.assign_cell(
+                        || "lrelu x",
+                        config.table_lrelu_x,
+                        offset,
+                        || Value::known(fr_i64(raw)),
+                    )?;
                     table.assign_cell(
                         || "lrelu y",
                         config.table_lrelu_y,
@@ -2204,13 +2731,33 @@ impl Circuit<Fr> for FullNativeCircuit {
         layouter.assign_table(
             || "native.lookup.exp.table",
             |mut table| {
-                table.assign_cell(|| "exp disabled x", config.table_exp_x, 0, || Value::known(Fr::ZERO))?;
-                table.assign_cell(|| "exp disabled y", config.table_exp_y, 0, || Value::known(Fr::ZERO))?;
+                table.assign_cell(
+                    || "exp disabled x",
+                    config.table_exp_x,
+                    0,
+                    || Value::known(Fr::ZERO),
+                )?;
+                table.assign_cell(
+                    || "exp disabled y",
+                    config.table_exp_y,
+                    0,
+                    || Value::known(Fr::ZERO),
+                )?;
                 for raw in 0usize..=16 {
                     let offset = raw + 1;
                     let out = (16i64 - raw as i64).max(0);
-                    table.assign_cell(|| "exp x", config.table_exp_x, offset, || Value::known(Fr::from(raw as u64)))?;
-                    table.assign_cell(|| "exp y", config.table_exp_y, offset, || Value::known(fr_i64(out)))?;
+                    table.assign_cell(
+                        || "exp x",
+                        config.table_exp_x,
+                        offset,
+                        || Value::known(Fr::from(raw as u64)),
+                    )?;
+                    table.assign_cell(
+                        || "exp y",
+                        config.table_exp_y,
+                        offset,
+                        || Value::known(fr_i64(out)),
+                    )?;
                 }
                 Ok(())
             },
@@ -2219,16 +2766,28 @@ impl Circuit<Fr> for FullNativeCircuit {
             || "native.lookup.elu.table",
             |mut table| {
                 for (offset, raw) in (-8i64..=8).enumerate() {
-                    table.assign_cell(|| "elu x", config.table_elu_x, offset, || Value::known(fr_i64(raw)))?;
-                    table.assign_cell(|| "elu y", config.table_elu_y, offset, || Value::known(fr_i64(raw)))?;
+                    table.assign_cell(
+                        || "elu x",
+                        config.table_elu_x,
+                        offset,
+                        || Value::known(fr_i64(raw)),
+                    )?;
+                    table.assign_cell(
+                        || "elu y",
+                        config.table_elu_y,
+                        offset,
+                        || Value::known(fr_i64(raw)),
+                    )?;
                 }
                 Ok(())
             },
         )?;
 
-        let scope = NativeDebugScope::parse(&self.params.scope)
-            .map_err(|_| Error::Synthesis)?;
-        if matches!(scope, NativeDebugScope::Level0Mul | NativeDebugScope::FullModel) {
+        let scope = NativeDebugScope::parse(&self.params.scope).map_err(|_| Error::Synthesis)?;
+        if matches!(
+            scope,
+            NativeDebugScope::Level0Mul | NativeDebugScope::FullModel
+        ) {
             self.assign_mul_region(
                 &mut layouter,
                 &config,
@@ -2237,11 +2796,14 @@ impl Circuit<Fr> for FullNativeCircuit {
                 self.plan.class_count.max(1),
             )?;
         }
-        if matches!(scope, NativeDebugScope::InverseOnly | NativeDebugScope::FullModel) {
+        if matches!(
+            scope,
+            NativeDebugScope::InverseOnly | NativeDebugScope::FullModel
+        ) {
             self.assign_inverse_region(
                 &mut layouter,
                 &config,
-                "native.inverse",
+                "native.quantized_inverse_lookup",
                 self.csr.max_in_degree.max(1),
             )?;
         }
@@ -2256,7 +2818,7 @@ impl Circuit<Fr> for FullNativeCircuit {
             self.assign_segment_sum_inverse_region(
                 &mut layouter,
                 &config,
-                "native.segment_sum",
+                "native.segment_sum_quantized_inverse",
                 32,
             )?;
         }
@@ -2326,14 +2888,26 @@ impl Circuit<Fr> for FullNativeCircuit {
                 | NativeDebugScope::HiddenOnly
                 | NativeDebugScope::FullModel
         ) {
-            let head_limit = if matches!(scope, NativeDebugScope::FirstHiddenLayerAllHeads | NativeDebugScope::HiddenOnly | NativeDebugScope::FullModel) {
+            let head_limit = if matches!(
+                scope,
+                NativeDebugScope::FirstHiddenLayerAllHeads
+                    | NativeDebugScope::HiddenOnly
+                    | NativeDebugScope::FullModel
+            ) {
                 total_hidden_heads_from_plan(&self.plan).max(1).min(8)
             } else {
                 1
             };
             for head in 0..head_limit {
-                let region_name = format!("native.full_model.layer_0.head_{head}.compressed_projection");
-                self.assign_projection_region(&mut layouter, &config, Box::leak(region_name.into_boxed_str()), 0, head)?;
+                let region_name =
+                    format!("native.full_model.layer_0.head_{head}.compressed_projection");
+                self.assign_projection_region(
+                    &mut layouter,
+                    &config,
+                    Box::leak(region_name.into_boxed_str()),
+                    0,
+                    head,
+                )?;
             }
         }
         if matches!(
@@ -2344,22 +2918,33 @@ impl Circuit<Fr> for FullNativeCircuit {
                 | NativeDebugScope::HiddenOnly
                 | NativeDebugScope::FullModel
         ) {
-            let head_limit = if matches!(scope, NativeDebugScope::FirstHiddenLayerAllHeads | NativeDebugScope::HiddenOnly | NativeDebugScope::FullModel) {
+            let head_limit = if matches!(
+                scope,
+                NativeDebugScope::FirstHiddenLayerAllHeads
+                    | NativeDebugScope::HiddenOnly
+                    | NativeDebugScope::FullModel
+            ) {
                 total_hidden_heads_from_plan(&self.plan).max(1).min(8)
             } else {
                 1
             };
             for head in 0..head_limit {
-                let region_name = format!("native.full_model.layer_0.head_{head}.compressed_aggregation");
-                self.assign_aggregation_region(&mut layouter, &config, Box::leak(region_name.into_boxed_str()), 0, head)?;
+                let region_name =
+                    format!("native.full_model.layer_0.head_{head}.compressed_aggregation");
+                self.assign_aggregation_region(
+                    &mut layouter,
+                    &config,
+                    Box::leak(region_name.into_boxed_str()),
+                    0,
+                    head,
+                )?;
             }
         }
-        if matches!(scope, NativeDebugScope::OutputOnly | NativeDebugScope::FullModel) {
-            self.assign_output_average_region(
-                &mut layouter,
-                &config,
-                "native.output_average",
-            )?;
+        if matches!(
+            scope,
+            NativeDebugScope::OutputOnly | NativeDebugScope::FullModel
+        ) {
+            self.assign_output_average_region(&mut layouter, &config, "native.output_average")?;
         }
         self.assign_public_binding_region(&mut layouter, &config)
     }
@@ -2390,7 +2975,11 @@ fn read_csr_payload(path: &Path) -> Result<CsrPayload, EZKLError> {
     let mut input = bytes.as_slice();
     let magic = b"EZKLGATCSR1\n";
     if input.len() < magic.len() || &input[..magic.len()] != magic {
-        return Err(format!("native_constraint_synthesis_failed: malformed CSR magic at {}", path.display()).into());
+        return Err(format!(
+            "native_constraint_synthesis_failed: malformed CSR magic at {}",
+            path.display()
+        )
+        .into());
     }
     input = &input[magic.len()..];
     let src = read_u64_vec(&mut input)?;
@@ -2467,13 +3056,18 @@ fn native_srs_path_for_key(key_path: &Path) -> PathBuf {
     srs_path
 }
 
-fn load_native_params_for_key(key_path: &Path, logrows: u32) -> Result<ParamsKZG<Bn256>, EZKLError> {
+fn load_native_params_for_key(
+    key_path: &Path,
+    logrows: u32,
+) -> Result<ParamsKZG<Bn256>, EZKLError> {
     let srs_path = native_srs_path_for_key(key_path);
     if srs_path.exists() {
         crate::pfsys::srs::load_srs_prover::<KZGCommitmentScheme<Bn256>>(srs_path)
             .map_err(EZKLError::from)
     } else {
-        Ok(crate::pfsys::srs::gen_srs::<KZGCommitmentScheme<Bn256>>(logrows))
+        Ok(crate::pfsys::srs::gen_srs::<KZGCommitmentScheme<Bn256>>(
+            logrows,
+        ))
     }
 }
 
@@ -2486,7 +3080,10 @@ fn run_dir_for_path(path: &Path) -> PathBuf {
     }
 }
 
-fn write_native_failure(run_dir: &Path, failure: &NativeConstraintFailure) -> Result<(), EZKLError> {
+fn write_native_failure(
+    run_dir: &Path,
+    failure: &NativeConstraintFailure,
+) -> Result<(), EZKLError> {
     write_json(&run_dir.join("native_constraint_failure.json"), failure)?;
     let log = format!(
         "block_reason={}\ngate_name={}\nregion_name={}\nrow_offset={}\ndataset={}\nroute_id={}\ncomponent={}\nexpected_relation={}\nactual_values={:?}\nwitness_source_path={}\ncommand={}\nraw_error={}\nattempted_fix={}\nremaining_blocker={}\n",
@@ -2586,7 +3183,7 @@ fn strict_equivalence_failure(
         layer_index: Some(plan.layer_count.saturating_sub(1)),
         head_index: None,
         component: "public_output_binding".to_string(),
-        expected_relation: "strict_public_input_equivalent requires public output bindings to be derived from every quantized full GAT forward relation: projection, attention score, LReLU lookup, segment max, Exp lookup, exact inverse, aggregation, ELU, output average".to_string(),
+        expected_relation: "strict_public_input_equivalent requires public output bindings to be derived from every quantized full GAT forward relation: projection, attention score, LReLU lookup, segment max, Exp lookup, quantized inverse lookup, alpha rescale, aggregation, ELU, output average".to_string(),
         actual_values: vec![
             "diagnostic proof binds CSR/table/metadata scoped relations only".to_string(),
             format!("scope={}", plan.native_debug_scope),
@@ -2653,12 +3250,12 @@ fn full_model_preflight_failure(
         gate_name: preflight
             .get("failure_gate")
             .and_then(|value| value.as_str())
-            .unwrap_or("native.exact_inverse")
+            .unwrap_or("native.quantized_inverse_lookup")
             .to_string(),
         region_name: preflight
             .get("failure_region")
             .and_then(|value| value.as_str())
-            .unwrap_or("native.full_model.layer_0.head_0.softmax.exact_inverse")
+            .unwrap_or("native.full_model.layer_0.head_0.softmax.quantized_inverse_lookup")
             .to_string(),
         row_offset: preflight
             .get("failure_row")
@@ -2671,12 +3268,12 @@ fn full_model_preflight_failure(
         component: preflight
             .get("component")
             .and_then(|value| value.as_str())
-            .unwrap_or("full_model.exact_inverse")
+            .unwrap_or("full_model.quantized_inverse_lookup")
             .to_string(),
         expected_relation: preflight
             .get("expected_relation")
             .and_then(|value| value.as_str())
-            .unwrap_or("strict native route requires exact finite-field Sum_i * Inv_i = 1")
+            .unwrap_or("strict native route requires quant_cfg_id-derived quantized inverse lookup and alpha rescale")
             .to_string(),
         actual_values,
         witness_source_path: output_path.display().to_string(),
@@ -2694,9 +3291,88 @@ fn full_model_preflight_failure(
         remaining_blocker: preflight
             .get("remaining_blocker")
             .and_then(|value| value.as_str())
-            .unwrap_or("native full-model witness preflight did not reach a strict exact-inverse compatible assignment")
+            .unwrap_or("native full-model witness preflight did not reach a quantized inverse and alpha compatible assignment")
             .to_string(),
     }
+}
+
+fn preflight_i64(preflight: &serde_json::Value, key: &str) -> Option<i64> {
+    preflight.get(key).and_then(|value| value.as_i64())
+}
+
+fn validate_ready_preflight_policy(
+    plan: &NativeCompiledPlan,
+    preflight: &serde_json::Value,
+) -> Result<(), EZKLError> {
+    let policy = inverse_policy_from_binding(&plan.formal_table_binding);
+    let preflight_policy = preflight
+        .get("inverse_policy")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if preflight_policy != policy.inverse_policy {
+        return Err(format!(
+            "inverse_policy_hash_mismatch: preflight inverse_policy={} plan inverse_policy={}",
+            preflight_policy, policy.inverse_policy
+        )
+        .into());
+    }
+    let preflight_hash = preflight
+        .get("inverse_policy_hash")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if preflight_hash != policy.inverse_policy_hash {
+        return Err(format!(
+            "inverse_policy_hash_mismatch: preflight inverse_policy_hash={} plan inverse_policy_hash={}",
+            preflight_hash, policy.inverse_policy_hash
+        )
+        .into());
+    }
+    if let (Some(sum_q), Some(inv_q)) = (
+        preflight_i64(preflight, "quantized_sum_scale16"),
+        preflight_i64(preflight, "quantized_inv_scale16"),
+    ) {
+        if !validate_inverse_witness_against_policy(sum_q, inv_q, &policy) {
+            return Err(format!(
+                "quantized_inverse_lookup_mismatch: sum_q={} inv_q={} expected_inv_q={}",
+                sum_q,
+                inv_q,
+                quantized_inverse_for_sum_q(sum_q, &policy)
+            )
+            .into());
+        }
+    }
+    if let (Some(u_q), Some(inv_q), Some(alpha_q)) = (
+        preflight_i64(preflight, "u_q"),
+        preflight_i64(preflight, "inv_q"),
+        preflight_i64(preflight, "alpha_q"),
+    ) {
+        if !validate_alpha_rescale(u_q, inv_q, alpha_q, &policy) {
+            return Err(format!(
+                "alpha_rescale_mismatch: u_q={} inv_q={} alpha_q={} divisor={}",
+                u_q, inv_q, alpha_q, policy.alpha_rescale_divisor
+            )
+            .into());
+        }
+    }
+    if preflight
+        .get("inverse_all_nodes_accepted")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+        != true
+    {
+        return Err(
+            "quantized_inverse_lookup_mismatch: preflight did not accept every node".into(),
+        );
+    }
+    if preflight
+        .get("alpha_all_edges_accepted")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+        != true
+    {
+        return Err("alpha_rescale_mismatch: preflight did not accept every edge".into());
+    }
+    Ok(())
 }
 
 fn save_full_keys(
@@ -2773,6 +3449,7 @@ pub(crate) fn graph_gat_setup(
                     )
                     .into());
                 }
+                validate_ready_preflight_policy(&plan, &preflight)?;
             }
             let logrows = save_full_keys(plan.clone(), &run_dir, &vk_path, &pk_path)?;
             Ok(serde_json::json!({
@@ -2827,6 +3504,7 @@ pub(crate) fn graph_gat_gen_witness(
                     )
                     .into());
                 }
+                validate_ready_preflight_policy(&plan, &preflight)?;
             }
             let witness = serde_json::json!({
                 "witness_kind": "full_compressed_csr_native_inputs",
@@ -2912,13 +3590,14 @@ pub(crate) fn graph_gat_prove(
             }
             let scope = NativeDebugScope::parse(&plan.native_debug_scope)?;
             let run_dir = run_dir_for_path(&compiled_circuit_path);
-            let circuit = FullNativeCircuit::new(
-                plan.clone(),
-                &run_dir,
-                witness_path.display().to_string(),
-            )?;
+            let circuit =
+                FullNativeCircuit::new(plan.clone(), &run_dir, witness_path.display().to_string())?;
             let public_inputs = native_full_public_inputs(&plan);
-            let mock = MockProver::run(circuit.params.logrows, &circuit, vec![public_inputs.clone()]);
+            let mock = MockProver::run(
+                circuit.params.logrows,
+                &circuit,
+                vec![public_inputs.clone()],
+            );
             match mock {
                 Ok(prover) => {
                     if let Err(failures) = prover.verify() {
@@ -3029,7 +3708,9 @@ pub(crate) fn graph_gat_prove(
                 None,
                 None,
             )
-            .map_err(|error| EZKLError::from(format!("native_prover_failed: create_proof: {error}")))?;
+            .map_err(|error| {
+                EZKLError::from(format!("native_prover_failed: create_proof: {error}"))
+            })?;
             snark.save(&proof_path)?;
             Ok(serde_json::json!({
                 "status": "proof_created",
@@ -3062,7 +3743,12 @@ pub(crate) fn graph_gat_verify(
 ) -> Result<String, EZKLError> {
     match load_backend_plan(&compiled_circuit_path, "graph-gat-verify")? {
         BackendPlan::Tiny(plan) => {
-            verify_tiny_proof(plan.level, plan.logrows, proof_path.clone(), vk_path.clone())?;
+            verify_tiny_proof(
+                plan.level,
+                plan.logrows,
+                proof_path.clone(),
+                vk_path.clone(),
+            )?;
             let output = NativeVerifyOutput {
                 status: "verified".to_string(),
                 verify_passed: true,
@@ -3076,13 +3762,12 @@ pub(crate) fn graph_gat_verify(
         }
         BackendPlan::Full(plan) => {
             let run_dir = run_dir_for_path(&compiled_circuit_path);
-            let circuit = FullNativeCircuit::new(
-                plan.clone(),
-                &run_dir,
-                proof_path.display().to_string(),
-            )?;
+            let circuit =
+                FullNativeCircuit::new(plan.clone(), &run_dir, proof_path.display().to_string())?;
             let proof = Snark::<Fr, G1Affine>::load::<KZGCommitmentScheme<Bn256>>(&proof_path)
-                .map_err(|error| EZKLError::from(format!("native_verify_failed: load_proof: {error}")))?;
+                .map_err(|error| {
+                    EZKLError::from(format!("native_verify_failed: load_proof: {error}"))
+                })?;
             let vk = load_vk::<KZGCommitmentScheme<Bn256>, FullNativeCircuit>(
                 vk_path.clone(),
                 circuit.params.clone(),
@@ -3103,7 +3788,9 @@ pub(crate) fn graph_gat_verify(
                 strategy,
                 1 << circuit.params.logrows,
             )
-            .map_err(|error| EZKLError::from(format!("native_verify_failed: verify_proof: {error}")))?;
+            .map_err(|error| {
+                EZKLError::from(format!("native_verify_failed: verify_proof: {error}"))
+            })?;
             let output = serde_json::json!({
                 "status": "verified",
                 "verify_passed": true,
@@ -3124,8 +3811,10 @@ pub(crate) fn graph_gat_verify(
 #[cfg(test)]
 mod tests {
     use super::{
-        create_tiny_proof, default_tiny_witness, save_tiny_keys, tiny_params, tiny_public_inputs,
-        verify_tiny_proof, TinyNativeCircuit, TINY_NATIVE_LOGROWS,
+        TINY_NATIVE_LOGROWS, TinyNativeCircuit, create_tiny_proof,
+        default_quantized_inverse_policy, default_tiny_witness, quantized_inverse_for_sum_q,
+        save_tiny_keys, tiny_params, tiny_public_inputs, validate_alpha_rescale,
+        validate_inverse_witness_against_policy, verify_tiny_proof,
     };
     use crate::circuit::CheckMode;
     use crate::pfsys::{create_keys, create_proof_circuit, verify_proof_circuit};
@@ -3218,6 +3907,35 @@ mod tests {
         };
         let prover = MockProver::run(4, &circuit, vec![]).unwrap();
         prover.assert_satisfied();
+    }
+
+    #[test]
+    fn quantized_inverse_policy_accepts_scale_product() {
+        let policy = default_quantized_inverse_policy();
+        assert!(validate_inverse_witness_against_policy(16, 16, &policy));
+        assert!(validate_inverse_witness_against_policy(32, 8, &policy));
+        assert!(validate_inverse_witness_against_policy(63, 4, &policy));
+        assert_eq!(quantized_inverse_for_sum_q(63, &policy), 4);
+        assert_eq!(quantized_inverse_for_sum_q(96, &policy), 3);
+        assert_eq!(quantized_inverse_for_sum_q(1014, &policy), 0);
+    }
+
+    #[test]
+    fn quantized_inverse_policy_rejects_bad_product() {
+        let policy = default_quantized_inverse_policy();
+        assert!(!validate_inverse_witness_against_policy(16, 15, &policy));
+        assert!(!validate_inverse_witness_against_policy(32, 7, &policy));
+        assert!(!validate_inverse_witness_against_policy(1014, 1, &policy));
+    }
+
+    #[test]
+    fn alpha_rescale_policy_matches_inverse_policy() {
+        let policy = default_quantized_inverse_policy();
+        assert!(validate_alpha_rescale(16, 16, 16, &policy));
+        assert!(validate_alpha_rescale(16, 4, 4, &policy));
+        assert!(validate_alpha_rescale(12, 8, 6, &policy));
+        assert!(validate_alpha_rescale(5, 5, 1, &policy));
+        assert!(!validate_alpha_rescale(16, 16, 11, &policy));
     }
 
     #[test]

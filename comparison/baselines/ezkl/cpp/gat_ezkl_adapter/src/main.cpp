@@ -333,7 +333,9 @@ int main(int argc, char** argv) {
             << "  \"quant_cfg_id\": \"" << gat_ezkl::json_escape(quant.quant_cfg_id) << "\",\n"
             << "  \"static_table_id\": \"" << gat_ezkl::json_escape(config.static_table_id) << "\"";
         if (formal_tables) {
-            settings << ",\n  \"formal_tables\": " << gat_ezkl::formal_table_binding_json(*formal_tables) << "\n";
+            settings << ",\n  \"formal_tables\": " << gat_ezkl::formal_table_binding_json(*formal_tables) << ",\n"
+                     << "  \"inverse_policy\": \"" << gat_ezkl::json_escape(formal_tables->inverse_policy) << "\",\n"
+                     << "  \"inverse_policy_hash\": \"" << formal_tables->hashes.inverse_policy_hash << "\"\n";
         } else {
             settings << "\n";
         }
@@ -379,6 +381,10 @@ int main(int argc, char** argv) {
             manifest
                 << "  \"formal_tables\": " << gat_ezkl::formal_table_binding_json(*formal_tables) << ",\n"
                 << "  \"formal_table_hash\": \"" << formal_tables->hashes.table_hash << "\",\n";
+            manifest
+                << "  \"inverse_policy\": \"" << gat_ezkl::json_escape(formal_tables->inverse_policy) << "\",\n"
+                << "  \"inverse_scale_product\": " << formal_tables->inverse.inverse_scale_product << ",\n"
+                << "  \"inverse_policy_hash\": \"" << formal_tables->hashes.inverse_policy_hash << "\",\n";
         }
         manifest
             << "  \"preprocess_id\": \"full_dataset_cpp_normalize_self_loop_dedup_sort_v1\",\n"

@@ -1,5 +1,7 @@
-use crate::circuit::region::RegionSettings;
+use crate::EZKL_BUF_CAPACITY;
+use crate::RunArgs;
 use crate::circuit::CheckMode;
+use crate::circuit::region::RegionSettings;
 use crate::commands::CalibrationTarget;
 #[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
 use crate::eth::deploy_contract_via_solidity;
@@ -12,15 +14,13 @@ use crate::graph::input::GraphData;
 use crate::graph::{GraphCircuit, GraphSettings, GraphWitness, Model};
 #[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
 use crate::pfsys::encode_calldata;
+use crate::pfsys::{ProofSplitCommit, create_proof_circuit, verify_proof_circuit};
 use crate::pfsys::{
-    create_keys, load_pk, load_vk, save_params, save_pk, swap_proof_commitments, Snark,
+    Snark, create_keys, load_pk, load_vk, save_params, save_pk, swap_proof_commitments,
 };
-use crate::pfsys::{create_proof_circuit, verify_proof_circuit, ProofSplitCommit};
 use crate::pfsys::{save_vk, srs::*};
 use crate::tensor::TensorError;
-use crate::RunArgs;
-use crate::EZKL_BUF_CAPACITY;
-use crate::{commands::*, EZKLError};
+use crate::{EZKLError, commands::*};
 use colored::Colorize;
 #[cfg(unix)]
 use gag::Gag;
@@ -31,12 +31,12 @@ use halo2_proofs::plonk::{self, Circuit};
 use halo2_proofs::poly::commitment::Verifier;
 use halo2_proofs::poly::commitment::{CommitmentScheme, Params};
 
+use halo2_proofs::poly::VerificationStrategy;
 use halo2_proofs::poly::kzg::commitment::KZGCommitmentScheme;
 use halo2_proofs::poly::kzg::multiopen::{ProverSHPLONK, VerifierSHPLONK};
 use halo2_proofs::poly::kzg::{
     commitment::ParamsKZG, strategy::SingleStrategy as KZGSingleStrategy,
 };
-use halo2_proofs::poly::VerificationStrategy;
 use halo2_proofs::transcript::{
     Blake2bRead, Blake2bWrite, Challenge255, EncodedChallenge, TranscriptReadBuffer,
 };
@@ -53,8 +53,8 @@ use itertools::Itertools;
 use lazy_static::lazy_static;
 use log::debug;
 use log::{info, trace, warn};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 #[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
 use std::fs::File;
 use std::io::BufWriter;
@@ -141,13 +141,16 @@ pub async fn run(command: Commands) -> Result<String, EZKLError> {
             settings_path,
             max_logrows,
             native_debug_scope,
-        } => crate::native_gat::graph_gat_gen_settings(
-            spec_path,
-            csr_layout_path,
-            settings_path,
-            max_logrows,
-            native_debug_scope,
-        ),
+        } => {
+            // Native GAT settings bind the formal table hashes that define inverse and alpha semantics.
+            crate::native_gat::graph_gat_gen_settings(
+                spec_path,
+                csr_layout_path,
+                settings_path,
+                max_logrows,
+                native_debug_scope,
+            )
+        }
         Commands::GraphGatCompile {
             spec_path,
             csr_layout_path,
@@ -1416,7 +1419,9 @@ pub(crate) async fn create_evm_vka(
     vka_path: PathBuf,
     decimals: usize,
 ) -> Result<String, EZKLError> {
-    log::warn!("Reusable verifier support is experimental and may change in the future. Use at your own risk.");
+    log::warn!(
+        "Reusable verifier support is experimental and may change in the future. Use at your own risk."
+    );
     let settings = GraphSettings::load(&settings_path)?;
     let params =
         load_params_verifier::<KZGCommitmentScheme<Bn256>>(srs_path, settings.run_args.logrows)?;
@@ -1503,7 +1508,9 @@ pub(crate) async fn register_vka(
     vka_digest_path: PathBuf,
     private_key: Option<String>,
 ) -> Result<String, EZKLError> {
-    log::warn!("Reusable verifier support is experimental and may change in the future. Use at your own risk.");
+    log::warn!(
+        "Reusable verifier support is experimental and may change in the future. Use at your own risk."
+    );
     // Load the vka, which is bincode serialized, from the vka_path
     let bytes = std::fs::read(vka_path)?;
     let vka_buf: Vec<[u8; 32]> = bincode::deserialize(&bytes)

@@ -22,24 +22,24 @@
 | hidden_only | missing |  |  |  |  | False |  |  |  |  |
 | output_only | missing |  |  |  |  | False |  |  |  |  |
 | full_model | missing |  |  |  |  | False |  |  |  |  |
-| full_model_current | blocked | 2.295 |  |  |  | False | native_full_exact_inverse_quantization_conflict | native.exact_inverse | native.full_model.layer_0.head_0.softmax.exact_inverse | 0 |
+| full_model_current | blocked | 132921.294 | 14752.499 |  |  | False | native_full_gat_forward_constraints_incomplete | native.public_output_binding | native.full_model.layer_1.output.public_output_binding | 0 |
 
 ## Current Full-Model Blocker
 
-- gate_name: `native.exact_inverse`
-- region_name: `native.full_model.layer_0.head_0.softmax.exact_inverse`
+- gate_name: `native.public_output_binding`
+- region_name: `native.full_model.layer_1.output.public_output_binding`
 - row_offset: `0`
-- relation: strict native route requires exact finite-field Sum_i * Inv_i = 1, but fp32_bundle_export supplies a scale-16 rounded reciprocal witness
-- actual_values: `['sum_q=63', 'inv_q=4', 'sum_q_times_inv_q=252', 'quant_cfg_id=fp32_bundle_export']`
-- attempted_fix: C++ adapter now executes the real full-dataset first hidden attention head and checks the formal exact inverse relation before Rust witness assignment
-- remaining_blocker: A compliant strict route needs a quant_cfg_id that defines exact inverse-compatible downstream alpha/aggregation/ELU semantics; replacing this with rounded fp32 reciprocal or output binding would violate the formal route
+- relation: strict_public_input_equivalent requires public output bindings to be derived from every quantized full GAT forward relation: projection, attention score, LReLU lookup, segment max, Exp lookup, quantized inverse lookup, alpha rescale, aggregation, ELU, output average
+- actual_values: `['diagnostic proof binds CSR/table/metadata scoped relations only', 'scope=full_model', 'full_gat_forward_in_ezkl_proof=false', 'strict_public_input_equivalent=false', 'run_dir=.']`
+- attempted_fix: replaced the artificial full compressed CSR failure with real Halo2 MockProver/KZG diagnostic scopes and preserved strict_public_input_equivalent=false for non-full semantics
+- remaining_blocker: full quantized GAT row assignment for public logits remains unimplemented; marking strict=true would be unsound
 
-## Full-Dataset Preflight Evidence
+## Full-Dataset Quantized Inverse Preflight Evidence
 
-| Dataset | node | degree | sum_fp32 | inv_fp32 | sum_q | inv_q | product |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Cora | 0 | 4 | 3.9303939786677424 | 0.25442742010788516 | 63 | 4 | 252 |
-| Citeseer | 0 | 2 | 1.9950954385290314 | 0.5012291545998884 | 32 | 8 | 256 |
-| Pubmed | 0 | 6 | 5.995988523252744 | 0.16677817112590357 | 96 | 3 | 288 |
-| PPI | 0 | 1 | 1 | 1 | 16 | 16 | 256 |
-| ogbn-arxiv | 0 | 290 | 63.34412927528665 | 0.015786782633858767 | 1014 | 0 | 0 |
+| Dataset | node | degree | policy | sum_fp32 | inv_fp32 | sum_q | inv_q | expected_inv_q | product | inverse_ok | alpha_ok |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| Cora | 0 | 4 | quantized_inverse_lookup | 3.9303939786677424 | 0.25442742010788516 | 63 | 4 | 4 | 252 | True | True |
+| Citeseer | 0 | 2 | quantized_inverse_lookup | 1.9950954385290314 | 0.5012291545998884 | 32 | 8 | 8 | 256 | True | True |
+| Pubmed | 0 | 6 | quantized_inverse_lookup | 5.995988523252744 | 0.16677817112590357 | 96 | 3 | 3 | 288 | True | True |
+| PPI | 0 | 1 | quantized_inverse_lookup | 1 | 1 | 16 | 16 | 16 | 256 | True | True |
+| ogbn-arxiv | 0 | 290 | quantized_inverse_lookup | 63.34412927528665 | 0.015786782633858767 | 1014 | 0 | 0 | 0 | True | True |

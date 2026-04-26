@@ -113,8 +113,12 @@ def analysis_blocker_classification(blocker: str) -> str:
 
 def classify_native_failure(timing_key: str, stdout: str, stderr: str) -> str:
     text = f"{stdout}\n{stderr}".lower()
-    if "native_full_exact_inverse_quantization_conflict" in text:
-        return "native_full_exact_inverse_quantization_conflict"
+    if "inverse_policy_hash_mismatch" in text:
+        return "inverse_policy_hash_mismatch"
+    if "quantized_inverse_lookup_mismatch" in text:
+        return "quantized_inverse_lookup_mismatch"
+    if "alpha_rescale_mismatch" in text:
+        return "alpha_rescale_mismatch"
     if "native_full_witness_preflight_failed" in text:
         return "native_full_witness_preflight_failed"
     if "native_full_gat_forward_constraints_incomplete" in text:
@@ -359,16 +363,25 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict, native_debug_scope:
         if code != 0:
             failure = classify_native_failure(timing_key, stdout, stderr)
             native_failure = read_native_failure(run_dir)
+            if (
+                timing_key == "setup_ms"
+                and not native_failure
+                and (code < 0 or (not stdout.strip() and not stderr.strip()))
+            ):
+                failure = "native_keygen_resource_failure"
             manifest.update(timings)
             manifest.update(
                 {
                     "status": "blocked"
                     if (
                         "resource_boundary" in failure
+                        or "resource_failure" in failure
                         or "lookup_tables" in failure
                         or "backend_unavailable" in failure
                         or "backend_incomplete" in failure
-                        or failure == "native_full_exact_inverse_quantization_conflict"
+                        or failure == "inverse_policy_hash_mismatch"
+                        or failure == "quantized_inverse_lookup_mismatch"
+                        or failure == "alpha_rescale_mismatch"
                         or failure == "native_full_witness_preflight_failed"
                         or failure == "native_full_gat_forward_constraints_incomplete"
                     )

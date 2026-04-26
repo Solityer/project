@@ -124,6 +124,10 @@ std::string build_metadata_json(
         << "  \"static_table_id\": \"" << json_escape(config.static_table_id) << "\",\n";
     if (formal_tables != nullptr) {
         out << "  \"formal_tables\": " << formal_table_binding_json(*formal_tables) << ",\n";
+        out << "  \"inverse_policy\": \"" << json_escape(formal_tables->inverse_policy) << "\",\n"
+            << "  \"inverse_scale_product\": " << formal_tables->inverse.inverse_scale_product << ",\n"
+            << "  \"alpha_rescale_policy\": \"" << json_escape(formal_tables->inverse.alpha_rescale_policy) << "\",\n"
+            << "  \"inverse_policy_hash\": \"" << formal_tables->hashes.inverse_policy_hash << "\",\n";
     }
     out
         << "  \"gat_semantics\": {\"implemented_in_cpp\":" << bool_json(gat_summary.implemented_in_cpp)
@@ -163,6 +167,12 @@ std::string build_model_info_json(
         << "  \"tensor_count_loaded_from_tensors_txt\": " << bundle.tensors.size() << ",\n";
     if (formal_tables != nullptr) {
         out << "  \"formal_tables\": " << formal_table_binding_json(*formal_tables) << ",\n";
+        out << "  \"inverse_policy\": \"" << json_escape(formal_tables->inverse_policy) << "\",\n"
+            << "  \"sum_scale\": " << formal_tables->inverse.sum_scale << ",\n"
+            << "  \"inv_scale\": " << formal_tables->inverse.inv_scale << ",\n"
+            << "  \"alpha_scale\": " << formal_tables->inverse.alpha_scale << ",\n"
+            << "  \"inverse_scale_product\": " << formal_tables->inverse.inverse_scale_product << ",\n"
+            << "  \"inverse_policy_hash\": \"" << formal_tables->hashes.inverse_policy_hash << "\",\n";
     }
     out
         << "  \"gat_forward_semantics_cpp_available\": " << bool_json(gat_summary.implemented_in_cpp) << "\n"

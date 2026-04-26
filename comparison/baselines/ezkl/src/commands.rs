@@ -1,7 +1,7 @@
 #[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
 use alloy::primitives::Address as H160;
 use clap::{Command, Parser, Subcommand};
-use clap_complete::{generate, Generator, Shell};
+use clap_complete::{Generator, Shell, generate};
 #[cfg(feature = "python-bindings")]
 use pyo3::{conversion::FromPyObject, exceptions::PyValueError, prelude::*};
 use serde::{Deserialize, Serialize};
@@ -405,7 +405,7 @@ pub enum Commands {
         args: RunArgs,
     },
 
-    /// Generates settings for the native CSR GraphSegmentAttention route.
+    /// Generates settings for the native CSR GraphSegmentAttention route with quantized inverse policy metadata.
     #[command(name = "graph-gat-gen-settings")]
     GraphGatGenSettings {
         /// The path to graph_attention_spec.json.
@@ -425,7 +425,7 @@ pub enum Commands {
         native_debug_scope: Option<String>,
     },
 
-    /// Compiles the native CSR GraphSegmentAttention plan.
+    /// Compiles the native CSR GraphSegmentAttention plan and binds quantized inverse policy hashes.
     #[command(name = "graph-gat-compile")]
     GraphGatCompile {
         /// The path to graph_attention_spec.json.
@@ -448,7 +448,7 @@ pub enum Commands {
         native_debug_scope: Option<String>,
     },
 
-    /// Creates native CSR GraphSegmentAttention proving and verifying keys.
+    /// Creates native CSR GraphSegmentAttention proving and verifying keys after policy preflight.
     #[command(name = "graph-gat-setup")]
     GraphGatSetup {
         /// The path to the compiled native plan.
@@ -462,7 +462,7 @@ pub enum Commands {
         pk_path: PathBuf,
     },
 
-    /// Generates a witness for the native CSR GraphSegmentAttention route.
+    /// Generates a witness for the native CSR GraphSegmentAttention route after inverse/alpha preflight.
     #[command(name = "graph-gat-gen-witness")]
     GraphGatGenWitness {
         /// The path to the compiled native plan.
