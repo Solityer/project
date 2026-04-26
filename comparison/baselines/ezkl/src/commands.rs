@@ -420,6 +420,9 @@ pub enum Commands {
         /// Maximum supported KZG logrows for this native route.
         #[arg(long, value_hint = clap::ValueHint::Other)]
         max_logrows: Option<u32>,
+        /// Native graph diagnostic scope.
+        #[arg(long, value_hint = clap::ValueHint::Other)]
+        native_debug_scope: Option<String>,
     },
 
     /// Compiles the native CSR GraphSegmentAttention plan.
@@ -440,6 +443,9 @@ pub enum Commands {
         /// Maximum supported KZG logrows for this native route.
         #[arg(long, value_hint = clap::ValueHint::Other)]
         max_logrows: Option<u32>,
+        /// Native graph diagnostic scope.
+        #[arg(long, value_hint = clap::ValueHint::Other)]
+        native_debug_scope: Option<String>,
     },
 
     /// Creates native CSR GraphSegmentAttention proving and verifying keys.

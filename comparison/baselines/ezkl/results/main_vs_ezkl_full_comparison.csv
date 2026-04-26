@@ -1,6 +1,6 @@
 dataset,ezkl_status,ezkl_block_reason,ezkl_route_id,main_cpu_commitment_time_ms,ezkl_commitment_time_ms,main_cpu_prove_time_ms,ezkl_prove_time_ms,main_cpu_verify_time_ms,ezkl_verify_time_ms,main_cpu_proof_size_bytes,ezkl_proof_size_bytes
-Cora,blocked,ezkl_compressed_csr_backend_unavailable,ezkl_gat_native_compressed_csr_attention_full,283.786,1.5622650098521262,1207.818,,153.379,,90755,
-Citeseer,blocked,ezkl_compressed_csr_backend_unavailable,ezkl_gat_native_compressed_csr_attention_full,453.773,2.203933006967418,1418.744,,153.837,,90763,
-Pubmed,blocked,ezkl_compressed_csr_backend_unavailable,ezkl_gat_native_compressed_csr_attention_full,2962.933,2.3204140015877783,5604.074,,175.454,,90760,
-PPI,blocked,ezkl_compressed_csr_backend_unavailable,ezkl_gat_native_compressed_csr_attention_full,3563.973,1.8514989933464676,7111.447,,424.71,,21360,
-ogbn-arxiv,blocked,ezkl_compressed_csr_backend_unavailable,ezkl_gat_native_compressed_csr_attention_full,18071.562,1.4673520054202527,66540.6,,417.38,,21361,
+Cora,blocked,native_full_gat_forward_constraints_incomplete,ezkl_gat_native_compressed_csr_attention_full,283.786,123566.10078200174,1207.818,14246.984154000529,153.379,,90755,
+Citeseer,blocked,not_run_because_cora_full_blocked_at_native_public_output_binding,ezkl_gat_native_compressed_csr_attention_full,453.773,,1418.744,,153.837,,90763,
+Pubmed,blocked,not_run_because_cora_full_blocked_at_native_public_output_binding,ezkl_gat_native_compressed_csr_attention_full,2962.933,,5604.074,,175.454,,90760,
+PPI,blocked,not_run_because_cora_full_blocked_at_native_public_output_binding,ezkl_gat_native_compressed_csr_attention_full,3563.973,,7111.447,,424.71,,21360,
+ogbn-arxiv,blocked,not_run_because_cora_full_blocked_at_native_public_output_binding,ezkl_gat_native_compressed_csr_attention_full,18071.562,,66540.6,,417.38,,21361,

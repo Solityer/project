@@ -32,6 +32,22 @@ SEGMENT_ROUTE = "ezkl_gat_strict_segment_softmax_full"
 NATIVE_CSR_ROUTE = "ezkl_gat_native_csr_segment_attention_full"
 COMPRESSED_NATIVE_CSR_ROUTE = "ezkl_gat_native_compressed_csr_attention_full"
 NATIVE_GRAPH_ROUTES = {NATIVE_CSR_ROUTE, COMPRESSED_NATIVE_CSR_ROUTE}
+NATIVE_DEBUG_SCOPES = [
+    "level0_mul",
+    "inverse_only",
+    "segment_sum_inverse",
+    "segment_max_only",
+    "lrelu_lookup_only",
+    "exp_lookup_only",
+    "elu_lookup_only",
+    "compressed_projection_only",
+    "compressed_aggregation_only",
+    "single_head_first_layer",
+    "first_hidden_layer_all_heads",
+    "hidden_only",
+    "output_only",
+    "full_model",
+]
 
 
 def ensure_inside(path: Path, root: Path) -> None:
@@ -97,6 +113,8 @@ def analysis_blocker_classification(blocker: str) -> str:
 
 def classify_native_failure(timing_key: str, stdout: str, stderr: str) -> str:
     text = f"{stdout}\n{stderr}".lower()
+    if "native_full_gat_forward_constraints_incomplete" in text:
+        return "native_full_gat_forward_constraints_incomplete"
     if "native_constraint_synthesis_failed" in text:
         return "native_constraint_synthesis_failed"
     if "native_keygen" in text:
@@ -116,6 +134,16 @@ def classify_native_failure(timing_key: str, stdout: str, stderr: str) -> str:
     if timing_key == "verify_time_ms":
         return "ezkl_native_verify_failed"
     return "ezkl_native_csr_route_failed"
+
+
+def read_native_failure(run_dir: Path) -> dict:
+    path = run_dir / "native_constraint_failure.json"
+    if path.exists():
+        try:
+            return read_json(path)
+        except json.JSONDecodeError:
+            return {}
+    return {}
 
 
 def update_manifest(run_dir: Path, **updates: object) -> dict:
@@ -216,7 +244,7 @@ def run_ezkl_pipeline(run_dir: Path, manifest: dict) -> dict:
     return manifest
 
 
-def run_native_graph_pipeline(run_dir: Path, manifest: dict) -> dict:
+def run_native_graph_pipeline(run_dir: Path, manifest: dict, native_debug_scope: str | None = None) -> dict:
     ezkl = find_ezkl_command()
     timings: dict[str, float | None] = {
         "gen_settings_ms": None,
@@ -226,6 +254,9 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict) -> dict:
         "prove_time_ms": None,
         "verify_time_ms": None,
     }
+    scope_flags = []
+    if native_debug_scope:
+        scope_flags = ["--native-debug-scope", native_debug_scope]
     commands = [
         (
             "gen_settings_ms",
@@ -238,7 +269,8 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict) -> dict:
                 "csr_segment_layout.json",
                 "--settings-path",
                 "settings.json",
-            ],
+            ]
+            + scope_flags,
         ),
         (
             "compile_ms",
@@ -253,7 +285,8 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict) -> dict:
                 "settings.json",
                 "--compiled-circuit",
                 "model.compiled",
-            ],
+            ]
+            + scope_flags,
         ),
         (
             "setup_ms",
@@ -321,6 +354,7 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict) -> dict:
         timings[timing_key] = elapsed_ms
         if code != 0:
             failure = classify_native_failure(timing_key, stdout, stderr)
+            native_failure = read_native_failure(run_dir)
             manifest.update(timings)
             manifest.update(
                 {
@@ -330,11 +364,14 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict) -> dict:
                         or "lookup_tables" in failure
                         or "backend_unavailable" in failure
                         or "backend_incomplete" in failure
+                        or failure == "native_full_gat_forward_constraints_incomplete"
                     )
                     else "failed",
                     "block_reason": failure,
                     "failure_step": timing_key,
                     "failed_command": " ".join(command),
+                    "command": " && ".join(" ".join(cmd) for _, cmd in commands),
+                    "native_debug_scope": native_debug_scope or manifest.get("native_debug_scope") or "full_model",
                     "strict_public_input_equivalent": False,
                     "full_gat_forward_in_ezkl_proof": False,
                     "verify_passed": False,
@@ -342,6 +379,11 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict) -> dict:
                     "commitment_time_ms": timings.get("setup_ms"),
                     "stdout_tail": tail("\n".join(stdout_all)),
                     "stderr_tail": tail("\n".join(stderr_all)),
+                    "failure_gate": native_failure.get("gate_name"),
+                    "failure_region": native_failure.get("region_name"),
+                    "failure_row": native_failure.get("row_offset"),
+                    "failure_relation": native_failure.get("expected_relation"),
+                    "failure_values": native_failure.get("actual_values"),
                 }
             )
             if (run_dir / "model.compiled").exists():
@@ -364,6 +406,9 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict) -> dict:
             return manifest
     proof_path = run_dir / "proof.json"
     proof_size = proof_path.stat().st_size if proof_path.exists() else None
+    verify = read_json(run_dir / "verify.json") if (run_dir / "verify.json").exists() else {}
+    strict_public = bool(verify.get("strict_public_input_equivalent", False))
+    full_forward = bool(verify.get("full_gat_forward_in_ezkl_proof", False))
     manifest.update(timings)
     manifest.update(
         {
@@ -372,9 +417,11 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict) -> dict:
             "proof_size_bytes": proof_size,
             "commitment_time_ms": timings.get("setup_ms"),
             "check_mode": "safe",
-            "strict_public_input_equivalent": True,
-            "full_gat_forward_in_ezkl_proof": True,
-            "verify_passed": True,
+            "strict_public_input_equivalent": strict_public,
+            "full_gat_forward_in_ezkl_proof": full_forward,
+            "verify_passed": bool(verify.get("verify_passed", True)),
+            "native_debug_scope": native_debug_scope or verify.get("native_debug_scope") or manifest.get("native_debug_scope") or "full_model",
+            "command": " && ".join(" ".join(cmd) for _, cmd in commands),
             "stdout_tail": tail("\n".join(stdout_all)),
             "stderr_tail": tail("\n".join(stderr_all)),
         }
@@ -391,6 +438,7 @@ def main() -> int:
     parser.add_argument("--route", default="strict_gat_full_onnx_v1")
     parser.add_argument("--max-packed-slots-limit", type=int, default=16000000)
     parser.add_argument("--emit-segment-debug", action="store_true")
+    parser.add_argument("--native-debug-scope", choices=NATIVE_DEBUG_SCOPES)
     parser.add_argument("--clean", action="store_true")
     parser.add_argument("--run", action="store_true")
     args = parser.parse_args()
@@ -399,6 +447,8 @@ def main() -> int:
         raise RuntimeError(f"C++ exporter is not built: {EXPORTER}")
 
     run_dir = EZKL_ROOT / DATASETS[args.dataset]
+    if args.native_debug_scope:
+        run_dir = run_dir / f"debug_{args.native_debug_scope}"
     ensure_inside(run_dir, EZKL_ROOT)
     if args.clean and run_dir.exists():
         shutil.rmtree(run_dir)
@@ -517,6 +567,8 @@ def main() -> int:
     manifest = update_manifest(
         run_dir,
         exporter_ms=exporter_ms,
+        native_debug_scope=args.native_debug_scope or "full_model",
+        scope=args.native_debug_scope or "full_model",
         stdout_tail=tail(stdout),
         stderr_tail=tail(stderr),
     )
@@ -530,7 +582,7 @@ def main() -> int:
 
     if args.run:
         if args.route in NATIVE_GRAPH_ROUTES:
-            manifest = run_native_graph_pipeline(run_dir, manifest)
+            manifest = run_native_graph_pipeline(run_dir, manifest, args.native_debug_scope)
         else:
             manifest = run_ezkl_pipeline(run_dir, manifest)
         print(f"dataset={args.dataset} status={manifest.get('status')} route_id={manifest.get('route_id')}")

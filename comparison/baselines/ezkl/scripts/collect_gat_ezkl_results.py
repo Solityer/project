@@ -28,6 +28,22 @@ SEGMENT_FIELDS = [
     "route_feasible_full",
     "blocker_if_any",
 ]
+NATIVE_DEBUG_SCOPES = [
+    "level0_mul",
+    "inverse_only",
+    "segment_sum_inverse",
+    "segment_max_only",
+    "lrelu_lookup_only",
+    "exp_lookup_only",
+    "elu_lookup_only",
+    "compressed_projection_only",
+    "compressed_aggregation_only",
+    "single_head_first_layer",
+    "first_hidden_layer_all_heads",
+    "hidden_only",
+    "output_only",
+    "full_model",
+]
 
 
 def read_json(path: Path) -> dict:
@@ -56,20 +72,42 @@ def main_rows() -> dict[str, dict]:
     return {row["dataset"]: row for row in latest["rows"]}
 
 
+def effective_manifest(run_dir: str, run_id: str) -> dict:
+    cora_failure = EZKL_ROOT / "runs/cora_full/debug_full_model/native_constraint_failure.json"
+    if run_id != "cora_full" and cora_failure.exists():
+        return {
+            "dataset": run_id,
+            "route_id": "ezkl_gat_native_compressed_csr_attention_full",
+            "status": "blocked",
+            "block_reason": "not_run_because_cora_full_blocked_at_native_public_output_binding",
+            "strict_public_input_equivalent": False,
+            "full_gat_forward_in_ezkl_proof": False,
+            "failure_step": "not_started",
+        }
+    base = EZKL_ROOT / run_dir
+    manifest_path = base / "run_manifest.json"
+    manifest = read_json(manifest_path) if manifest_path.exists() else {
+        "dataset": run_id,
+        "status": "failed",
+        "block_reason": "missing_run_manifest",
+    }
+    debug_full = base / "debug_full_model" / "run_manifest.json"
+    if debug_full.exists() and manifest.get("status") != "verified":
+        debug_manifest = read_json(debug_full)
+        if debug_manifest.get("block_reason") != "native_constraint_synthesis_failed":
+            manifest = debug_manifest | {
+                "dataset": run_id,
+                "source_manifest": str(debug_full.relative_to(EZKL_ROOT)),
+            }
+    return manifest
+
+
 def collect() -> tuple[list[dict], list[dict]]:
     main_by_dataset = main_rows()
     ezkl_rows: list[dict] = []
     comparison_rows: list[dict] = []
     for run_id, main_key, display, run_dir in DATASETS:
-        manifest_path = EZKL_ROOT / run_dir / "run_manifest.json"
-        if manifest_path.exists():
-            manifest = read_json(manifest_path)
-        else:
-            manifest = {
-                "dataset": run_id,
-                "status": "failed",
-                "block_reason": "missing_run_manifest",
-            }
+        manifest = effective_manifest(run_dir, run_id)
         ezkl_row = {
             "dataset": run_id,
             "display_dataset": display,
@@ -77,6 +115,12 @@ def collect() -> tuple[list[dict], list[dict]]:
             "status": manifest.get("status", "failed"),
             "block_reason": manifest.get("block_reason", ""),
             "strict_public_input_equivalent": manifest.get("strict_public_input_equivalent", False),
+            "full_gat_forward_in_ezkl_proof": manifest.get("full_gat_forward_in_ezkl_proof", False),
+            "failure_step": manifest.get("failure_step", ""),
+            "failure_gate": manifest.get("failure_gate", ""),
+            "failure_region": manifest.get("failure_region", ""),
+            "failure_row": manifest.get("failure_row", ""),
+            "failure_relation": manifest.get("failure_relation", ""),
         }
         for metric in METRICS:
             ezkl_row[metric] = manifest.get(metric)
@@ -112,15 +156,17 @@ def write_summary(ezkl_rows: list[dict], comparison_rows: list[dict]) -> None:
     verified_count = sum(1 for row in ezkl_rows if row.get("status") == "verified")
     lines.append(f"- Verified ezkl full-dataset rows: {verified_count}/{len(ezkl_rows)}.")
     lines.append("- Strict public input equivalent is true only for rows with a verified full native GAT proof.")
-    lines.append("- No precomputed logits, identity, reshape, digest, folding, subset, shard, or scaled route was used.")
+    lines.append("- No output-binding workaround, precomputed logits, identity, digest, folding, subset, shard, or sample route was used.")
     lines.append("")
     lines.append("## Dataset Status")
     lines.append("")
-    lines.append("| Dataset | status | route_id | block_reason |")
-    lines.append("| --- | --- | --- | --- |")
+    lines.append("| Dataset | status | route_id | strict | full GAT forward in proof | block_reason |")
+    lines.append("| --- | --- | --- | --- | --- | --- |")
     for row in ezkl_rows:
         lines.append(
-            f"| {row['display_dataset']} | {row['status']} | {row.get('route_id', '')} | {row.get('block_reason', '')} |"
+            f"| {row['display_dataset']} | {row['status']} | {row.get('route_id', '')} | "
+            f"{row.get('strict_public_input_equivalent', False)} | {row.get('full_gat_forward_in_ezkl_proof', False)} | "
+            f"{row.get('block_reason', '')} |"
         )
     lines.append("")
     lines.append("## Four-Metric Comparison")
@@ -159,7 +205,16 @@ def write_summary(ezkl_rows: list[dict], comparison_rows: list[dict]) -> None:
     lines.append("## Blocked/Failed Reasons")
     lines.append("")
     for row in ezkl_rows:
-        lines.append(f"- {row['display_dataset']}: {row['status']} / {row.get('block_reason', '')}")
+        detail = row.get("failure_gate") or row.get("failure_region") or row.get("failure_relation")
+        if detail:
+            lines.append(
+                f"- {row['display_dataset']}: {row['status']} / {row.get('block_reason', '')}; "
+                f"step={row.get('failure_step', '')}; gate={row.get('failure_gate', '')}; "
+                f"region={row.get('failure_region', '')}; row={row.get('failure_row', '')}; "
+                f"relation={row.get('failure_relation', '')}"
+            )
+        else:
+            lines.append(f"- {row['display_dataset']}: {row['status']} / {row.get('block_reason', '')}")
     (RESULTS / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -206,8 +261,7 @@ def write_native_csr_report() -> None:
     lines.append("| Dataset | route_id | primitive | status | block_reason | failure_step | rows | required_logrows | max_logrows |")
     lines.append("| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: |")
     for run_id, _main_key, display, run_dir in DATASETS:
-        manifest_path = EZKL_ROOT / run_dir / "run_manifest.json"
-        manifest = read_json(manifest_path) if manifest_path.exists() else {}
+        manifest = effective_manifest(run_dir, run_id)
         plan = manifest.get("native_compile_plan") or {}
         estimate = plan.get("estimate") or {}
         lines.append(
@@ -264,7 +318,7 @@ def write_native_compressed_csr_report() -> None:
     lines.append("| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |")
     for run_id, _main_key, display, run_dir in DATASETS:
         base = EZKL_ROOT / run_dir
-        manifest = read_json(base / "run_manifest.json") if (base / "run_manifest.json").exists() else {}
+        manifest = effective_manifest(run_dir, run_id)
         estimate = read_json(base / "compressed_row_estimate.json") if (base / "compressed_row_estimate.json").exists() else manifest.get("compressed_row_estimate", {})
         hashes = read_json(base / "formal_table_hashes.json") if (base / "formal_table_hashes.json").exists() else manifest.get("formal_table_hashes", {})
         rows = estimate.get("total_rows_estimated", "")
@@ -293,6 +347,62 @@ def write_native_compressed_csr_report() -> None:
     (RESULTS / "native_compressed_csr_attention_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def write_native_constraint_debug_report() -> None:
+    lines: list[str] = []
+    lines.append("# Native Constraint Debug Report")
+    lines.append("")
+    lines.append("- Route: `ezkl_gat_native_compressed_csr_attention_full`")
+    lines.append("- Diagnostic policy: every native debug scope runs MockProver before KZG prove; failures write `native_constraint_failure.json` and `.log`.")
+    lines.append("- No output-binding workaround, precomputed logits, subset, shard, sample, digest, folding, or identity route is used.")
+    lines.append("")
+    lines.append("## Cora Scope Ladder")
+    lines.append("")
+    lines.append("| Scope | status | setup_ms | prove_ms | verify_ms | proof_size | verify_passed | block_reason | failure gate | failure region | row |")
+    lines.append("| --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- | ---: |")
+    base = EZKL_ROOT / "runs/cora_full"
+    for scope in NATIVE_DEBUG_SCOPES:
+        manifest_path = base / f"debug_{scope}" / "run_manifest.json"
+        manifest = read_json(manifest_path) if manifest_path.exists() else {"status": "missing"}
+        lines.append(
+            f"| {scope} | {manifest.get('status', 'missing')} | {metric_cell(manifest, 'setup_ms')} | "
+            f"{metric_cell(manifest, 'prove_time_ms')} | {metric_cell(manifest, 'verify_time_ms')} | "
+            f"{metric_cell(manifest, 'proof_size_bytes')} | {manifest.get('verify_passed', False)} | "
+            f"{manifest.get('block_reason', '')} | {manifest.get('failure_gate', '')} | "
+            f"{manifest.get('failure_region', '')} | {manifest.get('failure_row', '')} |"
+        )
+    failure_path = base / "debug_full_model" / "native_constraint_failure.json"
+    if failure_path.exists():
+        failure = read_json(failure_path)
+        lines.append("")
+        lines.append("## Current Full-Model Blocker")
+        lines.append("")
+        lines.append(f"- gate_name: `{failure.get('gate_name', '')}`")
+        lines.append(f"- region_name: `{failure.get('region_name', '')}`")
+        lines.append(f"- row_offset: `{failure.get('row_offset', '')}`")
+        lines.append(f"- relation: {failure.get('expected_relation', '')}")
+        lines.append(f"- actual_values: `{failure.get('actual_values', [])}`")
+        lines.append(f"- attempted_fix: {failure.get('attempted_fix', '')}")
+        lines.append(f"- remaining_blocker: {failure.get('remaining_blocker', '')}")
+    (RESULTS / "native_constraint_debug_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_native_full_experiment_report(ezkl_rows: list[dict]) -> None:
+    lines: list[str] = []
+    lines.append("# Native Full Experiment Report")
+    lines.append("")
+    lines.append("| Dataset | status | strict_public_input_equivalent | full_gat_forward_in_ezkl_proof | block_reason |")
+    lines.append("| --- | --- | --- | --- | --- |")
+    for row in ezkl_rows:
+        lines.append(
+            f"| {row['display_dataset']} | {row.get('status', '')} | "
+            f"{row.get('strict_public_input_equivalent', False)} | "
+            f"{row.get('full_gat_forward_in_ezkl_proof', False)} | {row.get('block_reason', '')} |"
+        )
+    lines.append("")
+    lines.append("No output-binding workaround, no precomputed logits, no subset, no shard, and no sample route was used.")
+    (RESULTS / "native_full_experiment_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def main() -> int:
     RESULTS.mkdir(parents=True, exist_ok=True)
     ezkl_rows, comparison_rows = collect()
@@ -301,7 +411,21 @@ def main() -> int:
     write_csv(
         RESULTS / "gat_ezkl_full_results.csv",
         ezkl_rows,
-        ["dataset", "display_dataset", "route_id", "status", "block_reason", "strict_public_input_equivalent"] + METRICS,
+        [
+            "dataset",
+            "display_dataset",
+            "route_id",
+            "status",
+            "block_reason",
+            "strict_public_input_equivalent",
+            "full_gat_forward_in_ezkl_proof",
+            "failure_step",
+            "failure_gate",
+            "failure_region",
+            "failure_row",
+            "failure_relation",
+        ]
+        + METRICS,
     )
     comparison_fields = ["dataset", "ezkl_status", "ezkl_block_reason", "ezkl_route_id"]
     for metric in METRICS:
@@ -312,6 +436,8 @@ def main() -> int:
     write_segment_summary(segment_rows)
     write_native_csr_report()
     write_native_compressed_csr_report()
+    write_native_constraint_debug_report()
+    write_native_full_experiment_report(ezkl_rows)
     print(f"wrote results under {RESULTS}")
     return 0
 

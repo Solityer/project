@@ -140,11 +140,13 @@ pub async fn run(command: Commands) -> Result<String, EZKLError> {
             csr_layout_path,
             settings_path,
             max_logrows,
+            native_debug_scope,
         } => crate::native_gat::graph_gat_gen_settings(
             spec_path,
             csr_layout_path,
             settings_path,
             max_logrows,
+            native_debug_scope,
         ),
         Commands::GraphGatCompile {
             spec_path,
@@ -152,12 +154,14 @@ pub async fn run(command: Commands) -> Result<String, EZKLError> {
             settings_path,
             compiled_circuit,
             max_logrows,
+            native_debug_scope,
         } => crate::native_gat::graph_gat_compile(
             spec_path,
             csr_layout_path,
             settings_path,
             compiled_circuit,
             max_logrows,
+            native_debug_scope,
         ),
         Commands::GraphGatSetup {
             compiled_circuit,
