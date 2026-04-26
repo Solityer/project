@@ -1,0 +1,13 @@
+[package]
+name = "halo2_solidity_verifier"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+evm = []
+mv-lookup = []
+
+[lib]
+name = "halo2_solidity_verifier"
+path = "src/lib.rs"

@@ -35,7 +35,7 @@ halo2_wrong_ecc = { git = "https://github.com/zkonduit/halo2wrong", branch = "ac
 snark-verifier = { git = "https://github.com/zkonduit/snark-verifier", branch = "ac/chunked-mv-lookup", features = [
     "derive_serde", "mv-lookup"
 ] }
-halo2_solidity_verifier = { git = "https://github.com/zkonduit/ezkl-verifier", branch = "main", optional = true, features = [
+halo2_solidity_verifier = { path = "vendor/halo2_solidity_verifier_stub", optional = true, features = [
     "evm", "mv-lookup",
 ] }
 maybe-rayon = { version = "0.1.1", default-features = false }
@@ -267,13 +267,18 @@ mimalloc = ["dep:mimalloc"]
 reusable-verifier = []
 
 
-[patch.'https://github.com/zkonduit/halo2']
-halo2_proofs = { git = "https://github.com/zkonduit/halo2#1dd2090741f006fd031a07da7f3c9dfce5e0015e", package = "halo2_proofs", branch= "ac/conditional-compilation-icicle2", features = [
+[patch.'https://github.com/zkonduit/halo2#f441c920be45f8f05d2c06a173d82e8885a5ed4d']
+halo2_proofs = { git = "https://github.com/zkonduit/halo2", package = "halo2_proofs", branch = "ac/conditional-compilation-icicle2", features = [
     "circuit-params", "mv-lookup"
 ] }
 
-[patch.'https://github.com/zkonduit/halo2#f441c920be45f8f05d2c06a173d82e8885a5ed4d']
-halo2_proofs = { git = "https://github.com/zkonduit/halo2#1dd2090741f006fd031a07da7f3c9dfce5e0015e", package = "halo2_proofs", branch= "ac/conditional-compilation-icicle2", features = [
+[patch.'https://github.com/zkonduit/halo2#1dd2090741f006fd031a07da7f3c9dfce5e0015e']
+halo2_proofs = { git = "https://github.com/zkonduit/halo2", package = "halo2_proofs", branch = "ac/conditional-compilation-icicle2", features = [
+    "circuit-params", "mv-lookup"
+] }
+
+[patch.'https://github.com/zkonduit/halo2#1dd2090741f006fd031a07da7f3c9dfce5e0015e?branch=ac%2Fconditional-compilation-icicle2']
+halo2_proofs = { git = "https://github.com/zkonduit/halo2", package = "halo2_proofs", branch = "ac/conditional-compilation-icicle2", features = [
     "circuit-params", "mv-lookup"
 ] }
 
@@ -295,5 +300,3 @@ opt-level = 3
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = ["-O4", "--flexible-inline-max-function-size", "4294967295"]
-
-

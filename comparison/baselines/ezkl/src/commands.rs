@@ -29,6 +29,10 @@ pub const DEFAULT_PK: &str = "pk.key";
 pub const DEFAULT_VK: &str = "vk.key";
 /// The default path to the proof file
 pub const DEFAULT_PROOF: &str = "proof.json";
+/// The default path to the native graph attention spec file
+pub const DEFAULT_GRAPH_GAT_SPEC: &str = "graph_attention_spec.json";
+/// The default path to the native CSR segment layout manifest
+pub const DEFAULT_GRAPH_GAT_CSR_LAYOUT: &str = "csr_segment_layout.json";
 /// Default for whether to split proofs
 pub const DEFAULT_SPLIT: &str = "false";
 /// Default verifier abi
@@ -399,6 +403,93 @@ pub enum Commands {
         /// proving arguments
         #[clap(flatten)]
         args: RunArgs,
+    },
+
+    /// Generates settings for the native CSR GraphSegmentAttention route.
+    #[command(name = "graph-gat-gen-settings")]
+    GraphGatGenSettings {
+        /// The path to graph_attention_spec.json.
+        #[arg(long, default_value = DEFAULT_GRAPH_GAT_SPEC, value_hint = clap::ValueHint::FilePath)]
+        spec_path: PathBuf,
+        /// The path to csr_segment_layout.json.
+        #[arg(long, default_value = DEFAULT_GRAPH_GAT_CSR_LAYOUT, value_hint = clap::ValueHint::FilePath)]
+        csr_layout_path: PathBuf,
+        /// The path to write native settings.
+        #[arg(short = 'O', long, default_value = DEFAULT_SETTINGS, value_hint = clap::ValueHint::FilePath)]
+        settings_path: PathBuf,
+        /// Maximum supported KZG logrows for this native route.
+        #[arg(long, value_hint = clap::ValueHint::Other)]
+        max_logrows: Option<u32>,
+    },
+
+    /// Compiles the native CSR GraphSegmentAttention plan.
+    #[command(name = "graph-gat-compile")]
+    GraphGatCompile {
+        /// The path to graph_attention_spec.json.
+        #[arg(long, default_value = DEFAULT_GRAPH_GAT_SPEC, value_hint = clap::ValueHint::FilePath)]
+        spec_path: PathBuf,
+        /// The path to csr_segment_layout.json.
+        #[arg(long, default_value = DEFAULT_GRAPH_GAT_CSR_LAYOUT, value_hint = clap::ValueHint::FilePath)]
+        csr_layout_path: PathBuf,
+        /// The path to read/write native settings.
+        #[arg(short = 'S', long, default_value = DEFAULT_SETTINGS, value_hint = clap::ValueHint::FilePath)]
+        settings_path: PathBuf,
+        /// The path to write the compiled native plan.
+        #[arg(long, default_value = DEFAULT_COMPILED_CIRCUIT, value_hint = clap::ValueHint::FilePath)]
+        compiled_circuit: PathBuf,
+        /// Maximum supported KZG logrows for this native route.
+        #[arg(long, value_hint = clap::ValueHint::Other)]
+        max_logrows: Option<u32>,
+    },
+
+    /// Creates native CSR GraphSegmentAttention proving and verifying keys.
+    #[command(name = "graph-gat-setup")]
+    GraphGatSetup {
+        /// The path to the compiled native plan.
+        #[arg(short = 'M', long, default_value = DEFAULT_COMPILED_CIRCUIT, value_hint = clap::ValueHint::FilePath)]
+        compiled_circuit: PathBuf,
+        /// The path to output the verification key file to.
+        #[arg(long, default_value = DEFAULT_VK, value_hint = clap::ValueHint::FilePath)]
+        vk_path: PathBuf,
+        /// The path to output the proving key file to.
+        #[arg(long, default_value = DEFAULT_PK, value_hint = clap::ValueHint::FilePath)]
+        pk_path: PathBuf,
+    },
+
+    /// Generates a witness for the native CSR GraphSegmentAttention route.
+    #[command(name = "graph-gat-gen-witness")]
+    GraphGatGenWitness {
+        /// The path to the compiled native plan.
+        #[arg(short = 'M', long, default_value = DEFAULT_COMPILED_CIRCUIT, value_hint = clap::ValueHint::FilePath)]
+        compiled_circuit: PathBuf,
+        /// Path to output the witness file.
+        #[arg(short = 'O', long, default_value = DEFAULT_WITNESS, value_hint = clap::ValueHint::FilePath)]
+        output: PathBuf,
+    },
+
+    /// Creates a proof for the native CSR GraphSegmentAttention route.
+    #[command(name = "graph-gat-prove")]
+    GraphGatProve {
+        /// The path to the compiled native plan.
+        #[arg(short = 'M', long, default_value = DEFAULT_COMPILED_CIRCUIT, value_hint = clap::ValueHint::FilePath)]
+        compiled_circuit: PathBuf,
+        /// The path to output the proof file to.
+        #[arg(long, default_value = DEFAULT_PROOF, value_hint = clap::ValueHint::FilePath)]
+        proof_path: PathBuf,
+    },
+
+    /// Verifies a native CSR GraphSegmentAttention proof.
+    #[command(name = "graph-gat-verify")]
+    GraphGatVerify {
+        /// The path to the proof file.
+        #[arg(long, default_value = DEFAULT_PROOF, value_hint = clap::ValueHint::FilePath)]
+        proof_path: PathBuf,
+        /// The path to native settings.
+        #[arg(short = 'S', long, default_value = DEFAULT_SETTINGS, value_hint = clap::ValueHint::FilePath)]
+        settings_path: PathBuf,
+        /// The path to the verification key file.
+        #[arg(long, default_value = DEFAULT_VK, value_hint = clap::ValueHint::FilePath)]
+        vk_path: PathBuf,
     },
 
     /// Generates the witness from an input file.

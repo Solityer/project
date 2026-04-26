@@ -54,3 +54,13 @@ cache
 out
 !tests/assets/wasm.code
 !tests/assets/wasm.sol
+
+# GAT-ZKML baseline local build/run outputs.
+build_gat_adapter/
+tmp/
+artifacts/
+.cargo_local/
+.rustup/
+*.stdout.txt
+*.stderr.txt
+!results/*.csv
