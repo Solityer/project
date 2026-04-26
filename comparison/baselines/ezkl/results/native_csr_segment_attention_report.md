@@ -6,11 +6,11 @@
 
 | Dataset | route_id | primitive | status | block_reason | failure_step | rows | required_logrows | max_logrows |
 | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: |
-| Cora | ezkl_gat_native_compressed_csr_attention_full | GraphSegmentAttentionCompressedCSR | blocked | native_full_gat_forward_constraints_incomplete | prove_time_ms | 2117846 | 22 | 26 |
-| Citeseer | ezkl_gat_native_compressed_csr_attention_full |  | blocked | not_run_because_cora_full_blocked_at_native_public_output_binding | not_started |  |  |  |
-| Pubmed | ezkl_gat_native_compressed_csr_attention_full |  | blocked | not_run_because_cora_full_blocked_at_native_public_output_binding | not_started |  |  |  |
-| PPI | ezkl_gat_native_compressed_csr_attention_full |  | blocked | not_run_because_cora_full_blocked_at_native_public_output_binding | not_started |  |  |  |
-| ogbn-arxiv | ezkl_gat_native_compressed_csr_attention_full |  | blocked | not_run_because_cora_full_blocked_at_native_public_output_binding | not_started |  |  |  |
+| Cora | ezkl_gat_native_compressed_csr_attention_full | GraphSegmentAttentionCompressedCSR | blocked | native_full_exact_inverse_quantization_conflict | setup_ms | 2117846 | 22 | 26 |
+| Citeseer | ezkl_gat_native_compressed_csr_attention_full | GraphSegmentAttentionCompressedCSR | blocked | native_full_exact_inverse_quantization_conflict | setup_ms | 2218463 | 22 | 26 |
+| Pubmed | ezkl_gat_native_compressed_csr_attention_full | GraphSegmentAttentionCompressedCSR | blocked | native_full_exact_inverse_quantization_conflict | setup_ms | 16143874 | 24 | 26 |
+| PPI | ezkl_gat_native_compressed_csr_attention_full | GraphSegmentAttentionCompressedCSR | blocked | native_full_exact_inverse_quantization_conflict | setup_ms | 43372416 | 26 | 26 |
+| ogbn-arxiv | ezkl_gat_native_compressed_csr_attention_full | GraphSegmentAttentionCompressedCSR | blocked | native_full_exact_inverse_quantization_conflict | setup_ms | 59159176 | 26 | 26 |
 
 ## Artifact Contract
 

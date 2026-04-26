@@ -113,6 +113,10 @@ def analysis_blocker_classification(blocker: str) -> str:
 
 def classify_native_failure(timing_key: str, stdout: str, stderr: str) -> str:
     text = f"{stdout}\n{stderr}".lower()
+    if "native_full_exact_inverse_quantization_conflict" in text:
+        return "native_full_exact_inverse_quantization_conflict"
+    if "native_full_witness_preflight_failed" in text:
+        return "native_full_witness_preflight_failed"
     if "native_full_gat_forward_constraints_incomplete" in text:
         return "native_full_gat_forward_constraints_incomplete"
     if "native_constraint_synthesis_failed" in text:
@@ -364,6 +368,8 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict, native_debug_scope:
                         or "lookup_tables" in failure
                         or "backend_unavailable" in failure
                         or "backend_incomplete" in failure
+                        or failure == "native_full_exact_inverse_quantization_conflict"
+                        or failure == "native_full_witness_preflight_failed"
                         or failure == "native_full_gat_forward_constraints_incomplete"
                     )
                     else "failed",

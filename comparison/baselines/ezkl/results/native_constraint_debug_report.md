@@ -8,27 +8,38 @@
 
 | Scope | status | setup_ms | prove_ms | verify_ms | proof_size | verify_passed | block_reason | failure gate | failure region | row |
 | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- | ---: |
-| level0_mul | verified | 51.910 | 42.657 | 5.564 | 8545 | True |  |  |  |  |
-| inverse_only | verified | 48.840 | 41.319 | 5.414 | 8580 | True |  |  |  |  |
-| segment_sum_inverse | verified | 325.261 | 207.890 | 9.083 | 8651 | True |  |  |  |  |
-| segment_max_only | verified | 323.916 | 184.307 | 11.614 | 8625 | True |  |  |  |  |
-| lrelu_lookup_only | verified | 43.408 | 36.419 | 6.080 | 8594 | True |  |  |  |  |
-| exp_lookup_only | verified | 50.070 | 44.690 | 6.525 | 8572 | True |  |  |  |  |
-| elu_lookup_only | verified | 42.576 | 36.844 | 6.781 | 8579 | True |  |  |  |  |
-| compressed_projection_only | verified | 47.965 | 36.367 | 5.588 | 8581 | True |  |  |  |  |
-| compressed_aggregation_only | verified | 48.926 | 37.589 | 5.074 | 8554 | True |  |  |  |  |
-| single_head_first_layer | verified | 1057.009 | 632.487 | 19.029 | 8756 | True |  |  |  |  |
-| first_hidden_layer_all_heads | verified | 7743.635 | 4181.520 | 124.170 | 8774 | True |  |  |  |  |
-| hidden_only | verified | 7945.855 | 4416.195 | 114.662 | 8782 | True |  |  |  |  |
-| output_only | verified | 1068.895 | 589.447 | 17.681 | 8478 | True |  |  |  |  |
-| full_model | blocked | 123566.101 | 14246.984 |  |  | False | native_full_gat_forward_constraints_incomplete | native.public_output_binding | native.full_model.layer_1.output.public_output_binding | 0 |
+| level0_mul | missing |  |  |  |  | False |  |  |  |  |
+| inverse_only | missing |  |  |  |  | False |  |  |  |  |
+| segment_sum_inverse | missing |  |  |  |  | False |  |  |  |  |
+| segment_max_only | missing |  |  |  |  | False |  |  |  |  |
+| lrelu_lookup_only | missing |  |  |  |  | False |  |  |  |  |
+| exp_lookup_only | missing |  |  |  |  | False |  |  |  |  |
+| elu_lookup_only | missing |  |  |  |  | False |  |  |  |  |
+| compressed_projection_only | missing |  |  |  |  | False |  |  |  |  |
+| compressed_aggregation_only | missing |  |  |  |  | False |  |  |  |  |
+| single_head_first_layer | missing |  |  |  |  | False |  |  |  |  |
+| first_hidden_layer_all_heads | missing |  |  |  |  | False |  |  |  |  |
+| hidden_only | missing |  |  |  |  | False |  |  |  |  |
+| output_only | missing |  |  |  |  | False |  |  |  |  |
+| full_model | missing |  |  |  |  | False |  |  |  |  |
+| full_model_current | blocked | 2.295 |  |  |  | False | native_full_exact_inverse_quantization_conflict | native.exact_inverse | native.full_model.layer_0.head_0.softmax.exact_inverse | 0 |
 
 ## Current Full-Model Blocker
 
-- gate_name: `native.public_output_binding`
-- region_name: `native.full_model.layer_1.output.public_output_binding`
+- gate_name: `native.exact_inverse`
+- region_name: `native.full_model.layer_0.head_0.softmax.exact_inverse`
 - row_offset: `0`
-- relation: strict_public_input_equivalent requires public output bindings to be derived from every quantized full GAT forward relation: projection, attention score, LReLU lookup, segment max, Exp lookup, exact inverse, aggregation, ELU, output average
-- actual_values: `['diagnostic proof binds CSR/table/metadata scoped relations only', 'scope=full_model', 'full_gat_forward_in_ezkl_proof=false', 'strict_public_input_equivalent=false', 'run_dir=.']`
-- attempted_fix: replaced the artificial full compressed CSR failure with real Halo2 MockProver/KZG diagnostic scopes and preserved strict_public_input_equivalent=false for non-full semantics
-- remaining_blocker: full quantized GAT row assignment for public logits remains unimplemented; marking strict=true would be unsound
+- relation: strict native route requires exact finite-field Sum_i * Inv_i = 1, but fp32_bundle_export supplies a scale-16 rounded reciprocal witness
+- actual_values: `['sum_q=63', 'inv_q=4', 'sum_q_times_inv_q=252', 'quant_cfg_id=fp32_bundle_export']`
+- attempted_fix: C++ adapter now executes the real full-dataset first hidden attention head and checks the formal exact inverse relation before Rust witness assignment
+- remaining_blocker: A compliant strict route needs a quant_cfg_id that defines exact inverse-compatible downstream alpha/aggregation/ELU semantics; replacing this with rounded fp32 reciprocal or output binding would violate the formal route
+
+## Full-Dataset Preflight Evidence
+
+| Dataset | node | degree | sum_fp32 | inv_fp32 | sum_q | inv_q | product |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Cora | 0 | 4 | 3.9303939786677424 | 0.25442742010788516 | 63 | 4 | 252 |
+| Citeseer | 0 | 2 | 1.9950954385290314 | 0.5012291545998884 | 32 | 8 | 256 |
+| Pubmed | 0 | 6 | 5.995988523252744 | 0.16677817112590357 | 96 | 3 | 288 |
+| PPI | 0 | 1 | 1 | 1 | 16 | 16 | 256 |
+| ogbn-arxiv | 0 | 290 | 63.34412927528665 | 0.015786782633858767 | 1014 | 0 | 0 |

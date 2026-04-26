@@ -2,10 +2,10 @@
   "rows": [
     {
       "dataset": "Cora",
-      "ezkl_block_reason": "native_full_gat_forward_constraints_incomplete",
-      "ezkl_commitment_time_ms": 123566.10078200174,
+      "ezkl_block_reason": "native_full_exact_inverse_quantization_conflict",
+      "ezkl_commitment_time_ms": 2.2951620048843324,
       "ezkl_proof_size_bytes": null,
-      "ezkl_prove_time_ms": 14246.984154000529,
+      "ezkl_prove_time_ms": null,
       "ezkl_route_id": "ezkl_gat_native_compressed_csr_attention_full",
       "ezkl_status": "blocked",
       "ezkl_verify_time_ms": null,
@@ -16,8 +16,8 @@
     },
     {
       "dataset": "Citeseer",
-      "ezkl_block_reason": "not_run_because_cora_full_blocked_at_native_public_output_binding",
-      "ezkl_commitment_time_ms": null,
+      "ezkl_block_reason": "native_full_exact_inverse_quantization_conflict",
+      "ezkl_commitment_time_ms": 1.7585799942025915,
       "ezkl_proof_size_bytes": null,
       "ezkl_prove_time_ms": null,
       "ezkl_route_id": "ezkl_gat_native_compressed_csr_attention_full",
@@ -30,8 +30,8 @@
     },
     {
       "dataset": "Pubmed",
-      "ezkl_block_reason": "not_run_because_cora_full_blocked_at_native_public_output_binding",
-      "ezkl_commitment_time_ms": null,
+      "ezkl_block_reason": "native_full_exact_inverse_quantization_conflict",
+      "ezkl_commitment_time_ms": 1.503744992078282,
       "ezkl_proof_size_bytes": null,
       "ezkl_prove_time_ms": null,
       "ezkl_route_id": "ezkl_gat_native_compressed_csr_attention_full",
@@ -44,8 +44,8 @@
     },
     {
       "dataset": "PPI",
-      "ezkl_block_reason": "not_run_because_cora_full_blocked_at_native_public_output_binding",
-      "ezkl_commitment_time_ms": null,
+      "ezkl_block_reason": "native_full_exact_inverse_quantization_conflict",
+      "ezkl_commitment_time_ms": 1.7393790039932355,
       "ezkl_proof_size_bytes": null,
       "ezkl_prove_time_ms": null,
       "ezkl_route_id": "ezkl_gat_native_compressed_csr_attention_full",
@@ -58,8 +58,8 @@
     },
     {
       "dataset": "ogbn-arxiv",
-      "ezkl_block_reason": "not_run_because_cora_full_blocked_at_native_public_output_binding",
-      "ezkl_commitment_time_ms": null,
+      "ezkl_block_reason": "native_full_exact_inverse_quantization_conflict",
+      "ezkl_commitment_time_ms": 1.3216469960752875,
       "ezkl_proof_size_bytes": null,
       "ezkl_prove_time_ms": null,
       "ezkl_route_id": "ezkl_gat_native_compressed_csr_attention_full",

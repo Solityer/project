@@ -121,9 +121,9 @@ void load_tensor_shapes(const std::filesystem::path& path, CheckpointBundle* bun
             input >> info.shape[i];
         }
         input >> info.value_count;
-        double ignored = 0.0;
+        info.values.resize(info.value_count);
         for (std::size_t i = 0; i < info.value_count; ++i) {
-            input >> ignored;
+            input >> info.values[i];
         }
         bundle->tensors.emplace(name, std::move(info));
     }

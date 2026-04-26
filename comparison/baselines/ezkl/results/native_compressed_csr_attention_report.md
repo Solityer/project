@@ -7,11 +7,11 @@
 
 | Dataset | status | block_reason | previous rows | compressed rows | reduction | required_logrows | feasible | table_hash |
 | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |
-| Cora | blocked | native_full_gat_forward_constraints_incomplete | 252496464 | 2117846 | 119.22324097219533 | 22 | True | fnv1a64:f2933ff0aa727bba |
-| Citeseer | blocked | not_run_because_cora_full_blocked_at_native_public_output_binding | 792557483 | 2218463 | 357.25521813976616 | 22 | True | fnv1a64:f2933ff0aa727bba |
-| Pubmed | blocked | not_run_because_cora_full_blocked_at_native_public_output_binding | 657323900 | 16143874 | 40.71661485960557 | 24 | True | fnv1a64:f2933ff0aa727bba |
-| PPI | blocked | not_run_because_cora_full_blocked_at_native_public_output_binding | 315476272 | 43372416 | 7.273661490289127 | 26 | True | fnv1a64:f2933ff0aa727bba |
-| ogbn-arxiv | blocked | not_run_because_cora_full_blocked_at_native_public_output_binding | 381668318 | 59159176 | 6.451548919477851 | 26 | True | fnv1a64:dca099df18983198 |
+| Cora | blocked | native_full_exact_inverse_quantization_conflict | 252496464 | 2117846 | 119.22324097219533 | 22 | True | fnv1a64:f2933ff0aa727bba |
+| Citeseer | blocked | native_full_exact_inverse_quantization_conflict | 792557483 | 2218463 | 357.25521813976616 | 22 | True | fnv1a64:f2933ff0aa727bba |
+| Pubmed | blocked | native_full_exact_inverse_quantization_conflict | 657323900 | 16143874 | 40.71661485960557 | 24 | True | fnv1a64:f2933ff0aa727bba |
+| PPI | blocked | native_full_exact_inverse_quantization_conflict | 315476272 | 43372416 | 7.273661490289127 | 26 | True | fnv1a64:f2933ff0aa727bba |
+| ogbn-arxiv | blocked | native_full_exact_inverse_quantization_conflict | 381668318 | 59159176 | 6.451548919477851 | 26 | True | fnv1a64:dca099df18983198 |
 
 ## Required Artifacts
 

@@ -2602,6 +2602,103 @@ fn strict_equivalence_failure(
     }
 }
 
+fn full_model_preflight_failure(
+    plan: &NativeCompiledPlan,
+    run_dir: &Path,
+    output_path: &Path,
+    preflight: &serde_json::Value,
+) -> NativeConstraintFailure {
+    let actual_values = preflight
+        .get("actual_values")
+        .and_then(|value| value.as_array())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .filter(|values| !values.is_empty())
+        .unwrap_or_else(|| {
+            vec![
+                format!(
+                    "sum_fp32_reference={}",
+                    preflight
+                        .get("sum_fp32_reference")
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "null".to_string())
+                ),
+                format!(
+                    "inv_fp32_reference={}",
+                    preflight
+                        .get("inv_fp32_reference")
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "null".to_string())
+                ),
+                format!(
+                    "quantized_product={}",
+                    preflight
+                        .get("quantized_product")
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "null".to_string())
+                ),
+            ]
+        });
+    NativeConstraintFailure {
+        status: "blocked".to_string(),
+        block_reason: preflight
+            .get("block_reason")
+            .and_then(|value| value.as_str())
+            .unwrap_or("native_full_witness_preflight_failed")
+            .to_string(),
+        gate_name: preflight
+            .get("failure_gate")
+            .and_then(|value| value.as_str())
+            .unwrap_or("native.exact_inverse")
+            .to_string(),
+        region_name: preflight
+            .get("failure_region")
+            .and_then(|value| value.as_str())
+            .unwrap_or("native.full_model.layer_0.head_0.softmax.exact_inverse")
+            .to_string(),
+        row_offset: preflight
+            .get("failure_row")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0) as usize,
+        dataset: plan.dataset.clone(),
+        route_id: plan.route_id.clone(),
+        layer_index: preflight.get("layer_index").and_then(|value| value.as_u64()),
+        head_index: preflight.get("head_index").and_then(|value| value.as_u64()),
+        component: preflight
+            .get("component")
+            .and_then(|value| value.as_str())
+            .unwrap_or("full_model.exact_inverse")
+            .to_string(),
+        expected_relation: preflight
+            .get("expected_relation")
+            .and_then(|value| value.as_str())
+            .unwrap_or("strict native route requires exact finite-field Sum_i * Inv_i = 1")
+            .to_string(),
+        actual_values,
+        witness_source_path: output_path.display().to_string(),
+        command: format!(
+            "graph-gat-gen-witness --compiled-circuit {} --output {}",
+            run_dir.join("model.compiled").display(),
+            output_path.display()
+        ),
+        raw_error: preflight.to_string(),
+        attempted_fix: preflight
+            .get("attempted_fix")
+            .and_then(|value| value.as_str())
+            .unwrap_or("ran C++ full-dataset first hidden attention-head preflight before native Rust witness assignment")
+            .to_string(),
+        remaining_blocker: preflight
+            .get("remaining_blocker")
+            .and_then(|value| value.as_str())
+            .unwrap_or("native full-model witness preflight did not reach a strict exact-inverse compatible assignment")
+            .to_string(),
+    }
+}
+
 fn save_full_keys(
     plan: NativeCompiledPlan,
     run_dir: &Path,
@@ -2641,6 +2738,42 @@ pub(crate) fn graph_gat_setup(
         }
         BackendPlan::Full(plan) => {
             let run_dir = run_dir_for_path(&compiled_circuit_path);
+            let scope = NativeDebugScope::parse(&plan.native_debug_scope)?;
+            let preflight_path = run_dir.join("native_full_witness_preflight.json");
+            if scope == NativeDebugScope::FullModel && preflight_path.exists() {
+                let preflight = read_json::<serde_json::Value>(&preflight_path)?;
+                if preflight
+                    .get("status")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("blocked")
+                    != "ready"
+                {
+                    let mut failure = full_model_preflight_failure(
+                        &plan,
+                        &run_dir,
+                        &run_dir.join("witness.json"),
+                        &preflight,
+                    );
+                    failure.command = format!(
+                        "graph-gat-setup --compiled-circuit {} --vk-path {} --pk-path {}",
+                        compiled_circuit_path.display(),
+                        vk_path.display(),
+                        pk_path.display()
+                    );
+                    failure.witness_source_path = preflight_path.display().to_string();
+                    write_native_failure(&run_dir, &failure)?;
+                    return Err(format!(
+                        "{}: gate_name={} region_name={} row_offset={} relation={} values={:?}",
+                        failure.block_reason,
+                        failure.gate_name,
+                        failure.region_name,
+                        failure.row_offset,
+                        failure.expected_relation,
+                        failure.actual_values
+                    )
+                    .into());
+                }
+            }
             let logrows = save_full_keys(plan.clone(), &run_dir, &vk_path, &pk_path)?;
             Ok(serde_json::json!({
                 "status": "setup_complete",
@@ -2670,6 +2803,31 @@ pub(crate) fn graph_gat_gen_witness(
         }
         BackendPlan::Full(plan) => {
             let run_dir = run_dir_for_path(&compiled_circuit_path);
+            let scope = NativeDebugScope::parse(&plan.native_debug_scope)?;
+            let preflight_path = run_dir.join("native_full_witness_preflight.json");
+            if scope == NativeDebugScope::FullModel && preflight_path.exists() {
+                let preflight = read_json::<serde_json::Value>(&preflight_path)?;
+                if preflight
+                    .get("status")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("blocked")
+                    != "ready"
+                {
+                    let failure =
+                        full_model_preflight_failure(&plan, &run_dir, &output_path, &preflight);
+                    write_native_failure(&run_dir, &failure)?;
+                    return Err(format!(
+                        "{}: gate_name={} region_name={} row_offset={} relation={} values={:?}",
+                        failure.block_reason,
+                        failure.gate_name,
+                        failure.region_name,
+                        failure.row_offset,
+                        failure.expected_relation,
+                        failure.actual_values
+                    )
+                    .into());
+                }
+            }
             let witness = serde_json::json!({
                 "witness_kind": "full_compressed_csr_native_inputs",
                 "diagnostic_backend_version": NATIVE_DIAGNOSTIC_BACKEND_VERSION,
@@ -2697,7 +2855,12 @@ pub(crate) fn graph_gat_gen_witness(
                 "status": "diagnostic_witness_metadata_ready",
                 "strict_public_input_equivalent": false,
                 "full_gat_forward_in_ezkl_proof": false,
-                "note": "dataset payloads are bound for native diagnostic scopes; strict full GAT output binding is intentionally false until complete quantized full-model constraints exist"
+                "full_model_witness_preflight": if preflight_path.exists() {
+                    serde_json::from_str::<serde_json::Value>(&fs::read_to_string(&preflight_path)?)?
+                } else {
+                    serde_json::Value::Null
+                },
+                "note": "dataset payloads are bound for native diagnostic scopes; strict full GAT output binding remains false unless full-model preflight and circuit constraints are complete"
             });
             write_json(&output_path, &witness)?;
             Ok(witness.to_string())
