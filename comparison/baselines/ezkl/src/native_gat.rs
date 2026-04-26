@@ -5,6 +5,7 @@ use crate::pfsys::{
 };
 use crate::EZKLError;
 use halo2_proofs::circuit::{AssignedCell, Layouter, SimpleFloorPlanner, Value};
+use halo2_proofs::dev::MockProver;
 use halo2_proofs::plonk::{
     Advice, Circuit, Column, ConstraintSystem, Error, Expression, Instance, Selector, TableColumn,
 };
@@ -17,7 +18,7 @@ use halo2curves::bn256::{Bn256, Fr, G1Affine};
 use halo2curves::ff::Field;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -31,6 +32,24 @@ const DEFAULT_MAX_LOGROWS: u32 = 26;
 const TINY_NATIVE_COMPILED_KIND: &str = "graph_gat_tiny_native_compiled_plan";
 const TINY_NATIVE_BACKEND_VERSION: &str = "tiny_native_backend_levels_0_6_v1";
 const TINY_NATIVE_LOGROWS: u32 = 9;
+const DEFAULT_NATIVE_DEBUG_SCOPE: &str = "full_model";
+const NATIVE_DIAGNOSTIC_BACKEND_VERSION: &str = "native_full_diagnostic_scopes_v1";
+const NATIVE_DEBUG_SCOPES: [&str; 14] = [
+    "level0_mul",
+    "inverse_only",
+    "segment_sum_inverse",
+    "segment_max_only",
+    "lrelu_lookup_only",
+    "exp_lookup_only",
+    "elu_lookup_only",
+    "compressed_projection_only",
+    "compressed_aggregation_only",
+    "single_head_first_layer",
+    "first_hidden_layer_all_heads",
+    "hidden_only",
+    "output_only",
+    "full_model",
+];
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
@@ -229,6 +248,9 @@ struct NativeSettings {
     estimate: NativeEstimate,
     #[serde(skip_serializing_if = "Option::is_none")]
     compressed_row_estimate: Option<CompressedRowEstimate>,
+    native_debug_scope: String,
+    strict_public_input_equivalent: bool,
+    full_gat_forward_in_ezkl_proof: bool,
     generated_unix_ms: u128,
 }
 
@@ -266,16 +288,46 @@ struct NativeCompiledPlan {
     block_reason: String,
     failure_step: String,
     dataset: String,
+    #[serde(default)]
+    node_count: u64,
+    #[serde(default)]
+    edge_count: u64,
+    #[serde(default)]
+    graph_count: u64,
+    #[serde(default)]
+    feature_dim: u64,
+    #[serde(default)]
+    class_count: u64,
+    #[serde(default)]
+    layer_count: u64,
+    #[serde(default)]
+    k_out: u64,
+    #[serde(default)]
+    total_attention_head_count: u64,
     estimate: NativeEstimate,
     csr_layout: String,
     graph_hash: String,
     checkpoint_hash: String,
+    #[serde(default)]
+    metadata_hash: String,
+    #[serde(default)]
+    shape_hash: String,
     exact_inverse_gate: InverseSemantics,
     lookup_semantics: LookupSemantics,
     #[serde(default)]
     formal_table_binding: FormalTableBinding,
     #[serde(skip_serializing_if = "Option::is_none")]
     compressed_row_estimate: Option<CompressedRowEstimate>,
+    #[serde(default = "default_native_debug_scope_string")]
+    native_debug_scope: String,
+    #[serde(default)]
+    strict_public_input_equivalent: bool,
+    #[serde(default)]
+    full_gat_forward_in_ezkl_proof: bool,
+    #[serde(default)]
+    diagnostic_backend_version: String,
+    #[serde(default)]
+    diagnostic_note: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -325,11 +377,146 @@ enum BackendPlan {
     Full(NativeCompiledPlan),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeDebugScope {
+    Level0Mul,
+    InverseOnly,
+    SegmentSumInverse,
+    SegmentMaxOnly,
+    LreluLookupOnly,
+    ExpLookupOnly,
+    EluLookupOnly,
+    CompressedProjectionOnly,
+    CompressedAggregationOnly,
+    SingleHeadFirstLayer,
+    FirstHiddenLayerAllHeads,
+    HiddenOnly,
+    OutputOnly,
+    FullModel,
+}
+
+impl NativeDebugScope {
+    fn parse(raw: &str) -> Result<Self, EZKLError> {
+        match raw {
+            "level0_mul" => Ok(Self::Level0Mul),
+            "inverse_only" => Ok(Self::InverseOnly),
+            "segment_sum_inverse" => Ok(Self::SegmentSumInverse),
+            "segment_max_only" => Ok(Self::SegmentMaxOnly),
+            "lrelu_lookup_only" => Ok(Self::LreluLookupOnly),
+            "exp_lookup_only" => Ok(Self::ExpLookupOnly),
+            "elu_lookup_only" => Ok(Self::EluLookupOnly),
+            "compressed_projection_only" => Ok(Self::CompressedProjectionOnly),
+            "compressed_aggregation_only" => Ok(Self::CompressedAggregationOnly),
+            "single_head_first_layer" => Ok(Self::SingleHeadFirstLayer),
+            "first_hidden_layer_all_heads" => Ok(Self::FirstHiddenLayerAllHeads),
+            "hidden_only" => Ok(Self::HiddenOnly),
+            "output_only" => Ok(Self::OutputOnly),
+            "full_model" => Ok(Self::FullModel),
+            other => Err(format!(
+                "unknown native debug scope `{other}`; expected one of: {}",
+                NATIVE_DEBUG_SCOPES.join(", ")
+            )
+            .into()),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Level0Mul => "level0_mul",
+            Self::InverseOnly => "inverse_only",
+            Self::SegmentSumInverse => "segment_sum_inverse",
+            Self::SegmentMaxOnly => "segment_max_only",
+            Self::LreluLookupOnly => "lrelu_lookup_only",
+            Self::ExpLookupOnly => "exp_lookup_only",
+            Self::EluLookupOnly => "elu_lookup_only",
+            Self::CompressedProjectionOnly => "compressed_projection_only",
+            Self::CompressedAggregationOnly => "compressed_aggregation_only",
+            Self::SingleHeadFirstLayer => "single_head_first_layer",
+            Self::FirstHiddenLayerAllHeads => "first_hidden_layer_all_heads",
+            Self::HiddenOnly => "hidden_only",
+            Self::OutputOnly => "output_only",
+            Self::FullModel => "full_model",
+        }
+    }
+
+    fn logrows(self, plan: &NativeCompiledPlan) -> u32 {
+        let diagnostic_rows = match self {
+            Self::Level0Mul
+            | Self::InverseOnly
+            | Self::LreluLookupOnly
+            | Self::ExpLookupOnly
+            | Self::EluLookupOnly
+            | Self::CompressedProjectionOnly
+            | Self::CompressedAggregationOnly => 256u128,
+            Self::SegmentSumInverse | Self::SegmentMaxOnly => {
+                u128::from(plan.node_count.max(1)).saturating_mul(2)
+            }
+            Self::SingleHeadFirstLayer => {
+                u128::from(plan.node_count.max(1))
+                    .saturating_add(u128::from(plan.edge_count.max(1)))
+                    .saturating_add(1024)
+            }
+            Self::FirstHiddenLayerAllHeads | Self::HiddenOnly => {
+                let heads = total_hidden_heads_from_plan(plan).max(1);
+                u128::from(plan.node_count.max(1))
+                    .saturating_add(u128::from(plan.edge_count.max(1)))
+                    .saturating_mul(u128::from(heads))
+                    .saturating_add(4096)
+            }
+            Self::OutputOnly => {
+                u128::from(plan.node_count.max(1))
+                    .saturating_mul(u128::from(plan.class_count.max(1)))
+                    .saturating_add(4096)
+            }
+            Self::FullModel => plan.estimate.total_rows.max(4096),
+        };
+        ceil_log2(diagnostic_rows.saturating_add(64)).clamp(9, plan.estimate.max_logrows)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct NativeConstraintFailure {
+    status: String,
+    block_reason: String,
+    gate_name: String,
+    region_name: String,
+    row_offset: usize,
+    dataset: String,
+    route_id: String,
+    layer_index: Option<u64>,
+    head_index: Option<u64>,
+    component: String,
+    expected_relation: String,
+    actual_values: Vec<String>,
+    witness_source_path: String,
+    command: String,
+    raw_error: String,
+    attempted_fix: String,
+    remaining_blocker: String,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+struct DiagnosticRow {
+    gate_name: &'static str,
+    region_name: String,
+    row_offset: usize,
+    layer_index: Option<u64>,
+    head_index: Option<u64>,
+    component: String,
+    expected_relation: String,
+    actual_values: Vec<String>,
+}
+
 fn now_unix_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or(0)
+}
+
+fn default_native_debug_scope_string() -> String {
+    DEFAULT_NATIVE_DEBUG_SCOPE.to_string()
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, EZKLError> {
@@ -852,6 +1039,13 @@ fn total_hidden_heads(spec: &GraphAttentionSpec) -> u64 {
         .sum()
 }
 
+fn total_hidden_heads_from_plan(plan: &NativeCompiledPlan) -> u64 {
+    plan.compressed_row_estimate
+        .as_ref()
+        .map(|estimate| estimate.hidden_heads)
+        .unwrap_or_else(|| plan.total_attention_head_count.saturating_sub(plan.k_out))
+}
+
 fn hidden_concat_width(profile: &HiddenProfile) -> u64 {
     profile.head_count.saturating_mul(profile.head_dim)
 }
@@ -1184,8 +1378,11 @@ pub(crate) fn graph_gat_gen_settings(
     csr_layout_path: PathBuf,
     settings_path: PathBuf,
     max_logrows: Option<u32>,
+    native_debug_scope: Option<String>,
 ) -> Result<String, EZKLError> {
     let (spec, _csr) = load_pair(&spec_path, &csr_layout_path)?;
+    let native_debug_scope = native_debug_scope.unwrap_or_else(default_native_debug_scope_string);
+    let _ = NativeDebugScope::parse(&native_debug_scope)?;
     let max_logrows = max_logrows.unwrap_or(DEFAULT_MAX_LOGROWS);
     let previous_estimate = estimate_rows(&spec, max_logrows);
     let compressed_estimate = if is_compressed_route(&spec.route_id) {
@@ -1241,6 +1438,9 @@ pub(crate) fn graph_gat_gen_settings(
         formal_table_binding,
         estimate,
         compressed_row_estimate: compressed_estimate,
+        native_debug_scope,
+        strict_public_input_equivalent: false,
+        full_gat_forward_in_ezkl_proof: false,
         generated_unix_ms: now_unix_ms(),
     };
     write_json(&settings_path, &settings)?;
@@ -1253,8 +1453,11 @@ pub(crate) fn graph_gat_compile(
     settings_path: PathBuf,
     compiled_circuit_path: PathBuf,
     max_logrows: Option<u32>,
+    native_debug_scope: Option<String>,
 ) -> Result<String, EZKLError> {
     let (spec, _csr) = load_pair(&spec_path, &csr_layout_path)?;
+    let native_debug_scope = native_debug_scope.unwrap_or_else(default_native_debug_scope_string);
+    let _ = NativeDebugScope::parse(&native_debug_scope)?;
     let max_logrows = max_logrows.unwrap_or(DEFAULT_MAX_LOGROWS);
     let previous_estimate = estimate_rows(&spec, max_logrows);
     let compressed_estimate = if is_compressed_route(&spec.route_id) {
@@ -1302,18 +1505,39 @@ pub(crate) fn graph_gat_compile(
             "graph-gat-compile".to_string()
         },
         dataset: spec.dataset.clone(),
+        node_count: spec.node_count,
+        edge_count: spec.edge_count,
+        graph_count: spec.graph_count,
+        feature_dim: spec.feature_dim,
+        class_count: spec.class_count,
+        layer_count: spec.layer_count,
+        k_out: spec.k_out,
+        total_attention_head_count: spec.total_attention_head_count,
         estimate,
         csr_layout: "csr_dst_segment_ragged".to_string(),
         graph_hash: spec.graph_hash.clone(),
         checkpoint_hash: spec.checkpoint_hash.clone(),
+        metadata_hash: spec.metadata_hash.clone(),
+        shape_hash: spec.shape_hash.clone(),
         exact_inverse_gate: inverse,
         lookup_semantics: lookup,
         formal_table_binding,
         compressed_row_estimate: compressed_estimate,
+        native_debug_scope,
+        strict_public_input_equivalent: false,
+        full_gat_forward_in_ezkl_proof: false,
+        diagnostic_backend_version: NATIVE_DIAGNOSTIC_BACKEND_VERSION.to_string(),
+        diagnostic_note: "diagnostic native circuit proves scoped CSR/table/metadata relations; strict full GAT forward is not asserted until all full-model relations are implemented".to_string(),
     };
     write_json(&compiled_circuit_path, &plan)?;
     if !settings_path.exists() {
-        graph_gat_gen_settings(spec_path, csr_layout_path, settings_path, Some(max_logrows))?;
+        graph_gat_gen_settings(
+            spec_path,
+            csr_layout_path,
+            settings_path,
+            Some(max_logrows),
+            Some(plan.native_debug_scope.clone()),
+        )?;
     }
     if status != "compiled" {
         return Err(format!(
@@ -1437,6 +1661,965 @@ fn verify_tiny_proof(
     .map_err(|error| EZKLError::from(format!("native_verify_failed: verify_proof: {error}")))
 }
 
+#[allow(dead_code)]
+#[derive(Clone, Debug, Default)]
+struct CsrPayload {
+    src: Vec<u64>,
+    dst: Vec<u64>,
+    segment_ptr: Vec<u64>,
+    edge_ptr: Vec<u64>,
+    node_ptr: Vec<u64>,
+    segment_graph_id: Vec<u64>,
+    max_in_degree: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct FullNativeParams {
+    scope: String,
+    logrows: u32,
+}
+
+#[derive(Clone, Debug)]
+struct FullNativeConfig {
+    left: Column<Advice>,
+    right: Column<Advice>,
+    out: Column<Advice>,
+    aux: Column<Advice>,
+    instance: Column<Instance>,
+    q_mul: Selector,
+    q_inverse: Selector,
+    q_segment_sum: Selector,
+    q_max: Selector,
+    q_projection: Selector,
+    q_aggregation: Selector,
+    q_output_average: Selector,
+    q_public_binding: Selector,
+    q_lrelu_lookup: Selector,
+    q_exp_lookup: Selector,
+    q_elu_lookup: Selector,
+    table_lrelu_x: TableColumn,
+    table_lrelu_y: TableColumn,
+    table_exp_x: TableColumn,
+    table_exp_y: TableColumn,
+    table_elu_x: TableColumn,
+    table_elu_y: TableColumn,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+struct FullNativeCircuit {
+    params: FullNativeParams,
+    plan: NativeCompiledPlan,
+    csr: CsrPayload,
+    witness_source_path: String,
+}
+
+impl FullNativeCircuit {
+    fn new(plan: NativeCompiledPlan, run_dir: &Path, witness_source_path: String) -> Result<Self, EZKLError> {
+        let scope = NativeDebugScope::parse(&plan.native_debug_scope)?;
+        let params = FullNativeParams {
+            scope: scope.as_str().to_string(),
+            logrows: scope.logrows(&plan),
+        };
+        let csr = read_csr_payload(&run_dir.join("csr_segment_layout.bin")).unwrap_or_else(|_| {
+            synthetic_csr_payload(plan.node_count.max(1), plan.edge_count.max(1), plan.graph_count.max(1))
+        });
+        Ok(Self {
+            params,
+            plan,
+            csr,
+            witness_source_path,
+        })
+    }
+
+    fn without_values(plan: NativeCompiledPlan, scope: NativeDebugScope, logrows: u32) -> Self {
+        let csr = synthetic_csr_payload(plan.node_count.max(1), plan.edge_count.max(1), plan.graph_count.max(1));
+        Self {
+            params: FullNativeParams {
+                scope: scope.as_str().to_string(),
+                logrows,
+            },
+            plan,
+            csr,
+            witness_source_path: String::new(),
+        }
+    }
+
+    fn assign_advice(
+        region: &mut halo2_proofs::circuit::Region<'_, Fr>,
+        column: Column<Advice>,
+        offset: usize,
+        name: &'static str,
+        value: Fr,
+    ) -> Result<AssignedCell<Fr, Fr>, Error> {
+        region.assign_advice(|| name, column, offset, || Value::known(value))
+    }
+
+    fn assign_mul_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+        region_name: &'static str,
+        left: u64,
+        right: u64,
+    ) -> Result<(), Error> {
+        layouter.assign_region(
+            || region_name,
+            |mut region| {
+                config.q_mul.enable(&mut region, 0)?;
+                Self::assign_advice(&mut region, config.left, 0, "mul lhs", Fr::from(left))?;
+                Self::assign_advice(&mut region, config.right, 0, "mul rhs", Fr::from(right))?;
+                Self::assign_advice(
+                    &mut region,
+                    config.out,
+                    0,
+                    "mul out",
+                    Fr::from(left.saturating_mul(right)),
+                )?;
+                Self::assign_advice(&mut region, config.aux, 0, "mul aux", Fr::ZERO)?;
+                Ok(())
+            },
+        )
+    }
+
+    fn assign_inverse_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+        region_name: &'static str,
+        sum: u64,
+    ) -> Result<(), Error> {
+        layouter.assign_region(
+            || region_name,
+            |mut region| {
+                let sum = Fr::from(sum.max(1));
+                config.q_inverse.enable(&mut region, 0)?;
+                Self::assign_advice(&mut region, config.left, 0, "segment sum", sum)?;
+                Self::assign_advice(&mut region, config.right, 0, "segment inverse", sum.invert().unwrap())?;
+                Self::assign_advice(&mut region, config.out, 0, "one", Fr::ONE)?;
+                Self::assign_advice(&mut region, config.aux, 0, "inverse aux", Fr::ZERO)?;
+                Ok(())
+            },
+        )
+    }
+
+    fn assign_segment_sum_inverse_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+        region_name: &'static str,
+        max_segments: usize,
+    ) -> Result<(), Error> {
+        layouter.assign_region(
+            || region_name,
+            |mut region| {
+                let mut offset = 0usize;
+                let segment_count = self
+                    .csr
+                    .segment_ptr
+                    .len()
+                    .saturating_sub(1)
+                    .min(max_segments.max(1));
+                for segment in 0..segment_count {
+                    let begin = self.csr.segment_ptr[segment];
+                    let end = self.csr.segment_ptr[segment + 1];
+                    let count = end.saturating_sub(begin).max(1);
+                    config.q_segment_sum.enable(&mut region, offset)?;
+                    Self::assign_advice(&mut region, config.left, offset, "segment begin", Fr::from(begin))?;
+                    Self::assign_advice(&mut region, config.right, offset, "segment edge count", Fr::from(count))?;
+                    Self::assign_advice(&mut region, config.out, offset, "segment end", Fr::from(begin.saturating_add(count)))?;
+                    Self::assign_advice(&mut region, config.aux, offset, "segment id", Fr::from(segment as u64))?;
+                    offset += 1;
+
+                    let sum = Fr::from(count);
+                    config.q_inverse.enable(&mut region, offset)?;
+                    Self::assign_advice(&mut region, config.left, offset, "segment sum", sum)?;
+                    Self::assign_advice(&mut region, config.right, offset, "segment inverse", sum.invert().unwrap())?;
+                    Self::assign_advice(&mut region, config.out, offset, "one", Fr::ONE)?;
+                    Self::assign_advice(&mut region, config.aux, offset, "segment id", Fr::from(segment as u64))?;
+                    offset += 1;
+                }
+                Ok(())
+            },
+        )
+    }
+
+    fn assign_segment_max_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+        region_name: &'static str,
+        max_edges: usize,
+    ) -> Result<(), Error> {
+        layouter.assign_region(
+            || region_name,
+            |mut region| {
+                let mut offset = 0usize;
+                let edge_count = self.csr.src.len().min(max_edges.max(1));
+                for edge_index in 0..edge_count {
+                    let dst = self.csr.dst.get(edge_index).copied().unwrap_or(0);
+                    let src_score = (self.csr.src[edge_index] % 17) as i64;
+                    let dst_score = (dst % 11) as i64;
+                    let score = src_score + dst_score;
+                    let max_score = score + i64::from(edge_index % 3 != 0);
+                    let selector = u64::from(score == max_score);
+                    let diff = (max_score - score) as u64;
+                    config.q_max.enable(&mut region, offset)?;
+                    Self::assign_advice(&mut region, config.left, offset, "max selector", Fr::from(selector))?;
+                    Self::assign_advice(&mut region, config.right, offset, "max diff", Fr::from(diff))?;
+                    Self::assign_advice(&mut region, config.out, offset, "score", fr_i64(score))?;
+                    Self::assign_advice(&mut region, config.aux, offset, "dst", Fr::from(dst))?;
+                    offset += 1;
+                }
+                Ok(())
+            },
+        )
+    }
+
+    fn assign_lookup_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+        region_name: &'static str,
+        lookup_kind: NativeDebugScope,
+    ) -> Result<(), Error> {
+        layouter.assign_region(
+            || region_name,
+            |mut region| {
+                let samples: &[(i64, i64)] = match lookup_kind {
+                    NativeDebugScope::LreluLookupOnly => &[(-5, -1), (-1, 0), (0, 0), (7, 7)],
+                    NativeDebugScope::ExpLookupOnly => &[(0, 16), (1, 15), (4, 12), (8, 8)],
+                    NativeDebugScope::EluLookupOnly => &[(-4, -4), (-1, -1), (0, 0), (6, 6)],
+                    _ => &[],
+                };
+                for (offset, (x, y)) in samples.iter().copied().enumerate() {
+                    match lookup_kind {
+                        NativeDebugScope::LreluLookupOnly => config.q_lrelu_lookup.enable(&mut region, offset)?,
+                        NativeDebugScope::ExpLookupOnly => config.q_exp_lookup.enable(&mut region, offset)?,
+                        NativeDebugScope::EluLookupOnly => config.q_elu_lookup.enable(&mut region, offset)?,
+                        _ => {}
+                    }
+                    Self::assign_advice(&mut region, config.left, offset, "lookup x", fr_i64(x))?;
+                    Self::assign_advice(&mut region, config.right, offset, "lookup y", fr_i64(y))?;
+                    Self::assign_advice(&mut region, config.out, offset, "lookup unused", Fr::ZERO)?;
+                    Self::assign_advice(&mut region, config.aux, offset, "lookup row", Fr::from(offset as u64))?;
+                }
+                Ok(())
+            },
+        )
+    }
+
+    fn assign_projection_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+        region_name: &'static str,
+        layer_index: u64,
+        head_index: u64,
+    ) -> Result<(), Error> {
+        layouter.assign_region(
+            || region_name,
+            |mut region| {
+                let rho = 7i64 + layer_index as i64 + head_index as i64;
+                let h = [
+                    (self.plan.feature_dim as i64 % 13) + 1,
+                    (self.plan.node_count as i64 % 17) - 8,
+                    (self.plan.edge_count as i64 % 19) - 9,
+                ];
+                let weights = [[3i64, -2], [5, 4], [-1, 6]];
+                let lhs = h[0] * weights[0][0]
+                    + h[1] * weights[1][0]
+                    + h[2] * weights[2][0]
+                    + rho
+                        * (h[0] * weights[0][1]
+                            + h[1] * weights[1][1]
+                            + h[2] * weights[2][1]);
+                let rhs: i64 = (0..h.len())
+                    .map(|idx| h[idx] * (weights[idx][0] + weights[idx][1] * rho))
+                    .sum();
+                config.q_projection.enable(&mut region, 0)?;
+                Self::assign_advice(&mut region, config.left, 0, "projection lhs", fr_i64(lhs))?;
+                Self::assign_advice(&mut region, config.right, 0, "projection rhs", fr_i64(rhs))?;
+                Self::assign_advice(&mut region, config.out, 0, "projection rho", fr_i64(rho))?;
+                Self::assign_advice(&mut region, config.aux, 0, "projection head", Fr::from(head_index))?;
+                Ok(())
+            },
+        )
+    }
+
+    fn assign_aggregation_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+        region_name: &'static str,
+        layer_index: u64,
+        head_index: u64,
+    ) -> Result<(), Error> {
+        layouter.assign_region(
+            || region_name,
+            |mut region| {
+                let rho = 11i64 + layer_index as i64 + head_index as i64;
+                let alpha = [2i64, 5, 7];
+                let h_prime = [[3i64, -1], [4, 2], [-2, 6]];
+                let lhs = alpha[0] * h_prime[0][0]
+                    + alpha[1] * h_prime[1][0]
+                    + alpha[2] * h_prime[2][0]
+                    + rho
+                        * (alpha[0] * h_prime[0][1]
+                            + alpha[1] * h_prime[1][1]
+                            + alpha[2] * h_prime[2][1]);
+                let rhs: i64 = (0..alpha.len())
+                    .map(|idx| alpha[idx] * (h_prime[idx][0] + h_prime[idx][1] * rho))
+                    .sum();
+                config.q_aggregation.enable(&mut region, 0)?;
+                Self::assign_advice(&mut region, config.left, 0, "aggregation lhs", fr_i64(lhs))?;
+                Self::assign_advice(&mut region, config.right, 0, "aggregation rhs", fr_i64(rhs))?;
+                Self::assign_advice(&mut region, config.out, 0, "aggregation rho", fr_i64(rho))?;
+                Self::assign_advice(&mut region, config.aux, 0, "aggregation head", Fr::from(head_index))?;
+                Ok(())
+            },
+        )
+    }
+
+    fn assign_output_average_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+        region_name: &'static str,
+    ) -> Result<(), Error> {
+        layouter.assign_region(
+            || region_name,
+            |mut region| {
+                let head_count = self.plan.k_out.max(1);
+                let sum = self.plan.class_count.saturating_mul(head_count).max(1);
+                let avg = sum / head_count;
+                config.q_output_average.enable(&mut region, 0)?;
+                Self::assign_advice(&mut region, config.left, 0, "output sum", Fr::from(sum))?;
+                Self::assign_advice(&mut region, config.right, 0, "output head count", Fr::from(head_count))?;
+                Self::assign_advice(&mut region, config.out, 0, "output average", Fr::from(avg))?;
+                Self::assign_advice(&mut region, config.aux, 0, "output class count", Fr::from(self.plan.class_count))?;
+                Ok(())
+            },
+        )
+    }
+
+    fn assign_public_binding_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+    ) -> Result<(), Error> {
+        let values = native_full_public_inputs(&self.plan);
+        let cells = layouter.assign_region(
+            || "native.public_output_binding",
+            |mut region| {
+                let mut cells = Vec::with_capacity(values.len());
+                for (offset, value) in values.iter().copied().enumerate() {
+                    config.q_public_binding.enable(&mut region, offset)?;
+                    let cell = Self::assign_advice(&mut region, config.left, offset, "public lhs", value)?;
+                    Self::assign_advice(&mut region, config.right, offset, "public rhs", value)?;
+                    Self::assign_advice(&mut region, config.out, offset, "public index", Fr::from(offset as u64))?;
+                    Self::assign_advice(&mut region, config.aux, offset, "public aux", Fr::ZERO)?;
+                    cells.push(cell);
+                }
+                Ok(cells)
+            },
+        )?;
+        for (index, cell) in cells.into_iter().enumerate() {
+            layouter.constrain_instance(cell.cell(), config.instance, index)?;
+        }
+        Ok(())
+    }
+}
+
+impl Circuit<Fr> for FullNativeCircuit {
+    type Config = FullNativeConfig;
+    type FloorPlanner = SimpleFloorPlanner;
+    type Params = FullNativeParams;
+
+    fn without_witnesses(&self) -> Self {
+        let scope = NativeDebugScope::parse(&self.params.scope).unwrap_or(NativeDebugScope::FullModel);
+        Self::without_values(self.plan.clone(), scope, self.params.logrows)
+    }
+
+    fn configure(meta: &mut ConstraintSystem<Fr>) -> Self::Config {
+        Self::configure_with_params(
+            meta,
+            FullNativeParams {
+                scope: DEFAULT_NATIVE_DEBUG_SCOPE.to_string(),
+                logrows: 12,
+            },
+        )
+    }
+
+    fn configure_with_params(
+        meta: &mut ConstraintSystem<Fr>,
+        _params: Self::Params,
+    ) -> Self::Config {
+        let left = meta.advice_column();
+        let right = meta.advice_column();
+        let out = meta.advice_column();
+        let aux = meta.advice_column();
+        let instance = meta.instance_column();
+        meta.enable_equality(left);
+        meta.enable_equality(instance);
+
+        let q_mul = meta.selector();
+        let q_inverse = meta.selector();
+        let q_segment_sum = meta.selector();
+        let q_max = meta.selector();
+        let q_projection = meta.selector();
+        let q_aggregation = meta.selector();
+        let q_output_average = meta.selector();
+        let q_public_binding = meta.selector();
+        let q_lrelu_lookup = meta.complex_selector();
+        let q_exp_lookup = meta.complex_selector();
+        let q_elu_lookup = meta.complex_selector();
+        let table_lrelu_x = meta.lookup_table_column();
+        let table_lrelu_y = meta.lookup_table_column();
+        let table_exp_x = meta.lookup_table_column();
+        let table_exp_y = meta.lookup_table_column();
+        let table_elu_x = meta.lookup_table_column();
+        let table_elu_y = meta.lookup_table_column();
+
+        meta.create_gate("native.level0.mul", |meta| {
+            let q = meta.query_selector(q_mul);
+            let left_expr = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
+            let right_expr = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
+            let out_expr = meta.query_advice(out, halo2_proofs::poly::Rotation::cur());
+            vec![q * (left_expr * right_expr - out_expr)]
+        });
+        meta.create_gate("native.inverse", |meta| {
+            let q = meta.query_selector(q_inverse);
+            let sum = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
+            let inv = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
+            let one = meta.query_advice(out, halo2_proofs::poly::Rotation::cur());
+            vec![q * (sum * inv - one)]
+        });
+        meta.create_gate("native.segment_sum", |meta| {
+            let q = meta.query_selector(q_segment_sum);
+            let begin = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
+            let count = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
+            let end = meta.query_advice(out, halo2_proofs::poly::Rotation::cur());
+            vec![q * (begin + count - end)]
+        });
+        meta.create_gate("native.segment_max_selector", |meta| {
+            let q = meta.query_selector(q_max);
+            let selector = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
+            let diff = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
+            vec![
+                q.clone() * selector.clone() * (Expression::Constant(Fr::ONE) - selector.clone()),
+                q * selector * diff,
+            ]
+        });
+        meta.create_gate("native.compressed_projection", |meta| {
+            let q = meta.query_selector(q_projection);
+            let lhs = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
+            let rhs = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
+            vec![q * (lhs - rhs)]
+        });
+        meta.create_gate("native.compressed_aggregation", |meta| {
+            let q = meta.query_selector(q_aggregation);
+            let lhs = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
+            let rhs = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
+            vec![q * (lhs - rhs)]
+        });
+        meta.create_gate("native.output_average", |meta| {
+            let q = meta.query_selector(q_output_average);
+            let sum = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
+            let heads = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
+            let avg = meta.query_advice(out, halo2_proofs::poly::Rotation::cur());
+            vec![q * (avg * heads - sum)]
+        });
+        meta.create_gate("native.public_output_binding", |meta| {
+            let q = meta.query_selector(q_public_binding);
+            let lhs = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
+            let rhs = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
+            vec![q * (lhs - rhs)]
+        });
+        meta.lookup("native.lookup.lrelu", |meta| {
+            let q = meta.query_selector(q_lrelu_lookup);
+            let x = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
+            let y = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
+            vec![(q.clone() * x, table_lrelu_x), (q * y, table_lrelu_y)]
+        });
+        meta.lookup("native.lookup.exp", |meta| {
+            let q = meta.query_selector(q_exp_lookup);
+            let x = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
+            let y = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
+            vec![(q.clone() * x, table_exp_x), (q * y, table_exp_y)]
+        });
+        meta.lookup("native.lookup.elu", |meta| {
+            let q = meta.query_selector(q_elu_lookup);
+            let x = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
+            let y = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
+            vec![(q.clone() * x, table_elu_x), (q * y, table_elu_y)]
+        });
+
+        FullNativeConfig {
+            left,
+            right,
+            out,
+            aux,
+            instance,
+            q_mul,
+            q_inverse,
+            q_segment_sum,
+            q_max,
+            q_projection,
+            q_aggregation,
+            q_output_average,
+            q_public_binding,
+            q_lrelu_lookup,
+            q_exp_lookup,
+            q_elu_lookup,
+            table_lrelu_x,
+            table_lrelu_y,
+            table_exp_x,
+            table_exp_y,
+            table_elu_x,
+            table_elu_y,
+        }
+    }
+
+    fn synthesize(
+        &self,
+        config: Self::Config,
+        mut layouter: impl Layouter<Fr>,
+    ) -> Result<(), Error> {
+        layouter.assign_table(
+            || "native.lookup.lrelu.table",
+            |mut table| {
+                for (offset, raw) in (-8i64..=8).enumerate() {
+                    table.assign_cell(|| "lrelu x", config.table_lrelu_x, offset, || Value::known(fr_i64(raw)))?;
+                    table.assign_cell(
+                        || "lrelu y",
+                        config.table_lrelu_y,
+                        offset,
+                        || Value::known(fr_i64(leaky_relu_table_output(raw))),
+                    )?;
+                }
+                Ok(())
+            },
+        )?;
+        layouter.assign_table(
+            || "native.lookup.exp.table",
+            |mut table| {
+                table.assign_cell(|| "exp disabled x", config.table_exp_x, 0, || Value::known(Fr::ZERO))?;
+                table.assign_cell(|| "exp disabled y", config.table_exp_y, 0, || Value::known(Fr::ZERO))?;
+                for raw in 0usize..=16 {
+                    let offset = raw + 1;
+                    let out = (16i64 - raw as i64).max(0);
+                    table.assign_cell(|| "exp x", config.table_exp_x, offset, || Value::known(Fr::from(raw as u64)))?;
+                    table.assign_cell(|| "exp y", config.table_exp_y, offset, || Value::known(fr_i64(out)))?;
+                }
+                Ok(())
+            },
+        )?;
+        layouter.assign_table(
+            || "native.lookup.elu.table",
+            |mut table| {
+                for (offset, raw) in (-8i64..=8).enumerate() {
+                    table.assign_cell(|| "elu x", config.table_elu_x, offset, || Value::known(fr_i64(raw)))?;
+                    table.assign_cell(|| "elu y", config.table_elu_y, offset, || Value::known(fr_i64(raw)))?;
+                }
+                Ok(())
+            },
+        )?;
+
+        let scope = NativeDebugScope::parse(&self.params.scope)
+            .map_err(|_| Error::Synthesis)?;
+        if matches!(scope, NativeDebugScope::Level0Mul | NativeDebugScope::FullModel) {
+            self.assign_mul_region(
+                &mut layouter,
+                &config,
+                "native.level0.mul",
+                self.plan.node_count.max(1),
+                self.plan.class_count.max(1),
+            )?;
+        }
+        if matches!(scope, NativeDebugScope::InverseOnly | NativeDebugScope::FullModel) {
+            self.assign_inverse_region(
+                &mut layouter,
+                &config,
+                "native.inverse",
+                self.csr.max_in_degree.max(1),
+            )?;
+        }
+        if matches!(
+            scope,
+            NativeDebugScope::SegmentSumInverse
+                | NativeDebugScope::SingleHeadFirstLayer
+                | NativeDebugScope::FirstHiddenLayerAllHeads
+                | NativeDebugScope::HiddenOnly
+                | NativeDebugScope::FullModel
+        ) {
+            self.assign_segment_sum_inverse_region(
+                &mut layouter,
+                &config,
+                "native.segment_sum",
+                32,
+            )?;
+        }
+        if matches!(
+            scope,
+            NativeDebugScope::SegmentMaxOnly
+                | NativeDebugScope::SingleHeadFirstLayer
+                | NativeDebugScope::FirstHiddenLayerAllHeads
+                | NativeDebugScope::HiddenOnly
+                | NativeDebugScope::FullModel
+        ) {
+            self.assign_segment_max_region(
+                &mut layouter,
+                &config,
+                "native.segment_max_selector",
+                64,
+            )?;
+        }
+        if matches!(
+            scope,
+            NativeDebugScope::LreluLookupOnly
+                | NativeDebugScope::SingleHeadFirstLayer
+                | NativeDebugScope::FirstHiddenLayerAllHeads
+                | NativeDebugScope::HiddenOnly
+                | NativeDebugScope::FullModel
+        ) {
+            self.assign_lookup_region(
+                &mut layouter,
+                &config,
+                "native.lookup.lrelu",
+                NativeDebugScope::LreluLookupOnly,
+            )?;
+        }
+        if matches!(
+            scope,
+            NativeDebugScope::ExpLookupOnly
+                | NativeDebugScope::SingleHeadFirstLayer
+                | NativeDebugScope::FirstHiddenLayerAllHeads
+                | NativeDebugScope::HiddenOnly
+                | NativeDebugScope::FullModel
+        ) {
+            self.assign_lookup_region(
+                &mut layouter,
+                &config,
+                "native.lookup.exp",
+                NativeDebugScope::ExpLookupOnly,
+            )?;
+        }
+        if matches!(
+            scope,
+            NativeDebugScope::EluLookupOnly
+                | NativeDebugScope::HiddenOnly
+                | NativeDebugScope::FullModel
+        ) {
+            self.assign_lookup_region(
+                &mut layouter,
+                &config,
+                "native.lookup.elu",
+                NativeDebugScope::EluLookupOnly,
+            )?;
+        }
+        if matches!(
+            scope,
+            NativeDebugScope::CompressedProjectionOnly
+                | NativeDebugScope::SingleHeadFirstLayer
+                | NativeDebugScope::FirstHiddenLayerAllHeads
+                | NativeDebugScope::HiddenOnly
+                | NativeDebugScope::FullModel
+        ) {
+            let head_limit = if matches!(scope, NativeDebugScope::FirstHiddenLayerAllHeads | NativeDebugScope::HiddenOnly | NativeDebugScope::FullModel) {
+                total_hidden_heads_from_plan(&self.plan).max(1).min(8)
+            } else {
+                1
+            };
+            for head in 0..head_limit {
+                let region_name = format!("native.full_model.layer_0.head_{head}.compressed_projection");
+                self.assign_projection_region(&mut layouter, &config, Box::leak(region_name.into_boxed_str()), 0, head)?;
+            }
+        }
+        if matches!(
+            scope,
+            NativeDebugScope::CompressedAggregationOnly
+                | NativeDebugScope::SingleHeadFirstLayer
+                | NativeDebugScope::FirstHiddenLayerAllHeads
+                | NativeDebugScope::HiddenOnly
+                | NativeDebugScope::FullModel
+        ) {
+            let head_limit = if matches!(scope, NativeDebugScope::FirstHiddenLayerAllHeads | NativeDebugScope::HiddenOnly | NativeDebugScope::FullModel) {
+                total_hidden_heads_from_plan(&self.plan).max(1).min(8)
+            } else {
+                1
+            };
+            for head in 0..head_limit {
+                let region_name = format!("native.full_model.layer_0.head_{head}.compressed_aggregation");
+                self.assign_aggregation_region(&mut layouter, &config, Box::leak(region_name.into_boxed_str()), 0, head)?;
+            }
+        }
+        if matches!(scope, NativeDebugScope::OutputOnly | NativeDebugScope::FullModel) {
+            self.assign_output_average_region(
+                &mut layouter,
+                &config,
+                "native.output_average",
+            )?;
+        }
+        self.assign_public_binding_region(&mut layouter, &config)
+    }
+}
+
+fn read_u64(input: &mut &[u8]) -> Result<u64, EZKLError> {
+    if input.len() < 8 {
+        return Err("native_constraint_synthesis_failed: truncated CSR binary payload".into());
+    }
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&input[..8]);
+    *input = &input[8..];
+    Ok(u64::from_le_bytes(bytes))
+}
+
+fn read_u64_vec(input: &mut &[u8]) -> Result<Vec<u64>, EZKLError> {
+    let len = read_u64(input)? as usize;
+    let mut values = Vec::with_capacity(len);
+    for _ in 0..len {
+        values.push(read_u64(input)?);
+    }
+    Ok(values)
+}
+
+fn read_csr_payload(path: &Path) -> Result<CsrPayload, EZKLError> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)?.read_to_end(&mut bytes)?;
+    let mut input = bytes.as_slice();
+    let magic = b"EZKLGATCSR1\n";
+    if input.len() < magic.len() || &input[..magic.len()] != magic {
+        return Err(format!("native_constraint_synthesis_failed: malformed CSR magic at {}", path.display()).into());
+    }
+    input = &input[magic.len()..];
+    let src = read_u64_vec(&mut input)?;
+    let dst = read_u64_vec(&mut input)?;
+    let segment_ptr = read_u64_vec(&mut input)?;
+    let edge_ptr = read_u64_vec(&mut input)?;
+    let node_ptr = read_u64_vec(&mut input)?;
+    let segment_graph_id = read_u64_vec(&mut input)?;
+    let max_in_degree = read_u64(&mut input)?;
+    Ok(CsrPayload {
+        src,
+        dst,
+        segment_ptr,
+        edge_ptr,
+        node_ptr,
+        segment_graph_id,
+        max_in_degree,
+    })
+}
+
+fn synthetic_csr_payload(node_count: u64, edge_count: u64, graph_count: u64) -> CsrPayload {
+    let nodes = node_count.max(1);
+    let edges = edge_count.max(nodes);
+    let mut src = Vec::with_capacity(edges as usize);
+    let mut dst = Vec::with_capacity(edges as usize);
+    let mut segment_ptr = Vec::with_capacity(nodes as usize + 1);
+    let mut cursor = 0u64;
+    for node in 0..nodes {
+        segment_ptr.push(cursor);
+        let per_node = (edges / nodes).max(1);
+        for local in 0..per_node {
+            if cursor >= edges {
+                break;
+            }
+            src.push((node + local) % nodes);
+            dst.push(node);
+            cursor += 1;
+        }
+    }
+    while cursor < edges {
+        src.push(cursor % nodes);
+        dst.push(nodes - 1);
+        cursor += 1;
+    }
+    segment_ptr.push(edges);
+    let graph_count = graph_count.max(1);
+    let mut node_ptr = Vec::with_capacity(graph_count as usize + 1);
+    for graph_id in 0..=graph_count {
+        node_ptr.push(graph_id.saturating_mul(nodes) / graph_count);
+    }
+    CsrPayload {
+        src,
+        dst,
+        segment_ptr,
+        edge_ptr: vec![0, edges],
+        node_ptr,
+        segment_graph_id: vec![0; nodes as usize],
+        max_in_degree: (edges / nodes).max(1),
+    }
+}
+
+fn native_full_public_inputs(plan: &NativeCompiledPlan) -> Vec<Fr> {
+    vec![
+        Fr::from(plan.node_count.max(1)),
+        Fr::from(plan.edge_count.max(1)),
+        Fr::from(plan.class_count.max(1)),
+        Fr::from(plan.total_attention_head_count.max(1)),
+    ]
+}
+
+fn native_srs_path_for_key(key_path: &Path) -> PathBuf {
+    let mut srs_path = key_path.to_path_buf();
+    srs_path.set_extension("srs");
+    srs_path
+}
+
+fn load_native_params_for_key(key_path: &Path, logrows: u32) -> Result<ParamsKZG<Bn256>, EZKLError> {
+    let srs_path = native_srs_path_for_key(key_path);
+    if srs_path.exists() {
+        crate::pfsys::srs::load_srs_prover::<KZGCommitmentScheme<Bn256>>(srs_path)
+            .map_err(EZKLError::from)
+    } else {
+        Ok(crate::pfsys::srs::gen_srs::<KZGCommitmentScheme<Bn256>>(logrows))
+    }
+}
+
+fn run_dir_for_path(path: &Path) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    if parent.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        parent.to_path_buf()
+    }
+}
+
+fn write_native_failure(run_dir: &Path, failure: &NativeConstraintFailure) -> Result<(), EZKLError> {
+    write_json(&run_dir.join("native_constraint_failure.json"), failure)?;
+    let log = format!(
+        "block_reason={}\ngate_name={}\nregion_name={}\nrow_offset={}\ndataset={}\nroute_id={}\ncomponent={}\nexpected_relation={}\nactual_values={:?}\nwitness_source_path={}\ncommand={}\nraw_error={}\nattempted_fix={}\nremaining_blocker={}\n",
+        failure.block_reason,
+        failure.gate_name,
+        failure.region_name,
+        failure.row_offset,
+        failure.dataset,
+        failure.route_id,
+        failure.component,
+        failure.expected_relation,
+        failure.actual_values,
+        failure.witness_source_path,
+        failure.command,
+        failure.raw_error,
+        failure.attempted_fix,
+        failure.remaining_blocker
+    );
+    fs::write(run_dir.join("native_constraint_failure.log"), log)?;
+    Ok(())
+}
+
+fn parse_mock_failure_location(raw_error: &str, scope: &str) -> (String, String, usize, String) {
+    let region_name = raw_error
+        .split("('")
+        .nth(1)
+        .and_then(|tail| tail.split("')").next())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("native.debug_scope.{scope}"));
+    let row_offset = raw_error
+        .split(" at offset ")
+        .nth(1)
+        .and_then(|tail| tail.split_whitespace().next())
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let gate_name = if region_name.starts_with("native.") {
+        region_name.clone()
+    } else {
+        "native.mockprover.detected_failure".to_string()
+    };
+    let component = region_name
+        .strip_prefix("native.")
+        .unwrap_or(&region_name)
+        .to_string();
+    (gate_name, region_name, row_offset, component)
+}
+
+fn mock_failure_to_native_failure(
+    plan: &NativeCompiledPlan,
+    run_dir: &Path,
+    witness_path: &Path,
+    command: String,
+    raw_error: String,
+) -> NativeConstraintFailure {
+    let (gate_name, region_name, row_offset, component) =
+        parse_mock_failure_location(&raw_error, &plan.native_debug_scope);
+    NativeConstraintFailure {
+        status: "failed".to_string(),
+        block_reason: "native_constraint_synthesis_failed".to_string(),
+        gate_name,
+        region_name,
+        row_offset,
+        dataset: plan.dataset.clone(),
+        route_id: plan.route_id.clone(),
+        layer_index: None,
+        head_index: None,
+        component,
+        expected_relation: "MockProver must satisfy every enabled native diagnostic gate before KZG proving".to_string(),
+        actual_values: vec![
+            format!("required_logrows={}", plan.estimate.required_logrows),
+            format!("node_count={}", plan.node_count),
+            format!("edge_count={}", plan.edge_count),
+            format!("run_dir={}", run_dir.display()),
+        ],
+        witness_source_path: witness_path.display().to_string(),
+        command,
+        raw_error,
+        attempted_fix: "added MockProver preflight and stable native diagnostic gate/region names before KZG proving".to_string(),
+        remaining_blocker: "MockProver returned at least one unsatisfied Halo2 relation".to_string(),
+    }
+}
+
+fn strict_equivalence_failure(
+    plan: &NativeCompiledPlan,
+    run_dir: &Path,
+    witness_path: &Path,
+    command: String,
+) -> NativeConstraintFailure {
+    NativeConstraintFailure {
+        status: "blocked".to_string(),
+        block_reason: "native_full_gat_forward_constraints_incomplete".to_string(),
+        gate_name: "native.public_output_binding".to_string(),
+        region_name: "native.full_model.layer_1.output.public_output_binding".to_string(),
+        row_offset: 0,
+        dataset: plan.dataset.clone(),
+        route_id: plan.route_id.clone(),
+        layer_index: Some(plan.layer_count.saturating_sub(1)),
+        head_index: None,
+        component: "public_output_binding".to_string(),
+        expected_relation: "strict_public_input_equivalent requires public output bindings to be derived from every quantized full GAT forward relation: projection, attention score, LReLU lookup, segment max, Exp lookup, exact inverse, aggregation, ELU, output average".to_string(),
+        actual_values: vec![
+            "diagnostic proof binds CSR/table/metadata scoped relations only".to_string(),
+            format!("scope={}", plan.native_debug_scope),
+            format!("full_gat_forward_in_ezkl_proof={}", plan.full_gat_forward_in_ezkl_proof),
+            format!("strict_public_input_equivalent={}", plan.strict_public_input_equivalent),
+            format!("run_dir={}", run_dir.display()),
+        ],
+        witness_source_path: witness_path.display().to_string(),
+        command,
+        raw_error: "strict full-model public output witness columns are not assigned by this native diagnostic circuit".to_string(),
+        attempted_fix: "replaced the artificial full compressed CSR failure with real Halo2 MockProver/KZG diagnostic scopes and preserved strict_public_input_equivalent=false for non-full semantics".to_string(),
+        remaining_blocker: "full quantized GAT row assignment for public logits remains unimplemented; marking strict=true would be unsound".to_string(),
+    }
+}
+
+fn save_full_keys(
+    plan: NativeCompiledPlan,
+    run_dir: &Path,
+    vk_path: &PathBuf,
+    pk_path: &PathBuf,
+) -> Result<u32, EZKLError> {
+    let circuit = FullNativeCircuit::new(plan, run_dir, String::new())?;
+    let logrows = circuit.params.logrows;
+    let params = crate::pfsys::srs::gen_srs::<KZGCommitmentScheme<Bn256>>(logrows);
+    save_params::<KZGCommitmentScheme<Bn256>>(&native_srs_path_for_key(pk_path), &params)?;
+    save_params::<KZGCommitmentScheme<Bn256>>(&native_srs_path_for_key(vk_path), &params)?;
+    let pk = create_keys::<KZGCommitmentScheme<Bn256>, FullNativeCircuit>(&circuit, &params, false)
+        .map_err(|error| EZKLError::from(format!("native_keygen_failed: {error}")))?;
+    save_vk::<G1Affine>(vk_path, pk.get_vk())?;
+    save_pk::<G1Affine>(pk_path, &pk)?;
+    Ok(logrows)
+}
+
 pub(crate) fn graph_gat_setup(
     compiled_circuit_path: PathBuf,
     vk_path: PathBuf,
@@ -1457,17 +2640,18 @@ pub(crate) fn graph_gat_setup(
             .to_string())
         }
         BackendPlan::Full(plan) => {
-            save_tiny_keys(0, TINY_NATIVE_LOGROWS, &vk_path, &pk_path)?;
+            let run_dir = run_dir_for_path(&compiled_circuit_path);
+            let logrows = save_full_keys(plan.clone(), &run_dir, &vk_path, &pk_path)?;
             Ok(serde_json::json!({
-                "status": "setup_complete_smoke_key",
+                "status": "setup_complete",
                 "route_id": plan.route_id,
                 "native_primitive": plan.native_primitive,
                 "native_primitive_version": plan.native_primitive_version,
                 "dataset": plan.dataset,
-                "logrows": TINY_NATIVE_LOGROWS,
+                "native_debug_scope": plan.native_debug_scope,
+                "logrows": logrows,
                 "vk_path": vk_path,
-                "pk_path": pk_path,
-                "note": "real KZG keygen completed for native graph command path; full compressed CSR synthesis proceeds in graph-gat-prove"
+                "pk_path": pk_path
             })
             .to_string())
         }
@@ -1485,17 +2669,35 @@ pub(crate) fn graph_gat_gen_witness(
             Ok(serde_json::to_string(&witness)?)
         }
         BackendPlan::Full(plan) => {
+            let run_dir = run_dir_for_path(&compiled_circuit_path);
             let witness = serde_json::json!({
                 "witness_kind": "full_compressed_csr_native_inputs",
+                "diagnostic_backend_version": NATIVE_DIAGNOSTIC_BACKEND_VERSION,
                 "route_id": plan.route_id,
                 "native_primitive": plan.native_primitive,
                 "native_primitive_version": plan.native_primitive_version,
+                "native_debug_scope": plan.native_debug_scope,
                 "dataset": plan.dataset,
+                "node_count": plan.node_count,
+                "edge_count": plan.edge_count,
+                "graph_count": plan.graph_count,
+                "feature_dim": plan.feature_dim,
+                "class_count": plan.class_count,
                 "graph_hash": plan.graph_hash,
                 "checkpoint_hash": plan.checkpoint_hash,
+                "metadata_hash": plan.metadata_hash,
+                "shape_hash": plan.shape_hash,
                 "formal_table_hash": plan.formal_table_binding.table_hash,
-                "status": "witness_metadata_ready",
-                "note": "dataset witness metadata is bound; full row assignment is synthesized by native graph-gat-prove"
+                "payloads": {
+                    "csr_layout": run_dir.join("csr_segment_layout.bin"),
+                    "node_features": run_dir.join("node_features.f64.bin"),
+                    "checkpoint_tensors": run_dir.join("checkpoint_tensors.txt"),
+                    "formal_tables": run_dir.join("formal_tables.bin")
+                },
+                "status": "diagnostic_witness_metadata_ready",
+                "strict_public_input_equivalent": false,
+                "full_gat_forward_in_ezkl_proof": false,
+                "note": "dataset payloads are bound for native diagnostic scopes; strict full GAT output binding is intentionally false until complete quantized full-model constraints exist"
             });
             write_json(&output_path, &witness)?;
             Ok(witness.to_string())
@@ -1533,22 +2735,157 @@ pub(crate) fn graph_gat_prove(
             .to_string())
         }
         BackendPlan::Full(plan) => {
-            let _ = read_json::<serde_json::Value>(&witness_path)?;
-            let _ = load_pk::<KZGCommitmentScheme<Bn256>, TinyNativeCircuit>(
-                pk_path,
-                TinyNativeParams { level: 0 },
+            let witness = read_json::<serde_json::Value>(&witness_path)?;
+            let witness_scope = witness
+                .get("native_debug_scope")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            if !witness_scope.is_empty() && witness_scope != plan.native_debug_scope {
+                return Err(format!(
+                    "native_constraint_synthesis_failed: witness scope mismatch plan_scope={} witness_scope={}",
+                    plan.native_debug_scope, witness_scope
+                )
+                .into());
+            }
+            let scope = NativeDebugScope::parse(&plan.native_debug_scope)?;
+            let run_dir = run_dir_for_path(&compiled_circuit_path);
+            let circuit = FullNativeCircuit::new(
+                plan.clone(),
+                &run_dir,
+                witness_path.display().to_string(),
+            )?;
+            let public_inputs = native_full_public_inputs(&plan);
+            let mock = MockProver::run(circuit.params.logrows, &circuit, vec![public_inputs.clone()]);
+            match mock {
+                Ok(prover) => {
+                    if let Err(failures) = prover.verify() {
+                        let raw_error = failures
+                            .iter()
+                            .map(|failure| format!("{failure:?}"))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let failure = mock_failure_to_native_failure(
+                            &plan,
+                            &run_dir,
+                            &witness_path,
+                            format!(
+                                "graph-gat-prove --compiled-circuit {} --witness {} --pk-path {} --proof-path {}",
+                                compiled_circuit_path.display(),
+                                witness_path.display(),
+                                pk_path.display(),
+                                proof_path.display()
+                            ),
+                            raw_error.clone(),
+                        );
+                        write_native_failure(&run_dir, &failure)?;
+                        return Err(format!(
+                            "native_constraint_synthesis_failed: gate_name={} region_name={} row_offset={} relation={} values={:?}",
+                            failure.gate_name,
+                            failure.region_name,
+                            failure.row_offset,
+                            failure.expected_relation,
+                            failure.actual_values
+                        )
+                        .into());
+                    }
+                }
+                Err(error) => {
+                    let failure = mock_failure_to_native_failure(
+                        &plan,
+                        &run_dir,
+                        &witness_path,
+                        format!(
+                            "graph-gat-prove --compiled-circuit {} --witness {} --pk-path {} --proof-path {}",
+                            compiled_circuit_path.display(),
+                            witness_path.display(),
+                            pk_path.display(),
+                            proof_path.display()
+                        ),
+                        format!("{error:?}"),
+                    );
+                    write_native_failure(&run_dir, &failure)?;
+                    return Err(format!(
+                        "native_constraint_synthesis_failed: gate_name={} region_name={} row_offset={} relation={} values={:?}",
+                        failure.gate_name,
+                        failure.region_name,
+                        failure.row_offset,
+                        failure.expected_relation,
+                        failure.actual_values
+                    )
+                    .into());
+                }
+            }
+
+            if scope == NativeDebugScope::FullModel && !plan.strict_public_input_equivalent {
+                let failure = strict_equivalence_failure(
+                    &plan,
+                    &run_dir,
+                    &witness_path,
+                    format!(
+                        "graph-gat-prove --compiled-circuit {} --witness {} --pk-path {} --proof-path {}",
+                        compiled_circuit_path.display(),
+                        witness_path.display(),
+                        pk_path.display(),
+                        proof_path.display()
+                    ),
+                );
+                write_native_failure(&run_dir, &failure)?;
+                return Err(format!(
+                    "{}: gate_name={} region_name={} row_offset={} relation={} values={:?}",
+                    failure.block_reason,
+                    failure.gate_name,
+                    failure.region_name,
+                    failure.row_offset,
+                    failure.expected_relation,
+                    failure.actual_values
+                )
+                .into());
+            }
+
+            let pk = load_pk::<KZGCommitmentScheme<Bn256>, FullNativeCircuit>(
+                pk_path.clone(),
+                circuit.params.clone(),
             )
             .map_err(|error| EZKLError::from(format!("native_prover_failed: load_pk: {error}")))?;
-            Err(format!(
-                "native_constraint_synthesis_failed: full compressed CSR assignment for dataset={} route={} reached real KZG proving path, but constraint witness expansion stopped before committing proof; primitive={} version={} estimated_rows={} required_logrows={}",
-                plan.dataset,
-                plan.route_id,
-                plan.native_primitive,
-                plan.native_primitive_version,
-                plan.estimate.total_rows,
-                plan.estimate.required_logrows
+            let params = load_native_params_for_key(&pk_path, circuit.params.logrows)?;
+            let snark = create_proof_circuit::<
+                KZGCommitmentScheme<Bn256>,
+                _,
+                ProverSHPLONK<_>,
+                VerifierSHPLONK<_>,
+                KZGSingleStrategy<_>,
+                _,
+                Blake2bWrite<Vec<u8>, _, Challenge255<_>>,
+                Blake2bRead<Cursor<Vec<u8>>, _, Challenge255<_>>,
+            >(
+                circuit,
+                vec![public_inputs],
+                &params,
+                &pk,
+                CheckMode::SAFE,
+                None,
+                None,
             )
-            .into())
+            .map_err(|error| EZKLError::from(format!("native_prover_failed: create_proof: {error}")))?;
+            snark.save(&proof_path)?;
+            Ok(serde_json::json!({
+                "status": "proof_created",
+                "route_id": plan.route_id,
+                "native_debug_scope": plan.native_debug_scope,
+                "diagnostic_backend_version": NATIVE_DIAGNOSTIC_BACKEND_VERSION,
+                "dataset": plan.dataset,
+                "logrows": NativeDebugScope::parse(&plan.native_debug_scope)?.logrows(&plan),
+                "proof_path": proof_path,
+                "public_inputs": [
+                    plan.node_count.max(1),
+                    plan.edge_count.max(1),
+                    plan.class_count.max(1),
+                    plan.total_attention_head_count.max(1)
+                ],
+                "strict_public_input_equivalent": plan.strict_public_input_equivalent,
+                "full_gat_forward_in_ezkl_proof": plan.full_gat_forward_in_ezkl_proof
+            })
+            .to_string())
         }
     }
 }
@@ -1574,11 +2911,50 @@ pub(crate) fn graph_gat_verify(
             write_json(&output_path, &output)?;
             Ok(serde_json::to_string(&output)?)
         }
-        BackendPlan::Full(plan) => Err(format!(
-            "native_verify_failed: no full compressed CSR proof is available for dataset={} route={} because graph-gat-prove stopped at constraint synthesis",
-            plan.dataset, plan.route_id
-        )
-        .into()),
+        BackendPlan::Full(plan) => {
+            let run_dir = run_dir_for_path(&compiled_circuit_path);
+            let circuit = FullNativeCircuit::new(
+                plan.clone(),
+                &run_dir,
+                proof_path.display().to_string(),
+            )?;
+            let proof = Snark::<Fr, G1Affine>::load::<KZGCommitmentScheme<Bn256>>(&proof_path)
+                .map_err(|error| EZKLError::from(format!("native_verify_failed: load_proof: {error}")))?;
+            let vk = load_vk::<KZGCommitmentScheme<Bn256>, FullNativeCircuit>(
+                vk_path.clone(),
+                circuit.params.clone(),
+            )
+            .map_err(|error| EZKLError::from(format!("native_verify_failed: load_vk: {error}")))?;
+            let params = load_native_params_for_key(&vk_path, circuit.params.logrows)?;
+            let strategy = KZGSingleStrategy::new(params.verifier_params());
+            verify_proof_circuit::<
+                VerifierSHPLONK<_>,
+                KZGCommitmentScheme<Bn256>,
+                KZGSingleStrategy<_>,
+                _,
+                Blake2bRead<Cursor<Vec<u8>>, _, Challenge255<_>>,
+            >(
+                &proof,
+                params.verifier_params(),
+                &vk,
+                strategy,
+                1 << circuit.params.logrows,
+            )
+            .map_err(|error| EZKLError::from(format!("native_verify_failed: verify_proof: {error}")))?;
+            let output = serde_json::json!({
+                "status": "verified",
+                "verify_passed": true,
+                "route_id": plan.route_id,
+                "native_debug_scope": plan.native_debug_scope,
+                "diagnostic_backend_version": NATIVE_DIAGNOSTIC_BACKEND_VERSION,
+                "proof_path": proof_path,
+                "vk_path": vk_path,
+                "strict_public_input_equivalent": plan.strict_public_input_equivalent,
+                "full_gat_forward_in_ezkl_proof": plan.full_gat_forward_in_ezkl_proof
+            });
+            write_json(&output_path, &output)?;
+            Ok(output.to_string())
+        }
     }
 }
 
