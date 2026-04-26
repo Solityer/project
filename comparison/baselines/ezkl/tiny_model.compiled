@@ -1,0 +1,15 @@
+{
+  "compiled_kind": "graph_gat_tiny_native_compiled_plan",
+  "route_id": "ezkl_gat_native_compressed_csr_attention_full",
+  "native_primitive": "GraphSegmentAttentionCompressedCSR",
+  "native_primitive_version": "csr_segment_attention_compressed_v1",
+  "backend_version": "tiny_native_backend_levels_0_6_v1",
+  "status": "compiled",
+  "logrows": 9,
+  "level": 6,
+  "public_inputs": [
+    15,
+    1
+  ],
+  "note": "tiny native graph backend exercises levels 0 through 6 with real Halo2 KZG proof"
+}

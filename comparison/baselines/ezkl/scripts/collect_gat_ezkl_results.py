@@ -99,7 +99,7 @@ def collect() -> tuple[list[dict], list[dict]]:
 def write_csv(path: Path, rows: list[dict], fieldnames: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
         for row in rows:
             writer.writerow({key: row.get(key, "") for key in fieldnames})
@@ -109,8 +109,9 @@ def write_summary(ezkl_rows: list[dict], comparison_rows: list[dict]) -> None:
     lines: list[str] = []
     lines.append("# GAT-ZKML vs ezkl Full-Dataset Baseline Summary")
     lines.append("")
-    lines.append("- Strict public input equivalent: false for all completed rows because no full GAT ezkl proof verified.")
-    lines.append("- Full GAT forward entered ezkl proof: false for all rows.")
+    verified_count = sum(1 for row in ezkl_rows if row.get("status") == "verified")
+    lines.append(f"- Verified ezkl full-dataset rows: {verified_count}/{len(ezkl_rows)}.")
+    lines.append("- Strict public input equivalent is true only for rows with a verified full native GAT proof.")
     lines.append("- No precomputed logits, identity, reshape, digest, folding, subset, shard, or scaled route was used.")
     lines.append("")
     lines.append("## Dataset Status")
@@ -198,20 +199,20 @@ def write_native_csr_report() -> None:
     lines: list[str] = []
     lines.append("# Native CSR Segment Attention Report")
     lines.append("")
-    lines.append("- Route: `ezkl_gat_native_csr_segment_attention_full`")
-    lines.append("- Native primitive: `GraphSegmentAttention` / `csr_segment_attention_v1`")
+    lines.append("- Legacy report retained for continuity; rows below reflect the latest native route manifest for each dataset.")
     lines.append("- Layout: CSR/ragged dst segments over `src[E]`, `dst[E]`, `segment_ptr[N+1]`, `edge_ptr[G+1]`, and `node_ptr[G+1]`.")
     lines.append("- Exact inverse attempt: native witness inverse column with `Sum_i * Inv_i = 1`; no epsilon reciprocal is used.")
     lines.append("")
-    lines.append("| Dataset | status | block_reason | failure_step | rows | required_logrows | max_logrows |")
-    lines.append("| --- | --- | --- | --- | ---: | ---: | ---: |")
+    lines.append("| Dataset | route_id | primitive | status | block_reason | failure_step | rows | required_logrows | max_logrows |")
+    lines.append("| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: |")
     for run_id, _main_key, display, run_dir in DATASETS:
         manifest_path = EZKL_ROOT / run_dir / "run_manifest.json"
         manifest = read_json(manifest_path) if manifest_path.exists() else {}
         plan = manifest.get("native_compile_plan") or {}
         estimate = plan.get("estimate") or {}
         lines.append(
-            f"| {display} | {manifest.get('status', 'missing')} | {manifest.get('block_reason', '')} | "
+            f"| {display} | {manifest.get('route_id', '')} | {manifest.get('native_primitive', '')} | "
+            f"{manifest.get('status', 'missing')} | {manifest.get('block_reason', '')} | "
             f"{manifest.get('failure_step', '')} | {estimate.get('total_rows', '')} | "
             f"{estimate.get('required_logrows', '')} | {estimate.get('max_logrows', '')} |"
         )
@@ -250,6 +251,48 @@ def write_native_csr_report() -> None:
     (RESULTS / "native_csr_segment_attention_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def write_native_compressed_csr_report() -> None:
+    lines: list[str] = []
+    lines.append("# Native Compressed CSR Attention Report")
+    lines.append("")
+    lines.append("- Route: `ezkl_gat_native_compressed_csr_attention_full`")
+    lines.append("- Native primitive: `GraphSegmentAttentionCompressedCSR` / `csr_segment_attention_compressed_v1`")
+    lines.append("- Row model: CSR edge rows, row-compressed projection and aggregation, segment max selector/state machine, exact `Sum_i * Inv_i = 1`, and batched formal lookup table accounting.")
+    lines.append("- Formal tables: deterministic from `range_bits`, `quant_cfg_id`, and `static_table_id`; no witness-specific table is generated.")
+    lines.append("")
+    lines.append("| Dataset | status | block_reason | previous rows | compressed rows | reduction | required_logrows | feasible | table_hash |")
+    lines.append("| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |")
+    for run_id, _main_key, display, run_dir in DATASETS:
+        base = EZKL_ROOT / run_dir
+        manifest = read_json(base / "run_manifest.json") if (base / "run_manifest.json").exists() else {}
+        estimate = read_json(base / "compressed_row_estimate.json") if (base / "compressed_row_estimate.json").exists() else manifest.get("compressed_row_estimate", {})
+        hashes = read_json(base / "formal_table_hashes.json") if (base / "formal_table_hashes.json").exists() else manifest.get("formal_table_hashes", {})
+        rows = estimate.get("total_rows_estimated", "")
+        previous = estimate.get("previous_native_csr_rows", "")
+        reduction = estimate.get("row_reduction_ratio_vs_previous_native_csr", "")
+        lines.append(
+            f"| {display} | {manifest.get('status', 'missing')} | {manifest.get('block_reason', '')} | "
+            f"{previous} | {rows} | {reduction} | {estimate.get('required_logrows', '')} | "
+            f"{estimate.get('feasible_under_logrows_26', '')} | {hashes.get('table_hash', '')} |"
+        )
+    lines.append("")
+    lines.append("## Required Artifacts")
+    lines.append("")
+    for _run_id, _main_key, display, run_dir in DATASETS:
+        base = EZKL_ROOT / run_dir
+        artifacts = [
+            "run_manifest.json",
+            "compressed_row_estimate.json",
+            "formal_tables.json",
+            "formal_table_hashes.json",
+            "graph_attention_spec.json",
+            "model_info.json",
+        ]
+        status = ", ".join(f"{name}={str((base / name).exists()).lower()}" for name in artifacts)
+        lines.append(f"- {display}: {status}")
+    (RESULTS / "native_compressed_csr_attention_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def main() -> int:
     RESULTS.mkdir(parents=True, exist_ok=True)
     ezkl_rows, comparison_rows = collect()
@@ -268,6 +311,7 @@ def main() -> int:
     segment_rows = collect_segment_rows()
     write_segment_summary(segment_rows)
     write_native_csr_report()
+    write_native_compressed_csr_report()
     print(f"wrote results under {RESULTS}")
     return 0
 

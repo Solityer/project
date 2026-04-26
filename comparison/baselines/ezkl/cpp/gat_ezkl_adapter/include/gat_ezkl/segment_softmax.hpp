@@ -10,6 +10,7 @@
 #include "gat_ezkl/checkpoint.hpp"
 #include "gat_ezkl/config.hpp"
 #include "gat_ezkl/dataset.hpp"
+#include "gat_ezkl/formal_tables.hpp"
 #include "gat_ezkl/gat.hpp"
 
 namespace gat_ezkl {
@@ -129,7 +130,8 @@ void write_native_csr_graph_artifacts(
     const std::string& graph_hash,
     const std::string& checkpoint_hash,
     const std::string& metadata_hash,
-    const std::string& shape_hash);
+    const std::string& shape_hash,
+    const FormalTablesSummary* formal_tables = nullptr);
 
 std::string segment_analysis_json(const SegmentAnalysisReport& report);
 std::string segment_metadata_json(const SegmentAnalysisReport& report);

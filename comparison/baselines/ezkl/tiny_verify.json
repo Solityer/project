@@ -1,0 +1,8 @@
+{
+  "status": "verified",
+  "verify_passed": true,
+  "route_id": "ezkl_gat_native_compressed_csr_attention_full",
+  "backend_version": "tiny_native_backend_levels_0_6_v1",
+  "proof_path": "tiny_proof.json",
+  "vk_path": "tiny_vk.key"
+}

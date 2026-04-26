@@ -10,6 +10,7 @@ add_executable(gat_ezkl_export
   src/checkpoint.cpp
   src/config.cpp
   src/dataset.cpp
+  src/formal_tables.cpp
   src/gat.cpp
   src/graph.cpp
   src/hash.cpp

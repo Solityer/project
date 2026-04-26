@@ -473,6 +473,12 @@ pub enum Commands {
         /// The path to the compiled native plan.
         #[arg(short = 'M', long, default_value = DEFAULT_COMPILED_CIRCUIT, value_hint = clap::ValueHint::FilePath)]
         compiled_circuit: PathBuf,
+        /// The path to the native graph witness.
+        #[arg(short = 'W', long, default_value = DEFAULT_WITNESS, value_hint = clap::ValueHint::FilePath)]
+        witness: PathBuf,
+        /// The path to the proving key file.
+        #[arg(long, default_value = DEFAULT_PK, value_hint = clap::ValueHint::FilePath)]
+        pk_path: PathBuf,
         /// The path to output the proof file to.
         #[arg(long, default_value = DEFAULT_PROOF, value_hint = clap::ValueHint::FilePath)]
         proof_path: PathBuf,
@@ -481,6 +487,9 @@ pub enum Commands {
     /// Verifies a native CSR GraphSegmentAttention proof.
     #[command(name = "graph-gat-verify")]
     GraphGatVerify {
+        /// The path to the compiled native plan.
+        #[arg(short = 'M', long, default_value = DEFAULT_COMPILED_CIRCUIT, value_hint = clap::ValueHint::FilePath)]
+        compiled_circuit: PathBuf,
         /// The path to the proof file.
         #[arg(long, default_value = DEFAULT_PROOF, value_hint = clap::ValueHint::FilePath)]
         proof_path: PathBuf,
@@ -490,6 +499,9 @@ pub enum Commands {
         /// The path to the verification key file.
         #[arg(long, default_value = DEFAULT_VK, value_hint = clap::ValueHint::FilePath)]
         vk_path: PathBuf,
+        /// The path to write verify result JSON.
+        #[arg(short = 'O', long, default_value = "verify.json", value_hint = clap::ValueHint::FilePath)]
+        output: PathBuf,
     },
 
     /// Generates the witness from an input file.

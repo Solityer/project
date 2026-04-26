@@ -1,0 +1,31 @@
+{
+  "witness_kind": "tiny_native_graph_witness",
+  "backend_version": "tiny_native_backend_levels_0_6_v1",
+  "level": 6,
+  "a": 3,
+  "b": 5,
+  "c": 15,
+  "sum": 5,
+  "inv": 0,
+  "u_values": [
+    2,
+    3,
+    5
+  ],
+  "z_values": [
+    1,
+    4,
+    3
+  ],
+  "m_values": [
+    4,
+    3
+  ],
+  "max_sel": [
+    0,
+    1,
+    1
+  ],
+  "projection_rho": 7,
+  "aggregation_rho": 11
+}
