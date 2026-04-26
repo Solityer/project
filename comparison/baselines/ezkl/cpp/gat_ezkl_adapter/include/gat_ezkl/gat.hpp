@@ -37,6 +37,13 @@ struct HeadForwardTrace {
     FloatMatrix h_prime;
     std::vector<double> e_src;
     std::vector<double> e_dst;
+    std::vector<double> s;
+    std::vector<double> z;
+    std::vector<double> m;
+    std::vector<double> delta;
+    std::vector<double> u;
+    std::vector<double> sum;
+    std::vector<double> inv;
     std::vector<double> alpha;
     FloatMatrix h_agg;
 };

@@ -13,6 +13,7 @@ namespace gat_ezkl {
 struct TensorInfo {
     std::vector<std::size_t> shape;
     std::size_t value_count = 0;
+    std::vector<double> values;
 };
 
 struct CheckpointHeadSpec {

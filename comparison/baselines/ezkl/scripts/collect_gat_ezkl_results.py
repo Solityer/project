@@ -102,12 +102,20 @@ def effective_manifest(run_dir: str, run_id: str) -> dict:
     return manifest
 
 
+def preflight_for_run(run_dir: str) -> dict:
+    path = EZKL_ROOT / run_dir / "native_full_witness_preflight.json"
+    if not path.exists():
+        return {}
+    return read_json(path)
+
+
 def collect() -> tuple[list[dict], list[dict]]:
     main_by_dataset = main_rows()
     ezkl_rows: list[dict] = []
     comparison_rows: list[dict] = []
     for run_id, main_key, display, run_dir in DATASETS:
         manifest = effective_manifest(run_dir, run_id)
+        preflight = preflight_for_run(run_dir)
         ezkl_row = {
             "dataset": run_id,
             "display_dataset": display,
@@ -121,6 +129,14 @@ def collect() -> tuple[list[dict], list[dict]]:
             "failure_region": manifest.get("failure_region", ""),
             "failure_row": manifest.get("failure_row", ""),
             "failure_relation": manifest.get("failure_relation", ""),
+            "failure_values": manifest.get("failure_values", []),
+            "preflight_node_index": preflight.get("node_index"),
+            "preflight_degree": preflight.get("degree"),
+            "preflight_sum_fp32_reference": preflight.get("sum_fp32_reference"),
+            "preflight_inv_fp32_reference": preflight.get("inv_fp32_reference"),
+            "preflight_quantized_sum_scale16": preflight.get("quantized_sum_scale16"),
+            "preflight_quantized_inv_scale16": preflight.get("quantized_inv_scale16"),
+            "preflight_quantized_product": preflight.get("quantized_product"),
         }
         for metric in METRICS:
             ezkl_row[metric] = manifest.get(metric)
@@ -207,11 +223,23 @@ def write_summary(ezkl_rows: list[dict], comparison_rows: list[dict]) -> None:
     for row in ezkl_rows:
         detail = row.get("failure_gate") or row.get("failure_region") or row.get("failure_relation")
         if detail:
+            values = row.get("failure_values") or []
+            value_text = ", ".join(values) if isinstance(values, list) else str(values)
+            preflight_text = ""
+            if row.get("preflight_node_index") is not None:
+                preflight_text = (
+                    f"; node={row.get('preflight_node_index')}; degree={row.get('preflight_degree')}; "
+                    f"sum_fp32={row.get('preflight_sum_fp32_reference')}; "
+                    f"inv_fp32={row.get('preflight_inv_fp32_reference')}; "
+                    f"sum_q={row.get('preflight_quantized_sum_scale16')}; "
+                    f"inv_q={row.get('preflight_quantized_inv_scale16')}; "
+                    f"product={row.get('preflight_quantized_product')}"
+                )
             lines.append(
                 f"- {row['display_dataset']}: {row['status']} / {row.get('block_reason', '')}; "
                 f"step={row.get('failure_step', '')}; gate={row.get('failure_gate', '')}; "
                 f"region={row.get('failure_region', '')}; row={row.get('failure_row', '')}; "
-                f"relation={row.get('failure_relation', '')}"
+                f"relation={row.get('failure_relation', '')}; values={value_text}{preflight_text}"
             )
         else:
             lines.append(f"- {row['display_dataset']}: {row['status']} / {row.get('block_reason', '')}")
@@ -370,7 +398,20 @@ def write_native_constraint_debug_report() -> None:
             f"{manifest.get('block_reason', '')} | {manifest.get('failure_gate', '')} | "
             f"{manifest.get('failure_region', '')} | {manifest.get('failure_row', '')} |"
         )
+    root_manifest_path = base / "run_manifest.json"
+    if root_manifest_path.exists():
+        root_manifest = read_json(root_manifest_path)
+        lines.append(
+            f"| full_model_current | {root_manifest.get('status', 'missing')} | "
+            f"{metric_cell(root_manifest, 'setup_ms')} | {metric_cell(root_manifest, 'prove_time_ms')} | "
+            f"{metric_cell(root_manifest, 'verify_time_ms')} | {metric_cell(root_manifest, 'proof_size_bytes')} | "
+            f"{root_manifest.get('verify_passed', False)} | {root_manifest.get('block_reason', '')} | "
+            f"{root_manifest.get('failure_gate', '')} | {root_manifest.get('failure_region', '')} | "
+            f"{root_manifest.get('failure_row', '')} |"
+        )
     failure_path = base / "debug_full_model" / "native_constraint_failure.json"
+    if not failure_path.exists():
+        failure_path = base / "native_constraint_failure.json"
     if failure_path.exists():
         failure = read_json(failure_path)
         lines.append("")
@@ -383,6 +424,19 @@ def write_native_constraint_debug_report() -> None:
         lines.append(f"- actual_values: `{failure.get('actual_values', [])}`")
         lines.append(f"- attempted_fix: {failure.get('attempted_fix', '')}")
         lines.append(f"- remaining_blocker: {failure.get('remaining_blocker', '')}")
+    lines.append("")
+    lines.append("## Full-Dataset Preflight Evidence")
+    lines.append("")
+    lines.append("| Dataset | node | degree | sum_fp32 | inv_fp32 | sum_q | inv_q | product |")
+    lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+    for _run_id, _main_key, display, run_dir in DATASETS:
+        preflight = preflight_for_run(run_dir)
+        lines.append(
+            f"| {display} | {preflight.get('node_index', '')} | {preflight.get('degree', '')} | "
+            f"{preflight.get('sum_fp32_reference', '')} | {preflight.get('inv_fp32_reference', '')} | "
+            f"{preflight.get('quantized_sum_scale16', '')} | {preflight.get('quantized_inv_scale16', '')} | "
+            f"{preflight.get('quantized_product', '')} |"
+        )
     (RESULTS / "native_constraint_debug_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -400,6 +454,19 @@ def write_native_full_experiment_report(ezkl_rows: list[dict]) -> None:
         )
     lines.append("")
     lines.append("No output-binding workaround, no precomputed logits, no subset, no shard, and no sample route was used.")
+    lines.append("")
+    lines.append("## Exact-Inverse Preflight Evidence")
+    lines.append("")
+    lines.append("| Dataset | step | gate | region | node | degree | sum_q | inv_q | product | relation |")
+    lines.append("| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |")
+    for row in ezkl_rows:
+        lines.append(
+            f"| {row['display_dataset']} | {row.get('failure_step', '')} | {row.get('failure_gate', '')} | "
+            f"{row.get('failure_region', '')} | {row.get('preflight_node_index', '')} | "
+            f"{row.get('preflight_degree', '')} | {row.get('preflight_quantized_sum_scale16', '')} | "
+            f"{row.get('preflight_quantized_inv_scale16', '')} | {row.get('preflight_quantized_product', '')} | "
+            f"{row.get('failure_relation', '')} |"
+        )
     (RESULTS / "native_full_experiment_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -424,6 +491,14 @@ def main() -> int:
             "failure_region",
             "failure_row",
             "failure_relation",
+            "failure_values",
+            "preflight_node_index",
+            "preflight_degree",
+            "preflight_sum_fp32_reference",
+            "preflight_inv_fp32_reference",
+            "preflight_quantized_sum_scale16",
+            "preflight_quantized_inv_scale16",
+            "preflight_quantized_product",
         ]
         + METRICS,
     )

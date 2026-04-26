@@ -79,6 +79,13 @@ HeadForwardTrace attention_head_forward(
     trace.h_prime = matmul(features, parameters.seq_kernel);
     trace.e_src = matvec(trace.h_prime, parameters.attn_src_kernel, parameters.attn_src_bias);
     trace.e_dst = matvec(trace.h_prime, parameters.attn_dst_kernel, parameters.attn_dst_bias);
+    trace.s.assign(edges.size(), 0.0);
+    trace.z.assign(edges.size(), 0.0);
+    trace.m.assign(node_count, -std::numeric_limits<double>::infinity());
+    trace.delta.assign(edges.size(), 0.0);
+    trace.u.assign(edges.size(), 0.0);
+    trace.sum.assign(node_count, 0.0);
+    trace.inv.assign(node_count, 0.0);
     trace.alpha.assign(edges.size(), 0.0);
     trace.h_agg.assign(node_count, std::vector<double>(width, 0.0));
 
@@ -100,14 +107,24 @@ HeadForwardTrace attention_head_forward(
             const auto& edge = edges[edge_index];
             max_score = std::max(max_score, leaky_relu(trace.e_src[edge.src] + trace.e_dst[edge.dst]));
         }
+        trace.m[dst] = max_score;
         double denom = 0.0;
         for (const auto edge_index : incoming_edge_indices[dst]) {
             const auto& edge = edges[edge_index];
             denom += std::exp(leaky_relu(trace.e_src[edge.src] + trace.e_dst[edge.dst]) - max_score);
         }
+        trace.sum[dst] = denom;
+        trace.inv[dst] = 1.0 / denom;
         for (const auto edge_index : incoming_edge_indices[dst]) {
             const auto& edge = edges[edge_index];
-            const auto alpha = std::exp(leaky_relu(trace.e_src[edge.src] + trace.e_dst[edge.dst]) - max_score) / denom;
+            const auto score = trace.e_src[edge.src] + trace.e_dst[edge.dst];
+            const auto activated = leaky_relu(score);
+            const auto exp_value = std::exp(activated - max_score);
+            const auto alpha = exp_value / denom;
+            trace.s[edge_index] = score;
+            trace.z[edge_index] = activated;
+            trace.delta[edge_index] = max_score - activated;
+            trace.u[edge_index] = exp_value;
             trace.alpha[edge_index] = alpha;
             for (std::size_t col = 0; col < width; ++col) {
                 trace.h_agg[dst][col] += alpha * trace.h_prime[edge.src][col];

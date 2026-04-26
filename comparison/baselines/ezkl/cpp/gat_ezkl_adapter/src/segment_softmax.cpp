@@ -8,6 +8,7 @@
 #include "gat_ezkl/graph.hpp"
 #include "gat_ezkl/hash.hpp"
 #include "gat_ezkl/metadata.hpp"
+#include "gat_ezkl/quant.hpp"
 
 namespace gat_ezkl {
 namespace {
@@ -123,6 +124,156 @@ std::string output_heads_json(const CheckpointBundle& bundle) {
     }
     out << "]";
     return out.str();
+}
+
+const TensorInfo& require_tensor_values(const CheckpointBundle& bundle, const std::string& name) {
+    const auto it = bundle.tensors.find(name);
+    if (it == bundle.tensors.end()) {
+        throw std::runtime_error("checkpoint tensor missing while building native full preflight: " + name);
+    }
+    if (it->second.values.size() != it->second.value_count) {
+        throw std::runtime_error("checkpoint tensor values were not loaded for native full preflight: " + name);
+    }
+    return it->second;
+}
+
+FloatMatrix reshape_seq_kernel_values(const TensorInfo& tensor) {
+    if (tensor.shape.size() != 3 || tensor.shape[0] != 1) {
+        throw std::runtime_error("expected seq kernel tensor shape [1, in, out]");
+    }
+    const auto rows = tensor.shape[1];
+    const auto cols = tensor.shape[2];
+    if (tensor.values.size() != rows * cols) {
+        throw std::runtime_error("seq kernel tensor value count does not match shape");
+    }
+    FloatMatrix out(rows, std::vector<double>(cols, 0.0));
+    for (std::size_t row = 0; row < rows; ++row) {
+        for (std::size_t col = 0; col < cols; ++col) {
+            out[row][col] = tensor.values[row * cols + col];
+        }
+    }
+    return out;
+}
+
+std::vector<double> reshape_attention_kernel_values(const TensorInfo& tensor) {
+    if (tensor.shape.size() != 3 || tensor.shape[0] != 1 || tensor.shape[2] != 1) {
+        throw std::runtime_error("expected attention kernel tensor shape [1, width, 1]");
+    }
+    return tensor.values;
+}
+
+double reshape_scalar_bias_value(const TensorInfo& tensor) {
+    if (tensor.shape.size() != 1 || tensor.shape[0] != 1 || tensor.values.size() != 1) {
+        throw std::runtime_error("expected scalar bias tensor shape [1]");
+    }
+    return tensor.values.front();
+}
+
+std::vector<double> reshape_output_bias_values(const TensorInfo& tensor) {
+    if (tensor.shape.size() != 1 || tensor.values.size() != tensor.shape[0]) {
+        throw std::runtime_error("expected output bias tensor shape [width]");
+    }
+    return tensor.values;
+}
+
+HeadParameters load_hidden_head_parameters(
+    const CheckpointBundle& bundle,
+    const CheckpointHeadSpec& spec) {
+    HeadParameters out;
+    out.seq_kernel = reshape_seq_kernel_values(require_tensor_values(bundle, spec.seq_kernel));
+    out.attn_src_kernel = reshape_attention_kernel_values(require_tensor_values(bundle, spec.attn_src_kernel));
+    out.attn_dst_kernel = reshape_attention_kernel_values(require_tensor_values(bundle, spec.attn_dst_kernel));
+    out.attn_src_bias = reshape_scalar_bias_value(require_tensor_values(bundle, spec.attn_src_bias));
+    out.attn_dst_bias = reshape_scalar_bias_value(require_tensor_values(bundle, spec.attn_dst_bias));
+    out.output_bias = reshape_output_bias_values(require_tensor_values(bundle, spec.output_bias));
+    return out;
+}
+
+std::string native_full_witness_preflight_json(
+    const std::string& route_id,
+    const AppConfig& config,
+    const NormalizedGraph& graph,
+    const CheckpointBundle& bundle,
+    const CsrSegmentLayout& layout) {
+    std::ostringstream out;
+    out << std::setprecision(17);
+    out << "{\n"
+        << "  \"preflight_kind\": \"native_full_gat_witness_semantic_preflight_v1\",\n"
+        << "  \"route_id\": \"" << json_escape(route_id) << "\",\n"
+        << "  \"dataset\": \"" << json_escape(config.dataset) << "\",\n"
+        << "  \"full_dataset\": true,\n"
+        << "  \"component\": \"full_model.layer_0.hidden_head_0.exact_inverse\",\n"
+        << "  \"full_model_reference_forward_attempted\": true,\n"
+        << "  \"full_model_witness_complete\": false,\n"
+        << "  \"full_model_circuit_complete\": false,\n"
+        << "  \"public_output_binding_implemented\": false,\n";
+
+    if (bundle.hidden_heads.empty()) {
+        out << "  \"status\": \"blocked\",\n"
+            << "  \"block_reason\": \"native_full_gat_checkpoint_has_no_hidden_heads\",\n"
+            << "  \"failure_step\": \"native_full_witness_preflight\",\n"
+            << "  \"failure_relation\": \"full-model native witness requires at least one hidden attention head\"\n"
+            << "}\n";
+        return out.str();
+    }
+
+    try {
+        const auto head = load_hidden_head_parameters(bundle, bundle.hidden_heads.front());
+        const auto trace = attention_head_forward(
+            graph.features_fp,
+            graph.edges,
+            head,
+            false,
+            true);
+        for (std::size_t node = 0; node < trace.sum.size(); ++node) {
+            const auto quantized_sum = quantize_to_i64(trace.sum[node], 16.0);
+            const auto quantized_inv = quantize_to_i64(trace.inv[node], 16.0);
+            const auto product = quantized_sum * quantized_inv;
+            if (product != 1) {
+                out << "  \"status\": \"blocked\",\n"
+                    << "  \"block_reason\": \"native_full_exact_inverse_quantization_conflict\",\n"
+                    << "  \"failure_step\": \"graph-gat-gen-witness\",\n"
+                    << "  \"failure_gate\": \"native.exact_inverse\",\n"
+                    << "  \"failure_region\": \"native.full_model.layer_0.head_0.softmax.exact_inverse\",\n"
+                    << "  \"failure_row\": " << node << ",\n"
+                    << "  \"layer_index\": 0,\n"
+                    << "  \"head_index\": 0,\n"
+                    << "  \"node_index\": " << node << ",\n"
+                    << "  \"segment_begin\": " << layout.segment_ptr.at(node) << ",\n"
+                    << "  \"segment_end\": " << layout.segment_ptr.at(node + 1) << ",\n"
+                    << "  \"degree\": " << (layout.segment_ptr.at(node + 1) - layout.segment_ptr.at(node)) << ",\n"
+                    << "  \"sum_fp32_reference\": " << trace.sum[node] << ",\n"
+                    << "  \"inv_fp32_reference\": " << trace.inv[node] << ",\n"
+                    << "  \"quantized_sum_scale16\": " << quantized_sum << ",\n"
+                    << "  \"quantized_inv_scale16\": " << quantized_inv << ",\n"
+                    << "  \"quantized_product\": " << product << ",\n"
+                    << "  \"expected_relation\": \"strict native route requires exact finite-field Sum_i * Inv_i = 1, but fp32_bundle_export supplies a scale-16 rounded reciprocal witness\",\n"
+                    << "  \"actual_values\": [\"sum_q=" << quantized_sum
+                    << "\", \"inv_q=" << quantized_inv
+                    << "\", \"sum_q_times_inv_q=" << product
+                    << "\", \"quant_cfg_id=" << json_escape(config.quant_cfg_id)
+                    << "\"],\n"
+                    << "  \"attempted_fix\": \"C++ adapter now executes the real full-dataset first hidden attention head and checks the formal exact inverse relation before Rust witness assignment\",\n"
+                    << "  \"remaining_blocker\": \"A compliant strict route needs a quant_cfg_id that defines exact inverse-compatible downstream alpha/aggregation/ELU semantics; replacing this with rounded fp32 reciprocal or output binding would violate the formal route\"\n"
+                    << "}\n";
+                return out.str();
+            }
+        }
+        out << "  \"status\": \"ready\",\n"
+            << "  \"block_reason\": \"\",\n"
+            << "  \"failure_step\": null,\n"
+            << "  \"checked_nodes\": " << trace.sum.size() << "\n"
+            << "}\n";
+        return out.str();
+    } catch (const std::exception& error) {
+        out << "  \"status\": \"blocked\",\n"
+            << "  \"block_reason\": \"native_full_witness_preflight_failed\",\n"
+            << "  \"failure_step\": \"native_full_witness_preflight\",\n"
+            << "  \"failure_relation\": \"C++ adapter must compute first hidden-head full-dataset attention witness before Rust assignment\",\n"
+            << "  \"raw_error\": \"" << json_escape(error.what()) << "\"\n"
+            << "}\n";
+        return out.str();
+    }
 }
 
 std::uint64_t hash_feature_payload(const NormalizedGraph& graph) {
@@ -533,6 +684,9 @@ void write_native_csr_graph_artifacts(
         << "\",\"node_ptr_hash\":\"" << layout.hashes.node_ptr_hash << "\"}\n"
         << "}\n";
     write_text_file(output_dir / "tensor_payloads.json", tensor_manifest.str());
+    write_text_file(
+        output_dir / "native_full_witness_preflight.json",
+        native_full_witness_preflight_json(route_id, config, graph, bundle, layout));
 
     std::ostringstream spec;
     spec << "{\n"
