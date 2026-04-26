@@ -30,6 +30,7 @@ std::string build_metadata_json(
 
 std::string build_model_info_json(
     const AppConfig& config,
+    const NormalizedGraph& graph,
     const CheckpointBundle& bundle,
     const GatSemanticSummary& gat_summary,
     const std::string& checkpoint_hash,

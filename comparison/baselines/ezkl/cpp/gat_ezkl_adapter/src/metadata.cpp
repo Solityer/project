@@ -105,6 +105,11 @@ std::string build_metadata_json(
         << "  \"visibility_cfg\": \"public_input_public_logits_constant_weight_hash\",\n"
         << "  \"input_visibility\": \"public_full_dataset_tensor_summary\",\n"
         << "  \"output_visibility\": \"public_logits_when_verified\",\n"
+        << "  \"public_instance_order\": \"final_logits_row_major_node_then_class\",\n"
+        << "  \"public_instance_length\": " << (graph.node_count * graph.class_count) << ",\n"
+        << "  \"final_logits_shape\": [" << graph.node_count << "," << graph.class_count << "],\n"
+        << "  \"output_average_policy\": \"" << json_escape(bundle.output_average_rule) << "\",\n"
+        << "  \"output_rounding_policy\": \"integer_exact_no_post_average_rescale\",\n"
         << "  \"param_visibility\": \"weight_constants_bound_by_checkpoint_hash\",\n"
         << "  \"graph_hash\": \"" << graph_hash << "\",\n"
         << "  \"checkpoint_hash\": \"" << checkpoint_hash << "\",\n"
@@ -145,6 +150,7 @@ std::string build_metadata_json(
 
 std::string build_model_info_json(
     const AppConfig& config,
+    const NormalizedGraph& graph,
     const CheckpointBundle& bundle,
     const GatSemanticSummary& gat_summary,
     const std::string& checkpoint_hash,
@@ -164,6 +170,19 @@ std::string build_model_info_json(
         << "  \"num_classes\": " << bundle.class_count << ",\n"
         << "  \"hidden_head_count\": " << bundle.hidden_heads.size() << ",\n"
         << "  \"output_head_count\": " << bundle.output_heads.size() << ",\n"
+        << "  \"output_layer_spec\": {\"output_head_count\":" << bundle.output_heads.size()
+        << ",\"K_out\":" << bundle.K_out
+        << ",\"C\":" << bundle.class_count
+        << ",\"input_width\":\"last_hidden_concat_width\","
+        << "\"output_bias_dim\":" << bundle.class_count
+        << ",\"output_average_rule\":\"" << json_escape(bundle.output_average_rule) << "\"},\n"
+        << "  \"final_logits_binding_spec\": {\"final_logits_shape\":["
+        << graph.node_count << "," << graph.class_count << "],"
+        << "\"public_instance_length\":" << (graph.node_count * graph.class_count) << ","
+        << "\"public_instance_order\":\"final_logits_row_major_node_then_class\","
+        << "\"output_scale\":16,"
+        << "\"output_rounding_policy\":\"integer_exact_no_post_average_rescale\","
+        << "\"final_logits_hash_policy\":\"fnv1a64_over_quantized_row_major_final_logits\"},\n"
         << "  \"tensor_count_loaded_from_tensors_txt\": " << bundle.tensors.size() << ",\n";
     if (formal_tables != nullptr) {
         out << "  \"formal_tables\": " << formal_table_binding_json(*formal_tables) << ",\n";

@@ -123,6 +123,8 @@ def classify_native_failure(timing_key: str, stdout: str, stderr: str) -> str:
         return "native_full_witness_preflight_failed"
     if "native_full_gat_forward_constraints_incomplete" in text:
         return "native_full_gat_forward_constraints_incomplete"
+    if "final_logits_derivation_incomplete" in text:
+        return "final_logits_derivation_incomplete"
     if "native_constraint_synthesis_failed" in text:
         return "native_constraint_synthesis_failed"
     if "native_keygen" in text:
@@ -384,6 +386,7 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict, native_debug_scope:
                         or failure == "alpha_rescale_mismatch"
                         or failure == "native_full_witness_preflight_failed"
                         or failure == "native_full_gat_forward_constraints_incomplete"
+                        or failure == "final_logits_derivation_incomplete"
                     )
                     else "failed",
                     "block_reason": failure,
