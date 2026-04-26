@@ -6,6 +6,7 @@
 #include "gat_ezkl/checkpoint.hpp"
 #include "gat_ezkl/config.hpp"
 #include "gat_ezkl/dataset.hpp"
+#include "gat_ezkl/formal_tables.hpp"
 #include "gat_ezkl/gat.hpp"
 #include "gat_ezkl/quant.hpp"
 
@@ -24,14 +25,16 @@ std::string build_metadata_json(
     const GatSemanticSummary& gat_summary,
     const std::string& graph_hash,
     const std::string& checkpoint_hash,
-    const std::string& shape_hash);
+    const std::string& shape_hash,
+    const FormalTablesSummary* formal_tables = nullptr);
 
 std::string build_model_info_json(
     const AppConfig& config,
     const CheckpointBundle& bundle,
     const GatSemanticSummary& gat_summary,
     const std::string& checkpoint_hash,
-    const std::string& shape_hash);
+    const std::string& shape_hash,
+    const FormalTablesSummary* formal_tables = nullptr);
 
 std::string build_input_summary_json(
     const NormalizedGraph& graph,

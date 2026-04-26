@@ -490,7 +490,15 @@ void write_native_csr_graph_artifacts(
     const std::string& graph_hash,
     const std::string& checkpoint_hash,
     const std::string& metadata_hash,
-    const std::string& shape_hash) {
+    const std::string& shape_hash,
+    const FormalTablesSummary* formal_tables) {
+    const bool compressed_route = route_id == "ezkl_gat_native_compressed_csr_attention_full";
+    const std::string native_primitive = compressed_route
+        ? "GraphSegmentAttentionCompressedCSR"
+        : "GraphSegmentAttention";
+    const std::string native_primitive_version = compressed_route
+        ? "csr_segment_attention_compressed_v1"
+        : "csr_segment_attention_v1";
     std::string reason;
     const auto layout = build_csr_segment_layout(graph, &reason);
     if (!reason.empty()) {
@@ -529,8 +537,8 @@ void write_native_csr_graph_artifacts(
     std::ostringstream spec;
     spec << "{\n"
         << "  \"route_id\": \"" << json_escape(route_id) << "\",\n"
-        << "  \"native_primitive\": \"GraphSegmentAttention\",\n"
-        << "  \"native_primitive_version\": \"csr_segment_attention_v1\",\n"
+        << "  \"native_primitive\": \"" << native_primitive << "\",\n"
+        << "  \"native_primitive_version\": \"" << native_primitive_version << "\",\n"
         << "  \"full_dataset\": true,\n"
         << "  \"strict_public_input_equivalent_candidate\": true,\n"
         << "  \"forbidden_substitute_used\": false,\n"
@@ -561,6 +569,12 @@ void write_native_csr_graph_artifacts(
         << "  \"model_arch_id\": \"" << json_escape(config.model_arch_id) << "\",\n"
         << "  \"model_param_id\": \"" << json_escape(config.model_param_id) << "\",\n"
         << "  \"quant_cfg_id\": \"" << json_escape(config.quant_cfg_id) << "\",\n"
+        << "  \"static_table_id\": \"" << json_escape(config.static_table_id) << "\",\n";
+    if (formal_tables != nullptr) {
+        spec << "  \"formal_tables\": " << formal_table_binding_json(*formal_tables) << ",\n"
+             << "  \"formal_table_hash\": \"" << formal_tables->hashes.table_hash << "\",\n";
+    }
+    spec
         << "  \"graph_hash\": \"" << graph_hash << "\",\n"
         << "  \"checkpoint_hash\": \"" << checkpoint_hash << "\",\n"
         << "  \"metadata_hash\": \"" << metadata_hash << "\",\n"

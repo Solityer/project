@@ -38,6 +38,7 @@ ExportDecision export_or_block_strict_segment_gat_onnx(
 
 ExportDecision export_native_csr_segment_attention_gat(
     const std::filesystem::path& output_dir,
+    const std::string& route_id,
     const AppConfig& config,
     const NormalizedGraph& graph,
     const CheckpointBundle& bundle,

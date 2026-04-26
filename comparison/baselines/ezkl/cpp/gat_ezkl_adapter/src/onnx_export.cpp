@@ -123,14 +123,16 @@ ExportDecision export_or_block_strict_segment_gat_onnx(
 
 ExportDecision export_native_csr_segment_attention_gat(
     const std::filesystem::path& output_dir,
+    const std::string& route_id,
     const AppConfig& config,
     const NormalizedGraph& graph,
     const CheckpointBundle& bundle,
     const GatSemanticSummary& summary) {
     (void)config;
     (void)bundle;
+    const bool compressed_route = route_id == "ezkl_gat_native_compressed_csr_attention_full";
     ExportDecision decision;
-    decision.route_id = "ezkl_gat_native_csr_segment_attention_full";
+    decision.route_id = route_id;
     decision.status = "ready";
     decision.block_reason = "";
     decision.strict_public_input_equivalent = true;
@@ -140,7 +142,8 @@ ExportDecision export_native_csr_segment_attention_gat(
     std::ostringstream limitation;
     limitation
         << "C++ adapter exported full-dataset CSR/ragged graph attention artifacts for ezkl native "
-        << "GraphSegmentAttention. The route avoids dense NxN attention and padded N*Dmax as the "
+        << (compressed_route ? "GraphSegmentAttentionCompressedCSR" : "GraphSegmentAttention")
+        << ". The route avoids dense NxN attention and padded N*Dmax as the "
         << "primary representation. Proof success still depends on native ezkl compile/setup/prove/verify. "
         << "N=" << graph.node_count
         << ", E=" << graph.edge_count
@@ -153,7 +156,9 @@ ExportDecision export_native_csr_segment_attention_gat(
     marker << "{\n"
         << "  \"artifact\": \"network.onnx\",\n"
         << "  \"placeholder\": false,\n"
-        << "  \"model_type\": \"graph-segment-attention-native-csr\",\n"
+        << "  \"model_type\": \""
+        << (compressed_route ? "graph-segment-attention-compressed-native-csr" : "graph-segment-attention-native-csr")
+        << "\",\n"
         << "  \"route_id\": \"" << decision.route_id << "\",\n"
         << "  \"status\": \"ready\",\n"
         << "  \"note\": \"native graph route uses graph_attention_spec.json and csr_segment_layout.bin, not ordinary ONNX ops\"\n"

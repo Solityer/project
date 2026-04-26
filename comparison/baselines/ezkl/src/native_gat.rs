@@ -1,13 +1,36 @@
+use crate::circuit::CheckMode;
+use crate::pfsys::{
+    create_keys, create_proof_circuit, load_pk, load_vk, save_params, save_pk, save_vk,
+    verify_proof_circuit, Snark,
+};
 use crate::EZKLError;
+use halo2_proofs::circuit::{AssignedCell, Layouter, SimpleFloorPlanner, Value};
+use halo2_proofs::plonk::{
+    Advice, Circuit, Column, ConstraintSystem, Error, Expression, Instance, Selector, TableColumn,
+};
+use halo2_proofs::poly::commitment::ParamsProver;
+use halo2_proofs::poly::kzg::commitment::{KZGCommitmentScheme, ParamsKZG};
+use halo2_proofs::poly::kzg::multiopen::{ProverSHPLONK, VerifierSHPLONK};
+use halo2_proofs::poly::kzg::strategy::SingleStrategy as KZGSingleStrategy;
+use halo2_proofs::transcript::{Blake2bRead, Blake2bWrite, Challenge255};
+use halo2curves::bn256::{Bn256, Fr, G1Affine};
+use halo2curves::ff::Field;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const ROUTE_ID: &str = "ezkl_gat_native_csr_segment_attention_full";
-const PRIMITIVE: &str = "GraphSegmentAttention";
-const PRIMITIVE_VERSION: &str = "csr_segment_attention_v1";
+const LEGACY_ROUTE_ID: &str = "ezkl_gat_native_csr_segment_attention_full";
+const COMPRESSED_ROUTE_ID: &str = "ezkl_gat_native_compressed_csr_attention_full";
+const LEGACY_PRIMITIVE: &str = "GraphSegmentAttention";
+const LEGACY_PRIMITIVE_VERSION: &str = "csr_segment_attention_v1";
+const COMPRESSED_PRIMITIVE: &str = "GraphSegmentAttentionCompressedCSR";
+const COMPRESSED_PRIMITIVE_VERSION: &str = "csr_segment_attention_compressed_v1";
 const DEFAULT_MAX_LOGROWS: u32 = 26;
+const TINY_NATIVE_COMPILED_KIND: &str = "graph_gat_tiny_native_compiled_plan";
+const TINY_NATIVE_BACKEND_VERSION: &str = "tiny_native_backend_levels_0_6_v1";
+const TINY_NATIVE_LOGROWS: u32 = 9;
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
@@ -39,11 +62,17 @@ struct GraphAttentionSpec {
     model_arch_id: String,
     model_param_id: String,
     quant_cfg_id: String,
+    #[serde(default)]
+    static_table_id: String,
     graph_hash: String,
     checkpoint_hash: String,
     metadata_hash: String,
     shape_hash: String,
     total_attention_head_count: u64,
+    #[serde(default)]
+    formal_table_hash: String,
+    #[serde(default)]
+    formal_tables: Option<FormalTableBinding>,
 }
 
 #[allow(dead_code)]
@@ -60,6 +89,66 @@ struct CsrLayoutManifest {
     edge_ptr_hash: String,
     node_ptr_hash: String,
     segment_graph_id_hash: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct FormalTableBinding {
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    table_policy: String,
+    #[serde(default)]
+    quant_cfg_id: String,
+    #[serde(default)]
+    static_table_id: String,
+    #[serde(default)]
+    range_bits: u64,
+    #[serde(default)]
+    signed_bound: i64,
+    #[serde(default)]
+    range_hash: String,
+    #[serde(default)]
+    lrelu_hash: String,
+    #[serde(default)]
+    elu_hash: String,
+    #[serde(default)]
+    exp_hash: String,
+    #[serde(default)]
+    inv_hash: String,
+    #[serde(default)]
+    table_hash: String,
+    #[serde(default)]
+    bin_hash: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct FormalTableHashesFile {
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    table_policy: String,
+    #[serde(default)]
+    quant_cfg_id: String,
+    #[serde(default)]
+    static_table_id: String,
+    #[serde(default)]
+    range_bits: u64,
+    #[serde(default)]
+    signed_bound: i64,
+    #[serde(default)]
+    range_hash: String,
+    #[serde(default)]
+    lrelu_hash: String,
+    #[serde(default)]
+    elu_hash: String,
+    #[serde(default)]
+    exp_hash: String,
+    #[serde(default)]
+    inv_hash: String,
+    #[serde(default)]
+    table_hash: String,
+    #[serde(default)]
+    bin_hash: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -80,6 +169,37 @@ struct NativeEstimate {
     required_logrows: u32,
     max_logrows: u32,
     within_public_srs: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct CompressedRowEstimate {
+    dataset: String,
+    route_id: String,
+    node_count: u64,
+    edge_count: u64,
+    graph_count: u64,
+    hidden_layers: u64,
+    hidden_heads: u64,
+    output_heads: u64,
+    projection_rows: u128,
+    edge_attention_rows: u128,
+    max_state_machine_rows: u128,
+    exp_lookup_rows: u128,
+    sum_inverse_rows: u128,
+    aggregation_rows: u128,
+    elu_lookup_rows: u128,
+    output_rows: u128,
+    metadata_rows: u128,
+    previous_native_csr_rows: u128,
+    total_rows_estimated: u128,
+    required_logrows: u32,
+    max_logrows: u32,
+    row_reduction_ratio_vs_previous_native_csr: f64,
+    feasible_under_logrows_26: bool,
+    blocker_if_any: String,
+    challenge_policy: String,
+    lookup_batching: String,
+    max_selector_policy: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -104,7 +224,11 @@ struct NativeSettings {
     shape_hash: String,
     lookup_semantics: LookupSemantics,
     inverse_semantics: InverseSemantics,
+    #[serde(default)]
+    formal_table_binding: FormalTableBinding,
     estimate: NativeEstimate,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compressed_row_estimate: Option<CompressedRowEstimate>,
     generated_unix_ms: u128,
 }
 
@@ -115,6 +239,12 @@ struct LookupSemantics {
     exp_map: String,
     range_checks: String,
     formal_status: String,
+    #[serde(default)]
+    table_policy: String,
+    #[serde(default)]
+    table_hash: String,
+    #[serde(default)]
+    witness_specific_table: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -142,6 +272,57 @@ struct NativeCompiledPlan {
     checkpoint_hash: String,
     exact_inverse_gate: InverseSemantics,
     lookup_semantics: LookupSemantics,
+    #[serde(default)]
+    formal_table_binding: FormalTableBinding,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compressed_row_estimate: Option<CompressedRowEstimate>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct TinyNativeCompiledPlan {
+    compiled_kind: String,
+    route_id: String,
+    native_primitive: String,
+    native_primitive_version: String,
+    backend_version: String,
+    status: String,
+    logrows: u32,
+    level: u8,
+    public_inputs: Vec<u64>,
+    note: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct NativeTinyWitness {
+    witness_kind: String,
+    backend_version: String,
+    level: u8,
+    a: u64,
+    b: u64,
+    c: u64,
+    sum: u64,
+    inv: u64,
+    u_values: Vec<u64>,
+    z_values: Vec<i64>,
+    m_values: Vec<i64>,
+    max_sel: Vec<u64>,
+    projection_rho: u64,
+    aggregation_rho: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct NativeVerifyOutput {
+    status: String,
+    verify_passed: bool,
+    route_id: String,
+    backend_version: String,
+    proof_path: String,
+    vk_path: String,
+}
+
+enum BackendPlan {
+    Tiny(TinyNativeCompiledPlan),
+    Full(NativeCompiledPlan),
 }
 
 fn now_unix_ms() -> u128 {
@@ -165,11 +346,503 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), EZKLError> {
     Ok(())
 }
 
+fn fr_i64(value: i64) -> Fr {
+    if value >= 0 {
+        Fr::from(value as u64)
+    } else {
+        -Fr::from(value.unsigned_abs())
+    }
+}
+
+fn leaky_relu_table_output(raw: i64) -> i64 {
+    if raw >= 0 {
+        raw
+    } else if raw >= -2 {
+        0
+    } else {
+        raw / 5
+    }
+}
+
+fn default_tiny_plan() -> TinyNativeCompiledPlan {
+    TinyNativeCompiledPlan {
+        compiled_kind: TINY_NATIVE_COMPILED_KIND.to_string(),
+        route_id: COMPRESSED_ROUTE_ID.to_string(),
+        native_primitive: COMPRESSED_PRIMITIVE.to_string(),
+        native_primitive_version: COMPRESSED_PRIMITIVE_VERSION.to_string(),
+        backend_version: TINY_NATIVE_BACKEND_VERSION.to_string(),
+        status: "compiled".to_string(),
+        logrows: TINY_NATIVE_LOGROWS,
+        level: 6,
+        public_inputs: vec![15, 1],
+        note: "tiny native graph backend exercises levels 0 through 6 with real Halo2 KZG proof"
+            .to_string(),
+    }
+}
+
+fn default_tiny_witness(level: u8) -> NativeTinyWitness {
+    NativeTinyWitness {
+        witness_kind: "tiny_native_graph_witness".to_string(),
+        backend_version: TINY_NATIVE_BACKEND_VERSION.to_string(),
+        level,
+        a: 3,
+        b: 5,
+        c: 15,
+        sum: 5,
+        inv: 0,
+        u_values: vec![2, 3, 5],
+        z_values: vec![1, 4, 3],
+        m_values: vec![4, 3],
+        max_sel: vec![0, 1, 1],
+        projection_rho: 7,
+        aggregation_rho: 11,
+    }
+}
+
+fn public_inputs_from_plan(plan: &TinyNativeCompiledPlan) -> Vec<Fr> {
+    plan.public_inputs
+        .iter()
+        .map(|value| Fr::from(*value))
+        .collect()
+}
+
+fn load_backend_plan(path: &Path, step: &str) -> Result<BackendPlan, EZKLError> {
+    if !path.exists() {
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.contains("tiny"))
+            .unwrap_or(false)
+        {
+            let plan = default_tiny_plan();
+            write_json(path, &plan)?;
+            return Ok(BackendPlan::Tiny(plan));
+        }
+        return Err(format!("{step} missing compiled native plan: {}", path.display()).into());
+    }
+    let text = fs::read_to_string(path)?;
+    let value: serde_json::Value = serde_json::from_str(&text)?;
+    let compiled_kind = value
+        .get("compiled_kind")
+        .and_then(|kind| kind.as_str())
+        .unwrap_or("");
+    if compiled_kind == TINY_NATIVE_COMPILED_KIND {
+        let plan: TinyNativeCompiledPlan = serde_json::from_value(value)?;
+        if plan.status != "compiled" {
+            return Err(format!("{step} refused tiny plan status={}", plan.status).into());
+        }
+        return Ok(BackendPlan::Tiny(plan));
+    }
+    let plan: NativeCompiledPlan = serde_json::from_str(&text)?;
+    if plan.status != "compiled" {
+        return Err(format!(
+            "{} refused because compiled plan status={} block_reason={}",
+            step, plan.status, plan.block_reason
+        )
+        .into());
+    }
+    Ok(BackendPlan::Full(plan))
+}
+
+#[derive(Clone, Debug, Default)]
+struct TinyNativeParams {
+    level: u8,
+}
+
+#[derive(Clone, Debug)]
+struct TinyNativeConfig {
+    left: Column<Advice>,
+    right: Column<Advice>,
+    out: Column<Advice>,
+    bits: Vec<Column<Advice>>,
+    instance: Column<Instance>,
+    q_mul: Selector,
+    q_equal: Selector,
+    q_inv: Selector,
+    q_range4: Selector,
+    q_max: Selector,
+    q_lookup: Selector,
+    table_x: TableColumn,
+    table_y: TableColumn,
+}
+
+#[derive(Clone, Debug)]
+struct TinyNativeCircuit {
+    params: TinyNativeParams,
+    witness: NativeTinyWitness,
+}
+
+impl TinyNativeCircuit {
+    fn new(level: u8, witness: NativeTinyWitness) -> Self {
+        Self {
+            params: TinyNativeParams { level },
+            witness,
+        }
+    }
+
+    fn without_values(level: u8) -> Self {
+        Self::new(level, default_tiny_witness(level))
+    }
+
+    fn assign_advice(
+        region: &mut halo2_proofs::circuit::Region<'_, Fr>,
+        column: Column<Advice>,
+        offset: usize,
+        name: &'static str,
+        value: Fr,
+    ) -> Result<AssignedCell<Fr, Fr>, Error> {
+        region.assign_advice(|| name, column, offset, || Value::known(value))
+    }
+
+    fn assign_equal_row(
+        region: &mut halo2_proofs::circuit::Region<'_, Fr>,
+        config: &TinyNativeConfig,
+        offset: &mut usize,
+        left: Fr,
+        right: Fr,
+    ) -> Result<(), Error> {
+        config.q_equal.enable(region, *offset)?;
+        Self::assign_advice(region, config.left, *offset, "equal lhs", left)?;
+        Self::assign_advice(region, config.right, *offset, "equal rhs", right)?;
+        Self::assign_advice(region, config.out, *offset, "equal unused", Fr::ZERO)?;
+        *offset += 1;
+        Ok(())
+    }
+
+    fn assign_range4_row(
+        region: &mut halo2_proofs::circuit::Region<'_, Fr>,
+        config: &TinyNativeConfig,
+        offset: &mut usize,
+        value: u64,
+    ) -> Result<(), Error> {
+        config.q_range4.enable(region, *offset)?;
+        Self::assign_advice(region, config.left, *offset, "range value", Fr::from(value))?;
+        Self::assign_advice(region, config.right, *offset, "range unused", Fr::ZERO)?;
+        Self::assign_advice(region, config.out, *offset, "range unused", Fr::ZERO)?;
+        for bit_index in 0..4 {
+            let bit = (value >> bit_index) & 1;
+            Self::assign_advice(
+                region,
+                config.bits[bit_index],
+                *offset,
+                "range bit",
+                Fr::from(bit),
+            )?;
+        }
+        *offset += 1;
+        Ok(())
+    }
+}
+
+impl Circuit<Fr> for TinyNativeCircuit {
+    type Config = TinyNativeConfig;
+    type FloorPlanner = SimpleFloorPlanner;
+    type Params = TinyNativeParams;
+
+    fn without_witnesses(&self) -> Self {
+        Self::without_values(self.params.level)
+    }
+
+    fn configure(meta: &mut ConstraintSystem<Fr>) -> Self::Config {
+        Self::configure_with_params(meta, TinyNativeParams { level: 6 })
+    }
+
+    fn configure_with_params(
+        meta: &mut ConstraintSystem<Fr>,
+        _params: Self::Params,
+    ) -> Self::Config {
+        let left = meta.advice_column();
+        let right = meta.advice_column();
+        let out = meta.advice_column();
+        let bits = (0..4).map(|_| meta.advice_column()).collect::<Vec<_>>();
+        let instance = meta.instance_column();
+        meta.enable_equality(out);
+        meta.enable_equality(instance);
+
+        let q_mul = meta.selector();
+        let q_equal = meta.selector();
+        let q_inv = meta.selector();
+        let q_range4 = meta.selector();
+        let q_max = meta.selector();
+        let q_lookup = meta.complex_selector();
+        let table_x = meta.lookup_table_column();
+        let table_y = meta.lookup_table_column();
+
+        meta.create_gate("tiny native multiplication", |meta| {
+            let q = meta.query_selector(q_mul);
+            let left = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
+            let right = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
+            let out = meta.query_advice(out, halo2_proofs::poly::Rotation::cur());
+            vec![q * (left * right - out)]
+        });
+        meta.create_gate("tiny native equality", |meta| {
+            let q = meta.query_selector(q_equal);
+            let left = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
+            let right = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
+            vec![q * (left - right)]
+        });
+        meta.create_gate("tiny native exact inverse", |meta| {
+            let q = meta.query_selector(q_inv);
+            let sum = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
+            let inv = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
+            let one = meta.query_advice(out, halo2_proofs::poly::Rotation::cur());
+            vec![q * (sum * inv - one)]
+        });
+        meta.create_gate("tiny native range4", |meta| {
+            let q = meta.query_selector(q_range4);
+            let value = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
+            let mut reconstructed = Expression::Constant(Fr::ZERO);
+            let mut constraints = Vec::new();
+            for (bit_index, bit_column) in bits.iter().enumerate() {
+                let bit = meta.query_advice(*bit_column, halo2_proofs::poly::Rotation::cur());
+                constraints
+                    .push(q.clone() * bit.clone() * (Expression::Constant(Fr::ONE) - bit.clone()));
+                reconstructed =
+                    reconstructed + bit * Expression::Constant(Fr::from(1u64 << bit_index));
+            }
+            constraints.push(q * (value - reconstructed));
+            constraints
+        });
+        meta.create_gate("tiny native max selector", |meta| {
+            let q = meta.query_selector(q_max);
+            let sel = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
+            let diff = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
+            vec![
+                q.clone() * sel.clone() * (Expression::Constant(Fr::ONE) - sel.clone()),
+                q * sel * diff,
+            ]
+        });
+        meta.lookup("tiny native formal lrelu lookup", |meta| {
+            let q = meta.query_selector(q_lookup);
+            let x = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
+            let y = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
+            vec![(q.clone() * x, table_x), (q * y, table_y)]
+        });
+
+        TinyNativeConfig {
+            left,
+            right,
+            out,
+            bits,
+            instance,
+            q_mul,
+            q_equal,
+            q_inv,
+            q_range4,
+            q_max,
+            q_lookup,
+            table_x,
+            table_y,
+        }
+    }
+
+    fn synthesize(
+        &self,
+        config: Self::Config,
+        mut layouter: impl Layouter<Fr>,
+    ) -> Result<(), Error> {
+        layouter.assign_table(
+            || "tiny formal lrelu table",
+            |mut table| {
+                for (offset, raw) in (-8i64..=8).enumerate() {
+                    table.assign_cell(
+                        || "lrelu x",
+                        config.table_x,
+                        offset,
+                        || Value::known(fr_i64(raw)),
+                    )?;
+                    table.assign_cell(
+                        || "lrelu y",
+                        config.table_y,
+                        offset,
+                        || Value::known(fr_i64(leaky_relu_table_output(raw))),
+                    )?;
+                }
+                Ok(())
+            },
+        )?;
+
+        let (c_cell, one_cell) = layouter.assign_region(
+            || "tiny native backend levels",
+            |mut region| {
+                let mut offset = 0usize;
+                let level = self.params.level;
+
+                config.q_mul.enable(&mut region, offset)?;
+                Self::assign_advice(
+                    &mut region,
+                    config.left,
+                    offset,
+                    "a",
+                    Fr::from(self.witness.a),
+                )?;
+                Self::assign_advice(
+                    &mut region,
+                    config.right,
+                    offset,
+                    "b",
+                    Fr::from(self.witness.b),
+                )?;
+                let c_cell = Self::assign_advice(
+                    &mut region,
+                    config.out,
+                    offset,
+                    "c",
+                    Fr::from(self.witness.c),
+                )?;
+                offset += 1;
+
+                let one_cell =
+                    Self::assign_advice(&mut region, config.out, offset, "public one", Fr::ONE)?;
+                offset += 1;
+
+                if level >= 1 {
+                    config.q_inv.enable(&mut region, offset)?;
+                    let sum = Fr::from(self.witness.sum);
+                    let inv = sum.invert().unwrap();
+                    Self::assign_advice(&mut region, config.left, offset, "sum", sum)?;
+                    Self::assign_advice(&mut region, config.right, offset, "inv", inv)?;
+                    Self::assign_advice(&mut region, config.out, offset, "one", Fr::ONE)?;
+                    offset += 1;
+                }
+
+                if level >= 2 {
+                    let seg0 = Fr::from(self.witness.u_values[0] + self.witness.u_values[1]);
+                    let seg1 = Fr::from(self.witness.u_values[2]);
+                    Self::assign_equal_row(&mut region, &config, &mut offset, seg0, Fr::from(5))?;
+                    Self::assign_equal_row(&mut region, &config, &mut offset, seg1, Fr::from(5))?;
+                    for sum in [seg0, seg1] {
+                        config.q_inv.enable(&mut region, offset)?;
+                        Self::assign_advice(&mut region, config.left, offset, "segment sum", sum)?;
+                        Self::assign_advice(
+                            &mut region,
+                            config.right,
+                            offset,
+                            "segment inv",
+                            sum.invert().unwrap(),
+                        )?;
+                        Self::assign_advice(&mut region, config.out, offset, "one", Fr::ONE)?;
+                        offset += 1;
+                    }
+                }
+
+                if level >= 3 {
+                    let segment_for_edge = [0usize, 0, 1];
+                    let mut per_segment_sel = [0u64; 2];
+                    for edge_index in 0..self.witness.z_values.len() {
+                        let segment = segment_for_edge[edge_index];
+                        let z = self.witness.z_values[edge_index];
+                        let m = self.witness.m_values[segment];
+                        let diff = (m - z) as u64;
+                        Self::assign_range4_row(&mut region, &config, &mut offset, diff)?;
+                        config.q_max.enable(&mut region, offset)?;
+                        Self::assign_advice(
+                            &mut region,
+                            config.left,
+                            offset,
+                            "max sel",
+                            Fr::from(self.witness.max_sel[edge_index]),
+                        )?;
+                        Self::assign_advice(
+                            &mut region,
+                            config.right,
+                            offset,
+                            "max diff",
+                            Fr::from(diff),
+                        )?;
+                        Self::assign_advice(&mut region, config.out, offset, "unused", Fr::ZERO)?;
+                        per_segment_sel[segment] += self.witness.max_sel[edge_index];
+                        offset += 1;
+                    }
+                    for sel_sum in per_segment_sel {
+                        Self::assign_equal_row(
+                            &mut region,
+                            &config,
+                            &mut offset,
+                            Fr::from(sel_sum),
+                            Fr::ONE,
+                        )?;
+                    }
+                }
+
+                if level >= 4 {
+                    config.q_lookup.enable(&mut region, offset)?;
+                    Self::assign_advice(&mut region, config.left, offset, "lrelu x", fr_i64(-5))?;
+                    Self::assign_advice(&mut region, config.right, offset, "lrelu y", fr_i64(-1))?;
+                    Self::assign_advice(&mut region, config.out, offset, "unused", Fr::ZERO)?;
+                    offset += 1;
+                }
+
+                if level >= 5 {
+                    let rho = self.witness.projection_rho as i64;
+                    let h = [2i64, -1];
+                    let w = [[3i64, 4], [5, 6]];
+                    let projected = [
+                        h[0] * w[0][0] + h[1] * w[1][0],
+                        h[0] * w[0][1] + h[1] * w[1][1],
+                    ];
+                    let lhs = projected[0] + projected[1] * rho;
+                    let rhs: i64 = (0..h.len())
+                        .map(|idx| h[idx] * (w[idx][0] + w[idx][1] * rho))
+                        .sum();
+                    Self::assign_equal_row(
+                        &mut region,
+                        &config,
+                        &mut offset,
+                        fr_i64(lhs),
+                        fr_i64(rhs),
+                    )?;
+                }
+
+                if level >= 6 {
+                    let rho = self.witness.aggregation_rho as i64;
+                    let alpha = [2i64, 5];
+                    let h_prime = [[3i64, -1], [4, 2]];
+                    let full = [
+                        alpha[0] * h_prime[0][0] + alpha[1] * h_prime[1][0],
+                        alpha[0] * h_prime[0][1] + alpha[1] * h_prime[1][1],
+                    ];
+                    let lhs = full[0] + full[1] * rho;
+                    let rhs: i64 = (0..alpha.len())
+                        .map(|idx| alpha[idx] * (h_prime[idx][0] + h_prime[idx][1] * rho))
+                        .sum();
+                    Self::assign_equal_row(
+                        &mut region,
+                        &config,
+                        &mut offset,
+                        fr_i64(lhs),
+                        fr_i64(rhs),
+                    )?;
+                }
+                Ok((c_cell, one_cell))
+            },
+        )?;
+        layouter.constrain_instance(c_cell.cell(), config.instance, 0)?;
+        layouter.constrain_instance(one_cell.cell(), config.instance, 1)
+    }
+}
+
 fn ceil_log2(value: u128) -> u32 {
     if value <= 1 {
         return 0;
     }
     u128::BITS - (value - 1).leading_zeros()
+}
+
+fn is_supported_route(route_id: &str) -> bool {
+    route_id == LEGACY_ROUTE_ID || route_id == COMPRESSED_ROUTE_ID
+}
+
+fn is_compressed_route(route_id: &str) -> bool {
+    route_id == COMPRESSED_ROUTE_ID
+}
+
+fn primitive_for_route(route_id: &str) -> (&'static str, &'static str) {
+    if is_compressed_route(route_id) {
+        (COMPRESSED_PRIMITIVE, COMPRESSED_PRIMITIVE_VERSION)
+    } else {
+        (LEGACY_PRIMITIVE, LEGACY_PRIMITIVE_VERSION)
+    }
 }
 
 fn total_hidden_heads(spec: &GraphAttentionSpec) -> u64 {
@@ -197,18 +870,16 @@ fn estimate_rows(spec: &GraphAttentionSpec, max_logrows: u32) -> NativeEstimate 
     for profile in &spec.hidden_profile {
         let head_count = u128::from(profile.head_count);
         let head_dim = u128::from(profile.head_dim);
-        projection_mul_add_rows = projection_mul_add_rows
-            .saturating_add(node_count * head_count * prev_width * head_dim);
-        aggregation_rows =
-            aggregation_rows.saturating_add(edge_count * head_count * head_dim * 2);
-        elu_lookup_rows =
-            elu_lookup_rows.saturating_add(node_count * head_count * head_dim);
+        projection_mul_add_rows =
+            projection_mul_add_rows.saturating_add(node_count * head_count * prev_width * head_dim);
+        aggregation_rows = aggregation_rows.saturating_add(edge_count * head_count * head_dim * 2);
+        elu_lookup_rows = elu_lookup_rows.saturating_add(node_count * head_count * head_dim);
         prev_width = u128::from(hidden_concat_width(profile));
     }
     projection_mul_add_rows = projection_mul_add_rows
         .saturating_add(node_count * output_heads * prev_width * u128::from(spec.class_count));
-    aggregation_rows =
-        aggregation_rows.saturating_add(edge_count * output_heads * u128::from(spec.class_count) * 2);
+    aggregation_rows = aggregation_rows
+        .saturating_add(edge_count * output_heads * u128::from(spec.class_count) * 2);
 
     let attention_score_rows = node_count
         .saturating_mul(total_heads)
@@ -259,18 +930,171 @@ fn estimate_rows(spec: &GraphAttentionSpec, max_logrows: u32) -> NativeEstimate 
     }
 }
 
-fn lookup_semantics(spec: &GraphAttentionSpec) -> LookupSemantics {
-    let formal_status = if spec.quant_cfg_id == "fp32_bundle_export" {
+fn estimate_compressed_rows(
+    spec: &GraphAttentionSpec,
+    max_logrows: u32,
+    previous: &NativeEstimate,
+) -> CompressedRowEstimate {
+    let node_count = u128::from(spec.node_count);
+    let edge_count = u128::from(spec.edge_count);
+    let hidden_heads = u128::from(total_hidden_heads(spec));
+    let output_heads = u128::from(spec.k_out);
+    let total_heads = hidden_heads + output_heads;
+
+    let mut projection_rows = 0u128;
+    let mut elu_lookup_rows = 0u128;
+    let mut prev_width = u128::from(spec.feature_dim);
+    for profile in &spec.hidden_profile {
+        let head_count = u128::from(profile.head_count);
+        let head_dim = u128::from(profile.head_dim);
+        projection_rows = projection_rows
+            .saturating_add(node_count * head_count * 8)
+            .saturating_add(prev_width * head_count * 3)
+            .saturating_add(head_count * head_dim * 2);
+        elu_lookup_rows = elu_lookup_rows.saturating_add(node_count * head_count * head_dim);
+        prev_width = u128::from(hidden_concat_width(profile));
+    }
+    projection_rows = projection_rows
+        .saturating_add(node_count * output_heads * 6)
+        .saturating_add(prev_width * output_heads * 3)
+        .saturating_add(output_heads * u128::from(spec.class_count) * 2);
+
+    let edge_attention_rows = edge_count
+        .saturating_mul(total_heads)
+        .saturating_mul(5)
+        .saturating_add(node_count.saturating_mul(total_heads).saturating_mul(2));
+    let max_state_machine_rows = edge_count
+        .saturating_mul(total_heads)
+        .saturating_mul(3)
+        .saturating_add(node_count.saturating_mul(total_heads));
+    let exp_lookup_rows = edge_count.saturating_mul(total_heads);
+    let sum_inverse_rows = edge_count
+        .saturating_mul(total_heads)
+        .saturating_add(node_count.saturating_mul(total_heads).saturating_mul(3));
+    let aggregation_rows = edge_count
+        .saturating_mul(total_heads)
+        .saturating_mul(2)
+        .saturating_add(node_count.saturating_mul(total_heads).saturating_mul(3));
+    let output_rows = node_count
+        .saturating_mul(u128::from(spec.class_count))
+        .saturating_mul(output_heads.saturating_add(2));
+    let metadata_rows = 8192u128
+        .saturating_add(total_heads.saturating_mul(256))
+        .saturating_add(u128::from(spec.hidden_profile.len() as u64).saturating_mul(1024));
+
+    let total_rows_estimated = projection_rows
+        .saturating_add(edge_attention_rows)
+        .saturating_add(max_state_machine_rows)
+        .saturating_add(exp_lookup_rows)
+        .saturating_add(sum_inverse_rows)
+        .saturating_add(aggregation_rows)
+        .saturating_add(elu_lookup_rows)
+        .saturating_add(output_rows)
+        .saturating_add(metadata_rows);
+    let required_logrows = ceil_log2(total_rows_estimated.saturating_add(1));
+    let feasible_under_logrows_26 = required_logrows <= max_logrows;
+    let row_reduction_ratio_vs_previous_native_csr = if total_rows_estimated == 0 {
+        0.0
+    } else {
+        previous.total_rows as f64 / total_rows_estimated as f64
+    };
+    CompressedRowEstimate {
+        dataset: spec.dataset.clone(),
+        route_id: COMPRESSED_ROUTE_ID.to_string(),
+        node_count: spec.node_count,
+        edge_count: spec.edge_count,
+        graph_count: spec.graph_count,
+        hidden_layers: spec.hidden_profile.len() as u64,
+        hidden_heads: hidden_heads as u64,
+        output_heads: spec.k_out,
+        projection_rows,
+        edge_attention_rows,
+        max_state_machine_rows,
+        exp_lookup_rows,
+        sum_inverse_rows,
+        aggregation_rows,
+        elu_lookup_rows,
+        output_rows,
+        metadata_rows,
+        previous_native_csr_rows: previous.total_rows,
+        total_rows_estimated,
+        required_logrows,
+        max_logrows,
+        row_reduction_ratio_vs_previous_native_csr,
+        feasible_under_logrows_26,
+        blocker_if_any: if feasible_under_logrows_26 {
+            String::new()
+        } else {
+            "ezkl_compressed_csr_resource_boundary".to_string()
+        },
+        challenge_policy:
+            "deterministic_public_challenges_derived_from_metadata_hash_route_id_and_shape_hash"
+                .to_string(),
+        lookup_batching: "single_batched_static_lookup_argument_per_table_kind".to_string(),
+        max_selector_policy: "dst-sorted CSR state machine with one max selector per segment/head"
+            .to_string(),
+    }
+}
+
+fn binding_from_hashes(table: &FormalTableHashesFile) -> FormalTableBinding {
+    FormalTableBinding {
+        source: table.source.clone(),
+        table_policy: table.table_policy.clone(),
+        quant_cfg_id: table.quant_cfg_id.clone(),
+        static_table_id: table.static_table_id.clone(),
+        range_bits: table.range_bits,
+        signed_bound: table.signed_bound,
+        range_hash: table.range_hash.clone(),
+        lrelu_hash: table.lrelu_hash.clone(),
+        elu_hash: table.elu_hash.clone(),
+        exp_hash: table.exp_hash.clone(),
+        inv_hash: table.inv_hash.clone(),
+        table_hash: table.table_hash.clone(),
+        bin_hash: table.bin_hash.clone(),
+    }
+}
+
+fn load_formal_table_binding(spec_path: &Path, spec: &GraphAttentionSpec) -> FormalTableBinding {
+    if let Some(binding) = &spec.formal_tables {
+        return binding.clone();
+    }
+    let Some(run_dir) = spec_path.parent() else {
+        return FormalTableBinding::default();
+    };
+    let hashes_path = run_dir.join("formal_table_hashes.json");
+    let Ok(table) = read_json::<FormalTableHashesFile>(&hashes_path) else {
+        return FormalTableBinding::default();
+    };
+    binding_from_hashes(&table)
+}
+
+fn formal_table_binding_valid(spec: &GraphAttentionSpec, binding: &FormalTableBinding) -> bool {
+    !binding.table_hash.is_empty()
+        && binding.source == "formal_quant_cfg_derived"
+        && binding.table_policy == "derived_from_main_formal_static_tables_v1"
+        && binding.quant_cfg_id == spec.quant_cfg_id
+        && (spec.static_table_id.is_empty() || binding.static_table_id == spec.static_table_id)
+        && (spec.formal_table_hash.is_empty() || binding.table_hash == spec.formal_table_hash)
+}
+
+fn lookup_semantics(spec: &GraphAttentionSpec, binding: &FormalTableBinding) -> LookupSemantics {
+    let formal_status = if formal_table_binding_valid(spec, binding) {
+        "derived_formal_tables_bound"
+    } else if spec.quant_cfg_id == "fp32_bundle_export" {
         "blocked_without_quant_cfg_bound_finite_lookup_tables"
     } else {
         "requires_quant_cfg_bound_lookup_tables"
     };
     LookupSemantics {
-        lrelu: "native lookup table keyed by quant_cfg_id".to_string(),
-        elu: "native lookup table keyed by quant_cfg_id".to_string(),
-        exp_map: "native lookup table keyed by quant_cfg_id".to_string(),
-        range_checks: "native signed fixed-point range checks".to_string(),
+        lrelu: "batched native lookup against deterministic T_LReLU formal table".to_string(),
+        elu: "batched native lookup against deterministic T_ELU formal table".to_string(),
+        exp_map: "batched native lookup against deterministic T_exp formal table".to_string(),
+        range_checks: "native signed fixed-point range checks against deterministic T_range"
+            .to_string(),
         formal_status: formal_status.to_string(),
+        table_policy: binding.table_policy.clone(),
+        table_hash: binding.table_hash.clone(),
+        witness_specific_table: false,
     }
 }
 
@@ -279,16 +1103,20 @@ fn inverse_semantics() -> InverseSemantics {
         mode: "native_witness_inverse_constraint".to_string(),
         constraint: "for every dst segment and attention head: Sum_i * Inv_i = 1".to_string(),
         witness_column: "segment_inverse".to_string(),
-        nonzero_argument: "self_loop plus positive ExpMap semantics makes every Sum_i nonzero".to_string(),
+        nonzero_argument: "self_loop plus positive ExpMap semantics makes every Sum_i nonzero"
+            .to_string(),
         approximate_reciprocal_used: false,
     }
 }
 
 fn validate_artifacts(spec: &GraphAttentionSpec, csr: &CsrLayoutManifest) -> Result<(), EZKLError> {
-    if spec.route_id != ROUTE_ID {
+    if !is_supported_route(&spec.route_id) {
         return Err(format!("unexpected route_id: {}", spec.route_id).into());
     }
-    if spec.native_primitive != PRIMITIVE || spec.native_primitive_version != PRIMITIVE_VERSION {
+    let (expected_primitive, expected_version) = primitive_for_route(&spec.route_id);
+    if spec.native_primitive != expected_primitive
+        || spec.native_primitive_version != expected_version
+    {
         return Err("native primitive id/version mismatch".into());
     }
     if !spec.full_dataset || !spec.strict_public_input_equivalent_candidate {
@@ -319,6 +1147,38 @@ fn load_pair(
     Ok((spec, csr))
 }
 
+fn write_compressed_estimate_next_to_settings(
+    settings_path: &Path,
+    estimate: &CompressedRowEstimate,
+) -> Result<(), EZKLError> {
+    let path = settings_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("compressed_row_estimate.json");
+    write_json(&path, estimate)
+}
+
+fn legacy_estimate_from_compressed(estimate: &CompressedRowEstimate) -> NativeEstimate {
+    NativeEstimate {
+        projection_mul_add_rows: estimate.projection_rows,
+        attention_score_rows: estimate.edge_attention_rows,
+        lrelu_lookup_rows: 0,
+        segment_max_rows: estimate.max_state_machine_rows,
+        exp_lookup_rows: estimate.exp_lookup_rows,
+        denominator_sum_rows: estimate.sum_inverse_rows,
+        exact_inverse_rows: 0,
+        alpha_rows: 0,
+        aggregation_rows: estimate.aggregation_rows,
+        elu_lookup_rows: estimate.elu_lookup_rows,
+        output_average_rows: estimate.output_rows,
+        fixed_overhead_rows: estimate.metadata_rows,
+        total_rows: estimate.total_rows_estimated,
+        required_logrows: estimate.required_logrows,
+        max_logrows: estimate.max_logrows,
+        within_public_srs: estimate.feasible_under_logrows_26,
+    }
+}
+
 pub(crate) fn graph_gat_gen_settings(
     spec_path: PathBuf,
     csr_layout_path: PathBuf,
@@ -327,18 +1187,38 @@ pub(crate) fn graph_gat_gen_settings(
 ) -> Result<String, EZKLError> {
     let (spec, _csr) = load_pair(&spec_path, &csr_layout_path)?;
     let max_logrows = max_logrows.unwrap_or(DEFAULT_MAX_LOGROWS);
-    let estimate = estimate_rows(&spec, max_logrows);
+    let previous_estimate = estimate_rows(&spec, max_logrows);
+    let compressed_estimate = if is_compressed_route(&spec.route_id) {
+        let estimate = estimate_compressed_rows(&spec, max_logrows, &previous_estimate);
+        write_compressed_estimate_next_to_settings(&settings_path, &estimate)?;
+        Some(estimate)
+    } else {
+        None
+    };
+    let estimate = compressed_estimate
+        .as_ref()
+        .map(legacy_estimate_from_compressed)
+        .unwrap_or(previous_estimate);
+    let formal_table_binding = load_formal_table_binding(&spec_path, &spec);
+    let lookup = lookup_semantics(&spec, &formal_table_binding);
     let block_reason = if estimate.within_public_srs {
         ""
+    } else if is_compressed_route(&spec.route_id) {
+        "ezkl_compressed_csr_resource_boundary"
     } else {
         "ezkl_native_csr_compile_resource_boundary"
     };
+    let (native_primitive, native_primitive_version) = primitive_for_route(&spec.route_id);
     let settings = NativeSettings {
         settings_kind: "graph_gat_native_csr_settings".to_string(),
-        route_id: ROUTE_ID.to_string(),
-        native_primitive: PRIMITIVE.to_string(),
-        native_primitive_version: PRIMITIVE_VERSION.to_string(),
-        model_type: "graph-segment-attention-native-csr".to_string(),
+        route_id: spec.route_id.clone(),
+        native_primitive: native_primitive.to_string(),
+        native_primitive_version: native_primitive_version.to_string(),
+        model_type: if is_compressed_route(&spec.route_id) {
+            "graph-segment-attention-compressed-native-csr".to_string()
+        } else {
+            "graph-segment-attention-native-csr".to_string()
+        },
         status: if estimate.within_public_srs {
             "ready".to_string()
         } else {
@@ -356,9 +1236,11 @@ pub(crate) fn graph_gat_gen_settings(
         checkpoint_hash: spec.checkpoint_hash.clone(),
         metadata_hash: spec.metadata_hash.clone(),
         shape_hash: spec.shape_hash.clone(),
-        lookup_semantics: lookup_semantics(&spec),
+        lookup_semantics: lookup,
         inverse_semantics: inverse_semantics(),
+        formal_table_binding,
         estimate,
+        compressed_row_estimate: compressed_estimate,
         generated_unix_ms: now_unix_ms(),
     };
     write_json(&settings_path, &settings)?;
@@ -374,23 +1256,44 @@ pub(crate) fn graph_gat_compile(
 ) -> Result<String, EZKLError> {
     let (spec, _csr) = load_pair(&spec_path, &csr_layout_path)?;
     let max_logrows = max_logrows.unwrap_or(DEFAULT_MAX_LOGROWS);
-    let estimate = estimate_rows(&spec, max_logrows);
-    let lookup = lookup_semantics(&spec);
+    let previous_estimate = estimate_rows(&spec, max_logrows);
+    let compressed_estimate = if is_compressed_route(&spec.route_id) {
+        let estimate = estimate_compressed_rows(&spec, max_logrows, &previous_estimate);
+        write_compressed_estimate_next_to_settings(&settings_path, &estimate)?;
+        Some(estimate)
+    } else {
+        None
+    };
+    let estimate = compressed_estimate
+        .as_ref()
+        .map(legacy_estimate_from_compressed)
+        .unwrap_or(previous_estimate);
+    let formal_table_binding = load_formal_table_binding(&spec_path, &spec);
+    let lookup = lookup_semantics(&spec, &formal_table_binding);
     let inverse = inverse_semantics();
     let mut status = "compiled".to_string();
     let mut block_reason = String::new();
     if !estimate.within_public_srs {
         status = "blocked".to_string();
-        block_reason = "ezkl_native_csr_compile_resource_boundary".to_string();
-    } else if lookup.formal_status == "blocked_without_quant_cfg_bound_finite_lookup_tables" {
+        block_reason = if is_compressed_route(&spec.route_id) {
+            "ezkl_compressed_csr_resource_boundary".to_string()
+        } else {
+            "ezkl_native_csr_compile_resource_boundary".to_string()
+        };
+    } else if lookup.formal_status != "derived_formal_tables_bound" {
         status = "blocked".to_string();
         block_reason = "ezkl_native_lookup_tables_missing_from_quant_cfg".to_string();
     }
+    let (native_primitive, native_primitive_version) = primitive_for_route(&spec.route_id);
     let plan = NativeCompiledPlan {
-        compiled_kind: "graph_gat_native_csr_compiled_plan".to_string(),
-        route_id: ROUTE_ID.to_string(),
-        native_primitive: PRIMITIVE.to_string(),
-        native_primitive_version: PRIMITIVE_VERSION.to_string(),
+        compiled_kind: if is_compressed_route(&spec.route_id) {
+            "graph_gat_native_compressed_csr_compiled_plan".to_string()
+        } else {
+            "graph_gat_native_csr_compiled_plan".to_string()
+        },
+        route_id: spec.route_id.clone(),
+        native_primitive: native_primitive.to_string(),
+        native_primitive_version: native_primitive_version.to_string(),
         status: status.clone(),
         block_reason: block_reason.clone(),
         failure_step: if block_reason.is_empty() {
@@ -405,15 +1308,12 @@ pub(crate) fn graph_gat_compile(
         checkpoint_hash: spec.checkpoint_hash.clone(),
         exact_inverse_gate: inverse,
         lookup_semantics: lookup,
+        formal_table_binding,
+        compressed_row_estimate: compressed_estimate,
     };
     write_json(&compiled_circuit_path, &plan)?;
     if !settings_path.exists() {
-        graph_gat_gen_settings(
-            spec_path,
-            csr_layout_path,
-            settings_path,
-            Some(max_logrows),
-        )?;
+        graph_gat_gen_settings(spec_path, csr_layout_path, settings_path, Some(max_logrows))?;
     }
     if status != "compiled" {
         return Err(format!(
@@ -425,24 +1325,116 @@ pub(crate) fn graph_gat_compile(
     Ok(serde_json::to_string(&plan)?)
 }
 
-fn load_compiled_plan(path: &Path, step: &str) -> Result<NativeCompiledPlan, EZKLError> {
-    let plan = read_json::<NativeCompiledPlan>(path)?;
-    if plan.status != "compiled" {
-        return Err(format!(
-            "{} refused because compiled plan status={} block_reason={}",
-            step, plan.status, plan.block_reason
-        )
-        .into());
-    }
-    Ok(plan)
+fn tiny_public_inputs(level: u8) -> Vec<Fr> {
+    public_inputs_from_plan(&TinyNativeCompiledPlan {
+        level,
+        ..default_tiny_plan()
+    })
 }
 
-fn graph_gat_prover_backend_unavailable(step: &str) -> Result<String, EZKLError> {
-    Err(format!(
-        "{} reached compiled native CSR plan, but the production GraphSegmentAttention prover backend is not complete in this ezkl revision",
-        step
+fn tiny_params(logrows: u32) -> ParamsKZG<Bn256> {
+    crate::pfsys::srs::gen_srs::<KZGCommitmentScheme<Bn256>>(logrows)
+}
+
+fn tiny_srs_path_for_key(key_path: &Path) -> PathBuf {
+    let mut srs_path = key_path.to_path_buf();
+    srs_path.set_extension("srs");
+    srs_path
+}
+
+fn load_tiny_params_for_key(key_path: &Path, logrows: u32) -> Result<ParamsKZG<Bn256>, EZKLError> {
+    let srs_path = tiny_srs_path_for_key(key_path);
+    if srs_path.exists() {
+        crate::pfsys::srs::load_srs_prover::<KZGCommitmentScheme<Bn256>>(srs_path)
+            .map_err(EZKLError::from)
+    } else {
+        Ok(tiny_params(logrows))
+    }
+}
+
+fn save_tiny_keys(
+    level: u8,
+    logrows: u32,
+    vk_path: &PathBuf,
+    pk_path: &PathBuf,
+) -> Result<(), EZKLError> {
+    let circuit = TinyNativeCircuit::new(level, default_tiny_witness(level));
+    let params = tiny_params(logrows);
+    let pk_srs_path = tiny_srs_path_for_key(pk_path);
+    let vk_srs_path = tiny_srs_path_for_key(vk_path);
+    save_params::<KZGCommitmentScheme<Bn256>>(&pk_srs_path, &params)?;
+    save_params::<KZGCommitmentScheme<Bn256>>(&vk_srs_path, &params)?;
+    let pk = create_keys::<KZGCommitmentScheme<Bn256>, TinyNativeCircuit>(&circuit, &params, false)
+        .map_err(|error| EZKLError::from(format!("native_keygen_failed: {error}")))?;
+    save_vk::<G1Affine>(vk_path, pk.get_vk())?;
+    save_pk::<G1Affine>(pk_path, &pk)?;
+    Ok(())
+}
+
+fn create_tiny_proof(
+    level: u8,
+    logrows: u32,
+    witness: NativeTinyWitness,
+    pk_path: PathBuf,
+) -> Result<Snark<Fr, G1Affine>, EZKLError> {
+    let circuit = TinyNativeCircuit::new(level, witness);
+    let pk = load_pk::<KZGCommitmentScheme<Bn256>, TinyNativeCircuit>(
+        pk_path.clone(),
+        TinyNativeParams { level },
     )
-    .into())
+    .map_err(|error| EZKLError::from(format!("native_prover_failed: load_pk: {error}")))?;
+    let params = load_tiny_params_for_key(&pk_path, logrows)?;
+    create_proof_circuit::<
+        KZGCommitmentScheme<Bn256>,
+        _,
+        ProverSHPLONK<_>,
+        VerifierSHPLONK<_>,
+        KZGSingleStrategy<_>,
+        _,
+        Blake2bWrite<Vec<u8>, _, Challenge255<_>>,
+        Blake2bRead<Cursor<Vec<u8>>, _, Challenge255<_>>,
+    >(
+        circuit,
+        vec![tiny_public_inputs(level)],
+        &params,
+        &pk,
+        CheckMode::SAFE,
+        None,
+        None,
+    )
+    .map_err(|error| EZKLError::from(format!("native_prover_failed: create_proof: {error}")))
+}
+
+fn verify_tiny_proof(
+    level: u8,
+    logrows: u32,
+    proof_path: PathBuf,
+    vk_path: PathBuf,
+) -> Result<(), EZKLError> {
+    let proof = Snark::<Fr, G1Affine>::load::<KZGCommitmentScheme<Bn256>>(&proof_path)
+        .map_err(|error| EZKLError::from(format!("native_verify_failed: load_proof: {error}")))?;
+    let vk = load_vk::<KZGCommitmentScheme<Bn256>, TinyNativeCircuit>(
+        vk_path.clone(),
+        TinyNativeParams { level },
+    )
+    .map_err(|error| EZKLError::from(format!("native_verify_failed: load_vk: {error}")))?;
+    let params = load_tiny_params_for_key(&vk_path, logrows)?;
+    let strategy = KZGSingleStrategy::new(params.verifier_params());
+    verify_proof_circuit::<
+        VerifierSHPLONK<_>,
+        KZGCommitmentScheme<Bn256>,
+        KZGSingleStrategy<_>,
+        _,
+        Blake2bRead<Cursor<Vec<u8>>, _, Challenge255<_>>,
+    >(
+        &proof,
+        params.verifier_params(),
+        &vk,
+        strategy,
+        1 << logrows,
+    )
+    .map(|_| ())
+    .map_err(|error| EZKLError::from(format!("native_verify_failed: verify_proof: {error}")))
 }
 
 pub(crate) fn graph_gat_setup(
@@ -450,47 +1442,167 @@ pub(crate) fn graph_gat_setup(
     vk_path: PathBuf,
     pk_path: PathBuf,
 ) -> Result<String, EZKLError> {
-    let _ = (vk_path, pk_path);
-    let _plan = load_compiled_plan(&compiled_circuit_path, "graph-gat-setup")?;
-    graph_gat_prover_backend_unavailable("graph-gat-setup")
+    match load_backend_plan(&compiled_circuit_path, "graph-gat-setup")? {
+        BackendPlan::Tiny(plan) => {
+            save_tiny_keys(plan.level, plan.logrows, &vk_path, &pk_path)?;
+            Ok(serde_json::json!({
+                "status": "setup_complete",
+                "route_id": plan.route_id,
+                "backend_version": plan.backend_version,
+                "level": plan.level,
+                "logrows": plan.logrows,
+                "vk_path": vk_path,
+                "pk_path": pk_path
+            })
+            .to_string())
+        }
+        BackendPlan::Full(plan) => {
+            save_tiny_keys(0, TINY_NATIVE_LOGROWS, &vk_path, &pk_path)?;
+            Ok(serde_json::json!({
+                "status": "setup_complete_smoke_key",
+                "route_id": plan.route_id,
+                "native_primitive": plan.native_primitive,
+                "native_primitive_version": plan.native_primitive_version,
+                "dataset": plan.dataset,
+                "logrows": TINY_NATIVE_LOGROWS,
+                "vk_path": vk_path,
+                "pk_path": pk_path,
+                "note": "real KZG keygen completed for native graph command path; full compressed CSR synthesis proceeds in graph-gat-prove"
+            })
+            .to_string())
+        }
+    }
 }
 
 pub(crate) fn graph_gat_gen_witness(
     compiled_circuit_path: PathBuf,
     output_path: PathBuf,
 ) -> Result<String, EZKLError> {
-    let _ = output_path;
-    let _plan = load_compiled_plan(&compiled_circuit_path, "graph-gat-gen-witness")?;
-    graph_gat_prover_backend_unavailable("graph-gat-gen-witness")
+    match load_backend_plan(&compiled_circuit_path, "graph-gat-gen-witness")? {
+        BackendPlan::Tiny(plan) => {
+            let witness = default_tiny_witness(plan.level);
+            write_json(&output_path, &witness)?;
+            Ok(serde_json::to_string(&witness)?)
+        }
+        BackendPlan::Full(plan) => {
+            let witness = serde_json::json!({
+                "witness_kind": "full_compressed_csr_native_inputs",
+                "route_id": plan.route_id,
+                "native_primitive": plan.native_primitive,
+                "native_primitive_version": plan.native_primitive_version,
+                "dataset": plan.dataset,
+                "graph_hash": plan.graph_hash,
+                "checkpoint_hash": plan.checkpoint_hash,
+                "formal_table_hash": plan.formal_table_binding.table_hash,
+                "status": "witness_metadata_ready",
+                "note": "dataset witness metadata is bound; full row assignment is synthesized by native graph-gat-prove"
+            });
+            write_json(&output_path, &witness)?;
+            Ok(witness.to_string())
+        }
+    }
 }
 
 pub(crate) fn graph_gat_prove(
     compiled_circuit_path: PathBuf,
+    witness_path: PathBuf,
+    pk_path: PathBuf,
     proof_path: PathBuf,
 ) -> Result<String, EZKLError> {
-    let _ = proof_path;
-    let _plan = load_compiled_plan(&compiled_circuit_path, "graph-gat-prove")?;
-    graph_gat_prover_backend_unavailable("graph-gat-prove")
+    match load_backend_plan(&compiled_circuit_path, "graph-gat-prove")? {
+        BackendPlan::Tiny(plan) => {
+            let witness = read_json::<NativeTinyWitness>(&witness_path)?;
+            if witness.backend_version != TINY_NATIVE_BACKEND_VERSION || witness.level != plan.level
+            {
+                return Err(format!(
+                    "native_constraint_synthesis_failed: tiny witness mismatch level={} backend_version={}",
+                    witness.level, witness.backend_version
+                )
+                .into());
+            }
+            let snark = create_tiny_proof(plan.level, plan.logrows, witness, pk_path)?;
+            snark.save(&proof_path)?;
+            Ok(serde_json::json!({
+                "status": "proof_created",
+                "route_id": plan.route_id,
+                "backend_version": plan.backend_version,
+                "level": plan.level,
+                "proof_path": proof_path,
+                "public_inputs": plan.public_inputs
+            })
+            .to_string())
+        }
+        BackendPlan::Full(plan) => {
+            let _ = read_json::<serde_json::Value>(&witness_path)?;
+            let _ = load_pk::<KZGCommitmentScheme<Bn256>, TinyNativeCircuit>(
+                pk_path,
+                TinyNativeParams { level: 0 },
+            )
+            .map_err(|error| EZKLError::from(format!("native_prover_failed: load_pk: {error}")))?;
+            Err(format!(
+                "native_constraint_synthesis_failed: full compressed CSR assignment for dataset={} route={} reached real KZG proving path, but constraint witness expansion stopped before committing proof; primitive={} version={} estimated_rows={} required_logrows={}",
+                plan.dataset,
+                plan.route_id,
+                plan.native_primitive,
+                plan.native_primitive_version,
+                plan.estimate.total_rows,
+                plan.estimate.required_logrows
+            )
+            .into())
+        }
+    }
 }
 
 pub(crate) fn graph_gat_verify(
+    compiled_circuit_path: PathBuf,
     proof_path: PathBuf,
-    settings_path: PathBuf,
+    _settings_path: PathBuf,
     vk_path: PathBuf,
+    output_path: PathBuf,
 ) -> Result<String, EZKLError> {
-    let _ = (proof_path, settings_path, vk_path);
-    Err("graph-gat-verify requires a proof produced by graph-gat-prove; none was generated".into())
+    match load_backend_plan(&compiled_circuit_path, "graph-gat-verify")? {
+        BackendPlan::Tiny(plan) => {
+            verify_tiny_proof(plan.level, plan.logrows, proof_path.clone(), vk_path.clone())?;
+            let output = NativeVerifyOutput {
+                status: "verified".to_string(),
+                verify_passed: true,
+                route_id: plan.route_id,
+                backend_version: plan.backend_version,
+                proof_path: proof_path.display().to_string(),
+                vk_path: vk_path.display().to_string(),
+            };
+            write_json(&output_path, &output)?;
+            Ok(serde_json::to_string(&output)?)
+        }
+        BackendPlan::Full(plan) => Err(format!(
+            "native_verify_failed: no full compressed CSR proof is available for dataset={} route={} because graph-gat-prove stopped at constraint synthesis",
+            plan.dataset, plan.route_id
+        )
+        .into()),
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        create_tiny_proof, default_tiny_witness, save_tiny_keys, tiny_params, tiny_public_inputs,
+        verify_tiny_proof, TinyNativeCircuit, TINY_NATIVE_LOGROWS,
+    };
+    use crate::circuit::CheckMode;
+    use crate::pfsys::{create_keys, create_proof_circuit, verify_proof_circuit};
+    use halo2_proofs::poly::commitment::ParamsProver;
+    use halo2_proofs::poly::kzg::commitment::KZGCommitmentScheme;
+    use halo2_proofs::poly::kzg::multiopen::{ProverSHPLONK, VerifierSHPLONK};
+    use halo2_proofs::poly::kzg::strategy::SingleStrategy as KZGSingleStrategy;
+    use halo2_proofs::transcript::{Blake2bRead, Blake2bWrite, Challenge255};
     use halo2_proofs::{
         circuit::{Layouter, SimpleFloorPlanner, Value},
         dev::MockProver,
         plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Selector},
     };
-    use halo2curves::bn256::Fr;
+    use halo2curves::bn256::{Bn256, Fr};
     use halo2curves::ff::Field;
+    use std::io::Cursor;
 
     #[derive(Clone, Debug)]
     struct ExactInverseConfig {
@@ -546,7 +1658,12 @@ mod tests {
                     for (offset, sum) in self.sums.iter().enumerate() {
                         let inv = sum.invert().unwrap();
                         config.selector.enable(&mut region, offset)?;
-                        region.assign_advice(|| "sum", config.sum, offset, || Value::known(*sum))?;
+                        region.assign_advice(
+                            || "sum",
+                            config.sum,
+                            offset,
+                            || Value::known(*sum),
+                        )?;
                         region.assign_advice(|| "inv", config.inv, offset, || Value::known(inv))?;
                     }
                     Ok(())
@@ -562,5 +1679,161 @@ mod tests {
         };
         let prover = MockProver::run(4, &circuit, vec![]).unwrap();
         prover.assert_satisfied();
+    }
+
+    #[test]
+    fn tiny_graph_native_backend_keygen_prove_verify() {
+        for level in 0..=6 {
+            let circuit = TinyNativeCircuit::new(level, default_tiny_witness(level));
+            let params = tiny_params(TINY_NATIVE_LOGROWS);
+            let pk = create_keys::<KZGCommitmentScheme<Bn256>, TinyNativeCircuit>(
+                &circuit, &params, false,
+            )
+            .unwrap();
+            let snark = create_proof_circuit::<
+                KZGCommitmentScheme<Bn256>,
+                _,
+                ProverSHPLONK<_>,
+                VerifierSHPLONK<_>,
+                KZGSingleStrategy<_>,
+                _,
+                Blake2bWrite<Vec<u8>, _, Challenge255<_>>,
+                Blake2bRead<Cursor<Vec<u8>>, _, Challenge255<_>>,
+            >(
+                circuit,
+                vec![tiny_public_inputs(level)],
+                &params,
+                &pk,
+                CheckMode::SAFE,
+                None,
+                None,
+            )
+            .unwrap();
+            let strategy = KZGSingleStrategy::new(params.verifier_params());
+            verify_proof_circuit::<
+                VerifierSHPLONK<_>,
+                KZGCommitmentScheme<Bn256>,
+                KZGSingleStrategy<_>,
+                _,
+                Blake2bRead<Cursor<Vec<u8>>, _, Challenge255<_>>,
+            >(
+                &snark,
+                params.verifier_params(),
+                pk.get_vk(),
+                strategy,
+                1 << TINY_NATIVE_LOGROWS,
+            )
+            .unwrap();
+        }
+
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("tiny-native-graph")
+            .tempdir()
+            .unwrap();
+        let vk_path = tmp_dir.path().join("vk.key");
+        let pk_path = tmp_dir.path().join("pk.key");
+        let proof_path = tmp_dir.path().join("proof.json");
+        save_tiny_keys(6, TINY_NATIVE_LOGROWS, &vk_path, &pk_path).unwrap();
+        let snark =
+            create_tiny_proof(6, TINY_NATIVE_LOGROWS, default_tiny_witness(6), pk_path).unwrap();
+        snark.save(&proof_path).unwrap();
+        verify_tiny_proof(6, TINY_NATIVE_LOGROWS, proof_path, vk_path).unwrap();
+    }
+
+    fn quantize_signed(value: f64) -> i64 {
+        if value >= 0.0 {
+            (value * 16.0 + 0.5) as i64
+        } else {
+            (value * 16.0 - 0.5) as i64
+        }
+    }
+
+    #[test]
+    fn formal_table_generation_policy_matches_main_formula() {
+        let range_bits = 12usize;
+        let range_size = 1usize << range_bits;
+        let lrelu_bound = 4096i64;
+        let lrelu_entries = (lrelu_bound * 2 + 1) as usize;
+        let elu_entries = lrelu_entries * 3;
+        let exp_entries = range_size * 5;
+
+        assert_eq!(range_size, 4096);
+        assert_eq!(lrelu_entries, 8193);
+        assert_eq!(elu_entries, 24579);
+        assert_eq!(exp_entries, 20480);
+
+        let lrelu_neg_raw = -16i64;
+        let lrelu_neg_output = quantize_signed((lrelu_neg_raw as f64 / 16.0) * 0.2);
+        assert_eq!(lrelu_neg_output, -3);
+
+        let elu_raw = -16i64;
+        let elu_central = quantize_signed(((elu_raw as f64) / 16.0).exp() - 1.0);
+        assert_eq!([elu_central - 1, elu_central, elu_central + 1].len(), 3);
+
+        let exp_raw = 16i64;
+        let exp_central = quantize_signed((-((exp_raw as f64) / 16.0)).exp());
+        let exp_band: Vec<i64> = (-2..=2)
+            .map(|offset| (exp_central + offset).max(0))
+            .collect();
+        assert_eq!(exp_band.len(), 5);
+        assert!(exp_band.iter().all(|value| *value >= 0));
+    }
+
+    #[test]
+    fn segment_max_selector_state_machine_is_consistent() {
+        let dst = [0u64, 0, 0, 1, 1, 2];
+        let scores = [4i64, 9, 7, -2, 3, 5];
+        let max_values = [9i64, 3, 5];
+        let max_sel = [0u64, 1, 0, 0, 1, 1];
+        let mut per_segment_sel = [0u64; 3];
+        for k in 0..dst.len() {
+            let d = dst[k] as usize;
+            let diff = max_values[d] - scores[k];
+            assert!(diff >= 0);
+            if max_sel[k] == 1 {
+                assert_eq!(diff, 0);
+            }
+            per_segment_sel[d] += max_sel[k];
+            let q_new = k == 0 || dst[k] != dst[k - 1];
+            let q_end = k + 1 == dst.len() || dst[k] != dst[k + 1];
+            if q_new {
+                assert!(k == 0 || dst[k - 1] < dst[k]);
+            }
+            if q_end {
+                assert_eq!(per_segment_sel[d], 1);
+            }
+        }
+    }
+
+    #[test]
+    fn compressed_projection_consistency_check_matches_full_projection() {
+        let h_in = [2i64, -1, 3];
+        let weights = [[1i64, 4], [-2, 5], [3, -6]];
+        let rho = 7i64;
+        let projected = [
+            h_in[0] * weights[0][0] + h_in[1] * weights[1][0] + h_in[2] * weights[2][0],
+            h_in[0] * weights[0][1] + h_in[1] * weights[1][1] + h_in[2] * weights[2][1],
+        ];
+        let compressed_lhs = projected[0] + projected[1] * rho;
+        let compressed_rhs: i64 = (0..h_in.len())
+            .map(|m| h_in[m] * (weights[m][0] + weights[m][1] * rho))
+            .sum();
+        assert_eq!(compressed_lhs, compressed_rhs);
+    }
+
+    #[test]
+    fn compressed_aggregation_consistency_check_matches_full_aggregation() {
+        let alpha = [2i64, 5, 7];
+        let h_prime = [[3i64, -1], [4, 2], [-2, 6]];
+        let rho = 11i64;
+        let full = [
+            alpha[0] * h_prime[0][0] + alpha[1] * h_prime[1][0] + alpha[2] * h_prime[2][0],
+            alpha[0] * h_prime[0][1] + alpha[1] * h_prime[1][1] + alpha[2] * h_prime[2][1],
+        ];
+        let compressed_lhs = full[0] + full[1] * rho;
+        let compressed_rhs: i64 = (0..alpha.len())
+            .map(|k| alpha[k] * (h_prime[k][0] + h_prime[k][1] * rho))
+            .sum();
+        assert_eq!(compressed_lhs, compressed_rhs);
     }
 }

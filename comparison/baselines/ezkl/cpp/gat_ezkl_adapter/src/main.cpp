@@ -10,6 +10,7 @@
 #include "gat_ezkl/checkpoint.hpp"
 #include "gat_ezkl/config.hpp"
 #include "gat_ezkl/dataset.hpp"
+#include "gat_ezkl/formal_tables.hpp"
 #include "gat_ezkl/gat.hpp"
 #include "gat_ezkl/graph.hpp"
 #include "gat_ezkl/hash.hpp"
@@ -78,6 +79,27 @@ bool optional_bool_arg(
     const std::string& key) {
     const auto it = args.find(key);
     return it != args.end() && (it->second == "true" || it->second == "1" || it->second == "yes");
+}
+
+bool is_native_graph_route(const std::string& route) {
+    return route == "ezkl_gat_native_csr_segment_attention_full"
+        || route == "ezkl_gat_native_compressed_csr_attention_full";
+}
+
+bool is_compressed_native_graph_route(const std::string& route) {
+    return route == "ezkl_gat_native_compressed_csr_attention_full";
+}
+
+std::string native_primitive_for_route(const std::string& route) {
+    return is_compressed_native_graph_route(route)
+        ? "GraphSegmentAttentionCompressedCSR"
+        : "GraphSegmentAttention";
+}
+
+std::string native_primitive_version_for_route(const std::string& route) {
+    return is_compressed_native_graph_route(route)
+        ? "csr_segment_attention_compressed_v1"
+        : "csr_segment_attention_v1";
 }
 
 std::size_t optional_size_arg(
@@ -182,7 +204,7 @@ int main(int argc, char** argv) {
         const auto quant = gat_ezkl::quant_config_from_id(config.quant_cfg_id, config.range_bits);
         const auto gat_summary = gat_ezkl::summarize_gat_semantics(graph, checkpoint);
         std::optional<gat_ezkl::SegmentAnalysisReport> segment_report;
-        const bool wants_native_csr_route = route == "ezkl_gat_native_csr_segment_attention_full";
+        const bool wants_native_csr_route = is_native_graph_route(route);
         const bool wants_segment_route = route == "ezkl_gat_strict_segment_softmax_full"
             || analysis_only == "segment-softmax";
         if (wants_segment_route) {
@@ -228,6 +250,11 @@ int main(int argc, char** argv) {
         const auto shape_hash = gat_ezkl::hash_shape_hex(graph, checkpoint);
         const auto output_hash = gat_ezkl::hash_output_shape_hex(graph);
 
+        std::optional<gat_ezkl::FormalTablesSummary> formal_tables;
+        if (wants_native_csr_route) {
+            formal_tables = gat_ezkl::write_formal_table_artifacts(output_dir, config);
+        }
+
         const auto metadata_json = gat_ezkl::build_metadata_json(
             run_id,
             config,
@@ -237,14 +264,16 @@ int main(int argc, char** argv) {
             gat_summary,
             graph_hash,
             checkpoint_hash,
-            shape_hash);
+            shape_hash,
+            formal_tables ? &*formal_tables : nullptr);
         const auto metadata_hash = gat_ezkl::hash_metadata_hex(metadata_json);
         const auto model_info_json = gat_ezkl::build_model_info_json(
             config,
             checkpoint,
             gat_summary,
             checkpoint_hash,
-            shape_hash);
+            shape_hash,
+            formal_tables ? &*formal_tables : nullptr);
         const auto input_json = gat_ezkl::build_input_summary_json(graph, quant, graph_hash);
         if (wants_native_csr_route) {
             gat_ezkl::write_native_csr_graph_artifacts(
@@ -257,11 +286,13 @@ int main(int argc, char** argv) {
                 graph_hash,
                 checkpoint_hash,
                 metadata_hash,
-                shape_hash);
+                shape_hash,
+                formal_tables ? &*formal_tables : nullptr);
         }
         const auto decision = wants_native_csr_route
             ? gat_ezkl::export_native_csr_segment_attention_gat(
                 output_dir,
+                route,
                 config,
                 graph,
                 checkpoint,
@@ -299,8 +330,14 @@ int main(int argc, char** argv) {
             << "    \"output_visibility\": \"public_logits_when_verified\",\n"
             << "    \"param_visibility\": \"weight_constants_bound_by_checkpoint_hash\"\n"
             << "  },\n"
-            << "  \"quant_cfg_id\": \"" << gat_ezkl::json_escape(quant.quant_cfg_id) << "\"\n"
-            << "}\n";
+            << "  \"quant_cfg_id\": \"" << gat_ezkl::json_escape(quant.quant_cfg_id) << "\",\n"
+            << "  \"static_table_id\": \"" << gat_ezkl::json_escape(config.static_table_id) << "\"";
+        if (formal_tables) {
+            settings << ",\n  \"formal_tables\": " << gat_ezkl::formal_table_binding_json(*formal_tables) << "\n";
+        } else {
+            settings << "\n";
+        }
+        settings << "}\n";
         gat_ezkl::write_text_file(output_dir / "settings.json", settings.str());
 
         std::ostringstream export_status;
@@ -331,12 +368,19 @@ int main(int argc, char** argv) {
             << "  \"input_visibility\": \"public_full_dataset_tensor_summary\",\n"
             << "  \"output_visibility\": \"public_logits_when_verified\",\n"
             << "  \"param_visibility\": \"weight_constants_bound_by_checkpoint_hash\",\n"
-            << "  \"native_primitive\": \"" << (wants_native_csr_route ? "GraphSegmentAttention" : "") << "\",\n"
-            << "  \"native_primitive_version\": \"" << (wants_native_csr_route ? "csr_segment_attention_v1" : "") << "\",\n"
+            << "  \"native_primitive\": \"" << (wants_native_csr_route ? native_primitive_for_route(route) : "") << "\",\n"
+            << "  \"native_primitive_version\": \"" << (wants_native_csr_route ? native_primitive_version_for_route(route) : "") << "\",\n"
             << "  \"csr_layout\": \"" << (wants_native_csr_route ? "csr_dst_segment_ragged" : "") << "\",\n"
             << "  \"model_arch_id\": \"" << gat_ezkl::json_escape(config.model_arch_id) << "\",\n"
             << "  \"model_param_id\": \"" << gat_ezkl::json_escape(config.model_param_id) << "\",\n"
             << "  \"quant_cfg_id\": \"" << gat_ezkl::json_escape(quant.quant_cfg_id) << "\",\n"
+            << "  \"static_table_id\": \"" << gat_ezkl::json_escape(config.static_table_id) << "\",\n";
+        if (formal_tables) {
+            manifest
+                << "  \"formal_tables\": " << gat_ezkl::formal_table_binding_json(*formal_tables) << ",\n"
+                << "  \"formal_table_hash\": \"" << formal_tables->hashes.table_hash << "\",\n";
+        }
+        manifest
             << "  \"preprocess_id\": \"full_dataset_cpp_normalize_self_loop_dedup_sort_v1\",\n"
             << "  \"batching_rule\": \"" << gat_ezkl::json_escape(config.batching_rule) << "\",\n"
             << "  \"subgraph_rule\": \"" << gat_ezkl::json_escape(config.subgraph_rule) << "\",\n"

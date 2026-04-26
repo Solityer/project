@@ -10,12 +10,12 @@ use crate::eth::register_vka_via_rv;
 use crate::eth::{get_contract_artifacts, verify_proof_via_solidity};
 use crate::graph::input::GraphData;
 use crate::graph::{GraphCircuit, GraphSettings, GraphWitness, Model};
+#[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
+use crate::pfsys::encode_calldata;
 use crate::pfsys::{
     create_keys, load_pk, load_vk, save_params, save_pk, swap_proof_commitments, Snark,
 };
 use crate::pfsys::{create_proof_circuit, verify_proof_circuit, ProofSplitCommit};
-#[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
-use crate::pfsys::encode_calldata;
 use crate::pfsys::{save_vk, srs::*};
 use crate::tensor::TensorError;
 use crate::RunArgs;
@@ -170,13 +170,23 @@ pub async fn run(command: Commands) -> Result<String, EZKLError> {
         } => crate::native_gat::graph_gat_gen_witness(compiled_circuit, output),
         Commands::GraphGatProve {
             compiled_circuit,
+            witness,
+            pk_path,
             proof_path,
-        } => crate::native_gat::graph_gat_prove(compiled_circuit, proof_path),
+        } => crate::native_gat::graph_gat_prove(compiled_circuit, witness, pk_path, proof_path),
         Commands::GraphGatVerify {
+            compiled_circuit,
             proof_path,
             settings_path,
             vk_path,
-        } => crate::native_gat::graph_gat_verify(proof_path, settings_path, vk_path),
+            output,
+        } => crate::native_gat::graph_gat_verify(
+            compiled_circuit,
+            proof_path,
+            settings_path,
+            vk_path,
+            output,
+        ),
         Commands::GenSettings {
             model,
             settings_path,

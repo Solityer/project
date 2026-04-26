@@ -83,7 +83,8 @@ std::string build_metadata_json(
     const GatSemanticSummary& gat_summary,
     const std::string& graph_hash,
     const std::string& checkpoint_hash,
-    const std::string& shape_hash) {
+    const std::string& shape_hash,
+    const FormalTablesSummary* formal_tables) {
     std::ostringstream out;
     out << "{\n"
         << "  \"protocol_id\": \"gat_zkml_ezkl_baseline_v1\",\n"
@@ -120,6 +121,11 @@ std::string build_metadata_json(
         << "  \"quantization\": {\"input_scale\":" << quant.input_scale
         << ",\"weight_scale\":" << quant.weight_scale
         << ",\"rounding\":\"" << json_escape(quant.rounding) << "\"},\n"
+        << "  \"static_table_id\": \"" << json_escape(config.static_table_id) << "\",\n";
+    if (formal_tables != nullptr) {
+        out << "  \"formal_tables\": " << formal_table_binding_json(*formal_tables) << ",\n";
+    }
+    out
         << "  \"gat_semantics\": {\"implemented_in_cpp\":" << bool_json(gat_summary.implemented_in_cpp)
         << ",\"hidden_activation\":\"" << gat_summary.hidden_activation
         << "\",\"attention_activation\":\"" << gat_summary.attention_activation
@@ -138,7 +144,8 @@ std::string build_model_info_json(
     const CheckpointBundle& bundle,
     const GatSemanticSummary& gat_summary,
     const std::string& checkpoint_hash,
-    const std::string& shape_hash) {
+    const std::string& shape_hash,
+    const FormalTablesSummary* formal_tables) {
     std::ostringstream out;
     out << "{\n"
         << "  \"model_arch_id\": \"" << json_escape(config.model_arch_id) << "\",\n"
@@ -153,7 +160,11 @@ std::string build_model_info_json(
         << "  \"num_classes\": " << bundle.class_count << ",\n"
         << "  \"hidden_head_count\": " << bundle.hidden_heads.size() << ",\n"
         << "  \"output_head_count\": " << bundle.output_heads.size() << ",\n"
-        << "  \"tensor_count_loaded_from_tensors_txt\": " << bundle.tensors.size() << ",\n"
+        << "  \"tensor_count_loaded_from_tensors_txt\": " << bundle.tensors.size() << ",\n";
+    if (formal_tables != nullptr) {
+        out << "  \"formal_tables\": " << formal_table_binding_json(*formal_tables) << ",\n";
+    }
+    out
         << "  \"gat_forward_semantics_cpp_available\": " << bool_json(gat_summary.implemented_in_cpp) << "\n"
         << "}\n";
     return out.str();

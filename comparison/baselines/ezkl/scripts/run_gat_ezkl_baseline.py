@@ -30,6 +30,8 @@ DATASETS = {
 }
 SEGMENT_ROUTE = "ezkl_gat_strict_segment_softmax_full"
 NATIVE_CSR_ROUTE = "ezkl_gat_native_csr_segment_attention_full"
+COMPRESSED_NATIVE_CSR_ROUTE = "ezkl_gat_native_compressed_csr_attention_full"
+NATIVE_GRAPH_ROUTES = {NATIVE_CSR_ROUTE, COMPRESSED_NATIVE_CSR_ROUTE}
 
 
 def ensure_inside(path: Path, root: Path) -> None:
@@ -95,14 +97,22 @@ def analysis_blocker_classification(blocker: str) -> str:
 
 def classify_native_failure(timing_key: str, stdout: str, stderr: str) -> str:
     text = f"{stdout}\n{stderr}".lower()
+    if "native_constraint_synthesis_failed" in text:
+        return "native_constraint_synthesis_failed"
+    if "native_keygen" in text:
+        return "native_keygen_failed"
+    if "native_prover" in text:
+        return "native_prover_failed"
+    if "native_verify" in text:
+        return "native_verify_failed"
+    if "ezkl_compressed_csr_resource_boundary" in text:
+        return "ezkl_compressed_csr_resource_boundary"
     if "ezkl_native_csr_compile_resource_boundary" in text or "required_logrows" in text:
         return "ezkl_native_csr_compile_resource_boundary"
     if "lookup" in text and "quant_cfg" in text:
         return "ezkl_native_lookup_tables_missing_from_quant_cfg"
     if "inverse" in text:
         return "ezkl_native_segment_inverse_implementation_failed"
-    if "prover backend is not complete" in text:
-        return "ezkl_native_graph_segment_attention_prover_backend_incomplete"
     if timing_key == "verify_time_ms":
         return "ezkl_native_verify_failed"
     return "ezkl_native_csr_route_failed"
@@ -185,6 +195,10 @@ def run_ezkl_pipeline(run_dir: Path, manifest: dict) -> dict:
             return manifest
     proof_path = run_dir / "proof.json"
     proof_size = proof_path.stat().st_size if proof_path.exists() else None
+    if (run_dir / "compressed_row_estimate.json").exists():
+        manifest["compressed_row_estimate"] = read_json(run_dir / "compressed_row_estimate.json")
+    if (run_dir / "formal_table_hashes.json").exists():
+        manifest["formal_table_hashes"] = read_json(run_dir / "formal_table_hashes.json")
     manifest.update(timings)
     manifest.update(
         {
@@ -272,6 +286,10 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict) -> dict:
                 "graph-gat-prove",
                 "--compiled-circuit",
                 "model.compiled",
+                "--witness",
+                "witness.json",
+                "--pk-path",
+                "pk.key",
                 "--proof-path",
                 "proof.json",
             ],
@@ -281,12 +299,16 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict) -> dict:
             ezkl
             + [
                 "graph-gat-verify",
+                "--compiled-circuit",
+                "model.compiled",
                 "--proof-path",
                 "proof.json",
                 "--settings-path",
                 "settings.json",
                 "--vk-path",
                 "vk.key",
+                "--output",
+                "verify.json",
             ],
         ),
     ]
@@ -302,7 +324,14 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict) -> dict:
             manifest.update(timings)
             manifest.update(
                 {
-                    "status": "blocked" if "resource_boundary" in failure or "lookup_tables" in failure else "failed",
+                    "status": "blocked"
+                    if (
+                        "resource_boundary" in failure
+                        or "lookup_tables" in failure
+                        or "backend_unavailable" in failure
+                        or "backend_incomplete" in failure
+                    )
+                    else "failed",
                     "block_reason": failure,
                     "failure_step": timing_key,
                     "failed_command": " ".join(command),
@@ -318,6 +347,16 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict) -> dict:
             if (run_dir / "model.compiled").exists():
                 try:
                     manifest["native_compile_plan"] = read_json(run_dir / "model.compiled")
+                except json.JSONDecodeError:
+                    pass
+            if (run_dir / "compressed_row_estimate.json").exists():
+                try:
+                    manifest["compressed_row_estimate"] = read_json(run_dir / "compressed_row_estimate.json")
+                except json.JSONDecodeError:
+                    pass
+            if (run_dir / "formal_table_hashes.json").exists():
+                try:
+                    manifest["formal_table_hashes"] = read_json(run_dir / "formal_table_hashes.json")
                 except json.JSONDecodeError:
                     pass
             write_json(run_dir / "run_manifest.json", manifest)
@@ -490,7 +529,7 @@ def main() -> int:
         return 0
 
     if args.run:
-        if args.route == NATIVE_CSR_ROUTE:
+        if args.route in NATIVE_GRAPH_ROUTES:
             manifest = run_native_graph_pipeline(run_dir, manifest)
         else:
             manifest = run_ezkl_pipeline(run_dir, manifest)
