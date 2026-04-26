@@ -73,17 +73,6 @@ def main_rows() -> dict[str, dict]:
 
 
 def effective_manifest(run_dir: str, run_id: str) -> dict:
-    cora_failure = EZKL_ROOT / "runs/cora_full/debug_full_model/native_constraint_failure.json"
-    if run_id != "cora_full" and cora_failure.exists():
-        return {
-            "dataset": run_id,
-            "route_id": "ezkl_gat_native_compressed_csr_attention_full",
-            "status": "blocked",
-            "block_reason": "not_run_because_cora_full_blocked_at_native_public_output_binding",
-            "strict_public_input_equivalent": False,
-            "full_gat_forward_in_ezkl_proof": False,
-            "failure_step": "not_started",
-        }
     base = EZKL_ROOT / run_dir
     manifest_path = base / "run_manifest.json"
     manifest = read_json(manifest_path) if manifest_path.exists() else {
@@ -109,6 +98,13 @@ def preflight_for_run(run_dir: str) -> dict:
     return read_json(path)
 
 
+def final_logits_binding_for_run(run_dir: str) -> dict:
+    path = EZKL_ROOT / run_dir / "final_logits_binding.json"
+    if not path.exists():
+        return {}
+    return read_json(path)
+
+
 def collect() -> tuple[list[dict], list[dict]]:
     main_by_dataset = main_rows()
     ezkl_rows: list[dict] = []
@@ -116,6 +112,7 @@ def collect() -> tuple[list[dict], list[dict]]:
     for run_id, main_key, display, run_dir in DATASETS:
         manifest = effective_manifest(run_dir, run_id)
         preflight = preflight_for_run(run_dir)
+        final_binding = final_logits_binding_for_run(run_dir)
         ezkl_row = {
             "dataset": run_id,
             "display_dataset": display,
@@ -147,6 +144,14 @@ def collect() -> tuple[list[dict], list[dict]]:
             "preflight_inverse_table_hash": preflight.get("inverse_table_hash"),
             "preflight_inverse_accepted": preflight.get("inverse_all_nodes_accepted"),
             "preflight_alpha_accepted": preflight.get("alpha_all_edges_accepted"),
+            "final_logits_binding_exists": bool(final_binding),
+            "final_logits_binding_status": final_binding.get("binding_status", ""),
+            "final_logits_shape": final_binding.get("final_logits_shape"),
+            "public_instance_length": final_binding.get("public_instance_length"),
+            "public_instance_order": final_binding.get("public_instance_order"),
+            "final_logits_hash": final_binding.get("final_logits_hash"),
+            "public_instance_hash": final_binding.get("public_instance_hash"),
+            "no_precomputed_logits_bypass": final_binding.get("no_precomputed_logits_bypass"),
         }
         for metric in METRICS:
             ezkl_row[metric] = manifest.get(metric)
@@ -469,6 +474,18 @@ def write_native_full_experiment_report(ezkl_rows: list[dict]) -> None:
             f"{row.get('full_gat_forward_in_ezkl_proof', False)} | {row.get('block_reason', '')} |"
         )
     lines.append("")
+    lines.append("## Final Logits Binding")
+    lines.append("")
+    lines.append("| Dataset | binding_exists | binding_status | shape | public_instance_length | order | no_precomputed_logits_bypass |")
+    lines.append("| --- | --- | --- | --- | ---: | --- | --- |")
+    for row in ezkl_rows:
+        lines.append(
+            f"| {row['display_dataset']} | {row.get('final_logits_binding_exists', False)} | "
+            f"{row.get('final_logits_binding_status', '')} | {row.get('final_logits_shape', '')} | "
+            f"{row.get('public_instance_length', '')} | {row.get('public_instance_order', '')} | "
+            f"{row.get('no_precomputed_logits_bypass', '')} |"
+        )
+    lines.append("")
     lines.append("No output-binding workaround, no precomputed logits, no subset, no shard, and no sample route was used.")
     lines.append("")
     lines.append("## Quantized Inverse Preflight Evidence")
@@ -527,6 +544,14 @@ def main() -> int:
             "preflight_inverse_table_hash",
             "preflight_inverse_accepted",
             "preflight_alpha_accepted",
+            "final_logits_binding_exists",
+            "final_logits_binding_status",
+            "final_logits_shape",
+            "public_instance_length",
+            "public_instance_order",
+            "final_logits_hash",
+            "public_instance_hash",
+            "no_precomputed_logits_bypass",
         ]
         + METRICS,
     )

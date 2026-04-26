@@ -22,17 +22,17 @@
 | hidden_only | missing |  |  |  |  | False |  |  |  |  |
 | output_only | missing |  |  |  |  | False |  |  |  |  |
 | full_model | missing |  |  |  |  | False |  |  |  |  |
-| full_model_current | blocked | 132921.294 | 14752.499 |  |  | False | native_full_gat_forward_constraints_incomplete | native.public_output_binding | native.full_model.layer_1.output.public_output_binding | 0 |
+| full_model_current | blocked | 142970.888 | 15035.652 |  |  | False | final_logits_derivation_incomplete | native.full_model.final_logits.derivation | native.full_model.output.head_0.projection | 0 |
 
 ## Current Full-Model Blocker
 
-- gate_name: `native.public_output_binding`
-- region_name: `native.full_model.layer_1.output.public_output_binding`
+- gate_name: `native.full_model.final_logits.derivation`
+- region_name: `native.full_model.output.head_0.projection`
 - row_offset: `0`
-- relation: strict_public_input_equivalent requires public output bindings to be derived from every quantized full GAT forward relation: projection, attention score, LReLU lookup, segment max, Exp lookup, quantized inverse lookup, alpha rescale, aggregation, ELU, output average
-- actual_values: `['diagnostic proof binds CSR/table/metadata scoped relations only', 'scope=full_model', 'full_gat_forward_in_ezkl_proof=false', 'strict_public_input_equivalent=false', 'run_dir=.']`
-- attempted_fix: replaced the artificial full compressed CSR failure with real Halo2 MockProver/KZG diagnostic scopes and preserved strict_public_input_equivalent=false for non-full semantics
-- remaining_blocker: full quantized GAT row assignment for public logits remains unimplemented; marking strict=true would be unsound
+- relation: strict_public_input_equivalent now has a row-major public instance binding for final_logits[N,C], but strict verification also requires those final logits to be derived from complete quantized output-head projection, attention score, LReLU lookup, segment max, Exp lookup, quantized inverse lookup, alpha rescale, aggregation, bias add, and K_out average relations over the real hidden activations
+- actual_values: `['public_instance_binding=assigned_and_constrained_to_final_logits', 'public_instance_order=final_logits_row_major_node_then_class', 'public_instance_length=18956', 'final_logits_hash=fnv1a64:28269ee5bd574b96', 'scope=full_model', 'full_gat_forward_in_ezkl_proof=false', 'strict_public_input_equivalent=false', 'run_dir=.']`
+- attempted_fix: implemented row-major final_logits[N,C] assignment, K_out average gate rows, output head projection/attention/bias_add diagnostic regions, and public instance equality constraints without enabling unsound strict flags
+- remaining_blocker: replace diagnostic output-head rows with complete output-layer witness assignment over real hidden activations and checkpoint tensors before strict_public_input_equivalent can be true
 
 ## Full-Dataset Quantized Inverse Preflight Evidence
 

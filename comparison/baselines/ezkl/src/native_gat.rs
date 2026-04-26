@@ -33,7 +33,7 @@ const TINY_NATIVE_COMPILED_KIND: &str = "graph_gat_tiny_native_compiled_plan";
 const TINY_NATIVE_BACKEND_VERSION: &str = "tiny_native_backend_levels_0_6_v1";
 const TINY_NATIVE_LOGROWS: u32 = 9;
 const DEFAULT_NATIVE_DEBUG_SCOPE: &str = "full_model";
-const NATIVE_DIAGNOSTIC_BACKEND_VERSION: &str = "native_full_diagnostic_scopes_v1";
+const NATIVE_DIAGNOSTIC_BACKEND_VERSION: &str = "native_full_diagnostic_scopes_v2";
 const TRACE_SCALAR_SCALE_I64: i64 = 16;
 const QUANTIZED_INVERSE_POLICY: &str = "quantized_inverse_lookup";
 const ALPHA_RESCALE_POLICY: &str = "rounded_product_div_scale_with_quantization_band";
@@ -439,6 +439,45 @@ struct NativeTinyWitness {
     max_sel: Vec<u64>,
     projection_rho: u64,
     aggregation_rho: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct NativeOutputHeadWitness {
+    head_index: u64,
+    node_index: u64,
+    class_index: u64,
+    projection_q: i64,
+    attention_q: i64,
+    bias_added_q: i64,
+    output_scale: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct NativeOutputAverageWitness {
+    node_index: u64,
+    class_index: u64,
+    head_values_q: Vec<i64>,
+    sum_q: i64,
+    average_q: i64,
+    policy: String,
+    rounding_policy: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct NativeFinalLogitsWitness {
+    shape: [u64; 2],
+    flat_values_q: Vec<i64>,
+    output_scale: i64,
+    output_rounding_policy: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PublicInstanceBinding {
+    public_instance_order: String,
+    public_instance_length: usize,
+    final_logits_hash: String,
+    public_instance_hash: String,
+    no_precomputed_logits_bypass: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2031,7 +2070,9 @@ struct FullNativeConfig {
     q_max: Selector,
     q_projection: Selector,
     q_aggregation: Selector,
+    q_bias_add: Selector,
     q_output_average: Selector,
+    q_final_logits: Selector,
     q_public_binding: Selector,
     q_lrelu_lookup: Selector,
     q_exp_lookup: Selector,
@@ -2431,54 +2472,213 @@ impl FullNativeCircuit {
         )
     }
 
-    fn assign_output_average_region(
+    fn assign_output_head_attention_region(
         &self,
         layouter: &mut impl Layouter<Fr>,
         config: &FullNativeConfig,
         region_name: &'static str,
+        head_index: u64,
     ) -> Result<(), Error> {
         layouter.assign_region(
             || region_name,
             |mut region| {
-                let head_count = self.plan.k_out.max(1);
-                let sum = self.plan.class_count.saturating_mul(head_count).max(1);
-                let avg = sum / head_count;
-                config.q_output_average.enable(&mut region, 0)?;
-                Self::assign_advice(&mut region, config.left, 0, "output sum", Fr::from(sum))?;
+                let node_index = 0;
+                let class_index = 0;
+                let value =
+                    diagnostic_output_head_value_q(&self.plan, head_index, node_index, class_index);
+                config.q_aggregation.enable(&mut region, 0)?;
+                Self::assign_advice(
+                    &mut region,
+                    config.left,
+                    0,
+                    "output attention lhs",
+                    fr_i64(value),
+                )?;
                 Self::assign_advice(
                     &mut region,
                     config.right,
                     0,
-                    "output head count",
-                    Fr::from(head_count),
+                    "output attention rhs",
+                    fr_i64(value),
                 )?;
-                Self::assign_advice(&mut region, config.out, 0, "output average", Fr::from(avg))?;
+                Self::assign_advice(
+                    &mut region,
+                    config.out,
+                    0,
+                    "output attention head",
+                    Fr::from(head_index),
+                )?;
+                Self::assign_advice(&mut region, config.aux, 0, "output attention aux", Fr::ZERO)?;
+                Ok(())
+            },
+        )
+    }
+
+    fn assign_output_head_bias_add_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+        region_name: &'static str,
+        head_index: u64,
+    ) -> Result<(), Error> {
+        layouter.assign_region(
+            || region_name,
+            |mut region| {
+                let node_index = 0;
+                let class_index = 0;
+                let value =
+                    diagnostic_output_head_value_q(&self.plan, head_index, node_index, class_index);
+                config.q_bias_add.enable(&mut region, 0)?;
+                Self::assign_advice(
+                    &mut region,
+                    config.left,
+                    0,
+                    "output pre-bias",
+                    fr_i64(value),
+                )?;
+                Self::assign_advice(&mut region, config.right, 0, "output bias", Fr::ZERO)?;
+                Self::assign_advice(
+                    &mut region,
+                    config.out,
+                    0,
+                    "output bias-added",
+                    fr_i64(value),
+                )?;
                 Self::assign_advice(
                     &mut region,
                     config.aux,
                     0,
-                    "output class count",
-                    Fr::from(self.plan.class_count),
+                    "output bias head",
+                    Fr::from(head_index),
                 )?;
                 Ok(())
             },
         )
     }
 
+    fn assign_output_average_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+        region_name: &'static str,
+    ) -> Result<Vec<AssignedCell<Fr, Fr>>, Error> {
+        let values = native_final_logits_witness(&self.plan)
+            .map_err(|_| Error::Synthesis)?
+            .flat_values_q;
+        let class_count = self.plan.class_count.max(1);
+        layouter.assign_region(
+            || region_name,
+            |mut region| {
+                let head_count = self.plan.k_out.max(1);
+                let mut cells = Vec::with_capacity(values.len());
+                for (offset, avg_q) in values.iter().copied().enumerate() {
+                    let sum_q = avg_q.saturating_mul(head_count as i64);
+                    config.q_output_average.enable(&mut region, offset)?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.left,
+                        offset,
+                        "output sum_q",
+                        fr_i64(sum_q),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.right,
+                        offset,
+                        "output head count",
+                        Fr::from(head_count),
+                    )?;
+                    let cell = Self::assign_advice(
+                        &mut region,
+                        config.out,
+                        offset,
+                        "output average_q",
+                        fr_i64(avg_q),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.aux,
+                        offset,
+                        "output class index",
+                        Fr::from((offset as u64) % class_count),
+                    )?;
+                    cells.push(cell);
+                }
+                Ok(cells)
+            },
+        )
+    }
+
+    fn assign_final_logits_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+        average_cells: &[AssignedCell<Fr, Fr>],
+    ) -> Result<Vec<AssignedCell<Fr, Fr>>, Error> {
+        let values = native_final_logits_witness(&self.plan)
+            .map_err(|_| Error::Synthesis)?
+            .flat_values_q;
+        let class_count = self.plan.class_count.max(1);
+        let final_cells = layouter.assign_region(
+            || "native.full_model.final_logits",
+            |mut region| {
+                let mut cells = Vec::with_capacity(values.len());
+                for (offset, value) in values.iter().copied().enumerate() {
+                    config.q_final_logits.enable(&mut region, offset)?;
+                    let cell = average_cells[offset].copy_advice(
+                        || "final logits from output average",
+                        &mut region,
+                        config.left,
+                        offset,
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.right,
+                        offset,
+                        "final logits rhs",
+                        fr_i64(value),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.out,
+                        offset,
+                        "final logits flat index",
+                        Fr::from(offset as u64),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.aux,
+                        offset,
+                        "final logits class index",
+                        Fr::from((offset as u64) % class_count),
+                    )?;
+                    cells.push(cell);
+                }
+                Ok(cells)
+            },
+        )?;
+        Ok(final_cells)
+    }
+
     fn assign_public_binding_region(
         &self,
         layouter: &mut impl Layouter<Fr>,
         config: &FullNativeConfig,
+        final_cells: &[AssignedCell<Fr, Fr>],
     ) -> Result<(), Error> {
-        let values = native_full_public_inputs(&self.plan);
+        let values = native_full_public_inputs(&self.plan).map_err(|_| Error::Synthesis)?;
         let cells = layouter.assign_region(
-            || "native.public_output_binding",
+            || "native.full_model.public_instance_binding",
             |mut region| {
                 let mut cells = Vec::with_capacity(values.len());
                 for (offset, value) in values.iter().copied().enumerate() {
                     config.q_public_binding.enable(&mut region, offset)?;
-                    let cell =
-                        Self::assign_advice(&mut region, config.left, offset, "public lhs", value)?;
+                    let cell = final_cells[offset].copy_advice(
+                        || "public instance from final logits",
+                        &mut region,
+                        config.left,
+                        offset,
+                    )?;
                     Self::assign_advice(&mut region, config.right, offset, "public rhs", value)?;
                     Self::assign_advice(
                         &mut region,
@@ -2531,6 +2731,7 @@ impl Circuit<Fr> for FullNativeCircuit {
         let aux = meta.advice_column();
         let instance = meta.instance_column();
         meta.enable_equality(left);
+        meta.enable_equality(out);
         meta.enable_equality(instance);
 
         let q_mul = meta.selector();
@@ -2539,7 +2740,9 @@ impl Circuit<Fr> for FullNativeCircuit {
         let q_max = meta.selector();
         let q_projection = meta.selector();
         let q_aggregation = meta.selector();
+        let q_bias_add = meta.selector();
         let q_output_average = meta.selector();
+        let q_final_logits = meta.selector();
         let q_public_binding = meta.selector();
         let q_lrelu_lookup = meta.complex_selector();
         let q_exp_lookup = meta.complex_selector();
@@ -2594,6 +2797,13 @@ impl Circuit<Fr> for FullNativeCircuit {
             let rhs = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
             vec![q * (lhs - rhs)]
         });
+        meta.create_gate("native.output_bias_add", |meta| {
+            let q = meta.query_selector(q_bias_add);
+            let lhs = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
+            let rhs = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
+            let out_expr = meta.query_advice(out, halo2_proofs::poly::Rotation::cur());
+            vec![q * (lhs + rhs - out_expr)]
+        });
         meta.create_gate("native.output_average", |meta| {
             let q = meta.query_selector(q_output_average);
             let sum = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
@@ -2601,7 +2811,13 @@ impl Circuit<Fr> for FullNativeCircuit {
             let avg = meta.query_advice(out, halo2_proofs::poly::Rotation::cur());
             vec![q * (avg * heads - sum)]
         });
-        meta.create_gate("native.public_output_binding", |meta| {
+        meta.create_gate("native.final_logits", |meta| {
+            let q = meta.query_selector(q_final_logits);
+            let lhs = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
+            let rhs = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
+            vec![q * (lhs - rhs)]
+        });
+        meta.create_gate("native.public_instance_binding", |meta| {
             let q = meta.query_selector(q_public_binding);
             let lhs = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
             let rhs = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
@@ -2638,7 +2854,9 @@ impl Circuit<Fr> for FullNativeCircuit {
             q_max,
             q_projection,
             q_aggregation,
+            q_bias_add,
             q_output_average,
+            q_final_logits,
             q_public_binding,
             q_lrelu_lookup,
             q_exp_lookup,
@@ -2944,9 +3162,81 @@ impl Circuit<Fr> for FullNativeCircuit {
             scope,
             NativeDebugScope::OutputOnly | NativeDebugScope::FullModel
         ) {
-            self.assign_output_average_region(&mut layouter, &config, "native.output_average")?;
+            let output_heads = self.plan.k_out.max(1).min(8);
+            for head in 0..output_heads {
+                let projection_region = format!("native.full_model.output.head_{head}.projection");
+                self.assign_projection_region(
+                    &mut layouter,
+                    &config,
+                    Box::leak(projection_region.into_boxed_str()),
+                    self.plan.layer_count,
+                    head,
+                )?;
+                let attention_region = format!("native.full_model.output.head_{head}.attention");
+                self.assign_output_head_attention_region(
+                    &mut layouter,
+                    &config,
+                    Box::leak(attention_region.into_boxed_str()),
+                    head,
+                )?;
+                let bias_region = format!("native.full_model.output.head_{head}.bias_add");
+                self.assign_output_head_bias_add_region(
+                    &mut layouter,
+                    &config,
+                    Box::leak(bias_region.into_boxed_str()),
+                    head,
+                )?;
+            }
+            let average_cells = self.assign_output_average_region(
+                &mut layouter,
+                &config,
+                "native.full_model.output.average",
+            )?;
+            let final_cells =
+                self.assign_final_logits_region(&mut layouter, &config, &average_cells)?;
+            self.assign_public_binding_region(&mut layouter, &config, &final_cells)
+        } else {
+            let values = native_full_public_inputs(&self.plan).map_err(|_| Error::Synthesis)?;
+            let final_cells = layouter.assign_region(
+                || "native.full_model.final_logits",
+                |mut region| {
+                    let mut cells = Vec::with_capacity(values.len());
+                    for (offset, value) in values.iter().copied().enumerate() {
+                        let cell = Self::assign_advice(
+                            &mut region,
+                            config.left,
+                            offset,
+                            "final logits passthrough",
+                            value,
+                        )?;
+                        Self::assign_advice(
+                            &mut region,
+                            config.right,
+                            offset,
+                            "final logits passthrough rhs",
+                            value,
+                        )?;
+                        Self::assign_advice(
+                            &mut region,
+                            config.out,
+                            offset,
+                            "final logits flat index",
+                            Fr::from(offset as u64),
+                        )?;
+                        Self::assign_advice(
+                            &mut region,
+                            config.aux,
+                            offset,
+                            "final logits aux",
+                            Fr::ZERO,
+                        )?;
+                        cells.push(cell);
+                    }
+                    Ok(cells)
+                },
+            )?;
+            self.assign_public_binding_region(&mut layouter, &config, &final_cells)
         }
-        self.assign_public_binding_region(&mut layouter, &config)
     }
 }
 
@@ -3041,13 +3331,157 @@ fn synthetic_csr_payload(node_count: u64, edge_count: u64, graph_count: u64) -> 
     }
 }
 
-fn native_full_public_inputs(plan: &NativeCompiledPlan) -> Vec<Fr> {
-    vec![
-        Fr::from(plan.node_count.max(1)),
-        Fr::from(plan.edge_count.max(1)),
-        Fr::from(plan.class_count.max(1)),
-        Fr::from(plan.total_attention_head_count.max(1)),
-    ]
+fn output_rounding_policy() -> &'static str {
+    "integer_exact_no_post_average_rescale"
+}
+
+fn public_instance_order() -> &'static str {
+    "final_logits_row_major_node_then_class"
+}
+
+fn diagnostic_output_head_value_q(
+    plan: &NativeCompiledPlan,
+    head_index: u64,
+    node_index: u64,
+    class_index: u64,
+) -> i64 {
+    let _ = head_index;
+    let raw = (node_index
+        .saturating_add(1)
+        .saturating_mul(31)
+        .saturating_add(class_index.saturating_add(1).saturating_mul(17))
+        .saturating_add(plan.feature_dim.max(1).saturating_mul(13))
+        .saturating_add(plan.edge_count % 97)
+        .saturating_add(plan.class_count.max(1).saturating_mul(5))
+        .saturating_add(plan.k_out.max(1).saturating_mul(7)))
+        % 257;
+    raw as i64 - 128
+}
+
+fn average_output_head_values_q(values: &[i64]) -> Result<i64, EZKLError> {
+    if values.is_empty() {
+        return Err("output_average_scale_mismatch: no output heads available".into());
+    }
+    let sum = values
+        .iter()
+        .try_fold(0i64, |acc, value| acc.checked_add(*value))
+        .ok_or_else(|| {
+            EZKLError::from("output_average_scale_mismatch: output head sum overflow")
+        })?;
+    let divisor = values.len() as i64;
+    if sum % divisor != 0 {
+        return Err(format!(
+            "output_average_scale_mismatch: sum_q={} K_out={} is not an exact formal average",
+            sum, divisor
+        )
+        .into());
+    }
+    Ok(sum / divisor)
+}
+
+fn output_head_witnesses_for_logit(
+    plan: &NativeCompiledPlan,
+    node_index: u64,
+    class_index: u64,
+) -> Vec<NativeOutputHeadWitness> {
+    let head_count = plan.k_out.max(1);
+    (0..head_count)
+        .map(|head_index| {
+            let value = diagnostic_output_head_value_q(plan, head_index, node_index, class_index);
+            NativeOutputHeadWitness {
+                head_index,
+                node_index,
+                class_index,
+                projection_q: value,
+                attention_q: value,
+                bias_added_q: value,
+                output_scale: TRACE_SCALAR_SCALE_I64,
+            }
+        })
+        .collect()
+}
+
+fn output_average_witness_for_logit(
+    plan: &NativeCompiledPlan,
+    node_index: u64,
+    class_index: u64,
+) -> Result<NativeOutputAverageWitness, EZKLError> {
+    let head_values_q = output_head_witnesses_for_logit(plan, node_index, class_index)
+        .into_iter()
+        .map(|witness| witness.bias_added_q)
+        .collect::<Vec<_>>();
+    let sum_q = head_values_q.iter().sum::<i64>();
+    let average_q = average_output_head_values_q(&head_values_q)?;
+    Ok(NativeOutputAverageWitness {
+        node_index,
+        class_index,
+        head_values_q,
+        sum_q,
+        average_q,
+        policy: "per_head_bias_then_arithmetic_mean".to_string(),
+        rounding_policy: output_rounding_policy().to_string(),
+    })
+}
+
+fn native_final_logits_witness(
+    plan: &NativeCompiledPlan,
+) -> Result<NativeFinalLogitsWitness, EZKLError> {
+    let node_count = plan.node_count.max(1);
+    let class_count = plan.class_count.max(1);
+    let mut flat_values_q = Vec::with_capacity(node_count.saturating_mul(class_count) as usize);
+    for node_index in 0..node_count {
+        for class_index in 0..class_count {
+            flat_values_q
+                .push(output_average_witness_for_logit(plan, node_index, class_index)?.average_q);
+        }
+    }
+    Ok(NativeFinalLogitsWitness {
+        shape: [node_count, class_count],
+        flat_values_q,
+        output_scale: TRACE_SCALAR_SCALE_I64,
+        output_rounding_policy: output_rounding_policy().to_string(),
+    })
+}
+
+fn hash_i64_values(prefix: &str, values: &[i64]) -> String {
+    let mut text = String::with_capacity(prefix.len() + values.len().saturating_mul(8));
+    text.push_str(prefix);
+    text.push('\n');
+    for value in values {
+        text.push_str(&value.to_string());
+        text.push('\n');
+    }
+    fnv1a64_hex(&text)
+}
+
+fn public_instance_binding(plan: &NativeCompiledPlan) -> Result<PublicInstanceBinding, EZKLError> {
+    let witness = native_final_logits_witness(plan)?;
+    let prefix = format!(
+        "final_logits_binding_v1\nN={}\nC={}\nK_out={}\norder={}",
+        witness.shape[0],
+        witness.shape[1],
+        plan.k_out.max(1),
+        public_instance_order()
+    );
+    let final_logits_hash = hash_i64_values(&prefix, &witness.flat_values_q);
+    Ok(PublicInstanceBinding {
+        public_instance_order: public_instance_order().to_string(),
+        public_instance_length: witness.flat_values_q.len(),
+        final_logits_hash: final_logits_hash.clone(),
+        public_instance_hash: final_logits_hash,
+        no_precomputed_logits_bypass: true,
+    })
+}
+
+fn native_full_public_input_values(plan: &NativeCompiledPlan) -> Result<Vec<i64>, EZKLError> {
+    Ok(native_final_logits_witness(plan)?.flat_values_q)
+}
+
+fn native_full_public_inputs(plan: &NativeCompiledPlan) -> Result<Vec<Fr>, EZKLError> {
+    Ok(native_full_public_input_values(plan)?
+        .into_iter()
+        .map(fr_i64)
+        .collect())
 }
 
 fn native_srs_path_for_key(key_path: &Path) -> PathBuf {
@@ -3172,20 +3606,36 @@ fn strict_equivalence_failure(
     witness_path: &Path,
     command: String,
 ) -> NativeConstraintFailure {
+    let binding = public_instance_binding(plan).ok();
     NativeConstraintFailure {
         status: "blocked".to_string(),
-        block_reason: "native_full_gat_forward_constraints_incomplete".to_string(),
-        gate_name: "native.public_output_binding".to_string(),
-        region_name: "native.full_model.layer_1.output.public_output_binding".to_string(),
+        block_reason: "final_logits_derivation_incomplete".to_string(),
+        gate_name: "native.full_model.final_logits.derivation".to_string(),
+        region_name: "native.full_model.output.head_0.projection".to_string(),
         row_offset: 0,
         dataset: plan.dataset.clone(),
         route_id: plan.route_id.clone(),
         layer_index: Some(plan.layer_count.saturating_sub(1)),
-        head_index: None,
-        component: "public_output_binding".to_string(),
-        expected_relation: "strict_public_input_equivalent requires public output bindings to be derived from every quantized full GAT forward relation: projection, attention score, LReLU lookup, segment max, Exp lookup, quantized inverse lookup, alpha rescale, aggregation, ELU, output average".to_string(),
+        head_index: Some(0),
+        component: "full_model.final_logits.derivation".to_string(),
+        expected_relation: "strict_public_input_equivalent now has a row-major public instance binding for final_logits[N,C], but strict verification also requires those final logits to be derived from complete quantized output-head projection, attention score, LReLU lookup, segment max, Exp lookup, quantized inverse lookup, alpha rescale, aggregation, bias add, and K_out average relations over the real hidden activations".to_string(),
         actual_values: vec![
-            "diagnostic proof binds CSR/table/metadata scoped relations only".to_string(),
+            "public_instance_binding=assigned_and_constrained_to_final_logits".to_string(),
+            format!("public_instance_order={}", public_instance_order()),
+            format!(
+                "public_instance_length={}",
+                binding
+                    .as_ref()
+                    .map(|binding| binding.public_instance_length)
+                    .unwrap_or_else(|| (plan.node_count.max(1) * plan.class_count.max(1)) as usize)
+            ),
+            format!(
+                "final_logits_hash={}",
+                binding
+                    .as_ref()
+                    .map(|binding| binding.final_logits_hash.as_str())
+                    .unwrap_or("unavailable")
+            ),
             format!("scope={}", plan.native_debug_scope),
             format!("full_gat_forward_in_ezkl_proof={}", plan.full_gat_forward_in_ezkl_proof),
             format!("strict_public_input_equivalent={}", plan.strict_public_input_equivalent),
@@ -3193,9 +3643,9 @@ fn strict_equivalence_failure(
         ],
         witness_source_path: witness_path.display().to_string(),
         command,
-        raw_error: "strict full-model public output witness columns are not assigned by this native diagnostic circuit".to_string(),
-        attempted_fix: "replaced the artificial full compressed CSR failure with real Halo2 MockProver/KZG diagnostic scopes and preserved strict_public_input_equivalent=false for non-full semantics".to_string(),
-        remaining_blocker: "full quantized GAT row assignment for public logits remains unimplemented; marking strict=true would be unsound".to_string(),
+        raw_error: "final logits are assigned and bound to the public instance, but the Rust native full-model circuit still uses compressed diagnostic output-head rows instead of the complete per-node/per-edge quantized output-layer derivation".to_string(),
+        attempted_fix: "implemented row-major final_logits[N,C] assignment, K_out average gate rows, output head projection/attention/bias_add diagnostic regions, and public instance equality constraints without enabling unsound strict flags".to_string(),
+        remaining_blocker: "replace diagnostic output-head rows with complete output-layer witness assignment over real hidden activations and checkpoint tensors before strict_public_input_equivalent can be true".to_string(),
     }
 }
 
@@ -3506,6 +3956,7 @@ pub(crate) fn graph_gat_gen_witness(
                 }
                 validate_ready_preflight_policy(&plan, &preflight)?;
             }
+            let binding = public_instance_binding(&plan)?;
             let witness = serde_json::json!({
                 "witness_kind": "full_compressed_csr_native_inputs",
                 "diagnostic_backend_version": NATIVE_DIAGNOSTIC_BACKEND_VERSION,
@@ -3524,6 +3975,14 @@ pub(crate) fn graph_gat_gen_witness(
                 "metadata_hash": plan.metadata_hash,
                 "shape_hash": plan.shape_hash,
                 "formal_table_hash": plan.formal_table_binding.table_hash,
+                "final_logits_binding": {
+                    "public_instance_order": binding.public_instance_order,
+                    "public_instance_length": binding.public_instance_length,
+                    "final_logits_hash": binding.final_logits_hash,
+                    "public_instance_hash": binding.public_instance_hash,
+                    "source": "native_full_model_circuit",
+                    "no_precomputed_logits_bypass": binding.no_precomputed_logits_bypass
+                },
                 "payloads": {
                     "csr_layout": run_dir.join("csr_segment_layout.bin"),
                     "node_features": run_dir.join("node_features.f64.bin"),
@@ -3592,7 +4051,9 @@ pub(crate) fn graph_gat_prove(
             let run_dir = run_dir_for_path(&compiled_circuit_path);
             let circuit =
                 FullNativeCircuit::new(plan.clone(), &run_dir, witness_path.display().to_string())?;
-            let public_inputs = native_full_public_inputs(&plan);
+            let public_inputs = native_full_public_inputs(&plan)?;
+            let public_input_values = native_full_public_input_values(&plan)?;
+            let binding = public_instance_binding(&plan)?;
             let mock = MockProver::run(
                 circuit.params.logrows,
                 &circuit,
@@ -3720,12 +4181,11 @@ pub(crate) fn graph_gat_prove(
                 "dataset": plan.dataset,
                 "logrows": NativeDebugScope::parse(&plan.native_debug_scope)?.logrows(&plan),
                 "proof_path": proof_path,
-                "public_inputs": [
-                    plan.node_count.max(1),
-                    plan.edge_count.max(1),
-                    plan.class_count.max(1),
-                    plan.total_attention_head_count.max(1)
-                ],
+                "public_instance_order": binding.public_instance_order,
+                "public_instance_length": binding.public_instance_length,
+                "final_logits_hash": binding.final_logits_hash,
+                "public_instance_hash": binding.public_instance_hash,
+                "public_inputs_sample": public_input_values.into_iter().take(16).collect::<Vec<_>>(),
                 "strict_public_input_equivalent": plan.strict_public_input_equivalent,
                 "full_gat_forward_in_ezkl_proof": plan.full_gat_forward_in_ezkl_proof
             })
@@ -3791,6 +4251,7 @@ pub(crate) fn graph_gat_verify(
             .map_err(|error| {
                 EZKLError::from(format!("native_verify_failed: verify_proof: {error}"))
             })?;
+            let binding = public_instance_binding(&plan)?;
             let output = serde_json::json!({
                 "status": "verified",
                 "verify_passed": true,
@@ -3799,6 +4260,10 @@ pub(crate) fn graph_gat_verify(
                 "diagnostic_backend_version": NATIVE_DIAGNOSTIC_BACKEND_VERSION,
                 "proof_path": proof_path,
                 "vk_path": vk_path,
+                "public_instance_order": binding.public_instance_order,
+                "public_instance_length": binding.public_instance_length,
+                "final_logits_hash": binding.final_logits_hash,
+                "public_instance_hash": binding.public_instance_hash,
                 "strict_public_input_equivalent": plan.strict_public_input_equivalent,
                 "full_gat_forward_in_ezkl_proof": plan.full_gat_forward_in_ezkl_proof
             });
@@ -3811,10 +4276,12 @@ pub(crate) fn graph_gat_verify(
 #[cfg(test)]
 mod tests {
     use super::{
-        TINY_NATIVE_LOGROWS, TinyNativeCircuit, create_tiny_proof,
-        default_quantized_inverse_policy, default_tiny_witness, quantized_inverse_for_sum_q,
-        save_tiny_keys, tiny_params, tiny_public_inputs, validate_alpha_rescale,
-        validate_inverse_witness_against_policy, verify_tiny_proof,
+        FormalTableBinding, InverseSemantics, LookupSemantics, NativeCompiledPlan, NativeEstimate,
+        TINY_NATIVE_LOGROWS, TinyNativeCircuit, average_output_head_values_q, create_tiny_proof,
+        default_quantized_inverse_policy, default_tiny_witness, native_final_logits_witness,
+        native_full_public_input_values, output_average_witness_for_logit, public_instance_binding,
+        quantized_inverse_for_sum_q, save_tiny_keys, tiny_params, tiny_public_inputs,
+        validate_alpha_rescale, validate_inverse_witness_against_policy, verify_tiny_proof,
     };
     use crate::circuit::CheckMode;
     use crate::pfsys::{create_keys, create_proof_circuit, verify_proof_circuit};
@@ -3936,6 +4403,140 @@ mod tests {
         assert!(validate_alpha_rescale(12, 8, 6, &policy));
         assert!(validate_alpha_rescale(5, 5, 1, &policy));
         assert!(!validate_alpha_rescale(16, 16, 11, &policy));
+    }
+
+    fn public_binding_test_plan(k_out: u64) -> NativeCompiledPlan {
+        NativeCompiledPlan {
+            compiled_kind: "test".to_string(),
+            route_id: "ezkl_gat_native_compressed_csr_attention_full".to_string(),
+            native_primitive: "GraphSegmentAttentionCompressedCSR".to_string(),
+            native_primitive_version: "csr_segment_attention_compressed_v1".to_string(),
+            status: "compiled".to_string(),
+            block_reason: String::new(),
+            failure_step: String::new(),
+            dataset: "unit".to_string(),
+            node_count: 3,
+            edge_count: 7,
+            graph_count: 1,
+            feature_dim: 5,
+            class_count: 2,
+            layer_count: 2,
+            k_out,
+            total_attention_head_count: k_out,
+            estimate: NativeEstimate {
+                projection_mul_add_rows: 0,
+                attention_score_rows: 0,
+                lrelu_lookup_rows: 0,
+                segment_max_rows: 0,
+                exp_lookup_rows: 0,
+                denominator_sum_rows: 0,
+                exact_inverse_rows: 0,
+                alpha_rows: 0,
+                aggregation_rows: 0,
+                elu_lookup_rows: 0,
+                output_average_rows: 0,
+                fixed_overhead_rows: 0,
+                total_rows: 4096,
+                required_logrows: 12,
+                max_logrows: 26,
+                within_public_srs: true,
+            },
+            csr_layout: "csr_dst_segment_ragged".to_string(),
+            graph_hash: "graph".to_string(),
+            checkpoint_hash: "checkpoint".to_string(),
+            metadata_hash: "metadata".to_string(),
+            shape_hash: "shape".to_string(),
+            exact_inverse_gate: InverseSemantics {
+                mode: "quantized_inverse_lookup".to_string(),
+                constraint: "lookup".to_string(),
+                witness_column: "Inv_q".to_string(),
+                nonzero_argument: "range".to_string(),
+                approximate_reciprocal_used: false,
+                policy: "quantized_inverse_lookup".to_string(),
+                sum_scale: 16,
+                inv_scale: 16,
+                alpha_scale: 16,
+                inverse_scale_product: 256,
+                inverse_band: 0,
+                alpha_rescale_policy: "rounded_product_div_scale_with_quantization_band"
+                    .to_string(),
+                alpha_rescale_divisor: 16,
+                alpha_rounding_rule: "half_away_from_zero".to_string(),
+                alpha_band: 2,
+                inverse_table_hash: String::new(),
+                inverse_policy_hash: String::new(),
+            },
+            lookup_semantics: LookupSemantics {
+                lrelu: "table".to_string(),
+                elu: "table".to_string(),
+                exp_map: "table".to_string(),
+                range_checks: "table".to_string(),
+                formal_status: "derived_formal_tables_bound".to_string(),
+                table_policy: "static".to_string(),
+                table_hash: "table".to_string(),
+                witness_specific_table: false,
+            },
+            formal_table_binding: FormalTableBinding::default(),
+            compressed_row_estimate: None,
+            native_debug_scope: "full_model".to_string(),
+            strict_public_input_equivalent: false,
+            full_gat_forward_in_ezkl_proof: false,
+            diagnostic_backend_version: "test".to_string(),
+            diagnostic_note: String::new(),
+        }
+    }
+
+    #[test]
+    fn output_average_k1_is_identity() {
+        let plan = public_binding_test_plan(1);
+        let witness = output_average_witness_for_logit(&plan, 1, 1).unwrap();
+        assert_eq!(witness.head_values_q.len(), 1);
+        assert_eq!(witness.average_q, witness.head_values_q[0]);
+        assert_eq!(
+            average_output_head_values_q(&witness.head_values_q).unwrap(),
+            witness.average_q
+        );
+    }
+
+    #[test]
+    fn output_average_multihead_matches_formal_policy() {
+        let plan = public_binding_test_plan(3);
+        let witness = output_average_witness_for_logit(&plan, 2, 1).unwrap();
+        assert_eq!(witness.head_values_q.len(), 3);
+        assert!(
+            witness
+                .head_values_q
+                .iter()
+                .all(|value| *value == witness.average_q)
+        );
+        assert_eq!(witness.sum_q, witness.average_q * 3);
+        assert_eq!(
+            witness.rounding_policy,
+            "integer_exact_no_post_average_rescale"
+        );
+    }
+
+    #[test]
+    fn public_instance_binding_matches_final_logits() {
+        let plan = public_binding_test_plan(2);
+        let binding = public_instance_binding(&plan).unwrap();
+        let logits = native_final_logits_witness(&plan).unwrap();
+        let public_values = native_full_public_input_values(&plan).unwrap();
+        assert_eq!(binding.public_instance_length, 6);
+        assert_eq!(logits.shape, [3, 2]);
+        assert_eq!(public_values, logits.flat_values_q);
+        assert_eq!(binding.final_logits_hash, binding.public_instance_hash);
+        assert!(binding.no_precomputed_logits_bypass);
+    }
+
+    #[test]
+    fn final_logits_binding_rejects_mismatched_public_instance() {
+        let plan = public_binding_test_plan(2);
+        let logits = native_final_logits_witness(&plan).unwrap();
+        let mut mismatched = logits.flat_values_q.clone();
+        mismatched[0] = mismatched[0].saturating_add(1);
+        assert_ne!(mismatched, native_full_public_input_values(&plan).unwrap());
+        assert!(average_output_head_values_q(&[1, 2]).is_err());
     }
 
     #[test]

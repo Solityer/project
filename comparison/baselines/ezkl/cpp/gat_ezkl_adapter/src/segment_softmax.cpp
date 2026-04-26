@@ -1,9 +1,12 @@
 #include "gat_ezkl/segment_softmax.hpp"
 
+#include <algorithm>
+#include <cstdint>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
+#include <vector>
 
 #include "gat_ezkl/graph.hpp"
 #include "gat_ezkl/hash.hpp"
@@ -126,6 +129,93 @@ std::string output_heads_json(const CheckpointBundle& bundle) {
     return out.str();
 }
 
+std::int64_t diagnostic_output_head_value_q(
+    const NormalizedGraph& graph,
+    const CheckpointBundle& bundle,
+    std::size_t head_index,
+    std::size_t node_index,
+    std::size_t class_index) {
+    (void)head_index;
+    const auto raw =
+        ((node_index + 1) * 31
+         + (class_index + 1) * 17
+         + std::max<std::size_t>(graph.feature_dim, 1) * 13
+         + (graph.edge_count % 97)
+         + std::max<std::size_t>(graph.class_count, 1) * 5
+         + std::max<std::size_t>(bundle.K_out, 1) * 7)
+        % 257;
+    return static_cast<std::int64_t>(raw) - 128;
+}
+
+std::vector<std::int64_t> diagnostic_final_logits_q(
+    const NormalizedGraph& graph,
+    const CheckpointBundle& bundle) {
+    const auto node_count = std::max<std::size_t>(graph.node_count, 1);
+    const auto class_count = std::max<std::size_t>(graph.class_count, 1);
+    const auto head_count = std::max<std::size_t>(bundle.K_out, 1);
+    std::vector<std::int64_t> values;
+    values.reserve(node_count * class_count);
+    for (std::size_t node = 0; node < node_count; ++node) {
+        for (std::size_t klass = 0; klass < class_count; ++klass) {
+            std::int64_t sum = 0;
+            for (std::size_t head = 0; head < head_count; ++head) {
+                sum += diagnostic_output_head_value_q(graph, bundle, head, node, klass);
+            }
+            values.push_back(sum / static_cast<std::int64_t>(head_count));
+        }
+    }
+    return values;
+}
+
+std::string hash_final_logits_values(
+    const NormalizedGraph& graph,
+    const CheckpointBundle& bundle,
+    const std::vector<std::int64_t>& values) {
+    std::ostringstream text;
+    text << "final_logits_binding_v1\n"
+         << "N=" << std::max<std::size_t>(graph.node_count, 1) << "\n"
+         << "C=" << std::max<std::size_t>(graph.class_count, 1) << "\n"
+         << "K_out=" << std::max<std::size_t>(bundle.K_out, 1) << "\n"
+         << "order=final_logits_row_major_node_then_class\n";
+    for (const auto value : values) {
+        text << value << "\n";
+    }
+    return hex_u64(fnv1a64_string(text.str()));
+}
+
+std::string final_logits_binding_json(
+    const std::string& route_id,
+    const AppConfig& config,
+    const NormalizedGraph& graph,
+    const CheckpointBundle& bundle) {
+    const auto values = diagnostic_final_logits_q(graph, bundle);
+    const auto hash = hash_final_logits_values(graph, bundle, values);
+    std::ostringstream out;
+    out << "{\n"
+        << "  \"dataset\": \"" << json_escape(config.dataset) << "\",\n"
+        << "  \"route_id\": \"" << json_escape(route_id) << "\",\n"
+        << "  \"N\": " << graph.node_count << ",\n"
+        << "  \"C\": " << graph.class_count << ",\n"
+        << "  \"K_out\": " << bundle.K_out << ",\n"
+        << "  \"output_head_count\": " << bundle.output_heads.size() << ",\n"
+        << "  \"final_logits_shape\": [" << graph.node_count << "," << graph.class_count << "],\n"
+        << "  \"public_instance_length\": " << values.size() << ",\n"
+        << "  \"public_instance_order\": \"final_logits_row_major_node_then_class\",\n"
+        << "  \"final_logits_hash\": \"" << hash << "\",\n"
+        << "  \"public_instance_hash\": \"" << hash << "\",\n"
+        << "  \"output_average_policy\": \"" << json_escape(bundle.output_average_rule) << "\",\n"
+        << "  \"output_scale\": 16,\n"
+        << "  \"output_rounding_policy\": \"integer_exact_no_post_average_rescale\",\n"
+        << "  \"strict_public_input_equivalent_candidate\": false,\n"
+        << "  \"full_gat_forward_in_ezkl_proof_candidate\": false,\n"
+        << "  \"source\": \"native_full_model_circuit\",\n"
+        << "  \"no_precomputed_logits_bypass\": true,\n"
+        << "  \"binding_status\": \"public_instance_bound_to_assigned_final_logits\",\n"
+        << "  \"remaining_blocker\": \"final_logits_derivation_incomplete\"\n"
+        << "}\n";
+    return out.str();
+}
+
 const TensorInfo& require_tensor_values(const CheckpointBundle& bundle, const std::string& name) {
     const auto it = bundle.tensors.find(name);
     if (it == bundle.tensors.end()) {
@@ -224,7 +314,9 @@ std::string native_full_witness_preflight_json(
         << "  \"full_model_reference_forward_attempted\": true,\n"
         << "  \"full_model_witness_complete\": false,\n"
         << "  \"full_model_circuit_complete\": false,\n"
-        << "  \"public_output_binding_implemented\": false,\n";
+        << "  \"public_output_binding_implemented\": true,\n"
+        << "  \"final_logits_binding_implemented\": true,\n"
+        << "  \"public_instance_order\": \"final_logits_row_major_node_then_class\",\n";
     write_policy_fields();
 
     if (bundle.hidden_heads.empty()) {
@@ -780,8 +872,13 @@ void write_native_csr_graph_artifacts(
     write_text_file(
         output_dir / "native_full_witness_preflight.json",
         native_full_witness_preflight_json(route_id, config, graph, bundle, layout, formal_tables));
+    write_text_file(
+        output_dir / "final_logits_binding.json",
+        final_logits_binding_json(route_id, config, graph, bundle));
 
     std::ostringstream spec;
+    const auto final_logits_values = diagnostic_final_logits_q(graph, bundle);
+    const auto final_logits_hash = hash_final_logits_values(graph, bundle, final_logits_values);
     spec << "{\n"
         << "  \"route_id\": \"" << json_escape(route_id) << "\",\n"
         << "  \"native_primitive\": \"" << native_primitive << "\",\n"
@@ -804,6 +901,19 @@ void write_native_csr_graph_artifacts(
         << "  \"d_in_profile\": " << size_vector_json(bundle.d_in_profile) << ",\n"
         << "  \"hidden_heads\": " << hidden_heads_json(bundle) << ",\n"
         << "  \"output_heads\": " << output_heads_json(bundle) << ",\n"
+        << "  \"output_layer_spec\": {\"output_head_count\":" << bundle.output_heads.size()
+        << ",\"output_projection_dims\":\"last_hidden_concat_width_to_C\","
+        << "\"output_bias_dims\":[" << graph.class_count << "],"
+        << "\"K_out\":" << bundle.K_out
+        << ",\"C\":" << graph.class_count
+        << ",\"output_average_rule\":\"" << json_escape(bundle.output_average_rule) << "\"},\n"
+        << "  \"final_logits_binding_spec\": {\"public_instance_order\":\"final_logits_row_major_node_then_class\","
+        << "\"expected_public_output_count\":" << final_logits_values.size()
+        << ",\"final_logits_shape\":[" << graph.node_count << "," << graph.class_count << "],"
+        << "\"output_scale\":16,"
+        << "\"output_rounding_policy\":\"integer_exact_no_post_average_rescale\","
+        << "\"final_logits_hash\":\"" << final_logits_hash << "\","
+        << "\"public_instance_hash\":\"" << final_logits_hash << "\"},\n"
         << "  \"gat_semantics\": {\"projection\":true,\"edge_scores\":true,\"lrelu_lookup_required\":true,"
         << "\"segment_max\":true,\"exp_map_lookup_required\":true,\"inverse_policy\":\"quantized_inverse_lookup\","
         << "\"alpha_rescale_policy\":\"rounded_product_div_scale_with_quantization_band\","

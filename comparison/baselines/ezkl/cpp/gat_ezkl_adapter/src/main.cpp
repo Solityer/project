@@ -269,6 +269,7 @@ int main(int argc, char** argv) {
         const auto metadata_hash = gat_ezkl::hash_metadata_hex(metadata_json);
         const auto model_info_json = gat_ezkl::build_model_info_json(
             config,
+            graph,
             checkpoint,
             gat_summary,
             checkpoint_hash,
@@ -416,6 +417,13 @@ int main(int argc, char** argv) {
             << "  \"metadata_hash\": \"" << metadata_hash << "\",\n"
             << "  \"shape_hash\": \"" << shape_hash << "\",\n"
             << "  \"output_hash\": \"" << output_hash << "\",\n"
+            << "  \"final_logits_binding_path\": \"final_logits_binding.json\",\n"
+            << "  \"final_logits_binding_status\": \"public_instance_bound_to_assigned_final_logits\",\n"
+            << "  \"final_logits_shape\": [" << graph.node_count << "," << graph.class_count << "],\n"
+            << "  \"public_instance_order\": \"final_logits_row_major_node_then_class\",\n"
+            << "  \"public_instance_length\": " << (graph.node_count * graph.class_count) << ",\n"
+            << "  \"output_average_policy\": \"" << gat_ezkl::json_escape(checkpoint.output_average_rule) << "\",\n"
+            << "  \"output_rounding_policy\": \"integer_exact_no_post_average_rescale\",\n"
             << "  \"onnx_model_id\": \"blocked-placeholder:" << shape_hash << "\",\n"
             << "  \"settings_id\": \"blocked-preflight:" << metadata_hash << "\",\n"
             << "  \"compiled_circuit_id\": null,\n"

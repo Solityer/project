@@ -133,8 +133,8 @@ ExportDecision export_native_csr_segment_attention_gat(
     decision.route_id = route_id;
     decision.status = "ready";
     decision.block_reason = "";
-    decision.strict_public_input_equivalent = true;
-    decision.full_gat_forward_in_ezkl_proof = true;
+    decision.strict_public_input_equivalent = false;
+    decision.full_gat_forward_in_ezkl_proof = false;
     decision.network_onnx_is_placeholder = false;
 
     std::ostringstream limitation;
@@ -142,7 +142,9 @@ ExportDecision export_native_csr_segment_attention_gat(
         << "C++ adapter exported full-dataset CSR/ragged graph attention artifacts for ezkl native "
         << (compressed_route ? "GraphSegmentAttentionCompressedCSR" : "GraphSegmentAttention")
         << ". The route avoids dense NxN attention and padded N*Dmax as the "
-        << "primary representation. Proof success still depends on native ezkl compile/setup/prove/verify. "
+        << "primary representation. The adapter emits final_logits_binding.json and output-layer metadata, "
+        << "while strict=true is left to the Rust native backend only after complete output-head derivation is constrained. "
+        << "Proof success still depends on native ezkl compile/setup/prove/verify. "
         << "N=" << graph.node_count
         << ", E=" << graph.edge_count
         << ", G=" << graph.graph_count

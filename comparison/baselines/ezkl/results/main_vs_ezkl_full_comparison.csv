@@ -1,6 +1,6 @@
 dataset,ezkl_status,ezkl_block_reason,ezkl_route_id,main_cpu_commitment_time_ms,ezkl_commitment_time_ms,main_cpu_prove_time_ms,ezkl_prove_time_ms,main_cpu_verify_time_ms,ezkl_verify_time_ms,main_cpu_proof_size_bytes,ezkl_proof_size_bytes
-Cora,blocked,native_full_gat_forward_constraints_incomplete,ezkl_gat_native_compressed_csr_attention_full,283.786,132921.29374999786,1207.818,14752.499171998352,153.379,,90755,
-Citeseer,blocked,native_full_gat_forward_constraints_incomplete,ezkl_gat_native_compressed_csr_attention_full,453.773,134072.70978900488,1418.744,14817.839709998225,153.837,,90763,
-Pubmed,blocked,native_full_gat_forward_constraints_incomplete,ezkl_gat_native_compressed_csr_attention_full,2962.933,544980.6620559975,5604.074,62015.50412600045,175.454,,90760,
+Cora,blocked,final_logits_derivation_incomplete,ezkl_gat_native_compressed_csr_attention_full,283.786,142970.8877869998,1207.818,15035.65203299513,153.379,,90755,
+Citeseer,blocked,final_logits_derivation_incomplete,ezkl_gat_native_compressed_csr_attention_full,453.773,136880.81107700418,1418.744,14887.324198993156,153.837,,90763,
+Pubmed,blocked,final_logits_derivation_incomplete,ezkl_gat_native_compressed_csr_attention_full,2962.933,558303.1376500003,5604.074,62827.004637001664,175.454,,90760,
 PPI,blocked,native_keygen_resource_failure,ezkl_gat_native_compressed_csr_attention_full,3563.973,1608590.8740110025,7111.447,,424.71,,21360,
 ogbn-arxiv,blocked,native_keygen_resource_failure,ezkl_gat_native_compressed_csr_attention_full,18071.562,1671729.9925629923,66540.6,,417.38,,21361,
