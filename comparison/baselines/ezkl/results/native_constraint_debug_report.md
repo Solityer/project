@@ -29,7 +29,7 @@
 | final_logits_public_binding_only | missing |  |  |  |  | False |  |  |  |  |
 | output_full_derivation | missing |  |  |  |  | False |  |  |  |  |
 | full_model | missing |  |  |  |  | False |  |  |  |  |
-| full_model_current | verified | 34249.261 | 20726.156 | 566.251 | 1280198 | True |  |  |  |  |
+| full_model_current | verified | 44691.611 | 22186.999 | 397.249 | 1281018 | True |  |  |  |  |
 
 ## Full-Dataset Quantized Inverse Preflight Evidence
 
