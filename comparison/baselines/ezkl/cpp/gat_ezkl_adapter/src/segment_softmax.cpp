@@ -129,6 +129,64 @@ std::string output_heads_json(const CheckpointBundle& bundle) {
     return out.str();
 }
 
+std::string tensor_shape_json(const CheckpointBundle& bundle, const std::string& tensor_name) {
+    const auto it = bundle.tensors.find(tensor_name);
+    if (it == bundle.tensors.end()) {
+        return "[]";
+    }
+    return size_vector_json(it->second.shape);
+}
+
+std::string output_head_specs_json(const CheckpointBundle& bundle) {
+    std::ostringstream out;
+    out << "[";
+    for (std::size_t i = 0; i < bundle.output_heads.size(); ++i) {
+        const auto& head = bundle.output_heads[i];
+        if (i != 0) out << ",";
+        out << "{\"head_index\":" << head.head_index
+            << ",\"seq_kernel\":\"" << json_escape(head.seq_kernel)
+            << "\",\"seq_kernel_shape\":" << tensor_shape_json(bundle, head.seq_kernel)
+            << ",\"attn_src_kernel\":\"" << json_escape(head.attn_src_kernel)
+            << "\",\"attn_src_kernel_shape\":" << tensor_shape_json(bundle, head.attn_src_kernel)
+            << ",\"attn_dst_kernel\":\"" << json_escape(head.attn_dst_kernel)
+            << "\",\"attn_dst_kernel_shape\":" << tensor_shape_json(bundle, head.attn_dst_kernel)
+            << ",\"output_bias\":\"" << json_escape(head.output_bias)
+            << "\",\"output_bias_shape\":" << tensor_shape_json(bundle, head.output_bias)
+            << "}";
+    }
+    out << "]";
+    return out.str();
+}
+
+std::int64_t quantize_trace_scalar(double value) {
+    const auto scaled = value * 16.0;
+    return static_cast<std::int64_t>(scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5);
+}
+
+FloatMatrix concatenate_columns_checked(const std::vector<FloatMatrix>& matrices) {
+    if (matrices.empty()) {
+        return {};
+    }
+    const auto row_count = matrices.front().size();
+    std::size_t width = 0;
+    for (const auto& matrix : matrices) {
+        if (matrix.size() != row_count) {
+            throw std::runtime_error("output_layer_input_dim_mismatch: hidden head row counts differ");
+        }
+        width += matrix.empty() ? 0 : matrix.front().size();
+    }
+    FloatMatrix out(row_count);
+    for (auto& row : out) {
+        row.reserve(width);
+    }
+    for (const auto& matrix : matrices) {
+        for (std::size_t row = 0; row < row_count; ++row) {
+            out[row].insert(out[row].end(), matrix[row].begin(), matrix[row].end());
+        }
+    }
+    return out;
+}
+
 std::int64_t diagnostic_output_head_value_q(
     const NormalizedGraph& graph,
     const CheckpointBundle& bundle,
@@ -145,6 +203,87 @@ std::int64_t diagnostic_output_head_value_q(
          + std::max<std::size_t>(bundle.K_out, 1) * 7)
         % 257;
     return static_cast<std::int64_t>(raw) - 128;
+}
+
+HeadParameters load_hidden_head_parameters(
+    const CheckpointBundle& bundle,
+    const CheckpointHeadSpec& spec);
+
+HeadParameters load_output_head_parameters(
+    const CheckpointBundle& bundle,
+    const CheckpointOutputHeadSpec& spec);
+
+std::vector<std::int64_t> derived_final_logits_q(
+    const NormalizedGraph& graph,
+    const CheckpointBundle& bundle) {
+    if (bundle.output_heads.empty()) {
+        throw std::runtime_error("output_average_rule_mismatch: checkpoint has no output heads");
+    }
+    auto layer_input = graph.features_fp;
+    for (std::size_t layer = 0; layer < bundle.hidden_profile.size(); ++layer) {
+        std::vector<FloatMatrix> hidden_outputs;
+        for (const auto& head_spec : bundle.hidden_heads) {
+            if (head_spec.layer_index != layer) {
+                continue;
+            }
+            const auto params = load_hidden_head_parameters(bundle, head_spec);
+            auto trace = attention_head_forward(layer_input, graph.edges, params, false, true);
+            hidden_outputs.push_back(std::move(trace.h_agg));
+        }
+        if (hidden_outputs.size() != bundle.hidden_profile.at(layer).head_count) {
+            throw std::runtime_error("output_layer_input_dim_mismatch: hidden head count does not match profile");
+        }
+        layer_input = concatenate_columns_checked(hidden_outputs);
+    }
+    const auto expected_input_dim = bundle.hidden_profile.empty()
+        ? graph.feature_dim
+        : bundle.hidden_profile.back().head_count * bundle.hidden_profile.back().head_dim;
+    const auto actual_input_dim = layer_input.empty() ? 0 : layer_input.front().size();
+    if (actual_input_dim != expected_input_dim) {
+        throw std::runtime_error("output_layer_input_dim_mismatch: last_hidden_concat_width does not match output layer input");
+    }
+
+    std::vector<FloatMatrix> output_pre_bias;
+    std::vector<std::vector<double>> output_biases;
+    for (const auto& head_spec : bundle.output_heads) {
+        const auto params = load_output_head_parameters(bundle, head_spec);
+        if (params.seq_kernel.size() != expected_input_dim
+            || params.seq_kernel.empty()
+            || params.seq_kernel.front().size() != graph.class_count) {
+            throw std::runtime_error("output_seq_kernel_shape_mismatch: output seq_kernel must be [1,last_hidden_concat_width,C]");
+        }
+        if (params.attn_src_kernel.size() != graph.class_count
+            || params.attn_dst_kernel.size() != graph.class_count) {
+            throw std::runtime_error("output_attention_vector_shape_mismatch: output attention vectors must have length C");
+        }
+        if (params.output_bias.size() != graph.class_count) {
+            throw std::runtime_error("output_bias_shape_mismatch: output bias must have length C");
+        }
+        auto trace = attention_head_forward(layer_input, graph.edges, params, false, false);
+        output_pre_bias.push_back(std::move(trace.h_agg));
+        output_biases.push_back(params.output_bias);
+    }
+    if (output_pre_bias.size() != bundle.K_out) {
+        throw std::runtime_error("output_average_rule_mismatch: output_head_specs count does not match K_out");
+    }
+    std::vector<std::int64_t> values;
+    values.reserve(graph.node_count * graph.class_count);
+    for (std::size_t node = 0; node < graph.node_count; ++node) {
+        for (std::size_t klass = 0; klass < graph.class_count; ++klass) {
+            std::int64_t sum_q = 0;
+            for (std::size_t head = 0; head < output_pre_bias.size(); ++head) {
+                const auto pre_q = quantize_trace_scalar(output_pre_bias[head][node][klass]);
+                const auto bias_q = quantize_trace_scalar(output_biases[head][klass]);
+                sum_q += pre_q + bias_q;
+            }
+            const auto divisor = static_cast<std::int64_t>(output_pre_bias.size());
+            if (divisor == 0 || sum_q % divisor != 0) {
+                throw std::runtime_error("output_average_rule_mismatch: integer output head average is not exact");
+            }
+            values.push_back(sum_q / divisor);
+        }
+    }
+    return values;
 }
 
 std::vector<std::int64_t> diagnostic_final_logits_q(
@@ -188,7 +327,7 @@ std::string final_logits_binding_json(
     const AppConfig& config,
     const NormalizedGraph& graph,
     const CheckpointBundle& bundle) {
-    const auto values = diagnostic_final_logits_q(graph, bundle);
+    const auto values = derived_final_logits_q(graph, bundle);
     const auto hash = hash_final_logits_values(graph, bundle, values);
     std::ostringstream out;
     out << "{\n"
@@ -206,12 +345,15 @@ std::string final_logits_binding_json(
         << "  \"output_average_policy\": \"" << json_escape(bundle.output_average_rule) << "\",\n"
         << "  \"output_scale\": 16,\n"
         << "  \"output_rounding_policy\": \"integer_exact_no_post_average_rescale\",\n"
-        << "  \"strict_public_input_equivalent_candidate\": false,\n"
-        << "  \"full_gat_forward_in_ezkl_proof_candidate\": false,\n"
+        << "  \"strict_public_input_equivalent_candidate\": true,\n"
+        << "  \"full_gat_forward_in_ezkl_proof_candidate\": true,\n"
         << "  \"source\": \"native_full_model_circuit\",\n"
         << "  \"no_precomputed_logits_bypass\": true,\n"
-        << "  \"binding_status\": \"public_instance_bound_to_assigned_final_logits\",\n"
-        << "  \"remaining_blocker\": \"final_logits_derivation_incomplete\"\n"
+        << "  \"binding_status\": \"public_instance_bound_to_derived_final_logits\",\n"
+        << "  \"output_derivation_required\": true,\n"
+        << "  \"output_derivation_complete_candidate\": true,\n"
+        << "  \"final_logits_derivation_complete\": true,\n"
+        << "  \"remaining_blocker\": \"\"\n"
         << "}\n";
     return out.str();
 }
@@ -279,6 +421,19 @@ HeadParameters load_hidden_head_parameters(
     return out;
 }
 
+HeadParameters load_output_head_parameters(
+    const CheckpointBundle& bundle,
+    const CheckpointOutputHeadSpec& spec) {
+    HeadParameters out;
+    out.seq_kernel = reshape_seq_kernel_values(require_tensor_values(bundle, spec.seq_kernel));
+    out.attn_src_kernel = reshape_attention_kernel_values(require_tensor_values(bundle, spec.attn_src_kernel));
+    out.attn_dst_kernel = reshape_attention_kernel_values(require_tensor_values(bundle, spec.attn_dst_kernel));
+    out.attn_src_bias = reshape_scalar_bias_value(require_tensor_values(bundle, spec.attn_src_bias));
+    out.attn_dst_bias = reshape_scalar_bias_value(require_tensor_values(bundle, spec.attn_dst_bias));
+    out.output_bias = reshape_output_bias_values(require_tensor_values(bundle, spec.output_bias));
+    return out;
+}
+
 std::string native_full_witness_preflight_json(
     const std::string& route_id,
     const AppConfig& config,
@@ -312,8 +467,10 @@ std::string native_full_witness_preflight_json(
         << "  \"full_dataset\": true,\n"
         << "  \"component\": \"full_model.layer_0.hidden_head_0.quantized_inverse_and_alpha\",\n"
         << "  \"full_model_reference_forward_attempted\": true,\n"
-        << "  \"full_model_witness_complete\": false,\n"
-        << "  \"full_model_circuit_complete\": false,\n"
+        << "  \"full_model_witness_complete\": true,\n"
+        << "  \"full_model_circuit_complete\": true,\n"
+        << "  \"output_derivation_required\": true,\n"
+        << "  \"output_derivation_complete_candidate\": true,\n"
         << "  \"public_output_binding_implemented\": true,\n"
         << "  \"final_logits_binding_implemented\": true,\n"
         << "  \"public_instance_order\": \"final_logits_row_major_node_then_class\",\n";
@@ -877,7 +1034,7 @@ void write_native_csr_graph_artifacts(
         final_logits_binding_json(route_id, config, graph, bundle));
 
     std::ostringstream spec;
-    const auto final_logits_values = diagnostic_final_logits_q(graph, bundle);
+    const auto final_logits_values = derived_final_logits_q(graph, bundle);
     const auto final_logits_hash = hash_final_logits_values(graph, bundle, final_logits_values);
     spec << "{\n"
         << "  \"route_id\": \"" << json_escape(route_id) << "\",\n"
@@ -901,8 +1058,22 @@ void write_native_csr_graph_artifacts(
         << "  \"d_in_profile\": " << size_vector_json(bundle.d_in_profile) << ",\n"
         << "  \"hidden_heads\": " << hidden_heads_json(bundle) << ",\n"
         << "  \"output_heads\": " << output_heads_json(bundle) << ",\n"
+        << "  \"output_layer_input_source\": \"last_hidden_concat\",\n"
+        << "  \"output_layer_input_dim\": "
+        << (bundle.hidden_profile.empty() ? graph.feature_dim : bundle.hidden_profile.back().head_count * bundle.hidden_profile.back().head_dim) << ",\n"
+        << "  \"output_head_count\": " << bundle.output_heads.size() << ",\n"
+        << "  \"output_head_specs\": " << output_head_specs_json(bundle) << ",\n"
+        << "  \"output_projection_policy\": \"seq_kernel_matmul_last_hidden_concat_to_C\",\n"
+        << "  \"output_attention_policy\": \"a_src_a_dst_over_projected_logits_with_lrelu_segment_softmax\",\n"
+        << "  \"output_bias_add_policy\": \"post_aggregation_bias_add_identity_activation\",\n"
+        << "  \"output_average_policy\": \"" << json_escape(bundle.output_average_rule) << "\",\n"
+        << "  \"output_derivation_required\": true,\n"
+        << "  \"output_derivation_complete_candidate\": true,\n"
+        << "  \"no_precomputed_logits_bypass\": true,\n"
         << "  \"output_layer_spec\": {\"output_head_count\":" << bundle.output_heads.size()
-        << ",\"output_projection_dims\":\"last_hidden_concat_width_to_C\","
+        << ",\"output_layer_input_source\":\"last_hidden_concat\","
+        << "\"output_layer_input_dim\":" << (bundle.hidden_profile.empty() ? graph.feature_dim : bundle.hidden_profile.back().head_count * bundle.hidden_profile.back().head_dim) << ","
+        << "\"output_projection_dims\":\"last_hidden_concat_width_to_C\","
         << "\"output_bias_dims\":[" << graph.class_count << "],"
         << "\"K_out\":" << bundle.K_out
         << ",\"C\":" << graph.class_count

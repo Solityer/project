@@ -42,6 +42,13 @@ NATIVE_DEBUG_SCOPES = [
     "first_hidden_layer_all_heads",
     "hidden_only",
     "output_only",
+    "output_projection_only",
+    "output_attention_only",
+    "output_aggregation_only",
+    "output_bias_add_only",
+    "output_average_only",
+    "final_logits_public_binding_only",
+    "output_full_derivation",
     "full_model",
 ]
 
@@ -121,6 +128,18 @@ def collect() -> tuple[list[dict], list[dict]]:
             "block_reason": manifest.get("block_reason", ""),
             "strict_public_input_equivalent": manifest.get("strict_public_input_equivalent", False),
             "full_gat_forward_in_ezkl_proof": manifest.get("full_gat_forward_in_ezkl_proof", False),
+            "final_logits_derivation_complete": manifest.get(
+                "final_logits_derivation_complete",
+                final_binding.get("final_logits_derivation_complete", False),
+            ),
+            "output_derivation_required": manifest.get(
+                "output_derivation_required",
+                final_binding.get("output_derivation_required", False),
+            ),
+            "output_derivation_complete_candidate": manifest.get(
+                "output_derivation_complete_candidate",
+                final_binding.get("output_derivation_complete_candidate", False),
+            ),
             "failure_step": manifest.get("failure_step", ""),
             "failure_gate": manifest.get("failure_gate", ""),
             "failure_region": manifest.get("failure_region", ""),
@@ -191,12 +210,13 @@ def write_summary(ezkl_rows: list[dict], comparison_rows: list[dict]) -> None:
     lines.append("")
     lines.append("## Dataset Status")
     lines.append("")
-    lines.append("| Dataset | status | route_id | strict | full GAT forward in proof | block_reason |")
-    lines.append("| --- | --- | --- | --- | --- | --- |")
+    lines.append("| Dataset | status | route_id | strict | full GAT forward in proof | final logits derivation | block_reason |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- |")
     for row in ezkl_rows:
         lines.append(
             f"| {row['display_dataset']} | {row['status']} | {row.get('route_id', '')} | "
             f"{row.get('strict_public_input_equivalent', False)} | {row.get('full_gat_forward_in_ezkl_proof', False)} | "
+            f"{row.get('final_logits_derivation_complete', False)} | "
             f"{row.get('block_reason', '')} |"
         )
     lines.append("")
@@ -465,13 +485,14 @@ def write_native_full_experiment_report(ezkl_rows: list[dict]) -> None:
     lines: list[str] = []
     lines.append("# Native Full Experiment Report")
     lines.append("")
-    lines.append("| Dataset | status | strict_public_input_equivalent | full_gat_forward_in_ezkl_proof | block_reason |")
-    lines.append("| --- | --- | --- | --- | --- |")
+    lines.append("| Dataset | status | strict_public_input_equivalent | full_gat_forward_in_ezkl_proof | final_logits_derivation_complete | block_reason |")
+    lines.append("| --- | --- | --- | --- | --- | --- |")
     for row in ezkl_rows:
         lines.append(
             f"| {row['display_dataset']} | {row.get('status', '')} | "
             f"{row.get('strict_public_input_equivalent', False)} | "
-            f"{row.get('full_gat_forward_in_ezkl_proof', False)} | {row.get('block_reason', '')} |"
+            f"{row.get('full_gat_forward_in_ezkl_proof', False)} | "
+            f"{row.get('final_logits_derivation_complete', False)} | {row.get('block_reason', '')} |"
         )
     lines.append("")
     lines.append("## Final Logits Binding")
@@ -521,6 +542,9 @@ def main() -> int:
             "block_reason",
             "strict_public_input_equivalent",
             "full_gat_forward_in_ezkl_proof",
+            "final_logits_derivation_complete",
+            "output_derivation_required",
+            "output_derivation_complete_candidate",
             "failure_step",
             "failure_gate",
             "failure_region",

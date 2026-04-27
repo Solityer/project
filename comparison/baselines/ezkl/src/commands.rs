@@ -1,7 +1,7 @@
 #[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
 use alloy::primitives::Address as H160;
 use clap::{Command, Parser, Subcommand};
-use clap_complete::{Generator, Shell, generate};
+use clap_complete::{generate, Generator, Shell};
 #[cfg(feature = "python-bindings")]
 use pyo3::{conversion::FromPyObject, exceptions::PyValueError, prelude::*};
 use serde::{Deserialize, Serialize};

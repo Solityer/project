@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -46,6 +47,13 @@ NATIVE_DEBUG_SCOPES = [
     "first_hidden_layer_all_heads",
     "hidden_only",
     "output_only",
+    "output_projection_only",
+    "output_attention_only",
+    "output_aggregation_only",
+    "output_bias_add_only",
+    "output_average_only",
+    "final_logits_public_binding_only",
+    "output_full_derivation",
     "full_model",
 ]
 
@@ -73,11 +81,18 @@ def write_json(path: Path, data: dict) -> None:
         handle.write("\n")
 
 
-def run_command(command: list[str], cwd: Path) -> tuple[int, float, str, str]:
+def run_command(command: list[str], cwd: Path, env: dict[str, str] | None = None) -> tuple[int, float, str, str]:
     start = time.perf_counter()
-    completed = subprocess.run(command, cwd=cwd, text=True, capture_output=True)
+    completed = subprocess.run(command, cwd=cwd, text=True, capture_output=True, env=env)
     elapsed_ms = (time.perf_counter() - start) * 1000.0
     return completed.returncode, elapsed_ms, completed.stdout, completed.stderr
+
+
+def native_command_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.setdefault("RAYON_NUM_THREADS", "1")
+    env.setdefault("MALLOC_ARENA_MAX", "1")
+    return env
 
 
 def classify_ezkl_failure(timing_key: str, stdout: str, stderr: str) -> str:
@@ -125,6 +140,20 @@ def classify_native_failure(timing_key: str, stdout: str, stderr: str) -> str:
         return "native_full_gat_forward_constraints_incomplete"
     if "final_logits_derivation_incomplete" in text:
         return "final_logits_derivation_incomplete"
+    if "output_projection_constraint_failed" in text:
+        return "output_projection_constraint_failed"
+    if "output_attention_constraint_failed" in text:
+        return "output_attention_constraint_failed"
+    if "output_aggregation_constraint_failed" in text:
+        return "output_aggregation_constraint_failed"
+    if "output_bias_add_constraint_failed" in text:
+        return "output_bias_add_constraint_failed"
+    if "output_average_constraint_failed" in text:
+        return "output_average_constraint_failed"
+    if "final_logits_public_binding_mismatch" in text:
+        return "final_logits_public_binding_mismatch"
+    if "public_instance_encoding_mismatch" in text:
+        return "public_instance_encoding_mismatch"
     if "native_constraint_synthesis_failed" in text:
         return "native_constraint_synthesis_failed"
     if "native_keygen" in text:
@@ -212,7 +241,7 @@ def run_ezkl_pipeline(run_dir: Path, manifest: dict) -> dict:
     stdout_all = []
     stderr_all = []
     for timing_key, command in commands:
-        code, elapsed_ms, stdout, stderr = run_command(command, run_dir)
+        code, elapsed_ms, stdout, stderr = run_command(command, run_dir, env=native_command_env())
         stdout_all.append(f"$ {' '.join(command)}\n{stdout}")
         stderr_all.append(f"$ {' '.join(command)}\n{stderr}")
         if timing_key in timings:
@@ -371,6 +400,12 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict, native_debug_scope:
                 and (code < 0 or (not stdout.strip() and not stderr.strip()))
             ):
                 failure = "native_keygen_resource_failure"
+            if (
+                timing_key == "prove_time_ms"
+                and not native_failure
+                and (code < 0 or (not stdout.strip() and not stderr.strip()))
+            ):
+                failure = "native_prove_resource_failure"
             manifest.update(timings)
             manifest.update(
                 {

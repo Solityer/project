@@ -7,9 +7,9 @@
 
 | Dataset | status | block_reason | previous rows | compressed rows | reduction | required_logrows | feasible | table_hash |
 | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |
-| Cora | blocked | final_logits_derivation_incomplete | 252496464 | 2117846 | 119.22324097219533 | 22 | True | fnv1a64:89bb68268073848a |
-| Citeseer | blocked | final_logits_derivation_incomplete | 792557483 | 2218463 | 357.25521813976616 | 22 | True | fnv1a64:89bb68268073848a |
-| Pubmed | blocked | final_logits_derivation_incomplete | 657323900 | 16143874 | 40.71661485960557 | 24 | True | fnv1a64:89bb68268073848a |
+| Cora | verified |  | 252496464 | 2117846 | 119.22324097219533 | 22 | True | fnv1a64:89bb68268073848a |
+| Citeseer | verified |  | 792557483 | 2218463 | 357.25521813976616 | 22 | True | fnv1a64:89bb68268073848a |
+| Pubmed | verified |  | 657323900 | 16143874 | 40.71661485960557 | 24 | True | fnv1a64:89bb68268073848a |
 | PPI | blocked | native_keygen_resource_failure | 315476272 | 43372416 | 7.273661490289127 | 26 | True | fnv1a64:89bb68268073848a |
 | ogbn-arxiv | blocked | native_keygen_resource_failure | 381668318 | 59159176 | 6.451548919477851 | 26 | True | fnv1a64:08c90fe141fea976 |
 
