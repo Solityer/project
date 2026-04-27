@@ -112,6 +112,17 @@ def final_logits_binding_for_run(run_dir: str) -> dict:
     return read_json(path)
 
 
+def native_constraint_failure_for_run(run_dir: str) -> dict:
+    base = EZKL_ROOT / run_dir
+    for path in [
+        base / "debug_full_model" / "native_constraint_failure.json",
+        base / "native_constraint_failure.json",
+    ]:
+        if path.exists():
+            return read_json(path)
+    return {}
+
+
 def collect() -> tuple[list[dict], list[dict]]:
     main_by_dataset = main_rows()
     ezkl_rows: list[dict] = []
@@ -120,6 +131,7 @@ def collect() -> tuple[list[dict], list[dict]]:
         manifest = effective_manifest(run_dir, run_id)
         preflight = preflight_for_run(run_dir)
         final_binding = final_logits_binding_for_run(run_dir)
+        failure = native_constraint_failure_for_run(run_dir)
         ezkl_row = {
             "dataset": run_id,
             "display_dataset": display,
@@ -140,12 +152,16 @@ def collect() -> tuple[list[dict], list[dict]]:
                 "output_derivation_complete_candidate",
                 final_binding.get("output_derivation_complete_candidate", False),
             ),
-            "failure_step": manifest.get("failure_step", ""),
-            "failure_gate": manifest.get("failure_gate", ""),
-            "failure_region": manifest.get("failure_region", ""),
-            "failure_row": manifest.get("failure_row", ""),
-            "failure_relation": manifest.get("failure_relation", ""),
-            "failure_values": manifest.get("failure_values", []),
+            "failure_step": manifest.get("failure_step", "") or ("prove_time_ms" if failure else ""),
+            "failure_gate": failure.get("gate_name", manifest.get("failure_gate", "")),
+            "failure_region": failure.get("region_name", manifest.get("failure_region", "")),
+            "failure_row": failure.get("row_offset", manifest.get("failure_row", "")),
+            "failure_relation": failure.get(
+                "expected_relation", manifest.get("failure_relation", "")
+            ),
+            "failure_values": failure.get("actual_values", manifest.get("failure_values", [])),
+            "failure_raw_error": failure.get("raw_error", ""),
+            "failure_remaining_blocker": failure.get("remaining_blocker", ""),
             "preflight_node_index": preflight.get("node_index"),
             "preflight_degree": preflight.get("degree"),
             "preflight_sum_fp32_reference": preflight.get("sum_fp32_reference"),
@@ -168,6 +184,18 @@ def collect() -> tuple[list[dict], list[dict]]:
             "final_logits_shape": final_binding.get("final_logits_shape"),
             "public_instance_length": final_binding.get("public_instance_length"),
             "public_instance_order": final_binding.get("public_instance_order"),
+            "public_instance_layout": final_binding.get(
+                "public_instance_layout", manifest.get("public_instance_layout", "")
+            ),
+            "public_instance_chunk_size": final_binding.get(
+                "public_instance_chunk_size", manifest.get("public_instance_chunk_size")
+            ),
+            "public_instance_column_count": final_binding.get(
+                "public_instance_column_count", manifest.get("public_instance_column_count")
+            ),
+            "public_instance_total_length": final_binding.get(
+                "public_instance_total_length", manifest.get("public_instance_total_length")
+            ),
             "final_logits_hash": final_binding.get("final_logits_hash"),
             "public_instance_hash": final_binding.get("public_instance_hash"),
             "no_precomputed_logits_bypass": final_binding.get("no_precomputed_logits_bypass"),
@@ -261,7 +289,7 @@ def write_summary(ezkl_rows: list[dict], comparison_rows: list[dict]) -> None:
             values = row.get("failure_values") or []
             value_text = ", ".join(values) if isinstance(values, list) else str(values)
             preflight_text = ""
-            if row.get("preflight_node_index") is not None:
+            if not values and row.get("preflight_node_index") is not None:
                 preflight_text = (
                     f"; node={row.get('preflight_node_index')}; degree={row.get('preflight_degree')}; "
                     f"sum_fp32={row.get('preflight_sum_fp32_reference')}; "
@@ -497,13 +525,15 @@ def write_native_full_experiment_report(ezkl_rows: list[dict]) -> None:
     lines.append("")
     lines.append("## Final Logits Binding")
     lines.append("")
-    lines.append("| Dataset | binding_exists | binding_status | shape | public_instance_length | order | no_precomputed_logits_bypass |")
-    lines.append("| --- | --- | --- | --- | ---: | --- | --- |")
+    lines.append("| Dataset | binding_exists | binding_status | shape | public_instance_length | layout | columns | chunk_size | order | no_precomputed_logits_bypass |")
+    lines.append("| --- | --- | --- | --- | ---: | --- | ---: | ---: | --- | --- |")
     for row in ezkl_rows:
         lines.append(
             f"| {row['display_dataset']} | {row.get('final_logits_binding_exists', False)} | "
             f"{row.get('final_logits_binding_status', '')} | {row.get('final_logits_shape', '')} | "
-            f"{row.get('public_instance_length', '')} | {row.get('public_instance_order', '')} | "
+            f"{row.get('public_instance_length', '')} | {row.get('public_instance_layout', '')} | "
+            f"{row.get('public_instance_column_count', '')} | {row.get('public_instance_chunk_size', '')} | "
+            f"{row.get('public_instance_order', '')} | "
             f"{row.get('no_precomputed_logits_bypass', '')} |"
         )
     lines.append("")
@@ -522,6 +552,21 @@ def write_native_full_experiment_report(ezkl_rows: list[dict]) -> None:
             f"{row.get('preflight_quantized_inv_scale16', '')} | {row.get('preflight_expected_inv_q', '')} | "
             f"{row.get('preflight_quantized_product', '')} | {row.get('preflight_inverse_accepted', '')} | "
             f"{row.get('preflight_alpha_accepted', '')} | {row.get('failure_relation', '')} |"
+        )
+    lines.append("")
+    lines.append("## Native Constraint Failure Evidence")
+    lines.append("")
+    lines.append("| Dataset | gate | region | row | values | remaining_blocker |")
+    lines.append("| --- | --- | --- | ---: | --- | --- |")
+    for row in ezkl_rows:
+        if not row.get("failure_gate"):
+            continue
+        values = row.get("failure_values") or []
+        value_text = "; ".join(values) if isinstance(values, list) else str(values)
+        lines.append(
+            f"| {row['display_dataset']} | {row.get('failure_gate', '')} | "
+            f"{row.get('failure_region', '')} | {row.get('failure_row', '')} | "
+            f"{value_text} | {row.get('failure_remaining_blocker', '')} |"
         )
     (RESULTS / "native_full_experiment_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -573,6 +618,10 @@ def main() -> int:
             "final_logits_shape",
             "public_instance_length",
             "public_instance_order",
+            "public_instance_layout",
+            "public_instance_chunk_size",
+            "public_instance_column_count",
+            "public_instance_total_length",
             "final_logits_hash",
             "public_instance_hash",
             "no_precomputed_logits_bypass",

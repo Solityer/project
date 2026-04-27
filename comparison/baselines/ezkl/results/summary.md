@@ -11,23 +11,23 @@
 | Cora | verified | ezkl_gat_native_compressed_csr_attention_full | True | True | True |  |
 | Citeseer | verified | ezkl_gat_native_compressed_csr_attention_full | True | True | True |  |
 | Pubmed | verified | ezkl_gat_native_compressed_csr_attention_full | True | True | True |  |
-| PPI | blocked | ezkl_gat_native_compressed_csr_attention_full | False | False | True | native_keygen_resource_failure |
-| ogbn-arxiv | blocked | ezkl_gat_native_compressed_csr_attention_full | False | False | True | native_keygen_resource_failure |
+| PPI | failed | ezkl_gat_native_compressed_csr_attention_full | False | False | True | native_constraint_synthesis_failed |
+| ogbn-arxiv | blocked | ezkl_gat_native_compressed_csr_attention_full | False | False | True | native_prove_resource_failure |
 
 ## Four-Metric Comparison
 
 | Dataset | main commitment_time_ms | ezkl commitment_time_ms | main prove_time_ms | ezkl prove_time_ms | main verify_time_ms | ezkl verify_time_ms | main proof_size_bytes | ezkl proof_size_bytes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Cora | 283.786 | 34249.261 | 1207.818 | 20726.156 | 153.379 | 566.251 | 90755 | 1280198 |
-| Citeseer | 453.773 | 35124.103 | 1418.744 | 21365.887 | 153.837 | 676.547 | 90763 | 1347596 |
-| Pubmed | 2962.933 | 69588.681 | 5604.074 | 43774.539 | 175.454 | 1303.938 | 90760 | 3973278 |
-| PPI | 3563.973 | 1001891.381 | 7111.447 | blocked | 424.710 | blocked | 21360 | blocked |
-| ogbn-arxiv | 18071.562 | 1734496.290 | 66540.600 | blocked | 417.380 | blocked | 21361 | blocked |
+| Cora | 283.786 | 44691.611 | 1207.818 | 22186.999 | 153.379 | 397.249 | 90755 | 1281018 |
+| Citeseer | 453.773 | 44597.467 | 1418.744 | 22231.393 | 153.837 | 508.609 | 90763 | 1348419 |
+| Pubmed | 2962.933 | 90476.599 | 5604.074 | 47989.941 | 175.454 | 958.592 | 90760 | 3974097 |
+| PPI | 3563.973 | 1428500.900 | 7111.447 | 98325.890 | 424.710 |  | 21360 |  |
+| ogbn-arxiv | 18071.562 | 1458744.766 | 66540.600 | 606168.838 | 417.380 | blocked | 21361 | blocked |
 
 ## Blocked/Failed Reasons
 
 - Cora: verified / 
 - Citeseer: verified / 
 - Pubmed: verified / 
-- PPI: blocked / native_keygen_resource_failure
-- ogbn-arxiv: blocked / native_keygen_resource_failure
+- PPI: failed / native_constraint_synthesis_failed; step=prove_time_ms; gate=native.full_model.output.head_0.segment_sum_inverse; region=native.full_model.output.head_0.segment_sum_inverse; row=35543; relation=MockProver must satisfy every enabled native diagnostic gate before KZG proving; values=required_logrows=25, node_count=56944, edge_count=850576, run_dir=., output_head_index=0, output_node_index=17771, output_sum_fp64=326.70716581639925, output_sum_q=5227, output_inv_q=0, inverse_table_range_size=4096, output_sum_q_in_inverse_table_range=false, segment_begin=234519, segment_end=235101, segment_degree=582
+- ogbn-arxiv: blocked / native_prove_resource_failure

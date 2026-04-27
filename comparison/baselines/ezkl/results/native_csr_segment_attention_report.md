@@ -9,8 +9,8 @@
 | Cora | ezkl_gat_native_compressed_csr_attention_full | GraphSegmentAttentionCompressedCSR | verified |  | None |  |  |  |
 | Citeseer | ezkl_gat_native_compressed_csr_attention_full | GraphSegmentAttentionCompressedCSR | verified |  | None |  |  |  |
 | Pubmed | ezkl_gat_native_compressed_csr_attention_full | GraphSegmentAttentionCompressedCSR | verified |  | None |  |  |  |
-| PPI | ezkl_gat_native_compressed_csr_attention_full | GraphSegmentAttentionCompressedCSR | blocked | native_keygen_resource_failure | setup_ms | 43372416 | 26 | 26 |
-| ogbn-arxiv | ezkl_gat_native_compressed_csr_attention_full | GraphSegmentAttentionCompressedCSR | blocked | native_keygen_resource_failure | setup_ms | 59159176 | 26 | 26 |
+| PPI | ezkl_gat_native_compressed_csr_attention_full | GraphSegmentAttentionCompressedCSR | failed | native_constraint_synthesis_failed | prove_time_ms | 29591968 | 25 | 26 |
+| ogbn-arxiv | ezkl_gat_native_compressed_csr_attention_full | GraphSegmentAttentionCompressedCSR | blocked | native_prove_resource_failure | prove_time_ms | 45611736 | 26 | 26 |
 
 ## Artifact Contract
 

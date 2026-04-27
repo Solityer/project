@@ -310,12 +310,18 @@ std::string hash_final_logits_values(
     const NormalizedGraph& graph,
     const CheckpointBundle& bundle,
     const std::vector<std::int64_t>& values) {
+    constexpr std::size_t kPublicInstanceChunkSize = 1u << 22;
+    const auto chunk_size = std::min<std::size_t>(kPublicInstanceChunkSize, std::max<std::size_t>(values.size(), 1));
+    const auto column_count = (values.size() + chunk_size - 1) / chunk_size;
     std::ostringstream text;
-    text << "final_logits_binding_v1\n"
+    text << "final_logits_binding_v2\n"
          << "N=" << std::max<std::size_t>(graph.node_count, 1) << "\n"
          << "C=" << std::max<std::size_t>(graph.class_count, 1) << "\n"
          << "K_out=" << std::max<std::size_t>(bundle.K_out, 1) << "\n"
-         << "order=final_logits_row_major_node_then_class\n";
+         << "order=final_logits_row_major_node_then_class_chunked_columns_column_then_row\n"
+         << "layout=chunked_columns\n"
+         << "chunk_size=" << chunk_size << "\n"
+         << "columns=" << column_count << "\n";
     for (const auto value : values) {
         text << value << "\n";
     }
@@ -329,6 +335,9 @@ std::string final_logits_binding_json(
     const CheckpointBundle& bundle) {
     const auto values = derived_final_logits_q(graph, bundle);
     const auto hash = hash_final_logits_values(graph, bundle, values);
+    constexpr std::size_t kPublicInstanceChunkSize = 1u << 22;
+    const auto chunk_size = std::min<std::size_t>(kPublicInstanceChunkSize, std::max<std::size_t>(values.size(), 1));
+    const auto column_count = (values.size() + chunk_size - 1) / chunk_size;
     std::ostringstream out;
     out << "{\n"
         << "  \"dataset\": \"" << json_escape(config.dataset) << "\",\n"
@@ -339,7 +348,11 @@ std::string final_logits_binding_json(
         << "  \"output_head_count\": " << bundle.output_heads.size() << ",\n"
         << "  \"final_logits_shape\": [" << graph.node_count << "," << graph.class_count << "],\n"
         << "  \"public_instance_length\": " << values.size() << ",\n"
-        << "  \"public_instance_order\": \"final_logits_row_major_node_then_class\",\n"
+        << "  \"public_instance_order\": \"final_logits_row_major_node_then_class_chunked_columns_column_then_row\",\n"
+        << "  \"public_instance_layout\": \"chunked_columns\",\n"
+        << "  \"public_instance_chunk_size\": " << chunk_size << ",\n"
+        << "  \"public_instance_column_count\": " << column_count << ",\n"
+        << "  \"public_instance_total_length\": " << values.size() << ",\n"
         << "  \"final_logits_hash\": \"" << hash << "\",\n"
         << "  \"public_instance_hash\": \"" << hash << "\",\n"
         << "  \"output_average_policy\": \"" << json_escape(bundle.output_average_rule) << "\",\n"
@@ -473,7 +486,8 @@ std::string native_full_witness_preflight_json(
         << "  \"output_derivation_complete_candidate\": true,\n"
         << "  \"public_output_binding_implemented\": true,\n"
         << "  \"final_logits_binding_implemented\": true,\n"
-        << "  \"public_instance_order\": \"final_logits_row_major_node_then_class\",\n";
+        << "  \"public_instance_order\": \"final_logits_row_major_node_then_class_chunked_columns_column_then_row\",\n"
+        << "  \"public_instance_layout\": \"chunked_columns\",\n";
     write_policy_fields();
 
     if (bundle.hidden_heads.empty()) {
@@ -1078,7 +1092,8 @@ void write_native_csr_graph_artifacts(
         << "\"K_out\":" << bundle.K_out
         << ",\"C\":" << graph.class_count
         << ",\"output_average_rule\":\"" << json_escape(bundle.output_average_rule) << "\"},\n"
-        << "  \"final_logits_binding_spec\": {\"public_instance_order\":\"final_logits_row_major_node_then_class\","
+        << "  \"final_logits_binding_spec\": {\"public_instance_order\":\"final_logits_row_major_node_then_class_chunked_columns_column_then_row\","
+        << "\"public_instance_layout\":\"chunked_columns\","
         << "\"expected_public_output_count\":" << final_logits_values.size()
         << ",\"final_logits_shape\":[" << graph.node_count << "," << graph.class_count << "],"
         << "\"output_scale\":16,"

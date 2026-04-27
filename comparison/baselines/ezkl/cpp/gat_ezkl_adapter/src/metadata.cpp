@@ -1,5 +1,6 @@
 #include "gat_ezkl/metadata.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <filesystem>
@@ -114,6 +115,13 @@ std::string build_metadata_json(
     const std::string& checkpoint_hash,
     const std::string& shape_hash,
     const FormalTablesSummary* formal_tables) {
+    constexpr std::size_t kPublicInstanceChunkSize = 1u << 22;
+    const auto public_instance_length = graph.node_count * graph.class_count;
+    const auto public_instance_chunk_size = std::min<std::size_t>(
+        kPublicInstanceChunkSize,
+        std::max<std::size_t>(public_instance_length, 1));
+    const auto public_instance_column_count =
+        (public_instance_length + public_instance_chunk_size - 1) / public_instance_chunk_size;
     std::ostringstream out;
     out << "{\n"
         << "  \"protocol_id\": \"gat_zkml_ezkl_baseline_v1\",\n"
@@ -134,8 +142,12 @@ std::string build_metadata_json(
         << "  \"visibility_cfg\": \"public_input_public_logits_constant_weight_hash\",\n"
         << "  \"input_visibility\": \"public_full_dataset_tensor_summary\",\n"
         << "  \"output_visibility\": \"public_logits_when_verified\",\n"
-        << "  \"public_instance_order\": \"final_logits_row_major_node_then_class\",\n"
-        << "  \"public_instance_length\": " << (graph.node_count * graph.class_count) << ",\n"
+        << "  \"public_instance_order\": \"final_logits_row_major_node_then_class_chunked_columns_column_then_row\",\n"
+        << "  \"public_instance_layout\": \"chunked_columns\",\n"
+        << "  \"public_instance_chunk_size\": " << public_instance_chunk_size << ",\n"
+        << "  \"public_instance_column_count\": " << public_instance_column_count << ",\n"
+        << "  \"public_instance_total_length\": " << public_instance_length << ",\n"
+        << "  \"public_instance_length\": " << public_instance_length << ",\n"
         << "  \"final_logits_shape\": [" << graph.node_count << "," << graph.class_count << "],\n"
         << "  \"output_average_policy\": \"" << json_escape(bundle.output_average_rule) << "\",\n"
         << "  \"output_rounding_policy\": \"integer_exact_no_post_average_rescale\",\n"
@@ -185,6 +197,13 @@ std::string build_model_info_json(
     const std::string& checkpoint_hash,
     const std::string& shape_hash,
     const FormalTablesSummary* formal_tables) {
+    constexpr std::size_t kPublicInstanceChunkSize = 1u << 22;
+    const auto public_instance_length = graph.node_count * graph.class_count;
+    const auto public_instance_chunk_size = std::min<std::size_t>(
+        kPublicInstanceChunkSize,
+        std::max<std::size_t>(public_instance_length, 1));
+    const auto public_instance_column_count =
+        (public_instance_length + public_instance_chunk_size - 1) / public_instance_chunk_size;
     std::ostringstream out;
     out << "{\n"
         << "  \"model_arch_id\": \"" << json_escape(config.model_arch_id) << "\",\n"
@@ -220,8 +239,12 @@ std::string build_model_info_json(
         << ",\"output_average_rule\":\"" << json_escape(bundle.output_average_rule) << "\"},\n"
         << "  \"final_logits_binding_spec\": {\"final_logits_shape\":["
         << graph.node_count << "," << graph.class_count << "],"
-        << "\"public_instance_length\":" << (graph.node_count * graph.class_count) << ","
-        << "\"public_instance_order\":\"final_logits_row_major_node_then_class\","
+        << "\"public_instance_length\":" << public_instance_length << ","
+        << "\"public_instance_order\":\"final_logits_row_major_node_then_class_chunked_columns_column_then_row\","
+        << "\"public_instance_layout\":\"chunked_columns\","
+        << "\"public_instance_chunk_size\":" << public_instance_chunk_size << ","
+        << "\"public_instance_column_count\":" << public_instance_column_count << ","
+        << "\"public_instance_total_length\":" << public_instance_length << ","
         << "\"output_scale\":16,"
         << "\"output_rounding_policy\":\"integer_exact_no_post_average_rescale\","
         << "\"final_logits_hash_policy\":\"fnv1a64_over_quantized_row_major_final_logits\"},\n"

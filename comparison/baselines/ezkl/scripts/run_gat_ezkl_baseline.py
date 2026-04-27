@@ -88,10 +88,48 @@ def run_command(command: list[str], cwd: Path, env: dict[str, str] | None = None
     return completed.returncode, elapsed_ms, completed.stdout, completed.stderr
 
 
+def parse_time_verbose(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    data: dict[str, object] = {"raw_path": str(path)}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if "Maximum resident set size" in line:
+            try:
+                data["peak_rss_bytes"] = int(line.rsplit(":", 1)[1].strip()) * 1024
+            except ValueError:
+                pass
+        elif "Command being timed" in line:
+            data["time_command"] = line.rsplit(":", 1)[1].strip().strip('"')
+        elif "Elapsed (wall clock) time" in line:
+            data["elapsed_wall_clock"] = line.rsplit(":", 1)[1].strip()
+        elif "Exit status" in line:
+            data["exit_status"] = line.rsplit(":", 1)[1].strip()
+    return data
+
+
+def run_command_profiled(
+    command: list[str],
+    cwd: Path,
+    profile_path: Path,
+    env: dict[str, str] | None = None,
+) -> tuple[int, float, str, str, dict]:
+    time_bin = shutil.which("time")
+    if not time_bin:
+        code, elapsed_ms, stdout, stderr = run_command(command, cwd, env=env)
+        return code, elapsed_ms, stdout, stderr, {}
+    time_txt = profile_path.with_suffix(".time.txt")
+    wrapped = [time_bin, "-v", "-o", str(time_txt)] + command
+    code, elapsed_ms, stdout, stderr = run_command(wrapped, cwd, env=env)
+    profile = parse_time_verbose(time_txt)
+    return code, elapsed_ms, stdout, stderr, profile
+
+
 def native_command_env() -> dict[str, str]:
     env = os.environ.copy()
-    env.setdefault("RAYON_NUM_THREADS", "1")
+    env.setdefault("RAYON_NUM_THREADS", "4")
     env.setdefault("MALLOC_ARENA_MAX", "1")
+    env.setdefault("OMP_NUM_THREADS", "1")
+    env.setdefault("OPENBLAS_NUM_THREADS", "1")
     return env
 
 
@@ -387,7 +425,39 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict, native_debug_scope:
     stdout_all = []
     stderr_all = []
     for timing_key, command in commands:
-        code, elapsed_ms, stdout, stderr = run_command(command, run_dir)
+        if timing_key == "setup_ms":
+            code, elapsed_ms, stdout, stderr, profile = run_command_profiled(
+                command,
+                run_dir,
+                run_dir / "keygen_memory_profile.json",
+                env=native_command_env(),
+            )
+            compiled = {}
+            if (run_dir / "model.compiled").exists():
+                try:
+                    compiled = read_json(run_dir / "model.compiled")
+                except json.JSONDecodeError:
+                    compiled = {}
+            profile.update(
+                {
+                    "command": " ".join(command),
+                    "public_instance_length": compiled.get("public_instance_total_length", compiled.get("public_instance_length")),
+                    "instance_column_count": compiled.get("public_instance_column_count"),
+                    "chunk_size": compiled.get("public_instance_chunk_size"),
+                    "public_instance_layout": compiled.get("public_instance_layout"),
+                    "compiled_size_bytes": (run_dir / "model.compiled").stat().st_size
+                    if (run_dir / "model.compiled").exists()
+                    else None,
+                    "loaded_payloads": ["model.compiled", "shape metadata only"],
+                    "keygen_phase": "graph-gat-setup",
+                    "setup_payload_mode": "shape_only",
+                    "elapsed_ms": elapsed_ms,
+                    "returncode": code,
+                }
+            )
+            write_json(run_dir / "keygen_memory_profile.json", profile)
+        else:
+            code, elapsed_ms, stdout, stderr = run_command(command, run_dir, env=native_command_env())
         stdout_all.append(f"$ {' '.join(command)}\n{stdout}")
         stderr_all.append(f"$ {' '.join(command)}\n{stderr}")
         timings[timing_key] = elapsed_ms
@@ -458,6 +528,11 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict, native_debug_scope:
                     manifest["formal_table_hashes"] = read_json(run_dir / "formal_table_hashes.json")
                 except json.JSONDecodeError:
                     pass
+            if (run_dir / "keygen_memory_profile.json").exists():
+                try:
+                    manifest["keygen_memory_profile"] = read_json(run_dir / "keygen_memory_profile.json")
+                except json.JSONDecodeError:
+                    pass
             write_json(run_dir / "run_manifest.json", manifest)
             write_blocked_artifacts(run_dir, manifest)
             return manifest
@@ -467,6 +542,11 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict, native_debug_scope:
     strict_public = bool(verify.get("strict_public_input_equivalent", False))
     full_forward = bool(verify.get("full_gat_forward_in_ezkl_proof", False))
     manifest.update(timings)
+    if (run_dir / "keygen_memory_profile.json").exists():
+        try:
+            manifest["keygen_memory_profile"] = read_json(run_dir / "keygen_memory_profile.json")
+        except json.JSONDecodeError:
+            pass
     manifest.update(
         {
             "status": "verified",

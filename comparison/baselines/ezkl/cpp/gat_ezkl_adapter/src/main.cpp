@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <filesystem>
 #include <iostream>
 #include <map>
@@ -356,6 +357,14 @@ int main(int argc, char** argv) {
             << "}\n";
         gat_ezkl::write_text_file(output_dir / "export_status.json", export_status.str());
 
+        constexpr std::size_t kPublicInstanceChunkSize = 1u << 22;
+        const auto public_instance_length = graph.node_count * graph.class_count;
+        const auto public_instance_chunk_size = std::min<std::size_t>(
+            kPublicInstanceChunkSize,
+            std::max<std::size_t>(public_instance_length, 1));
+        const auto public_instance_column_count =
+            (public_instance_length + public_instance_chunk_size - 1) / public_instance_chunk_size;
+
         std::ostringstream manifest;
         manifest << "{\n"
             << "  \"generated_at\": \"" << gat_ezkl::now_utc_iso8601() << "\",\n"
@@ -420,8 +429,12 @@ int main(int argc, char** argv) {
             << "  \"final_logits_binding_path\": \"final_logits_binding.json\",\n"
             << "  \"final_logits_binding_status\": \"public_instance_bound_to_derived_final_logits\",\n"
             << "  \"final_logits_shape\": [" << graph.node_count << "," << graph.class_count << "],\n"
-            << "  \"public_instance_order\": \"final_logits_row_major_node_then_class\",\n"
-            << "  \"public_instance_length\": " << (graph.node_count * graph.class_count) << ",\n"
+            << "  \"public_instance_order\": \"final_logits_row_major_node_then_class_chunked_columns_column_then_row\",\n"
+            << "  \"public_instance_layout\": \"chunked_columns\",\n"
+            << "  \"public_instance_chunk_size\": " << public_instance_chunk_size << ",\n"
+            << "  \"public_instance_column_count\": " << public_instance_column_count << ",\n"
+            << "  \"public_instance_total_length\": " << public_instance_length << ",\n"
+            << "  \"public_instance_length\": " << public_instance_length << ",\n"
             << "  \"output_average_policy\": \"" << gat_ezkl::json_escape(checkpoint.output_average_rule) << "\",\n"
             << "  \"output_rounding_policy\": \"integer_exact_no_post_average_rescale\",\n"
             << "  \"final_logits_derivation_complete\": true,\n"

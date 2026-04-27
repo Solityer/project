@@ -30,6 +30,8 @@ const LEGACY_PRIMITIVE_VERSION: &str = "csr_segment_attention_v1";
 const COMPRESSED_PRIMITIVE: &str = "GraphSegmentAttentionCompressedCSR";
 const COMPRESSED_PRIMITIVE_VERSION: &str = "csr_segment_attention_compressed_v1";
 const DEFAULT_MAX_LOGROWS: u32 = 26;
+const DEFAULT_PUBLIC_INSTANCE_CHUNK_SIZE: usize = 1 << 22;
+const MAX_PUBLIC_INSTANCE_COLUMNS: usize = 2;
 const TINY_NATIVE_COMPILED_KIND: &str = "graph_gat_tiny_native_compiled_plan";
 const TINY_NATIVE_BACKEND_VERSION: &str = "tiny_native_backend_levels_0_6_v1";
 const TINY_NATIVE_LOGROWS: u32 = 9;
@@ -475,6 +477,14 @@ struct NativeCompiledPlan {
     diagnostic_backend_version: String,
     #[serde(default)]
     diagnostic_note: String,
+    #[serde(default = "default_public_instance_layout_string")]
+    public_instance_layout: String,
+    #[serde(default = "default_public_instance_chunk_size")]
+    public_instance_chunk_size: usize,
+    #[serde(default)]
+    public_instance_column_count: usize,
+    #[serde(default)]
+    public_instance_total_length: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -641,9 +651,21 @@ struct NativeFinalLogitsWitness {
 struct PublicInstanceBinding {
     public_instance_order: String,
     public_instance_length: usize,
+    public_instance_layout: String,
+    public_instance_chunk_size: usize,
+    public_instance_column_count: usize,
+    public_instance_total_length: usize,
     final_logits_hash: String,
     public_instance_hash: String,
     no_precomputed_logits_bypass: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PublicInstanceLayout {
+    layout: String,
+    chunk_size: usize,
+    column_count: usize,
+    total_length: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -800,7 +822,11 @@ fn full_model_assigned_row_upper_bound(plan: &NativeCompiledPlan) -> u128 {
             .saturating_add(e.saturating_mul(4))
             .saturating_add(n.saturating_mul(c)),
     );
-    let output_shared_rows = n.saturating_mul(c).saturating_mul(3);
+    let output_shared_rows = if plan.k_out.max(1) == 1 {
+        0
+    } else {
+        n.saturating_mul(c)
+    };
     let hidden_compressed_rows = hidden_heads.saturating_mul(4).saturating_add(4096);
     let diagnostic_rows = 8192u128;
     let lookup_table_margin = 131_072u128;
@@ -858,6 +884,14 @@ fn now_unix_ms() -> u128 {
 
 fn default_native_debug_scope_string() -> String {
     DEFAULT_NATIVE_DEBUG_SCOPE.to_string()
+}
+
+fn default_public_instance_layout_string() -> String {
+    "chunked_columns".to_string()
+}
+
+fn default_public_instance_chunk_size() -> usize {
+    DEFAULT_PUBLIC_INSTANCE_CHUNK_SIZE
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, EZKLError> {
@@ -1690,9 +1724,12 @@ fn estimate_compressed_rows(
         .saturating_mul(total_heads)
         .saturating_mul(2)
         .saturating_add(node_count.saturating_mul(total_heads).saturating_mul(3));
-    let output_rows = node_count
-        .saturating_mul(u128::from(spec.class_count))
-        .saturating_mul(output_heads.saturating_add(2));
+    let final_logit_rows = node_count.saturating_mul(u128::from(spec.class_count));
+    let output_rows = if spec.k_out.max(1) == 1 {
+        final_logit_rows
+    } else {
+        final_logit_rows.saturating_mul(output_heads.saturating_add(2))
+    };
     let metadata_rows = 8192u128
         .saturating_add(total_heads.saturating_mul(256))
         .saturating_add(u128::from(spec.hidden_profile.len() as u64).saturating_mul(1024));
@@ -2075,6 +2112,15 @@ pub(crate) fn graph_gat_compile(
     let formal_table_binding = load_formal_table_binding(&spec_path, &spec);
     let lookup = lookup_semantics(&spec, &formal_table_binding);
     let inverse = inverse_semantics(&formal_table_binding);
+    let public_instance_total_length =
+        usize::try_from(spec.node_count.max(1).saturating_mul(spec.class_count.max(1)))
+            .unwrap_or(usize::MAX);
+    let public_instance_chunk_size = default_public_instance_chunk_size()
+        .max(1)
+        .min(public_instance_total_length.max(1));
+    let public_instance_column_count = public_instance_total_length
+        .saturating_add(public_instance_chunk_size - 1)
+        / public_instance_chunk_size;
     let mut status = "compiled".to_string();
     let mut block_reason = String::new();
     if !estimate.within_public_srs {
@@ -2137,6 +2183,10 @@ pub(crate) fn graph_gat_compile(
         full_gat_forward_in_ezkl_proof: matches!(scope, NativeDebugScope::FullModel),
         diagnostic_backend_version: NATIVE_DIAGNOSTIC_BACKEND_VERSION.to_string(),
         diagnostic_note: "native circuit derives output logits from last_hidden_concat, checkpoint output heads, CSR attention, bias add, K_out average, and public instance binding for full_model/output_full_derivation scopes".to_string(),
+        public_instance_layout: default_public_instance_layout_string(),
+        public_instance_chunk_size,
+        public_instance_column_count,
+        public_instance_total_length,
     };
     write_json(&compiled_circuit_path, &plan)?;
     if !settings_path.exists() {
@@ -2286,6 +2336,7 @@ struct CsrPayload {
 struct FullNativeParams {
     scope: String,
     logrows: u32,
+    public_instance_column_count: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -2294,7 +2345,7 @@ struct FullNativeConfig {
     right: Column<Advice>,
     out: Column<Advice>,
     aux: Column<Advice>,
-    instance: Column<Instance>,
+    instance_columns: Vec<Column<Instance>>,
     q_mul: Selector,
     q_inverse: Selector,
     q_segment_sum: Selector,
@@ -2303,7 +2354,6 @@ struct FullNativeConfig {
     q_aggregation: Selector,
     q_bias_add: Selector,
     q_output_average: Selector,
-    q_final_logits: Selector,
     q_public_binding: Selector,
     q_lrelu_lookup: Selector,
     q_exp_lookup: Selector,
@@ -2326,6 +2376,7 @@ struct FullNativeCircuit {
     csr: CsrPayload,
     run_dir: PathBuf,
     witness_source_path: String,
+    shape_only: bool,
 }
 
 impl FullNativeCircuit {
@@ -2338,6 +2389,7 @@ impl FullNativeCircuit {
         let params = FullNativeParams {
             scope: scope.as_str().to_string(),
             logrows: scope.logrows(&plan),
+            public_instance_column_count: public_instance_layout_for_plan(&plan).column_count,
         };
         let csr = read_csr_payload(&run_dir.join("csr_segment_layout.bin")).unwrap_or_else(|_| {
             synthetic_csr_payload(
@@ -2352,6 +2404,29 @@ impl FullNativeCircuit {
             csr,
             run_dir: run_dir.to_path_buf(),
             witness_source_path,
+            shape_only: false,
+        })
+    }
+
+    fn new_shape_only(plan: NativeCompiledPlan) -> Result<Self, EZKLError> {
+        let scope = NativeDebugScope::parse(&plan.native_debug_scope)?;
+        let layout = public_instance_layout_for_plan(&plan);
+        let logrows = scope.logrows(&plan);
+        Ok(Self {
+            params: FullNativeParams {
+                scope: scope.as_str().to_string(),
+                logrows,
+                public_instance_column_count: layout.column_count,
+            },
+            csr: synthetic_csr_payload(
+                plan.node_count.max(1),
+                plan.edge_count.max(1),
+                plan.graph_count.max(1),
+            ),
+            plan,
+            run_dir: PathBuf::new(),
+            witness_source_path: String::new(),
+            shape_only: true,
         })
     }
 
@@ -2365,11 +2440,13 @@ impl FullNativeCircuit {
             params: FullNativeParams {
                 scope: scope.as_str().to_string(),
                 logrows,
+                public_instance_column_count: public_instance_layout_for_plan(&plan).column_count,
             },
             plan,
             csr,
             run_dir: PathBuf::new(),
             witness_source_path: String::new(),
+            shape_only: true,
         }
     }
 
@@ -2421,7 +2498,14 @@ impl FullNativeCircuit {
             || region_name,
             |mut region| {
                 let policy = inverse_policy_from_binding(&self.plan.formal_table_binding);
-                let sum_q = (sum.max(1) as i64).saturating_mul(policy.sum_scale);
+                let requested_sum_q = (sum.max(1) as i64).saturating_mul(policy.sum_scale);
+                let max_table_sum_q =
+                    (inverse_table_range_size(&self.plan.formal_table_binding) as i64)
+                        .saturating_sub(1)
+                        .max(policy.sum_scale);
+                let sum_q = requested_sum_q
+                    .min(max_table_sum_q)
+                    .max(policy.sum_scale);
                 let inv_q = quantized_inverse_for_sum_q(sum_q, &policy);
                 config.q_inverse.enable(&mut region, 0)?;
                 Self::assign_advice(&mut region, config.left, 0, "segment sum_q", fr_i64(sum_q))?;
@@ -3285,6 +3369,7 @@ impl FullNativeCircuit {
         )
     }
 
+    #[allow(dead_code)]
     fn assign_output_average_region(
         &self,
         layouter: &mut impl Layouter<Fr>,
@@ -3351,6 +3436,7 @@ impl FullNativeCircuit {
         )
     }
 
+    #[allow(dead_code)]
     fn assign_final_logits_region(
         &self,
         layouter: &mut impl Layouter<Fr>,
@@ -3365,7 +3451,7 @@ impl FullNativeCircuit {
             |mut region| {
                 let mut cells = Vec::with_capacity(values.len());
                 for (offset, value) in values.iter().copied().enumerate() {
-                    config.q_final_logits.enable(&mut region, offset)?;
+                    config.q_public_binding.enable(&mut region, offset)?;
                     let cell = average_cells[offset].copy_advice(
                         || "final logits from output average",
                         &mut region,
@@ -3435,10 +3521,140 @@ impl FullNativeCircuit {
                 Ok(cells)
             },
         )?;
+        let layout = public_instance_layout_for_plan(&self.plan);
         for (index, cell) in cells.into_iter().enumerate() {
-            layouter.constrain_instance(cell.cell(), config.instance, index)?;
+            let (column_index, row) = public_instance_position(&layout, index)?;
+            layouter.constrain_instance(
+                cell.cell(),
+                config.instance_columns[column_index],
+                row,
+            )?;
         }
         Ok(())
+    }
+
+    fn assign_output_bias_add_public_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+        region_name: &'static str,
+        head: &NativeOutputHeadDerivation,
+    ) -> Result<(), Error> {
+        let class_count = self.plan.class_count.max(1) as usize;
+        let layout = public_instance_layout_for_plan(&self.plan);
+        layouter.assign_region(
+            || region_name,
+            |mut region| {
+                for node in 0..head.trace.h_agg_pre_bias.len() {
+                    for class_index in 0..class_count {
+                        let offset = node * class_count + class_index;
+                        let pre_q =
+                            quantize_trace_scalar(head.trace.h_agg_pre_bias[node][class_index]);
+                        let bias_q =
+                            quantize_trace_scalar(head.parameters.output_bias[class_index]);
+                        let (instance_column, instance_row) =
+                            public_instance_position(&layout, offset)?;
+                        config.q_bias_add.enable(&mut region, offset)?;
+                        Self::assign_advice(
+                            &mut region,
+                            config.left,
+                            offset,
+                            "output pre-bias",
+                            fr_i64(pre_q),
+                        )?;
+                        Self::assign_advice(
+                            &mut region,
+                            config.right,
+                            offset,
+                            "output bias",
+                            fr_i64(bias_q),
+                        )?;
+                        region.assign_advice_from_instance(
+                            || "public final logits",
+                            config.instance_columns[instance_column],
+                            instance_row,
+                            config.out,
+                            offset,
+                        )?;
+                        Self::assign_advice(
+                            &mut region,
+                            config.aux,
+                            offset,
+                            "output class index",
+                            Fr::from(class_index as u64),
+                        )?;
+                    }
+                }
+                Ok(())
+            },
+        )
+    }
+
+    fn assign_output_average_public_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+        region_name: &'static str,
+        witness: &NativeOutputDerivationWitness,
+        head_logits_cells: &[Vec<AssignedCell<Fr, Fr>>],
+    ) -> Result<(), Error> {
+        let class_count = self.plan.class_count.max(1);
+        let layout = public_instance_layout_for_plan(&self.plan);
+        layouter.assign_region(
+            || region_name,
+            |mut region| {
+                let head_count = self.plan.k_out.max(1);
+                for (offset, average) in witness.output_average.iter().enumerate() {
+                    let avg_q = average.average_q;
+                    let sum_q = if head_count == 1 && head_logits_cells.len() == 1 {
+                        avg_q
+                    } else {
+                        avg_q.saturating_mul(head_count as i64)
+                    };
+                    config.q_output_average.enable(&mut region, offset)?;
+                    if head_count == 1 && head_logits_cells.len() == 1 {
+                        head_logits_cells[0][offset].copy_advice(
+                            || "output sum from head logits",
+                            &mut region,
+                            config.left,
+                            offset,
+                        )?;
+                    } else {
+                        Self::assign_advice(
+                            &mut region,
+                            config.left,
+                            offset,
+                            "output sum_q",
+                            fr_i64(sum_q),
+                        )?;
+                    }
+                    Self::assign_advice(
+                        &mut region,
+                        config.right,
+                        offset,
+                        "output head count",
+                        Fr::from(head_count),
+                    )?;
+                    let (instance_column, instance_row) =
+                        public_instance_position(&layout, offset)?;
+                    region.assign_advice_from_instance(
+                        || "public final logits",
+                        config.instance_columns[instance_column],
+                        instance_row,
+                        config.out,
+                        offset,
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.aux,
+                        offset,
+                        "output class index",
+                        Fr::from((offset as u64) % class_count),
+                    )?;
+                }
+                Ok(())
+            },
+        )
     }
 }
 
@@ -3459,22 +3675,30 @@ impl Circuit<Fr> for FullNativeCircuit {
             FullNativeParams {
                 scope: DEFAULT_NATIVE_DEBUG_SCOPE.to_string(),
                 logrows: 12,
+                public_instance_column_count: 1,
             },
         )
     }
 
     fn configure_with_params(
         meta: &mut ConstraintSystem<Fr>,
-        _params: Self::Params,
+        params: Self::Params,
     ) -> Self::Config {
         let left = meta.advice_column();
         let right = meta.advice_column();
         let out = meta.advice_column();
         let aux = meta.advice_column();
-        let instance = meta.instance_column();
+        let instance_columns = (0..params
+            .public_instance_column_count
+            .max(MAX_PUBLIC_INSTANCE_COLUMNS)
+            .max(1))
+            .map(|_| meta.instance_column())
+            .collect::<Vec<_>>();
         meta.enable_equality(left);
         meta.enable_equality(out);
-        meta.enable_equality(instance);
+        for instance in &instance_columns {
+            meta.enable_equality(*instance);
+        }
 
         let q_mul = meta.selector();
         let q_inverse = meta.complex_selector();
@@ -3484,7 +3708,6 @@ impl Circuit<Fr> for FullNativeCircuit {
         let q_aggregation = meta.selector();
         let q_bias_add = meta.selector();
         let q_output_average = meta.selector();
-        let q_final_logits = meta.selector();
         let q_public_binding = meta.selector();
         let q_lrelu_lookup = meta.complex_selector();
         let q_exp_lookup = meta.complex_selector();
@@ -3553,12 +3776,6 @@ impl Circuit<Fr> for FullNativeCircuit {
             let avg = meta.query_advice(out, halo2_proofs::poly::Rotation::cur());
             vec![q * (avg * heads - sum)]
         });
-        meta.create_gate("native.final_logits", |meta| {
-            let q = meta.query_selector(q_final_logits);
-            let lhs = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
-            let rhs = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
-            vec![q * (lhs - rhs)]
-        });
         meta.create_gate("native.public_instance_binding", |meta| {
             let q = meta.query_selector(q_public_binding);
             let lhs = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
@@ -3589,7 +3806,7 @@ impl Circuit<Fr> for FullNativeCircuit {
             right,
             out,
             aux,
-            instance,
+            instance_columns,
             q_mul,
             q_inverse,
             q_segment_sum,
@@ -3598,7 +3815,6 @@ impl Circuit<Fr> for FullNativeCircuit {
             q_aggregation,
             q_bias_add,
             q_output_average,
-            q_final_logits,
             q_public_binding,
             q_lrelu_lookup,
             q_exp_lookup,
@@ -3962,9 +4178,22 @@ impl Circuit<Fr> for FullNativeCircuit {
                 | NativeDebugScope::OutputFullDerivation
                 | NativeDebugScope::FullModel
         ) {
-            let witness = native_output_derivation_witness(&self.plan, &self.run_dir)
-                .map_err(|_| Error::Synthesis)?;
+            let witness = if self.shape_only {
+                shape_only_output_derivation_witness(&self.plan)
+            } else {
+                native_output_derivation_witness(&self.plan, &self.run_dir)
+            }
+            .map_err(|_| Error::Synthesis)?;
             let mut head_logits_cells: Vec<Vec<AssignedCell<Fr, Fr>>> = Vec::new();
+            let bind_single_output_head_directly = self.plan.k_out.max(1) == 1
+                && matches!(
+                    scope,
+                    NativeDebugScope::OutputOnly
+                        | NativeDebugScope::OutputAverageOnly
+                        | NativeDebugScope::FinalLogitsPublicBindingOnly
+                        | NativeDebugScope::OutputFullDerivation
+                        | NativeDebugScope::FullModel
+                );
             for head in &witness.output_heads {
                 if matches!(
                     scope,
@@ -4077,13 +4306,22 @@ impl Circuit<Fr> for FullNativeCircuit {
                 ) {
                     let bias_region =
                         format!("native.full_model.output.head_{}.bias_add", head.head_index);
-                    let cells = self.assign_output_bias_add_derivation_region(
-                        &mut layouter,
-                        &config,
-                        Box::leak(bias_region.into_boxed_str()),
-                        head,
-                    )?;
-                    head_logits_cells.push(cells);
+                    if bind_single_output_head_directly {
+                        self.assign_output_bias_add_public_region(
+                            &mut layouter,
+                            &config,
+                            Box::leak(bias_region.into_boxed_str()),
+                            head,
+                        )?;
+                    } else {
+                        let cells = self.assign_output_bias_add_derivation_region(
+                            &mut layouter,
+                            &config,
+                            Box::leak(bias_region.into_boxed_str()),
+                            head,
+                        )?;
+                        head_logits_cells.push(cells);
+                    }
                 }
             }
             if matches!(
@@ -4094,20 +4332,17 @@ impl Circuit<Fr> for FullNativeCircuit {
                     | NativeDebugScope::OutputFullDerivation
                     | NativeDebugScope::FullModel
             ) {
-                let average_cells = self.assign_output_average_region(
-                    &mut layouter,
-                    &config,
-                    "native.full_model.output.average",
-                    &witness,
-                    &head_logits_cells,
-                )?;
-                let final_cells = self.assign_final_logits_region(
-                    &mut layouter,
-                    &config,
-                    &average_cells,
-                    &witness,
-                )?;
-                self.assign_public_binding_region(&mut layouter, &config, &final_cells)
+                if bind_single_output_head_directly {
+                    Ok(())
+                } else {
+                    self.assign_output_average_public_region(
+                        &mut layouter,
+                        &config,
+                        "native.full_model.output.average",
+                        &witness,
+                        &head_logits_cells,
+                    )
+                }
             } else {
                 Ok(())
             }
@@ -4253,7 +4488,54 @@ fn output_rounding_policy() -> &'static str {
 }
 
 fn public_instance_order() -> &'static str {
-    "final_logits_row_major_node_then_class"
+    "final_logits_row_major_node_then_class_chunked_columns_column_then_row"
+}
+
+fn public_instance_total_length_for_plan(plan: &NativeCompiledPlan) -> usize {
+    let total = plan
+        .node_count
+        .max(1)
+        .saturating_mul(plan.class_count.max(1));
+    usize::try_from(total).unwrap_or(usize::MAX)
+}
+
+fn public_instance_layout_for_plan(plan: &NativeCompiledPlan) -> PublicInstanceLayout {
+    let total_length = if plan.public_instance_total_length > 0 {
+        plan.public_instance_total_length
+    } else {
+        public_instance_total_length_for_plan(plan)
+    };
+    let chunk_size = plan
+        .public_instance_chunk_size
+        .max(1)
+        .min(total_length.max(1));
+    let column_count = if plan.public_instance_column_count > 0 {
+        plan.public_instance_column_count
+    } else {
+        total_length.saturating_add(chunk_size - 1) / chunk_size
+    }
+    .max(1);
+    PublicInstanceLayout {
+        layout: if plan.public_instance_layout.is_empty() {
+            default_public_instance_layout_string()
+        } else {
+            plan.public_instance_layout.clone()
+        },
+        chunk_size,
+        column_count,
+        total_length,
+    }
+}
+
+fn public_instance_position(
+    layout: &PublicInstanceLayout,
+    flat_index: usize,
+) -> Result<(usize, usize), Error> {
+    let column = flat_index / layout.chunk_size.max(1);
+    if column >= layout.column_count {
+        return Err(Error::Synthesis);
+    }
+    Ok((column, flat_index % layout.chunk_size.max(1)))
 }
 
 fn quantize_trace_scalar(value: f64) -> i64 {
@@ -4754,6 +5036,82 @@ fn synthetic_output_derivation_witness(
     })
 }
 
+fn shape_only_output_derivation_witness(
+    plan: &NativeCompiledPlan,
+) -> Result<NativeOutputDerivationWitness, EZKLError> {
+    let node_count = plan.node_count.max(1) as usize;
+    let edge_count = plan.edge_count.max(1) as usize;
+    let class_count = plan.class_count.max(1) as usize;
+    let head_count = plan.k_out.max(1) as usize;
+    let mut output_heads = Vec::with_capacity(head_count);
+    for head_index in 0..head_count {
+        let parameters = NativeHeadParameters {
+            seq_kernel: Vec::new(),
+            attn_src_kernel: vec![0.0; class_count],
+            attn_dst_kernel: vec![0.0; class_count],
+            attn_src_bias: 0.0,
+            attn_dst_bias: 0.0,
+            output_bias: vec![0.0; class_count],
+        };
+        let trace = NativeHeadForwardTrace {
+            h_prime: vec![vec![0.0; class_count]; node_count],
+            e_src: vec![0.0; node_count],
+            e_dst: vec![0.0; node_count],
+            s: vec![0.0; edge_count],
+            z: vec![0.0; edge_count],
+            m: vec![0.0; node_count],
+            delta: vec![0.0; edge_count],
+            u: vec![1.0; edge_count],
+            sum: vec![1.0; node_count],
+            inv: vec![1.0; node_count],
+            alpha: vec![1.0; edge_count],
+            h_agg_pre_bias: vec![vec![0.0; class_count]; node_count],
+            h_agg: vec![vec![0.0; class_count]; node_count],
+        };
+        output_heads.push(output_head_derivation(
+            plan,
+            head_index as u64,
+            parameters,
+            trace,
+        ));
+    }
+    let final_len = node_count.saturating_mul(class_count);
+    let mut output_average = Vec::with_capacity(if head_count == 1 { 0 } else { final_len });
+    if head_count > 1 {
+        for node in 0..node_count {
+            for class_index in 0..class_count {
+                output_average.push(NativeOutputAverageWitness {
+                    node_index: node as u64,
+                    class_index: class_index as u64,
+                    head_values_q: vec![0; head_count],
+                    sum_q: 0,
+                    average_q: 0,
+                    policy: "per_head_bias_then_arithmetic_mean".to_string(),
+                    rounding_policy: output_rounding_policy().to_string(),
+                });
+            }
+        }
+    }
+    Ok(NativeOutputDerivationWitness {
+        output_layer_input_source: "shape_only_setup".to_string(),
+        output_layer_input_dim: plan.class_count.max(1),
+        last_hidden_concat: Vec::new(),
+        output_heads,
+        final_logits: NativeFinalLogitsWitness {
+            shape: [plan.node_count.max(1), plan.class_count.max(1)],
+            flat_values_q: if head_count == 1 {
+                Vec::new()
+            } else {
+                vec![0; final_len]
+            },
+            output_scale: TRACE_SCALAR_SCALE_I64,
+            output_rounding_policy: output_rounding_policy().to_string(),
+        },
+        output_average,
+        derivation_complete: true,
+    })
+}
+
 fn validate_output_layer_shapes(
     spec: &GraphAttentionSpec,
     tensors: &HashMap<String, TensorDump>,
@@ -5072,17 +5430,25 @@ fn hash_i64_values(prefix: &str, values: &[i64]) -> String {
 
 fn public_instance_binding(plan: &NativeCompiledPlan) -> Result<PublicInstanceBinding, EZKLError> {
     let witness = native_final_logits_witness(plan)?;
+    let layout = public_instance_layout_for_plan(plan);
     let prefix = format!(
-        "final_logits_binding_v1\nN={}\nC={}\nK_out={}\norder={}",
+        "final_logits_binding_v2\nN={}\nC={}\nK_out={}\norder={}\nlayout={}\nchunk_size={}\ncolumns={}",
         witness.shape[0],
         witness.shape[1],
         plan.k_out.max(1),
-        public_instance_order()
+        public_instance_order(),
+        layout.layout,
+        layout.chunk_size,
+        layout.column_count
     );
     let final_logits_hash = hash_i64_values(&prefix, &witness.flat_values_q);
     Ok(PublicInstanceBinding {
         public_instance_order: public_instance_order().to_string(),
         public_instance_length: witness.flat_values_q.len(),
+        public_instance_layout: layout.layout,
+        public_instance_chunk_size: layout.chunk_size,
+        public_instance_column_count: layout.column_count,
+        public_instance_total_length: layout.total_length,
         final_logits_hash: final_logits_hash.clone(),
         public_instance_hash: final_logits_hash,
         no_precomputed_logits_bypass: true,
@@ -5114,17 +5480,25 @@ fn public_instance_binding_for_run(
     run_dir: &Path,
 ) -> Result<PublicInstanceBinding, EZKLError> {
     let witness = native_final_logits_witness_for_run(plan, run_dir)?;
+    let layout = public_instance_layout_for_plan(plan);
     let prefix = format!(
-        "final_logits_binding_v1\nN={}\nC={}\nK_out={}\norder={}",
+        "final_logits_binding_v2\nN={}\nC={}\nK_out={}\norder={}\nlayout={}\nchunk_size={}\ncolumns={}",
         witness.shape[0],
         witness.shape[1],
         plan.k_out.max(1),
-        public_instance_order()
+        public_instance_order(),
+        layout.layout,
+        layout.chunk_size,
+        layout.column_count
     );
     let final_logits_hash = hash_i64_values(&prefix, &witness.flat_values_q);
     Ok(PublicInstanceBinding {
         public_instance_order: public_instance_order().to_string(),
         public_instance_length: witness.flat_values_q.len(),
+        public_instance_layout: layout.layout,
+        public_instance_chunk_size: layout.chunk_size,
+        public_instance_column_count: layout.column_count,
+        public_instance_total_length: layout.total_length,
         final_logits_hash: final_logits_hash.clone(),
         public_instance_hash: final_logits_hash,
         no_precomputed_logits_bypass: true,
@@ -5146,6 +5520,26 @@ fn native_full_public_inputs_for_run(
         .into_iter()
         .map(fr_i64)
         .collect())
+}
+
+fn native_full_public_instance_columns_for_run(
+    plan: &NativeCompiledPlan,
+    run_dir: &Path,
+) -> Result<Vec<Vec<Fr>>, EZKLError> {
+    let layout = public_instance_layout_for_plan(plan);
+    let configured_columns = layout.column_count.max(MAX_PUBLIC_INSTANCE_COLUMNS);
+    let mut columns = vec![Vec::new(); configured_columns];
+    for (index, value) in native_full_public_input_values_for_run(plan, run_dir)?
+        .into_iter()
+        .enumerate()
+    {
+        let column = index / layout.chunk_size.max(1);
+        if column >= columns.len() {
+            return Err("public_instance_encoding_mismatch: chunk column overflow".into());
+        }
+        columns[column].push(fr_i64(value));
+    }
+    Ok(columns)
 }
 
 fn native_srs_path_for_key(key_path: &Path) -> PathBuf {
@@ -5238,6 +5632,55 @@ fn mock_failure_to_native_failure(
 ) -> NativeConstraintFailure {
     let (gate_name, region_name, row_offset, component) =
         parse_mock_failure_location(&raw_error, &plan.native_debug_scope);
+    let mut actual_values = vec![
+        format!("required_logrows={}", plan.estimate.required_logrows),
+        format!("node_count={}", plan.node_count),
+        format!("edge_count={}", plan.edge_count),
+        format!("run_dir={}", run_dir.display()),
+    ];
+    if region_name.contains(".output.head_") && region_name.ends_with(".segment_sum_inverse") {
+        if let Some(head_index) = region_name
+            .split(".output.head_")
+            .nth(1)
+            .and_then(|tail| tail.split('.').next())
+            .and_then(|value| value.parse::<usize>().ok())
+        {
+            if row_offset % 2 == 1 {
+                let node = (row_offset - 1) / 2;
+                if let Ok(derivation) = native_output_derivation_witness(plan, run_dir) {
+                    if let Some(head) = derivation.output_heads.get(head_index) {
+                        if node < head.trace.sum.len() {
+                            let policy = inverse_policy_from_binding(&plan.formal_table_binding);
+                            let sum_q = quantize_trace_scalar(head.trace.sum[node]);
+                            let inv_q = quantized_inverse_for_sum_q(sum_q, &policy);
+                            let range_size = inverse_table_range_size(&plan.formal_table_binding);
+                            let in_table_range = sum_q >= 0 && (sum_q as usize) < range_size;
+                            actual_values.extend([
+                                format!("output_head_index={head_index}"),
+                                format!("output_node_index={node}"),
+                                format!("output_sum_fp64={}", head.trace.sum[node]),
+                                format!("output_sum_q={sum_q}"),
+                                format!("output_inv_q={inv_q}"),
+                                format!("inverse_table_range_size={range_size}"),
+                                format!("output_sum_q_in_inverse_table_range={in_table_range}"),
+                            ]);
+                            if let Ok(csr) = read_csr_payload(&run_dir.join("csr_segment_layout.bin")) {
+                                if node + 1 < csr.segment_ptr.len() {
+                                    let begin = csr.segment_ptr[node];
+                                    let end = csr.segment_ptr[node + 1];
+                                    actual_values.extend([
+                                        format!("segment_begin={begin}"),
+                                        format!("segment_end={end}"),
+                                        format!("segment_degree={}", end.saturating_sub(begin)),
+                                    ]);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     NativeConstraintFailure {
         status: "failed".to_string(),
         block_reason: "native_constraint_synthesis_failed".to_string(),
@@ -5250,12 +5693,7 @@ fn mock_failure_to_native_failure(
         head_index: None,
         component,
         expected_relation: "MockProver must satisfy every enabled native diagnostic gate before KZG proving".to_string(),
-        actual_values: vec![
-            format!("required_logrows={}", plan.estimate.required_logrows),
-            format!("node_count={}", plan.node_count),
-            format!("edge_count={}", plan.edge_count),
-            format!("run_dir={}", run_dir.display()),
-        ],
+        actual_values,
         witness_source_path: witness_path.display().to_string(),
         command,
         raw_error,
@@ -5495,7 +5933,8 @@ fn save_full_keys(
     vk_path: &PathBuf,
     pk_path: &PathBuf,
 ) -> Result<u32, EZKLError> {
-    let circuit = FullNativeCircuit::new(plan, run_dir, String::new())?;
+    let _ = run_dir;
+    let circuit = FullNativeCircuit::new_shape_only(plan)?;
     let logrows = circuit.params.logrows;
     let params = crate::pfsys::srs::gen_srs::<KZGCommitmentScheme<Bn256>>(logrows);
     save_params::<KZGCommitmentScheme<Bn256>>(&native_srs_path_for_key(pk_path), &params)?;
@@ -5566,6 +6005,7 @@ pub(crate) fn graph_gat_setup(
                 validate_ready_preflight_policy(&plan, &preflight)?;
             }
             let logrows = save_full_keys(plan.clone(), &run_dir, &vk_path, &pk_path)?;
+            let layout = public_instance_layout_for_plan(&plan);
             Ok(serde_json::json!({
                 "status": "setup_complete",
                 "route_id": plan.route_id,
@@ -5574,6 +6014,11 @@ pub(crate) fn graph_gat_setup(
                 "dataset": plan.dataset,
                 "native_debug_scope": plan.native_debug_scope,
                 "logrows": logrows,
+                "public_instance_layout": layout.layout,
+                "public_instance_chunk_size": layout.chunk_size,
+                "public_instance_column_count": layout.column_count,
+                "public_instance_total_length": layout.total_length,
+                "setup_payload_mode": "shape_only",
                 "vk_path": vk_path,
                 "pk_path": pk_path
             })
@@ -5643,6 +6088,10 @@ pub(crate) fn graph_gat_gen_witness(
                 "final_logits_binding": {
                     "public_instance_order": binding.public_instance_order,
                     "public_instance_length": binding.public_instance_length,
+                    "public_instance_layout": binding.public_instance_layout,
+                    "public_instance_chunk_size": binding.public_instance_chunk_size,
+                    "public_instance_column_count": binding.public_instance_column_count,
+                    "public_instance_total_length": binding.public_instance_total_length,
                     "final_logits_hash": binding.final_logits_hash,
                     "public_instance_hash": binding.public_instance_hash,
                     "source": "native_full_output_derivation_circuit",
@@ -5729,13 +6178,13 @@ pub(crate) fn graph_gat_prove(
             let run_dir = run_dir_for_path(&compiled_circuit_path);
             let circuit =
                 FullNativeCircuit::new(plan.clone(), &run_dir, witness_path.display().to_string())?;
-            let public_inputs = native_full_public_inputs_for_run(&plan, &run_dir)?;
+            let public_instances = native_full_public_instance_columns_for_run(&plan, &run_dir)?;
             let public_input_values = native_full_public_input_values_for_run(&plan, &run_dir)?;
             let binding = public_instance_binding_for_run(&plan, &run_dir)?;
             let mock = MockProver::run(
                 circuit.params.logrows,
                 &circuit,
-                vec![public_inputs.clone()],
+                public_instances.clone(),
             );
             match mock {
                 Ok(prover) => {
@@ -5840,7 +6289,7 @@ pub(crate) fn graph_gat_prove(
                 Blake2bRead<Cursor<Vec<u8>>, _, Challenge255<_>>,
             >(
                 circuit,
-                vec![public_inputs],
+                public_instances,
                 &params,
                 &pk,
                 CheckMode::SAFE,
@@ -5861,6 +6310,10 @@ pub(crate) fn graph_gat_prove(
                 "proof_path": proof_path,
                 "public_instance_order": binding.public_instance_order,
                 "public_instance_length": binding.public_instance_length,
+                "public_instance_layout": binding.public_instance_layout,
+                "public_instance_chunk_size": binding.public_instance_chunk_size,
+                "public_instance_column_count": binding.public_instance_column_count,
+                "public_instance_total_length": binding.public_instance_total_length,
                 "final_logits_hash": binding.final_logits_hash,
                 "public_instance_hash": binding.public_instance_hash,
                 "public_inputs_sample": public_input_values.into_iter().take(16).collect::<Vec<_>>(),
@@ -5940,6 +6393,10 @@ pub(crate) fn graph_gat_verify(
                 "vk_path": vk_path,
                 "public_instance_order": binding.public_instance_order,
                 "public_instance_length": binding.public_instance_length,
+                "public_instance_layout": binding.public_instance_layout,
+                "public_instance_chunk_size": binding.public_instance_chunk_size,
+                "public_instance_column_count": binding.public_instance_column_count,
+                "public_instance_total_length": binding.public_instance_total_length,
                 "final_logits_hash": binding.final_logits_hash,
                 "public_instance_hash": binding.public_instance_hash,
                 "strict_public_input_equivalent": plan.strict_public_input_equivalent,
@@ -6163,6 +6620,10 @@ mod tests {
             full_gat_forward_in_ezkl_proof: false,
             diagnostic_backend_version: "test".to_string(),
             diagnostic_note: String::new(),
+            public_instance_layout: "chunked_columns".to_string(),
+            public_instance_chunk_size: super::DEFAULT_PUBLIC_INSTANCE_CHUNK_SIZE,
+            public_instance_column_count: 1,
+            public_instance_total_length: 6,
         }
     }
 
