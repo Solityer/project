@@ -38,6 +38,35 @@ std::string size_vector_json(const std::vector<std::size_t>& values) {
     return out.str();
 }
 
+std::string tensor_shape_json(const CheckpointBundle& bundle, const std::string& tensor_name) {
+    const auto it = bundle.tensors.find(tensor_name);
+    if (it == bundle.tensors.end()) {
+        return "[]";
+    }
+    return size_vector_json(it->second.shape);
+}
+
+std::string output_head_specs_json(const CheckpointBundle& bundle) {
+    std::ostringstream out;
+    out << "[";
+    for (std::size_t i = 0; i < bundle.output_heads.size(); ++i) {
+        const auto& head = bundle.output_heads[i];
+        if (i != 0) out << ",";
+        out << "{\"head_index\":" << head.head_index
+            << ",\"seq_kernel\":\"" << json_escape(head.seq_kernel)
+            << "\",\"seq_kernel_shape\":" << tensor_shape_json(bundle, head.seq_kernel)
+            << ",\"attn_src_kernel\":\"" << json_escape(head.attn_src_kernel)
+            << "\",\"attn_src_kernel_shape\":" << tensor_shape_json(bundle, head.attn_src_kernel)
+            << ",\"attn_dst_kernel\":\"" << json_escape(head.attn_dst_kernel)
+            << "\",\"attn_dst_kernel_shape\":" << tensor_shape_json(bundle, head.attn_dst_kernel)
+            << ",\"output_bias\":\"" << json_escape(head.output_bias)
+            << "\",\"output_bias_shape\":" << tensor_shape_json(bundle, head.output_bias)
+            << "}";
+    }
+    out << "]";
+    return out.str();
+}
+
 }  // namespace
 
 std::string json_escape(const std::string& value) {
@@ -170,10 +199,23 @@ std::string build_model_info_json(
         << "  \"num_classes\": " << bundle.class_count << ",\n"
         << "  \"hidden_head_count\": " << bundle.hidden_heads.size() << ",\n"
         << "  \"output_head_count\": " << bundle.output_heads.size() << ",\n"
+        << "  \"output_layer_input_source\": \"last_hidden_concat\",\n"
+        << "  \"output_layer_input_dim\": "
+        << (bundle.hidden_profile.empty() ? graph.feature_dim : bundle.hidden_profile.back().head_count * bundle.hidden_profile.back().head_dim) << ",\n"
+        << "  \"output_head_specs\": " << output_head_specs_json(bundle) << ",\n"
+        << "  \"output_projection_policy\": \"seq_kernel_matmul_last_hidden_concat_to_C\",\n"
+        << "  \"output_attention_policy\": \"a_src_a_dst_over_projected_logits_with_lrelu_segment_softmax\",\n"
+        << "  \"output_bias_add_policy\": \"post_aggregation_bias_add_identity_activation\",\n"
+        << "  \"output_average_policy\": \"" << json_escape(bundle.output_average_rule) << "\",\n"
+        << "  \"output_derivation_required\": true,\n"
+        << "  \"output_derivation_complete_candidate\": true,\n"
+        << "  \"no_precomputed_logits_bypass\": true,\n"
         << "  \"output_layer_spec\": {\"output_head_count\":" << bundle.output_heads.size()
         << ",\"K_out\":" << bundle.K_out
         << ",\"C\":" << bundle.class_count
         << ",\"input_width\":\"last_hidden_concat_width\","
+        << "\"output_layer_input_source\":\"last_hidden_concat\","
+        << "\"output_layer_input_dim\":" << (bundle.hidden_profile.empty() ? graph.feature_dim : bundle.hidden_profile.back().head_count * bundle.hidden_profile.back().head_dim) << ","
         << "\"output_bias_dim\":" << bundle.class_count
         << ",\"output_average_rule\":\"" << json_escape(bundle.output_average_rule) << "\"},\n"
         << "  \"final_logits_binding_spec\": {\"final_logits_shape\":["

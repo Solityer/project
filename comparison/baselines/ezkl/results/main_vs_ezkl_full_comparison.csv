@@ -1,6 +1,6 @@
 dataset,ezkl_status,ezkl_block_reason,ezkl_route_id,main_cpu_commitment_time_ms,ezkl_commitment_time_ms,main_cpu_prove_time_ms,ezkl_prove_time_ms,main_cpu_verify_time_ms,ezkl_verify_time_ms,main_cpu_proof_size_bytes,ezkl_proof_size_bytes
-Cora,blocked,final_logits_derivation_incomplete,ezkl_gat_native_compressed_csr_attention_full,283.786,142970.8877869998,1207.818,15035.65203299513,153.379,,90755,
-Citeseer,blocked,final_logits_derivation_incomplete,ezkl_gat_native_compressed_csr_attention_full,453.773,136880.81107700418,1418.744,14887.324198993156,153.837,,90763,
-Pubmed,blocked,final_logits_derivation_incomplete,ezkl_gat_native_compressed_csr_attention_full,2962.933,558303.1376500003,5604.074,62827.004637001664,175.454,,90760,
-PPI,blocked,native_keygen_resource_failure,ezkl_gat_native_compressed_csr_attention_full,3563.973,1608590.8740110025,7111.447,,424.71,,21360,
-ogbn-arxiv,blocked,native_keygen_resource_failure,ezkl_gat_native_compressed_csr_attention_full,18071.562,1671729.9925629923,66540.6,,417.38,,21361,
+Cora,verified,,ezkl_gat_native_compressed_csr_attention_full,283.786,34249.26139699528,1207.818,20726.15556101664,153.379,566.2509760004468,90755,1280198
+Citeseer,verified,,ezkl_gat_native_compressed_csr_attention_full,453.773,35124.10268399981,1418.744,21365.887385007227,153.837,676.5465110074729,90763,1347596
+Pubmed,verified,,ezkl_gat_native_compressed_csr_attention_full,2962.933,69588.68112700293,5604.074,43774.53932099161,175.454,1303.9383580035064,90760,3973278
+PPI,blocked,native_keygen_resource_failure,ezkl_gat_native_compressed_csr_attention_full,3563.973,1001891.3809889928,7111.447,,424.71,,21360,
+ogbn-arxiv,blocked,native_keygen_resource_failure,ezkl_gat_native_compressed_csr_attention_full,18071.562,1734496.2902679981,66540.6,,417.38,,21361,

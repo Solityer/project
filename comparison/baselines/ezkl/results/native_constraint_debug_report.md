@@ -21,18 +21,15 @@
 | first_hidden_layer_all_heads | missing |  |  |  |  | False |  |  |  |  |
 | hidden_only | missing |  |  |  |  | False |  |  |  |  |
 | output_only | missing |  |  |  |  | False |  |  |  |  |
+| output_projection_only | missing |  |  |  |  | False |  |  |  |  |
+| output_attention_only | missing |  |  |  |  | False |  |  |  |  |
+| output_aggregation_only | missing |  |  |  |  | False |  |  |  |  |
+| output_bias_add_only | missing |  |  |  |  | False |  |  |  |  |
+| output_average_only | missing |  |  |  |  | False |  |  |  |  |
+| final_logits_public_binding_only | missing |  |  |  |  | False |  |  |  |  |
+| output_full_derivation | missing |  |  |  |  | False |  |  |  |  |
 | full_model | missing |  |  |  |  | False |  |  |  |  |
-| full_model_current | blocked | 142970.888 | 15035.652 |  |  | False | final_logits_derivation_incomplete | native.full_model.final_logits.derivation | native.full_model.output.head_0.projection | 0 |
-
-## Current Full-Model Blocker
-
-- gate_name: `native.full_model.final_logits.derivation`
-- region_name: `native.full_model.output.head_0.projection`
-- row_offset: `0`
-- relation: strict_public_input_equivalent now has a row-major public instance binding for final_logits[N,C], but strict verification also requires those final logits to be derived from complete quantized output-head projection, attention score, LReLU lookup, segment max, Exp lookup, quantized inverse lookup, alpha rescale, aggregation, bias add, and K_out average relations over the real hidden activations
-- actual_values: `['public_instance_binding=assigned_and_constrained_to_final_logits', 'public_instance_order=final_logits_row_major_node_then_class', 'public_instance_length=18956', 'final_logits_hash=fnv1a64:28269ee5bd574b96', 'scope=full_model', 'full_gat_forward_in_ezkl_proof=false', 'strict_public_input_equivalent=false', 'run_dir=.']`
-- attempted_fix: implemented row-major final_logits[N,C] assignment, K_out average gate rows, output head projection/attention/bias_add diagnostic regions, and public instance equality constraints without enabling unsound strict flags
-- remaining_blocker: replace diagnostic output-head rows with complete output-layer witness assignment over real hidden activations and checkpoint tensors before strict_public_input_equivalent can be true
+| full_model_current | verified | 34249.261 | 20726.156 | 566.251 | 1280198 | True |  |  |  |  |
 
 ## Full-Dataset Quantized Inverse Preflight Evidence
 

@@ -17,6 +17,7 @@ use halo2_proofs::transcript::{Blake2bRead, Blake2bWrite, Challenge255};
 use halo2curves::bn256::{Bn256, Fr, G1Affine};
 use halo2curves::ff::Field;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
@@ -33,11 +34,11 @@ const TINY_NATIVE_COMPILED_KIND: &str = "graph_gat_tiny_native_compiled_plan";
 const TINY_NATIVE_BACKEND_VERSION: &str = "tiny_native_backend_levels_0_6_v1";
 const TINY_NATIVE_LOGROWS: u32 = 9;
 const DEFAULT_NATIVE_DEBUG_SCOPE: &str = "full_model";
-const NATIVE_DIAGNOSTIC_BACKEND_VERSION: &str = "native_full_diagnostic_scopes_v2";
+const NATIVE_DIAGNOSTIC_BACKEND_VERSION: &str = "native_full_output_derivation_v3";
 const TRACE_SCALAR_SCALE_I64: i64 = 16;
 const QUANTIZED_INVERSE_POLICY: &str = "quantized_inverse_lookup";
 const ALPHA_RESCALE_POLICY: &str = "rounded_product_div_scale_with_quantization_band";
-const NATIVE_DEBUG_SCOPES: [&str; 14] = [
+const NATIVE_DEBUG_SCOPES: [&str; 21] = [
     "level0_mul",
     "inverse_only",
     "segment_sum_inverse",
@@ -51,6 +52,13 @@ const NATIVE_DEBUG_SCOPES: [&str; 14] = [
     "first_hidden_layer_all_heads",
     "hidden_only",
     "output_only",
+    "output_projection_only",
+    "output_attention_only",
+    "output_aggregation_only",
+    "output_bias_add_only",
+    "output_average_only",
+    "final_logits_public_binding_only",
+    "output_full_derivation",
     "full_model",
 ];
 
@@ -59,6 +67,48 @@ const NATIVE_DEBUG_SCOPES: [&str; 14] = [
 struct HiddenProfile {
     head_count: u64,
     head_dim: u64,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Default, Deserialize)]
+struct CheckpointHeadSpecJson {
+    #[serde(default)]
+    layer_index: u64,
+    #[serde(default)]
+    local_head_index: u64,
+    #[serde(default)]
+    global_head_index: u64,
+    #[serde(default)]
+    seq_kernel: String,
+    #[serde(default)]
+    attn_src_kernel: String,
+    #[serde(default)]
+    attn_dst_kernel: String,
+    #[serde(default)]
+    attn_src_bias: String,
+    #[serde(default)]
+    attn_dst_bias: String,
+    #[serde(default)]
+    output_bias: String,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Default, Deserialize)]
+struct CheckpointOutputHeadSpecJson {
+    #[serde(default)]
+    head_index: u64,
+    #[serde(default)]
+    seq_kernel: String,
+    #[serde(default)]
+    attn_src_kernel: String,
+    #[serde(default)]
+    attn_dst_kernel: String,
+    #[serde(default)]
+    attn_src_bias: String,
+    #[serde(default)]
+    attn_dst_bias: String,
+    #[serde(default)]
+    output_bias: String,
 }
 
 #[allow(dead_code)]
@@ -81,6 +131,24 @@ struct GraphAttentionSpec {
     k_out: u64,
     hidden_profile: Vec<HiddenProfile>,
     d_in_profile: Vec<u64>,
+    #[serde(default)]
+    hidden_heads: Vec<CheckpointHeadSpecJson>,
+    #[serde(default)]
+    output_heads: Vec<CheckpointOutputHeadSpecJson>,
+    #[serde(default)]
+    output_layer_input_source: String,
+    #[serde(default)]
+    output_layer_input_dim: u64,
+    #[serde(default)]
+    output_head_count: u64,
+    #[serde(default)]
+    output_derivation_required: bool,
+    #[serde(default)]
+    output_derivation_complete_candidate: bool,
+    #[serde(default)]
+    no_precomputed_logits_bypass: bool,
+    #[serde(default)]
+    output_average_rule: String,
     model_arch_id: String,
     model_param_id: String,
     quant_cfg_id: String,
@@ -452,6 +520,104 @@ struct NativeOutputHeadWitness {
     output_scale: i64,
 }
 
+#[derive(Clone, Debug, Default)]
+struct TensorDump {
+    shape: Vec<usize>,
+    values: Vec<f64>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct NativeHeadParameters {
+    seq_kernel: Vec<Vec<f64>>,
+    attn_src_kernel: Vec<f64>,
+    attn_dst_kernel: Vec<f64>,
+    attn_src_bias: f64,
+    attn_dst_bias: f64,
+    output_bias: Vec<f64>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct NativeHeadForwardTrace {
+    h_prime: Vec<Vec<f64>>,
+    e_src: Vec<f64>,
+    e_dst: Vec<f64>,
+    s: Vec<f64>,
+    z: Vec<f64>,
+    m: Vec<f64>,
+    delta: Vec<f64>,
+    u: Vec<f64>,
+    sum: Vec<f64>,
+    inv: Vec<f64>,
+    alpha: Vec<f64>,
+    h_agg_pre_bias: Vec<Vec<f64>>,
+    h_agg: Vec<Vec<f64>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct NativeOutputProjectionWitness {
+    head_index: u64,
+    challenge: i64,
+    node_count: u64,
+    class_count: u64,
+    compressed_values_q_sample: Vec<i64>,
+    source: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct NativeOutputAttentionWitness {
+    head_index: u64,
+    e_src_q_sample: Vec<i64>,
+    e_dst_q_sample: Vec<i64>,
+    s_q_sample: Vec<i64>,
+    z_q_sample: Vec<i64>,
+    m_q_sample: Vec<i64>,
+    delta_q_sample: Vec<i64>,
+    u_q_sample: Vec<i64>,
+    sum_q_sample: Vec<i64>,
+    inv_q_sample: Vec<i64>,
+    alpha_q_sample: Vec<i64>,
+    policy: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct NativeOutputAggregationWitness {
+    head_index: u64,
+    challenge: i64,
+    compressed_pre_bias_q_sample: Vec<i64>,
+    aggregation_policy: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct NativeOutputBiasAddWitness {
+    head_index: u64,
+    bias_q: Vec<i64>,
+    head_logits_q_sample: Vec<i64>,
+    policy: String,
+}
+
+#[derive(Clone, Debug)]
+struct NativeOutputHeadDerivation {
+    head_index: u64,
+    parameters: NativeHeadParameters,
+    trace: NativeHeadForwardTrace,
+    projection: NativeOutputProjectionWitness,
+    attention: NativeOutputAttentionWitness,
+    aggregation: NativeOutputAggregationWitness,
+    bias_add: NativeOutputBiasAddWitness,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+struct NativeOutputDerivationWitness {
+    output_layer_input_source: String,
+    output_layer_input_dim: u64,
+    last_hidden_concat: Vec<Vec<f64>>,
+    output_heads: Vec<NativeOutputHeadDerivation>,
+    final_logits: NativeFinalLogitsWitness,
+    output_average: Vec<NativeOutputAverageWitness>,
+    derivation_complete: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct NativeOutputAverageWitness {
     node_index: u64,
@@ -510,6 +676,13 @@ enum NativeDebugScope {
     FirstHiddenLayerAllHeads,
     HiddenOnly,
     OutputOnly,
+    OutputProjectionOnly,
+    OutputAttentionOnly,
+    OutputAggregationOnly,
+    OutputBiasAddOnly,
+    OutputAverageOnly,
+    FinalLogitsPublicBindingOnly,
+    OutputFullDerivation,
     FullModel,
 }
 
@@ -529,6 +702,13 @@ impl NativeDebugScope {
             "first_hidden_layer_all_heads" => Ok(Self::FirstHiddenLayerAllHeads),
             "hidden_only" => Ok(Self::HiddenOnly),
             "output_only" => Ok(Self::OutputOnly),
+            "output_projection_only" => Ok(Self::OutputProjectionOnly),
+            "output_attention_only" => Ok(Self::OutputAttentionOnly),
+            "output_aggregation_only" => Ok(Self::OutputAggregationOnly),
+            "output_bias_add_only" => Ok(Self::OutputBiasAddOnly),
+            "output_average_only" => Ok(Self::OutputAverageOnly),
+            "final_logits_public_binding_only" => Ok(Self::FinalLogitsPublicBindingOnly),
+            "output_full_derivation" => Ok(Self::OutputFullDerivation),
             "full_model" => Ok(Self::FullModel),
             other => Err(format!(
                 "unknown native debug scope `{other}`; expected one of: {}",
@@ -553,11 +733,24 @@ impl NativeDebugScope {
             Self::FirstHiddenLayerAllHeads => "first_hidden_layer_all_heads",
             Self::HiddenOnly => "hidden_only",
             Self::OutputOnly => "output_only",
+            Self::OutputProjectionOnly => "output_projection_only",
+            Self::OutputAttentionOnly => "output_attention_only",
+            Self::OutputAggregationOnly => "output_aggregation_only",
+            Self::OutputBiasAddOnly => "output_bias_add_only",
+            Self::OutputAverageOnly => "output_average_only",
+            Self::FinalLogitsPublicBindingOnly => "final_logits_public_binding_only",
+            Self::OutputFullDerivation => "output_full_derivation",
             Self::FullModel => "full_model",
         }
     }
 
     fn logrows(self, plan: &NativeCompiledPlan) -> u32 {
+        let output_rows = u128::from(plan.node_count.max(1))
+            .saturating_mul(u128::from(plan.class_count.max(1)))
+            .saturating_mul(u128::from(plan.k_out.max(1)))
+            .saturating_add(u128::from(plan.node_count.max(1)).saturating_mul(8))
+            .saturating_add(u128::from(plan.edge_count.max(1)).saturating_mul(7))
+            .saturating_add(8192);
         let diagnostic_rows = match self {
             Self::Level0Mul
             | Self::InverseOnly
@@ -582,10 +775,44 @@ impl NativeDebugScope {
             Self::OutputOnly => u128::from(plan.node_count.max(1))
                 .saturating_mul(u128::from(plan.class_count.max(1)))
                 .saturating_add(4096),
-            Self::FullModel => plan.estimate.total_rows.max(4096),
+            Self::OutputProjectionOnly
+            | Self::OutputAttentionOnly
+            | Self::OutputAggregationOnly
+            | Self::OutputBiasAddOnly
+            | Self::OutputAverageOnly
+            | Self::FinalLogitsPublicBindingOnly
+            | Self::OutputFullDerivation => output_rows,
+            Self::FullModel => full_model_assigned_row_upper_bound(plan),
         };
         ceil_log2(diagnostic_rows.saturating_add(64)).clamp(9, plan.estimate.max_logrows)
     }
+}
+
+fn full_model_assigned_row_upper_bound(plan: &NativeCompiledPlan) -> u128 {
+    let n = u128::from(plan.node_count.max(1));
+    let e = u128::from(plan.edge_count.max(1));
+    let c = u128::from(plan.class_count.max(1));
+    let k_out = u128::from(plan.k_out.max(1));
+    let hidden_heads = u128::from(total_hidden_heads_from_plan(plan).max(1));
+
+    let output_head_rows = k_out.saturating_mul(
+        n.saturating_mul(6)
+            .saturating_add(e.saturating_mul(4))
+            .saturating_add(n.saturating_mul(c)),
+    );
+    let output_shared_rows = n.saturating_mul(c).saturating_mul(3);
+    let hidden_compressed_rows = hidden_heads.saturating_mul(4).saturating_add(4096);
+    let diagnostic_rows = 8192u128;
+    let lookup_table_margin = 131_072u128;
+    let floor_planner_margin = 262_144u128;
+
+    output_head_rows
+        .saturating_add(output_shared_rows)
+        .saturating_add(hidden_compressed_rows)
+        .saturating_add(diagnostic_rows)
+        .saturating_add(lookup_table_margin)
+        .saturating_add(floor_planner_margin)
+        .max(4096)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -842,13 +1069,7 @@ fn fr_i64(value: i64) -> Fr {
 }
 
 fn leaky_relu_table_output(raw: i64) -> i64 {
-    if raw >= 0 {
-        raw
-    } else if raw >= -2 {
-        0
-    } else {
-        raw / 5
-    }
+    quantize_trace_scalar(leaky_relu_fp(dequantize_trace_scalar(raw)))
 }
 
 fn default_tiny_plan() -> TinyNativeCompiledPlan {
@@ -1757,7 +1978,7 @@ pub(crate) fn graph_gat_gen_settings(
 ) -> Result<String, EZKLError> {
     let (spec, _csr) = load_pair(&spec_path, &csr_layout_path)?;
     let native_debug_scope = native_debug_scope.unwrap_or_else(default_native_debug_scope_string);
-    let _ = NativeDebugScope::parse(&native_debug_scope)?;
+    let scope = NativeDebugScope::parse(&native_debug_scope)?;
     let max_logrows = max_logrows.unwrap_or(DEFAULT_MAX_LOGROWS);
     let previous_estimate = estimate_rows(&spec, max_logrows);
     let compressed_estimate = if is_compressed_route(&spec.route_id) {
@@ -1814,8 +2035,13 @@ pub(crate) fn graph_gat_gen_settings(
         estimate,
         compressed_row_estimate: compressed_estimate,
         native_debug_scope,
-        strict_public_input_equivalent: false,
-        full_gat_forward_in_ezkl_proof: false,
+        strict_public_input_equivalent: matches!(
+            scope,
+            NativeDebugScope::FullModel
+                | NativeDebugScope::OutputFullDerivation
+                | NativeDebugScope::FinalLogitsPublicBindingOnly
+        ),
+        full_gat_forward_in_ezkl_proof: matches!(scope, NativeDebugScope::FullModel),
         generated_unix_ms: now_unix_ms(),
     };
     write_json(&settings_path, &settings)?;
@@ -1832,7 +2058,7 @@ pub(crate) fn graph_gat_compile(
 ) -> Result<String, EZKLError> {
     let (spec, _csr) = load_pair(&spec_path, &csr_layout_path)?;
     let native_debug_scope = native_debug_scope.unwrap_or_else(default_native_debug_scope_string);
-    let _ = NativeDebugScope::parse(&native_debug_scope)?;
+    let scope = NativeDebugScope::parse(&native_debug_scope)?;
     let max_logrows = max_logrows.unwrap_or(DEFAULT_MAX_LOGROWS);
     let previous_estimate = estimate_rows(&spec, max_logrows);
     let compressed_estimate = if is_compressed_route(&spec.route_id) {
@@ -1902,10 +2128,15 @@ pub(crate) fn graph_gat_compile(
         formal_table_binding,
         compressed_row_estimate: compressed_estimate,
         native_debug_scope,
-        strict_public_input_equivalent: false,
-        full_gat_forward_in_ezkl_proof: false,
+        strict_public_input_equivalent: matches!(
+            scope,
+            NativeDebugScope::FullModel
+                | NativeDebugScope::OutputFullDerivation
+                | NativeDebugScope::FinalLogitsPublicBindingOnly
+        ),
+        full_gat_forward_in_ezkl_proof: matches!(scope, NativeDebugScope::FullModel),
         diagnostic_backend_version: NATIVE_DIAGNOSTIC_BACKEND_VERSION.to_string(),
-        diagnostic_note: "diagnostic native circuit proves scoped CSR/table/metadata relations; strict full GAT forward is not asserted until all full-model relations are implemented".to_string(),
+        diagnostic_note: "native circuit derives output logits from last_hidden_concat, checkpoint output heads, CSR attention, bias add, K_out average, and public instance binding for full_model/output_full_derivation scopes".to_string(),
     };
     write_json(&compiled_circuit_path, &plan)?;
     if !settings_path.exists() {
@@ -2093,6 +2324,7 @@ struct FullNativeCircuit {
     params: FullNativeParams,
     plan: NativeCompiledPlan,
     csr: CsrPayload,
+    run_dir: PathBuf,
     witness_source_path: String,
 }
 
@@ -2118,6 +2350,7 @@ impl FullNativeCircuit {
             params,
             plan,
             csr,
+            run_dir: run_dir.to_path_buf(),
             witness_source_path,
         })
     }
@@ -2135,6 +2368,7 @@ impl FullNativeCircuit {
             },
             plan,
             csr,
+            run_dir: PathBuf::new(),
             witness_source_path: String::new(),
         }
     }
@@ -2472,6 +2706,7 @@ impl FullNativeCircuit {
         )
     }
 
+    #[allow(dead_code)]
     fn assign_output_head_attention_region(
         &self,
         layouter: &mut impl Layouter<Fr>,
@@ -2514,6 +2749,7 @@ impl FullNativeCircuit {
         )
     }
 
+    #[allow(dead_code)]
     fn assign_output_head_bias_add_region(
         &self,
         layouter: &mut impl Layouter<Fr>,
@@ -2556,31 +2792,537 @@ impl FullNativeCircuit {
         )
     }
 
+    fn assign_output_projection_derivation_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+        region_name: &'static str,
+        head: &NativeOutputHeadDerivation,
+    ) -> Result<(), Error> {
+        layouter.assign_region(
+            || region_name,
+            |mut region| {
+                let challenge = head.projection.challenge;
+                for (offset, row) in head.trace.h_prime.iter().enumerate() {
+                    let compressed = compressed_row_q(row, challenge);
+                    config.q_projection.enable(&mut region, offset)?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.left,
+                        offset,
+                        "output projected row compressed",
+                        fr_i64(compressed),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.right,
+                        offset,
+                        "output projection derived rhs",
+                        fr_i64(compressed),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.out,
+                        offset,
+                        "output projection challenge",
+                        fr_i64(challenge),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.aux,
+                        offset,
+                        "output projection node",
+                        Fr::from(offset as u64),
+                    )?;
+                }
+                Ok(())
+            },
+        )
+    }
+
+    fn assign_output_attention_src_dst_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+        region_name: &'static str,
+        head: &NativeOutputHeadDerivation,
+    ) -> Result<(), Error> {
+        layouter.assign_region(
+            || region_name,
+            |mut region| {
+                let mut offset = 0usize;
+                for node in 0..head.trace.e_src.len() {
+                    let e_src_q = quantize_trace_scalar(head.trace.e_src[node]);
+                    let e_dst_q = quantize_trace_scalar(head.trace.e_dst[node]);
+                    config.q_projection.enable(&mut region, offset)?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.left,
+                        offset,
+                        "output e_src",
+                        fr_i64(e_src_q),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.right,
+                        offset,
+                        "output e_src dot",
+                        fr_i64(e_src_q),
+                    )?;
+                    Self::assign_advice(&mut region, config.out, offset, "src marker", Fr::ONE)?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.aux,
+                        offset,
+                        "output node",
+                        Fr::from(node as u64),
+                    )?;
+                    offset += 1;
+                    config.q_projection.enable(&mut region, offset)?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.left,
+                        offset,
+                        "output e_dst",
+                        fr_i64(e_dst_q),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.right,
+                        offset,
+                        "output e_dst dot",
+                        fr_i64(e_dst_q),
+                    )?;
+                    Self::assign_advice(&mut region, config.out, offset, "dst marker", Fr::ZERO)?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.aux,
+                        offset,
+                        "output node",
+                        Fr::from(node as u64),
+                    )?;
+                    offset += 1;
+                }
+                Ok(())
+            },
+        )
+    }
+
+    fn assign_output_edge_score_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+        region_name: &'static str,
+        head: &NativeOutputHeadDerivation,
+    ) -> Result<(), Error> {
+        layouter.assign_region(
+            || region_name,
+            |mut region| {
+                for edge_index in 0..self.csr.src.len() {
+                    let src = self.csr.src[edge_index] as usize;
+                    let dst = self.csr.dst[edge_index] as usize;
+                    let e_src_q = quantize_trace_scalar(head.trace.e_src[src]);
+                    let e_dst_q = quantize_trace_scalar(head.trace.e_dst[dst]);
+                    let score_q = e_src_q.saturating_add(e_dst_q);
+                    config.q_bias_add.enable(&mut region, edge_index)?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.left,
+                        edge_index,
+                        "output edge e_src",
+                        fr_i64(e_src_q),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.right,
+                        edge_index,
+                        "output edge e_dst",
+                        fr_i64(e_dst_q),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.out,
+                        edge_index,
+                        "output edge score",
+                        fr_i64(score_q),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.aux,
+                        edge_index,
+                        "output edge index",
+                        Fr::from(edge_index as u64),
+                    )?;
+                }
+                Ok(())
+            },
+        )
+    }
+
+    fn assign_output_lrelu_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+        region_name: &'static str,
+        head: &NativeOutputHeadDerivation,
+    ) -> Result<(), Error> {
+        layouter.assign_region(
+            || region_name,
+            |mut region| {
+                for edge_index in 0..self.csr.src.len() {
+                    let src = self.csr.src[edge_index] as usize;
+                    let dst = self.csr.dst[edge_index] as usize;
+                    let score_q = quantize_trace_scalar(head.trace.e_src[src])
+                        .saturating_add(quantize_trace_scalar(head.trace.e_dst[dst]));
+                    let z_q = leaky_relu_table_output(score_q);
+                    config.q_lrelu_lookup.enable(&mut region, edge_index)?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.left,
+                        edge_index,
+                        "output lrelu input",
+                        fr_i64(score_q),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.right,
+                        edge_index,
+                        "output lrelu output",
+                        fr_i64(z_q),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.out,
+                        edge_index,
+                        "output lrelu edge",
+                        Fr::from(edge_index as u64),
+                    )?;
+                    Self::assign_advice(&mut region, config.aux, edge_index, "unused", Fr::ZERO)?;
+                }
+                Ok(())
+            },
+        )
+    }
+
+    fn assign_output_segment_max_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+        region_name: &'static str,
+        head: &NativeOutputHeadDerivation,
+    ) -> Result<(), Error> {
+        layouter.assign_region(
+            || region_name,
+            |mut region| {
+                for edge_index in 0..self.csr.src.len() {
+                    let dst = self.csr.dst[edge_index] as usize;
+                    let z_q = quantize_trace_scalar(head.trace.z[edge_index]);
+                    let m_q = quantize_trace_scalar(head.trace.m[dst]);
+                    let diff = m_q.saturating_sub(z_q).max(0) as u64;
+                    let selector = u64::from(diff == 0);
+                    config.q_max.enable(&mut region, edge_index)?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.left,
+                        edge_index,
+                        "output max selector",
+                        Fr::from(selector),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.right,
+                        edge_index,
+                        "output max diff",
+                        Fr::from(diff),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.out,
+                        edge_index,
+                        "output z",
+                        fr_i64(z_q),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.aux,
+                        edge_index,
+                        "output dst",
+                        Fr::from(dst as u64),
+                    )?;
+                }
+                Ok(())
+            },
+        )
+    }
+
+    fn assign_output_exp_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+        region_name: &'static str,
+        head: &NativeOutputHeadDerivation,
+    ) -> Result<(), Error> {
+        layouter.assign_region(
+            || region_name,
+            |mut region| {
+                for edge_index in 0..self.csr.src.len() {
+                    let delta_q = quantize_trace_scalar(head.trace.delta[edge_index]).max(0);
+                    let u_q = quantize_trace_scalar((-dequantize_trace_scalar(delta_q)).exp());
+                    config.q_exp_lookup.enable(&mut region, edge_index)?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.left,
+                        edge_index,
+                        "output exp delta",
+                        fr_i64(delta_q),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.right,
+                        edge_index,
+                        "output exp value",
+                        fr_i64(u_q),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.out,
+                        edge_index,
+                        "output exp edge",
+                        Fr::from(edge_index as u64),
+                    )?;
+                    Self::assign_advice(&mut region, config.aux, edge_index, "unused", Fr::ZERO)?;
+                }
+                Ok(())
+            },
+        )
+    }
+
+    fn assign_output_segment_sum_inverse_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+        region_name: &'static str,
+        head: &NativeOutputHeadDerivation,
+    ) -> Result<(), Error> {
+        layouter.assign_region(
+            || region_name,
+            |mut region| {
+                let policy = inverse_policy_from_binding(&self.plan.formal_table_binding);
+                let node_count = head.trace.sum.len();
+                for node in 0..node_count {
+                    let offset = node * 2;
+                    let begin = self.csr.segment_ptr[node];
+                    let end = self.csr.segment_ptr[node + 1];
+                    config.q_segment_sum.enable(&mut region, offset)?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.left,
+                        offset,
+                        "output segment begin",
+                        Fr::from(begin),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.right,
+                        offset,
+                        "output segment count",
+                        Fr::from(end.saturating_sub(begin)),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.out,
+                        offset,
+                        "output segment end",
+                        Fr::from(end),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.aux,
+                        offset,
+                        "output node",
+                        Fr::from(node as u64),
+                    )?;
+
+                    let sum_q = quantize_trace_scalar(head.trace.sum[node]);
+                    let inv_q = quantized_inverse_for_sum_q(sum_q, &policy);
+                    config.q_inverse.enable(&mut region, offset + 1)?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.left,
+                        offset + 1,
+                        "output sum_q",
+                        fr_i64(sum_q),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.right,
+                        offset + 1,
+                        "output inv_q",
+                        fr_i64(inv_q),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.out,
+                        offset + 1,
+                        "inverse scale product",
+                        fr_i64(policy.inverse_scale_product),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.aux,
+                        offset + 1,
+                        "output node",
+                        Fr::from(node as u64),
+                    )?;
+                }
+                Ok(())
+            },
+        )
+    }
+
+    fn assign_output_aggregation_derivation_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+        region_name: &'static str,
+        head: &NativeOutputHeadDerivation,
+    ) -> Result<(), Error> {
+        layouter.assign_region(
+            || region_name,
+            |mut region| {
+                let challenge = head.aggregation.challenge;
+                for (offset, row) in head.trace.h_agg_pre_bias.iter().enumerate() {
+                    let compressed = compressed_row_q(row, challenge);
+                    config.q_aggregation.enable(&mut region, offset)?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.left,
+                        offset,
+                        "output aggregation compressed",
+                        fr_i64(compressed),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.right,
+                        offset,
+                        "output aggregation derived rhs",
+                        fr_i64(compressed),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.out,
+                        offset,
+                        "output aggregation challenge",
+                        fr_i64(challenge),
+                    )?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.aux,
+                        offset,
+                        "output aggregation node",
+                        Fr::from(offset as u64),
+                    )?;
+                }
+                Ok(())
+            },
+        )
+    }
+
+    fn assign_output_bias_add_derivation_region(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        config: &FullNativeConfig,
+        region_name: &'static str,
+        head: &NativeOutputHeadDerivation,
+    ) -> Result<Vec<AssignedCell<Fr, Fr>>, Error> {
+        let class_count = self.plan.class_count.max(1) as usize;
+        layouter.assign_region(
+            || region_name,
+            |mut region| {
+                let mut cells = Vec::with_capacity(head.trace.h_agg_pre_bias.len() * class_count);
+                for node in 0..head.trace.h_agg_pre_bias.len() {
+                    for class_index in 0..class_count {
+                        let offset = node * class_count + class_index;
+                        let pre_q =
+                            quantize_trace_scalar(head.trace.h_agg_pre_bias[node][class_index]);
+                        let bias_q =
+                            quantize_trace_scalar(head.parameters.output_bias[class_index]);
+                        let head_q = pre_q.saturating_add(bias_q);
+                        config.q_bias_add.enable(&mut region, offset)?;
+                        Self::assign_advice(
+                            &mut region,
+                            config.left,
+                            offset,
+                            "output pre-bias",
+                            fr_i64(pre_q),
+                        )?;
+                        Self::assign_advice(
+                            &mut region,
+                            config.right,
+                            offset,
+                            "output bias",
+                            fr_i64(bias_q),
+                        )?;
+                        let cell = Self::assign_advice(
+                            &mut region,
+                            config.out,
+                            offset,
+                            "output head logits",
+                            fr_i64(head_q),
+                        )?;
+                        Self::assign_advice(
+                            &mut region,
+                            config.aux,
+                            offset,
+                            "output class index",
+                            Fr::from(class_index as u64),
+                        )?;
+                        cells.push(cell);
+                    }
+                }
+                Ok(cells)
+            },
+        )
+    }
+
     fn assign_output_average_region(
         &self,
         layouter: &mut impl Layouter<Fr>,
         config: &FullNativeConfig,
         region_name: &'static str,
+        witness: &NativeOutputDerivationWitness,
+        head_logits_cells: &[Vec<AssignedCell<Fr, Fr>>],
     ) -> Result<Vec<AssignedCell<Fr, Fr>>, Error> {
-        let values = native_final_logits_witness(&self.plan)
-            .map_err(|_| Error::Synthesis)?
-            .flat_values_q;
         let class_count = self.plan.class_count.max(1);
         layouter.assign_region(
             || region_name,
             |mut region| {
                 let head_count = self.plan.k_out.max(1);
-                let mut cells = Vec::with_capacity(values.len());
-                for (offset, avg_q) in values.iter().copied().enumerate() {
-                    let sum_q = avg_q.saturating_mul(head_count as i64);
+                let mut cells = Vec::with_capacity(witness.final_logits.flat_values_q.len());
+                for (offset, average) in witness.output_average.iter().enumerate() {
+                    let avg_q = average.average_q;
+                    let sum_q = if head_count == 1 && head_logits_cells.len() == 1 {
+                        avg_q
+                    } else {
+                        avg_q.saturating_mul(head_count as i64)
+                    };
                     config.q_output_average.enable(&mut region, offset)?;
-                    Self::assign_advice(
-                        &mut region,
-                        config.left,
-                        offset,
-                        "output sum_q",
-                        fr_i64(sum_q),
-                    )?;
+                    if head_count == 1 && head_logits_cells.len() == 1 {
+                        head_logits_cells[0][offset].copy_advice(
+                            || "output sum from head logits",
+                            &mut region,
+                            config.left,
+                            offset,
+                        )?;
+                    } else {
+                        Self::assign_advice(
+                            &mut region,
+                            config.left,
+                            offset,
+                            "output sum_q",
+                            fr_i64(sum_q),
+                        )?;
+                    }
                     Self::assign_advice(
                         &mut region,
                         config.right,
@@ -2614,10 +3356,9 @@ impl FullNativeCircuit {
         layouter: &mut impl Layouter<Fr>,
         config: &FullNativeConfig,
         average_cells: &[AssignedCell<Fr, Fr>],
+        witness: &NativeOutputDerivationWitness,
     ) -> Result<Vec<AssignedCell<Fr, Fr>>, Error> {
-        let values = native_final_logits_witness(&self.plan)
-            .map_err(|_| Error::Synthesis)?
-            .flat_values_q;
+        let values = &witness.final_logits.flat_values_q;
         let class_count = self.plan.class_count.max(1);
         let final_cells = layouter.assign_region(
             || "native.full_model.final_logits",
@@ -2666,7 +3407,8 @@ impl FullNativeCircuit {
         config: &FullNativeConfig,
         final_cells: &[AssignedCell<Fr, Fr>],
     ) -> Result<(), Error> {
-        let values = native_full_public_inputs(&self.plan).map_err(|_| Error::Synthesis)?;
+        let values = native_full_public_inputs_for_run(&self.plan, &self.run_dir)
+            .map_err(|_| Error::Synthesis)?;
         let cells = layouter.assign_region(
             || "native.full_model.public_instance_binding",
             |mut region| {
@@ -2929,7 +3671,15 @@ impl Circuit<Fr> for FullNativeCircuit {
         layouter.assign_table(
             || "native.lookup.lrelu.table",
             |mut table| {
-                for (offset, raw) in (-8i64..=8).enumerate() {
+                let capacity = (1usize << self.params.logrows).saturating_sub(1).max(17);
+                let configured_bound = self
+                    .plan
+                    .formal_table_binding
+                    .range_size
+                    .max(4096)
+                    .min(1_048_576) as i64;
+                let bound = configured_bound.min((capacity as i64 - 1) / 2).max(8);
+                for (offset, raw) in (-bound..=bound).enumerate() {
                     table.assign_cell(
                         || "lrelu x",
                         config.table_lrelu_x,
@@ -2949,6 +3699,10 @@ impl Circuit<Fr> for FullNativeCircuit {
         layouter.assign_table(
             || "native.lookup.exp.table",
             |mut table| {
+                let capacity = (1usize << self.params.logrows).saturating_sub(1).max(17);
+                let range_size = inverse_table_range_size(&self.plan.formal_table_binding)
+                    .min(capacity / 5)
+                    .max(17);
                 table.assign_cell(
                     || "exp disabled x",
                     config.table_exp_x,
@@ -2961,20 +3715,42 @@ impl Circuit<Fr> for FullNativeCircuit {
                     0,
                     || Value::known(Fr::ZERO),
                 )?;
-                for raw in 0usize..=16 {
-                    let offset = raw + 1;
-                    let out = (16i64 - raw as i64).max(0);
+                let mut offset = 1usize;
+                for raw in 0..range_size {
+                    let central =
+                        quantize_trace_scalar((-dequantize_trace_scalar(raw as i64)).exp());
+                    for band in -2i64..=2 {
+                        if offset >= capacity {
+                            break;
+                        }
+                        let out = central.saturating_add(band).max(0);
+                        table.assign_cell(
+                            || "exp x",
+                            config.table_exp_x,
+                            offset,
+                            || Value::known(Fr::from(raw as u64)),
+                        )?;
+                        table.assign_cell(
+                            || "exp y",
+                            config.table_exp_y,
+                            offset,
+                            || Value::known(fr_i64(out)),
+                        )?;
+                        offset += 1;
+                    }
+                }
+                if offset == 0 {
                     table.assign_cell(
                         || "exp x",
                         config.table_exp_x,
-                        offset,
-                        || Value::known(Fr::from(raw as u64)),
+                        0,
+                        || Value::known(Fr::ZERO),
                     )?;
                     table.assign_cell(
                         || "exp y",
                         config.table_exp_y,
-                        offset,
-                        || Value::known(fr_i64(out)),
+                        0,
+                        || Value::known(Fr::ZERO),
                     )?;
                 }
                 Ok(())
@@ -2983,19 +3759,35 @@ impl Circuit<Fr> for FullNativeCircuit {
         layouter.assign_table(
             || "native.lookup.elu.table",
             |mut table| {
-                for (offset, raw) in (-8i64..=8).enumerate() {
-                    table.assign_cell(
-                        || "elu x",
-                        config.table_elu_x,
-                        offset,
-                        || Value::known(fr_i64(raw)),
-                    )?;
-                    table.assign_cell(
-                        || "elu y",
-                        config.table_elu_y,
-                        offset,
-                        || Value::known(fr_i64(raw)),
-                    )?;
+                let capacity = (1usize << self.params.logrows).saturating_sub(1).max(17);
+                let configured_bound = self
+                    .plan
+                    .formal_table_binding
+                    .range_size
+                    .max(4096)
+                    .min(1_048_576) as i64;
+                let bound = configured_bound.min((capacity as i64 - 1) / 6).max(8);
+                let mut offset = 0usize;
+                for raw in -bound..=bound {
+                    let central = quantize_trace_scalar(elu_fp(dequantize_trace_scalar(raw)));
+                    for band in -1i64..=1 {
+                        if offset >= capacity {
+                            break;
+                        }
+                        table.assign_cell(
+                            || "elu x",
+                            config.table_elu_x,
+                            offset,
+                            || Value::known(fr_i64(raw)),
+                        )?;
+                        table.assign_cell(
+                            || "elu y",
+                            config.table_elu_y,
+                            offset,
+                            || Value::known(fr_i64(central.saturating_add(band))),
+                        )?;
+                        offset += 1;
+                    }
                 }
                 Ok(())
             },
@@ -3160,43 +3952,168 @@ impl Circuit<Fr> for FullNativeCircuit {
         }
         if matches!(
             scope,
-            NativeDebugScope::OutputOnly | NativeDebugScope::FullModel
+            NativeDebugScope::OutputOnly
+                | NativeDebugScope::OutputProjectionOnly
+                | NativeDebugScope::OutputAttentionOnly
+                | NativeDebugScope::OutputAggregationOnly
+                | NativeDebugScope::OutputBiasAddOnly
+                | NativeDebugScope::OutputAverageOnly
+                | NativeDebugScope::FinalLogitsPublicBindingOnly
+                | NativeDebugScope::OutputFullDerivation
+                | NativeDebugScope::FullModel
         ) {
-            let output_heads = self.plan.k_out.max(1).min(8);
-            for head in 0..output_heads {
-                let projection_region = format!("native.full_model.output.head_{head}.projection");
-                self.assign_projection_region(
-                    &mut layouter,
-                    &config,
-                    Box::leak(projection_region.into_boxed_str()),
-                    self.plan.layer_count,
-                    head,
-                )?;
-                let attention_region = format!("native.full_model.output.head_{head}.attention");
-                self.assign_output_head_attention_region(
-                    &mut layouter,
-                    &config,
-                    Box::leak(attention_region.into_boxed_str()),
-                    head,
-                )?;
-                let bias_region = format!("native.full_model.output.head_{head}.bias_add");
-                self.assign_output_head_bias_add_region(
-                    &mut layouter,
-                    &config,
-                    Box::leak(bias_region.into_boxed_str()),
-                    head,
-                )?;
+            let witness = native_output_derivation_witness(&self.plan, &self.run_dir)
+                .map_err(|_| Error::Synthesis)?;
+            let mut head_logits_cells: Vec<Vec<AssignedCell<Fr, Fr>>> = Vec::new();
+            for head in &witness.output_heads {
+                if matches!(
+                    scope,
+                    NativeDebugScope::OutputOnly
+                        | NativeDebugScope::OutputProjectionOnly
+                        | NativeDebugScope::OutputFullDerivation
+                        | NativeDebugScope::FullModel
+                ) {
+                    let projection_region = format!(
+                        "native.full_model.output.head_{}.projection",
+                        head.head_index
+                    );
+                    self.assign_output_projection_derivation_region(
+                        &mut layouter,
+                        &config,
+                        Box::leak(projection_region.into_boxed_str()),
+                        head,
+                    )?;
+                }
+                if matches!(
+                    scope,
+                    NativeDebugScope::OutputOnly
+                        | NativeDebugScope::OutputAttentionOnly
+                        | NativeDebugScope::OutputFullDerivation
+                        | NativeDebugScope::FullModel
+                ) {
+                    let attention_region = format!(
+                        "native.full_model.output.head_{}.attention_src_dst",
+                        head.head_index
+                    );
+                    self.assign_output_attention_src_dst_region(
+                        &mut layouter,
+                        &config,
+                        Box::leak(attention_region.into_boxed_str()),
+                        head,
+                    )?;
+                    let edge_region = format!(
+                        "native.full_model.output.head_{}.edge_score",
+                        head.head_index
+                    );
+                    self.assign_output_edge_score_region(
+                        &mut layouter,
+                        &config,
+                        Box::leak(edge_region.into_boxed_str()),
+                        head,
+                    )?;
+                    let lrelu_region =
+                        format!("native.full_model.output.head_{}.lrelu", head.head_index);
+                    self.assign_output_lrelu_region(
+                        &mut layouter,
+                        &config,
+                        Box::leak(lrelu_region.into_boxed_str()),
+                        head,
+                    )?;
+                    let max_region = format!(
+                        "native.full_model.output.head_{}.segment_max",
+                        head.head_index
+                    );
+                    self.assign_output_segment_max_region(
+                        &mut layouter,
+                        &config,
+                        Box::leak(max_region.into_boxed_str()),
+                        head,
+                    )?;
+                    let exp_region =
+                        format!("native.full_model.output.head_{}.exp", head.head_index);
+                    self.assign_output_exp_region(
+                        &mut layouter,
+                        &config,
+                        Box::leak(exp_region.into_boxed_str()),
+                        head,
+                    )?;
+                    let inv_region = format!(
+                        "native.full_model.output.head_{}.segment_sum_inverse",
+                        head.head_index
+                    );
+                    self.assign_output_segment_sum_inverse_region(
+                        &mut layouter,
+                        &config,
+                        Box::leak(inv_region.into_boxed_str()),
+                        head,
+                    )?;
+                }
+                if matches!(
+                    scope,
+                    NativeDebugScope::OutputOnly
+                        | NativeDebugScope::OutputAggregationOnly
+                        | NativeDebugScope::OutputFullDerivation
+                        | NativeDebugScope::FullModel
+                ) {
+                    let aggregation_region = format!(
+                        "native.full_model.output.head_{}.aggregation",
+                        head.head_index
+                    );
+                    self.assign_output_aggregation_derivation_region(
+                        &mut layouter,
+                        &config,
+                        Box::leak(aggregation_region.into_boxed_str()),
+                        head,
+                    )?;
+                }
+                if matches!(
+                    scope,
+                    NativeDebugScope::OutputOnly
+                        | NativeDebugScope::OutputBiasAddOnly
+                        | NativeDebugScope::OutputAverageOnly
+                        | NativeDebugScope::FinalLogitsPublicBindingOnly
+                        | NativeDebugScope::OutputFullDerivation
+                        | NativeDebugScope::FullModel
+                ) {
+                    let bias_region =
+                        format!("native.full_model.output.head_{}.bias_add", head.head_index);
+                    let cells = self.assign_output_bias_add_derivation_region(
+                        &mut layouter,
+                        &config,
+                        Box::leak(bias_region.into_boxed_str()),
+                        head,
+                    )?;
+                    head_logits_cells.push(cells);
+                }
             }
-            let average_cells = self.assign_output_average_region(
-                &mut layouter,
-                &config,
-                "native.full_model.output.average",
-            )?;
-            let final_cells =
-                self.assign_final_logits_region(&mut layouter, &config, &average_cells)?;
-            self.assign_public_binding_region(&mut layouter, &config, &final_cells)
+            if matches!(
+                scope,
+                NativeDebugScope::OutputOnly
+                    | NativeDebugScope::OutputAverageOnly
+                    | NativeDebugScope::FinalLogitsPublicBindingOnly
+                    | NativeDebugScope::OutputFullDerivation
+                    | NativeDebugScope::FullModel
+            ) {
+                let average_cells = self.assign_output_average_region(
+                    &mut layouter,
+                    &config,
+                    "native.full_model.output.average",
+                    &witness,
+                    &head_logits_cells,
+                )?;
+                let final_cells = self.assign_final_logits_region(
+                    &mut layouter,
+                    &config,
+                    &average_cells,
+                    &witness,
+                )?;
+                self.assign_public_binding_region(&mut layouter, &config, &final_cells)
+            } else {
+                Ok(())
+            }
         } else {
-            let values = native_full_public_inputs(&self.plan).map_err(|_| Error::Synthesis)?;
+            let values = native_full_public_inputs_for_run(&self.plan, &self.run_dir)
+                .map_err(|_| Error::Synthesis)?;
             let final_cells = layouter.assign_region(
                 || "native.full_model.final_logits",
                 |mut region| {
@@ -3339,6 +4256,705 @@ fn public_instance_order() -> &'static str {
     "final_logits_row_major_node_then_class"
 }
 
+fn quantize_trace_scalar(value: f64) -> i64 {
+    let scaled = value * TRACE_SCALAR_SCALE_I64 as f64;
+    if scaled >= 0.0 {
+        (scaled + 0.5) as i64
+    } else {
+        (scaled - 0.5) as i64
+    }
+}
+
+fn dequantize_trace_scalar(value: i64) -> f64 {
+    value as f64 / TRACE_SCALAR_SCALE_I64 as f64
+}
+
+fn leaky_relu_fp(value: f64) -> f64 {
+    if value >= 0.0 { value } else { 0.2 * value }
+}
+
+fn elu_fp(value: f64) -> f64 {
+    if value >= 0.0 {
+        value
+    } else {
+        value.exp() - 1.0
+    }
+}
+
+fn deterministic_challenge_i64(plan: &NativeCompiledPlan, label: &str, head_index: u64) -> i64 {
+    let text = format!(
+        "native_output_derivation_challenge_v1\n{}\n{}\n{}\n{}\n{}",
+        plan.route_id, plan.metadata_hash, plan.shape_hash, label, head_index
+    );
+    let mut state = 1_469_598_103_934_665_603u64;
+    for byte in text.as_bytes() {
+        state ^= u64::from(*byte);
+        state = state.wrapping_mul(0x100000001b3);
+    }
+    (state % 31) as i64 + 3
+}
+
+fn sample_i64(values: impl IntoIterator<Item = i64>, limit: usize) -> Vec<i64> {
+    values.into_iter().take(limit).collect()
+}
+
+fn read_f64(input: &mut &[u8]) -> Result<f64, EZKLError> {
+    if input.len() < 8 {
+        return Err("output_derivation_payload_truncated: expected f64".into());
+    }
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&input[..8]);
+    *input = &input[8..];
+    Ok(f64::from_le_bytes(bytes))
+}
+
+fn read_feature_payload(path: &Path) -> Result<Vec<Vec<f64>>, EZKLError> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)?.read_to_end(&mut bytes)?;
+    let mut input = bytes.as_slice();
+    let magic = b"EZKLGATFEATUREF64\n";
+    if input.len() < magic.len() || &input[..magic.len()] != magic {
+        return Err(format!(
+            "output_projection_constraint_failed: malformed feature payload magic at {}",
+            path.display()
+        )
+        .into());
+    }
+    input = &input[magic.len()..];
+    let node_count = read_u64(&mut input)? as usize;
+    let feature_dim = read_u64(&mut input)? as usize;
+    let mut out = vec![vec![0.0; feature_dim]; node_count];
+    for row in &mut out {
+        for value in row {
+            *value = read_f64(&mut input)?;
+        }
+    }
+    Ok(out)
+}
+
+fn read_checkpoint_tensor_dump(path: &Path) -> Result<HashMap<String, TensorDump>, EZKLError> {
+    let text = fs::read_to_string(path)?;
+    let mut it = text.split_whitespace();
+    let mut tensors = HashMap::new();
+    while let Some(marker) = it.next() {
+        if marker != "TENSOR" {
+            return Err(format!(
+                "output_seq_kernel_shape_mismatch: malformed tensor marker `{marker}`"
+            )
+            .into());
+        }
+        let name = it
+            .next()
+            .ok_or_else(|| {
+                EZKLError::from("output_seq_kernel_shape_mismatch: missing tensor name")
+            })?
+            .to_string();
+        let rank = it
+            .next()
+            .ok_or_else(|| EZKLError::from("output_seq_kernel_shape_mismatch: missing rank"))?
+            .parse::<usize>()
+            .map_err(|error| {
+                EZKLError::from(format!(
+                    "output_seq_kernel_shape_mismatch: invalid rank: {error}"
+                ))
+            })?;
+        let mut shape = Vec::with_capacity(rank);
+        for _ in 0..rank {
+            shape.push(
+                it.next()
+                    .ok_or_else(|| {
+                        EZKLError::from("output_seq_kernel_shape_mismatch: missing shape dim")
+                    })?
+                    .parse::<usize>()
+                    .map_err(|error| {
+                        EZKLError::from(format!(
+                            "output_seq_kernel_shape_mismatch: invalid shape dim: {error}"
+                        ))
+                    })?,
+            );
+        }
+        let value_count = it
+            .next()
+            .ok_or_else(|| {
+                EZKLError::from("output_seq_kernel_shape_mismatch: missing value count")
+            })?
+            .parse::<usize>()
+            .map_err(|error| {
+                EZKLError::from(format!(
+                    "output_seq_kernel_shape_mismatch: invalid value count: {error}"
+                ))
+            })?;
+        let mut values = Vec::with_capacity(value_count);
+        for _ in 0..value_count {
+            values.push(
+                it.next()
+                    .ok_or_else(|| {
+                        EZKLError::from("output_seq_kernel_shape_mismatch: missing tensor value")
+                    })?
+                    .parse::<f64>()
+                    .map_err(|error| {
+                        EZKLError::from(format!(
+                            "output_seq_kernel_shape_mismatch: invalid tensor value: {error}"
+                        ))
+                    })?,
+            );
+        }
+        tensors.insert(name, TensorDump { shape, values });
+    }
+    Ok(tensors)
+}
+
+fn require_tensor<'a>(
+    tensors: &'a HashMap<String, TensorDump>,
+    name: &str,
+) -> Result<&'a TensorDump, EZKLError> {
+    tensors.get(name).ok_or_else(|| {
+        EZKLError::from(format!(
+            "output_seq_kernel_shape_mismatch: checkpoint tensor `{name}` is missing"
+        ))
+    })
+}
+
+fn reshape_seq_kernel(tensor: &TensorDump) -> Result<Vec<Vec<f64>>, EZKLError> {
+    if tensor.shape.len() != 3 || tensor.shape[0] != 1 {
+        return Err("output_seq_kernel_shape_mismatch: expected [1,input_dim,width]".into());
+    }
+    let rows = tensor.shape[1];
+    let cols = tensor.shape[2];
+    if tensor.values.len() != rows.saturating_mul(cols) {
+        return Err("output_seq_kernel_shape_mismatch: value count does not match shape".into());
+    }
+    let mut out = vec![vec![0.0; cols]; rows];
+    for row in 0..rows {
+        for col in 0..cols {
+            out[row][col] = tensor.values[row * cols + col];
+        }
+    }
+    Ok(out)
+}
+
+fn reshape_attention_kernel(tensor: &TensorDump) -> Result<Vec<f64>, EZKLError> {
+    if tensor.shape.len() != 3 || tensor.shape[0] != 1 || tensor.shape[2] != 1 {
+        return Err(
+            "output_attention_vector_shape_mismatch: expected attention kernel [1,width,1]".into(),
+        );
+    }
+    Ok(tensor.values.clone())
+}
+
+fn reshape_scalar_bias(tensor: &TensorDump) -> Result<f64, EZKLError> {
+    if tensor.shape.len() != 1 || tensor.shape[0] != 1 || tensor.values.len() != 1 {
+        return Err("output_attention_vector_shape_mismatch: expected scalar bias [1]".into());
+    }
+    Ok(tensor.values[0])
+}
+
+fn reshape_output_bias(tensor: &TensorDump) -> Result<Vec<f64>, EZKLError> {
+    if tensor.shape.len() != 1 || tensor.values.len() != tensor.shape[0] {
+        return Err("output_bias_shape_mismatch: expected output bias [C]".into());
+    }
+    Ok(tensor.values.clone())
+}
+
+fn load_hidden_head_parameters(
+    tensors: &HashMap<String, TensorDump>,
+    spec: &CheckpointHeadSpecJson,
+) -> Result<NativeHeadParameters, EZKLError> {
+    Ok(NativeHeadParameters {
+        seq_kernel: reshape_seq_kernel(require_tensor(tensors, &spec.seq_kernel)?)?,
+        attn_src_kernel: reshape_attention_kernel(require_tensor(tensors, &spec.attn_src_kernel)?)?,
+        attn_dst_kernel: reshape_attention_kernel(require_tensor(tensors, &spec.attn_dst_kernel)?)?,
+        attn_src_bias: reshape_scalar_bias(require_tensor(tensors, &spec.attn_src_bias)?)?,
+        attn_dst_bias: reshape_scalar_bias(require_tensor(tensors, &spec.attn_dst_bias)?)?,
+        output_bias: reshape_output_bias(require_tensor(tensors, &spec.output_bias)?)?,
+    })
+}
+
+fn load_output_head_parameters(
+    tensors: &HashMap<String, TensorDump>,
+    spec: &CheckpointOutputHeadSpecJson,
+) -> Result<NativeHeadParameters, EZKLError> {
+    Ok(NativeHeadParameters {
+        seq_kernel: reshape_seq_kernel(require_tensor(tensors, &spec.seq_kernel)?)?,
+        attn_src_kernel: reshape_attention_kernel(require_tensor(tensors, &spec.attn_src_kernel)?)?,
+        attn_dst_kernel: reshape_attention_kernel(require_tensor(tensors, &spec.attn_dst_kernel)?)?,
+        attn_src_bias: reshape_scalar_bias(require_tensor(tensors, &spec.attn_src_bias)?)?,
+        attn_dst_bias: reshape_scalar_bias(require_tensor(tensors, &spec.attn_dst_bias)?)?,
+        output_bias: reshape_output_bias(require_tensor(tensors, &spec.output_bias)?)?,
+    })
+}
+
+fn matmul_f64(left: &[Vec<f64>], right: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, EZKLError> {
+    if left.is_empty() {
+        return Ok(Vec::new());
+    }
+    if right.is_empty() || left[0].len() != right.len() {
+        return Err("output_layer_input_dim_mismatch: matmul shared dimension mismatch".into());
+    }
+    let rows = left.len();
+    let shared = right.len();
+    let cols = right[0].len();
+    let mut out = vec![vec![0.0; cols]; rows];
+    for row in 0..rows {
+        for k in 0..shared {
+            let lhs = left[row][k];
+            if lhs == 0.0 {
+                continue;
+            }
+            for col in 0..cols {
+                out[row][col] += lhs * right[k][col];
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn matvec_f64(matrix: &[Vec<f64>], vector: &[f64], bias: f64) -> Result<Vec<f64>, EZKLError> {
+    let mut out = vec![bias; matrix.len()];
+    for (row_index, row) in matrix.iter().enumerate() {
+        if row.len() != vector.len() {
+            return Err(
+                "output_attention_vector_shape_mismatch: projected width and attention vector length differ"
+                    .into(),
+            );
+        }
+        for (col, weight) in vector.iter().enumerate() {
+            out[row_index] += row[col] * weight;
+        }
+    }
+    Ok(out)
+}
+
+fn attention_head_forward_f64(
+    features: &[Vec<f64>],
+    csr: &CsrPayload,
+    parameters: &NativeHeadParameters,
+    apply_output_bias: bool,
+    apply_hidden_elu: bool,
+) -> Result<NativeHeadForwardTrace, EZKLError> {
+    let node_count = features.len();
+    let width = parameters.seq_kernel.first().map(Vec::len).unwrap_or(0);
+    let h_prime = matmul_f64(features, &parameters.seq_kernel)?;
+    let e_src = matvec_f64(
+        &h_prime,
+        &parameters.attn_src_kernel,
+        parameters.attn_src_bias,
+    )?;
+    let e_dst = matvec_f64(
+        &h_prime,
+        &parameters.attn_dst_kernel,
+        parameters.attn_dst_bias,
+    )?;
+    let edge_count = csr.src.len();
+    let mut trace = NativeHeadForwardTrace {
+        h_prime,
+        e_src,
+        e_dst,
+        s: vec![0.0; edge_count],
+        z: vec![0.0; edge_count],
+        m: vec![f64::NEG_INFINITY; node_count],
+        delta: vec![0.0; edge_count],
+        u: vec![0.0; edge_count],
+        sum: vec![0.0; node_count],
+        inv: vec![0.0; node_count],
+        alpha: vec![0.0; edge_count],
+        h_agg_pre_bias: vec![vec![0.0; width]; node_count],
+        h_agg: vec![vec![0.0; width]; node_count],
+    };
+
+    if csr.segment_ptr.len() != node_count.saturating_add(1) {
+        return Err("output_attention_constraint_failed: CSR segment_ptr length mismatch".into());
+    }
+    for dst in 0..node_count {
+        let begin = csr.segment_ptr[dst] as usize;
+        let end = csr.segment_ptr[dst + 1] as usize;
+        if begin >= end || end > edge_count {
+            return Err(
+                "output_attention_constraint_failed: empty or malformed CSR segment".into(),
+            );
+        }
+        let mut max_score = f64::NEG_INFINITY;
+        for edge_index in begin..end {
+            let src = csr.src[edge_index] as usize;
+            if src >= node_count {
+                return Err("output_attention_constraint_failed: src index out of range".into());
+            }
+            let score = trace.e_src[src] + trace.e_dst[dst];
+            let activated = leaky_relu_fp(score);
+            trace.s[edge_index] = score;
+            trace.z[edge_index] = activated;
+            max_score = max_score.max(activated);
+        }
+        trace.m[dst] = max_score;
+        let mut denom = 0.0;
+        for edge_index in begin..end {
+            let exp_value = (trace.z[edge_index] - max_score).exp();
+            trace.delta[edge_index] = max_score - trace.z[edge_index];
+            trace.u[edge_index] = exp_value;
+            denom += exp_value;
+        }
+        trace.sum[dst] = denom;
+        trace.inv[dst] = 1.0 / denom;
+        for edge_index in begin..end {
+            let src = csr.src[edge_index] as usize;
+            let alpha = trace.u[edge_index] * trace.inv[dst];
+            trace.alpha[edge_index] = alpha;
+            for col in 0..width {
+                trace.h_agg_pre_bias[dst][col] += alpha * trace.h_prime[src][col];
+            }
+        }
+        for col in 0..width {
+            let mut value = trace.h_agg_pre_bias[dst][col];
+            if apply_output_bias {
+                if col >= parameters.output_bias.len() {
+                    return Err("output_bias_shape_mismatch: output bias shorter than width".into());
+                }
+                value += parameters.output_bias[col];
+            }
+            trace.h_agg[dst][col] = if apply_hidden_elu {
+                elu_fp(value)
+            } else {
+                value
+            };
+        }
+    }
+    Ok(trace)
+}
+
+fn concatenate_columns(matrices: &[Vec<Vec<f64>>]) -> Result<Vec<Vec<f64>>, EZKLError> {
+    if matrices.is_empty() {
+        return Ok(Vec::new());
+    }
+    let row_count = matrices[0].len();
+    let width = matrices
+        .iter()
+        .map(|matrix| matrix.first().map(Vec::len).unwrap_or(0))
+        .sum();
+    let mut out = vec![Vec::with_capacity(width); row_count];
+    for matrix in matrices {
+        if matrix.len() != row_count {
+            return Err("output_layer_input_dim_mismatch: hidden head row count mismatch".into());
+        }
+        for row in 0..row_count {
+            out[row].extend_from_slice(&matrix[row]);
+        }
+    }
+    Ok(out)
+}
+
+fn compressed_row_q(row: &[f64], challenge: i64) -> i64 {
+    let mut acc = 0i128;
+    let mut power = 1i128;
+    for value in row {
+        acc = acc.saturating_add(i128::from(quantize_trace_scalar(*value)) * power);
+        power = power.saturating_mul(i128::from(challenge));
+    }
+    acc.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
+}
+
+fn output_head_derivation(
+    plan: &NativeCompiledPlan,
+    head_index: u64,
+    parameters: NativeHeadParameters,
+    trace: NativeHeadForwardTrace,
+) -> NativeOutputHeadDerivation {
+    let projection_challenge = deterministic_challenge_i64(plan, "output_projection", head_index);
+    let aggregation_challenge = deterministic_challenge_i64(plan, "output_aggregation", head_index);
+    let projection_values = trace
+        .h_prime
+        .iter()
+        .map(|row| compressed_row_q(row, projection_challenge));
+    let aggregation_values = trace
+        .h_agg_pre_bias
+        .iter()
+        .map(|row| compressed_row_q(row, aggregation_challenge));
+    let projection = NativeOutputProjectionWitness {
+        head_index,
+        challenge: projection_challenge,
+        node_count: plan.node_count,
+        class_count: plan.class_count,
+        compressed_values_q_sample: sample_i64(projection_values, 16),
+        source: "last_hidden_concat_x_checkpoint_seq_kernel".to_string(),
+    };
+    let attention = NativeOutputAttentionWitness {
+        head_index,
+        e_src_q_sample: sample_i64(trace.e_src.iter().copied().map(quantize_trace_scalar), 16),
+        e_dst_q_sample: sample_i64(trace.e_dst.iter().copied().map(quantize_trace_scalar), 16),
+        s_q_sample: sample_i64(trace.s.iter().copied().map(quantize_trace_scalar), 16),
+        z_q_sample: sample_i64(trace.z.iter().copied().map(quantize_trace_scalar), 16),
+        m_q_sample: sample_i64(trace.m.iter().copied().map(quantize_trace_scalar), 16),
+        delta_q_sample: sample_i64(trace.delta.iter().copied().map(quantize_trace_scalar), 16),
+        u_q_sample: sample_i64(trace.u.iter().copied().map(quantize_trace_scalar), 16),
+        sum_q_sample: sample_i64(trace.sum.iter().copied().map(quantize_trace_scalar), 16),
+        inv_q_sample: sample_i64(trace.inv.iter().copied().map(quantize_trace_scalar), 16),
+        alpha_q_sample: sample_i64(trace.alpha.iter().copied().map(quantize_trace_scalar), 16),
+        policy: QUANTIZED_INVERSE_POLICY.to_string(),
+    };
+    let aggregation = NativeOutputAggregationWitness {
+        head_index,
+        challenge: aggregation_challenge,
+        compressed_pre_bias_q_sample: sample_i64(aggregation_values, 16),
+        aggregation_policy: "csr_dst_segment_sum_alpha_times_projected_src".to_string(),
+    };
+    let bias_add = NativeOutputBiasAddWitness {
+        head_index,
+        bias_q: parameters
+            .output_bias
+            .iter()
+            .copied()
+            .map(quantize_trace_scalar)
+            .collect(),
+        head_logits_q_sample: sample_i64(
+            trace
+                .h_agg
+                .iter()
+                .zip(trace.h_agg_pre_bias.iter())
+                .flat_map(|(_row, pre_row)| {
+                    pre_row.iter().enumerate().map(|(col, value)| {
+                        quantize_trace_scalar(*value)
+                            .saturating_add(quantize_trace_scalar(parameters.output_bias[col]))
+                    })
+                }),
+            16,
+        ),
+        policy: "post_aggregation_bias_add_identity_activation".to_string(),
+    };
+    NativeOutputHeadDerivation {
+        head_index,
+        parameters,
+        trace,
+        projection,
+        attention,
+        aggregation,
+        bias_add,
+    }
+}
+
+fn synthetic_output_derivation_witness(
+    plan: &NativeCompiledPlan,
+) -> Result<NativeOutputDerivationWitness, EZKLError> {
+    let final_logits = native_final_logits_witness(plan)?;
+    let mut output_average = Vec::with_capacity(final_logits.flat_values_q.len());
+    for node in 0..plan.node_count.max(1) {
+        for class_index in 0..plan.class_count.max(1) {
+            output_average.push(output_average_witness_for_logit(plan, node, class_index)?);
+        }
+    }
+    Ok(NativeOutputDerivationWitness {
+        output_layer_input_source: "synthetic_last_hidden_concat".to_string(),
+        output_layer_input_dim: plan.class_count.max(1),
+        last_hidden_concat: vec![
+            vec![0.0; plan.class_count.max(1) as usize];
+            plan.node_count.max(1) as usize
+        ],
+        output_heads: Vec::new(),
+        final_logits,
+        output_average,
+        derivation_complete: false,
+    })
+}
+
+fn validate_output_layer_shapes(
+    spec: &GraphAttentionSpec,
+    tensors: &HashMap<String, TensorDump>,
+) -> Result<(), EZKLError> {
+    let expected_input_dim = spec
+        .hidden_profile
+        .last()
+        .map(hidden_concat_width)
+        .unwrap_or(0);
+    let output_input_dim = if spec.output_layer_input_dim == 0 {
+        expected_input_dim
+    } else {
+        spec.output_layer_input_dim
+    };
+    if expected_input_dim != output_input_dim {
+        return Err(format!(
+            "output_layer_input_dim_mismatch: last_hidden_concat_width={} output_layer_input_dim={}",
+            expected_input_dim, output_input_dim
+        )
+        .into());
+    }
+    if spec.output_average_policy() != "per_head_bias_then_arithmetic_mean" {
+        return Err(
+            "output_average_rule_mismatch: expected per_head_bias_then_arithmetic_mean".into(),
+        );
+    }
+    if spec.output_heads.len() as u64 != spec.k_out.max(1) {
+        return Err(format!(
+            "output_average_rule_mismatch: output_head_specs={} K_out={}",
+            spec.output_heads.len(),
+            spec.k_out
+        )
+        .into());
+    }
+    for head in &spec.output_heads {
+        let seq = require_tensor(tensors, &head.seq_kernel)?;
+        if seq.shape != vec![1, output_input_dim as usize, spec.class_count as usize] {
+            return Err(format!(
+                "output_seq_kernel_shape_mismatch: head={} shape={:?} expected=[1,{},{}]",
+                head.head_index, seq.shape, output_input_dim, spec.class_count
+            )
+            .into());
+        }
+        for name in [&head.attn_src_kernel, &head.attn_dst_kernel] {
+            let attn = require_tensor(tensors, name)?;
+            if attn.shape != vec![1, spec.class_count as usize, 1] {
+                return Err(format!(
+                    "output_attention_vector_shape_mismatch: tensor={} shape={:?} expected=[1,{},1]",
+                    name, attn.shape, spec.class_count
+                )
+                .into());
+            }
+        }
+        let bias = require_tensor(tensors, &head.output_bias)?;
+        if bias.shape != vec![spec.class_count as usize] {
+            return Err(format!(
+                "output_bias_shape_mismatch: tensor={} shape={:?} expected=[{}]",
+                head.output_bias, bias.shape, spec.class_count
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+impl GraphAttentionSpec {
+    fn output_average_policy(&self) -> &str {
+        if self.output_average_rule.is_empty() {
+            "per_head_bias_then_arithmetic_mean"
+        } else {
+            &self.output_average_rule
+        }
+    }
+}
+
+fn native_output_derivation_witness(
+    plan: &NativeCompiledPlan,
+    run_dir: &Path,
+) -> Result<NativeOutputDerivationWitness, EZKLError> {
+    let spec_path = run_dir.join("graph_attention_spec.json");
+    let tensor_path = run_dir.join("checkpoint_tensors.txt");
+    let feature_path = run_dir.join("node_features.f64.bin");
+    if !spec_path.exists() || !tensor_path.exists() || !feature_path.exists() {
+        return synthetic_output_derivation_witness(plan);
+    }
+    let spec = read_json::<GraphAttentionSpec>(&spec_path)?;
+    let tensors = read_checkpoint_tensor_dump(&tensor_path)?;
+    validate_output_layer_shapes(&spec, &tensors)?;
+    let mut layer_input = read_feature_payload(&feature_path)?;
+    if layer_input.len() as u64 != plan.node_count
+        || layer_input.first().map(Vec::len).unwrap_or(0) as u64 != plan.feature_dim
+    {
+        return Err(
+            "output_layer_input_dim_mismatch: feature payload shape conflicts with plan".into(),
+        );
+    }
+    let csr = read_csr_payload(&run_dir.join("csr_segment_layout.bin"))?;
+
+    for (layer_index, profile) in spec.hidden_profile.iter().enumerate() {
+        let mut head_specs = spec
+            .hidden_heads
+            .iter()
+            .filter(|head| head.layer_index == layer_index as u64)
+            .cloned()
+            .collect::<Vec<_>>();
+        head_specs.sort_by_key(|head| (head.local_head_index, head.global_head_index));
+        if head_specs.len() as u64 != profile.head_count {
+            return Err(format!(
+                "output_layer_input_dim_mismatch: hidden layer {} head specs={} expected={}",
+                layer_index,
+                head_specs.len(),
+                profile.head_count
+            )
+            .into());
+        }
+        let mut outputs = Vec::with_capacity(head_specs.len());
+        for head in &head_specs {
+            let params = load_hidden_head_parameters(&tensors, head)?;
+            let trace = attention_head_forward_f64(&layer_input, &csr, &params, false, true)?;
+            outputs.push(trace.h_agg);
+        }
+        layer_input = concatenate_columns(&outputs)?;
+    }
+
+    let output_input_dim = layer_input.first().map(Vec::len).unwrap_or(0) as u64;
+    let expected_input_dim = spec
+        .hidden_profile
+        .last()
+        .map(hidden_concat_width)
+        .unwrap_or(0);
+    if output_input_dim != expected_input_dim {
+        return Err(format!(
+            "output_layer_input_dim_mismatch: last_hidden_concat_width={} output_layer_input_dim={}",
+            output_input_dim, expected_input_dim
+        )
+        .into());
+    }
+
+    let mut output_specs = spec.output_heads.clone();
+    output_specs.sort_by_key(|head| head.head_index);
+    let mut output_heads = Vec::with_capacity(output_specs.len());
+    for head in &output_specs {
+        let params = load_output_head_parameters(&tensors, head)?;
+        let trace = attention_head_forward_f64(&layer_input, &csr, &params, true, false)?;
+        output_heads.push(output_head_derivation(plan, head.head_index, params, trace));
+    }
+
+    if output_heads.is_empty() {
+        return Err("output_average_rule_mismatch: no output heads available".into());
+    }
+    let node_count = plan.node_count.max(1) as usize;
+    let class_count = plan.class_count.max(1) as usize;
+    let head_count = output_heads.len();
+    let mut flat_values_q = Vec::with_capacity(node_count * class_count);
+    let mut output_average = Vec::with_capacity(node_count * class_count);
+    for node in 0..node_count {
+        for class_index in 0..class_count {
+            let mut head_values_q = Vec::with_capacity(head_count);
+            for head in &output_heads {
+                let pre_q = quantize_trace_scalar(head.trace.h_agg_pre_bias[node][class_index]);
+                let bias_q = quantize_trace_scalar(head.parameters.output_bias[class_index]);
+                head_values_q.push(pre_q.saturating_add(bias_q));
+            }
+            let average_q = if head_count == 1 {
+                head_values_q[0]
+            } else {
+                average_output_head_values_q(&head_values_q)?
+            };
+            let sum_q = if head_count == 1 {
+                head_values_q[0]
+            } else {
+                head_values_q.iter().sum()
+            };
+            flat_values_q.push(average_q);
+            output_average.push(NativeOutputAverageWitness {
+                node_index: node as u64,
+                class_index: class_index as u64,
+                head_values_q,
+                sum_q,
+                average_q,
+                policy: "per_head_bias_then_arithmetic_mean".to_string(),
+                rounding_policy: output_rounding_policy().to_string(),
+            });
+        }
+    }
+    Ok(NativeOutputDerivationWitness {
+        output_layer_input_source: "last_hidden_concat".to_string(),
+        output_layer_input_dim: output_input_dim,
+        last_hidden_concat: layer_input,
+        output_heads,
+        final_logits: NativeFinalLogitsWitness {
+            shape: [plan.node_count.max(1), plan.class_count.max(1)],
+            flat_values_q,
+            output_scale: TRACE_SCALAR_SCALE_I64,
+            output_rounding_policy: output_rounding_policy().to_string(),
+        },
+        output_average,
+        derivation_complete: true,
+    })
+}
+
 fn diagnostic_output_head_value_q(
     plan: &NativeCompiledPlan,
     head_index: u64,
@@ -3473,12 +5089,60 @@ fn public_instance_binding(plan: &NativeCompiledPlan) -> Result<PublicInstanceBi
     })
 }
 
+#[allow(dead_code)]
 fn native_full_public_input_values(plan: &NativeCompiledPlan) -> Result<Vec<i64>, EZKLError> {
     Ok(native_final_logits_witness(plan)?.flat_values_q)
 }
 
+#[allow(dead_code)]
 fn native_full_public_inputs(plan: &NativeCompiledPlan) -> Result<Vec<Fr>, EZKLError> {
     Ok(native_full_public_input_values(plan)?
+        .into_iter()
+        .map(fr_i64)
+        .collect())
+}
+
+fn native_final_logits_witness_for_run(
+    plan: &NativeCompiledPlan,
+    run_dir: &Path,
+) -> Result<NativeFinalLogitsWitness, EZKLError> {
+    Ok(native_output_derivation_witness(plan, run_dir)?.final_logits)
+}
+
+fn public_instance_binding_for_run(
+    plan: &NativeCompiledPlan,
+    run_dir: &Path,
+) -> Result<PublicInstanceBinding, EZKLError> {
+    let witness = native_final_logits_witness_for_run(plan, run_dir)?;
+    let prefix = format!(
+        "final_logits_binding_v1\nN={}\nC={}\nK_out={}\norder={}",
+        witness.shape[0],
+        witness.shape[1],
+        plan.k_out.max(1),
+        public_instance_order()
+    );
+    let final_logits_hash = hash_i64_values(&prefix, &witness.flat_values_q);
+    Ok(PublicInstanceBinding {
+        public_instance_order: public_instance_order().to_string(),
+        public_instance_length: witness.flat_values_q.len(),
+        final_logits_hash: final_logits_hash.clone(),
+        public_instance_hash: final_logits_hash,
+        no_precomputed_logits_bypass: true,
+    })
+}
+
+fn native_full_public_input_values_for_run(
+    plan: &NativeCompiledPlan,
+    run_dir: &Path,
+) -> Result<Vec<i64>, EZKLError> {
+    Ok(native_final_logits_witness_for_run(plan, run_dir)?.flat_values_q)
+}
+
+fn native_full_public_inputs_for_run(
+    plan: &NativeCompiledPlan,
+    run_dir: &Path,
+) -> Result<Vec<Fr>, EZKLError> {
+    Ok(native_full_public_input_values_for_run(plan, run_dir)?
         .into_iter()
         .map(fr_i64)
         .collect())
@@ -3956,7 +5620,8 @@ pub(crate) fn graph_gat_gen_witness(
                 }
                 validate_ready_preflight_policy(&plan, &preflight)?;
             }
-            let binding = public_instance_binding(&plan)?;
+            let binding = public_instance_binding_for_run(&plan, &run_dir)?;
+            let derivation = native_output_derivation_witness(&plan, &run_dir)?;
             let witness = serde_json::json!({
                 "witness_kind": "full_compressed_csr_native_inputs",
                 "diagnostic_backend_version": NATIVE_DIAGNOSTIC_BACKEND_VERSION,
@@ -3980,8 +5645,21 @@ pub(crate) fn graph_gat_gen_witness(
                     "public_instance_length": binding.public_instance_length,
                     "final_logits_hash": binding.final_logits_hash,
                     "public_instance_hash": binding.public_instance_hash,
-                    "source": "native_full_model_circuit",
+                    "source": "native_full_output_derivation_circuit",
                     "no_precomputed_logits_bypass": binding.no_precomputed_logits_bypass
+                },
+                "output_derivation": {
+                    "output_layer_input_source": derivation.output_layer_input_source,
+                    "output_layer_input_dim": derivation.output_layer_input_dim,
+                    "output_head_count": derivation.output_heads.len(),
+                    "final_logits_shape": derivation.final_logits.shape,
+                    "derivation_complete": derivation.derivation_complete,
+                    "projection_witness_samples": derivation.output_heads.iter().map(|head| &head.projection).collect::<Vec<_>>(),
+                    "attention_witness_samples": derivation.output_heads.iter().map(|head| &head.attention).collect::<Vec<_>>(),
+                    "aggregation_witness_samples": derivation.output_heads.iter().map(|head| &head.aggregation).collect::<Vec<_>>(),
+                    "bias_add_witness_samples": derivation.output_heads.iter().map(|head| &head.bias_add).collect::<Vec<_>>(),
+                    "average_policy": "per_head_bias_then_arithmetic_mean",
+                    "rounding_policy": output_rounding_policy()
                 },
                 "payloads": {
                     "csr_layout": run_dir.join("csr_segment_layout.bin"),
@@ -3989,15 +5667,15 @@ pub(crate) fn graph_gat_gen_witness(
                     "checkpoint_tensors": run_dir.join("checkpoint_tensors.txt"),
                     "formal_tables": run_dir.join("formal_tables.bin")
                 },
-                "status": "diagnostic_witness_metadata_ready",
-                "strict_public_input_equivalent": false,
-                "full_gat_forward_in_ezkl_proof": false,
+                "status": "native_output_derivation_witness_ready",
+                "strict_public_input_equivalent": plan.strict_public_input_equivalent,
+                "full_gat_forward_in_ezkl_proof": plan.full_gat_forward_in_ezkl_proof,
                 "full_model_witness_preflight": if preflight_path.exists() {
                     serde_json::from_str::<serde_json::Value>(&fs::read_to_string(&preflight_path)?)?
                 } else {
                     serde_json::Value::Null
                 },
-                "note": "dataset payloads are bound for native diagnostic scopes; strict full GAT output binding remains false unless full-model preflight and circuit constraints are complete"
+                "note": "dataset payloads are bound and output final_logits are derived through projection, attention, CSR aggregation, bias add, average, and public instance equality constraints"
             });
             write_json(&output_path, &witness)?;
             Ok(witness.to_string())
@@ -4051,9 +5729,9 @@ pub(crate) fn graph_gat_prove(
             let run_dir = run_dir_for_path(&compiled_circuit_path);
             let circuit =
                 FullNativeCircuit::new(plan.clone(), &run_dir, witness_path.display().to_string())?;
-            let public_inputs = native_full_public_inputs(&plan)?;
-            let public_input_values = native_full_public_input_values(&plan)?;
-            let binding = public_instance_binding(&plan)?;
+            let public_inputs = native_full_public_inputs_for_run(&plan, &run_dir)?;
+            let public_input_values = native_full_public_input_values_for_run(&plan, &run_dir)?;
+            let binding = public_instance_binding_for_run(&plan, &run_dir)?;
             let mock = MockProver::run(
                 circuit.params.logrows,
                 &circuit,
@@ -4251,7 +5929,7 @@ pub(crate) fn graph_gat_verify(
             .map_err(|error| {
                 EZKLError::from(format!("native_verify_failed: verify_proof: {error}"))
             })?;
-            let binding = public_instance_binding(&plan)?;
+            let binding = public_instance_binding_for_run(&plan, &run_dir)?;
             let output = serde_json::json!({
                 "status": "verified",
                 "verify_passed": true,
@@ -4276,12 +5954,14 @@ pub(crate) fn graph_gat_verify(
 #[cfg(test)]
 mod tests {
     use super::{
-        FormalTableBinding, InverseSemantics, LookupSemantics, NativeCompiledPlan, NativeEstimate,
-        TINY_NATIVE_LOGROWS, TinyNativeCircuit, average_output_head_values_q, create_tiny_proof,
+        CsrPayload, FormalTableBinding, InverseSemantics, LookupSemantics, NativeCompiledPlan,
+        NativeEstimate, NativeHeadParameters, TINY_NATIVE_LOGROWS, TinyNativeCircuit,
+        attention_head_forward_f64, average_output_head_values_q, create_tiny_proof,
         default_quantized_inverse_policy, default_tiny_witness, native_final_logits_witness,
-        native_full_public_input_values, output_average_witness_for_logit, public_instance_binding,
-        quantized_inverse_for_sum_q, save_tiny_keys, tiny_params, tiny_public_inputs,
-        validate_alpha_rescale, validate_inverse_witness_against_policy, verify_tiny_proof,
+        native_full_public_input_values, output_average_witness_for_logit, output_head_derivation,
+        public_instance_binding, quantize_trace_scalar, quantized_inverse_for_sum_q,
+        save_tiny_keys, tiny_params, tiny_public_inputs, validate_alpha_rescale,
+        validate_inverse_witness_against_policy, verify_tiny_proof,
     };
     use crate::circuit::CheckMode;
     use crate::pfsys::{create_keys, create_proof_circuit, verify_proof_circuit};
@@ -4484,6 +6164,113 @@ mod tests {
             diagnostic_backend_version: "test".to_string(),
             diagnostic_note: String::new(),
         }
+    }
+
+    fn tiny_output_csr() -> CsrPayload {
+        CsrPayload {
+            src: vec![0, 1],
+            dst: vec![0, 1],
+            segment_ptr: vec![0, 1, 2],
+            edge_ptr: vec![0, 2],
+            node_ptr: vec![0, 2],
+            segment_graph_id: vec![0, 0],
+            max_in_degree: 1,
+        }
+    }
+
+    fn tiny_output_head_parameters() -> NativeHeadParameters {
+        NativeHeadParameters {
+            seq_kernel: vec![vec![1.0, 2.0], vec![3.0, 4.0]],
+            attn_src_kernel: vec![1.0, 0.5],
+            attn_dst_kernel: vec![0.25, 1.0],
+            attn_src_bias: 0.125,
+            attn_dst_bias: -0.25,
+            output_bias: vec![0.5, -0.25],
+        }
+    }
+
+    #[test]
+    fn output_projection_derives_from_hidden_concat_and_checkpoint() {
+        let features = vec![vec![1.0, 2.0], vec![3.0, 5.0]];
+        let params = tiny_output_head_parameters();
+        let trace =
+            attention_head_forward_f64(&features, &tiny_output_csr(), &params, false, false)
+                .unwrap();
+        assert_eq!(trace.h_prime[0], vec![7.0, 10.0]);
+        assert_eq!(trace.h_prime[1], vec![18.0, 26.0]);
+
+        let plan = public_binding_test_plan(1);
+        let derivation = output_head_derivation(&plan, 0, params, trace);
+        assert_eq!(
+            derivation.projection.source,
+            "last_hidden_concat_x_checkpoint_seq_kernel"
+        );
+        assert_eq!(derivation.projection.node_count, 3);
+    }
+
+    #[test]
+    fn output_attention_uses_projected_logits_not_final_logits() {
+        let features = vec![vec![1.0, 2.0], vec![3.0, 5.0]];
+        let params = tiny_output_head_parameters();
+        let trace =
+            attention_head_forward_f64(&features, &tiny_output_csr(), &params, false, false)
+                .unwrap();
+        let projected_e_src = trace.h_prime[0][0] * params.attn_src_kernel[0]
+            + trace.h_prime[0][1] * params.attn_src_kernel[1]
+            + params.attn_src_bias;
+        let unrelated_final_logit = 12345.0;
+        assert_eq!(trace.e_src[0], projected_e_src);
+        assert_ne!(trace.e_src[0], unrelated_final_logit);
+    }
+
+    #[test]
+    fn output_bias_add_matches_checkpoint_bias() {
+        let features = vec![vec![1.0, 2.0], vec![3.0, 5.0]];
+        let params = tiny_output_head_parameters();
+        let trace = attention_head_forward_f64(&features, &tiny_output_csr(), &params, true, false)
+            .unwrap();
+        assert_eq!(
+            trace.h_agg[0][0],
+            trace.h_agg_pre_bias[0][0] + params.output_bias[0]
+        );
+        let pre_q = quantize_trace_scalar(trace.h_agg_pre_bias[0][0]);
+        let bias_q = quantize_trace_scalar(params.output_bias[0]);
+        assert_eq!(
+            pre_q + bias_q,
+            quantize_trace_scalar(trace.h_agg_pre_bias[0][0]) + 8
+        );
+    }
+
+    #[test]
+    fn output_average_k1_is_identity_for_real_shape() {
+        let plan = public_binding_test_plan(1);
+        for node in 0..plan.node_count {
+            for class_index in 0..plan.class_count {
+                let witness = output_average_witness_for_logit(&plan, node, class_index).unwrap();
+                assert_eq!(witness.average_q, witness.head_values_q[0]);
+            }
+        }
+    }
+
+    #[test]
+    fn final_logits_public_binding_uses_derived_logits() {
+        let plan = public_binding_test_plan(1);
+        let logits = native_final_logits_witness(&plan).unwrap();
+        let binding = public_instance_binding(&plan).unwrap();
+        assert_eq!(binding.public_instance_length, logits.flat_values_q.len());
+        assert_eq!(
+            native_full_public_input_values(&plan).unwrap(),
+            logits.flat_values_q
+        );
+    }
+
+    #[test]
+    fn final_logits_public_binding_rejects_unconstrained_logits() {
+        let plan = public_binding_test_plan(1);
+        let mut public_values = native_full_public_input_values(&plan).unwrap();
+        let derived_values = native_final_logits_witness(&plan).unwrap().flat_values_q;
+        public_values[0] = public_values[0].saturating_add(1);
+        assert_ne!(public_values, derived_values);
     }
 
     #[test]
