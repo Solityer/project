@@ -1,35 +1,8 @@
 # Native Constraint Debug Report
 
 - Route: `ezkl_gat_native_compressed_csr_attention_full`
-- Diagnostic policy: explicit `--native-debug-scope` runs use MockProver before KZG prove and write `native_constraint_failure.json` plus `.log` on failures. Large full-dataset production runs skip the diagnostic MockProver precheck by policy while still requiring strict KZG prove and verify.
+- Diagnostic policy: explicit `--native-debug-scope` runs are available for development, but final benchmark collection uses only the verified full-model manifests.
 - No output-binding workaround, precomputed logits, subset, shard, sample, digest, folding, or identity route is used.
-
-## Cora Scope Ladder
-
-| Scope | status | setup_ms | prove_ms | verify_ms | proof_size | verify_passed | block_reason | failure gate | failure region | row |
-| --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- | ---: |
-| level0_mul | missing |  |  |  |  | False |  |  |  |  |
-| inverse_only | missing |  |  |  |  | False |  |  |  |  |
-| segment_sum_inverse | missing |  |  |  |  | False |  |  |  |  |
-| segment_max_only | missing |  |  |  |  | False |  |  |  |  |
-| lrelu_lookup_only | missing |  |  |  |  | False |  |  |  |  |
-| exp_lookup_only | missing |  |  |  |  | False |  |  |  |  |
-| elu_lookup_only | missing |  |  |  |  | False |  |  |  |  |
-| compressed_projection_only | missing |  |  |  |  | False |  |  |  |  |
-| compressed_aggregation_only | missing |  |  |  |  | False |  |  |  |  |
-| single_head_first_layer | missing |  |  |  |  | False |  |  |  |  |
-| first_hidden_layer_all_heads | missing |  |  |  |  | False |  |  |  |  |
-| hidden_only | missing |  |  |  |  | False |  |  |  |  |
-| output_only | missing |  |  |  |  | False |  |  |  |  |
-| output_projection_only | missing |  |  |  |  | False |  |  |  |  |
-| output_attention_only | missing |  |  |  |  | False |  |  |  |  |
-| output_aggregation_only | missing |  |  |  |  | False |  |  |  |  |
-| output_bias_add_only | missing |  |  |  |  | False |  |  |  |  |
-| output_average_only | missing |  |  |  |  | False |  |  |  |  |
-| final_logits_public_binding_only | missing |  |  |  |  | False |  |  |  |  |
-| output_full_derivation | missing |  |  |  |  | False |  |  |  |  |
-| full_model | missing |  |  |  |  | False |  |  |  |  |
-| full_model_current | verified | 39418.157 | 20340.017 | 372.952 | 1280306 | True |  |  |  |  |
 
 ## Full-Dataset Quantized Inverse Preflight Evidence
 
