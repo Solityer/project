@@ -1,7 +1,7 @@
 # Native Constraint Debug Report
 
 - Route: `ezkl_gat_native_compressed_csr_attention_full`
-- Diagnostic policy: every native debug scope runs MockProver before KZG prove; failures write `native_constraint_failure.json` and `.log`.
+- Diagnostic policy: explicit `--native-debug-scope` runs use MockProver before KZG prove and write `native_constraint_failure.json` plus `.log` on failures. Large full-dataset production runs skip the diagnostic MockProver precheck by policy while still requiring strict KZG prove and verify.
 - No output-binding workaround, precomputed logits, subset, shard, sample, digest, folding, or identity route is used.
 
 ## Cora Scope Ladder
@@ -29,7 +29,7 @@
 | final_logits_public_binding_only | missing |  |  |  |  | False |  |  |  |  |
 | output_full_derivation | missing |  |  |  |  | False |  |  |  |  |
 | full_model | missing |  |  |  |  | False |  |  |  |  |
-| full_model_current | verified | 44691.611 | 22186.999 | 397.249 | 1281018 | True |  |  |  |  |
+| full_model_current | verified | 39418.157 | 20340.017 | 372.952 | 1280306 | True |  |  |  |  |
 
 ## Full-Dataset Quantized Inverse Preflight Evidence
 

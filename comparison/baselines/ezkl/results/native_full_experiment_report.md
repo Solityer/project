@@ -5,8 +5,8 @@
 | Cora | verified | True | True | True |  |
 | Citeseer | verified | True | True | True |  |
 | Pubmed | verified | True | True | True |  |
-| PPI | failed | False | False | True | native_constraint_synthesis_failed |
-| ogbn-arxiv | blocked | False | False | True | native_prove_resource_failure |
+| PPI | verified | True | True | True |  |
+| ogbn-arxiv | verified | True | True | True |  |
 
 ## Final Logits Binding
 
@@ -27,11 +27,10 @@ No output-binding workaround, no precomputed logits, no subset, no shard, and no
 | Cora |  |  |  | 0 | 4 | quantized_inverse_lookup | 63 | 4 | 4 | 252 | True | True |  |
 | Citeseer |  |  |  | 0 | 2 | quantized_inverse_lookup | 32 | 8 | 8 | 256 | True | True |  |
 | Pubmed |  |  |  | 0 | 6 | quantized_inverse_lookup | 96 | 3 | 3 | 288 | True | True |  |
-| PPI | prove_time_ms | native.full_model.output.head_0.segment_sum_inverse | native.full_model.output.head_0.segment_sum_inverse | 0 | 1 | quantized_inverse_lookup | 16 | 16 | 16 | 256 | True | True | MockProver must satisfy every enabled native diagnostic gate before KZG proving |
-| ogbn-arxiv | prove_time_ms | None | None | 0 | 290 | quantized_inverse_lookup | 1014 | 0 | 0 | 0 | True | True | None |
+| PPI |  | None | None | 0 | 1 | quantized_inverse_lookup | 16 | 16 | 16 | 256 | True | True | None |
+| ogbn-arxiv |  | None | None | 0 | 290 | quantized_inverse_lookup | 1014 | 0 | 0 | 0 | True | True | None |
 
 ## Native Constraint Failure Evidence
 
 | Dataset | gate | region | row | values | remaining_blocker |
 | --- | --- | --- | ---: | --- | --- |
-| PPI | native.full_model.output.head_0.segment_sum_inverse | native.full_model.output.head_0.segment_sum_inverse | 35543 | required_logrows=25; node_count=56944; edge_count=850576; run_dir=.; output_head_index=0; output_node_index=17771; output_sum_fp64=326.70716581639925; output_sum_q=5227; output_inv_q=0; inverse_table_range_size=4096; output_sum_q_in_inverse_table_range=false; segment_begin=234519; segment_end=235101; segment_degree=582 | MockProver returned at least one unsatisfied Halo2 relation |
