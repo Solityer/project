@@ -1,0 +1,88 @@
+{
+  "advice_columns": 4,
+  "assigned_row_upper_bound": 29591968,
+  "circuit_rows": 16777216,
+  "command": "../../target/release/ezkl graph-gat-prove --compiled-circuit model.compiled --witness witness.json --pk-path pk.key --proof-path proof.json",
+  "compiled_circuit_size": 5842,
+  "current_rss_bytes": 71462518784,
+  "fixed_columns": 12,
+  "instance_columns": 2,
+  "largest_payloads_loaded": [
+    {
+      "name": "pk.key",
+      "path": "pk.key",
+      "size_bytes": 51564774651
+    },
+    {
+      "name": "pk.srs",
+      "path": "pk.srs",
+      "size_bytes": 2147483908
+    },
+    {
+      "name": "node_features.f64.bin",
+      "path": "./node_features.f64.bin",
+      "size_bytes": 22777634
+    },
+    {
+      "name": "csr_segment_layout.bin",
+      "path": "./csr_segment_layout.bin",
+      "size_bytes": 14525132
+    },
+    {
+      "name": "formal_tables.bin",
+      "path": "./formal_tables.bin",
+      "size_bytes": 1155136
+    },
+    {
+      "name": "checkpoint_tensors.txt",
+      "path": "./checkpoint_tensors.txt",
+      "size_bytes": 37195
+    },
+    {
+      "name": "witness",
+      "path": "witness.json",
+      "size_bytes": 10556
+    },
+    {
+      "name": "model.compiled",
+      "path": "./model.compiled",
+      "size_bytes": 5835
+    }
+  ],
+  "logrows": 24,
+  "lookup_table_columns": 3,
+  "mock_precheck_policy": "skipped_for_large_full_dataset_memory_policy",
+  "payload_deduplication": "single NativeOutputDerivationWitness reused for public instance, binding, MockProver when enabled, and create_proof circuit assignment",
+  "phase": "proof_serialized",
+  "pk_size": 51564774651,
+  "proof_backend": "halo2_kzg_shplonk_blake2b",
+  "proof_serialization_policy": "snark_json_written_after_create_proof_completes",
+  "public_instance_length": 6890224,
+  "setup_only_data_policy": "shape-only setup artifacts are not retained by graph-gat-prove",
+  "thread_env_settings": {
+    "MALLOC_ARENA_MAX": "1",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "RAYON_NUM_THREADS": "1",
+    "RUST_BACKTRACE": "0",
+    "RUST_LOG": "warn"
+  },
+  "witness_payload_policy": "compact metadata JSON; tensor payloads remain in binary/text run artifacts and are loaded once into the reused derivation",
+  "witness_payload_size": 10556,
+  "peak_rss_bytes": 123818070016,
+  "elapsed_ms": 1921540,
+  "elapsed_wall_clock": "32:01.54",
+  "returncode": 0,
+  "signal": null,
+  "proof_generated": true,
+  "stderr_tail": "",
+  "stdout_tail": "",
+  "attempted_optimizations": [
+    "deterministic inverse table range from public degree/ExpMap bound",
+    "single tagged lookup table for inverse/LReLU/Exp/ELU reduced lookup table columns from 8 to 3",
+    "prove-time output derivation/public instance/binding payload deduplication",
+    "compact metadata witness; large tensor payloads loaded from run artifacts once",
+    "large full-dataset MockProver diagnostic precheck skipped while strict KZG proof and verify remain enabled",
+    "single-thread low-memory prove environment"
+  ]
+}

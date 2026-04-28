@@ -31,11 +31,6 @@ std::map<std::string, std::string> parse_args(int argc, char** argv) {
             throw std::runtime_error("expected --key value argument, got: " + key);
         }
         const auto normalized = key.substr(2);
-        if (normalized == "fail-on-padding-bound-unverified"
-            || normalized == "emit-segment-debug") {
-            out[normalized] = "true";
-            continue;
-        }
         if (i + 1 >= argc) {
             throw std::runtime_error("expected value for argument: " + key);
         }
@@ -76,32 +71,18 @@ std::string optional_string_arg(
     return it == args.end() ? fallback : it->second;
 }
 
-bool optional_bool_arg(
-    const std::map<std::string, std::string>& args,
-    const std::string& key) {
-    const auto it = args.find(key);
-    return it != args.end() && (it->second == "true" || it->second == "1" || it->second == "yes");
-}
-
 bool is_native_graph_route(const std::string& route) {
-    return route == "ezkl_gat_native_csr_segment_attention_full"
-        || route == "ezkl_gat_native_compressed_csr_attention_full";
-}
-
-bool is_compressed_native_graph_route(const std::string& route) {
     return route == "ezkl_gat_native_compressed_csr_attention_full";
 }
 
 std::string native_primitive_for_route(const std::string& route) {
-    return is_compressed_native_graph_route(route)
-        ? "GraphSegmentAttentionCompressedCSR"
-        : "GraphSegmentAttention";
+    (void)route;
+    return "GraphSegmentAttentionCompressedCSR";
 }
 
 std::string native_primitive_version_for_route(const std::string& route) {
-    return is_compressed_native_graph_route(route)
-        ? "csr_segment_attention_compressed_v1"
-        : "csr_segment_attention_v1";
+    (void)route;
+    return "csr_segment_attention_compressed_v1";
 }
 
 std::size_t public_degree_bound_from_graph(const gat_ezkl::NormalizedGraph& graph) {
@@ -121,17 +102,6 @@ std::size_t public_degree_bound_from_graph(const gat_ezkl::NormalizedGraph& grap
     return max_degree;
 }
 
-std::size_t optional_size_arg(
-    const std::map<std::string, std::string>& args,
-    const std::string& key,
-    std::size_t fallback) {
-    const auto it = args.find(key);
-    if (it == args.end() || it->second.empty()) {
-        return fallback;
-    }
-    return static_cast<std::size_t>(std::stoull(it->second));
-}
-
 bool path_is_within(const std::filesystem::path& child, const std::filesystem::path& parent) {
     const auto abs_child = std::filesystem::weakly_canonical(child);
     const auto abs_parent = std::filesystem::weakly_canonical(parent);
@@ -148,26 +118,6 @@ std::string null_metric_json() {
     return "null";
 }
 
-std::string manifest_segment_fields(const gat_ezkl::SegmentAnalysisReport* report) {
-    if (report == nullptr) {
-        return "";
-    }
-    std::ostringstream out;
-    out << "  \"segment_lowering\": true,\n"
-        << "  \"segment_layout\": \"" << gat_ezkl::json_escape(report->segment_layout) << "\",\n"
-        << "  \"max_in_degree\": " << report->max_in_degree << ",\n"
-        << "  \"padded_edge_slots\": " << report->total_packed_slots << ",\n"
-        << "  \"original_edge_count\": " << report->edge_count << ",\n"
-        << "  \"padding_ratio\": " << report->padding_ratio << ",\n"
-        << "  \"sentinel_value\": " << report->sentinel_value << ",\n"
-        << "  \"sentinel_bound_verified\": " << (report->sentinel_bound_verified ? "true" : "false") << ",\n"
-        << "  \"valid_mask_hash\": \"" << report->hashes.valid_mask_hash << "\",\n"
-        << "  \"segment_ptr_hash\": \"" << report->hashes.segment_ptr_hash << "\",\n"
-        << "  \"packed_src_hash\": \"" << report->hashes.packed_src_hash << "\",\n"
-        << "  \"packed_edge_index_hash\": \"" << report->hashes.packed_edge_index_hash << "\",\n";
-    return out.str();
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -177,10 +127,8 @@ int main(int argc, char** argv) {
         const auto project_root = std::filesystem::weakly_canonical(require_path_arg(args, "project-root"));
         const auto ezkl_root = std::filesystem::weakly_canonical(require_path_arg(args, "ezkl-root"));
         const auto output_dir = require_path_arg(args, "output-dir");
-        const auto route = optional_string_arg(args, "route", "strict_gat_full_onnx_v1");
+        const auto route = optional_string_arg(args, "route", "ezkl_gat_native_compressed_csr_attention_full");
         const auto analysis_only = optional_string_arg(args, "analysis-only", "");
-        const auto max_packed_slots_limit = optional_size_arg(args, "max-packed-slots-limit", 16000000);
-        const auto emit_segment_debug = optional_bool_arg(args, "emit-segment-debug");
 
         if (!path_is_within(output_dir, ezkl_root)) {
             throw std::runtime_error("output-dir must be inside ezkl-root");
@@ -222,48 +170,13 @@ int main(int argc, char** argv) {
 
         const auto quant = gat_ezkl::quant_config_from_id(config.quant_cfg_id, config.range_bits);
         const auto gat_summary = gat_ezkl::summarize_gat_semantics(graph, checkpoint);
-        std::optional<gat_ezkl::SegmentAnalysisReport> segment_report;
-        const bool wants_native_csr_route = is_native_graph_route(route);
-        const bool wants_segment_route = route == "ezkl_gat_strict_segment_softmax_full"
-            || analysis_only == "segment-softmax";
-        if (wants_segment_route) {
-            const auto bounds = gat_ezkl::choose_invalid_score_sentinel(
-                gat_ezkl::infer_score_bounds_from_quant_cfg(quant, config.range_bits));
-            segment_report = gat_ezkl::analyze_segment_softmax(
-                run_id,
-                config,
-                graph,
-                checkpoint,
-                gat_summary,
-                bounds,
-                max_packed_slots_limit);
-            gat_ezkl::write_segment_analysis_json(
-                output_dir / "segment_softmax_analysis.json",
-                *segment_report);
-            gat_ezkl::write_text_file(
-                output_dir / "segment_metadata.json",
-                gat_ezkl::segment_metadata_json(*segment_report));
-            if (emit_segment_debug) {
-                std::string reason;
-                const auto layout = gat_ezkl::build_segment_packed_layout(graph, &reason);
-                if (reason.empty()) {
-                    gat_ezkl::write_segment_debug_files(output_dir, layout);
-                }
-            }
-            if (analysis_only == "segment-softmax") {
-                std::cout << "dataset=" << run_id
-                          << " route_id=" << route
-                          << " analysis=segment-softmax"
-                          << " N=" << graph.node_count
-                          << " E=" << graph.edge_count
-                          << " Dmax=" << segment_report->max_in_degree
-                          << " packed_slots=" << segment_report->total_packed_slots
-                          << " feasible=" << (segment_report->route_feasible_full ? "true" : "false")
-                          << " blocker=" << segment_report->blocker_if_any
-                          << std::endl;
-                return 0;
-            }
+        if (!analysis_only.empty()) {
+            throw std::runtime_error("analysis-only routes are not part of the final strict ezkl comparison");
         }
+        if (!is_native_graph_route(route)) {
+            throw std::runtime_error("only ezkl_gat_native_compressed_csr_attention_full is allowed for the final comparison");
+        }
+        const bool wants_native_csr_route = true;
         const auto graph_hash = gat_ezkl::hash_graph_hex(graph);
         const auto checkpoint_hash = gat_ezkl::hash_files_hex({checkpoint_root / "manifest.json", checkpoint_root / "tensors.txt"});
         const auto shape_hash = gat_ezkl::hash_shape_hex(graph, checkpoint);
@@ -312,28 +225,13 @@ int main(int argc, char** argv) {
                 shape_hash,
                 formal_tables ? &*formal_tables : nullptr);
         }
-        const auto decision = wants_native_csr_route
-            ? gat_ezkl::export_native_csr_segment_attention_gat(
-                output_dir,
-                route,
-                config,
-                graph,
-                checkpoint,
-                gat_summary)
-            : route == "ezkl_gat_strict_segment_softmax_full"
-            ? gat_ezkl::export_or_block_strict_segment_gat_onnx(
-                output_dir,
-                config,
-                graph,
-                checkpoint,
-                gat_summary,
-                *segment_report)
-            : gat_ezkl::export_or_block_strict_gat_onnx(
-                output_dir,
-                config,
-                graph,
-                checkpoint,
-                gat_summary);
+        const auto decision = gat_ezkl::export_native_csr_segment_attention_gat(
+            output_dir,
+            route,
+            config,
+            graph,
+            checkpoint,
+            gat_summary);
 
         gat_ezkl::write_text_file(output_dir / "metadata.json", metadata_json);
         gat_ezkl::write_text_file(output_dir / "model_info.json", model_info_json);
@@ -373,7 +271,6 @@ int main(int argc, char** argv) {
             << "  \"limitation\": \"" << gat_ezkl::json_escape(decision.limitation) << "\",\n"
             << "  \"strict_public_input_equivalent\": " << (decision.strict_public_input_equivalent ? "true" : "false") << ",\n"
             << "  \"full_gat_forward_in_ezkl_proof\": " << (decision.full_gat_forward_in_ezkl_proof ? "true" : "false") << ",\n"
-            << manifest_segment_fields(segment_report ? &*segment_report : nullptr)
             << "  \"network_onnx_is_blocked_artifact\": " << (decision.network_onnx_is_blocked_artifact ? "true" : "false") << "\n"
             << "}\n";
         gat_ezkl::write_text_file(output_dir / "export_status.json", export_status.str());
@@ -433,7 +330,6 @@ int main(int argc, char** argv) {
             << "  \"compile_ms\": " << null_metric_json() << ",\n"
             << "  \"gen_settings_ms\": " << null_metric_json() << ",\n"
             << "  \"check_mode\": \"not_started\",\n"
-            << manifest_segment_fields(segment_report ? &*segment_report : nullptr)
             << "  \"public_input_element_count\": " << gat_ezkl::public_input_element_count(graph) << ",\n"
             << "  \"public_output_element_count\": " << gat_ezkl::public_output_element_count(graph) << ",\n"
             << "  \"N\": " << graph.node_count << ",\n"

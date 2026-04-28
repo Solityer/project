@@ -24,10 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const LEGACY_ROUTE_ID: &str = "ezkl_gat_native_csr_segment_attention_full";
 const COMPRESSED_ROUTE_ID: &str = "ezkl_gat_native_compressed_csr_attention_full";
-const LEGACY_PRIMITIVE: &str = "GraphSegmentAttention";
-const LEGACY_PRIMITIVE_VERSION: &str = "csr_segment_attention_v1";
 const COMPRESSED_PRIMITIVE: &str = "GraphSegmentAttentionCompressedCSR";
 const COMPRESSED_PRIMITIVE_VERSION: &str = "csr_segment_attention_compressed_v1";
 const DEFAULT_MAX_LOGROWS: u32 = 26;
@@ -1647,7 +1644,7 @@ fn ceil_log2(value: u128) -> u32 {
 }
 
 fn is_supported_route(route_id: &str) -> bool {
-    route_id == LEGACY_ROUTE_ID || route_id == COMPRESSED_ROUTE_ID
+    route_id == COMPRESSED_ROUTE_ID
 }
 
 fn is_compressed_route(route_id: &str) -> bool {
@@ -1655,11 +1652,8 @@ fn is_compressed_route(route_id: &str) -> bool {
 }
 
 fn primitive_for_route(route_id: &str) -> (&'static str, &'static str) {
-    if is_compressed_route(route_id) {
-        (COMPRESSED_PRIMITIVE, COMPRESSED_PRIMITIVE_VERSION)
-    } else {
-        (LEGACY_PRIMITIVE, LEGACY_PRIMITIVE_VERSION)
-    }
+    let _ = route_id;
+    (COMPRESSED_PRIMITIVE, COMPRESSED_PRIMITIVE_VERSION)
 }
 
 fn total_hidden_heads(spec: &GraphAttentionSpec) -> u64 {

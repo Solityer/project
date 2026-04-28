@@ -1,0 +1,22 @@
+{
+  "chunk_size": 59151,
+  "command": "/home/pzh/project/comparison/baselines/ezkl/target/release/ezkl graph-gat-setup --compiled-circuit model.compiled --vk-path vk.key --pk-path pk.key",
+  "compiled_size_bytes": 5835,
+  "elapsed_ms": 79890.20834700204,
+  "elapsed_wall_clock": "19.88",
+  "exit_status": "0",
+  "instance_column_count": 1,
+  "keygen_phase": "graph-gat-setup",
+  "loaded_payloads": [
+    "model.compiled",
+    "shape metadata only"
+  ],
+  "peak_rss_bytes": 5510811648,
+  "peak_rss_kbytes": 5381652,
+  "public_instance_layout": "chunked_columns",
+  "public_instance_length": 59151,
+  "raw_path": "/home/pzh/project/comparison/baselines/ezkl/runs/pubmed_full/keygen_memory_profile.time.txt",
+  "returncode": 0,
+  "setup_payload_mode": "shape_only",
+  "time_command": "/home/pzh/project/comparison/baselines/ezkl/target/release/ezkl graph-gat-setup --compiled-circuit model.compiled --vk-path vk.key --pk-path pk.key"
+}

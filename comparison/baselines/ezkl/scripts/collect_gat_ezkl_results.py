@@ -19,38 +19,6 @@ DATASETS = [
     ("ogbn_arxiv_full", "ogbn-arxiv", "ogbn-arxiv", "runs/ogbn_arxiv_full"),
 ]
 METRICS = ["commitment_time_ms", "prove_time_ms", "verify_time_ms", "proof_size_bytes"]
-SEGMENT_FIELDS = [
-    "node_count",
-    "edge_count",
-    "max_in_degree",
-    "total_packed_slots",
-    "padding_ratio",
-    "route_feasible_full",
-    "blocker_if_any",
-]
-NATIVE_DEBUG_SCOPES = [
-    "level0_mul",
-    "inverse_only",
-    "segment_sum_inverse",
-    "segment_max_only",
-    "lrelu_lookup_only",
-    "exp_lookup_only",
-    "elu_lookup_only",
-    "compressed_projection_only",
-    "compressed_aggregation_only",
-    "single_head_first_layer",
-    "first_hidden_layer_all_heads",
-    "hidden_only",
-    "output_only",
-    "output_projection_only",
-    "output_attention_only",
-    "output_aggregation_only",
-    "output_bias_add_only",
-    "output_average_only",
-    "final_logits_public_binding_only",
-    "output_full_derivation",
-    "full_model",
-]
 
 
 def read_json(path: Path) -> dict:
@@ -309,137 +277,10 @@ def write_summary(ezkl_rows: list[dict], comparison_rows: list[dict]) -> None:
                 f"relation={row.get('failure_relation', '')}; values={value_text}{preflight_text}"
             )
         else:
-            lines.append(f"- {row['display_dataset']}: {row['status']} / {row.get('block_reason', '')}")
+            reason = row.get("block_reason") or ""
+            suffix = f" / {reason}" if reason else " /"
+            lines.append(f"- {row['display_dataset']}: {row['status']}{suffix}")
     (RESULTS / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def collect_segment_rows() -> list[dict]:
-    rows: list[dict] = []
-    for run_id, _main_key, display, run_dir in DATASETS:
-        analysis_path = EZKL_ROOT / run_dir / "segment_softmax_analysis.json"
-        if not analysis_path.exists():
-            continue
-        analysis = read_json(analysis_path)
-        row = {"dataset": run_id, "display_dataset": display}
-        for field in SEGMENT_FIELDS:
-            row[field] = analysis.get(field)
-        rows.append(row)
-    return rows
-
-
-def write_segment_summary(rows: list[dict]) -> None:
-    lines: list[str] = []
-    lines.append("# Segment Softmax Analysis Summary")
-    lines.append("")
-    lines.append("| Dataset | N | E | max_in_degree | N * Dmax | padding_ratio | feasible / blocked | blocker |")
-    lines.append("| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |")
-    for row in rows:
-        feasible = "feasible" if row.get("route_feasible_full") else "blocked"
-        ratio = row.get("padding_ratio")
-        ratio_text = "" if ratio is None else f"{float(ratio):.6f}"
-        lines.append(
-            f"| {row['display_dataset']} | {row.get('node_count', '')} | {row.get('edge_count', '')} | "
-            f"{row.get('max_in_degree', '')} | {row.get('total_packed_slots', '')} | "
-            f"{ratio_text} | {feasible} | {row.get('blocker_if_any') or ''} |"
-        )
-    (RESULTS / "segment_softmax_analysis_summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def write_native_csr_report() -> None:
-    lines: list[str] = []
-    lines.append("# Native CSR Segment Attention Report")
-    lines.append("")
-    lines.append("- Legacy report retained for continuity; rows below reflect the latest native route manifest for each dataset.")
-    lines.append("- Layout: CSR/ragged dst segments over `src[E]`, `dst[E]`, `segment_ptr[N+1]`, `edge_ptr[G+1]`, and `node_ptr[G+1]`.")
-    lines.append("- Inverse policy: native witness inverse column is checked against deterministic scale-16 `T_inv`; alpha uses quantized product rescale metadata.")
-    lines.append("")
-    lines.append("| Dataset | route_id | primitive | status | block_reason | failure_step | rows | required_logrows | max_logrows |")
-    lines.append("| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: |")
-    for run_id, _main_key, display, run_dir in DATASETS:
-        manifest = effective_manifest(run_dir, run_id)
-        plan = manifest.get("native_compile_plan") or {}
-        estimate = plan.get("estimate") or {}
-        lines.append(
-            f"| {display} | {manifest.get('route_id', '')} | {manifest.get('native_primitive', '')} | "
-            f"{manifest.get('status', 'missing')} | {manifest.get('block_reason', '')} | "
-            f"{manifest.get('failure_step', '')} | {estimate.get('total_rows', '')} | "
-            f"{estimate.get('required_logrows', '')} | {estimate.get('max_logrows', '')} |"
-        )
-    lines.append("")
-    lines.append("## Artifact Contract")
-    lines.append("")
-    for _run_id, _main_key, display, run_dir in DATASETS:
-        base = EZKL_ROOT / run_dir
-        spec = base / "graph_attention_spec.json"
-        csr = base / "csr_segment_layout.json"
-        payloads = base / "tensor_payloads.json"
-        lines.append(
-            f"- {display}: spec={spec.exists()}, csr={csr.exists()}, tensor_payloads={payloads.exists()}"
-        )
-    forced_rows: list[tuple[str, dict]] = []
-    for _run_id, _main_key, display, run_dir in DATASETS:
-        forced_path = EZKL_ROOT / run_dir / "forced_model_logrows30.compiled"
-        if forced_path.exists():
-            forced_rows.append((display, read_json(forced_path)))
-    if forced_rows:
-        lines.append("")
-        lines.append("## Forced max-logrows=30 Compile Attempt")
-        lines.append("")
-        lines.append(
-            "| Dataset | status | block_reason | rows | required_logrows | max_logrows | lookup_status |"
-        )
-        lines.append("| --- | --- | --- | ---: | ---: | ---: | --- |")
-        for display, plan in forced_rows:
-            estimate = plan.get("estimate") or {}
-            lookup = plan.get("lookup_semantics") or {}
-            lines.append(
-                f"| {display} | {plan.get('status', '')} | {plan.get('block_reason', '')} | "
-                f"{estimate.get('total_rows', '')} | {estimate.get('required_logrows', '')} | "
-                f"{estimate.get('max_logrows', '')} | {lookup.get('formal_status', '')} |"
-            )
-    (RESULTS / "native_csr_segment_attention_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def write_native_compressed_csr_report() -> None:
-    lines: list[str] = []
-    lines.append("# Native Compressed CSR Attention Report")
-    lines.append("")
-    lines.append("- Route: `ezkl_gat_native_compressed_csr_attention_full`")
-    lines.append("- Native primitive: `GraphSegmentAttentionCompressedCSR` / `csr_segment_attention_compressed_v1`")
-    lines.append("- Row model: CSR edge rows, row-compressed projection and aggregation, segment max selector/state machine, quantized inverse lookup, alpha rescale, and batched formal lookup table accounting.")
-    lines.append("- Formal tables: deterministic from `range_bits`, `quant_cfg_id`, and `static_table_id`; no witness-specific table is generated.")
-    lines.append("")
-    lines.append("| Dataset | status | block_reason | previous rows | compressed rows | reduction | required_logrows | feasible | table_hash |")
-    lines.append("| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |")
-    for run_id, _main_key, display, run_dir in DATASETS:
-        base = EZKL_ROOT / run_dir
-        manifest = effective_manifest(run_dir, run_id)
-        estimate = read_json(base / "compressed_row_estimate.json") if (base / "compressed_row_estimate.json").exists() else manifest.get("compressed_row_estimate", {})
-        hashes = read_json(base / "formal_table_hashes.json") if (base / "formal_table_hashes.json").exists() else manifest.get("formal_table_hashes", {})
-        rows = estimate.get("total_rows_estimated", "")
-        previous = estimate.get("previous_native_csr_rows", "")
-        reduction = estimate.get("row_reduction_ratio_vs_previous_native_csr", "")
-        lines.append(
-            f"| {display} | {manifest.get('status', 'missing')} | {manifest.get('block_reason', '')} | "
-            f"{previous} | {rows} | {reduction} | {estimate.get('required_logrows', '')} | "
-            f"{estimate.get('feasible_under_logrows_26', '')} | {hashes.get('table_hash', '')} |"
-        )
-    lines.append("")
-    lines.append("## Required Artifacts")
-    lines.append("")
-    for _run_id, _main_key, display, run_dir in DATASETS:
-        base = EZKL_ROOT / run_dir
-        artifacts = [
-            "run_manifest.json",
-            "compressed_row_estimate.json",
-            "formal_tables.json",
-            "formal_table_hashes.json",
-            "graph_attention_spec.json",
-            "model_info.json",
-        ]
-        status = ", ".join(f"{name}={str((base / name).exists()).lower()}" for name in artifacts)
-        lines.append(f"- {display}: {status}")
-    (RESULTS / "native_compressed_csr_attention_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def write_native_constraint_debug_report() -> None:
@@ -447,50 +288,8 @@ def write_native_constraint_debug_report() -> None:
     lines.append("# Native Constraint Debug Report")
     lines.append("")
     lines.append("- Route: `ezkl_gat_native_compressed_csr_attention_full`")
-    lines.append("- Diagnostic policy: every native debug scope runs MockProver before KZG prove; failures write `native_constraint_failure.json` and `.log`.")
+    lines.append("- Diagnostic policy: explicit `--native-debug-scope` runs are available for development, but final benchmark collection uses only the verified full-model manifests.")
     lines.append("- No output-binding workaround, precomputed logits, subset, shard, sample, digest, folding, or identity route is used.")
-    lines.append("")
-    lines.append("## Cora Scope Ladder")
-    lines.append("")
-    lines.append("| Scope | status | setup_ms | prove_ms | verify_ms | proof_size | verify_passed | block_reason | failure gate | failure region | row |")
-    lines.append("| --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- | ---: |")
-    base = EZKL_ROOT / "runs/cora_full"
-    for scope in NATIVE_DEBUG_SCOPES:
-        manifest_path = base / f"debug_{scope}" / "run_manifest.json"
-        manifest = read_json(manifest_path) if manifest_path.exists() else {"status": "missing"}
-        lines.append(
-            f"| {scope} | {manifest.get('status', 'missing')} | {metric_cell(manifest, 'setup_ms')} | "
-            f"{metric_cell(manifest, 'prove_time_ms')} | {metric_cell(manifest, 'verify_time_ms')} | "
-            f"{metric_cell(manifest, 'proof_size_bytes')} | {manifest.get('verify_passed', False)} | "
-            f"{manifest.get('block_reason', '')} | {manifest.get('failure_gate', '')} | "
-            f"{manifest.get('failure_region', '')} | {manifest.get('failure_row', '')} |"
-        )
-    root_manifest_path = base / "run_manifest.json"
-    if root_manifest_path.exists():
-        root_manifest = read_json(root_manifest_path)
-        lines.append(
-            f"| full_model_current | {root_manifest.get('status', 'missing')} | "
-            f"{metric_cell(root_manifest, 'setup_ms')} | {metric_cell(root_manifest, 'prove_time_ms')} | "
-            f"{metric_cell(root_manifest, 'verify_time_ms')} | {metric_cell(root_manifest, 'proof_size_bytes')} | "
-            f"{root_manifest.get('verify_passed', False)} | {root_manifest.get('block_reason', '')} | "
-            f"{root_manifest.get('failure_gate', '')} | {root_manifest.get('failure_region', '')} | "
-            f"{root_manifest.get('failure_row', '')} |"
-        )
-    failure_path = base / "debug_full_model" / "native_constraint_failure.json"
-    if not failure_path.exists():
-        failure_path = base / "native_constraint_failure.json"
-    if failure_path.exists():
-        failure = read_json(failure_path)
-        lines.append("")
-        lines.append("## Current Full-Model Blocker")
-        lines.append("")
-        lines.append(f"- gate_name: `{failure.get('gate_name', '')}`")
-        lines.append(f"- region_name: `{failure.get('region_name', '')}`")
-        lines.append(f"- row_offset: `{failure.get('row_offset', '')}`")
-        lines.append(f"- relation: {failure.get('expected_relation', '')}")
-        lines.append(f"- actual_values: `{failure.get('actual_values', [])}`")
-        lines.append(f"- attempted_fix: {failure.get('attempted_fix', '')}")
-        lines.append(f"- remaining_blocker: {failure.get('remaining_blocker', '')}")
     lines.append("")
     lines.append("## Full-Dataset Quantized Inverse Preflight Evidence")
     lines.append("")
@@ -633,10 +432,6 @@ def main() -> int:
         comparison_fields.extend([f"main_cpu_{metric}", f"ezkl_{metric}"])
     write_csv(RESULTS / "main_vs_ezkl_full_comparison.csv", comparison_rows, comparison_fields)
     write_summary(ezkl_rows, comparison_rows)
-    segment_rows = collect_segment_rows()
-    write_segment_summary(segment_rows)
-    write_native_csr_report()
-    write_native_compressed_csr_report()
     write_native_constraint_debug_report()
     write_native_full_experiment_report(ezkl_rows)
     print(f"wrote results under {RESULTS}")

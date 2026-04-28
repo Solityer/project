@@ -1,0 +1,15 @@
+{
+  "command": "../../target/release/ezkl graph-gat-setup --compiled-circuit model.compiled --vk-path vk.key --pk-path pk.key",
+  "elapsed_wall_clock": "21:30.66",
+  "peak_rss_bytes": 88157806592,
+  "keygen_phase": "graph-gat-setup",
+  "setup_payload_mode": "shape_only",
+  "loaded_payloads": [
+    "model.compiled",
+    "shape metadata only"
+  ],
+  "compiled_size_bytes": 5870,
+  "pk_size": 51564774651,
+  "elapsed_ms": 1290660,
+  "returncode": 0
+}

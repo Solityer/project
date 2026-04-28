@@ -1,4 +1,4 @@
-target
+target/
 pkg
 *.csv
 !examples/notebooks/eth_price.csv
@@ -43,6 +43,17 @@ var/
 .vscode/
 *.whl
 *.bak
+*.tmp
+*.old
+*.orig
+core
+core.*
+perf.data
+nohup.out
+tiny_*
+scratch_*
+debug_*
+*.log
 node_modules
 /dist
 timingData.json
@@ -57,6 +68,13 @@ out
 
 # GAT-ZKML baseline local build/run outputs.
 build_gat_adapter/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.o
+*.a
+*.so
+*.dylib
 tmp/
 artifacts/
 .cargo_local/
@@ -64,3 +82,21 @@ artifacts/
 *.stdout.txt
 *.stderr.txt
 !results/*.csv
+!results/*.json
+!results/*.md
+
+# Final GAT comparison run directories are ignored by the project root
+# gitignore. The small JSON audit artifacts are force-added intentionally;
+# large proof/setup/witness payloads remain ignored and reproducible.
+runs/*/proof.json
+runs/*/pk.key
+runs/*/vk.key
+runs/*/pk.srs
+runs/*/vk.srs
+runs/*/witness.json
+runs/*/model.compiled
+runs/*/*.bin
+runs/*/*.stdout.txt
+runs/*/*.stderr.txt
+runs/*/*.time.txt
+runs/*/prove_memory_profile_internal.json

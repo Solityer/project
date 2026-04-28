@@ -1,3 +1,73 @@
+## GAT-ZKML Strict Full-Dataset Comparison
+
+This checkout contains the final ezkl baseline used for the GAT-ZKML comparison. The only final benchmark route is:
+
+```text
+ezkl_gat_native_compressed_csr_attention_full
+```
+
+The route proves the full native GAT forward relation over the full datasets `cora_full`, `citeseer_full`, `pubmed_full`, `ppi_full_formal`, and `ogbn_arxiv_full`. Final logits remain public instance cells and are bound to in-circuit derivation. No output-binding replacement, digest, folding, identity, subset, shard, sample, partial, scaled graph, or precomputed-logits route is part of the final benchmark.
+
+### Build
+
+```bash
+cd /home/pzh/project/comparison/baselines/ezkl
+
+RUSTC=$PWD/.rustup/toolchains/nightly-2025-12-01-aarch64-unknown-linux-gnu/bin/rustc \
+RUSTDOC=$PWD/.rustup/toolchains/nightly-2025-12-01-aarch64-unknown-linux-gnu/bin/rustdoc \
+$PWD/.rustup/toolchains/nightly-2025-12-01-aarch64-unknown-linux-gnu/bin/cargo build --release --bin ezkl --no-default-features --features ezkl,no-banner
+
+cmake -S cpp/gat_ezkl_adapter -B build_gat_adapter -DCMAKE_BUILD_TYPE=Release
+cmake --build build_gat_adapter -j
+```
+
+The local `.rustup/` and `.cargo_local/` directories are ignored toolchain/cache material. They are not final experiment artifacts.
+
+### Run
+
+```bash
+python3 scripts/run_gat_ezkl_baseline.py --dataset cora_full --mode full --route ezkl_gat_native_compressed_csr_attention_full --clean --run
+python3 scripts/run_gat_ezkl_baseline.py --dataset citeseer_full --mode full --route ezkl_gat_native_compressed_csr_attention_full --clean --run
+python3 scripts/run_gat_ezkl_baseline.py --dataset pubmed_full --mode full --route ezkl_gat_native_compressed_csr_attention_full --clean --run
+python3 scripts/run_gat_ezkl_baseline.py --dataset ppi_full_formal --mode full --route ezkl_gat_native_compressed_csr_attention_full --clean --run
+python3 scripts/run_gat_ezkl_baseline.py --dataset ogbn_arxiv_full --mode full --route ezkl_gat_native_compressed_csr_attention_full --clean --run
+python3 scripts/collect_gat_ezkl_results.py
+python3 scripts/validate_final_results.py
+```
+
+Large proof/key/SRS/witness/compiled-circuit payloads under `runs/` are reproducible and intentionally ignored. The repository keeps the small final audit artifacts needed to review strictness, table policy, public-instance binding, memory profile, and metrics.
+
+### Final Results
+
+| Dataset | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Cora | 39418.157 | 20340.017 | 372.952 | 1280306 |
+| Citeseer | 39775.686 | 20593.018 | 489.516 | 1347736 |
+| Pubmed | 79890.208 | 43471.667 | 966.513 | 3973400 |
+| PPI | 1289180 | 1921540 | 23240 | 461655303 |
+| ogbn-arxiv | 1290660 | 1860150 | 24660 | 453849446 |
+
+Primary result files:
+
+- `results/gat_ezkl_full_results.json`
+- `results/gat_ezkl_full_results.csv`
+- `results/main_vs_ezkl_full_comparison.json`
+- `results/main_vs_ezkl_full_comparison.csv`
+- `results/summary.md`
+- `results/control_variable_audit.md`
+- `results/large_public_output_policy_review.md`
+- `results/native_full_experiment_report.md`
+
+Per-dataset audit artifacts are kept in `runs/<dataset>/`: `run_manifest.json`, `model_info.json`, `graph_attention_spec.json`, `final_logits_binding.json`, `formal_tables.json`, `formal_table_hashes.json`, `native_full_witness_preflight.json`, `keygen_memory_profile.json`, and `prove_memory_profile.json`.
+
+### Necessary Adaptations
+
+- Deterministic inverse table range policy: `degree_bound_exp_bound_sum_scale_v1`, derived from public graph/quant/table metadata with `witness_specific_table=false`.
+- Shape-only setup and chunked public instance columns for large public outputs.
+- Tagged formal lookup table columns for inverse, LReLU, Exp, and ELU.
+- Prove-time payload deduplication and low-memory environment settings for large full datasets.
+- Large full-dataset diagnostic MockProver precheck is skipped; strict KZG proof and verify remain required.
+
 <h1 align="center">
 	<br>
 	 :thought_balloon:
@@ -156,4 +226,3 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Copyright (c) 2026 Zkonduit Inc. 
-
