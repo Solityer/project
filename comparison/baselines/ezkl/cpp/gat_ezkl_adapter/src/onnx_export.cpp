@@ -21,7 +21,7 @@ ExportDecision export_or_block_strict_gat_onnx(
     decision.block_reason = "ezkl_cannot_represent_grouped_softmax";
     decision.strict_public_input_equivalent = false;
     decision.full_gat_forward_in_ezkl_proof = false;
-    decision.network_onnx_is_placeholder = true;
+    decision.network_onnx_is_blocked_artifact = true;
 
     std::ostringstream limitation;
     limitation
@@ -35,17 +35,17 @@ ExportDecision export_or_block_strict_gat_onnx(
         << "No identity, digest, folding, or precomputed-logits route was used.";
     decision.limitation = limitation.str();
 
-    std::ostringstream placeholder;
-    placeholder << "{\n"
+    std::ostringstream blocked_artifact;
+    blocked_artifact << "{\n"
         << "  \"artifact\": \"network.onnx\",\n"
-        << "  \"placeholder\": true,\n"
+        << "  \"blocked_artifact\": true,\n"
         << "  \"route_id\": \"" << decision.route_id << "\",\n"
         << "  \"status\": \"blocked\",\n"
         << "  \"block_reason\": \"" << decision.block_reason << "\",\n"
         << "  \"limitation\": \"" << json_escape(decision.limitation) << "\"\n"
         << "}\n";
-    write_text_file(output_dir / "network.onnx", placeholder.str());
-    write_text_file(output_dir / "network.onnx.blocked.json", placeholder.str());
+    write_text_file(output_dir / "network.onnx", blocked_artifact.str());
+    write_text_file(output_dir / "network.onnx.blocked.json", blocked_artifact.str());
     return decision;
 }
 
@@ -62,7 +62,7 @@ ExportDecision export_or_block_strict_segment_gat_onnx(
     decision.status = "blocked";
     decision.strict_public_input_equivalent = false;
     decision.full_gat_forward_in_ezkl_proof = false;
-    decision.network_onnx_is_placeholder = true;
+    decision.network_onnx_is_blocked_artifact = true;
 
     if (!segment_report.blocker_if_any.empty()) {
         decision.block_reason = segment_report.blocker_if_any;
@@ -98,10 +98,10 @@ ExportDecision export_or_block_strict_segment_gat_onnx(
         decision.limitation = limitation.str();
     }
 
-    std::ostringstream placeholder;
-    placeholder << "{\n"
+    std::ostringstream blocked_artifact;
+    blocked_artifact << "{\n"
         << "  \"artifact\": \"network.onnx\",\n"
-        << "  \"placeholder\": true,\n"
+        << "  \"blocked_artifact\": true,\n"
         << "  \"route_id\": \"" << decision.route_id << "\",\n"
         << "  \"status\": \"blocked\",\n"
         << "  \"block_reason\": \"" << decision.block_reason << "\",\n"
@@ -114,8 +114,8 @@ ExportDecision export_or_block_strict_segment_gat_onnx(
         << (segment_report.sentinel_bound_verified ? "true" : "false") << ",\n"
         << "  \"limitation\": \"" << json_escape(decision.limitation) << "\"\n"
         << "}\n";
-    write_text_file(output_dir / "network.onnx", placeholder.str());
-    write_text_file(output_dir / "network.onnx.blocked.json", placeholder.str());
+    write_text_file(output_dir / "network.onnx", blocked_artifact.str());
+    write_text_file(output_dir / "network.onnx.blocked.json", blocked_artifact.str());
     return decision;
 }
 
@@ -135,7 +135,7 @@ ExportDecision export_native_csr_segment_attention_gat(
     decision.block_reason = "";
     decision.strict_public_input_equivalent = false;
     decision.full_gat_forward_in_ezkl_proof = false;
-    decision.network_onnx_is_placeholder = false;
+    decision.network_onnx_is_blocked_artifact = false;
 
     std::ostringstream limitation;
     limitation
@@ -155,7 +155,7 @@ ExportDecision export_native_csr_segment_attention_gat(
     std::ostringstream marker;
     marker << "{\n"
         << "  \"artifact\": \"network.onnx\",\n"
-        << "  \"placeholder\": false,\n"
+        << "  \"blocked_artifact\": false,\n"
         << "  \"model_type\": \""
         << (compressed_route ? "graph-segment-attention-compressed-native-csr" : "graph-segment-attention-native-csr")
         << "\",\n"

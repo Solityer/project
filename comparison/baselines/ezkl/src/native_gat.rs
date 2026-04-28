@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const LEGACY_ROUTE_ID: &str = "ezkl_gat_native_csr_segment_attention_full";
@@ -40,6 +41,11 @@ const NATIVE_DIAGNOSTIC_BACKEND_VERSION: &str = "native_full_output_derivation_v
 const TRACE_SCALAR_SCALE_I64: i64 = 16;
 const QUANTIZED_INVERSE_POLICY: &str = "quantized_inverse_lookup";
 const ALPHA_RESCALE_POLICY: &str = "rounded_product_div_scale_with_quantization_band";
+const LOOKUP_KIND_DISABLED: u64 = 0;
+const LOOKUP_KIND_INVERSE: u64 = 1;
+const LOOKUP_KIND_LRELU: u64 = 2;
+const LOOKUP_KIND_EXP: u64 = 3;
+const LOOKUP_KIND_ELU: u64 = 4;
 const NATIVE_DEBUG_SCOPES: [&str; 21] = [
     "level0_mul",
     "inverse_only",
@@ -190,13 +196,29 @@ struct FormalTableBinding {
     #[serde(default)]
     table_policy: String,
     #[serde(default)]
+    inverse_table_policy: String,
+    #[serde(default)]
     quant_cfg_id: String,
     #[serde(default)]
     static_table_id: String,
     #[serde(default)]
+    degree_bound_id: String,
+    #[serde(default)]
     range_bits: u64,
     #[serde(default)]
     signed_bound: i64,
+    #[serde(default)]
+    degree_bound: u64,
+    #[serde(default)]
+    exp_bound: i64,
+    #[serde(default)]
+    derived_sum_bound: i64,
+    #[serde(default)]
+    inverse_table_range_old: u64,
+    #[serde(default)]
+    inverse_table_range_new: u64,
+    #[serde(default)]
+    inverse_table_range_size: u64,
     #[serde(default)]
     range_hash: String,
     #[serde(default)]
@@ -237,6 +259,8 @@ struct FormalTableBinding {
     table_hash: String,
     #[serde(default)]
     bin_hash: String,
+    #[serde(default)]
+    witness_specific_table: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -246,13 +270,29 @@ struct FormalTableHashesFile {
     #[serde(default)]
     table_policy: String,
     #[serde(default)]
+    inverse_table_policy: String,
+    #[serde(default)]
     quant_cfg_id: String,
     #[serde(default)]
     static_table_id: String,
     #[serde(default)]
+    degree_bound_id: String,
+    #[serde(default)]
     range_bits: u64,
     #[serde(default)]
     signed_bound: i64,
+    #[serde(default)]
+    degree_bound: u64,
+    #[serde(default)]
+    exp_bound: i64,
+    #[serde(default)]
+    derived_sum_bound: i64,
+    #[serde(default)]
+    inverse_table_range_old: u64,
+    #[serde(default)]
+    inverse_table_range_new: u64,
+    #[serde(default)]
+    inverse_table_range_size: u64,
     #[serde(default)]
     range_hash: String,
     #[serde(default)]
@@ -293,6 +333,8 @@ struct FormalTableHashesFile {
     table_hash: String,
     #[serde(default)]
     bin_hash: String,
+    #[serde(default)]
+    witness_specific_table: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1055,6 +1097,23 @@ fn validate_inverse_witness_against_policy(
     inv_q >= min_inv && inv_q <= max_inv
 }
 
+fn inverse_sum_in_table_range(sum_q: i64, binding: &FormalTableBinding) -> bool {
+    sum_q >= 0 && (sum_q as usize) < inverse_table_range_size(binding)
+}
+
+fn validate_inverse_lookup_against_binding(
+    sum_q: i64,
+    inv_q: i64,
+    binding: &FormalTableBinding,
+) -> bool {
+    inverse_sum_in_table_range(sum_q, binding)
+        && validate_inverse_witness_against_policy(
+            sum_q,
+            inv_q,
+            &inverse_policy_from_binding(binding),
+        )
+}
+
 fn validate_alpha_rescale(
     u_q: i64,
     inv_q: i64,
@@ -1085,6 +1144,22 @@ fn rust_policy_matches_binding(binding: &FormalTableBinding) -> bool {
 }
 
 fn inverse_table_range_size(binding: &FormalTableBinding) -> usize {
+    if binding.inverse_table_range_size > 0 {
+        return binding.inverse_table_range_size as usize;
+    }
+    if binding.inverse_table_range_new > 0 {
+        return binding.inverse_table_range_new as usize;
+    }
+    if binding.range_size > 0 {
+        return binding.range_size as usize;
+    }
+    if binding.range_bits > 0 && binding.range_bits < usize::BITS as u64 {
+        return 1usize << binding.range_bits;
+    }
+    1usize << 12
+}
+
+fn formal_range_table_size(binding: &FormalTableBinding) -> usize {
     if binding.range_size > 0 {
         return binding.range_size as usize;
     }
@@ -1782,7 +1857,7 @@ fn estimate_compressed_rows(
         challenge_policy:
             "deterministic_public_challenges_derived_from_metadata_hash_route_id_and_shape_hash"
                 .to_string(),
-        lookup_batching: "single_batched_static_lookup_argument_per_table_kind".to_string(),
+        lookup_batching: "single_tagged_static_lookup_table_for_inverse_lrelu_exp_elu".to_string(),
         max_selector_policy: "dst-sorted CSR state machine with one max selector per segment/head"
             .to_string(),
     }
@@ -1792,11 +1867,19 @@ fn binding_from_hashes(table: &FormalTableHashesFile) -> FormalTableBinding {
     FormalTableBinding {
         source: table.source.clone(),
         table_policy: table.table_policy.clone(),
+        inverse_table_policy: table.inverse_table_policy.clone(),
         quant_cfg_id: table.quant_cfg_id.clone(),
         static_table_id: table.static_table_id.clone(),
+        degree_bound_id: table.degree_bound_id.clone(),
         range_bits: table.range_bits,
         range_size: table.range_size,
         signed_bound: table.signed_bound,
+        degree_bound: table.degree_bound,
+        exp_bound: table.exp_bound,
+        derived_sum_bound: table.derived_sum_bound,
+        inverse_table_range_old: table.inverse_table_range_old,
+        inverse_table_range_new: table.inverse_table_range_new,
+        inverse_table_range_size: table.inverse_table_range_size,
         range_hash: table.range_hash.clone(),
         lrelu_hash: table.lrelu_hash.clone(),
         elu_hash: table.elu_hash.clone(),
@@ -1816,6 +1899,7 @@ fn binding_from_hashes(table: &FormalTableHashesFile) -> FormalTableBinding {
         inverse_policy_hash: table.inverse_policy_hash.clone(),
         table_hash: table.table_hash.clone(),
         bin_hash: table.bin_hash.clone(),
+        witness_specific_table: table.witness_specific_table,
     }
 }
 
@@ -1834,15 +1918,21 @@ fn load_formal_table_binding(spec_path: &Path, spec: &GraphAttentionSpec) -> For
 }
 
 fn formal_table_binding_valid(spec: &GraphAttentionSpec, binding: &FormalTableBinding) -> bool {
+    let inverse_range = inverse_table_range_size(binding);
+    let derived_bound = binding.derived_sum_bound.max(0) as usize;
     !binding.table_hash.is_empty()
         && binding.source == "formal_quant_cfg_derived"
         && binding.table_policy == "derived_from_main_formal_static_tables_v1"
+        && (binding.inverse_table_policy.is_empty()
+            || binding.inverse_table_policy == "degree_bound_exp_bound_sum_scale_v1")
         && binding.quant_cfg_id == spec.quant_cfg_id
         && (spec.static_table_id.is_empty() || binding.static_table_id == spec.static_table_id)
         && (spec.formal_table_hash.is_empty() || binding.table_hash == spec.formal_table_hash)
         && binding.inverse_policy == QUANTIZED_INVERSE_POLICY
         && !binding.inv_hash.is_empty()
         && binding.inverse_table_hash == binding.inv_hash
+        && !binding.witness_specific_table
+        && inverse_range > derived_bound
         && rust_policy_matches_binding(binding)
 }
 
@@ -2358,14 +2448,9 @@ struct FullNativeConfig {
     q_lrelu_lookup: Selector,
     q_exp_lookup: Selector,
     q_elu_lookup: Selector,
-    table_lrelu_x: TableColumn,
-    table_lrelu_y: TableColumn,
-    table_exp_x: TableColumn,
-    table_exp_y: TableColumn,
-    table_elu_x: TableColumn,
-    table_elu_y: TableColumn,
-    table_inv_sum: TableColumn,
-    table_inv_inv: TableColumn,
+    table_lookup_kind: TableColumn,
+    table_lookup_x: TableColumn,
+    table_lookup_y: TableColumn,
 }
 
 #[allow(dead_code)]
@@ -2377,6 +2462,7 @@ struct FullNativeCircuit {
     run_dir: PathBuf,
     witness_source_path: String,
     shape_only: bool,
+    output_derivation: Option<Arc<NativeOutputDerivationWitness>>,
 }
 
 impl FullNativeCircuit {
@@ -2405,7 +2491,19 @@ impl FullNativeCircuit {
             run_dir: run_dir.to_path_buf(),
             witness_source_path,
             shape_only: false,
+            output_derivation: None,
         })
+    }
+
+    fn new_with_output_derivation(
+        plan: NativeCompiledPlan,
+        run_dir: &Path,
+        witness_source_path: String,
+        output_derivation: Arc<NativeOutputDerivationWitness>,
+    ) -> Result<Self, EZKLError> {
+        let mut circuit = Self::new(plan, run_dir, witness_source_path)?;
+        circuit.output_derivation = Some(output_derivation);
+        Ok(circuit)
     }
 
     fn new_shape_only(plan: NativeCompiledPlan) -> Result<Self, EZKLError> {
@@ -2427,6 +2525,7 @@ impl FullNativeCircuit {
             run_dir: PathBuf::new(),
             witness_source_path: String::new(),
             shape_only: true,
+            output_derivation: None,
         })
     }
 
@@ -2447,7 +2546,26 @@ impl FullNativeCircuit {
             run_dir: PathBuf::new(),
             witness_source_path: String::new(),
             shape_only: true,
+            output_derivation: None,
         }
+    }
+
+    fn output_derivation_for_assignment(
+        &self,
+    ) -> Result<Option<Arc<NativeOutputDerivationWitness>>, EZKLError> {
+        if self.shape_only {
+            return Ok(Some(Arc::new(shape_only_output_derivation_witness(&self.plan)?)));
+        }
+        if let Some(derivation) = &self.output_derivation {
+            return Ok(Some(Arc::clone(derivation)));
+        }
+        if self.run_dir.as_os_str().is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Arc::new(native_output_derivation_witness(
+            &self.plan,
+            &self.run_dir,
+        )?)))
     }
 
     fn assign_advice(
@@ -2517,7 +2635,13 @@ impl FullNativeCircuit {
                     "inverse scale product",
                     fr_i64(policy.inverse_scale_product),
                 )?;
-                Self::assign_advice(&mut region, config.aux, 0, "inverse aux", Fr::ZERO)?;
+                Self::assign_advice(
+                    &mut region,
+                    config.aux,
+                    0,
+                    "inverse lookup kind",
+                    Fr::from(LOOKUP_KIND_INVERSE),
+                )?;
                 Ok(())
             },
         )
@@ -2604,8 +2728,8 @@ impl FullNativeCircuit {
                         &mut region,
                         config.aux,
                         offset,
-                        "segment id",
-                        Fr::from(segment as u64),
+                        "inverse lookup kind",
+                        Fr::from(LOOKUP_KIND_INVERSE),
                     )?;
                     offset += 1;
                 }
@@ -2674,6 +2798,12 @@ impl FullNativeCircuit {
                     NativeDebugScope::EluLookupOnly => &[(-4, -4), (-1, -1), (0, 0), (6, 6)],
                     _ => &[],
                 };
+                let lookup_tag = match lookup_kind {
+                    NativeDebugScope::LreluLookupOnly => LOOKUP_KIND_LRELU,
+                    NativeDebugScope::ExpLookupOnly => LOOKUP_KIND_EXP,
+                    NativeDebugScope::EluLookupOnly => LOOKUP_KIND_ELU,
+                    _ => LOOKUP_KIND_DISABLED,
+                };
                 for (offset, (x, y)) in samples.iter().copied().enumerate() {
                     match lookup_kind {
                         NativeDebugScope::LreluLookupOnly => {
@@ -2700,8 +2830,8 @@ impl FullNativeCircuit {
                         &mut region,
                         config.aux,
                         offset,
-                        "lookup row",
-                        Fr::from(offset as u64),
+                        "lookup kind",
+                        Fr::from(lookup_tag),
                     )?;
                 }
                 Ok(())
@@ -3081,7 +3211,13 @@ impl FullNativeCircuit {
                         "output lrelu edge",
                         Fr::from(edge_index as u64),
                     )?;
-                    Self::assign_advice(&mut region, config.aux, edge_index, "unused", Fr::ZERO)?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.aux,
+                        edge_index,
+                        "lrelu lookup kind",
+                        Fr::from(LOOKUP_KIND_LRELU),
+                    )?;
                 }
                 Ok(())
             },
@@ -3174,7 +3310,13 @@ impl FullNativeCircuit {
                         "output exp edge",
                         Fr::from(edge_index as u64),
                     )?;
-                    Self::assign_advice(&mut region, config.aux, edge_index, "unused", Fr::ZERO)?;
+                    Self::assign_advice(
+                        &mut region,
+                        config.aux,
+                        edge_index,
+                        "exp lookup kind",
+                        Fr::from(LOOKUP_KIND_EXP),
+                    )?;
                 }
                 Ok(())
             },
@@ -3255,8 +3397,8 @@ impl FullNativeCircuit {
                         &mut region,
                         config.aux,
                         offset + 1,
-                        "output node",
-                        Fr::from(node as u64),
+                        "inverse lookup kind",
+                        Fr::from(LOOKUP_KIND_INVERSE),
                     )?;
                 }
                 Ok(())
@@ -3712,14 +3854,9 @@ impl Circuit<Fr> for FullNativeCircuit {
         let q_lrelu_lookup = meta.complex_selector();
         let q_exp_lookup = meta.complex_selector();
         let q_elu_lookup = meta.complex_selector();
-        let table_lrelu_x = meta.lookup_table_column();
-        let table_lrelu_y = meta.lookup_table_column();
-        let table_exp_x = meta.lookup_table_column();
-        let table_exp_y = meta.lookup_table_column();
-        let table_elu_x = meta.lookup_table_column();
-        let table_elu_y = meta.lookup_table_column();
-        let table_inv_sum = meta.lookup_table_column();
-        let table_inv_inv = meta.lookup_table_column();
+        let table_lookup_kind = meta.lookup_table_column();
+        let table_lookup_x = meta.lookup_table_column();
+        let table_lookup_y = meta.lookup_table_column();
 
         meta.create_gate("native.level0.mul", |meta| {
             let q = meta.query_selector(q_mul);
@@ -3730,9 +3867,14 @@ impl Circuit<Fr> for FullNativeCircuit {
         });
         meta.lookup("native.lookup.inverse", |meta| {
             let q = meta.query_selector(q_inverse);
+            let kind = meta.query_advice(aux, halo2_proofs::poly::Rotation::cur());
             let sum = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
             let inv = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
-            vec![(q.clone() * sum, table_inv_sum), (q * inv, table_inv_inv)]
+            vec![
+                (q.clone() * kind, table_lookup_kind),
+                (q.clone() * sum, table_lookup_x),
+                (q * inv, table_lookup_y),
+            ]
         });
         meta.create_gate("native.segment_sum", |meta| {
             let q = meta.query_selector(q_segment_sum);
@@ -3784,21 +3926,36 @@ impl Circuit<Fr> for FullNativeCircuit {
         });
         meta.lookup("native.lookup.lrelu", |meta| {
             let q = meta.query_selector(q_lrelu_lookup);
+            let kind = meta.query_advice(aux, halo2_proofs::poly::Rotation::cur());
             let x = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
             let y = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
-            vec![(q.clone() * x, table_lrelu_x), (q * y, table_lrelu_y)]
+            vec![
+                (q.clone() * kind, table_lookup_kind),
+                (q.clone() * x, table_lookup_x),
+                (q * y, table_lookup_y),
+            ]
         });
         meta.lookup("native.lookup.exp", |meta| {
             let q = meta.query_selector(q_exp_lookup);
+            let kind = meta.query_advice(aux, halo2_proofs::poly::Rotation::cur());
             let x = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
             let y = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
-            vec![(q.clone() * x, table_exp_x), (q * y, table_exp_y)]
+            vec![
+                (q.clone() * kind, table_lookup_kind),
+                (q.clone() * x, table_lookup_x),
+                (q * y, table_lookup_y),
+            ]
         });
         meta.lookup("native.lookup.elu", |meta| {
             let q = meta.query_selector(q_elu_lookup);
+            let kind = meta.query_advice(aux, halo2_proofs::poly::Rotation::cur());
             let x = meta.query_advice(left, halo2_proofs::poly::Rotation::cur());
             let y = meta.query_advice(right, halo2_proofs::poly::Rotation::cur());
-            vec![(q.clone() * x, table_elu_x), (q * y, table_elu_y)]
+            vec![
+                (q.clone() * kind, table_lookup_kind),
+                (q.clone() * x, table_lookup_x),
+                (q * y, table_lookup_y),
+            ]
         });
 
         FullNativeConfig {
@@ -3819,14 +3976,9 @@ impl Circuit<Fr> for FullNativeCircuit {
             q_lrelu_lookup,
             q_exp_lookup,
             q_elu_lookup,
-            table_lrelu_x,
-            table_lrelu_y,
-            table_exp_x,
-            table_exp_y,
-            table_elu_x,
-            table_elu_y,
-            table_inv_sum,
-            table_inv_inv,
+            table_lookup_kind,
+            table_lookup_x,
+            table_lookup_y,
         }
     }
 
@@ -3836,173 +3988,103 @@ impl Circuit<Fr> for FullNativeCircuit {
         mut layouter: impl Layouter<Fr>,
     ) -> Result<(), Error> {
         layouter.assign_table(
-            || "native.lookup.inverse.table",
+            || "native.lookup.tagged.table",
             |mut table| {
-                let policy = inverse_policy_from_binding(&self.plan.formal_table_binding);
-                let capacity = (1usize << self.params.logrows).saturating_sub(1);
+                let capacity = (1usize << self.params.logrows).saturating_sub(1).max(17);
                 let mut offset = 0usize;
-                let range_size = inverse_table_range_size(&self.plan.formal_table_binding);
-                for sum_q in 0..range_size {
-                    if offset >= capacity {
-                        break;
-                    }
+                macro_rules! assign_lookup_row {
+                    ($kind:expr, $x:expr, $y:expr) => {{
+                        if offset >= capacity {
+                            false
+                        } else {
+                            table.assign_cell(
+                                || "lookup kind",
+                                config.table_lookup_kind,
+                                offset,
+                                || Value::known(Fr::from($kind)),
+                            )?;
+                            table.assign_cell(
+                                || "lookup x",
+                                config.table_lookup_x,
+                                offset,
+                                || Value::known($x),
+                            )?;
+                            table.assign_cell(
+                                || "lookup y",
+                                config.table_lookup_y,
+                                offset,
+                                || Value::known($y),
+                            )?;
+                            offset += 1;
+                            true
+                        }
+                    }};
+                }
+
+                assign_lookup_row!(LOOKUP_KIND_DISABLED, Fr::ZERO, Fr::ZERO);
+
+                let policy = inverse_policy_from_binding(&self.plan.formal_table_binding);
+                let inverse_range_size = inverse_table_range_size(&self.plan.formal_table_binding);
+                'inverse_rows: for sum_q in 0..inverse_range_size {
                     let (min_inv, max_inv) =
                         quantized_inverse_interval_for_sum_q(sum_q as i64, &policy);
                     for inv_q in min_inv..=max_inv {
-                        if offset >= capacity {
-                            break;
+                        if !assign_lookup_row!(
+                            LOOKUP_KIND_INVERSE,
+                            Fr::from(sum_q as u64),
+                            fr_i64(inv_q)
+                        ) {
+                            break 'inverse_rows;
                         }
-                        table.assign_cell(
-                            || "inv sum_q",
-                            config.table_inv_sum,
-                            offset,
-                            || Value::known(Fr::from(sum_q as u64)),
-                        )?;
-                        table.assign_cell(
-                            || "inv inv_q",
-                            config.table_inv_inv,
-                            offset,
-                            || Value::known(fr_i64(inv_q)),
-                        )?;
-                        offset += 1;
                     }
                 }
-                if offset == 0 {
-                    table.assign_cell(
-                        || "inv sum_q",
-                        config.table_inv_sum,
-                        0,
-                        || Value::known(Fr::ZERO),
-                    )?;
-                    table.assign_cell(
-                        || "inv inv_q",
-                        config.table_inv_inv,
-                        0,
-                        || Value::known(Fr::ZERO),
-                    )?;
-                }
-                Ok(())
-            },
-        )?;
-        layouter.assign_table(
-            || "native.lookup.lrelu.table",
-            |mut table| {
-                let capacity = (1usize << self.params.logrows).saturating_sub(1).max(17);
+
                 let configured_bound = self
                     .plan
                     .formal_table_binding
                     .range_size
                     .max(4096)
                     .min(1_048_576) as i64;
-                let bound = configured_bound.min((capacity as i64 - 1) / 2).max(8);
-                for (offset, raw) in (-bound..=bound).enumerate() {
-                    table.assign_cell(
-                        || "lrelu x",
-                        config.table_lrelu_x,
-                        offset,
-                        || Value::known(fr_i64(raw)),
-                    )?;
-                    table.assign_cell(
-                        || "lrelu y",
-                        config.table_lrelu_y,
-                        offset,
-                        || Value::known(fr_i64(leaky_relu_table_output(raw))),
-                    )?;
+                let lrelu_bound = configured_bound.max(8);
+                for raw in -lrelu_bound..=lrelu_bound {
+                    if !assign_lookup_row!(
+                        LOOKUP_KIND_LRELU,
+                        fr_i64(raw),
+                        fr_i64(leaky_relu_table_output(raw))
+                    ) {
+                        break;
+                    }
                 }
-                Ok(())
-            },
-        )?;
-        layouter.assign_table(
-            || "native.lookup.exp.table",
-            |mut table| {
-                let capacity = (1usize << self.params.logrows).saturating_sub(1).max(17);
-                let range_size = inverse_table_range_size(&self.plan.formal_table_binding)
-                    .min(capacity / 5)
-                    .max(17);
-                table.assign_cell(
-                    || "exp disabled x",
-                    config.table_exp_x,
-                    0,
-                    || Value::known(Fr::ZERO),
-                )?;
-                table.assign_cell(
-                    || "exp disabled y",
-                    config.table_exp_y,
-                    0,
-                    || Value::known(Fr::ZERO),
-                )?;
-                let mut offset = 1usize;
-                for raw in 0..range_size {
+
+                let exp_range_size = formal_range_table_size(&self.plan.formal_table_binding)
+                    .max(17)
+                    .min(1_048_576);
+                'exp_rows: for raw in 0..exp_range_size {
                     let central =
                         quantize_trace_scalar((-dequantize_trace_scalar(raw as i64)).exp());
                     for band in -2i64..=2 {
-                        if offset >= capacity {
-                            break;
-                        }
                         let out = central.saturating_add(band).max(0);
-                        table.assign_cell(
-                            || "exp x",
-                            config.table_exp_x,
-                            offset,
-                            || Value::known(Fr::from(raw as u64)),
-                        )?;
-                        table.assign_cell(
-                            || "exp y",
-                            config.table_exp_y,
-                            offset,
-                            || Value::known(fr_i64(out)),
-                        )?;
-                        offset += 1;
+                        if !assign_lookup_row!(
+                            LOOKUP_KIND_EXP,
+                            Fr::from(raw as u64),
+                            fr_i64(out)
+                        ) {
+                            break 'exp_rows;
+                        }
                     }
                 }
-                if offset == 0 {
-                    table.assign_cell(
-                        || "exp x",
-                        config.table_exp_x,
-                        0,
-                        || Value::known(Fr::ZERO),
-                    )?;
-                    table.assign_cell(
-                        || "exp y",
-                        config.table_exp_y,
-                        0,
-                        || Value::known(Fr::ZERO),
-                    )?;
-                }
-                Ok(())
-            },
-        )?;
-        layouter.assign_table(
-            || "native.lookup.elu.table",
-            |mut table| {
-                let capacity = (1usize << self.params.logrows).saturating_sub(1).max(17);
-                let configured_bound = self
-                    .plan
-                    .formal_table_binding
-                    .range_size
-                    .max(4096)
-                    .min(1_048_576) as i64;
-                let bound = configured_bound.min((capacity as i64 - 1) / 6).max(8);
-                let mut offset = 0usize;
-                for raw in -bound..=bound {
+
+                let elu_bound = configured_bound.max(8);
+                'elu_rows: for raw in -elu_bound..=elu_bound {
                     let central = quantize_trace_scalar(elu_fp(dequantize_trace_scalar(raw)));
                     for band in -1i64..=1 {
-                        if offset >= capacity {
-                            break;
+                        if !assign_lookup_row!(
+                            LOOKUP_KIND_ELU,
+                            fr_i64(raw),
+                            fr_i64(central.saturating_add(band))
+                        ) {
+                            break 'elu_rows;
                         }
-                        table.assign_cell(
-                            || "elu x",
-                            config.table_elu_x,
-                            offset,
-                            || Value::known(fr_i64(raw)),
-                        )?;
-                        table.assign_cell(
-                            || "elu y",
-                            config.table_elu_y,
-                            offset,
-                            || Value::known(fr_i64(central.saturating_add(band))),
-                        )?;
-                        offset += 1;
                     }
                 }
                 Ok(())
@@ -4178,12 +4260,10 @@ impl Circuit<Fr> for FullNativeCircuit {
                 | NativeDebugScope::OutputFullDerivation
                 | NativeDebugScope::FullModel
         ) {
-            let witness = if self.shape_only {
-                shape_only_output_derivation_witness(&self.plan)
-            } else {
-                native_output_derivation_witness(&self.plan, &self.run_dir)
-            }
-            .map_err(|_| Error::Synthesis)?;
+            let witness = self
+                .output_derivation_for_assignment()
+                .map_err(|_| Error::Synthesis)?
+                .ok_or(Error::Synthesis)?;
             let mut head_logits_cells: Vec<Vec<AssignedCell<Fr, Fr>>> = Vec::new();
             let bind_single_output_head_directly = self.plan.k_out.max(1) == 1
                 && matches!(
@@ -4339,7 +4419,7 @@ impl Circuit<Fr> for FullNativeCircuit {
                         &mut layouter,
                         &config,
                         "native.full_model.output.average",
-                        &witness,
+                        witness.as_ref(),
                         &head_logits_cells,
                     )
                 }
@@ -4347,8 +4427,21 @@ impl Circuit<Fr> for FullNativeCircuit {
                 Ok(())
             }
         } else {
-            let values = native_full_public_inputs_for_run(&self.plan, &self.run_dir)
-                .map_err(|_| Error::Synthesis)?;
+            let values = if let Some(derivation) = self
+                .output_derivation_for_assignment()
+                .map_err(|_| Error::Synthesis)?
+            {
+                derivation
+                    .final_logits
+                    .flat_values_q
+                    .iter()
+                    .copied()
+                    .map(fr_i64)
+                    .collect::<Vec<_>>()
+            } else {
+                native_full_public_inputs_for_run(&self.plan, &self.run_dir)
+                    .map_err(|_| Error::Synthesis)?
+            };
             let final_cells = layouter.assign_region(
                 || "native.full_model.final_logits",
                 |mut region| {
@@ -5480,6 +5573,13 @@ fn public_instance_binding_for_run(
     run_dir: &Path,
 ) -> Result<PublicInstanceBinding, EZKLError> {
     let witness = native_final_logits_witness_for_run(plan, run_dir)?;
+    public_instance_binding_from_final_logits(plan, &witness)
+}
+
+fn public_instance_binding_from_final_logits(
+    plan: &NativeCompiledPlan,
+    witness: &NativeFinalLogitsWitness,
+) -> Result<PublicInstanceBinding, EZKLError> {
     let layout = public_instance_layout_for_plan(plan);
     let prefix = format!(
         "final_logits_binding_v2\nN={}\nC={}\nK_out={}\norder={}\nlayout={}\nchunk_size={}\ncolumns={}",
@@ -5522,17 +5622,14 @@ fn native_full_public_inputs_for_run(
         .collect())
 }
 
-fn native_full_public_instance_columns_for_run(
+fn native_full_public_instance_columns_from_values(
     plan: &NativeCompiledPlan,
-    run_dir: &Path,
+    values: &[i64],
 ) -> Result<Vec<Vec<Fr>>, EZKLError> {
     let layout = public_instance_layout_for_plan(plan);
     let configured_columns = layout.column_count.max(MAX_PUBLIC_INSTANCE_COLUMNS);
     let mut columns = vec![Vec::new(); configured_columns];
-    for (index, value) in native_full_public_input_values_for_run(plan, run_dir)?
-        .into_iter()
-        .enumerate()
-    {
+    for (index, value) in values.iter().copied().enumerate() {
         let column = index / layout.chunk_size.max(1);
         if column >= columns.len() {
             return Err("public_instance_encoding_mismatch: chunk column overflow".into());
@@ -5561,6 +5658,147 @@ fn load_native_params_for_key(
             logrows,
         ))
     }
+}
+
+fn current_rss_bytes() -> Option<u64> {
+    let status = fs::read_to_string("/proc/self/status").ok()?;
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("VmRSS:") {
+            let kb = rest
+                .split_whitespace()
+                .next()
+                .and_then(|value| value.parse::<u64>().ok())?;
+            return Some(kb.saturating_mul(1024));
+        }
+    }
+    None
+}
+
+fn file_size(path: &Path) -> Option<u64> {
+    fs::metadata(path).ok().map(|metadata| metadata.len())
+}
+
+fn largest_payloads_for_run(run_dir: &Path, witness_path: &Path, pk_path: &Path) -> serde_json::Value {
+    let payloads = [
+        ("pk.key", pk_path.to_path_buf()),
+        ("pk.srs", native_srs_path_for_key(pk_path)),
+        ("witness", witness_path.to_path_buf()),
+        ("model.compiled", run_dir.join("model.compiled")),
+        ("formal_tables.bin", run_dir.join("formal_tables.bin")),
+        ("node_features.f64.bin", run_dir.join("node_features.f64.bin")),
+        ("csr_segment_layout.bin", run_dir.join("csr_segment_layout.bin")),
+        ("checkpoint_tensors.txt", run_dir.join("checkpoint_tensors.txt")),
+    ];
+    let mut rows = payloads
+        .into_iter()
+        .filter_map(|(name, path)| {
+            file_size(&path).map(|bytes| {
+                serde_json::json!({
+                    "name": name,
+                    "path": path.display().to_string(),
+                    "size_bytes": bytes
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        right
+            .get("size_bytes")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0)
+            .cmp(
+                &left
+                    .get("size_bytes")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0),
+            )
+    });
+    serde_json::Value::Array(rows.into_iter().take(8).collect())
+}
+
+fn thread_env_profile() -> serde_json::Value {
+    let keys = [
+        "RAYON_NUM_THREADS",
+        "MALLOC_ARENA_MAX",
+        "MALLOC_CONF",
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "RUST_BACKTRACE",
+        "RUST_LOG",
+    ];
+    let mut out = serde_json::Map::new();
+    for key in keys {
+        if let Ok(value) = std::env::var(key) {
+            out.insert(key.to_string(), serde_json::Value::String(value));
+        }
+    }
+    serde_json::Value::Object(out)
+}
+
+fn native_column_profile(plan: &NativeCompiledPlan) -> serde_json::Value {
+    let layout = public_instance_layout_for_plan(plan);
+    serde_json::json!({
+        "advice_columns": 4,
+        "fixed_columns": 12,
+        "instance_columns": layout.column_count.max(MAX_PUBLIC_INSTANCE_COLUMNS),
+        "lookup_table_columns": 3
+    })
+}
+
+fn should_run_mock_precheck(plan: &NativeCompiledPlan) -> bool {
+    if let Ok(value) = std::env::var("EZKL_NATIVE_MOCK_PRECHECK") {
+        let normalized = value.trim().to_ascii_lowercase();
+        if ["0", "false", "off", "no"].contains(&normalized.as_str()) {
+            return false;
+        }
+        if ["1", "true", "on", "yes"].contains(&normalized.as_str()) {
+            return true;
+        }
+    }
+    let public_len = plan
+        .public_instance_total_length
+        .max(public_instance_total_length_for_plan(plan));
+    plan.dataset != "ogbn_arxiv_full" && public_len <= 5_000_000
+}
+
+fn write_native_prove_phase_profile(
+    run_dir: &Path,
+    plan: &NativeCompiledPlan,
+    phase: &str,
+    command: &str,
+    witness_path: &Path,
+    pk_path: &Path,
+    mock_precheck_policy: &str,
+) {
+    let scope = NativeDebugScope::parse(&plan.native_debug_scope)
+        .unwrap_or(NativeDebugScope::FullModel);
+    let logrows = scope.logrows(plan);
+    let columns = native_column_profile(plan);
+    let profile = serde_json::json!({
+        "phase": phase,
+        "current_rss_bytes": current_rss_bytes(),
+        "circuit_rows": 1u64.checked_shl(logrows).unwrap_or(0),
+        "assigned_row_upper_bound": u64::try_from(plan.estimate.total_rows).unwrap_or(u64::MAX),
+        "logrows": logrows,
+        "advice_columns": columns.get("advice_columns").and_then(|value| value.as_u64()).unwrap_or(4),
+        "fixed_columns": columns.get("fixed_columns").and_then(|value| value.as_u64()).unwrap_or(12),
+        "instance_columns": columns.get("instance_columns").and_then(|value| value.as_u64()).unwrap_or(2),
+        "lookup_table_columns": columns.get("lookup_table_columns").and_then(|value| value.as_u64()).unwrap_or(3),
+        "public_instance_length": plan.public_instance_total_length.max(public_instance_total_length_for_plan(plan)),
+        "proof_backend": "halo2_kzg_shplonk_blake2b",
+        "largest_payloads_loaded": largest_payloads_for_run(run_dir, witness_path, pk_path),
+        "witness_payload_size": file_size(witness_path),
+        "compiled_circuit_size": file_size(&run_dir.join("model.compiled")),
+        "pk_size": file_size(pk_path),
+        "proof_serialization_policy": "snark_json_written_after_create_proof_completes",
+        "thread_env_settings": thread_env_profile(),
+        "command": command,
+        "mock_precheck_policy": mock_precheck_policy,
+        "payload_deduplication": "single NativeOutputDerivationWitness reused for public instance, binding, MockProver when enabled, and create_proof circuit assignment",
+        "witness_payload_policy": "compact metadata JSON; tensor payloads remain in binary/text run artifacts and are loaded once into the reused derivation",
+        "setup_only_data_policy": "shape-only setup artifacts are not retained by graph-gat-prove"
+    });
+    let _ = write_json(&run_dir.join("prove_memory_profile_internal.json"), &profile);
 }
 
 fn run_dir_for_path(path: &Path) -> PathBuf {
@@ -5883,12 +6121,33 @@ fn validate_ready_preflight_policy(
         preflight_i64(preflight, "quantized_sum_scale16"),
         preflight_i64(preflight, "quantized_inv_scale16"),
     ) {
-        if !validate_inverse_witness_against_policy(sum_q, inv_q, &policy) {
+        if !validate_inverse_lookup_against_binding(sum_q, inv_q, &plan.formal_table_binding) {
             return Err(format!(
-                "quantized_inverse_lookup_mismatch: sum_q={} inv_q={} expected_inv_q={}",
+                "quantized_inverse_lookup_mismatch: sum_q={} inv_q={} expected_inv_q={} inverse_table_range_size={}",
                 sum_q,
                 inv_q,
-                quantized_inverse_for_sum_q(sum_q, &policy)
+                quantized_inverse_for_sum_q(sum_q, &policy),
+                inverse_table_range_size(&plan.formal_table_binding)
+            )
+            .into());
+        }
+    }
+    if let Some(max_observed_sum_q) = preflight_i64(preflight, "max_observed_sum_q") {
+        if !inverse_sum_in_table_range(max_observed_sum_q, &plan.formal_table_binding) {
+            return Err(format!(
+                "quantized_inverse_lookup_mismatch: max_observed_sum_q={} inverse_table_range_size={}",
+                max_observed_sum_q,
+                inverse_table_range_size(&plan.formal_table_binding)
+            )
+            .into());
+        }
+    }
+    if let Some(derived_sum_bound) = preflight_i64(preflight, "derived_sum_bound") {
+        if derived_sum_bound >= inverse_table_range_size(&plan.formal_table_binding) as i64 {
+            return Err(format!(
+                "quantized_inverse_lookup_mismatch: derived_sum_bound={} inverse_table_range_size={}",
+                derived_sum_bound,
+                inverse_table_range_size(&plan.formal_table_binding)
             )
             .into());
         }
@@ -6176,36 +6435,105 @@ pub(crate) fn graph_gat_prove(
             }
             let scope = NativeDebugScope::parse(&plan.native_debug_scope)?;
             let run_dir = run_dir_for_path(&compiled_circuit_path);
-            let circuit =
-                FullNativeCircuit::new(plan.clone(), &run_dir, witness_path.display().to_string())?;
-            let public_instances = native_full_public_instance_columns_for_run(&plan, &run_dir)?;
-            let public_input_values = native_full_public_input_values_for_run(&plan, &run_dir)?;
-            let binding = public_instance_binding_for_run(&plan, &run_dir)?;
-            let mock = MockProver::run(
-                circuit.params.logrows,
-                &circuit,
-                public_instances.clone(),
+            let command = format!(
+                "graph-gat-prove --compiled-circuit {} --witness {} --pk-path {} --proof-path {}",
+                compiled_circuit_path.display(),
+                witness_path.display(),
+                pk_path.display(),
+                proof_path.display()
             );
-            match mock {
-                Ok(prover) => {
-                    if let Err(failures) = prover.verify() {
-                        let raw_error = failures
-                            .iter()
-                            .map(|failure| format!("{failure:?}"))
-                            .collect::<Vec<_>>()
-                            .join("\n");
+            let run_mock_precheck = should_run_mock_precheck(&plan);
+            let mock_precheck_policy = if run_mock_precheck {
+                "enabled_for_dataset_size"
+            } else {
+                "skipped_for_large_full_dataset_memory_policy"
+            };
+            write_native_prove_phase_profile(
+                &run_dir,
+                &plan,
+                "start",
+                &command,
+                &witness_path,
+                &pk_path,
+                mock_precheck_policy,
+            );
+            let derivation = Arc::new(native_output_derivation_witness(&plan, &run_dir)?);
+            let public_instances = native_full_public_instance_columns_from_values(
+                &plan,
+                &derivation.final_logits.flat_values_q,
+            )?;
+            let public_inputs_sample = derivation
+                .final_logits
+                .flat_values_q
+                .iter()
+                .copied()
+                .take(16)
+                .collect::<Vec<_>>();
+            let binding = public_instance_binding_from_final_logits(&plan, &derivation.final_logits)?;
+            let circuit = FullNativeCircuit::new_with_output_derivation(
+                plan.clone(),
+                &run_dir,
+                witness_path.display().to_string(),
+                Arc::clone(&derivation),
+            )?;
+            write_native_prove_phase_profile(
+                &run_dir,
+                &plan,
+                "payloads_deduplicated_derivation_ready",
+                &command,
+                &witness_path,
+                &pk_path,
+                mock_precheck_policy,
+            );
+            if run_mock_precheck {
+                write_native_prove_phase_profile(
+                    &run_dir,
+                    &plan,
+                    "mock_precheck_start",
+                    &command,
+                    &witness_path,
+                    &pk_path,
+                    mock_precheck_policy,
+                );
+                let mock = MockProver::run(
+                    circuit.params.logrows,
+                    &circuit,
+                    public_instances.clone(),
+                );
+                match mock {
+                    Ok(prover) => {
+                        if let Err(failures) = prover.verify() {
+                            let raw_error = failures
+                                .iter()
+                                .map(|failure| format!("{failure:?}"))
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            let failure = mock_failure_to_native_failure(
+                                &plan,
+                                &run_dir,
+                                &witness_path,
+                                command.clone(),
+                                raw_error.clone(),
+                            );
+                            write_native_failure(&run_dir, &failure)?;
+                            return Err(format!(
+                                "native_constraint_synthesis_failed: gate_name={} region_name={} row_offset={} relation={} values={:?}",
+                                failure.gate_name,
+                                failure.region_name,
+                                failure.row_offset,
+                                failure.expected_relation,
+                                failure.actual_values
+                            )
+                            .into());
+                        }
+                    }
+                    Err(error) => {
                         let failure = mock_failure_to_native_failure(
                             &plan,
                             &run_dir,
                             &witness_path,
-                            format!(
-                                "graph-gat-prove --compiled-circuit {} --witness {} --pk-path {} --proof-path {}",
-                                compiled_circuit_path.display(),
-                                witness_path.display(),
-                                pk_path.display(),
-                                proof_path.display()
-                            ),
-                            raw_error.clone(),
+                            command.clone(),
+                            format!("{error:?}"),
                         );
                         write_native_failure(&run_dir, &failure)?;
                         return Err(format!(
@@ -6219,31 +6547,25 @@ pub(crate) fn graph_gat_prove(
                         .into());
                     }
                 }
-                Err(error) => {
-                    let failure = mock_failure_to_native_failure(
-                        &plan,
-                        &run_dir,
-                        &witness_path,
-                        format!(
-                            "graph-gat-prove --compiled-circuit {} --witness {} --pk-path {} --proof-path {}",
-                            compiled_circuit_path.display(),
-                            witness_path.display(),
-                            pk_path.display(),
-                            proof_path.display()
-                        ),
-                        format!("{error:?}"),
-                    );
-                    write_native_failure(&run_dir, &failure)?;
-                    return Err(format!(
-                        "native_constraint_synthesis_failed: gate_name={} region_name={} row_offset={} relation={} values={:?}",
-                        failure.gate_name,
-                        failure.region_name,
-                        failure.row_offset,
-                        failure.expected_relation,
-                        failure.actual_values
-                    )
-                    .into());
-                }
+                write_native_prove_phase_profile(
+                    &run_dir,
+                    &plan,
+                    "mock_precheck_complete",
+                    &command,
+                    &witness_path,
+                    &pk_path,
+                    mock_precheck_policy,
+                );
+            } else {
+                write_native_prove_phase_profile(
+                    &run_dir,
+                    &plan,
+                    "mock_precheck_skipped",
+                    &command,
+                    &witness_path,
+                    &pk_path,
+                    mock_precheck_policy,
+                );
             }
 
             if scope == NativeDebugScope::FullModel && !plan.strict_public_input_equivalent {
@@ -6251,13 +6573,7 @@ pub(crate) fn graph_gat_prove(
                     &plan,
                     &run_dir,
                     &witness_path,
-                    format!(
-                        "graph-gat-prove --compiled-circuit {} --witness {} --pk-path {} --proof-path {}",
-                        compiled_circuit_path.display(),
-                        witness_path.display(),
-                        pk_path.display(),
-                        proof_path.display()
-                    ),
+                    command.clone(),
                 );
                 write_native_failure(&run_dir, &failure)?;
                 return Err(format!(
@@ -6272,12 +6588,57 @@ pub(crate) fn graph_gat_prove(
                 .into());
             }
 
+            write_native_prove_phase_profile(
+                &run_dir,
+                &plan,
+                "load_pk_start",
+                &command,
+                &witness_path,
+                &pk_path,
+                mock_precheck_policy,
+            );
             let pk = load_pk::<KZGCommitmentScheme<Bn256>, FullNativeCircuit>(
                 pk_path.clone(),
                 circuit.params.clone(),
             )
             .map_err(|error| EZKLError::from(format!("native_prover_failed: load_pk: {error}")))?;
+            write_native_prove_phase_profile(
+                &run_dir,
+                &plan,
+                "load_pk_complete",
+                &command,
+                &witness_path,
+                &pk_path,
+                mock_precheck_policy,
+            );
+            write_native_prove_phase_profile(
+                &run_dir,
+                &plan,
+                "load_params_start",
+                &command,
+                &witness_path,
+                &pk_path,
+                mock_precheck_policy,
+            );
             let params = load_native_params_for_key(&pk_path, circuit.params.logrows)?;
+            write_native_prove_phase_profile(
+                &run_dir,
+                &plan,
+                "load_params_complete",
+                &command,
+                &witness_path,
+                &pk_path,
+                mock_precheck_policy,
+            );
+            write_native_prove_phase_profile(
+                &run_dir,
+                &plan,
+                "create_proof_start",
+                &command,
+                &witness_path,
+                &pk_path,
+                mock_precheck_policy,
+            );
             let snark = create_proof_circuit::<
                 KZGCommitmentScheme<Bn256>,
                 _,
@@ -6299,7 +6660,25 @@ pub(crate) fn graph_gat_prove(
             .map_err(|error| {
                 EZKLError::from(format!("native_prover_failed: create_proof: {error}"))
             })?;
+            write_native_prove_phase_profile(
+                &run_dir,
+                &plan,
+                "create_proof_complete",
+                &command,
+                &witness_path,
+                &pk_path,
+                mock_precheck_policy,
+            );
             snark.save(&proof_path)?;
+            write_native_prove_phase_profile(
+                &run_dir,
+                &plan,
+                "proof_serialized",
+                &command,
+                &witness_path,
+                &pk_path,
+                mock_precheck_policy,
+            );
             Ok(serde_json::json!({
                 "status": "proof_created",
                 "route_id": plan.route_id,
@@ -6316,9 +6695,10 @@ pub(crate) fn graph_gat_prove(
                 "public_instance_total_length": binding.public_instance_total_length,
                 "final_logits_hash": binding.final_logits_hash,
                 "public_instance_hash": binding.public_instance_hash,
-                "public_inputs_sample": public_input_values.into_iter().take(16).collect::<Vec<_>>(),
+                "public_inputs_sample": public_inputs_sample,
                 "strict_public_input_equivalent": plan.strict_public_input_equivalent,
-                "full_gat_forward_in_ezkl_proof": plan.full_gat_forward_in_ezkl_proof
+                "full_gat_forward_in_ezkl_proof": plan.full_gat_forward_in_ezkl_proof,
+                "mock_precheck_policy": mock_precheck_policy
             })
             .to_string())
         }
@@ -6414,10 +6794,12 @@ mod tests {
         CsrPayload, FormalTableBinding, InverseSemantics, LookupSemantics, NativeCompiledPlan,
         NativeEstimate, NativeHeadParameters, TINY_NATIVE_LOGROWS, TinyNativeCircuit,
         attention_head_forward_f64, average_output_head_values_q, create_tiny_proof,
-        default_quantized_inverse_policy, default_tiny_witness, native_final_logits_witness,
+        default_quantized_inverse_policy, default_tiny_witness, inverse_policy_from_binding,
+        inverse_sum_in_table_range, inverse_table_range_size, native_final_logits_witness,
         native_full_public_input_values, output_average_witness_for_logit, output_head_derivation,
         public_instance_binding, quantize_trace_scalar, quantized_inverse_for_sum_q,
-        save_tiny_keys, tiny_params, tiny_public_inputs, validate_alpha_rescale,
+        rust_policy_matches_binding, save_tiny_keys, tiny_params, tiny_public_inputs,
+        validate_alpha_rescale, validate_inverse_lookup_against_binding,
         validate_inverse_witness_against_policy, verify_tiny_proof,
     };
     use crate::circuit::CheckMode;
@@ -6540,6 +6922,95 @@ mod tests {
         assert!(validate_alpha_rescale(12, 8, 6, &policy));
         assert!(validate_alpha_rescale(5, 5, 1, &policy));
         assert!(!validate_alpha_rescale(16, 16, 11, &policy));
+    }
+
+    fn inverse_policy_test_binding(
+        degree_bound: u64,
+        exp_bound: i64,
+        inverse_range: u64,
+    ) -> FormalTableBinding {
+        let policy = default_quantized_inverse_policy();
+        FormalTableBinding {
+            source: "formal_quant_cfg_derived".to_string(),
+            table_policy: "derived_from_main_formal_static_tables_v1".to_string(),
+            inverse_table_policy: "degree_bound_exp_bound_sum_scale_v1".to_string(),
+            quant_cfg_id: "fp32_bundle_export".to_string(),
+            static_table_id: "tables:lrelu+elu+exp+range".to_string(),
+            degree_bound_id: "auto".to_string(),
+            range_bits: 12,
+            range_size: 4096,
+            signed_bound: 2048,
+            degree_bound,
+            exp_bound,
+            derived_sum_bound: degree_bound as i64 * exp_bound,
+            inverse_table_range_old: 4096,
+            inverse_table_range_new: inverse_range,
+            inverse_table_range_size: inverse_range,
+            range_hash: "range".to_string(),
+            lrelu_hash: "lrelu".to_string(),
+            elu_hash: "elu".to_string(),
+            exp_hash: "exp".to_string(),
+            inv_hash: "inv".to_string(),
+            inverse_policy: policy.inverse_policy,
+            sum_scale: policy.sum_scale,
+            inv_scale: policy.inv_scale,
+            alpha_scale: policy.alpha_scale,
+            inverse_scale_product: policy.inverse_scale_product,
+            inverse_band: policy.inverse_band,
+            alpha_rescale_policy: policy.alpha_rescale_policy,
+            alpha_rescale_divisor: policy.alpha_rescale_divisor,
+            alpha_rounding_rule: policy.alpha_rounding_rule,
+            alpha_band: policy.alpha_band,
+            inverse_table_hash: "inv".to_string(),
+            inverse_policy_hash: policy.inverse_policy_hash,
+            table_hash: "table".to_string(),
+            bin_hash: "bin".to_string(),
+            witness_specific_table: false,
+        }
+    }
+
+    #[test]
+    fn inverse_table_covers_ppi_output_sum_bound() {
+        let binding = inverse_policy_test_binding(582, 18, 16_384);
+        let sum_q = 5_227;
+        let inv_q = quantized_inverse_for_sum_q(sum_q, &inverse_policy_from_binding(&binding));
+        assert!(binding.derived_sum_bound < binding.inverse_table_range_size as i64);
+        assert!(inverse_sum_in_table_range(sum_q, &binding));
+        assert!(validate_inverse_lookup_against_binding(sum_q, inv_q, &binding));
+    }
+
+    #[test]
+    fn inverse_table_policy_is_dataset_deterministic() {
+        let first = inverse_policy_test_binding(582, 18, 16_384);
+        let second = inverse_policy_test_binding(582, 18, 16_384);
+        assert_eq!(first.degree_bound_id, "auto");
+        assert_eq!(first.derived_sum_bound, second.derived_sum_bound);
+        assert_eq!(
+            inverse_table_range_size(&first),
+            inverse_table_range_size(&second)
+        );
+        assert!(!first.witness_specific_table);
+    }
+
+    #[test]
+    fn inverse_table_rejects_out_of_policy_sum() {
+        let binding = inverse_policy_test_binding(582, 18, 16_384);
+        let out_of_policy_sum = binding.inverse_table_range_size as i64;
+        let inv_q =
+            quantized_inverse_for_sum_q(out_of_policy_sum, &inverse_policy_from_binding(&binding));
+        assert!(!inverse_sum_in_table_range(out_of_policy_sum, &binding));
+        assert!(!validate_inverse_lookup_against_binding(
+            out_of_policy_sum,
+            inv_q,
+            &binding
+        ));
+    }
+
+    #[test]
+    fn inverse_policy_hash_mismatch_rejected() {
+        let mut binding = inverse_policy_test_binding(582, 18, 16_384);
+        binding.inverse_policy_hash = "fnv1a64:0000000000000000".to_string();
+        assert!(!rust_policy_matches_binding(&binding));
     }
 
     fn public_binding_test_plan(k_out: u64) -> NativeCompiledPlan {

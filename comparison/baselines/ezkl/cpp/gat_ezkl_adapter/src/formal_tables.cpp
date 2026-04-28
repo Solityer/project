@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -52,6 +53,7 @@ std::string hash_summary_fields(
     const AppConfig& config,
     const FormalTableHashes& hashes,
     const InverseQuantPolicy& inverse,
+    const FormalTablesSummary& summary,
     std::size_t range_bits,
     std::size_t range_size,
     std::size_t lrelu_bound,
@@ -60,10 +62,17 @@ std::string hash_summary_fields(
     out << "derived_from_main_formal_static_tables_v1\n"
         << config.quant_cfg_id << '\n'
         << config.static_table_id << '\n'
+        << config.degree_bound_id << '\n'
         << range_bits << '\n'
         << range_size << '\n'
         << lrelu_bound << '\n'
         << elu_bound << '\n'
+        << summary.inverse_table_policy << '\n'
+        << summary.degree_bound << '\n'
+        << summary.exp_bound << '\n'
+        << summary.derived_sum_bound << '\n'
+        << summary.inverse_table_range_old << '\n'
+        << summary.inverse_table_range_size << '\n'
         << hashes.range_hash << '\n'
         << hashes.lrelu_hash << '\n'
         << hashes.elu_hash << '\n'
@@ -92,6 +101,36 @@ std::size_t effective_range_size(const AppConfig& config) {
         (config.dataset == "ogbn_arxiv" || config.dataset == "ogbn-arxiv")
         && config.batching_rule == "whole_graph_single";
     return std::max<std::size_t>(configured, large_whole_graph_gat ? (std::size_t{1} << 19) : configured);
+}
+
+std::size_t next_power_of_two_at_least(std::size_t value) {
+    if (value <= 1) {
+        return 1;
+    }
+    std::size_t out = 1;
+    while (out < value) {
+        if (out > (std::numeric_limits<std::size_t>::max() >> 1)) {
+            throw std::runtime_error("inverse table range overflow while deriving formal table policy");
+        }
+        out <<= 1;
+    }
+    return out;
+}
+
+std::int64_t checked_sum_bound(std::size_t degree_bound, std::int64_t exp_bound) {
+    if (exp_bound < 0) {
+        throw std::runtime_error("negative exp bound is invalid for inverse table policy");
+    }
+    const auto degree = static_cast<unsigned long long>(degree_bound);
+    const auto exp = static_cast<unsigned long long>(exp_bound);
+    if (degree != 0 && exp > std::numeric_limits<unsigned long long>::max() / degree) {
+        throw std::runtime_error("inverse table sum bound overflow");
+    }
+    const auto bound = degree * exp;
+    if (bound > static_cast<unsigned long long>(std::numeric_limits<std::int64_t>::max())) {
+        throw std::runtime_error("inverse table sum bound exceeds i64");
+    }
+    return static_cast<std::int64_t>(bound);
 }
 
 }  // namespace
@@ -191,18 +230,26 @@ bool validate_alpha_rescale(
 
 FormalTablesSummary write_formal_table_artifacts(
     const std::filesystem::path& output_dir,
-    const AppConfig& config) {
+    const AppConfig& config,
+    std::size_t degree_bound) {
     std::filesystem::create_directories(output_dir);
 
     FormalTablesSummary summary;
     summary.quant_cfg_id = config.quant_cfg_id;
     summary.static_table_id = config.static_table_id;
+    summary.degree_bound_id = config.degree_bound_id.empty() ? "auto" : config.degree_bound_id;
     summary.inverse = derive_inverse_quant_policy(config);
     summary.inverse_policy = summary.inverse.inverse_policy;
     summary.range_bits = config.range_bits;
     summary.range_size = effective_range_size(config);
     summary.range_entries = summary.range_size;
     summary.signed_bound = static_cast<std::int64_t>(std::int64_t{1} << (config.range_bits - 1));
+    summary.degree_bound = std::max<std::size_t>(degree_bound, 1);
+    summary.exp_bound = summary.inverse.sum_scale + static_cast<std::int64_t>(exp_table_band());
+    summary.derived_sum_bound = checked_sum_bound(summary.degree_bound, summary.exp_bound);
+    summary.inverse_table_range_old = summary.range_size;
+    summary.inverse_table_range_size = next_power_of_two_at_least(
+        static_cast<std::size_t>(summary.derived_sum_bound) + 1);
     const bool large_whole_graph_gat =
         (config.dataset == "ogbn_arxiv" || config.dataset == "ogbn-arxiv")
         && config.batching_rule == "whole_graph_single";
@@ -215,7 +262,10 @@ FormalTablesSummary write_formal_table_artifacts(
     summary.lrelu_entries = summary.lrelu_bound * 2 + 1;
     summary.elu_entries = (summary.elu_bound * 2 + 1) * (2 * summary.elu_band + 1);
     summary.exp_entries = summary.range_size * (2 * summary.exp_band + 1);
-    const auto inverse_table = generate_inverse_table(summary.inverse, summary.range_size);
+    summary.inverse_table_range_size = std::max<std::size_t>(
+        std::size_t{1} << config.range_bits,
+        summary.inverse_table_range_size);
+    const auto inverse_table = generate_inverse_table(summary.inverse, summary.inverse_table_range_size);
     summary.inv_entries = inverse_table.size();
 
     const auto bin_path = output_dir / "formal_tables.bin";
@@ -294,6 +344,7 @@ FormalTablesSummary write_formal_table_artifacts(
         config,
         summary.hashes,
         summary.inverse,
+        summary,
         summary.range_bits,
         summary.range_size,
         summary.lrelu_bound,
@@ -309,12 +360,19 @@ std::string formal_tables_json(const FormalTablesSummary& summary) {
     out << "{\n"
         << "  \"source\": \"" << json_escape(summary.source) << "\",\n"
         << "  \"table_policy\": \"" << json_escape(summary.table_policy) << "\",\n"
+        << "  \"inverse_table_policy\": \"" << json_escape(summary.inverse_table_policy) << "\",\n"
         << "  \"quant_cfg_id\": \"" << json_escape(summary.quant_cfg_id) << "\",\n"
         << "  \"static_table_id\": \"" << json_escape(summary.static_table_id) << "\",\n"
+        << "  \"degree_bound_id\": \"" << json_escape(summary.degree_bound_id) << "\",\n"
         << "  \"range_bits\": " << summary.range_bits << ",\n"
         << "  \"range_size\": " << summary.range_size << ",\n"
         << "  \"signed_bound\": " << summary.signed_bound << ",\n"
-        << "  \"range_size\": " << summary.range_size << ",\n"
+        << "  \"degree_bound\": " << summary.degree_bound << ",\n"
+        << "  \"exp_bound\": " << summary.exp_bound << ",\n"
+        << "  \"derived_sum_bound\": " << summary.derived_sum_bound << ",\n"
+        << "  \"inverse_table_range_old\": " << summary.inverse_table_range_old << ",\n"
+        << "  \"inverse_table_range_new\": " << summary.inverse_table_range_size << ",\n"
+        << "  \"inverse_table_range_size\": " << summary.inverse_table_range_size << ",\n"
         << "  \"lrelu_bound\": " << summary.lrelu_bound << ",\n"
         << "  \"elu_bound\": " << summary.elu_bound << ",\n"
         << "  \"elu_band\": " << summary.elu_band << ",\n"
@@ -353,10 +411,19 @@ std::string formal_table_hashes_json(const FormalTablesSummary& summary) {
     out << "{\n"
         << "  \"source\": \"" << json_escape(summary.source) << "\",\n"
         << "  \"table_policy\": \"" << json_escape(summary.table_policy) << "\",\n"
+        << "  \"inverse_table_policy\": \"" << json_escape(summary.inverse_table_policy) << "\",\n"
         << "  \"quant_cfg_id\": \"" << json_escape(summary.quant_cfg_id) << "\",\n"
         << "  \"static_table_id\": \"" << json_escape(summary.static_table_id) << "\",\n"
+        << "  \"degree_bound_id\": \"" << json_escape(summary.degree_bound_id) << "\",\n"
         << "  \"range_bits\": " << summary.range_bits << ",\n"
+        << "  \"range_size\": " << summary.range_size << ",\n"
         << "  \"signed_bound\": " << summary.signed_bound << ",\n"
+        << "  \"degree_bound\": " << summary.degree_bound << ",\n"
+        << "  \"exp_bound\": " << summary.exp_bound << ",\n"
+        << "  \"derived_sum_bound\": " << summary.derived_sum_bound << ",\n"
+        << "  \"inverse_table_range_old\": " << summary.inverse_table_range_old << ",\n"
+        << "  \"inverse_table_range_new\": " << summary.inverse_table_range_size << ",\n"
+        << "  \"inverse_table_range_size\": " << summary.inverse_table_range_size << ",\n"
         << "  \"range_hash\": \"" << summary.hashes.range_hash << "\",\n"
         << "  \"lrelu_hash\": \"" << summary.hashes.lrelu_hash << "\",\n"
         << "  \"elu_hash\": \"" << summary.hashes.elu_hash << "\",\n"
@@ -375,7 +442,8 @@ std::string formal_table_hashes_json(const FormalTablesSummary& summary) {
         << "  \"inverse_table_hash\": \"" << summary.hashes.inv_hash << "\",\n"
         << "  \"inverse_policy_hash\": \"" << summary.hashes.inverse_policy_hash << "\",\n"
         << "  \"table_hash\": \"" << summary.hashes.table_hash << "\",\n"
-        << "  \"bin_hash\": \"" << summary.hashes.bin_hash << "\"\n"
+        << "  \"bin_hash\": \"" << summary.hashes.bin_hash << "\",\n"
+        << "  \"witness_specific_table\": false\n"
         << "}\n";
     return out.str();
 }
@@ -384,11 +452,19 @@ std::string formal_table_binding_json(const FormalTablesSummary& summary) {
     std::ostringstream out;
     out << "{\"source\":\"" << json_escape(summary.source)
         << "\",\"table_policy\":\"" << json_escape(summary.table_policy)
+        << "\",\"inverse_table_policy\":\"" << json_escape(summary.inverse_table_policy)
         << "\",\"quant_cfg_id\":\"" << json_escape(summary.quant_cfg_id)
         << "\",\"static_table_id\":\"" << json_escape(summary.static_table_id)
+        << "\",\"degree_bound_id\":\"" << json_escape(summary.degree_bound_id)
         << "\",\"range_bits\":" << summary.range_bits
         << ",\"range_size\":" << summary.range_size
         << ",\"signed_bound\":" << summary.signed_bound
+        << ",\"degree_bound\":" << summary.degree_bound
+        << ",\"exp_bound\":" << summary.exp_bound
+        << ",\"derived_sum_bound\":" << summary.derived_sum_bound
+        << ",\"inverse_table_range_old\":" << summary.inverse_table_range_old
+        << ",\"inverse_table_range_new\":" << summary.inverse_table_range_size
+        << ",\"inverse_table_range_size\":" << summary.inverse_table_range_size
         << ",\"range_hash\":\"" << summary.hashes.range_hash
         << "\",\"lrelu_hash\":\"" << summary.hashes.lrelu_hash
         << "\",\"elu_hash\":\"" << summary.hashes.elu_hash
@@ -408,7 +484,7 @@ std::string formal_table_binding_json(const FormalTablesSummary& summary) {
         << "\",\"inverse_policy_hash\":\"" << summary.hashes.inverse_policy_hash
         << "\",\"table_hash\":\"" << summary.hashes.table_hash
         << "\",\"bin_hash\":\"" << summary.hashes.bin_hash
-        << "\"}";
+        << "\",\"witness_specific_table\":false}";
     return out.str();
 }
 

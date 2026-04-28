@@ -18,7 +18,7 @@ struct ExportDecision {
     std::string limitation;
     bool strict_public_input_equivalent = false;
     bool full_gat_forward_in_ezkl_proof = false;
-    bool network_onnx_is_placeholder = true;
+    bool network_onnx_is_blocked_artifact = true;
 };
 
 ExportDecision export_or_block_strict_gat_onnx(

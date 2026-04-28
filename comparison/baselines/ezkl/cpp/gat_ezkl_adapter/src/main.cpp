@@ -6,6 +6,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "gat_ezkl/bounds.hpp"
 #include "gat_ezkl/checkpoint.hpp"
@@ -101,6 +102,23 @@ std::string native_primitive_version_for_route(const std::string& route) {
     return is_compressed_native_graph_route(route)
         ? "csr_segment_attention_compressed_v1"
         : "csr_segment_attention_v1";
+}
+
+std::size_t public_degree_bound_from_graph(const gat_ezkl::NormalizedGraph& graph) {
+    std::vector<std::size_t> degrees(graph.node_count, 0);
+    std::size_t max_degree = 0;
+    for (const auto& edge : graph.edges) {
+        if (edge.dst >= degrees.size()) {
+            throw std::runtime_error("edge dst out of range while deriving inverse table degree bound");
+        }
+        auto& degree = degrees[edge.dst];
+        ++degree;
+        max_degree = std::max(max_degree, degree);
+    }
+    if (max_degree == 0) {
+        throw std::runtime_error("cannot derive inverse table degree bound from an edgeless graph");
+    }
+    return max_degree;
 }
 
 std::size_t optional_size_arg(
@@ -253,7 +271,10 @@ int main(int argc, char** argv) {
 
         std::optional<gat_ezkl::FormalTablesSummary> formal_tables;
         if (wants_native_csr_route) {
-            formal_tables = gat_ezkl::write_formal_table_artifacts(output_dir, config);
+            formal_tables = gat_ezkl::write_formal_table_artifacts(
+                output_dir,
+                config,
+                public_degree_bound_from_graph(graph));
         }
 
         const auto metadata_json = gat_ezkl::build_metadata_json(
@@ -353,7 +374,7 @@ int main(int argc, char** argv) {
             << "  \"strict_public_input_equivalent\": " << (decision.strict_public_input_equivalent ? "true" : "false") << ",\n"
             << "  \"full_gat_forward_in_ezkl_proof\": " << (decision.full_gat_forward_in_ezkl_proof ? "true" : "false") << ",\n"
             << manifest_segment_fields(segment_report ? &*segment_report : nullptr)
-            << "  \"network_onnx_is_placeholder\": " << (decision.network_onnx_is_placeholder ? "true" : "false") << "\n"
+            << "  \"network_onnx_is_blocked_artifact\": " << (decision.network_onnx_is_blocked_artifact ? "true" : "false") << "\n"
             << "}\n";
         gat_ezkl::write_text_file(output_dir / "export_status.json", export_status.str());
 
@@ -440,7 +461,7 @@ int main(int argc, char** argv) {
             << "  \"final_logits_derivation_complete\": true,\n"
             << "  \"output_derivation_required\": true,\n"
             << "  \"output_derivation_complete_candidate\": true,\n"
-            << "  \"onnx_model_id\": \"blocked-placeholder:" << shape_hash << "\",\n"
+            << "  \"onnx_model_id\": \"blocked-artifact:" << shape_hash << "\",\n"
             << "  \"settings_id\": \"blocked-preflight:" << metadata_hash << "\",\n"
             << "  \"compiled_circuit_id\": null,\n"
             << "  \"vk_id\": null,\n"

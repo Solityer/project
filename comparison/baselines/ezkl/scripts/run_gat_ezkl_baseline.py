@@ -95,9 +95,16 @@ def parse_time_verbose(path: Path) -> dict:
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         if "Maximum resident set size" in line:
             try:
-                data["peak_rss_bytes"] = int(line.rsplit(":", 1)[1].strip()) * 1024
+                peak_rss_kbytes = int(line.rsplit(":", 1)[1].strip())
+                data["peak_rss_kbytes"] = peak_rss_kbytes
+                data["peak_rss_bytes"] = peak_rss_kbytes * 1024
             except ValueError:
                 pass
+        elif line.startswith("Command terminated by signal"):
+            try:
+                data["signal"] = int(line.rsplit(" ", 1)[1].strip())
+            except ValueError:
+                data["signal"] = line.rsplit(" ", 1)[1].strip()
         elif "Command being timed" in line:
             data["time_command"] = line.rsplit(":", 1)[1].strip().strip('"')
         elif "Elapsed (wall clock) time" in line:
@@ -124,12 +131,22 @@ def run_command_profiled(
     return code, elapsed_ms, stdout, stderr, profile
 
 
-def native_command_env() -> dict[str, str]:
+def native_command_env(run_dir: Path | None = None, timing_key: str | None = None) -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("RAYON_NUM_THREADS", "4")
     env.setdefault("MALLOC_ARENA_MAX", "1")
     env.setdefault("OMP_NUM_THREADS", "1")
     env.setdefault("OPENBLAS_NUM_THREADS", "1")
+    env.setdefault("RUST_BACKTRACE", "0")
+    if run_dir is not None and run_dir.name == "ogbn_arxiv_full" and timing_key == "prove_time_ms":
+        env["RAYON_NUM_THREADS"] = "1"
+        env["MALLOC_ARENA_MAX"] = "1"
+        env.setdefault("MALLOC_CONF", "background_thread:false,narenas:1,dirty_decay_ms:0,muzzy_decay_ms:0")
+        env["OMP_NUM_THREADS"] = "1"
+        env["OPENBLAS_NUM_THREADS"] = "1"
+        env["RUST_BACKTRACE"] = "0"
+        env.setdefault("RUST_LOG", "warn")
+        env.setdefault("EZKL_NATIVE_MOCK_PRECHECK", "0")
     return env
 
 
@@ -221,6 +238,149 @@ def read_native_failure(run_dir: Path) -> dict:
         except json.JSONDecodeError:
             return {}
     return {}
+
+
+def optional_file_size(path: Path) -> int | None:
+    try:
+        return path.stat().st_size
+    except FileNotFoundError:
+        return None
+
+
+def payload_sizes(run_dir: Path) -> list[dict[str, object]]:
+    payloads = [
+        ("pk.key", run_dir / "pk.key"),
+        ("pk.srs", run_dir / "pk.srs"),
+        ("node_features.f64.bin", run_dir / "node_features.f64.bin"),
+        ("csr_segment_layout.bin", run_dir / "csr_segment_layout.bin"),
+        ("formal_tables.bin", run_dir / "formal_tables.bin"),
+        ("checkpoint_tensors.txt", run_dir / "checkpoint_tensors.txt"),
+        ("witness.json", run_dir / "witness.json"),
+        ("model.compiled", run_dir / "model.compiled"),
+    ]
+    rows = []
+    for name, path in payloads:
+        size = optional_file_size(path)
+        if size is not None:
+            rows.append({"name": name, "path": str(path), "size_bytes": size})
+    rows.sort(key=lambda item: int(item["size_bytes"]), reverse=True)
+    return rows
+
+
+def env_profile(env: dict[str, str]) -> dict[str, str]:
+    keys = [
+        "RAYON_NUM_THREADS",
+        "MALLOC_ARENA_MAX",
+        "MALLOC_CONF",
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "RUST_BACKTRACE",
+        "RUST_LOG",
+        "EZKL_NATIVE_MOCK_PRECHECK",
+    ]
+    return {key: env[key] for key in keys if key in env}
+
+
+def column_profile(compiled: dict, internal: dict) -> dict[str, int | None]:
+    return {
+        "advice_columns": internal.get("advice_columns", compiled.get("advice_columns", 4)),
+        "fixed_columns": internal.get("fixed_columns", compiled.get("fixed_columns", 12)),
+        "instance_columns": internal.get(
+            "instance_columns",
+            compiled.get("instance_columns", compiled.get("public_instance_column_count")),
+        ),
+        "lookup_table_columns": internal.get(
+            "lookup_table_columns", compiled.get("lookup_table_columns", 3)
+        ),
+    }
+
+
+def write_prove_memory_profile(
+    run_dir: Path,
+    command: list[str],
+    elapsed_ms: float,
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    time_profile: dict,
+    env: dict[str, str],
+) -> dict:
+    compiled = {}
+    if (run_dir / "model.compiled").exists():
+        try:
+            compiled = read_json(run_dir / "model.compiled")
+        except json.JSONDecodeError:
+            compiled = {}
+    internal = {}
+    if (run_dir / "prove_memory_profile_internal.json").exists():
+        try:
+            internal = read_json(run_dir / "prove_memory_profile_internal.json")
+        except json.JSONDecodeError:
+            internal = {}
+    estimate = compiled.get("estimate", {}) if isinstance(compiled.get("estimate"), dict) else {}
+    columns = column_profile(compiled, internal)
+    signal = time_profile.get("signal")
+    if signal is None and returncode < 0:
+        signal = -returncode
+    if signal is None and returncode in {137, 247}:
+        signal = 9
+    profile = {
+        "phase": internal.get("phase", "graph-gat-prove"),
+        "peak_rss_bytes": time_profile.get("peak_rss_bytes"),
+        "circuit_rows": internal.get("circuit_rows"),
+        "assigned_row_upper_bound": internal.get(
+            "assigned_row_upper_bound", estimate.get("total_rows")
+        ),
+        "logrows": internal.get("logrows", estimate.get("required_logrows")),
+        "advice_columns": columns["advice_columns"],
+        "fixed_columns": columns["fixed_columns"],
+        "instance_columns": columns["instance_columns"],
+        "lookup_table_columns": columns["lookup_table_columns"],
+        "public_instance_length": internal.get(
+            "public_instance_length",
+            compiled.get("public_instance_total_length", compiled.get("public_instance_length")),
+        ),
+        "proof_backend": internal.get("proof_backend", "halo2_kzg_shplonk_blake2b"),
+        "largest_payloads_loaded": internal.get("largest_payloads_loaded", payload_sizes(run_dir)),
+        "witness_payload_size": internal.get("witness_payload_size", optional_file_size(run_dir / "witness.json")),
+        "compiled_circuit_size": internal.get("compiled_circuit_size", optional_file_size(run_dir / "model.compiled")),
+        "pk_size": internal.get("pk_size", optional_file_size(run_dir / "pk.key")),
+        "proof_serialization_policy": internal.get(
+            "proof_serialization_policy", "snark_json_written_after_create_proof_completes"
+        ),
+        "thread_env_settings": internal.get("thread_env_settings", env_profile(env)),
+        "command": " ".join(command),
+        "signal": signal,
+        "returncode": returncode,
+        "elapsed_ms": elapsed_ms,
+        "elapsed_wall_clock": time_profile.get("elapsed_wall_clock"),
+        "stderr_tail": tail(stderr),
+        "stdout_tail": tail(stdout),
+        "proof_generated": (run_dir / "proof.json").exists() and returncode == 0,
+        "payload_deduplication": internal.get(
+            "payload_deduplication",
+            "single output derivation reused in graph-gat-prove when available",
+        ),
+        "witness_payload_policy": internal.get(
+            "witness_payload_policy",
+            "compact metadata JSON; binary tensor payloads stay in run artifact files",
+        ),
+        "setup_only_data_policy": internal.get(
+            "setup_only_data_policy",
+            "shape-only setup artifacts are not retained by prove",
+        ),
+        "mock_precheck_policy": internal.get("mock_precheck_policy"),
+        "attempted_optimizations": [
+            "prove-time payload deduplication for output derivation/public instance/binding/circuit",
+            "compact witness metadata; binary witness conversion not used because witness.json is small",
+            "drop setup-only data before prove; setup uses shape-only plan",
+            "chunked public instance columns without logits duplication in runner",
+            "ogbn low-memory environment and single-thread prove",
+            "large full-dataset MockProver diagnostic precheck skipped for ogbn while proof and verify remain strict",
+        ],
+    }
+    write_json(run_dir / "prove_memory_profile.json", profile)
+    return profile
 
 
 def update_manifest(run_dir: Path, **updates: object) -> dict:
@@ -426,11 +586,12 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict, native_debug_scope:
     stderr_all = []
     for timing_key, command in commands:
         if timing_key == "setup_ms":
+            env = native_command_env(run_dir, timing_key)
             code, elapsed_ms, stdout, stderr, profile = run_command_profiled(
                 command,
                 run_dir,
                 run_dir / "keygen_memory_profile.json",
-                env=native_command_env(),
+                env=env,
             )
             compiled = {}
             if (run_dir / "model.compiled").exists():
@@ -456,8 +617,30 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict, native_debug_scope:
                 }
             )
             write_json(run_dir / "keygen_memory_profile.json", profile)
+        elif timing_key == "prove_time_ms":
+            env = native_command_env(run_dir, timing_key)
+            code, elapsed_ms, stdout, stderr, prove_profile = run_command_profiled(
+                command,
+                run_dir,
+                run_dir / "prove_memory_profile.json",
+                env=env,
+            )
+            prove_profile = write_prove_memory_profile(
+                run_dir,
+                command,
+                elapsed_ms,
+                code,
+                stdout,
+                stderr,
+                prove_profile,
+                env,
+            )
         else:
-            code, elapsed_ms, stdout, stderr = run_command(command, run_dir, env=native_command_env())
+            code, elapsed_ms, stdout, stderr = run_command(
+                command,
+                run_dir,
+                env=native_command_env(run_dir, timing_key),
+            )
         stdout_all.append(f"$ {' '.join(command)}\n{stdout}")
         stderr_all.append(f"$ {' '.join(command)}\n{stderr}")
         timings[timing_key] = elapsed_ms
@@ -533,6 +716,15 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict, native_debug_scope:
                     manifest["keygen_memory_profile"] = read_json(run_dir / "keygen_memory_profile.json")
                 except json.JSONDecodeError:
                     pass
+            if (run_dir / "prove_memory_profile.json").exists():
+                try:
+                    manifest["prove_memory_profile"] = read_json(run_dir / "prove_memory_profile.json")
+                    if failure == "native_prove_resource_failure":
+                        manifest["block_reason"] = "native_prove_memory_phase_resource_failure"
+                        manifest["memory_failure_phase"] = manifest["prove_memory_profile"].get("phase")
+                        manifest["memory_failure_peak_rss_bytes"] = manifest["prove_memory_profile"].get("peak_rss_bytes")
+                except json.JSONDecodeError:
+                    pass
             write_json(run_dir / "run_manifest.json", manifest)
             write_blocked_artifacts(run_dir, manifest)
             return manifest
@@ -545,6 +737,11 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict, native_debug_scope:
     if (run_dir / "keygen_memory_profile.json").exists():
         try:
             manifest["keygen_memory_profile"] = read_json(run_dir / "keygen_memory_profile.json")
+        except json.JSONDecodeError:
+            pass
+    if (run_dir / "prove_memory_profile.json").exists():
+        try:
+            manifest["prove_memory_profile"] = read_json(run_dir / "prove_memory_profile.json")
         except json.JSONDecodeError:
             pass
     manifest.update(

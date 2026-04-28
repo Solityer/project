@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
@@ -459,6 +460,17 @@ std::string native_full_witness_preflight_json(
     const auto policy = formal_tables != nullptr ? formal_tables->inverse : derive_inverse_quant_policy(config);
     const auto inverse_table_hash = formal_tables != nullptr ? formal_tables->hashes.inv_hash : std::string();
     const auto inverse_policy_hash = formal_tables != nullptr ? formal_tables->hashes.inverse_policy_hash : policy.policy_hash;
+    const auto inverse_table_range_old = formal_tables != nullptr ? formal_tables->inverse_table_range_old : (std::size_t{1} << config.range_bits);
+    const auto inverse_table_range_new = formal_tables != nullptr ? formal_tables->inverse_table_range_size : (std::size_t{1} << config.range_bits);
+    const auto degree_bound = formal_tables != nullptr ? formal_tables->degree_bound : layout.max_in_degree;
+    const auto exp_bound = formal_tables != nullptr ? formal_tables->exp_bound : policy.sum_scale + 2;
+    const auto derived_sum_bound = formal_tables != nullptr
+        ? formal_tables->derived_sum_bound
+        : static_cast<std::int64_t>(degree_bound) * exp_bound;
+    const auto inverse_table_policy = formal_tables != nullptr
+        ? formal_tables->inverse_table_policy
+        : std::string("degree_bound_exp_bound_sum_scale_v1");
+    const auto table_hash = formal_tables != nullptr ? formal_tables->hashes.table_hash : std::string();
     auto write_policy_fields = [&]() {
         out << "  \"sum_scale\": " << policy.sum_scale << ",\n"
             << "  \"inv_scale\": " << policy.inv_scale << ",\n"
@@ -470,6 +482,14 @@ std::string native_full_witness_preflight_json(
             << "  \"alpha_rescale_divisor\": " << policy.alpha_rescale_divisor << ",\n"
             << "  \"alpha_rounding_rule\": \"" << json_escape(policy.rounding_rule) << "\",\n"
             << "  \"alpha_band\": " << policy.alpha_band << ",\n"
+            << "  \"inverse_table_range_old\": " << inverse_table_range_old << ",\n"
+            << "  \"inverse_table_range_new\": " << inverse_table_range_new << ",\n"
+            << "  \"degree_bound\": " << degree_bound << ",\n"
+            << "  \"exp_bound\": " << exp_bound << ",\n"
+            << "  \"derived_sum_bound\": " << derived_sum_bound << ",\n"
+            << "  \"table_policy\": \"" << json_escape(inverse_table_policy) << "\",\n"
+            << "  \"table_hash\": \"" << json_escape(table_hash) << "\",\n"
+            << "  \"witness_specific_table\": false,\n"
             << "  \"inverse_table_hash\": \"" << json_escape(inverse_table_hash) << "\",\n"
             << "  \"inverse_policy_hash\": \"" << json_escape(inverse_policy_hash) << "\",\n";
     };
@@ -500,104 +520,210 @@ std::string native_full_witness_preflight_json(
     }
 
     try {
-        const auto head = load_hidden_head_parameters(bundle, bundle.hidden_heads.front());
-        const auto trace = attention_head_forward(
-            graph.features_fp,
-            graph.edges,
-            head,
-            false,
-            true);
         std::size_t sample_node = 0;
         std::int64_t sample_sum_q = 0;
         std::int64_t sample_inv_q = 0;
         std::int64_t sample_expected_inv_q = 0;
         std::int64_t sample_product = 0;
-        for (std::size_t node = 0; node < trace.sum.size(); ++node) {
-            const auto quantized_sum = quantize_to_i64(trace.sum[node], static_cast<double>(policy.sum_scale));
-            const auto quantized_inv = quantize_to_i64(trace.inv[node], static_cast<double>(policy.inv_scale));
-            const auto product = quantized_sum * quantized_inv;
-            std::int64_t expected_inv = 0;
-            if (node == 0) {
-                sample_sum_q = quantized_sum;
-                sample_inv_q = quantized_inv;
-                sample_expected_inv_q = quantized_inverse_for_sum(quantized_sum, policy);
-                sample_product = product;
+        double sample_sum_fp64 = 0.0;
+        double sample_inv_fp64 = 0.0;
+        bool sample_set = false;
+        std::int64_t max_observed_sum_q = std::numeric_limits<std::int64_t>::min();
+        std::size_t max_observed_node = 0;
+        std::size_t max_observed_degree = 0;
+        std::string max_observed_component;
+        std::size_t checked_nodes = 0;
+        std::size_t checked_edges = 0;
+
+        auto note_observed_sum = [&](const std::string& component, std::size_t node, std::int64_t sum_q) {
+            const auto degree = layout.segment_ptr.at(node + 1) - layout.segment_ptr.at(node);
+            if (sum_q > max_observed_sum_q) {
+                max_observed_sum_q = sum_q;
+                max_observed_node = node;
+                max_observed_degree = degree;
+                max_observed_component = component;
             }
-            if (!validate_inverse_witness_against_policy(quantized_sum, quantized_inv, policy, &expected_inv)) {
-                out << "  \"status\": \"blocked\",\n"
-                    << "  \"block_reason\": \"quantized_inverse_lookup_mismatch\",\n"
-                    << "  \"failure_step\": \"graph-gat-gen-witness\",\n"
-                    << "  \"failure_gate\": \"native.quantized_inverse_lookup\",\n"
-                    << "  \"failure_region\": \"native.full_model.layer_0.head_0.softmax.quantized_inverse_lookup\",\n"
-                    << "  \"failure_row\": " << node << ",\n"
-                    << "  \"layer_index\": 0,\n"
-                    << "  \"head_index\": 0,\n"
-                    << "  \"node_index\": " << node << ",\n"
-                    << "  \"segment_begin\": " << layout.segment_ptr.at(node) << ",\n"
-                    << "  \"segment_end\": " << layout.segment_ptr.at(node + 1) << ",\n"
-                    << "  \"degree\": " << (layout.segment_ptr.at(node + 1) - layout.segment_ptr.at(node)) << ",\n"
-                    << "  \"sum_fp32_reference\": " << trace.sum[node] << ",\n"
-                    << "  \"inv_fp32_reference\": " << trace.inv[node] << ",\n"
-                    << "  \"quantized_sum_scale16\": " << quantized_sum << ",\n"
-                    << "  \"quantized_inv_scale16\": " << quantized_inv << ",\n"
-                    << "  \"quantized_product\": " << product << ",\n"
-                    << "  \"expected_inv_q\": " << expected_inv << ",\n"
-                    << "  \"target_q\": " << policy.inverse_scale_product << ",\n"
-                    << "  \"accepted\": false,\n"
-                    << "  \"expected_relation\": \"quantized inverse lookup requires inv_q = round(sum_scale * inv_scale / sum_q) under quant_cfg_id-derived scale-16 policy\",\n"
-                    << "  \"actual_values\": [\"sum_q=" << quantized_sum
-                    << "\", \"inv_q=" << quantized_inv
-                    << "\", \"expected_inv_q=" << expected_inv
-                    << "\", \"sum_q_times_inv_q=" << product
-                    << "\", \"quant_cfg_id=" << json_escape(config.quant_cfg_id)
-                    << "\"],\n"
-                    << "  \"attempted_fix\": \"derived deterministic T_inv from trace scalar scale 16 and validated full-dataset inverse witness against that table before Rust assignment\",\n"
-                    << "  \"remaining_blocker\": \"the quantized inverse witness is outside the deterministic inverse lookup table for this quant_cfg_id\"\n"
-                    << "}\n";
+        };
+
+        auto validate_trace = [&](
+            const std::string& component,
+            const std::string& inverse_region,
+            const std::string& alpha_region,
+            std::size_t layer_index,
+            std::size_t head_index,
+            const HeadForwardTrace& trace) -> bool {
+            checked_nodes += trace.sum.size();
+            checked_edges += graph.edges.size();
+            for (std::size_t node = 0; node < trace.sum.size(); ++node) {
+                const auto quantized_sum = quantize_to_i64(trace.sum[node], static_cast<double>(policy.sum_scale));
+                const auto quantized_inv = quantize_to_i64(trace.inv[node], static_cast<double>(policy.inv_scale));
+                const auto product = quantized_sum * quantized_inv;
+                std::int64_t expected_inv = 0;
+                if (!sample_set) {
+                    sample_set = true;
+                    sample_node = node;
+                    sample_sum_q = quantized_sum;
+                    sample_inv_q = quantized_inv;
+                    sample_expected_inv_q = quantized_inverse_for_sum(quantized_sum, policy);
+                    sample_product = product;
+                    sample_sum_fp64 = trace.sum[node];
+                    sample_inv_fp64 = trace.inv[node];
+                }
+                note_observed_sum(component, node, quantized_sum);
+                const bool in_table_range =
+                    quantized_sum >= 0
+                    && static_cast<std::uint64_t>(quantized_sum) < static_cast<std::uint64_t>(inverse_table_range_new);
+                const bool inverse_value_ok =
+                    validate_inverse_witness_against_policy(quantized_sum, quantized_inv, policy, &expected_inv);
+                if (!in_table_range || !inverse_value_ok) {
+                    const auto degree = layout.segment_ptr.at(node + 1) - layout.segment_ptr.at(node);
+                    const auto block_reason = in_table_range
+                        ? "quantized_inverse_lookup_mismatch"
+                        : "quantized_inverse_lookup_out_of_policy_range";
+                    const auto relation = in_table_range
+                        ? "quantized inverse lookup requires inv_q = round(sum_scale * inv_scale / sum_q) under quant_cfg_id-derived scale-16 policy"
+                        : "quantized inverse lookup requires 0 <= sum_q < inverse_table_range_new where inverse_table_range_new is derived from public degree_bound and ExpMap range";
+                    const auto remaining = in_table_range
+                        ? "the quantized inverse witness is outside the deterministic inverse lookup table for this quant_cfg_id"
+                        : "the deterministic inverse table range policy does not cover the public degree-bound sum range";
+                    out << "  \"status\": \"blocked\",\n"
+                        << "  \"block_reason\": \"" << block_reason << "\",\n"
+                        << "  \"failure_step\": \"graph-gat-gen-witness\",\n"
+                        << "  \"failure_gate\": \"native.quantized_inverse_lookup\",\n"
+                        << "  \"failure_region\": \"" << json_escape(inverse_region) << "\",\n"
+                        << "  \"failure_row\": " << node << ",\n"
+                        << "  \"layer_index\": " << layer_index << ",\n"
+                        << "  \"head_index\": " << head_index << ",\n"
+                        << "  \"node_index\": " << node << ",\n"
+                        << "  \"segment_begin\": " << layout.segment_ptr.at(node) << ",\n"
+                        << "  \"segment_end\": " << layout.segment_ptr.at(node + 1) << ",\n"
+                        << "  \"degree\": " << degree << ",\n"
+                        << "  \"sum_fp32_reference\": " << trace.sum[node] << ",\n"
+                        << "  \"inv_fp32_reference\": " << trace.inv[node] << ",\n"
+                        << "  \"quantized_sum_scale16\": " << quantized_sum << ",\n"
+                        << "  \"quantized_inv_scale16\": " << quantized_inv << ",\n"
+                        << "  \"quantized_product\": " << product << ",\n"
+                        << "  \"expected_inv_q\": " << expected_inv << ",\n"
+                        << "  \"target_q\": " << policy.inverse_scale_product << ",\n"
+                        << "  \"max_observed_sum_q\": " << max_observed_sum_q << ",\n"
+                        << "  \"output_sum_q_in_inverse_table_range\": " << bool_json(in_table_range) << ",\n"
+                        << "  \"accepted\": false,\n"
+                        << "  \"expected_relation\": \"" << relation << "\",\n"
+                        << "  \"actual_values\": [\"sum_q=" << quantized_sum
+                        << "\", \"inv_q=" << quantized_inv
+                        << "\", \"expected_inv_q=" << expected_inv
+                        << "\", \"sum_q_times_inv_q=" << product
+                        << "\", \"inverse_table_range_new=" << inverse_table_range_new
+                        << "\", \"derived_sum_bound=" << derived_sum_bound
+                        << "\", \"degree_bound=" << degree_bound
+                        << "\", \"exp_bound=" << exp_bound
+                        << "\", \"quant_cfg_id=" << json_escape(config.quant_cfg_id)
+                        << "\"],\n"
+                        << "  \"attempted_fix\": \"derived deterministic T_inv from public degree_bound, ExpMap range, and trace scalar scale 16 before Rust assignment\",\n"
+                        << "  \"remaining_blocker\": \"" << remaining << "\"\n"
+                        << "}\n";
+                    return false;
+                }
+            }
+            for (std::size_t edge_index = 0; edge_index < graph.edges.size(); ++edge_index) {
+                const auto dst = graph.edges[edge_index].dst;
+                const auto u_q = quantize_to_i64(trace.u[edge_index], static_cast<double>(policy.alpha_scale));
+                const auto inv_q = quantize_to_i64(trace.inv[dst], static_cast<double>(policy.inv_scale));
+                const auto alpha_q = quantize_to_i64(trace.alpha[edge_index], static_cast<double>(policy.alpha_scale));
+                std::int64_t expected_alpha = 0;
+                if (!validate_alpha_rescale(u_q, inv_q, alpha_q, policy, &expected_alpha)) {
+                    out << "  \"status\": \"blocked\",\n"
+                        << "  \"block_reason\": \"alpha_rescale_mismatch\",\n"
+                        << "  \"failure_step\": \"graph-gat-gen-witness\",\n"
+                        << "  \"failure_gate\": \"native.alpha_rescale\",\n"
+                        << "  \"failure_region\": \"" << json_escape(alpha_region) << "\",\n"
+                        << "  \"failure_row\": " << edge_index << ",\n"
+                        << "  \"layer_index\": " << layer_index << ",\n"
+                        << "  \"head_index\": " << head_index << ",\n"
+                        << "  \"edge_index\": " << edge_index << ",\n"
+                        << "  \"node_index\": " << dst << ",\n"
+                        << "  \"segment_begin\": " << layout.segment_ptr.at(dst) << ",\n"
+                        << "  \"segment_end\": " << layout.segment_ptr.at(dst + 1) << ",\n"
+                        << "  \"degree\": " << (layout.segment_ptr.at(dst + 1) - layout.segment_ptr.at(dst)) << ",\n"
+                        << "  \"u_q\": " << u_q << ",\n"
+                        << "  \"inv_q\": " << inv_q << ",\n"
+                        << "  \"alpha_q\": " << alpha_q << ",\n"
+                        << "  \"expected_alpha_q\": " << expected_alpha << ",\n"
+                        << "  \"alpha_product_q\": " << (u_q * inv_q) << ",\n"
+                        << "  \"max_observed_sum_q\": " << max_observed_sum_q << ",\n"
+                        << "  \"accepted\": false,\n"
+                        << "  \"expected_relation\": \"alpha_q must match rounded U_q * Inv_q / alpha_rescale_divisor within the quant_cfg_id-derived alpha band\",\n"
+                        << "  \"actual_values\": [\"edge_index=" << edge_index
+                        << "\", \"dst=" << dst
+                        << "\", \"u_q=" << u_q
+                        << "\", \"inv_q=" << inv_q
+                        << "\", \"alpha_q=" << alpha_q
+                        << "\", \"expected_alpha_q=" << expected_alpha
+                        << "\", \"alpha_band=" << policy.alpha_band
+                        << "\"],\n"
+                        << "  \"attempted_fix\": \"validated alpha_q against the same scale-16 quantized inverse policy used for T_inv\",\n"
+                        << "  \"remaining_blocker\": \"alpha witness does not fit the quant_cfg_id-derived rescale relation\"\n"
+                        << "}\n";
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        auto layer_input = graph.features_fp;
+        for (std::size_t layer = 0; layer < bundle.hidden_profile.size(); ++layer) {
+            std::vector<FloatMatrix> hidden_outputs;
+            for (const auto& head_spec : bundle.hidden_heads) {
+                if (head_spec.layer_index != layer) {
+                    continue;
+                }
+                const auto head = load_hidden_head_parameters(bundle, head_spec);
+                auto trace = attention_head_forward(layer_input, graph.edges, head, false, true);
+                const auto component = "full_model.layer_" + std::to_string(layer)
+                    + ".hidden_head_" + std::to_string(head_spec.global_head_index)
+                    + ".quantized_inverse_and_alpha";
+                const auto inverse_region = "native.full_model.layer_" + std::to_string(layer)
+                    + ".head_" + std::to_string(head_spec.global_head_index)
+                    + ".softmax.quantized_inverse_lookup";
+                const auto alpha_region = "native.full_model.layer_" + std::to_string(layer)
+                    + ".head_" + std::to_string(head_spec.global_head_index)
+                    + ".softmax.alpha_rescale";
+                if (!validate_trace(component, inverse_region, alpha_region, layer, head_spec.global_head_index, trace)) {
+                    return out.str();
+                }
+                hidden_outputs.push_back(std::move(trace.h_agg));
+            }
+            if (hidden_outputs.size() != bundle.hidden_profile.at(layer).head_count) {
+                throw std::runtime_error("output_layer_input_dim_mismatch: hidden head count does not match profile");
+            }
+            layer_input = concatenate_columns_checked(hidden_outputs);
+        }
+        for (const auto& head_spec : bundle.output_heads) {
+            const auto head = load_output_head_parameters(bundle, head_spec);
+            auto trace = attention_head_forward(layer_input, graph.edges, head, true, false);
+            const auto component = "full_model.output.head_" + std::to_string(head_spec.head_index)
+                + ".quantized_inverse_and_alpha";
+            const auto inverse_region = "native.full_model.output.head_"
+                + std::to_string(head_spec.head_index) + ".segment_sum_inverse";
+            const auto alpha_region = "native.full_model.output.head_"
+                + std::to_string(head_spec.head_index) + ".alpha_rescale";
+            if (!validate_trace(
+                    component,
+                    inverse_region,
+                    alpha_region,
+                    bundle.hidden_profile.size(),
+                    head_spec.head_index,
+                    trace)) {
                 return out.str();
             }
         }
-        for (std::size_t edge_index = 0; edge_index < graph.edges.size(); ++edge_index) {
-            const auto dst = graph.edges[edge_index].dst;
-            const auto u_q = quantize_to_i64(trace.u[edge_index], static_cast<double>(policy.alpha_scale));
-            const auto inv_q = quantize_to_i64(trace.inv[dst], static_cast<double>(policy.inv_scale));
-            const auto alpha_q = quantize_to_i64(trace.alpha[edge_index], static_cast<double>(policy.alpha_scale));
-            std::int64_t expected_alpha = 0;
-            if (!validate_alpha_rescale(u_q, inv_q, alpha_q, policy, &expected_alpha)) {
-                out << "  \"status\": \"blocked\",\n"
-                    << "  \"block_reason\": \"alpha_rescale_mismatch\",\n"
-                    << "  \"failure_step\": \"graph-gat-gen-witness\",\n"
-                    << "  \"failure_gate\": \"native.alpha_rescale\",\n"
-                    << "  \"failure_region\": \"native.full_model.layer_0.head_0.softmax.alpha_rescale\",\n"
-                    << "  \"failure_row\": " << edge_index << ",\n"
-                    << "  \"layer_index\": 0,\n"
-                    << "  \"head_index\": 0,\n"
-                    << "  \"edge_index\": " << edge_index << ",\n"
-                    << "  \"node_index\": " << dst << ",\n"
-                    << "  \"segment_begin\": " << layout.segment_ptr.at(dst) << ",\n"
-                    << "  \"segment_end\": " << layout.segment_ptr.at(dst + 1) << ",\n"
-                    << "  \"degree\": " << (layout.segment_ptr.at(dst + 1) - layout.segment_ptr.at(dst)) << ",\n"
-                    << "  \"u_q\": " << u_q << ",\n"
-                    << "  \"inv_q\": " << inv_q << ",\n"
-                    << "  \"alpha_q\": " << alpha_q << ",\n"
-                    << "  \"expected_alpha_q\": " << expected_alpha << ",\n"
-                    << "  \"alpha_product_q\": " << (u_q * inv_q) << ",\n"
-                    << "  \"accepted\": false,\n"
-                    << "  \"expected_relation\": \"alpha_q must match rounded U_q * Inv_q / alpha_rescale_divisor within the quant_cfg_id-derived alpha band\",\n"
-                    << "  \"actual_values\": [\"edge_index=" << edge_index
-                    << "\", \"dst=" << dst
-                    << "\", \"u_q=" << u_q
-                    << "\", \"inv_q=" << inv_q
-                    << "\", \"alpha_q=" << alpha_q
-                    << "\", \"expected_alpha_q=" << expected_alpha
-                    << "\", \"alpha_band=" << policy.alpha_band
-                    << "\"],\n"
-                    << "  \"attempted_fix\": \"validated alpha_q against the same scale-16 quantized inverse policy used for T_inv\",\n"
-                    << "  \"remaining_blocker\": \"alpha witness does not fit the quant_cfg_id-derived rescale relation\"\n"
-                    << "}\n";
-                return out.str();
-            }
+        if (max_observed_sum_q == std::numeric_limits<std::int64_t>::min()) {
+            max_observed_sum_q = 0;
         }
+        const bool observed_within_bound = max_observed_sum_q <= derived_sum_bound;
+        const bool observed_within_table =
+            max_observed_sum_q >= 0
+            && static_cast<std::uint64_t>(max_observed_sum_q) < static_cast<std::uint64_t>(inverse_table_range_new);
         out << "  \"status\": \"ready\",\n"
             << "  \"block_reason\": \"\",\n"
             << "  \"failure_step\": null,\n"
@@ -607,25 +733,31 @@ std::string native_full_witness_preflight_json(
             << "  \"segment_begin\": " << layout.segment_ptr.at(sample_node) << ",\n"
             << "  \"segment_end\": " << layout.segment_ptr.at(sample_node + 1) << ",\n"
             << "  \"degree\": " << (layout.segment_ptr.at(sample_node + 1) - layout.segment_ptr.at(sample_node)) << ",\n"
-            << "  \"sum_fp32_reference\": " << trace.sum[sample_node] << ",\n"
-            << "  \"inv_fp32_reference\": " << trace.inv[sample_node] << ",\n"
+            << "  \"sum_fp32_reference\": " << sample_sum_fp64 << ",\n"
+            << "  \"inv_fp32_reference\": " << sample_inv_fp64 << ",\n"
             << "  \"quantized_sum_scale16\": " << sample_sum_q << ",\n"
             << "  \"quantized_inv_scale16\": " << sample_inv_q << ",\n"
             << "  \"quantized_product\": " << sample_product << ",\n"
             << "  \"expected_inv_q\": " << sample_expected_inv_q << ",\n"
             << "  \"target_q\": " << policy.inverse_scale_product << ",\n"
+            << "  \"max_observed_sum_q\": " << max_observed_sum_q << ",\n"
+            << "  \"max_observed_sum_node\": " << max_observed_node << ",\n"
+            << "  \"max_observed_sum_degree\": " << max_observed_degree << ",\n"
+            << "  \"max_observed_sum_component\": \"" << json_escape(max_observed_component) << "\",\n"
+            << "  \"max_observed_sum_within_derived_bound\": " << bool_json(observed_within_bound) << ",\n"
+            << "  \"max_observed_sum_in_inverse_table_range\": " << bool_json(observed_within_table) << ",\n"
             << "  \"accepted\": true,\n"
             << "  \"inverse_all_nodes_accepted\": true,\n"
             << "  \"alpha_all_edges_accepted\": true,\n"
-            << "  \"checked_nodes\": " << trace.sum.size() << ",\n"
-            << "  \"checked_edges\": " << graph.edges.size() << "\n"
+            << "  \"checked_nodes\": " << checked_nodes << ",\n"
+            << "  \"checked_edges\": " << checked_edges << "\n"
             << "}\n";
         return out.str();
     } catch (const std::exception& error) {
         out << "  \"status\": \"blocked\",\n"
             << "  \"block_reason\": \"native_full_witness_preflight_failed\",\n"
             << "  \"failure_step\": \"native_full_witness_preflight\",\n"
-            << "  \"failure_relation\": \"C++ adapter must compute first hidden-head full-dataset attention witness before Rust assignment\",\n"
+            << "  \"failure_relation\": \"C++ adapter must compute full-dataset hidden and output attention witness policy checks before Rust assignment\",\n"
             << "  \"raw_error\": \"" << json_escape(error.what()) << "\"\n"
             << "}\n";
         return out.str();

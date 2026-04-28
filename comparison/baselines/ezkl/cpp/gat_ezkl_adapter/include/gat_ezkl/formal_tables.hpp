@@ -42,8 +42,10 @@ struct FormalTableHashes {
 struct FormalTablesSummary {
     std::string source = "formal_quant_cfg_derived";
     std::string table_policy = "derived_from_main_formal_static_tables_v1";
+    std::string inverse_table_policy = "degree_bound_exp_bound_sum_scale_v1";
     std::string quant_cfg_id;
     std::string static_table_id;
+    std::string degree_bound_id;
     std::size_t range_bits = 0;
     std::size_t range_entries = 0;
     std::size_t lrelu_entries = 0;
@@ -54,6 +56,11 @@ struct FormalTablesSummary {
     std::size_t lrelu_bound = 0;
     std::size_t elu_bound = 0;
     std::size_t range_size = 0;
+    std::size_t degree_bound = 0;
+    std::int64_t exp_bound = 0;
+    std::int64_t derived_sum_bound = 0;
+    std::size_t inverse_table_range_old = 0;
+    std::size_t inverse_table_range_size = 0;
     std::size_t elu_band = 1;
     std::size_t exp_band = 2;
     std::string scale_policy = "trace_scalar_scale_16";
@@ -83,7 +90,8 @@ bool validate_alpha_rescale(
 
 FormalTablesSummary write_formal_table_artifacts(
     const std::filesystem::path& output_dir,
-    const AppConfig& config);
+    const AppConfig& config,
+    std::size_t degree_bound);
 
 std::string formal_tables_json(const FormalTablesSummary& summary);
 std::string formal_table_hashes_json(const FormalTablesSummary& summary);
