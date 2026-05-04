@@ -102,6 +102,15 @@ def candidate_backend_dirs() -> list[Path]:
     ]
     halo2_dirs.sort(key=lambda path: (0 if "1dd2090" in str(path) else 1, str(path)))
     candidates.extend(halo2_dirs)
+    for system_root in [Path("/usr/local"), Path("/opt")]:
+        for pattern in [
+            "libicicle_backend_cuda_device.so",
+            "icicle/backend/cuda/libicicle_backend_cuda_device.so",
+        ]:
+            try:
+                candidates.extend(path.parent for path in system_root.rglob(pattern))
+            except PermissionError:
+                continue
     unique: list[Path] = []
     seen: set[Path] = set()
     for path in candidates:
@@ -113,10 +122,15 @@ def candidate_backend_dirs() -> list[Path]:
 
 
 def choose_backend_dir() -> Path | None:
+    complete: list[Path] = []
+    expected_arch = host_arch()
     for path in candidate_backend_dirs():
         if all((path / name).exists() for name in REQUIRED_LIBS):
-            return path
-    return None
+            complete.append(path)
+            report = library_report(path, expected_arch)
+            if report.get("arch_match"):
+                return path
+    return complete[0] if complete else None
 
 
 def library_report(backend_dir: Path | None, expected_arch: str) -> dict[str, object]:
@@ -265,7 +279,13 @@ def make_report() -> dict[str, object]:
         "cuda": cuda_report(),
         "icicle_backend_install_dir": str(backend_dir) if backend_dir else "",
         "backend_libraries": libraries,
+        "backend_arch_match": libraries.get("arch_match"),
+        "gpu_available": gpu.get("available"),
+        "gpu_device_count": gpu.get("device_count", 0),
         "initialization": init,
+        "cuda_backend_initialization_status": init.get("status"),
+        "cpu_fallback_used": False,
+        "no_cpu_fallback": True,
         "usable": bool(
             gpu.get("available")
             and gpu.get("device_count", 0) > 0

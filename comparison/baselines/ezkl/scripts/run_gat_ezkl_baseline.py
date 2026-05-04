@@ -205,9 +205,14 @@ def default_icicle_backend_dir() -> str | None:
     env_dir = os.environ.get("ICICLE_BACKEND_INSTALL_DIR")
     if env_dir:
         return env_dir
+    candidates: list[Path] = []
+    for root in [EZKL_ROOT / ".icicle_backend_local", EZKL_ROOT / ".gpu_backend_local"]:
+        if root.exists():
+            candidates.extend(path for path in root.rglob("*") if path.is_dir())
     checkout_root = EZKL_ROOT / ".cargo_local" / "git" / "checkouts"
-    candidates = list(checkout_root.glob("halo2-*/**/icicle/backend/cuda"))
-    candidates.sort(key=lambda path: (0 if "1dd2090" in str(path) else 1, str(path)))
+    halo2_candidates = list(checkout_root.glob("halo2-*/**/icicle/backend/cuda"))
+    halo2_candidates.sort(key=lambda path: (0 if "1dd2090" in str(path) else 1, str(path)))
+    candidates.extend(halo2_candidates)
     for candidate in candidates:
         if all((candidate / name).exists() for name in REQUIRED_GPU_BACKEND_LIBS):
             return str(candidate)
@@ -331,6 +336,31 @@ def gpu_backend_ready(backend_info: dict[str, object], device_info: dict[str, ob
         and device_info.get("available")
         and gpu_device_summary(device_info)[1] > 0
     )
+
+
+def gpu_backend_runtime_report(icicle_backend_dir: str | None) -> dict[str, object]:
+    script = EZKL_ROOT / "scripts" / "check_gpu_backend.py"
+    env = os.environ.copy()
+    env["EZKL_REQUIRE_GPU_BACKEND"] = "1"
+    if icicle_backend_dir:
+        env["ICICLE_BACKEND_INSTALL_DIR"] = icicle_backend_dir
+    completed = subprocess.run(
+        [sys.executable, str(script), "--json"],
+        cwd=EZKL_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    try:
+        report = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        report = {}
+    report["command"] = f"{sys.executable} {script} --json"
+    report["returncode"] = completed.returncode
+    report["stdout_tail"] = tail(completed.stdout)
+    report["stderr_tail"] = tail(completed.stderr)
+    return report
 
 
 def gpu_manifest_fields(
@@ -1054,7 +1084,10 @@ def main() -> int:
     if args.backend == "gpu":
         device_info = gpu_device_info()
         backend_info = gpu_backend_binary_info(icicle_backend_dir)
+        runtime_report = gpu_backend_runtime_report(icicle_backend_dir)
         gpu_fields = gpu_manifest_fields(route_cfg, command_env, device_info, backend_info, False)
+    else:
+        runtime_report = {}
     manifest = update_manifest(
         run_dir,
         exporter_ms=exporter_ms,
@@ -1065,13 +1098,16 @@ def main() -> int:
         gpu_env=gpu_env_profile(command_env) if args.backend == "gpu" else {},
         gpu_device_info=device_info if args.backend == "gpu" else {},
         gpu_backend_binary_info=backend_info if args.backend == "gpu" else {},
+        gpu_backend_preflight_report=runtime_report if args.backend == "gpu" else {},
         **gpu_fields,
         native_debug_scope=args.native_debug_scope or "full_model",
         scope=args.native_debug_scope or "full_model",
         stdout_tail=tail(stdout),
         stderr_tail=tail(stderr),
     )
-    if args.backend == "gpu" and not gpu_backend_ready(backend_info, device_info):
+    if args.backend == "gpu" and not (
+        gpu_backend_ready(backend_info, device_info) and runtime_report.get("usable") is True
+    ):
         arch_detail = backend_info.get("primary_library_arch") or ",".join(
             str(item) for item in backend_info.get("library_arches", [])
         )
@@ -1090,6 +1126,7 @@ def main() -> int:
                 "gpu_backend_active": False,
                 "cpu_fallback_used": False,
                 "gpu_backend_library_arch": arch_detail,
+                "gpu_backend_preflight_usable": runtime_report.get("usable", False),
                 "strict_public_input_equivalent": False,
                 "full_gat_forward_in_ezkl_proof": False,
                 "verify_passed": False,
