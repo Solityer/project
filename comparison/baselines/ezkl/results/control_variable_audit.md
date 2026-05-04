@@ -1,58 +1,94 @@
-# Control Variable Audit
+# 控制变量审计
 
-Route: `ezkl_gat_native_compressed_csr_attention_full`
+## 路线范围
 
-## Scope
+CPU 路线：
 
-All reported runs use the full datasets:
+- `ezkl_gat_native_compressed_csr_attention_full`
 
-| Dataset | run_manifest |
+GPU 路线：
+
+- `ezkl_gat_native_compressed_csr_attention_full_gpu`
+
+两条路线属于同一个证明语句等价组：
+
+- `gat_native_compressed_csr_attention_full_v1`
+
+GPU 路线仅改变执行后端和输出目录，不改变 `GAT` 语义、数据集、checkpoint、图预处理、量化配置、最终 logits 语义或公开输出策略。
+
+## 全量数据集覆盖
+
+| 数据集 | CPU manifest | GPU manifest |
+| --- | --- | --- |
+| `cora_full` | `runs/cora_full/run_manifest.json` | `runs/cora_full/gpu/run_manifest.json` |
+| `citeseer_full` | `runs/citeseer_full/run_manifest.json` | `runs/citeseer_full/gpu/run_manifest.json` |
+| `pubmed_full` | `runs/pubmed_full/run_manifest.json` | `runs/pubmed_full/gpu/run_manifest.json` |
+| `ppi_full_formal` | `runs/ppi_full_formal/run_manifest.json` | `runs/ppi_full_formal/gpu/run_manifest.json` |
+| `ogbn_arxiv_full` | `runs/ogbn_arxiv_full/run_manifest.json` | `runs/ogbn_arxiv_full/gpu/run_manifest.json` |
+
+最终结果未使用 toy、smoke、subset、sample、shard、partial、debug 数据集或缩放图。
+
+## 保持不变的对象
+
+| 控制变量 | 审计结论 |
 | --- | --- |
-| cora_full | `runs/cora_full/run_manifest.json` |
-| citeseer_full | `runs/citeseer_full/run_manifest.json` |
-| pubmed_full | `runs/pubmed_full/run_manifest.json` |
-| ppi_full_formal | `runs/ppi_full_formal/run_manifest.json` |
-| ogbn_arxiv_full | `runs/ogbn_arxiv_full/run_manifest.json` |
+| checkpoint bundle | CPU 与 GPU 路线复用同一全量数据集配置导出的 checkpoint 元数据。 |
+| `model_arch_id` | 由 adapter 导出的 `model_info.json` 与 manifest 绑定，两条路线保持一致。 |
+| `model_param_id` | 由 checkpoint 摘要与 manifest 绑定，两条路线保持一致。 |
+| `quant_cfg_id` | 保持 `fp32_bundle_export`，逆元查找表策略来自公开量化和表元数据。 |
+| `hidden_profile` | 由同一 checkpoint manifest 固定，两条路线保持一致。 |
+| `d_in_profile` | 由同一 checkpoint manifest 固定，两条路线保持一致。 |
+| `K_out` | 由同一 checkpoint manifest 固定，两条路线保持一致。 |
+| `output_average_rule` | 保持“每个输出头加偏置后算术平均”的 formal 规则。 |
+| 图预处理 | 保持全量图、自环、去重、稳定排序与 compressed CSR 输入。 |
+| 最终 logits 语义 | 保持 row-major node-by-class final logits public instances。 |
 
-No toy, smoke, subset, sample, shard, partial, debug dataset, or scaled graph route was used for the final table.
+## 允许的工程适配
 
-## Preserved Semantics
-
-| Control variable | Audit result |
+| 适配 | 对证明语句的影响 |
 | --- | --- |
-| Checkpoint bundle | Reused from the existing full-dataset configuration. |
-| `model_arch_id` | Preserved by adapter-exported model metadata and backend manifest checks. |
-| `model_param_id` | Preserved by adapter-exported model metadata and backend manifest checks. |
-| `quant_cfg_id` | Preserved; inverse range policy is derived from the public quant/table metadata rather than witness sums. |
-| `hidden_profile` | Preserved by dataset/model metadata. |
-| `d_in_profile` | Preserved by dataset/model metadata. |
-| `K_out` | Preserved by dataset/model metadata. |
-| `output_average_rule` | Preserved; final logits remain derived inside the native GAT relation. |
-| Graph preprocessing | Preserved by the dataset export route. |
-| Self-loop rule | Preserved by graph metadata and compressed CSR attention input. |
-| Edge sort rule | Preserved by graph metadata and compressed CSR attention input. |
-| Batching rule | Preserved by full-dataset single-run compressed CSR execution. |
-| Final logits semantics | Full row-major node-by-class logits are public instances and are bound to in-circuit derivation. |
+| native compressed CSR attention | 只改变稀疏图在 `ezkl/Halo2` 中的承载方式。 |
+| shape-only setup | setup 阶段只消费公开实例形状，prove 与 verify 仍绑定完整公开 logits。 |
+| chunked public instance columns | 只拆分同一 row-major public logits 序列。 |
+| deterministic inverse table range policy | 查找表范围来自公开量化、度数和表边界，不来自 witness。 |
+| tagged lookup table columns | 复用查找表列，不改变 inverse、LReLU、Exp、ELU 语义。 |
+| prove-time payload deduplication | 只减少重复主机内存，不改变约束或公开实例。 |
+| `gpu-accelerated` feature 与 `Icicle CUDA` | 只改变 Halo2 执行后端；当前因后端二进制架构不匹配未产生 verified 结果。 |
 
-## Allowed Adaptations
+## 严格性检查
 
-| Adaptation | Statement impact |
-| --- | --- |
-| Shape-only setup for large public outputs | Setup avoids loading public values; prove/verify still bind the full public logits. |
-| Chunked public instance columns | Splits the same row-major public logits across instance columns without changing values or order. |
-| Deterministic inverse table range policy | Extends `T_inv` from public degree/quant/table bounds; `witness_specific_table=false`. |
-| Tagged lookup table columns | Reuses one deterministic lookup table for inverse/LReLU/Exp/ELU with kind tags; lookup semantics are unchanged. |
-| Prove-time payload deduplication and low-memory environment | Reduces duplicate host memory only; constraints and public statement are unchanged. |
-| Skipping large full-dataset diagnostic MockProver precheck | Removes a diagnostic-only precheck for resource reasons; strict KZG proof and verify remain required. |
+CPU 路线：
 
-## Strictness Check
-
-| Dataset | status | strict_public_input_equivalent | full_gat_forward_in_ezkl_proof | final_logits_derivation_complete |
+| 数据集 | status | strict_public_input_equivalent | full_gat_forward_in_ezkl_proof | final_logits_derivation_complete |
 | --- | --- | --- | --- | --- |
-| cora_full | verified | true | true | true |
-| citeseer_full | verified | true | true | true |
-| pubmed_full | verified | true | true | true |
-| ppi_full_formal | verified | true | true | true |
-| ogbn_arxiv_full | verified | true | true | true |
+| `cora_full` | `verified` | `true` | `true` | `true` |
+| `citeseer_full` | `verified` | `true` | `true` | `true` |
+| `pubmed_full` | `verified` | `true` | `true` | `true` |
+| `ppi_full_formal` | `verified` | `true` | `true` | `true` |
+| `ogbn_arxiv_full` | `verified` | `true` | `true` | `true` |
 
-No output-binding replacement, digest-only output, folding, identity route, subset, shard, sample, or precomputed-logits bypass appears in the final verified route.
+GPU 路线：
+
+| 数据集 | status | block_reason | strict_public_input_equivalent | verified |
+| --- | --- | --- | --- | --- |
+| `cora_full` | `blocked` | `gpu_backend_unavailable` | `false` | 否 |
+| `citeseer_full` | `blocked` | `gpu_backend_unavailable` | `false` | 否 |
+| `pubmed_full` | `blocked` | `gpu_backend_unavailable` | `false` | 否 |
+| `ppi_full_formal` | `blocked` | `gpu_backend_unavailable` | `false` | 否 |
+| `ogbn_arxiv_full` | `blocked` | `gpu_backend_unavailable` | `false` | 否 |
+
+## 禁用项确认
+
+CPU accepted results 与 GPU route 尝试均未启用：
+
+- output-binding replacement
+- digest-only output
+- folding
+- identity route
+- precomputed logits bypass
+- subset
+- shard
+- sample
+- toy、smoke、debug 数据集
+
+GPU route 未标记为 `verified`，原因见 `results/gpu_route_status.md`。

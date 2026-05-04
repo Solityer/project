@@ -1,24 +1,24 @@
-# GAT-ZKML ezkl Full-Dataset Baseline
+# GAT-ZKML 的 ezkl 全量数据集对比实验
 
 ## 项目定位
 
-本目录是 `GAT-ZKML` 主仓库的 `ezkl` strict full-dataset comparison baseline。它用于在相同 `GAT statement`、相同 full dataset、相同 checkpoint、相同图预处理、相同量化配置与相同 final logits 输出语义下，将主仓库证明系统替换为 `ezkl/Halo2` native backend 进行对比。
+本目录是 `GAT-ZKML` 主仓库的 `ezkl` 严格全量数据集对比实验基线。它只服务于一个目标：在相同 `GAT` 证明语句、相同数据集、相同图预处理、相同 checkpoint、相同量化配置与相同最终 logits 语义下，将主仓库证明系统替换为 `ezkl/Halo2` 路线进行对照。
 
-本目录不是主仓库 formal proof 系统本身，也不是 `ezkl` 官方 demo。当前结果依赖本目录内对 `ezkl` 源码增加的 native GAT proof route，因此不能表述为原版 `ezkl` 开箱即用的 ONNX baseline。它证明的是与主仓库 formal 语义对齐的 full GAT statement；对比变量是证明后端以及为承载该 statement 所需的 `ezkl/Halo2` 适配。
+本目录不是 `ezkl` 官方通用仓库说明，也不承载 `ezkl` 官方示例、教程或贡献说明。当前实现依赖本目录内的 native `GAT` 适配，用于证明与主仓库 formal 语义对齐的全量数据集推理语句；允许变化的对象仅限证明系统后端，以及为承载该语句所需的 `ezkl/Halo2` 工程适配。
 
-所有构建、运行、结果汇总与审计产物均独立保存在 `comparison/baselines/ezkl/` 下。主仓库代码、数据、checkpoint、配置与 formal note 只作为只读真源使用。
+所有源码、配置、复现脚本、结果表与审计产物均位于 `comparison/baselines/ezkl/`。主仓库其它目录只作为只读 formal 真源使用。
 
 ## formal 基准与对比约束
 
-唯一 formal 语义真源仍是项目根目录下的：
+唯一 formal 真源为：
 
 - `../../../GAT-ZKML-多层多头.md`
 
-本目录不重新定义 GAT 语义，只实现与该 formal statement 对齐的 `ezkl` native backend 适配。对比实验中下列对象不得改变：
+本目录不重新定义 `GAT` 语义。下列控制变量必须与主仓库保持一致：
 
-- `dataset`
-- `graph preprocessing`
-- `checkpoint bundle`
+- 数据集与全量样本集合
+- 图预处理、自环规则、边排序规则与批处理规则
+- checkpoint bundle
 - `model_arch_id`
 - `model_param_id`
 - `quant_cfg_id`
@@ -26,62 +26,43 @@
 - `d_in_profile`
 - `K_out`
 - `output_average_rule`
-- `final logits semantics`
+- 最终 logits 语义与公开输出策略
 
-## 当前正式路线
+允许差异仅为证明系统替换为 `ezkl/Halo2`，以及 native compressed CSR、公开实例分列、确定性查找表、资源复用和 GPU 后端切换等不改变证明语句的工程适配。
 
-当前唯一正式路线为：
+## 当前路线
 
-```text
-ezkl_gat_native_compressed_csr_attention_full
-```
+| 路线 | route_id | 后端 | 状态 |
+| --- | --- | --- | --- |
+| CPU 严格路线 | `ezkl_gat_native_compressed_csr_attention_full` | `CPU` | 五个全量数据集均为 `verified` |
+| GPU 严格路线 | `ezkl_gat_native_compressed_csr_attention_full_gpu` | `GPU` / `Icicle CUDA` | 已接入并实际启动，当前因后端二进制架构不匹配为 `blocked`，未产生 `verified` 结果 |
 
-该路线是 `ezkl native extension for the same GAT statement`。native `ezkl/Halo2` 适配包括：
-
-- compressed CSR graph attention
-- deterministic formal lookup tables
-- quantized inverse lookup policy
-- chunked public instance columns
-- shape-only setup for large public outputs
-- tagged lookup tables
-- prove-time payload deduplication
-
-这些适配属于 statement-preserving proof backend adaptations，只改变证明后端承载方式与资源组织方式，不改变模型语义、数据语义、量化语义或输出语义。
+两条路线使用同一个 compressed CSR native `GAT` 关系、同一套数据与模型元数据、同一套量化和最终 logits 语义。GPU 路线只改变执行后端和独立输出目录，不允许改变模型、数据、预处理、量化、输出平均规则或公开输出语义。
 
 ## 严格性说明
 
-当前 accepted truth 为：
+当前 CPU accepted results 满足：
 
-- `route_id=ezkl_gat_native_compressed_csr_attention_full`
-- verified rows: `5/5`
-- 数据集：`Cora`、`Citeseer`、`Pubmed`、`PPI`、`ogbn-arxiv`
+- 五个全量数据集均为 `verified`。
+- `strict_public_input_equivalent=true`。
+- `full_gat_forward_in_ezkl_proof=true`。
+- `final_logits_derivation_complete=true`。
+- 最终 logits 是 row-major node-by-class public instances。
+- 最终 logits 由 proof 内完整 native `GAT` forward 推导并绑定。
+- 未使用 output-binding workaround、digest、folding、identity、precomputed logits、subset、shard、sample。
+- 未使用 toy、smoke 或 debug 数据集。
 
-五个数据集均满足：
-
-| 数据集 | status | strict_public_input_equivalent | full_gat_forward_in_ezkl_proof | final_logits_derivation_complete | no_precomputed_logits_bypass |
-| --- | --- | --- | --- | --- | --- |
-| Cora | verified | true | true | true | true |
-| Citeseer | verified | true | true | true | true |
-| Pubmed | verified | true | true | true | true |
-| PPI | verified | true | true | true | true |
-| ogbn-arxiv | verified | true | true | true | true |
-
-严格性口径如下：
-
-- full GAT forward 在 `ezkl` proof 内证明。
-- final logits 是 row-major node-by-class public instances。
-- final logits 由 native output derivation 产生并绑定。
-- 未采用 output-binding workaround、precomputed logits、identity route、digest route 或 folding route。
-- 未采用 subset、shard、sample 切分。
-- 未采用 toy、smoke、debug 数据集。
+GPU 路线沿用同一严格性口径。若 GPU 构建、设备、后端加载、prove 或 verify 任一步未完成，结果不得标记为 `verified`。
 
 ## 构建方式
+
+### CPU 构建
 
 ```bash
 cd /home/pzh/project/comparison/baselines/ezkl
 
-cargo test native_gat --no-default-features --features ezkl,no-banner
-cargo build --release --bin ezkl --no-default-features --features ezkl,no-banner
+RUSTUP_HOME=/home/pzh/project/comparison/baselines/ezkl/.rustup CARGO_HOME=/home/pzh/project/comparison/baselines/ezkl/.cargo_local cargo test native_gat --no-default-features --features ezkl,no-banner
+RUSTUP_HOME=/home/pzh/project/comparison/baselines/ezkl/.rustup CARGO_HOME=/home/pzh/project/comparison/baselines/ezkl/.cargo_local cargo build --release --bin ezkl --no-default-features --features ezkl,no-banner
 
 cmake -S cpp/gat_ezkl_adapter -B build_gat_adapter -DCMAKE_BUILD_TYPE=Release
 cmake --build build_gat_adapter -j
@@ -89,21 +70,45 @@ cmake --build build_gat_adapter -j
 python3 -m py_compile scripts/run_gat_ezkl_baseline.py scripts/collect_gat_ezkl_results.py scripts/validate_final_results.py
 ```
 
-如本机 `rustup` 未配置 default toolchain，请按本地 toolchain 配置导出 `RUSTC` / `RUSTDOC`，或使用本机已有的 `cargo` toolchain 执行同一组命令。toolchain 路径不是实验 statement 的组成部分。
+### GPU 构建
+
+GPU 路线使用实际存在的 `gpu-accelerated` feature，并通过 `ICICLE_BACKEND_INSTALL_DIR` 指向 `Icicle CUDA` 后端目录。
+
+```bash
+cd /home/pzh/project/comparison/baselines/ezkl
+
+RUSTUP_HOME=/home/pzh/project/comparison/baselines/ezkl/.rustup CARGO_HOME=/home/pzh/project/comparison/baselines/ezkl/.cargo_local cargo build --release --bin ezkl --no-default-features --features ezkl,no-banner,gpu-accelerated
+```
+
+当前本机检测到的 `Icicle CUDA` 后端目录为：
+
+```text
+/home/pzh/project/comparison/baselines/ezkl/.cargo_local/git/checkouts/halo2-9199b7623b70ff0b/1dd2090/icicle/backend/cuda
+```
 
 ## 正式复现命令
 
-五个 full dataset 的正式运行命令如下：
+### CPU 五个数据集
 
 ```bash
-python3 scripts/run_gat_ezkl_baseline.py --dataset cora_full --mode full --route ezkl_gat_native_compressed_csr_attention_full --clean --run
-python3 scripts/run_gat_ezkl_baseline.py --dataset citeseer_full --mode full --route ezkl_gat_native_compressed_csr_attention_full --clean --run
-python3 scripts/run_gat_ezkl_baseline.py --dataset pubmed_full --mode full --route ezkl_gat_native_compressed_csr_attention_full --clean --run
-python3 scripts/run_gat_ezkl_baseline.py --dataset ppi_full_formal --mode full --route ezkl_gat_native_compressed_csr_attention_full --clean --run
-python3 scripts/run_gat_ezkl_baseline.py --dataset ogbn_arxiv_full --mode full --route ezkl_gat_native_compressed_csr_attention_full --clean --run
+python3 scripts/run_gat_ezkl_baseline.py --dataset cora_full --mode full --route ezkl_gat_native_compressed_csr_attention_full --backend cpu --clean --run
+python3 scripts/run_gat_ezkl_baseline.py --dataset citeseer_full --mode full --route ezkl_gat_native_compressed_csr_attention_full --backend cpu --clean --run
+python3 scripts/run_gat_ezkl_baseline.py --dataset pubmed_full --mode full --route ezkl_gat_native_compressed_csr_attention_full --backend cpu --clean --run
+python3 scripts/run_gat_ezkl_baseline.py --dataset ppi_full_formal --mode full --route ezkl_gat_native_compressed_csr_attention_full --backend cpu --clean --run
+python3 scripts/run_gat_ezkl_baseline.py --dataset ogbn_arxiv_full --mode full --route ezkl_gat_native_compressed_csr_attention_full --backend cpu --clean --run
 ```
 
-运行结束后汇总并验证最终结果：
+### GPU 五个数据集
+
+```bash
+ICICLE_BACKEND_INSTALL_DIR=/home/pzh/project/comparison/baselines/ezkl/.cargo_local/git/checkouts/halo2-9199b7623b70ff0b/1dd2090/icicle/backend/cuda python3 scripts/run_gat_ezkl_baseline.py --dataset cora_full --mode full --route ezkl_gat_native_compressed_csr_attention_full_gpu --backend gpu --icicle-backend-dir /home/pzh/project/comparison/baselines/ezkl/.cargo_local/git/checkouts/halo2-9199b7623b70ff0b/1dd2090/icicle/backend/cuda --clean --run
+ICICLE_BACKEND_INSTALL_DIR=/home/pzh/project/comparison/baselines/ezkl/.cargo_local/git/checkouts/halo2-9199b7623b70ff0b/1dd2090/icicle/backend/cuda python3 scripts/run_gat_ezkl_baseline.py --dataset citeseer_full --mode full --route ezkl_gat_native_compressed_csr_attention_full_gpu --backend gpu --icicle-backend-dir /home/pzh/project/comparison/baselines/ezkl/.cargo_local/git/checkouts/halo2-9199b7623b70ff0b/1dd2090/icicle/backend/cuda --clean --run
+ICICLE_BACKEND_INSTALL_DIR=/home/pzh/project/comparison/baselines/ezkl/.cargo_local/git/checkouts/halo2-9199b7623b70ff0b/1dd2090/icicle/backend/cuda python3 scripts/run_gat_ezkl_baseline.py --dataset pubmed_full --mode full --route ezkl_gat_native_compressed_csr_attention_full_gpu --backend gpu --icicle-backend-dir /home/pzh/project/comparison/baselines/ezkl/.cargo_local/git/checkouts/halo2-9199b7623b70ff0b/1dd2090/icicle/backend/cuda --clean --run
+ICICLE_BACKEND_INSTALL_DIR=/home/pzh/project/comparison/baselines/ezkl/.cargo_local/git/checkouts/halo2-9199b7623b70ff0b/1dd2090/icicle/backend/cuda python3 scripts/run_gat_ezkl_baseline.py --dataset ppi_full_formal --mode full --route ezkl_gat_native_compressed_csr_attention_full_gpu --backend gpu --icicle-backend-dir /home/pzh/project/comparison/baselines/ezkl/.cargo_local/git/checkouts/halo2-9199b7623b70ff0b/1dd2090/icicle/backend/cuda --clean --run
+ICICLE_BACKEND_INSTALL_DIR=/home/pzh/project/comparison/baselines/ezkl/.cargo_local/git/checkouts/halo2-9199b7623b70ff0b/1dd2090/icicle/backend/cuda python3 scripts/run_gat_ezkl_baseline.py --dataset ogbn_arxiv_full --mode full --route ezkl_gat_native_compressed_csr_attention_full_gpu --backend gpu --icicle-backend-dir /home/pzh/project/comparison/baselines/ezkl/.cargo_local/git/checkouts/halo2-9199b7623b70ff0b/1dd2090/icicle/backend/cuda --clean --run
+```
+
+运行结束后汇总并验证：
 
 ```bash
 python3 scripts/collect_gat_ezkl_results.py
@@ -112,7 +117,7 @@ python3 scripts/validate_final_results.py
 
 ## 正式结果
 
-`ezkl` 四项正式指标如下：
+### CPU 四项指标
 
 | 数据集 | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes |
 | --- | ---: | ---: | ---: | ---: |
@@ -122,15 +127,21 @@ python3 scripts/validate_final_results.py
 | PPI | 1289180 | 1921540 | 23240 | 461655303 |
 | ogbn-arxiv | 1290660 | 1860150 | 24660 | 453849446 |
 
-主仓库与 `ezkl` 的正式对比表不在本 README 中手写维护，其正式来源为：
+### GPU 四项指标
 
-- `results/main_vs_ezkl_full_comparison.csv`
-- `results/main_vs_ezkl_full_comparison.json`
-- `results/summary.md`
+GPU route 已对五个全量数据集实际启动，但未产生 `verified` 结果。当前本机为 `aarch64`，检测到的 `Icicle CUDA` 后端库为 `x86-64`，运行时在 `gen_settings_ms` 阶段报 `Device API not found for type: CUDA`。正式状态与证据记录在 `results/gpu_route_status.md`；不得将 CPU 指标复制为 GPU 指标。
+
+| 数据集 | status | block_reason | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| Cora | `blocked` | `gpu_backend_unavailable` |  |  |  |  |
+| Citeseer | `blocked` | `gpu_backend_unavailable` |  |  |  |  |
+| Pubmed | `blocked` | `gpu_backend_unavailable` |  |  |  |  |
+| PPI | `blocked` | `gpu_backend_unavailable` |  |  |  |  |
+| ogbn-arxiv | `blocked` | `gpu_backend_unavailable` |  |  |  |  |
 
 ## 对比结果真源
 
-最终展示与机器可读结果保存在：
+CPU 结果真源：
 
 - `results/gat_ezkl_full_results.json`
 - `results/gat_ezkl_full_results.csv`
@@ -138,21 +149,48 @@ python3 scripts/validate_final_results.py
 - `results/main_vs_ezkl_full_comparison.csv`
 - `results/summary.md`
 
-上述文件由 `scripts/collect_gat_ezkl_results.py` 从 run manifests、per-run binding artifact 与主仓库 benchmark 真源生成，并由 `scripts/validate_final_results.py` 校验。
+GPU 状态和未验证结果真源：
+
+- `results/gat_ezkl_gpu_full_results.json`
+- `results/gat_ezkl_gpu_full_results.csv`
+- `results/main_vs_ezkl_gpu_full_comparison.json`
+- `results/main_vs_ezkl_gpu_full_comparison.csv`
+- `results/gpu_summary.md`
+- `results/gpu_route_status.md`
 
 ## 机器复核真源
 
-每个正式数据集目录均保留最小复核 artifact：
+CPU 每个数据集保留以下最小审计 artifact：
 
-- `runs/cora_full/`
-- `runs/citeseer_full/`
-- `runs/pubmed_full/`
-- `runs/ppi_full_formal/`
-- `runs/ogbn_arxiv_full/`
+- `runs/cora_full/run_manifest.json`
+- `runs/citeseer_full/run_manifest.json`
+- `runs/pubmed_full/run_manifest.json`
+- `runs/ppi_full_formal/run_manifest.json`
+- `runs/ogbn_arxiv_full/run_manifest.json`
 
-每个目录下的核心复核文件为：
+每个 CPU 目录同时保留：
 
-- `run_manifest.json`
+- `model_info.json`
+- `graph_attention_spec.json`
+- `final_logits_binding.json`
+- `formal_tables.json`
+- `formal_table_hashes.json`
+- `native_full_witness_preflight.json`
+- `keygen_memory_profile.json`
+- `prove_memory_profile.json`
+
+GPU route 的最小审计 artifact 使用独立目录：
+
+- `runs/cora_full/gpu/run_manifest.json`
+- `runs/citeseer_full/gpu/run_manifest.json`
+- `runs/pubmed_full/gpu/run_manifest.json`
+- `runs/ppi_full_formal/gpu/run_manifest.json`
+- `runs/ogbn_arxiv_full/gpu/run_manifest.json`
+
+GPU manifest 必须记录 `backend=gpu`、`gpu_backend`、`gpu_env`、`gpu_device_info`、完整命令、证明验证状态与四项指标；未验证时不得填入成功状态。
+
+当前 GPU 阻塞状态还保留每个 `gpu/` 目录下的小型 JSON 复核文件：
+
 - `model_info.json`
 - `graph_attention_spec.json`
 - `final_logits_binding.json`
@@ -160,7 +198,7 @@ python3 scripts/validate_final_results.py
 - `formal_table_hashes.json`
 - `native_full_witness_preflight.json`
 
-其中 `final_logits_binding.json` 记录 row-major node-by-class public instance 绑定；`run_manifest.json` 记录 route、status 与四项指标；`formal_tables.json` 与 `formal_table_hashes.json` 记录 deterministic lookup table policy。
+二进制输入、feature payload、proof、key、witness、compiled circuit 与控制台输出已清理，不进入最终仓库表面。
 
 ## 控制变量审计
 
@@ -168,9 +206,7 @@ python3 scripts/validate_final_results.py
 
 - `results/control_variable_audit.md`
 
-审计结论为：除证明系统替换为 `ezkl/Halo2` native route 以及为承载 full public logits 与 native GAT relation 所必需的 backend adaptations 外，数据、模型、checkpoint、图预处理、量化配置、输出平均规则与 final logits 语义均保持与主仓库对齐。
-
-`ezkl` proof size 大于主仓库正式 proof size，是 `ezkl/Halo2` native route 与 full public logits 绑定共同作用的结果，不表示任务、数据集或输出语义发生改变。
+审计结论必须同时覆盖 CPU 与 GPU 路线：两条路线证明同一 `GAT` 语义，差异只属于证明后端执行方式和工程资源组织方式。
 
 ## 大图 public output 与资源说明
 
@@ -178,13 +214,13 @@ python3 scripts/validate_final_results.py
 
 - `results/large_public_output_policy_review.md`
 
-`PPI` 与 `ogbn-arxiv` 的 final logits 规模较大，当前路线使用 chunked public instance columns、shape-only setup 与 prove-time payload deduplication 等资源组织方式。这些方式不改变 public output 语义：final logits 仍作为公开实例参与验证，并由 proof 内 native output derivation 绑定。
+`PPI` 与 `ogbn-arxiv` 保留完整最终 logits 公开实例。chunked public instance columns、shape-only setup 与 prove-time payload deduplication 只改变资源组织方式，不改变公开输出值、顺序或验证语义。
 
-## 清理与仓库状态
+## 仓库清理状态
 
 清理与代码洁净审计真源为：
 
 - `results/cleanup_report.md`
 - `results/code_cleanliness_audit.md`
 
-最终仓库只保留源码、配置、复现脚本、最终结果与最小审计 artifact。proof、key、SRS、witness、compiled circuit、二进制 formal table 与构建产物不保留在仓库中，可由正式复现脚本重新生成。当前结果表、审计文件与 per-run manifests 构成本目录的 accepted truth。
+最终仓库只保留源码、配置、脚本、README、正式结果表和最小审计 artifact。proof、key、SRS、witness、compiled circuit、二进制 formal table、构建目录、缓存目录和临时文件不进入最终仓库表面。

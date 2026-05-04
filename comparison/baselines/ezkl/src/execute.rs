@@ -85,17 +85,31 @@ lazy_static! {
 
 /// Set the device used for computation.
 #[cfg(feature = "gpu-accelerated")]
-pub fn set_device() {
+pub fn set_device() -> Result<(), EZKLError> {
+    let require_gpu = std::env::var("EZKL_REQUIRE_GPU_BACKEND").ok().as_deref() == Some("1");
     if std::env::var("ICICLE_BACKEND_INSTALL_DIR").is_ok() {
         info!("Running with ICICLE GPU");
         try_load_and_set_backend_device("CUDA");
         match warmup(&IcicleStream::default()) {
-            Ok(_) => info!("GPU warmed :)"),
-            Err(e) => log::error!("GPU warmup failed: {:?}", e),
+            Ok(_) => {
+                info!("GPU warmed");
+                Ok(())
+            }
+            Err(e) => {
+                if require_gpu {
+                    Err(format!("gpu_backend_warmup_failed: {:?}", e).into())
+                } else {
+                    log::error!("GPU warmup failed: {:?}", e);
+                    Ok(())
+                }
+            }
         }
+    } else if require_gpu {
+        Err("gpu_backend_required_but_icicle_backend_install_dir_missing".into())
     } else {
         info!("Running with CPU: 'ICICLE_BACKEND_INSTALL_DIR' not set");
         try_load_and_set_backend_device("CPU");
+        Ok(())
     }
 }
 
@@ -121,7 +135,11 @@ lazy_static::lazy_static! {
 /// Run an ezkl command with given args
 pub async fn run(command: Commands) -> Result<String, EZKLError> {
     #[cfg(feature = "gpu-accelerated")]
-    set_device();
+    set_device()?;
+    #[cfg(not(feature = "gpu-accelerated"))]
+    if std::env::var("EZKL_REQUIRE_GPU_BACKEND").ok().as_deref() == Some("1") {
+        return Err("gpu_backend_required_but_gpu_accelerated_feature_disabled".into());
+    }
     // set working dir
     std::env::set_current_dir(WORKING_DIR.as_path())?;
 

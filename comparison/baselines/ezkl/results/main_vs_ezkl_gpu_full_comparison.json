@@ -1,0 +1,79 @@
+{
+  "rows": [
+    {
+      "backend": "gpu",
+      "dataset": "Cora",
+      "ezkl_block_reason": "gpu_backend_unavailable",
+      "ezkl_commitment_time_ms": null,
+      "ezkl_proof_size_bytes": null,
+      "ezkl_prove_time_ms": null,
+      "ezkl_route_id": "ezkl_gat_native_compressed_csr_attention_full_gpu",
+      "ezkl_status": "blocked",
+      "ezkl_verify_time_ms": null,
+      "main_cpu_commitment_time_ms": 283.786,
+      "main_cpu_proof_size_bytes": 90755,
+      "main_cpu_prove_time_ms": 1207.818,
+      "main_cpu_verify_time_ms": 153.379
+    },
+    {
+      "backend": "gpu",
+      "dataset": "Citeseer",
+      "ezkl_block_reason": "gpu_backend_unavailable",
+      "ezkl_commitment_time_ms": null,
+      "ezkl_proof_size_bytes": null,
+      "ezkl_prove_time_ms": null,
+      "ezkl_route_id": "ezkl_gat_native_compressed_csr_attention_full_gpu",
+      "ezkl_status": "blocked",
+      "ezkl_verify_time_ms": null,
+      "main_cpu_commitment_time_ms": 453.773,
+      "main_cpu_proof_size_bytes": 90763,
+      "main_cpu_prove_time_ms": 1418.744,
+      "main_cpu_verify_time_ms": 153.837
+    },
+    {
+      "backend": "gpu",
+      "dataset": "Pubmed",
+      "ezkl_block_reason": "gpu_backend_unavailable",
+      "ezkl_commitment_time_ms": null,
+      "ezkl_proof_size_bytes": null,
+      "ezkl_prove_time_ms": null,
+      "ezkl_route_id": "ezkl_gat_native_compressed_csr_attention_full_gpu",
+      "ezkl_status": "blocked",
+      "ezkl_verify_time_ms": null,
+      "main_cpu_commitment_time_ms": 2962.933,
+      "main_cpu_proof_size_bytes": 90760,
+      "main_cpu_prove_time_ms": 5604.074,
+      "main_cpu_verify_time_ms": 175.454
+    },
+    {
+      "backend": "gpu",
+      "dataset": "PPI",
+      "ezkl_block_reason": "gpu_backend_unavailable",
+      "ezkl_commitment_time_ms": null,
+      "ezkl_proof_size_bytes": null,
+      "ezkl_prove_time_ms": null,
+      "ezkl_route_id": "ezkl_gat_native_compressed_csr_attention_full_gpu",
+      "ezkl_status": "blocked",
+      "ezkl_verify_time_ms": null,
+      "main_cpu_commitment_time_ms": 3563.973,
+      "main_cpu_proof_size_bytes": 21360,
+      "main_cpu_prove_time_ms": 7111.447,
+      "main_cpu_verify_time_ms": 424.71
+    },
+    {
+      "backend": "gpu",
+      "dataset": "ogbn-arxiv",
+      "ezkl_block_reason": "gpu_backend_unavailable",
+      "ezkl_commitment_time_ms": null,
+      "ezkl_proof_size_bytes": null,
+      "ezkl_prove_time_ms": null,
+      "ezkl_route_id": "ezkl_gat_native_compressed_csr_attention_full_gpu",
+      "ezkl_status": "blocked",
+      "ezkl_verify_time_ms": null,
+      "main_cpu_commitment_time_ms": 18071.562,
+      "main_cpu_proof_size_bytes": 21361,
+      "main_cpu_prove_time_ms": 66540.6,
+      "main_cpu_verify_time_ms": 417.38
+    }
+  ]
+}

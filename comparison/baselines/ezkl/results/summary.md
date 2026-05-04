@@ -1,22 +1,23 @@
-# GAT-ZKML vs ezkl Full-Dataset Baseline Summary
+# GAT-ZKML 与 ezkl 全量数据集 CPU 汇总
 
-- Verified ezkl full-dataset rows: 5/5.
-- Strict public input equivalent is true only for rows with a verified full native GAT proof.
-- No output-binding workaround, precomputed logits, identity, digest, folding, subset, shard, or sample route was used.
+- 已验证全量数据集行数：5/5。
+- 路线：`ezkl_gat_native_compressed_csr_attention_full`。
+- `strict_public_input_equivalent` 只在完整 native GAT proof 已通过验证时为 `true`。
+- 未使用 output-binding workaround、precomputed logits、identity、digest、folding、subset、shard 或 sample route。
 
-## Dataset Status
+## 数据集状态
 
-| Dataset | status | route_id | strict | full GAT forward in proof | final logits derivation | block_reason |
-| --- | --- | --- | --- | --- | --- | --- |
-| Cora | verified | ezkl_gat_native_compressed_csr_attention_full | True | True | True |  |
-| Citeseer | verified | ezkl_gat_native_compressed_csr_attention_full | True | True | True |  |
-| Pubmed | verified | ezkl_gat_native_compressed_csr_attention_full | True | True | True |  |
-| PPI | verified | ezkl_gat_native_compressed_csr_attention_full | True | True | True |  |
-| ogbn-arxiv | verified | ezkl_gat_native_compressed_csr_attention_full | True | True | True |  |
+| 数据集 | status | route_id | backend | strict | full GAT forward in proof | final logits derivation | block_reason |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Cora | verified | ezkl_gat_native_compressed_csr_attention_full | cpu | True | True | True |  |
+| Citeseer | verified | ezkl_gat_native_compressed_csr_attention_full | cpu | True | True | True |  |
+| Pubmed | verified | ezkl_gat_native_compressed_csr_attention_full | cpu | True | True | True |  |
+| PPI | verified | ezkl_gat_native_compressed_csr_attention_full | cpu | True | True | True |  |
+| ogbn-arxiv | verified | ezkl_gat_native_compressed_csr_attention_full | cpu | True | True | True |  |
 
-## Four-Metric Comparison
+## 四项指标对比
 
-| Dataset | main commitment_time_ms | ezkl commitment_time_ms | main prove_time_ms | ezkl prove_time_ms | main verify_time_ms | ezkl verify_time_ms | main proof_size_bytes | ezkl proof_size_bytes |
+| 数据集 | main commitment_time_ms | ezkl commitment_time_ms | main prove_time_ms | ezkl prove_time_ms | main verify_time_ms | ezkl verify_time_ms | main proof_size_bytes | ezkl proof_size_bytes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Cora | 283.786 | 39418.157 | 1207.818 | 20340.017 | 153.379 | 372.952 | 90755 | 1280306 |
 | Citeseer | 453.773 | 39775.686 | 1418.744 | 20593.018 | 153.837 | 489.516 | 90763 | 1347736 |
@@ -24,7 +25,7 @@
 | PPI | 3563.973 | 1289180 | 7111.447 | 1921540 | 424.710 | 23240 | 21360 | 461655303 |
 | ogbn-arxiv | 18071.562 | 1290660 | 66540.600 | 1860150 | 417.380 | 24660 | 21361 | 453849446 |
 
-## Blocked/Failed Reasons
+## 阻塞或失败原因
 
 - Cora: verified /
 - Citeseer: verified /

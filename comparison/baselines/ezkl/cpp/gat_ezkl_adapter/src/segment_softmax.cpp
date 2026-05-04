@@ -1131,7 +1131,8 @@ void write_native_csr_graph_artifacts(
     const std::string& metadata_hash,
     const std::string& shape_hash,
     const FormalTablesSummary* formal_tables) {
-    const bool compressed_route = route_id == "ezkl_gat_native_compressed_csr_attention_full";
+    const bool compressed_route = route_id == "ezkl_gat_native_compressed_csr_attention_full" ||
+                                  route_id == "ezkl_gat_native_compressed_csr_attention_full_gpu";
     const std::string native_primitive = compressed_route
         ? "GraphSegmentAttentionCompressedCSR"
         : "GraphSegmentAttention";

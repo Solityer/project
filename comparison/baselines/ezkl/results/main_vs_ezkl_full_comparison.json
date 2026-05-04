@@ -1,6 +1,7 @@
 {
   "rows": [
     {
+      "backend": "cpu",
       "dataset": "Cora",
       "ezkl_block_reason": "",
       "ezkl_commitment_time_ms": 39418.157057021745,
@@ -15,6 +16,7 @@
       "main_cpu_verify_time_ms": 153.379
     },
     {
+      "backend": "cpu",
       "dataset": "Citeseer",
       "ezkl_block_reason": "",
       "ezkl_commitment_time_ms": 39775.68579901708,
@@ -29,6 +31,7 @@
       "main_cpu_verify_time_ms": 153.837
     },
     {
+      "backend": "cpu",
       "dataset": "Pubmed",
       "ezkl_block_reason": "",
       "ezkl_commitment_time_ms": 79890.20834700204,
@@ -43,6 +46,7 @@
       "main_cpu_verify_time_ms": 175.454
     },
     {
+      "backend": "cpu",
       "dataset": "PPI",
       "ezkl_block_reason": "",
       "ezkl_commitment_time_ms": 1289180,
@@ -57,6 +61,7 @@
       "main_cpu_verify_time_ms": 424.71
     },
     {
+      "backend": "cpu",
       "dataset": "ogbn-arxiv",
       "ezkl_block_reason": "",
       "ezkl_commitment_time_ms": 1290660,

@@ -30,3 +30,7 @@ The current route is `ezkl_gat_native_compressed_csr_attention_full`. It keeps e
 The earlier large-public-output keygen OOM was eliminated by shape-only setup plus chunked public instance columns. The later PPI inverse-table blocker was resolved by a deterministic public-metadata inverse range policy, not by witness-specific table construction. The later ogbn-arxiv prove SIGKILL was resolved by prove-time payload deduplication, low-memory execution settings, skipping large full-dataset diagnostic MockProver precheck, and consolidating native lookup tables into one tagged table.
 
 No public-output commitment route was enabled in the strict main comparison. PPI and ogbn-arxiv both completed strict KZG prove and verify with full public final logits retained.
+
+## GPU Route Note
+
+The GPU route `ezkl_gat_native_compressed_csr_attention_full_gpu` uses the same public-output policy and would retain the same full row-major final logits public instances when verified. In the current run, GPU execution is blocked before proof generation by `gpu_backend_unavailable`, so no GPU row is marked verified and no GPU proof-size or timing metric is reported.
