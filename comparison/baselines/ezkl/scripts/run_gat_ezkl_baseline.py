@@ -29,7 +29,22 @@ DATASETS = {
     "ppi_full_formal": "runs/ppi_full_formal",
     "ogbn_arxiv_full": "runs/ogbn_arxiv_full",
 }
-FINAL_ROUTE = "ezkl_gat_native_compressed_csr_attention_full"
+CPU_ROUTE = "ezkl_gat_native_compressed_csr_attention_full"
+GPU_ROUTE = "ezkl_gat_native_compressed_csr_attention_full_gpu"
+ROUTES = {
+    CPU_ROUTE: {
+        "backend": "cpu",
+        "run_subdir": "",
+        "statement_route_id": CPU_ROUTE,
+        "gpu_backend": "",
+    },
+    GPU_ROUTE: {
+        "backend": "gpu",
+        "run_subdir": "gpu",
+        "statement_route_id": CPU_ROUTE,
+        "gpu_backend": "icicle_cuda",
+    },
+}
 NATIVE_DEBUG_SCOPES = [
     "level0_mul",
     "inverse_only",
@@ -128,14 +143,20 @@ def run_command_profiled(
     return code, elapsed_ms, stdout, stderr, profile
 
 
-def native_command_env(run_dir: Path | None = None, timing_key: str | None = None) -> dict[str, str]:
+def native_command_env(
+    run_dir: Path | None = None,
+    timing_key: str | None = None,
+    backend: str = "cpu",
+    icicle_backend_dir: str | None = None,
+) -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("RAYON_NUM_THREADS", "4")
     env.setdefault("MALLOC_ARENA_MAX", "1")
     env.setdefault("OMP_NUM_THREADS", "1")
     env.setdefault("OPENBLAS_NUM_THREADS", "1")
     env.setdefault("RUST_BACKTRACE", "0")
-    if run_dir is not None and run_dir.name == "ogbn_arxiv_full" and timing_key == "prove_time_ms":
+    run_parts = set(run_dir.parts) if run_dir is not None else set()
+    if run_dir is not None and "ogbn_arxiv_full" in run_parts and timing_key == "prove_time_ms":
         env["RAYON_NUM_THREADS"] = "1"
         env["MALLOC_ARENA_MAX"] = "1"
         env.setdefault("MALLOC_CONF", "background_thread:false,narenas:1,dirty_decay_ms:0,muzzy_decay_ms:0")
@@ -144,7 +165,84 @@ def native_command_env(run_dir: Path | None = None, timing_key: str | None = Non
         env["RUST_BACKTRACE"] = "0"
         env.setdefault("RUST_LOG", "warn")
         env.setdefault("EZKL_NATIVE_MOCK_PRECHECK", "0")
+    if backend == "gpu":
+        env["EZKL_REQUIRE_GPU_BACKEND"] = "1"
+        if icicle_backend_dir:
+            env["ICICLE_BACKEND_INSTALL_DIR"] = icicle_backend_dir
+        icicle_lib_dir = EZKL_ROOT / "target" / "release" / "deps" / "icicle" / "lib"
+        if icicle_lib_dir.exists():
+            prior = env.get("LD_LIBRARY_PATH")
+            env["LD_LIBRARY_PATH"] = f"{icicle_lib_dir}:{prior}" if prior else str(icicle_lib_dir)
     return env
+
+
+def gpu_env_profile(env: dict[str, str]) -> dict[str, str]:
+    keys = [
+        "CUDA_VISIBLE_DEVICES",
+        "EZKL_REQUIRE_GPU_BACKEND",
+        "ICICLE_BACKEND_INSTALL_DIR",
+        "LD_LIBRARY_PATH",
+    ]
+    return {key: env[key] for key in keys if key in env}
+
+
+def gpu_device_info() -> dict[str, object]:
+    query = [
+        "nvidia-smi",
+        "--query-gpu=index,name,driver_version",
+        "--format=csv,noheader",
+    ]
+    try:
+        completed = subprocess.run(query, text=True, capture_output=True, check=False)
+    except FileNotFoundError:
+        return {
+            "available": False,
+            "command": " ".join(query),
+            "error": "nvidia_smi_not_found",
+        }
+    info: dict[str, object] = {
+        "available": completed.returncode == 0,
+        "command": " ".join(query),
+        "returncode": completed.returncode,
+        "stdout": completed.stdout.strip(),
+        "stderr": completed.stderr.strip(),
+    }
+    if completed.returncode == 0:
+        devices = []
+        for line in completed.stdout.splitlines():
+            parts = [part.strip() for part in line.split(",")]
+            if len(parts) >= 3:
+                devices.append(
+                    {
+                        "index": parts[0],
+                        "name": parts[1],
+                        "driver_version": parts[2],
+                    }
+                )
+        info["devices"] = devices
+    return info
+
+
+def gpu_backend_binary_info(icicle_backend_dir: str | None) -> dict[str, object]:
+    if not icicle_backend_dir:
+        return {"available": False, "error": "icicle_backend_dir_not_set"}
+    backend_dir = Path(icicle_backend_dir)
+    libraries = sorted(backend_dir.glob("*.so"))
+    rows = []
+    for lib in libraries:
+        completed = subprocess.run(["file", str(lib)], text=True, capture_output=True, check=False)
+        rows.append(
+            {
+                "path": str(lib),
+                "returncode": completed.returncode,
+                "file_output": completed.stdout.strip() or completed.stderr.strip(),
+            }
+        )
+    return {
+        "available": backend_dir.exists(),
+        "path": str(backend_dir),
+        "libraries": rows,
+    }
 
 
 def classify_native_failure(timing_key: str, stdout: str, stderr: str) -> str:
@@ -183,6 +281,14 @@ def classify_native_failure(timing_key: str, stdout: str, stderr: str) -> str:
         return "native_prover_failed"
     if "native_verify" in text:
         return "native_verify_failed"
+    if (
+        "gpu_backend_required" in text
+        or "gpu_backend_warmup_failed" in text
+        or "libicicle" in text
+        or "device api not found" in text
+        or "invalid_device" in text
+    ):
+        return "gpu_backend_unavailable"
     if "ezkl_compressed_csr_resource_boundary" in text:
         return "ezkl_compressed_csr_resource_boundary"
     if "ezkl_native_csr_compile_resource_boundary" in text or "required_logrows" in text:
@@ -243,6 +349,10 @@ def env_profile(env: dict[str, str]) -> dict[str, str]:
         "RUST_BACKTRACE",
         "RUST_LOG",
         "EZKL_NATIVE_MOCK_PRECHECK",
+        "EZKL_REQUIRE_GPU_BACKEND",
+        "ICICLE_BACKEND_INSTALL_DIR",
+        "CUDA_VISIBLE_DEVICES",
+        "LD_LIBRARY_PATH",
     ]
     return {key: env[key] for key in keys if key in env}
 
@@ -382,7 +492,13 @@ def find_ezkl_command() -> list[str]:
     return ["cargo", "run", "--release", "--bin", "ezkl", "--"]
 
 
-def run_native_graph_pipeline(run_dir: Path, manifest: dict, native_debug_scope: str | None = None) -> dict:
+def run_native_graph_pipeline(
+    run_dir: Path,
+    manifest: dict,
+    native_debug_scope: str | None = None,
+    backend: str = "cpu",
+    icicle_backend_dir: str | None = None,
+) -> dict:
     ezkl = find_ezkl_command()
     timings: dict[str, float | None] = {
         "gen_settings_ms": None,
@@ -487,7 +603,7 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict, native_debug_scope:
     stderr_all = []
     for timing_key, command in commands:
         if timing_key == "setup_ms":
-            env = native_command_env(run_dir, timing_key)
+            env = native_command_env(run_dir, timing_key, backend, icicle_backend_dir)
             code, elapsed_ms, stdout, stderr, profile = run_command_profiled(
                 command,
                 run_dir,
@@ -519,7 +635,7 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict, native_debug_scope:
             )
             write_json(run_dir / "keygen_memory_profile.json", profile)
         elif timing_key == "prove_time_ms":
-            env = native_command_env(run_dir, timing_key)
+            env = native_command_env(run_dir, timing_key, backend, icicle_backend_dir)
             code, elapsed_ms, stdout, stderr, prove_profile = run_command_profiled(
                 command,
                 run_dir,
@@ -540,7 +656,7 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict, native_debug_scope:
             code, elapsed_ms, stdout, stderr = run_command(
                 command,
                 run_dir,
-                env=native_command_env(run_dir, timing_key),
+                env=native_command_env(run_dir, timing_key, backend, icicle_backend_dir),
             )
         stdout_all.append(f"$ {' '.join(command)}\n{stdout}")
         stderr_all.append(f"$ {' '.join(command)}\n{stderr}")
@@ -582,10 +698,15 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict, native_debug_scope:
                     "failure_step": timing_key,
                     "failed_command": " ".join(command),
                     "command": " && ".join(" ".join(cmd) for _, cmd in commands),
+                    "backend": backend,
+                    "gpu_backend": manifest.get("gpu_backend", ""),
+                    "gpu_env": manifest.get("gpu_env", {}),
+                    "gpu_device_info": manifest.get("gpu_device_info", {}),
                     "native_debug_scope": native_debug_scope or manifest.get("native_debug_scope") or "full_model",
                     "strict_public_input_equivalent": False,
                     "full_gat_forward_in_ezkl_proof": False,
                     "verify_passed": False,
+                    "proof_verification_status": "not_verified",
                     "proof_size_bytes": None,
                     "commitment_time_ms": timings.get("setup_ms"),
                     "stdout_tail": tail("\n".join(stdout_all)),
@@ -655,7 +776,12 @@ def run_native_graph_pipeline(run_dir: Path, manifest: dict, native_debug_scope:
             "strict_public_input_equivalent": strict_public,
             "full_gat_forward_in_ezkl_proof": full_forward,
             "verify_passed": bool(verify.get("verify_passed", True)),
+            "proof_verification_status": "verified",
             "native_debug_scope": native_debug_scope or verify.get("native_debug_scope") or manifest.get("native_debug_scope") or "full_model",
+            "backend": backend,
+            "gpu_backend": manifest.get("gpu_backend", ""),
+            "gpu_env": manifest.get("gpu_env", {}),
+            "gpu_device_info": manifest.get("gpu_device_info", {}),
             "command": " && ".join(" ".join(cmd) for _, cmd in commands),
             "stdout_tail": tail("\n".join(stdout_all)),
             "stderr_tail": tail("\n".join(stderr_all)),
@@ -670,16 +796,24 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", required=True, choices=DATASETS.keys())
     parser.add_argument("--mode", default="full", choices=["full"])
-    parser.add_argument("--route", default=FINAL_ROUTE, choices=[FINAL_ROUTE])
+    parser.add_argument("--route", default=CPU_ROUTE, choices=sorted(ROUTES))
+    parser.add_argument("--backend", default="cpu", choices=["cpu", "gpu"])
+    parser.add_argument("--icicle-backend-dir")
     parser.add_argument("--native-debug-scope", choices=NATIVE_DEBUG_SCOPES)
     parser.add_argument("--clean", action="store_true")
     parser.add_argument("--run", action="store_true")
     args = parser.parse_args()
 
+    route_cfg = ROUTES[args.route]
+    if args.backend != route_cfg["backend"]:
+        raise RuntimeError(f"route {args.route} requires backend={route_cfg['backend']}")
+
     if not EXPORTER.exists():
         raise RuntimeError(f"C++ exporter is not built: {EXPORTER}")
 
     run_dir = EZKL_ROOT / DATASETS[args.dataset]
+    if route_cfg["run_subdir"]:
+        run_dir = run_dir / route_cfg["run_subdir"]
     if args.native_debug_scope:
         run_dir = run_dir / f"debug_{args.native_debug_scope}"
     ensure_inside(run_dir, EZKL_ROOT)
@@ -718,9 +852,22 @@ def main() -> int:
         print(f"dataset={args.dataset} status=failed block_reason=exporter_failure")
         return 1
 
+    command_env = native_command_env(
+        run_dir,
+        None,
+        args.backend,
+        args.icicle_backend_dir or os.environ.get("ICICLE_BACKEND_INSTALL_DIR"),
+    )
     manifest = update_manifest(
         run_dir,
         exporter_ms=exporter_ms,
+        backend=args.backend,
+        statement_route_id=route_cfg["statement_route_id"],
+        route_statement_equivalence="same_dataset_checkpoint_preprocessing_quantization_and_final_logits_semantics",
+        gpu_backend=route_cfg["gpu_backend"],
+        gpu_env=gpu_env_profile(command_env) if args.backend == "gpu" else {},
+        gpu_device_info=gpu_device_info() if args.backend == "gpu" else {},
+        gpu_backend_binary_info=gpu_backend_binary_info(args.icicle_backend_dir or os.environ.get("ICICLE_BACKEND_INSTALL_DIR")) if args.backend == "gpu" else {},
         native_debug_scope=args.native_debug_scope or "full_model",
         scope=args.native_debug_scope or "full_model",
         stdout_tail=tail(stdout),
@@ -735,7 +882,13 @@ def main() -> int:
         return 0
 
     if args.run:
-        manifest = run_native_graph_pipeline(run_dir, manifest, args.native_debug_scope)
+        manifest = run_native_graph_pipeline(
+            run_dir,
+            manifest,
+            args.native_debug_scope,
+            args.backend,
+            args.icicle_backend_dir or os.environ.get("ICICLE_BACKEND_INSTALL_DIR"),
+        )
         print(f"dataset={args.dataset} status={manifest.get('status')} route_id={manifest.get('route_id')}")
     return 0
 

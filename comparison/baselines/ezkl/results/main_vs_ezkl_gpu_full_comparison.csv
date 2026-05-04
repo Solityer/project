@@ -1,0 +1,6 @@
+dataset,backend,ezkl_status,ezkl_block_reason,ezkl_route_id,main_cpu_commitment_time_ms,ezkl_commitment_time_ms,main_cpu_prove_time_ms,ezkl_prove_time_ms,main_cpu_verify_time_ms,ezkl_verify_time_ms,main_cpu_proof_size_bytes,ezkl_proof_size_bytes
+Cora,gpu,blocked,gpu_backend_unavailable,ezkl_gat_native_compressed_csr_attention_full_gpu,283.786,,1207.818,,153.379,,90755,
+Citeseer,gpu,blocked,gpu_backend_unavailable,ezkl_gat_native_compressed_csr_attention_full_gpu,453.773,,1418.744,,153.837,,90763,
+Pubmed,gpu,blocked,gpu_backend_unavailable,ezkl_gat_native_compressed_csr_attention_full_gpu,2962.933,,5604.074,,175.454,,90760,
+PPI,gpu,blocked,gpu_backend_unavailable,ezkl_gat_native_compressed_csr_attention_full_gpu,3563.973,,7111.447,,424.71,,21360,
+ogbn-arxiv,gpu,blocked,gpu_backend_unavailable,ezkl_gat_native_compressed_csr_attention_full_gpu,18071.562,,66540.6,,417.38,,21361,

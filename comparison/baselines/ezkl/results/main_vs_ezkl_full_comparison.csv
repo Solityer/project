@@ -1,6 +1,6 @@
-dataset,ezkl_status,ezkl_block_reason,ezkl_route_id,main_cpu_commitment_time_ms,ezkl_commitment_time_ms,main_cpu_prove_time_ms,ezkl_prove_time_ms,main_cpu_verify_time_ms,ezkl_verify_time_ms,main_cpu_proof_size_bytes,ezkl_proof_size_bytes
-Cora,verified,,ezkl_gat_native_compressed_csr_attention_full,283.786,39418.157057021745,1207.818,20340.016772039235,153.379,372.95206397539005,90755,1280306
-Citeseer,verified,,ezkl_gat_native_compressed_csr_attention_full,453.773,39775.68579901708,1418.744,20593.01791503094,153.837,489.51647500507534,90763,1347736
-Pubmed,verified,,ezkl_gat_native_compressed_csr_attention_full,2962.933,79890.20834700204,5604.074,43471.66690597078,175.454,966.51258203201,90760,3973400
-PPI,verified,,ezkl_gat_native_compressed_csr_attention_full,3563.973,1289180,7111.447,1921540,424.71,23240,21360,461655303
-ogbn-arxiv,verified,,ezkl_gat_native_compressed_csr_attention_full,18071.562,1290660,66540.6,1860150,417.38,24660,21361,453849446
+dataset,backend,ezkl_status,ezkl_block_reason,ezkl_route_id,main_cpu_commitment_time_ms,ezkl_commitment_time_ms,main_cpu_prove_time_ms,ezkl_prove_time_ms,main_cpu_verify_time_ms,ezkl_verify_time_ms,main_cpu_proof_size_bytes,ezkl_proof_size_bytes
+Cora,cpu,verified,,ezkl_gat_native_compressed_csr_attention_full,283.786,39418.157057021745,1207.818,20340.016772039235,153.379,372.95206397539005,90755,1280306
+Citeseer,cpu,verified,,ezkl_gat_native_compressed_csr_attention_full,453.773,39775.68579901708,1418.744,20593.01791503094,153.837,489.51647500507534,90763,1347736
+Pubmed,cpu,verified,,ezkl_gat_native_compressed_csr_attention_full,2962.933,79890.20834700204,5604.074,43471.66690597078,175.454,966.51258203201,90760,3973400
+PPI,cpu,verified,,ezkl_gat_native_compressed_csr_attention_full,3563.973,1289180,7111.447,1921540,424.71,23240,21360,461655303
+ogbn-arxiv,cpu,verified,,ezkl_gat_native_compressed_csr_attention_full,18071.562,1290660,66540.6,1860150,417.38,24660,21361,453849446
