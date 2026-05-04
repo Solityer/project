@@ -1,0 +1,104 @@
+{
+  "backend_libraries": {
+    "arch_match": false,
+    "available": true,
+    "libraries": [
+      {
+        "arch": "x86_64",
+        "arch_matches_host": false,
+        "exists": true,
+        "file": "/home/pzh/project/comparison/baselines/ezkl/.cargo_local/git/checkouts/halo2-9199b7623b70ff0b/1dd2090/icicle/backend/cuda/libicicle_backend_cuda_device.so: ELF 64-bit LSB shared object, x86-64, version 1 (GNU/Linux), dynamically linked, BuildID[sha1]=7b16367904e8be22ce455829797ef65ca018abd9, stripped",
+        "ldd_returncode": 1,
+        "ldd_stderr": "not a dynamic executable",
+        "ldd_stdout": "",
+        "name": "libicicle_backend_cuda_device.so",
+        "path": "/home/pzh/project/comparison/baselines/ezkl/.cargo_local/git/checkouts/halo2-9199b7623b70ff0b/1dd2090/icicle/backend/cuda/libicicle_backend_cuda_device.so"
+      },
+      {
+        "arch": "x86_64",
+        "arch_matches_host": false,
+        "exists": true,
+        "file": "/home/pzh/project/comparison/baselines/ezkl/.cargo_local/git/checkouts/halo2-9199b7623b70ff0b/1dd2090/icicle/backend/cuda/libicicle_backend_cuda_curve_bn254.so: ELF 64-bit LSB shared object, x86-64, version 1 (GNU/Linux), dynamically linked, BuildID[sha1]=2d0021663e1272c37aac1be8d592e292b1bd2184, stripped",
+        "ldd_returncode": 1,
+        "ldd_stderr": "not a dynamic executable",
+        "ldd_stdout": "",
+        "name": "libicicle_backend_cuda_curve_bn254.so",
+        "path": "/home/pzh/project/comparison/baselines/ezkl/.cargo_local/git/checkouts/halo2-9199b7623b70ff0b/1dd2090/icicle/backend/cuda/libicicle_backend_cuda_curve_bn254.so"
+      },
+      {
+        "arch": "x86_64",
+        "arch_matches_host": false,
+        "exists": true,
+        "file": "/home/pzh/project/comparison/baselines/ezkl/.cargo_local/git/checkouts/halo2-9199b7623b70ff0b/1dd2090/icicle/backend/cuda/libicicle_backend_cuda_field_bn254.so: ELF 64-bit LSB shared object, x86-64, version 1 (GNU/Linux), dynamically linked, BuildID[sha1]=c1eaeae0584a3005871bc2dc102fb7a30ece70bf, stripped",
+        "ldd_returncode": 1,
+        "ldd_stderr": "not a dynamic executable",
+        "ldd_stdout": "",
+        "name": "libicicle_backend_cuda_field_bn254.so",
+        "path": "/home/pzh/project/comparison/baselines/ezkl/.cargo_local/git/checkouts/halo2-9199b7623b70ff0b/1dd2090/icicle/backend/cuda/libicicle_backend_cuda_field_bn254.so"
+      },
+      {
+        "arch": "x86_64",
+        "arch_matches_host": false,
+        "exists": true,
+        "file": "/home/pzh/project/comparison/baselines/ezkl/.cargo_local/git/checkouts/halo2-9199b7623b70ff0b/1dd2090/icicle/backend/cuda/libicicle_backend_cuda_hash.so: ELF 64-bit LSB shared object, x86-64, version 1 (GNU/Linux), dynamically linked, BuildID[sha1]=822c2c7063820a12c197dd132c74f0a12934c4be, stripped",
+        "ldd_returncode": 1,
+        "ldd_stderr": "not a dynamic executable",
+        "ldd_stdout": "",
+        "name": "libicicle_backend_cuda_hash.so",
+        "path": "/home/pzh/project/comparison/baselines/ezkl/.cargo_local/git/checkouts/halo2-9199b7623b70ff0b/1dd2090/icicle/backend/cuda/libicicle_backend_cuda_hash.so"
+      }
+    ],
+    "library_arches": [
+      "x86_64"
+    ],
+    "missing_libraries": [],
+    "path": "/home/pzh/project/comparison/baselines/ezkl/.cargo_local/git/checkouts/halo2-9199b7623b70ff0b/1dd2090/icicle/backend/cuda",
+    "required_libraries": [
+      "libicicle_backend_cuda_device.so",
+      "libicicle_backend_cuda_curve_bn254.so",
+      "libicicle_backend_cuda_field_bn254.so",
+      "libicicle_backend_cuda_hash.so"
+    ]
+  },
+  "cuda": {
+    "nvcc": {
+      "command": "nvcc --version",
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2025 NVIDIA Corporation\nBuilt on Wed_Aug_20_01:57:39_PM_PDT_2025\nCuda compilation tools, release 13.0, V13.0.88\nBuild cuda_13.0.r13.0/compiler.36424714_0"
+    },
+    "nvidia_smi": {
+      "command": "nvidia-smi",
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "Mon May  4 12:53:36 2026       \n+-----------------------------------------------------------------------------------------+\n| NVIDIA-SMI 580.142                Driver Version: 580.142        CUDA Version: 13.0     |\n+-----------------------------------------+------------------------+----------------------+\n| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |\n| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |\n|                                         |                        |               MIG M. |\n|=========================================+========================+======================|\n|   0  NVIDIA GB10                    On  |   0000000F:01:00.0 Off |                  N/A |\n| N/A   35C    P8              3W /  N/A  | Not Supported          |      0%      Default |\n|                                         |                        |                  N/A |\n+-----------------------------------------+------------------------+----------------------+\n\n+-----------------------------------------------------------------------------------------+\n| Processes:                                                                              |\n|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |\n|        ID   ID                                                               Usage      |\n|=========================================================================================|\n|    0   N/A  N/A            2796      G   /usr/lib/xorg/Xorg                       18MiB |\n|    0   N/A  N/A            2986      G   /usr/bin/gnome-shell                      6MiB |\n+-----------------------------------------------------------------------------------------+"
+    }
+  },
+  "generated_at": "2026-05-04T04:53:36.633628+00:00",
+  "gpu": {
+    "available": true,
+    "command": "nvidia-smi --query-gpu=index,name,driver_version --format=csv,noheader",
+    "device_count": 1,
+    "devices": [
+      {
+        "driver_version": "580.142",
+        "index": "0",
+        "name": "NVIDIA GB10"
+      }
+    ],
+    "stderr": "",
+    "stdout": "0, NVIDIA GB10, 580.142"
+  },
+  "host_arch": "aarch64",
+  "icicle_backend_install_dir": "/home/pzh/project/comparison/baselines/ezkl/.cargo_local/git/checkouts/halo2-9199b7623b70ff0b/1dd2090/icicle/backend/cuda",
+  "initialization": {
+    "attempted": true,
+    "command": "/home/pzh/project/comparison/baselines/ezkl/target/release/ezkl gen-srs --srs-path gpu_backend_check.srs --logrows 1",
+    "returncode": 1,
+    "status": "failed",
+    "stderr_tail": "[INFO] ICICLE backend loaded from $ICICLE_BACKEND_INSTALL_DIR=/home/pzh/project/comparison/baselines/ezkl/.cargo_local/git/checkouts/halo2-9199b7623b70ff0b/1dd2090/icicle/backend/cuda",
+    "stdout_tail": "[E] [2026-05-04 04:53:36:632, ezkl] - [Uncategorized] gpu_backend_device_unavailable: CUDA device 0 is not available"
+  },
+  "platform_machine": "aarch64",
+  "usable": false
+}

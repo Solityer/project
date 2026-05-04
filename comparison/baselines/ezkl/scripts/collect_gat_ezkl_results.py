@@ -131,8 +131,16 @@ def collect_backend(backend: str) -> tuple[list[dict], list[dict]]:
         ezkl_row = {
             "dataset": run_id,
             "display_dataset": display,
-            "backend": manifest.get("backend", backend),
+            "backend": manifest.get("backend") or backend,
             "gpu_backend": manifest.get("gpu_backend", ""),
+            "gpu_backend_required": manifest.get("gpu_backend_required"),
+            "gpu_backend_active": manifest.get("gpu_backend_active"),
+            "gpu_backend_name": manifest.get("gpu_backend_name", manifest.get("gpu_backend", "")),
+            "gpu_backend_library_path": manifest.get("gpu_backend_library_path", ""),
+            "gpu_backend_library_arch": manifest.get("gpu_backend_library_arch", ""),
+            "gpu_device_name": manifest.get("gpu_device_name", ""),
+            "gpu_device_count": manifest.get("gpu_device_count"),
+            "cpu_fallback_used": manifest.get("cpu_fallback_used"),
             "gpu_env": manifest.get("gpu_env", {}),
             "gpu_device_info": manifest.get("gpu_device_info", {}),
             "statement_route_id": manifest.get("statement_route_id", CPU_ROUTE_ID),
@@ -201,6 +209,9 @@ def collect_backend(backend: str) -> tuple[list[dict], list[dict]]:
             "final_logits_hash": final_binding.get("final_logits_hash"),
             "public_instance_hash": final_binding.get("public_instance_hash"),
             "no_precomputed_logits_bypass": final_binding.get("no_precomputed_logits_bypass"),
+            "full_dataset": manifest.get("full_dataset"),
+            "command": manifest.get("command", ""),
+            "verify_passed": manifest.get("verify_passed"),
         }
         for metric in METRICS:
             ezkl_row[metric] = manifest.get(metric)
@@ -416,6 +427,14 @@ def main() -> int:
         "display_dataset",
         "backend",
         "gpu_backend",
+        "gpu_backend_required",
+        "gpu_backend_active",
+        "gpu_backend_name",
+        "gpu_backend_library_path",
+        "gpu_backend_library_arch",
+        "gpu_device_name",
+        "gpu_device_count",
+        "cpu_fallback_used",
         "statement_route_id",
         "source_run_dir",
         "route_id",
@@ -461,6 +480,9 @@ def main() -> int:
         "final_logits_hash",
         "public_instance_hash",
         "no_precomputed_logits_bypass",
+        "full_dataset",
+        "command",
+        "verify_passed",
     ] + METRICS
     comparison_fields = ["dataset", "backend", "ezkl_status", "ezkl_block_reason", "ezkl_route_id"]
     for metric in METRICS:

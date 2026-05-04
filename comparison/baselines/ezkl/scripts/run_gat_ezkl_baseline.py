@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -31,6 +32,12 @@ DATASETS = {
 }
 CPU_ROUTE = "ezkl_gat_native_compressed_csr_attention_full"
 GPU_ROUTE = "ezkl_gat_native_compressed_csr_attention_full_gpu"
+REQUIRED_GPU_BACKEND_LIBS = [
+    "libicicle_backend_cuda_device.so",
+    "libicicle_backend_cuda_curve_bn254.so",
+    "libicicle_backend_cuda_field_bn254.so",
+    "libicicle_backend_cuda_hash.so",
+]
 ROUTES = {
     CPU_ROUTE: {
         "backend": "cpu",
@@ -176,6 +183,37 @@ def native_command_env(
     return env
 
 
+def host_arch() -> str:
+    machine = platform.machine().lower()
+    if machine in {"arm64", "aarch64"}:
+        return "aarch64"
+    if machine in {"x86_64", "amd64"}:
+        return "x86_64"
+    return machine
+
+
+def classify_library_arch(file_output: str) -> str:
+    lowered = file_output.lower()
+    if "x86-64" in lowered or "x86_64" in lowered:
+        return "x86_64"
+    if "aarch64" in lowered or "arm aarch64" in lowered or "arm64" in lowered:
+        return "aarch64"
+    return "unknown"
+
+
+def default_icicle_backend_dir() -> str | None:
+    env_dir = os.environ.get("ICICLE_BACKEND_INSTALL_DIR")
+    if env_dir:
+        return env_dir
+    checkout_root = EZKL_ROOT / ".cargo_local" / "git" / "checkouts"
+    candidates = list(checkout_root.glob("halo2-*/**/icicle/backend/cuda"))
+    candidates.sort(key=lambda path: (0 if "1dd2090" in str(path) else 1, str(path)))
+    for candidate in candidates:
+        if all((candidate / name).exists() for name in REQUIRED_GPU_BACKEND_LIBS):
+            return str(candidate)
+    return None
+
+
 def gpu_env_profile(env: dict[str, str]) -> dict[str, str]:
     keys = [
         "CUDA_VISIBLE_DEVICES",
@@ -223,25 +261,95 @@ def gpu_device_info() -> dict[str, object]:
     return info
 
 
+def gpu_device_summary(info: dict[str, object]) -> tuple[str, int]:
+    devices = info.get("devices")
+    if not isinstance(devices, list):
+        return "", 0
+    names = []
+    for device in devices:
+        if isinstance(device, dict) and device.get("name"):
+            names.append(str(device["name"]))
+    return (names[0] if names else "", len(devices))
+
+
 def gpu_backend_binary_info(icicle_backend_dir: str | None) -> dict[str, object]:
     if not icicle_backend_dir:
-        return {"available": False, "error": "icicle_backend_dir_not_set"}
+        return {
+            "available": False,
+            "error": "icicle_backend_dir_not_set",
+            "required_libraries": REQUIRED_GPU_BACKEND_LIBS,
+            "missing_libraries": REQUIRED_GPU_BACKEND_LIBS,
+            "arch_match": False,
+        }
     backend_dir = Path(icicle_backend_dir)
-    libraries = sorted(backend_dir.glob("*.so"))
+    expected_arch = host_arch()
     rows = []
-    for lib in libraries:
+    missing = []
+    for name in REQUIRED_GPU_BACKEND_LIBS:
+        lib = backend_dir / name
+        if not lib.exists():
+            missing.append(name)
+            rows.append({"name": name, "path": str(lib), "exists": False})
+            continue
         completed = subprocess.run(["file", str(lib)], text=True, capture_output=True, check=False)
+        file_output = completed.stdout.strip() or completed.stderr.strip()
+        arch = classify_library_arch(file_output)
         rows.append(
             {
+                "name": name,
                 "path": str(lib),
+                "exists": True,
                 "returncode": completed.returncode,
-                "file_output": completed.stdout.strip() or completed.stderr.strip(),
+                "file_output": file_output,
+                "arch": arch,
+                "arch_matches_host": arch == expected_arch,
             }
         )
+    primary = rows[0] if rows else {}
+    present_arches = sorted({str(row.get("arch")) for row in rows if row.get("exists")})
     return {
         "available": backend_dir.exists(),
         "path": str(backend_dir),
+        "host_arch": expected_arch,
+        "required_libraries": REQUIRED_GPU_BACKEND_LIBS,
+        "missing_libraries": missing,
         "libraries": rows,
+        "library_arches": present_arches,
+        "primary_library_path": primary.get("path", ""),
+        "primary_library_arch": primary.get("arch", ""),
+        "arch_match": backend_dir.exists()
+        and not missing
+        and bool(rows)
+        and all(row.get("arch_matches_host") for row in rows),
+    }
+
+
+def gpu_backend_ready(backend_info: dict[str, object], device_info: dict[str, object]) -> bool:
+    return bool(
+        backend_info.get("available")
+        and backend_info.get("arch_match")
+        and device_info.get("available")
+        and gpu_device_summary(device_info)[1] > 0
+    )
+
+
+def gpu_manifest_fields(
+    route_cfg: dict[str, str],
+    command_env: dict[str, str],
+    device_info: dict[str, object],
+    backend_info: dict[str, object],
+    active: bool,
+) -> dict[str, object]:
+    device_name, device_count = gpu_device_summary(device_info)
+    return {
+        "gpu_backend_required": True,
+        "gpu_backend_active": active,
+        "gpu_backend_name": route_cfg["gpu_backend"],
+        "gpu_backend_library_path": backend_info.get("primary_library_path", ""),
+        "gpu_backend_library_arch": backend_info.get("primary_library_arch", ""),
+        "gpu_device_name": device_name,
+        "gpu_device_count": device_count,
+        "cpu_fallback_used": False,
     }
 
 
@@ -490,6 +598,82 @@ def find_ezkl_command() -> list[str]:
     if binary.exists():
         return [str(binary)]
     return ["cargo", "run", "--release", "--bin", "ezkl", "--"]
+
+
+def intended_native_graph_command(native_debug_scope: str | None = None) -> str:
+    ezkl = find_ezkl_command()
+    scope_flags = ["--native-debug-scope", native_debug_scope] if native_debug_scope else []
+    commands = [
+        ezkl
+        + [
+            "graph-gat-gen-settings",
+            "--spec-path",
+            "graph_attention_spec.json",
+            "--csr-layout-path",
+            "csr_segment_layout.json",
+            "--settings-path",
+            "settings.json",
+        ]
+        + scope_flags,
+        ezkl
+        + [
+            "graph-gat-compile",
+            "--spec-path",
+            "graph_attention_spec.json",
+            "--csr-layout-path",
+            "csr_segment_layout.json",
+            "--settings-path",
+            "settings.json",
+            "--compiled-circuit",
+            "model.compiled",
+        ]
+        + scope_flags,
+        ezkl
+        + [
+            "graph-gat-setup",
+            "--compiled-circuit",
+            "model.compiled",
+            "--vk-path",
+            "vk.key",
+            "--pk-path",
+            "pk.key",
+        ],
+        ezkl
+        + [
+            "graph-gat-gen-witness",
+            "--compiled-circuit",
+            "model.compiled",
+            "--output",
+            "witness.json",
+        ],
+        ezkl
+        + [
+            "graph-gat-prove",
+            "--compiled-circuit",
+            "model.compiled",
+            "--witness",
+            "witness.json",
+            "--pk-path",
+            "pk.key",
+            "--proof-path",
+            "proof.json",
+        ],
+        ezkl
+        + [
+            "graph-gat-verify",
+            "--compiled-circuit",
+            "model.compiled",
+            "--proof-path",
+            "proof.json",
+            "--settings-path",
+            "settings.json",
+            "--vk-path",
+            "vk.key",
+            "--output",
+            "verify.json",
+        ],
+    ]
+    return " && ".join(" ".join(command) for command in commands)
 
 
 def run_native_graph_pipeline(
@@ -753,6 +937,7 @@ def run_native_graph_pipeline(
     proof_path = run_dir / "proof.json"
     proof_size = proof_path.stat().st_size if proof_path.exists() else None
     verify = read_json(run_dir / "verify.json") if (run_dir / "verify.json").exists() else {}
+    final_binding = read_json(run_dir / "final_logits_binding.json") if (run_dir / "final_logits_binding.json").exists() else {}
     strict_public = bool(verify.get("strict_public_input_equivalent", False))
     full_forward = bool(verify.get("full_gat_forward_in_ezkl_proof", False))
     manifest.update(timings)
@@ -775,10 +960,19 @@ def run_native_graph_pipeline(
             "check_mode": "safe",
             "strict_public_input_equivalent": strict_public,
             "full_gat_forward_in_ezkl_proof": full_forward,
+            "final_logits_derivation_complete": bool(
+                final_binding.get("final_logits_derivation_complete", False)
+            ),
+            "no_precomputed_logits_bypass": bool(
+                final_binding.get("no_precomputed_logits_bypass", False)
+            ),
             "verify_passed": bool(verify.get("verify_passed", True)),
             "proof_verification_status": "verified",
             "native_debug_scope": native_debug_scope or verify.get("native_debug_scope") or manifest.get("native_debug_scope") or "full_model",
             "backend": backend,
+            "gpu_backend_required": backend == "gpu",
+            "gpu_backend_active": backend == "gpu",
+            "cpu_fallback_used": False if backend == "gpu" else None,
             "gpu_backend": manifest.get("gpu_backend", ""),
             "gpu_env": manifest.get("gpu_env", {}),
             "gpu_device_info": manifest.get("gpu_device_info", {}),
@@ -852,12 +1046,15 @@ def main() -> int:
         print(f"dataset={args.dataset} status=failed block_reason=exporter_failure")
         return 1
 
-    command_env = native_command_env(
-        run_dir,
-        None,
-        args.backend,
-        args.icicle_backend_dir or os.environ.get("ICICLE_BACKEND_INSTALL_DIR"),
-    )
+    icicle_backend_dir = args.icicle_backend_dir or default_icicle_backend_dir()
+    command_env = native_command_env(run_dir, None, args.backend, icicle_backend_dir)
+    device_info: dict[str, object] = {}
+    backend_info: dict[str, object] = {}
+    gpu_fields: dict[str, object] = {}
+    if args.backend == "gpu":
+        device_info = gpu_device_info()
+        backend_info = gpu_backend_binary_info(icicle_backend_dir)
+        gpu_fields = gpu_manifest_fields(route_cfg, command_env, device_info, backend_info, False)
     manifest = update_manifest(
         run_dir,
         exporter_ms=exporter_ms,
@@ -866,13 +1063,51 @@ def main() -> int:
         route_statement_equivalence="same_dataset_checkpoint_preprocessing_quantization_and_final_logits_semantics",
         gpu_backend=route_cfg["gpu_backend"],
         gpu_env=gpu_env_profile(command_env) if args.backend == "gpu" else {},
-        gpu_device_info=gpu_device_info() if args.backend == "gpu" else {},
-        gpu_backend_binary_info=gpu_backend_binary_info(args.icicle_backend_dir or os.environ.get("ICICLE_BACKEND_INSTALL_DIR")) if args.backend == "gpu" else {},
+        gpu_device_info=device_info if args.backend == "gpu" else {},
+        gpu_backend_binary_info=backend_info if args.backend == "gpu" else {},
+        **gpu_fields,
         native_debug_scope=args.native_debug_scope or "full_model",
         scope=args.native_debug_scope or "full_model",
         stdout_tail=tail(stdout),
         stderr_tail=tail(stderr),
     )
+    if args.backend == "gpu" and not gpu_backend_ready(backend_info, device_info):
+        arch_detail = backend_info.get("primary_library_arch") or ",".join(
+            str(item) for item in backend_info.get("library_arches", [])
+        )
+        manifest.update(
+            {
+                "status": "blocked",
+                "block_reason": "gpu_backend_unavailable",
+                "failure_step": "gpu_backend_preflight",
+                "limitation": (
+                    "icicle_cuda_backend_unusable_on_host_arch"
+                    if not backend_info.get("arch_match")
+                    else "icicle_cuda_backend_or_device_unavailable"
+                ),
+                "backend": "gpu",
+                "gpu_backend_required": True,
+                "gpu_backend_active": False,
+                "cpu_fallback_used": False,
+                "gpu_backend_library_arch": arch_detail,
+                "strict_public_input_equivalent": False,
+                "full_gat_forward_in_ezkl_proof": False,
+                "verify_passed": False,
+                "proof_verification_status": "not_verified",
+                "proof_size_bytes": None,
+                "commitment_time_ms": None,
+                "prove_time_ms": None,
+                "verify_time_ms": None,
+                "command": intended_native_graph_command(args.native_debug_scope),
+            }
+        )
+        write_json(run_dir / "run_manifest.json", manifest)
+        write_blocked_artifacts(run_dir, manifest)
+        print(
+            f"dataset={args.dataset} status=blocked "
+            f"block_reason={manifest.get('block_reason')} route_id={manifest.get('route_id')}"
+        )
+        return 0
     if manifest.get("status") == "blocked":
         write_blocked_artifacts(run_dir, manifest)
         print(
@@ -887,7 +1122,7 @@ def main() -> int:
             manifest,
             args.native_debug_scope,
             args.backend,
-            args.icicle_backend_dir or os.environ.get("ICICLE_BACKEND_INSTALL_DIR"),
+            icicle_backend_dir,
         )
         print(f"dataset={args.dataset} status={manifest.get('status')} route_id={manifest.get('route_id')}")
     return 0

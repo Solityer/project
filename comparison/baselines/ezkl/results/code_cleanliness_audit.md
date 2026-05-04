@@ -9,7 +9,7 @@
 - CPU：`ezkl_gat_native_compressed_csr_attention_full`
 - GPU：`ezkl_gat_native_compressed_csr_attention_full_gpu`
 
-GPU 路线已接入 runner、配置、collector、validator 与 README。当前 GPU 运行状态为 `blocked`，原因是 `Icicle CUDA` 后端二进制与本机 `aarch64` 架构不匹配；未写入任何 fake、stub、dummy 或 placeholder 成功路径。
+GPU 路线已接入 runner、配置、collector、validator、正式 GPU 后端自检脚本与 README。当前 GPU 运行状态为 `blocked`，阻塞步骤为 `gpu_backend_preflight`，原因是 `Icicle CUDA` 后端二进制与本机 `aarch64` 架构不匹配；未写入任何 fake、stub、dummy 或 placeholder 成功路径。
 
 ## 检查命令
 
@@ -22,6 +22,7 @@ grep -R "TODO\|FIXME\|HACK\|XXX\|stub\|dummy\|fake\|placeholder\|temporary\|debu
 - `scripts/run_gat_ezkl_baseline.py` 未新增 TODO、stub、dummy、fake、placeholder 或未接通函数。
 - `scripts/collect_gat_ezkl_results.py` 未新增 TODO、stub、dummy、fake、placeholder 或未接通函数。
 - `scripts/validate_final_results.py` 未新增 TODO、stub、dummy、fake、placeholder 或未接通函数。
+- `scripts/check_gpu_backend.py` 未出现禁用词命中。
 - `configs/ezkl_routes.json` 未出现禁用词命中。
 - `cpp/gat_ezkl_adapter/` 未新增禁用词命中。
 - `README.md` 未出现禁用词命中。
