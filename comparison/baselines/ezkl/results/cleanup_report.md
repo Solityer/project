@@ -19,6 +19,7 @@
 - `scripts/run_gat_ezkl_baseline.py`
 - `scripts/collect_gat_ezkl_results.py`
 - `scripts/validate_final_results.py`
+- `scripts/check_gpu_backend.py`
 
 CPU 结果：
 
@@ -36,6 +37,7 @@ GPU 状态与结果：
 - `results/main_vs_ezkl_gpu_full_comparison.csv`
 - `results/gpu_summary.md`
 - `results/gpu_route_status.md`
+- `results/gpu_backend_check.json`
 
 审计文档：
 
@@ -78,6 +80,9 @@ GPU 未保留 proof、key、SRS、witness、compiled circuit 或二进制 payloa
 
 - `target/`
 - `build_gat_adapter/`
+- `build_gpu_backend/`
+- `.gpu_backend_local/`
+- `.icicle_backend_local/`
 - `CMakeFiles/`
 - `CMakeCache.txt`
 - `cmake_install.cmake`
@@ -103,12 +108,13 @@ GPU 未保留 proof、key、SRS、witness、compiled circuit 或二进制 payloa
 
 ## GPU 清理结论
 
-GPU route 已对五个全量数据集实际启动，但全部在 `gen_settings_ms` 阶段因 `gpu_backend_unavailable` 阻塞。阻塞证据已汇总到：
+GPU route 已对五个全量数据集执行正式后端预检，但全部在 `gpu_backend_preflight` 阶段因 `gpu_backend_unavailable` 阻塞。阻塞证据已汇总到：
 
 - `results/gpu_route_status.md`
+- `results/gpu_backend_check.json`
 - `runs/<dataset>/gpu/run_manifest.json`
 
-GPU 未产生 verified proof，因此没有 GPU 四项正式指标。
+GPU 未产生 verified proof，因此没有 GPU 四项正式指标。本轮生成的本地构建目录和 Cargo/Rust 缓存目录均被忽略，不进入提交。
 
 ## 验证状态
 

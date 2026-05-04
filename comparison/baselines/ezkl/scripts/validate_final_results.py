@@ -44,6 +44,17 @@ METRICS = [
     "verify_time_ms",
     "proof_size_bytes",
 ]
+FORBIDDEN_ROUTE_TOKENS = [
+    "output-binding",
+    "output_binding",
+    "digest",
+    "folding",
+    "identity",
+    "subset",
+    "shard",
+    "sample",
+    "precomputed_logits",
+]
 
 
 def read_json(path: Path) -> object:
@@ -158,6 +169,27 @@ def validate_reports(expected: dict[str, dict]) -> None:
         require(str(row["proof_size_bytes"]) in summary, f"{dataset} proof size missing from summary")
 
 
+def validate_gpu_verified_rows(rows: list[dict]) -> None:
+    for row in rows:
+        dataset = str(row.get("dataset"))
+        require(row.get("route_id") == GPU_ROUTE_ID, f"{dataset} GPU route mismatch")
+        require(row.get("backend") == "gpu", f"{dataset} GPU backend mismatch")
+        require(row.get("gpu_backend_required") is True, f"{dataset} GPU required flag false")
+        require(row.get("gpu_backend_active") is True, f"{dataset} GPU active flag false")
+        require(row.get("cpu_fallback_used") is False, f"{dataset} CPU fallback flag true")
+        require(row.get("full_dataset") is True, f"{dataset} full dataset flag false")
+        require(row.get("verify_passed") is True, f"{dataset} verify flag false")
+        require(row.get("gpu_backend_library_arch") not in {"", None}, f"{dataset} GPU library arch missing")
+        require(row.get("gpu_device_name") not in {"", None}, f"{dataset} GPU device name missing")
+        require(row.get("gpu_device_count") not in {"", None, 0}, f"{dataset} GPU device count missing")
+        text = " ".join(
+            str(row.get(key, ""))
+            for key in ["route_id", "command", "block_reason", "source_run_dir"]
+        ).lower()
+        for token in FORBIDDEN_ROUTE_TOKENS:
+            require(token not in text, f"{dataset} forbidden GPU route token present: {token}")
+
+
 def main() -> int:
     results = read_json(RESULTS / "gat_ezkl_full_results.json")
     require(isinstance(results, dict), "result JSON is not an object")
@@ -181,6 +213,7 @@ def main() -> int:
         validate_comparison_csv(RESULTS / "main_vs_ezkl_gpu_full_comparison.csv", GPU_ROUTE_ID, False)
         gpu_verified = [row for row in gpu_rows if row.get("status") == "verified"]
         if len(gpu_verified) == 5:
+            validate_gpu_verified_rows(gpu_rows)
             validate_manifests(gpu_expected, GPU_ROUTE_ID, "gpu")
             gpu_status = "verified_5/5"
         else:
