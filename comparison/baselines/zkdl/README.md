@@ -1,6 +1,10 @@
 # zkDL GAT Full Forward Baseline
 
-This directory is an independent zkDL comparison baseline. It builds from `comparison/zkdl`, carries its own C++ runner, configs, scripts, manifests, results, and copied zkDL primitive headers under `third_party/zkdl`.
+This directory is the only zkDL comparison baseline entry point:
+
+`comparison/baselines/zkdl`
+
+It carries the original zkDL CUDA/header primitives in this directory and adds an independent C++ manifest runner, CUDA primitive probe, configs, scripts, manifests, and result collection around those primitives.
 
 The baseline treats the main repository as a read-only source for full dataset caches, checkpoint bundles, original configs, and published main-run manifests. It never includes or executes the main repository `src`, `include`, or `scripts` trees.
 
@@ -57,6 +61,6 @@ Collected tables:
 
 ## Current zkDL Capability Boundary
 
-The copied zkDL backend exposes CUDA tensor commitment, multilinear evaluation, inner-product and Hadamard-product sumcheck, binary sumcheck, matrix multiplication, product, and ReLU-style range machinery. It does not expose a CPU tensor commitment/proof backend, a verifier acceptance API, or the full GAT proof relations required here: destination-group max, inverse, exponent and ELU lookup arguments, rescale arguments, FAC4DNN sparse aggregation, and final public logits binding.
+The zkDL backend in this directory exposes CUDA tensor commitment, multilinear evaluation, inner-product and Hadamard-product sumcheck, binary sumcheck, matrix multiplication, product, and ReLU-style range machinery. It does not expose a CPU tensor commitment/proof backend, a verifier acceptance API, or the full GAT proof relations required here: destination-group max, inverse, exponent and ELU lookup arguments, rescale arguments, FAC4DNN sparse aggregation, and final public logits binding.
 
 For that reason this baseline records formal blockers instead of marking any full GAT result as verified. GPU probing still runs a real zkDL CUDA primitive path and records whether a CUDA backend is active. A GPU manifest is never marked verified when fallback or missing GPU support occurs.
