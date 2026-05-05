@@ -1743,15 +1743,6 @@ mod native_tests {
 
     #[allow(unused_variables)]
     fn build_ezkl() {
-        #[cfg(feature = "gpu-accelerated")]
-        let args = [
-            "build",
-            "--profile=test-runs",
-            "--bin",
-            "ezkl",
-            "--features",
-            "icicle",
-        ];
         #[cfg(feature = "macos-metal")]
         let args = [
             "build",
@@ -1761,8 +1752,7 @@ mod native_tests {
             "--features",
             "macos-metal",
         ];
-        // not macos-metal and not icicle
-        #[cfg(all(not(feature = "gpu-accelerated"), not(feature = "macos-metal")))]
+        #[cfg(not(feature = "macos-metal"))]
         let args = ["build", "--profile=test-runs", "--bin", "ezkl"];
         #[cfg(feature = "reusable-verifier")]
         let args = [

@@ -25,7 +25,6 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const COMPRESSED_ROUTE_ID: &str = "ezkl_gat_native_compressed_csr_attention_full";
-const COMPRESSED_GPU_ROUTE_ID: &str = "ezkl_gat_native_compressed_csr_attention_full_gpu";
 const COMPRESSED_PRIMITIVE: &str = "GraphSegmentAttentionCompressedCSR";
 const COMPRESSED_PRIMITIVE_VERSION: &str = "csr_segment_attention_compressed_v1";
 const DEFAULT_MAX_LOGROWS: u32 = 26;
@@ -1645,11 +1644,11 @@ fn ceil_log2(value: u128) -> u32 {
 }
 
 fn is_supported_route(route_id: &str) -> bool {
-    matches!(route_id, COMPRESSED_ROUTE_ID | COMPRESSED_GPU_ROUTE_ID)
+    route_id == COMPRESSED_ROUTE_ID
 }
 
 fn is_compressed_route(route_id: &str) -> bool {
-    matches!(route_id, COMPRESSED_ROUTE_ID | COMPRESSED_GPU_ROUTE_ID)
+    route_id == COMPRESSED_ROUTE_ID
 }
 
 fn primitive_for_route(route_id: &str) -> (&'static str, &'static str) {

@@ -1544,15 +1544,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3e64b0cc0439b12df2fa678eae89a1c56a529fd067a9115f7827f1fffd22b32"
 
 [[package]]
-name = "cmake"
-version = "0.1.57"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75443c44cd6b379beb8c5b45d85d0773baf31cce901fe7bb252f4eff3008ef7d"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "colorchoice"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2272,7 +2263,6 @@ dependencies = [
  "halo2_solidity_verifier",
  "halo2curves 0.7.0 (git+https://github.com/privacy-scaling-explorations/halo2curves?rev=b753a832e92d5c86c5c997327a9cf9de86a18851)",
  "hex",
- "icicle-runtime",
  "indicatif",
  "instant",
  "itertools 0.10.5",
@@ -2797,9 +2787,6 @@ dependencies = [
  "ff",
  "group",
  "halo2curves 0.7.0 (git+https://github.com/privacy-scaling-explorations/halo2curves?rev=b753a832e92d5c86c5c997327a9cf9de86a18851)",
- "icicle-bn254",
- "icicle-core",
- "icicle-runtime",
  "instant",
  "lazy_static",
  "log",
@@ -3226,49 +3213,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f31827a206f56af32e590ba56d5d2d085f558508192593743f16b2306495269f"
 dependencies = [
  "cc",
-]
-
-[[package]]
-name = "icicle-bn254"
-version = "3.7.0"
-source = "git+https://github.com/ingonyama-zk/icicle?branch=emir%2Fgate_eval_2#012e00694f4cf399fe7a42d9cfbfa6cd7a60f876"
-dependencies = [
- "cmake",
- "icicle-core",
- "icicle-hash",
- "icicle-runtime",
-]
-
-[[package]]
-name = "icicle-core"
-version = "3.7.0"
-source = "git+https://github.com/ingonyama-zk/icicle?branch=emir%2Fgate_eval_2#012e00694f4cf399fe7a42d9cfbfa6cd7a60f876"
-dependencies = [
- "hex",
- "icicle-runtime",
- "once_cell",
- "rand 0.8.5",
- "rayon",
-]
-
-[[package]]
-name = "icicle-hash"
-version = "3.7.0"
-source = "git+https://github.com/ingonyama-zk/icicle?branch=emir%2Fgate_eval_2#012e00694f4cf399fe7a42d9cfbfa6cd7a60f876"
-dependencies = [
- "cmake",
- "icicle-core",
- "icicle-runtime",
- "rand 0.8.5",
-]
-
-[[package]]
-name = "icicle-runtime"
-version = "3.7.0"
-source = "git+https://github.com/ingonyama-zk/icicle?branch=emir%2Fgate_eval_2#012e00694f4cf399fe7a42d9cfbfa6cd7a60f876"
-dependencies = [
- "cmake",
- "once_cell",
 ]
 
 [[package]]

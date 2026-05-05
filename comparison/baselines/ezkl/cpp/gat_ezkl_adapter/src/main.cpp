@@ -72,8 +72,7 @@ std::string optional_string_arg(
 }
 
 bool is_native_graph_route(const std::string& route) {
-    return route == "ezkl_gat_native_compressed_csr_attention_full" ||
-           route == "ezkl_gat_native_compressed_csr_attention_full_gpu";
+    return route == "ezkl_gat_native_compressed_csr_attention_full";
 }
 
 std::string native_primitive_for_route(const std::string& route) {
@@ -175,7 +174,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("analysis-only routes are not part of the final strict ezkl comparison");
         }
         if (!is_native_graph_route(route)) {
-            throw std::runtime_error("only the strict CPU/GPU compressed CSR routes are allowed for the final comparison");
+            throw std::runtime_error("only the strict CPU compressed CSR route is allowed for the final comparison");
         }
         const bool wants_native_csr_route = true;
         const auto graph_hash = gat_ezkl::hash_graph_hex(graph);

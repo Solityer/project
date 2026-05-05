@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect GAT-ZKML ezkl baseline results into JSON/CSV/Markdown."""
+"""Collect the CPU-only strict GAT-ZKML ezkl baseline results."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ EZKL_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = Path("/home/pzh/project")
 RESULTS = EZKL_ROOT / "results"
 CPU_ROUTE_ID = "ezkl_gat_native_compressed_csr_attention_full"
-GPU_ROUTE_ID = "ezkl_gat_native_compressed_csr_attention_full_gpu"
 DATASETS = [
     ("cora_full", "cora", "Cora", "runs/cora_full"),
     ("citeseer_full", "citeseer", "Citeseer", "runs/citeseer_full"),
@@ -21,24 +20,6 @@ DATASETS = [
     ("ogbn_arxiv_full", "ogbn-arxiv", "ogbn-arxiv", "runs/ogbn_arxiv_full"),
 ]
 METRICS = ["commitment_time_ms", "prove_time_ms", "verify_time_ms", "proof_size_bytes"]
-BACKENDS = {
-    "cpu": {
-        "route_id": CPU_ROUTE_ID,
-        "run_suffix": "",
-        "result_prefix": "gat_ezkl_full_results",
-        "comparison_prefix": "main_vs_ezkl_full_comparison",
-        "summary": "summary.md",
-        "label": "CPU",
-    },
-    "gpu": {
-        "route_id": GPU_ROUTE_ID,
-        "run_suffix": "gpu",
-        "result_prefix": "gat_ezkl_gpu_full_results",
-        "comparison_prefix": "main_vs_ezkl_gpu_full_comparison",
-        "summary": "gpu_summary.md",
-        "label": "GPU",
-    },
-}
 
 
 def read_json(path: Path) -> dict:
@@ -51,6 +32,15 @@ def write_json(path: Path, data: object) -> None:
     with path.open("w", encoding="utf-8") as handle:
         json.dump(data, handle, indent=2, sort_keys=True)
         handle.write("\n")
+
+
+def write_csv(path: Path, rows: list[dict], fieldnames: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key, "") for key in fieldnames})
 
 
 def metric_cell(row: dict, key: str) -> str:
@@ -67,44 +57,14 @@ def main_rows() -> dict[str, dict]:
     return {row["dataset"]: row for row in latest["rows"]}
 
 
-def backend_run_dir(run_dir: str, backend: str) -> str:
-    suffix = BACKENDS[backend]["run_suffix"]
-    return f"{run_dir}/{suffix}" if suffix else run_dir
-
-
-def effective_manifest(run_dir: str, run_id: str, backend: str) -> dict:
-    base = EZKL_ROOT / run_dir
-    manifest_path = base / "run_manifest.json"
-    manifest = read_json(manifest_path) if manifest_path.exists() else {
-        "dataset": run_id,
-        "route_id": BACKENDS[backend]["route_id"],
-        "backend": backend,
-        "status": "missing" if backend == "gpu" else "failed",
-        "block_reason": f"missing_{backend}_run_manifest",
-    }
-    debug_full = base / "debug_full_model" / "run_manifest.json"
-    if debug_full.exists() and manifest.get("status") != "verified":
-        debug_manifest = read_json(debug_full)
-        if debug_manifest.get("block_reason") != "native_constraint_synthesis_failed":
-            manifest = debug_manifest | {
-                "dataset": run_id,
-                "source_manifest": str(debug_full.relative_to(EZKL_ROOT)),
-            }
-    return manifest
-
-
 def preflight_for_run(run_dir: str) -> dict:
     path = EZKL_ROOT / run_dir / "native_full_witness_preflight.json"
-    if not path.exists():
-        return {}
-    return read_json(path)
+    return read_json(path) if path.exists() else {}
 
 
 def final_logits_binding_for_run(run_dir: str) -> dict:
     path = EZKL_ROOT / run_dir / "final_logits_binding.json"
-    if not path.exists():
-        return {}
-    return read_json(path)
+    return read_json(path) if path.exists() else {}
 
 
 def native_constraint_failure_for_run(run_dir: str) -> dict:
@@ -118,33 +78,42 @@ def native_constraint_failure_for_run(run_dir: str) -> dict:
     return {}
 
 
-def collect_backend(backend: str) -> tuple[list[dict], list[dict]]:
+def effective_manifest(run_dir: str, run_id: str) -> dict:
+    base = EZKL_ROOT / run_dir
+    manifest_path = base / "run_manifest.json"
+    manifest = read_json(manifest_path) if manifest_path.exists() else {
+        "dataset": run_id,
+        "route_id": CPU_ROUTE_ID,
+        "backend": "cpu",
+        "status": "failed",
+        "block_reason": "missing_cpu_run_manifest",
+    }
+    debug_full = base / "debug_full_model" / "run_manifest.json"
+    if debug_full.exists() and manifest.get("status") != "verified":
+        debug_manifest = read_json(debug_full)
+        if debug_manifest.get("block_reason") != "native_constraint_synthesis_failed":
+            manifest = debug_manifest | {
+                "dataset": run_id,
+                "source_manifest": str(debug_full.relative_to(EZKL_ROOT)),
+            }
+    return manifest
+
+
+def collect_cpu() -> tuple[list[dict], list[dict]]:
     main_by_dataset = main_rows()
     ezkl_rows: list[dict] = []
     comparison_rows: list[dict] = []
     for run_id, main_key, display, run_dir in DATASETS:
-        actual_run_dir = backend_run_dir(run_dir, backend)
-        manifest = effective_manifest(actual_run_dir, run_id, backend)
-        preflight = preflight_for_run(actual_run_dir)
-        final_binding = final_logits_binding_for_run(actual_run_dir)
-        failure = native_constraint_failure_for_run(actual_run_dir)
+        manifest = effective_manifest(run_dir, run_id)
+        preflight = preflight_for_run(run_dir)
+        final_binding = final_logits_binding_for_run(run_dir)
+        failure = native_constraint_failure_for_run(run_dir)
         ezkl_row = {
             "dataset": run_id,
             "display_dataset": display,
-            "backend": manifest.get("backend") or backend,
-            "gpu_backend": manifest.get("gpu_backend", ""),
-            "gpu_backend_required": manifest.get("gpu_backend_required"),
-            "gpu_backend_active": manifest.get("gpu_backend_active"),
-            "gpu_backend_name": manifest.get("gpu_backend_name", manifest.get("gpu_backend", "")),
-            "gpu_backend_library_path": manifest.get("gpu_backend_library_path", ""),
-            "gpu_backend_library_arch": manifest.get("gpu_backend_library_arch", ""),
-            "gpu_device_name": manifest.get("gpu_device_name", ""),
-            "gpu_device_count": manifest.get("gpu_device_count"),
-            "cpu_fallback_used": manifest.get("cpu_fallback_used"),
-            "gpu_env": manifest.get("gpu_env", {}),
-            "gpu_device_info": manifest.get("gpu_device_info", {}),
+            "backend": "cpu",
             "statement_route_id": manifest.get("statement_route_id", CPU_ROUTE_ID),
-            "source_run_dir": actual_run_dir,
+            "source_run_dir": run_dir,
             "route_id": manifest.get("route_id", ""),
             "status": manifest.get("status", "failed"),
             "block_reason": manifest.get("block_reason", ""),
@@ -166,12 +135,8 @@ def collect_backend(backend: str) -> tuple[list[dict], list[dict]]:
             "failure_gate": failure.get("gate_name", manifest.get("failure_gate", "")),
             "failure_region": failure.get("region_name", manifest.get("failure_region", "")),
             "failure_row": failure.get("row_offset", manifest.get("failure_row", "")),
-            "failure_relation": failure.get(
-                "expected_relation", manifest.get("failure_relation", "")
-            ),
+            "failure_relation": failure.get("expected_relation", manifest.get("failure_relation", "")),
             "failure_values": failure.get("actual_values", manifest.get("failure_values", [])),
-            "failure_raw_error": failure.get("raw_error", ""),
-            "failure_remaining_blocker": failure.get("remaining_blocker", ""),
             "preflight_node_index": preflight.get("node_index"),
             "preflight_degree": preflight.get("degree"),
             "preflight_sum_fp32_reference": preflight.get("sum_fp32_reference"),
@@ -220,7 +185,7 @@ def collect_backend(backend: str) -> tuple[list[dict], list[dict]]:
         main_row = main_by_dataset.get(main_key, {})
         comparison = {
             "dataset": display,
-            "backend": backend,
+            "backend": "cpu",
             "ezkl_status": ezkl_row["status"],
             "ezkl_block_reason": ezkl_row["block_reason"],
             "ezkl_route_id": ezkl_row["route_id"],
@@ -232,113 +197,76 @@ def collect_backend(backend: str) -> tuple[list[dict], list[dict]]:
     return ezkl_rows, comparison_rows
 
 
-def write_csv(path: Path, rows: list[dict], fieldnames: list[str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({key: row.get(key, "") for key in fieldnames})
-
-
-def write_summary(ezkl_rows: list[dict], comparison_rows: list[dict], backend: str) -> None:
-    label = BACKENDS[backend]["label"]
-    route_id = BACKENDS[backend]["route_id"]
+def write_summary(ezkl_rows: list[dict], comparison_rows: list[dict]) -> None:
     lines: list[str] = []
-    lines.append(f"# GAT-ZKML 与 ezkl 全量数据集 {label} 汇总")
+    lines.append("# GAT-ZKML 与 ezkl CPU 严格全量数据集结果")
     lines.append("")
     verified_count = sum(1 for row in ezkl_rows if row.get("status") == "verified")
     lines.append(f"- 已验证全量数据集行数：{verified_count}/{len(ezkl_rows)}。")
-    lines.append(f"- 路线：`{route_id}`。")
+    lines.append(f"- 路线：`{CPU_ROUTE_ID}`。")
     lines.append("- `strict_public_input_equivalent` 只在完整 native GAT proof 已通过验证时为 `true`。")
     lines.append("- 未使用 output-binding workaround、precomputed logits、identity、digest、folding、subset、shard 或 sample route。")
     lines.append("")
     lines.append("## 数据集状态")
     lines.append("")
-    lines.append("| 数据集 | status | route_id | backend | strict | full GAT forward in proof | final logits derivation | block_reason |")
-    lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+    lines.append("| 数据集 | status | route_id | strict | full GAT forward in proof | final logits derivation |")
+    lines.append("| --- | --- | --- | --- | --- | --- |")
     for row in ezkl_rows:
         lines.append(
             f"| {row['display_dataset']} | {row['status']} | {row.get('route_id', '')} | "
-            f"{row.get('backend', backend)} | "
-            f"{row.get('strict_public_input_equivalent', False)} | {row.get('full_gat_forward_in_ezkl_proof', False)} | "
-            f"{row.get('final_logits_derivation_complete', False)} | "
-            f"{row.get('block_reason', '')} |"
+            f"{str(row.get('strict_public_input_equivalent', False)).lower()} | "
+            f"{str(row.get('full_gat_forward_in_ezkl_proof', False)).lower()} | "
+            f"{str(row.get('final_logits_derivation_complete', False)).lower()} |"
         )
     lines.append("")
-    lines.append("## 四项指标对比")
+    lines.append("## CPU 四项指标")
+    lines.append("")
+    lines.append("| 数据集 | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes |")
+    lines.append("| --- | ---: | ---: | ---: | ---: |")
+    for row in ezkl_rows:
+        lines.append(
+            f"| {row['display_dataset']} | {metric_cell(row, 'commitment_time_ms')} | "
+            f"{metric_cell(row, 'prove_time_ms')} | {metric_cell(row, 'verify_time_ms')} | "
+            f"{metric_cell(row, 'proof_size_bytes')} |"
+        )
+    lines.append("")
+    lines.append("## 与主仓库基准对比")
     lines.append("")
     lines.append(
         "| 数据集 | main commitment_time_ms | ezkl commitment_time_ms | main prove_time_ms | ezkl prove_time_ms | main verify_time_ms | ezkl verify_time_ms | main proof_size_bytes | ezkl proof_size_bytes |"
     )
     lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     for row in comparison_rows:
-        ezkl_display = {
-            metric: ("blocked" if row["ezkl_status"] == "blocked" and row.get(f"ezkl_{metric}") is None else metric_cell(row, f"ezkl_{metric}"))
-            for metric in METRICS
-        }
         lines.append(
             "| "
             + row["dataset"]
             + " | "
             + metric_cell(row, "main_cpu_commitment_time_ms")
             + " | "
-            + ezkl_display["commitment_time_ms"]
+            + metric_cell(row, "ezkl_commitment_time_ms")
             + " | "
             + metric_cell(row, "main_cpu_prove_time_ms")
             + " | "
-            + ezkl_display["prove_time_ms"]
+            + metric_cell(row, "ezkl_prove_time_ms")
             + " | "
             + metric_cell(row, "main_cpu_verify_time_ms")
             + " | "
-            + ezkl_display["verify_time_ms"]
+            + metric_cell(row, "ezkl_verify_time_ms")
             + " | "
             + metric_cell(row, "main_cpu_proof_size_bytes")
             + " | "
-            + ezkl_display["proof_size_bytes"]
+            + metric_cell(row, "ezkl_proof_size_bytes")
             + " |"
         )
-    lines.append("")
-    lines.append("## 阻塞或失败原因")
-    lines.append("")
-    for row in ezkl_rows:
-        detail = row.get("failure_gate") or row.get("failure_region") or row.get("failure_relation")
-        if detail:
-            values = row.get("failure_values") or []
-            value_text = ", ".join(values) if isinstance(values, list) else str(values)
-            preflight_text = ""
-            if not values and row.get("preflight_node_index") is not None:
-                preflight_text = (
-                    f"; node={row.get('preflight_node_index')}; degree={row.get('preflight_degree')}; "
-                    f"sum_fp32={row.get('preflight_sum_fp32_reference')}; "
-                    f"inv_fp32={row.get('preflight_inv_fp32_reference')}; "
-                    f"policy={row.get('preflight_inverse_policy')}; "
-                    f"sum_q={row.get('preflight_quantized_sum_scale16')}; "
-                    f"inv_q={row.get('preflight_quantized_inv_scale16')}; "
-                    f"expected_inv_q={row.get('preflight_expected_inv_q')}; "
-                    f"product={row.get('preflight_quantized_product')}; "
-                    f"inverse_ok={row.get('preflight_inverse_accepted')}; "
-                    f"alpha_ok={row.get('preflight_alpha_accepted')}"
-                )
-            lines.append(
-                f"- {row['display_dataset']}: {row['status']} / {row.get('block_reason', '')}; "
-                f"step={row.get('failure_step', '')}; gate={row.get('failure_gate', '')}; "
-                f"region={row.get('failure_region', '')}; row={row.get('failure_row', '')}; "
-                f"relation={row.get('failure_relation', '')}; values={value_text}{preflight_text}"
-            )
-        else:
-            reason = row.get("block_reason") or ""
-            suffix = f" / {reason}" if reason else " /"
-            lines.append(f"- {row['display_dataset']}: {row['status']}{suffix}")
-    (RESULTS / BACKENDS[backend]["summary"]).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (RESULTS / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def write_native_constraint_debug_report() -> None:
     lines: list[str] = []
     lines.append("# Native Constraint Debug Report")
     lines.append("")
-    lines.append("- Route: `ezkl_gat_native_compressed_csr_attention_full`")
-    lines.append("- Diagnostic policy: explicit `--native-debug-scope` runs are available for development, but final benchmark collection uses only the verified full-model manifests.")
+    lines.append(f"- Route: `{CPU_ROUTE_ID}`")
+    lines.append("- Final benchmark collection uses only verified full-model manifests.")
     lines.append("- No output-binding workaround, precomputed logits, subset, shard, sample, digest, folding, or identity route is used.")
     lines.append("")
     lines.append("## Full-Dataset Quantized Inverse Preflight Evidence")
@@ -362,14 +290,14 @@ def write_native_full_experiment_report(ezkl_rows: list[dict]) -> None:
     lines: list[str] = []
     lines.append("# Native Full Experiment Report")
     lines.append("")
-    lines.append("| Dataset | status | strict_public_input_equivalent | full_gat_forward_in_ezkl_proof | final_logits_derivation_complete | block_reason |")
-    lines.append("| --- | --- | --- | --- | --- | --- |")
+    lines.append("| Dataset | status | strict_public_input_equivalent | full_gat_forward_in_ezkl_proof | final_logits_derivation_complete |")
+    lines.append("| --- | --- | --- | --- | --- |")
     for row in ezkl_rows:
         lines.append(
             f"| {row['display_dataset']} | {row.get('status', '')} | "
-            f"{row.get('strict_public_input_equivalent', False)} | "
-            f"{row.get('full_gat_forward_in_ezkl_proof', False)} | "
-            f"{row.get('final_logits_derivation_complete', False)} | {row.get('block_reason', '')} |"
+            f"{str(row.get('strict_public_input_equivalent', False)).lower()} | "
+            f"{str(row.get('full_gat_forward_in_ezkl_proof', False)).lower()} | "
+            f"{str(row.get('final_logits_derivation_complete', False)).lower()} |"
         )
     lines.append("")
     lines.append("## Final Logits Binding")
@@ -378,45 +306,15 @@ def write_native_full_experiment_report(ezkl_rows: list[dict]) -> None:
     lines.append("| --- | --- | --- | --- | ---: | --- | ---: | ---: | --- | --- |")
     for row in ezkl_rows:
         lines.append(
-            f"| {row['display_dataset']} | {row.get('final_logits_binding_exists', False)} | "
+            f"| {row['display_dataset']} | {str(row.get('final_logits_binding_exists', False)).lower()} | "
             f"{row.get('final_logits_binding_status', '')} | {row.get('final_logits_shape', '')} | "
             f"{row.get('public_instance_length', '')} | {row.get('public_instance_layout', '')} | "
             f"{row.get('public_instance_column_count', '')} | {row.get('public_instance_chunk_size', '')} | "
             f"{row.get('public_instance_order', '')} | "
-            f"{row.get('no_precomputed_logits_bypass', '')} |"
+            f"{str(row.get('no_precomputed_logits_bypass', '')).lower()} |"
         )
     lines.append("")
     lines.append("No output-binding workaround, no precomputed logits, no subset, no shard, and no sample route was used.")
-    lines.append("")
-    lines.append("## Quantized Inverse Preflight Evidence")
-    lines.append("")
-    lines.append("| Dataset | step | gate | region | node | degree | policy | sum_q | inv_q | expected_inv_q | product | inverse_ok | alpha_ok | relation |")
-    lines.append("| --- | --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- | --- | --- |")
-    for row in ezkl_rows:
-        lines.append(
-            f"| {row['display_dataset']} | {row.get('failure_step', '')} | {row.get('failure_gate', '')} | "
-            f"{row.get('failure_region', '')} | {row.get('preflight_node_index', '')} | "
-            f"{row.get('preflight_degree', '')} | {row.get('preflight_inverse_policy', '')} | "
-            f"{row.get('preflight_quantized_sum_scale16', '')} | "
-            f"{row.get('preflight_quantized_inv_scale16', '')} | {row.get('preflight_expected_inv_q', '')} | "
-            f"{row.get('preflight_quantized_product', '')} | {row.get('preflight_inverse_accepted', '')} | "
-            f"{row.get('preflight_alpha_accepted', '')} | {row.get('failure_relation', '')} |"
-        )
-    lines.append("")
-    lines.append("## Native Constraint Failure Evidence")
-    lines.append("")
-    lines.append("| Dataset | gate | region | row | values | remaining_blocker |")
-    lines.append("| --- | --- | --- | ---: | --- | --- |")
-    for row in ezkl_rows:
-        if not row.get("failure_gate"):
-            continue
-        values = row.get("failure_values") or []
-        value_text = "; ".join(values) if isinstance(values, list) else str(values)
-        lines.append(
-            f"| {row['display_dataset']} | {row.get('failure_gate', '')} | "
-            f"{row.get('failure_region', '')} | {row.get('failure_row', '')} | "
-            f"{value_text} | {row.get('failure_remaining_blocker', '')} |"
-        )
     (RESULTS / "native_full_experiment_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -426,15 +324,6 @@ def main() -> int:
         "dataset",
         "display_dataset",
         "backend",
-        "gpu_backend",
-        "gpu_backend_required",
-        "gpu_backend_active",
-        "gpu_backend_name",
-        "gpu_backend_library_path",
-        "gpu_backend_library_arch",
-        "gpu_device_name",
-        "gpu_device_count",
-        "cpu_fallback_used",
         "statement_route_id",
         "source_run_dir",
         "route_id",
@@ -488,22 +377,15 @@ def main() -> int:
     for metric in METRICS:
         comparison_fields.extend([f"main_cpu_{metric}", f"ezkl_{metric}"])
 
-    cpu_rows, cpu_comparison_rows = collect_backend("cpu")
+    cpu_rows, cpu_comparison_rows = collect_cpu()
     write_json(RESULTS / "gat_ezkl_full_results.json", {"rows": cpu_rows})
     write_json(RESULTS / "main_vs_ezkl_full_comparison.json", {"rows": cpu_comparison_rows})
     write_csv(RESULTS / "gat_ezkl_full_results.csv", cpu_rows, result_fields)
     write_csv(RESULTS / "main_vs_ezkl_full_comparison.csv", cpu_comparison_rows, comparison_fields)
-    write_summary(cpu_rows, cpu_comparison_rows, "cpu")
+    write_summary(cpu_rows, cpu_comparison_rows)
     write_native_constraint_debug_report()
     write_native_full_experiment_report(cpu_rows)
-
-    gpu_rows, gpu_comparison_rows = collect_backend("gpu")
-    write_json(RESULTS / "gat_ezkl_gpu_full_results.json", {"rows": gpu_rows})
-    write_json(RESULTS / "main_vs_ezkl_gpu_full_comparison.json", {"rows": gpu_comparison_rows})
-    write_csv(RESULTS / "gat_ezkl_gpu_full_results.csv", gpu_rows, result_fields)
-    write_csv(RESULTS / "main_vs_ezkl_gpu_full_comparison.csv", gpu_comparison_rows, comparison_fields)
-    write_summary(gpu_rows, gpu_comparison_rows, "gpu")
-    print(f"wrote results under {RESULTS}")
+    print(f"wrote CPU results under {RESULTS}")
     return 0
 
 

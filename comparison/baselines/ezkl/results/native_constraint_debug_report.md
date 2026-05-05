@@ -1,7 +1,7 @@
 # Native Constraint Debug Report
 
 - Route: `ezkl_gat_native_compressed_csr_attention_full`
-- Diagnostic policy: explicit `--native-debug-scope` runs are available for development, but final benchmark collection uses only the verified full-model manifests.
+- Final benchmark collection uses only verified full-model manifests.
 - No output-binding workaround, precomputed logits, subset, shard, sample, digest, folding, or identity route is used.
 
 ## Full-Dataset Quantized Inverse Preflight Evidence
