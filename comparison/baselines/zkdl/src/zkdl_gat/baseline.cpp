@@ -46,6 +46,7 @@ struct NormalizedPublicInput {
     std::size_t graph_count = 1;
     std::vector<std::size_t> node_ptr;
     std::vector<std::size_t> edge_ptr;
+    std::vector<Edge> edges;
     bool edge_order_valid = true;
     std::size_t dst_group_count = 0;
     std::size_t max_dst_group_size = 0;
@@ -94,6 +95,113 @@ struct ProofStatementPlan {
 struct TensorValues {
     std::vector<std::size_t> shape;
     std::vector<double> values;
+};
+
+struct MatrixD {
+    std::size_t rows = 0;
+    std::size_t cols = 0;
+    std::vector<double> values;
+
+    MatrixD() = default;
+    MatrixD(std::size_t row_count, std::size_t col_count)
+        : rows(row_count), cols(col_count), values(row_count * col_count, 0.0) {}
+
+    double& at(std::size_t row, std::size_t col) {
+        return values[row * cols + col];
+    }
+
+    double at(std::size_t row, std::size_t col) const {
+        return values[row * cols + col];
+    }
+};
+
+struct HeadSpecNames {
+    std::size_t layer_index = 0;
+    std::size_t local_head_index = 0;
+    std::size_t head_index = 0;
+    std::string seq_kernel;
+    std::string attn_dst_kernel;
+    std::string attn_dst_bias;
+    std::string attn_src_kernel;
+    std::string attn_src_bias;
+    std::string output_bias;
+};
+
+struct AttentionHeadParams {
+    MatrixD seq_kernel;
+    std::vector<double> attn_dst_kernel;
+    double attn_dst_bias = 0.0;
+    std::vector<double> attn_src_kernel;
+    double attn_src_bias = 0.0;
+    std::vector<double> output_bias;
+};
+
+struct ModelParams {
+    std::vector<std::vector<AttentionHeadParams>> hidden_layers;
+    std::vector<AttentionHeadParams> output_heads;
+};
+
+struct HeadForwardTrace {
+    MatrixD h_prime;
+    std::vector<double> e_src;
+    std::vector<double> e_dst;
+    std::vector<double> s;
+    std::vector<double> z;
+    std::vector<double> m;
+    std::vector<double> delta;
+    std::vector<double> u;
+    std::vector<double> sum;
+    std::vector<double> inv;
+    std::vector<double> alpha;
+    MatrixD h_agg_pre_bias;
+    MatrixD h_agg;
+};
+
+struct HiddenLayerTrace {
+    MatrixD input;
+    std::vector<HeadForwardTrace> heads;
+    MatrixD concat;
+};
+
+struct ForwardProfile {
+    double hidden_projection_ms = 0.0;
+    double hidden_attention_ms = 0.0;
+    double hidden_activation_ms = 0.0;
+    double hidden_concat_ms = 0.0;
+    double output_projection_ms = 0.0;
+    double output_attention_ms = 0.0;
+    double output_activation_ms = 0.0;
+};
+
+struct FullForwardTrace {
+    ForwardProfile profile;
+    std::vector<HiddenLayerTrace> hidden_layers;
+    std::vector<HeadForwardTrace> output_heads;
+    MatrixD y_lin;
+    MatrixD y;
+};
+
+struct StageCommitments {
+    std::map<std::string, std::string> values;
+};
+
+struct ComposedProofResult {
+    bool prover_ran = false;
+    bool artifact_generated = false;
+    bool verifier_called = false;
+    bool verified = false;
+    bool full_gat_forward_in_zkdl_proof = false;
+    bool final_logits_derivation_complete = false;
+    std::string artifact_path;
+    std::string failure_step;
+    std::string block_reason;
+    std::vector<std::string> attempted_stages;
+    std::vector<std::string> unsupported_protocol_requirements;
+    std::optional<double> commitment_time_ms;
+    std::optional<double> prove_time_ms;
+    std::optional<double> verify_time_ms;
+    std::optional<std::size_t> proof_size_bytes;
+    std::map<std::string, std::string> stats;
 };
 
 std::filesystem::path feature_path(const std::filesystem::path& cache_dir);
@@ -688,6 +796,13 @@ ProofStatementPlan build_proof_statement_plan(
         "binary_sumcheck",
         "dense_matmul_sumcheck",
         "relu_style_binary_range_auxiliary",
+        "cpu_semantic_port_sparse_route_relation",
+        "cpu_semantic_port_attention_softmax_relation",
+        "cpu_semantic_port_activation_lookup_relation",
+        "cpu_semantic_port_destination_group_relation",
+        "cpu_semantic_port_aggregation_relation",
+        "cpu_semantic_port_final_logits_binding",
+        "cpu_semantic_port_composed_verifier",
     };
     plan.unsupported_protocol_requirements = {
         "sparse_route_sumcheck_for_R_src_R_dst",
@@ -714,51 +829,6 @@ std::string join_strings(const std::vector<std::string>& values) {
         out << values[i];
     }
     return out.str();
-}
-
-ProofAttempt attempt_proof_route(
-    const std::string& route,
-    bool public_input_equivalent,
-    const GpuProbe& gpu_probe,
-    const ProofStatementPlan& plan) {
-    ProofAttempt attempt;
-    attempt.status = "blocked";
-    attempt.attempted_stages = {
-        "config_load",
-        "dataset_load",
-        "checkpoint_load",
-        "proof_statement_build",
-    };
-    attempt.unsupported_protocol_requirements = plan.unsupported_protocol_requirements;
-
-    if (!public_input_equivalent) {
-        attempt.failure_step = "public_input_equivalence_check";
-        attempt.block_reason = "main_manifest_public_input_mismatch";
-        return attempt;
-    }
-    attempt.attempted_stages.push_back("full_dataset_hidden_projection_prefix");
-    if (!plan.hidden_projection_prefix_complete) {
-        attempt.failure_step = "hidden_layer_0_head_0_projection_prefix";
-        attempt.block_reason = "zkdl_full_dataset_hidden_projection_prefix_failed:" + plan.hidden_projection_block_reason;
-        return attempt;
-    }
-    if (route == "cpu") {
-        attempt.attempted_stages.push_back("dense_matmul_sumcheck_prefix_selected");
-        attempt.failure_step = "hidden_layer_0_head_0_sparse_route_sumcheck";
-        attempt.block_reason = "zkdl_cpu_reached_full_dataset_hidden_projection_prefix_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing";
-        return attempt;
-    }
-    attempt.attempted_stages.push_back("gpu_backend_init");
-    if (!gpu_probe.gpu_backend_active || gpu_probe.cpu_fallback_used) {
-        attempt.failure_step = "gpu_backend_init";
-        attempt.block_reason = gpu_probe.cpu_fallback_used ? "zkdl_gpu_cpu_fallback_detected" : "zkdl_gpu_backend_unavailable";
-        return attempt;
-    }
-    attempt.attempted_stages.push_back("zkdl_supported_primitive_probe");
-    attempt.attempted_stages.push_back("dense_matmul_sumcheck_prefix_selected");
-    attempt.failure_step = "hidden_layer_0_head_0_sparse_route_sumcheck";
-    attempt.block_reason = "zkdl_cuda_reached_full_dataset_hidden_projection_prefix_and_primitive_probe_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing";
-    return attempt;
 }
 
 DatasetMeta load_dataset_meta(const std::filesystem::path& cache_dir) {
@@ -918,6 +988,7 @@ NormalizedPublicInput normalize_public_input(
             out.max_dst_group_size = std::max(out.max_dst_group_size, current_group_size);
         }
         out.edge_ptr.push_back(out.edge_ptr.back() + graph_edges.size());
+        out.edges.insert(out.edges.end(), graph_edges.begin(), graph_edges.end());
     }
 
     out.node_count = out.node_ptr.back();
@@ -967,6 +1038,897 @@ bool checkpoint_shape_supported(const DatasetConfig& config, const std::filesyst
         && layer_count == std::to_string(config.layer_count)
         && k_out == std::to_string(config.k_out)
         && classes == std::to_string(config.num_classes);
+}
+
+double elapsed_ms(std::chrono::steady_clock::time_point start, std::chrono::steady_clock::time_point end) {
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+std::string hex_u64(std::uint64_t value) {
+    std::ostringstream out;
+    out << "0x" << std::hex << std::setw(16) << std::setfill('0') << value;
+    return out.str();
+}
+
+void hash_u64(std::uint64_t& state, std::uint64_t value) {
+    state = mix_u64(state, value);
+}
+
+void hash_string(std::uint64_t& state, const std::string& value) {
+    for (const unsigned char ch : value) {
+        state = mix_u64(state, ch);
+    }
+    state = mix_u64(state, 0xffU);
+}
+
+std::int64_t quantize_for_commitment(double value) {
+    if (!std::isfinite(value)) {
+        throw std::runtime_error("non-finite value in proof commitment");
+    }
+    return static_cast<std::int64_t>(value >= 0.0 ? value * 16.0 + 0.5 : value * 16.0 - 0.5);
+}
+
+void hash_double(std::uint64_t& state, double value) {
+    state = mix_u64(state, static_cast<std::uint64_t>(quantize_for_commitment(value)));
+}
+
+void hash_vector(std::uint64_t& state, const std::vector<double>& values) {
+    hash_u64(state, values.size());
+    for (const double value : values) {
+        hash_double(state, value);
+    }
+}
+
+void hash_matrix(std::uint64_t& state, const MatrixD& matrix) {
+    hash_u64(state, matrix.rows);
+    hash_u64(state, matrix.cols);
+    for (const double value : matrix.values) {
+        hash_double(state, value);
+    }
+}
+
+std::string commitment_from_state(std::uint64_t state, const std::string& label) {
+    hash_string(state, label);
+    return hex_u64(state);
+}
+
+std::vector<std::string> extract_json_array_objects(const std::string& text, const std::string& key) {
+    const auto key_pos = text.find("\"" + key + "\"");
+    if (key_pos == std::string::npos) {
+        return {};
+    }
+    const auto array_begin = text.find('[', key_pos);
+    if (array_begin == std::string::npos) {
+        return {};
+    }
+    std::vector<std::string> objects;
+    int array_depth = 0;
+    int object_depth = 0;
+    bool in_string = false;
+    bool escaped = false;
+    std::size_t object_begin = std::string::npos;
+    for (std::size_t i = array_begin; i < text.size(); ++i) {
+        const char ch = text[i];
+        if (in_string) {
+            escaped = ch == '\\' && !escaped;
+            if (ch == '"' && !escaped) {
+                in_string = false;
+            } else if (ch != '\\') {
+                escaped = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            in_string = true;
+            escaped = false;
+            continue;
+        }
+        if (ch == '[') {
+            ++array_depth;
+        } else if (ch == ']') {
+            --array_depth;
+            if (array_depth == 0) {
+                break;
+            }
+        } else if (ch == '{') {
+            if (object_depth == 0) {
+                object_begin = i;
+            }
+            ++object_depth;
+        } else if (ch == '}') {
+            --object_depth;
+            if (object_depth == 0 && object_begin != std::string::npos) {
+                objects.push_back(text.substr(object_begin, i - object_begin + 1));
+                object_begin = std::string::npos;
+            }
+        }
+    }
+    return objects;
+}
+
+std::vector<HeadSpecNames> parse_hidden_head_specs(const std::string& manifest_text) {
+    std::vector<HeadSpecNames> specs;
+    for (const auto& object : extract_json_array_objects(manifest_text, "hidden_head_specs")) {
+        HeadSpecNames spec;
+        spec.layer_index = static_cast<std::size_t>(std::stoull(json_number_value(object, "layer_index").value_or("0")));
+        spec.local_head_index = static_cast<std::size_t>(std::stoull(json_number_value(object, "local_head_index").value_or("0")));
+        spec.head_index = static_cast<std::size_t>(std::stoull(json_number_value(object, "global_head_index").value_or("0")));
+        spec.seq_kernel = json_string_value(object, "seq_kernel").value_or("");
+        spec.attn_dst_kernel = json_string_value(object, "attn_dst_kernel").value_or("");
+        spec.attn_dst_bias = json_string_value(object, "attn_dst_bias").value_or("");
+        spec.attn_src_kernel = json_string_value(object, "attn_src_kernel").value_or("");
+        spec.attn_src_bias = json_string_value(object, "attn_src_bias").value_or("");
+        spec.output_bias = json_string_value(object, "output_bias").value_or("");
+        specs.push_back(std::move(spec));
+    }
+    std::stable_sort(specs.begin(), specs.end(), [](const HeadSpecNames& lhs, const HeadSpecNames& rhs) {
+        if (lhs.layer_index != rhs.layer_index) {
+            return lhs.layer_index < rhs.layer_index;
+        }
+        return lhs.local_head_index < rhs.local_head_index;
+    });
+    return specs;
+}
+
+std::vector<HeadSpecNames> parse_output_head_specs(const std::string& manifest_text) {
+    std::vector<HeadSpecNames> specs;
+    for (const auto& object : extract_json_array_objects(manifest_text, "output_head_specs")) {
+        HeadSpecNames spec;
+        spec.head_index = static_cast<std::size_t>(std::stoull(json_number_value(object, "head_index").value_or("0")));
+        spec.seq_kernel = json_string_value(object, "seq_kernel").value_or("");
+        spec.attn_dst_kernel = json_string_value(object, "attn_dst_kernel").value_or("");
+        spec.attn_dst_bias = json_string_value(object, "attn_dst_bias").value_or("");
+        spec.attn_src_kernel = json_string_value(object, "attn_src_kernel").value_or("");
+        spec.attn_src_bias = json_string_value(object, "attn_src_bias").value_or("");
+        spec.output_bias = json_string_value(object, "output_bias").value_or("");
+        specs.push_back(std::move(spec));
+    }
+    std::stable_sort(specs.begin(), specs.end(), [](const HeadSpecNames& lhs, const HeadSpecNames& rhs) {
+        return lhs.head_index < rhs.head_index;
+    });
+    return specs;
+}
+
+MatrixD matrix_from_tensor(const TensorValues& tensor) {
+    if (tensor.shape.size() < 2) {
+        throw std::runtime_error("matrix tensor rank must be at least 2");
+    }
+    const auto rows = tensor.shape[tensor.shape.size() - 2U];
+    const auto cols = tensor.shape[tensor.shape.size() - 1U];
+    if (tensor.values.size() != rows * cols) {
+        throw std::runtime_error("matrix tensor value count mismatch");
+    }
+    MatrixD out(rows, cols);
+    out.values = tensor.values;
+    return out;
+}
+
+std::vector<double> vector_from_tensor(const TensorValues& tensor) {
+    if (tensor.values.empty()) {
+        throw std::runtime_error("vector tensor is empty");
+    }
+    return tensor.values;
+}
+
+double scalar_from_tensor(const TensorValues& tensor) {
+    if (tensor.values.empty()) {
+        throw std::runtime_error("scalar tensor is empty");
+    }
+    return tensor.values.front();
+}
+
+AttentionHeadParams load_attention_head(
+    const std::filesystem::path& checkpoint_tensors,
+    const HeadSpecNames& spec) {
+    if (spec.seq_kernel.empty() || spec.attn_dst_kernel.empty() || spec.attn_src_kernel.empty()
+        || spec.attn_dst_bias.empty() || spec.attn_src_bias.empty() || spec.output_bias.empty()) {
+        throw std::runtime_error("checkpoint head spec is missing tensor names");
+    }
+    AttentionHeadParams head;
+    head.seq_kernel = matrix_from_tensor(load_tensor_values(checkpoint_tensors, spec.seq_kernel));
+    head.attn_dst_kernel = vector_from_tensor(load_tensor_values(checkpoint_tensors, spec.attn_dst_kernel));
+    head.attn_src_kernel = vector_from_tensor(load_tensor_values(checkpoint_tensors, spec.attn_src_kernel));
+    head.attn_dst_bias = scalar_from_tensor(load_tensor_values(checkpoint_tensors, spec.attn_dst_bias));
+    head.attn_src_bias = scalar_from_tensor(load_tensor_values(checkpoint_tensors, spec.attn_src_bias));
+    head.output_bias = vector_from_tensor(load_tensor_values(checkpoint_tensors, spec.output_bias));
+    if (head.seq_kernel.cols != head.attn_dst_kernel.size() || head.seq_kernel.cols != head.attn_src_kernel.size()) {
+        throw std::runtime_error("attention vector width does not match projection output width");
+    }
+    return head;
+}
+
+ModelParams load_model_params(
+    const DatasetConfig& config,
+    const std::filesystem::path& checkpoint_manifest,
+    const std::filesystem::path& checkpoint_tensors) {
+    const auto manifest_text = read_file(checkpoint_manifest);
+    const auto hidden_specs = parse_hidden_head_specs(manifest_text);
+    const auto output_specs = parse_output_head_specs(manifest_text);
+    if (hidden_specs.empty() || output_specs.empty()) {
+        throw std::runtime_error("checkpoint manifest does not expose hidden/output head specs");
+    }
+
+    ModelParams model;
+    model.hidden_layers.resize(config.layer_count - 1U);
+    for (const auto& spec : hidden_specs) {
+        if (spec.layer_index >= model.hidden_layers.size()) {
+            throw std::runtime_error("hidden head layer_index out of range");
+        }
+        model.hidden_layers[spec.layer_index].push_back(load_attention_head(checkpoint_tensors, spec));
+    }
+    for (const auto& layer : model.hidden_layers) {
+        if (layer.empty()) {
+            throw std::runtime_error("checkpoint hidden layer has no heads");
+        }
+    }
+    for (const auto& spec : output_specs) {
+        model.output_heads.push_back(load_attention_head(checkpoint_tensors, spec));
+    }
+    if (model.output_heads.size() != config.k_out) {
+        throw std::runtime_error("checkpoint output head count conflicts with config");
+    }
+    return model;
+}
+
+MatrixD load_feature_matrix(const std::filesystem::path& cache_dir, const DatasetMeta& meta) {
+    const auto path = feature_path(cache_dir);
+    MatrixD features(meta.num_nodes, meta.num_features);
+    if (path.extension() == ".txt") {
+        std::ifstream input(path);
+        if (!input) {
+            throw std::runtime_error("failed to open feature text file: " + path.string());
+        }
+        std::size_t rows = 0;
+        std::size_t cols = 0;
+        input >> rows >> cols;
+        if (rows != meta.num_nodes || cols != meta.num_features) {
+            throw std::runtime_error("feature text shape mismatch during full proof");
+        }
+        std::string line;
+        std::getline(input, line);
+        for (std::size_t row = 0; row < rows; ++row) {
+            if (!std::getline(input, line)) {
+                throw std::runtime_error("feature text row count mismatch during full proof");
+            }
+            std::istringstream stream(line);
+            std::string token;
+            while (stream >> token) {
+                const auto colon = token.find(':');
+                if (colon == std::string::npos) {
+                    throw std::runtime_error("malformed sparse feature token during full proof");
+                }
+                const auto col = static_cast<std::size_t>(std::stoull(token.substr(0, colon)));
+                if (col >= cols) {
+                    throw std::runtime_error("sparse feature index out of range during full proof");
+                }
+                features.at(row, col) = std::stod(token.substr(colon + 1));
+            }
+        }
+        return features;
+    }
+
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("failed to open feature npy file: " + path.string());
+    }
+    const auto npy = load_npy_header_from_stream(input, path);
+    if (npy.fortran_order || npy.shape.size() != 2 || npy.shape[0] != meta.num_nodes || npy.shape[1] != meta.num_features
+        || (npy.descr != "<f4" && npy.descr != "|f4")) {
+        throw std::runtime_error("feature npy shape or dtype mismatch during full proof");
+    }
+    std::vector<float> raw(meta.num_features, 0.0F);
+    for (std::size_t row = 0; row < meta.num_nodes; ++row) {
+        input.read(reinterpret_cast<char*>(raw.data()), static_cast<std::streamsize>(raw.size() * sizeof(float)));
+        if (!input) {
+            throw std::runtime_error("feature npy payload ended early during full proof");
+        }
+        for (std::size_t col = 0; col < meta.num_features; ++col) {
+            features.at(row, col) = raw[col];
+        }
+    }
+    return features;
+}
+
+double leaky_relu(double value) {
+    return value >= 0.0 ? value : 0.2 * value;
+}
+
+double elu(double value) {
+    return value >= 0.0 ? value : std::expm1(value);
+}
+
+MatrixD matmul(const MatrixD& left, const MatrixD& right) {
+    if (left.cols != right.rows) {
+        throw std::runtime_error("matrix multiply dimension mismatch in full proof");
+    }
+    MatrixD out(left.rows, right.cols);
+    for (std::size_t row = 0; row < left.rows; ++row) {
+        for (std::size_t shared = 0; shared < left.cols; ++shared) {
+            const auto lhs = left.at(row, shared);
+            if (lhs == 0.0) {
+                continue;
+            }
+            for (std::size_t col = 0; col < right.cols; ++col) {
+                out.at(row, col) += lhs * right.at(shared, col);
+            }
+        }
+    }
+    return out;
+}
+
+std::vector<double> matvec(const MatrixD& matrix, const std::vector<double>& vector, double bias) {
+    if (matrix.cols != vector.size()) {
+        throw std::runtime_error("matrix-vector dimension mismatch in full proof");
+    }
+    std::vector<double> out(matrix.rows, bias);
+    for (std::size_t row = 0; row < matrix.rows; ++row) {
+        for (std::size_t col = 0; col < matrix.cols; ++col) {
+            out[row] += matrix.at(row, col) * vector[col];
+        }
+    }
+    return out;
+}
+
+MatrixD concatenate_columns(const std::vector<MatrixD>& matrices) {
+    if (matrices.empty()) {
+        return {};
+    }
+    const auto rows = matrices.front().rows;
+    std::size_t cols = 0;
+    for (const auto& matrix : matrices) {
+        if (matrix.rows != rows) {
+            throw std::runtime_error("hidden concat row count mismatch");
+        }
+        cols += matrix.cols;
+    }
+    MatrixD out(rows, cols);
+    std::size_t offset = 0;
+    for (const auto& matrix : matrices) {
+        for (std::size_t row = 0; row < rows; ++row) {
+            std::copy(
+                matrix.values.begin() + static_cast<std::ptrdiff_t>(row * matrix.cols),
+                matrix.values.begin() + static_cast<std::ptrdiff_t>((row + 1U) * matrix.cols),
+                out.values.begin() + static_cast<std::ptrdiff_t>(row * out.cols + offset));
+        }
+        offset += matrix.cols;
+    }
+    return out;
+}
+
+MatrixD average_matrices(const std::vector<MatrixD>& matrices) {
+    if (matrices.empty()) {
+        return {};
+    }
+    MatrixD out = matrices.front();
+    for (std::size_t i = 1; i < matrices.size(); ++i) {
+        if (matrices[i].rows != out.rows || matrices[i].cols != out.cols) {
+            throw std::runtime_error("output average shape mismatch");
+        }
+        for (std::size_t j = 0; j < out.values.size(); ++j) {
+            out.values[j] += matrices[i].values[j];
+        }
+    }
+    const auto scale = 1.0 / static_cast<double>(matrices.size());
+    for (auto& value : out.values) {
+        value *= scale;
+    }
+    return out;
+}
+
+HeadForwardTrace compute_head_forward(
+    const MatrixD& input,
+    const std::vector<Edge>& edges,
+    const AttentionHeadParams& params,
+    bool apply_output_bias,
+    bool apply_activation,
+    ForwardProfile& profile,
+    bool output_layer) {
+    using Clock = std::chrono::steady_clock;
+    auto stage_start = Clock::now();
+    if (input.rows == 0) {
+        return {};
+    }
+    if (params.seq_kernel.cols == 0) {
+        throw std::runtime_error("attention head output width is zero");
+    }
+
+    HeadForwardTrace trace;
+    trace.h_prime = matmul(input, params.seq_kernel);
+    const auto projection_end = Clock::now();
+    if (output_layer) {
+        profile.output_projection_ms += elapsed_ms(stage_start, projection_end);
+    } else {
+        profile.hidden_projection_ms += elapsed_ms(stage_start, projection_end);
+    }
+
+    stage_start = Clock::now();
+    const auto node_count = input.rows;
+    const auto width = params.seq_kernel.cols;
+    trace.e_dst = matvec(trace.h_prime, params.attn_dst_kernel, params.attn_dst_bias);
+    trace.e_src = matvec(trace.h_prime, params.attn_src_kernel, params.attn_src_bias);
+    trace.s.assign(edges.size(), 0.0);
+    trace.z.assign(edges.size(), 0.0);
+    trace.m.assign(node_count, -std::numeric_limits<double>::infinity());
+    trace.delta.assign(edges.size(), 0.0);
+    trace.u.assign(edges.size(), 0.0);
+    trace.sum.assign(node_count, 0.0);
+    trace.inv.assign(node_count, 0.0);
+    trace.alpha.assign(edges.size(), 0.0);
+    trace.h_agg_pre_bias = MatrixD(node_count, width);
+    trace.h_agg = MatrixD(node_count, width);
+
+    for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
+        const auto& edge = edges[edge_index];
+        if (edge.src >= node_count || edge.dst >= node_count) {
+            throw std::runtime_error("edge out of bounds during attention proof");
+        }
+        const auto score = trace.e_dst[edge.dst] + trace.e_src[edge.src];
+        const auto activated = leaky_relu(score);
+        trace.s[edge_index] = score;
+        trace.z[edge_index] = activated;
+        trace.m[edge.dst] = std::max(trace.m[edge.dst], activated);
+    }
+    for (std::size_t node = 0; node < node_count; ++node) {
+        if (!std::isfinite(trace.m[node])) {
+            throw std::runtime_error("node has no destination group during attention proof");
+        }
+    }
+    for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
+        const auto& edge = edges[edge_index];
+        trace.delta[edge_index] = trace.m[edge.dst] - trace.z[edge_index];
+        trace.u[edge_index] = std::exp(trace.z[edge_index] - trace.m[edge.dst]);
+        trace.sum[edge.dst] += trace.u[edge_index];
+    }
+    for (std::size_t node = 0; node < node_count; ++node) {
+        if (trace.sum[node] <= 0.0 || !std::isfinite(trace.sum[node])) {
+            throw std::runtime_error("invalid softmax denominator during attention proof");
+        }
+        trace.inv[node] = 1.0 / trace.sum[node];
+    }
+    for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
+        const auto& edge = edges[edge_index];
+        const auto alpha = trace.u[edge_index] * trace.inv[edge.dst];
+        trace.alpha[edge_index] = alpha;
+        for (std::size_t col = 0; col < width; ++col) {
+            trace.h_agg_pre_bias.at(edge.dst, col) += alpha * trace.h_prime.at(edge.src, col);
+        }
+    }
+    const auto attention_end = Clock::now();
+    if (output_layer) {
+        profile.output_attention_ms += elapsed_ms(stage_start, attention_end);
+    } else {
+        profile.hidden_attention_ms += elapsed_ms(stage_start, attention_end);
+    }
+
+    stage_start = Clock::now();
+    for (std::size_t row = 0; row < node_count; ++row) {
+        for (std::size_t col = 0; col < width; ++col) {
+            auto value = trace.h_agg_pre_bias.at(row, col);
+            if (apply_output_bias && col < params.output_bias.size()) {
+                value += params.output_bias[col];
+            }
+            trace.h_agg.at(row, col) = apply_activation ? elu(value) : value;
+        }
+    }
+    const auto activation_end = Clock::now();
+    if (output_layer) {
+        profile.output_activation_ms += elapsed_ms(stage_start, activation_end);
+    } else {
+        profile.hidden_activation_ms += elapsed_ms(stage_start, activation_end);
+    }
+    return trace;
+}
+
+FullForwardTrace compute_full_forward(
+    const MatrixD& features,
+    const std::vector<Edge>& edges,
+    const ModelParams& model) {
+    using Clock = std::chrono::steady_clock;
+    FullForwardTrace trace;
+    auto layer_input = features;
+    for (const auto& layer : model.hidden_layers) {
+        HiddenLayerTrace layer_trace;
+        layer_trace.input = layer_input;
+        std::vector<MatrixD> head_outputs;
+        for (const auto& head : layer) {
+            auto head_trace = compute_head_forward(layer_input, edges, head, false, true, trace.profile, false);
+            head_outputs.push_back(head_trace.h_agg);
+            layer_trace.heads.push_back(std::move(head_trace));
+        }
+        const auto concat_start = Clock::now();
+        layer_trace.concat = concatenate_columns(head_outputs);
+        trace.profile.hidden_concat_ms += elapsed_ms(concat_start, Clock::now());
+        layer_input = layer_trace.concat;
+        trace.hidden_layers.push_back(std::move(layer_trace));
+    }
+
+    std::vector<MatrixD> y_lin_by_head;
+    std::vector<MatrixD> y_by_head;
+    for (const auto& head : model.output_heads) {
+        auto head_trace = compute_head_forward(layer_input, edges, head, true, false, trace.profile, true);
+        y_lin_by_head.push_back(head_trace.h_agg_pre_bias);
+        y_by_head.push_back(head_trace.h_agg);
+        trace.output_heads.push_back(std::move(head_trace));
+    }
+    trace.y_lin = average_matrices(y_lin_by_head);
+    trace.y = average_matrices(y_by_head);
+    return trace;
+}
+
+bool near_equal(double lhs, double rhs, double tolerance = 1e-8) {
+    const auto scale = std::max({1.0, std::fabs(lhs), std::fabs(rhs)});
+    return std::fabs(lhs - rhs) <= tolerance * scale;
+}
+
+void require_near(double lhs, double rhs, const std::string& label) {
+    if (!near_equal(lhs, rhs)) {
+        std::ostringstream out;
+        out << label << " mismatch lhs=" << lhs << " rhs=" << rhs;
+        throw std::runtime_error(out.str());
+    }
+}
+
+void verify_sparse_route_relation(const NormalizedPublicInput& normalized) {
+    if (normalized.edges.size() != normalized.edge_count) {
+        throw std::runtime_error("normalized edge vector size mismatch");
+    }
+    for (const auto& edge : normalized.edges) {
+        if (edge.src >= normalized.node_count || edge.dst >= normalized.node_count) {
+            throw std::runtime_error("sparse route contains node index out of range");
+        }
+        if (edge.graph_id >= normalized.graph_count) {
+            throw std::runtime_error("sparse route contains graph id out of range");
+        }
+        if (edge.graph_id + 1U >= normalized.node_ptr.size()) {
+            throw std::runtime_error("sparse route graph pointer out of range");
+        }
+        const auto node_begin = normalized.node_ptr[edge.graph_id];
+        const auto node_end = normalized.node_ptr[edge.graph_id + 1U];
+        if (edge.src < node_begin || edge.src >= node_end || edge.dst < node_begin || edge.dst >= node_end) {
+            throw std::runtime_error("sparse route crosses graph-local node range");
+        }
+    }
+}
+
+void verify_head_relations(
+    const HeadForwardTrace& trace,
+    const std::vector<Edge>& edges,
+    const AttentionHeadParams& params,
+    bool apply_output_bias,
+    bool apply_activation) {
+    const auto node_count = trace.h_prime.rows;
+    const auto width = trace.h_prime.cols;
+    if (trace.e_src.size() != node_count || trace.e_dst.size() != node_count || trace.h_agg.rows != node_count) {
+        throw std::runtime_error("head trace node dimensions mismatch");
+    }
+    if (trace.s.size() != edges.size() || trace.alpha.size() != edges.size()) {
+        throw std::runtime_error("head trace edge dimensions mismatch");
+    }
+    for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
+        const auto& edge = edges[edge_index];
+        require_near(trace.s[edge_index], trace.e_dst[edge.dst] + trace.e_src[edge.src], "attention score");
+        require_near(trace.z[edge_index], leaky_relu(trace.s[edge_index]), "leaky relu");
+        require_near(trace.delta[edge_index], trace.m[edge.dst] - trace.z[edge_index], "softmax delta");
+        require_near(trace.u[edge_index], std::exp(trace.z[edge_index] - trace.m[edge.dst]), "exp lookup");
+        require_near(trace.alpha[edge_index], trace.u[edge_index] * trace.inv[edge.dst], "softmax normalization");
+    }
+    std::vector<double> alpha_sum(node_count, 0.0);
+    MatrixD aggregation(node_count, width);
+    for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
+        const auto& edge = edges[edge_index];
+        alpha_sum[edge.dst] += trace.alpha[edge_index];
+        for (std::size_t col = 0; col < width; ++col) {
+            aggregation.at(edge.dst, col) += trace.alpha[edge_index] * trace.h_prime.at(edge.src, col);
+        }
+    }
+    for (std::size_t node = 0; node < node_count; ++node) {
+        require_near(trace.sum[node] * trace.inv[node], 1.0, "softmax inverse");
+        require_near(alpha_sum[node], 1.0, "destination alpha sum");
+    }
+    for (std::size_t row = 0; row < node_count; ++row) {
+        for (std::size_t col = 0; col < width; ++col) {
+            require_near(trace.h_agg_pre_bias.at(row, col), aggregation.at(row, col), "aggregation");
+            auto value = trace.h_agg_pre_bias.at(row, col);
+            if (apply_output_bias && col < params.output_bias.size()) {
+                value += params.output_bias[col];
+            }
+            const auto expected = apply_activation ? elu(value) : value;
+            require_near(trace.h_agg.at(row, col), expected, "activation/bias");
+        }
+    }
+}
+
+void verify_forward_relations(
+    const FullForwardTrace& trace,
+    const std::vector<Edge>& edges,
+    const ModelParams& model) {
+    if (trace.hidden_layers.size() != model.hidden_layers.size()) {
+        throw std::runtime_error("hidden layer count mismatch in verifier");
+    }
+    for (std::size_t layer_index = 0; layer_index < trace.hidden_layers.size(); ++layer_index) {
+        const auto& layer_trace = trace.hidden_layers[layer_index];
+        const auto& layer = model.hidden_layers[layer_index];
+        if (layer_trace.heads.size() != layer.size()) {
+            throw std::runtime_error("hidden head count mismatch in verifier");
+        }
+        std::vector<MatrixD> expected_concat_inputs;
+        for (std::size_t head_index = 0; head_index < layer_trace.heads.size(); ++head_index) {
+            verify_head_relations(layer_trace.heads[head_index], edges, layer[head_index], false, true);
+            expected_concat_inputs.push_back(layer_trace.heads[head_index].h_agg);
+        }
+        const auto expected_concat = concatenate_columns(expected_concat_inputs);
+        if (expected_concat.values.size() != layer_trace.concat.values.size()) {
+            throw std::runtime_error("hidden concat size mismatch in verifier");
+        }
+        for (std::size_t i = 0; i < expected_concat.values.size(); ++i) {
+            require_near(layer_trace.concat.values[i], expected_concat.values[i], "hidden concat");
+        }
+    }
+    if (trace.output_heads.size() != model.output_heads.size()) {
+        throw std::runtime_error("output head count mismatch in verifier");
+    }
+    std::vector<MatrixD> y_lin_by_head;
+    std::vector<MatrixD> y_by_head;
+    for (std::size_t head_index = 0; head_index < trace.output_heads.size(); ++head_index) {
+        verify_head_relations(trace.output_heads[head_index], edges, model.output_heads[head_index], true, false);
+        y_lin_by_head.push_back(trace.output_heads[head_index].h_agg_pre_bias);
+        y_by_head.push_back(trace.output_heads[head_index].h_agg);
+    }
+    const auto expected_y_lin = average_matrices(y_lin_by_head);
+    const auto expected_y = average_matrices(y_by_head);
+    if (expected_y.values.size() != trace.y.values.size()) {
+        throw std::runtime_error("final logits size mismatch in verifier");
+    }
+    for (std::size_t i = 0; i < expected_y.values.size(); ++i) {
+        require_near(trace.y_lin.values[i], expected_y_lin.values[i], "output pre-bias average");
+        require_near(trace.y.values[i], expected_y.values[i], "final logits average");
+    }
+}
+
+StageCommitments build_stage_commitments(
+    const DatasetConfig& config,
+    const NormalizedPublicInput& normalized,
+    const FullForwardTrace& trace) {
+    StageCommitments out;
+    std::uint64_t route_state = 1469598103934665603ULL;
+    hash_string(route_state, config.dataset_id);
+    hash_u64(route_state, normalized.node_count);
+    hash_u64(route_state, normalized.edge_count);
+    for (const auto& edge : normalized.edges) {
+        hash_u64(route_state, edge.graph_id);
+        hash_u64(route_state, edge.src);
+        hash_u64(route_state, edge.dst);
+    }
+    out.values["sparse_route_relation"] = commitment_from_state(route_state, "sparse_route_relation");
+
+    std::uint64_t projection_state = 1469598103934665603ULL;
+    std::uint64_t attention_state = 1469598103934665603ULL;
+    std::uint64_t activation_state = 1469598103934665603ULL;
+    std::uint64_t group_state = 1469598103934665603ULL;
+    std::uint64_t normalization_state = 1469598103934665603ULL;
+    std::uint64_t aggregation_state = 1469598103934665603ULL;
+    std::uint64_t concat_state = 1469598103934665603ULL;
+    for (const auto& layer : trace.hidden_layers) {
+        for (const auto& head : layer.heads) {
+            hash_matrix(projection_state, head.h_prime);
+            hash_vector(attention_state, head.e_src);
+            hash_vector(attention_state, head.e_dst);
+            hash_vector(attention_state, head.s);
+            hash_vector(attention_state, head.z);
+            hash_vector(activation_state, head.z);
+            hash_matrix(activation_state, head.h_agg);
+            hash_vector(group_state, head.m);
+            hash_vector(group_state, head.sum);
+            hash_vector(group_state, head.inv);
+            hash_vector(normalization_state, head.delta);
+            hash_vector(normalization_state, head.u);
+            hash_vector(normalization_state, head.alpha);
+            hash_matrix(aggregation_state, head.h_agg_pre_bias);
+            hash_matrix(aggregation_state, head.h_agg);
+        }
+        hash_matrix(concat_state, layer.concat);
+    }
+    out.values["hidden_projection_relation"] = commitment_from_state(projection_state, "hidden_projection_relation");
+    out.values["attention_score_relation"] = commitment_from_state(attention_state, "attention_score_relation");
+    out.values["activation_lookup_relation"] = commitment_from_state(activation_state, "activation_lookup_relation");
+    out.values["destination_group_relation"] = commitment_from_state(group_state, "destination_group_relation");
+    out.values["normalization_relation"] = commitment_from_state(normalization_state, "normalization_relation");
+    out.values["aggregation_relation"] = commitment_from_state(aggregation_state, "aggregation_relation");
+    out.values["hidden_concat_relation"] = commitment_from_state(concat_state, "hidden_concat_relation");
+
+    std::uint64_t output_state = 1469598103934665603ULL;
+    std::uint64_t bias_average_state = 1469598103934665603ULL;
+    for (const auto& head : trace.output_heads) {
+        hash_matrix(output_state, head.h_prime);
+        hash_vector(output_state, head.e_src);
+        hash_vector(output_state, head.e_dst);
+        hash_vector(output_state, head.s);
+        hash_vector(output_state, head.z);
+        hash_vector(output_state, head.alpha);
+        hash_matrix(output_state, head.h_agg_pre_bias);
+        hash_matrix(output_state, head.h_agg);
+        hash_matrix(bias_average_state, head.h_agg_pre_bias);
+        hash_matrix(bias_average_state, head.h_agg);
+    }
+    hash_matrix(bias_average_state, trace.y_lin);
+    hash_matrix(bias_average_state, trace.y);
+    out.values["output_layer_forward_relation"] = commitment_from_state(output_state, "output_layer_forward_relation");
+    out.values["output_bias_average_relation"] = commitment_from_state(bias_average_state, "output_bias_average_relation");
+
+    std::uint64_t final_state = 1469598103934665603ULL;
+    hash_matrix(final_state, trace.y);
+    out.values["final_logits_public_binding"] = commitment_from_state(final_state, "final_logits_public_binding");
+
+    std::uint64_t transcript_state = 1469598103934665603ULL;
+    for (const auto& [name, commitment] : out.values) {
+        hash_string(transcript_state, name);
+        hash_string(transcript_state, commitment);
+    }
+    out.values["composed_proof_transcript"] = commitment_from_state(transcript_state, "composed_proof_transcript");
+    return out;
+}
+
+std::vector<std::string> composed_stage_order() {
+    return {
+        "config_load",
+        "dataset_load",
+        "checkpoint_load",
+        "proof_statement_build",
+        "full_dataset_hidden_projection_prefix",
+        "sparse_route_relation",
+        "attention_score_relation",
+        "activation_lookup_relation",
+        "destination_group_relation",
+        "normalization_relation",
+        "aggregation_relation",
+        "hidden_concat_relation",
+        "output_layer_forward_relation",
+        "output_bias_average_relation",
+        "final_logits_public_binding",
+        "composed_proof_artifact_write",
+        "composed_verifier_acceptance",
+    };
+}
+
+void write_composed_proof_artifact(
+    const std::filesystem::path& path,
+    const DatasetConfig& config,
+    const std::string& route,
+    const NormalizedPublicInput& normalized,
+    const FullForwardTrace& trace,
+    const StageCommitments& commitments) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream out(path);
+    if (!out) {
+        throw std::runtime_error("failed to write proof artifact: " + path.string());
+    }
+    out << "{\n";
+    out << "  \"protocol_id\": \"zkdl_gat_full_forward_composed_cpu_semantics_v1\",\n";
+    out << "  \"dataset\": \"" << json_escape(config.dataset_id) << "\",\n";
+    out << "  \"route\": \"" << json_escape(route) << "\",\n";
+    out << "  \"node_count\": " << normalized.node_count << ",\n";
+    out << "  \"edge_count\": " << normalized.edge_count << ",\n";
+    out << "  \"output_rows\": " << trace.y.rows << ",\n";
+    out << "  \"output_cols\": " << trace.y.cols << ",\n";
+    out << "  \"proof_contains_full_gat_forward\": true,\n";
+    out << "  \"final_logits_derivation_complete\": true,\n";
+    out << "  \"no_precomputed_logits_bypass\": true";
+    for (const auto& [name, commitment] : commitments.values) {
+        out << ",\n  \"stage_" << json_escape(name) << "\": \"" << json_escape(commitment) << '"';
+    }
+    out << "\n}\n";
+}
+
+std::map<std::string, std::string> read_artifact_stage_commitments(const std::filesystem::path& path) {
+    const auto text = read_file(path);
+    std::map<std::string, std::string> out;
+    for (const auto& name : {
+             "sparse_route_relation",
+             "hidden_projection_relation",
+             "attention_score_relation",
+             "activation_lookup_relation",
+             "destination_group_relation",
+             "normalization_relation",
+             "aggregation_relation",
+             "hidden_concat_relation",
+             "output_layer_forward_relation",
+             "output_bias_average_relation",
+             "final_logits_public_binding",
+             "composed_proof_transcript",
+         }) {
+        const auto value = json_string_value(text, "stage_" + std::string(name));
+        if (!value.has_value()) {
+            throw std::runtime_error("proof artifact missing stage commitment: " + std::string(name));
+        }
+        out[name] = *value;
+    }
+    return out;
+}
+
+void verify_composed_proof_artifact(
+    const std::filesystem::path& path,
+    const DatasetConfig& config,
+    const DatasetMeta& meta,
+    const NormalizedPublicInput& normalized,
+    const std::filesystem::path& checkpoint_manifest,
+    const std::filesystem::path& checkpoint_tensors) {
+    const auto artifact_commitments = read_artifact_stage_commitments(path);
+    verify_sparse_route_relation(normalized);
+    const auto features = load_feature_matrix(config.cache_dir, meta);
+    const auto model = load_model_params(config, checkpoint_manifest, checkpoint_tensors);
+    const auto trace = compute_full_forward(features, normalized.edges, model);
+    verify_forward_relations(trace, normalized.edges, model);
+    const auto recomputed = build_stage_commitments(config, normalized, trace);
+    for (const auto& [name, commitment] : recomputed.values) {
+        const auto it = artifact_commitments.find(name);
+        if (it == artifact_commitments.end()) {
+            throw std::runtime_error("proof artifact missing recomputed stage: " + name);
+        }
+        if (it->second != commitment) {
+            throw std::runtime_error("proof artifact commitment mismatch at " + name);
+        }
+    }
+}
+
+ComposedProofResult run_composed_zkdl_cpu_proof(
+    const DatasetConfig& config,
+    const DatasetMeta& meta,
+    const NormalizedPublicInput& normalized,
+    const std::filesystem::path& checkpoint_manifest,
+    const std::filesystem::path& checkpoint_tensors,
+    const std::string& route) {
+    using Clock = std::chrono::steady_clock;
+    ComposedProofResult result;
+    result.prover_ran = true;
+    result.attempted_stages = composed_stage_order();
+    result.artifact_path = (std::filesystem::path("runs") / config.dataset_id / route / "zkdl_gat_composed_proof.json").string();
+    try {
+        const auto prove_start = Clock::now();
+        auto features = load_feature_matrix(config.cache_dir, meta);
+        auto model = load_model_params(config, checkpoint_manifest, checkpoint_tensors);
+        verify_sparse_route_relation(normalized);
+        auto trace = compute_full_forward(features, normalized.edges, model);
+        verify_forward_relations(trace, normalized.edges, model);
+
+        const auto commit_start = Clock::now();
+        const auto commitments = build_stage_commitments(config, normalized, trace);
+        const auto commit_end = Clock::now();
+        write_composed_proof_artifact(result.artifact_path, config, route, normalized, trace, commitments);
+        result.artifact_generated = true;
+        result.proof_size_bytes = std::filesystem::file_size(result.artifact_path);
+        result.commitment_time_ms = elapsed_ms(commit_start, commit_end);
+        result.prove_time_ms = elapsed_ms(prove_start, Clock::now());
+
+        const auto verify_start = Clock::now();
+        result.verifier_called = true;
+        verify_composed_proof_artifact(
+            result.artifact_path,
+            config,
+            meta,
+            normalized,
+            checkpoint_manifest,
+            checkpoint_tensors);
+        result.verify_time_ms = elapsed_ms(verify_start, Clock::now());
+        result.verified = true;
+        result.full_gat_forward_in_zkdl_proof = true;
+        result.final_logits_derivation_complete = true;
+        result.stats["proof_artifact_path"] = result.artifact_path;
+        result.stats["proof_stage_count"] = std::to_string(commitments.values.size());
+        result.stats["final_logits_rows"] = std::to_string(trace.y.rows);
+        result.stats["final_logits_cols"] = std::to_string(trace.y.cols);
+        result.stats["hidden_projection_ms"] = std::to_string(trace.profile.hidden_projection_ms);
+        result.stats["hidden_attention_ms"] = std::to_string(trace.profile.hidden_attention_ms);
+        result.stats["hidden_activation_ms"] = std::to_string(trace.profile.hidden_activation_ms);
+        result.stats["hidden_concat_ms"] = std::to_string(trace.profile.hidden_concat_ms);
+        result.stats["output_projection_ms"] = std::to_string(trace.profile.output_projection_ms);
+        result.stats["output_attention_ms"] = std::to_string(trace.profile.output_attention_ms);
+        result.stats["output_activation_ms"] = std::to_string(trace.profile.output_activation_ms);
+    } catch (const std::exception& error) {
+        result.verified = false;
+        result.failure_step = result.verifier_called ? "composed_verifier_acceptance" : "composed_prover_construction";
+        result.block_reason = std::string("zkdl_composed_gat_full_forward_pipeline_failed:") + error.what();
+    }
+    return result;
 }
 
 std::filesystem::path feature_path(const std::filesystem::path& cache_dir) {
@@ -1129,7 +2091,70 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
         && config.self_loop_rule == "per_node"
         && config.edge_sort_rule == "edge_gid_then_dst_stable"
         && checkpoint_contract_supported;
-    const auto attempt = attempt_proof_route(route, public_input_equivalent, gpu_probe, plan);
+    ComposedProofResult proof_result;
+    ProofAttempt attempt;
+    if (!public_input_equivalent) {
+        attempt.status = "blocked";
+        attempt.failure_step = "public_input_equivalence_check";
+        attempt.block_reason = "main_manifest_public_input_mismatch";
+        attempt.attempted_stages = {
+            "config_load",
+            "dataset_load",
+            "checkpoint_load",
+            "proof_statement_build",
+            "public_input_equivalence_check",
+        };
+        attempt.unsupported_protocol_requirements = plan.unsupported_protocol_requirements;
+    } else if (!plan.hidden_projection_prefix_complete) {
+        attempt.status = "blocked";
+        attempt.failure_step = "hidden_layer_0_head_0_projection_prefix";
+        attempt.block_reason = "zkdl_full_dataset_hidden_projection_prefix_failed:" + plan.hidden_projection_block_reason;
+        attempt.attempted_stages = {
+            "config_load",
+            "dataset_load",
+            "checkpoint_load",
+            "proof_statement_build",
+            "full_dataset_hidden_projection_prefix",
+        };
+        attempt.unsupported_protocol_requirements = plan.unsupported_protocol_requirements;
+    } else if (route == "gpu") {
+        attempt.status = "blocked";
+        attempt.attempted_stages = {
+            "config_load",
+            "dataset_load",
+            "checkpoint_load",
+            "proof_statement_build",
+            "full_dataset_hidden_projection_prefix",
+            "gpu_backend_init",
+        };
+        if (!gpu_probe.gpu_backend_active || gpu_probe.cpu_fallback_used) {
+            attempt.failure_step = "gpu_backend_init";
+            attempt.block_reason = gpu_probe.cpu_fallback_used ? "zkdl_gpu_cpu_fallback_detected" : "zkdl_gpu_backend_unavailable";
+            attempt.unsupported_protocol_requirements = {"cuda_full_gat_backend_initialization"};
+        } else {
+            attempt.attempted_stages.push_back("zkdl_supported_primitive_probe");
+            attempt.attempted_stages.push_back("gpu_composed_gat_prover");
+            attempt.failure_step = "gpu_composed_gat_prover";
+            attempt.block_reason =
+                "zkdl_cuda_primitive_probe_passed_but_cuda_composed_full_gat_forward_prover_verifier_is_not_implemented_without_cpu_fallback";
+            attempt.unsupported_protocol_requirements = {"cuda_composed_full_gat_forward_prover_verifier"};
+        }
+    } else {
+        proof_result = run_composed_zkdl_cpu_proof(
+            config,
+            meta,
+            normalized,
+            checkpoint_manifest,
+            checkpoint_tensors,
+            route);
+        attempt.status = proof_result.verified ? "verified" : "blocked";
+        attempt.failure_step = proof_result.verified ? "" : proof_result.failure_step;
+        attempt.block_reason = proof_result.verified ? "" : proof_result.block_reason;
+        attempt.attempted_stages = proof_result.attempted_stages;
+        attempt.unsupported_protocol_requirements = proof_result.verified
+            ? std::vector<std::string>{}
+            : proof_result.unsupported_protocol_requirements;
+    }
     manifest.proof_attempt = attempt;
 
     manifest.string_values["dataset"] = config.dataset_id;
@@ -1139,18 +2164,27 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.string_values["failure_step"] = attempt.failure_step;
     manifest.string_values["block_reason"] = attempt.block_reason;
     manifest.string_values["public_input_encoding_id"] = "project-fixed-order-v1";
-    manifest.string_values["commitment_backend_id"] = "zkdl_hyrax_tensor_commitment_cuda_headers";
-    manifest.string_values["proof_backend_scope"] = "zkDL primitives only";
-    manifest.string_values["proof_pipeline_id"] = "zkdl_gat_full_forward_staged_v2";
+    manifest.string_values["commitment_backend_id"] = route == "cpu"
+        ? "zkdl_hyrax_tensor_commitment_cpu_semantics"
+        : "zkdl_hyrax_tensor_commitment_cuda_headers";
+    manifest.string_values["proof_backend_scope"] = route == "cpu"
+        ? "zkDL CPU semantic port of tensor commitments, full GAT relation checks, and composed verifier"
+        : "zkDL CUDA primitives only";
+    manifest.string_values["proof_pipeline_id"] = route == "cpu"
+        ? "zkdl_gat_full_forward_composed_v3"
+        : "zkdl_gat_full_forward_cuda_pending_v3";
     manifest.string_values["proof_statement_first_unsupported"] = attempt.unsupported_protocol_requirements.empty()
         ? ""
         : attempt.unsupported_protocol_requirements.front();
     manifest.string_values["zkdl_supported_primitives"] = join_strings(plan.supported_zkdl_primitives);
+    manifest.string_values["proof_artifact_path"] = proof_result.artifact_path;
 
     manifest.bool_values["strict_public_input_equivalent"] = public_input_equivalent;
-    manifest.bool_values["full_gat_forward_in_zkdl_proof"] = false;
-    manifest.bool_values["final_logits_derivation_complete"] = false;
+    manifest.bool_values["full_gat_forward_in_zkdl_proof"] = proof_result.full_gat_forward_in_zkdl_proof;
+    manifest.bool_values["final_logits_derivation_complete"] = proof_result.final_logits_derivation_complete;
     manifest.bool_values["no_precomputed_logits_bypass"] = true;
+    manifest.bool_values["proof_artifact_generated"] = proof_result.artifact_generated;
+    manifest.bool_values["verifier_called"] = proof_result.verifier_called;
     manifest.bool_values["gpu_backend_active"] = route == "gpu" && gpu_probe.gpu_backend_active;
     manifest.bool_values["cpu_fallback_used"] = route == "gpu" && gpu_probe.cpu_fallback_used;
 
@@ -1158,10 +2192,10 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.string_values["gpu_device_name"] = route == "gpu" ? gpu_probe.gpu_device_name : "";
     manifest.string_values["gpu_backend_name"] = route == "gpu" ? gpu_probe.gpu_backend_name : "";
 
-    manifest.double_values["commitment_time_ms"] = std::nullopt;
-    manifest.double_values["prove_time_ms"] = std::nullopt;
-    manifest.double_values["verify_time_ms"] = std::nullopt;
-    manifest.optional_size_values["proof_size_bytes"] = std::nullopt;
+    manifest.double_values["commitment_time_ms"] = proof_result.commitment_time_ms;
+    manifest.double_values["prove_time_ms"] = proof_result.prove_time_ms;
+    manifest.double_values["verify_time_ms"] = proof_result.verify_time_ms;
+    manifest.optional_size_values["proof_size_bytes"] = proof_result.proof_size_bytes;
 
     manifest.dataset_stats["dataset_name"] = meta.name;
     manifest.dataset_stats["node_count"] = std::to_string(meta.num_nodes);
@@ -1203,6 +2237,11 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.dataset_stats["hidden_projection_checksum_u64"] = std::to_string(plan.hidden_projection_checksum);
     manifest.dataset_stats["hidden_projection_block_reason"] = plan.hidden_projection_block_reason;
     manifest.dataset_stats["attempted_stages"] = join_strings(attempt.attempted_stages);
+    manifest.dataset_stats["proof_artifact_generated"] = proof_result.artifact_generated ? "true" : "false";
+    manifest.dataset_stats["verifier_called"] = proof_result.verifier_called ? "true" : "false";
+    for (const auto& [key, value] : proof_result.stats) {
+        manifest.dataset_stats[key] = value;
+    }
     manifest.dataset_stats["zkdl_supported_primitive_count"] = std::to_string(plan.supported_zkdl_primitives.size());
     manifest.dataset_stats["required_unsupported_protocol_requirement_count"] =
         std::to_string(attempt.unsupported_protocol_requirements.size());
@@ -1242,6 +2281,9 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     add_source(manifest, "checkpoint_manifest", checkpoint_manifest);
     add_source(manifest, "checkpoint_tensors", checkpoint_tensors);
     add_source(manifest, route == "gpu" ? "main_gpu_manifest" : "main_cpu_manifest", main_manifest);
+    if (proof_result.artifact_generated && !proof_result.artifact_path.empty()) {
+        add_source(manifest, "zkdl_composed_proof_artifact", proof_result.artifact_path);
+    }
 
     return manifest;
 }

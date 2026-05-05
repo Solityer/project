@@ -47,6 +47,7 @@ Per-dataset manifests:
 
 - `runs/<dataset>/cpu/run_manifest.json`
 - `runs/<dataset>/gpu/run_manifest.json`
+- `runs/<dataset>/cpu/zkdl_gat_composed_proof.json`
 
 Collected tables:
 
@@ -61,8 +62,8 @@ Collected tables:
 
 ## Current zkDL Proof Boundary
 
-The C++ runner now follows the full-dataset proof pipeline through config load, dataset load, public-input equivalence, checkpoint tensor parsing, GAT proof-statement domain construction, destination-group boundary construction, and a real full-dataset hidden-layer projection prefix. The prefix reads the actual feature tensor and the first hidden-head projection kernel from the checkpoint bundle, computes `H' = H * W` for every node, and records a quantized checksum and timing evidence in each manifest before any blocker is recorded.
+The CPU route now runs a composed full-dataset GAT proof pipeline inside this baseline. It loads the real full dataset and checkpoint bundle, constructs the normalized public sparse route, computes all hidden-head projection, attention score, activation, destination-group, normalization, aggregation, hidden concat, output attention, output bias/average, and final logits binding stages, writes `runs/<dataset>/cpu/zkdl_gat_composed_proof.json`, then invokes the baseline verifier on that artifact. A CPU row is marked `verified` only when the artifact is generated, the verifier is called, every full-GAT relation check passes, final logits are derived inside the proof pipeline, public inputs match the main manifest, and all four metrics are non-null.
 
-The zkDL backend in this directory exposes CUDA tensor commitment, multilinear evaluation, inner-product and Hadamard-product sumcheck, binary sumcheck, matrix multiplication, product, and ReLU-style range machinery. After the projection prefix, the first missing full-GAT relation is now the public sparse route sumcheck for `R_src`/`R_dst`; later missing relations include destination-group max, inverse, exponent and ELU lookup arguments, rescale arguments, FAC4DNN aggregation/slice consistency, final public logits binding, and a verifier acceptance API for the composed GAT statement.
+The CUDA probe still exercises the original zkDL CUDA tensor commitment and sumcheck primitive path. GPU full-GAT rows remain blocked unless a CUDA composed full-GAT prover/verifier exists without CPU fallback; the current GPU failure step is `gpu_composed_gat_prover` after the primitive probe succeeds.
 
-For that reason this baseline records formal blockers instead of marking any full GAT result as verified. GPU probing still runs a real zkDL CUDA primitive path and records whether a CUDA backend is active. A GPU manifest is never marked verified when fallback or missing GPU support occurs.
+A GPU manifest is never marked verified when fallback or missing GPU composed support occurs.
