@@ -1,0 +1,6 @@
+dataset,main_route,zkdl_route_id,zkdl_status,comparison_status,main_commitment_time_ms,main_prove_time_ms,main_verify_time_ms,main_proof_size_bytes,zkdl_commitment_time_ms,zkdl_prove_time_ms,zkdl_verify_time_ms,zkdl_proof_size_bytes,failure_step,block_reason
+cora_full,cpu,zkdl_gat_full_forward_cpu,blocked,blocked,283.786,1207.818,153.379,90755,,,,,zkdl_cpu_backend_capability_check,zkdl_cpu_backend_unavailable
+citeseer_full,cpu,zkdl_gat_full_forward_cpu,blocked,blocked,453.773,1418.744,153.837,90763,,,,,zkdl_cpu_backend_capability_check,zkdl_cpu_backend_unavailable
+pubmed_full,cpu,zkdl_gat_full_forward_cpu,blocked,blocked,2962.933,5604.074,175.454,90760,,,,,zkdl_cpu_backend_capability_check,zkdl_cpu_backend_unavailable
+ppi_full_formal,cpu,zkdl_gat_full_forward_cpu,blocked,blocked,3563.973,7111.447,424.71,21360,,,,,zkdl_cpu_backend_capability_check,zkdl_cpu_backend_unavailable
+ogbn_arxiv_full,cpu,zkdl_gat_full_forward_cpu,blocked,blocked,18071.562,66540.6,417.38,21361,,,,,zkdl_cpu_backend_capability_check,zkdl_cpu_backend_unavailable
