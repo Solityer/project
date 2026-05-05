@@ -1,0 +1,5 @@
+cora_full
+citeseer_full
+pubmed_full
+ppi_full_formal
+ogbn_arxiv_full

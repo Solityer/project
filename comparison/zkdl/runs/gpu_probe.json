@@ -1,0 +1,12 @@
+{
+  "gpu_backend_active": true,
+  "gpu_device_name": "NVIDIA GB10",
+  "gpu_device_count": 1,
+  "gpu_backend_name": "zkDL CUDA tensor commitment and sumcheck primitive backend",
+  "cpu_fallback_used": false,
+  "primitive_probe_status": "ok",
+  "primitive_commitment_time_ms": 6.03828,
+  "primitive_prove_time_ms": 0.298461,
+  "primitive_verify_time_ms": 61.0379,
+  "primitive_proof_size_bytes": 604
+}
