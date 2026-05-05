@@ -395,7 +395,7 @@ KERNEL void random_kernel(Fr_t* gpu_data, uint n, unsigned long seed)
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     curandState state;
 
-    if (tid > n) return;
+    if (tid >= n) return;
 
     // Initialize the RNG state for this thread.
     curand_init(seed, tid, 0, &state);
