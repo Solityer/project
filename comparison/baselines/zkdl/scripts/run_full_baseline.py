@@ -41,6 +41,23 @@ def write_csv(path, rows, fieldnames):
             writer.writerow({key: row.get(key, "") for key in fieldnames})
 
 
+def metric(value):
+    return "" if value is None else value
+
+
+def md_table(rows, include_gpu=False):
+    headers = ["dataset", "status", "commitment_time_ms", "prove_time_ms", "verify_time_ms", "proof_size_bytes"]
+    if include_gpu:
+        headers.extend(["gpu_backend_active", "cpu_fallback_used"])
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(["---"] * len(headers)) + " |",
+    ]
+    for row in rows:
+        lines.append("| " + " | ".join(str(metric(row.get(key))) for key in headers) + " |")
+    return "\n".join(lines)
+
+
 def main_rows_by_dataset(path):
     payload = load_json(path)
     return {row["dataset"]: row for row in payload["rows"]}
@@ -170,6 +187,105 @@ def collect(root, cpu_manifests, gpu_manifests):
     })
     write_csv(results / "main_vs_zkdl_cpu_full_comparison.csv", cpu_cmp, cmp_fields)
     write_csv(results / "main_vs_zkdl_gpu_full_comparison.csv", gpu_cmp, cmp_fields + ["gpu_backend_active", "cpu_fallback_used", "gpu_device_name"])
+    write_markdown_reports(root, results, cpu_rows, gpu_rows, cpu_cmp, gpu_cmp, generated_at)
+
+
+def write_markdown_reports(root, results, cpu_rows, gpu_rows, cpu_cmp, gpu_cmp, generated_at):
+    blocked = [
+        row for row in cpu_rows + gpu_rows
+        if row["status"] != "verified"
+    ]
+    summary = [
+        "# zkDL Full GAT Baseline Summary",
+        "",
+        f"Generated at: `{generated_at}`",
+        "",
+        "Correct baseline directory: `comparison/baselines/zkdl`.",
+        "",
+        "The full-dataset statement is attempted for `cora_full`, `citeseer_full`, `pubmed_full`, `ppi_full_formal`, and `ogbn_arxiv_full`. No row is marked verified unless a real zkDL proof and verifier acceptance path succeeds.",
+        "",
+        "## CPU",
+        "",
+        md_table(cpu_rows),
+        "",
+        "## GPU",
+        "",
+        md_table(gpu_rows, include_gpu=True),
+        "",
+        "## Blocked Items",
+        "",
+        "| dataset | route_id | failure_step | block_reason |",
+        "| --- | --- | --- | --- |",
+    ]
+    for row in blocked:
+        summary.append(f"| {row['dataset']} | {row['route_id']} | {row['failure_step']} | {row['block_reason']} |")
+    summary.append("")
+    (results / "summary.md").write_text("\n".join(summary), encoding="utf-8")
+
+    control = [
+        "# Control Variable Audit",
+        "",
+        "Both CPU and GPU routes use the same five full dataset configs under `comparison/baselines/zkdl/configs` and read the same main-repository data/checkpoint sources in read-only mode.",
+        "",
+        "| dataset | cpu_status | gpu_status | cpu_public_equivalent | gpu_public_equivalent | cpu_route | gpu_route |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    gpu_by_dataset = {row["dataset"]: row for row in gpu_rows}
+    for cpu in cpu_rows:
+        gpu = gpu_by_dataset[cpu["dataset"]]
+        control.append(
+            f"| {cpu['dataset']} | {cpu['status']} | {gpu['status']} | "
+            f"{cpu['strict_public_input_equivalent']} | {gpu['strict_public_input_equivalent']} | "
+            f"{cpu['route_id']} | {gpu['route_id']} |"
+        )
+    control.extend([
+        "",
+        "The GPU primitive probe is recorded only as backend availability evidence. It is not copied into full GAT proof metrics and cannot make a full GAT row verified.",
+    ])
+    (results / "control_variable_audit.md").write_text("\n".join(control), encoding="utf-8")
+
+    scanned_roots = [root / "include", root / "src", root / "scripts", root / "configs", root / "manifests"]
+    forbidden_refs = []
+    for scanned_root in scanned_roots:
+        for path in scanned_root.rglob("*"):
+            if path.is_file():
+                text = path.read_text(encoding="utf-8", errors="ignore")
+                needles = [
+                    str(root.parents[2] / "src"),
+                    str(root.parents[2] / "include"),
+                    str(root.parents[2] / "scripts"),
+                    str(root.parents[1] / "zkdl"),
+                ]
+                for needle in needles:
+                    if needle in text:
+                        forbidden_refs.append(f"{path.relative_to(root)} -> {needle}")
+    code = [
+        "# Code Cleanliness Audit",
+        "",
+        "Scanned baseline-owned `include`, `src`, `scripts`, `configs`, and `manifests` paths.",
+        "",
+        f"- forbidden dependency references: `{len(forbidden_refs)}`",
+        "- C++ runner owns manifest construction, full-dataset public-input equivalence checks, source hashing, and zkDL capability gating.",
+        "- Python is limited to route orchestration, collection, validation, and report formatting.",
+        "",
+    ]
+    if forbidden_refs:
+        code.append("## Findings")
+        code.extend(f"- {item}" for item in forbidden_refs)
+    else:
+        code.append("No forbidden main `src`, `include`, or `scripts` dependency references were found.")
+    (results / "code_cleanliness_audit.md").write_text("\n".join(code), encoding="utf-8")
+
+    wrong_dir = root.parents[1] / "zkdl"
+    cleanup = [
+        "# Cleanup Report",
+        "",
+        f"- wrong baseline directory exists at report generation: `{wrong_dir.exists()}`",
+        "- formal baseline directory: `comparison/baselines/zkdl`",
+        "- result and run paths are written only under `comparison/baselines/zkdl`.",
+        "- `comparison/zkdl` is not used as a build, run, or result directory by these scripts.",
+    ]
+    (results / "cleanup_report.md").write_text("\n".join(cleanup), encoding="utf-8")
 
 
 def main():

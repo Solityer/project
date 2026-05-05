@@ -24,12 +24,12 @@ if(ZKDL_GAT_ENABLE_CUDA)
   enable_language(CUDA)
   find_package(CUDAToolkit REQUIRED)
   if(NOT CMAKE_CUDA_ARCHITECTURES)
-    set(CMAKE_CUDA_ARCHITECTURES 120)
+    set(CMAKE_CUDA_ARCHITECTURES native)
   endif()
   add_executable(zkdl_gat_gpu_probe src/zkdl_gat_gpu_probe.cu)
   target_include_directories(zkdl_gat_gpu_probe
     PRIVATE
-      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/zkdl
+      ${CMAKE_CURRENT_SOURCE_DIR}
   )
   target_link_libraries(zkdl_gat_gpu_probe PRIVATE CUDA::cudart CUDA::curand)
   set_target_properties(zkdl_gat_gpu_probe PROPERTIES CUDA_SEPARABLE_COMPILATION OFF)

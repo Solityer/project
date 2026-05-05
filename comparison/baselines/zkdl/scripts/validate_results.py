@@ -65,12 +65,16 @@ def main():
         "main_vs_zkdl_cpu_full_comparison.csv",
         "main_vs_zkdl_gpu_full_comparison.json",
         "main_vs_zkdl_gpu_full_comparison.csv",
+        "summary.md",
+        "control_variable_audit.md",
+        "code_cleanliness_audit.md",
+        "cleanup_report.md",
     ]:
         if not (root / "results" / result).exists():
             errors.append(f"missing result file: results/{result}")
 
     scanned = []
-    for folder in ["include", "src", "scripts"]:
+    for folder in ["include", "src", "scripts", "configs", "manifests"]:
         scanned.extend((root / folder).rglob("*"))
     forbidden = ["/home/pzh/project/" + item for item in ("src", "include", "scripts")]
     for path in scanned:
