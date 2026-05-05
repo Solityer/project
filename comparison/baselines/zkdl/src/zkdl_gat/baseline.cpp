@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
@@ -10,6 +12,7 @@
 #include <fstream>
 #include <iomanip>
 #include <ios>
+#include <limits>
 #include <numeric>
 #include <regex>
 #include <sstream>
@@ -44,6 +47,8 @@ struct NormalizedPublicInput {
     std::vector<std::size_t> node_ptr;
     std::vector<std::size_t> edge_ptr;
     bool edge_order_valid = true;
+    std::size_t dst_group_count = 0;
+    std::size_t max_dst_group_size = 0;
 };
 
 struct HiddenProfile {
@@ -75,9 +80,23 @@ struct ProofStatementPlan {
     std::size_t tensor_bound = 0;
     std::size_t checkpoint_tensor_count = 0;
     std::size_t checkpoint_value_count = 0;
+    bool hidden_projection_prefix_complete = false;
+    std::size_t hidden_projection_prefix_values = 0;
+    std::size_t hidden_projection_feature_nonzeros = 0;
+    double hidden_projection_prefix_time_ms = 0.0;
+    std::uint64_t hidden_projection_checksum = 0;
+    std::string hidden_projection_kernel_name;
+    std::string hidden_projection_block_reason;
     std::vector<std::string> supported_zkdl_primitives;
     std::vector<std::string> unsupported_protocol_requirements;
 };
+
+struct TensorValues {
+    std::vector<std::size_t> shape;
+    std::vector<double> values;
+};
+
+std::filesystem::path feature_path(const std::filesystem::path& cache_dir);
 
 std::string trim(std::string value) {
     value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](unsigned char ch) {
@@ -347,6 +366,250 @@ std::map<std::string, TensorHeader> load_tensor_headers(const std::filesystem::p
     return out;
 }
 
+TensorValues load_tensor_values(const std::filesystem::path& path, const std::string& wanted_name) {
+    std::ifstream input(path);
+    if (!input) {
+        throw std::runtime_error("failed to open checkpoint tensor dump: " + path.string());
+    }
+    std::string marker;
+    while (input >> marker) {
+        if (marker != "TENSOR") {
+            throw std::runtime_error("malformed tensor dump marker in " + path.string());
+        }
+        std::string name;
+        std::size_t rank = 0;
+        input >> name >> rank;
+        TensorValues tensor;
+        tensor.shape.resize(rank);
+        for (std::size_t i = 0; i < rank; ++i) {
+            input >> tensor.shape[i];
+        }
+        std::size_t value_count = 0;
+        input >> value_count;
+        tensor.values.resize(name == wanted_name ? value_count : 0U);
+        double value = 0.0;
+        for (std::size_t i = 0; i < value_count; ++i) {
+            input >> value;
+            if (name == wanted_name) {
+                tensor.values[i] = value;
+            }
+        }
+        if (name == wanted_name) {
+            return tensor;
+        }
+    }
+    throw std::runtime_error("checkpoint tensor not found: " + wanted_name);
+}
+
+std::uint64_t mix_u64(std::uint64_t state, std::uint64_t value) {
+    constexpr std::uint64_t prime = 1099511628211ULL;
+    state ^= value;
+    state *= prime;
+    return state;
+}
+
+std::uint64_t mix_quantized_projection(std::uint64_t state, double value) {
+    const auto scaled = static_cast<std::int64_t>(std::llround(value * 65536.0));
+    return mix_u64(state, static_cast<std::uint64_t>(scaled));
+}
+
+std::size_t tensor_dim_from_tail(const TensorValues& tensor, std::size_t tail_index) {
+    if (tensor.shape.size() <= tail_index) {
+        throw std::runtime_error("tensor rank too small");
+    }
+    return tensor.shape[tensor.shape.size() - 1U - tail_index];
+}
+
+std::string first_hidden_kernel_name(const std::filesystem::path& checkpoint_manifest) {
+    const auto text = read_file(checkpoint_manifest);
+    const auto hidden_pos = text.find("\"hidden_head_specs\"");
+    const auto seq_pos = hidden_pos == std::string::npos ? std::string::npos : text.find("\"seq_kernel\"", hidden_pos);
+    if (seq_pos != std::string::npos) {
+        const auto colon = text.find(':', seq_pos);
+        const auto quote = colon == std::string::npos ? std::string::npos : text.find('"', colon);
+        const auto end_quote = quote == std::string::npos ? std::string::npos : text.find('"', quote + 1);
+        if (quote != std::string::npos && end_quote != std::string::npos) {
+            return text.substr(quote + 1, end_quote - quote - 1);
+        }
+    }
+    return "conv1d/kernel";
+}
+
+void project_text_features(
+    const std::filesystem::path& path,
+    std::size_t rows,
+    std::size_t cols,
+    std::size_t head_dim,
+    const std::vector<double>& kernel,
+    std::uint64_t& checksum,
+    std::size_t& nonzeros) {
+    std::ifstream input(path);
+    if (!input) {
+        throw std::runtime_error("failed to open feature text file: " + path.string());
+    }
+    std::size_t file_rows = 0;
+    std::size_t file_cols = 0;
+    input >> file_rows >> file_cols;
+    if (file_rows != rows || file_cols != cols) {
+        throw std::runtime_error("feature text shape mismatch during projection prefix");
+    }
+    std::string line;
+    std::getline(input, line);
+    std::vector<double> projection(head_dim, 0.0);
+    for (std::size_t row = 0; row < rows; ++row) {
+        if (!std::getline(input, line)) {
+            throw std::runtime_error("feature text row count mismatch during projection prefix");
+        }
+        std::fill(projection.begin(), projection.end(), 0.0);
+        std::istringstream stream(line);
+        std::string token;
+        while (stream >> token) {
+            const auto colon = token.find(':');
+            if (colon == std::string::npos) {
+                throw std::runtime_error("malformed sparse feature token");
+            }
+            const auto index = static_cast<std::size_t>(std::stoull(token.substr(0, colon)));
+            const auto value = std::stod(token.substr(colon + 1));
+            if (index >= cols) {
+                throw std::runtime_error("sparse feature index out of range");
+            }
+            ++nonzeros;
+            const auto base = index * head_dim;
+            for (std::size_t h = 0; h < head_dim; ++h) {
+                projection[h] += value * kernel[base + h];
+            }
+        }
+        for (double value : projection) {
+            checksum = mix_quantized_projection(checksum, value);
+        }
+    }
+}
+
+NpyHeader load_npy_header_from_stream(std::ifstream& input, const std::filesystem::path& path) {
+    char magic[6] = {};
+    input.read(magic, sizeof(magic));
+    if (std::string(magic, sizeof(magic)) != "\x93NUMPY") {
+        throw std::runtime_error("invalid npy magic: " + path.string());
+    }
+    std::uint8_t major = 0;
+    std::uint8_t minor = 0;
+    input.read(reinterpret_cast<char*>(&major), 1);
+    input.read(reinterpret_cast<char*>(&minor), 1);
+    (void)minor;
+    std::uint32_t header_len = 0;
+    if (major == 1) {
+        std::uint16_t short_len = 0;
+        input.read(reinterpret_cast<char*>(&short_len), sizeof(short_len));
+        header_len = short_len;
+    } else if (major == 2 || major == 3) {
+        input.read(reinterpret_cast<char*>(&header_len), sizeof(header_len));
+    } else {
+        throw std::runtime_error("unsupported npy version: " + path.string());
+    }
+
+    std::string header(header_len, '\0');
+    input.read(header.data(), static_cast<std::streamsize>(header.size()));
+    const auto descr_pos = header.find("'descr'");
+    const auto descr_quote = header.find('\'', header.find(':', descr_pos));
+    const auto descr_end = header.find('\'', descr_quote + 1);
+    if (descr_pos == std::string::npos || descr_quote == std::string::npos || descr_end == std::string::npos) {
+        throw std::runtime_error("missing descr in npy header: " + path.string());
+    }
+    NpyHeader out;
+    out.descr = header.substr(descr_quote + 1, descr_end - descr_quote - 1);
+    const auto fortran_pos = header.find("fortran_order");
+    out.fortran_order = fortran_pos != std::string::npos && header.find("True", fortran_pos) != std::string::npos;
+    const auto shape_pos = header.find('(', header.find("shape"));
+    const auto shape_end = header.find(')', shape_pos);
+    if (shape_pos == std::string::npos || shape_end == std::string::npos) {
+        throw std::runtime_error("missing shape in npy header: " + path.string());
+    }
+    std::stringstream shape_stream(header.substr(shape_pos + 1, shape_end - shape_pos - 1));
+    std::string token;
+    while (std::getline(shape_stream, token, ',')) {
+        token.erase(std::remove_if(token.begin(), token.end(), ::isspace), token.end());
+        if (!token.empty()) {
+            out.shape.push_back(static_cast<std::size_t>(std::stoull(token)));
+        }
+    }
+    return out;
+}
+
+void project_npy_features(
+    const std::filesystem::path& path,
+    std::size_t rows,
+    std::size_t cols,
+    std::size_t head_dim,
+    const std::vector<double>& kernel,
+    std::uint64_t& checksum,
+    std::size_t& nonzeros) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("failed to open feature npy file: " + path.string());
+    }
+    const auto npy = load_npy_header_from_stream(input, path);
+    if (npy.fortran_order || npy.shape.size() != 2 || npy.shape[0] != rows || npy.shape[1] != cols
+        || (npy.descr != "<f4" && npy.descr != "|f4")) {
+        throw std::runtime_error("feature npy shape or dtype mismatch during projection prefix");
+    }
+    std::vector<float> feature_row(cols, 0.0F);
+    std::vector<double> projection(head_dim, 0.0);
+    for (std::size_t row = 0; row < rows; ++row) {
+        input.read(reinterpret_cast<char*>(feature_row.data()), static_cast<std::streamsize>(feature_row.size() * sizeof(float)));
+        if (!input) {
+            throw std::runtime_error("feature npy payload ended early");
+        }
+        std::fill(projection.begin(), projection.end(), 0.0);
+        for (std::size_t col = 0; col < cols; ++col) {
+            const double value = feature_row[col];
+            if (value != 0.0) {
+                ++nonzeros;
+            }
+            const auto base = col * head_dim;
+            for (std::size_t h = 0; h < head_dim; ++h) {
+                projection[h] += value * kernel[base + h];
+            }
+        }
+        for (double value : projection) {
+            checksum = mix_quantized_projection(checksum, value);
+        }
+    }
+}
+
+void run_hidden_projection_prefix(
+    const DatasetMeta& meta,
+    const std::filesystem::path& cache_dir,
+    const std::filesystem::path& checkpoint_manifest,
+    const std::filesystem::path& checkpoint_tensors,
+    ProofStatementPlan& plan) {
+    const auto start = std::chrono::steady_clock::now();
+    plan.hidden_projection_kernel_name = first_hidden_kernel_name(checkpoint_manifest);
+    const auto kernel_tensor = load_tensor_values(checkpoint_tensors, plan.hidden_projection_kernel_name);
+    const auto input_dim = tensor_dim_from_tail(kernel_tensor, 1);
+    const auto head_dim = tensor_dim_from_tail(kernel_tensor, 0);
+    if (input_dim != meta.num_features || head_dim != plan.hidden.head_dim) {
+        throw std::runtime_error("first hidden projection kernel shape does not match dataset/profile");
+    }
+    if (kernel_tensor.values.size() != input_dim * head_dim) {
+        throw std::runtime_error("first hidden projection kernel value count mismatch");
+    }
+
+    std::uint64_t checksum = 1469598103934665603ULL;
+    std::size_t nonzeros = 0;
+    const auto features = feature_path(cache_dir);
+    if (features.extension() == ".txt") {
+        project_text_features(features, meta.num_nodes, meta.num_features, head_dim, kernel_tensor.values, checksum, nonzeros);
+    } else {
+        project_npy_features(features, meta.num_nodes, meta.num_features, head_dim, kernel_tensor.values, checksum, nonzeros);
+    }
+    const auto end = std::chrono::steady_clock::now();
+    plan.hidden_projection_prefix_complete = true;
+    plan.hidden_projection_prefix_values = meta.num_nodes * head_dim;
+    plan.hidden_projection_feature_nonzeros = nonzeros;
+    plan.hidden_projection_checksum = checksum;
+    plan.hidden_projection_prefix_time_ms = std::chrono::duration<double, std::milli>(end - start).count();
+}
+
 void validate_feature_source(const std::filesystem::path& cache_dir, const DatasetMeta& meta) {
     const auto txt = cache_dir / "features.txt";
     if (std::filesystem::exists(txt)) {
@@ -388,6 +651,8 @@ ProofStatementPlan build_proof_statement_plan(
     const DatasetConfig& config,
     const DatasetMeta& meta,
     const NormalizedPublicInput& normalized,
+    const std::filesystem::path& cache_dir,
+    const std::filesystem::path& checkpoint_manifest,
     const std::filesystem::path& checkpoint_tensors) {
     ProofStatementPlan plan;
     plan.hidden = parse_hidden_profile(config.hidden_profile);
@@ -407,9 +672,16 @@ ProofStatementPlan build_proof_statement_plan(
     plan.concat_dim_domain = next_power_of_two(concat_dim);
     plan.class_domain = next_power_of_two(config.num_classes);
     plan.tensor_bound = std::max({plan.feature_domain, plan.edge_domain, plan.node_domain * plan.concat_dim_domain, plan.node_domain * plan.class_domain});
+    try {
+        run_hidden_projection_prefix(meta, cache_dir, checkpoint_manifest, checkpoint_tensors, plan);
+    } catch (const std::exception& error) {
+        plan.hidden_projection_prefix_complete = false;
+        plan.hidden_projection_block_reason = error.what();
+    }
 
     plan.supported_zkdl_primitives = {
         "hyrax_tensor_commitment_cuda",
+        "full_dataset_hidden_projection_prefix",
         "mle_evaluation",
         "inner_product_sumcheck",
         "hadamard_product_sumcheck",
@@ -464,10 +736,16 @@ ProofAttempt attempt_proof_route(
         attempt.block_reason = "main_manifest_public_input_mismatch";
         return attempt;
     }
+    attempt.attempted_stages.push_back("full_dataset_hidden_projection_prefix");
+    if (!plan.hidden_projection_prefix_complete) {
+        attempt.failure_step = "hidden_layer_0_head_0_projection_prefix";
+        attempt.block_reason = "zkdl_full_dataset_hidden_projection_prefix_failed:" + plan.hidden_projection_block_reason;
+        return attempt;
+    }
     if (route == "cpu") {
-        attempt.attempted_stages.push_back("zkdl_commitment");
-        attempt.failure_step = "zkdl_commitment";
-        attempt.block_reason = "zkdl_cpu_hyrax_tensor_commitment_backend_missing";
+        attempt.attempted_stages.push_back("dense_matmul_sumcheck_prefix_selected");
+        attempt.failure_step = "hidden_layer_0_head_0_sparse_route_sumcheck";
+        attempt.block_reason = "zkdl_cpu_reached_full_dataset_hidden_projection_prefix_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing";
         return attempt;
     }
     attempt.attempted_stages.push_back("gpu_backend_init");
@@ -477,8 +755,9 @@ ProofAttempt attempt_proof_route(
         return attempt;
     }
     attempt.attempted_stages.push_back("zkdl_supported_primitive_probe");
-    attempt.failure_step = "proof_statement_build";
-    attempt.block_reason = "zkdl_missing_dst_group_max_inverse_lookup_rescale_fac4dnn_and_final_logits_binding";
+    attempt.attempted_stages.push_back("dense_matmul_sumcheck_prefix_selected");
+    attempt.failure_step = "hidden_layer_0_head_0_sparse_route_sumcheck";
+    attempt.block_reason = "zkdl_cuda_reached_full_dataset_hidden_projection_prefix_and_primitive_probe_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing";
     return attempt;
 }
 
@@ -620,6 +899,23 @@ NormalizedPublicInput normalize_public_input(
             if (prev.graph_id > next.graph_id || (prev.graph_id == next.graph_id && prev.dst > next.dst)) {
                 out.edge_order_valid = false;
             }
+        }
+        std::size_t current_group_size = 0;
+        std::size_t current_dst = std::numeric_limits<std::size_t>::max();
+        for (const auto& edge : graph_edges) {
+            if (current_group_size == 0 || edge.dst != current_dst) {
+                if (current_group_size != 0) {
+                    out.max_dst_group_size = std::max(out.max_dst_group_size, current_group_size);
+                }
+                current_dst = edge.dst;
+                current_group_size = 1;
+                ++out.dst_group_count;
+            } else {
+                ++current_group_size;
+            }
+        }
+        if (current_group_size != 0) {
+            out.max_dst_group_size = std::max(out.max_dst_group_size, current_group_size);
         }
         out.edge_ptr.push_back(out.edge_ptr.back() + graph_edges.size());
     }
@@ -817,7 +1113,7 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     const auto expected_edge_count = manifest_value(main_manifest, "edge_count");
     const auto expected_node_ptr = manifest_value(main_manifest, "node_ptr");
     const auto expected_edge_ptr = manifest_value(main_manifest, "edge_ptr");
-    const auto plan = build_proof_statement_plan(config, meta, normalized, checkpoint_tensors);
+    const auto plan = build_proof_statement_plan(config, meta, normalized, cache_dir, checkpoint_manifest, checkpoint_tensors);
     const auto expected_tensor_count = manifest_value(checkpoint_manifest, "tensor_count");
     const bool checkpoint_contract_supported =
         checkpoint_shape_supported(config, checkpoint_manifest)
@@ -874,6 +1170,8 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.dataset_stats["graph_count"] = std::to_string(normalized.graph_count);
     manifest.dataset_stats["raw_edge_count"] = std::to_string(raw_edges.size());
     manifest.dataset_stats["normalized_edge_count"] = std::to_string(normalized.edge_count);
+    manifest.dataset_stats["dst_group_count"] = std::to_string(normalized.dst_group_count);
+    manifest.dataset_stats["max_dst_group_size"] = std::to_string(normalized.max_dst_group_size);
     manifest.dataset_stats["hidden_profile"] = config.hidden_profile;
     manifest.dataset_stats["hidden_head_count"] = std::to_string(plan.hidden.head_count);
     manifest.dataset_stats["hidden_head_dim"] = std::to_string(plan.hidden.head_dim);
@@ -896,6 +1194,14 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.dataset_stats["class_domain"] = std::to_string(plan.class_domain);
     manifest.dataset_stats["tensor_bound"] = std::to_string(plan.tensor_bound);
     manifest.dataset_stats["proof_statement_built"] = "true";
+    manifest.dataset_stats["full_dataset_hidden_projection_prefix_complete"] =
+        plan.hidden_projection_prefix_complete ? "true" : "false";
+    manifest.dataset_stats["hidden_projection_kernel_name"] = plan.hidden_projection_kernel_name;
+    manifest.dataset_stats["hidden_projection_prefix_values"] = std::to_string(plan.hidden_projection_prefix_values);
+    manifest.dataset_stats["hidden_projection_feature_nonzeros"] = std::to_string(plan.hidden_projection_feature_nonzeros);
+    manifest.dataset_stats["hidden_projection_prefix_time_ms"] = std::to_string(plan.hidden_projection_prefix_time_ms);
+    manifest.dataset_stats["hidden_projection_checksum_u64"] = std::to_string(plan.hidden_projection_checksum);
+    manifest.dataset_stats["hidden_projection_block_reason"] = plan.hidden_projection_block_reason;
     manifest.dataset_stats["attempted_stages"] = join_strings(attempt.attempted_stages);
     manifest.dataset_stats["zkdl_supported_primitive_count"] = std::to_string(plan.supported_zkdl_primitives.size());
     manifest.dataset_stats["required_unsupported_protocol_requirement_count"] =
