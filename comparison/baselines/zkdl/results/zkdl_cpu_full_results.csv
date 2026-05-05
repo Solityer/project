@@ -1,6 +1,6 @@
 dataset,route_id,backend,status,commitment_time_ms,prove_time_ms,verify_time_ms,proof_size_bytes,strict_public_input_equivalent,full_gat_forward_in_zkdl_proof,final_logits_derivation_complete,no_precomputed_logits_bypass,failure_step,block_reason
-cora_full,zkdl_gat_full_forward_cpu,cpu,blocked,,,,,True,False,False,True,zkdl_cpu_backend_capability_check,zkdl_cpu_backend_unavailable
-citeseer_full,zkdl_gat_full_forward_cpu,cpu,blocked,,,,,True,False,False,True,zkdl_cpu_backend_capability_check,zkdl_cpu_backend_unavailable
-pubmed_full,zkdl_gat_full_forward_cpu,cpu,blocked,,,,,True,False,False,True,zkdl_cpu_backend_capability_check,zkdl_cpu_backend_unavailable
-ppi_full_formal,zkdl_gat_full_forward_cpu,cpu,blocked,,,,,True,False,False,True,zkdl_cpu_backend_capability_check,zkdl_cpu_backend_unavailable
-ogbn_arxiv_full,zkdl_gat_full_forward_cpu,cpu,blocked,,,,,True,False,False,True,zkdl_cpu_backend_capability_check,zkdl_cpu_backend_unavailable
+cora_full,zkdl_gat_full_forward_cpu,cpu,blocked,,,,,True,False,False,True,zkdl_commitment,zkdl_cpu_hyrax_tensor_commitment_backend_missing
+citeseer_full,zkdl_gat_full_forward_cpu,cpu,blocked,,,,,True,False,False,True,zkdl_commitment,zkdl_cpu_hyrax_tensor_commitment_backend_missing
+pubmed_full,zkdl_gat_full_forward_cpu,cpu,blocked,,,,,True,False,False,True,zkdl_commitment,zkdl_cpu_hyrax_tensor_commitment_backend_missing
+ppi_full_formal,zkdl_gat_full_forward_cpu,cpu,blocked,,,,,True,False,False,True,zkdl_commitment,zkdl_cpu_hyrax_tensor_commitment_backend_missing
+ogbn_arxiv_full,zkdl_gat_full_forward_cpu,cpu,blocked,,,,,True,False,False,True,zkdl_commitment,zkdl_cpu_hyrax_tensor_commitment_backend_missing

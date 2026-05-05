@@ -1,13 +1,13 @@
 {
-  "generated_at": "2026-05-05T08:22:53.443197+00:00",
+  "generated_at": "2026-05-05T08:52:45.977186+00:00",
   "route": "gpu",
   "rows": [
     {
-      "block_reason": "gat_forward_constraint_not_representable_in_current_zkdl",
+      "block_reason": "zkdl_missing_dst_group_max_inverse_lookup_rescale_fac4dnn_and_final_logits_binding",
       "comparison_status": "blocked",
       "cpu_fallback_used": false,
       "dataset": "cora_full",
-      "failure_step": "zkdl_gat_full_forward_capability_check",
+      "failure_step": "proof_statement_build",
       "gpu_backend_active": true,
       "gpu_device_name": "NVIDIA GB10",
       "main_commitment_time_ms": 287.779,
@@ -23,11 +23,11 @@
       "zkdl_verify_time_ms": null
     },
     {
-      "block_reason": "gat_forward_constraint_not_representable_in_current_zkdl",
+      "block_reason": "zkdl_missing_dst_group_max_inverse_lookup_rescale_fac4dnn_and_final_logits_binding",
       "comparison_status": "blocked",
       "cpu_fallback_used": false,
       "dataset": "citeseer_full",
-      "failure_step": "zkdl_gat_full_forward_capability_check",
+      "failure_step": "proof_statement_build",
       "gpu_backend_active": true,
       "gpu_device_name": "NVIDIA GB10",
       "main_commitment_time_ms": 472.522,
@@ -43,11 +43,11 @@
       "zkdl_verify_time_ms": null
     },
     {
-      "block_reason": "gat_forward_constraint_not_representable_in_current_zkdl",
+      "block_reason": "zkdl_missing_dst_group_max_inverse_lookup_rescale_fac4dnn_and_final_logits_binding",
       "comparison_status": "blocked",
       "cpu_fallback_used": false,
       "dataset": "pubmed_full",
-      "failure_step": "zkdl_gat_full_forward_capability_check",
+      "failure_step": "proof_statement_build",
       "gpu_backend_active": true,
       "gpu_device_name": "NVIDIA GB10",
       "main_commitment_time_ms": 2998.093,
@@ -63,11 +63,11 @@
       "zkdl_verify_time_ms": null
     },
     {
-      "block_reason": "gat_forward_constraint_not_representable_in_current_zkdl",
+      "block_reason": "zkdl_missing_dst_group_max_inverse_lookup_rescale_fac4dnn_and_final_logits_binding",
       "comparison_status": "blocked",
       "cpu_fallback_used": false,
       "dataset": "ppi_full_formal",
-      "failure_step": "zkdl_gat_full_forward_capability_check",
+      "failure_step": "proof_statement_build",
       "gpu_backend_active": true,
       "gpu_device_name": "NVIDIA GB10",
       "main_commitment_time_ms": 3572.921,
@@ -83,11 +83,11 @@
       "zkdl_verify_time_ms": null
     },
     {
-      "block_reason": "gat_forward_constraint_not_representable_in_current_zkdl",
+      "block_reason": "zkdl_missing_dst_group_max_inverse_lookup_rescale_fac4dnn_and_final_logits_binding",
       "comparison_status": "blocked",
       "cpu_fallback_used": false,
       "dataset": "ogbn_arxiv_full",
-      "failure_step": "zkdl_gat_full_forward_capability_check",
+      "failure_step": "proof_statement_build",
       "gpu_backend_active": true,
       "gpu_device_name": "NVIDIA GB10",
       "main_commitment_time_ms": 17541.068,

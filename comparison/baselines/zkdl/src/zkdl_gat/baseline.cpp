@@ -5,9 +5,11 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <ios>
 #include <numeric>
 #include <regex>
 #include <sstream>
@@ -42,6 +44,39 @@ struct NormalizedPublicInput {
     std::vector<std::size_t> node_ptr;
     std::vector<std::size_t> edge_ptr;
     bool edge_order_valid = true;
+};
+
+struct HiddenProfile {
+    std::size_t head_count = 0;
+    std::size_t head_dim = 0;
+};
+
+struct TensorHeader {
+    std::vector<std::size_t> shape;
+    std::size_t value_count = 0;
+};
+
+struct NpyHeader {
+    std::vector<std::size_t> shape;
+    std::string descr;
+    bool fortran_order = false;
+};
+
+struct ProofStatementPlan {
+    HiddenProfile hidden;
+    std::size_t range_bits = 12;
+    std::size_t node_domain = 0;
+    std::size_t edge_domain = 0;
+    std::size_t feature_domain = 0;
+    std::size_t input_dim_domain = 0;
+    std::size_t hidden_dim_domain = 0;
+    std::size_t concat_dim_domain = 0;
+    std::size_t class_domain = 0;
+    std::size_t tensor_bound = 0;
+    std::size_t checkpoint_tensor_count = 0;
+    std::size_t checkpoint_value_count = 0;
+    std::vector<std::string> supported_zkdl_primitives;
+    std::vector<std::string> unsupported_protocol_requirements;
 };
 
 std::string trim(std::string value) {
@@ -190,6 +225,261 @@ std::size_t count_lines(const std::filesystem::path& path) {
         }
     }
     return count;
+}
+
+std::size_t next_power_of_two(std::size_t value) {
+    if (value <= 1) {
+        return 1;
+    }
+    std::size_t out = 1;
+    while (out < value) {
+        out <<= 1U;
+    }
+    return out;
+}
+
+HiddenProfile parse_hidden_profile(const std::string& value) {
+    const auto x = value.find('x');
+    if (x == std::string::npos) {
+        throw std::runtime_error("invalid hidden_profile: " + value);
+    }
+    HiddenProfile profile;
+    profile.head_count = static_cast<std::size_t>(std::stoull(value.substr(0, x)));
+    profile.head_dim = static_cast<std::size_t>(std::stoull(value.substr(x + 1)));
+    if (profile.head_count == 0 || profile.head_dim == 0) {
+        throw std::runtime_error("hidden_profile dimensions must be positive");
+    }
+    return profile;
+}
+
+std::size_t optional_size_from_file(const std::filesystem::path& path, const std::string& key, std::size_t fallback) {
+    if (!std::filesystem::exists(path)) {
+        return fallback;
+    }
+    const auto values = read_key_value_file(path);
+    const auto it = values.find(key);
+    if (it == values.end()) {
+        return fallback;
+    }
+    return static_cast<std::size_t>(std::stoull(it->second));
+}
+
+NpyHeader load_npy_header(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("failed to open npy file: " + path.string());
+    }
+    char magic[6] = {};
+    input.read(magic, sizeof(magic));
+    if (std::string(magic, sizeof(magic)) != "\x93NUMPY") {
+        throw std::runtime_error("invalid npy magic: " + path.string());
+    }
+    std::uint8_t major = 0;
+    std::uint8_t minor = 0;
+    input.read(reinterpret_cast<char*>(&major), 1);
+    input.read(reinterpret_cast<char*>(&minor), 1);
+    (void)minor;
+    std::uint32_t header_len = 0;
+    if (major == 1) {
+        std::uint16_t short_len = 0;
+        input.read(reinterpret_cast<char*>(&short_len), sizeof(short_len));
+        header_len = short_len;
+    } else if (major == 2 || major == 3) {
+        input.read(reinterpret_cast<char*>(&header_len), sizeof(header_len));
+    } else {
+        throw std::runtime_error("unsupported npy version: " + path.string());
+    }
+
+    std::string header(header_len, '\0');
+    input.read(header.data(), static_cast<std::streamsize>(header.size()));
+    const auto descr_pos = header.find("'descr'");
+    const auto descr_quote = header.find('\'', header.find(':', descr_pos));
+    const auto descr_end = header.find('\'', descr_quote + 1);
+    if (descr_pos == std::string::npos || descr_quote == std::string::npos || descr_end == std::string::npos) {
+        throw std::runtime_error("missing descr in npy header: " + path.string());
+    }
+    NpyHeader out;
+    out.descr = header.substr(descr_quote + 1, descr_end - descr_quote - 1);
+    const auto fortran_pos = header.find("fortran_order");
+    out.fortran_order = fortran_pos != std::string::npos && header.find("True", fortran_pos) != std::string::npos;
+    const auto shape_pos = header.find('(', header.find("shape"));
+    const auto shape_end = header.find(')', shape_pos);
+    if (shape_pos == std::string::npos || shape_end == std::string::npos) {
+        throw std::runtime_error("missing shape in npy header: " + path.string());
+    }
+    std::stringstream shape_stream(header.substr(shape_pos + 1, shape_end - shape_pos - 1));
+    std::string token;
+    while (std::getline(shape_stream, token, ',')) {
+        token.erase(std::remove_if(token.begin(), token.end(), ::isspace), token.end());
+        if (!token.empty()) {
+            out.shape.push_back(static_cast<std::size_t>(std::stoull(token)));
+        }
+    }
+    return out;
+}
+
+std::map<std::string, TensorHeader> load_tensor_headers(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    if (!input) {
+        throw std::runtime_error("failed to open checkpoint tensor dump: " + path.string());
+    }
+    std::map<std::string, TensorHeader> out;
+    std::string marker;
+    while (input >> marker) {
+        if (marker != "TENSOR") {
+            throw std::runtime_error("malformed tensor dump marker in " + path.string());
+        }
+        std::string name;
+        std::size_t rank = 0;
+        input >> name >> rank;
+        TensorHeader tensor;
+        tensor.shape.resize(rank);
+        for (std::size_t i = 0; i < rank; ++i) {
+            input >> tensor.shape[i];
+        }
+        input >> tensor.value_count;
+        double ignored = 0.0;
+        for (std::size_t i = 0; i < tensor.value_count; ++i) {
+            input >> ignored;
+        }
+        out.emplace(std::move(name), std::move(tensor));
+    }
+    return out;
+}
+
+void validate_feature_source(const std::filesystem::path& cache_dir, const DatasetMeta& meta) {
+    const auto txt = cache_dir / "features.txt";
+    if (std::filesystem::exists(txt)) {
+        std::ifstream input(txt);
+        if (!input) {
+            throw std::runtime_error("failed to open features file: " + txt.string());
+        }
+        std::size_t rows = 0;
+        std::size_t cols = 0;
+        input >> rows >> cols;
+        if (rows != meta.num_nodes || cols != meta.num_features) {
+            throw std::runtime_error("feature text shape mismatch");
+        }
+        return;
+    }
+    const auto npy = load_npy_header(cache_dir / "features.npy");
+    if (npy.fortran_order || npy.shape.size() != 2 || npy.shape[0] != meta.num_nodes || npy.shape[1] != meta.num_features) {
+        throw std::runtime_error("feature npy shape mismatch");
+    }
+}
+
+void validate_label_source(const std::filesystem::path& cache_dir, const DatasetMeta& meta) {
+    const auto path = cache_dir / "labels.txt";
+    std::ifstream input(path);
+    if (!input) {
+        throw std::runtime_error("failed to open labels file: " + path.string());
+    }
+    std::size_t count = 0;
+    std::string value;
+    while (input >> value) {
+        ++count;
+    }
+    if (count != meta.num_nodes) {
+        throw std::runtime_error("label count mismatch");
+    }
+}
+
+ProofStatementPlan build_proof_statement_plan(
+    const DatasetConfig& config,
+    const DatasetMeta& meta,
+    const NormalizedPublicInput& normalized,
+    const std::filesystem::path& checkpoint_tensors) {
+    ProofStatementPlan plan;
+    plan.hidden = parse_hidden_profile(config.hidden_profile);
+    plan.range_bits = optional_size_from_file(config.source_config, "range_bits", 12);
+    const auto concat_dim = plan.hidden.head_count * plan.hidden.head_dim;
+    const auto tensor_headers = load_tensor_headers(checkpoint_tensors);
+    plan.checkpoint_tensor_count = tensor_headers.size();
+    for (const auto& [_, tensor] : tensor_headers) {
+        plan.checkpoint_value_count += tensor.value_count;
+    }
+
+    plan.node_domain = next_power_of_two(normalized.node_count);
+    plan.edge_domain = next_power_of_two(std::max({normalized.edge_count, normalized.node_count, normalized.node_count * plan.hidden.head_dim, (std::size_t{1} << plan.range_bits)}));
+    plan.feature_domain = next_power_of_two(normalized.node_count * meta.num_features);
+    plan.input_dim_domain = next_power_of_two(meta.num_features);
+    plan.hidden_dim_domain = next_power_of_two(plan.hidden.head_dim);
+    plan.concat_dim_domain = next_power_of_two(concat_dim);
+    plan.class_domain = next_power_of_two(config.num_classes);
+    plan.tensor_bound = std::max({plan.feature_domain, plan.edge_domain, plan.node_domain * plan.concat_dim_domain, plan.node_domain * plan.class_domain});
+
+    plan.supported_zkdl_primitives = {
+        "hyrax_tensor_commitment_cuda",
+        "mle_evaluation",
+        "inner_product_sumcheck",
+        "hadamard_product_sumcheck",
+        "binary_sumcheck",
+        "dense_matmul_sumcheck",
+        "relu_style_binary_range_auxiliary",
+    };
+    plan.unsupported_protocol_requirements = {
+        "sparse_route_sumcheck_for_R_src_R_dst",
+        "dst_group_max_argument",
+        "leaky_relu_lookup_argument_bound_to_static_table",
+        "exp_lookup_argument_bound_to_static_table",
+        "elu_lookup_argument_bound_to_static_table",
+        "range_argument_for_delta_and_rescale_remainders",
+        "inverse_argument_for_softmax_denominator",
+        "rescale_argument_for_output_head_scale",
+        "fac4dnn_aggregation_and_slice_consistency",
+        "final_public_logits_mle_binding",
+        "verifier_acceptance_api_for_composed_gat_statement",
+    };
+    return plan;
+}
+
+std::string join_strings(const std::vector<std::string>& values) {
+    std::ostringstream out;
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) {
+            out << ',';
+        }
+        out << values[i];
+    }
+    return out.str();
+}
+
+ProofAttempt attempt_proof_route(
+    const std::string& route,
+    bool public_input_equivalent,
+    const GpuProbe& gpu_probe,
+    const ProofStatementPlan& plan) {
+    ProofAttempt attempt;
+    attempt.status = "blocked";
+    attempt.attempted_stages = {
+        "config_load",
+        "dataset_load",
+        "checkpoint_load",
+        "proof_statement_build",
+    };
+    attempt.unsupported_protocol_requirements = plan.unsupported_protocol_requirements;
+
+    if (!public_input_equivalent) {
+        attempt.failure_step = "public_input_equivalence_check";
+        attempt.block_reason = "main_manifest_public_input_mismatch";
+        return attempt;
+    }
+    if (route == "cpu") {
+        attempt.attempted_stages.push_back("zkdl_commitment");
+        attempt.failure_step = "zkdl_commitment";
+        attempt.block_reason = "zkdl_cpu_hyrax_tensor_commitment_backend_missing";
+        return attempt;
+    }
+    attempt.attempted_stages.push_back("gpu_backend_init");
+    if (!gpu_probe.gpu_backend_active || gpu_probe.cpu_fallback_used) {
+        attempt.failure_step = "gpu_backend_init";
+        attempt.block_reason = gpu_probe.cpu_fallback_used ? "zkdl_gpu_cpu_fallback_detected" : "zkdl_gpu_backend_unavailable";
+        return attempt;
+    }
+    attempt.attempted_stages.push_back("zkdl_supported_primitive_probe");
+    attempt.failure_step = "proof_statement_build";
+    attempt.block_reason = "zkdl_missing_dst_group_max_inverse_lookup_rescale_fac4dnn_and_final_logits_binding";
+    return attempt;
 }
 
 DatasetMeta load_dataset_meta(const std::filesystem::path& cache_dir) {
@@ -417,6 +707,20 @@ void write_string_map(std::ostream& out, const std::map<std::string, std::string
     out << '}';
 }
 
+void write_string_array(std::ostream& out, const std::vector<std::string>& values, int indent) {
+    out << "[\n";
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        write_indent(out, indent + 2);
+        out << '"' << json_escape(values[i]) << '"';
+        if (i + 1 != values.size()) {
+            out << ',';
+        }
+        out << '\n';
+    }
+    write_indent(out, indent);
+    out << ']';
+}
+
 void write_optional_double(std::ostream& out, const std::optional<double>& value) {
     if (!value.has_value()) {
         out << "null";
@@ -504,6 +808,8 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     if (source_node_ptr.size() < 2) {
         source_node_ptr = {0, meta.num_nodes};
     }
+    validate_feature_source(cache_dir, meta);
+    validate_label_source(cache_dir, meta);
     const auto raw_edges = load_edges(cache_dir / "edges.txt");
     const auto normalized = normalize_public_input(config, meta, raw_edges, source_node_ptr);
     const auto main_manifest = route == "gpu" ? config.main_gpu_manifest : config.main_cpu_manifest;
@@ -511,6 +817,11 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     const auto expected_edge_count = manifest_value(main_manifest, "edge_count");
     const auto expected_node_ptr = manifest_value(main_manifest, "node_ptr");
     const auto expected_edge_ptr = manifest_value(main_manifest, "edge_ptr");
+    const auto plan = build_proof_statement_plan(config, meta, normalized, checkpoint_tensors);
+    const auto expected_tensor_count = manifest_value(checkpoint_manifest, "tensor_count");
+    const bool checkpoint_contract_supported =
+        checkpoint_shape_supported(config, checkpoint_manifest)
+        && (expected_tensor_count.empty() || expected_tensor_count == std::to_string(plan.checkpoint_tensor_count));
     const bool public_input_equivalent =
         normalized.node_count == meta.num_nodes
         && expected_node_count == std::to_string(normalized.node_count)
@@ -521,25 +832,24 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
         && config.chunking_rule == "none"
         && config.self_loop_rule == "per_node"
         && config.edge_sort_rule == "edge_gid_then_dst_stable"
-        && checkpoint_shape_supported(config, checkpoint_manifest);
+        && checkpoint_contract_supported;
+    const auto attempt = attempt_proof_route(route, public_input_equivalent, gpu_probe, plan);
+    manifest.proof_attempt = attempt;
 
     manifest.string_values["dataset"] = config.dataset_id;
     manifest.string_values["route_id"] = route == "cpu" ? "zkdl_gat_full_forward_cpu" : "zkdl_gat_full_forward_gpu";
     manifest.string_values["backend"] = route;
-    manifest.string_values["status"] = "blocked";
-    manifest.string_values["failure_step"] = route == "cpu"
-        ? "zkdl_cpu_backend_capability_check"
-        : (gpu_probe.gpu_backend_active && !gpu_probe.cpu_fallback_used
-            ? "zkdl_gat_full_forward_capability_check"
-            : "zkdl_gpu_backend_capability_check");
-    manifest.string_values["block_reason"] = route == "cpu"
-        ? "zkdl_cpu_backend_unavailable"
-        : (gpu_probe.gpu_backend_active && !gpu_probe.cpu_fallback_used
-            ? "gat_forward_constraint_not_representable_in_current_zkdl"
-            : "zkdl_gpu_backend_unavailable");
+    manifest.string_values["status"] = attempt.status;
+    manifest.string_values["failure_step"] = attempt.failure_step;
+    manifest.string_values["block_reason"] = attempt.block_reason;
     manifest.string_values["public_input_encoding_id"] = "project-fixed-order-v1";
     manifest.string_values["commitment_backend_id"] = "zkdl_hyrax_tensor_commitment_cuda_headers";
     manifest.string_values["proof_backend_scope"] = "zkDL primitives only";
+    manifest.string_values["proof_pipeline_id"] = "zkdl_gat_full_forward_staged_v2";
+    manifest.string_values["proof_statement_first_unsupported"] = attempt.unsupported_protocol_requirements.empty()
+        ? ""
+        : attempt.unsupported_protocol_requirements.front();
+    manifest.string_values["zkdl_supported_primitives"] = join_strings(plan.supported_zkdl_primitives);
 
     manifest.bool_values["strict_public_input_equivalent"] = public_input_equivalent;
     manifest.bool_values["full_gat_forward_in_zkdl_proof"] = false;
@@ -565,10 +875,31 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.dataset_stats["raw_edge_count"] = std::to_string(raw_edges.size());
     manifest.dataset_stats["normalized_edge_count"] = std::to_string(normalized.edge_count);
     manifest.dataset_stats["hidden_profile"] = config.hidden_profile;
+    manifest.dataset_stats["hidden_head_count"] = std::to_string(plan.hidden.head_count);
+    manifest.dataset_stats["hidden_head_dim"] = std::to_string(plan.hidden.head_dim);
+    manifest.dataset_stats["hidden_concat_dim"] = std::to_string(plan.hidden.head_count * plan.hidden.head_dim);
     manifest.dataset_stats["d_in_profile"] = config.d_in_profile;
     manifest.dataset_stats["layer_count"] = std::to_string(config.layer_count);
     manifest.dataset_stats["K_out"] = std::to_string(config.k_out);
     manifest.dataset_stats["checkpoint_tensor_bytes"] = std::to_string(std::filesystem::file_size(checkpoint_tensors));
+    manifest.dataset_stats["checkpoint_tensor_count"] = std::to_string(plan.checkpoint_tensor_count);
+    manifest.dataset_stats["checkpoint_tensor_count_matches_manifest"] =
+        expected_tensor_count == std::to_string(plan.checkpoint_tensor_count) ? "true" : "false";
+    manifest.dataset_stats["checkpoint_value_count"] = std::to_string(plan.checkpoint_value_count);
+    manifest.dataset_stats["range_bits"] = std::to_string(plan.range_bits);
+    manifest.dataset_stats["node_domain"] = std::to_string(plan.node_domain);
+    manifest.dataset_stats["edge_domain"] = std::to_string(plan.edge_domain);
+    manifest.dataset_stats["feature_domain"] = std::to_string(plan.feature_domain);
+    manifest.dataset_stats["input_dim_domain"] = std::to_string(plan.input_dim_domain);
+    manifest.dataset_stats["hidden_dim_domain"] = std::to_string(plan.hidden_dim_domain);
+    manifest.dataset_stats["concat_dim_domain"] = std::to_string(plan.concat_dim_domain);
+    manifest.dataset_stats["class_domain"] = std::to_string(plan.class_domain);
+    manifest.dataset_stats["tensor_bound"] = std::to_string(plan.tensor_bound);
+    manifest.dataset_stats["proof_statement_built"] = "true";
+    manifest.dataset_stats["attempted_stages"] = join_strings(attempt.attempted_stages);
+    manifest.dataset_stats["zkdl_supported_primitive_count"] = std::to_string(plan.supported_zkdl_primitives.size());
+    manifest.dataset_stats["required_unsupported_protocol_requirement_count"] =
+        std::to_string(attempt.unsupported_protocol_requirements.size());
     manifest.dataset_stats["node_ptr"] = join_size_vector(normalized.node_ptr);
     manifest.dataset_stats["edge_ptr"] = join_size_vector(normalized.edge_ptr);
     manifest.dataset_stats["edge_sort_rule"] = config.edge_sort_rule;
@@ -578,6 +909,21 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.dataset_stats["source_feature_rows_checked"] = std::filesystem::exists(cache_dir / "features.txt")
         ? std::to_string(count_lines(cache_dir / "features.txt") - 1)
         : "npy_shape_declared_by_meta";
+    if (route == "gpu") {
+        manifest.dataset_stats["gpu_primitive_probe_status"] = gpu_probe.primitive_probe_status;
+        manifest.dataset_stats["gpu_primitive_commitment_time_ms"] = gpu_probe.primitive_commitment_time_ms.has_value()
+            ? std::to_string(*gpu_probe.primitive_commitment_time_ms)
+            : "";
+        manifest.dataset_stats["gpu_primitive_prove_time_ms"] = gpu_probe.primitive_prove_time_ms.has_value()
+            ? std::to_string(*gpu_probe.primitive_prove_time_ms)
+            : "";
+        manifest.dataset_stats["gpu_primitive_verify_time_ms"] = gpu_probe.primitive_verify_time_ms.has_value()
+            ? std::to_string(*gpu_probe.primitive_verify_time_ms)
+            : "";
+        manifest.dataset_stats["gpu_primitive_proof_size_bytes"] = gpu_probe.primitive_proof_size_bytes.has_value()
+            ? std::to_string(*gpu_probe.primitive_proof_size_bytes)
+            : "";
+    }
 
     add_source(manifest, "source_config", config.source_config);
     add_source(manifest, "cache_meta", cache_dir / "meta.cfg");
@@ -590,38 +936,6 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     add_source(manifest, "checkpoint_manifest", checkpoint_manifest);
     add_source(manifest, "checkpoint_tensors", checkpoint_tensors);
     add_source(manifest, route == "gpu" ? "main_gpu_manifest" : "main_cpu_manifest", main_manifest);
-
-    if (route == "cpu") {
-        manifest.capability_gaps = {
-            "cpu_tensor_commitment_backend",
-            "full_gat_attention_statement",
-            "dst_group_softmax_max_constraint",
-            "inverse_constraint",
-            "exp_lookup_argument",
-            "elu_lookup_argument",
-            "range_argument",
-            "rescale_argument",
-            "fac4dnn_aggregation",
-            "final_logits_public_binding",
-            "verifier_acceptance_api",
-        };
-    } else {
-        manifest.capability_gaps = {
-            "full_gat_attention_statement",
-            "dst_group_softmax_max_constraint",
-            "inverse_constraint",
-            "exp_lookup_argument",
-            "elu_lookup_argument",
-            "range_argument",
-            "rescale_argument",
-            "fac4dnn_aggregation",
-            "final_logits_public_binding",
-            "verifier_acceptance_api",
-        };
-        if (!gpu_probe.gpu_backend_active) {
-            manifest.capability_gaps.insert(manifest.capability_gaps.begin(), "cuda_tensor_commitment_backend");
-        }
-    }
 
     return manifest;
 }
@@ -640,7 +954,7 @@ void write_manifest_json(const Manifest& manifest, const std::string& path) {
         + manifest.size_values.size()
         + manifest.double_values.size()
         + manifest.optional_size_values.size()
-        + 4U;
+        + 5U;
     auto comma = [&]() {
         if (++written != total) {
             out << ',';
@@ -683,15 +997,13 @@ void write_manifest_json(const Manifest& manifest, const std::string& path) {
     write_string_map(out, manifest.source_sha256, 2);
     comma();
 
-    out << "  \"capability_gaps\": [\n";
-    for (std::size_t i = 0; i < manifest.capability_gaps.size(); ++i) {
-        out << "    \"" << json_escape(manifest.capability_gaps[i]) << '"';
-        if (i + 1 != manifest.capability_gaps.size()) {
-            out << ',';
-        }
-        out << '\n';
-    }
-    out << "  ]\n";
+    out << "  \"attempted_stages\": ";
+    write_string_array(out, manifest.proof_attempt.attempted_stages, 2);
+    comma();
+
+    out << "  \"unsupported_protocol_requirements\": ";
+    write_string_array(out, manifest.proof_attempt.unsupported_protocol_requirements, 2);
+    out << '\n';
     out << "}\n";
 }
 

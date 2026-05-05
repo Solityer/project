@@ -1,13 +1,13 @@
 {
-  "generated_at": "2026-05-05T08:22:53.443197+00:00",
+  "generated_at": "2026-05-05T08:52:45.977186+00:00",
   "route": "cpu",
   "rows": [
     {
-      "block_reason": "zkdl_cpu_backend_unavailable",
+      "block_reason": "zkdl_cpu_hyrax_tensor_commitment_backend_missing",
       "comparison_status": "blocked",
       "cpu_fallback_used": false,
       "dataset": "cora_full",
-      "failure_step": "zkdl_cpu_backend_capability_check",
+      "failure_step": "zkdl_commitment",
       "gpu_backend_active": false,
       "gpu_device_name": "",
       "main_commitment_time_ms": 283.786,
@@ -23,11 +23,11 @@
       "zkdl_verify_time_ms": null
     },
     {
-      "block_reason": "zkdl_cpu_backend_unavailable",
+      "block_reason": "zkdl_cpu_hyrax_tensor_commitment_backend_missing",
       "comparison_status": "blocked",
       "cpu_fallback_used": false,
       "dataset": "citeseer_full",
-      "failure_step": "zkdl_cpu_backend_capability_check",
+      "failure_step": "zkdl_commitment",
       "gpu_backend_active": false,
       "gpu_device_name": "",
       "main_commitment_time_ms": 453.773,
@@ -43,11 +43,11 @@
       "zkdl_verify_time_ms": null
     },
     {
-      "block_reason": "zkdl_cpu_backend_unavailable",
+      "block_reason": "zkdl_cpu_hyrax_tensor_commitment_backend_missing",
       "comparison_status": "blocked",
       "cpu_fallback_used": false,
       "dataset": "pubmed_full",
-      "failure_step": "zkdl_cpu_backend_capability_check",
+      "failure_step": "zkdl_commitment",
       "gpu_backend_active": false,
       "gpu_device_name": "",
       "main_commitment_time_ms": 2962.933,
@@ -63,11 +63,11 @@
       "zkdl_verify_time_ms": null
     },
     {
-      "block_reason": "zkdl_cpu_backend_unavailable",
+      "block_reason": "zkdl_cpu_hyrax_tensor_commitment_backend_missing",
       "comparison_status": "blocked",
       "cpu_fallback_used": false,
       "dataset": "ppi_full_formal",
-      "failure_step": "zkdl_cpu_backend_capability_check",
+      "failure_step": "zkdl_commitment",
       "gpu_backend_active": false,
       "gpu_device_name": "",
       "main_commitment_time_ms": 3563.973,
@@ -83,11 +83,11 @@
       "zkdl_verify_time_ms": null
     },
     {
-      "block_reason": "zkdl_cpu_backend_unavailable",
+      "block_reason": "zkdl_cpu_hyrax_tensor_commitment_backend_missing",
       "comparison_status": "blocked",
       "cpu_fallback_used": false,
       "dataset": "ogbn_arxiv_full",
-      "failure_step": "zkdl_cpu_backend_capability_check",
+      "failure_step": "zkdl_commitment",
       "gpu_backend_active": false,
       "gpu_device_name": "",
       "main_commitment_time_ms": 18071.562,
