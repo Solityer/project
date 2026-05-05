@@ -35,7 +35,7 @@ def write_json(path, payload):
 def write_csv(path, rows, fieldnames):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
         for row in rows:
             writer.writerow({key: row.get(key, "") for key in fieldnames})
@@ -265,7 +265,7 @@ def write_markdown_reports(root, results, cpu_rows, gpu_rows, cpu_cmp, gpu_cmp, 
         "Scanned baseline-owned `include`, `src`, `scripts`, `configs`, and `manifests` paths.",
         "",
         f"- forbidden dependency references: `{len(forbidden_refs)}`",
-        "- C++ runner owns manifest construction, full-dataset public-input equivalence checks, source hashing, and zkDL capability gating.",
+        "- C++ runner owns manifest construction, full-dataset public-input equivalence checks, source hashing, proof-statement domain construction, and zkDL proof-stage gating.",
         "- Python is limited to route orchestration, collection, validation, and report formatting.",
         "",
     ]

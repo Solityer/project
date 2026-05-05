@@ -44,6 +44,14 @@ struct GpuProbe {
     std::optional<std::size_t> primitive_proof_size_bytes;
 };
 
+struct ProofAttempt {
+    std::string status = "blocked";
+    std::string failure_step;
+    std::string block_reason;
+    std::vector<std::string> attempted_stages;
+    std::vector<std::string> unsupported_protocol_requirements;
+};
+
 struct Manifest {
     std::map<std::string, std::string> string_values;
     std::map<std::string, bool> bool_values;
@@ -53,7 +61,7 @@ struct Manifest {
     std::map<std::string, std::string> dataset_stats;
     std::map<std::string, std::string> source_files;
     std::map<std::string, std::string> source_sha256;
-    std::vector<std::string> capability_gaps;
+    ProofAttempt proof_attempt;
 };
 
 DatasetConfig load_dataset_config(const std::string& path);

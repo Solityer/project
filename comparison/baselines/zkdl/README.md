@@ -10,14 +10,14 @@ The baseline treats the main repository as a read-only source for full dataset c
 
 ## Build
 
-CPU capability route:
+CPU route:
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
-GPU capability route:
+GPU route:
 
 ```bash
 cmake -S . -B build_cuda -DCMAKE_BUILD_TYPE=Release -DZKDL_GAT_ENABLE_CUDA=ON
@@ -59,8 +59,8 @@ Collected tables:
 - `results/main_vs_zkdl_gpu_full_comparison.json`
 - `results/main_vs_zkdl_gpu_full_comparison.csv`
 
-## Current zkDL Capability Boundary
+## Current zkDL Proof Boundary
 
-The zkDL backend in this directory exposes CUDA tensor commitment, multilinear evaluation, inner-product and Hadamard-product sumcheck, binary sumcheck, matrix multiplication, product, and ReLU-style range machinery. It does not expose a CPU tensor commitment/proof backend, a verifier acceptance API, or the full GAT proof relations required here: destination-group max, inverse, exponent and ELU lookup arguments, rescale arguments, FAC4DNN sparse aggregation, and final public logits binding.
+The C++ runner now follows the full-dataset proof pipeline through config load, dataset load, public-input equivalence, checkpoint tensor parsing, and GAT proof-statement domain construction before it records any blocker. The zkDL backend in this directory exposes CUDA tensor commitment, multilinear evaluation, inner-product and Hadamard-product sumcheck, binary sumcheck, matrix multiplication, product, and ReLU-style range machinery. It does not expose a CPU tensor commitment/proof backend, a verifier acceptance API, or the full GAT proof relations required here: destination-group max, inverse, exponent and ELU lookup arguments, rescale arguments, FAC4DNN sparse aggregation, and final public logits binding.
 
 For that reason this baseline records formal blockers instead of marking any full GAT result as verified. GPU probing still runs a real zkDL CUDA primitive path and records whether a CUDA backend is active. A GPU manifest is never marked verified when fallback or missing GPU support occurs.

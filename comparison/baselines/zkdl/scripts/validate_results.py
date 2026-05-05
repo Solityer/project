@@ -47,6 +47,13 @@ def main():
                         errors.append(f"{path}: missing {key}")
                 if manifest.get("cpu_fallback_used") and manifest.get("status") == "verified":
                     errors.append(f"{path}: GPU fallback cannot be verified")
+            if manifest.get("status") != "verified":
+                if not manifest.get("failure_step") or not manifest.get("block_reason"):
+                    errors.append(f"{path}: blocked row must carry failure_step and block_reason")
+                if "capability_check" in str(manifest.get("failure_step")):
+                    errors.append(f"{path}: failure_step must name the reached proof stage, not a generic capability check")
+            if manifest.get("status") not in {"blocked", "verified"}:
+                errors.append(f"{path}: unsupported status {manifest.get('status')}")
             if manifest.get("status") == "verified":
                 gates = [
                     manifest.get("strict_public_input_equivalent"),
@@ -56,6 +63,13 @@ def main():
                 ]
                 if not all(gates):
                     errors.append(f"{path}: verified status without all proof gates")
+                if manifest.get("commitment_time_ms") is None or manifest.get("prove_time_ms") is None:
+                    errors.append(f"{path}: verified status without commitment/prove metrics")
+                if manifest.get("verify_time_ms") is None or manifest.get("proof_size_bytes") in (None, 0):
+                    errors.append(f"{path}: verified status without verify metrics and proof bytes")
+            for key in ["attempted_stages", "unsupported_protocol_requirements"]:
+                if key not in manifest or not isinstance(manifest[key], list):
+                    errors.append(f"{path}: missing {key} array")
     for result in [
         "zkdl_cpu_full_results.json",
         "zkdl_cpu_full_results.csv",
