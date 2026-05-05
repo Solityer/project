@@ -1,6 +1,6 @@
 # zkDL Full GAT Baseline Summary
 
-Generated at: `2026-05-05T09:08:51.368190+00:00`
+Generated at: `2026-05-05T09:31:21.286314+00:00`
 
 Correct baseline directory: `comparison/baselines/zkdl`.
 
@@ -10,11 +10,11 @@ The full-dataset statement is attempted for `cora_full`, `citeseer_full`, `pubme
 
 | dataset | status | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes |
 | --- | --- | --- | --- | --- | --- |
-| cora_full | blocked |  |  |  |  |
-| citeseer_full | blocked |  |  |  |  |
-| pubmed_full | blocked |  |  |  |  |
-| ppi_full_formal | blocked |  |  |  |  |
-| ogbn_arxiv_full | blocked |  |  |  |  |
+| cora_full | verified | 2.614 | 367.031 | 371.924 | 1034 |
+| citeseer_full | verified | 2.716 | 1032.501 | 1055.001 | 1038 |
+| pubmed_full | verified | 15.828 | 480.085 | 506.635 | 1039 |
+| ppi_full_formal | verified | 56.779 | 682.067 | 728.28 | 1045 |
+| ogbn_arxiv_full | verified | 89.838 | 1073.28 | 1196.919 | 1047 |
 
 ## GPU
 
@@ -30,13 +30,8 @@ The full-dataset statement is attempted for `cora_full`, `citeseer_full`, `pubme
 
 | dataset | route_id | failure_step | block_reason |
 | --- | --- | --- | --- |
-| cora_full | zkdl_gat_full_forward_cpu | hidden_layer_0_head_0_sparse_route_sumcheck | zkdl_cpu_reached_full_dataset_hidden_projection_prefix_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing |
-| citeseer_full | zkdl_gat_full_forward_cpu | hidden_layer_0_head_0_sparse_route_sumcheck | zkdl_cpu_reached_full_dataset_hidden_projection_prefix_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing |
-| pubmed_full | zkdl_gat_full_forward_cpu | hidden_layer_0_head_0_sparse_route_sumcheck | zkdl_cpu_reached_full_dataset_hidden_projection_prefix_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing |
-| ppi_full_formal | zkdl_gat_full_forward_cpu | hidden_layer_0_head_0_sparse_route_sumcheck | zkdl_cpu_reached_full_dataset_hidden_projection_prefix_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing |
-| ogbn_arxiv_full | zkdl_gat_full_forward_cpu | hidden_layer_0_head_0_sparse_route_sumcheck | zkdl_cpu_reached_full_dataset_hidden_projection_prefix_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing |
-| cora_full | zkdl_gat_full_forward_gpu | hidden_layer_0_head_0_sparse_route_sumcheck | zkdl_cuda_reached_full_dataset_hidden_projection_prefix_and_primitive_probe_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing |
-| citeseer_full | zkdl_gat_full_forward_gpu | hidden_layer_0_head_0_sparse_route_sumcheck | zkdl_cuda_reached_full_dataset_hidden_projection_prefix_and_primitive_probe_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing |
-| pubmed_full | zkdl_gat_full_forward_gpu | hidden_layer_0_head_0_sparse_route_sumcheck | zkdl_cuda_reached_full_dataset_hidden_projection_prefix_and_primitive_probe_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing |
-| ppi_full_formal | zkdl_gat_full_forward_gpu | hidden_layer_0_head_0_sparse_route_sumcheck | zkdl_cuda_reached_full_dataset_hidden_projection_prefix_and_primitive_probe_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing |
-| ogbn_arxiv_full | zkdl_gat_full_forward_gpu | hidden_layer_0_head_0_sparse_route_sumcheck | zkdl_cuda_reached_full_dataset_hidden_projection_prefix_and_primitive_probe_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing |
+| cora_full | zkdl_gat_full_forward_gpu | gpu_composed_gat_prover | zkdl_cuda_primitive_probe_passed_but_cuda_composed_full_gat_forward_prover_verifier_is_not_implemented_without_cpu_fallback |
+| citeseer_full | zkdl_gat_full_forward_gpu | gpu_composed_gat_prover | zkdl_cuda_primitive_probe_passed_but_cuda_composed_full_gat_forward_prover_verifier_is_not_implemented_without_cpu_fallback |
+| pubmed_full | zkdl_gat_full_forward_gpu | gpu_composed_gat_prover | zkdl_cuda_primitive_probe_passed_but_cuda_composed_full_gat_forward_prover_verifier_is_not_implemented_without_cpu_fallback |
+| ppi_full_formal | zkdl_gat_full_forward_gpu | gpu_composed_gat_prover | zkdl_cuda_primitive_probe_passed_but_cuda_composed_full_gat_forward_prover_verifier_is_not_implemented_without_cpu_fallback |
+| ogbn_arxiv_full | zkdl_gat_full_forward_gpu | gpu_composed_gat_prover | zkdl_cuda_primitive_probe_passed_but_cuda_composed_full_gat_forward_prover_verifier_is_not_implemented_without_cpu_fallback |
