@@ -188,24 +188,6 @@ FloatMatrix concatenate_columns_checked(const std::vector<FloatMatrix>& matrices
     return out;
 }
 
-std::int64_t diagnostic_output_head_value_q(
-    const NormalizedGraph& graph,
-    const CheckpointBundle& bundle,
-    std::size_t head_index,
-    std::size_t node_index,
-    std::size_t class_index) {
-    (void)head_index;
-    const auto raw =
-        ((node_index + 1) * 31
-         + (class_index + 1) * 17
-         + std::max<std::size_t>(graph.feature_dim, 1) * 13
-         + (graph.edge_count % 97)
-         + std::max<std::size_t>(graph.class_count, 1) * 5
-         + std::max<std::size_t>(bundle.K_out, 1) * 7)
-        % 257;
-    return static_cast<std::int64_t>(raw) - 128;
-}
-
 HeadParameters load_hidden_head_parameters(
     const CheckpointBundle& bundle,
     const CheckpointHeadSpec& spec);
@@ -282,26 +264,6 @@ std::vector<std::int64_t> derived_final_logits_q(
                 throw std::runtime_error("output_average_rule_mismatch: integer output head average is not exact");
             }
             values.push_back(sum_q / divisor);
-        }
-    }
-    return values;
-}
-
-std::vector<std::int64_t> diagnostic_final_logits_q(
-    const NormalizedGraph& graph,
-    const CheckpointBundle& bundle) {
-    const auto node_count = std::max<std::size_t>(graph.node_count, 1);
-    const auto class_count = std::max<std::size_t>(graph.class_count, 1);
-    const auto head_count = std::max<std::size_t>(bundle.K_out, 1);
-    std::vector<std::int64_t> values;
-    values.reserve(node_count * class_count);
-    for (std::size_t node = 0; node < node_count; ++node) {
-        for (std::size_t klass = 0; klass < class_count; ++klass) {
-            std::int64_t sum = 0;
-            for (std::size_t head = 0; head < head_count; ++head) {
-                sum += diagnostic_output_head_value_q(graph, bundle, head, node, klass);
-            }
-            values.push_back(sum / static_cast<std::int64_t>(head_count));
         }
     }
     return values;
@@ -1131,8 +1093,7 @@ void write_native_csr_graph_artifacts(
     const std::string& metadata_hash,
     const std::string& shape_hash,
     const FormalTablesSummary* formal_tables) {
-    const bool compressed_route = route_id == "ezkl_gat_native_compressed_csr_attention_full" ||
-                                  route_id == "ezkl_gat_native_compressed_csr_attention_full_gpu";
+    const bool compressed_route = route_id == "ezkl_gat_native_compressed_csr_attention_full";
     const std::string native_primitive = compressed_route
         ? "GraphSegmentAttentionCompressedCSR"
         : "GraphSegmentAttention";

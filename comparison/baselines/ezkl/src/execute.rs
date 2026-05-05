@@ -43,8 +43,6 @@ use halo2_solidity_verifier;
 use halo2curves::bn256::{Bn256, Fr, G1Affine};
 use halo2curves::ff::{FromUniformBytes, WithSmallOrderMulGroup};
 use halo2curves::serde::SerdeObject;
-#[cfg(feature = "gpu-accelerated")]
-use icicle_runtime::{Device, runtime, stream::IcicleStream, warmup};
 use indicatif::{ProgressBar, ProgressStyle};
 use instant::Instant;
 use itertools::Itertools;
@@ -81,59 +79,6 @@ lazy_static! {
 
 }
 
-/// Set the device used for computation.
-#[cfg(feature = "gpu-accelerated")]
-pub fn set_device() -> Result<(), EZKLError> {
-    let require_gpu = std::env::var("EZKL_REQUIRE_GPU_BACKEND").ok().as_deref() == Some("1");
-    if std::env::var("ICICLE_BACKEND_INSTALL_DIR").is_ok() {
-        info!("Running with ICICLE GPU");
-        runtime::load_backend_from_env_or_default()
-            .map_err(|e| format!("gpu_backend_load_failed: {:?}", e))?;
-        let device = Device::new("CUDA", 0);
-        if !runtime::is_device_available(&device) {
-            return Err("gpu_backend_device_unavailable: CUDA device 0 is not available".into());
-        }
-        runtime::set_device(&device)
-            .map_err(|e| format!("gpu_backend_set_device_failed: {:?}", e))?;
-        runtime::set_default_device(&device)
-            .map_err(|e| format!("gpu_backend_set_default_device_failed: {:?}", e))?;
-        let active = runtime::get_active_device()
-            .map_err(|e| format!("gpu_backend_active_device_check_failed: {:?}", e))?;
-        if active.get_device_type() != "CUDA" {
-            return Err(format!("gpu_backend_inactive: active_device={:?}", active).into());
-        }
-        let device_count = runtime::get_device_count()
-            .map_err(|e| format!("gpu_backend_device_count_failed: {:?}", e))?;
-        if device_count <= 0 {
-            return Err(format!("gpu_backend_device_count_zero: {}", device_count).into());
-        }
-        match warmup(&IcicleStream::default()) {
-            Ok(_) => {
-                info!("GPU warmed");
-                Ok(())
-            }
-            Err(e) => {
-                if require_gpu {
-                    Err(format!("gpu_backend_warmup_failed: {:?}", e).into())
-                } else {
-                    log::error!("GPU warmup failed: {:?}", e);
-                    Ok(())
-                }
-            }
-        }
-    } else if require_gpu {
-        Err("gpu_backend_required_but_icicle_backend_install_dir_missing".into())
-    } else {
-        info!("Running with CPU: 'ICICLE_BACKEND_INSTALL_DIR' not set");
-        let device = Device::new("CPU", 0);
-        runtime::set_device(&device)
-            .map_err(|e| format!("cpu_backend_set_device_failed: {:?}", e))?;
-        runtime::set_default_device(&device)
-            .map_err(|e| format!("cpu_backend_set_default_device_failed: {:?}", e))?;
-        Ok(())
-    }
-}
-
 /// A wrapper for execution errors
 #[derive(Debug, Error)]
 pub enum ExecutionError {
@@ -155,12 +100,6 @@ lazy_static::lazy_static! {
 
 /// Run an ezkl command with given args
 pub async fn run(command: Commands) -> Result<String, EZKLError> {
-    #[cfg(feature = "gpu-accelerated")]
-    set_device()?;
-    #[cfg(not(feature = "gpu-accelerated"))]
-    if std::env::var("EZKL_REQUIRE_GPU_BACKEND").ok().as_deref() == Some("1") {
-        return Err("gpu_backend_required_but_gpu_accelerated_feature_disabled".into());
-    }
     // set working dir
     std::env::set_current_dir(WORKING_DIR.as_path())?;
 

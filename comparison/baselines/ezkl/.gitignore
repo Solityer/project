@@ -68,12 +68,6 @@ out
 
 # GAT-ZKML baseline local build/run outputs.
 build_gat_adapter/
-build_gpu_backend/
-.gpu_backend_local/
-.icicle_backend_local/
-.vendor_local/
-gpu_experiment_bundle/
-*.tar.gz
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
