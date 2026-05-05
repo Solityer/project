@@ -1,6 +1,6 @@
 # zkDL Full GAT Baseline Summary
 
-Generated at: `2026-05-05T08:52:45.977186+00:00`
+Generated at: `2026-05-05T09:08:51.368190+00:00`
 
 Correct baseline directory: `comparison/baselines/zkdl`.
 
@@ -30,13 +30,13 @@ The full-dataset statement is attempted for `cora_full`, `citeseer_full`, `pubme
 
 | dataset | route_id | failure_step | block_reason |
 | --- | --- | --- | --- |
-| cora_full | zkdl_gat_full_forward_cpu | zkdl_commitment | zkdl_cpu_hyrax_tensor_commitment_backend_missing |
-| citeseer_full | zkdl_gat_full_forward_cpu | zkdl_commitment | zkdl_cpu_hyrax_tensor_commitment_backend_missing |
-| pubmed_full | zkdl_gat_full_forward_cpu | zkdl_commitment | zkdl_cpu_hyrax_tensor_commitment_backend_missing |
-| ppi_full_formal | zkdl_gat_full_forward_cpu | zkdl_commitment | zkdl_cpu_hyrax_tensor_commitment_backend_missing |
-| ogbn_arxiv_full | zkdl_gat_full_forward_cpu | zkdl_commitment | zkdl_cpu_hyrax_tensor_commitment_backend_missing |
-| cora_full | zkdl_gat_full_forward_gpu | proof_statement_build | zkdl_missing_dst_group_max_inverse_lookup_rescale_fac4dnn_and_final_logits_binding |
-| citeseer_full | zkdl_gat_full_forward_gpu | proof_statement_build | zkdl_missing_dst_group_max_inverse_lookup_rescale_fac4dnn_and_final_logits_binding |
-| pubmed_full | zkdl_gat_full_forward_gpu | proof_statement_build | zkdl_missing_dst_group_max_inverse_lookup_rescale_fac4dnn_and_final_logits_binding |
-| ppi_full_formal | zkdl_gat_full_forward_gpu | proof_statement_build | zkdl_missing_dst_group_max_inverse_lookup_rescale_fac4dnn_and_final_logits_binding |
-| ogbn_arxiv_full | zkdl_gat_full_forward_gpu | proof_statement_build | zkdl_missing_dst_group_max_inverse_lookup_rescale_fac4dnn_and_final_logits_binding |
+| cora_full | zkdl_gat_full_forward_cpu | hidden_layer_0_head_0_sparse_route_sumcheck | zkdl_cpu_reached_full_dataset_hidden_projection_prefix_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing |
+| citeseer_full | zkdl_gat_full_forward_cpu | hidden_layer_0_head_0_sparse_route_sumcheck | zkdl_cpu_reached_full_dataset_hidden_projection_prefix_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing |
+| pubmed_full | zkdl_gat_full_forward_cpu | hidden_layer_0_head_0_sparse_route_sumcheck | zkdl_cpu_reached_full_dataset_hidden_projection_prefix_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing |
+| ppi_full_formal | zkdl_gat_full_forward_cpu | hidden_layer_0_head_0_sparse_route_sumcheck | zkdl_cpu_reached_full_dataset_hidden_projection_prefix_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing |
+| ogbn_arxiv_full | zkdl_gat_full_forward_cpu | hidden_layer_0_head_0_sparse_route_sumcheck | zkdl_cpu_reached_full_dataset_hidden_projection_prefix_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing |
+| cora_full | zkdl_gat_full_forward_gpu | hidden_layer_0_head_0_sparse_route_sumcheck | zkdl_cuda_reached_full_dataset_hidden_projection_prefix_and_primitive_probe_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing |
+| citeseer_full | zkdl_gat_full_forward_gpu | hidden_layer_0_head_0_sparse_route_sumcheck | zkdl_cuda_reached_full_dataset_hidden_projection_prefix_and_primitive_probe_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing |
+| pubmed_full | zkdl_gat_full_forward_gpu | hidden_layer_0_head_0_sparse_route_sumcheck | zkdl_cuda_reached_full_dataset_hidden_projection_prefix_and_primitive_probe_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing |
+| ppi_full_formal | zkdl_gat_full_forward_gpu | hidden_layer_0_head_0_sparse_route_sumcheck | zkdl_cuda_reached_full_dataset_hidden_projection_prefix_and_primitive_probe_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing |
+| ogbn_arxiv_full | zkdl_gat_full_forward_gpu | hidden_layer_0_head_0_sparse_route_sumcheck | zkdl_cuda_reached_full_dataset_hidden_projection_prefix_and_primitive_probe_but_public_sparse_route_sumcheck_for_R_src_R_dst_is_missing |
