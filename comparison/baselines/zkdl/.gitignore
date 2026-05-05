@@ -1,0 +1,12 @@
+*
+!*.cu
+!*.h
+!*.cuh
+!*.cpp
+!*.hpp
+!Makefile
+!.gitignore
+!README.md
+!/images
+!/images/*
+!CMakeLists.txts
