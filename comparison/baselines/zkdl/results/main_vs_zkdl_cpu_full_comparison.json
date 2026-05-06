@@ -1,13 +1,13 @@
 {
-  "generated_at": "2026-05-06T04:46:42.893944+00:00",
+  "generated_at": "2026-05-06T05:01:27.352366+00:00",
   "route": "cpu",
   "rows": [
     {
-      "block_reason": "zkdl_sumcheck_residual_nonzero:section=hidden.layer0.head0.attention_score,residual=0x02a17e2a02e4f811",
+      "block_reason": "zkdl_sumcheck_residual_nonzero:section=hidden.layer0.head0.softmax_inverse,residual=0x1cc6b127a1cae79d",
       "comparison_status": "blocked",
       "cpu_fallback_used": false,
       "dataset": "cora_full",
-      "failure_step": "sparse_attention_score_sumcheck_verify",
+      "failure_step": "softmax_denominator_inverse_sumcheck_verify",
       "full_dataset_gate_passed": true,
       "gpu_backend_active": false,
       "gpu_device_name": "",
@@ -27,11 +27,11 @@
       "zkdl_verify_time_ms": null
     },
     {
-      "block_reason": "zkdl_sumcheck_residual_nonzero:section=hidden.layer0.head0.attention_score,residual=0x0d01dd3816c4682c",
+      "block_reason": "zkdl_sumcheck_residual_nonzero:section=hidden.layer0.head0.softmax_inverse,residual=0x18ab80b8cc3fd87e",
       "comparison_status": "blocked",
       "cpu_fallback_used": false,
       "dataset": "citeseer_full",
-      "failure_step": "sparse_attention_score_sumcheck_verify",
+      "failure_step": "softmax_denominator_inverse_sumcheck_verify",
       "full_dataset_gate_passed": true,
       "gpu_backend_active": false,
       "gpu_device_name": "",
@@ -51,11 +51,11 @@
       "zkdl_verify_time_ms": null
     },
     {
-      "block_reason": "zkdl_sumcheck_residual_nonzero:section=hidden.layer0.head0.attention_score,residual=0x03f2d1855301e239",
+      "block_reason": "zkdl_sumcheck_residual_nonzero:section=hidden.layer0.head0.softmax_inverse,residual=0x05afcbfe734e4a25",
       "comparison_status": "blocked",
       "cpu_fallback_used": false,
       "dataset": "pubmed_full",
-      "failure_step": "sparse_attention_score_sumcheck_verify",
+      "failure_step": "softmax_denominator_inverse_sumcheck_verify",
       "full_dataset_gate_passed": true,
       "gpu_backend_active": false,
       "gpu_device_name": "",
@@ -75,11 +75,11 @@
       "zkdl_verify_time_ms": null
     },
     {
-      "block_reason": "zkdl_sumcheck_residual_nonzero:section=hidden.layer0.head0.attention_score,residual=0x1f462ae2fc9cf879",
+      "block_reason": "zkdl_sumcheck_residual_nonzero:section=hidden.layer0.head0.softmax_inverse,residual=0x095540416daff023",
       "comparison_status": "blocked",
       "cpu_fallback_used": false,
       "dataset": "ppi_full_formal",
-      "failure_step": "sparse_attention_score_sumcheck_verify",
+      "failure_step": "softmax_denominator_inverse_sumcheck_verify",
       "full_dataset_gate_passed": true,
       "gpu_backend_active": false,
       "gpu_device_name": "",
@@ -99,11 +99,11 @@
       "zkdl_verify_time_ms": null
     },
     {
-      "block_reason": "zkdl_sumcheck_residual_nonzero:section=hidden.layer0.head0.attention_score,residual=0x1099b3c92e6f080f",
+      "block_reason": "zkdl_sumcheck_residual_nonzero:section=hidden.layer0.head0.softmax_inverse,residual=0x0ed0ae1819dc4550",
       "comparison_status": "blocked",
       "cpu_fallback_used": false,
       "dataset": "ogbn_arxiv_full",
-      "failure_step": "sparse_attention_score_sumcheck_verify",
+      "failure_step": "softmax_denominator_inverse_sumcheck_verify",
       "full_dataset_gate_passed": true,
       "gpu_backend_active": false,
       "gpu_device_name": "",

@@ -1,6 +1,6 @@
 # zkDL Full GAT Baseline Summary
 
-Generated at: `2026-05-06T04:46:42.893944+00:00`
+Generated at: `2026-05-06T05:01:27.352366+00:00`
 
 Correct baseline directory: `comparison/baselines/zkdl`.
 
@@ -34,11 +34,11 @@ Formal commitment/prove/verify/proof-size metrics are populated only for `status
 
 | dataset | route_id | failure_step | block_reason |
 | --- | --- | --- | --- |
-| cora_full | zkdl_gat_full_forward_cpu | sparse_attention_score_sumcheck_verify | zkdl_sumcheck_residual_nonzero:section=hidden.layer0.head0.attention_score,residual=0x02a17e2a02e4f811 |
-| citeseer_full | zkdl_gat_full_forward_cpu | sparse_attention_score_sumcheck_verify | zkdl_sumcheck_residual_nonzero:section=hidden.layer0.head0.attention_score,residual=0x0d01dd3816c4682c |
-| pubmed_full | zkdl_gat_full_forward_cpu | sparse_attention_score_sumcheck_verify | zkdl_sumcheck_residual_nonzero:section=hidden.layer0.head0.attention_score,residual=0x03f2d1855301e239 |
-| ppi_full_formal | zkdl_gat_full_forward_cpu | sparse_attention_score_sumcheck_verify | zkdl_sumcheck_residual_nonzero:section=hidden.layer0.head0.attention_score,residual=0x1f462ae2fc9cf879 |
-| ogbn_arxiv_full | zkdl_gat_full_forward_cpu | sparse_attention_score_sumcheck_verify | zkdl_sumcheck_residual_nonzero:section=hidden.layer0.head0.attention_score,residual=0x1099b3c92e6f080f |
+| cora_full | zkdl_gat_full_forward_cpu | softmax_denominator_inverse_sumcheck_verify | zkdl_sumcheck_residual_nonzero:section=hidden.layer0.head0.softmax_inverse,residual=0x1cc6b127a1cae79d |
+| citeseer_full | zkdl_gat_full_forward_cpu | softmax_denominator_inverse_sumcheck_verify | zkdl_sumcheck_residual_nonzero:section=hidden.layer0.head0.softmax_inverse,residual=0x18ab80b8cc3fd87e |
+| pubmed_full | zkdl_gat_full_forward_cpu | softmax_denominator_inverse_sumcheck_verify | zkdl_sumcheck_residual_nonzero:section=hidden.layer0.head0.softmax_inverse,residual=0x05afcbfe734e4a25 |
+| ppi_full_formal | zkdl_gat_full_forward_cpu | softmax_denominator_inverse_sumcheck_verify | zkdl_sumcheck_residual_nonzero:section=hidden.layer0.head0.softmax_inverse,residual=0x095540416daff023 |
+| ogbn_arxiv_full | zkdl_gat_full_forward_cpu | softmax_denominator_inverse_sumcheck_verify | zkdl_sumcheck_residual_nonzero:section=hidden.layer0.head0.softmax_inverse,residual=0x0ed0ae1819dc4550 |
 | cora_full | zkdl_gat_full_forward_gpu | gpu_composed_gat_prover | zkdl_cuda_primitive_probe_passed_but_cuda_composed_full_gat_forward_prover_verifier_is_not_implemented_without_cpu_fallback |
 | citeseer_full | zkdl_gat_full_forward_gpu | gpu_composed_gat_prover | zkdl_cuda_primitive_probe_passed_but_cuda_composed_full_gat_forward_prover_verifier_is_not_implemented_without_cpu_fallback |
 | pubmed_full | zkdl_gat_full_forward_gpu | gpu_composed_gat_prover | zkdl_cuda_primitive_probe_passed_but_cuda_composed_full_gat_forward_prover_verifier_is_not_implemented_without_cpu_fallback |

@@ -1877,6 +1877,17 @@ ZkdlTensorCommitment commit_vector(const std::string& label, const std::vector<d
     return commit_double_values(label, {values.size()}, values);
 }
 
+std::uint64_t attention_score_remainder_field(
+    const HeadForwardTrace& trace,
+    const Edge& edge,
+    std::size_t edge_index) {
+    const auto score_q = field_from_double(trace.s[edge_index]);
+    const auto routed_q = field_add(
+        field_from_double(trace.e_dst[edge.dst]),
+        field_from_double(trace.e_src[edge.src]));
+    return field_sub(score_q, routed_q);
+}
+
 std::uint64_t weighted_matrix_eval(const MatrixD& matrix, std::uint64_t row_challenge, std::uint64_t col_challenge) {
     std::vector<std::uint64_t> col_weights(matrix.cols, 1U);
     for (std::size_t col = 1; col < matrix.cols; ++col) {
@@ -2008,25 +2019,60 @@ ZkdlProofSection build_attention_score_section(
     const HeadForwardTrace& trace,
     const std::string& e_src_label,
     const std::string& e_dst_label,
-    const std::string& score_label) {
+    const std::string& score_label,
+    const std::string& score_remainder_label,
+    std::vector<std::uint64_t>* score_remainders) {
     ZkdlProofSection section;
     section.section_id = label;
     section.relation = "sparse_attention_score_sumcheck";
     section.label = label;
-    section.tensor_labels = {e_src_label, e_dst_label, score_label, "public_sparse_route"};
+    section.tensor_labels = {e_src_label, e_dst_label, score_label, score_remainder_label, "public_sparse_route"};
     const auto challenge = challenge_from_label(label + ":edge", edges.size());
+    if (score_remainders != nullptr) {
+        score_remainders->clear();
+        score_remainders->reserve(edges.size());
+    }
+    std::uint64_t score_eval = 0;
+    std::uint64_t src_route_eval = 0;
+    std::uint64_t dst_route_eval = 0;
+    std::uint64_t score_remainder_eval = 0;
     std::uint64_t residual = 0;
     std::uint64_t weight = 1;
     for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
         const auto& edge = edges[edge_index];
-        auto term = field_sub(field_from_double(trace.s[edge_index]), field_from_double(trace.e_dst[edge.dst]));
-        term = field_sub(term, field_from_double(trace.e_src[edge.src]));
+        const auto score_q = field_from_double(trace.s[edge_index]);
+        const auto src_q = field_from_double(trace.e_src[edge.src]);
+        const auto dst_q = field_from_double(trace.e_dst[edge.dst]);
+        const auto remainder = attention_score_remainder_field(trace, edge, edge_index);
+        if (score_remainders != nullptr) {
+            score_remainders->push_back(remainder);
+        }
+        score_eval = field_add(score_eval, field_mul(weight, score_q));
+        src_route_eval = field_add(src_route_eval, field_mul(weight, src_q));
+        dst_route_eval = field_add(dst_route_eval, field_mul(weight, dst_q));
+        score_remainder_eval = field_add(score_remainder_eval, field_mul(weight, remainder));
+        auto term = field_sub(score_q, dst_q);
+        term = field_sub(term, src_q);
+        term = field_sub(term, remainder);
         residual = field_add(residual, field_mul(weight, term));
         weight = field_mul(weight, challenge);
     }
+    const auto residual_without_remainder = field_sub(field_sub(score_eval, dst_route_eval), src_route_eval);
     section.field_values["edge_challenge"] = challenge;
+    section.field_values["score_eval"] = score_eval;
+    section.field_values["src_route_eval"] = src_route_eval;
+    section.field_values["dst_route_eval"] = dst_route_eval;
+    section.field_values["score_rescale_remainder_eval"] = score_remainder_eval;
+    section.field_values["residual_without_remainder"] = residual_without_remainder;
     section.field_values["residual"] = residual;
     section.metadata["edge_count"] = std::to_string(edges.size());
+    section.metadata["quantization_scale"] = std::to_string(kZkdlQuantizationScale);
+    section.metadata["claim_equation"] = "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder";
+    section.metadata["rescale_rule"] = "fixed_point_independent_score_rounding_remainder_witness";
+    section.metadata["score_rescale_remainder_tensor"] = score_remainder_label;
+    section.metadata["route_source"] = "public_sparse_route";
+    section.metadata["edge_flatten_order"] = "normalized_edge_order_graph_id_then_dst_then_stable_input_order";
+    section.metadata["mle_variable_order"] = "edge_index_univariate_powers";
     section.relation_passed = residual == 0;
     return section;
 }
@@ -2189,6 +2235,256 @@ ZkdlProofSection build_final_logits_section(
     return section;
 }
 
+const ZkdlProofSection* find_proof_section(const ZkdlProofObject& proof, const std::string& section_id) {
+    for (const auto& section : proof.proof_sections) {
+        if (section.section_id == section_id) {
+            return &section;
+        }
+    }
+    return nullptr;
+}
+
+std::uint64_t attention_dot_product_sum(
+    const MatrixD& h_prime,
+    const std::vector<double>& attention,
+    double bias,
+    std::size_t row) {
+    auto out = field_mul(field_from_double(bias), kZkdlQuantizationScale);
+    for (std::size_t col = 0; col < h_prime.cols; ++col) {
+        out = field_add(out, field_mul(field_from_double(h_prime.at(row, col)), field_from_double(attention[col])));
+    }
+    return out;
+}
+
+void write_field_hex_array_from_doubles(std::ostream& out, const std::vector<double>& values, std::size_t limit) {
+    out << '[';
+    const auto count = std::min(limit, values.size());
+    for (std::size_t i = 0; i < count; ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        out << '"' << field_hex(field_from_double(values[i])) << '"';
+    }
+    out << ']';
+}
+
+void write_field_hex_matrix_sample(std::ostream& out, const MatrixD& matrix, std::size_t row_limit, std::size_t col_limit) {
+    out << "[\n";
+    const auto rows = std::min(row_limit, matrix.rows);
+    const auto cols = std::min(col_limit, matrix.cols);
+    for (std::size_t row = 0; row < rows; ++row) {
+        write_indent(out, 4);
+        out << "{\"row\": " << row << ", \"values\": [";
+        for (std::size_t col = 0; col < cols; ++col) {
+            if (col != 0) {
+                out << ", ";
+            }
+            out << '"' << field_hex(field_from_double(matrix.at(row, col))) << '"';
+        }
+        out << "]}";
+        if (row + 1U != rows) {
+            out << ',';
+        }
+        out << '\n';
+    }
+    write_indent(out, 2);
+    out << ']';
+}
+
+std::uint64_t section_field_or_zero(const ZkdlProofSection* section, const std::string& key) {
+    if (section == nullptr) {
+        return 0;
+    }
+    const auto it = section->field_values.find(key);
+    return it == section->field_values.end() ? 0 : it->second;
+}
+
+void write_proof_section_label_summary(std::ostream& out, const ZkdlProofSection* section, int indent) {
+    write_indent(out, indent);
+    out << "{\n";
+    write_indent(out, indent + 2);
+    out << "\"section_id\": \"" << (section == nullptr ? "" : json_escape(section->section_id)) << "\",\n";
+    write_indent(out, indent + 2);
+    out << "\"relation\": \"" << (section == nullptr ? "" : json_escape(section->relation)) << "\",\n";
+    write_indent(out, indent + 2);
+    out << "\"tensor_labels\": [";
+    if (section != nullptr) {
+        for (std::size_t i = 0; i < section->tensor_labels.size(); ++i) {
+            if (i != 0) {
+                out << ", ";
+            }
+            out << '"' << json_escape(section->tensor_labels[i]) << '"';
+        }
+    }
+    out << "]\n";
+    write_indent(out, indent);
+    out << '}';
+}
+
+void write_sparse_attention_debug_evidence(
+    const std::filesystem::path& path,
+    const DatasetConfig& config,
+    const DatasetMeta& meta,
+    const NormalizedPublicInput& normalized,
+    const ModelParams& model,
+    const FullForwardTrace& trace,
+    const ZkdlProofObject& proof) {
+    if (trace.hidden_layers.empty() || trace.hidden_layers.front().heads.empty()
+        || model.hidden_layers.empty() || model.hidden_layers.front().empty()) {
+        return;
+    }
+    const auto& head = trace.hidden_layers.front().heads.front();
+    const auto& params = model.hidden_layers.front().front();
+    const auto attention_section = find_proof_section(proof, "hidden.layer0.head0.attention_score");
+    const auto projection_section = find_proof_section(proof, "hidden.layer0.head0.projection");
+    const auto residual_recomputed = field_sub(
+        field_sub(
+            field_sub(
+                section_field_or_zero(attention_section, "score_eval"),
+                section_field_or_zero(attention_section, "dst_route_eval")),
+            section_field_or_zero(attention_section, "src_route_eval")),
+        section_field_or_zero(attention_section, "score_rescale_remainder_eval"));
+
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream out(path);
+    if (!out) {
+        throw std::runtime_error("failed to write sparse attention debug evidence: " + path.string());
+    }
+
+    out << "{\n";
+    out << "  \"artifact_type\": \"debug_sparse_attention_sumcheck_evidence_not_a_proof\",\n";
+    out << "  \"dataset\": \"" << json_escape(config.dataset_id) << "\",\n";
+    out << "  \"route\": \"cpu\",\n";
+    out << "  \"section_id\": \"hidden.layer0.head0.attention_score\",\n";
+    out << "  \"N\": " << normalized.node_count << ",\n";
+    out << "  \"E\": " << normalized.edge_count << ",\n";
+    out << "  \"feature_dim\": " << meta.num_features << ",\n";
+    out << "  \"hidden_dim\": " << head.h_prime.cols << ",\n";
+    out << "  \"graph_count\": " << normalized.graph_count << ",\n";
+    out << "  \"node_ptr\": \"" << json_escape(join_size_vector(normalized.node_ptr)) << "\",\n";
+    out << "  \"edge_ptr\": \"" << json_escape(join_size_vector(normalized.edge_ptr)) << "\",\n";
+    out << "  \"self_loop_rule\": \"" << json_escape(config.self_loop_rule) << "\",\n";
+    out << "  \"edge_sort_rule\": \"" << json_escape(config.edge_sort_rule) << "\",\n";
+    out << "  \"node_id_semantics\": \"local node ids after full dataset gate normalization\",\n";
+    out << "  \"field_id\": \"mersenne61_portable_scalar_field\",\n";
+    out << "  \"field_encoding\": \"signed fixed-point values map negative integers to prime-minus-abs modulo p\",\n";
+    out << "  \"quantization_scale\": " << kZkdlQuantizationScale << ",\n";
+    out << "  \"route_MLE_variable_order\": \"edge_index_univariate_powers_k_0_to_E_minus_1_over_normalized_edge_order\",\n";
+    out << "  \"attention_vector_flatten_order\": \"checkpoint tensor [1,width,1] flattened in row-major storage order\",\n";
+
+    out << "  \"edge_sample_0_16\": [\n";
+    const auto edge_sample = std::min<std::size_t>(16, normalized.edges.size());
+    for (std::size_t k = 0; k < edge_sample; ++k) {
+        const auto& edge = normalized.edges[k];
+        write_indent(out, 4);
+        out << "{\"k\": " << k
+            << ", \"graph_id\": " << edge.graph_id
+            << ", \"src\": " << edge.src
+            << ", \"dst\": " << edge.dst
+            << ", \"stable_index\": " << edge.stable_index << '}';
+        if (k + 1U != edge_sample) {
+            out << ',';
+        }
+        out << '\n';
+    }
+    out << "  ],\n";
+
+    out << "  \"score_sample_0_16\": [\n";
+    for (std::size_t k = 0; k < edge_sample; ++k) {
+        const auto& edge = normalized.edges[k];
+        const auto e_src_q = field_from_double(head.e_src[edge.src]);
+        const auto e_dst_q = field_from_double(head.e_dst[edge.dst]);
+        const auto score_q = field_from_double(head.s[k]);
+        const auto route_sum_q = field_add(e_src_q, e_dst_q);
+        const auto remainder = attention_score_remainder_field(head, edge, k);
+        write_indent(out, 4);
+        out << "{"
+            << "\"k\": " << k
+            << ", \"src\": " << edge.src
+            << ", \"dst\": " << edge.dst
+            << ", \"E_src_float\": " << std::setprecision(17) << head.e_src[edge.src]
+            << ", \"E_dst_float\": " << std::setprecision(17) << head.e_dst[edge.dst]
+            << ", \"S_float\": " << std::setprecision(17) << head.s[k]
+            << ", \"E_src_q\": \"" << field_hex(e_src_q) << "\""
+            << ", \"E_dst_q\": \"" << field_hex(e_dst_q) << "\""
+            << ", \"quantized_score\": \"" << field_hex(score_q) << "\""
+            << ", \"routed_sum_q\": \"" << field_hex(route_sum_q) << "\""
+            << ", \"score_rescale_remainder\": \"" << field_hex(remainder) << "\""
+            << "}";
+        if (k + 1U != edge_sample) {
+            out << ',';
+        }
+        out << '\n';
+    }
+    out << "  ],\n";
+
+    out << "  \"H_prime_q_sample\": ";
+    write_field_hex_matrix_sample(out, head.h_prime, 4, 8);
+    out << ",\n";
+    out << "  \"a_src_q_sample\": ";
+    write_field_hex_array_from_doubles(out, params.attn_src_kernel, 16);
+    out << ",\n";
+    out << "  \"a_dst_q_sample\": ";
+    write_field_hex_array_from_doubles(out, params.attn_dst_kernel, 16);
+    out << ",\n";
+
+    out << "  \"integer_product_sum_sample\": [\n";
+    const auto node_sample = std::min<std::size_t>(8, head.h_prime.rows);
+    for (std::size_t row = 0; row < node_sample; ++row) {
+        const auto src_raw = attention_dot_product_sum(head.h_prime, params.attn_src_kernel, params.attn_src_bias, row);
+        const auto dst_raw = attention_dot_product_sum(head.h_prime, params.attn_dst_kernel, params.attn_dst_bias, row);
+        const auto src_scaled = field_mul(field_from_double(head.e_src[row]), kZkdlQuantizationScale);
+        const auto dst_scaled = field_mul(field_from_double(head.e_dst[row]), kZkdlQuantizationScale);
+        write_indent(out, 4);
+        out << "{"
+            << "\"node\": " << row
+            << ", \"E_src_integer_product_sum\": \"" << field_hex(src_raw) << "\""
+            << ", \"E_src_scaled_quantized_output\": \"" << field_hex(src_scaled) << "\""
+            << ", \"E_src_rescale_remainder\": \"" << field_hex(field_sub(src_raw, src_scaled)) << "\""
+            << ", \"E_dst_integer_product_sum\": \"" << field_hex(dst_raw) << "\""
+            << ", \"E_dst_scaled_quantized_output\": \"" << field_hex(dst_scaled) << "\""
+            << ", \"E_dst_rescale_remainder\": \"" << field_hex(field_sub(dst_raw, dst_scaled)) << "\""
+            << "}";
+        if (row + 1U != node_sample) {
+            out << ',';
+        }
+        out << '\n';
+    }
+    out << "  ],\n";
+
+    out << "  \"any_rescale_remainder\": {\n";
+    out << "    \"score_rescale_remainder_eval\": \"" << field_hex(section_field_or_zero(attention_section, "score_rescale_remainder_eval")) << "\",\n";
+    out << "    \"score_residual_without_remainder\": \"" << field_hex(section_field_or_zero(attention_section, "residual_without_remainder")) << "\",\n";
+    out << "    \"score_remainder_rule\": \"score_q - routed_e_src_q - routed_e_dst_q\"\n";
+    out << "  },\n";
+    out << "  \"prover_claim\": {\n";
+    out << "    \"equation\": \"score_eval = src_route_eval + dst_route_eval + score_rescale_remainder_eval\",\n";
+    out << "    \"score_eval\": \"" << field_hex(section_field_or_zero(attention_section, "score_eval")) << "\",\n";
+    out << "    \"src_route_eval\": \"" << field_hex(section_field_or_zero(attention_section, "src_route_eval")) << "\",\n";
+    out << "    \"dst_route_eval\": \"" << field_hex(section_field_or_zero(attention_section, "dst_route_eval")) << "\",\n";
+    out << "    \"score_rescale_remainder_eval\": \"" << field_hex(section_field_or_zero(attention_section, "score_rescale_remainder_eval")) << "\"\n";
+    out << "  },\n";
+    out << "  \"verifier_recomputed_claim\": {\n";
+    out << "    \"residual\": \"" << field_hex(residual_recomputed) << "\",\n";
+    out << "    \"accepted_this_relation\": " << (residual_recomputed == 0 ? "true" : "false") << "\n";
+    out << "  },\n";
+    out << "  \"residual\": \"" << field_hex(section_field_or_zero(attention_section, "residual")) << "\",\n";
+    out << "  \"transcript_challenge_values\": {\n";
+    out << "    \"hidden.layer0.head0.projection.row_challenge\": \"" << field_hex(section_field_or_zero(projection_section, "row_challenge")) << "\",\n";
+    out << "    \"hidden.layer0.head0.projection.col_challenge\": \"" << field_hex(section_field_or_zero(projection_section, "col_challenge")) << "\",\n";
+    out << "    \"hidden.layer0.head0.attention_score.edge_challenge\": \"" << field_hex(section_field_or_zero(attention_section, "edge_challenge")) << "\"\n";
+    out << "  },\n";
+    out << "  \"proof_section_labels\": {\n";
+    out << "    \"previous_dense_projection\": ";
+    write_proof_section_label_summary(out, projection_section, 4);
+    out << ",\n";
+    out << "    \"sparse_attention_score\": ";
+    write_proof_section_label_summary(out, attention_section, 4);
+    out << "\n";
+    out << "  }\n";
+    out << "}\n";
+}
+
 void add_head_tensor_commitments(
     ZkdlProofObject& proof,
     const std::string& prefix,
@@ -2214,13 +2510,22 @@ void add_head_proof_sections(
     const std::vector<Edge>& edges,
     const HeadForwardTrace& head,
     bool hidden_activation) {
-    proof.proof_sections.push_back(build_attention_score_section(
+    const auto score_remainder_label = prefix + ".score_rescale_remainder";
+    std::vector<std::uint64_t> score_remainders;
+    auto attention_section = build_attention_score_section(
         prefix + ".attention_score",
         edges,
         head,
         prefix + ".e_src",
         prefix + ".e_dst",
-        prefix + ".score"));
+        prefix + ".score",
+        score_remainder_label,
+        &score_remainders);
+    proof.tensor_commitments.push_back(commit_field_values(
+        score_remainder_label,
+        {edges.size()},
+        score_remainders));
+    proof.proof_sections.push_back(std::move(attention_section));
     proof.proof_sections.push_back(build_softmax_inverse_section(
         prefix + ".softmax_inverse",
         head,
@@ -2493,6 +2798,33 @@ ZkdlVerifierResult verify_zkdl_proof_object(const ZkdlProofObject& proof) {
                 return result;
             }
         }
+        if (section.relation == "sparse_attention_score_sumcheck") {
+            const auto score_it = section.field_values.find("score_eval");
+            const auto src_it = section.field_values.find("src_route_eval");
+            const auto dst_it = section.field_values.find("dst_route_eval");
+            const auto remainder_it = section.field_values.find("score_rescale_remainder_eval");
+            if (score_it == section.field_values.end()
+                || src_it == section.field_values.end()
+                || dst_it == section.field_values.end()
+                || remainder_it == section.field_values.end()) {
+                result.failure_step = section.relation + "_verify";
+                result.first_failure_section = section.section_id;
+                result.block_reason = "zkdl_sparse_attention_score_sumcheck_missing_claim_field:" + section.section_id;
+                return result;
+            }
+            const auto recomputed_residual = field_sub(
+                field_sub(field_sub(score_it->second, dst_it->second), src_it->second),
+                remainder_it->second);
+            if (recomputed_residual != residual_it->second) {
+                result.failure_step = section.relation + "_verify";
+                result.first_failure_section = section.section_id;
+                result.block_reason =
+                    "zkdl_sparse_attention_score_sumcheck_residual_mismatch:section=" + section.section_id
+                    + ",claimed=" + field_hex(residual_it->second)
+                    + ",recomputed=" + field_hex(recomputed_residual);
+                return result;
+            }
+        }
         if (residual_it->second != 0 || !section.relation_passed) {
             result.failure_step = section.relation + "_verify";
             result.first_failure_section = section.section_id;
@@ -2557,6 +2889,17 @@ ZkdlProofRunResult run_zkdl_cpu_full_gat_proof(
         result.full_gat_payload_generated = true;
         result.final_logits_payload_generated = true;
 
+        const auto sparse_debug_path =
+            std::filesystem::path("runs") / config.dataset_id / route / "debug_sparse_attention_sumcheck.json";
+        write_sparse_attention_debug_evidence(
+            sparse_debug_path,
+            config,
+            meta,
+            normalized,
+            model,
+            trace,
+            proof);
+
         write_zkdl_proof_artifact(result.artifact_path, config, route, normalized, proof);
         result.prove_time_ms = elapsed_ms(prove_start, Clock::now());
         result.generated = true;
@@ -2590,6 +2933,7 @@ ZkdlProofRunResult run_zkdl_cpu_full_gat_proof(
         result.stats["zkdl_verifier_called"] = result.verifier_called ? "true" : "false";
         result.stats["zkdl_proof_generated"] = result.generated ? "true" : "false";
         result.stats["zkdl_proof_verified"] = result.verified ? "true" : "false";
+        result.stats["sparse_attention_debug_evidence_path"] = sparse_debug_path.string();
         result.stats["zkdl_proof_size_bytes"] = result.proof_size_bytes.has_value()
             ? std::to_string(*result.proof_size_bytes)
             : "";
