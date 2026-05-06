@@ -1,0 +1,246 @@
+{
+  "artifact_type": "all_relations_diagnostic_not_a_proof",
+  "dataset": "ogbn_arxiv_full",
+  "route": "cpu",
+  "diagnostic_scope": "full_dataset_gat_forward_all_relation_sections",
+  "proof_acceptance": false,
+  "node_count": 169343,
+  "edge_count": 1335586,
+  "graph_count": 1,
+  "quant_policy": {
+    "policy_id": "zkdl_gat_fixed_point_policy_v1",
+    "scale": 16,
+    "rounding": "round_half_away_from_zero",
+    "signed_encoding": "negative_values_encode_as_field_prime_minus_abs",
+    "rescale_remainder_rule": "derived_from_exact_quantized_operands_and_range_bounded_per_relation",
+    "lookup_binding_rule": "lookup_input_output_tables_are_public_and_scale_bound_before_acceptance",
+    "inverse_rule": "denominator_inverse_must_satisfy_scaled_inverse_relation_and_range_binding",
+    "unrestricted_remainder_allowed": false
+  },
+  "zkdl_source_coverage_evidence": {
+    "native_files": "proof.cuh,commitment.cuh,zkmatmul.cuh,zkprod.cuh,zkrelu.cuh",
+    "available_primitives": "inner_product_sumcheck,hadamard_product_sumcheck,binary_sumcheck,zkMatMul,zkProd,zkReLU,Hyrax-style opening",
+    "missing_for_full_gat": "sparse route verifier,dst max argument,LeakyReLU/ELU/Exp static table lookup binding,scaled inverse argument,rescale range binding,final logits public MLE binding"
+  },
+  "section_count": 13,
+  "passed_count": 7,
+  "failed_count": 6,
+  "first_failing_section": "hidden.layer0.head0.softmax_inverse",
+  "relations": [
+    {
+      "relation_name": "dense_matmul_sumcheck",
+      "section_id": "hidden.layer0.head0.projection",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "sum_q_products = quantization_scale * output_q + rescale_remainder",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "rescale_remainder_tensor_present_but_range_binding_required_before_acceptance",
+      "range_lookup_binding_status": "required_rescale_remainder_range_binding_not_available_in_original_zkdl_primitives",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["hidden.layer0.input", "hidden.layer0.head0.W", "hidden.layer0.head0.h_prime", "hidden.layer0.head0.projection_rescale_remainder"],
+      "transcript_challenge_summary": {
+        "col_challenge": "0x04f6c72f8f6b1bda",
+        "row_challenge": "0x0b4e7ae7229745ce"
+      }
+    },
+    {
+      "relation_name": "sparse_attention_score_sumcheck",
+      "section_id": "hidden.layer0.head0.attention_score",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "score_route_remainder_present_but_unrestricted_remainder_is_rejected_by_policy",
+      "range_lookup_binding_status": "required_rescale_remainder_range_binding_not_available_in_original_zkdl_primitives",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["hidden.layer0.head0.e_src", "hidden.layer0.head0.e_dst", "hidden.layer0.head0.score", "hidden.layer0.head0.score_rescale_remainder", "public_sparse_route"],
+      "transcript_challenge_summary": {
+        "edge_challenge": "0x071f3af754b23247"
+      }
+    },
+    {
+      "relation_name": "softmax_denominator_inverse_sumcheck",
+      "section_id": "hidden.layer0.head0.softmax_inverse",
+      "passed": false,
+      "residual": "0x0ed0ae1819dc4550",
+      "claim": "denominator_q * inverse_q = 1 under the public fixed-point inverse scale",
+      "recomputed_value": "0x0ed0ae1819dc4550",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "inverse_witness_present_but_scaled_inverse_range_binding_missing",
+      "range_lookup_binding_status": "required_inverse_and_range_binding_not_available_in_original_zkdl_primitives",
+      "first_failing_index_or_section": "hidden.layer0.head0.softmax_inverse",
+      "proof_section_labels": ["hidden.layer0.head0.denominator", "hidden.layer0.head0.denominator_inverse"],
+      "transcript_challenge_summary": {
+        "node_challenge": "0x14d8092587caba50"
+      }
+    },
+    {
+      "relation_name": "softmax_alpha_product_sumcheck",
+      "section_id": "hidden.layer0.head0.softmax_alpha",
+      "passed": false,
+      "residual": "0x0449f4ed59045329",
+      "claim": "alpha_q = exp_q * inverse_q with public alpha scale",
+      "recomputed_value": "0x0449f4ed59045329",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "alpha_witness_present_but_exp_inverse_scale_binding_missing",
+      "range_lookup_binding_status": "no_range_or_lookup_binding_recorded",
+      "first_failing_index_or_section": "hidden.layer0.head0.softmax_alpha",
+      "proof_section_labels": ["hidden.layer0.head0.exp_lookup", "hidden.layer0.head0.denominator_inverse", "hidden.layer0.head0.alpha", "public_sparse_route"],
+      "transcript_challenge_summary": {
+        "edge_challenge": "0x11acf3f4ea4ab71b"
+      }
+    },
+    {
+      "relation_name": "fac4dnn_aggregation_sumcheck",
+      "section_id": "hidden.layer0.head0.aggregation",
+      "passed": false,
+      "residual": "0x154b0c08398634fe",
+      "claim": "aggregate_q = sum_edges alpha_q * h_prime_q with public sparse route",
+      "recomputed_value": "0x154b0c08398634fe",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "aggregation_witness_present_but_sparse_route_opening_missing",
+      "range_lookup_binding_status": "required_sparse_route_and_slice_consistency_binding_not_available_in_original_zkdl_primitives",
+      "first_failing_index_or_section": "hidden.layer0.head0.aggregation",
+      "proof_section_labels": ["hidden.layer0.head0.alpha", "hidden.layer0.head0.h_prime", "hidden.layer0.head0.aggregate_pre_bias", "public_sparse_route"],
+      "transcript_challenge_summary": {
+        "col_challenge": "0x0b4963283de330a0",
+        "row_challenge": "0x1390aa5228fbb924"
+      }
+    },
+    {
+      "relation_name": "elu_lookup_argument",
+      "section_id": "hidden.layer0.head0.activation",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "aggregate_out_q = T_ELU(aggregate_pre_q) with public lookup table binding",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "activation_witness_present_but_lookup_or_bias_scale_binding_missing",
+      "range_lookup_binding_status": "required_static_table_binding_not_available_in_original_zkdl_primitives",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["hidden.layer0.head0.aggregate_pre_bias", "hidden.layer0.head0.aggregate_out"],
+      "transcript_challenge_summary": {
+        "col_challenge": "0x07e32696084e676d",
+        "row_challenge": "0x159f247c44fdbba9"
+      }
+    },
+    {
+      "relation_name": "dense_matmul_sumcheck",
+      "section_id": "output.head0.projection",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "sum_q_products = quantization_scale * output_q + rescale_remainder",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "rescale_remainder_tensor_present_but_range_binding_required_before_acceptance",
+      "range_lookup_binding_status": "required_rescale_remainder_range_binding_not_available_in_original_zkdl_primitives",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["hidden.layer0.concat", "output.head0.W", "output.head0.h_prime", "output.head0.projection_rescale_remainder"],
+      "transcript_challenge_summary": {
+        "col_challenge": "0x0631437884db2610",
+        "row_challenge": "0x0574efca346b8246"
+      }
+    },
+    {
+      "relation_name": "sparse_attention_score_sumcheck",
+      "section_id": "output.head0.attention_score",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "score_route_remainder_present_but_unrestricted_remainder_is_rejected_by_policy",
+      "range_lookup_binding_status": "required_rescale_remainder_range_binding_not_available_in_original_zkdl_primitives",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["output.head0.e_src", "output.head0.e_dst", "output.head0.score", "output.head0.score_rescale_remainder", "public_sparse_route"],
+      "transcript_challenge_summary": {
+        "edge_challenge": "0x1269d8374ece772a"
+      }
+    },
+    {
+      "relation_name": "softmax_denominator_inverse_sumcheck",
+      "section_id": "output.head0.softmax_inverse",
+      "passed": false,
+      "residual": "0x06e1bf1b68b6c39f",
+      "claim": "denominator_q * inverse_q = 1 under the public fixed-point inverse scale",
+      "recomputed_value": "0x06e1bf1b68b6c39f",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "inverse_witness_present_but_scaled_inverse_range_binding_missing",
+      "range_lookup_binding_status": "required_inverse_and_range_binding_not_available_in_original_zkdl_primitives",
+      "first_failing_index_or_section": "output.head0.softmax_inverse",
+      "proof_section_labels": ["output.head0.denominator", "output.head0.denominator_inverse"],
+      "transcript_challenge_summary": {
+        "node_challenge": "0x1b6424f2c5aa3aba"
+      }
+    },
+    {
+      "relation_name": "softmax_alpha_product_sumcheck",
+      "section_id": "output.head0.softmax_alpha",
+      "passed": false,
+      "residual": "0x1f6a555e8eb2d4cc",
+      "claim": "alpha_q = exp_q * inverse_q with public alpha scale",
+      "recomputed_value": "0x1f6a555e8eb2d4cc",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "alpha_witness_present_but_exp_inverse_scale_binding_missing",
+      "range_lookup_binding_status": "no_range_or_lookup_binding_recorded",
+      "first_failing_index_or_section": "output.head0.softmax_alpha",
+      "proof_section_labels": ["output.head0.exp_lookup", "output.head0.denominator_inverse", "output.head0.alpha", "public_sparse_route"],
+      "transcript_challenge_summary": {
+        "edge_challenge": "0x06f54304c54aab3f"
+      }
+    },
+    {
+      "relation_name": "fac4dnn_aggregation_sumcheck",
+      "section_id": "output.head0.aggregation",
+      "passed": false,
+      "residual": "0x0add67c75cb97abb",
+      "claim": "aggregate_q = sum_edges alpha_q * h_prime_q with public sparse route",
+      "recomputed_value": "0x0add67c75cb97abb",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "aggregation_witness_present_but_sparse_route_opening_missing",
+      "range_lookup_binding_status": "required_sparse_route_and_slice_consistency_binding_not_available_in_original_zkdl_primitives",
+      "first_failing_index_or_section": "output.head0.aggregation",
+      "proof_section_labels": ["output.head0.alpha", "output.head0.h_prime", "output.head0.aggregate_pre_bias", "public_sparse_route"],
+      "transcript_challenge_summary": {
+        "col_challenge": "0x183714d390137451",
+        "row_challenge": "0x13cf2f86e8680787"
+      }
+    },
+    {
+      "relation_name": "identity_output_activation_argument",
+      "section_id": "output.head0.activation",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "output_head_q = aggregate_pre_q + output_bias_q on the output-head scale",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "activation_witness_present_but_lookup_or_bias_scale_binding_missing",
+      "range_lookup_binding_status": "required_static_table_binding_not_available_in_original_zkdl_primitives",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["output.head0.aggregate_pre_bias", "output.head0.aggregate_out"],
+      "transcript_challenge_summary": {
+        "col_challenge": "0x08a37730d35354bc",
+        "row_challenge": "0x1f2fcc4c41961ff8"
+      }
+    },
+    {
+      "relation_name": "final_logits_public_binding",
+      "section_id": "final_logits.public_binding",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "public final logits opening equals the proof-derived output-head average",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "final_logits_witness_present_but_public_opening_binding_missing",
+      "range_lookup_binding_status": "required_public_logits_mle_opening_binding_not_available_in_current_adapter",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["final_logits"],
+      "transcript_challenge_summary": {
+        "col_challenge": "0x0438161e4c028beb",
+        "row_challenge": "0x00d6d2f8687cd24e"
+      }
+    }
+  ]
+}

@@ -210,15 +210,29 @@ struct ZkdlProofSection {
 };
 
 struct ZkdlProofObject {
-    std::string format_id = "zkdl_full_gat_forward_portable_proof_v2";
-    std::string commitment_backend_id = "zkdl_portable_hyrax_tensor_commitment_mle_v1";
-    std::string verifier_backend_id = "zkDL";
+    std::string format_id = "zkdl_full_gat_forward_relation_payload_v3";
+    std::string commitment_backend_id = "zkdl_portable_relation_commitment_diagnostic_v1";
+    std::string verifier_backend_id = "not_invoked_until_native_zkdl_relation_coverage_exists";
     std::string field_id = "mersenne61_portable_scalar_field";
     std::string public_input_hash;
     std::string final_logits_hash;
     std::string witness_coverage_hash;
     std::vector<ZkdlTensorCommitment> tensor_commitments;
     std::vector<ZkdlProofSection> proof_sections;
+};
+
+struct FixedPointProofPolicy {
+    std::string policy_id = "zkdl_gat_fixed_point_policy_v1";
+    std::uint64_t scale = 16U;
+    std::string rounding = "round_half_away_from_zero";
+    std::string signed_encoding = "negative_values_encode_as_field_prime_minus_abs";
+    std::string rescale_remainder_rule =
+        "derived_from_exact_quantized_operands_and_range_bounded_per_relation";
+    std::string lookup_binding_rule =
+        "lookup_input_output_tables_are_public_and_scale_bound_before_acceptance";
+    std::string inverse_rule =
+        "denominator_inverse_must_satisfy_scaled_inverse_relation_and_range_binding";
+    bool unrestricted_remainder_allowed = false;
 };
 
 struct ZkdlVerifierResult {
@@ -235,7 +249,9 @@ struct ZkdlProofRunResult {
     bool verified = false;
     bool full_gat_payload_generated = false;
     bool final_logits_payload_generated = false;
+    bool diagnostic_generated = false;
     std::string artifact_path;
+    std::string diagnostic_path;
     std::string failure_step;
     std::string block_reason;
     std::optional<double> commitment_time_ms;
@@ -1752,6 +1768,11 @@ std::string hash_witness_coverage(
 constexpr std::uint64_t kZkdlPortableFieldPrime = (std::uint64_t{1} << 61U) - 1U;
 constexpr std::uint64_t kZkdlQuantizationScale = 16U;
 
+const FixedPointProofPolicy& fixed_point_policy() {
+    static const FixedPointProofPolicy policy;
+    return policy;
+}
+
 std::uint64_t field_reduce(std::uint64_t value) {
     value = (value & kZkdlPortableFieldPrime) + (value >> 61U);
     if (value >= kZkdlPortableFieldPrime) {
@@ -2321,7 +2342,7 @@ void write_proof_section_label_summary(std::ostream& out, const ZkdlProofSection
     out << '}';
 }
 
-void write_sparse_attention_debug_evidence(
+[[maybe_unused]] void write_sparse_attention_debug_evidence(
     const std::filesystem::path& path,
     const DatasetConfig& config,
     const DatasetMeta& meta,
@@ -2672,6 +2693,217 @@ void write_string_array_inline(std::ostream& out, const std::vector<std::string>
     out << ']';
 }
 
+std::string section_claim(const ZkdlProofSection& section) {
+    const auto it = section.metadata.find("claim_equation");
+    if (it != section.metadata.end()) {
+        return it->second;
+    }
+    if (section.relation == "softmax_denominator_inverse_sumcheck") {
+        return "denominator_q * inverse_q = 1 under the public fixed-point inverse scale";
+    }
+    if (section.relation == "softmax_alpha_product_sumcheck") {
+        return "alpha_q = exp_q * inverse_q with public alpha scale";
+    }
+    if (section.relation == "fac4dnn_aggregation_sumcheck") {
+        return "aggregate_q = sum_edges alpha_q * h_prime_q with public sparse route";
+    }
+    if (section.relation == "elu_lookup_argument") {
+        return "aggregate_out_q = T_ELU(aggregate_pre_q) with public lookup table binding";
+    }
+    if (section.relation == "identity_output_activation_argument") {
+        return "output_head_q = aggregate_pre_q + output_bias_q on the output-head scale";
+    }
+    if (section.relation == "final_logits_public_binding") {
+        return "public final logits opening equals the proof-derived output-head average";
+    }
+    return "relation residual must be zero under zkDL verifier equations";
+}
+
+std::uint64_t recompute_section_residual(const ZkdlProofSection& section) {
+    const auto field_or_zero = [&](const std::string& key) {
+        const auto it = section.field_values.find(key);
+        return it == section.field_values.end() ? std::uint64_t{0} : it->second;
+    };
+    if (section.relation == "dense_matmul_sumcheck") {
+        return field_sub(
+            field_sub(field_or_zero("lhs_weighted_product_eval"), field_or_zero("scaled_output_eval")),
+            field_or_zero("rescale_remainder_eval"));
+    }
+    if (section.relation == "sparse_attention_score_sumcheck") {
+        return field_sub(
+            field_sub(field_sub(field_or_zero("score_eval"), field_or_zero("dst_route_eval")), field_or_zero("src_route_eval")),
+            field_or_zero("score_rescale_remainder_eval"));
+    }
+    return field_or_zero("residual");
+}
+
+std::string auxiliary_witness_status(const ZkdlProofSection& section) {
+    if (section.relation == "dense_matmul_sumcheck") {
+        return "rescale_remainder_tensor_present_but_range_binding_required_before_acceptance";
+    }
+    if (section.relation == "sparse_attention_score_sumcheck") {
+        return "score_route_remainder_present_but_unrestricted_remainder_is_rejected_by_policy";
+    }
+    if (section.relation == "softmax_denominator_inverse_sumcheck") {
+        return "inverse_witness_present_but_scaled_inverse_range_binding_missing";
+    }
+    if (section.relation == "softmax_alpha_product_sumcheck") {
+        return "alpha_witness_present_but_exp_inverse_scale_binding_missing";
+    }
+    if (section.relation == "fac4dnn_aggregation_sumcheck") {
+        return "aggregation_witness_present_but_sparse_route_opening_missing";
+    }
+    if (section.relation == "elu_lookup_argument" || section.relation == "identity_output_activation_argument") {
+        return "activation_witness_present_but_lookup_or_bias_scale_binding_missing";
+    }
+    if (section.relation == "final_logits_public_binding") {
+        return "final_logits_witness_present_but_public_opening_binding_missing";
+    }
+    return "no_auxiliary_witness_required";
+}
+
+std::string range_lookup_binding_status(const ZkdlProofSection& section) {
+    if (section.relation.find("lookup") != std::string::npos || section.relation.find("activation") != std::string::npos) {
+        return "required_static_table_binding_not_available_in_original_zkdl_primitives";
+    }
+    if (section.relation.find("inverse") != std::string::npos) {
+        return "required_inverse_and_range_binding_not_available_in_original_zkdl_primitives";
+    }
+    if (section.relation == "dense_matmul_sumcheck" || section.relation == "sparse_attention_score_sumcheck") {
+        return "required_rescale_remainder_range_binding_not_available_in_original_zkdl_primitives";
+    }
+    if (section.relation == "fac4dnn_aggregation_sumcheck") {
+        return "required_sparse_route_and_slice_consistency_binding_not_available_in_original_zkdl_primitives";
+    }
+    if (section.relation == "final_logits_public_binding") {
+        return "required_public_logits_mle_opening_binding_not_available_in_current_adapter";
+    }
+    return "no_range_or_lookup_binding_recorded";
+}
+
+void write_fixed_point_policy_json(std::ostream& out, int indent) {
+    const auto& policy = fixed_point_policy();
+    out << "{\n";
+    write_indent(out, indent + 2);
+    out << "\"policy_id\": \"" << json_escape(policy.policy_id) << "\",\n";
+    write_indent(out, indent + 2);
+    out << "\"scale\": " << policy.scale << ",\n";
+    write_indent(out, indent + 2);
+    out << "\"rounding\": \"" << json_escape(policy.rounding) << "\",\n";
+    write_indent(out, indent + 2);
+    out << "\"signed_encoding\": \"" << json_escape(policy.signed_encoding) << "\",\n";
+    write_indent(out, indent + 2);
+    out << "\"rescale_remainder_rule\": \"" << json_escape(policy.rescale_remainder_rule) << "\",\n";
+    write_indent(out, indent + 2);
+    out << "\"lookup_binding_rule\": \"" << json_escape(policy.lookup_binding_rule) << "\",\n";
+    write_indent(out, indent + 2);
+    out << "\"inverse_rule\": \"" << json_escape(policy.inverse_rule) << "\",\n";
+    write_indent(out, indent + 2);
+    out << "\"unrestricted_remainder_allowed\": " << (policy.unrestricted_remainder_allowed ? "true" : "false") << '\n';
+    write_indent(out, indent);
+    out << '}';
+}
+
+void write_transcript_challenge_summary(std::ostream& out, const ZkdlProofSection& section, int indent) {
+    out << "{\n";
+    std::size_t count = 0;
+    for (const auto& [key, value] : section.field_values) {
+        if (key.find("challenge") == std::string::npos) {
+            continue;
+        }
+        if (count != 0) {
+            out << ",\n";
+        }
+        write_indent(out, indent + 2);
+        out << '"' << json_escape(key) << "\": \"" << field_hex(value) << '"';
+        ++count;
+    }
+    if (count != 0) {
+        out << '\n';
+    }
+    write_indent(out, indent);
+    out << '}';
+}
+
+void write_all_relations_diagnostic(
+    const std::filesystem::path& path,
+    const DatasetConfig& config,
+    const std::string& route,
+    const NormalizedPublicInput& normalized,
+    const ZkdlProofObject& proof) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream out(path);
+    if (!out) {
+        throw std::runtime_error("failed to write all-relations diagnostic: " + path.string());
+    }
+
+    std::size_t passed = 0;
+    std::size_t failed = 0;
+    std::string first_failure;
+    for (const auto& section : proof.proof_sections) {
+        if (section.relation_passed) {
+            ++passed;
+        } else {
+            ++failed;
+            if (first_failure.empty()) {
+                first_failure = section.section_id;
+            }
+        }
+    }
+
+    out << "{\n";
+    out << "  \"artifact_type\": \"all_relations_diagnostic_not_a_proof\",\n";
+    out << "  \"dataset\": \"" << json_escape(config.dataset_id) << "\",\n";
+    out << "  \"route\": \"" << json_escape(route) << "\",\n";
+    out << "  \"diagnostic_scope\": \"full_dataset_gat_forward_all_relation_sections\",\n";
+    out << "  \"proof_acceptance\": false,\n";
+    out << "  \"node_count\": " << normalized.node_count << ",\n";
+    out << "  \"edge_count\": " << normalized.edge_count << ",\n";
+    out << "  \"graph_count\": " << normalized.graph_count << ",\n";
+    out << "  \"quant_policy\": ";
+    write_fixed_point_policy_json(out, 2);
+    out << ",\n";
+    out << "  \"zkdl_source_coverage_evidence\": {\n";
+    out << "    \"native_files\": \"proof.cuh,commitment.cuh,zkmatmul.cuh,zkprod.cuh,zkrelu.cuh\",\n";
+    out << "    \"available_primitives\": \"inner_product_sumcheck,hadamard_product_sumcheck,binary_sumcheck,zkMatMul,zkProd,zkReLU,Hyrax-style opening\",\n";
+    out << "    \"missing_for_full_gat\": \"sparse route verifier,dst max argument,LeakyReLU/ELU/Exp static table lookup binding,scaled inverse argument,rescale range binding,final logits public MLE binding\"\n";
+    out << "  },\n";
+    out << "  \"section_count\": " << proof.proof_sections.size() << ",\n";
+    out << "  \"passed_count\": " << passed << ",\n";
+    out << "  \"failed_count\": " << failed << ",\n";
+    out << "  \"first_failing_section\": \"" << json_escape(first_failure) << "\",\n";
+    out << "  \"relations\": [\n";
+    for (std::size_t i = 0; i < proof.proof_sections.size(); ++i) {
+        const auto& section = proof.proof_sections[i];
+        const auto claimed_residual = section_field_or_zero(&section, "residual");
+        const auto recomputed_residual = recompute_section_residual(section);
+        out << "    {\n";
+        out << "      \"relation_name\": \"" << json_escape(section.relation) << "\",\n";
+        out << "      \"section_id\": \"" << json_escape(section.section_id) << "\",\n";
+        out << "      \"passed\": " << (section.relation_passed ? "true" : "false") << ",\n";
+        out << "      \"residual\": \"" << field_hex(claimed_residual) << "\",\n";
+        out << "      \"claim\": \"" << json_escape(section_claim(section)) << "\",\n";
+        out << "      \"recomputed_value\": \"" << field_hex(recomputed_residual) << "\",\n";
+        out << "      \"scale_quant_policy_id\": \"" << json_escape(fixed_point_policy().policy_id) << "\",\n";
+        out << "      \"auxiliary_witness_status\": \"" << json_escape(auxiliary_witness_status(section)) << "\",\n";
+        out << "      \"range_lookup_binding_status\": \"" << json_escape(range_lookup_binding_status(section)) << "\",\n";
+        out << "      \"first_failing_index_or_section\": \"" << (section.relation_passed ? "" : json_escape(section.section_id)) << "\",\n";
+        out << "      \"proof_section_labels\": ";
+        write_string_array_inline(out, section.tensor_labels);
+        out << ",\n";
+        out << "      \"transcript_challenge_summary\": ";
+        write_transcript_challenge_summary(out, section, 6);
+        out << "\n";
+        out << "    }";
+        if (i + 1U != proof.proof_sections.size()) {
+            out << ',';
+        }
+        out << '\n';
+    }
+    out << "  ]\n";
+    out << "}\n";
+}
+
 void write_zkdl_proof_artifact(
     const std::filesystem::path& path,
     const DatasetConfig& config,
@@ -2681,12 +2913,12 @@ void write_zkdl_proof_artifact(
     std::filesystem::create_directories(path.parent_path());
     std::ofstream out(path);
     if (!out) {
-        throw std::runtime_error("failed to write zkDL proof artifact: " + path.string());
+        throw std::runtime_error("failed to write zkDL relation payload artifact: " + path.string());
     }
     out << "{\n";
-    out << "  \"artifact_type\": \"zkdl_proof\",\n";
+    out << "  \"artifact_type\": \"zkdl_relation_payload_diagnostic_not_a_proof\",\n";
     out << "  \"proof_format_id\": \"" << json_escape(proof.format_id) << "\",\n";
-    out << "  \"proof_backend\": \"zkDL\",\n";
+    out << "  \"proof_backend\": \"zkDL_relation_adapter_blocked_before_native_proof\",\n";
     out << "  \"verifier_backend\": \"" << json_escape(proof.verifier_backend_id) << "\",\n";
     out << "  \"commitment_backend_id\": \"" << json_escape(proof.commitment_backend_id) << "\",\n";
     out << "  \"field_id\": \"" << json_escape(proof.field_id) << "\",\n";
@@ -2699,7 +2931,9 @@ void write_zkdl_proof_artifact(
     out << "  \"public_input_hash\": \"" << json_escape(proof.public_input_hash) << "\",\n";
     out << "  \"witness_coverage_hash\": \"" << json_escape(proof.witness_coverage_hash) << "\",\n";
     out << "  \"final_logits_hash\": \"" << json_escape(proof.final_logits_hash) << "\",\n";
-    out << "  \"payload_kind\": \"tensor_commitments_and_sumcheck_relation_payload\",\n";
+    out << "  \"payload_kind\": \"diagnostic_tensor_commitments_and_relation_payload_not_accepted_as_proof\",\n";
+    out << "  \"zkdl_proof\": false,\n";
+    out << "  \"zkdl_verifier_acceptance\": false,\n";
     out << "  \"tensor_commitments\": [\n";
     for (std::size_t i = 0; i < proof.tensor_commitments.size(); ++i) {
         const auto& item = proof.tensor_commitments[i];
@@ -2745,7 +2979,7 @@ void write_zkdl_proof_artifact(
     out << "}\n";
 }
 
-ZkdlVerifierResult verify_zkdl_proof_object(const ZkdlProofObject& proof) {
+[[maybe_unused]] ZkdlVerifierResult verify_zkdl_proof_object(const ZkdlProofObject& proof) {
     ZkdlVerifierResult result;
     if (proof.tensor_commitments.empty()) {
         result.failure_step = "commitment_opening_verify";
@@ -2850,7 +3084,8 @@ ZkdlProofRunResult run_zkdl_cpu_full_gat_proof(
     using Clock = std::chrono::steady_clock;
     ZkdlProofRunResult result;
     result.attempted = true;
-    result.artifact_path = (std::filesystem::path("runs") / config.dataset_id / route / "full_gat_forward.zkdl_proof.json").string();
+    result.artifact_path = (std::filesystem::path("runs") / config.dataset_id / route / "full_gat_forward.zkdl_relation_payload.json").string();
+    result.diagnostic_path = (std::filesystem::path("runs") / config.dataset_id / route / "debug_all_relations.json").string();
     result.attempted_stages = {
         "config_load",
         "dataset_load",
@@ -2859,10 +3094,10 @@ ZkdlProofRunResult run_zkdl_cpu_full_gat_proof(
         "full_dataset_gate",
         "semantic_precheck_full_forward",
         "semantic_precheck_relation_checker",
-        "zkdl_tensor_commitment",
-        "zkdl_sumcheck_proof_generation",
-        "zkdl_transferable_proof_object_serialize",
-        "zkdl_verifier_invocation",
+        "fixed_point_policy_rebuild",
+        "zkdl_relation_payload_diagnostic",
+        "all_relations_diagnostic",
+        "zkdl_native_relation_coverage_preflight",
     };
 
     try {
@@ -2886,59 +3121,70 @@ ZkdlProofRunResult run_zkdl_cpu_full_gat_proof(
             final_hash,
             witness_hash);
         result.commitment_time_ms = elapsed_ms(commitment_start, Clock::now());
-        result.full_gat_payload_generated = true;
-        result.final_logits_payload_generated = true;
-
-        const auto sparse_debug_path =
-            std::filesystem::path("runs") / config.dataset_id / route / "debug_sparse_attention_sumcheck.json";
-        write_sparse_attention_debug_evidence(
-            sparse_debug_path,
-            config,
-            meta,
-            normalized,
-            model,
-            trace,
-            proof);
+        result.full_gat_payload_generated = false;
+        result.final_logits_payload_generated = false;
 
         write_zkdl_proof_artifact(result.artifact_path, config, route, normalized, proof);
+        write_all_relations_diagnostic(result.diagnostic_path, config, route, normalized, proof);
         result.prove_time_ms = elapsed_ms(prove_start, Clock::now());
-        result.generated = true;
+        result.generated = false;
+        result.diagnostic_generated = true;
         result.proof_size_bytes = std::filesystem::file_size(result.artifact_path);
 
-        const auto verify_start = Clock::now();
-        const auto verifier_result = verify_zkdl_proof_object(proof);
-        result.verify_time_ms = elapsed_ms(verify_start, Clock::now());
-        result.verifier_called = true;
-        result.verified = verifier_result.accepted;
-        if (!verifier_result.accepted) {
-            result.failure_step = verifier_result.failure_step;
-            result.block_reason = verifier_result.block_reason;
-            result.unsupported_protocol_requirements = {
-                "field_quantized_full_gat_sumcheck_relation_acceptance",
-                "lookup_and_rescale_arguments_after_sumcheck_acceptance",
-            };
-            result.stats["zkdl_first_failure_section"] = verifier_result.first_failure_section;
+        std::size_t relation_failed_count = 0;
+        std::string first_failing_section;
+        for (const auto& section : proof.proof_sections) {
+            if (!section.relation_passed) {
+                ++relation_failed_count;
+                if (first_failing_section.empty()) {
+                    first_failing_section = section.section_id;
+                }
+            }
         }
-        result.stats["zkdl_proof_artifact_path"] = result.artifact_path;
-        result.stats["zkdl_proof_format_id"] = proof.format_id;
+        result.failure_step = "sparse_source_target_route_sumcheck_verify";
+        result.block_reason =
+            "native_zkdl_relation_coverage_blocked: original zkDL exposes dense/product/binary/ReLU-style sumcheck primitives "
+            "but no verifier-backed sparse route, static lookup, scaled inverse, rescale range, or final logits public binding "
+            "relations required by the full-dataset GAT statement; relation payload and all-relations diagnostic were generated "
+            "but are not accepted as a zkDL proof";
+        result.unsupported_protocol_requirements = {
+            "sparse_route_sumcheck_for_R_src_R_dst",
+            "dst_group_max_argument",
+            "leaky_relu_lookup_argument_bound_to_static_table",
+            "exp_lookup_argument_bound_to_static_table",
+            "elu_lookup_argument_bound_to_static_table",
+            "range_argument_for_rescale_remainders",
+            "scaled_inverse_argument_for_softmax_denominator",
+            "fac4dnn_sparse_aggregation_route_consistency",
+            "final_public_logits_mle_binding",
+            "native_zkdl_verifier_acceptance_api_for_composed_full_gat",
+        };
+        result.stats["zkdl_first_failure_section"] = first_failing_section;
+        result.stats["zkdl_relation_failure_count"] = std::to_string(relation_failed_count);
+        result.stats["zkdl_relation_payload_path"] = result.artifact_path;
+        result.stats["all_relations_diagnostic_path"] = result.diagnostic_path;
+        result.stats["all_relations_diagnostic_generated"] = "true";
+        result.stats["fixed_point_policy_id"] = fixed_point_policy().policy_id;
+        result.stats["unrestricted_remainder_allowed"] =
+            fixed_point_policy().unrestricted_remainder_allowed ? "true" : "false";
+        result.stats["zkdl_relation_payload_format_id"] = proof.format_id;
         result.stats["zkdl_commitment_backend_id"] = proof.commitment_backend_id;
         result.stats["zkdl_field_id"] = proof.field_id;
         result.stats["zkdl_tensor_commitment_count"] = std::to_string(proof.tensor_commitments.size());
-        result.stats["zkdl_proof_section_count"] = std::to_string(proof.proof_sections.size());
-        result.stats["zkdl_proof_payload_contains"] =
+        result.stats["zkdl_relation_section_count"] = std::to_string(proof.proof_sections.size());
+        result.stats["zkdl_relation_payload_contains"] =
             "tensor_commitments,challenge_transcript_values,dense_matmul_sumcheck,sparse_attention_score_sumcheck,"
             "softmax_inverse_sumcheck,alpha_product_sumcheck,fac4dnn_aggregation_sumcheck,activation_lookup_argument,"
             "final_logits_public_binding";
-        result.stats["zkdl_verifier_backend"] = "zkDL";
-        result.stats["zkdl_verifier_called"] = result.verifier_called ? "true" : "false";
-        result.stats["zkdl_proof_generated"] = result.generated ? "true" : "false";
-        result.stats["zkdl_proof_verified"] = result.verified ? "true" : "false";
-        result.stats["sparse_attention_debug_evidence_path"] = sparse_debug_path.string();
-        result.stats["zkdl_proof_size_bytes"] = result.proof_size_bytes.has_value()
+        result.stats["zkdl_verifier_backend"] = "not_invoked";
+        result.stats["zkdl_verifier_called"] = "false";
+        result.stats["zkdl_proof_generated"] = "false";
+        result.stats["zkdl_proof_verified"] = "false";
+        result.stats["debug_relation_payload_size_bytes"] = result.proof_size_bytes.has_value()
             ? std::to_string(*result.proof_size_bytes)
             : "";
     } catch (const std::exception& error) {
-        result.failure_step = result.generated ? "zkdl_verifier_invocation" : "zkdl_sumcheck_proof_generation";
+        result.failure_step = "zkdl_relation_payload_diagnostic";
         result.block_reason = std::string("zkdl_cpu_full_gat_proof_attempt_failed:") + error.what();
         result.unsupported_protocol_requirements = {"zkdl_cpu_full_gat_proof_generation_exception"};
     }
@@ -3202,6 +3448,19 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     if (std::filesystem::exists(legacy_proof_path)) {
         std::filesystem::remove(legacy_proof_path);
     }
+    const auto stale_portable_proof_path =
+        std::filesystem::path("runs") / config.dataset_id / route / "full_gat_forward.zkdl_proof.json";
+    if (std::filesystem::exists(stale_portable_proof_path)) {
+        std::filesystem::remove(stale_portable_proof_path);
+    }
+    for (const auto& stale_debug_name : {
+             "debug_sparse_attention_sumcheck.json",
+             "debug_dense_matmul_sumcheck.json"}) {
+        const auto stale_debug_path = std::filesystem::path("runs") / config.dataset_id / route / stale_debug_name;
+        if (std::filesystem::exists(stale_debug_path)) {
+            std::filesystem::remove(stale_debug_path);
+        }
+    }
 
     const auto expected_node_count = manifest_value(main_manifest, "node_count");
     const auto expected_edge_count = manifest_value(main_manifest, "edge_count");
@@ -3366,21 +3625,21 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.string_values["public_input_encoding_id"] = "project-fixed-order-v1";
     manifest.string_values["commitment_backend_id"] = cpu_zkdl_proof_generated
         ? "zkdl_portable_hyrax_tensor_commitment_mle_v1"
-        : (route == "cpu" ? "none_for_full_gat_until_real_zkdl_backend" : "zkdl_cuda_primitive_probe_only");
-    manifest.string_values["proof_backend"] = cpu_zkdl_proof_generated ? "zkDL" : "zkDL_full_gat_backend_unavailable";
+        : (route == "cpu" ? "zkDL_relation_adapter_blocked_before_native_proof" : "zkdl_cuda_primitive_probe_only");
+    manifest.string_values["proof_backend"] = cpu_zkdl_proof_generated ? "zkDL" : "zkDL_native_full_gat_relation_coverage_blocked";
     manifest.string_values["verifier_backend"] = cpu_zkdl_verifier_called ? "zkDL" : "not_invoked";
     manifest.string_values["proof_artifact_type"] = cpu_zkdl_proof_generated ? "zkdl_proof" : "none";
     manifest.string_values["precheck_artifact_path"] = semantic_result.artifact_path;
     manifest.string_values["proof_backend_scope"] = cpu_zkdl_proof_generated
         ? "transferable zkDL proof object with tensor commitments, challenge transcript values, and full-GAT relation proof sections"
         : (route == "cpu"
-            ? "full dataset gate and semantic precheck only; no transferable zkDL proof object or zkDL verifier acceptance"
+            ? "full dataset statement and all-relations diagnostic built; blocked before proof acceptance because original zkDL lacks required sparse route, lookup, inverse, range, and public-output verifier relations"
             : "full dataset gate and CUDA primitive probe only; no CUDA composed full-GAT zkDL prover/verifier");
     manifest.string_values["proof_pipeline_id"] = cpu_zkdl_proof_generated
         ? "zkdl_gat_full_forward_cpu_real_proof_attempt_v1"
         : (route == "cpu"
-            ? "zkdl_gat_full_forward_cpu_blocked_until_real_zkdl_proof_v4"
-            : "zkdl_gat_full_forward_cuda_pending_real_zkdl_proof_v4");
+            ? "zkdl_gat_full_forward_policy_rebuild_blocked_v1"
+            : "zkdl_gat_full_forward_cuda_pending_real_zkdl_proof_v5");
     manifest.string_values["proof_statement_first_unsupported"] = attempt.unsupported_protocol_requirements.empty()
         ? ""
         : attempt.unsupported_protocol_requirements.front();
@@ -3394,8 +3653,8 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.bool_values["zkdl_proof_generated"] = cpu_zkdl_proof_generated;
     manifest.bool_values["zkdl_proof_verified"] = cpu_zkdl_verified;
     manifest.bool_values["zkdl_verifier_called"] = cpu_zkdl_verifier_called;
-    manifest.bool_values["full_gat_forward_in_zkdl_proof"] = proof_result.full_gat_payload_generated;
-    manifest.bool_values["final_logits_derivation_complete"] = proof_result.final_logits_payload_generated;
+    manifest.bool_values["full_gat_forward_in_zkdl_proof"] = cpu_zkdl_verified && proof_result.full_gat_payload_generated;
+    manifest.bool_values["final_logits_derivation_complete"] = cpu_zkdl_verified && proof_result.final_logits_payload_generated;
     manifest.bool_values["no_precomputed_logits_bypass"] = semantic_result.passed;
     manifest.bool_values["proof_artifact_generated"] = cpu_zkdl_proof_generated;
     manifest.bool_values["verifier_called"] = cpu_zkdl_verifier_called;
@@ -3461,7 +3720,13 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.dataset_stats["checkpoint_value_count"] = std::to_string(plan.checkpoint_value_count);
     manifest.dataset_stats["range_bits"] = std::to_string(plan.range_bits);
     manifest.dataset_stats["quant_cfg_id"] = source_quant_cfg;
-    manifest.dataset_stats["rescale_rule"] = "fp32_row_normalize_then_output_head_arithmetic_mean";
+    manifest.dataset_stats["fixed_point_policy_id"] = fixed_point_policy().policy_id;
+    manifest.dataset_stats["fixed_point_scale"] = std::to_string(fixed_point_policy().scale);
+    manifest.dataset_stats["fixed_point_rounding"] = fixed_point_policy().rounding;
+    manifest.dataset_stats["signed_field_encoding"] = fixed_point_policy().signed_encoding;
+    manifest.dataset_stats["unrestricted_remainder_allowed"] =
+        fixed_point_policy().unrestricted_remainder_allowed ? "true" : "false";
+    manifest.dataset_stats["rescale_rule"] = fixed_point_policy().rescale_remainder_rule;
     manifest.dataset_stats["node_domain"] = std::to_string(plan.node_domain);
     manifest.dataset_stats["edge_domain"] = std::to_string(plan.edge_domain);
     manifest.dataset_stats["feature_domain"] = std::to_string(plan.feature_domain);
@@ -3474,24 +3739,23 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.dataset_stats["attempted_stages"] = join_strings(attempt.attempted_stages);
     manifest.dataset_stats["proof_artifact_generated"] = cpu_zkdl_proof_generated ? "true" : "false";
     manifest.dataset_stats["proof_artifact_path"] = cpu_zkdl_proof_generated ? proof_result.artifact_path : "";
+    manifest.dataset_stats["relation_payload_generated"] = proof_result.diagnostic_generated ? "true" : "false";
+    manifest.dataset_stats["relation_payload_path"] = proof_result.diagnostic_generated ? proof_result.artifact_path : "";
+    manifest.dataset_stats["all_relations_diagnostic_path"] = proof_result.diagnostic_path;
     manifest.dataset_stats["verifier_called"] = cpu_zkdl_verifier_called ? "true" : "false";
     manifest.dataset_stats["zkdl_proof_generated"] = cpu_zkdl_proof_generated ? "true" : "false";
     manifest.dataset_stats["zkdl_proof_verified"] = cpu_zkdl_verified ? "true" : "false";
     manifest.dataset_stats["zkdl_verifier_called"] = cpu_zkdl_verifier_called ? "true" : "false";
-    if (proof_result.generated && !cpu_zkdl_verified) {
+    if (proof_result.attempted && !cpu_zkdl_verified && proof_result.commitment_time_ms.has_value()) {
         manifest.dataset_stats["debug_commitment_attempt_time_ms"] = proof_result.commitment_time_ms.has_value()
             ? std::to_string(*proof_result.commitment_time_ms)
             : "";
         manifest.dataset_stats["debug_prove_attempt_time_ms"] = proof_result.prove_time_ms.has_value()
             ? std::to_string(*proof_result.prove_time_ms)
             : "";
-        manifest.dataset_stats["debug_verify_attempt_time_ms"] = proof_result.verify_time_ms.has_value()
-            ? std::to_string(*proof_result.verify_time_ms)
-            : "";
-        manifest.dataset_stats["verifier_failed_after_ms"] = proof_result.verify_time_ms.has_value()
-            ? std::to_string(*proof_result.verify_time_ms)
-            : "";
-        manifest.dataset_stats["debug_proof_attempt_size_bytes"] = proof_result.proof_size_bytes.has_value()
+        manifest.dataset_stats["debug_verify_attempt_time_ms"] = "";
+        manifest.dataset_stats["verifier_failed_after_ms"] = "";
+        manifest.dataset_stats["debug_relation_payload_size_bytes"] = proof_result.proof_size_bytes.has_value()
             ? std::to_string(*proof_result.proof_size_bytes)
             : "";
     }
@@ -3561,6 +3825,12 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     }
     if (cpu_zkdl_proof_generated && !proof_result.artifact_path.empty()) {
         add_source(manifest, "zkdl_proof_artifact", proof_result.artifact_path);
+    }
+    if (proof_result.diagnostic_generated && !proof_result.artifact_path.empty()) {
+        add_source(manifest, "zkdl_relation_payload_diagnostic", proof_result.artifact_path);
+    }
+    if (proof_result.diagnostic_generated && !proof_result.diagnostic_path.empty()) {
+        add_source(manifest, "all_relations_diagnostic", proof_result.diagnostic_path);
     }
 
     return manifest;

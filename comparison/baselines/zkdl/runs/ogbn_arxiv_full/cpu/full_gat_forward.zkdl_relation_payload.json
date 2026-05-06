@@ -1,9 +1,9 @@
 {
-  "artifact_type": "zkdl_proof",
-  "proof_format_id": "zkdl_full_gat_forward_portable_proof_v2",
-  "proof_backend": "zkDL",
-  "verifier_backend": "zkDL",
-  "commitment_backend_id": "zkdl_portable_hyrax_tensor_commitment_mle_v1",
+  "artifact_type": "zkdl_relation_payload_diagnostic_not_a_proof",
+  "proof_format_id": "zkdl_full_gat_forward_relation_payload_v3",
+  "proof_backend": "zkDL_relation_adapter_blocked_before_native_proof",
+  "verifier_backend": "not_invoked_until_native_zkdl_relation_coverage_exists",
+  "commitment_backend_id": "zkdl_portable_relation_commitment_diagnostic_v1",
   "field_id": "mersenne61_portable_scalar_field",
   "dataset": "ogbn_arxiv_full",
   "route": "cpu",
@@ -14,7 +14,9 @@
   "public_input_hash": "0x17a59427c8a2496a",
   "witness_coverage_hash": "0x6b20f5df54013cc1",
   "final_logits_hash": "0xce9f3974030ed588",
-  "payload_kind": "tensor_commitments_and_sumcheck_relation_payload",
+  "payload_kind": "diagnostic_tensor_commitments_and_relation_payload_not_accepted_as_proof",
+  "zkdl_proof": false,
+  "zkdl_verifier_acceptance": false,
   "tensor_commitments": [
     {
       "label": "public_feature_table",
