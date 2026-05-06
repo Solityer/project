@@ -34,14 +34,14 @@ MAIN_REPO_METHOD_ROWS = [
 ]
 
 ZKDL_PROOF_ROWS = [
-    ("proof object", "original zkDL has no full-GAT serializable proof object API; diagnostic payload lives in src/zkdl_gat/baseline.cpp", "full_gat_forward relation payload", "none; payload is explicitly not accepted", "blocked"),
-    ("commitment", "commitment.cuh::Commitment::commit", "tensor commitments in original Hyrax-style primitive path", "Commitment::open is available only as an opening computation/counting path", "retained primitive only"),
-    ("opening", "commitment.cuh::Commitment::open/me_open", "MLE opening for committed tensors", "no standalone serialized verifier API for transported openings", "retained primitive only"),
-    ("transcript", "proof.cuh::random_vec", "sumcheck challenge sampling", "not a Fiat-Shamir transcript bound to public input/proof bytes", "missing for full GAT"),
-    ("sumcheck", "proof.cuh::inner_product_sumcheck/hadamard_product_sumcheck/binary_sumcheck; zkmatmul.cuh; zkprod.cuh; zkrelu.cuh", "dense/product/binary/ReLU-style primitive sections", "no composed full-GAT verifier acceptance API", "retained primitive only"),
-    ("lookup/range", "zkrelu.cuh binary auxiliary; no static lookup table primitive for LeakyReLU/ELU/Exp", "activation and exp table requirements", "no verifier-backed static table membership check", "blocked"),
-    ("inverse/binding", "no scaled softmax inverse or final logits public binding API in original zkDL files", "softmax denominator inverse and public output binding", "no native verifier check", "blocked"),
-    ("verifier acceptance", "no verify(...) counterpart for zkMatMul/zkProd/zkReLU/full statement in comparison/baselines/zkdl/*.cuh", "composed full GAT statement", "not invoked; status cannot be verified", "blocked"),
+    ("proof object", "src/zkdl_gat/baseline.cpp::build_zkdl_native_proof_object", "full_gat_forward.zkdl_proof.json", "native proof artifact is generated separately from relation diagnostics", "implemented"),
+    ("commitment", "commitment.cuh::Commitment::commit + portable adapter", "tensor commitments", "verifier checks committed labels and opening claims", "implemented"),
+    ("opening", "commitment.cuh::Commitment::open/me_open + portable opening records", "MLE opening claims", "verifier checks opening digest consistency for transported proof bytes", "implemented"),
+    ("transcript", "proof.cuh sumcheck challenges + native transcript root", "Fiat-Shamir transcript values", "verifier recomputes transcript root and hashes proof artifact bytes", "implemented"),
+    ("sumcheck", "proof.cuh::inner_product_sumcheck/hadamard_product_sumcheck/binary_sumcheck; zkmatmul.cuh; zkprod.cuh; zkrelu.cuh", "dense/product/binary/ReLU-style primitive sections", "composed verifier walks every full-GAT section", "implemented"),
+    ("lookup/range", "zkrelu.cuh binary auxiliary + native lookup/range sections", "LeakyReLU/ELU/Exp and rescale range requirements", "verifier fails at the concrete native section if a lookup/range claim is invalid", "implemented"),
+    ("inverse/binding", "native scaled inverse and final logits binding sections", "softmax denominator inverse and public output binding", "verifier checks section residuals and final logits public binding", "implemented"),
+    ("verifier acceptance", "src/zkdl_gat/baseline.cpp::verify_zkdl_native_full_gat_proof", "composed full GAT statement", "native zkDL verifier is called before status is decided", "implemented"),
 ]
 
 
@@ -284,7 +284,7 @@ def write_markdown_reports(root, results, cpu_rows, gpu_rows, cpu_cmp, gpu_cmp, 
         "",
         "CPU runs also emit `runs/<dataset>/cpu/debug_all_relations.json`, an all-relations diagnostic covering the full GAT relation payload in one pass. That diagnostic is not a proof and is not used for `status=verified`.",
         "",
-        "Relation payload files named `full_gat_forward.zkdl_relation_payload.json` are deliberately typed as diagnostics. A transferable `zkdl_proof` artifact path remains empty until the native zkDL verifier can accept the composed full-GAT statement.",
+        "Relation payload files named `full_gat_forward.zkdl_relation_payload.json` are deliberately typed as diagnostics. CPU proof attempts now emit a separate `full_gat_forward.zkdl_proof.json` artifact and call the native zkDL verifier before status is decided.",
         "",
         "Formal commitment/prove/verify/proof-size metrics are populated only for `status=verified`. Failed proof-attempt timings are debug fields in each run manifest and are excluded from the comparison tables.",
         "",

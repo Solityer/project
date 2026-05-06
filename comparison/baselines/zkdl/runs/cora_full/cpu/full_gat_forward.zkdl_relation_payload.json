@@ -2,7 +2,7 @@
   "artifact_type": "zkdl_relation_payload_diagnostic_not_a_proof",
   "proof_format_id": "zkdl_full_gat_forward_relation_payload_v3",
   "proof_backend": "zkDL_relation_adapter_blocked_before_native_proof",
-  "verifier_backend": "not_invoked_until_native_zkdl_relation_coverage_exists",
+  "verifier_backend": "diagnostic_payload_not_submitted_to_verifier",
   "commitment_backend_id": "zkdl_portable_relation_commitment_diagnostic_v1",
   "field_id": "mersenne61_portable_scalar_field",
   "dataset": "cora_full",
@@ -1091,6 +1091,24 @@
       }
     },
     {
+      "section_id": "hidden.layer0.head0.projection_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "hidden.layer0.head0.projection_rescale_range",
+      "tensor_labels": ["hidden.layer0.head0.projection_rescale_remainder"],
+      "relation_passed": true,
+      "field_values": {
+        "out_of_field_count": "0x0000000000000000",
+        "range_challenge": "0x06db76c58577273a",
+        "remainder_eval": "0x0c688dc748a7fbc2",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
+        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "value_count": "21664"
+      }
+    },
+    {
       "section_id": "hidden.layer0.head0.attention_score",
       "relation": "sparse_attention_score_sumcheck",
       "label": "hidden.layer0.head0.attention_score",
@@ -1114,6 +1132,72 @@
         "rescale_rule": "fixed_point_independent_score_rounding_remainder_witness",
         "route_source": "public_sparse_route",
         "score_rescale_remainder_tensor": "hidden.layer0.head0.score_rescale_remainder"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head0.score_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "hidden.layer0.head0.score_rescale_range",
+      "tensor_labels": ["hidden.layer0.head0.score_rescale_remainder"],
+      "relation_passed": true,
+      "field_values": {
+        "out_of_field_count": "0x0000000000000000",
+        "range_challenge": "0x044b79e8c9838b17",
+        "remainder_eval": "0x1de607eb53e936e1",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
+        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "value_count": "13264"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head0.leaky_relu_lookup",
+      "relation": "leaky_relu_static_lookup_argument",
+      "label": "hidden.layer0.head0.leaky_relu_lookup",
+      "tensor_labels": ["hidden.layer0.head0.score", "hidden.layer0.head0.leaky_relu", "T_LEAKY_RELU"],
+      "relation_passed": true,
+      "field_values": {
+        "edge_challenge": "0x1c819c1101044e69",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "leaky_relu_q = T_LEAKY_RELU(score_q)",
+        "edge_count": "13264",
+        "lookup_table_id": "T_LEAKY_RELU_slope_0p2"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head0.destination_group",
+      "relation": "destination_group_max_denominator_argument",
+      "label": "hidden.layer0.head0.destination_group",
+      "tensor_labels": ["hidden.layer0.head0.leaky_relu", "hidden.layer0.head0.dst_max", "hidden.layer0.head0.softmax_delta", "hidden.layer0.head0.exp_lookup", "hidden.layer0.head0.denominator", "public_sparse_route"],
+      "relation_passed": true,
+      "field_values": {
+        "node_challenge": "0x0321a380a29e0e1a",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "dst_max is the destination group max and denominator is sum exp(z - max)",
+        "edge_count": "13264",
+        "node_count": "2708"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head0.exp_lookup",
+      "relation": "exp_static_lookup_argument",
+      "label": "hidden.layer0.head0.exp_lookup",
+      "tensor_labels": ["hidden.layer0.head0.softmax_delta", "hidden.layer0.head0.exp_lookup", "T_EXP"],
+      "relation_passed": true,
+      "field_values": {
+        "edge_challenge": "0x0aefb5ab7109ab05",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "exp_lookup_q = T_EXP(-softmax_delta_q)",
+        "edge_count": "13264",
+        "lookup_table_id": "T_EXP_negative_delta"
       }
     },
     {
@@ -1208,6 +1292,24 @@
       }
     },
     {
+      "section_id": "hidden.layer0.head1.projection_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "hidden.layer0.head1.projection_rescale_range",
+      "tensor_labels": ["hidden.layer0.head1.projection_rescale_remainder"],
+      "relation_passed": true,
+      "field_values": {
+        "out_of_field_count": "0x0000000000000000",
+        "range_challenge": "0x03c04d53bc1ba728",
+        "remainder_eval": "0x06de507a79d28496",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
+        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "value_count": "21664"
+      }
+    },
+    {
       "section_id": "hidden.layer0.head1.attention_score",
       "relation": "sparse_attention_score_sumcheck",
       "label": "hidden.layer0.head1.attention_score",
@@ -1231,6 +1333,72 @@
         "rescale_rule": "fixed_point_independent_score_rounding_remainder_witness",
         "route_source": "public_sparse_route",
         "score_rescale_remainder_tensor": "hidden.layer0.head1.score_rescale_remainder"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head1.score_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "hidden.layer0.head1.score_rescale_range",
+      "tensor_labels": ["hidden.layer0.head1.score_rescale_remainder"],
+      "relation_passed": true,
+      "field_values": {
+        "out_of_field_count": "0x0000000000000000",
+        "range_challenge": "0x1a76c057d3e08ca0",
+        "remainder_eval": "0x02fb19c7f7e09c97",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
+        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "value_count": "13264"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head1.leaky_relu_lookup",
+      "relation": "leaky_relu_static_lookup_argument",
+      "label": "hidden.layer0.head1.leaky_relu_lookup",
+      "tensor_labels": ["hidden.layer0.head1.score", "hidden.layer0.head1.leaky_relu", "T_LEAKY_RELU"],
+      "relation_passed": true,
+      "field_values": {
+        "edge_challenge": "0x1f2482b9ce294b99",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "leaky_relu_q = T_LEAKY_RELU(score_q)",
+        "edge_count": "13264",
+        "lookup_table_id": "T_LEAKY_RELU_slope_0p2"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head1.destination_group",
+      "relation": "destination_group_max_denominator_argument",
+      "label": "hidden.layer0.head1.destination_group",
+      "tensor_labels": ["hidden.layer0.head1.leaky_relu", "hidden.layer0.head1.dst_max", "hidden.layer0.head1.softmax_delta", "hidden.layer0.head1.exp_lookup", "hidden.layer0.head1.denominator", "public_sparse_route"],
+      "relation_passed": true,
+      "field_values": {
+        "node_challenge": "0x1a1f8b6e62f48fd9",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "dst_max is the destination group max and denominator is sum exp(z - max)",
+        "edge_count": "13264",
+        "node_count": "2708"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head1.exp_lookup",
+      "relation": "exp_static_lookup_argument",
+      "label": "hidden.layer0.head1.exp_lookup",
+      "tensor_labels": ["hidden.layer0.head1.softmax_delta", "hidden.layer0.head1.exp_lookup", "T_EXP"],
+      "relation_passed": true,
+      "field_values": {
+        "edge_challenge": "0x0e802a128d0887d6",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "exp_lookup_q = T_EXP(-softmax_delta_q)",
+        "edge_count": "13264",
+        "lookup_table_id": "T_EXP_negative_delta"
       }
     },
     {
@@ -1325,6 +1493,24 @@
       }
     },
     {
+      "section_id": "hidden.layer0.head2.projection_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "hidden.layer0.head2.projection_rescale_range",
+      "tensor_labels": ["hidden.layer0.head2.projection_rescale_remainder"],
+      "relation_passed": true,
+      "field_values": {
+        "out_of_field_count": "0x0000000000000000",
+        "range_challenge": "0x08c996b064305ae7",
+        "remainder_eval": "0x04faf482da604b87",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
+        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "value_count": "21664"
+      }
+    },
+    {
       "section_id": "hidden.layer0.head2.attention_score",
       "relation": "sparse_attention_score_sumcheck",
       "label": "hidden.layer0.head2.attention_score",
@@ -1348,6 +1534,72 @@
         "rescale_rule": "fixed_point_independent_score_rounding_remainder_witness",
         "route_source": "public_sparse_route",
         "score_rescale_remainder_tensor": "hidden.layer0.head2.score_rescale_remainder"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head2.score_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "hidden.layer0.head2.score_rescale_range",
+      "tensor_labels": ["hidden.layer0.head2.score_rescale_remainder"],
+      "relation_passed": true,
+      "field_values": {
+        "out_of_field_count": "0x0000000000000000",
+        "range_challenge": "0x1ae0b2ad1b927d8f",
+        "remainder_eval": "0x0c284546d085c907",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
+        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "value_count": "13264"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head2.leaky_relu_lookup",
+      "relation": "leaky_relu_static_lookup_argument",
+      "label": "hidden.layer0.head2.leaky_relu_lookup",
+      "tensor_labels": ["hidden.layer0.head2.score", "hidden.layer0.head2.leaky_relu", "T_LEAKY_RELU"],
+      "relation_passed": true,
+      "field_values": {
+        "edge_challenge": "0x0e9130ff27de7a60",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "leaky_relu_q = T_LEAKY_RELU(score_q)",
+        "edge_count": "13264",
+        "lookup_table_id": "T_LEAKY_RELU_slope_0p2"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head2.destination_group",
+      "relation": "destination_group_max_denominator_argument",
+      "label": "hidden.layer0.head2.destination_group",
+      "tensor_labels": ["hidden.layer0.head2.leaky_relu", "hidden.layer0.head2.dst_max", "hidden.layer0.head2.softmax_delta", "hidden.layer0.head2.exp_lookup", "hidden.layer0.head2.denominator", "public_sparse_route"],
+      "relation_passed": true,
+      "field_values": {
+        "node_challenge": "0x1609cca78c5a6e93",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "dst_max is the destination group max and denominator is sum exp(z - max)",
+        "edge_count": "13264",
+        "node_count": "2708"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head2.exp_lookup",
+      "relation": "exp_static_lookup_argument",
+      "label": "hidden.layer0.head2.exp_lookup",
+      "tensor_labels": ["hidden.layer0.head2.softmax_delta", "hidden.layer0.head2.exp_lookup", "T_EXP"],
+      "relation_passed": true,
+      "field_values": {
+        "edge_challenge": "0x1f84d22e5b4715e4",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "exp_lookup_q = T_EXP(-softmax_delta_q)",
+        "edge_count": "13264",
+        "lookup_table_id": "T_EXP_negative_delta"
       }
     },
     {
@@ -1442,6 +1694,24 @@
       }
     },
     {
+      "section_id": "hidden.layer0.head3.projection_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "hidden.layer0.head3.projection_rescale_range",
+      "tensor_labels": ["hidden.layer0.head3.projection_rescale_remainder"],
+      "relation_passed": true,
+      "field_values": {
+        "out_of_field_count": "0x0000000000000000",
+        "range_challenge": "0x0d3109bd8ed48374",
+        "remainder_eval": "0x11ccd4229f9dde7c",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
+        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "value_count": "21664"
+      }
+    },
+    {
       "section_id": "hidden.layer0.head3.attention_score",
       "relation": "sparse_attention_score_sumcheck",
       "label": "hidden.layer0.head3.attention_score",
@@ -1465,6 +1735,72 @@
         "rescale_rule": "fixed_point_independent_score_rounding_remainder_witness",
         "route_source": "public_sparse_route",
         "score_rescale_remainder_tensor": "hidden.layer0.head3.score_rescale_remainder"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head3.score_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "hidden.layer0.head3.score_rescale_range",
+      "tensor_labels": ["hidden.layer0.head3.score_rescale_remainder"],
+      "relation_passed": true,
+      "field_values": {
+        "out_of_field_count": "0x0000000000000000",
+        "range_challenge": "0x0fa53c269a672e49",
+        "remainder_eval": "0x144bcd5dc05d6a51",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
+        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "value_count": "13264"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head3.leaky_relu_lookup",
+      "relation": "leaky_relu_static_lookup_argument",
+      "label": "hidden.layer0.head3.leaky_relu_lookup",
+      "tensor_labels": ["hidden.layer0.head3.score", "hidden.layer0.head3.leaky_relu", "T_LEAKY_RELU"],
+      "relation_passed": true,
+      "field_values": {
+        "edge_challenge": "0x066a0ad2798ae123",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "leaky_relu_q = T_LEAKY_RELU(score_q)",
+        "edge_count": "13264",
+        "lookup_table_id": "T_LEAKY_RELU_slope_0p2"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head3.destination_group",
+      "relation": "destination_group_max_denominator_argument",
+      "label": "hidden.layer0.head3.destination_group",
+      "tensor_labels": ["hidden.layer0.head3.leaky_relu", "hidden.layer0.head3.dst_max", "hidden.layer0.head3.softmax_delta", "hidden.layer0.head3.exp_lookup", "hidden.layer0.head3.denominator", "public_sparse_route"],
+      "relation_passed": true,
+      "field_values": {
+        "node_challenge": "0x0ee9383e2b6785a5",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "dst_max is the destination group max and denominator is sum exp(z - max)",
+        "edge_count": "13264",
+        "node_count": "2708"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head3.exp_lookup",
+      "relation": "exp_static_lookup_argument",
+      "label": "hidden.layer0.head3.exp_lookup",
+      "tensor_labels": ["hidden.layer0.head3.softmax_delta", "hidden.layer0.head3.exp_lookup", "T_EXP"],
+      "relation_passed": true,
+      "field_values": {
+        "edge_challenge": "0x01a5c223c2416883",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "exp_lookup_q = T_EXP(-softmax_delta_q)",
+        "edge_count": "13264",
+        "lookup_table_id": "T_EXP_negative_delta"
       }
     },
     {
@@ -1559,6 +1895,24 @@
       }
     },
     {
+      "section_id": "hidden.layer0.head4.projection_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "hidden.layer0.head4.projection_rescale_range",
+      "tensor_labels": ["hidden.layer0.head4.projection_rescale_remainder"],
+      "relation_passed": true,
+      "field_values": {
+        "out_of_field_count": "0x0000000000000000",
+        "range_challenge": "0x11efade83bcde252",
+        "remainder_eval": "0x16b408b8688aaeee",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
+        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "value_count": "21664"
+      }
+    },
+    {
       "section_id": "hidden.layer0.head4.attention_score",
       "relation": "sparse_attention_score_sumcheck",
       "label": "hidden.layer0.head4.attention_score",
@@ -1582,6 +1936,72 @@
         "rescale_rule": "fixed_point_independent_score_rounding_remainder_witness",
         "route_source": "public_sparse_route",
         "score_rescale_remainder_tensor": "hidden.layer0.head4.score_rescale_remainder"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head4.score_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "hidden.layer0.head4.score_rescale_range",
+      "tensor_labels": ["hidden.layer0.head4.score_rescale_remainder"],
+      "relation_passed": true,
+      "field_values": {
+        "out_of_field_count": "0x0000000000000000",
+        "range_challenge": "0x0bf47a0828cd46a0",
+        "remainder_eval": "0x0b332bd1a45081e8",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
+        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "value_count": "13264"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head4.leaky_relu_lookup",
+      "relation": "leaky_relu_static_lookup_argument",
+      "label": "hidden.layer0.head4.leaky_relu_lookup",
+      "tensor_labels": ["hidden.layer0.head4.score", "hidden.layer0.head4.leaky_relu", "T_LEAKY_RELU"],
+      "relation_passed": true,
+      "field_values": {
+        "edge_challenge": "0x06f5b2cf2955b308",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "leaky_relu_q = T_LEAKY_RELU(score_q)",
+        "edge_count": "13264",
+        "lookup_table_id": "T_LEAKY_RELU_slope_0p2"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head4.destination_group",
+      "relation": "destination_group_max_denominator_argument",
+      "label": "hidden.layer0.head4.destination_group",
+      "tensor_labels": ["hidden.layer0.head4.leaky_relu", "hidden.layer0.head4.dst_max", "hidden.layer0.head4.softmax_delta", "hidden.layer0.head4.exp_lookup", "hidden.layer0.head4.denominator", "public_sparse_route"],
+      "relation_passed": true,
+      "field_values": {
+        "node_challenge": "0x06f6c8ad7a0ff0a4",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "dst_max is the destination group max and denominator is sum exp(z - max)",
+        "edge_count": "13264",
+        "node_count": "2708"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head4.exp_lookup",
+      "relation": "exp_static_lookup_argument",
+      "label": "hidden.layer0.head4.exp_lookup",
+      "tensor_labels": ["hidden.layer0.head4.softmax_delta", "hidden.layer0.head4.exp_lookup", "T_EXP"],
+      "relation_passed": true,
+      "field_values": {
+        "edge_challenge": "0x00089fbd9714110b",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "exp_lookup_q = T_EXP(-softmax_delta_q)",
+        "edge_count": "13264",
+        "lookup_table_id": "T_EXP_negative_delta"
       }
     },
     {
@@ -1676,6 +2096,24 @@
       }
     },
     {
+      "section_id": "hidden.layer0.head5.projection_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "hidden.layer0.head5.projection_rescale_range",
+      "tensor_labels": ["hidden.layer0.head5.projection_rescale_remainder"],
+      "relation_passed": true,
+      "field_values": {
+        "out_of_field_count": "0x0000000000000000",
+        "range_challenge": "0x1b10b6fd3e7e591e",
+        "remainder_eval": "0x186302533af446e6",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
+        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "value_count": "21664"
+      }
+    },
+    {
       "section_id": "hidden.layer0.head5.attention_score",
       "relation": "sparse_attention_score_sumcheck",
       "label": "hidden.layer0.head5.attention_score",
@@ -1699,6 +2137,72 @@
         "rescale_rule": "fixed_point_independent_score_rounding_remainder_witness",
         "route_source": "public_sparse_route",
         "score_rescale_remainder_tensor": "hidden.layer0.head5.score_rescale_remainder"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head5.score_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "hidden.layer0.head5.score_rescale_range",
+      "tensor_labels": ["hidden.layer0.head5.score_rescale_remainder"],
+      "relation_passed": true,
+      "field_values": {
+        "out_of_field_count": "0x0000000000000000",
+        "range_challenge": "0x10e3bb3f1d911f91",
+        "remainder_eval": "0x19d8ad0ab92a6ac8",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
+        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "value_count": "13264"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head5.leaky_relu_lookup",
+      "relation": "leaky_relu_static_lookup_argument",
+      "label": "hidden.layer0.head5.leaky_relu_lookup",
+      "tensor_labels": ["hidden.layer0.head5.score", "hidden.layer0.head5.leaky_relu", "T_LEAKY_RELU"],
+      "relation_passed": true,
+      "field_values": {
+        "edge_challenge": "0x11d06df7c0f9af0d",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "leaky_relu_q = T_LEAKY_RELU(score_q)",
+        "edge_count": "13264",
+        "lookup_table_id": "T_LEAKY_RELU_slope_0p2"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head5.destination_group",
+      "relation": "destination_group_max_denominator_argument",
+      "label": "hidden.layer0.head5.destination_group",
+      "tensor_labels": ["hidden.layer0.head5.leaky_relu", "hidden.layer0.head5.dst_max", "hidden.layer0.head5.softmax_delta", "hidden.layer0.head5.exp_lookup", "hidden.layer0.head5.denominator", "public_sparse_route"],
+      "relation_passed": true,
+      "field_values": {
+        "node_challenge": "0x1728af8fe7128ac2",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "dst_max is the destination group max and denominator is sum exp(z - max)",
+        "edge_count": "13264",
+        "node_count": "2708"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head5.exp_lookup",
+      "relation": "exp_static_lookup_argument",
+      "label": "hidden.layer0.head5.exp_lookup",
+      "tensor_labels": ["hidden.layer0.head5.softmax_delta", "hidden.layer0.head5.exp_lookup", "T_EXP"],
+      "relation_passed": true,
+      "field_values": {
+        "edge_challenge": "0x0295fad39a307833",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "exp_lookup_q = T_EXP(-softmax_delta_q)",
+        "edge_count": "13264",
+        "lookup_table_id": "T_EXP_negative_delta"
       }
     },
     {
@@ -1793,6 +2297,24 @@
       }
     },
     {
+      "section_id": "hidden.layer0.head6.projection_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "hidden.layer0.head6.projection_rescale_range",
+      "tensor_labels": ["hidden.layer0.head6.projection_rescale_remainder"],
+      "relation_passed": true,
+      "field_values": {
+        "out_of_field_count": "0x0000000000000000",
+        "range_challenge": "0x10e1ca865adb8c07",
+        "remainder_eval": "0x1a8d0a8f6dfdc5a9",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
+        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "value_count": "21664"
+      }
+    },
+    {
       "section_id": "hidden.layer0.head6.attention_score",
       "relation": "sparse_attention_score_sumcheck",
       "label": "hidden.layer0.head6.attention_score",
@@ -1816,6 +2338,72 @@
         "rescale_rule": "fixed_point_independent_score_rounding_remainder_witness",
         "route_source": "public_sparse_route",
         "score_rescale_remainder_tensor": "hidden.layer0.head6.score_rescale_remainder"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head6.score_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "hidden.layer0.head6.score_rescale_range",
+      "tensor_labels": ["hidden.layer0.head6.score_rescale_remainder"],
+      "relation_passed": true,
+      "field_values": {
+        "out_of_field_count": "0x0000000000000000",
+        "range_challenge": "0x01efeb4753b0a559",
+        "remainder_eval": "0x1c8a9f054610a23a",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
+        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "value_count": "13264"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head6.leaky_relu_lookup",
+      "relation": "leaky_relu_static_lookup_argument",
+      "label": "hidden.layer0.head6.leaky_relu_lookup",
+      "tensor_labels": ["hidden.layer0.head6.score", "hidden.layer0.head6.leaky_relu", "T_LEAKY_RELU"],
+      "relation_passed": true,
+      "field_values": {
+        "edge_challenge": "0x1a1cd5b39c37388a",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "leaky_relu_q = T_LEAKY_RELU(score_q)",
+        "edge_count": "13264",
+        "lookup_table_id": "T_LEAKY_RELU_slope_0p2"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head6.destination_group",
+      "relation": "destination_group_max_denominator_argument",
+      "label": "hidden.layer0.head6.destination_group",
+      "tensor_labels": ["hidden.layer0.head6.leaky_relu", "hidden.layer0.head6.dst_max", "hidden.layer0.head6.softmax_delta", "hidden.layer0.head6.exp_lookup", "hidden.layer0.head6.denominator", "public_sparse_route"],
+      "relation_passed": true,
+      "field_values": {
+        "node_challenge": "0x0eb81c295efb45c0",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "dst_max is the destination group max and denominator is sum exp(z - max)",
+        "edge_count": "13264",
+        "node_count": "2708"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head6.exp_lookup",
+      "relation": "exp_static_lookup_argument",
+      "label": "hidden.layer0.head6.exp_lookup",
+      "tensor_labels": ["hidden.layer0.head6.softmax_delta", "hidden.layer0.head6.exp_lookup", "T_EXP"],
+      "relation_passed": true,
+      "field_values": {
+        "edge_challenge": "0x14225a3120ad4027",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "exp_lookup_q = T_EXP(-softmax_delta_q)",
+        "edge_count": "13264",
+        "lookup_table_id": "T_EXP_negative_delta"
       }
     },
     {
@@ -1910,6 +2498,24 @@
       }
     },
     {
+      "section_id": "hidden.layer0.head7.projection_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "hidden.layer0.head7.projection_rescale_range",
+      "tensor_labels": ["hidden.layer0.head7.projection_rescale_remainder"],
+      "relation_passed": true,
+      "field_values": {
+        "out_of_field_count": "0x0000000000000000",
+        "range_challenge": "0x0b500b1429fe6ee0",
+        "remainder_eval": "0x13ce4f367e667436",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
+        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "value_count": "21664"
+      }
+    },
+    {
       "section_id": "hidden.layer0.head7.attention_score",
       "relation": "sparse_attention_score_sumcheck",
       "label": "hidden.layer0.head7.attention_score",
@@ -1933,6 +2539,72 @@
         "rescale_rule": "fixed_point_independent_score_rounding_remainder_witness",
         "route_source": "public_sparse_route",
         "score_rescale_remainder_tensor": "hidden.layer0.head7.score_rescale_remainder"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head7.score_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "hidden.layer0.head7.score_rescale_range",
+      "tensor_labels": ["hidden.layer0.head7.score_rescale_remainder"],
+      "relation_passed": true,
+      "field_values": {
+        "out_of_field_count": "0x0000000000000000",
+        "range_challenge": "0x00c15eeafa6438d7",
+        "remainder_eval": "0x152d03b519998e4e",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
+        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "value_count": "13264"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head7.leaky_relu_lookup",
+      "relation": "leaky_relu_static_lookup_argument",
+      "label": "hidden.layer0.head7.leaky_relu_lookup",
+      "tensor_labels": ["hidden.layer0.head7.score", "hidden.layer0.head7.leaky_relu", "T_LEAKY_RELU"],
+      "relation_passed": true,
+      "field_values": {
+        "edge_challenge": "0x07c07b9ecf52ef18",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "leaky_relu_q = T_LEAKY_RELU(score_q)",
+        "edge_count": "13264",
+        "lookup_table_id": "T_LEAKY_RELU_slope_0p2"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head7.destination_group",
+      "relation": "destination_group_max_denominator_argument",
+      "label": "hidden.layer0.head7.destination_group",
+      "tensor_labels": ["hidden.layer0.head7.leaky_relu", "hidden.layer0.head7.dst_max", "hidden.layer0.head7.softmax_delta", "hidden.layer0.head7.exp_lookup", "hidden.layer0.head7.denominator", "public_sparse_route"],
+      "relation_passed": true,
+      "field_values": {
+        "node_challenge": "0x1ecdfa9a3b26c544",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "dst_max is the destination group max and denominator is sum exp(z - max)",
+        "edge_count": "13264",
+        "node_count": "2708"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head7.exp_lookup",
+      "relation": "exp_static_lookup_argument",
+      "label": "hidden.layer0.head7.exp_lookup",
+      "tensor_labels": ["hidden.layer0.head7.softmax_delta", "hidden.layer0.head7.exp_lookup", "T_EXP"],
+      "relation_passed": true,
+      "field_values": {
+        "edge_challenge": "0x114beaccfb8d23a7",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "exp_lookup_q = T_EXP(-softmax_delta_q)",
+        "edge_count": "13264",
+        "lookup_table_id": "T_EXP_negative_delta"
       }
     },
     {
@@ -2000,6 +2672,24 @@
       }
     },
     {
+      "section_id": "hidden.layer0.hidden_concat",
+      "relation": "hidden_concat_slice_consistency",
+      "label": "hidden.layer0.hidden_concat",
+      "tensor_labels": ["hidden.layer0.concat", "hidden.layer0.head0.aggregate_out", "hidden.layer0.head1.aggregate_out", "hidden.layer0.head2.aggregate_out", "hidden.layer0.head3.aggregate_out", "hidden.layer0.head4.aggregate_out", "hidden.layer0.head5.aggregate_out", "hidden.layer0.head6.aggregate_out", "hidden.layer0.head7.aggregate_out"],
+      "relation_passed": true,
+      "field_values": {
+        "col_challenge": "0x0040fc4529526f8e",
+        "residual": "0x0000000000000000",
+        "row_challenge": "0x0b15863ece839c1e"
+      },
+      "metadata": {
+        "claim_equation": "hidden concat tensor equals the ordered slice concatenation of hidden head outputs",
+        "concat_dim": "64",
+        "head_count": "8",
+        "node_count": "2708"
+      }
+    },
+    {
       "section_id": "output.head0.projection",
       "relation": "dense_matmul_sumcheck",
       "label": "output.head0.projection",
@@ -2027,6 +2717,24 @@
       }
     },
     {
+      "section_id": "output.head0.projection_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "output.head0.projection_rescale_range",
+      "tensor_labels": ["output.head0.projection_rescale_remainder"],
+      "relation_passed": true,
+      "field_values": {
+        "out_of_field_count": "0x0000000000000000",
+        "range_challenge": "0x1aa52ca2ce3ed09e",
+        "remainder_eval": "0x03b73ec80c7577ac",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
+        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "value_count": "18956"
+      }
+    },
+    {
       "section_id": "output.head0.attention_score",
       "relation": "sparse_attention_score_sumcheck",
       "label": "output.head0.attention_score",
@@ -2050,6 +2758,72 @@
         "rescale_rule": "fixed_point_independent_score_rounding_remainder_witness",
         "route_source": "public_sparse_route",
         "score_rescale_remainder_tensor": "output.head0.score_rescale_remainder"
+      }
+    },
+    {
+      "section_id": "output.head0.score_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "output.head0.score_rescale_range",
+      "tensor_labels": ["output.head0.score_rescale_remainder"],
+      "relation_passed": true,
+      "field_values": {
+        "out_of_field_count": "0x0000000000000000",
+        "range_challenge": "0x103e1a44697a517e",
+        "remainder_eval": "0x1add103bbe7cdb86",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
+        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "value_count": "13264"
+      }
+    },
+    {
+      "section_id": "output.head0.leaky_relu_lookup",
+      "relation": "leaky_relu_static_lookup_argument",
+      "label": "output.head0.leaky_relu_lookup",
+      "tensor_labels": ["output.head0.score", "output.head0.leaky_relu", "T_LEAKY_RELU"],
+      "relation_passed": true,
+      "field_values": {
+        "edge_challenge": "0x0e7d2d13325f7c3c",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "leaky_relu_q = T_LEAKY_RELU(score_q)",
+        "edge_count": "13264",
+        "lookup_table_id": "T_LEAKY_RELU_slope_0p2"
+      }
+    },
+    {
+      "section_id": "output.head0.destination_group",
+      "relation": "destination_group_max_denominator_argument",
+      "label": "output.head0.destination_group",
+      "tensor_labels": ["output.head0.leaky_relu", "output.head0.dst_max", "output.head0.softmax_delta", "output.head0.exp_lookup", "output.head0.denominator", "public_sparse_route"],
+      "relation_passed": true,
+      "field_values": {
+        "node_challenge": "0x0e30426dd7e2d429",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "dst_max is the destination group max and denominator is sum exp(z - max)",
+        "edge_count": "13264",
+        "node_count": "2708"
+      }
+    },
+    {
+      "section_id": "output.head0.exp_lookup",
+      "relation": "exp_static_lookup_argument",
+      "label": "output.head0.exp_lookup",
+      "tensor_labels": ["output.head0.softmax_delta", "output.head0.exp_lookup", "T_EXP"],
+      "relation_passed": true,
+      "field_values": {
+        "edge_challenge": "0x18d17faec6114cb3",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "exp_lookup_q = T_EXP(-softmax_delta_q)",
+        "edge_count": "13264",
+        "lookup_table_id": "T_EXP_negative_delta"
       }
     },
     {
@@ -2114,6 +2888,24 @@
         "feature_dim": "7",
         "lookup_table_id": "identity",
         "node_count": "2708"
+      }
+    },
+    {
+      "section_id": "output.bias_head_average",
+      "relation": "output_bias_head_average_sumcheck",
+      "label": "output.bias_head_average",
+      "tensor_labels": ["output.average_pre_bias", "final_logits", "output.head0.aggregate_pre_bias", "output.head0.aggregate_out"],
+      "relation_passed": true,
+      "field_values": {
+        "col_challenge": "0x0d11c20e87f2d26b",
+        "residual": "0x0000000000000000",
+        "row_challenge": "0x0575b8f006e9b10d"
+      },
+      "metadata": {
+        "claim_equation": "final logits and pre-bias logits equal arithmetic averages of output heads",
+        "class_count": "7",
+        "node_count": "2708",
+        "output_head_count": "1"
       }
     },
     {
