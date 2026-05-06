@@ -69,6 +69,12 @@ def route_result_row(manifest):
         "route_id": manifest["route_id"],
         "backend": manifest["backend"],
         "status": manifest["status"],
+        "proof_backend": manifest["proof_backend"],
+        "verifier_backend": manifest["verifier_backend"],
+        "full_dataset": manifest["full_dataset"],
+        "full_dataset_gate_passed": manifest["full_dataset_gate_passed"],
+        "semantic_precheck_passed": manifest["semantic_precheck_passed"],
+        "zkdl_proof_verified": manifest["zkdl_proof_verified"],
         "commitment_time_ms": manifest["commitment_time_ms"],
         "prove_time_ms": manifest["prove_time_ms"],
         "verify_time_ms": manifest["verify_time_ms"],
@@ -94,6 +100,10 @@ def comparison_row(manifest, main_row, route):
         "zkdl_route_id": manifest["route_id"],
         "zkdl_status": manifest["status"],
         "comparison_status": "verified" if manifest["status"] == "verified" else "blocked",
+        "zkdl_proof_backend": manifest["proof_backend"],
+        "zkdl_verifier_backend": manifest["verifier_backend"],
+        "full_dataset_gate_passed": manifest["full_dataset_gate_passed"],
+        "semantic_precheck_passed": manifest["semantic_precheck_passed"],
         "main_commitment_time_ms": main_row["commitment_time_ms"],
         "main_prove_time_ms": main_row["prove_time_ms"],
         "main_verify_time_ms": main_row["verify_time_ms"],
@@ -124,6 +134,9 @@ def run_route(root, build_dir, route):
     for dataset_id, _ in DATASETS:
         cfg = root / "configs" / f"{dataset_id}.cfg"
         out = root / "runs" / dataset_id / route / "run_manifest.json"
+        legacy = root / "runs" / dataset_id / route / "zkdl_gat_composed_proof.json"
+        if legacy.exists():
+            legacy.unlink()
         run([
             str(runner),
             "--config", str(cfg),
@@ -139,7 +152,8 @@ def collect(root, cpu_manifests, gpu_manifests):
     results = root / "results"
     generated_at = datetime.now(timezone.utc).isoformat()
     route_fields = [
-        "dataset", "route_id", "backend", "status",
+        "dataset", "route_id", "backend", "status", "proof_backend", "verifier_backend",
+        "full_dataset", "full_dataset_gate_passed", "semantic_precheck_passed", "zkdl_proof_verified",
         "commitment_time_ms", "prove_time_ms", "verify_time_ms", "proof_size_bytes",
         "strict_public_input_equivalent", "full_gat_forward_in_zkdl_proof",
         "final_logits_derivation_complete", "no_precomputed_logits_bypass",
@@ -171,6 +185,7 @@ def collect(root, cpu_manifests, gpu_manifests):
     gpu_cmp = [comparison_row(item, main_gpu[name_map[item["dataset"]]], "gpu") for item in gpu_manifests]
     cmp_fields = [
         "dataset", "main_route", "zkdl_route_id", "zkdl_status", "comparison_status",
+        "zkdl_proof_backend", "zkdl_verifier_backend", "full_dataset_gate_passed", "semantic_precheck_passed",
         "main_commitment_time_ms", "main_prove_time_ms", "main_verify_time_ms", "main_proof_size_bytes",
         "zkdl_commitment_time_ms", "zkdl_prove_time_ms", "zkdl_verify_time_ms", "zkdl_proof_size_bytes",
         "failure_step", "block_reason",
@@ -203,6 +218,8 @@ def write_markdown_reports(root, results, cpu_rows, gpu_rows, cpu_cmp, gpu_cmp, 
         "Correct baseline directory: `comparison/baselines/zkdl`.",
         "",
         "The full-dataset statement is attempted for `cora_full`, `citeseer_full`, `pubmed_full`, `ppi_full_formal`, and `ogbn_arxiv_full`. No row is marked verified unless a real zkDL proof and verifier acceptance path succeeds.",
+        "",
+        "`semantic_precheck_passed=true` only means the baseline recomputed the full-dataset forward and local semantic checker accepted it. It is not a zkDL proof and never contributes to `proof_size_bytes`.",
         "",
         "## CPU",
         "",

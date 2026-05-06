@@ -47,7 +47,7 @@ Per-dataset manifests:
 
 - `runs/<dataset>/cpu/run_manifest.json`
 - `runs/<dataset>/gpu/run_manifest.json`
-- `runs/<dataset>/cpu/zkdl_gat_composed_proof.json`
+- `runs/<dataset>/<route>/full_gat_semantic_precheck.json`
 
 Collected tables:
 
@@ -62,8 +62,10 @@ Collected tables:
 
 ## Current zkDL Proof Boundary
 
-The CPU route now runs a composed full-dataset GAT proof pipeline inside this baseline. It loads the real full dataset and checkpoint bundle, constructs the normalized public sparse route, computes all hidden-head projection, attention score, activation, destination-group, normalization, aggregation, hidden concat, output attention, output bias/average, and final logits binding stages, writes `runs/<dataset>/cpu/zkdl_gat_composed_proof.json`, then invokes the baseline verifier on that artifact. A CPU row is marked `verified` only when the artifact is generated, the verifier is called, every full-GAT relation check passes, final logits are derived inside the proof pipeline, public inputs match the main manifest, and all four metrics are non-null.
+The CPU and GPU routes first run a full-dataset gate against the main repository config, data cache, checkpoint bundle, and published main-run manifest. The gate records dataset id, full-dataset status, node/edge counts, feature/class dimensions, graph batch pointers, layer/head configuration, self-loop and edge-sort policy, source hashes, checkpoint hashes, public-input hash, witness-coverage hash, and final-logits hash.
 
-The CUDA probe still exercises the original zkDL CUDA tensor commitment and sumcheck primitive path. GPU full-GAT rows remain blocked unless a CUDA composed full-GAT prover/verifier exists without CPU fallback; the current GPU failure step is `gpu_composed_gat_prover` after the primitive probe succeeds.
+The local full forward and relation checker are now recorded only as `semantic_precheck_passed`. That artifact is named `full_gat_semantic_precheck.json` and is explicitly marked `semantic_precheck_not_zkdl_proof`. It is not counted as `proof_size_bytes` and cannot make a row `verified`.
 
-A GPU manifest is never marked verified when fallback or missing GPU composed support occurs.
+`status=verified` is reserved for a real zkDL full-GAT prover output plus a real zkDL verifier acceptance path with `proof_backend=zkDL`, `verifier_backend=zkDL`, `zkdl_proof_verified=true`, and a transferable zkDL proof object. The current composed full-GAT zkDL prover/verifier is still missing, so full-dataset rows are blocked after the gate/precheck stage instead of being falsely verified.
+
+The CUDA probe only exercises the original zkDL CUDA tensor commitment and sumcheck primitive path. GPU full-GAT rows remain blocked unless a CUDA composed full-GAT prover/verifier exists without CPU fallback.
