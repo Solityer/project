@@ -1,6 +1,6 @@
 {
   "artifact_type": "zkdl_proof",
-  "proof_format_id": "zkdl_full_gat_forward_portable_proof_v1",
+  "proof_format_id": "zkdl_full_gat_forward_portable_proof_v2",
   "proof_backend": "zkDL",
   "verifier_backend": "zkDL",
   "commitment_backend_id": "zkdl_portable_hyrax_tensor_commitment_mle_v1",
@@ -136,6 +136,13 @@
       "blinding": "0x0ee5345975b3beef"
     },
     {
+      "label": "hidden.layer0.head0.projection_rescale_remainder",
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x08a330e9bb377bf6",
+      "blinding": "0x03d6d7303fc17885"
+    },
+    {
       "label": "hidden.layer0.head1.h_prime",
       "shape": [19717, 8],
       "value_count": 157736,
@@ -232,6 +239,13 @@
       "value_count": 4000,
       "commitment": "0x0118ae20b99e42bc",
       "blinding": "0x03c10b4f965d4499"
+    },
+    {
+      "label": "hidden.layer0.head1.projection_rescale_remainder",
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x09cf9b4dacb44d3a",
+      "blinding": "0x02b83ea595e6f3bb"
     },
     {
       "label": "hidden.layer0.head2.h_prime",
@@ -332,6 +346,13 @@
       "blinding": "0x14b3aff0a3833c51"
     },
     {
+      "label": "hidden.layer0.head2.projection_rescale_remainder",
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x110b6fbaa4343ca1",
+      "blinding": "0x1f7a640a7a6fbfe9"
+    },
+    {
       "label": "hidden.layer0.head3.h_prime",
       "shape": [19717, 8],
       "value_count": 157736,
@@ -428,6 +449,13 @@
       "value_count": 4000,
       "commitment": "0x0ebb98eeffce6935",
       "blinding": "0x029cd94fede99988"
+    },
+    {
+      "label": "hidden.layer0.head3.projection_rescale_remainder",
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x16c24284289ae100",
+      "blinding": "0x1df7bd1890f87ab8"
     },
     {
       "label": "hidden.layer0.head4.h_prime",
@@ -528,6 +556,13 @@
       "blinding": "0x19046e1b19bc526d"
     },
     {
+      "label": "hidden.layer0.head4.projection_rescale_remainder",
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x1a059eafcc07c367",
+      "blinding": "0x10bc9f92d8f23939"
+    },
+    {
       "label": "hidden.layer0.head5.h_prime",
       "shape": [19717, 8],
       "value_count": 157736,
@@ -624,6 +659,13 @@
       "value_count": 4000,
       "commitment": "0x004b3d323f1e7fc9",
       "blinding": "0x196dd364a991b317"
+    },
+    {
+      "label": "hidden.layer0.head5.projection_rescale_remainder",
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x0b0a9cf904c29b5f",
+      "blinding": "0x08e2e8ca0284c353"
     },
     {
       "label": "hidden.layer0.head6.h_prime",
@@ -724,6 +766,13 @@
       "blinding": "0x175ea2840dfa95d0"
     },
     {
+      "label": "hidden.layer0.head6.projection_rescale_remainder",
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x1d6ae256a0d488cf",
+      "blinding": "0x11dd3a78284f4df1"
+    },
+    {
       "label": "hidden.layer0.head7.h_prime",
       "shape": [19717, 8],
       "value_count": 157736,
@@ -820,6 +869,13 @@
       "value_count": 4000,
       "commitment": "0x0486b3c5620492b3",
       "blinding": "0x0634cd5b21667c74"
+    },
+    {
+      "label": "hidden.layer0.head7.projection_rescale_remainder",
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x0485176977f66d41",
+      "blinding": "0x1646512511d6502a"
     },
     {
       "label": "output.head0.h_prime",
@@ -920,6 +976,13 @@
       "blinding": "0x1e220a8b8628e335"
     },
     {
+      "label": "output.head0.projection_rescale_remainder",
+      "shape": [19717, 3],
+      "value_count": 59151,
+      "commitment": "0x0c50cda6fe34eaa5",
+      "blinding": "0x0ea49eafdc38f4a6"
+    },
+    {
       "label": "output.average_pre_bias",
       "shape": [19717, 3],
       "value_count": 59151,
@@ -939,18 +1002,25 @@
       "section_id": "hidden.layer0.head0.projection",
       "relation": "dense_matmul_sumcheck",
       "label": "hidden.layer0.head0.projection",
-      "tensor_labels": ["hidden.layer0.input", "hidden.layer0.head0.W", "hidden.layer0.head0.h_prime"],
-      "relation_passed": false,
+      "tensor_labels": ["hidden.layer0.input", "hidden.layer0.head0.W", "hidden.layer0.head0.h_prime", "hidden.layer0.head0.projection_rescale_remainder"],
+      "relation_passed": true,
       "field_values": {
         "col_challenge": "0x04f6c72f8f6b1bda",
         "lhs_weighted_product_eval": "0x076e594c4c0a1893",
-        "residual": "0x04d57e25cf7768ff",
+        "rescale_remainder_eval": "0x04d57e25cf7768ff",
+        "residual": "0x0000000000000000",
+        "residual_without_remainder": "0x04d57e25cf7768ff",
         "row_challenge": "0x0d76c4e72641bb8c",
         "scaled_output_eval": "0x0298db267c92af94"
       },
       "metadata": {
+        "claim_equation": "sum_q_products = quantization_scale * output_q + rescale_remainder",
         "cols": "8",
+        "matrix_flatten_order": "row_major",
+        "mle_variable_order": "row_variables_then_col_variables",
         "quantization_scale": "16",
+        "rescale_remainder_tensor": "hidden.layer0.head0.projection_rescale_remainder",
+        "rescale_rule": "fixed_point_nearest_rounding_remainder_witness",
         "rows": "19717",
         "shared_dim": "500"
       }
@@ -1037,18 +1107,25 @@
       "section_id": "hidden.layer0.head1.projection",
       "relation": "dense_matmul_sumcheck",
       "label": "hidden.layer0.head1.projection",
-      "tensor_labels": ["hidden.layer0.input", "hidden.layer0.head1.W", "hidden.layer0.head1.h_prime"],
-      "relation_passed": false,
+      "tensor_labels": ["hidden.layer0.input", "hidden.layer0.head1.W", "hidden.layer0.head1.h_prime", "hidden.layer0.head1.projection_rescale_remainder"],
+      "relation_passed": true,
       "field_values": {
         "col_challenge": "0x1f85ea38c4e74f38",
         "lhs_weighted_product_eval": "0x1f1459a706a351ca",
-        "residual": "0x05f7f6a3d9b967be",
+        "rescale_remainder_eval": "0x05f7f6a3d9b967be",
+        "residual": "0x0000000000000000",
+        "residual_without_remainder": "0x05f7f6a3d9b967be",
         "row_challenge": "0x1970a3e6fbcd0853",
         "scaled_output_eval": "0x191c63032ce9ea0c"
       },
       "metadata": {
+        "claim_equation": "sum_q_products = quantization_scale * output_q + rescale_remainder",
         "cols": "8",
+        "matrix_flatten_order": "row_major",
+        "mle_variable_order": "row_variables_then_col_variables",
         "quantization_scale": "16",
+        "rescale_remainder_tensor": "hidden.layer0.head1.projection_rescale_remainder",
+        "rescale_rule": "fixed_point_nearest_rounding_remainder_witness",
         "rows": "19717",
         "shared_dim": "500"
       }
@@ -1135,18 +1212,25 @@
       "section_id": "hidden.layer0.head2.projection",
       "relation": "dense_matmul_sumcheck",
       "label": "hidden.layer0.head2.projection",
-      "tensor_labels": ["hidden.layer0.input", "hidden.layer0.head2.W", "hidden.layer0.head2.h_prime"],
-      "relation_passed": false,
+      "tensor_labels": ["hidden.layer0.input", "hidden.layer0.head2.W", "hidden.layer0.head2.h_prime", "hidden.layer0.head2.projection_rescale_remainder"],
+      "relation_passed": true,
       "field_values": {
         "col_challenge": "0x02e110ba7b5728c2",
         "lhs_weighted_product_eval": "0x024e0991a37240d5",
-        "residual": "0x1e67106b0197ede0",
+        "rescale_remainder_eval": "0x1e67106b0197ede0",
+        "residual": "0x0000000000000000",
+        "residual_without_remainder": "0x1e67106b0197ede0",
         "row_challenge": "0x0b861b0b8f1395b1",
         "scaled_output_eval": "0x03e6f926a1da52f4"
       },
       "metadata": {
+        "claim_equation": "sum_q_products = quantization_scale * output_q + rescale_remainder",
         "cols": "8",
+        "matrix_flatten_order": "row_major",
+        "mle_variable_order": "row_variables_then_col_variables",
         "quantization_scale": "16",
+        "rescale_remainder_tensor": "hidden.layer0.head2.projection_rescale_remainder",
+        "rescale_rule": "fixed_point_nearest_rounding_remainder_witness",
         "rows": "19717",
         "shared_dim": "500"
       }
@@ -1233,18 +1317,25 @@
       "section_id": "hidden.layer0.head3.projection",
       "relation": "dense_matmul_sumcheck",
       "label": "hidden.layer0.head3.projection",
-      "tensor_labels": ["hidden.layer0.input", "hidden.layer0.head3.W", "hidden.layer0.head3.h_prime"],
-      "relation_passed": false,
+      "tensor_labels": ["hidden.layer0.input", "hidden.layer0.head3.W", "hidden.layer0.head3.h_prime", "hidden.layer0.head3.projection_rescale_remainder"],
+      "relation_passed": true,
       "field_values": {
         "col_challenge": "0x0119cfb9513e73ad",
         "lhs_weighted_product_eval": "0x070c9f9fffb49077",
-        "residual": "0x134ccbbcbbc2cba6",
+        "rescale_remainder_eval": "0x134ccbbcbbc2cba6",
+        "residual": "0x0000000000000000",
+        "residual_without_remainder": "0x134ccbbcbbc2cba6",
         "row_challenge": "0x0647ed67a3751fb5",
         "scaled_output_eval": "0x13bfd3e343f1c4d0"
       },
       "metadata": {
+        "claim_equation": "sum_q_products = quantization_scale * output_q + rescale_remainder",
         "cols": "8",
+        "matrix_flatten_order": "row_major",
+        "mle_variable_order": "row_variables_then_col_variables",
         "quantization_scale": "16",
+        "rescale_remainder_tensor": "hidden.layer0.head3.projection_rescale_remainder",
+        "rescale_rule": "fixed_point_nearest_rounding_remainder_witness",
         "rows": "19717",
         "shared_dim": "500"
       }
@@ -1331,18 +1422,25 @@
       "section_id": "hidden.layer0.head4.projection",
       "relation": "dense_matmul_sumcheck",
       "label": "hidden.layer0.head4.projection",
-      "tensor_labels": ["hidden.layer0.input", "hidden.layer0.head4.W", "hidden.layer0.head4.h_prime"],
-      "relation_passed": false,
+      "tensor_labels": ["hidden.layer0.input", "hidden.layer0.head4.W", "hidden.layer0.head4.h_prime", "hidden.layer0.head4.projection_rescale_remainder"],
+      "relation_passed": true,
       "field_values": {
         "col_challenge": "0x0d3d298d38189ead",
         "lhs_weighted_product_eval": "0x0d00338d6918d175",
-        "residual": "0x1a3494bd23c27f27",
+        "rescale_remainder_eval": "0x1a3494bd23c27f27",
+        "residual": "0x0000000000000000",
+        "residual_without_remainder": "0x1a3494bd23c27f27",
         "row_challenge": "0x1b2716ee995801c7",
         "scaled_output_eval": "0x12cb9ed04556524d"
       },
       "metadata": {
+        "claim_equation": "sum_q_products = quantization_scale * output_q + rescale_remainder",
         "cols": "8",
+        "matrix_flatten_order": "row_major",
+        "mle_variable_order": "row_variables_then_col_variables",
         "quantization_scale": "16",
+        "rescale_remainder_tensor": "hidden.layer0.head4.projection_rescale_remainder",
+        "rescale_rule": "fixed_point_nearest_rounding_remainder_witness",
         "rows": "19717",
         "shared_dim": "500"
       }
@@ -1429,18 +1527,25 @@
       "section_id": "hidden.layer0.head5.projection",
       "relation": "dense_matmul_sumcheck",
       "label": "hidden.layer0.head5.projection",
-      "tensor_labels": ["hidden.layer0.input", "hidden.layer0.head5.W", "hidden.layer0.head5.h_prime"],
-      "relation_passed": false,
+      "tensor_labels": ["hidden.layer0.input", "hidden.layer0.head5.W", "hidden.layer0.head5.h_prime", "hidden.layer0.head5.projection_rescale_remainder"],
+      "relation_passed": true,
       "field_values": {
         "col_challenge": "0x08114fa5b99339eb",
         "lhs_weighted_product_eval": "0x0e9315edf7f6e933",
-        "residual": "0x1089b49df88514e7",
+        "rescale_remainder_eval": "0x1089b49df88514e7",
+        "residual": "0x0000000000000000",
+        "residual_without_remainder": "0x1089b49df88514e7",
         "row_challenge": "0x1b6d015491184a6e",
         "scaled_output_eval": "0x1e09614fff71d44b"
       },
       "metadata": {
+        "claim_equation": "sum_q_products = quantization_scale * output_q + rescale_remainder",
         "cols": "8",
+        "matrix_flatten_order": "row_major",
+        "mle_variable_order": "row_variables_then_col_variables",
         "quantization_scale": "16",
+        "rescale_remainder_tensor": "hidden.layer0.head5.projection_rescale_remainder",
+        "rescale_rule": "fixed_point_nearest_rounding_remainder_witness",
         "rows": "19717",
         "shared_dim": "500"
       }
@@ -1527,18 +1632,25 @@
       "section_id": "hidden.layer0.head6.projection",
       "relation": "dense_matmul_sumcheck",
       "label": "hidden.layer0.head6.projection",
-      "tensor_labels": ["hidden.layer0.input", "hidden.layer0.head6.W", "hidden.layer0.head6.h_prime"],
-      "relation_passed": false,
+      "tensor_labels": ["hidden.layer0.input", "hidden.layer0.head6.W", "hidden.layer0.head6.h_prime", "hidden.layer0.head6.projection_rescale_remainder"],
+      "relation_passed": true,
       "field_values": {
         "col_challenge": "0x155164cfd2022f9b",
         "lhs_weighted_product_eval": "0x0e12cbac3929e8da",
-        "residual": "0x0a2b55f5ace47e4d",
+        "rescale_remainder_eval": "0x0a2b55f5ace47e4d",
+        "residual": "0x0000000000000000",
+        "residual_without_remainder": "0x0a2b55f5ace47e4d",
         "row_challenge": "0x1dc4d71c4b1d0741",
         "scaled_output_eval": "0x03e775b68c456a8d"
       },
       "metadata": {
+        "claim_equation": "sum_q_products = quantization_scale * output_q + rescale_remainder",
         "cols": "8",
+        "matrix_flatten_order": "row_major",
+        "mle_variable_order": "row_variables_then_col_variables",
         "quantization_scale": "16",
+        "rescale_remainder_tensor": "hidden.layer0.head6.projection_rescale_remainder",
+        "rescale_rule": "fixed_point_nearest_rounding_remainder_witness",
         "rows": "19717",
         "shared_dim": "500"
       }
@@ -1625,18 +1737,25 @@
       "section_id": "hidden.layer0.head7.projection",
       "relation": "dense_matmul_sumcheck",
       "label": "hidden.layer0.head7.projection",
-      "tensor_labels": ["hidden.layer0.input", "hidden.layer0.head7.W", "hidden.layer0.head7.h_prime"],
-      "relation_passed": false,
+      "tensor_labels": ["hidden.layer0.input", "hidden.layer0.head7.W", "hidden.layer0.head7.h_prime", "hidden.layer0.head7.projection_rescale_remainder"],
+      "relation_passed": true,
       "field_values": {
         "col_challenge": "0x0c6b3ef7cba1dc11",
         "lhs_weighted_product_eval": "0x0ce75a76f1ea9a1e",
-        "residual": "0x00e04391c9c785e9",
+        "rescale_remainder_eval": "0x00e04391c9c785e9",
+        "residual": "0x0000000000000000",
+        "residual_without_remainder": "0x00e04391c9c785e9",
         "row_challenge": "0x07728d4048bde484",
         "scaled_output_eval": "0x0c0716e528231435"
       },
       "metadata": {
+        "claim_equation": "sum_q_products = quantization_scale * output_q + rescale_remainder",
         "cols": "8",
+        "matrix_flatten_order": "row_major",
+        "mle_variable_order": "row_variables_then_col_variables",
         "quantization_scale": "16",
+        "rescale_remainder_tensor": "hidden.layer0.head7.projection_rescale_remainder",
+        "rescale_rule": "fixed_point_nearest_rounding_remainder_witness",
         "rows": "19717",
         "shared_dim": "500"
       }
@@ -1723,18 +1842,25 @@
       "section_id": "output.head0.projection",
       "relation": "dense_matmul_sumcheck",
       "label": "output.head0.projection",
-      "tensor_labels": ["hidden.layer0.concat", "output.head0.W", "output.head0.h_prime"],
-      "relation_passed": false,
+      "tensor_labels": ["hidden.layer0.concat", "output.head0.W", "output.head0.h_prime", "output.head0.projection_rescale_remainder"],
+      "relation_passed": true,
       "field_values": {
         "col_challenge": "0x06311a7884dae065",
         "lhs_weighted_product_eval": "0x125583777f142f89",
-        "residual": "0x118d44d6b7f3899c",
+        "rescale_remainder_eval": "0x118d44d6b7f3899c",
+        "residual": "0x0000000000000000",
+        "residual_without_remainder": "0x118d44d6b7f3899c",
         "row_challenge": "0x07bcf5ca384be478",
         "scaled_output_eval": "0x00c83ea0c720a5ed"
       },
       "metadata": {
+        "claim_equation": "sum_q_products = quantization_scale * output_q + rescale_remainder",
         "cols": "3",
+        "matrix_flatten_order": "row_major",
+        "mle_variable_order": "row_variables_then_col_variables",
         "quantization_scale": "16",
+        "rescale_remainder_tensor": "output.head0.projection_rescale_remainder",
+        "rescale_rule": "fixed_point_nearest_rounding_remainder_witness",
         "rows": "19717",
         "shared_dim": "64"
       }
