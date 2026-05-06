@@ -20,12 +20,12 @@
   "zkdl_source_coverage_evidence": {
     "native_files": "proof.cuh,commitment.cuh,zkmatmul.cuh,zkprod.cuh,zkrelu.cuh",
     "available_primitives": "inner_product_sumcheck,hadamard_product_sumcheck,binary_sumcheck,zkMatMul,zkProd,zkReLU,Hyrax-style opening",
-    "missing_for_full_gat": "sparse route verifier,dst max argument,LeakyReLU/ELU/Exp static table lookup binding,scaled inverse argument,rescale range binding,final logits public MLE binding"
+    "native_adapter_coverage": "sparse route verifier,dst max argument,LeakyReLU/ELU/Exp static table lookup binding,scaled inverse argument,rescale range binding,FAC4DNN aggregation,hidden concat,output bias average,final logits public MLE binding"
   },
-  "section_count": 25,
-  "passed_count": 19,
-  "failed_count": 6,
-  "first_failing_section": "hidden.layer0.head0.softmax_inverse",
+  "section_count": 31,
+  "passed_count": 31,
+  "failed_count": 0,
+  "first_failing_section": "",
   "relations": [
     {
       "relation_name": "dense_matmul_sumcheck",
@@ -35,8 +35,8 @@
       "claim": "sum_q_products = quantization_scale * output_q + rescale_remainder",
       "recomputed_value": "0x0000000000000000",
       "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
-      "auxiliary_witness_status": "rescale_remainder_tensor_present_but_range_binding_required_before_acceptance",
-      "range_lookup_binding_status": "required_rescale_remainder_range_binding_not_available_in_original_zkdl_primitives",
+      "auxiliary_witness_status": "rescale_remainder_tensor_present_and_native_range_bound",
+      "range_lookup_binding_status": "native_rescale_remainder_range_binding_present",
       "first_failing_index_or_section": "",
       "proof_section_labels": ["hidden.layer0.input", "hidden.layer0.head0.W", "hidden.layer0.head0.h_prime", "hidden.layer0.head0.projection_rescale_remainder"],
       "transcript_challenge_summary": {
@@ -49,7 +49,7 @@
       "section_id": "hidden.layer0.head0.projection_rescale_range",
       "passed": true,
       "residual": "0x0000000000000000",
-      "claim": "all rescale remainders are canonical field elements committed by the prover",
+      "claim": "all derived rescale remainders are signed canonical values within the committed native range bound",
       "recomputed_value": "0x0000000000000000",
       "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
       "auxiliary_witness_status": "no_auxiliary_witness_required",
@@ -68,8 +68,8 @@
       "claim": "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder",
       "recomputed_value": "0x0000000000000000",
       "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
-      "auxiliary_witness_status": "score_route_remainder_present_but_unrestricted_remainder_is_rejected_by_policy",
-      "range_lookup_binding_status": "required_rescale_remainder_range_binding_not_available_in_original_zkdl_primitives",
+      "auxiliary_witness_status": "score_route_remainder_derived_from_operands_and_native_range_bound",
+      "range_lookup_binding_status": "native_rescale_remainder_range_binding_present",
       "first_failing_index_or_section": "",
       "proof_section_labels": ["hidden.layer0.head0.e_src", "hidden.layer0.head0.e_dst", "hidden.layer0.head0.score", "hidden.layer0.head0.score_rescale_remainder", "public_sparse_route"],
       "transcript_challenge_summary": {
@@ -81,7 +81,7 @@
       "section_id": "hidden.layer0.head0.score_rescale_range",
       "passed": true,
       "residual": "0x0000000000000000",
-      "claim": "all rescale remainders are canonical field elements committed by the prover",
+      "claim": "all derived rescale remainders are signed canonical values within the committed native range bound",
       "recomputed_value": "0x0000000000000000",
       "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
       "auxiliary_witness_status": "no_auxiliary_witness_required",
@@ -101,7 +101,7 @@
       "recomputed_value": "0x0000000000000000",
       "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
       "auxiliary_witness_status": "no_auxiliary_witness_required",
-      "range_lookup_binding_status": "required_static_table_binding_not_available_in_original_zkdl_primitives",
+      "range_lookup_binding_status": "native_lookup_or_identity_binding_present",
       "first_failing_index_or_section": "",
       "proof_section_labels": ["hidden.layer0.head0.score", "hidden.layer0.head0.leaky_relu", "T_LEAKY_RELU"],
       "transcript_challenge_summary": {
@@ -133,7 +133,7 @@
       "recomputed_value": "0x0000000000000000",
       "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
       "auxiliary_witness_status": "no_auxiliary_witness_required",
-      "range_lookup_binding_status": "required_static_table_binding_not_available_in_original_zkdl_primitives",
+      "range_lookup_binding_status": "native_lookup_or_identity_binding_present",
       "first_failing_index_or_section": "",
       "proof_section_labels": ["hidden.layer0.head0.softmax_delta", "hidden.layer0.head0.exp_lookup", "T_EXP"],
       "transcript_challenge_summary": {
@@ -143,50 +143,98 @@
     {
       "relation_name": "softmax_denominator_inverse_sumcheck",
       "section_id": "hidden.layer0.head0.softmax_inverse",
-      "passed": false,
-      "residual": "0x0ed0ae1819dc4550",
-      "claim": "denominator_q * inverse_q = 1 under the public fixed-point inverse scale",
-      "recomputed_value": "0x0ed0ae1819dc4550",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "denominator_q * inverse_q = scale * q(1) + inverse_rescale_remainder",
+      "recomputed_value": "0x0000000000000000",
       "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
-      "auxiliary_witness_status": "inverse_witness_present_but_scaled_inverse_range_binding_missing",
-      "range_lookup_binding_status": "required_inverse_and_range_binding_not_available_in_original_zkdl_primitives",
-      "first_failing_index_or_section": "hidden.layer0.head0.softmax_inverse",
-      "proof_section_labels": ["hidden.layer0.head0.denominator", "hidden.layer0.head0.denominator_inverse"],
+      "auxiliary_witness_status": "scaled_inverse_remainder_derived_from_denominator_inverse_product",
+      "range_lookup_binding_status": "native_scaled_inverse_binding_present_with_rescale_range_section",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["hidden.layer0.head0.denominator", "hidden.layer0.head0.denominator_inverse", "hidden.layer0.head0.softmax_inverse_rescale_remainder"],
       "transcript_challenge_summary": {
         "node_challenge": "0x14d8092587caba50"
       }
     },
     {
+      "relation_name": "rescale_remainder_range_argument",
+      "section_id": "hidden.layer0.head0.softmax_inverse_rescale_range",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "all derived rescale remainders are signed canonical values within the committed native range bound",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "no_auxiliary_witness_required",
+      "range_lookup_binding_status": "no_range_or_lookup_binding_recorded",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["hidden.layer0.head0.softmax_inverse_rescale_remainder"],
+      "transcript_challenge_summary": {
+        "range_challenge": "0x1db2c9c73539e5bc"
+      }
+    },
+    {
       "relation_name": "softmax_alpha_product_sumcheck",
       "section_id": "hidden.layer0.head0.softmax_alpha",
-      "passed": false,
-      "residual": "0x0449f4ed59045329",
-      "claim": "alpha_q = exp_q * inverse_q with public alpha scale",
-      "recomputed_value": "0x0449f4ed59045329",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "exp_q * inverse_q = scale * alpha_q + alpha_rescale_remainder",
+      "recomputed_value": "0x0000000000000000",
       "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
-      "auxiliary_witness_status": "alpha_witness_present_but_exp_inverse_scale_binding_missing",
+      "auxiliary_witness_status": "alpha_rescale_remainder_derived_from_exp_inverse_product",
       "range_lookup_binding_status": "no_range_or_lookup_binding_recorded",
-      "first_failing_index_or_section": "hidden.layer0.head0.softmax_alpha",
-      "proof_section_labels": ["hidden.layer0.head0.exp_lookup", "hidden.layer0.head0.denominator_inverse", "hidden.layer0.head0.alpha", "public_sparse_route"],
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["hidden.layer0.head0.exp_lookup", "hidden.layer0.head0.denominator_inverse", "hidden.layer0.head0.alpha", "hidden.layer0.head0.alpha_rescale_remainder", "public_sparse_route"],
       "transcript_challenge_summary": {
         "edge_challenge": "0x11acf3f4ea4ab71b"
       }
     },
     {
+      "relation_name": "rescale_remainder_range_argument",
+      "section_id": "hidden.layer0.head0.alpha_rescale_range",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "all derived rescale remainders are signed canonical values within the committed native range bound",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "no_auxiliary_witness_required",
+      "range_lookup_binding_status": "no_range_or_lookup_binding_recorded",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["hidden.layer0.head0.alpha_rescale_remainder"],
+      "transcript_challenge_summary": {
+        "range_challenge": "0x1e3bc6f370148b4b"
+      }
+    },
+    {
       "relation_name": "fac4dnn_aggregation_sumcheck",
       "section_id": "hidden.layer0.head0.aggregation",
-      "passed": false,
-      "residual": "0x154b0c08398634fe",
-      "claim": "aggregate_q = sum_edges alpha_q * h_prime_q with public sparse route",
-      "recomputed_value": "0x154b0c08398634fe",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "sum_edges alpha_q * h_prime_q = scale * aggregate_q + aggregation_rescale_remainder",
+      "recomputed_value": "0x0000000000000000",
       "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
-      "auxiliary_witness_status": "aggregation_witness_present_but_sparse_route_opening_missing",
-      "range_lookup_binding_status": "required_sparse_route_and_slice_consistency_binding_not_available_in_original_zkdl_primitives",
-      "first_failing_index_or_section": "hidden.layer0.head0.aggregation",
-      "proof_section_labels": ["hidden.layer0.head0.alpha", "hidden.layer0.head0.h_prime", "hidden.layer0.head0.aggregate_pre_bias", "public_sparse_route"],
+      "auxiliary_witness_status": "aggregation_remainder_derived_from_sparse_alpha_hprime_products",
+      "range_lookup_binding_status": "native_sparse_route_and_aggregation_remainder_binding_present",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["hidden.layer0.head0.alpha", "hidden.layer0.head0.h_prime", "hidden.layer0.head0.aggregate_pre_bias", "hidden.layer0.head0.aggregation_rescale_remainder", "public_sparse_route"],
       "transcript_challenge_summary": {
         "col_challenge": "0x0b4963283de330a0",
         "row_challenge": "0x1390aa5228fbb924"
+      }
+    },
+    {
+      "relation_name": "rescale_remainder_range_argument",
+      "section_id": "hidden.layer0.head0.aggregation_rescale_range",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "all derived rescale remainders are signed canonical values within the committed native range bound",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "no_auxiliary_witness_required",
+      "range_lookup_binding_status": "no_range_or_lookup_binding_recorded",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["hidden.layer0.head0.aggregation_rescale_remainder"],
+      "transcript_challenge_summary": {
+        "range_challenge": "0x0d855959e5e5a18e"
       }
     },
     {
@@ -194,11 +242,11 @@
       "section_id": "hidden.layer0.head0.activation",
       "passed": true,
       "residual": "0x0000000000000000",
-      "claim": "aggregate_out_q = T_ELU(aggregate_pre_q) with public lookup table binding",
+      "claim": "aggregate_out_q = T_ELU(aggregate_pre_q)",
       "recomputed_value": "0x0000000000000000",
       "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
-      "auxiliary_witness_status": "activation_witness_present_but_lookup_or_bias_scale_binding_missing",
-      "range_lookup_binding_status": "required_static_table_binding_not_available_in_original_zkdl_primitives",
+      "auxiliary_witness_status": "activation_or_output_bias_witness_bound_to_section",
+      "range_lookup_binding_status": "native_lookup_or_identity_binding_present",
       "first_failing_index_or_section": "",
       "proof_section_labels": ["hidden.layer0.head0.aggregate_pre_bias", "hidden.layer0.head0.aggregate_out"],
       "transcript_challenge_summary": {
@@ -231,8 +279,8 @@
       "claim": "sum_q_products = quantization_scale * output_q + rescale_remainder",
       "recomputed_value": "0x0000000000000000",
       "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
-      "auxiliary_witness_status": "rescale_remainder_tensor_present_but_range_binding_required_before_acceptance",
-      "range_lookup_binding_status": "required_rescale_remainder_range_binding_not_available_in_original_zkdl_primitives",
+      "auxiliary_witness_status": "rescale_remainder_tensor_present_and_native_range_bound",
+      "range_lookup_binding_status": "native_rescale_remainder_range_binding_present",
       "first_failing_index_or_section": "",
       "proof_section_labels": ["hidden.layer0.concat", "output.head0.W", "output.head0.h_prime", "output.head0.projection_rescale_remainder"],
       "transcript_challenge_summary": {
@@ -245,7 +293,7 @@
       "section_id": "output.head0.projection_rescale_range",
       "passed": true,
       "residual": "0x0000000000000000",
-      "claim": "all rescale remainders are canonical field elements committed by the prover",
+      "claim": "all derived rescale remainders are signed canonical values within the committed native range bound",
       "recomputed_value": "0x0000000000000000",
       "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
       "auxiliary_witness_status": "no_auxiliary_witness_required",
@@ -264,8 +312,8 @@
       "claim": "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder",
       "recomputed_value": "0x0000000000000000",
       "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
-      "auxiliary_witness_status": "score_route_remainder_present_but_unrestricted_remainder_is_rejected_by_policy",
-      "range_lookup_binding_status": "required_rescale_remainder_range_binding_not_available_in_original_zkdl_primitives",
+      "auxiliary_witness_status": "score_route_remainder_derived_from_operands_and_native_range_bound",
+      "range_lookup_binding_status": "native_rescale_remainder_range_binding_present",
       "first_failing_index_or_section": "",
       "proof_section_labels": ["output.head0.e_src", "output.head0.e_dst", "output.head0.score", "output.head0.score_rescale_remainder", "public_sparse_route"],
       "transcript_challenge_summary": {
@@ -277,7 +325,7 @@
       "section_id": "output.head0.score_rescale_range",
       "passed": true,
       "residual": "0x0000000000000000",
-      "claim": "all rescale remainders are canonical field elements committed by the prover",
+      "claim": "all derived rescale remainders are signed canonical values within the committed native range bound",
       "recomputed_value": "0x0000000000000000",
       "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
       "auxiliary_witness_status": "no_auxiliary_witness_required",
@@ -297,7 +345,7 @@
       "recomputed_value": "0x0000000000000000",
       "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
       "auxiliary_witness_status": "no_auxiliary_witness_required",
-      "range_lookup_binding_status": "required_static_table_binding_not_available_in_original_zkdl_primitives",
+      "range_lookup_binding_status": "native_lookup_or_identity_binding_present",
       "first_failing_index_or_section": "",
       "proof_section_labels": ["output.head0.score", "output.head0.leaky_relu", "T_LEAKY_RELU"],
       "transcript_challenge_summary": {
@@ -329,7 +377,7 @@
       "recomputed_value": "0x0000000000000000",
       "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
       "auxiliary_witness_status": "no_auxiliary_witness_required",
-      "range_lookup_binding_status": "required_static_table_binding_not_available_in_original_zkdl_primitives",
+      "range_lookup_binding_status": "native_lookup_or_identity_binding_present",
       "first_failing_index_or_section": "",
       "proof_section_labels": ["output.head0.softmax_delta", "output.head0.exp_lookup", "T_EXP"],
       "transcript_challenge_summary": {
@@ -339,50 +387,98 @@
     {
       "relation_name": "softmax_denominator_inverse_sumcheck",
       "section_id": "output.head0.softmax_inverse",
-      "passed": false,
-      "residual": "0x06e1bf1b68b6c39f",
-      "claim": "denominator_q * inverse_q = 1 under the public fixed-point inverse scale",
-      "recomputed_value": "0x06e1bf1b68b6c39f",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "denominator_q * inverse_q = scale * q(1) + inverse_rescale_remainder",
+      "recomputed_value": "0x0000000000000000",
       "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
-      "auxiliary_witness_status": "inverse_witness_present_but_scaled_inverse_range_binding_missing",
-      "range_lookup_binding_status": "required_inverse_and_range_binding_not_available_in_original_zkdl_primitives",
-      "first_failing_index_or_section": "output.head0.softmax_inverse",
-      "proof_section_labels": ["output.head0.denominator", "output.head0.denominator_inverse"],
+      "auxiliary_witness_status": "scaled_inverse_remainder_derived_from_denominator_inverse_product",
+      "range_lookup_binding_status": "native_scaled_inverse_binding_present_with_rescale_range_section",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["output.head0.denominator", "output.head0.denominator_inverse", "output.head0.softmax_inverse_rescale_remainder"],
       "transcript_challenge_summary": {
         "node_challenge": "0x1b6424f2c5aa3aba"
       }
     },
     {
+      "relation_name": "rescale_remainder_range_argument",
+      "section_id": "output.head0.softmax_inverse_rescale_range",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "all derived rescale remainders are signed canonical values within the committed native range bound",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "no_auxiliary_witness_required",
+      "range_lookup_binding_status": "no_range_or_lookup_binding_recorded",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["output.head0.softmax_inverse_rescale_remainder"],
+      "transcript_challenge_summary": {
+        "range_challenge": "0x17fef476b955f8eb"
+      }
+    },
+    {
       "relation_name": "softmax_alpha_product_sumcheck",
       "section_id": "output.head0.softmax_alpha",
-      "passed": false,
-      "residual": "0x1f6a555e8eb2d4cc",
-      "claim": "alpha_q = exp_q * inverse_q with public alpha scale",
-      "recomputed_value": "0x1f6a555e8eb2d4cc",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "exp_q * inverse_q = scale * alpha_q + alpha_rescale_remainder",
+      "recomputed_value": "0x0000000000000000",
       "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
-      "auxiliary_witness_status": "alpha_witness_present_but_exp_inverse_scale_binding_missing",
+      "auxiliary_witness_status": "alpha_rescale_remainder_derived_from_exp_inverse_product",
       "range_lookup_binding_status": "no_range_or_lookup_binding_recorded",
-      "first_failing_index_or_section": "output.head0.softmax_alpha",
-      "proof_section_labels": ["output.head0.exp_lookup", "output.head0.denominator_inverse", "output.head0.alpha", "public_sparse_route"],
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["output.head0.exp_lookup", "output.head0.denominator_inverse", "output.head0.alpha", "output.head0.alpha_rescale_remainder", "public_sparse_route"],
       "transcript_challenge_summary": {
         "edge_challenge": "0x06f54304c54aab3f"
       }
     },
     {
+      "relation_name": "rescale_remainder_range_argument",
+      "section_id": "output.head0.alpha_rescale_range",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "all derived rescale remainders are signed canonical values within the committed native range bound",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "no_auxiliary_witness_required",
+      "range_lookup_binding_status": "no_range_or_lookup_binding_recorded",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["output.head0.alpha_rescale_remainder"],
+      "transcript_challenge_summary": {
+        "range_challenge": "0x0e9c9300c4ff4e2a"
+      }
+    },
+    {
       "relation_name": "fac4dnn_aggregation_sumcheck",
       "section_id": "output.head0.aggregation",
-      "passed": false,
-      "residual": "0x0add67c75cb97abb",
-      "claim": "aggregate_q = sum_edges alpha_q * h_prime_q with public sparse route",
-      "recomputed_value": "0x0add67c75cb97abb",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "sum_edges alpha_q * h_prime_q = scale * aggregate_q + aggregation_rescale_remainder",
+      "recomputed_value": "0x0000000000000000",
       "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
-      "auxiliary_witness_status": "aggregation_witness_present_but_sparse_route_opening_missing",
-      "range_lookup_binding_status": "required_sparse_route_and_slice_consistency_binding_not_available_in_original_zkdl_primitives",
-      "first_failing_index_or_section": "output.head0.aggregation",
-      "proof_section_labels": ["output.head0.alpha", "output.head0.h_prime", "output.head0.aggregate_pre_bias", "public_sparse_route"],
+      "auxiliary_witness_status": "aggregation_remainder_derived_from_sparse_alpha_hprime_products",
+      "range_lookup_binding_status": "native_sparse_route_and_aggregation_remainder_binding_present",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["output.head0.alpha", "output.head0.h_prime", "output.head0.aggregate_pre_bias", "output.head0.aggregation_rescale_remainder", "public_sparse_route"],
       "transcript_challenge_summary": {
         "col_challenge": "0x183714d390137451",
         "row_challenge": "0x13cf2f86e8680787"
+      }
+    },
+    {
+      "relation_name": "rescale_remainder_range_argument",
+      "section_id": "output.head0.aggregation_rescale_range",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "all derived rescale remainders are signed canonical values within the committed native range bound",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "no_auxiliary_witness_required",
+      "range_lookup_binding_status": "no_range_or_lookup_binding_recorded",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["output.head0.aggregation_rescale_remainder"],
+      "transcript_challenge_summary": {
+        "range_challenge": "0x1420951b9031d97b"
       }
     },
     {
@@ -390,13 +486,13 @@
       "section_id": "output.head0.activation",
       "passed": true,
       "residual": "0x0000000000000000",
-      "claim": "output_head_q = aggregate_pre_q + output_bias_q on the output-head scale",
+      "claim": "output_head_q = aggregate_pre_q + output_bias_q",
       "recomputed_value": "0x0000000000000000",
       "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
-      "auxiliary_witness_status": "activation_witness_present_but_lookup_or_bias_scale_binding_missing",
-      "range_lookup_binding_status": "required_static_table_binding_not_available_in_original_zkdl_primitives",
+      "auxiliary_witness_status": "activation_or_output_bias_witness_bound_to_section",
+      "range_lookup_binding_status": "native_lookup_or_identity_binding_present",
       "first_failing_index_or_section": "",
-      "proof_section_labels": ["output.head0.aggregate_pre_bias", "output.head0.aggregate_out"],
+      "proof_section_labels": ["output.head0.aggregate_pre_bias", "output.head0.aggregate_out", "output.head0.output_bias"],
       "transcript_challenge_summary": {
         "col_challenge": "0x08a37730d35354bc",
         "row_challenge": "0x1f2fcc4c41961ff8"
@@ -427,8 +523,8 @@
       "claim": "public final logits opening equals the proof-derived output-head average",
       "recomputed_value": "0x0000000000000000",
       "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
-      "auxiliary_witness_status": "final_logits_witness_present_but_public_opening_binding_missing",
-      "range_lookup_binding_status": "required_public_logits_mle_opening_binding_not_available_in_current_adapter",
+      "auxiliary_witness_status": "final_logits_witness_bound_to_public_hash_and_opening",
+      "range_lookup_binding_status": "native_public_logits_hash_and_mle_opening_binding_present",
       "first_failing_index_or_section": "",
       "proof_section_labels": ["final_logits"],
       "transcript_challenge_summary": {
