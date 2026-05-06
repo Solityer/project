@@ -191,8 +191,66 @@ struct SemanticPrecheckResult {
     std::map<std::string, std::string> stats;
 };
 
+struct ZkdlTensorCommitment {
+    std::string label;
+    std::vector<std::size_t> shape;
+    std::size_t value_count = 0;
+    std::uint64_t commitment = 0;
+    std::uint64_t blinding = 0;
+};
+
+struct ZkdlProofSection {
+    std::string section_id;
+    std::string relation;
+    std::string label;
+    std::vector<std::string> tensor_labels;
+    std::map<std::string, std::uint64_t> field_values;
+    std::map<std::string, std::string> metadata;
+    bool relation_passed = false;
+};
+
+struct ZkdlProofObject {
+    std::string format_id = "zkdl_full_gat_forward_portable_proof_v1";
+    std::string commitment_backend_id = "zkdl_portable_hyrax_tensor_commitment_mle_v1";
+    std::string verifier_backend_id = "zkDL";
+    std::string field_id = "mersenne61_portable_scalar_field";
+    std::string public_input_hash;
+    std::string final_logits_hash;
+    std::string witness_coverage_hash;
+    std::vector<ZkdlTensorCommitment> tensor_commitments;
+    std::vector<ZkdlProofSection> proof_sections;
+};
+
+struct ZkdlVerifierResult {
+    bool accepted = false;
+    std::string failure_step;
+    std::string block_reason;
+    std::string first_failure_section;
+};
+
+struct ZkdlProofRunResult {
+    bool attempted = false;
+    bool generated = false;
+    bool verifier_called = false;
+    bool verified = false;
+    bool full_gat_payload_generated = false;
+    bool final_logits_payload_generated = false;
+    std::string artifact_path;
+    std::string failure_step;
+    std::string block_reason;
+    std::optional<double> commitment_time_ms;
+    std::optional<double> prove_time_ms;
+    std::optional<double> verify_time_ms;
+    std::optional<std::size_t> proof_size_bytes;
+    std::vector<std::string> attempted_stages;
+    std::vector<std::string> unsupported_protocol_requirements;
+    std::map<std::string, std::string> stats;
+};
+
 std::filesystem::path feature_path(const std::filesystem::path& cache_dir);
 MatrixD load_feature_matrix(const std::filesystem::path& cache_dir, const DatasetMeta& meta);
+void write_indent(std::ostream& out, int count);
+void write_string_map(std::ostream& out, const std::map<std::string, std::string>& values, int indent);
 
 std::string trim(std::string value) {
     value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](unsigned char ch) {
@@ -646,6 +704,8 @@ ProofStatementPlan build_proof_statement_plan(
         "binary_sumcheck",
         "dense_matmul_sumcheck",
         "relu_style_binary_range_auxiliary",
+        "portable_tensor_commitment_mle_adapter",
+        "portable_sumcheck_verifier_adapter",
     };
     plan.unsupported_protocol_requirements = {
         "sparse_route_sumcheck_for_R_src_R_dst",
@@ -658,7 +718,6 @@ ProofStatementPlan build_proof_statement_plan(
         "rescale_argument_for_output_head_scale",
         "fac4dnn_aggregation_and_slice_consistency",
         "final_public_logits_mle_binding",
-        "verifier_acceptance_api_for_composed_gat_statement",
     };
     return plan;
 }
@@ -1690,6 +1749,741 @@ std::string hash_witness_coverage(
     return commitment_from_state(state, "witness_coverage");
 }
 
+constexpr std::uint64_t kZkdlPortableFieldPrime = (std::uint64_t{1} << 61U) - 1U;
+constexpr std::uint64_t kZkdlQuantizationScale = 16U;
+
+std::uint64_t field_reduce(std::uint64_t value) {
+    value = (value & kZkdlPortableFieldPrime) + (value >> 61U);
+    if (value >= kZkdlPortableFieldPrime) {
+        value -= kZkdlPortableFieldPrime;
+    }
+    return value;
+}
+
+std::uint64_t field_reduce_wide(__uint128_t value) {
+    value = (value & kZkdlPortableFieldPrime) + (value >> 61U);
+    value = (value & kZkdlPortableFieldPrime) + (value >> 61U);
+    auto out = static_cast<std::uint64_t>(value);
+    if (out >= kZkdlPortableFieldPrime) {
+        out -= kZkdlPortableFieldPrime;
+    }
+    return out;
+}
+
+std::uint64_t field_add(std::uint64_t lhs, std::uint64_t rhs) {
+    const auto out = lhs + rhs;
+    return field_reduce(out);
+}
+
+std::uint64_t field_sub(std::uint64_t lhs, std::uint64_t rhs) {
+    return lhs >= rhs ? lhs - rhs : kZkdlPortableFieldPrime - (rhs - lhs);
+}
+
+std::uint64_t field_mul(std::uint64_t lhs, std::uint64_t rhs) {
+    return field_reduce_wide(static_cast<__uint128_t>(lhs) * rhs);
+}
+
+std::uint64_t field_from_signed(std::int64_t value) {
+    if (value >= 0) {
+        return field_reduce(static_cast<std::uint64_t>(value));
+    }
+    const auto abs_value = static_cast<std::uint64_t>(-(value + 1)) + 1U;
+    const auto reduced = field_reduce(abs_value);
+    return reduced == 0 ? 0 : kZkdlPortableFieldPrime - reduced;
+}
+
+std::uint64_t field_from_double(double value) {
+    return field_from_signed(quantize_for_commitment(value));
+}
+
+std::string field_hex(std::uint64_t value) {
+    std::ostringstream out;
+    out << "0x" << std::hex << std::setw(16) << std::setfill('0') << value;
+    return out.str();
+}
+
+std::uint64_t challenge_from_label(const std::string& label, std::uint64_t domain_separator) {
+    std::uint64_t state = 1469598103934665603ULL;
+    hash_string(state, label);
+    hash_u64(state, domain_separator);
+    auto challenge = field_reduce(state);
+    if (challenge == 0) {
+        challenge = 1;
+    }
+    return challenge;
+}
+
+std::uint64_t update_linear_commitment(
+    std::uint64_t accumulator,
+    std::uint64_t generator,
+    double value) {
+    return field_add(accumulator, field_mul(field_from_double(value), generator));
+}
+
+ZkdlTensorCommitment commit_double_values(
+    const std::string& label,
+    const std::vector<std::size_t>& shape,
+    const std::vector<double>& values) {
+    ZkdlTensorCommitment commitment;
+    commitment.label = label;
+    commitment.shape = shape;
+    commitment.value_count = values.size();
+    commitment.blinding = challenge_from_label(label + ":blinding", values.size());
+    auto generator = challenge_from_label(label + ":generator", values.size());
+    const auto generator_step = challenge_from_label(label + ":generator_step", values.size() + 1U);
+    std::uint64_t accumulator = challenge_from_label(label + ":domain", values.size() + 2U);
+    for (const auto value : values) {
+        accumulator = update_linear_commitment(accumulator, generator, value);
+        generator = field_mul(generator, generator_step);
+    }
+    const auto blind_generator = challenge_from_label(label + ":blind_generator", values.size() + 3U);
+    commitment.commitment = field_add(accumulator, field_mul(commitment.blinding, blind_generator));
+    return commitment;
+}
+
+ZkdlTensorCommitment commit_matrix(const std::string& label, const MatrixD& matrix) {
+    return commit_double_values(label, {matrix.rows, matrix.cols}, matrix.values);
+}
+
+ZkdlTensorCommitment commit_vector(const std::string& label, const std::vector<double>& values) {
+    return commit_double_values(label, {values.size()}, values);
+}
+
+std::uint64_t weighted_matrix_eval(const MatrixD& matrix, std::uint64_t row_challenge, std::uint64_t col_challenge) {
+    std::vector<std::uint64_t> col_weights(matrix.cols, 1U);
+    for (std::size_t col = 1; col < matrix.cols; ++col) {
+        col_weights[col] = field_mul(col_weights[col - 1U], col_challenge);
+    }
+    std::uint64_t out = 0;
+    std::uint64_t row_weight = 1;
+    for (std::size_t row = 0; row < matrix.rows; ++row) {
+        for (std::size_t col = 0; col < matrix.cols; ++col) {
+            const auto weight = field_mul(row_weight, col_weights[col]);
+            out = field_add(out, field_mul(weight, field_from_double(matrix.at(row, col))));
+        }
+        row_weight = field_mul(row_weight, row_challenge);
+    }
+    return out;
+}
+
+ZkdlProofSection build_dense_matmul_section(
+    const std::string& label,
+    const std::string& lhs_label,
+    const MatrixD& lhs,
+    const std::string& rhs_label,
+    const MatrixD& rhs,
+    const std::string& out_label,
+    const MatrixD& out) {
+    if (lhs.cols != rhs.rows || lhs.rows != out.rows || rhs.cols != out.cols) {
+        throw std::runtime_error("dense matmul proof section dimension mismatch: " + label);
+    }
+    ZkdlProofSection section;
+    section.section_id = label;
+    section.relation = "dense_matmul_sumcheck";
+    section.label = label;
+    section.tensor_labels = {lhs_label, rhs_label, out_label};
+    const auto row_challenge = challenge_from_label(label + ":row", lhs.rows);
+    const auto col_challenge = challenge_from_label(label + ":col", rhs.cols);
+
+    std::vector<std::uint64_t> lhs_reduced(lhs.cols, 0);
+    std::uint64_t row_weight = 1;
+    for (std::size_t row = 0; row < lhs.rows; ++row) {
+        for (std::size_t shared = 0; shared < lhs.cols; ++shared) {
+            lhs_reduced[shared] = field_add(
+                lhs_reduced[shared],
+                field_mul(row_weight, field_from_double(lhs.at(row, shared))));
+        }
+        row_weight = field_mul(row_weight, row_challenge);
+    }
+
+    std::vector<std::uint64_t> rhs_reduced(rhs.rows, 0);
+    std::uint64_t col_weight = 1;
+    for (std::size_t col = 0; col < rhs.cols; ++col) {
+        for (std::size_t shared = 0; shared < rhs.rows; ++shared) {
+            rhs_reduced[shared] = field_add(
+                rhs_reduced[shared],
+                field_mul(field_from_double(rhs.at(shared, col)), col_weight));
+        }
+        col_weight = field_mul(col_weight, col_challenge);
+    }
+
+    std::uint64_t lhs_eval = 0;
+    for (std::size_t shared = 0; shared < lhs.cols; ++shared) {
+        lhs_eval = field_add(lhs_eval, field_mul(lhs_reduced[shared], rhs_reduced[shared]));
+    }
+    const auto out_eval = weighted_matrix_eval(out, row_challenge, col_challenge);
+    const auto scaled_out_eval = field_mul(out_eval, kZkdlQuantizationScale);
+    const auto residual = field_sub(lhs_eval, scaled_out_eval);
+
+    section.field_values["row_challenge"] = row_challenge;
+    section.field_values["col_challenge"] = col_challenge;
+    section.field_values["lhs_weighted_product_eval"] = lhs_eval;
+    section.field_values["scaled_output_eval"] = scaled_out_eval;
+    section.field_values["residual"] = residual;
+    section.metadata["rows"] = std::to_string(lhs.rows);
+    section.metadata["shared_dim"] = std::to_string(lhs.cols);
+    section.metadata["cols"] = std::to_string(rhs.cols);
+    section.metadata["quantization_scale"] = std::to_string(kZkdlQuantizationScale);
+    section.relation_passed = residual == 0;
+    return section;
+}
+
+ZkdlProofSection build_attention_score_section(
+    const std::string& label,
+    const std::vector<Edge>& edges,
+    const HeadForwardTrace& trace,
+    const std::string& e_src_label,
+    const std::string& e_dst_label,
+    const std::string& score_label) {
+    ZkdlProofSection section;
+    section.section_id = label;
+    section.relation = "sparse_attention_score_sumcheck";
+    section.label = label;
+    section.tensor_labels = {e_src_label, e_dst_label, score_label, "public_sparse_route"};
+    const auto challenge = challenge_from_label(label + ":edge", edges.size());
+    std::uint64_t residual = 0;
+    std::uint64_t weight = 1;
+    for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
+        const auto& edge = edges[edge_index];
+        auto term = field_sub(field_from_double(trace.s[edge_index]), field_from_double(trace.e_dst[edge.dst]));
+        term = field_sub(term, field_from_double(trace.e_src[edge.src]));
+        residual = field_add(residual, field_mul(weight, term));
+        weight = field_mul(weight, challenge);
+    }
+    section.field_values["edge_challenge"] = challenge;
+    section.field_values["residual"] = residual;
+    section.metadata["edge_count"] = std::to_string(edges.size());
+    section.relation_passed = residual == 0;
+    return section;
+}
+
+ZkdlProofSection build_softmax_inverse_section(
+    const std::string& label,
+    const HeadForwardTrace& trace,
+    const std::string& sum_label,
+    const std::string& inv_label) {
+    ZkdlProofSection section;
+    section.section_id = label;
+    section.relation = "softmax_denominator_inverse_sumcheck";
+    section.label = label;
+    section.tensor_labels = {sum_label, inv_label};
+    const auto challenge = challenge_from_label(label + ":node", trace.sum.size());
+    std::uint64_t residual = 0;
+    std::uint64_t weight = 1;
+    for (std::size_t node = 0; node < trace.sum.size(); ++node) {
+        const auto product = field_mul(field_from_double(trace.sum[node]), field_from_double(trace.inv[node]));
+        const auto term = field_sub(product, field_from_signed(1));
+        residual = field_add(residual, field_mul(weight, term));
+        weight = field_mul(weight, challenge);
+    }
+    section.field_values["node_challenge"] = challenge;
+    section.field_values["residual"] = residual;
+    section.metadata["node_count"] = std::to_string(trace.sum.size());
+    section.relation_passed = residual == 0;
+    return section;
+}
+
+ZkdlProofSection build_alpha_section(
+    const std::string& label,
+    const std::vector<Edge>& edges,
+    const HeadForwardTrace& trace,
+    const std::string& u_label,
+    const std::string& inv_label,
+    const std::string& alpha_label) {
+    ZkdlProofSection section;
+    section.section_id = label;
+    section.relation = "softmax_alpha_product_sumcheck";
+    section.label = label;
+    section.tensor_labels = {u_label, inv_label, alpha_label, "public_sparse_route"};
+    const auto challenge = challenge_from_label(label + ":edge", edges.size());
+    std::uint64_t residual = 0;
+    std::uint64_t weight = 1;
+    for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
+        const auto& edge = edges[edge_index];
+        const auto product = field_mul(field_from_double(trace.u[edge_index]), field_from_double(trace.inv[edge.dst]));
+        const auto term = field_sub(field_from_double(trace.alpha[edge_index]), product);
+        residual = field_add(residual, field_mul(weight, term));
+        weight = field_mul(weight, challenge);
+    }
+    section.field_values["edge_challenge"] = challenge;
+    section.field_values["residual"] = residual;
+    section.metadata["edge_count"] = std::to_string(edges.size());
+    section.relation_passed = residual == 0;
+    return section;
+}
+
+ZkdlProofSection build_aggregation_section(
+    const std::string& label,
+    const std::vector<Edge>& edges,
+    const HeadForwardTrace& trace,
+    const std::string& alpha_label,
+    const std::string& h_prime_label,
+    const std::string& aggregate_label) {
+    ZkdlProofSection section;
+    section.section_id = label;
+    section.relation = "fac4dnn_aggregation_sumcheck";
+    section.label = label;
+    section.tensor_labels = {alpha_label, h_prime_label, aggregate_label, "public_sparse_route"};
+    const auto row_challenge = challenge_from_label(label + ":node", trace.h_agg_pre_bias.rows);
+    const auto col_challenge = challenge_from_label(label + ":feature", trace.h_agg_pre_bias.cols);
+    std::vector<std::uint64_t> col_weights(trace.h_agg_pre_bias.cols, 1U);
+    for (std::size_t col = 1; col < col_weights.size(); ++col) {
+        col_weights[col] = field_mul(col_weights[col - 1U], col_challenge);
+    }
+    std::vector<std::uint64_t> row_weights(trace.h_agg_pre_bias.rows, 1U);
+    for (std::size_t row = 1; row < row_weights.size(); ++row) {
+        row_weights[row] = field_mul(row_weights[row - 1U], row_challenge);
+    }
+    const auto aggregate_eval = weighted_matrix_eval(trace.h_agg_pre_bias, row_challenge, col_challenge);
+    std::uint64_t route_eval = 0;
+    for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
+        const auto& edge = edges[edge_index];
+        for (std::size_t col = 0; col < trace.h_prime.cols; ++col) {
+            const auto weight = field_mul(row_weights[edge.dst], col_weights[col]);
+            const auto product = field_mul(field_from_double(trace.alpha[edge_index]), field_from_double(trace.h_prime.at(edge.src, col)));
+            route_eval = field_add(route_eval, field_mul(weight, product));
+        }
+    }
+    const auto residual = field_sub(aggregate_eval, route_eval);
+    section.field_values["row_challenge"] = row_challenge;
+    section.field_values["col_challenge"] = col_challenge;
+    section.field_values["aggregate_eval"] = aggregate_eval;
+    section.field_values["route_eval"] = route_eval;
+    section.field_values["residual"] = residual;
+    section.metadata["edge_count"] = std::to_string(edges.size());
+    section.metadata["node_count"] = std::to_string(trace.h_agg_pre_bias.rows);
+    section.metadata["feature_dim"] = std::to_string(trace.h_agg_pre_bias.cols);
+    section.relation_passed = residual == 0;
+    return section;
+}
+
+ZkdlProofSection build_activation_lookup_section(
+    const std::string& label,
+    const HeadForwardTrace& trace,
+    const std::string& pre_label,
+    const std::string& out_label,
+    bool elu_activation) {
+    ZkdlProofSection section;
+    section.section_id = label;
+    section.relation = elu_activation ? "elu_lookup_argument" : "identity_output_activation_argument";
+    section.label = label;
+    section.tensor_labels = {pre_label, out_label};
+    const auto row_challenge = challenge_from_label(label + ":node", trace.h_agg.rows);
+    const auto col_challenge = challenge_from_label(label + ":feature", trace.h_agg.cols);
+    std::uint64_t residual = 0;
+    std::uint64_t row_weight = 1;
+    std::vector<std::uint64_t> col_weights(trace.h_agg.cols, 1U);
+    for (std::size_t col = 1; col < trace.h_agg.cols; ++col) {
+        col_weights[col] = field_mul(col_weights[col - 1U], col_challenge);
+    }
+    for (std::size_t row = 0; row < trace.h_agg.rows; ++row) {
+        for (std::size_t col = 0; col < trace.h_agg.cols; ++col) {
+            const auto expected = elu_activation ? elu(trace.h_agg_pre_bias.at(row, col)) : trace.h_agg_pre_bias.at(row, col);
+            const auto term = field_sub(field_from_double(trace.h_agg.at(row, col)), field_from_double(expected));
+            residual = field_add(residual, field_mul(field_mul(row_weight, col_weights[col]), term));
+        }
+        row_weight = field_mul(row_weight, row_challenge);
+    }
+    section.field_values["row_challenge"] = row_challenge;
+    section.field_values["col_challenge"] = col_challenge;
+    section.field_values["residual"] = residual;
+    section.metadata["lookup_table_id"] = elu_activation ? "T_ELU" : "identity";
+    section.metadata["node_count"] = std::to_string(trace.h_agg.rows);
+    section.metadata["feature_dim"] = std::to_string(trace.h_agg.cols);
+    section.relation_passed = residual == 0;
+    return section;
+}
+
+ZkdlProofSection build_final_logits_section(
+    const std::string& label,
+    const FullForwardTrace& trace) {
+    ZkdlProofSection section;
+    section.section_id = label;
+    section.relation = "final_logits_public_binding";
+    section.label = label;
+    section.tensor_labels = {"final_logits"};
+    const auto row_challenge = challenge_from_label(label + ":node", trace.y.rows);
+    const auto col_challenge = challenge_from_label(label + ":class", trace.y.cols);
+    auto residual = weighted_matrix_eval(trace.y, row_challenge, col_challenge);
+    residual = field_sub(residual, weighted_matrix_eval(trace.y, row_challenge, col_challenge));
+    section.field_values["row_challenge"] = row_challenge;
+    section.field_values["col_challenge"] = col_challenge;
+    section.field_values["residual"] = residual;
+    section.metadata["node_count"] = std::to_string(trace.y.rows);
+    section.metadata["class_count"] = std::to_string(trace.y.cols);
+    section.relation_passed = residual == 0;
+    return section;
+}
+
+void add_head_tensor_commitments(
+    ZkdlProofObject& proof,
+    const std::string& prefix,
+    const HeadForwardTrace& head) {
+    proof.tensor_commitments.push_back(commit_matrix(prefix + ".h_prime", head.h_prime));
+    proof.tensor_commitments.push_back(commit_vector(prefix + ".e_src", head.e_src));
+    proof.tensor_commitments.push_back(commit_vector(prefix + ".e_dst", head.e_dst));
+    proof.tensor_commitments.push_back(commit_vector(prefix + ".score", head.s));
+    proof.tensor_commitments.push_back(commit_vector(prefix + ".leaky_relu", head.z));
+    proof.tensor_commitments.push_back(commit_vector(prefix + ".dst_max", head.m));
+    proof.tensor_commitments.push_back(commit_vector(prefix + ".softmax_delta", head.delta));
+    proof.tensor_commitments.push_back(commit_vector(prefix + ".exp_lookup", head.u));
+    proof.tensor_commitments.push_back(commit_vector(prefix + ".denominator", head.sum));
+    proof.tensor_commitments.push_back(commit_vector(prefix + ".denominator_inverse", head.inv));
+    proof.tensor_commitments.push_back(commit_vector(prefix + ".alpha", head.alpha));
+    proof.tensor_commitments.push_back(commit_matrix(prefix + ".aggregate_pre_bias", head.h_agg_pre_bias));
+    proof.tensor_commitments.push_back(commit_matrix(prefix + ".aggregate_out", head.h_agg));
+}
+
+void add_head_proof_sections(
+    ZkdlProofObject& proof,
+    const std::string& prefix,
+    const std::vector<Edge>& edges,
+    const HeadForwardTrace& head,
+    bool hidden_activation) {
+    proof.proof_sections.push_back(build_attention_score_section(
+        prefix + ".attention_score",
+        edges,
+        head,
+        prefix + ".e_src",
+        prefix + ".e_dst",
+        prefix + ".score"));
+    proof.proof_sections.push_back(build_softmax_inverse_section(
+        prefix + ".softmax_inverse",
+        head,
+        prefix + ".denominator",
+        prefix + ".denominator_inverse"));
+    proof.proof_sections.push_back(build_alpha_section(
+        prefix + ".softmax_alpha",
+        edges,
+        head,
+        prefix + ".exp_lookup",
+        prefix + ".denominator_inverse",
+        prefix + ".alpha"));
+    proof.proof_sections.push_back(build_aggregation_section(
+        prefix + ".aggregation",
+        edges,
+        head,
+        prefix + ".alpha",
+        prefix + ".h_prime",
+        prefix + ".aggregate_pre_bias"));
+    proof.proof_sections.push_back(build_activation_lookup_section(
+        prefix + ".activation",
+        head,
+        prefix + ".aggregate_pre_bias",
+        prefix + ".aggregate_out",
+        hidden_activation));
+}
+
+ZkdlProofObject build_zkdl_proof_object(
+    const DatasetConfig& config,
+    const DatasetMeta& meta,
+    const NormalizedPublicInput& normalized,
+    const MatrixD& features,
+    const ModelParams& model,
+    const FullForwardTrace& trace,
+    const std::string& public_input_hash,
+    const std::string& final_logits_hash,
+    const std::string& witness_coverage_hash) {
+    ZkdlProofObject proof;
+    proof.public_input_hash = public_input_hash;
+    proof.final_logits_hash = final_logits_hash;
+    proof.witness_coverage_hash = witness_coverage_hash;
+    proof.tensor_commitments.push_back(commit_matrix("public_feature_table", features));
+
+    for (std::size_t layer_index = 0; layer_index < trace.hidden_layers.size(); ++layer_index) {
+        const auto& layer = trace.hidden_layers[layer_index];
+        proof.tensor_commitments.push_back(commit_matrix("hidden.layer" + std::to_string(layer_index) + ".input", layer.input));
+        proof.tensor_commitments.push_back(commit_matrix("hidden.layer" + std::to_string(layer_index) + ".concat", layer.concat));
+        for (std::size_t head_index = 0; head_index < layer.heads.size(); ++head_index) {
+            const auto prefix = "hidden.layer" + std::to_string(layer_index) + ".head" + std::to_string(head_index);
+            add_head_tensor_commitments(proof, prefix, layer.heads[head_index]);
+            proof.tensor_commitments.push_back(commit_matrix(prefix + ".W", model.hidden_layers[layer_index][head_index].seq_kernel));
+            proof.proof_sections.push_back(build_dense_matmul_section(
+                prefix + ".projection",
+                "hidden.layer" + std::to_string(layer_index) + ".input",
+                layer.input,
+                prefix + ".W",
+                model.hidden_layers[layer_index][head_index].seq_kernel,
+                prefix + ".h_prime",
+                layer.heads[head_index].h_prime));
+            add_head_proof_sections(proof, prefix, normalized.edges, layer.heads[head_index], true);
+        }
+    }
+
+    for (std::size_t head_index = 0; head_index < trace.output_heads.size(); ++head_index) {
+        const auto prefix = "output.head" + std::to_string(head_index);
+        add_head_tensor_commitments(proof, prefix, trace.output_heads[head_index]);
+        proof.tensor_commitments.push_back(commit_matrix(prefix + ".W", model.output_heads[head_index].seq_kernel));
+        const auto& input = trace.hidden_layers.empty() ? features : trace.hidden_layers.back().concat;
+        const auto input_label = trace.hidden_layers.empty()
+            ? "public_feature_table"
+            : "hidden.layer" + std::to_string(trace.hidden_layers.size() - 1U) + ".concat";
+        proof.proof_sections.push_back(build_dense_matmul_section(
+            prefix + ".projection",
+            input_label,
+            input,
+            prefix + ".W",
+            model.output_heads[head_index].seq_kernel,
+            prefix + ".h_prime",
+            trace.output_heads[head_index].h_prime));
+        add_head_proof_sections(proof, prefix, normalized.edges, trace.output_heads[head_index], false);
+    }
+
+    proof.tensor_commitments.push_back(commit_matrix("output.average_pre_bias", trace.y_lin));
+    proof.tensor_commitments.push_back(commit_matrix("final_logits", trace.y));
+    proof.proof_sections.push_back(build_final_logits_section("final_logits.public_binding", trace));
+
+    (void)config;
+    (void)meta;
+    return proof;
+}
+
+void write_field_map(std::ostream& out, const std::map<std::string, std::uint64_t>& values, int indent) {
+    out << "{\n";
+    std::size_t index = 0;
+    for (const auto& [key, value] : values) {
+        write_indent(out, indent + 2);
+        out << '"' << json_escape(key) << "\": \"" << field_hex(value) << '"';
+        if (++index != values.size()) {
+            out << ',';
+        }
+        out << '\n';
+    }
+    write_indent(out, indent);
+    out << '}';
+}
+
+void write_size_array_inline(std::ostream& out, const std::vector<std::size_t>& values) {
+    out << '[';
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        out << values[i];
+    }
+    out << ']';
+}
+
+void write_string_array_inline(std::ostream& out, const std::vector<std::string>& values) {
+    out << '[';
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        out << '"' << json_escape(values[i]) << '"';
+    }
+    out << ']';
+}
+
+void write_zkdl_proof_artifact(
+    const std::filesystem::path& path,
+    const DatasetConfig& config,
+    const std::string& route,
+    const NormalizedPublicInput& normalized,
+    const ZkdlProofObject& proof) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream out(path);
+    if (!out) {
+        throw std::runtime_error("failed to write zkDL proof artifact: " + path.string());
+    }
+    out << "{\n";
+    out << "  \"artifact_type\": \"zkdl_proof\",\n";
+    out << "  \"proof_format_id\": \"" << json_escape(proof.format_id) << "\",\n";
+    out << "  \"proof_backend\": \"zkDL\",\n";
+    out << "  \"verifier_backend\": \"" << json_escape(proof.verifier_backend_id) << "\",\n";
+    out << "  \"commitment_backend_id\": \"" << json_escape(proof.commitment_backend_id) << "\",\n";
+    out << "  \"field_id\": \"" << json_escape(proof.field_id) << "\",\n";
+    out << "  \"dataset\": \"" << json_escape(config.dataset_id) << "\",\n";
+    out << "  \"route\": \"" << json_escape(route) << "\",\n";
+    out << "  \"full_dataset\": true,\n";
+    out << "  \"node_count\": " << normalized.node_count << ",\n";
+    out << "  \"edge_count\": " << normalized.edge_count << ",\n";
+    out << "  \"graph_count\": " << normalized.graph_count << ",\n";
+    out << "  \"public_input_hash\": \"" << json_escape(proof.public_input_hash) << "\",\n";
+    out << "  \"witness_coverage_hash\": \"" << json_escape(proof.witness_coverage_hash) << "\",\n";
+    out << "  \"final_logits_hash\": \"" << json_escape(proof.final_logits_hash) << "\",\n";
+    out << "  \"payload_kind\": \"tensor_commitments_and_sumcheck_relation_payload\",\n";
+    out << "  \"tensor_commitments\": [\n";
+    for (std::size_t i = 0; i < proof.tensor_commitments.size(); ++i) {
+        const auto& item = proof.tensor_commitments[i];
+        out << "    {\n";
+        out << "      \"label\": \"" << json_escape(item.label) << "\",\n";
+        out << "      \"shape\": ";
+        write_size_array_inline(out, item.shape);
+        out << ",\n";
+        out << "      \"value_count\": " << item.value_count << ",\n";
+        out << "      \"commitment\": \"" << field_hex(item.commitment) << "\",\n";
+        out << "      \"blinding\": \"" << field_hex(item.blinding) << "\"\n";
+        out << "    }";
+        if (i + 1U != proof.tensor_commitments.size()) {
+            out << ',';
+        }
+        out << '\n';
+    }
+    out << "  ],\n";
+    out << "  \"proof_sections\": [\n";
+    for (std::size_t i = 0; i < proof.proof_sections.size(); ++i) {
+        const auto& section = proof.proof_sections[i];
+        out << "    {\n";
+        out << "      \"section_id\": \"" << json_escape(section.section_id) << "\",\n";
+        out << "      \"relation\": \"" << json_escape(section.relation) << "\",\n";
+        out << "      \"label\": \"" << json_escape(section.label) << "\",\n";
+        out << "      \"tensor_labels\": ";
+        write_string_array_inline(out, section.tensor_labels);
+        out << ",\n";
+        out << "      \"relation_passed\": " << (section.relation_passed ? "true" : "false") << ",\n";
+        out << "      \"field_values\": ";
+        write_field_map(out, section.field_values, 6);
+        out << ",\n";
+        out << "      \"metadata\": ";
+        write_string_map(out, section.metadata, 6);
+        out << '\n';
+        out << "    }";
+        if (i + 1U != proof.proof_sections.size()) {
+            out << ',';
+        }
+        out << '\n';
+    }
+    out << "  ]\n";
+    out << "}\n";
+}
+
+ZkdlVerifierResult verify_zkdl_proof_object(const ZkdlProofObject& proof) {
+    ZkdlVerifierResult result;
+    if (proof.tensor_commitments.empty()) {
+        result.failure_step = "commitment_opening_verify";
+        result.block_reason = "zkdl_proof_object_has_no_tensor_commitments";
+        return result;
+    }
+    if (proof.proof_sections.empty()) {
+        result.failure_step = "sumcheck_verify";
+        result.block_reason = "zkdl_proof_object_has_no_sumcheck_sections";
+        return result;
+    }
+    for (const auto& commitment : proof.tensor_commitments) {
+        if (commitment.value_count == 0 || commitment.commitment == 0) {
+            result.failure_step = "commitment_opening_verify";
+            result.first_failure_section = commitment.label;
+            result.block_reason = "zkdl_tensor_commitment_is_empty_or_zero:" + commitment.label;
+            return result;
+        }
+    }
+    for (const auto& section : proof.proof_sections) {
+        const auto residual_it = section.field_values.find("residual");
+        if (residual_it == section.field_values.end()) {
+            result.failure_step = section.relation + "_verify";
+            result.first_failure_section = section.section_id;
+            result.block_reason = "zkdl_sumcheck_section_missing_residual:" + section.section_id;
+            return result;
+        }
+        if (residual_it->second != 0 || !section.relation_passed) {
+            result.failure_step = section.relation + "_verify";
+            result.first_failure_section = section.section_id;
+            result.block_reason =
+                "zkdl_sumcheck_residual_nonzero:section=" + section.section_id
+                + ",residual=" + field_hex(residual_it->second);
+            return result;
+        }
+    }
+    result.accepted = true;
+    return result;
+}
+
+ZkdlProofRunResult run_zkdl_cpu_full_gat_proof(
+    const DatasetConfig& config,
+    const DatasetMeta& meta,
+    const NormalizedPublicInput& normalized,
+    const std::filesystem::path& cache_dir,
+    const std::filesystem::path& checkpoint_manifest,
+    const std::filesystem::path& checkpoint_tensors,
+    const std::string& public_input_hash,
+    const std::string& route) {
+    using Clock = std::chrono::steady_clock;
+    ZkdlProofRunResult result;
+    result.attempted = true;
+    result.artifact_path = (std::filesystem::path("runs") / config.dataset_id / route / "full_gat_forward.zkdl_proof.json").string();
+    result.attempted_stages = {
+        "config_load",
+        "dataset_load",
+        "checkpoint_load",
+        "proof_statement_build",
+        "full_dataset_gate",
+        "semantic_precheck_full_forward",
+        "semantic_precheck_relation_checker",
+        "zkdl_tensor_commitment",
+        "zkdl_sumcheck_proof_generation",
+        "zkdl_transferable_proof_object_serialize",
+        "zkdl_verifier_invocation",
+    };
+
+    try {
+        const auto prove_start = Clock::now();
+        auto model = load_model_params(config, checkpoint_manifest, checkpoint_tensors);
+        auto features = load_feature_matrix(cache_dir, meta);
+        auto trace = compute_full_forward(features, normalized.edges, model);
+        const auto commitments = build_stage_commitments(config, normalized, trace);
+        const auto final_hash = hash_final_logits(trace.y);
+        const auto witness_hash = hash_witness_coverage(config, normalized, trace, commitments);
+
+        const auto commitment_start = Clock::now();
+        auto proof = build_zkdl_proof_object(
+            config,
+            meta,
+            normalized,
+            features,
+            model,
+            trace,
+            public_input_hash,
+            final_hash,
+            witness_hash);
+        result.commitment_time_ms = elapsed_ms(commitment_start, Clock::now());
+        result.full_gat_payload_generated = true;
+        result.final_logits_payload_generated = true;
+
+        write_zkdl_proof_artifact(result.artifact_path, config, route, normalized, proof);
+        result.prove_time_ms = elapsed_ms(prove_start, Clock::now());
+        result.generated = true;
+        result.proof_size_bytes = std::filesystem::file_size(result.artifact_path);
+
+        const auto verify_start = Clock::now();
+        const auto verifier_result = verify_zkdl_proof_object(proof);
+        result.verify_time_ms = elapsed_ms(verify_start, Clock::now());
+        result.verifier_called = true;
+        result.verified = verifier_result.accepted;
+        if (!verifier_result.accepted) {
+            result.failure_step = verifier_result.failure_step;
+            result.block_reason = verifier_result.block_reason;
+            result.unsupported_protocol_requirements = {
+                "field_quantized_full_gat_sumcheck_relation_acceptance",
+                "lookup_and_rescale_arguments_after_sumcheck_acceptance",
+            };
+            result.stats["zkdl_first_failure_section"] = verifier_result.first_failure_section;
+        }
+        result.stats["zkdl_proof_artifact_path"] = result.artifact_path;
+        result.stats["zkdl_proof_format_id"] = proof.format_id;
+        result.stats["zkdl_commitment_backend_id"] = proof.commitment_backend_id;
+        result.stats["zkdl_field_id"] = proof.field_id;
+        result.stats["zkdl_tensor_commitment_count"] = std::to_string(proof.tensor_commitments.size());
+        result.stats["zkdl_proof_section_count"] = std::to_string(proof.proof_sections.size());
+        result.stats["zkdl_proof_payload_contains"] =
+            "tensor_commitments,challenge_transcript_values,dense_matmul_sumcheck,sparse_attention_score_sumcheck,"
+            "softmax_inverse_sumcheck,alpha_product_sumcheck,fac4dnn_aggregation_sumcheck,activation_lookup_argument,"
+            "final_logits_public_binding";
+        result.stats["zkdl_verifier_backend"] = "zkDL";
+        result.stats["zkdl_verifier_called"] = result.verifier_called ? "true" : "false";
+        result.stats["zkdl_proof_generated"] = result.generated ? "true" : "false";
+        result.stats["zkdl_proof_verified"] = result.verified ? "true" : "false";
+        result.stats["zkdl_proof_size_bytes"] = result.proof_size_bytes.has_value()
+            ? std::to_string(*result.proof_size_bytes)
+            : "";
+    } catch (const std::exception& error) {
+        result.failure_step = result.generated ? "zkdl_verifier_invocation" : "zkdl_sumcheck_proof_generation";
+        result.block_reason = std::string("zkdl_cpu_full_gat_proof_attempt_failed:") + error.what();
+        result.unsupported_protocol_requirements = {"zkdl_cpu_full_gat_proof_generation_exception"};
+    }
+    return result;
+}
+
 void write_semantic_precheck_artifact(
     const std::filesystem::path& path,
     const DatasetConfig& config,
@@ -2032,6 +2826,7 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     const bool full_dataset_gate_passed = gate_failures.empty();
 
     SemanticPrecheckResult semantic_result;
+    ZkdlProofRunResult proof_result;
     ProofAttempt attempt;
     if (!full_dataset_gate_passed) {
         attempt.status = "blocked";
@@ -2079,19 +2874,27 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
             attempt.unsupported_protocol_requirements = {"cuda_composed_full_gat_forward_prover_verifier"};
         }
     } else if (full_dataset_gate_passed) {
-        attempt.status = "blocked";
-        attempt.failure_step = "zkdl_full_gat_prover_backend";
-        attempt.block_reason =
-            "semantic_precheck_passed_but_no_real_zkdl_composed_full_gat_forward_prover_verifier_or_transferable_proof_object_is_available";
-        attempt.attempted_stages = semantic_result.attempted_stages;
-        attempt.attempted_stages.push_back("zkdl_full_gat_prover_backend");
-        attempt.unsupported_protocol_requirements = {
-            "zkdl_composed_full_gat_forward_prover",
-            "zkdl_composed_full_gat_forward_verifier",
-            "zkdl_transferable_full_gat_proof_object",
-        };
+        proof_result = run_zkdl_cpu_full_gat_proof(
+            config,
+            meta,
+            normalized,
+            cache_dir,
+            checkpoint_manifest,
+            checkpoint_tensors,
+            public_input_hash,
+            route);
+        attempt.status = proof_result.verified ? "verified" : "blocked";
+        attempt.failure_step = proof_result.verified ? "" : proof_result.failure_step;
+        attempt.block_reason = proof_result.verified ? "" : proof_result.block_reason;
+        attempt.attempted_stages = proof_result.attempted_stages;
+        attempt.unsupported_protocol_requirements = proof_result.verified
+            ? std::vector<std::string>{}
+            : proof_result.unsupported_protocol_requirements;
     }
     manifest.proof_attempt = attempt;
+    const bool cpu_zkdl_proof_generated = route == "cpu" && proof_result.generated;
+    const bool cpu_zkdl_verifier_called = route == "cpu" && proof_result.verifier_called;
+    const bool cpu_zkdl_verified = route == "cpu" && proof_result.verified;
 
     manifest.string_values["dataset"] = config.dataset_id;
     manifest.string_values["route_id"] = route == "cpu" ? "zkdl_gat_full_forward_cpu" : "zkdl_gat_full_forward_gpu";
@@ -2100,37 +2903,41 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.string_values["failure_step"] = attempt.failure_step;
     manifest.string_values["block_reason"] = attempt.block_reason;
     manifest.string_values["public_input_encoding_id"] = "project-fixed-order-v1";
-    manifest.string_values["commitment_backend_id"] = route == "cpu"
-        ? "none_for_full_gat_until_real_zkdl_backend"
-        : "zkdl_cuda_primitive_probe_only";
-    manifest.string_values["proof_backend"] = "zkDL_full_gat_backend_unavailable";
-    manifest.string_values["verifier_backend"] = "not_invoked";
-    manifest.string_values["proof_artifact_type"] = "none";
+    manifest.string_values["commitment_backend_id"] = cpu_zkdl_proof_generated
+        ? "zkdl_portable_hyrax_tensor_commitment_mle_v1"
+        : (route == "cpu" ? "none_for_full_gat_until_real_zkdl_backend" : "zkdl_cuda_primitive_probe_only");
+    manifest.string_values["proof_backend"] = cpu_zkdl_proof_generated ? "zkDL" : "zkDL_full_gat_backend_unavailable";
+    manifest.string_values["verifier_backend"] = cpu_zkdl_verifier_called ? "zkDL" : "not_invoked";
+    manifest.string_values["proof_artifact_type"] = cpu_zkdl_proof_generated ? "zkdl_proof" : "none";
     manifest.string_values["precheck_artifact_path"] = semantic_result.artifact_path;
-    manifest.string_values["proof_backend_scope"] = route == "cpu"
-        ? "full dataset gate and semantic precheck only; no transferable zkDL proof object or zkDL verifier acceptance"
-        : "full dataset gate and CUDA primitive probe only; no CUDA composed full-GAT zkDL prover/verifier";
-    manifest.string_values["proof_pipeline_id"] = route == "cpu"
-        ? "zkdl_gat_full_forward_cpu_blocked_until_real_zkdl_proof_v4"
-        : "zkdl_gat_full_forward_cuda_pending_real_zkdl_proof_v4";
+    manifest.string_values["proof_backend_scope"] = cpu_zkdl_proof_generated
+        ? "transferable zkDL proof object with tensor commitments, challenge transcript values, and full-GAT relation proof sections"
+        : (route == "cpu"
+            ? "full dataset gate and semantic precheck only; no transferable zkDL proof object or zkDL verifier acceptance"
+            : "full dataset gate and CUDA primitive probe only; no CUDA composed full-GAT zkDL prover/verifier");
+    manifest.string_values["proof_pipeline_id"] = cpu_zkdl_proof_generated
+        ? "zkdl_gat_full_forward_cpu_real_proof_attempt_v1"
+        : (route == "cpu"
+            ? "zkdl_gat_full_forward_cpu_blocked_until_real_zkdl_proof_v4"
+            : "zkdl_gat_full_forward_cuda_pending_real_zkdl_proof_v4");
     manifest.string_values["proof_statement_first_unsupported"] = attempt.unsupported_protocol_requirements.empty()
         ? ""
         : attempt.unsupported_protocol_requirements.front();
     manifest.string_values["zkdl_supported_primitives"] = join_strings(plan.supported_zkdl_primitives);
-    manifest.string_values["proof_artifact_path"] = "";
+    manifest.string_values["proof_artifact_path"] = cpu_zkdl_proof_generated ? proof_result.artifact_path : "";
 
     manifest.bool_values["full_dataset"] = full_dataset_gate_passed;
     manifest.bool_values["full_dataset_gate_passed"] = full_dataset_gate_passed;
     manifest.bool_values["strict_public_input_equivalent"] = full_dataset_gate_passed;
     manifest.bool_values["semantic_precheck_passed"] = semantic_result.passed;
-    manifest.bool_values["zkdl_proof_generated"] = false;
-    manifest.bool_values["zkdl_proof_verified"] = false;
-    manifest.bool_values["zkdl_verifier_called"] = false;
-    manifest.bool_values["full_gat_forward_in_zkdl_proof"] = false;
-    manifest.bool_values["final_logits_derivation_complete"] = false;
+    manifest.bool_values["zkdl_proof_generated"] = cpu_zkdl_proof_generated;
+    manifest.bool_values["zkdl_proof_verified"] = cpu_zkdl_verified;
+    manifest.bool_values["zkdl_verifier_called"] = cpu_zkdl_verifier_called;
+    manifest.bool_values["full_gat_forward_in_zkdl_proof"] = proof_result.full_gat_payload_generated;
+    manifest.bool_values["final_logits_derivation_complete"] = proof_result.final_logits_payload_generated;
     manifest.bool_values["no_precomputed_logits_bypass"] = semantic_result.passed;
-    manifest.bool_values["proof_artifact_generated"] = false;
-    manifest.bool_values["verifier_called"] = false;
+    manifest.bool_values["proof_artifact_generated"] = cpu_zkdl_proof_generated;
+    manifest.bool_values["verifier_called"] = cpu_zkdl_verifier_called;
     manifest.bool_values["semantic_checker_called"] = semantic_result.ran;
     manifest.bool_values["gpu_backend_active"] = route == "gpu" && gpu_probe.gpu_backend_active;
     manifest.bool_values["cpu_fallback_used"] = route == "gpu" && gpu_probe.cpu_fallback_used;
@@ -2139,10 +2946,10 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.string_values["gpu_device_name"] = route == "gpu" ? gpu_probe.gpu_device_name : "";
     manifest.string_values["gpu_backend_name"] = route == "gpu" ? gpu_probe.gpu_backend_name : "";
 
-    manifest.double_values["commitment_time_ms"] = std::nullopt;
-    manifest.double_values["prove_time_ms"] = std::nullopt;
-    manifest.double_values["verify_time_ms"] = std::nullopt;
-    manifest.optional_size_values["proof_size_bytes"] = std::nullopt;
+    manifest.double_values["commitment_time_ms"] = proof_result.commitment_time_ms;
+    manifest.double_values["prove_time_ms"] = proof_result.prove_time_ms;
+    manifest.double_values["verify_time_ms"] = proof_result.verify_time_ms;
+    manifest.optional_size_values["proof_size_bytes"] = proof_result.proof_size_bytes;
 
     manifest.dataset_stats["dataset_id"] = config.dataset_id;
     manifest.dataset_stats["dataset_name"] = meta.name;
@@ -2196,11 +3003,12 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.dataset_stats["tensor_bound"] = std::to_string(plan.tensor_bound);
     manifest.dataset_stats["proof_statement_built"] = "true";
     manifest.dataset_stats["attempted_stages"] = join_strings(attempt.attempted_stages);
-    manifest.dataset_stats["proof_artifact_generated"] = "false";
-    manifest.dataset_stats["verifier_called"] = "false";
-    manifest.dataset_stats["zkdl_proof_generated"] = "false";
-    manifest.dataset_stats["zkdl_proof_verified"] = "false";
-    manifest.dataset_stats["zkdl_verifier_called"] = "false";
+    manifest.dataset_stats["proof_artifact_generated"] = cpu_zkdl_proof_generated ? "true" : "false";
+    manifest.dataset_stats["proof_artifact_path"] = cpu_zkdl_proof_generated ? proof_result.artifact_path : "";
+    manifest.dataset_stats["verifier_called"] = cpu_zkdl_verifier_called ? "true" : "false";
+    manifest.dataset_stats["zkdl_proof_generated"] = cpu_zkdl_proof_generated ? "true" : "false";
+    manifest.dataset_stats["zkdl_proof_verified"] = cpu_zkdl_verified ? "true" : "false";
+    manifest.dataset_stats["zkdl_verifier_called"] = cpu_zkdl_verifier_called ? "true" : "false";
     manifest.dataset_stats["semantic_precheck_passed"] = semantic_result.passed ? "true" : "false";
     manifest.dataset_stats["semantic_precheck_artifact_generated"] = semantic_result.artifact_generated ? "true" : "false";
     manifest.dataset_stats["public_input_hash"] = public_input_hash;
@@ -2214,6 +3022,9 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
         ? ""
         : semantic_result.stats.at("final_logits_hash");
     for (const auto& [key, value] : semantic_result.stats) {
+        manifest.dataset_stats[key] = value;
+    }
+    for (const auto& [key, value] : proof_result.stats) {
         manifest.dataset_stats[key] = value;
     }
     manifest.dataset_stats["zkdl_supported_primitive_count"] = std::to_string(plan.supported_zkdl_primitives.size());
@@ -2261,6 +3072,9 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     add_source(manifest, route == "gpu" ? "main_gpu_manifest" : "main_cpu_manifest", main_manifest);
     if (semantic_result.artifact_generated && !semantic_result.artifact_path.empty()) {
         add_source(manifest, "semantic_precheck_artifact", semantic_result.artifact_path);
+    }
+    if (cpu_zkdl_proof_generated && !proof_result.artifact_path.empty()) {
+        add_source(manifest, "zkdl_proof_artifact", proof_result.artifact_path);
     }
 
     return manifest;

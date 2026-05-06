@@ -90,7 +90,8 @@ def main():
                 if "capability_check" in str(manifest.get("failure_step")):
                     errors.append(f"{path}: failure_step must name the reached proof stage, not a generic capability check")
                 if manifest.get("proof_size_bytes") not in (None, 0):
-                    errors.append(f"{path}: blocked row cannot report proof_size_bytes unless it is a real zkDL proof")
+                    if manifest.get("proof_artifact_type") != "zkdl_proof" or not manifest.get("zkdl_proof_generated"):
+                        errors.append(f"{path}: blocked row cannot report proof_size_bytes unless it is a real zkDL proof")
             if manifest.get("status") not in {"blocked", "verified"}:
                 errors.append(f"{path}: unsupported status {manifest.get('status')}")
 
@@ -142,8 +143,10 @@ def main():
                 if manifest.get("verify_time_ms") is None or manifest.get("proof_size_bytes") in (None, 0):
                     errors.append(f"{path}: verified status without verify metrics and proof bytes")
             else:
-                if manifest.get("proof_backend") == "zkDL" or manifest.get("verifier_backend") == "zkDL":
-                    errors.append(f"{path}: blocked row cannot claim zkDL proof/verifier backend")
+                if manifest.get("proof_backend") == "zkDL" and not manifest.get("zkdl_proof_generated"):
+                    errors.append(f"{path}: blocked row cannot claim zkDL proof backend without a generated proof")
+                if manifest.get("verifier_backend") == "zkDL" and not manifest.get("zkdl_verifier_called"):
+                    errors.append(f"{path}: blocked row cannot claim zkDL verifier backend without a verifier call")
             for key in ["attempted_stages", "unsupported_protocol_requirements"]:
                 if key not in manifest or not isinstance(manifest[key], list):
                     errors.append(f"{path}: missing {key} array")
