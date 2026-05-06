@@ -1,6 +1,6 @@
 dataset,route_id,backend,status,proof_backend,verifier_backend,full_dataset,full_dataset_gate_passed,semantic_precheck_passed,zkdl_proof_verified,commitment_time_ms,prove_time_ms,verify_time_ms,proof_size_bytes,strict_public_input_equivalent,full_gat_forward_in_zkdl_proof,final_logits_derivation_complete,no_precomputed_logits_bypass,failure_step,block_reason
-cora_full,zkdl_gat_full_forward_cpu,cpu,blocked,zkDL,zkDL,True,True,True,False,,,,,True,True,True,True,hidden.layer0.head0.softmax_inverse.verify,"native_zkdl_section_verify_failed:relation=softmax_denominator_inverse_sumcheck,residual=0x1cc6b127a1cae79d"
-citeseer_full,zkdl_gat_full_forward_cpu,cpu,blocked,zkDL,zkDL,True,True,True,False,,,,,True,True,True,True,hidden.layer0.head0.softmax_inverse.verify,"native_zkdl_section_verify_failed:relation=softmax_denominator_inverse_sumcheck,residual=0x18ab80b8cc3fd87e"
-pubmed_full,zkdl_gat_full_forward_cpu,cpu,blocked,zkDL,zkDL,True,True,True,False,,,,,True,True,True,True,hidden.layer0.head0.softmax_inverse.verify,"native_zkdl_section_verify_failed:relation=softmax_denominator_inverse_sumcheck,residual=0x05afcbfe734e4a25"
-ppi_full_formal,zkdl_gat_full_forward_cpu,cpu,blocked,zkDL,zkDL,True,True,True,False,,,,,True,True,True,True,hidden.layer0.head0.softmax_inverse.verify,"native_zkdl_section_verify_failed:relation=softmax_denominator_inverse_sumcheck,residual=0x095540416daff023"
-ogbn_arxiv_full,zkdl_gat_full_forward_cpu,cpu,blocked,zkDL,zkDL,True,True,True,False,,,,,True,True,True,True,hidden.layer0.head0.softmax_inverse.verify,"native_zkdl_section_verify_failed:relation=softmax_denominator_inverse_sumcheck,residual=0x0ed0ae1819dc4550"
+cora_full,zkdl_gat_full_forward_cpu,cpu,verified,zkDL,zkDL,True,True,True,True,670.201,1038.766,2.562,290685,True,True,True,True,,
+citeseer_full,zkdl_gat_full_forward_cpu,cpu,verified,zkDL,zkDL,True,True,True,True,2054.282,3055.256,2.978,290685,True,True,True,True,,
+pubmed_full,zkdl_gat_full_forward_cpu,cpu,verified,zkDL,zkDL,True,True,True,True,1762.117,2212.08,6.48,291284,True,True,True,True,,
+ppi_full_formal,zkdl_gat_full_forward_cpu,cpu,verified,zkDL,zkDL,True,True,True,True,1445.703,1790.991,35.243,74318,True,True,True,True,,
+ogbn_arxiv_full,zkdl_gat_full_forward_cpu,cpu,verified,zkDL,zkDL,True,True,True,True,2439.309,3233.389,63.508,74481,True,True,True,True,,

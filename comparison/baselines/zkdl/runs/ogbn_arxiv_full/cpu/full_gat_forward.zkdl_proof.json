@@ -15,7 +15,7 @@
   "public_input_hash": "0x17a59427c8a2496a",
   "witness_coverage_hash": "0x6b20f5df54013cc1",
   "final_logits_hash": "0xce9f3974030ed588",
-  "transcript_root": "0x897f1193118089ae",
+  "transcript_root": "0x0efb8764fcb59480",
   "full_gat_forward_in_zkdl_proof": true,
   "final_logits_derivation_complete": true,
   "native_verifier_api": "verify_zkdl_native_full_gat_proof",
@@ -183,6 +183,27 @@
       "blinding": "0x14f1b34733446e16"
     },
     {
+      "label": "hidden.layer0.head0.softmax_inverse_rescale_remainder",
+      "shape": [169343],
+      "value_count": 169343,
+      "commitment": "0x007afeeda05d7a40",
+      "blinding": "0x04835ab45d8a34ea"
+    },
+    {
+      "label": "hidden.layer0.head0.alpha_rescale_remainder",
+      "shape": [1335586],
+      "value_count": 1335586,
+      "commitment": "0x1079e1c036ef983b",
+      "blinding": "0x168e6a436f863d81"
+    },
+    {
+      "label": "hidden.layer0.head0.aggregation_rescale_remainder",
+      "shape": [169343, 8],
+      "value_count": 1354744,
+      "commitment": "0x0741f0d94c7fa324",
+      "blinding": "0x04104c1756b47244"
+    },
+    {
       "label": "output.head0.h_prime",
       "shape": [169343, 40],
       "value_count": 6773720,
@@ -281,6 +302,13 @@
       "blinding": "0x1e228a8b8629bcb5"
     },
     {
+      "label": "output.head0.output_bias",
+      "shape": [40],
+      "value_count": 40,
+      "commitment": "0x1bd9cf5cf6181030",
+      "blinding": "0x13240897b786c083"
+    },
+    {
       "label": "output.head0.projection_rescale_remainder",
       "shape": [169343, 40],
       "value_count": 6773720,
@@ -293,6 +321,27 @@
       "value_count": 1335586,
       "commitment": "0x0312ea2be126b614",
       "blinding": "0x03e74e088a92619b"
+    },
+    {
+      "label": "output.head0.softmax_inverse_rescale_remainder",
+      "shape": [169343],
+      "value_count": 169343,
+      "commitment": "0x0bc80b36ba0db966",
+      "blinding": "0x145661207c460fa1"
+    },
+    {
+      "label": "output.head0.alpha_rescale_remainder",
+      "shape": [1335586],
+      "value_count": 1335586,
+      "commitment": "0x029d06b771566a9d",
+      "blinding": "0x1fbaeeb3fe1b6555"
+    },
+    {
+      "label": "output.head0.aggregation_rescale_remainder",
+      "shape": [169343, 40],
+      "value_count": 6773720,
+      "commitment": "0x1ec231464849bad0",
+      "blinding": "0x0635c0983e9d56fc"
     },
     {
       "label": "output.average_pre_bias",
@@ -656,6 +705,51 @@
       }
     },
     {
+      "opening_id": "open.hidden.layer0.head0.softmax_inverse_rescale_remainder",
+      "tensor_label": "hidden.layer0.head0.softmax_inverse_rescale_remainder",
+      "section_id": "tensor_commitment_opening",
+      "point_label": "hidden.layer0.head0.softmax_inverse_rescale_remainder.mle_point",
+      "point": [1246112820092727288],
+      "commitment": "0x007afeeda05d7a40",
+      "opening_value": "0x104bc7835ff82e1a",
+      "opening_proof": "0x0d40cb666790ad0d",
+      "metadata": {
+        "opening_protocol": "zkdl_portable_hyrax_mle_opening_digest",
+        "shape_rank": "1",
+        "value_count": "169343"
+      }
+    },
+    {
+      "opening_id": "open.hidden.layer0.head0.alpha_rescale_remainder",
+      "tensor_label": "hidden.layer0.head0.alpha_rescale_remainder",
+      "section_id": "tensor_commitment_opening",
+      "point_label": "hidden.layer0.head0.alpha_rescale_remainder.mle_point",
+      "point": [228382023234547510],
+      "commitment": "0x1079e1c036ef983b",
+      "opening_value": "0x00b18c010a44bcc7",
+      "opening_proof": "0x1f9cace4657f8abc",
+      "metadata": {
+        "opening_protocol": "zkdl_portable_hyrax_mle_opening_digest",
+        "shape_rank": "1",
+        "value_count": "1335586"
+      }
+    },
+    {
+      "opening_id": "open.hidden.layer0.head0.aggregation_rescale_remainder",
+      "tensor_label": "hidden.layer0.head0.aggregation_rescale_remainder",
+      "section_id": "tensor_commitment_opening",
+      "point_label": "hidden.layer0.head0.aggregation_rescale_remainder.mle_point",
+      "point": [197720239704397941],
+      "commitment": "0x0741f0d94c7fa324",
+      "opening_value": "0x05baa800c6fc96b7",
+      "opening_proof": "0x033c3763d15fdac7",
+      "metadata": {
+        "opening_protocol": "zkdl_portable_hyrax_mle_opening_digest",
+        "shape_rank": "2",
+        "value_count": "1354744"
+      }
+    },
+    {
       "opening_id": "open.output.head0.h_prime",
       "tensor_label": "output.head0.h_prime",
       "section_id": "tensor_commitment_opening",
@@ -866,6 +960,21 @@
       }
     },
     {
+      "opening_id": "open.output.head0.output_bias",
+      "tensor_label": "output.head0.output_bias",
+      "section_id": "tensor_commitment_opening",
+      "point_label": "output.head0.output_bias.mle_point",
+      "point": [1800836991447284824],
+      "commitment": "0x1bd9cf5cf6181030",
+      "opening_value": "0x1d87b38c04b3ad81",
+      "opening_proof": "0x09ef8e78f90a1213",
+      "metadata": {
+        "opening_protocol": "zkdl_portable_hyrax_mle_opening_digest",
+        "shape_rank": "1",
+        "value_count": "40"
+      }
+    },
+    {
       "opening_id": "open.output.head0.projection_rescale_remainder",
       "tensor_label": "output.head0.projection_rescale_remainder",
       "section_id": "tensor_commitment_opening",
@@ -893,6 +1002,51 @@
         "opening_protocol": "zkdl_portable_hyrax_mle_opening_digest",
         "shape_rank": "1",
         "value_count": "1335586"
+      }
+    },
+    {
+      "opening_id": "open.output.head0.softmax_inverse_rescale_remainder",
+      "tensor_label": "output.head0.softmax_inverse_rescale_remainder",
+      "section_id": "tensor_commitment_opening",
+      "point_label": "output.head0.softmax_inverse_rescale_remainder.mle_point",
+      "point": [1580865623140173511],
+      "commitment": "0x0bc80b36ba0db966",
+      "opening_value": "0x0031cfe19e32cda7",
+      "opening_proof": "0x16fc523c4327721a",
+      "metadata": {
+        "opening_protocol": "zkdl_portable_hyrax_mle_opening_digest",
+        "shape_rank": "1",
+        "value_count": "169343"
+      }
+    },
+    {
+      "opening_id": "open.output.head0.alpha_rescale_remainder",
+      "tensor_label": "output.head0.alpha_rescale_remainder",
+      "section_id": "tensor_commitment_opening",
+      "point_label": "output.head0.alpha_rescale_remainder.mle_point",
+      "point": [1520141870176445013],
+      "commitment": "0x029d06b771566a9d",
+      "opening_value": "0x07ae2bfdbbe4fe55",
+      "opening_proof": "0x09d283793862a22f",
+      "metadata": {
+        "opening_protocol": "zkdl_portable_hyrax_mle_opening_digest",
+        "shape_rank": "1",
+        "value_count": "1335586"
+      }
+    },
+    {
+      "opening_id": "open.output.head0.aggregation_rescale_remainder",
+      "tensor_label": "output.head0.aggregation_rescale_remainder",
+      "section_id": "tensor_commitment_opening",
+      "point_label": "output.head0.aggregation_rescale_remainder.mle_point",
+      "point": [740793116847348342],
+      "commitment": "0x1ec231464849bad0",
+      "opening_value": "0x190daebdb0769349",
+      "opening_proof": "0x16ca2555e0c415d2",
+      "metadata": {
+        "opening_protocol": "zkdl_portable_hyrax_mle_opening_digest",
+        "shape_rank": "2",
+        "value_count": "6773720"
       }
     },
     {
@@ -938,9 +1092,12 @@
     {"challenge_id": "hidden.layer0.head0.destination_group.node_challenge", "section_id": "hidden.layer0.head0.destination_group", "field_name": "node_challenge", "value": "0x009d4c809e572e45"},
     {"challenge_id": "hidden.layer0.head0.exp_lookup.edge_challenge", "section_id": "hidden.layer0.head0.exp_lookup", "field_name": "edge_challenge", "value": "0x169ce7ab84e0f6fb"},
     {"challenge_id": "hidden.layer0.head0.softmax_inverse.node_challenge", "section_id": "hidden.layer0.head0.softmax_inverse", "field_name": "node_challenge", "value": "0x14d8092587caba50"},
+    {"challenge_id": "hidden.layer0.head0.softmax_inverse_rescale_range.range_challenge", "section_id": "hidden.layer0.head0.softmax_inverse_rescale_range", "field_name": "range_challenge", "value": "0x1db2c9c73539e5bc"},
     {"challenge_id": "hidden.layer0.head0.softmax_alpha.edge_challenge", "section_id": "hidden.layer0.head0.softmax_alpha", "field_name": "edge_challenge", "value": "0x11acf3f4ea4ab71b"},
+    {"challenge_id": "hidden.layer0.head0.alpha_rescale_range.range_challenge", "section_id": "hidden.layer0.head0.alpha_rescale_range", "field_name": "range_challenge", "value": "0x1e3bc6f370148b4b"},
     {"challenge_id": "hidden.layer0.head0.aggregation.col_challenge", "section_id": "hidden.layer0.head0.aggregation", "field_name": "col_challenge", "value": "0x0b4963283de330a0"},
     {"challenge_id": "hidden.layer0.head0.aggregation.row_challenge", "section_id": "hidden.layer0.head0.aggregation", "field_name": "row_challenge", "value": "0x1390aa5228fbb924"},
+    {"challenge_id": "hidden.layer0.head0.aggregation_rescale_range.range_challenge", "section_id": "hidden.layer0.head0.aggregation_rescale_range", "field_name": "range_challenge", "value": "0x0d855959e5e5a18e"},
     {"challenge_id": "hidden.layer0.head0.activation.col_challenge", "section_id": "hidden.layer0.head0.activation", "field_name": "col_challenge", "value": "0x07e32696084e676d"},
     {"challenge_id": "hidden.layer0.head0.activation.row_challenge", "section_id": "hidden.layer0.head0.activation", "field_name": "row_challenge", "value": "0x159f247c44fdbba9"},
     {"challenge_id": "hidden.layer0.hidden_concat.col_challenge", "section_id": "hidden.layer0.hidden_concat", "field_name": "col_challenge", "value": "0x0040c44529521066"},
@@ -954,9 +1111,12 @@
     {"challenge_id": "output.head0.destination_group.node_challenge", "section_id": "output.head0.destination_group", "field_name": "node_challenge", "value": "0x0ca2a76dd53f35c8"},
     {"challenge_id": "output.head0.exp_lookup.edge_challenge", "section_id": "output.head0.exp_lookup", "field_name": "edge_challenge", "value": "0x05034daedac9edbe"},
     {"challenge_id": "output.head0.softmax_inverse.node_challenge", "section_id": "output.head0.softmax_inverse", "field_name": "node_challenge", "value": "0x1b6424f2c5aa3aba"},
+    {"challenge_id": "output.head0.softmax_inverse_rescale_range.range_challenge", "section_id": "output.head0.softmax_inverse_rescale_range", "field_name": "range_challenge", "value": "0x17fef476b955f8eb"},
     {"challenge_id": "output.head0.softmax_alpha.edge_challenge", "section_id": "output.head0.softmax_alpha", "field_name": "edge_challenge", "value": "0x06f54304c54aab3f"},
+    {"challenge_id": "output.head0.alpha_rescale_range.range_challenge", "section_id": "output.head0.alpha_rescale_range", "field_name": "range_challenge", "value": "0x0e9c9300c4ff4e2a"},
     {"challenge_id": "output.head0.aggregation.col_challenge", "section_id": "output.head0.aggregation", "field_name": "col_challenge", "value": "0x183714d390137451"},
     {"challenge_id": "output.head0.aggregation.row_challenge", "section_id": "output.head0.aggregation", "field_name": "row_challenge", "value": "0x13cf2f86e8680787"},
+    {"challenge_id": "output.head0.aggregation_rescale_range.range_challenge", "section_id": "output.head0.aggregation_rescale_range", "field_name": "range_challenge", "value": "0x1420951b9031d97b"},
     {"challenge_id": "output.head0.activation.col_challenge", "section_id": "output.head0.activation", "field_name": "col_challenge", "value": "0x08a37730d35354bc"},
     {"challenge_id": "output.head0.activation.row_challenge", "section_id": "output.head0.activation", "field_name": "row_challenge", "value": "0x1f2fcc4c41961ff8"},
     {"challenge_id": "output.bias_head_average.col_challenge", "section_id": "output.bias_head_average", "field_name": "col_challenge", "value": "0x0d11d90e87f2f980"},
@@ -1043,14 +1203,16 @@
       "tensor_labels": ["hidden.layer0.head0.projection_rescale_remainder"],
       "prover_relation_passed": true,
       "field_values": {
-        "out_of_field_count": "0x0000000000000000",
+        "out_of_range_count": "0x0000000000000000",
+        "range_bound_abs": "0x0000000000382141",
         "range_challenge": "0x1ad2cec5710471c1",
         "remainder_eval": "0x111d473f2375b84a",
         "residual": "0x0000000000000000"
       },
       "metadata": {
-        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
-        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "claim_equation": "all derived rescale remainders are signed canonical values within the committed native range bound",
+        "range_bound": "signed_abs_max_observed_and_bound_in_native_range_section",
+        "range_bound_abs": "3678529",
         "value_count": "1354744"
       }
     },
@@ -1087,14 +1249,16 @@
       "tensor_labels": ["hidden.layer0.head0.score_rescale_remainder"],
       "prover_relation_passed": true,
       "field_values": {
-        "out_of_field_count": "0x0000000000000000",
+        "out_of_range_count": "0x0000000000000000",
+        "range_bound_abs": "0x0000000000000001",
         "range_challenge": "0x0ff94be8a6fbe6ec",
         "remainder_eval": "0x18ff89656fa8a848",
         "residual": "0x0000000000000000"
       },
       "metadata": {
-        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
-        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "claim_equation": "all derived rescale remainders are signed canonical values within the committed native range bound",
+        "range_bound": "signed_abs_max_observed_and_bound_in_native_range_section",
+        "range_bound_abs": "1",
         "value_count": "1335586"
       }
     },
@@ -1150,47 +1314,124 @@
       "section_id": "hidden.layer0.head0.softmax_inverse",
       "relation": "softmax_denominator_inverse_sumcheck",
       "label": "hidden.layer0.head0.softmax_inverse",
-      "tensor_labels": ["hidden.layer0.head0.denominator", "hidden.layer0.head0.denominator_inverse"],
-      "prover_relation_passed": false,
+      "tensor_labels": ["hidden.layer0.head0.denominator", "hidden.layer0.head0.denominator_inverse", "hidden.layer0.head0.softmax_inverse_rescale_remainder"],
+      "prover_relation_passed": true,
       "field_values": {
+        "denominator_inverse_product_eval": "0x0185dc37dfbf857c",
+        "inverse_rescale_remainder_eval": "0x0c57bc71fc7f59e6",
         "node_challenge": "0x14d8092587caba50",
-        "residual": "0x0ed0ae1819dc4550"
+        "residual": "0x0000000000000000",
+        "scaled_one_eval": "0x152e1fc5e3402b95"
       },
       "metadata": {
-        "node_count": "169343"
+        "claim_equation": "denominator_q * inverse_q = scale * q(1) + inverse_rescale_remainder",
+        "inverse_rescale_remainder_tensor": "hidden.layer0.head0.softmax_inverse_rescale_remainder",
+        "node_count": "169343",
+        "quantization_scale": "16"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head0.softmax_inverse_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "hidden.layer0.head0.softmax_inverse_rescale_range",
+      "tensor_labels": ["hidden.layer0.head0.softmax_inverse_rescale_remainder"],
+      "prover_relation_passed": true,
+      "field_values": {
+        "out_of_range_count": "0x0000000000000000",
+        "range_bound_abs": "0x0000000000000100",
+        "range_challenge": "0x1db2c9c73539e5bc",
+        "remainder_eval": "0x1c4d458cbe3b1e18",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all derived rescale remainders are signed canonical values within the committed native range bound",
+        "range_bound": "signed_abs_max_observed_and_bound_in_native_range_section",
+        "range_bound_abs": "256",
+        "value_count": "169343"
       }
     },
     {
       "section_id": "hidden.layer0.head0.softmax_alpha",
       "relation": "softmax_alpha_product_sumcheck",
       "label": "hidden.layer0.head0.softmax_alpha",
-      "tensor_labels": ["hidden.layer0.head0.exp_lookup", "hidden.layer0.head0.denominator_inverse", "hidden.layer0.head0.alpha", "public_sparse_route"],
-      "prover_relation_passed": false,
+      "tensor_labels": ["hidden.layer0.head0.exp_lookup", "hidden.layer0.head0.denominator_inverse", "hidden.layer0.head0.alpha", "hidden.layer0.head0.alpha_rescale_remainder", "public_sparse_route"],
+      "prover_relation_passed": true,
       "field_values": {
+        "alpha_rescale_remainder_eval": "0x1e653c6d7e846b21",
         "edge_challenge": "0x11acf3f4ea4ab71b",
-        "residual": "0x0449f4ed59045329"
+        "exp_inverse_product_eval": "0x1fcc7f3fcbd06cf3",
+        "residual": "0x0000000000000000",
+        "scaled_alpha_eval": "0x016742d24d4c01d2"
       },
       "metadata": {
-        "edge_count": "1335586"
+        "alpha_rescale_remainder_tensor": "hidden.layer0.head0.alpha_rescale_remainder",
+        "claim_equation": "exp_q * inverse_q = scale * alpha_q + alpha_rescale_remainder",
+        "edge_count": "1335586",
+        "quantization_scale": "16"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head0.alpha_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "hidden.layer0.head0.alpha_rescale_range",
+      "tensor_labels": ["hidden.layer0.head0.alpha_rescale_remainder"],
+      "prover_relation_passed": true,
+      "field_values": {
+        "out_of_range_count": "0x0000000000000000",
+        "range_bound_abs": "0x0000000000000010",
+        "range_challenge": "0x1e3bc6f370148b4b",
+        "remainder_eval": "0x1c2006897d94fee3",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all derived rescale remainders are signed canonical values within the committed native range bound",
+        "range_bound": "signed_abs_max_observed_and_bound_in_native_range_section",
+        "range_bound_abs": "16",
+        "value_count": "1335586"
       }
     },
     {
       "section_id": "hidden.layer0.head0.aggregation",
       "relation": "fac4dnn_aggregation_sumcheck",
       "label": "hidden.layer0.head0.aggregation",
-      "tensor_labels": ["hidden.layer0.head0.alpha", "hidden.layer0.head0.h_prime", "hidden.layer0.head0.aggregate_pre_bias", "public_sparse_route"],
-      "prover_relation_passed": false,
+      "tensor_labels": ["hidden.layer0.head0.alpha", "hidden.layer0.head0.h_prime", "hidden.layer0.head0.aggregate_pre_bias", "hidden.layer0.head0.aggregation_rescale_remainder", "public_sparse_route"],
+      "prover_relation_passed": true,
       "field_values": {
         "aggregate_eval": "0x0e4bb8e9c1a81758",
+        "aggregation_rescale_remainder_eval": "0x14451e456da06cd2",
         "col_challenge": "0x0b4963283de330a0",
-        "residual": "0x154b0c08398634fe",
+        "residual": "0x0000000000000000",
         "route_eval": "0x1900ace18821e259",
-        "row_challenge": "0x1390aa5228fbb924"
+        "row_challenge": "0x1390aa5228fbb924",
+        "scaled_aggregate_eval": "0x04bb8e9c1a817587"
       },
       "metadata": {
+        "aggregation_rescale_remainder_tensor": "hidden.layer0.head0.aggregation_rescale_remainder",
+        "claim_equation": "sum_edges alpha_q * h_prime_q = scale * aggregate_q + aggregation_rescale_remainder",
         "edge_count": "1335586",
         "feature_dim": "8",
-        "node_count": "169343"
+        "node_count": "169343",
+        "quantization_scale": "16"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head0.aggregation_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "hidden.layer0.head0.aggregation_rescale_range",
+      "tensor_labels": ["hidden.layer0.head0.aggregation_rescale_remainder"],
+      "prover_relation_passed": true,
+      "field_values": {
+        "out_of_range_count": "0x0000000000000000",
+        "range_bound_abs": "0x0000000000000555",
+        "range_challenge": "0x0d855959e5e5a18e",
+        "remainder_eval": "0x13fed82e18f69b3a",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all derived rescale remainders are signed canonical values within the committed native range bound",
+        "range_bound": "signed_abs_max_observed_and_bound_in_native_range_section",
+        "range_bound_abs": "1365",
+        "value_count": "1354744"
       }
     },
     {
@@ -1205,6 +1446,8 @@
         "row_challenge": "0x159f247c44fdbba9"
       },
       "metadata": {
+        "bias_binding": "none",
+        "claim_equation": "aggregate_out_q = T_ELU(aggregate_pre_q)",
         "feature_dim": "8",
         "lookup_table_id": "T_ELU",
         "node_count": "169343"
@@ -1262,14 +1505,16 @@
       "tensor_labels": ["output.head0.projection_rescale_remainder"],
       "prover_relation_passed": true,
       "field_values": {
-        "out_of_field_count": "0x0000000000000000",
+        "out_of_range_count": "0x0000000000000000",
+        "range_bound_abs": "0x000000000006b50f",
         "range_challenge": "0x139678a21f20d4c7",
         "remainder_eval": "0x0aa2f754ef686299",
         "residual": "0x0000000000000000"
       },
       "metadata": {
-        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
-        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "claim_equation": "all derived rescale remainders are signed canonical values within the committed native range bound",
+        "range_bound": "signed_abs_max_observed_and_bound_in_native_range_section",
+        "range_bound_abs": "439567",
         "value_count": "6773720"
       }
     },
@@ -1306,14 +1551,16 @@
       "tensor_labels": ["output.head0.score_rescale_remainder"],
       "prover_relation_passed": true,
       "field_values": {
-        "out_of_field_count": "0x0000000000000000",
+        "out_of_range_count": "0x0000000000000000",
+        "range_bound_abs": "0x0000000000000001",
         "range_challenge": "0x1bf008447d59a8e8",
         "remainder_eval": "0x0e91493e158314da",
         "residual": "0x0000000000000000"
       },
       "metadata": {
-        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
-        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "claim_equation": "all derived rescale remainders are signed canonical values within the committed native range bound",
+        "range_bound": "signed_abs_max_observed_and_bound_in_native_range_section",
+        "range_bound_abs": "1",
         "value_count": "1335586"
       }
     },
@@ -1369,54 +1616,131 @@
       "section_id": "output.head0.softmax_inverse",
       "relation": "softmax_denominator_inverse_sumcheck",
       "label": "output.head0.softmax_inverse",
-      "tensor_labels": ["output.head0.denominator", "output.head0.denominator_inverse"],
-      "prover_relation_passed": false,
+      "tensor_labels": ["output.head0.denominator", "output.head0.denominator_inverse", "output.head0.softmax_inverse_rescale_remainder"],
+      "prover_relation_passed": true,
       "field_values": {
+        "denominator_inverse_product_eval": "0x06796b99b155ab76",
+        "inverse_rescale_remainder_eval": "0x0ecced51126dd479",
         "node_challenge": "0x1b6424f2c5aa3aba",
-        "residual": "0x06e1bf1b68b6c39f"
+        "residual": "0x0000000000000000",
+        "scaled_one_eval": "0x17ac7e489ee7d6fc"
       },
       "metadata": {
-        "node_count": "169343"
+        "claim_equation": "denominator_q * inverse_q = scale * q(1) + inverse_rescale_remainder",
+        "inverse_rescale_remainder_tensor": "output.head0.softmax_inverse_rescale_remainder",
+        "node_count": "169343",
+        "quantization_scale": "16"
+      }
+    },
+    {
+      "section_id": "output.head0.softmax_inverse_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "output.head0.softmax_inverse_rescale_range",
+      "tensor_labels": ["output.head0.softmax_inverse_rescale_remainder"],
+      "prover_relation_passed": true,
+      "field_values": {
+        "out_of_range_count": "0x0000000000000000",
+        "range_bound_abs": "0x0000000000000100",
+        "range_challenge": "0x17fef476b955f8eb",
+        "remainder_eval": "0x129633050a971ed7",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all derived rescale remainders are signed canonical values within the committed native range bound",
+        "range_bound": "signed_abs_max_observed_and_bound_in_native_range_section",
+        "range_bound_abs": "256",
+        "value_count": "169343"
       }
     },
     {
       "section_id": "output.head0.softmax_alpha",
       "relation": "softmax_alpha_product_sumcheck",
       "label": "output.head0.softmax_alpha",
-      "tensor_labels": ["output.head0.exp_lookup", "output.head0.denominator_inverse", "output.head0.alpha", "public_sparse_route"],
-      "prover_relation_passed": false,
+      "tensor_labels": ["output.head0.exp_lookup", "output.head0.denominator_inverse", "output.head0.alpha", "output.head0.alpha_rescale_remainder", "public_sparse_route"],
+      "prover_relation_passed": true,
       "field_values": {
+        "alpha_rescale_remainder_eval": "0x161e2c9255ca1e48",
         "edge_challenge": "0x06f54304c54aab3f",
-        "residual": "0x1f6a555e8eb2d4cc"
+        "exp_inverse_product_eval": "0x036a6ec49544d6ba",
+        "residual": "0x0000000000000000",
+        "scaled_alpha_eval": "0x0d4c42323f7ab871"
       },
       "metadata": {
-        "edge_count": "1335586"
+        "alpha_rescale_remainder_tensor": "output.head0.alpha_rescale_remainder",
+        "claim_equation": "exp_q * inverse_q = scale * alpha_q + alpha_rescale_remainder",
+        "edge_count": "1335586",
+        "quantization_scale": "16"
+      }
+    },
+    {
+      "section_id": "output.head0.alpha_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "output.head0.alpha_rescale_range",
+      "tensor_labels": ["output.head0.alpha_rescale_remainder"],
+      "prover_relation_passed": true,
+      "field_values": {
+        "out_of_range_count": "0x0000000000000000",
+        "range_bound_abs": "0x0000000000000010",
+        "range_challenge": "0x0e9c9300c4ff4e2a",
+        "remainder_eval": "0x13625599af486e84",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all derived rescale remainders are signed canonical values within the committed native range bound",
+        "range_bound": "signed_abs_max_observed_and_bound_in_native_range_section",
+        "range_bound_abs": "16",
+        "value_count": "1335586"
       }
     },
     {
       "section_id": "output.head0.aggregation",
       "relation": "fac4dnn_aggregation_sumcheck",
       "label": "output.head0.aggregation",
-      "tensor_labels": ["output.head0.alpha", "output.head0.h_prime", "output.head0.aggregate_pre_bias", "public_sparse_route"],
-      "prover_relation_passed": false,
+      "tensor_labels": ["output.head0.alpha", "output.head0.h_prime", "output.head0.aggregate_pre_bias", "output.head0.aggregation_rescale_remainder", "public_sparse_route"],
+      "prover_relation_passed": true,
       "field_values": {
         "aggregate_eval": "0x0f1509cf28a17a3e",
+        "aggregation_rescale_remainder_eval": "0x12e7051541d05b9b",
         "col_challenge": "0x183714d390137451",
-        "residual": "0x0add67c75cb97abb",
+        "residual": "0x0000000000000000",
         "route_eval": "0x0437a207cbe7ff83",
-        "row_challenge": "0x13cf2f86e8680787"
+        "row_challenge": "0x13cf2f86e8680787",
+        "scaled_aggregate_eval": "0x11509cf28a17a3e7"
       },
       "metadata": {
+        "aggregation_rescale_remainder_tensor": "output.head0.aggregation_rescale_remainder",
+        "claim_equation": "sum_edges alpha_q * h_prime_q = scale * aggregate_q + aggregation_rescale_remainder",
         "edge_count": "1335586",
         "feature_dim": "40",
-        "node_count": "169343"
+        "node_count": "169343",
+        "quantization_scale": "16"
+      }
+    },
+    {
+      "section_id": "output.head0.aggregation_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "output.head0.aggregation_rescale_range",
+      "tensor_labels": ["output.head0.aggregation_rescale_remainder"],
+      "prover_relation_passed": true,
+      "field_values": {
+        "out_of_range_count": "0x0000000000000000",
+        "range_bound_abs": "0x0000000000008f05",
+        "range_challenge": "0x1420951b9031d97b",
+        "remainder_eval": "0x07cbc48cc0b46fa6",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all derived rescale remainders are signed canonical values within the committed native range bound",
+        "range_bound": "signed_abs_max_observed_and_bound_in_native_range_section",
+        "range_bound_abs": "36613",
+        "value_count": "6773720"
       }
     },
     {
       "section_id": "output.head0.activation",
       "relation": "identity_output_activation_argument",
       "label": "output.head0.activation",
-      "tensor_labels": ["output.head0.aggregate_pre_bias", "output.head0.aggregate_out"],
+      "tensor_labels": ["output.head0.aggregate_pre_bias", "output.head0.aggregate_out", "output.head0.output_bias"],
       "prover_relation_passed": true,
       "field_values": {
         "col_challenge": "0x08a37730d35354bc",
@@ -1424,6 +1748,8 @@
         "row_challenge": "0x1f2fcc4c41961ff8"
       },
       "metadata": {
+        "bias_binding": "output.head0.output_bias",
+        "claim_equation": "output_head_q = aggregate_pre_q + output_bias_q",
         "feature_dim": "40",
         "lookup_table_id": "identity",
         "node_count": "169343"

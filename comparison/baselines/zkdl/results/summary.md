@@ -1,6 +1,6 @@
 # zkDL Full GAT Baseline Summary
 
-Generated at: `2026-05-06T06:20:14.942810+00:00`
+Generated at: `2026-05-06T06:36:13.211513+00:00`
 
 Correct baseline directory: `comparison/baselines/zkdl`.
 
@@ -61,11 +61,11 @@ Formal commitment/prove/verify/proof-size metrics are populated only for `status
 
 | dataset | status | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes |
 | --- | --- | --- | --- | --- | --- |
-| cora_full | blocked |  |  |  |  |
-| citeseer_full | blocked |  |  |  |  |
-| pubmed_full | blocked |  |  |  |  |
-| ppi_full_formal | blocked |  |  |  |  |
-| ogbn_arxiv_full | blocked |  |  |  |  |
+| cora_full | verified | 670.201 | 1038.766 | 2.562 | 290685 |
+| citeseer_full | verified | 2054.282 | 3055.256 | 2.978 | 290685 |
+| pubmed_full | verified | 1762.117 | 2212.08 | 6.48 | 291284 |
+| ppi_full_formal | verified | 1445.703 | 1790.991 | 35.243 | 74318 |
+| ogbn_arxiv_full | verified | 2439.309 | 3233.389 | 63.508 | 74481 |
 
 ## GPU
 
@@ -81,11 +81,6 @@ Formal commitment/prove/verify/proof-size metrics are populated only for `status
 
 | dataset | route_id | failure_step | block_reason |
 | --- | --- | --- | --- |
-| cora_full | zkdl_gat_full_forward_cpu | hidden.layer0.head0.softmax_inverse.verify | native_zkdl_section_verify_failed:relation=softmax_denominator_inverse_sumcheck,residual=0x1cc6b127a1cae79d |
-| citeseer_full | zkdl_gat_full_forward_cpu | hidden.layer0.head0.softmax_inverse.verify | native_zkdl_section_verify_failed:relation=softmax_denominator_inverse_sumcheck,residual=0x18ab80b8cc3fd87e |
-| pubmed_full | zkdl_gat_full_forward_cpu | hidden.layer0.head0.softmax_inverse.verify | native_zkdl_section_verify_failed:relation=softmax_denominator_inverse_sumcheck,residual=0x05afcbfe734e4a25 |
-| ppi_full_formal | zkdl_gat_full_forward_cpu | hidden.layer0.head0.softmax_inverse.verify | native_zkdl_section_verify_failed:relation=softmax_denominator_inverse_sumcheck,residual=0x095540416daff023 |
-| ogbn_arxiv_full | zkdl_gat_full_forward_cpu | hidden.layer0.head0.softmax_inverse.verify | native_zkdl_section_verify_failed:relation=softmax_denominator_inverse_sumcheck,residual=0x0ed0ae1819dc4550 |
 | cora_full | zkdl_gat_full_forward_gpu | gpu_composed_gat_prover | zkdl_cuda_primitive_probe_passed_but_cuda_composed_full_gat_forward_prover_verifier_is_not_implemented_without_cpu_fallback |
 | citeseer_full | zkdl_gat_full_forward_gpu | gpu_composed_gat_prover | zkdl_cuda_primitive_probe_passed_but_cuda_composed_full_gat_forward_prover_verifier_is_not_implemented_without_cpu_fallback |
 | pubmed_full | zkdl_gat_full_forward_gpu | gpu_composed_gat_prover | zkdl_cuda_primitive_probe_passed_but_cuda_composed_full_gat_forward_prover_verifier_is_not_implemented_without_cpu_fallback |
