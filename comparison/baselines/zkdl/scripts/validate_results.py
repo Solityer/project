@@ -125,6 +125,26 @@ def main():
                     errors.append(f"{path}: non-zkDL proof artifact must not be exposed as proof_artifact_path")
                 if manifest.get("proof_artifact_generated"):
                     errors.append(f"{path}: non-zkDL artifact cannot set proof_artifact_generated")
+            if manifest.get("zkdl_proof_generated"):
+                proof_path = manifest.get("proof_artifact_path")
+                if not proof_path:
+                    errors.append(f"{path}: generated zkDL proof missing proof_artifact_path")
+                else:
+                    artifact_path = root / proof_path
+                    if not artifact_path.exists():
+                        errors.append(f"{path}: generated zkDL proof artifact missing: {artifact_path}")
+                    else:
+                        artifact = load(artifact_path)
+                        if artifact.get("artifact_type") != "zkdl_proof" or artifact.get("zkdl_proof") is not True:
+                            errors.append(f"{path}: proof_artifact_path does not point to a native zkDL proof object")
+                        if artifact.get("artifact_type") == "zkdl_relation_payload_diagnostic_not_a_proof":
+                            errors.append(f"{path}: relation payload cannot masquerade as proof_artifact_path")
+                        if artifact.get("proof_backend") != "zkDL" or artifact.get("verifier_backend") != "zkDL":
+                            errors.append(f"{path}: generated proof artifact must use zkDL proof/verifier backend")
+                        if not artifact.get("proof_sections") or not artifact.get("opening_claims"):
+                            errors.append(f"{path}: generated proof artifact missing native sections or openings")
+                if not manifest.get("zkdl_verifier_called"):
+                    errors.append(f"{path}: generated zkDL proof must call the zkDL verifier")
             if manifest.get("zkdl_proof_verified") and manifest.get("status") != "verified":
                 errors.append(f"{path}: zkdl_proof_verified true but status is not verified")
             if manifest.get("verifier_called") and not manifest.get("zkdl_verifier_called"):

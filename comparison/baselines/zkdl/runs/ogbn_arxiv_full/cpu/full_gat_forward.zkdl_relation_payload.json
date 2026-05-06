@@ -2,7 +2,7 @@
   "artifact_type": "zkdl_relation_payload_diagnostic_not_a_proof",
   "proof_format_id": "zkdl_full_gat_forward_relation_payload_v3",
   "proof_backend": "zkDL_relation_adapter_blocked_before_native_proof",
-  "verifier_backend": "not_invoked_until_native_zkdl_relation_coverage_exists",
+  "verifier_backend": "diagnostic_payload_not_submitted_to_verifier",
   "commitment_backend_id": "zkdl_portable_relation_commitment_diagnostic_v1",
   "field_id": "mersenne61_portable_scalar_field",
   "dataset": "ogbn_arxiv_full",
@@ -307,6 +307,24 @@
       }
     },
     {
+      "section_id": "hidden.layer0.head0.projection_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "hidden.layer0.head0.projection_rescale_range",
+      "tensor_labels": ["hidden.layer0.head0.projection_rescale_remainder"],
+      "relation_passed": true,
+      "field_values": {
+        "out_of_field_count": "0x0000000000000000",
+        "range_challenge": "0x1ad2cec5710471c1",
+        "remainder_eval": "0x111d473f2375b84a",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
+        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "value_count": "1354744"
+      }
+    },
+    {
       "section_id": "hidden.layer0.head0.attention_score",
       "relation": "sparse_attention_score_sumcheck",
       "label": "hidden.layer0.head0.attention_score",
@@ -330,6 +348,72 @@
         "rescale_rule": "fixed_point_independent_score_rounding_remainder_witness",
         "route_source": "public_sparse_route",
         "score_rescale_remainder_tensor": "hidden.layer0.head0.score_rescale_remainder"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head0.score_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "hidden.layer0.head0.score_rescale_range",
+      "tensor_labels": ["hidden.layer0.head0.score_rescale_remainder"],
+      "relation_passed": true,
+      "field_values": {
+        "out_of_field_count": "0x0000000000000000",
+        "range_challenge": "0x0ff94be8a6fbe6ec",
+        "remainder_eval": "0x18ff89656fa8a848",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
+        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "value_count": "1335586"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head0.leaky_relu_lookup",
+      "relation": "leaky_relu_static_lookup_argument",
+      "label": "hidden.layer0.head0.leaky_relu_lookup",
+      "tensor_labels": ["hidden.layer0.head0.score", "hidden.layer0.head0.leaky_relu", "T_LEAKY_RELU"],
+      "relation_passed": true,
+      "field_values": {
+        "edge_challenge": "0x08b06a10df57d673",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "leaky_relu_q = T_LEAKY_RELU(score_q)",
+        "edge_count": "1335586",
+        "lookup_table_id": "T_LEAKY_RELU_slope_0p2"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head0.destination_group",
+      "relation": "destination_group_max_denominator_argument",
+      "label": "hidden.layer0.head0.destination_group",
+      "tensor_labels": ["hidden.layer0.head0.leaky_relu", "hidden.layer0.head0.dst_max", "hidden.layer0.head0.softmax_delta", "hidden.layer0.head0.exp_lookup", "hidden.layer0.head0.denominator", "public_sparse_route"],
+      "relation_passed": true,
+      "field_values": {
+        "node_challenge": "0x009d4c809e572e45",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "dst_max is the destination group max and denominator is sum exp(z - max)",
+        "edge_count": "1335586",
+        "node_count": "169343"
+      }
+    },
+    {
+      "section_id": "hidden.layer0.head0.exp_lookup",
+      "relation": "exp_static_lookup_argument",
+      "label": "hidden.layer0.head0.exp_lookup",
+      "tensor_labels": ["hidden.layer0.head0.softmax_delta", "hidden.layer0.head0.exp_lookup", "T_EXP"],
+      "relation_passed": true,
+      "field_values": {
+        "edge_challenge": "0x169ce7ab84e0f6fb",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "exp_lookup_q = T_EXP(-softmax_delta_q)",
+        "edge_count": "1335586",
+        "lookup_table_id": "T_EXP_negative_delta"
       }
     },
     {
@@ -397,6 +481,24 @@
       }
     },
     {
+      "section_id": "hidden.layer0.hidden_concat",
+      "relation": "hidden_concat_slice_consistency",
+      "label": "hidden.layer0.hidden_concat",
+      "tensor_labels": ["hidden.layer0.concat", "hidden.layer0.head0.aggregate_out"],
+      "relation_passed": true,
+      "field_values": {
+        "col_challenge": "0x0040c44529521066",
+        "residual": "0x0000000000000000",
+        "row_challenge": "0x0d9ab13ed2cbe42f"
+      },
+      "metadata": {
+        "claim_equation": "hidden concat tensor equals the ordered slice concatenation of hidden head outputs",
+        "concat_dim": "8",
+        "head_count": "1",
+        "node_count": "169343"
+      }
+    },
+    {
       "section_id": "output.head0.projection",
       "relation": "dense_matmul_sumcheck",
       "label": "output.head0.projection",
@@ -424,6 +526,24 @@
       }
     },
     {
+      "section_id": "output.head0.projection_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "output.head0.projection_rescale_range",
+      "tensor_labels": ["output.head0.projection_rescale_remainder"],
+      "relation_passed": true,
+      "field_values": {
+        "out_of_field_count": "0x0000000000000000",
+        "range_challenge": "0x139678a21f20d4c7",
+        "remainder_eval": "0x0aa2f754ef686299",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
+        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "value_count": "6773720"
+      }
+    },
+    {
       "section_id": "output.head0.attention_score",
       "relation": "sparse_attention_score_sumcheck",
       "label": "output.head0.attention_score",
@@ -447,6 +567,72 @@
         "rescale_rule": "fixed_point_independent_score_rounding_remainder_witness",
         "route_source": "public_sparse_route",
         "score_rescale_remainder_tensor": "output.head0.score_rescale_remainder"
+      }
+    },
+    {
+      "section_id": "output.head0.score_rescale_range",
+      "relation": "rescale_remainder_range_argument",
+      "label": "output.head0.score_rescale_range",
+      "tensor_labels": ["output.head0.score_rescale_remainder"],
+      "relation_passed": true,
+      "field_values": {
+        "out_of_field_count": "0x0000000000000000",
+        "range_challenge": "0x1bf008447d59a8e8",
+        "remainder_eval": "0x0e91493e158314da",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "all rescale remainders are canonical field elements committed by the prover",
+        "range_bound": "field_element_canonical_before_scale_specific_range",
+        "value_count": "1335586"
+      }
+    },
+    {
+      "section_id": "output.head0.leaky_relu_lookup",
+      "relation": "leaky_relu_static_lookup_argument",
+      "label": "output.head0.leaky_relu_lookup",
+      "tensor_labels": ["output.head0.score", "output.head0.leaky_relu", "T_LEAKY_RELU"],
+      "relation_passed": true,
+      "field_values": {
+        "edge_challenge": "0x1aae7f1310b74a99",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "leaky_relu_q = T_LEAKY_RELU(score_q)",
+        "edge_count": "1335586",
+        "lookup_table_id": "T_LEAKY_RELU_slope_0p2"
+      }
+    },
+    {
+      "section_id": "output.head0.destination_group",
+      "relation": "destination_group_max_denominator_argument",
+      "label": "output.head0.destination_group",
+      "tensor_labels": ["output.head0.leaky_relu", "output.head0.dst_max", "output.head0.softmax_delta", "output.head0.exp_lookup", "output.head0.denominator", "public_sparse_route"],
+      "relation_passed": true,
+      "field_values": {
+        "node_challenge": "0x0ca2a76dd53f35c8",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "dst_max is the destination group max and denominator is sum exp(z - max)",
+        "edge_count": "1335586",
+        "node_count": "169343"
+      }
+    },
+    {
+      "section_id": "output.head0.exp_lookup",
+      "relation": "exp_static_lookup_argument",
+      "label": "output.head0.exp_lookup",
+      "tensor_labels": ["output.head0.softmax_delta", "output.head0.exp_lookup", "T_EXP"],
+      "relation_passed": true,
+      "field_values": {
+        "edge_challenge": "0x05034daedac9edbe",
+        "residual": "0x0000000000000000"
+      },
+      "metadata": {
+        "claim_equation": "exp_lookup_q = T_EXP(-softmax_delta_q)",
+        "edge_count": "1335586",
+        "lookup_table_id": "T_EXP_negative_delta"
       }
     },
     {
@@ -511,6 +697,24 @@
         "feature_dim": "40",
         "lookup_table_id": "identity",
         "node_count": "169343"
+      }
+    },
+    {
+      "section_id": "output.bias_head_average",
+      "relation": "output_bias_head_average_sumcheck",
+      "label": "output.bias_head_average",
+      "tensor_labels": ["output.average_pre_bias", "final_logits", "output.head0.aggregate_pre_bias", "output.head0.aggregate_out"],
+      "relation_passed": true,
+      "field_values": {
+        "col_challenge": "0x0d11d90e87f2f980",
+        "residual": "0x0000000000000000",
+        "row_challenge": "0x07fd1df00b35c1ac"
+      },
+      "metadata": {
+        "claim_equation": "final logits and pre-bias logits equal arithmetic averages of output heads",
+        "class_count": "40",
+        "node_count": "169343",
+        "output_head_count": "1"
       }
     },
     {

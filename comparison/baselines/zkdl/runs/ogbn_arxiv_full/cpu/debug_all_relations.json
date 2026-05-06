@@ -22,8 +22,8 @@
     "available_primitives": "inner_product_sumcheck,hadamard_product_sumcheck,binary_sumcheck,zkMatMul,zkProd,zkReLU,Hyrax-style opening",
     "missing_for_full_gat": "sparse route verifier,dst max argument,LeakyReLU/ELU/Exp static table lookup binding,scaled inverse argument,rescale range binding,final logits public MLE binding"
   },
-  "section_count": 13,
-  "passed_count": 7,
+  "section_count": 25,
+  "passed_count": 19,
   "failed_count": 6,
   "first_failing_section": "hidden.layer0.head0.softmax_inverse",
   "relations": [
@@ -45,6 +45,22 @@
       }
     },
     {
+      "relation_name": "rescale_remainder_range_argument",
+      "section_id": "hidden.layer0.head0.projection_rescale_range",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "all rescale remainders are canonical field elements committed by the prover",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "no_auxiliary_witness_required",
+      "range_lookup_binding_status": "no_range_or_lookup_binding_recorded",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["hidden.layer0.head0.projection_rescale_remainder"],
+      "transcript_challenge_summary": {
+        "range_challenge": "0x1ad2cec5710471c1"
+      }
+    },
+    {
       "relation_name": "sparse_attention_score_sumcheck",
       "section_id": "hidden.layer0.head0.attention_score",
       "passed": true,
@@ -58,6 +74,70 @@
       "proof_section_labels": ["hidden.layer0.head0.e_src", "hidden.layer0.head0.e_dst", "hidden.layer0.head0.score", "hidden.layer0.head0.score_rescale_remainder", "public_sparse_route"],
       "transcript_challenge_summary": {
         "edge_challenge": "0x071f3af754b23247"
+      }
+    },
+    {
+      "relation_name": "rescale_remainder_range_argument",
+      "section_id": "hidden.layer0.head0.score_rescale_range",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "all rescale remainders are canonical field elements committed by the prover",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "no_auxiliary_witness_required",
+      "range_lookup_binding_status": "no_range_or_lookup_binding_recorded",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["hidden.layer0.head0.score_rescale_remainder"],
+      "transcript_challenge_summary": {
+        "range_challenge": "0x0ff94be8a6fbe6ec"
+      }
+    },
+    {
+      "relation_name": "leaky_relu_static_lookup_argument",
+      "section_id": "hidden.layer0.head0.leaky_relu_lookup",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "leaky_relu_q = T_LEAKY_RELU(score_q)",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "no_auxiliary_witness_required",
+      "range_lookup_binding_status": "required_static_table_binding_not_available_in_original_zkdl_primitives",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["hidden.layer0.head0.score", "hidden.layer0.head0.leaky_relu", "T_LEAKY_RELU"],
+      "transcript_challenge_summary": {
+        "edge_challenge": "0x08b06a10df57d673"
+      }
+    },
+    {
+      "relation_name": "destination_group_max_denominator_argument",
+      "section_id": "hidden.layer0.head0.destination_group",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "dst_max is the destination group max and denominator is sum exp(z - max)",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "no_auxiliary_witness_required",
+      "range_lookup_binding_status": "no_range_or_lookup_binding_recorded",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["hidden.layer0.head0.leaky_relu", "hidden.layer0.head0.dst_max", "hidden.layer0.head0.softmax_delta", "hidden.layer0.head0.exp_lookup", "hidden.layer0.head0.denominator", "public_sparse_route"],
+      "transcript_challenge_summary": {
+        "node_challenge": "0x009d4c809e572e45"
+      }
+    },
+    {
+      "relation_name": "exp_static_lookup_argument",
+      "section_id": "hidden.layer0.head0.exp_lookup",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "exp_lookup_q = T_EXP(-softmax_delta_q)",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "no_auxiliary_witness_required",
+      "range_lookup_binding_status": "required_static_table_binding_not_available_in_original_zkdl_primitives",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["hidden.layer0.head0.softmax_delta", "hidden.layer0.head0.exp_lookup", "T_EXP"],
+      "transcript_challenge_summary": {
+        "edge_challenge": "0x169ce7ab84e0f6fb"
       }
     },
     {
@@ -127,6 +207,23 @@
       }
     },
     {
+      "relation_name": "hidden_concat_slice_consistency",
+      "section_id": "hidden.layer0.hidden_concat",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "hidden concat tensor equals the ordered slice concatenation of hidden head outputs",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "no_auxiliary_witness_required",
+      "range_lookup_binding_status": "no_range_or_lookup_binding_recorded",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["hidden.layer0.concat", "hidden.layer0.head0.aggregate_out"],
+      "transcript_challenge_summary": {
+        "col_challenge": "0x0040c44529521066",
+        "row_challenge": "0x0d9ab13ed2cbe42f"
+      }
+    },
+    {
       "relation_name": "dense_matmul_sumcheck",
       "section_id": "output.head0.projection",
       "passed": true,
@@ -144,6 +241,22 @@
       }
     },
     {
+      "relation_name": "rescale_remainder_range_argument",
+      "section_id": "output.head0.projection_rescale_range",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "all rescale remainders are canonical field elements committed by the prover",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "no_auxiliary_witness_required",
+      "range_lookup_binding_status": "no_range_or_lookup_binding_recorded",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["output.head0.projection_rescale_remainder"],
+      "transcript_challenge_summary": {
+        "range_challenge": "0x139678a21f20d4c7"
+      }
+    },
+    {
       "relation_name": "sparse_attention_score_sumcheck",
       "section_id": "output.head0.attention_score",
       "passed": true,
@@ -157,6 +270,70 @@
       "proof_section_labels": ["output.head0.e_src", "output.head0.e_dst", "output.head0.score", "output.head0.score_rescale_remainder", "public_sparse_route"],
       "transcript_challenge_summary": {
         "edge_challenge": "0x1269d8374ece772a"
+      }
+    },
+    {
+      "relation_name": "rescale_remainder_range_argument",
+      "section_id": "output.head0.score_rescale_range",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "all rescale remainders are canonical field elements committed by the prover",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "no_auxiliary_witness_required",
+      "range_lookup_binding_status": "no_range_or_lookup_binding_recorded",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["output.head0.score_rescale_remainder"],
+      "transcript_challenge_summary": {
+        "range_challenge": "0x1bf008447d59a8e8"
+      }
+    },
+    {
+      "relation_name": "leaky_relu_static_lookup_argument",
+      "section_id": "output.head0.leaky_relu_lookup",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "leaky_relu_q = T_LEAKY_RELU(score_q)",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "no_auxiliary_witness_required",
+      "range_lookup_binding_status": "required_static_table_binding_not_available_in_original_zkdl_primitives",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["output.head0.score", "output.head0.leaky_relu", "T_LEAKY_RELU"],
+      "transcript_challenge_summary": {
+        "edge_challenge": "0x1aae7f1310b74a99"
+      }
+    },
+    {
+      "relation_name": "destination_group_max_denominator_argument",
+      "section_id": "output.head0.destination_group",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "dst_max is the destination group max and denominator is sum exp(z - max)",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "no_auxiliary_witness_required",
+      "range_lookup_binding_status": "no_range_or_lookup_binding_recorded",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["output.head0.leaky_relu", "output.head0.dst_max", "output.head0.softmax_delta", "output.head0.exp_lookup", "output.head0.denominator", "public_sparse_route"],
+      "transcript_challenge_summary": {
+        "node_challenge": "0x0ca2a76dd53f35c8"
+      }
+    },
+    {
+      "relation_name": "exp_static_lookup_argument",
+      "section_id": "output.head0.exp_lookup",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "exp_lookup_q = T_EXP(-softmax_delta_q)",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "no_auxiliary_witness_required",
+      "range_lookup_binding_status": "required_static_table_binding_not_available_in_original_zkdl_primitives",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["output.head0.softmax_delta", "output.head0.exp_lookup", "T_EXP"],
+      "transcript_challenge_summary": {
+        "edge_challenge": "0x05034daedac9edbe"
       }
     },
     {
@@ -223,6 +400,23 @@
       "transcript_challenge_summary": {
         "col_challenge": "0x08a37730d35354bc",
         "row_challenge": "0x1f2fcc4c41961ff8"
+      }
+    },
+    {
+      "relation_name": "output_bias_head_average_sumcheck",
+      "section_id": "output.bias_head_average",
+      "passed": true,
+      "residual": "0x0000000000000000",
+      "claim": "final logits and pre-bias logits equal arithmetic averages of output heads",
+      "recomputed_value": "0x0000000000000000",
+      "scale_quant_policy_id": "zkdl_gat_fixed_point_policy_v1",
+      "auxiliary_witness_status": "no_auxiliary_witness_required",
+      "range_lookup_binding_status": "no_range_or_lookup_binding_recorded",
+      "first_failing_index_or_section": "",
+      "proof_section_labels": ["output.average_pre_bias", "final_logits", "output.head0.aggregate_pre_bias", "output.head0.aggregate_out"],
+      "transcript_challenge_summary": {
+        "col_challenge": "0x0d11d90e87f2f980",
+        "row_challenge": "0x07fd1df00b35c1ac"
       }
     },
     {
