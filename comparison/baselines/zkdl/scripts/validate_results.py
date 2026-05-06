@@ -89,9 +89,19 @@ def main():
                     errors.append(f"{path}: blocked row must carry failure_step and block_reason")
                 if "capability_check" in str(manifest.get("failure_step")):
                     errors.append(f"{path}: failure_step must name the reached proof stage, not a generic capability check")
-                if manifest.get("proof_size_bytes") not in (None, 0):
-                    if manifest.get("proof_artifact_type") != "zkdl_proof" or not manifest.get("zkdl_proof_generated"):
-                        errors.append(f"{path}: blocked row cannot report proof_size_bytes unless it is a real zkDL proof")
+                for metric_key in ["commitment_time_ms", "prove_time_ms", "verify_time_ms", "proof_size_bytes"]:
+                    if manifest.get(metric_key) is not None:
+                        errors.append(f"{path}: blocked row must keep formal metric {metric_key}=null")
+                if manifest.get("zkdl_proof_generated"):
+                    stats = manifest.get("dataset_stats", {})
+                    for debug_key in [
+                        "debug_commitment_attempt_time_ms",
+                        "debug_prove_attempt_time_ms",
+                        "debug_verify_attempt_time_ms",
+                        "verifier_failed_after_ms",
+                    ]:
+                        if not stats.get(debug_key):
+                            errors.append(f"{path}: generated blocked attempt missing dataset_stats.{debug_key}")
             if manifest.get("status") not in {"blocked", "verified"}:
                 errors.append(f"{path}: unsupported status {manifest.get('status')}")
 

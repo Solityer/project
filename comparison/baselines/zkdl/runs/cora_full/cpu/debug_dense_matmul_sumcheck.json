@@ -1,0 +1,663 @@
+{
+  "artifact_type": "debug_dense_matmul_sumcheck_evidence_not_proof",
+  "cell_level_rescale_evidence": [
+    {
+      "col": 0,
+      "encoded_h_prime_q": 0,
+      "field_h_prime": "0x0000000000000000",
+      "float_h_prime": -0.029805623874482177,
+      "raw_integer_product_field": "0x1ffffffffffffff5",
+      "raw_integer_product_signed_repr": -10,
+      "rescale_remainder_field": "0x1ffffffffffffff5",
+      "rescale_remainder_signed_repr": -10,
+      "row": 0,
+      "scale_times_h_prime_field": "0x0000000000000000"
+    },
+    {
+      "col": 1,
+      "encoded_h_prime_q": -2,
+      "field_h_prime": "0x1ffffffffffffffd",
+      "float_h_prime": -0.11662185295588438,
+      "raw_integer_product_field": "0x1fffffffffffffdd",
+      "raw_integer_product_signed_repr": -34,
+      "rescale_remainder_field": "0x1ffffffffffffffd",
+      "rescale_remainder_signed_repr": -2,
+      "row": 0,
+      "scale_times_h_prime_field": "0x1fffffffffffffdf"
+    },
+    {
+      "col": 2,
+      "encoded_h_prime_q": -1,
+      "field_h_prime": "0x1ffffffffffffffe",
+      "float_h_prime": -0.07589281640119022,
+      "raw_integer_product_field": "0x1fffffffffffffe7",
+      "raw_integer_product_signed_repr": -24,
+      "rescale_remainder_field": "0x1ffffffffffffff7",
+      "rescale_remainder_signed_repr": -8,
+      "row": 0,
+      "scale_times_h_prime_field": "0x1fffffffffffffef"
+    },
+    {
+      "col": 3,
+      "encoded_h_prime_q": 2,
+      "field_h_prime": "0x0000000000000002",
+      "float_h_prime": 0.10068839695304632,
+      "raw_integer_product_field": "0x000000000000001e",
+      "raw_integer_product_signed_repr": 30,
+      "rescale_remainder_field": "0x1ffffffffffffffd",
+      "rescale_remainder_signed_repr": -2,
+      "row": 0,
+      "scale_times_h_prime_field": "0x0000000000000020"
+    },
+    {
+      "col": 0,
+      "encoded_h_prime_q": 0,
+      "field_h_prime": "0x0000000000000000",
+      "float_h_prime": -0.02807788772548994,
+      "raw_integer_product_field": "0x1ffffffffffffff3",
+      "raw_integer_product_signed_repr": -12,
+      "rescale_remainder_field": "0x1ffffffffffffff3",
+      "rescale_remainder_signed_repr": -12,
+      "row": 1,
+      "scale_times_h_prime_field": "0x0000000000000000"
+    },
+    {
+      "col": 1,
+      "encoded_h_prime_q": 0,
+      "field_h_prime": "0x0000000000000000",
+      "float_h_prime": -0.013152127194663755,
+      "raw_integer_product_field": "0x1ffffffffffffffd",
+      "raw_integer_product_signed_repr": -2,
+      "rescale_remainder_field": "0x1ffffffffffffffd",
+      "rescale_remainder_signed_repr": -2,
+      "row": 1,
+      "scale_times_h_prime_field": "0x0000000000000000"
+    },
+    {
+      "col": 2,
+      "encoded_h_prime_q": 1,
+      "field_h_prime": "0x0000000000000001",
+      "float_h_prime": 0.07162860279862324,
+      "raw_integer_product_field": "0x000000000000001a",
+      "raw_integer_product_signed_repr": 26,
+      "rescale_remainder_field": "0x000000000000000a",
+      "rescale_remainder_signed_repr": 10,
+      "row": 1,
+      "scale_times_h_prime_field": "0x0000000000000010"
+    },
+    {
+      "col": 3,
+      "encoded_h_prime_q": 0,
+      "field_h_prime": "0x0000000000000000",
+      "float_h_prime": -0.02513956980439379,
+      "raw_integer_product_field": "0x1ffffffffffffff7",
+      "raw_integer_product_signed_repr": -8,
+      "rescale_remainder_field": "0x1ffffffffffffff7",
+      "rescale_remainder_signed_repr": -8,
+      "row": 1,
+      "scale_times_h_prime_field": "0x0000000000000000"
+    },
+    {
+      "col": 0,
+      "encoded_h_prime_q": -1,
+      "field_h_prime": "0x1ffffffffffffffe",
+      "float_h_prime": -0.07715858647746866,
+      "raw_integer_product_field": "0x1fffffffffffffe7",
+      "raw_integer_product_signed_repr": -24,
+      "rescale_remainder_field": "0x1ffffffffffffff7",
+      "rescale_remainder_signed_repr": -8,
+      "row": 2,
+      "scale_times_h_prime_field": "0x1fffffffffffffef"
+    },
+    {
+      "col": 1,
+      "encoded_h_prime_q": 0,
+      "field_h_prime": "0x0000000000000000",
+      "float_h_prime": -0.005557723147304439,
+      "raw_integer_product_field": "0x1ffffffffffffffd",
+      "raw_integer_product_signed_repr": -2,
+      "rescale_remainder_field": "0x1ffffffffffffffd",
+      "rescale_remainder_signed_repr": -2,
+      "row": 2,
+      "scale_times_h_prime_field": "0x0000000000000000"
+    },
+    {
+      "col": 2,
+      "encoded_h_prime_q": 1,
+      "field_h_prime": "0x0000000000000001",
+      "float_h_prime": 0.0314435724928779,
+      "raw_integer_product_field": "0x0000000000000009",
+      "raw_integer_product_signed_repr": 9,
+      "rescale_remainder_field": "0x1ffffffffffffff8",
+      "rescale_remainder_signed_repr": -7,
+      "row": 2,
+      "scale_times_h_prime_field": "0x0000000000000010"
+    },
+    {
+      "col": 3,
+      "encoded_h_prime_q": -1,
+      "field_h_prime": "0x1ffffffffffffffe",
+      "float_h_prime": -0.03260525222867727,
+      "raw_integer_product_field": "0x1ffffffffffffff7",
+      "raw_integer_product_signed_repr": -8,
+      "rescale_remainder_field": "0x0000000000000008",
+      "rescale_remainder_signed_repr": 8,
+      "row": 2,
+      "scale_times_h_prime_field": "0x1fffffffffffffef"
+    }
+  ],
+  "challenge_transcript": {
+    "col_challenge": "0x04f6c72f8f6b1bda",
+    "current_derivation": "challenge_from_label(label + :row, lhs.rows), challenge_from_label(label + :col, rhs.cols)",
+    "public_input_binding_observation": "current challenge helper does not absorb public_input_hash or tensor commitments for this section; this did not cause the arithmetic residual but remains recorded.",
+    "row_challenge": "0x0dbb53e726b63a89",
+    "section_label": "hidden.layer0.head0.projection"
+  },
+  "dataset": "cora_full",
+  "field_encoding_samples": {
+    "H_first_row_nonzero_encoded": [
+      {
+        "col": 19,
+        "field": "0x0000000000000002",
+        "quantized_signed": 2
+      },
+      {
+        "col": 81,
+        "field": "0x0000000000000002",
+        "quantized_signed": 2
+      },
+      {
+        "col": 146,
+        "field": "0x0000000000000002",
+        "quantized_signed": 2
+      },
+      {
+        "col": 315,
+        "field": "0x0000000000000002",
+        "quantized_signed": 2
+      },
+      {
+        "col": 774,
+        "field": "0x0000000000000002",
+        "quantized_signed": 2
+      },
+      {
+        "col": 877,
+        "field": "0x0000000000000002",
+        "quantized_signed": 2
+      },
+      {
+        "col": 1194,
+        "field": "0x0000000000000002",
+        "quantized_signed": 2
+      },
+      {
+        "col": 1247,
+        "field": "0x0000000000000002",
+        "quantized_signed": 2
+      },
+      {
+        "col": 1274,
+        "field": "0x0000000000000002",
+        "quantized_signed": 2
+      }
+    ],
+    "H_prime_first_3x4_encoded": [
+      [
+        {
+          "field": "0x0000000000000000",
+          "quantized_signed": 0
+        },
+        {
+          "field": "0x1ffffffffffffffd",
+          "quantized_signed": -2
+        },
+        {
+          "field": "0x1ffffffffffffffe",
+          "quantized_signed": -1
+        },
+        {
+          "field": "0x0000000000000002",
+          "quantized_signed": 2
+        }
+      ],
+      [
+        {
+          "field": "0x0000000000000000",
+          "quantized_signed": 0
+        },
+        {
+          "field": "0x0000000000000000",
+          "quantized_signed": 0
+        },
+        {
+          "field": "0x0000000000000001",
+          "quantized_signed": 1
+        },
+        {
+          "field": "0x0000000000000000",
+          "quantized_signed": 0
+        }
+      ],
+      [
+        {
+          "field": "0x1ffffffffffffffe",
+          "quantized_signed": -1
+        },
+        {
+          "field": "0x0000000000000000",
+          "quantized_signed": 0
+        },
+        {
+          "field": "0x0000000000000001",
+          "quantized_signed": 1
+        },
+        {
+          "field": "0x1ffffffffffffffe",
+          "quantized_signed": -1
+        }
+      ]
+    ],
+    "W_first_3x4_encoded": [
+      [
+        {
+          "field": "0x0000000000000000",
+          "quantized_signed": 0
+        },
+        {
+          "field": "0x0000000000000000",
+          "quantized_signed": 0
+        },
+        {
+          "field": "0x0000000000000000",
+          "quantized_signed": 0
+        },
+        {
+          "field": "0x0000000000000001",
+          "quantized_signed": 1
+        }
+      ],
+      [
+        {
+          "field": "0x0000000000000001",
+          "quantized_signed": 1
+        },
+        {
+          "field": "0x1ffffffffffffffe",
+          "quantized_signed": -1
+        },
+        {
+          "field": "0x0000000000000001",
+          "quantized_signed": 1
+        },
+        {
+          "field": "0x0000000000000002",
+          "quantized_signed": 2
+        }
+      ],
+      [
+        {
+          "field": "0x0000000000000001",
+          "quantized_signed": 1
+        },
+        {
+          "field": "0x1ffffffffffffffe",
+          "quantized_signed": -1
+        },
+        {
+          "field": "0x0000000000000001",
+          "quantized_signed": 1
+        },
+        {
+          "field": "0x0000000000000000",
+          "quantized_signed": 0
+        }
+      ]
+    ],
+    "rounding": "nearest, half away from zero via value*16 +/- 0.5 then int64 truncation",
+    "scale": 16
+  },
+  "field_modulus_observation": {
+    "baseline_current_adapter_field_id": "mersenne61_portable_scalar_field",
+    "baseline_current_adapter_prime_hex": "0x1fffffffffffffff",
+    "note": "The failing residual was produced before any original CUDA zkDL Fr_t verifier path; current CPU adapter used Mersenne61 field arithmetic.",
+    "zkdl_original_Fr_modulus_hex": "0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001",
+    "zkdl_original_Fr_t_field": "BLS12-381 scalar field"
+  },
+  "mle_and_flatten_order": {
+    "matrix_flatten_order": "row-major values[row * cols + col]",
+    "shared_dim_order": "W is loaded as shape [1433,8] row-major from checkpoint tensor conv1d/kernel shape [1,1433,8]; lhs shared index H[:,s] matches W[s,:]",
+    "sumcheck_variable_order_current_adapter": "row variables before column variables for output weighted claim; shared dimension reduced by summing lhs row-fold and rhs col-fold arrays in shared-index order",
+    "weighted_eval_order": "sum over row outer, col inner, weights row_challenge^row * col_challenge^col"
+  },
+  "plaintext_samples": {
+    "H_first_rows_normalized_nonzeros": [
+      [
+        {
+          "col": 19,
+          "value": 0.1111111111111111
+        },
+        {
+          "col": 81,
+          "value": 0.1111111111111111
+        },
+        {
+          "col": 146,
+          "value": 0.1111111111111111
+        },
+        {
+          "col": 315,
+          "value": 0.1111111111111111
+        },
+        {
+          "col": 774,
+          "value": 0.1111111111111111
+        },
+        {
+          "col": 877,
+          "value": 0.1111111111111111
+        },
+        {
+          "col": 1194,
+          "value": 0.1111111111111111
+        },
+        {
+          "col": 1247,
+          "value": 0.1111111111111111
+        },
+        {
+          "col": 1274,
+          "value": 0.1111111111111111
+        }
+      ],
+      [
+        {
+          "col": 19,
+          "value": 0.043478260869565216
+        },
+        {
+          "col": 88,
+          "value": 0.043478260869565216
+        },
+        {
+          "col": 149,
+          "value": 0.043478260869565216
+        },
+        {
+          "col": 212,
+          "value": 0.043478260869565216
+        },
+        {
+          "col": 233,
+          "value": 0.043478260869565216
+        },
+        {
+          "col": 332,
+          "value": 0.043478260869565216
+        },
+        {
+          "col": 336,
+          "value": 0.043478260869565216
+        },
+        {
+          "col": 359,
+          "value": 0.043478260869565216
+        },
+        {
+          "col": 472,
+          "value": 0.043478260869565216
+        },
+        {
+          "col": 507,
+          "value": 0.043478260869565216
+        },
+        {
+          "col": 548,
+          "value": 0.043478260869565216
+        },
+        {
+          "col": 687,
+          "value": 0.043478260869565216
+        },
+        {
+          "col": 763,
+          "value": 0.043478260869565216
+        },
+        {
+          "col": 808,
+          "value": 0.043478260869565216
+        },
+        {
+          "col": 889,
+          "value": 0.043478260869565216
+        },
+        {
+          "col": 1058,
+          "value": 0.043478260869565216
+        }
+      ],
+      [
+        {
+          "col": 19,
+          "value": 0.05263157894736842
+        },
+        {
+          "col": 89,
+          "value": 0.05263157894736842
+        },
+        {
+          "col": 128,
+          "value": 0.05263157894736842
+        },
+        {
+          "col": 322,
+          "value": 0.05263157894736842
+        },
+        {
+          "col": 381,
+          "value": 0.05263157894736842
+        },
+        {
+          "col": 480,
+          "value": 0.05263157894736842
+        },
+        {
+          "col": 507,
+          "value": 0.05263157894736842
+        },
+        {
+          "col": 551,
+          "value": 0.05263157894736842
+        },
+        {
+          "col": 647,
+          "value": 0.05263157894736842
+        },
+        {
+          "col": 702,
+          "value": 0.05263157894736842
+        },
+        {
+          "col": 715,
+          "value": 0.05263157894736842
+        },
+        {
+          "col": 912,
+          "value": 0.05263157894736842
+        },
+        {
+          "col": 1076,
+          "value": 0.05263157894736842
+        },
+        {
+          "col": 1091,
+          "value": 0.05263157894736842
+        },
+        {
+          "col": 1177,
+          "value": 0.05263157894736842
+        },
+        {
+          "col": 1209,
+          "value": 0.05263157894736842
+        }
+      ],
+      [
+        {
+          "col": 93,
+          "value": 0.047619047619047616
+        },
+        {
+          "col": 283,
+          "value": 0.047619047619047616
+        },
+        {
+          "col": 359,
+          "value": 0.047619047619047616
+        },
+        {
+          "col": 402,
+          "value": 0.047619047619047616
+        },
+        {
+          "col": 452,
+          "value": 0.047619047619047616
+        },
+        {
+          "col": 470,
+          "value": 0.047619047619047616
+        },
+        {
+          "col": 507,
+          "value": 0.047619047619047616
+        },
+        {
+          "col": 540,
+          "value": 0.047619047619047616
+        },
+        {
+          "col": 715,
+          "value": 0.047619047619047616
+        },
+        {
+          "col": 721,
+          "value": 0.047619047619047616
+        },
+        {
+          "col": 723,
+          "value": 0.047619047619047616
+        },
+        {
+          "col": 814,
+          "value": 0.047619047619047616
+        },
+        {
+          "col": 856,
+          "value": 0.047619047619047616
+        },
+        {
+          "col": 918,
+          "value": 0.047619047619047616
+        },
+        {
+          "col": 1071,
+          "value": 0.047619047619047616
+        },
+        {
+          "col": 1131,
+          "value": 0.047619047619047616
+        }
+      ]
+    ],
+    "H_prime_first_3x4_float_forward": [
+      [
+        -0.029805623874482177,
+        -0.11662185295588438,
+        -0.07589281640119022,
+        0.10068839695304632
+      ],
+      [
+        -0.02807788772548994,
+        -0.013152127194663755,
+        0.07162860279862324,
+        -0.02513956980439379
+      ],
+      [
+        -0.07715858647746866,
+        -0.005557723147304439,
+        0.0314435724928779,
+        -0.03260525222867727
+      ]
+    ],
+    "W_first_3x4": [
+      [
+        0.01907886564731598,
+        0.010970321483910084,
+        0.030639996752142906,
+        0.032036542892456055
+      ],
+      [
+        0.0515134297311306,
+        -0.04425187408924103,
+        0.07499860227108002,
+        0.1325993537902832
+      ],
+      [
+        0.05207088217139244,
+        -0.06837444752454758,
+        0.034844279289245605,
+        -0.0010604477720335126
+      ]
+    ]
+  },
+  "proof_artifact_dense_section_fields_before_fix": {
+    "field_values": {
+      "col_challenge": "0x04f6c72f8f6b1bda",
+      "lhs_weighted_product_eval": "0x023e2363a4bb57a1",
+      "residual": "0x11e64285603d2e58",
+      "row_challenge": "0x0dbb53e726b63a89",
+      "scaled_output_eval": "0x1057e0de447e2948"
+    },
+    "label": "hidden.layer0.head0.projection",
+    "metadata": {
+      "cols": "8",
+      "quantization_scale": "16",
+      "rows": "2708",
+      "shared_dim": "1433"
+    },
+    "relation": "dense_matmul_sumcheck",
+    "relation_passed": false,
+    "section_id": "hidden.layer0.head0.projection",
+    "tensor_labels": [
+      "hidden.layer0.input",
+      "hidden.layer0.head0.W",
+      "hidden.layer0.head0.h_prime"
+    ]
+  },
+  "recomputed_claims_before_fix": {
+    "prover_lhs_weighted_product_eval_from_artifact": "0x023e2363a4bb57a1",
+    "residual_from_artifact": "0x11e64285603d2e58",
+    "scaled_output_eval_from_artifact": "0x1057e0de447e2948",
+    "verifier_recomputed_lhs_weighted_product_eval": "0x023e2363a4bb57a1",
+    "verifier_recomputed_output_eval": "0x11057e0de447e294",
+    "verifier_recomputed_residual": "0x11e64285603d2e58",
+    "verifier_recomputed_scaled_output_eval": "0x1057e0de447e2948"
+  },
+  "root_cause_hypothesis_before_patch": "H_prime was generated by fp32-style floating matmul and then independently quantized, while dense_matmul_sumcheck_verify checked the stronger fixed-point equation sum(H_q*W_q)=16*H_prime_q with no rescale/remainder witness. Nonzero residual equals the missing weighted rescale remainder.",
+  "route": "cpu",
+  "section": "hidden.layer0.head0.projection",
+  "shapes": {
+    "H": [
+      2708,
+      1433
+    ],
+    "H_prime": [
+      2708,
+      8
+    ],
+    "W": [
+      1433,
+      8
+    ]
+  }
+}

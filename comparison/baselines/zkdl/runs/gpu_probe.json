@@ -5,9 +5,9 @@
   "gpu_backend_name": "zkDL CUDA tensor commitment and sumcheck primitive backend",
   "cpu_fallback_used": false,
   "primitive_probe_status": "ok",
-  "primitive_commitment_time_ms": 8.100,
+  "primitive_commitment_time_ms": 8.052,
   "primitive_prove_time_ms": 0.461,
-  "primitive_verify_time_ms": 108.011,
+  "primitive_verify_time_ms": 106.370,
   "primitive_proof_size_bytes": 1084,
   "error": ""
 }

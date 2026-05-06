@@ -210,7 +210,7 @@ struct ZkdlProofSection {
 };
 
 struct ZkdlProofObject {
-    std::string format_id = "zkdl_full_gat_forward_portable_proof_v1";
+    std::string format_id = "zkdl_full_gat_forward_portable_proof_v2";
     std::string commitment_backend_id = "zkdl_portable_hyrax_tensor_commitment_mle_v1";
     std::string verifier_backend_id = "zkDL";
     std::string field_id = "mersenne61_portable_scalar_field";
@@ -1820,6 +1820,13 @@ std::uint64_t update_linear_commitment(
     return field_add(accumulator, field_mul(field_from_double(value), generator));
 }
 
+std::uint64_t update_linear_commitment_field(
+    std::uint64_t accumulator,
+    std::uint64_t generator,
+    std::uint64_t value) {
+    return field_add(accumulator, field_mul(value, generator));
+}
+
 ZkdlTensorCommitment commit_double_values(
     const std::string& label,
     const std::vector<std::size_t>& shape,
@@ -1834,6 +1841,27 @@ ZkdlTensorCommitment commit_double_values(
     std::uint64_t accumulator = challenge_from_label(label + ":domain", values.size() + 2U);
     for (const auto value : values) {
         accumulator = update_linear_commitment(accumulator, generator, value);
+        generator = field_mul(generator, generator_step);
+    }
+    const auto blind_generator = challenge_from_label(label + ":blind_generator", values.size() + 3U);
+    commitment.commitment = field_add(accumulator, field_mul(commitment.blinding, blind_generator));
+    return commitment;
+}
+
+ZkdlTensorCommitment commit_field_values(
+    const std::string& label,
+    const std::vector<std::size_t>& shape,
+    const std::vector<std::uint64_t>& values) {
+    ZkdlTensorCommitment commitment;
+    commitment.label = label;
+    commitment.shape = shape;
+    commitment.value_count = values.size();
+    commitment.blinding = challenge_from_label(label + ":blinding", values.size());
+    auto generator = challenge_from_label(label + ":generator", values.size());
+    const auto generator_step = challenge_from_label(label + ":generator_step", values.size() + 1U);
+    std::uint64_t accumulator = challenge_from_label(label + ":domain", values.size() + 2U);
+    for (const auto value : values) {
+        accumulator = update_linear_commitment_field(accumulator, generator, value);
         generator = field_mul(generator, generator_step);
     }
     const auto blind_generator = challenge_from_label(label + ":blind_generator", values.size() + 3U);
@@ -1873,7 +1901,9 @@ ZkdlProofSection build_dense_matmul_section(
     const std::string& rhs_label,
     const MatrixD& rhs,
     const std::string& out_label,
-    const MatrixD& out) {
+    const MatrixD& out,
+    const std::string& rescale_remainder_label,
+    std::vector<std::uint64_t>* rescale_remainders) {
     if (lhs.cols != rhs.rows || lhs.rows != out.rows || rhs.cols != out.cols) {
         throw std::runtime_error("dense matmul proof section dimension mismatch: " + label);
     }
@@ -1881,30 +1911,35 @@ ZkdlProofSection build_dense_matmul_section(
     section.section_id = label;
     section.relation = "dense_matmul_sumcheck";
     section.label = label;
-    section.tensor_labels = {lhs_label, rhs_label, out_label};
+    section.tensor_labels = {lhs_label, rhs_label, out_label, rescale_remainder_label};
     const auto row_challenge = challenge_from_label(label + ":row", lhs.rows);
     const auto col_challenge = challenge_from_label(label + ":col", rhs.cols);
 
+    std::vector<std::uint64_t> row_weights(lhs.rows, 1U);
+    for (std::size_t row = 1; row < row_weights.size(); ++row) {
+        row_weights[row] = field_mul(row_weights[row - 1U], row_challenge);
+    }
+    std::vector<std::uint64_t> col_weights(rhs.cols, 1U);
+    for (std::size_t col = 1; col < col_weights.size(); ++col) {
+        col_weights[col] = field_mul(col_weights[col - 1U], col_challenge);
+    }
+
     std::vector<std::uint64_t> lhs_reduced(lhs.cols, 0);
-    std::uint64_t row_weight = 1;
     for (std::size_t row = 0; row < lhs.rows; ++row) {
         for (std::size_t shared = 0; shared < lhs.cols; ++shared) {
             lhs_reduced[shared] = field_add(
                 lhs_reduced[shared],
-                field_mul(row_weight, field_from_double(lhs.at(row, shared))));
+                field_mul(row_weights[row], field_from_double(lhs.at(row, shared))));
         }
-        row_weight = field_mul(row_weight, row_challenge);
     }
 
     std::vector<std::uint64_t> rhs_reduced(rhs.rows, 0);
-    std::uint64_t col_weight = 1;
     for (std::size_t col = 0; col < rhs.cols; ++col) {
         for (std::size_t shared = 0; shared < rhs.rows; ++shared) {
             rhs_reduced[shared] = field_add(
                 rhs_reduced[shared],
-                field_mul(field_from_double(rhs.at(shared, col)), col_weight));
+                field_mul(field_from_double(rhs.at(shared, col)), col_weights[col]));
         }
-        col_weight = field_mul(col_weight, col_challenge);
     }
 
     std::uint64_t lhs_eval = 0;
@@ -1913,17 +1948,56 @@ ZkdlProofSection build_dense_matmul_section(
     }
     const auto out_eval = weighted_matrix_eval(out, row_challenge, col_challenge);
     const auto scaled_out_eval = field_mul(out_eval, kZkdlQuantizationScale);
-    const auto residual = field_sub(lhs_eval, scaled_out_eval);
+    const auto residual_without_remainder = field_sub(lhs_eval, scaled_out_eval);
+
+    std::uint64_t rescale_remainder_eval = 0;
+    if (rescale_remainders != nullptr) {
+        rescale_remainders->clear();
+        rescale_remainders->reserve(out.rows * out.cols);
+    }
+    std::vector<std::uint64_t> rhs_field(rhs.values.size(), 0);
+    for (std::size_t index = 0; index < rhs.values.size(); ++index) {
+        rhs_field[index] = field_from_double(rhs.values[index]);
+    }
+    std::vector<std::uint64_t> lhs_row_field(lhs.cols, 0);
+    for (std::size_t row = 0; row < lhs.rows; ++row) {
+        for (std::size_t shared = 0; shared < lhs.cols; ++shared) {
+            lhs_row_field[shared] = field_from_double(lhs.at(row, shared));
+        }
+        for (std::size_t col = 0; col < rhs.cols; ++col) {
+            std::uint64_t raw_product = 0;
+            for (std::size_t shared = 0; shared < lhs.cols; ++shared) {
+                raw_product = field_add(
+                    raw_product,
+                    field_mul(lhs_row_field[shared], rhs_field[shared * rhs.cols + col]));
+            }
+            const auto scaled_output = field_mul(field_from_double(out.at(row, col)), kZkdlQuantizationScale);
+            const auto remainder = field_sub(raw_product, scaled_output);
+            if (rescale_remainders != nullptr) {
+                rescale_remainders->push_back(remainder);
+            }
+            const auto weight = field_mul(row_weights[row], col_weights[col]);
+            rescale_remainder_eval = field_add(rescale_remainder_eval, field_mul(weight, remainder));
+        }
+    }
+    const auto residual = field_sub(field_sub(lhs_eval, scaled_out_eval), rescale_remainder_eval);
 
     section.field_values["row_challenge"] = row_challenge;
     section.field_values["col_challenge"] = col_challenge;
     section.field_values["lhs_weighted_product_eval"] = lhs_eval;
     section.field_values["scaled_output_eval"] = scaled_out_eval;
+    section.field_values["rescale_remainder_eval"] = rescale_remainder_eval;
+    section.field_values["residual_without_remainder"] = residual_without_remainder;
     section.field_values["residual"] = residual;
     section.metadata["rows"] = std::to_string(lhs.rows);
     section.metadata["shared_dim"] = std::to_string(lhs.cols);
     section.metadata["cols"] = std::to_string(rhs.cols);
     section.metadata["quantization_scale"] = std::to_string(kZkdlQuantizationScale);
+    section.metadata["claim_equation"] = "sum_q_products = quantization_scale * output_q + rescale_remainder";
+    section.metadata["rescale_rule"] = "fixed_point_nearest_rounding_remainder_witness";
+    section.metadata["rescale_remainder_tensor"] = rescale_remainder_label;
+    section.metadata["matrix_flatten_order"] = "row_major";
+    section.metadata["mle_variable_order"] = "row_variables_then_col_variables";
     section.relation_passed = residual == 0;
     return section;
 }
@@ -2198,14 +2272,23 @@ ZkdlProofObject build_zkdl_proof_object(
             const auto prefix = "hidden.layer" + std::to_string(layer_index) + ".head" + std::to_string(head_index);
             add_head_tensor_commitments(proof, prefix, layer.heads[head_index]);
             proof.tensor_commitments.push_back(commit_matrix(prefix + ".W", model.hidden_layers[layer_index][head_index].seq_kernel));
-            proof.proof_sections.push_back(build_dense_matmul_section(
+            const auto remainder_label = prefix + ".projection_rescale_remainder";
+            std::vector<std::uint64_t> projection_remainders;
+            auto projection_section = build_dense_matmul_section(
                 prefix + ".projection",
                 "hidden.layer" + std::to_string(layer_index) + ".input",
                 layer.input,
                 prefix + ".W",
                 model.hidden_layers[layer_index][head_index].seq_kernel,
                 prefix + ".h_prime",
-                layer.heads[head_index].h_prime));
+                layer.heads[head_index].h_prime,
+                remainder_label,
+                &projection_remainders);
+            proof.tensor_commitments.push_back(commit_field_values(
+                remainder_label,
+                {layer.heads[head_index].h_prime.rows, layer.heads[head_index].h_prime.cols},
+                projection_remainders));
+            proof.proof_sections.push_back(std::move(projection_section));
             add_head_proof_sections(proof, prefix, normalized.edges, layer.heads[head_index], true);
         }
     }
@@ -2218,14 +2301,23 @@ ZkdlProofObject build_zkdl_proof_object(
         const auto input_label = trace.hidden_layers.empty()
             ? "public_feature_table"
             : "hidden.layer" + std::to_string(trace.hidden_layers.size() - 1U) + ".concat";
-        proof.proof_sections.push_back(build_dense_matmul_section(
+        const auto remainder_label = prefix + ".projection_rescale_remainder";
+        std::vector<std::uint64_t> projection_remainders;
+        auto projection_section = build_dense_matmul_section(
             prefix + ".projection",
             input_label,
             input,
             prefix + ".W",
             model.output_heads[head_index].seq_kernel,
             prefix + ".h_prime",
-            trace.output_heads[head_index].h_prime));
+            trace.output_heads[head_index].h_prime,
+            remainder_label,
+            &projection_remainders);
+        proof.tensor_commitments.push_back(commit_field_values(
+            remainder_label,
+            {trace.output_heads[head_index].h_prime.rows, trace.output_heads[head_index].h_prime.cols},
+            projection_remainders));
+        proof.proof_sections.push_back(std::move(projection_section));
         add_head_proof_sections(proof, prefix, normalized.edges, trace.output_heads[head_index], false);
     }
 
@@ -2375,6 +2467,31 @@ ZkdlVerifierResult verify_zkdl_proof_object(const ZkdlProofObject& proof) {
             result.first_failure_section = section.section_id;
             result.block_reason = "zkdl_sumcheck_section_missing_residual:" + section.section_id;
             return result;
+        }
+        if (section.relation == "dense_matmul_sumcheck") {
+            const auto lhs_it = section.field_values.find("lhs_weighted_product_eval");
+            const auto scaled_it = section.field_values.find("scaled_output_eval");
+            const auto remainder_it = section.field_values.find("rescale_remainder_eval");
+            if (lhs_it == section.field_values.end()
+                || scaled_it == section.field_values.end()
+                || remainder_it == section.field_values.end()) {
+                result.failure_step = section.relation + "_verify";
+                result.first_failure_section = section.section_id;
+                result.block_reason = "zkdl_dense_matmul_sumcheck_missing_claim_field:" + section.section_id;
+                return result;
+            }
+            const auto recomputed_residual = field_sub(
+                field_sub(lhs_it->second, scaled_it->second),
+                remainder_it->second);
+            if (recomputed_residual != residual_it->second) {
+                result.failure_step = section.relation + "_verify";
+                result.first_failure_section = section.section_id;
+                result.block_reason =
+                    "zkdl_dense_matmul_sumcheck_residual_mismatch:section=" + section.section_id
+                    + ",claimed=" + field_hex(residual_it->second)
+                    + ",recomputed=" + field_hex(recomputed_residual);
+                return result;
+            }
         }
         if (residual_it->second != 0 || !section.relation_passed) {
             result.failure_step = section.relation + "_verify";
@@ -2946,10 +3063,18 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.string_values["gpu_device_name"] = route == "gpu" ? gpu_probe.gpu_device_name : "";
     manifest.string_values["gpu_backend_name"] = route == "gpu" ? gpu_probe.gpu_backend_name : "";
 
-    manifest.double_values["commitment_time_ms"] = proof_result.commitment_time_ms;
-    manifest.double_values["prove_time_ms"] = proof_result.prove_time_ms;
-    manifest.double_values["verify_time_ms"] = proof_result.verify_time_ms;
-    manifest.optional_size_values["proof_size_bytes"] = proof_result.proof_size_bytes;
+    manifest.double_values["commitment_time_ms"] = cpu_zkdl_verified
+        ? proof_result.commitment_time_ms
+        : std::optional<double>{};
+    manifest.double_values["prove_time_ms"] = cpu_zkdl_verified
+        ? proof_result.prove_time_ms
+        : std::optional<double>{};
+    manifest.double_values["verify_time_ms"] = cpu_zkdl_verified
+        ? proof_result.verify_time_ms
+        : std::optional<double>{};
+    manifest.optional_size_values["proof_size_bytes"] = cpu_zkdl_verified
+        ? proof_result.proof_size_bytes
+        : std::optional<std::size_t>{};
 
     manifest.dataset_stats["dataset_id"] = config.dataset_id;
     manifest.dataset_stats["dataset_name"] = meta.name;
@@ -3009,6 +3134,23 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.dataset_stats["zkdl_proof_generated"] = cpu_zkdl_proof_generated ? "true" : "false";
     manifest.dataset_stats["zkdl_proof_verified"] = cpu_zkdl_verified ? "true" : "false";
     manifest.dataset_stats["zkdl_verifier_called"] = cpu_zkdl_verifier_called ? "true" : "false";
+    if (proof_result.generated && !cpu_zkdl_verified) {
+        manifest.dataset_stats["debug_commitment_attempt_time_ms"] = proof_result.commitment_time_ms.has_value()
+            ? std::to_string(*proof_result.commitment_time_ms)
+            : "";
+        manifest.dataset_stats["debug_prove_attempt_time_ms"] = proof_result.prove_time_ms.has_value()
+            ? std::to_string(*proof_result.prove_time_ms)
+            : "";
+        manifest.dataset_stats["debug_verify_attempt_time_ms"] = proof_result.verify_time_ms.has_value()
+            ? std::to_string(*proof_result.verify_time_ms)
+            : "";
+        manifest.dataset_stats["verifier_failed_after_ms"] = proof_result.verify_time_ms.has_value()
+            ? std::to_string(*proof_result.verify_time_ms)
+            : "";
+        manifest.dataset_stats["debug_proof_attempt_size_bytes"] = proof_result.proof_size_bytes.has_value()
+            ? std::to_string(*proof_result.proof_size_bytes)
+            : "";
+    }
     manifest.dataset_stats["semantic_precheck_passed"] = semantic_result.passed ? "true" : "false";
     manifest.dataset_stats["semantic_precheck_artifact_generated"] = semantic_result.artifact_generated ? "true" : "false";
     manifest.dataset_stats["public_input_hash"] = public_input_hash;
