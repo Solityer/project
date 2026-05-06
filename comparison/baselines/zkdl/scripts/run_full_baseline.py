@@ -15,6 +15,35 @@ DATASETS = [
     ("ogbn_arxiv_full", "ogbn-arxiv"),
 ]
 
+MAIN_REPO_METHOD_ROWS = [
+    ("config parsing", "src/util/config.cpp::load_config", "src/zkdl_gat/baseline.cpp::load_dataset_config", "rewritten", "same formal keys are required by the zkDL cfg files; no main src/include is linked"),
+    ("dataset cache reading", "src/data/loader.cpp::load_dataset/load_cached_dataset", "src/zkdl_gat/baseline.cpp::load_dataset_meta/load_feature_matrix/load_edges", "rewritten", "reads /home/pzh/project/data/cache/* directly in the same cache layout"),
+    ("feature/edge/label", "src/data/loader.cpp::load_features_matrix/load_labels/edges parser", "src/zkdl_gat/baseline.cpp::validate_feature_source/validate_label_source/load_edges", "ported", "feature shape, label count, and 2/3-column edge formats are checked before proving"),
+    ("PPI batch", "src/data/loader.cpp::selected_graph_ids/normalize_graph_input", "src/zkdl_gat/baseline.cpp::normalize_public_input", "ported", "batch_graphs=295 and node_ptr from cache_node_ptr are consumed for ppi_full_formal"),
+    ("ogbn_arxiv", "scripts/prepare_ogbn_arxiv.py output + src/data/loader.cpp npy path", "src/zkdl_gat/baseline.cpp::load_feature_matrix", "ported", "features.npy float32 path is supported without calling main scripts"),
+    ("self-loop", "src/data/loader.cpp::normalize_graph_input self-loop insertion", "src/zkdl_gat/baseline.cpp::normalize_public_input", "ported", "adds one per-node self-loop after local remapping with deduplication"),
+    ("edge sort", "src/data/loader.cpp stable graph_id,dst sort", "src/zkdl_gat/baseline.cpp::normalize_public_input", "ported", "stable_sort by graph_id then dst then stable_index"),
+    ("node_ptr/edge_ptr", "src/data/loader.cpp::normalize_graph_input", "src/zkdl_gat/baseline.cpp::normalize_public_input", "ported", "manifest gate compares node_ptr and edge_ptr against main run_manifest"),
+    ("checkpoint", "src/model/gat.cpp::inspect/load_checkpoint_bundle_parameters", "src/zkdl_gat/baseline.cpp::load_model_params/load_attention_head", "ported", "manifest.json and tensors.txt are parsed by tensor name and shape"),
+    ("quant config", "src/util/config.cpp + checkpoint manifest quant_cfg_id", "src/zkdl_gat/baseline.cpp::fixed_point_policy/build_manifest", "ported", "range_bits/quant_cfg_id are gate-checked; fixed-point scale and signed encoding are recorded"),
+    ("GAT forward", "src/model/gat.cpp::forward_note_style", "src/zkdl_gat/baseline.cpp::compute_full_forward", "ported", "hidden heads, concat, output attention, and output head average are computed locally"),
+    ("output bias/head average", "src/model/gat.cpp::attention_head_forward_impl/average_matrices", "src/zkdl_gat/baseline.cpp::compute_head_forward/compute_full_forward", "ported", "output heads add bias before arithmetic average; hidden heads do not add output bias"),
+    ("public input", "src/protocol/challenges.cpp and run_manifest public topology fields", "src/zkdl_gat/baseline.cpp::hash_normalized_public_input/build_manifest", "rewritten", "public topology hash is derived after gate-equivalent node/edge normalization"),
+    ("final logits", "src/model/gat.cpp::forward_note_style", "src/zkdl_gat/baseline.cpp::hash_final_logits/run_full_gat_semantic_precheck", "rewritten", "semantic precheck hashes locally derived final logits; not accepted as proof"),
+    ("metric scope", "src/main.cpp metrics and src/protocol/prover.cpp::proof_size_bytes", "scripts/run_full_baseline.py + src/zkdl_gat/baseline.cpp metrics gating", "rewritten", "formal four metrics remain null unless status=verified with real zkDL proof/verifier"),
+]
+
+ZKDL_PROOF_ROWS = [
+    ("proof object", "original zkDL has no full-GAT serializable proof object API; diagnostic payload lives in src/zkdl_gat/baseline.cpp", "full_gat_forward relation payload", "none; payload is explicitly not accepted", "blocked"),
+    ("commitment", "commitment.cuh::Commitment::commit", "tensor commitments in original Hyrax-style primitive path", "Commitment::open is available only as an opening computation/counting path", "retained primitive only"),
+    ("opening", "commitment.cuh::Commitment::open/me_open", "MLE opening for committed tensors", "no standalone serialized verifier API for transported openings", "retained primitive only"),
+    ("transcript", "proof.cuh::random_vec", "sumcheck challenge sampling", "not a Fiat-Shamir transcript bound to public input/proof bytes", "missing for full GAT"),
+    ("sumcheck", "proof.cuh::inner_product_sumcheck/hadamard_product_sumcheck/binary_sumcheck; zkmatmul.cuh; zkprod.cuh; zkrelu.cuh", "dense/product/binary/ReLU-style primitive sections", "no composed full-GAT verifier acceptance API", "retained primitive only"),
+    ("lookup/range", "zkrelu.cuh binary auxiliary; no static lookup table primitive for LeakyReLU/ELU/Exp", "activation and exp table requirements", "no verifier-backed static table membership check", "blocked"),
+    ("inverse/binding", "no scaled softmax inverse or final logits public binding API in original zkDL files", "softmax denominator inverse and public output binding", "no native verifier check", "blocked"),
+    ("verifier acceptance", "no verify(...) counterpart for zkMatMul/zkProd/zkReLU/full statement in comparison/baselines/zkdl/*.cuh", "composed full GAT statement", "not invoked; status cannot be verified", "blocked"),
+]
+
 
 def run(cmd, cwd):
     subprocess.run(cmd, cwd=cwd, check=True)
@@ -56,6 +85,38 @@ def md_table(rows, include_gpu=False):
     for row in rows:
         lines.append("| " + " | ".join(str(metric(row.get(key))) for key in headers) + " |")
     return "\n".join(lines)
+
+
+def md_rows_table(headers, rows):
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(["---"] * len(headers)) + " |",
+    ]
+    for row in rows:
+        lines.append("| " + " | ".join(str(value).replace("\n", " ") for value in row) + " |")
+    return "\n".join(lines)
+
+
+def equivalence_rows(cpu_rows):
+    rows = []
+    for row in cpu_rows:
+        stats = row.get("dataset_stats", {})
+        layer_head = f"L={stats.get('layer_count', '')}; hidden={stats.get('hidden_heads_per_layer', '')}; K_out={stats.get('output_heads', '')}"
+        rows.append((
+            row["dataset"],
+            stats.get("node_count", ""),
+            stats.get("edge_count", ""),
+            stats.get("feature_dim", ""),
+            stats.get("class_count", ""),
+            layer_head,
+            stats.get("checkpoint_tensors_sha256", ""),
+            stats.get("quant_cfg_id", ""),
+            stats.get("public_input_hash", ""),
+            stats.get("final_logits_shape", ""),
+            stats.get("final_logits_hash", ""),
+            stats.get("main_manifest_match", str(row.get("full_dataset_gate_passed", ""))),
+        ))
+    return rows
 
 
 def main_rows_by_dataset(path):
@@ -202,10 +263,10 @@ def collect(root, cpu_manifests, gpu_manifests):
     })
     write_csv(results / "main_vs_zkdl_cpu_full_comparison.csv", cpu_cmp, cmp_fields)
     write_csv(results / "main_vs_zkdl_gpu_full_comparison.csv", gpu_cmp, cmp_fields + ["gpu_backend_active", "cpu_fallback_used", "gpu_device_name"])
-    write_markdown_reports(root, results, cpu_rows, gpu_rows, cpu_cmp, gpu_cmp, generated_at)
+    write_markdown_reports(root, results, cpu_rows, gpu_rows, cpu_cmp, gpu_cmp, generated_at, cpu_manifests)
 
 
-def write_markdown_reports(root, results, cpu_rows, gpu_rows, cpu_cmp, gpu_cmp, generated_at):
+def write_markdown_reports(root, results, cpu_rows, gpu_rows, cpu_cmp, gpu_cmp, generated_at, cpu_manifests):
     blocked = [
         row for row in cpu_rows + gpu_rows
         if row["status"] != "verified"
@@ -226,6 +287,31 @@ def write_markdown_reports(root, results, cpu_rows, gpu_rows, cpu_cmp, gpu_cmp, 
         "Relation payload files named `full_gat_forward.zkdl_relation_payload.json` are deliberately typed as diagnostics. A transferable `zkdl_proof` artifact path remains empty until the native zkDL verifier can accept the composed full-GAT statement.",
         "",
         "Formal commitment/prove/verify/proof-size metrics are populated only for `status=verified`. Failed proof-attempt timings are debug fields in each run manifest and are excluded from the comparison tables.",
+        "",
+        "## Main Repo Method Porting Map",
+        "",
+        md_rows_table(
+            ["item", "main_repo_reference", "zkdl_baseline_file", "status", "evidence"],
+            MAIN_REPO_METHOD_ROWS,
+        ),
+        "",
+        "## zkDL Proof Retention Map",
+        "",
+        md_rows_table(
+            ["item", "zkdl_source_file_or_api", "proof_section", "verifier_check", "status"],
+            ZKDL_PROOF_ROWS,
+        ),
+        "",
+        "## Equivalence Map",
+        "",
+        md_rows_table(
+            [
+                "dataset", "N", "E", "feature_dim", "class_count", "layer/head config",
+                "checkpoint hash", "quant_cfg_id", "public_input_hash",
+                "final_logits_shape", "final_logits_hash", "main_manifest_match",
+            ],
+            equivalence_rows(cpu_manifests),
+        ),
         "",
         "## CPU",
         "",
