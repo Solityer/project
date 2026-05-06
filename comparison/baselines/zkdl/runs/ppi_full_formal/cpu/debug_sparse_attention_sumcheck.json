@@ -1,0 +1,109 @@
+{
+  "artifact_type": "debug_sparse_attention_sumcheck_evidence_not_a_proof",
+  "dataset": "ppi_full_formal",
+  "route": "cpu",
+  "section_id": "hidden.layer0.head0.attention_score",
+  "N": 56944,
+  "E": 850576,
+  "feature_dim": 50,
+  "hidden_dim": 8,
+  "graph_count": 295,
+  "node_ptr": "0,1546,1547,1548,1549,1550,1551,1552,1553,1554,2931,2932,2933,2935,2936,2937,2938,2939,2940,2941,2942,5205,5206,5207,5208,5209,5210,5211,5212,5213,5214,5215,7554,7555,7556,7557,7558,7559,7560,7561,7562,7563,7564,9142,9143,9144,9145,9146,9147,9148,9149,9150,9151,10172,10173,10174,10175,10176,10177,10178,10179,10180,12003,12004,12005,12006,12007,12008,12009,12010,12011,12012,12013,12014,12015,14503,14504,14505,14506,14507,14508,14509,14510,14511,14512,14513,14514,14515,15106,15107,15108,15109,15110,15111,15112,15113,15114,15115,15116,15117,18429,18430,18431,18432,18434,18435,18437,18438,18439,18440,18441,18442,18443,20844,20845,20846,20847,20848,20849,20850,22728,22729,22730,22731,22732,22733,22734,24553,24554,24555,24556,24557,24558,24559,28039,28040,28041,28042,28043,28044,28045,28046,28048,28049,28050,28051,28052,28053,28054,28055,28056,30850,30851,30852,30853,30854,30855,30856,30857,30858,30859,30860,30861,30862,30863,33189,33190,33191,33192,33193,33194,33195,33196,35846,35847,35848,35849,35850,35851,35852,35853,35854,35855,35856,35857,35858,35859,35860,38675,38676,38677,38678,38679,38680,38681,38682,38683,38684,38685,38686,38687,38688,38689,41852,41853,41854,41855,41856,41857,41859,41860,41861,41862,41863,41865,41866,41867,41868,41869,44890,44891,44892,44893,44894,44895,44896,44897,44898,44899,44900,44901,44902,44903,44904,44905,44906,48101,48102,48103,48104,48106,48108,48109,48110,48111,48113,48114,48115,48116,51400,51401,51402,51403,51404,51405,51406,51408,51409,51411,51413,51414,51416,51417,51418,51419,51420,54614,54615,54616,54617,54618,54619,54620,54621,54623,54624,54625,54626,54627,54628,54629,54631,54632,54633,54634,56934,56935,56936,56937,56938,56939,56940,56941,56942,56943,56944",
+  "edge_ptr": "0,17699,17700,17701,17702,17703,17704,17705,17706,17707,33936,33937,33938,33941,33942,33943,33944,33945,33946,33947,33948,66033,66034,66035,66036,66037,66038,66039,66040,66041,66042,66043,101097,101098,101099,101100,101101,101102,101103,101104,101105,101106,101107,120766,120767,120768,120769,120770,120771,120772,120773,120774,120775,130904,130905,130906,130907,130908,130909,130910,130911,130912,154900,154901,154902,154903,154904,154905,154906,154907,154908,154909,154910,154911,154912,192595,192596,192597,192598,192599,192600,192601,192602,192603,192604,192605,192606,192607,197052,197053,197054,197055,197056,197057,197058,197059,197060,197061,197062,197063,253474,253475,253476,253477,253480,253481,253484,253485,253486,253487,253488,253489,253490,288000,288001,288002,288003,288004,288005,288006,313018,313019,313020,313021,313022,313023,313024,337727,337728,337729,337730,337731,337732,337733,394590,394591,394592,394593,394594,394595,394596,394597,394600,394601,394602,394603,394604,394605,394606,394607,394608,440061,440062,440063,440064,440065,440066,440067,440068,440069,440070,440071,440072,440073,440074,472331,472332,472333,472334,472335,472336,472337,472338,513520,513521,513522,513523,513524,513525,513526,513527,513528,513529,513530,513531,513532,513533,513534,559109,559110,559111,559112,559113,559114,559115,559116,559117,559118,559119,559120,559121,559122,559123,609365,609366,609367,609368,609369,609370,609373,609374,609375,609376,609377,609380,609381,609382,609383,609384,658074,658075,658076,658077,658078,658079,658080,658081,658082,658083,658084,658085,658086,658087,658088,658089,658090,710001,710002,710003,710004,710007,710010,710011,710012,710013,710016,710017,710018,710019,764040,764041,764042,764043,764044,764045,764046,764049,764050,764053,764056,764057,764060,764061,764062,764063,764064,817580,817581,817582,817583,817584,817585,817586,817587,817590,817591,817592,817593,817594,817595,817596,817599,817600,817601,817602,850566,850567,850568,850569,850570,850571,850572,850573,850574,850575,850576",
+  "self_loop_rule": "per_node",
+  "edge_sort_rule": "edge_gid_then_dst_stable",
+  "node_id_semantics": "local node ids after full dataset gate normalization",
+  "field_id": "mersenne61_portable_scalar_field",
+  "field_encoding": "signed fixed-point values map negative integers to prime-minus-abs modulo p",
+  "quantization_scale": 16,
+  "route_MLE_variable_order": "edge_index_univariate_powers_k_0_to_E_minus_1_over_normalized_edge_order",
+  "attention_vector_flatten_order": "checkpoint tensor [1,width,1] flattened in row-major storage order",
+  "edge_sample_0_16": [
+    {"k": 0, "graph_id": 0, "src": 0, "dst": 0, "stable_index": 16904},
+    {"k": 1, "graph_id": 0, "src": 1, "dst": 1, "stable_index": 4},
+    {"k": 2, "graph_id": 0, "src": 2, "dst": 2, "stable_index": 38},
+    {"k": 3, "graph_id": 0, "src": 3, "dst": 3, "stable_index": 16905},
+    {"k": 4, "graph_id": 0, "src": 1, "dst": 4, "stable_index": 5},
+    {"k": 5, "graph_id": 0, "src": 4, "dst": 4, "stable_index": 47},
+    {"k": 6, "graph_id": 0, "src": 1, "dst": 5, "stable_index": 6},
+    {"k": 7, "graph_id": 0, "src": 5, "dst": 5, "stable_index": 16906},
+    {"k": 8, "graph_id": 0, "src": 4, "dst": 6, "stable_index": 48},
+    {"k": 9, "graph_id": 0, "src": 6, "dst": 6, "stable_index": 16907},
+    {"k": 10, "graph_id": 0, "src": 7, "dst": 7, "stable_index": 16908},
+    {"k": 11, "graph_id": 0, "src": 8, "dst": 8, "stable_index": 16909},
+    {"k": 12, "graph_id": 0, "src": 9, "dst": 9, "stable_index": 179},
+    {"k": 13, "graph_id": 0, "src": 10, "dst": 10, "stable_index": 189},
+    {"k": 14, "graph_id": 0, "src": 11, "dst": 11, "stable_index": 16910},
+    {"k": 15, "graph_id": 0, "src": 12, "dst": 12, "stable_index": 16911}
+  ],
+  "score_sample_0_16": [
+    {"k": 0, "src": 0, "dst": 0, "E_src_float": 0.15960340201854706, "E_dst_float": 0.10520616173744202, "S_float": 0.26480956375598907, "E_src_q": "0x0000000000000003", "E_dst_q": "0x0000000000000002", "quantized_score": "0x0000000000000004", "routed_sum_q": "0x0000000000000005", "score_rescale_remainder": "0x1ffffffffffffffe"},
+    {"k": 1, "src": 1, "dst": 1, "E_src_float": 0.15960340201854706, "E_dst_float": 0.10520616173744202, "S_float": 0.26480956375598907, "E_src_q": "0x0000000000000003", "E_dst_q": "0x0000000000000002", "quantized_score": "0x0000000000000004", "routed_sum_q": "0x0000000000000005", "score_rescale_remainder": "0x1ffffffffffffffe"},
+    {"k": 2, "src": 2, "dst": 2, "E_src_float": 0.15960340201854706, "E_dst_float": 0.10520616173744202, "S_float": 0.26480956375598907, "E_src_q": "0x0000000000000003", "E_dst_q": "0x0000000000000002", "quantized_score": "0x0000000000000004", "routed_sum_q": "0x0000000000000005", "score_rescale_remainder": "0x1ffffffffffffffe"},
+    {"k": 3, "src": 3, "dst": 3, "E_src_float": 0.15960340201854706, "E_dst_float": 0.10520616173744202, "S_float": 0.26480956375598907, "E_src_q": "0x0000000000000003", "E_dst_q": "0x0000000000000002", "quantized_score": "0x0000000000000004", "routed_sum_q": "0x0000000000000005", "score_rescale_remainder": "0x1ffffffffffffffe"},
+    {"k": 4, "src": 1, "dst": 4, "E_src_float": 0.15960340201854706, "E_dst_float": 0.08988907378736806, "S_float": 0.2494924758059151, "E_src_q": "0x0000000000000003", "E_dst_q": "0x0000000000000001", "quantized_score": "0x0000000000000004", "routed_sum_q": "0x0000000000000004", "score_rescale_remainder": "0x0000000000000000"},
+    {"k": 5, "src": 4, "dst": 4, "E_src_float": 0.16265837473392364, "E_dst_float": 0.08988907378736806, "S_float": 0.25254744852129168, "E_src_q": "0x0000000000000003", "E_dst_q": "0x0000000000000001", "quantized_score": "0x0000000000000004", "routed_sum_q": "0x0000000000000004", "score_rescale_remainder": "0x0000000000000000"},
+    {"k": 6, "src": 1, "dst": 5, "E_src_float": 0.15960340201854706, "E_dst_float": 0.10520616173744202, "S_float": 0.26480956375598907, "E_src_q": "0x0000000000000003", "E_dst_q": "0x0000000000000002", "quantized_score": "0x0000000000000004", "routed_sum_q": "0x0000000000000005", "score_rescale_remainder": "0x1ffffffffffffffe"},
+    {"k": 7, "src": 5, "dst": 5, "E_src_float": 0.15960340201854706, "E_dst_float": 0.10520616173744202, "S_float": 0.26480956375598907, "E_src_q": "0x0000000000000003", "E_dst_q": "0x0000000000000002", "quantized_score": "0x0000000000000004", "routed_sum_q": "0x0000000000000005", "score_rescale_remainder": "0x1ffffffffffffffe"},
+    {"k": 8, "src": 4, "dst": 6, "E_src_float": 0.16265837473392364, "E_dst_float": 0.12899023246516897, "S_float": 0.29164860719909258, "E_src_q": "0x0000000000000003", "E_dst_q": "0x0000000000000002", "quantized_score": "0x0000000000000005", "routed_sum_q": "0x0000000000000005", "score_rescale_remainder": "0x0000000000000000"},
+    {"k": 9, "src": 6, "dst": 6, "E_src_float": 0.10997020643072711, "E_dst_float": 0.12899023246516897, "S_float": 0.23896043889589608, "E_src_q": "0x0000000000000002", "E_dst_q": "0x0000000000000002", "quantized_score": "0x0000000000000004", "routed_sum_q": "0x0000000000000004", "score_rescale_remainder": "0x0000000000000000"},
+    {"k": 10, "src": 7, "dst": 7, "E_src_float": 0.15960340201854706, "E_dst_float": 0.10520616173744202, "S_float": 0.26480956375598907, "E_src_q": "0x0000000000000003", "E_dst_q": "0x0000000000000002", "quantized_score": "0x0000000000000004", "routed_sum_q": "0x0000000000000005", "score_rescale_remainder": "0x1ffffffffffffffe"},
+    {"k": 11, "src": 8, "dst": 8, "E_src_float": 0.15960340201854706, "E_dst_float": 0.10520616173744202, "S_float": 0.26480956375598907, "E_src_q": "0x0000000000000003", "E_dst_q": "0x0000000000000002", "quantized_score": "0x0000000000000004", "routed_sum_q": "0x0000000000000005", "score_rescale_remainder": "0x1ffffffffffffffe"},
+    {"k": 12, "src": 9, "dst": 9, "E_src_float": 0.14891641353938506, "E_dst_float": 0.15894885937941672, "S_float": 0.30786527291880178, "E_src_q": "0x0000000000000002", "E_dst_q": "0x0000000000000003", "quantized_score": "0x0000000000000005", "routed_sum_q": "0x0000000000000005", "score_rescale_remainder": "0x0000000000000000"},
+    {"k": 13, "src": 10, "dst": 10, "E_src_float": 0.15960340201854706, "E_dst_float": 0.10520616173744202, "S_float": 0.26480956375598907, "E_src_q": "0x0000000000000003", "E_dst_q": "0x0000000000000002", "quantized_score": "0x0000000000000004", "routed_sum_q": "0x0000000000000005", "score_rescale_remainder": "0x1ffffffffffffffe"},
+    {"k": 14, "src": 11, "dst": 11, "E_src_float": 0.12021924390893052, "E_dst_float": 0.10840141688150501, "S_float": 0.22862066079043553, "E_src_q": "0x0000000000000002", "E_dst_q": "0x0000000000000002", "quantized_score": "0x0000000000000004", "routed_sum_q": "0x0000000000000004", "score_rescale_remainder": "0x0000000000000000"},
+    {"k": 15, "src": 12, "dst": 12, "E_src_float": 0.1969369297285388, "E_dst_float": 0.14993346819149989, "S_float": 0.34687039792003871, "E_src_q": "0x0000000000000003", "E_dst_q": "0x0000000000000002", "quantized_score": "0x0000000000000006", "routed_sum_q": "0x0000000000000005", "score_rescale_remainder": "0x0000000000000001"}
+  ],
+  "H_prime_q_sample": [
+    {"row": 0, "values": ["0x0000000000000000", "0x0000000000000000", "0x0000000000000000", "0x0000000000000000", "0x0000000000000000", "0x0000000000000000", "0x0000000000000000", "0x0000000000000000"]},
+    {"row": 1, "values": ["0x0000000000000000", "0x0000000000000000", "0x0000000000000000", "0x0000000000000000", "0x0000000000000000", "0x0000000000000000", "0x0000000000000000", "0x0000000000000000"]},
+    {"row": 2, "values": ["0x0000000000000000", "0x0000000000000000", "0x0000000000000000", "0x0000000000000000", "0x0000000000000000", "0x0000000000000000", "0x0000000000000000", "0x0000000000000000"]},
+    {"row": 3, "values": ["0x0000000000000000", "0x0000000000000000", "0x0000000000000000", "0x0000000000000000", "0x0000000000000000", "0x0000000000000000", "0x0000000000000000", "0x0000000000000000"]}
+  ],
+  "a_src_q_sample": ["0x1ffffffffffffffb", "0x0000000000000000", "0x1ffffffffffffffe", "0x1ffffffffffffff9", "0x0000000000000001", "0x0000000000000005", "0x0000000000000005", "0x0000000000000001"],
+  "a_dst_q_sample": ["0x0000000000000003", "0x1ffffffffffffffb", "0x1ffffffffffffff9", "0x0000000000000002", "0x1ffffffffffffffc", "0x1ffffffffffffffd", "0x0000000000000001", "0x0000000000000001"],
+  "integer_product_sum_sample": [
+    {"node": 0, "E_src_integer_product_sum": "0x0000000000000030", "E_src_scaled_quantized_output": "0x0000000000000030", "E_src_rescale_remainder": "0x0000000000000000", "E_dst_integer_product_sum": "0x0000000000000020", "E_dst_scaled_quantized_output": "0x0000000000000020", "E_dst_rescale_remainder": "0x0000000000000000"},
+    {"node": 1, "E_src_integer_product_sum": "0x0000000000000030", "E_src_scaled_quantized_output": "0x0000000000000030", "E_src_rescale_remainder": "0x0000000000000000", "E_dst_integer_product_sum": "0x0000000000000020", "E_dst_scaled_quantized_output": "0x0000000000000020", "E_dst_rescale_remainder": "0x0000000000000000"},
+    {"node": 2, "E_src_integer_product_sum": "0x0000000000000030", "E_src_scaled_quantized_output": "0x0000000000000030", "E_src_rescale_remainder": "0x0000000000000000", "E_dst_integer_product_sum": "0x0000000000000020", "E_dst_scaled_quantized_output": "0x0000000000000020", "E_dst_rescale_remainder": "0x0000000000000000"},
+    {"node": 3, "E_src_integer_product_sum": "0x0000000000000030", "E_src_scaled_quantized_output": "0x0000000000000030", "E_src_rescale_remainder": "0x0000000000000000", "E_dst_integer_product_sum": "0x0000000000000020", "E_dst_scaled_quantized_output": "0x0000000000000020", "E_dst_rescale_remainder": "0x0000000000000000"},
+    {"node": 4, "E_src_integer_product_sum": "0x0000000000000033", "E_src_scaled_quantized_output": "0x0000000000000030", "E_src_rescale_remainder": "0x0000000000000003", "E_dst_integer_product_sum": "0x0000000000000020", "E_dst_scaled_quantized_output": "0x0000000000000010", "E_dst_rescale_remainder": "0x0000000000000010"},
+    {"node": 5, "E_src_integer_product_sum": "0x0000000000000030", "E_src_scaled_quantized_output": "0x0000000000000030", "E_src_rescale_remainder": "0x0000000000000000", "E_dst_integer_product_sum": "0x0000000000000020", "E_dst_scaled_quantized_output": "0x0000000000000020", "E_dst_rescale_remainder": "0x0000000000000000"},
+    {"node": 6, "E_src_integer_product_sum": "0x0000000000000027", "E_src_scaled_quantized_output": "0x0000000000000020", "E_src_rescale_remainder": "0x0000000000000007", "E_dst_integer_product_sum": "0x0000000000000027", "E_dst_scaled_quantized_output": "0x0000000000000020", "E_dst_rescale_remainder": "0x0000000000000007"},
+    {"node": 7, "E_src_integer_product_sum": "0x0000000000000030", "E_src_scaled_quantized_output": "0x0000000000000030", "E_src_rescale_remainder": "0x0000000000000000", "E_dst_integer_product_sum": "0x0000000000000020", "E_dst_scaled_quantized_output": "0x0000000000000020", "E_dst_rescale_remainder": "0x0000000000000000"}
+  ],
+  "any_rescale_remainder": {
+    "score_rescale_remainder_eval": "0x1f462ae2fc9cf879",
+    "score_residual_without_remainder": "0x1f462ae2fc9cf879",
+    "score_remainder_rule": "score_q - routed_e_src_q - routed_e_dst_q"
+  },
+  "prover_claim": {
+    "equation": "score_eval = src_route_eval + dst_route_eval + score_rescale_remainder_eval",
+    "score_eval": "0x00e738393d2a44d0",
+    "src_route_eval": "0x0415f714f8bbeb37",
+    "dst_route_eval": "0x1d8b164147d1611e",
+    "score_rescale_remainder_eval": "0x1f462ae2fc9cf879"
+  },
+  "verifier_recomputed_claim": {
+    "residual": "0x0000000000000000",
+    "accepted_this_relation": true
+  },
+  "residual": "0x0000000000000000",
+  "transcript_challenge_values": {
+    "hidden.layer0.head0.projection.row_challenge": "0x0d076fe725848e1d",
+    "hidden.layer0.head0.projection.col_challenge": "0x04f6c72f8f6b1bda",
+    "hidden.layer0.head0.attention_score.edge_challenge": "0x0f9aa8f7631bee31"
+  },
+  "proof_section_labels": {
+    "previous_dense_projection":     {
+      "section_id": "hidden.layer0.head0.projection",
+      "relation": "dense_matmul_sumcheck",
+      "tensor_labels": ["hidden.layer0.input", "hidden.layer0.head0.W", "hidden.layer0.head0.h_prime", "hidden.layer0.head0.projection_rescale_remainder"]
+    },
+    "sparse_attention_score":     {
+      "section_id": "hidden.layer0.head0.attention_score",
+      "relation": "sparse_attention_score_sumcheck",
+      "tensor_labels": ["hidden.layer0.head0.e_src", "hidden.layer0.head0.e_dst", "hidden.layer0.head0.score", "hidden.layer0.head0.score_rescale_remainder", "public_sparse_route"]
+    }
+  }
+}

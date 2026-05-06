@@ -143,6 +143,13 @@
       "blinding": "0x03d6d7303fc17885"
     },
     {
+      "label": "hidden.layer0.head0.score_rescale_remainder",
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x0347f0d5202b6970",
+      "blinding": "0x09ac0a47567d0fec"
+    },
+    {
       "label": "hidden.layer0.head1.h_prime",
       "shape": [19717, 8],
       "value_count": 157736,
@@ -246,6 +253,13 @@
       "value_count": 157736,
       "commitment": "0x09cf9b4dacb44d3a",
       "blinding": "0x02b83ea595e6f3bb"
+    },
+    {
+      "label": "hidden.layer0.head1.score_rescale_remainder",
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x002a60a3940b7792",
+      "blinding": "0x1324357e67b9c391"
     },
     {
       "label": "hidden.layer0.head2.h_prime",
@@ -353,6 +367,13 @@
       "blinding": "0x1f7a640a7a6fbfe9"
     },
     {
+      "label": "hidden.layer0.head2.score_rescale_remainder",
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x0afa63ca2f7a62bd",
+      "blinding": "0x06852d16fc164d32"
+    },
+    {
       "label": "hidden.layer0.head3.h_prime",
       "shape": [19717, 8],
       "value_count": 157736,
@@ -456,6 +477,13 @@
       "value_count": 157736,
       "commitment": "0x16c24284289ae100",
       "blinding": "0x1df7bd1890f87ab8"
+    },
+    {
+      "label": "hidden.layer0.head3.score_rescale_remainder",
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x0bb015c103a5760d",
+      "blinding": "0x002be01d69704db4"
     },
     {
       "label": "hidden.layer0.head4.h_prime",
@@ -563,6 +591,13 @@
       "blinding": "0x10bc9f92d8f23939"
     },
     {
+      "label": "hidden.layer0.head4.score_rescale_remainder",
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x1e73ca86fb768241",
+      "blinding": "0x1eac6ac225b190fa"
+    },
+    {
       "label": "hidden.layer0.head5.h_prime",
       "shape": [19717, 8],
       "value_count": 157736,
@@ -666,6 +701,13 @@
       "value_count": 157736,
       "commitment": "0x0b0a9cf904c29b5f",
       "blinding": "0x08e2e8ca0284c353"
+    },
+    {
+      "label": "hidden.layer0.head5.score_rescale_remainder",
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x09abe295f821c781",
+      "blinding": "0x07a739810ee5c30e"
     },
     {
       "label": "hidden.layer0.head6.h_prime",
@@ -773,6 +815,13 @@
       "blinding": "0x11dd3a78284f4df1"
     },
     {
+      "label": "hidden.layer0.head6.score_rescale_remainder",
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x082e0467f8c6c19e",
+      "blinding": "0x18f094b9690e1e1b"
+    },
+    {
       "label": "hidden.layer0.head7.h_prime",
       "shape": [19717, 8],
       "value_count": 157736,
@@ -876,6 +925,13 @@
       "value_count": 157736,
       "commitment": "0x0485176977f66d41",
       "blinding": "0x1646512511d6502a"
+    },
+    {
+      "label": "hidden.layer0.head7.score_rescale_remainder",
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x0d671fca15f87589",
+      "blinding": "0x0a719a2bda9430ae"
     },
     {
       "label": "output.head0.h_prime",
@@ -983,6 +1039,13 @@
       "blinding": "0x0ea49eafdc38f4a6"
     },
     {
+      "label": "output.head0.score_rescale_remainder",
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x0cb51212162ee92e",
+      "blinding": "0x0ea0e108666bb663"
+    },
+    {
       "label": "output.average_pre_bias",
       "shape": [19717, 3],
       "value_count": 59151,
@@ -1029,14 +1092,26 @@
       "section_id": "hidden.layer0.head0.attention_score",
       "relation": "sparse_attention_score_sumcheck",
       "label": "hidden.layer0.head0.attention_score",
-      "tensor_labels": ["hidden.layer0.head0.e_src", "hidden.layer0.head0.e_dst", "hidden.layer0.head0.score", "public_sparse_route"],
-      "relation_passed": false,
+      "tensor_labels": ["hidden.layer0.head0.e_src", "hidden.layer0.head0.e_dst", "hidden.layer0.head0.score", "hidden.layer0.head0.score_rescale_remainder", "public_sparse_route"],
+      "relation_passed": true,
       "field_values": {
+        "dst_route_eval": "0x12968d352cafca98",
         "edge_challenge": "0x14655bf76b405c5a",
-        "residual": "0x03f2d1855301e239"
+        "residual": "0x0000000000000000",
+        "residual_without_remainder": "0x03f2d1855301e239",
+        "score_eval": "0x0f874f3f0c1ebf93",
+        "score_rescale_remainder_eval": "0x03f2d1855301e239",
+        "src_route_eval": "0x18fdf0848c6d12c1"
       },
       "metadata": {
-        "edge_count": "108365"
+        "claim_equation": "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder",
+        "edge_count": "108365",
+        "edge_flatten_order": "normalized_edge_order_graph_id_then_dst_then_stable_input_order",
+        "mle_variable_order": "edge_index_univariate_powers",
+        "quantization_scale": "16",
+        "rescale_rule": "fixed_point_independent_score_rounding_remainder_witness",
+        "route_source": "public_sparse_route",
+        "score_rescale_remainder_tensor": "hidden.layer0.head0.score_rescale_remainder"
       }
     },
     {
@@ -1134,14 +1209,26 @@
       "section_id": "hidden.layer0.head1.attention_score",
       "relation": "sparse_attention_score_sumcheck",
       "label": "hidden.layer0.head1.attention_score",
-      "tensor_labels": ["hidden.layer0.head1.e_src", "hidden.layer0.head1.e_dst", "hidden.layer0.head1.score", "public_sparse_route"],
-      "relation_passed": false,
+      "tensor_labels": ["hidden.layer0.head1.e_src", "hidden.layer0.head1.e_dst", "hidden.layer0.head1.score", "hidden.layer0.head1.score_rescale_remainder", "public_sparse_route"],
+      "relation_passed": true,
       "field_values": {
+        "dst_route_eval": "0x1f2b9d37506cac71",
         "edge_challenge": "0x11ac4a9e728a3603",
-        "residual": "0x115f3f7b1cd25713"
+        "residual": "0x0000000000000000",
+        "residual_without_remainder": "0x115f3f7b1cd25713",
+        "score_eval": "0x13797103df84d764",
+        "score_rescale_remainder_eval": "0x115f3f7b1cd25713",
+        "src_route_eval": "0x02ee94517245d3df"
       },
       "metadata": {
-        "edge_count": "108365"
+        "claim_equation": "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder",
+        "edge_count": "108365",
+        "edge_flatten_order": "normalized_edge_order_graph_id_then_dst_then_stable_input_order",
+        "mle_variable_order": "edge_index_univariate_powers",
+        "quantization_scale": "16",
+        "rescale_rule": "fixed_point_independent_score_rounding_remainder_witness",
+        "route_source": "public_sparse_route",
+        "score_rescale_remainder_tensor": "hidden.layer0.head1.score_rescale_remainder"
       }
     },
     {
@@ -1239,14 +1326,26 @@
       "section_id": "hidden.layer0.head2.attention_score",
       "relation": "sparse_attention_score_sumcheck",
       "label": "hidden.layer0.head2.attention_score",
-      "tensor_labels": ["hidden.layer0.head2.e_src", "hidden.layer0.head2.e_dst", "hidden.layer0.head2.score", "public_sparse_route"],
-      "relation_passed": false,
+      "tensor_labels": ["hidden.layer0.head2.e_src", "hidden.layer0.head2.e_dst", "hidden.layer0.head2.score", "hidden.layer0.head2.score_rescale_remainder", "public_sparse_route"],
+      "relation_passed": true,
       "field_values": {
+        "dst_route_eval": "0x1967461fa10f3161",
         "edge_challenge": "0x0fdb7449cdc37a4e",
-        "residual": "0x144954f97d76a39a"
+        "residual": "0x0000000000000000",
+        "residual_without_remainder": "0x144954f97d76a39a",
+        "score_eval": "0x17166c50e6defc4d",
+        "score_rescale_remainder_eval": "0x144954f97d76a39a",
+        "src_route_eval": "0x0965d137c8592751"
       },
       "metadata": {
-        "edge_count": "108365"
+        "claim_equation": "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder",
+        "edge_count": "108365",
+        "edge_flatten_order": "normalized_edge_order_graph_id_then_dst_then_stable_input_order",
+        "mle_variable_order": "edge_index_univariate_powers",
+        "quantization_scale": "16",
+        "rescale_rule": "fixed_point_independent_score_rounding_remainder_witness",
+        "route_source": "public_sparse_route",
+        "score_rescale_remainder_tensor": "hidden.layer0.head2.score_rescale_remainder"
       }
     },
     {
@@ -1344,14 +1443,26 @@
       "section_id": "hidden.layer0.head3.attention_score",
       "relation": "sparse_attention_score_sumcheck",
       "label": "hidden.layer0.head3.attention_score",
-      "tensor_labels": ["hidden.layer0.head3.e_src", "hidden.layer0.head3.e_dst", "hidden.layer0.head3.score", "public_sparse_route"],
-      "relation_passed": false,
+      "tensor_labels": ["hidden.layer0.head3.e_src", "hidden.layer0.head3.e_dst", "hidden.layer0.head3.score", "hidden.layer0.head3.score_rescale_remainder", "public_sparse_route"],
+      "relation_passed": true,
       "field_values": {
+        "dst_route_eval": "0x19674ae2171d23cd",
         "edge_challenge": "0x1985ef6df6b4d7bf",
-        "residual": "0x12ad1f55685883b5"
+        "residual": "0x0000000000000000",
+        "residual_without_remainder": "0x12ad1f55685883b5",
+        "score_eval": "0x1d15e0b1b6ea9b95",
+        "score_rescale_remainder_eval": "0x12ad1f55685883b5",
+        "src_route_eval": "0x1101767a3774f412"
       },
       "metadata": {
-        "edge_count": "108365"
+        "claim_equation": "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder",
+        "edge_count": "108365",
+        "edge_flatten_order": "normalized_edge_order_graph_id_then_dst_then_stable_input_order",
+        "mle_variable_order": "edge_index_univariate_powers",
+        "quantization_scale": "16",
+        "rescale_rule": "fixed_point_independent_score_rounding_remainder_witness",
+        "route_source": "public_sparse_route",
+        "score_rescale_remainder_tensor": "hidden.layer0.head3.score_rescale_remainder"
       }
     },
     {
@@ -1449,14 +1560,26 @@
       "section_id": "hidden.layer0.head4.attention_score",
       "relation": "sparse_attention_score_sumcheck",
       "label": "hidden.layer0.head4.attention_score",
-      "tensor_labels": ["hidden.layer0.head4.e_src", "hidden.layer0.head4.e_dst", "hidden.layer0.head4.score", "public_sparse_route"],
-      "relation_passed": false,
+      "tensor_labels": ["hidden.layer0.head4.e_src", "hidden.layer0.head4.e_dst", "hidden.layer0.head4.score", "hidden.layer0.head4.score_rescale_remainder", "public_sparse_route"],
+      "relation_passed": true,
       "field_values": {
+        "dst_route_eval": "0x11cf87b3edabcaae",
         "edge_challenge": "0x02a3fd67dde4f69c",
-        "residual": "0x0f2f025e4c7f916c"
+        "residual": "0x0000000000000000",
+        "residual_without_remainder": "0x0f2f025e4c7f916c",
+        "score_eval": "0x0c4b66d6034e74c3",
+        "score_rescale_remainder_eval": "0x0f2f025e4c7f916c",
+        "src_route_eval": "0x0b4cdcc3c92318a8"
       },
       "metadata": {
-        "edge_count": "108365"
+        "claim_equation": "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder",
+        "edge_count": "108365",
+        "edge_flatten_order": "normalized_edge_order_graph_id_then_dst_then_stable_input_order",
+        "mle_variable_order": "edge_index_univariate_powers",
+        "quantization_scale": "16",
+        "rescale_rule": "fixed_point_independent_score_rounding_remainder_witness",
+        "route_source": "public_sparse_route",
+        "score_rescale_remainder_tensor": "hidden.layer0.head4.score_rescale_remainder"
       }
     },
     {
@@ -1554,14 +1677,26 @@
       "section_id": "hidden.layer0.head5.attention_score",
       "relation": "sparse_attention_score_sumcheck",
       "label": "hidden.layer0.head5.attention_score",
-      "tensor_labels": ["hidden.layer0.head5.e_src", "hidden.layer0.head5.e_dst", "hidden.layer0.head5.score", "public_sparse_route"],
-      "relation_passed": false,
+      "tensor_labels": ["hidden.layer0.head5.e_src", "hidden.layer0.head5.e_dst", "hidden.layer0.head5.score", "hidden.layer0.head5.score_rescale_remainder", "public_sparse_route"],
+      "relation_passed": true,
       "field_values": {
+        "dst_route_eval": "0x1f334f3cc3cd8b3c",
         "edge_challenge": "0x07f916d048956845",
-        "residual": "0x1e8f5cd8bec54f93"
+        "residual": "0x0000000000000000",
+        "residual_without_remainder": "0x1e8f5cd8bec54f93",
+        "score_eval": "0x1c294a8f0a2df14a",
+        "score_rescale_remainder_eval": "0x1e8f5cd8bec54f93",
+        "src_route_eval": "0x1e669e79879b1679"
       },
       "metadata": {
-        "edge_count": "108365"
+        "claim_equation": "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder",
+        "edge_count": "108365",
+        "edge_flatten_order": "normalized_edge_order_graph_id_then_dst_then_stable_input_order",
+        "mle_variable_order": "edge_index_univariate_powers",
+        "quantization_scale": "16",
+        "rescale_rule": "fixed_point_independent_score_rounding_remainder_witness",
+        "route_source": "public_sparse_route",
+        "score_rescale_remainder_tensor": "hidden.layer0.head5.score_rescale_remainder"
       }
     },
     {
@@ -1659,14 +1794,26 @@
       "section_id": "hidden.layer0.head6.attention_score",
       "relation": "sparse_attention_score_sumcheck",
       "label": "hidden.layer0.head6.attention_score",
-      "tensor_labels": ["hidden.layer0.head6.e_src", "hidden.layer0.head6.e_dst", "hidden.layer0.head6.score", "public_sparse_route"],
-      "relation_passed": false,
+      "tensor_labels": ["hidden.layer0.head6.e_src", "hidden.layer0.head6.e_dst", "hidden.layer0.head6.score", "hidden.layer0.head6.score_rescale_remainder", "public_sparse_route"],
+      "relation_passed": true,
       "field_values": {
+        "dst_route_eval": "0x02eb480ef2992f46",
         "edge_challenge": "0x117afa7a55c0e933",
-        "residual": "0x08b3612bcc29197d"
+        "residual": "0x0000000000000000",
+        "residual_without_remainder": "0x08b3612bcc29197d",
+        "score_eval": "0x18621fe78b1d7bbe",
+        "score_rescale_remainder_eval": "0x08b3612bcc29197d",
+        "src_route_eval": "0x0cc376accc5b32fb"
       },
       "metadata": {
-        "edge_count": "108365"
+        "claim_equation": "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder",
+        "edge_count": "108365",
+        "edge_flatten_order": "normalized_edge_order_graph_id_then_dst_then_stable_input_order",
+        "mle_variable_order": "edge_index_univariate_powers",
+        "quantization_scale": "16",
+        "rescale_rule": "fixed_point_independent_score_rounding_remainder_witness",
+        "route_source": "public_sparse_route",
+        "score_rescale_remainder_tensor": "hidden.layer0.head6.score_rescale_remainder"
       }
     },
     {
@@ -1764,14 +1911,26 @@
       "section_id": "hidden.layer0.head7.attention_score",
       "relation": "sparse_attention_score_sumcheck",
       "label": "hidden.layer0.head7.attention_score",
-      "tensor_labels": ["hidden.layer0.head7.e_src", "hidden.layer0.head7.e_dst", "hidden.layer0.head7.score", "public_sparse_route"],
-      "relation_passed": false,
+      "tensor_labels": ["hidden.layer0.head7.e_src", "hidden.layer0.head7.e_dst", "hidden.layer0.head7.score", "hidden.layer0.head7.score_rescale_remainder", "public_sparse_route"],
+      "relation_passed": true,
       "field_values": {
+        "dst_route_eval": "0x12900c0bec94dca3",
         "edge_challenge": "0x080910cbd87f8340",
-        "residual": "0x0c21f6eda8afb9ee"
+        "residual": "0x0000000000000000",
+        "residual_without_remainder": "0x0c21f6eda8afb9ee",
+        "score_eval": "0x1a67b2a4ed4e5e3e",
+        "score_rescale_remainder_eval": "0x0c21f6eda8afb9ee",
+        "src_route_eval": "0x1bb5afab5809c7ac"
       },
       "metadata": {
-        "edge_count": "108365"
+        "claim_equation": "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder",
+        "edge_count": "108365",
+        "edge_flatten_order": "normalized_edge_order_graph_id_then_dst_then_stable_input_order",
+        "mle_variable_order": "edge_index_univariate_powers",
+        "quantization_scale": "16",
+        "rescale_rule": "fixed_point_independent_score_rounding_remainder_witness",
+        "route_source": "public_sparse_route",
+        "score_rescale_remainder_tensor": "hidden.layer0.head7.score_rescale_remainder"
       }
     },
     {
@@ -1869,14 +2028,26 @@
       "section_id": "output.head0.attention_score",
       "relation": "sparse_attention_score_sumcheck",
       "label": "output.head0.attention_score",
-      "tensor_labels": ["output.head0.e_src", "output.head0.e_dst", "output.head0.score", "public_sparse_route"],
-      "relation_passed": false,
+      "tensor_labels": ["output.head0.e_src", "output.head0.e_dst", "output.head0.score", "output.head0.score_rescale_remainder", "public_sparse_route"],
+      "relation_passed": true,
       "field_values": {
+        "dst_route_eval": "0x1817c4608cfa7a9f",
         "edge_challenge": "0x1eabed3763a2c0d9",
-        "residual": "0x14734674d6197330"
+        "residual": "0x0000000000000000",
+        "residual_without_remainder": "0x14734674d6197330",
+        "score_eval": "0x18af2309bb1b8a79",
+        "score_rescale_remainder_eval": "0x14734674d6197330",
+        "src_route_eval": "0x0c24183458079ca9"
       },
       "metadata": {
-        "edge_count": "108365"
+        "claim_equation": "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder",
+        "edge_count": "108365",
+        "edge_flatten_order": "normalized_edge_order_graph_id_then_dst_then_stable_input_order",
+        "mle_variable_order": "edge_index_univariate_powers",
+        "quantization_scale": "16",
+        "rescale_rule": "fixed_point_independent_score_rounding_remainder_witness",
+        "route_source": "public_sparse_route",
+        "score_rescale_remainder_tensor": "output.head0.score_rescale_remainder"
       }
     },
     {
