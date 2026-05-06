@@ -9,7 +9,17 @@ REQUIRED = [
     "route_id",
     "backend",
     "status",
+    "proof_backend",
+    "verifier_backend",
+    "proof_artifact_type",
+    "precheck_artifact_path",
+    "full_dataset",
+    "full_dataset_gate_passed",
     "strict_public_input_equivalent",
+    "semantic_precheck_passed",
+    "zkdl_proof_generated",
+    "zkdl_proof_verified",
+    "zkdl_verifier_called",
     "full_gat_forward_in_zkdl_proof",
     "final_logits_derivation_complete",
     "no_precomputed_logits_bypass",
@@ -21,6 +31,33 @@ REQUIRED = [
     "failure_step",
 ]
 GPU_REQUIRED = ["gpu_backend_active", "gpu_device_name", "gpu_device_count", "gpu_backend_name", "cpu_fallback_used"]
+FULL_DATASET_GATE_FIELDS = [
+    "dataset_id",
+    "config_path",
+    "full_dataset",
+    "node_count",
+    "edge_count",
+    "feature_dim",
+    "class_count",
+    "layer_count",
+    "hidden_heads_per_layer",
+    "output_heads",
+    "hidden_dim",
+    "output_dim",
+    "graph_batch_count",
+    "node_ptr",
+    "edge_ptr",
+    "self_loop_policy",
+    "edge_sort_policy",
+    "feature_tensor_hash",
+    "edge_tensor_hash",
+    "checkpoint_tensor_count",
+    "checkpoint_tensor_hashes",
+    "public_input_hash",
+    "witness_coverage_hash",
+    "final_logits_shape",
+    "final_logits_hash",
+]
 
 
 def load(path):
@@ -52,21 +89,61 @@ def main():
                     errors.append(f"{path}: blocked row must carry failure_step and block_reason")
                 if "capability_check" in str(manifest.get("failure_step")):
                     errors.append(f"{path}: failure_step must name the reached proof stage, not a generic capability check")
+                if manifest.get("proof_size_bytes") not in (None, 0):
+                    errors.append(f"{path}: blocked row cannot report proof_size_bytes unless it is a real zkDL proof")
             if manifest.get("status") not in {"blocked", "verified"}:
                 errors.append(f"{path}: unsupported status {manifest.get('status')}")
+
+            stats = manifest.get("dataset_stats")
+            if not isinstance(stats, dict):
+                errors.append(f"{path}: missing dataset_stats object")
+                stats = {}
+            for key in FULL_DATASET_GATE_FIELDS:
+                if key not in stats:
+                    errors.append(f"{path}: missing full dataset gate field dataset_stats.{key}")
+            if manifest.get("full_dataset_gate_passed"):
+                for key in FULL_DATASET_GATE_FIELDS:
+                    if stats.get(key) in ("", None):
+                        errors.append(f"{path}: empty full dataset gate field dataset_stats.{key}")
+                if stats.get("full_dataset") != "true":
+                    errors.append(f"{path}: gate passed but dataset_stats.full_dataset is not true")
+
+            if manifest.get("proof_artifact_type") != "zkdl_proof":
+                if manifest.get("proof_artifact_path"):
+                    errors.append(f"{path}: non-zkDL proof artifact must not be exposed as proof_artifact_path")
+                if manifest.get("proof_artifact_generated"):
+                    errors.append(f"{path}: non-zkDL artifact cannot set proof_artifact_generated")
+            if manifest.get("zkdl_proof_verified") and manifest.get("status") != "verified":
+                errors.append(f"{path}: zkdl_proof_verified true but status is not verified")
+            if manifest.get("verifier_called") and not manifest.get("zkdl_verifier_called"):
+                errors.append(f"{path}: verifier_called must mean zkDL verifier, not semantic checker")
             if manifest.get("status") == "verified":
                 gates = [
+                    manifest.get("full_dataset"),
+                    manifest.get("full_dataset_gate_passed"),
                     manifest.get("strict_public_input_equivalent"),
+                    manifest.get("zkdl_proof_generated"),
+                    manifest.get("zkdl_proof_verified"),
+                    manifest.get("zkdl_verifier_called"),
                     manifest.get("full_gat_forward_in_zkdl_proof"),
                     manifest.get("final_logits_derivation_complete"),
                     manifest.get("no_precomputed_logits_bypass"),
                 ]
                 if not all(gates):
                     errors.append(f"{path}: verified status without all proof gates")
+                if manifest.get("proof_backend") != "zkDL":
+                    errors.append(f"{path}: verified status without proof_backend=zkDL")
+                if manifest.get("verifier_backend") != "zkDL":
+                    errors.append(f"{path}: verified status without verifier_backend=zkDL")
+                if manifest.get("proof_artifact_type") != "zkdl_proof":
+                    errors.append(f"{path}: verified status without a zkDL proof artifact type")
                 if manifest.get("commitment_time_ms") is None or manifest.get("prove_time_ms") is None:
                     errors.append(f"{path}: verified status without commitment/prove metrics")
                 if manifest.get("verify_time_ms") is None or manifest.get("proof_size_bytes") in (None, 0):
                     errors.append(f"{path}: verified status without verify metrics and proof bytes")
+            else:
+                if manifest.get("proof_backend") == "zkDL" or manifest.get("verifier_backend") == "zkDL":
+                    errors.append(f"{path}: blocked row cannot claim zkDL proof/verifier backend")
             for key in ["attempted_stages", "unsupported_protocol_requirements"]:
                 if key not in manifest or not isinstance(manifest[key], list):
                     errors.append(f"{path}: missing {key} array")
@@ -98,6 +175,9 @@ def main():
         for needle in forbidden:
             if needle in text:
                 errors.append(f"{path}: forbidden dependency reference {needle}")
+
+    for legacy in (root / "runs").glob("*/**/zkdl_gat_composed_proof.json"):
+        errors.append(f"legacy misleading proof artifact still present: {legacy}")
 
     if errors:
         for error in errors:

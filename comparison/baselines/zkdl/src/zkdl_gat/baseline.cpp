@@ -81,13 +81,6 @@ struct ProofStatementPlan {
     std::size_t tensor_bound = 0;
     std::size_t checkpoint_tensor_count = 0;
     std::size_t checkpoint_value_count = 0;
-    bool hidden_projection_prefix_complete = false;
-    std::size_t hidden_projection_prefix_values = 0;
-    std::size_t hidden_projection_feature_nonzeros = 0;
-    double hidden_projection_prefix_time_ms = 0.0;
-    std::uint64_t hidden_projection_checksum = 0;
-    std::string hidden_projection_kernel_name;
-    std::string hidden_projection_block_reason;
     std::vector<std::string> supported_zkdl_primitives;
     std::vector<std::string> unsupported_protocol_requirements;
 };
@@ -185,26 +178,21 @@ struct StageCommitments {
     std::map<std::string, std::string> values;
 };
 
-struct ComposedProofResult {
-    bool prover_ran = false;
+struct SemanticPrecheckResult {
+    bool ran = false;
+    bool passed = false;
     bool artifact_generated = false;
-    bool verifier_called = false;
-    bool verified = false;
-    bool full_gat_forward_in_zkdl_proof = false;
-    bool final_logits_derivation_complete = false;
     std::string artifact_path;
     std::string failure_step;
     std::string block_reason;
     std::vector<std::string> attempted_stages;
-    std::vector<std::string> unsupported_protocol_requirements;
-    std::optional<double> commitment_time_ms;
-    std::optional<double> prove_time_ms;
-    std::optional<double> verify_time_ms;
-    std::optional<std::size_t> proof_size_bytes;
+    std::optional<double> forward_time_ms;
+    std::optional<double> checker_time_ms;
     std::map<std::string, std::string> stats;
 };
 
 std::filesystem::path feature_path(const std::filesystem::path& cache_dir);
+MatrixD load_feature_matrix(const std::filesystem::path& cache_dir, const DatasetMeta& meta);
 
 std::string trim(std::string value) {
     value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](unsigned char ch) {
@@ -391,6 +379,25 @@ std::size_t optional_size_from_file(const std::filesystem::path& path, const std
     return static_cast<std::size_t>(std::stoull(it->second));
 }
 
+std::string optional_string_from_file(
+    const std::filesystem::path& path,
+    const std::string& key,
+    const std::string& fallback) {
+    if (!std::filesystem::exists(path)) {
+        return fallback;
+    }
+    const auto values = read_key_value_file(path);
+    const auto it = values.find(key);
+    if (it == values.end() || it->second.empty()) {
+        return fallback;
+    }
+    return it->second;
+}
+
+std::string benchmark_dataset_name(const std::string& dataset_name) {
+    return dataset_name == "ogbn_arxiv" ? "ogbn-arxiv" : dataset_name;
+}
+
 NpyHeader load_npy_header(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) {
@@ -516,83 +523,6 @@ std::uint64_t mix_u64(std::uint64_t state, std::uint64_t value) {
     return state;
 }
 
-std::uint64_t mix_quantized_projection(std::uint64_t state, double value) {
-    const auto scaled = static_cast<std::int64_t>(std::llround(value * 65536.0));
-    return mix_u64(state, static_cast<std::uint64_t>(scaled));
-}
-
-std::size_t tensor_dim_from_tail(const TensorValues& tensor, std::size_t tail_index) {
-    if (tensor.shape.size() <= tail_index) {
-        throw std::runtime_error("tensor rank too small");
-    }
-    return tensor.shape[tensor.shape.size() - 1U - tail_index];
-}
-
-std::string first_hidden_kernel_name(const std::filesystem::path& checkpoint_manifest) {
-    const auto text = read_file(checkpoint_manifest);
-    const auto hidden_pos = text.find("\"hidden_head_specs\"");
-    const auto seq_pos = hidden_pos == std::string::npos ? std::string::npos : text.find("\"seq_kernel\"", hidden_pos);
-    if (seq_pos != std::string::npos) {
-        const auto colon = text.find(':', seq_pos);
-        const auto quote = colon == std::string::npos ? std::string::npos : text.find('"', colon);
-        const auto end_quote = quote == std::string::npos ? std::string::npos : text.find('"', quote + 1);
-        if (quote != std::string::npos && end_quote != std::string::npos) {
-            return text.substr(quote + 1, end_quote - quote - 1);
-        }
-    }
-    return "conv1d/kernel";
-}
-
-void project_text_features(
-    const std::filesystem::path& path,
-    std::size_t rows,
-    std::size_t cols,
-    std::size_t head_dim,
-    const std::vector<double>& kernel,
-    std::uint64_t& checksum,
-    std::size_t& nonzeros) {
-    std::ifstream input(path);
-    if (!input) {
-        throw std::runtime_error("failed to open feature text file: " + path.string());
-    }
-    std::size_t file_rows = 0;
-    std::size_t file_cols = 0;
-    input >> file_rows >> file_cols;
-    if (file_rows != rows || file_cols != cols) {
-        throw std::runtime_error("feature text shape mismatch during projection prefix");
-    }
-    std::string line;
-    std::getline(input, line);
-    std::vector<double> projection(head_dim, 0.0);
-    for (std::size_t row = 0; row < rows; ++row) {
-        if (!std::getline(input, line)) {
-            throw std::runtime_error("feature text row count mismatch during projection prefix");
-        }
-        std::fill(projection.begin(), projection.end(), 0.0);
-        std::istringstream stream(line);
-        std::string token;
-        while (stream >> token) {
-            const auto colon = token.find(':');
-            if (colon == std::string::npos) {
-                throw std::runtime_error("malformed sparse feature token");
-            }
-            const auto index = static_cast<std::size_t>(std::stoull(token.substr(0, colon)));
-            const auto value = std::stod(token.substr(colon + 1));
-            if (index >= cols) {
-                throw std::runtime_error("sparse feature index out of range");
-            }
-            ++nonzeros;
-            const auto base = index * head_dim;
-            for (std::size_t h = 0; h < head_dim; ++h) {
-                projection[h] += value * kernel[base + h];
-            }
-        }
-        for (double value : projection) {
-            checksum = mix_quantized_projection(checksum, value);
-        }
-    }
-}
-
 NpyHeader load_npy_header_from_stream(std::ifstream& input, const std::filesystem::path& path) {
     char magic[6] = {};
     input.read(magic, sizeof(magic));
@@ -641,81 +571,6 @@ NpyHeader load_npy_header_from_stream(std::ifstream& input, const std::filesyste
         }
     }
     return out;
-}
-
-void project_npy_features(
-    const std::filesystem::path& path,
-    std::size_t rows,
-    std::size_t cols,
-    std::size_t head_dim,
-    const std::vector<double>& kernel,
-    std::uint64_t& checksum,
-    std::size_t& nonzeros) {
-    std::ifstream input(path, std::ios::binary);
-    if (!input) {
-        throw std::runtime_error("failed to open feature npy file: " + path.string());
-    }
-    const auto npy = load_npy_header_from_stream(input, path);
-    if (npy.fortran_order || npy.shape.size() != 2 || npy.shape[0] != rows || npy.shape[1] != cols
-        || (npy.descr != "<f4" && npy.descr != "|f4")) {
-        throw std::runtime_error("feature npy shape or dtype mismatch during projection prefix");
-    }
-    std::vector<float> feature_row(cols, 0.0F);
-    std::vector<double> projection(head_dim, 0.0);
-    for (std::size_t row = 0; row < rows; ++row) {
-        input.read(reinterpret_cast<char*>(feature_row.data()), static_cast<std::streamsize>(feature_row.size() * sizeof(float)));
-        if (!input) {
-            throw std::runtime_error("feature npy payload ended early");
-        }
-        std::fill(projection.begin(), projection.end(), 0.0);
-        for (std::size_t col = 0; col < cols; ++col) {
-            const double value = feature_row[col];
-            if (value != 0.0) {
-                ++nonzeros;
-            }
-            const auto base = col * head_dim;
-            for (std::size_t h = 0; h < head_dim; ++h) {
-                projection[h] += value * kernel[base + h];
-            }
-        }
-        for (double value : projection) {
-            checksum = mix_quantized_projection(checksum, value);
-        }
-    }
-}
-
-void run_hidden_projection_prefix(
-    const DatasetMeta& meta,
-    const std::filesystem::path& cache_dir,
-    const std::filesystem::path& checkpoint_manifest,
-    const std::filesystem::path& checkpoint_tensors,
-    ProofStatementPlan& plan) {
-    const auto start = std::chrono::steady_clock::now();
-    plan.hidden_projection_kernel_name = first_hidden_kernel_name(checkpoint_manifest);
-    const auto kernel_tensor = load_tensor_values(checkpoint_tensors, plan.hidden_projection_kernel_name);
-    const auto input_dim = tensor_dim_from_tail(kernel_tensor, 1);
-    const auto head_dim = tensor_dim_from_tail(kernel_tensor, 0);
-    if (input_dim != meta.num_features || head_dim != plan.hidden.head_dim) {
-        throw std::runtime_error("first hidden projection kernel shape does not match dataset/profile");
-    }
-    if (kernel_tensor.values.size() != input_dim * head_dim) {
-        throw std::runtime_error("first hidden projection kernel value count mismatch");
-    }
-
-    std::uint64_t checksum = 1469598103934665603ULL;
-    std::size_t nonzeros = 0;
-    const auto features = feature_path(cache_dir);
-    if (features.extension() == ".txt") {
-        project_text_features(features, meta.num_nodes, meta.num_features, head_dim, kernel_tensor.values, checksum, nonzeros);
-    } else {
-        project_npy_features(features, meta.num_nodes, meta.num_features, head_dim, kernel_tensor.values, checksum, nonzeros);
-    }
-    const auto end = std::chrono::steady_clock::now();
-    plan.hidden_projection_prefix_complete = true;
-    plan.hidden_projection_prefix_values = meta.num_nodes * head_dim;
-    plan.hidden_projection_feature_nonzeros = nonzeros;
-    plan.hidden_projection_checksum = checksum;
-    plan.hidden_projection_prefix_time_ms = std::chrono::duration<double, std::milli>(end - start).count();
 }
 
 void validate_feature_source(const std::filesystem::path& cache_dir, const DatasetMeta& meta) {
@@ -780,29 +635,17 @@ ProofStatementPlan build_proof_statement_plan(
     plan.concat_dim_domain = next_power_of_two(concat_dim);
     plan.class_domain = next_power_of_two(config.num_classes);
     plan.tensor_bound = std::max({plan.feature_domain, plan.edge_domain, plan.node_domain * plan.concat_dim_domain, plan.node_domain * plan.class_domain});
-    try {
-        run_hidden_projection_prefix(meta, cache_dir, checkpoint_manifest, checkpoint_tensors, plan);
-    } catch (const std::exception& error) {
-        plan.hidden_projection_prefix_complete = false;
-        plan.hidden_projection_block_reason = error.what();
-    }
+    (void)cache_dir;
+    (void)checkpoint_manifest;
 
     plan.supported_zkdl_primitives = {
         "hyrax_tensor_commitment_cuda",
-        "full_dataset_hidden_projection_prefix",
         "mle_evaluation",
         "inner_product_sumcheck",
         "hadamard_product_sumcheck",
         "binary_sumcheck",
         "dense_matmul_sumcheck",
         "relu_style_binary_range_auxiliary",
-        "cpu_semantic_port_sparse_route_relation",
-        "cpu_semantic_port_attention_softmax_relation",
-        "cpu_semantic_port_activation_lookup_relation",
-        "cpu_semantic_port_destination_group_relation",
-        "cpu_semantic_port_aggregation_relation",
-        "cpu_semantic_port_final_logits_binding",
-        "cpu_semantic_port_composed_verifier",
     };
     plan.unsupported_protocol_requirements = {
         "sparse_route_sumcheck_for_R_src_R_dst",
@@ -1270,6 +1113,21 @@ ModelParams load_model_params(
     return model;
 }
 
+void row_normalize_features(MatrixD& features) {
+    for (std::size_t row = 0; row < features.rows; ++row) {
+        double sum = 0.0;
+        for (std::size_t col = 0; col < features.cols; ++col) {
+            sum += features.at(row, col);
+        }
+        if (sum == 0.0) {
+            continue;
+        }
+        for (std::size_t col = 0; col < features.cols; ++col) {
+            features.at(row, col) /= sum;
+        }
+    }
+}
+
 MatrixD load_feature_matrix(const std::filesystem::path& cache_dir, const DatasetMeta& meta) {
     const auto path = feature_path(cache_dir);
     MatrixD features(meta.num_nodes, meta.num_features);
@@ -1304,6 +1162,7 @@ MatrixD load_feature_matrix(const std::filesystem::path& cache_dir, const Datase
                 features.at(row, col) = std::stod(token.substr(colon + 1));
             }
         }
+        row_normalize_features(features);
         return features;
     }
 
@@ -1326,6 +1185,7 @@ MatrixD load_feature_matrix(const std::filesystem::path& cache_dir, const Datase
             features.at(row, col) = raw[col];
         }
     }
+    row_normalize_features(features);
     return features;
 }
 
@@ -1768,154 +1628,165 @@ StageCommitments build_stage_commitments(
     return out;
 }
 
-std::vector<std::string> composed_stage_order() {
-    return {
-        "config_load",
-        "dataset_load",
-        "checkpoint_load",
-        "proof_statement_build",
-        "full_dataset_hidden_projection_prefix",
-        "sparse_route_relation",
-        "attention_score_relation",
-        "activation_lookup_relation",
-        "destination_group_relation",
-        "normalization_relation",
-        "aggregation_relation",
-        "hidden_concat_relation",
-        "output_layer_forward_relation",
-        "output_bias_average_relation",
-        "final_logits_public_binding",
-        "composed_proof_artifact_write",
-        "composed_verifier_acceptance",
-    };
+std::string hash_normalized_public_input(
+    const DatasetConfig& config,
+    const DatasetMeta& meta,
+    const NormalizedPublicInput& normalized) {
+    std::uint64_t state = 1469598103934665603ULL;
+    hash_string(state, config.dataset_id);
+    hash_string(state, config.dataset_name);
+    hash_u64(state, meta.num_nodes);
+    hash_u64(state, meta.num_features);
+    hash_u64(state, meta.num_classes);
+    hash_u64(state, normalized.node_count);
+    hash_u64(state, normalized.edge_count);
+    hash_u64(state, normalized.graph_count);
+    for (const auto value : normalized.node_ptr) {
+        hash_u64(state, value);
+    }
+    for (const auto value : normalized.edge_ptr) {
+        hash_u64(state, value);
+    }
+    for (const auto& edge : normalized.edges) {
+        hash_u64(state, edge.graph_id);
+        hash_u64(state, edge.src);
+        hash_u64(state, edge.dst);
+    }
+    hash_string(state, config.self_loop_rule);
+    hash_string(state, config.edge_sort_rule);
+    hash_string(state, config.batching_rule);
+    hash_string(state, config.chunking_rule);
+    return commitment_from_state(state, "public_input");
 }
 
-void write_composed_proof_artifact(
+std::string hash_final_logits(const MatrixD& logits) {
+    std::uint64_t state = 1469598103934665603ULL;
+    hash_matrix(state, logits);
+    return commitment_from_state(state, "final_logits");
+}
+
+std::string hash_witness_coverage(
+    const DatasetConfig& config,
+    const NormalizedPublicInput& normalized,
+    const FullForwardTrace& trace,
+    const StageCommitments& commitments) {
+    std::uint64_t state = 1469598103934665603ULL;
+    hash_string(state, config.dataset_id);
+    hash_u64(state, normalized.node_count);
+    hash_u64(state, normalized.edge_count);
+    hash_u64(state, trace.hidden_layers.size());
+    for (const auto& layer : trace.hidden_layers) {
+        hash_u64(state, layer.heads.size());
+        hash_matrix(state, layer.input);
+        hash_matrix(state, layer.concat);
+    }
+    hash_u64(state, trace.output_heads.size());
+    hash_matrix(state, trace.y_lin);
+    hash_matrix(state, trace.y);
+    for (const auto& [name, commitment] : commitments.values) {
+        hash_string(state, name);
+        hash_string(state, commitment);
+    }
+    return commitment_from_state(state, "witness_coverage");
+}
+
+void write_semantic_precheck_artifact(
     const std::filesystem::path& path,
     const DatasetConfig& config,
     const std::string& route,
     const NormalizedPublicInput& normalized,
     const FullForwardTrace& trace,
-    const StageCommitments& commitments) {
+    const StageCommitments& commitments,
+    const std::string& public_input_hash,
+    const std::string& witness_coverage_hash,
+    const std::string& final_logits_hash) {
     std::filesystem::create_directories(path.parent_path());
     std::ofstream out(path);
     if (!out) {
-        throw std::runtime_error("failed to write proof artifact: " + path.string());
+        throw std::runtime_error("failed to write semantic precheck artifact: " + path.string());
     }
     out << "{\n";
-    out << "  \"protocol_id\": \"zkdl_gat_full_forward_composed_cpu_semantics_v1\",\n";
+    out << "  \"artifact_type\": \"semantic_precheck_not_zkdl_proof\",\n";
     out << "  \"dataset\": \"" << json_escape(config.dataset_id) << "\",\n";
     out << "  \"route\": \"" << json_escape(route) << "\",\n";
+    out << "  \"zkdl_proof\": false,\n";
+    out << "  \"zkdl_verifier_acceptance\": false,\n";
+    out << "  \"full_dataset_forward_evaluated\": true,\n";
     out << "  \"node_count\": " << normalized.node_count << ",\n";
     out << "  \"edge_count\": " << normalized.edge_count << ",\n";
     out << "  \"output_rows\": " << trace.y.rows << ",\n";
     out << "  \"output_cols\": " << trace.y.cols << ",\n";
-    out << "  \"proof_contains_full_gat_forward\": true,\n";
-    out << "  \"final_logits_derivation_complete\": true,\n";
-    out << "  \"no_precomputed_logits_bypass\": true";
+    out << "  \"public_input_hash\": \"" << json_escape(public_input_hash) << "\",\n";
+    out << "  \"witness_coverage_hash\": \"" << json_escape(witness_coverage_hash) << "\",\n";
+    out << "  \"final_logits_hash\": \"" << json_escape(final_logits_hash) << '"';
     for (const auto& [name, commitment] : commitments.values) {
-        out << ",\n  \"stage_" << json_escape(name) << "\": \"" << json_escape(commitment) << '"';
+        out << ",\n  \"semantic_stage_" << json_escape(name) << "\": \"" << json_escape(commitment) << '"';
     }
     out << "\n}\n";
 }
 
-std::map<std::string, std::string> read_artifact_stage_commitments(const std::filesystem::path& path) {
-    const auto text = read_file(path);
-    std::map<std::string, std::string> out;
-    for (const auto& name : {
-             "sparse_route_relation",
-             "hidden_projection_relation",
-             "attention_score_relation",
-             "activation_lookup_relation",
-             "destination_group_relation",
-             "normalization_relation",
-             "aggregation_relation",
-             "hidden_concat_relation",
-             "output_layer_forward_relation",
-             "output_bias_average_relation",
-             "final_logits_public_binding",
-             "composed_proof_transcript",
-         }) {
-        const auto value = json_string_value(text, "stage_" + std::string(name));
-        if (!value.has_value()) {
-            throw std::runtime_error("proof artifact missing stage commitment: " + std::string(name));
-        }
-        out[name] = *value;
-    }
-    return out;
-}
-
-void verify_composed_proof_artifact(
-    const std::filesystem::path& path,
+SemanticPrecheckResult run_full_gat_semantic_precheck(
     const DatasetConfig& config,
     const DatasetMeta& meta,
     const NormalizedPublicInput& normalized,
-    const std::filesystem::path& checkpoint_manifest,
-    const std::filesystem::path& checkpoint_tensors) {
-    const auto artifact_commitments = read_artifact_stage_commitments(path);
-    verify_sparse_route_relation(normalized);
-    const auto features = load_feature_matrix(config.cache_dir, meta);
-    const auto model = load_model_params(config, checkpoint_manifest, checkpoint_tensors);
-    const auto trace = compute_full_forward(features, normalized.edges, model);
-    verify_forward_relations(trace, normalized.edges, model);
-    const auto recomputed = build_stage_commitments(config, normalized, trace);
-    for (const auto& [name, commitment] : recomputed.values) {
-        const auto it = artifact_commitments.find(name);
-        if (it == artifact_commitments.end()) {
-            throw std::runtime_error("proof artifact missing recomputed stage: " + name);
-        }
-        if (it->second != commitment) {
-            throw std::runtime_error("proof artifact commitment mismatch at " + name);
-        }
-    }
-}
-
-ComposedProofResult run_composed_zkdl_cpu_proof(
-    const DatasetConfig& config,
-    const DatasetMeta& meta,
-    const NormalizedPublicInput& normalized,
+    const std::filesystem::path& cache_dir,
     const std::filesystem::path& checkpoint_manifest,
     const std::filesystem::path& checkpoint_tensors,
     const std::string& route) {
     using Clock = std::chrono::steady_clock;
-    ComposedProofResult result;
-    result.prover_ran = true;
-    result.attempted_stages = composed_stage_order();
-    result.artifact_path = (std::filesystem::path("runs") / config.dataset_id / route / "zkdl_gat_composed_proof.json").string();
+    SemanticPrecheckResult result;
+    result.ran = true;
+    result.artifact_path = (std::filesystem::path("runs") / config.dataset_id / route / "full_gat_semantic_precheck.json").string();
+    result.attempted_stages = {
+        "config_load",
+        "dataset_load",
+        "checkpoint_load",
+        "proof_statement_build",
+        "full_dataset_gate",
+        "semantic_precheck_full_forward",
+        "semantic_precheck_relation_checker",
+    };
+
     try {
-        const auto prove_start = Clock::now();
-        auto features = load_feature_matrix(config.cache_dir, meta);
         auto model = load_model_params(config, checkpoint_manifest, checkpoint_tensors);
-        verify_sparse_route_relation(normalized);
+        auto features = load_feature_matrix(cache_dir, meta);
+
+        const auto forward_start = Clock::now();
         auto trace = compute_full_forward(features, normalized.edges, model);
+        result.forward_time_ms = elapsed_ms(forward_start, Clock::now());
+
+        const auto checker_start = Clock::now();
+        verify_sparse_route_relation(normalized);
         verify_forward_relations(trace, normalized.edges, model);
+        result.checker_time_ms = elapsed_ms(checker_start, Clock::now());
 
-        const auto commit_start = Clock::now();
         const auto commitments = build_stage_commitments(config, normalized, trace);
-        const auto commit_end = Clock::now();
-        write_composed_proof_artifact(result.artifact_path, config, route, normalized, trace, commitments);
-        result.artifact_generated = true;
-        result.proof_size_bytes = std::filesystem::file_size(result.artifact_path);
-        result.commitment_time_ms = elapsed_ms(commit_start, commit_end);
-        result.prove_time_ms = elapsed_ms(prove_start, Clock::now());
-
-        const auto verify_start = Clock::now();
-        result.verifier_called = true;
-        verify_composed_proof_artifact(
+        const auto public_hash = hash_normalized_public_input(config, meta, normalized);
+        const auto final_hash = hash_final_logits(trace.y);
+        const auto witness_hash = hash_witness_coverage(config, normalized, trace, commitments);
+        write_semantic_precheck_artifact(
             result.artifact_path,
             config,
-            meta,
+            route,
             normalized,
-            checkpoint_manifest,
-            checkpoint_tensors);
-        result.verify_time_ms = elapsed_ms(verify_start, Clock::now());
-        result.verified = true;
-        result.full_gat_forward_in_zkdl_proof = true;
-        result.final_logits_derivation_complete = true;
-        result.stats["proof_artifact_path"] = result.artifact_path;
-        result.stats["proof_stage_count"] = std::to_string(commitments.values.size());
+            trace,
+            commitments,
+            public_hash,
+            witness_hash,
+            final_hash);
+        result.artifact_generated = true;
+        result.passed = true;
+        result.stats["semantic_precheck_artifact_path"] = result.artifact_path;
+        result.stats["semantic_forward_time_ms"] = std::to_string(*result.forward_time_ms);
+        result.stats["semantic_checker_time_ms"] = std::to_string(*result.checker_time_ms);
+        result.stats["semantic_stage_count"] = std::to_string(commitments.values.size());
+        result.stats["public_input_hash"] = public_hash;
+        result.stats["witness_coverage_hash"] = witness_hash;
         result.stats["final_logits_rows"] = std::to_string(trace.y.rows);
         result.stats["final_logits_cols"] = std::to_string(trace.y.cols);
+        result.stats["final_logits_shape"] = std::to_string(trace.y.rows) + "x" + std::to_string(trace.y.cols);
+        result.stats["final_logits_hash"] = final_hash;
+        result.stats["semantic_final_logits_derivation_complete"] = "true";
         result.stats["hidden_projection_ms"] = std::to_string(trace.profile.hidden_projection_ms);
         result.stats["hidden_attention_ms"] = std::to_string(trace.profile.hidden_attention_ms);
         result.stats["hidden_activation_ms"] = std::to_string(trace.profile.hidden_activation_ms);
@@ -1924,9 +1795,9 @@ ComposedProofResult run_composed_zkdl_cpu_proof(
         result.stats["output_attention_ms"] = std::to_string(trace.profile.output_attention_ms);
         result.stats["output_activation_ms"] = std::to_string(trace.profile.output_activation_ms);
     } catch (const std::exception& error) {
-        result.verified = false;
-        result.failure_step = result.verifier_called ? "composed_verifier_acceptance" : "composed_prover_construction";
-        result.block_reason = std::string("zkdl_composed_gat_full_forward_pipeline_failed:") + error.what();
+        result.passed = false;
+        result.failure_step = "semantic_precheck_full_forward";
+        result.block_reason = std::string("full_dataset_semantic_precheck_failed:") + error.what();
     }
     return result;
 }
@@ -2071,62 +1942,130 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     const auto raw_edges = load_edges(cache_dir / "edges.txt");
     const auto normalized = normalize_public_input(config, meta, raw_edges, source_node_ptr);
     const auto main_manifest = route == "gpu" ? config.main_gpu_manifest : config.main_cpu_manifest;
+
+    const auto legacy_proof_path = std::filesystem::path("runs") / config.dataset_id / route / "zkdl_gat_composed_proof.json";
+    if (std::filesystem::exists(legacy_proof_path)) {
+        std::filesystem::remove(legacy_proof_path);
+    }
+
     const auto expected_node_count = manifest_value(main_manifest, "node_count");
     const auto expected_edge_count = manifest_value(main_manifest, "edge_count");
     const auto expected_node_ptr = manifest_value(main_manifest, "node_ptr");
     const auto expected_edge_ptr = manifest_value(main_manifest, "edge_ptr");
+    const auto expected_full_dataset = manifest_value(main_manifest, "is_full_dataset");
+    const auto expected_config = manifest_value(main_manifest, "config");
+    const auto expected_dataset = manifest_value(main_manifest, "dataset");
+    const auto expected_graph_count = manifest_value(main_manifest, "G_batch");
+    const auto expected_layer_count = manifest_value(main_manifest, "L");
+    const auto expected_hidden_profile = manifest_value(main_manifest, "hidden_profile");
+    const auto expected_d_in_profile = manifest_value(main_manifest, "d_in_profile");
+    const auto expected_output_heads = manifest_value(main_manifest, "K_out");
+    const auto expected_classes = manifest_value(main_manifest, "C");
+    const auto expected_batching_rule = manifest_value(main_manifest, "batching_rule");
+    const auto expected_self_loop_rule = manifest_value(main_manifest, "self_loop_rule");
+    const auto expected_edge_sort_rule = manifest_value(main_manifest, "edge_sort_rule");
+    const auto expected_chunking_rule = manifest_value(main_manifest, "chunking_rule");
+    const auto expected_quant_cfg = manifest_value(main_manifest, "quant_cfg_id");
     const auto plan = build_proof_statement_plan(config, meta, normalized, cache_dir, checkpoint_manifest, checkpoint_tensors);
     const auto expected_tensor_count = manifest_value(checkpoint_manifest, "tensor_count");
     const bool checkpoint_contract_supported =
         checkpoint_shape_supported(config, checkpoint_manifest)
         && (expected_tensor_count.empty() || expected_tensor_count == std::to_string(plan.checkpoint_tensor_count));
-    const bool public_input_equivalent =
-        normalized.node_count == meta.num_nodes
-        && expected_node_count == std::to_string(normalized.node_count)
-        && expected_edge_count == std::to_string(normalized.edge_count)
-        && (expected_node_ptr.empty() || expected_node_ptr == join_size_vector(normalized.node_ptr))
-        && (expected_edge_ptr.empty() || expected_edge_ptr == join_size_vector(normalized.edge_ptr))
-        && normalized.edge_order_valid
-        && config.chunking_rule == "none"
-        && config.self_loop_rule == "per_node"
-        && config.edge_sort_rule == "edge_gid_then_dst_stable"
-        && checkpoint_contract_supported;
-    ComposedProofResult proof_result;
+    const auto public_input_hash = hash_normalized_public_input(config, meta, normalized);
+    const auto checkpoint_manifest_text = read_file(checkpoint_manifest);
+    const auto checkpoint_quant_cfg = json_string_value(checkpoint_manifest_text, "quant_cfg_id").value_or("");
+    const auto checkpoint_model_arch_id = json_string_value(checkpoint_manifest_text, "model_arch_id").value_or("");
+    const auto checkpoint_model_param_id = json_string_value(checkpoint_manifest_text, "model_param_id").value_or("");
+    const auto source_quant_cfg = optional_string_from_file(
+        config.source_config,
+        "quant_cfg_id",
+        "range_bits=" + std::to_string(optional_size_from_file(config.source_config, "range_bits", plan.range_bits)));
+    const auto feature_sha = sha256_file(feature_path(cache_dir));
+    const auto edge_sha = sha256_file(cache_dir / "edges.txt");
+    const auto checkpoint_manifest_sha = sha256_file(checkpoint_manifest);
+    const auto checkpoint_tensors_sha = sha256_file(checkpoint_tensors);
+
+    std::vector<std::string> gate_failures;
+    auto require_equal = [&](const std::string& field, const std::string& expected, const std::string& actual) {
+        if (expected.empty()) {
+            gate_failures.push_back(field + ":missing_in_main_manifest");
+        } else if (expected != actual) {
+            gate_failures.push_back(field + ":main=" + expected + ",zkdl=" + actual);
+        }
+    };
+    require_equal("dataset", expected_dataset, benchmark_dataset_name(config.dataset_name));
+    require_equal("config", expected_config, config.source_config);
+    require_equal("is_full_dataset", expected_full_dataset, "true");
+    require_equal("node_count", expected_node_count, std::to_string(normalized.node_count));
+    require_equal("edge_count", expected_edge_count, std::to_string(normalized.edge_count));
+    require_equal("node_ptr", expected_node_ptr, join_size_vector(normalized.node_ptr));
+    require_equal("edge_ptr", expected_edge_ptr, join_size_vector(normalized.edge_ptr));
+    require_equal("G_batch", expected_graph_count, std::to_string(normalized.graph_count));
+    require_equal("d_in_profile", expected_d_in_profile, std::to_string(meta.num_features));
+    require_equal("C", expected_classes, std::to_string(meta.num_classes));
+    require_equal("L", expected_layer_count, std::to_string(config.layer_count));
+    require_equal("hidden_profile", expected_hidden_profile, config.hidden_profile);
+    require_equal("K_out", expected_output_heads, std::to_string(config.k_out));
+    require_equal("batching_rule", expected_batching_rule, config.batching_rule);
+    require_equal("self_loop_rule", expected_self_loop_rule, config.self_loop_rule);
+    require_equal("edge_sort_rule", expected_edge_sort_rule, config.edge_sort_rule);
+    require_equal("chunking_rule", expected_chunking_rule, config.chunking_rule);
+    require_equal("quant_cfg_id", expected_quant_cfg, source_quant_cfg);
+    if (normalized.node_count != meta.num_nodes) {
+        gate_failures.push_back("node_count:normalized_not_full_dataset");
+    }
+    if (!normalized.edge_order_valid) {
+        gate_failures.push_back("edge_sort_policy:normalized_edges_not_gid_dst_stable");
+    }
+    if (config.chunking_rule != "none") {
+        gate_failures.push_back("chunking_rule:not_full_dataset");
+    }
+    if (config.self_loop_rule != "per_node") {
+        gate_failures.push_back("self_loop_policy:not_per_node");
+    }
+    if (config.edge_sort_rule != "edge_gid_then_dst_stable") {
+        gate_failures.push_back("edge_sort_policy:not_edge_gid_then_dst_stable");
+    }
+    if (!checkpoint_contract_supported) {
+        gate_failures.push_back("checkpoint_contract:manifest_shape_or_tensor_count_mismatch");
+    }
+    const bool full_dataset_gate_passed = gate_failures.empty();
+
+    SemanticPrecheckResult semantic_result;
     ProofAttempt attempt;
-    if (!public_input_equivalent) {
+    if (!full_dataset_gate_passed) {
         attempt.status = "blocked";
-        attempt.failure_step = "public_input_equivalence_check";
-        attempt.block_reason = "main_manifest_public_input_mismatch";
+        attempt.failure_step = "full_dataset_gate";
+        attempt.block_reason = "full_dataset_gate_failed:" + join_strings(gate_failures);
         attempt.attempted_stages = {
             "config_load",
             "dataset_load",
             "checkpoint_load",
             "proof_statement_build",
-            "public_input_equivalence_check",
+            "full_dataset_gate",
         };
         attempt.unsupported_protocol_requirements = plan.unsupported_protocol_requirements;
-    } else if (!plan.hidden_projection_prefix_complete) {
+    } else {
+        semantic_result = run_full_gat_semantic_precheck(
+            config,
+            meta,
+            normalized,
+            cache_dir,
+            checkpoint_manifest,
+            checkpoint_tensors,
+            route);
+    }
+
+    if (full_dataset_gate_passed && !semantic_result.passed) {
         attempt.status = "blocked";
-        attempt.failure_step = "hidden_layer_0_head_0_projection_prefix";
-        attempt.block_reason = "zkdl_full_dataset_hidden_projection_prefix_failed:" + plan.hidden_projection_block_reason;
-        attempt.attempted_stages = {
-            "config_load",
-            "dataset_load",
-            "checkpoint_load",
-            "proof_statement_build",
-            "full_dataset_hidden_projection_prefix",
-        };
+        attempt.failure_step = semantic_result.failure_step;
+        attempt.block_reason = semantic_result.block_reason;
+        attempt.attempted_stages = semantic_result.attempted_stages;
         attempt.unsupported_protocol_requirements = plan.unsupported_protocol_requirements;
-    } else if (route == "gpu") {
+    } else if (full_dataset_gate_passed && route == "gpu") {
         attempt.status = "blocked";
-        attempt.attempted_stages = {
-            "config_load",
-            "dataset_load",
-            "checkpoint_load",
-            "proof_statement_build",
-            "full_dataset_hidden_projection_prefix",
-            "gpu_backend_init",
-        };
+        attempt.attempted_stages = semantic_result.attempted_stages;
+        attempt.attempted_stages.push_back("gpu_backend_init");
         if (!gpu_probe.gpu_backend_active || gpu_probe.cpu_fallback_used) {
             attempt.failure_step = "gpu_backend_init";
             attempt.block_reason = gpu_probe.cpu_fallback_used ? "zkdl_gpu_cpu_fallback_detected" : "zkdl_gpu_backend_unavailable";
@@ -2139,21 +2078,18 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
                 "zkdl_cuda_primitive_probe_passed_but_cuda_composed_full_gat_forward_prover_verifier_is_not_implemented_without_cpu_fallback";
             attempt.unsupported_protocol_requirements = {"cuda_composed_full_gat_forward_prover_verifier"};
         }
-    } else {
-        proof_result = run_composed_zkdl_cpu_proof(
-            config,
-            meta,
-            normalized,
-            checkpoint_manifest,
-            checkpoint_tensors,
-            route);
-        attempt.status = proof_result.verified ? "verified" : "blocked";
-        attempt.failure_step = proof_result.verified ? "" : proof_result.failure_step;
-        attempt.block_reason = proof_result.verified ? "" : proof_result.block_reason;
-        attempt.attempted_stages = proof_result.attempted_stages;
-        attempt.unsupported_protocol_requirements = proof_result.verified
-            ? std::vector<std::string>{}
-            : proof_result.unsupported_protocol_requirements;
+    } else if (full_dataset_gate_passed) {
+        attempt.status = "blocked";
+        attempt.failure_step = "zkdl_full_gat_prover_backend";
+        attempt.block_reason =
+            "semantic_precheck_passed_but_no_real_zkdl_composed_full_gat_forward_prover_verifier_or_transferable_proof_object_is_available";
+        attempt.attempted_stages = semantic_result.attempted_stages;
+        attempt.attempted_stages.push_back("zkdl_full_gat_prover_backend");
+        attempt.unsupported_protocol_requirements = {
+            "zkdl_composed_full_gat_forward_prover",
+            "zkdl_composed_full_gat_forward_verifier",
+            "zkdl_transferable_full_gat_proof_object",
+        };
     }
     manifest.proof_attempt = attempt;
 
@@ -2165,26 +2101,37 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.string_values["block_reason"] = attempt.block_reason;
     manifest.string_values["public_input_encoding_id"] = "project-fixed-order-v1";
     manifest.string_values["commitment_backend_id"] = route == "cpu"
-        ? "zkdl_hyrax_tensor_commitment_cpu_semantics"
-        : "zkdl_hyrax_tensor_commitment_cuda_headers";
+        ? "none_for_full_gat_until_real_zkdl_backend"
+        : "zkdl_cuda_primitive_probe_only";
+    manifest.string_values["proof_backend"] = "zkDL_full_gat_backend_unavailable";
+    manifest.string_values["verifier_backend"] = "not_invoked";
+    manifest.string_values["proof_artifact_type"] = "none";
+    manifest.string_values["precheck_artifact_path"] = semantic_result.artifact_path;
     manifest.string_values["proof_backend_scope"] = route == "cpu"
-        ? "zkDL CPU semantic port of tensor commitments, full GAT relation checks, and composed verifier"
-        : "zkDL CUDA primitives only";
+        ? "full dataset gate and semantic precheck only; no transferable zkDL proof object or zkDL verifier acceptance"
+        : "full dataset gate and CUDA primitive probe only; no CUDA composed full-GAT zkDL prover/verifier";
     manifest.string_values["proof_pipeline_id"] = route == "cpu"
-        ? "zkdl_gat_full_forward_composed_v3"
-        : "zkdl_gat_full_forward_cuda_pending_v3";
+        ? "zkdl_gat_full_forward_cpu_blocked_until_real_zkdl_proof_v4"
+        : "zkdl_gat_full_forward_cuda_pending_real_zkdl_proof_v4";
     manifest.string_values["proof_statement_first_unsupported"] = attempt.unsupported_protocol_requirements.empty()
         ? ""
         : attempt.unsupported_protocol_requirements.front();
     manifest.string_values["zkdl_supported_primitives"] = join_strings(plan.supported_zkdl_primitives);
-    manifest.string_values["proof_artifact_path"] = proof_result.artifact_path;
+    manifest.string_values["proof_artifact_path"] = "";
 
-    manifest.bool_values["strict_public_input_equivalent"] = public_input_equivalent;
-    manifest.bool_values["full_gat_forward_in_zkdl_proof"] = proof_result.full_gat_forward_in_zkdl_proof;
-    manifest.bool_values["final_logits_derivation_complete"] = proof_result.final_logits_derivation_complete;
-    manifest.bool_values["no_precomputed_logits_bypass"] = true;
-    manifest.bool_values["proof_artifact_generated"] = proof_result.artifact_generated;
-    manifest.bool_values["verifier_called"] = proof_result.verifier_called;
+    manifest.bool_values["full_dataset"] = full_dataset_gate_passed;
+    manifest.bool_values["full_dataset_gate_passed"] = full_dataset_gate_passed;
+    manifest.bool_values["strict_public_input_equivalent"] = full_dataset_gate_passed;
+    manifest.bool_values["semantic_precheck_passed"] = semantic_result.passed;
+    manifest.bool_values["zkdl_proof_generated"] = false;
+    manifest.bool_values["zkdl_proof_verified"] = false;
+    manifest.bool_values["zkdl_verifier_called"] = false;
+    manifest.bool_values["full_gat_forward_in_zkdl_proof"] = false;
+    manifest.bool_values["final_logits_derivation_complete"] = false;
+    manifest.bool_values["no_precomputed_logits_bypass"] = semantic_result.passed;
+    manifest.bool_values["proof_artifact_generated"] = false;
+    manifest.bool_values["verifier_called"] = false;
+    manifest.bool_values["semantic_checker_called"] = semantic_result.ran;
     manifest.bool_values["gpu_backend_active"] = route == "gpu" && gpu_probe.gpu_backend_active;
     manifest.bool_values["cpu_fallback_used"] = route == "gpu" && gpu_probe.cpu_fallback_used;
 
@@ -2192,33 +2139,53 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.string_values["gpu_device_name"] = route == "gpu" ? gpu_probe.gpu_device_name : "";
     manifest.string_values["gpu_backend_name"] = route == "gpu" ? gpu_probe.gpu_backend_name : "";
 
-    manifest.double_values["commitment_time_ms"] = proof_result.commitment_time_ms;
-    manifest.double_values["prove_time_ms"] = proof_result.prove_time_ms;
-    manifest.double_values["verify_time_ms"] = proof_result.verify_time_ms;
-    manifest.optional_size_values["proof_size_bytes"] = proof_result.proof_size_bytes;
+    manifest.double_values["commitment_time_ms"] = std::nullopt;
+    manifest.double_values["prove_time_ms"] = std::nullopt;
+    manifest.double_values["verify_time_ms"] = std::nullopt;
+    manifest.optional_size_values["proof_size_bytes"] = std::nullopt;
 
+    manifest.dataset_stats["dataset_id"] = config.dataset_id;
     manifest.dataset_stats["dataset_name"] = meta.name;
-    manifest.dataset_stats["node_count"] = std::to_string(meta.num_nodes);
+    manifest.dataset_stats["config_path"] = config.source_config;
+    manifest.dataset_stats["full_dataset"] = full_dataset_gate_passed ? "true" : "false";
+    manifest.dataset_stats["full_dataset_gate_passed"] = full_dataset_gate_passed ? "true" : "false";
+    manifest.dataset_stats["full_dataset_gate_failures"] = join_strings(gate_failures);
+    manifest.dataset_stats["node_count"] = std::to_string(normalized.node_count);
+    manifest.dataset_stats["edge_count"] = std::to_string(normalized.edge_count);
     manifest.dataset_stats["feature_dim"] = std::to_string(meta.num_features);
     manifest.dataset_stats["class_count"] = std::to_string(meta.num_classes);
     manifest.dataset_stats["graph_count"] = std::to_string(normalized.graph_count);
+    manifest.dataset_stats["graph_batch_count"] = std::to_string(normalized.graph_count);
     manifest.dataset_stats["raw_edge_count"] = std::to_string(raw_edges.size());
     manifest.dataset_stats["normalized_edge_count"] = std::to_string(normalized.edge_count);
     manifest.dataset_stats["dst_group_count"] = std::to_string(normalized.dst_group_count);
     manifest.dataset_stats["max_dst_group_size"] = std::to_string(normalized.max_dst_group_size);
     manifest.dataset_stats["hidden_profile"] = config.hidden_profile;
     manifest.dataset_stats["hidden_head_count"] = std::to_string(plan.hidden.head_count);
+    manifest.dataset_stats["hidden_heads_per_layer"] = config.hidden_profile;
     manifest.dataset_stats["hidden_head_dim"] = std::to_string(plan.hidden.head_dim);
+    manifest.dataset_stats["hidden_dim"] = std::to_string(plan.hidden.head_dim);
     manifest.dataset_stats["hidden_concat_dim"] = std::to_string(plan.hidden.head_count * plan.hidden.head_dim);
     manifest.dataset_stats["d_in_profile"] = config.d_in_profile;
     manifest.dataset_stats["layer_count"] = std::to_string(config.layer_count);
     manifest.dataset_stats["K_out"] = std::to_string(config.k_out);
+    manifest.dataset_stats["output_heads"] = std::to_string(config.k_out);
+    manifest.dataset_stats["output_dim"] = std::to_string(config.num_classes);
     manifest.dataset_stats["checkpoint_tensor_bytes"] = std::to_string(std::filesystem::file_size(checkpoint_tensors));
     manifest.dataset_stats["checkpoint_tensor_count"] = std::to_string(plan.checkpoint_tensor_count);
     manifest.dataset_stats["checkpoint_tensor_count_matches_manifest"] =
         expected_tensor_count == std::to_string(plan.checkpoint_tensor_count) ? "true" : "false";
+    manifest.dataset_stats["checkpoint_tensor_hashes"] =
+        "manifest:" + checkpoint_manifest_sha + ",tensors:" + checkpoint_tensors_sha;
+    manifest.dataset_stats["checkpoint_manifest_sha256"] = checkpoint_manifest_sha;
+    manifest.dataset_stats["checkpoint_tensors_sha256"] = checkpoint_tensors_sha;
+    manifest.dataset_stats["checkpoint_quant_cfg_id"] = checkpoint_quant_cfg;
+    manifest.dataset_stats["checkpoint_model_arch_id"] = checkpoint_model_arch_id;
+    manifest.dataset_stats["checkpoint_model_param_id"] = checkpoint_model_param_id;
     manifest.dataset_stats["checkpoint_value_count"] = std::to_string(plan.checkpoint_value_count);
     manifest.dataset_stats["range_bits"] = std::to_string(plan.range_bits);
+    manifest.dataset_stats["quant_cfg_id"] = source_quant_cfg;
+    manifest.dataset_stats["rescale_rule"] = "fp32_row_normalize_then_output_head_arithmetic_mean";
     manifest.dataset_stats["node_domain"] = std::to_string(plan.node_domain);
     manifest.dataset_stats["edge_domain"] = std::to_string(plan.edge_domain);
     manifest.dataset_stats["feature_domain"] = std::to_string(plan.feature_domain);
@@ -2228,18 +2195,25 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.dataset_stats["class_domain"] = std::to_string(plan.class_domain);
     manifest.dataset_stats["tensor_bound"] = std::to_string(plan.tensor_bound);
     manifest.dataset_stats["proof_statement_built"] = "true";
-    manifest.dataset_stats["full_dataset_hidden_projection_prefix_complete"] =
-        plan.hidden_projection_prefix_complete ? "true" : "false";
-    manifest.dataset_stats["hidden_projection_kernel_name"] = plan.hidden_projection_kernel_name;
-    manifest.dataset_stats["hidden_projection_prefix_values"] = std::to_string(plan.hidden_projection_prefix_values);
-    manifest.dataset_stats["hidden_projection_feature_nonzeros"] = std::to_string(plan.hidden_projection_feature_nonzeros);
-    manifest.dataset_stats["hidden_projection_prefix_time_ms"] = std::to_string(plan.hidden_projection_prefix_time_ms);
-    manifest.dataset_stats["hidden_projection_checksum_u64"] = std::to_string(plan.hidden_projection_checksum);
-    manifest.dataset_stats["hidden_projection_block_reason"] = plan.hidden_projection_block_reason;
     manifest.dataset_stats["attempted_stages"] = join_strings(attempt.attempted_stages);
-    manifest.dataset_stats["proof_artifact_generated"] = proof_result.artifact_generated ? "true" : "false";
-    manifest.dataset_stats["verifier_called"] = proof_result.verifier_called ? "true" : "false";
-    for (const auto& [key, value] : proof_result.stats) {
+    manifest.dataset_stats["proof_artifact_generated"] = "false";
+    manifest.dataset_stats["verifier_called"] = "false";
+    manifest.dataset_stats["zkdl_proof_generated"] = "false";
+    manifest.dataset_stats["zkdl_proof_verified"] = "false";
+    manifest.dataset_stats["zkdl_verifier_called"] = "false";
+    manifest.dataset_stats["semantic_precheck_passed"] = semantic_result.passed ? "true" : "false";
+    manifest.dataset_stats["semantic_precheck_artifact_generated"] = semantic_result.artifact_generated ? "true" : "false";
+    manifest.dataset_stats["public_input_hash"] = public_input_hash;
+    manifest.dataset_stats["witness_coverage_hash"] = semantic_result.stats.count("witness_coverage_hash") == 0
+        ? ""
+        : semantic_result.stats.at("witness_coverage_hash");
+    manifest.dataset_stats["final_logits_shape"] = semantic_result.stats.count("final_logits_shape") == 0
+        ? ""
+        : semantic_result.stats.at("final_logits_shape");
+    manifest.dataset_stats["final_logits_hash"] = semantic_result.stats.count("final_logits_hash") == 0
+        ? ""
+        : semantic_result.stats.at("final_logits_hash");
+    for (const auto& [key, value] : semantic_result.stats) {
         manifest.dataset_stats[key] = value;
     }
     manifest.dataset_stats["zkdl_supported_primitive_count"] = std::to_string(plan.supported_zkdl_primitives.size());
@@ -2248,7 +2222,11 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.dataset_stats["node_ptr"] = join_size_vector(normalized.node_ptr);
     manifest.dataset_stats["edge_ptr"] = join_size_vector(normalized.edge_ptr);
     manifest.dataset_stats["edge_sort_rule"] = config.edge_sort_rule;
+    manifest.dataset_stats["edge_sort_policy"] = config.edge_sort_rule;
     manifest.dataset_stats["self_loop_rule"] = config.self_loop_rule;
+    manifest.dataset_stats["self_loop_policy"] = config.self_loop_rule;
+    manifest.dataset_stats["feature_tensor_hash"] = feature_sha;
+    manifest.dataset_stats["edge_tensor_hash"] = edge_sha;
     manifest.dataset_stats["task_type"] = config.task_type;
     manifest.dataset_stats["report_unit"] = config.report_unit;
     manifest.dataset_stats["source_feature_rows_checked"] = std::filesystem::exists(cache_dir / "features.txt")
@@ -2281,8 +2259,8 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     add_source(manifest, "checkpoint_manifest", checkpoint_manifest);
     add_source(manifest, "checkpoint_tensors", checkpoint_tensors);
     add_source(manifest, route == "gpu" ? "main_gpu_manifest" : "main_cpu_manifest", main_manifest);
-    if (proof_result.artifact_generated && !proof_result.artifact_path.empty()) {
-        add_source(manifest, "zkdl_composed_proof_artifact", proof_result.artifact_path);
+    if (semantic_result.artifact_generated && !semantic_result.artifact_path.empty()) {
+        add_source(manifest, "semantic_precheck_artifact", semantic_result.artifact_path);
     }
 
     return manifest;
