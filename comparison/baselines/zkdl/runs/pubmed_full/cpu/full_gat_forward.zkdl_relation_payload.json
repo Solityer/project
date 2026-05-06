@@ -1,1063 +1,1065 @@
 {
-  "artifact_type": "zkdl_proof",
-  "proof_format_id": "zkdl_full_gat_forward_portable_proof_v2",
-  "proof_backend": "zkDL",
-  "verifier_backend": "zkDL",
-  "commitment_backend_id": "zkdl_portable_hyrax_tensor_commitment_mle_v1",
+  "artifact_type": "zkdl_relation_payload_diagnostic_not_a_proof",
+  "proof_format_id": "zkdl_full_gat_forward_relation_payload_v3",
+  "proof_backend": "zkDL_relation_adapter_blocked_before_native_proof",
+  "verifier_backend": "not_invoked_until_native_zkdl_relation_coverage_exists",
+  "commitment_backend_id": "zkdl_portable_relation_commitment_diagnostic_v1",
   "field_id": "mersenne61_portable_scalar_field",
-  "dataset": "cora_full",
+  "dataset": "pubmed_full",
   "route": "cpu",
   "full_dataset": true,
-  "node_count": 2708,
-  "edge_count": 13264,
+  "node_count": 19717,
+  "edge_count": 108365,
   "graph_count": 1,
-  "public_input_hash": "0x0562d892cb30cdd4",
-  "witness_coverage_hash": "0x0fccf3d77b23e4f2",
-  "final_logits_hash": "0x35e4d324b481436b",
-  "payload_kind": "tensor_commitments_and_sumcheck_relation_payload",
+  "public_input_hash": "0x9f71cc9e0822d146",
+  "witness_coverage_hash": "0x025dd43d028ed81b",
+  "final_logits_hash": "0xac429a4a0a4c876c",
+  "payload_kind": "diagnostic_tensor_commitments_and_relation_payload_not_accepted_as_proof",
+  "zkdl_proof": false,
+  "zkdl_verifier_acceptance": false,
   "tensor_commitments": [
     {
       "label": "public_feature_table",
-      "shape": [2708, 1433],
-      "value_count": 3880564,
-      "commitment": "0x11b3b12b3e682ad8",
-      "blinding": "0x137178b0b5fce911"
+      "shape": [19717, 500],
+      "value_count": 9858500,
+      "commitment": "0x0aa02b5ef819ffc7",
+      "blinding": "0x1037c8b00d61e306"
     },
     {
       "label": "hidden.layer0.input",
-      "shape": [2708, 1433],
-      "value_count": 3880564,
-      "commitment": "0x16cd978e4a16ad97",
-      "blinding": "0x15b2ec6a347f6705"
+      "shape": [19717, 500],
+      "value_count": 9858500,
+      "commitment": "0x01a65eb36ae76c09",
+      "blinding": "0x0a6a9c6ac4738710"
     },
     {
       "label": "hidden.layer0.concat",
-      "shape": [2708, 64],
-      "value_count": 173312,
-      "commitment": "0x1404207e53d6bd06",
-      "blinding": "0x12cff75729139de3"
+      "shape": [19717, 64],
+      "value_count": 1261888,
+      "commitment": "0x1e1010fd3d04a09b",
+      "blinding": "0x02ac37574406dea4"
     },
     {
       "label": "hidden.layer0.head0.h_prime",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x094af69795279686",
-      "blinding": "0x15ceb20c604d5236"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x06d8ca2b747cf1d5",
+      "blinding": "0x13b23a0c5cb6f24e"
     },
     {
       "label": "hidden.layer0.head0.e_src",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x02887ed56865b1ed",
-      "blinding": "0x0d85b84ce7ef5943"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x052620a0a0b29993",
+      "blinding": "0x0d46294ce7835946"
     },
     {
       "label": "hidden.layer0.head0.e_dst",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x1b0a344b6e791100",
-      "blinding": "0x01abfed13f3d02d0"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x015516b6eaccde57",
+      "blinding": "0x016b6dd13ecf4c6d"
     },
     {
       "label": "hidden.layer0.head0.score",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x136a4aa29630cf7c",
-      "blinding": "0x06b6e121d6cf0632"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x069b42d2934ae6cc",
+      "blinding": "0x052b7621d42f1f61"
     },
     {
       "label": "hidden.layer0.head0.leaky_relu",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x180999adba946093",
-      "blinding": "0x1a0d3a0b2535dd4d"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x134bf530856e466d",
+      "blinding": "0x19989d0b246fb686"
     },
     {
       "label": "hidden.layer0.head0.dst_max",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x126e82f182c96348",
-      "blinding": "0x03e67979c36e31d8"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x007d93da66100c7e",
+      "blinding": "0x04290a79c3df4e3b"
     },
     {
       "label": "hidden.layer0.head0.softmax_delta",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x15d21a7faec4f1a2",
-      "blinding": "0x0b65b1370ba48c37"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x1dd57d3512afc2f6",
+      "blinding": "0x0af94c370aec5c98"
     },
     {
       "label": "hidden.layer0.head0.exp_lookup",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x149ea999a03db210",
-      "blinding": "0x137e9c4e0e35dff1"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x157a2290cb3ca150",
+      "blinding": "0x13f3314e0efbf920"
     },
     {
       "label": "hidden.layer0.head0.denominator",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x02534dd076937867",
-      "blinding": "0x1d4c7e64f3b30848"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x0a8f7f03cde1e384",
+      "blinding": "0x1d850f64f41326ab"
     },
     {
       "label": "hidden.layer0.head0.denominator_inverse",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x06087767e3bd4253",
-      "blinding": "0x1e70f3691be7c97e"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x016b4135e97ce0b1",
+      "blinding": "0x1eaa82691c49977b"
     },
     {
       "label": "hidden.layer0.head0.alpha",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x0d603fb51af5895a",
-      "blinding": "0x12f4a48b0347a8df"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x0283f6b8acf3c908",
+      "blinding": "0x1288098b028f1d7e"
     },
     {
       "label": "hidden.layer0.head0.aggregate_pre_bias",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x129eca381d036bd0",
-      "blinding": "0x042c557a387730e3"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x1f0c999a9a4376ab",
+      "blinding": "0x0230dd7a3518e3fb"
     },
     {
       "label": "hidden.layer0.head0.aggregate_out",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x13683d342a1bad6f",
-      "blinding": "0x03f6df8a7a2e5fe1"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x06b05d404e34a739",
+      "blinding": "0x062a578a7debd4c9"
     },
     {
       "label": "hidden.layer0.head0.W",
-      "shape": [1433, 8],
-      "value_count": 11464,
-      "commitment": "0x00022a302152be4e",
-      "blinding": "0x0ec80c59758233f7"
+      "shape": [500, 8],
+      "value_count": 4000,
+      "commitment": "0x135b46106150368d",
+      "blinding": "0x0ee5345975b3beef"
     },
     {
       "label": "hidden.layer0.head0.projection_rescale_remainder",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x05e7f2a1a948bc72",
-      "blinding": "0x05f35f304357f39d"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x08a330e9bb377bf6",
+      "blinding": "0x03d6d7303fc17885"
     },
     {
       "label": "hidden.layer0.head0.score_rescale_remainder",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x1de77245d7dcfd85",
-      "blinding": "0x093f854755c4a9ed"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x0347f0d5202b6970",
+      "blinding": "0x09ac0a47567d0fec"
     },
     {
       "label": "hidden.layer0.head1.h_prime",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x05320ea2bf7097a4",
-      "blinding": "0x0fc5740c0c22523e"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x1d225e78c4afccac",
+      "blinding": "0x1201ec0c0fef1226"
     },
     {
       "label": "hidden.layer0.head1.e_src",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x1bf9396026565dc6",
-      "blinding": "0x0064390087aeb6c0"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x1d94e0aebb5447ef",
+      "blinding": "0x001cc800873551bd"
     },
     {
       "label": "hidden.layer0.head1.e_dst",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x12c21dcd99763b56",
-      "blinding": "0x1d2d8d58432d0cd2"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x0ef7cb62444f485f",
+      "blinding": "0x1d6bfe58439726d5"
     },
     {
       "label": "hidden.layer0.head1.score",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x1ff2e85a2eed7d75",
-      "blinding": "0x1266e2e1f8627226"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x1cacf154688d6d2e",
+      "blinding": "0x13fa4de1fb0ff0f7"
     },
     {
       "label": "hidden.layer0.head1.leaky_relu",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x1efb04f0baba4a61",
-      "blinding": "0x1539d0142a1ee03d"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x0b39f582107966bb",
+      "blinding": "0x14c54d142958e5a4"
     },
     {
       "label": "hidden.layer0.head1.dst_max",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x034d89219348d367",
-      "blinding": "0x149731d8ee452f41"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x12ab4821d373cff1",
+      "blinding": "0x14d8c0d8eeb4953e"
     },
     {
       "label": "hidden.layer0.head1.softmax_delta",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x032809a9b576aa15",
-      "blinding": "0x0b71cda2f26f9a51"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x16fc7d6cf949f45e",
+      "blinding": "0x0ce552a2f4e6e550"
     },
     {
       "label": "hidden.layer0.head1.exp_lookup",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x16c2761b3260dd5d",
-      "blinding": "0x1ad2e6ee5248f9d1"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x12b235ad154b7a49",
+      "blinding": "0x196759ee4fdf393a"
     },
     {
       "label": "hidden.layer0.head1.denominator",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x0377986486f1c678",
-      "blinding": "0x099323ab0b1f4369"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x08962f8c65f39cf9",
+      "blinding": "0x094b92ab0aa5a806"
     },
     {
       "label": "hidden.layer0.head1.denominator_inverse",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x1b656329b804eeb3",
-      "blinding": "0x05c01f88eff7aa6f"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x0920dbe3a8030adb",
+      "blinding": "0x0602b088f068c6d2"
     },
     {
       "label": "hidden.layer0.head1.alpha",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x119f78ec2716f8ee",
-      "blinding": "0x197a78f377076d26"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x0b23a78610900389",
+      "blinding": "0x1a05f3f377f46f27"
     },
     {
       "label": "hidden.layer0.head1.aggregate_pre_bias",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x0bc345db8158bbe9",
-      "blinding": "0x06aa2a456f1cb1fe"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x1e6fb65ab322187c",
+      "blinding": "0x0886b24572466d16"
     },
     {
       "label": "hidden.layer0.head1.aggregate_out",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x1924c251c3e2cdeb",
-      "blinding": "0x0cb9a85ca50a9f7a"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x1888ff2e5bbd64a8",
+      "blinding": "0x0eb6205ca86a9f62"
     },
     {
       "label": "hidden.layer0.head1.W",
-      "shape": [1433, 8],
-      "value_count": 11464,
-      "commitment": "0x1e793261271441f8",
-      "blinding": "0x03de634f968f2121"
+      "shape": [500, 8],
+      "value_count": 4000,
+      "commitment": "0x0118ae20b99e42bc",
+      "blinding": "0x03c10b4f965d4499"
     },
     {
       "label": "hidden.layer0.head1.projection_rescale_remainder",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x1f92eeddcc873b6d",
-      "blinding": "0x0494b6a5991093a3"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x09cf9b4dacb44d3a",
+      "blinding": "0x02b83ea595e6f3bb"
     },
     {
       "label": "hidden.layer0.head1.score_rescale_remainder",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x09bb02d699b171f7",
-      "blinding": "0x1298ca7e66ccdcc0"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x002a60a3940b7792",
+      "blinding": "0x1324357e67b9c391"
     },
     {
       "label": "hidden.layer0.head2.h_prime",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x11642cfb5c5fcf74",
-      "blinding": "0x1b5be0331ffb052d"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x1afa4bd427954aef",
+      "blinding": "0x196868331caa5045"
     },
     {
       "label": "hidden.layer0.head2.e_src",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x02b41bad646e1867",
-      "blinding": "0x1521751557728866"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x0ff0494437a2ced3",
+      "blinding": "0x1566e61557e88769"
     },
     {
       "label": "hidden.layer0.head2.e_dst",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x173770b381f213e1",
-      "blinding": "0x0f7cb06848d2c34a"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x118aac00e7d52d81",
+      "blinding": "0x0f3e3f684868a947"
     },
     {
       "label": "hidden.layer0.head2.score",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x18df323a6c697212",
-      "blinding": "0x17d81da1d2ee6e0b"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x1f97cd573cd2ff52",
+      "blinding": "0x184ba2a1d3b2b90a"
     },
     {
       "label": "hidden.layer0.head2.leaky_relu",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x01921f42d493538f",
-      "blinding": "0x1f58943affb27653"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x104773b55409c22e",
+      "blinding": "0x1eec2f3afefa46b4"
     },
     {
       "label": "hidden.layer0.head2.dst_max",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x1f39f37bca7f5e8c",
-      "blinding": "0x0a5041482b756779"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x0f10e5eaf40c78b7",
+      "blinding": "0x0a10b2482b09677c"
     },
     {
       "label": "hidden.layer0.head2.softmax_delta",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x0b31d3434591b7b4",
-      "blinding": "0x0ec16b9da8deb6b7"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x0d8f28dd442d6067",
+      "blinding": "0x0f4df69da9cd86e8"
     },
     {
       "label": "hidden.layer0.head2.exp_lookup",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x1bd322590941cec7",
-      "blinding": "0x06cc6478060ae7d4"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x05892fe74e618da8",
+      "blinding": "0x0857d17808aad20b"
     },
     {
       "label": "hidden.layer0.head2.denominator",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x1c218aeb9de734e3",
-      "blinding": "0x1322e68f8aac4d38"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x0262877c5b61d861",
+      "blinding": "0x1367778f8b20cf9b"
     },
     {
       "label": "hidden.layer0.head2.denominator_inverse",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x149656041c574b5f",
-      "blinding": "0x138d18d2a8d37913"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x049f8111933040f7",
+      "blinding": "0x13d087d2a9460eb0"
     },
     {
       "label": "hidden.layer0.head2.alpha",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x0baba6c34222eee9",
-      "blinding": "0x0e5c6e032ec03d78"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x166f858fa58333a9",
+      "blinding": "0x0feffb03316df60f"
     },
     {
       "label": "hidden.layer0.head2.aggregate_pre_bias",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x0742c368932c8726",
-      "blinding": "0x1f61fbc957e220ba"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x1cf7efb7f723fdfe",
+      "blinding": "0x1d5583c95466f0d2"
     },
     {
       "label": "hidden.layer0.head2.aggregate_out",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x0e7342c9c85dbd5b",
-      "blinding": "0x1b3578671c269aad"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x1c4a25b1701a822e",
+      "blinding": "0x1919006718903ac5"
     },
     {
       "label": "hidden.layer0.head2.W",
-      "shape": [1433, 8],
-      "value_count": 11464,
-      "commitment": "0x1af927be05aa567d",
-      "blinding": "0x149657f0a3515fc9"
+      "shape": [500, 8],
+      "value_count": 4000,
+      "commitment": "0x1650199fc9992581",
+      "blinding": "0x14b3aff0a3833c51"
     },
     {
       "label": "hidden.layer0.head2.projection_rescale_remainder",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x12b406afa7149081",
-      "blinding": "0x0195ec0a7e048802"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x110b6fbaa4343ca1",
+      "blinding": "0x1f7a640a7a6fbfe9"
     },
     {
       "label": "hidden.layer0.head2.score_rescale_remainder",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x1bbcfc0457ac3236",
-      "blinding": "0x05f8a016fb27799b"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x0afa63ca2f7a62bd",
+      "blinding": "0x06852d16fc164d32"
     },
     {
       "label": "hidden.layer0.head3.h_prime",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x051a6482a20eff91",
-      "blinding": "0x1e654809f36465e4"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x0a8348d88a7999d7",
+      "blinding": "0x0081c009f6fac5c5"
     },
     {
       "label": "hidden.layer0.head3.e_src",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x0c51628d5e5f96c3",
-      "blinding": "0x19a49f093e959b64"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x0dd32e818514983f",
+      "blinding": "0x19692e093e309a61"
     },
     {
       "label": "hidden.layer0.head3.e_dst",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x01154bc25526d7e7",
-      "blinding": "0x1392162f7661c2a4"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x04051358661e10e2",
+      "blinding": "0x1358a72f76002b07"
     },
     {
       "label": "hidden.layer0.head3.score",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x0a5f1b39975888db",
-      "blinding": "0x18a8c79c9e771574"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x089eaf2afc09ff62",
+      "blinding": "0x19353a9c9f65bcdd"
     },
     {
       "label": "hidden.layer0.head3.leaky_relu",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x0f7eb2b66f1996ca",
-      "blinding": "0x12dc6015deb1e40f"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x13013038d0d29fe7",
+      "blinding": "0x1167f515dc39123e"
     },
     {
       "label": "hidden.layer0.head3.dst_max",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x0c9353e27797fdb0",
-      "blinding": "0x0592ddb5e8a47722"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x06f719810453efc9",
+      "blinding": "0x05594cb5e842a5bf"
     },
     {
       "label": "hidden.layer0.head3.softmax_delta",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x1f73f1750a5475d6",
-      "blinding": "0x1b3d1906c8da5d33"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x1771912deb9b4cb5",
+      "blinding": "0x19a99606c62cb59a"
     },
     {
       "label": "hidden.layer0.head3.exp_lookup",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x1a22933673ec35f8",
-      "blinding": "0x0f3c8de3d718a8df"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x03fe01c3b82d38be",
+      "blinding": "0x0ec928e3d6549440"
     },
     {
       "label": "hidden.layer0.head3.denominator",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x0dff0f0bbe1ca797",
-      "blinding": "0x15cf59c002f1c93b"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x19c7f4da74a96f3b",
+      "blinding": "0x160cc8c0035a2cd8"
     },
     {
       "label": "hidden.layer0.head3.denominator_inverse",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x18e5797b1358ec5e",
-      "blinding": "0x03d297921afb2744"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x0d6d9fbec9dd14a3",
+      "blinding": "0x041328921b68dda7"
     },
     {
       "label": "hidden.layer0.head3.alpha",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x1e12b8495355cfa3",
-      "blinding": "0x01e2bdc49b134030"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x1132b8802be17d3b",
+      "blinding": "0x005638c498717a31"
     },
     {
       "label": "hidden.layer0.head3.aggregate_pre_bias",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x163d3c13ac207b2f",
-      "blinding": "0x1807dd9d83fbb7f9"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x18a6507d3c34c52e",
+      "blinding": "0x19d4659d870a4311"
     },
     {
       "label": "hidden.layer0.head3.aggregate_out",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x0a82c846544d193c",
-      "blinding": "0x172fc2f7b16e3ee1"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x0b4a8b90d37968d2",
+      "blinding": "0x19443af7b4f706c9"
     },
     {
       "label": "hidden.layer0.head3.W",
-      "shape": [1433, 8],
-      "value_count": 11464,
-      "commitment": "0x0584e4ae745fc42d",
-      "blinding": "0x02bd814fee211700"
+      "shape": [500, 8],
+      "value_count": 4000,
+      "commitment": "0x0ebb98eeffce6935",
+      "blinding": "0x029cd94fede99988"
     },
     {
       "label": "hidden.layer0.head3.projection_rescale_remainder",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x01d05f852e4c9f29",
-      "blinding": "0x001b4518949adad1"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x16c24284289ae100",
+      "blinding": "0x1df7bd1890f87ab8"
     },
     {
       "label": "hidden.layer0.head3.score_rescale_remainder",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x0e6c8ad81a75cd55",
-      "blinding": "0x1eb7751d66f77be2"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x0bb015c103a5760d",
+      "blinding": "0x002be01d69704db4"
     },
     {
       "label": "hidden.layer0.head4.h_prime",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x08167120d87374e1",
-      "blinding": "0x1e49f163505e7659"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x05a9b19c0cf429e0",
+      "blinding": "0x0066796353f4f16a"
     },
     {
       "label": "hidden.layer0.head4.e_src",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x0a9820c7e2c7f1ac",
-      "blinding": "0x0f9527407461355b"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x1a56dc7615b318dc",
+      "blinding": "0x0f5ab84073fdeabe"
     },
     {
       "label": "hidden.layer0.head4.e_dst",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x07af02e50b5eeffb",
-      "blinding": "0x1e079e2ed8bc556b"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x1b32895b8185d129",
+      "blinding": "0x1dcd2d2ed8590768"
     },
     {
       "label": "hidden.layer0.head4.score",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x11ea8953c73b1322",
-      "blinding": "0x0cbcf41ad029afd2"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x091cc0c7c3f8f3bc",
+      "blinding": "0x0b50711acdbe4d39"
     },
     {
       "label": "hidden.layer0.head4.leaky_relu",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x118e2a524e960d98",
-      "blinding": "0x00ae64ff739dd2cf"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x12296b554ed2ba81",
+      "blinding": "0x0041dfff72e56cd0"
     },
     {
       "label": "hidden.layer0.head4.dst_max",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x0fba82293d534cac",
-      "blinding": "0x01e3d95fd9762b09"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x1670f752b43256ce",
+      "blinding": "0x019e6a5fd9002f6c"
     },
     {
       "label": "hidden.layer0.head4.softmax_delta",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x166041824916c64b",
-      "blinding": "0x07d74ba51704dc53"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x1d2d4c8dd9bdd201",
+      "blinding": "0x0642bea5145570bc"
     },
     {
       "label": "hidden.layer0.head4.exp_lookup",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x1cf5c898b9125a4e",
-      "blinding": "0x12aba3f053ea5a59"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x165fe360f69f1993",
+      "blinding": "0x134030f054e6c5f0"
     },
     {
       "label": "hidden.layer0.head4.denominator",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x06208335724bd962",
-      "blinding": "0x002dbe9ea1bbd7b7"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x0b0aabbcc26d6056",
+      "blinding": "0x006c4f9ea226281a"
     },
     {
       "label": "hidden.layer0.head4.denominator_inverse",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x10c03b77efe1e4d4",
-      "blinding": "0x0b85ac2b138d4ed2"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x01461ba906f2c0aa",
+      "blinding": "0x0bc83b2b13fe67cf"
     },
     {
       "label": "hidden.layer0.head4.alpha",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x0c2b6f9dde3d9d9d",
-      "blinding": "0x12edbf53bbf74f1a"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x0a3b6828c75403c7",
+      "blinding": "0x13793c53bce45481"
     },
     {
       "label": "hidden.layer0.head4.aggregate_pre_bias",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x00bae3533e9f0c34",
-      "blinding": "0x00531a8c2726aa48"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x16d1de18a5779a4f",
+      "blinding": "0x024f928c2a86aa30"
     },
     {
       "label": "hidden.layer0.head4.aggregate_out",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x0ef1e58bccfd6e75",
-      "blinding": "0x1df8cf1afc3c77a4"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x1da25027bafbc647",
+      "blinding": "0x1c2c571af92e07bc"
     },
     {
       "label": "hidden.layer0.head4.W",
-      "shape": [1433, 8],
-      "value_count": 11464,
-      "commitment": "0x194bc2cbdeb4afdc",
-      "blinding": "0x18e5161b19870fe5"
+      "shape": [500, 8],
+      "value_count": 4000,
+      "commitment": "0x05d60ada315ea37f",
+      "blinding": "0x19046e1b19bc526d"
     },
     {
       "label": "hidden.layer0.head4.projection_rescale_remainder",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x15367136031b232d",
-      "blinding": "0x0ea82792d5697151"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x1a059eafcc07c367",
+      "blinding": "0x10bc9f92d8f23939"
     },
     {
       "label": "hidden.layer0.head4.score_rescale_remainder",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x1577372e83210631",
-      "blinding": "0x1e17ddc224b52563"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x1e73ca86fb768241",
+      "blinding": "0x1eac6ac225b190fa"
     },
     {
       "label": "hidden.layer0.head5.h_prime",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x0dd0f90d672f7f22",
-      "blinding": "0x056271df3bd83b54"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x1930d791436d08c0",
+      "blinding": "0x0785f9df3f7a9b6c"
     },
     {
       "label": "hidden.layer0.head5.e_src",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x08f361614f38c273",
-      "blinding": "0x13a170d11708fb3a"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x04aaa9c5c5627a8f",
+      "blinding": "0x13e2dfd117782ad7"
     },
     {
       "label": "hidden.layer0.head5.e_dst",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x0ef543adbda35ae2",
-      "blinding": "0x10627d4024e3fa6d"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x1ea8e87b79b085e3",
+      "blinding": "0x10a50e40255516d0"
     },
     {
       "label": "hidden.layer0.head5.score",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x0f3bb651bd14073e",
-      "blinding": "0x093b5e568d4a7b0b"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x0caecd930111a8ce",
+      "blinding": "0x08c7f1568c8658d4"
     },
     {
       "label": "hidden.layer0.head5.leaky_relu",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x12c0099195ee67f6",
-      "blinding": "0x0a71b9441cdba435"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x1e3b06afa39e606c",
+      "blinding": "0x0ade4e441d942564"
     },
     {
       "label": "hidden.layer0.head5.dst_max",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x1e80189158572004",
-      "blinding": "0x11854388b945fc5b"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x1411a292cc5127cf",
+      "blinding": "0x11c5d288b9b3af58"
     },
     {
       "label": "hidden.layer0.head5.softmax_delta",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x0bf6723be9bcadc5",
-      "blinding": "0x11085e084639d7dc"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x07811ba828f9caaf",
+      "blinding": "0x129bdb0848e77543"
     },
     {
       "label": "hidden.layer0.head5.exp_lookup",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x05c39b4f121c8e70",
-      "blinding": "0x03f341dc2aceb45b"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x1f4e7b442a8fff4a",
+      "blinding": "0x025eacdc281f3b2c"
     },
     {
       "label": "hidden.layer0.head5.denominator",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x04ef84cfb2f24018",
-      "blinding": "0x0129c21b6e105c22"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x02fc72de224c1ba2",
+      "blinding": "0x00e6511b6d9dc31f"
     },
     {
       "label": "hidden.layer0.head5.denominator_inverse",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x0a88751d8a42f4ee",
-      "blinding": "0x0ef2d5ef2896c2e1"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x15915e0714a53592",
+      "blinding": "0x0ead66ef2820c744"
     },
     {
       "label": "hidden.layer0.head5.alpha",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x1bc47789fb69d737",
-      "blinding": "0x012316ad3a36a865"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x0ffb36f42f9e92ec",
+      "blinding": "0x0296a9ad3cae0b2e"
     },
     {
       "label": "hidden.layer0.head5.aggregate_pre_bias",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x1f591860f86a24c8",
-      "blinding": "0x1017af365bb30160"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x0a33a72fd1bc8bf7",
+      "blinding": "0x0e4437365898ac78"
     },
     {
       "label": "hidden.layer0.head5.aggregate_out",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x1a70d31a02b11642",
-      "blinding": "0x192169bd6d88e29b"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x1631664a22b3ad18",
+      "blinding": "0x1735e1bd6a45aa83"
     },
     {
       "label": "hidden.layer0.head5.W",
-      "shape": [1433, 8],
-      "value_count": 11464,
-      "commitment": "0x03910376722638c9",
-      "blinding": "0x1990fb64a9cd700f"
+      "shape": [500, 8],
+      "value_count": 4000,
+      "commitment": "0x004b3d323f1e7fc9",
+      "blinding": "0x196dd364a991b317"
     },
     {
       "label": "hidden.layer0.head5.projection_rescale_remainder",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x1b713c13a3fdc0ca",
-      "blinding": "0x0afe70ca06198b6b"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x0b0a9cf904c29b5f",
+      "blinding": "0x08e2e8ca0284c353"
     },
     {
       "label": "hidden.layer0.head5.score_rescale_remainder",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x119248adb0a7584b",
-      "blinding": "0x0912a681114f4d45"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x09abe295f821c781",
+      "blinding": "0x07a739810ee5c30e"
     },
     {
       "label": "hidden.layer0.head6.h_prime",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x1ca3da5e093b2e58",
-      "blinding": "0x001501c05ddd9ecf"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x04ab75356030d53a",
+      "blinding": "0x01f179c061073eb7"
     },
     {
       "label": "hidden.layer0.head6.e_src",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x044cec45f464345f",
-      "blinding": "0x03eac131aa86e9e1"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x144051fb4f22e3d2",
+      "blinding": "0x042b5231aaf4a044"
     },
     {
       "label": "hidden.layer0.head6.e_dst",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x02b1f8d6a60728c1",
-      "blinding": "0x14ed0accbfbae318"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x13cab064c837d455",
+      "blinding": "0x14a899ccbf469715"
     },
     {
       "label": "hidden.layer0.head6.score",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x07b5b3e26903bfa0",
-      "blinding": "0x1dd549358068b7a3"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x1b0022eae06a5647",
+      "blinding": "0x1d60d6357fa2d83a"
     },
     {
       "label": "hidden.layer0.head6.leaky_relu",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x01a77bfbb1b57f91",
-      "blinding": "0x12f2b862d5d8e6d6"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x03993f8474009d3c",
+      "blinding": "0x12872b62d522263f"
     },
     {
       "label": "hidden.layer0.head6.dst_max",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x0662b2bb6d397974",
-      "blinding": "0x0b5059503acf8687"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x171e0911bf4743fe",
+      "blinding": "0x0b13ca503a689f8a"
     },
     {
       "label": "hidden.layer0.head6.softmax_delta",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x12917cb0ab020e77",
-      "blinding": "0x0881ef5f449f3834"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x1791c228e773106c",
+      "blinding": "0x0a0d525f473f116d"
     },
     {
       "label": "hidden.layer0.head6.exp_lookup",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x1e507d2a0a5b1e7d",
-      "blinding": "0x084b0c243afdd1ef"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x13ce102475ac6709",
+      "blinding": "0x07d791243a3997ee"
     },
     {
       "label": "hidden.layer0.head6.denominator",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x0023fd3bf30ec5b6",
-      "blinding": "0x15ddfc8eab8a1899"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x17316e2f37ec8b0e",
+      "blinding": "0x159f6d8eab1fcb9c"
     },
     {
       "label": "hidden.layer0.head6.denominator_inverse",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x092b8d0b75e96ee9",
-      "blinding": "0x148c57479cbbae03"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x1adfd7781501c378",
+      "blinding": "0x14c5c6479d1d45a0"
     },
     {
       "label": "hidden.layer0.head6.alpha",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x1e7d9a6bf4fdeb9e",
-      "blinding": "0x00f7a2ebc7e4e927"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x183e821e34631f32",
+      "blinding": "0x1f6c27ebc544e725"
     },
     {
       "label": "hidden.layer0.head6.aggregate_pre_bias",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x1a348f6ab487a0d1",
-      "blinding": "0x11f071d6fee8d8d4"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x147d01cd2ca5b364",
+      "blinding": "0x13bce9d701f748bc"
     },
     {
       "label": "hidden.layer0.head6.aggregate_out",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x128cc6e0f82a5ce5",
-      "blinding": "0x1759e0723e914a81"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x07dd90e912c43eea",
+      "blinding": "0x158568723b754299"
     },
     {
       "label": "hidden.layer0.head6.W",
-      "shape": [1433, 8],
-      "value_count": 11464,
-      "commitment": "0x1f9c6746d55f83e7",
-      "blinding": "0x177bfa840e2c7258"
+      "shape": [500, 8],
+      "value_count": 4000,
+      "commitment": "0x16262b326c8e43ae",
+      "blinding": "0x175ea2840dfa95d0"
     },
     {
       "label": "hidden.layer0.head6.projection_rescale_remainder",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x020ffb33975508ea",
-      "blinding": "0x0fd8b27824e19ad9"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x1d6ae256a0d488cf",
+      "blinding": "0x11dd3a78284f4df1"
     },
     {
       "label": "hidden.layer0.head6.score_rescale_remainder",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x093b205ae46d6695",
-      "blinding": "0x1a7bffb96bae04ec"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x082e0467f8c6c19e",
+      "blinding": "0x18f094b9690e1e1b"
     },
     {
       "label": "hidden.layer0.head7.h_prime",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x0c3e7ccacc216e2b",
-      "blinding": "0x1ab49d4e03fc7bac"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x1db59aa72b0715d3",
+      "blinding": "0x18e9254e00efbec4"
     },
     {
       "label": "hidden.layer0.head7.e_src",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x161ebd83c93672ff",
-      "blinding": "0x1b76ed3214048c41"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x169712bbf1ef21dd",
+      "blinding": "0x1bb05c32146623de"
     },
     {
       "label": "hidden.layer0.head7.e_dst",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x04f6b92fad097c77",
-      "blinding": "0x028533f12bd9e5d7"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x014aed6ffa33bb31",
+      "blinding": "0x0247a4f12b714bda"
     },
     {
       "label": "hidden.layer0.head7.score",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x045e26b92545a72f",
-      "blinding": "0x1034d37a29f55d16"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x1ffac2648617b624",
+      "blinding": "0x0ec16e7a277e4877"
     },
     {
       "label": "hidden.layer0.head7.leaky_relu",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x0aeb9406850f6ed4",
-      "blinding": "0x13e568102bb18b2e"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x0c74844c2431dfaf",
+      "blinding": "0x1571d5102e532865"
     },
     {
       "label": "hidden.layer0.head7.dst_max",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x0a7faf98f08bb6e0",
-      "blinding": "0x156d596ab90f2ab8"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x0d6ed4aaf0d36198",
+      "blinding": "0x15b3e86ab9870fb5"
     },
     {
       "label": "hidden.layer0.head7.softmax_delta",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x165c3352e0dbef92",
-      "blinding": "0x0e15b815e785a882"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x116d971c1c6f1218",
+      "blinding": "0x0f812d15e9ef4051"
     },
     {
       "label": "hidden.layer0.head7.exp_lookup",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x1392270deeaed40b",
-      "blinding": "0x1676ae01c444cef8"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x12197a82076ba1b8",
+      "blinding": "0x180a2101c6f25b61"
     },
     {
       "label": "hidden.layer0.head7.denominator",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x09a4d151d1a52f21",
-      "blinding": "0x0e1522eb63104305"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x141993e4db4dcba2",
+      "blinding": "0x0dd091eb629bc0a2"
     },
     {
       "label": "hidden.layer0.head7.denominator_inverse",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x0cf57ce9570a4284",
-      "blinding": "0x116a5fce0aa24caa"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x1d3974beb87af86d",
+      "blinding": "0x1124f0ce0a2c510d"
     },
     {
       "label": "hidden.layer0.head7.alpha",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x0f0a7e7457315199",
-      "blinding": "0x0e026afd635dd839"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x12fc11889316a21b",
+      "blinding": "0x0c76ddfd60bdb7a2"
     },
     {
       "label": "hidden.layer0.head7.aggregate_pre_bias",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x1b5c9c17d952849f",
-      "blinding": "0x028c9a1691866b69"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x04c3353c6976f4b9",
+      "blinding": "0x005922168dc8f681"
     },
     {
       "label": "hidden.layer0.head7.aggregate_out",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x1d3b8340f160b242",
-      "blinding": "0x08387b9a23bd8e23"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x09594a2b3f7b888c",
+      "blinding": "0x05fbf39a1ff0b30b"
     },
     {
       "label": "hidden.layer0.head7.W",
-      "shape": [1433, 8],
-      "value_count": 11464,
-      "commitment": "0x1c2b59ed27b6baee",
-      "blinding": "0x0617b55b21350cac"
+      "shape": [500, 8],
+      "value_count": 4000,
+      "commitment": "0x0486b3c5620492b3",
+      "blinding": "0x0634cd5b21667c74"
     },
     {
       "label": "hidden.layer0.head7.projection_rescale_remainder",
-      "shape": [2708, 8],
-      "value_count": 21664,
-      "commitment": "0x1005d835e3dbd9bd",
-      "blinding": "0x1442d9250e6a6b42"
+      "shape": [19717, 8],
+      "value_count": 157736,
+      "commitment": "0x0485176977f66d41",
+      "blinding": "0x1646512511d6502a"
     },
     {
       "label": "hidden.layer0.head7.score_rescale_remainder",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x0d63b9fb3c5ecb42",
-      "blinding": "0x0b05072bdb8eb2e5"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x0d671fca15f87589",
+      "blinding": "0x0a719a2bda9430ae"
     },
     {
       "label": "output.head0.h_prime",
-      "shape": [2708, 7],
-      "value_count": 18956,
-      "commitment": "0x0d35610ba7a92889",
-      "blinding": "0x0cf3b0676b3c60f8"
+      "shape": [19717, 3],
+      "value_count": 59151,
+      "commitment": "0x107cf2108135fb0b",
+      "blinding": "0x0c8eb3676a90c711"
     },
     {
       "label": "output.head0.e_src",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x161b672c82901592",
-      "blinding": "0x0dc44d2144d830dd"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x0430f7478b976cdf",
+      "blinding": "0x0e02be2145424ae0"
     },
     {
       "label": "output.head0.e_dst",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x15e0508cab336f09",
-      "blinding": "0x147199dc0a9fb8ea"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x05f2f5ee1cf3ca58",
+      "blinding": "0x143008dc0a304f87"
     },
     {
       "label": "output.head0.score",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x1eefee800e3830b5",
-      "blinding": "0x07a322c9ad49ba19"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x131dc5ebdf5b8403",
+      "blinding": "0x070e9fc9ac4d5f80"
     },
     {
       "label": "output.head0.leaky_relu",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x15f51bfa471a9891",
-      "blinding": "0x164391f8cc31747c"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x0b1eff1a05b7e446",
+      "blinding": "0x17b814f8ceaa6f15"
     },
     {
       "label": "output.head0.dst_max",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x0d7824aa5f1d4370",
-      "blinding": "0x0b817f8edd0a7dba"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x1a76a8150b6edc6c",
+      "blinding": "0x0bc4f08edd7d16bd"
     },
     {
       "label": "output.head0.softmax_delta",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x133f5c2623b02e58",
-      "blinding": "0x01d18264358bea4c"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x17d848d190782548",
+      "blinding": "0x0046156432ec0015"
     },
     {
       "label": "output.head0.exp_lookup",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x1ca96e89225ed0d1",
-      "blinding": "0x1f3b0d30a570fb88"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x148d095b5a4cfe6b",
+      "blinding": "0x1dcf8230a3073e57"
     },
     {
       "label": "output.head0.denominator",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x0c241b8cd623ba7d",
-      "blinding": "0x0b34f6d5bd6a9523"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x1bd6b85ecc178cb2",
+      "blinding": "0x0afc67d5bd0a7a26"
     },
     {
       "label": "output.head0.denominator_inverse",
-      "shape": [2708],
-      "value_count": 2708,
-      "commitment": "0x086c84d46142bd33",
-      "blinding": "0x12d07a0f6c012c60"
+      "shape": [19717],
+      "value_count": 19717,
+      "commitment": "0x13f819a98bf76f01",
+      "blinding": "0x1311090f6c6edf5d"
     },
     {
       "label": "output.head0.alpha",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x03011d92ec69aeac",
-      "blinding": "0x11148fdaeb1a0cee"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x0946d18b2f32d74e",
+      "blinding": "0x0f8924dae87a261d"
     },
     {
       "label": "output.head0.aggregate_pre_bias",
-      "shape": [2708, 7],
-      "value_count": 18956,
-      "commitment": "0x0a2c121a2caf9a7d",
-      "blinding": "0x1de77de6a1f975a2"
+      "shape": [19717, 3],
+      "value_count": 59151,
+      "commitment": "0x0395becf739cc750",
+      "blinding": "0x1e427ae6a2941189"
     },
     {
       "label": "output.head0.aggregate_out",
-      "shape": [2708, 7],
-      "value_count": 18956,
-      "commitment": "0x114f46e633415d6c",
-      "blinding": "0x0c17941e23869503"
+      "shape": [19717, 3],
+      "value_count": 59151,
+      "commitment": "0x163f9aefed586597",
+      "blinding": "0x0cc2971e24a92b1c"
     },
     {
       "label": "output.head0.W",
-      "shape": [64, 7],
-      "value_count": 448,
-      "commitment": "0x01011686fd77522b",
-      "blinding": "0x1e230a8b862a9635"
+      "shape": [64, 3],
+      "value_count": 192,
+      "commitment": "0x0b7f3ee1dbb98077",
+      "blinding": "0x1e220a8b8628e335"
     },
     {
       "label": "output.head0.projection_rescale_remainder",
-      "shape": [2708, 7],
-      "value_count": 18956,
-      "commitment": "0x1304b3000185073a",
-      "blinding": "0x0e01a1afdb2400bf"
+      "shape": [19717, 3],
+      "value_count": 59151,
+      "commitment": "0x0c50cda6fe34eaa5",
+      "blinding": "0x0ea49eafdc38f4a6"
     },
     {
       "label": "output.head0.score_rescale_remainder",
-      "shape": [13264],
-      "value_count": 13264,
-      "commitment": "0x0c64b90a31225a17",
-      "blinding": "0x10345c0869195064"
+      "shape": [108365],
+      "value_count": 108365,
+      "commitment": "0x0cb51212162ee92e",
+      "blinding": "0x0ea0e108666bb663"
     },
     {
       "label": "output.average_pre_bias",
-      "shape": [2708, 7],
-      "value_count": 18956,
-      "commitment": "0x0e8dac45d254416c",
-      "blinding": "0x1df579eb28134c92"
+      "shape": [19717, 3],
+      "value_count": 59151,
+      "commitment": "0x134db38af6df66e5",
+      "blinding": "0x1d9276eb276b0e79"
     },
     {
       "label": "final_logits",
-      "shape": [2708, 7],
-      "value_count": 18956,
-      "commitment": "0x1e4d39f64fa793f3",
-      "blinding": "0x0181ac0c4b564193"
+      "shape": [19717, 3],
+      "value_count": 59151,
+      "commitment": "0x04c017da15afb09d",
+      "blinding": "0x01dcab0c4bf0e0e0"
     }
   ],
   "proof_sections": [
@@ -1069,12 +1071,12 @@
       "relation_passed": true,
       "field_values": {
         "col_challenge": "0x04f6c72f8f6b1bda",
-        "lhs_weighted_product_eval": "0x023e2363a4bb57a1",
-        "rescale_remainder_eval": "0x11e64285603d2e58",
+        "lhs_weighted_product_eval": "0x076e594c4c0a1893",
+        "rescale_remainder_eval": "0x04d57e25cf7768ff",
         "residual": "0x0000000000000000",
-        "residual_without_remainder": "0x11e64285603d2e58",
-        "row_challenge": "0x0dbb53e726b63a89",
-        "scaled_output_eval": "0x1057e0de447e2948"
+        "residual_without_remainder": "0x04d57e25cf7768ff",
+        "row_challenge": "0x0d76c4e72641bb8c",
+        "scaled_output_eval": "0x0298db267c92af94"
       },
       "metadata": {
         "claim_equation": "sum_q_products = quantization_scale * output_q + rescale_remainder",
@@ -1084,8 +1086,8 @@
         "quantization_scale": "16",
         "rescale_remainder_tensor": "hidden.layer0.head0.projection_rescale_remainder",
         "rescale_rule": "fixed_point_nearest_rounding_remainder_witness",
-        "rows": "2708",
-        "shared_dim": "1433"
+        "rows": "19717",
+        "shared_dim": "500"
       }
     },
     {
@@ -1095,17 +1097,17 @@
       "tensor_labels": ["hidden.layer0.head0.e_src", "hidden.layer0.head0.e_dst", "hidden.layer0.head0.score", "hidden.layer0.head0.score_rescale_remainder", "public_sparse_route"],
       "relation_passed": true,
       "field_values": {
-        "dst_route_eval": "0x0fe17b0664a48e06",
-        "edge_challenge": "0x12d1e8f76892cff1",
+        "dst_route_eval": "0x12968d352cafca98",
+        "edge_challenge": "0x14655bf76b405c5a",
         "residual": "0x0000000000000000",
-        "residual_without_remainder": "0x02a17e2a02e4f811",
-        "score_eval": "0x006cff13a97cf4f9",
-        "score_rescale_remainder_eval": "0x02a17e2a02e4f811",
-        "src_route_eval": "0x0dea05e341f36ee1"
+        "residual_without_remainder": "0x03f2d1855301e239",
+        "score_eval": "0x0f874f3f0c1ebf93",
+        "score_rescale_remainder_eval": "0x03f2d1855301e239",
+        "src_route_eval": "0x18fdf0848c6d12c1"
       },
       "metadata": {
         "claim_equation": "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder",
-        "edge_count": "13264",
+        "edge_count": "108365",
         "edge_flatten_order": "normalized_edge_order_graph_id_then_dst_then_stable_input_order",
         "mle_variable_order": "edge_index_univariate_powers",
         "quantization_scale": "16",
@@ -1121,11 +1123,11 @@
       "tensor_labels": ["hidden.layer0.head0.denominator", "hidden.layer0.head0.denominator_inverse"],
       "relation_passed": false,
       "field_values": {
-        "node_challenge": "0x17501e258bfcc5ff",
-        "residual": "0x1cc6b127a1cae79d"
+        "node_challenge": "0x170f8f258b8f1302",
+        "residual": "0x05afcbfe734e4a25"
       },
       "metadata": {
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1135,11 +1137,11 @@
       "tensor_labels": ["hidden.layer0.head0.exp_lookup", "hidden.layer0.head0.denominator_inverse", "hidden.layer0.head0.alpha", "public_sparse_route"],
       "relation_passed": false,
       "field_values": {
-        "edge_challenge": "0x055be5f4d55cfc51",
-        "residual": "0x17979b8eacbd5f13"
+        "edge_challenge": "0x06ef48f4d80a6d8a",
+        "residual": "0x02ef4b2d2d451337"
       },
       "metadata": {
-        "edge_count": "13264"
+        "edge_count": "108365"
       }
     },
     {
@@ -1149,16 +1151,16 @@
       "tensor_labels": ["hidden.layer0.head0.alpha", "hidden.layer0.head0.h_prime", "hidden.layer0.head0.aggregate_pre_bias", "public_sparse_route"],
       "relation_passed": false,
       "field_values": {
-        "aggregate_eval": "0x07cb599c9f3931d0",
+        "aggregate_eval": "0x14d02a8875dd5009",
         "col_challenge": "0x0b4963283de330a0",
-        "residual": "0x19eb148339fe750e",
-        "route_eval": "0x0de04519653abcc1",
-        "row_challenge": "0x1120055224d650c5"
+        "residual": "0x0a467f6db7f627b2",
+        "route_eval": "0x0a89ab1abde72857",
+        "row_challenge": "0x10d89452245cebc2"
       },
       "metadata": {
-        "edge_count": "13264",
+        "edge_count": "108365",
         "feature_dim": "8",
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1170,12 +1172,12 @@
       "field_values": {
         "col_challenge": "0x07e32696084e676d",
         "residual": "0x0000000000000000",
-        "row_challenge": "0x17318b7c47a980ae"
+        "row_challenge": "0x16f71a7c474632ab"
       },
       "metadata": {
         "feature_dim": "8",
         "lookup_table_id": "T_ELU",
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1186,12 +1188,12 @@
       "relation_passed": true,
       "field_values": {
         "col_challenge": "0x1f85ea38c4e74f38",
-        "lhs_weighted_product_eval": "0x1e4fcad2a08eafeb",
-        "rescale_remainder_eval": "0x034c5cc8a8ce39f7",
+        "lhs_weighted_product_eval": "0x1f1459a706a351ca",
+        "rescale_remainder_eval": "0x05f7f6a3d9b967be",
         "residual": "0x0000000000000000",
-        "residual_without_remainder": "0x034c5cc8a8ce39f7",
-        "row_challenge": "0x19ac14e6fc320956",
-        "scaled_output_eval": "0x1b036e09f7c075f4"
+        "residual_without_remainder": "0x05f7f6a3d9b967be",
+        "row_challenge": "0x1970a3e6fbcd0853",
+        "scaled_output_eval": "0x191c63032ce9ea0c"
       },
       "metadata": {
         "claim_equation": "sum_q_products = quantization_scale * output_q + rescale_remainder",
@@ -1201,8 +1203,8 @@
         "quantization_scale": "16",
         "rescale_remainder_tensor": "hidden.layer0.head1.projection_rescale_remainder",
         "rescale_rule": "fixed_point_nearest_rounding_remainder_witness",
-        "rows": "2708",
-        "shared_dim": "1433"
+        "rows": "19717",
+        "shared_dim": "500"
       }
     },
     {
@@ -1212,17 +1214,17 @@
       "tensor_labels": ["hidden.layer0.head1.e_src", "hidden.layer0.head1.e_dst", "hidden.layer0.head1.score", "hidden.layer0.head1.score_rescale_remainder", "public_sparse_route"],
       "relation_passed": true,
       "field_values": {
-        "dst_route_eval": "0x1d43a2aafea9d815",
-        "edge_challenge": "0x1238b59e7378cfd4",
+        "dst_route_eval": "0x1f2b9d37506cac71",
+        "edge_challenge": "0x11ac4a9e728a3603",
         "residual": "0x0000000000000000",
-        "residual_without_remainder": "0x1bb05fd022a4a15e",
-        "score_eval": "0x14e0ccfc9b455acd",
-        "score_rescale_remainder_eval": "0x1bb05fd022a4a15e",
-        "src_route_eval": "0x1becca8179f6e158"
+        "residual_without_remainder": "0x115f3f7b1cd25713",
+        "score_eval": "0x13797103df84d764",
+        "score_rescale_remainder_eval": "0x115f3f7b1cd25713",
+        "src_route_eval": "0x02ee94517245d3df"
       },
       "metadata": {
         "claim_equation": "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder",
-        "edge_count": "13264",
+        "edge_count": "108365",
         "edge_flatten_order": "normalized_edge_order_graph_id_then_dst_then_stable_input_order",
         "mle_variable_order": "edge_index_univariate_powers",
         "quantization_scale": "16",
@@ -1238,11 +1240,11 @@
       "tensor_labels": ["hidden.layer0.head1.denominator", "hidden.layer0.head1.denominator_inverse"],
       "relation_passed": false,
       "field_values": {
-        "node_challenge": "0x125b4f4396ff9ce8",
-        "residual": "0x113ac602bac1fd92"
+        "node_challenge": "0x129cde43976f02e5",
+        "residual": "0x0ad79806825f41bd"
       },
       "metadata": {
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1252,11 +1254,11 @@
       "tensor_labels": ["hidden.layer0.head1.exp_lookup", "hidden.layer0.head1.denominator_inverse", "hidden.layer0.head1.alpha", "public_sparse_route"],
       "relation_passed": false,
       "field_values": {
-        "edge_challenge": "0x07406ce325b8b190",
-        "residual": "0x1153a5078e50252c"
+        "edge_challenge": "0x05d501e3234f2abf",
+        "residual": "0x0fbd3ac1cce91d4a"
       },
       "metadata": {
-        "edge_count": "13264"
+        "edge_count": "108365"
       }
     },
     {
@@ -1266,16 +1268,16 @@
       "tensor_labels": ["hidden.layer0.head1.alpha", "hidden.layer0.head1.h_prime", "hidden.layer0.head1.aggregate_pre_bias", "public_sparse_route"],
       "relation_passed": false,
       "field_values": {
-        "aggregate_eval": "0x07d1d5f57026ec3f",
+        "aggregate_eval": "0x07f5fd842450e295",
         "col_challenge": "0x0013688104e3cc2f",
-        "residual": "0x15ed329ca9912bb2",
-        "route_eval": "0x11e4a358c695c08c",
-        "row_challenge": "0x0da304e1829d3d36"
+        "residual": "0x023d641d91acef7d",
+        "route_eval": "0x05b8996692a3f318",
+        "row_challenge": "0x0de375e1830abd39"
       },
       "metadata": {
-        "edge_count": "13264",
+        "edge_count": "108365",
         "feature_dim": "8",
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1287,12 +1289,12 @@
       "field_values": {
         "col_challenge": "0x1373820d0020e07d",
         "residual": "0x0000000000000000",
-        "row_challenge": "0x0216c9de85498eaa"
+        "row_challenge": "0x01d93ade84e0f4ad"
       },
       "metadata": {
         "feature_dim": "8",
         "lookup_table_id": "T_ELU",
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1303,12 +1305,12 @@
       "relation_passed": true,
       "field_values": {
         "col_challenge": "0x02e110ba7b5728c2",
-        "lhs_weighted_product_eval": "0x0b514835544a1ead",
-        "rescale_remainder_eval": "0x08546b02fed19fff",
+        "lhs_weighted_product_eval": "0x024e0991a37240d5",
+        "rescale_remainder_eval": "0x1e67106b0197ede0",
         "residual": "0x0000000000000000",
-        "residual_without_remainder": "0x08546b02fed19fff",
-        "row_challenge": "0x0b418a0b8e9f134e",
-        "scaled_output_eval": "0x02fcdd3255787eae"
+        "residual_without_remainder": "0x1e67106b0197ede0",
+        "row_challenge": "0x0b861b0b8f1395b1",
+        "scaled_output_eval": "0x03e6f926a1da52f4"
       },
       "metadata": {
         "claim_equation": "sum_q_products = quantization_scale * output_q + rescale_remainder",
@@ -1318,8 +1320,8 @@
         "quantization_scale": "16",
         "rescale_remainder_tensor": "hidden.layer0.head2.projection_rescale_remainder",
         "rescale_rule": "fixed_point_nearest_rounding_remainder_witness",
-        "rows": "2708",
-        "shared_dim": "1433"
+        "rows": "19717",
+        "shared_dim": "500"
       }
     },
     {
@@ -1329,17 +1331,17 @@
       "tensor_labels": ["hidden.layer0.head2.e_src", "hidden.layer0.head2.e_dst", "hidden.layer0.head2.score", "hidden.layer0.head2.score_rescale_remainder", "public_sparse_route"],
       "relation_passed": true,
       "field_values": {
-        "dst_route_eval": "0x1d28f2585ecef546",
-        "edge_challenge": "0x104ef949ce87c54d",
+        "dst_route_eval": "0x1967461fa10f3161",
+        "edge_challenge": "0x0fdb7449cdc37a4e",
         "residual": "0x0000000000000000",
-        "residual_without_remainder": "0x1dccb8d19886a731",
-        "score_eval": "0x0e5df9b1f42a6f48",
-        "score_rescale_remainder_eval": "0x1dccb8d19886a731",
-        "src_route_eval": "0x13684e87fcd4d2cf"
+        "residual_without_remainder": "0x144954f97d76a39a",
+        "score_eval": "0x17166c50e6defc4d",
+        "score_rescale_remainder_eval": "0x144954f97d76a39a",
+        "src_route_eval": "0x0965d137c8592751"
       },
       "metadata": {
         "claim_equation": "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder",
-        "edge_count": "13264",
+        "edge_count": "108365",
         "edge_flatten_order": "normalized_edge_order_graph_id_then_dst_then_stable_input_order",
         "mle_variable_order": "edge_index_univariate_powers",
         "quantization_scale": "16",
@@ -1355,11 +1357,11 @@
       "tensor_labels": ["hidden.layer0.head2.denominator", "hidden.layer0.head2.denominator_inverse"],
       "relation_passed": false,
       "field_values": {
-        "node_challenge": "0x125a54870ce19e4a",
-        "residual": "0x104bf5a6d8c700cb"
+        "node_challenge": "0x1292e5870d41bcad",
+        "residual": "0x17491b1271f67d2d"
       },
       "metadata": {
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1369,11 +1371,11 @@
       "tensor_labels": ["hidden.layer0.head2.exp_lookup", "hidden.layer0.head2.denominator_inverse", "hidden.layer0.head2.alpha", "public_sparse_route"],
       "relation_passed": false,
       "field_values": {
-        "edge_challenge": "0x016da8ac47201346",
-        "residual": "0x17fde811e91f59b5"
+        "edge_challenge": "0x02023bac481c890f",
+        "residual": "0x05e04cab1784cfed"
       },
       "metadata": {
-        "edge_count": "13264"
+        "edge_count": "108365"
       }
     },
     {
@@ -1383,16 +1385,16 @@
       "tensor_labels": ["hidden.layer0.head2.alpha", "hidden.layer0.head2.h_prime", "hidden.layer0.head2.aggregate_pre_bias", "public_sparse_route"],
       "relation_passed": false,
       "field_values": {
-        "aggregate_eval": "0x1c5f2931b568d5ac",
+        "aggregate_eval": "0x13e74d3f3f4406f9",
         "col_challenge": "0x107b7fd9f3ad1455",
-        "residual": "0x180547c2b5fe8333",
-        "route_eval": "0x0459e16eff6a5279",
-        "row_challenge": "0x1da9049fef873c18"
+        "residual": "0x18d7daa32c63bf83",
+        "route_eval": "0x1b0f729c12e04775",
+        "row_challenge": "0x1d68939fef19bc15"
       },
       "metadata": {
-        "edge_count": "13264",
+        "edge_count": "108365",
         "feature_dim": "8",
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1404,12 +1406,12 @@
       "field_values": {
         "col_challenge": "0x1b234b023f45a409",
         "residual": "0x0000000000000000",
-        "row_challenge": "0x0e726434386e1412"
+        "row_challenge": "0x0eb3d33438dd43af"
       },
       "metadata": {
         "feature_dim": "8",
         "lookup_table_id": "T_ELU",
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1420,12 +1422,12 @@
       "relation_passed": true,
       "field_values": {
         "col_challenge": "0x0119cfb9513e73ad",
-        "lhs_weighted_product_eval": "0x0c6f708f176a0b64",
-        "rescale_remainder_eval": "0x1b6db7d4fcb01dd5",
+        "lhs_weighted_product_eval": "0x070c9f9fffb49077",
+        "rescale_remainder_eval": "0x134ccbbcbbc2cba6",
         "residual": "0x0000000000000000",
-        "residual_without_remainder": "0x1b6db7d4fcb01dd5",
-        "row_challenge": "0x06067e67a305f018",
-        "scaled_output_eval": "0x1101b8ba1ab9ed8e"
+        "residual_without_remainder": "0x134ccbbcbbc2cba6",
+        "row_challenge": "0x0647ed67a3751fb5",
+        "scaled_output_eval": "0x13bfd3e343f1c4d0"
       },
       "metadata": {
         "claim_equation": "sum_q_products = quantization_scale * output_q + rescale_remainder",
@@ -1435,8 +1437,8 @@
         "quantization_scale": "16",
         "rescale_remainder_tensor": "hidden.layer0.head3.projection_rescale_remainder",
         "rescale_rule": "fixed_point_nearest_rounding_remainder_witness",
-        "rows": "2708",
-        "shared_dim": "1433"
+        "rows": "19717",
+        "shared_dim": "500"
       }
     },
     {
@@ -1446,17 +1448,17 @@
       "tensor_labels": ["hidden.layer0.head3.e_src", "hidden.layer0.head3.e_dst", "hidden.layer0.head3.score", "hidden.layer0.head3.score_rescale_remainder", "public_sparse_route"],
       "relation_passed": true,
       "field_values": {
-        "dst_route_eval": "0x1d2bc3919c7dcb25",
-        "edge_challenge": "0x18f15a6df5b85e90",
+        "dst_route_eval": "0x19674ae2171d23cd",
+        "edge_challenge": "0x1985ef6df6b4d7bf",
         "residual": "0x0000000000000000",
-        "residual_without_remainder": "0x150de31314035768",
-        "score_eval": "0x10b5aa0cf3fe0a12",
-        "score_rescale_remainder_eval": "0x150de31314035768",
-        "src_route_eval": "0x1e7c0368437ce783"
+        "residual_without_remainder": "0x12ad1f55685883b5",
+        "score_eval": "0x1d15e0b1b6ea9b95",
+        "score_rescale_remainder_eval": "0x12ad1f55685883b5",
+        "src_route_eval": "0x1101767a3774f412"
       },
       "metadata": {
         "claim_equation": "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder",
-        "edge_count": "13264",
+        "edge_count": "108365",
         "edge_flatten_order": "normalized_edge_order_graph_id_then_dst_then_stable_input_order",
         "mle_variable_order": "edge_index_univariate_powers",
         "quantization_scale": "16",
@@ -1472,11 +1474,11 @@
       "tensor_labels": ["hidden.layer0.head3.denominator", "hidden.layer0.head3.denominator_inverse"],
       "relation_passed": false,
       "field_values": {
-        "node_challenge": "0x1993059b1df96ef5",
-        "residual": "0x05506d9f22131e7f"
+        "node_challenge": "0x19cf949b1e6055f2",
+        "residual": "0x09bf6c67f868945a"
       },
       "metadata": {
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1486,11 +1488,11 @@
       "tensor_labels": ["hidden.layer0.head3.exp_lookup", "hidden.layer0.head3.denominator_inverse", "hidden.layer0.head3.alpha", "public_sparse_route"],
       "relation_passed": false,
       "field_values": {
-        "edge_challenge": "0x126118bf152cbfcd",
-        "residual": "0x06ede1cb9d49c5a9"
+        "edge_challenge": "0x13f5b5bf17dc4694",
+        "residual": "0x0835bcd875a741c5"
       },
       "metadata": {
-        "edge_count": "13264"
+        "edge_count": "108365"
       }
     },
     {
@@ -1500,16 +1502,16 @@
       "tensor_labels": ["hidden.layer0.head3.alpha", "hidden.layer0.head3.h_prime", "hidden.layer0.head3.aggregate_pre_bias", "public_sparse_route"],
       "relation_passed": false,
       "field_values": {
-        "aggregate_eval": "0x19d148ac7dd2306e",
+        "aggregate_eval": "0x05930b9d08ba36d9",
         "col_challenge": "0x0ec49f83b3304557",
-        "residual": "0x0b878998826b6851",
-        "route_eval": "0x0e49bf13fb66c81d",
-        "row_challenge": "0x1560fee5111c17ab"
+        "residual": "0x054451f10be6a07b",
+        "route_eval": "0x004eb9abfcd3965e",
+        "row_challenge": "0x15278fe510ba800e"
       },
       "metadata": {
-        "edge_count": "13264",
+        "edge_count": "108365",
         "feature_dim": "8",
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1521,12 +1523,12 @@
       "field_values": {
         "col_challenge": "0x19f6bca91ac60646",
         "residual": "0x0000000000000000",
-        "row_challenge": "0x11fb894aea2fc4c1"
+        "row_challenge": "0x11b4fa4ae9b7dfc4"
       },
       "metadata": {
         "feature_dim": "8",
         "lookup_table_id": "T_ELU",
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1537,12 +1539,12 @@
       "relation_passed": true,
       "field_values": {
         "col_challenge": "0x0d3d298d38189ead",
-        "lhs_weighted_product_eval": "0x104f4f003d301b44",
-        "rescale_remainder_eval": "0x1a249899110de586",
+        "lhs_weighted_product_eval": "0x0d00338d6918d175",
+        "rescale_remainder_eval": "0x1a3494bd23c27f27",
         "residual": "0x0000000000000000",
-        "residual_without_remainder": "0x1a249899110de586",
-        "row_challenge": "0x1b6585ee99c21864",
-        "scaled_output_eval": "0x162ab6672c2235bd"
+        "residual_without_remainder": "0x1a3494bd23c27f27",
+        "row_challenge": "0x1b2716ee995801c7",
+        "scaled_output_eval": "0x12cb9ed04556524d"
       },
       "metadata": {
         "claim_equation": "sum_q_products = quantization_scale * output_q + rescale_remainder",
@@ -1552,8 +1554,8 @@
         "quantization_scale": "16",
         "rescale_remainder_tensor": "hidden.layer0.head4.projection_rescale_remainder",
         "rescale_rule": "fixed_point_nearest_rounding_remainder_witness",
-        "rows": "2708",
-        "shared_dim": "1433"
+        "rows": "19717",
+        "shared_dim": "500"
       }
     },
     {
@@ -1563,17 +1565,17 @@
       "tensor_labels": ["hidden.layer0.head4.e_src", "hidden.layer0.head4.e_dst", "hidden.layer0.head4.score", "hidden.layer0.head4.score_rescale_remainder", "public_sparse_route"],
       "relation_passed": true,
       "field_values": {
-        "dst_route_eval": "0x17fc08996fc4501c",
-        "edge_challenge": "0x02377267dd2c866b",
+        "dst_route_eval": "0x11cf87b3edabcaae",
+        "edge_challenge": "0x02a3fd67dde4f69c",
         "residual": "0x0000000000000000",
-        "residual_without_remainder": "0x1f2955ff6de44ca6",
-        "score_eval": "0x18ab111cb13b8625",
-        "score_rescale_remainder_eval": "0x1f2955ff6de44ca6",
-        "src_route_eval": "0x0185b283d392e962"
+        "residual_without_remainder": "0x0f2f025e4c7f916c",
+        "score_eval": "0x0c4b66d6034e74c3",
+        "score_rescale_remainder_eval": "0x0f2f025e4c7f916c",
+        "src_route_eval": "0x0b4cdcc3c92318a8"
       },
       "metadata": {
         "claim_equation": "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder",
-        "edge_count": "13264",
+        "edge_count": "108365",
         "edge_flatten_order": "normalized_edge_order_graph_id_then_dst_then_stable_input_order",
         "mle_variable_order": "edge_index_univariate_powers",
         "quantization_scale": "16",
@@ -1589,11 +1591,11 @@
       "tensor_labels": ["hidden.layer0.head4.denominator", "hidden.layer0.head4.denominator_inverse"],
       "relation_passed": false,
       "field_values": {
-        "node_challenge": "0x174d6c690a58517f",
-        "residual": "0x00aea3bdc122f4df"
+        "node_challenge": "0x170bfd6909e921e2",
+        "residual": "0x142b2597f21aaeeb"
       },
       "metadata": {
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1603,11 +1605,11 @@
       "tensor_labels": ["hidden.layer0.head4.exp_lookup", "hidden.layer0.head4.denominator_inverse", "hidden.layer0.head4.alpha", "public_sparse_route"],
       "relation_passed": false,
       "field_values": {
-        "edge_challenge": "0x0483ddd543fab46b",
-        "residual": "0x1ed10e890711289b"
+        "edge_challenge": "0x031858d54191016c",
+        "residual": "0x113ce14a2992d797"
       },
       "metadata": {
-        "edge_count": "13264"
+        "edge_count": "108365"
       }
     },
     {
@@ -1617,16 +1619,16 @@
       "tensor_labels": ["hidden.layer0.head4.alpha", "hidden.layer0.head4.h_prime", "hidden.layer0.head4.aggregate_pre_bias", "public_sparse_route"],
       "relation_passed": false,
       "field_values": {
-        "aggregate_eval": "0x00ac94712d12604f",
+        "aggregate_eval": "0x1243ee34c6a5815b",
         "col_challenge": "0x026195d4054519b2",
-        "residual": "0x0c7ef53d63bae586",
-        "route_eval": "0x142d9f33c9577ac8",
-        "row_challenge": "0x014b4f22f5b7e1f4"
+        "residual": "0x064438723b922a26",
+        "route_eval": "0x0bffb5c28b135735",
+        "row_challenge": "0x010bde22f54c14f1"
       },
       "metadata": {
-        "edge_count": "13264",
+        "edge_count": "108365",
         "feature_dim": "8",
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1638,12 +1640,12 @@
       "field_values": {
         "col_challenge": "0x0739cc89fda1b9ac",
         "residual": "0x0000000000000000",
-        "row_challenge": "0x183ae20bda661685"
+        "row_challenge": "0x187e710bdad8e282"
       },
       "metadata": {
         "feature_dim": "8",
         "lookup_table_id": "T_ELU",
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1654,12 +1656,12 @@
       "relation_passed": true,
       "field_values": {
         "col_challenge": "0x08114fa5b99339eb",
-        "lhs_weighted_product_eval": "0x06eb2230e2e804b2",
-        "rescale_remainder_eval": "0x1978449b2f8a06d3",
+        "lhs_weighted_product_eval": "0x0e9315edf7f6e933",
+        "rescale_remainder_eval": "0x1089b49df88514e7",
         "residual": "0x0000000000000000",
-        "residual_without_remainder": "0x1978449b2f8a06d3",
-        "row_challenge": "0x1ba99254917f34d1",
-        "scaled_output_eval": "0x0d72dd95b35dfdde"
+        "residual_without_remainder": "0x1089b49df88514e7",
+        "row_challenge": "0x1b6d015491184a6e",
+        "scaled_output_eval": "0x1e09614fff71d44b"
       },
       "metadata": {
         "claim_equation": "sum_q_products = quantization_scale * output_q + rescale_remainder",
@@ -1669,8 +1671,8 @@
         "quantization_scale": "16",
         "rescale_remainder_tensor": "hidden.layer0.head5.projection_rescale_remainder",
         "rescale_rule": "fixed_point_nearest_rounding_remainder_witness",
-        "rows": "2708",
-        "shared_dim": "1433"
+        "rows": "19717",
+        "shared_dim": "500"
       }
     },
     {
@@ -1680,17 +1682,17 @@
       "tensor_labels": ["hidden.layer0.head5.e_src", "hidden.layer0.head5.e_dst", "hidden.layer0.head5.score", "hidden.layer0.head5.score_rescale_remainder", "public_sparse_route"],
       "relation_passed": true,
       "field_values": {
-        "dst_route_eval": "0x1eda1c19f30bf09b",
-        "edge_challenge": "0x078da9d047dede0e",
+        "dst_route_eval": "0x1f334f3cc3cd8b3c",
+        "edge_challenge": "0x07f916d048956845",
         "residual": "0x0000000000000000",
-        "residual_without_remainder": "0x1180366b81a7351f",
-        "score_eval": "0x04a9aa3c8f745ce5",
-        "score_rescale_remainder_eval": "0x1180366b81a7351f",
-        "src_route_eval": "0x144f57b71ac13729"
+        "residual_without_remainder": "0x1e8f5cd8bec54f93",
+        "score_eval": "0x1c294a8f0a2df14a",
+        "score_rescale_remainder_eval": "0x1e8f5cd8bec54f93",
+        "src_route_eval": "0x1e669e79879b1679"
       },
       "metadata": {
         "claim_equation": "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder",
-        "edge_count": "13264",
+        "edge_count": "108365",
         "edge_flatten_order": "normalized_edge_order_graph_id_then_dst_then_stable_input_order",
         "mle_variable_order": "edge_index_univariate_powers",
         "quantization_scale": "16",
@@ -1706,11 +1708,11 @@
       "tensor_labels": ["hidden.layer0.head5.denominator", "hidden.layer0.head5.denominator_inverse"],
       "relation_passed": false,
       "field_values": {
-        "node_challenge": "0x098b12f2e59b38d4",
-        "residual": "0x16a5559875da875d"
+        "node_challenge": "0x0950a1f2e537ead1",
+        "residual": "0x13057efe9148c5e4"
       },
       "metadata": {
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1720,11 +1722,11 @@
       "tensor_labels": ["hidden.layer0.head5.exp_lookup", "hidden.layer0.head5.denominator_inverse", "hidden.layer0.head5.alpha", "public_sparse_route"],
       "relation_passed": false,
       "field_values": {
-        "edge_challenge": "0x1b5b0597a0d33a68",
-        "residual": "0x1aa98ca01abd30d4"
+        "edge_challenge": "0x19c672979e23c49f",
+        "residual": "0x13e256bbff281cfa"
       },
       "metadata": {
-        "edge_count": "13264"
+        "edge_count": "108365"
       }
     },
     {
@@ -1734,16 +1736,16 @@
       "tensor_labels": ["hidden.layer0.head5.alpha", "hidden.layer0.head5.h_prime", "hidden.layer0.head5.aggregate_pre_bias", "public_sparse_route"],
       "relation_passed": false,
       "field_values": {
-        "aggregate_eval": "0x06c8b4d31c3cbe36",
+        "aggregate_eval": "0x1cd5ef319a0f0afe",
         "col_challenge": "0x1a298ffe445c47e3",
-        "residual": "0x157f7e1500052165",
-        "route_eval": "0x114936be1c379cd0",
-        "row_challenge": "0x092e462e6ef719d2"
+        "residual": "0x15b0ba7c6bab628a",
+        "route_eval": "0x072534b52e63a874",
+        "row_challenge": "0x08e8b72e6e80e7d5"
       },
       "metadata": {
-        "edge_count": "13264",
+        "edge_count": "108365",
         "feature_dim": "8",
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1755,12 +1757,12 @@
       "field_values": {
         "col_challenge": "0x042b8ad1b9877878",
         "residual": "0x0000000000000000",
-        "row_challenge": "0x0088bebe137f4863"
+        "row_challenge": "0x00502fbe131f2d66"
       },
       "metadata": {
         "feature_dim": "8",
         "lookup_table_id": "T_ELU",
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1771,12 +1773,12 @@
       "relation_passed": true,
       "field_values": {
         "col_challenge": "0x155164cfd2022f9b",
-        "lhs_weighted_product_eval": "0x1748858f85238e57",
-        "rescale_remainder_eval": "0x0a64f44c94a8fd28",
+        "lhs_weighted_product_eval": "0x0e12cbac3929e8da",
+        "rescale_remainder_eval": "0x0a2b55f5ace47e4d",
         "residual": "0x0000000000000000",
-        "residual_without_remainder": "0x0a64f44c94a8fd28",
-        "row_challenge": "0x1d8c461c4abce8de",
-        "scaled_output_eval": "0x0ce39142f07a912f"
+        "residual_without_remainder": "0x0a2b55f5ace47e4d",
+        "row_challenge": "0x1dc4d71c4b1d0741",
+        "scaled_output_eval": "0x03e775b68c456a8d"
       },
       "metadata": {
         "claim_equation": "sum_q_products = quantization_scale * output_q + rescale_remainder",
@@ -1786,8 +1788,8 @@
         "quantization_scale": "16",
         "rescale_remainder_tensor": "hidden.layer0.head6.projection_rescale_remainder",
         "rescale_rule": "fixed_point_nearest_rounding_remainder_witness",
-        "rows": "2708",
-        "shared_dim": "1433"
+        "rows": "19717",
+        "shared_dim": "500"
       }
     },
     {
@@ -1797,17 +1799,17 @@
       "tensor_labels": ["hidden.layer0.head6.e_src", "hidden.layer0.head6.e_dst", "hidden.layer0.head6.score", "hidden.layer0.head6.score_rescale_remainder", "public_sparse_route"],
       "relation_passed": true,
       "field_values": {
-        "dst_route_eval": "0x1db46522b3a0b44d",
-        "edge_challenge": "0x1007677a5349866a",
+        "dst_route_eval": "0x02eb480ef2992f46",
+        "edge_challenge": "0x117afa7a55c0e933",
         "residual": "0x0000000000000000",
-        "residual_without_remainder": "0x19ab59208102a0ab",
-        "score_eval": "0x1e100865df68721e",
-        "score_rescale_remainder_eval": "0x19ab59208102a0ab",
-        "src_route_eval": "0x06b04a22aac51d25"
+        "residual_without_remainder": "0x08b3612bcc29197d",
+        "score_eval": "0x18621fe78b1d7bbe",
+        "score_rescale_remainder_eval": "0x08b3612bcc29197d",
+        "src_route_eval": "0x0cc376accc5b32fb"
       },
       "metadata": {
         "claim_equation": "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder",
-        "edge_count": "13264",
+        "edge_count": "108365",
         "edge_flatten_order": "normalized_edge_order_graph_id_then_dst_then_stable_input_order",
         "mle_variable_order": "edge_index_univariate_powers",
         "quantization_scale": "16",
@@ -1823,11 +1825,11 @@
       "tensor_labels": ["hidden.layer0.head6.denominator", "hidden.layer0.head6.denominator_inverse"],
       "relation_passed": false,
       "field_values": {
-        "node_challenge": "0x0b86ce7730360586",
-        "residual": "0x160e6de0de54cde0"
+        "node_challenge": "0x0bc45f77309ea2e9",
+        "residual": "0x0c361bed9afec70c"
       },
       "metadata": {
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1837,11 +1839,11 @@
       "tensor_labels": ["hidden.layer0.head6.exp_lookup", "hidden.layer0.head6.denominator_inverse", "hidden.layer0.head6.alpha", "public_sparse_route"],
       "relation_passed": false,
       "field_values": {
-        "edge_challenge": "0x14b34c972dd14e2e",
-        "residual": "0x1e3322f8b6f8c978"
+        "edge_challenge": "0x131ed7972b220b5f",
+        "residual": "0x1ed8ba1fc7dcb452"
       },
       "metadata": {
-        "edge_count": "13264"
+        "edge_count": "108365"
       }
     },
     {
@@ -1851,16 +1853,16 @@
       "tensor_labels": ["hidden.layer0.head6.alpha", "hidden.layer0.head6.h_prime", "hidden.layer0.head6.aggregate_pre_bias", "public_sparse_route"],
       "relation_passed": false,
       "field_values": {
-        "aggregate_eval": "0x1cd51d3bca79f783",
+        "aggregate_eval": "0x1b378e06590c74f0",
         "col_challenge": "0x04c0f68f482cf1cf",
-        "residual": "0x038a3cfb77179b92",
-        "route_eval": "0x194ae04053625bf1",
-        "row_challenge": "0x1bbd87fc4e41c925"
+        "residual": "0x176c9bfa21c153d9",
+        "route_eval": "0x03caf20c374b2117",
+        "row_challenge": "0x1bfc16fc4eac1622"
       },
       "metadata": {
-        "edge_count": "13264",
+        "edge_count": "108365",
         "feature_dim": "8",
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1872,12 +1874,12 @@
       "field_values": {
         "col_challenge": "0x0552456c23e9a135",
         "residual": "0x0000000000000000",
-        "row_challenge": "0x04cd512537a94b74"
+        "row_challenge": "0x050ce02538154b71"
       },
       "metadata": {
         "feature_dim": "8",
         "lookup_table_id": "T_ELU",
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1888,12 +1890,12 @@
       "relation_passed": true,
       "field_values": {
         "col_challenge": "0x0c6b3ef7cba1dc11",
-        "lhs_weighted_product_eval": "0x016bc4785767f236",
-        "rescale_remainder_eval": "0x0a298b18d2116ca2",
+        "lhs_weighted_product_eval": "0x0ce75a76f1ea9a1e",
+        "rescale_remainder_eval": "0x00e04391c9c785e9",
         "residual": "0x0000000000000000",
-        "residual_without_remainder": "0x0a298b18d2116ca2",
-        "row_challenge": "0x07ad1e40492168e7",
-        "scaled_output_eval": "0x1742395f85568593"
+        "residual_without_remainder": "0x00e04391c9c785e9",
+        "row_challenge": "0x07728d4048bde484",
+        "scaled_output_eval": "0x0c0716e528231435"
       },
       "metadata": {
         "claim_equation": "sum_q_products = quantization_scale * output_q + rescale_remainder",
@@ -1903,8 +1905,8 @@
         "quantization_scale": "16",
         "rescale_remainder_tensor": "hidden.layer0.head7.projection_rescale_remainder",
         "rescale_rule": "fixed_point_nearest_rounding_remainder_witness",
-        "rows": "2708",
-        "shared_dim": "1433"
+        "rows": "19717",
+        "shared_dim": "500"
       }
     },
     {
@@ -1914,17 +1916,17 @@
       "tensor_labels": ["hidden.layer0.head7.e_src", "hidden.layer0.head7.e_dst", "hidden.layer0.head7.score", "hidden.layer0.head7.score_rescale_remainder", "public_sparse_route"],
       "relation_passed": true,
       "field_values": {
-        "dst_route_eval": "0x0873258b5568e11d",
-        "edge_challenge": "0x067da3cbd5df9909",
+        "dst_route_eval": "0x12900c0bec94dca3",
+        "edge_challenge": "0x080910cbd87f8340",
         "residual": "0x0000000000000000",
-        "residual_without_remainder": "0x1473d122403d6699",
-        "score_eval": "0x124a78b0b0fda2fe",
-        "score_rescale_remainder_eval": "0x1473d122403d6699",
-        "src_route_eval": "0x156382031b575b47"
+        "residual_without_remainder": "0x0c21f6eda8afb9ee",
+        "score_eval": "0x1a67b2a4ed4e5e3e",
+        "score_rescale_remainder_eval": "0x0c21f6eda8afb9ee",
+        "src_route_eval": "0x1bb5afab5809c7ac"
       },
       "metadata": {
         "claim_equation": "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder",
-        "edge_count": "13264",
+        "edge_count": "108365",
         "edge_flatten_order": "normalized_edge_order_graph_id_then_dst_then_stable_input_order",
         "mle_variable_order": "edge_index_univariate_powers",
         "quantization_scale": "16",
@@ -1940,11 +1942,11 @@
       "tensor_labels": ["hidden.layer0.head7.denominator", "hidden.layer0.head7.denominator_inverse"],
       "relation_passed": false,
       "field_values": {
-        "node_challenge": "0x0a21eb78034b68d0",
-        "residual": "0x17ffb75422800c39"
+        "node_challenge": "0x09dd5a7802d6e66d",
+        "residual": "0x01901b3a6da3ef83"
       },
       "metadata": {
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1954,11 +1956,11 @@
       "tensor_labels": ["hidden.layer0.head7.exp_lookup", "hidden.layer0.head7.denominator_inverse", "hidden.layer0.head7.alpha", "public_sparse_route"],
       "relation_passed": false,
       "field_values": {
-        "edge_challenge": "0x04f4200e0b7aa3e9",
-        "residual": "0x19a56d61229fdd34"
+        "edge_challenge": "0x047f950e0ab49bb8",
+        "residual": "0x11846088114fc046"
       },
       "metadata": {
-        "edge_count": "13264"
+        "edge_count": "108365"
       }
     },
     {
@@ -1968,16 +1970,16 @@
       "tensor_labels": ["hidden.layer0.head7.alpha", "hidden.layer0.head7.h_prime", "hidden.layer0.head7.aggregate_pre_bias", "public_sparse_route"],
       "relation_passed": false,
       "field_values": {
-        "aggregate_eval": "0x08b28ac59a0a9d6d",
+        "aggregate_eval": "0x025ca5f051f2b365",
         "col_challenge": "0x1f19a35f563392cd",
-        "residual": "0x04e2b59b42847e01",
-        "route_eval": "0x03cfd52a57861f6c",
-        "row_challenge": "0x052b704403fd662b"
+        "residual": "0x11bfdee5327cea1e",
+        "route_eval": "0x109cc70b1f75c946",
+        "row_challenge": "0x056f01440470358e"
       },
       "metadata": {
-        "edge_count": "13264",
+        "edge_count": "108365",
         "feature_dim": "8",
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -1989,12 +1991,12 @@
       "field_values": {
         "col_challenge": "0x1cc25c88655e4933",
         "residual": "0x0000000000000000",
-        "row_challenge": "0x172dd09f4d842cb5"
+        "row_challenge": "0x176a419f4deae0b8"
       },
       "metadata": {
         "feature_dim": "8",
         "lookup_table_id": "T_ELU",
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -2004,23 +2006,23 @@
       "tensor_labels": ["hidden.layer0.concat", "output.head0.W", "output.head0.h_prime", "output.head0.projection_rescale_remainder"],
       "relation_passed": true,
       "field_values": {
-        "col_challenge": "0x06311e7884dae731",
-        "lhs_weighted_product_eval": "0x0efc62efd28a0274",
-        "rescale_remainder_eval": "0x07d4d3bbaeec6ca5",
+        "col_challenge": "0x06311a7884dae065",
+        "lhs_weighted_product_eval": "0x125583777f142f89",
+        "rescale_remainder_eval": "0x118d44d6b7f3899c",
         "residual": "0x0000000000000000",
-        "residual_without_remainder": "0x07d4d3bbaeec6ca5",
-        "row_challenge": "0x080084ca38beb075",
-        "scaled_output_eval": "0x07278f34239d95cf"
+        "residual_without_remainder": "0x118d44d6b7f3899c",
+        "row_challenge": "0x07bcf5ca384be478",
+        "scaled_output_eval": "0x00c83ea0c720a5ed"
       },
       "metadata": {
         "claim_equation": "sum_q_products = quantization_scale * output_q + rescale_remainder",
-        "cols": "7",
+        "cols": "3",
         "matrix_flatten_order": "row_major",
         "mle_variable_order": "row_variables_then_col_variables",
         "quantization_scale": "16",
         "rescale_remainder_tensor": "output.head0.projection_rescale_remainder",
         "rescale_rule": "fixed_point_nearest_rounding_remainder_witness",
-        "rows": "2708",
+        "rows": "19717",
         "shared_dim": "64"
       }
     },
@@ -2031,17 +2033,17 @@
       "tensor_labels": ["output.head0.e_src", "output.head0.e_dst", "output.head0.score", "output.head0.score_rescale_remainder", "public_sparse_route"],
       "relation_passed": true,
       "field_values": {
-        "dst_route_eval": "0x16434d184758bba5",
-        "edge_challenge": "0x1e176a3762a66640",
+        "dst_route_eval": "0x1817c4608cfa7a9f",
+        "edge_challenge": "0x1eabed3763a2c0d9",
         "residual": "0x0000000000000000",
-        "residual_without_remainder": "0x0b65c2b8c87f6c3c",
-        "score_eval": "0x10dfa13a9c6cf053",
-        "score_rescale_remainder_eval": "0x0b65c2b8c87f6c3c",
-        "src_route_eval": "0x0f3691698c94c871"
+        "residual_without_remainder": "0x14734674d6197330",
+        "score_eval": "0x18af2309bb1b8a79",
+        "score_rescale_remainder_eval": "0x14734674d6197330",
+        "src_route_eval": "0x0c24183458079ca9"
       },
       "metadata": {
         "claim_equation": "score_q = routed_e_src_q + routed_e_dst_q + score_rescale_remainder",
-        "edge_count": "13264",
+        "edge_count": "108365",
         "edge_flatten_order": "normalized_edge_order_graph_id_then_dst_then_stable_input_order",
         "mle_variable_order": "edge_index_univariate_powers",
         "quantization_scale": "16",
@@ -2057,11 +2059,11 @@
       "tensor_labels": ["output.head0.denominator", "output.head0.denominator_inverse"],
       "relation_passed": false,
       "field_values": {
-        "node_challenge": "0x19fe0df2c349c1a5",
-        "residual": "0x1c3d78338ed218a5"
+        "node_challenge": "0x19bc9ef2c2da9208",
+        "residual": "0x07e365944e84ec40"
       },
       "metadata": {
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -2071,11 +2073,11 @@
       "tensor_labels": ["output.head0.exp_lookup", "output.head0.denominator_inverse", "output.head0.alpha", "public_sparse_route"],
       "relation_passed": false,
       "field_values": {
-        "edge_challenge": "0x12a77104d92a6f69",
-        "residual": "0x0c2d93961ffa2cc6"
+        "edge_challenge": "0x143aec04dbd8096a",
+        "residual": "0x01b029b4b9aba9ed"
       },
       "metadata": {
-        "edge_count": "13264"
+        "edge_count": "108365"
       }
     },
     {
@@ -2085,16 +2087,16 @@
       "tensor_labels": ["output.head0.alpha", "output.head0.h_prime", "output.head0.aggregate_pre_bias", "public_sparse_route"],
       "relation_passed": false,
       "field_values": {
-        "aggregate_eval": "0x1cf4ded0d69e00a2",
-        "col_challenge": "0x1836edd39013320c",
-        "residual": "0x1192580e0dd65607",
-        "route_eval": "0x0b6286c2c8c7aa9b",
-        "row_challenge": "0x12645686e5ff78cc"
+        "aggregate_eval": "0x1d1ea69c6902b367",
+        "col_challenge": "0x1836e9d390132b40",
+        "residual": "0x1457d53fd9dc49e2",
+        "route_eval": "0x08c6d15c8f266985",
+        "row_challenge": "0x1226c586e596db69"
       },
       "metadata": {
-        "edge_count": "13264",
-        "feature_dim": "7",
-        "node_count": "2708"
+        "edge_count": "108365",
+        "feature_dim": "3",
+        "node_count": "19717"
       }
     },
     {
@@ -2102,16 +2104,16 @@
       "relation": "identity_output_activation_argument",
       "label": "output.head0.activation",
       "tensor_labels": ["output.head0.aggregate_pre_bias", "output.head0.aggregate_out"],
-      "relation_passed": false,
+      "relation_passed": true,
       "field_values": {
-        "col_challenge": "0x08a34c30d3530bab",
-        "residual": "0x0c8feb4c340b178b",
-        "row_challenge": "0x00a7674c44145c5a"
+        "col_challenge": "0x08a35030d3531277",
+        "residual": "0x0000000000000000",
+        "row_challenge": "0x00e7f64c44820f57"
       },
       "metadata": {
-        "feature_dim": "7",
+        "feature_dim": "3",
         "lookup_table_id": "identity",
-        "node_count": "2708"
+        "node_count": "19717"
       }
     },
     {
@@ -2121,13 +2123,13 @@
       "tensor_labels": ["final_logits"],
       "relation_passed": true,
       "field_values": {
-        "col_challenge": "0x0437e91e4c023f74",
+        "col_challenge": "0x0437ed1e4c024640",
         "residual": "0x0000000000000000",
-        "row_challenge": "0x1e6ab7f8645f206c"
+        "row_challenge": "0x1eaf28f864d36c6f"
       },
       "metadata": {
-        "class_count": "7",
-        "node_count": "2708"
+        "class_count": "3",
+        "node_count": "19717"
       }
     }
   ]
