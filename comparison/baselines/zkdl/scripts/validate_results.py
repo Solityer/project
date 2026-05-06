@@ -57,6 +57,7 @@ FULL_DATASET_GATE_FIELDS = [
     "witness_coverage_hash",
     "final_logits_shape",
     "final_logits_hash",
+    "main_manifest_match",
 ]
 
 

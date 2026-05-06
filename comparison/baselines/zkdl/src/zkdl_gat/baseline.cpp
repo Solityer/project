@@ -209,7 +209,7 @@ struct ZkdlProofSection {
     bool relation_passed = false;
 };
 
-struct ZkdlProofObject {
+struct ZkdlRelationPayload {
     std::string format_id = "zkdl_full_gat_forward_relation_payload_v3";
     std::string commitment_backend_id = "zkdl_portable_relation_commitment_diagnostic_v1";
     std::string verifier_backend_id = "not_invoked_until_native_zkdl_relation_coverage_exists";
@@ -233,13 +233,6 @@ struct FixedPointProofPolicy {
     std::string inverse_rule =
         "denominator_inverse_must_satisfy_scaled_inverse_relation_and_range_binding";
     bool unrestricted_remainder_allowed = false;
-};
-
-struct ZkdlVerifierResult {
-    bool accepted = false;
-    std::string failure_step;
-    std::string block_reason;
-    std::string first_failure_section;
 };
 
 struct ZkdlProofRunResult {
@@ -2256,7 +2249,7 @@ ZkdlProofSection build_final_logits_section(
     return section;
 }
 
-const ZkdlProofSection* find_proof_section(const ZkdlProofObject& proof, const std::string& section_id) {
+const ZkdlProofSection* find_proof_section(const ZkdlRelationPayload& proof, const std::string& section_id) {
     for (const auto& section : proof.proof_sections) {
         if (section.section_id == section_id) {
             return &section;
@@ -2349,7 +2342,7 @@ void write_proof_section_label_summary(std::ostream& out, const ZkdlProofSection
     const NormalizedPublicInput& normalized,
     const ModelParams& model,
     const FullForwardTrace& trace,
-    const ZkdlProofObject& proof) {
+    const ZkdlRelationPayload& proof) {
     if (trace.hidden_layers.empty() || trace.hidden_layers.front().heads.empty()
         || model.hidden_layers.empty() || model.hidden_layers.front().empty()) {
         return;
@@ -2485,7 +2478,7 @@ void write_proof_section_label_summary(std::ostream& out, const ZkdlProofSection
     out << "    \"dst_route_eval\": \"" << field_hex(section_field_or_zero(attention_section, "dst_route_eval")) << "\",\n";
     out << "    \"score_rescale_remainder_eval\": \"" << field_hex(section_field_or_zero(attention_section, "score_rescale_remainder_eval")) << "\"\n";
     out << "  },\n";
-    out << "  \"verifier_recomputed_claim\": {\n";
+    out << "  \"diagnostic_recomputed_claim\": {\n";
     out << "    \"residual\": \"" << field_hex(residual_recomputed) << "\",\n";
     out << "    \"accepted_this_relation\": " << (residual_recomputed == 0 ? "true" : "false") << "\n";
     out << "  },\n";
@@ -2507,7 +2500,7 @@ void write_proof_section_label_summary(std::ostream& out, const ZkdlProofSection
 }
 
 void add_head_tensor_commitments(
-    ZkdlProofObject& proof,
+    ZkdlRelationPayload& proof,
     const std::string& prefix,
     const HeadForwardTrace& head) {
     proof.tensor_commitments.push_back(commit_matrix(prefix + ".h_prime", head.h_prime));
@@ -2526,7 +2519,7 @@ void add_head_tensor_commitments(
 }
 
 void add_head_proof_sections(
-    ZkdlProofObject& proof,
+    ZkdlRelationPayload& proof,
     const std::string& prefix,
     const std::vector<Edge>& edges,
     const HeadForwardTrace& head,
@@ -2574,7 +2567,7 @@ void add_head_proof_sections(
         hidden_activation));
 }
 
-ZkdlProofObject build_zkdl_proof_object(
+ZkdlRelationPayload build_zkdl_relation_payload(
     const DatasetConfig& config,
     const DatasetMeta& meta,
     const NormalizedPublicInput& normalized,
@@ -2584,7 +2577,7 @@ ZkdlProofObject build_zkdl_proof_object(
     const std::string& public_input_hash,
     const std::string& final_logits_hash,
     const std::string& witness_coverage_hash) {
-    ZkdlProofObject proof;
+    ZkdlRelationPayload proof;
     proof.public_input_hash = public_input_hash;
     proof.final_logits_hash = final_logits_hash;
     proof.witness_coverage_hash = witness_coverage_hash;
@@ -2830,7 +2823,7 @@ void write_all_relations_diagnostic(
     const DatasetConfig& config,
     const std::string& route,
     const NormalizedPublicInput& normalized,
-    const ZkdlProofObject& proof) {
+    const ZkdlRelationPayload& proof) {
     std::filesystem::create_directories(path.parent_path());
     std::ofstream out(path);
     if (!out) {
@@ -2904,12 +2897,12 @@ void write_all_relations_diagnostic(
     out << "}\n";
 }
 
-void write_zkdl_proof_artifact(
+void write_zkdl_relation_payload_artifact(
     const std::filesystem::path& path,
     const DatasetConfig& config,
     const std::string& route,
     const NormalizedPublicInput& normalized,
-    const ZkdlProofObject& proof) {
+    const ZkdlRelationPayload& proof) {
     std::filesystem::create_directories(path.parent_path());
     std::ofstream out(path);
     if (!out) {
@@ -2979,99 +2972,6 @@ void write_zkdl_proof_artifact(
     out << "}\n";
 }
 
-[[maybe_unused]] ZkdlVerifierResult verify_zkdl_proof_object(const ZkdlProofObject& proof) {
-    ZkdlVerifierResult result;
-    if (proof.tensor_commitments.empty()) {
-        result.failure_step = "commitment_opening_verify";
-        result.block_reason = "zkdl_proof_object_has_no_tensor_commitments";
-        return result;
-    }
-    if (proof.proof_sections.empty()) {
-        result.failure_step = "sumcheck_verify";
-        result.block_reason = "zkdl_proof_object_has_no_sumcheck_sections";
-        return result;
-    }
-    for (const auto& commitment : proof.tensor_commitments) {
-        if (commitment.value_count == 0 || commitment.commitment == 0) {
-            result.failure_step = "commitment_opening_verify";
-            result.first_failure_section = commitment.label;
-            result.block_reason = "zkdl_tensor_commitment_is_empty_or_zero:" + commitment.label;
-            return result;
-        }
-    }
-    for (const auto& section : proof.proof_sections) {
-        const auto residual_it = section.field_values.find("residual");
-        if (residual_it == section.field_values.end()) {
-            result.failure_step = section.relation + "_verify";
-            result.first_failure_section = section.section_id;
-            result.block_reason = "zkdl_sumcheck_section_missing_residual:" + section.section_id;
-            return result;
-        }
-        if (section.relation == "dense_matmul_sumcheck") {
-            const auto lhs_it = section.field_values.find("lhs_weighted_product_eval");
-            const auto scaled_it = section.field_values.find("scaled_output_eval");
-            const auto remainder_it = section.field_values.find("rescale_remainder_eval");
-            if (lhs_it == section.field_values.end()
-                || scaled_it == section.field_values.end()
-                || remainder_it == section.field_values.end()) {
-                result.failure_step = section.relation + "_verify";
-                result.first_failure_section = section.section_id;
-                result.block_reason = "zkdl_dense_matmul_sumcheck_missing_claim_field:" + section.section_id;
-                return result;
-            }
-            const auto recomputed_residual = field_sub(
-                field_sub(lhs_it->second, scaled_it->second),
-                remainder_it->second);
-            if (recomputed_residual != residual_it->second) {
-                result.failure_step = section.relation + "_verify";
-                result.first_failure_section = section.section_id;
-                result.block_reason =
-                    "zkdl_dense_matmul_sumcheck_residual_mismatch:section=" + section.section_id
-                    + ",claimed=" + field_hex(residual_it->second)
-                    + ",recomputed=" + field_hex(recomputed_residual);
-                return result;
-            }
-        }
-        if (section.relation == "sparse_attention_score_sumcheck") {
-            const auto score_it = section.field_values.find("score_eval");
-            const auto src_it = section.field_values.find("src_route_eval");
-            const auto dst_it = section.field_values.find("dst_route_eval");
-            const auto remainder_it = section.field_values.find("score_rescale_remainder_eval");
-            if (score_it == section.field_values.end()
-                || src_it == section.field_values.end()
-                || dst_it == section.field_values.end()
-                || remainder_it == section.field_values.end()) {
-                result.failure_step = section.relation + "_verify";
-                result.first_failure_section = section.section_id;
-                result.block_reason = "zkdl_sparse_attention_score_sumcheck_missing_claim_field:" + section.section_id;
-                return result;
-            }
-            const auto recomputed_residual = field_sub(
-                field_sub(field_sub(score_it->second, dst_it->second), src_it->second),
-                remainder_it->second);
-            if (recomputed_residual != residual_it->second) {
-                result.failure_step = section.relation + "_verify";
-                result.first_failure_section = section.section_id;
-                result.block_reason =
-                    "zkdl_sparse_attention_score_sumcheck_residual_mismatch:section=" + section.section_id
-                    + ",claimed=" + field_hex(residual_it->second)
-                    + ",recomputed=" + field_hex(recomputed_residual);
-                return result;
-            }
-        }
-        if (residual_it->second != 0 || !section.relation_passed) {
-            result.failure_step = section.relation + "_verify";
-            result.first_failure_section = section.section_id;
-            result.block_reason =
-                "zkdl_sumcheck_residual_nonzero:section=" + section.section_id
-                + ",residual=" + field_hex(residual_it->second);
-            return result;
-        }
-    }
-    result.accepted = true;
-    return result;
-}
-
 ZkdlProofRunResult run_zkdl_cpu_full_gat_proof(
     const DatasetConfig& config,
     const DatasetMeta& meta,
@@ -3110,7 +3010,7 @@ ZkdlProofRunResult run_zkdl_cpu_full_gat_proof(
         const auto witness_hash = hash_witness_coverage(config, normalized, trace, commitments);
 
         const auto commitment_start = Clock::now();
-        auto proof = build_zkdl_proof_object(
+        auto proof = build_zkdl_relation_payload(
             config,
             meta,
             normalized,
@@ -3124,7 +3024,7 @@ ZkdlProofRunResult run_zkdl_cpu_full_gat_proof(
         result.full_gat_payload_generated = false;
         result.final_logits_payload_generated = false;
 
-        write_zkdl_proof_artifact(result.artifact_path, config, route, normalized, proof);
+        write_zkdl_relation_payload_artifact(result.artifact_path, config, route, normalized, proof);
         write_all_relations_diagnostic(result.diagnostic_path, config, route, normalized, proof);
         result.prove_time_ms = elapsed_ms(prove_start, Clock::now());
         result.generated = false;
@@ -3685,6 +3585,8 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.dataset_stats["full_dataset"] = full_dataset_gate_passed ? "true" : "false";
     manifest.dataset_stats["full_dataset_gate_passed"] = full_dataset_gate_passed ? "true" : "false";
     manifest.dataset_stats["full_dataset_gate_failures"] = join_strings(gate_failures);
+    manifest.dataset_stats["main_manifest_match"] = full_dataset_gate_passed ? "true" : "false";
+    manifest.dataset_stats["main_manifest_checked"] = main_manifest;
     manifest.dataset_stats["node_count"] = std::to_string(normalized.node_count);
     manifest.dataset_stats["edge_count"] = std::to_string(normalized.edge_count);
     manifest.dataset_stats["feature_dim"] = std::to_string(meta.num_features);
