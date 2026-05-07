@@ -25,13 +25,13 @@ class Commitment: public G1TensorJacobian
 };
 
 KERNEL void sum_axis_n_optimized(GLOBAL G1Jacobian_t* arr, GLOBAL G1Jacobian_t* arr_out, uint n, uint m) {
-    const uint gid = GET_GLOBAL_ID();
+    const uint gid = GET_GROUP_ID();
     if (gid >= m) return;
     
     __shared__ G1Jacobian_t shared_data[G1NumThread];
     uint local_id = threadIdx.x;
     
-    G1Jacobian_t sum = arr[gid * n + local_id];
+    G1Jacobian_t sum = (local_id < n) ? arr[gid * n + local_id] : blstrs__g1__G1Affine_ZERO;
     for (uint i = local_id + G1NumThread; i < n; i += G1NumThread) {
         sum = blstrs__g1__G1Affine_add(sum, arr[gid * n + i]);
     }
@@ -59,7 +59,7 @@ G1TensorJacobian Commitment::commit(const FrTensor& t) const
     uint m = t.size / size;
     G1TensorJacobian temp = (*this) * t_unmont;
     G1TensorJacobian out(m);
-    sum_axis_n_optimized<<<(m+G1NumThread-1)/G1NumThread,G1NumThread>>>(temp.gpu_data, out.gpu_data, size, m);
+    sum_axis_n_optimized<<<m,G1NumThread>>>(temp.gpu_data, out.gpu_data, size, m);
     cudaDeviceSynchronize();
     return out;
 }
@@ -109,7 +109,7 @@ Fr_t Commitment::open(const FrTensor& t, const G1TensorJacobian& com, const vect
     const vector<Fr_t> u_out(u.end() - ceilLog2(com.size), u.end());
     const vector<Fr_t> u_in(u.begin(), u.end() - ceilLog2(com.size));
 
-    auto g_temp = com(u_out);
+    (void)com;
     if (size != (1 << u_in.size())) throw std::runtime_error("Incompatible dimensions");
     vector<G1Jacobian_t> proof;
     auto val = me_open(t.partial_me(u_out, 1 << u_in.size()), *this, u_in.begin(), u_in.end(), proof);
