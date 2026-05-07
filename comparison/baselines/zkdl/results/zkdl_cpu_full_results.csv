@@ -1,6 +1,0 @@
-dataset,route_id,backend,status,proof_backend,verifier_backend,full_dataset,full_dataset_gate_passed,semantic_precheck_passed,zkdl_proof_verified,commitment_time_ms,prove_time_ms,verify_time_ms,proof_size_bytes,strict_public_input_equivalent,full_gat_forward_in_zkdl_proof,final_logits_derivation_complete,no_precomputed_logits_bypass,failure_step,block_reason
-cora_full,zkdl_gat_full_forward_cpu,cpu,verified,zkDL,zkDL,True,True,True,True,663.066,1047.761,2.646,290685,True,True,True,True,,
-citeseer_full,zkdl_gat_full_forward_cpu,cpu,verified,zkDL,zkDL,True,True,True,True,2052.269,3049.405,2.421,290685,True,True,True,True,,
-pubmed_full,zkdl_gat_full_forward_cpu,cpu,verified,zkDL,zkDL,True,True,True,True,1767.254,2275.398,6.259,291284,True,True,True,True,,
-ppi_full_formal,zkdl_gat_full_forward_cpu,cpu,verified,zkDL,zkDL,True,True,True,True,1408.22,1748.726,35.713,74318,True,True,True,True,,
-ogbn_arxiv_full,zkdl_gat_full_forward_cpu,cpu,verified,zkDL,zkDL,True,True,True,True,2469.506,3267.96,63.916,74481,True,True,True,True,,
