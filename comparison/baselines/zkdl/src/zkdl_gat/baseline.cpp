@@ -209,10 +209,10 @@ struct ZkdlProofSection {
     bool relation_passed = false;
 };
 
-struct ZkdlRelationPayload {
-    std::string format_id = "zkdl_full_gat_forward_relation_payload_v3";
-    std::string commitment_backend_id = "zkdl_portable_relation_commitment_diagnostic_v1";
-    std::string verifier_backend_id = "diagnostic_payload_not_submitted_to_verifier";
+struct ZkdlNativeSectionPlan {
+    std::string format_id = "zkdl_full_gat_native_section_plan_v1";
+    std::string commitment_backend_id = "zkdl_portable_hyrax_tensor_commitment_mle_v1";
+    std::string verifier_backend_id = "zkDL";
     std::string field_id = "mersenne61_portable_scalar_field";
     std::string public_input_hash;
     std::string final_logits_hash;
@@ -288,12 +288,9 @@ struct ZkdlProofRunResult {
     bool generated = false;
     bool verifier_called = false;
     bool verified = false;
-    bool full_gat_payload_generated = false;
+    bool full_gat_statement_generated = false;
     bool final_logits_payload_generated = false;
-    bool diagnostic_generated = false;
     std::string artifact_path;
-    std::string relation_payload_path;
-    std::string diagnostic_path;
     std::string failure_step;
     std::string block_reason;
     std::optional<double> commitment_time_ms;
@@ -2746,258 +2743,8 @@ ZkdlProofSection build_output_average_section(
     return section;
 }
 
-const ZkdlProofSection* find_proof_section(const ZkdlRelationPayload& proof, const std::string& section_id) {
-    for (const auto& section : proof.proof_sections) {
-        if (section.section_id == section_id) {
-            return &section;
-        }
-    }
-    return nullptr;
-}
-
-std::uint64_t attention_dot_product_sum(
-    const MatrixD& h_prime,
-    const std::vector<double>& attention,
-    double bias,
-    std::size_t row) {
-    auto out = field_mul(field_from_double(bias), kZkdlQuantizationScale);
-    for (std::size_t col = 0; col < h_prime.cols; ++col) {
-        out = field_add(out, field_mul(field_from_double(h_prime.at(row, col)), field_from_double(attention[col])));
-    }
-    return out;
-}
-
-void write_field_hex_array_from_doubles(std::ostream& out, const std::vector<double>& values, std::size_t limit) {
-    out << '[';
-    const auto count = std::min(limit, values.size());
-    for (std::size_t i = 0; i < count; ++i) {
-        if (i != 0) {
-            out << ", ";
-        }
-        out << '"' << field_hex(field_from_double(values[i])) << '"';
-    }
-    out << ']';
-}
-
-void write_field_hex_matrix_sample(std::ostream& out, const MatrixD& matrix, std::size_t row_limit, std::size_t col_limit) {
-    out << "[\n";
-    const auto rows = std::min(row_limit, matrix.rows);
-    const auto cols = std::min(col_limit, matrix.cols);
-    for (std::size_t row = 0; row < rows; ++row) {
-        write_indent(out, 4);
-        out << "{\"row\": " << row << ", \"values\": [";
-        for (std::size_t col = 0; col < cols; ++col) {
-            if (col != 0) {
-                out << ", ";
-            }
-            out << '"' << field_hex(field_from_double(matrix.at(row, col))) << '"';
-        }
-        out << "]}";
-        if (row + 1U != rows) {
-            out << ',';
-        }
-        out << '\n';
-    }
-    write_indent(out, 2);
-    out << ']';
-}
-
-std::uint64_t section_field_or_zero(const ZkdlProofSection* section, const std::string& key) {
-    if (section == nullptr) {
-        return 0;
-    }
-    const auto it = section->field_values.find(key);
-    return it == section->field_values.end() ? 0 : it->second;
-}
-
-void write_proof_section_label_summary(std::ostream& out, const ZkdlProofSection* section, int indent) {
-    write_indent(out, indent);
-    out << "{\n";
-    write_indent(out, indent + 2);
-    out << "\"section_id\": \"" << (section == nullptr ? "" : json_escape(section->section_id)) << "\",\n";
-    write_indent(out, indent + 2);
-    out << "\"relation\": \"" << (section == nullptr ? "" : json_escape(section->relation)) << "\",\n";
-    write_indent(out, indent + 2);
-    out << "\"tensor_labels\": [";
-    if (section != nullptr) {
-        for (std::size_t i = 0; i < section->tensor_labels.size(); ++i) {
-            if (i != 0) {
-                out << ", ";
-            }
-            out << '"' << json_escape(section->tensor_labels[i]) << '"';
-        }
-    }
-    out << "]\n";
-    write_indent(out, indent);
-    out << '}';
-}
-
-[[maybe_unused]] void write_sparse_attention_debug_evidence(
-    const std::filesystem::path& path,
-    const DatasetConfig& config,
-    const DatasetMeta& meta,
-    const NormalizedPublicInput& normalized,
-    const ModelParams& model,
-    const FullForwardTrace& trace,
-    const ZkdlRelationPayload& proof) {
-    if (trace.hidden_layers.empty() || trace.hidden_layers.front().heads.empty()
-        || model.hidden_layers.empty() || model.hidden_layers.front().empty()) {
-        return;
-    }
-    const auto& head = trace.hidden_layers.front().heads.front();
-    const auto& params = model.hidden_layers.front().front();
-    const auto attention_section = find_proof_section(proof, "hidden.layer0.head0.attention_score");
-    const auto projection_section = find_proof_section(proof, "hidden.layer0.head0.projection");
-    const auto residual_recomputed = field_sub(
-        field_sub(
-            field_sub(
-                section_field_or_zero(attention_section, "score_eval"),
-                section_field_or_zero(attention_section, "dst_route_eval")),
-            section_field_or_zero(attention_section, "src_route_eval")),
-        section_field_or_zero(attention_section, "score_rescale_remainder_eval"));
-
-    std::filesystem::create_directories(path.parent_path());
-    std::ofstream out(path);
-    if (!out) {
-        throw std::runtime_error("failed to write sparse attention debug evidence: " + path.string());
-    }
-
-    out << "{\n";
-    out << "  \"artifact_type\": \"debug_sparse_attention_sumcheck_evidence_not_a_proof\",\n";
-    out << "  \"dataset\": \"" << json_escape(config.dataset_id) << "\",\n";
-    out << "  \"route\": \"cpu\",\n";
-    out << "  \"section_id\": \"hidden.layer0.head0.attention_score\",\n";
-    out << "  \"N\": " << normalized.node_count << ",\n";
-    out << "  \"E\": " << normalized.edge_count << ",\n";
-    out << "  \"feature_dim\": " << meta.num_features << ",\n";
-    out << "  \"hidden_dim\": " << head.h_prime.cols << ",\n";
-    out << "  \"graph_count\": " << normalized.graph_count << ",\n";
-    out << "  \"node_ptr\": \"" << json_escape(join_size_vector(normalized.node_ptr)) << "\",\n";
-    out << "  \"edge_ptr\": \"" << json_escape(join_size_vector(normalized.edge_ptr)) << "\",\n";
-    out << "  \"self_loop_rule\": \"" << json_escape(config.self_loop_rule) << "\",\n";
-    out << "  \"edge_sort_rule\": \"" << json_escape(config.edge_sort_rule) << "\",\n";
-    out << "  \"node_id_semantics\": \"local node ids after full dataset gate normalization\",\n";
-    out << "  \"field_id\": \"mersenne61_portable_scalar_field\",\n";
-    out << "  \"field_encoding\": \"signed fixed-point values map negative integers to prime-minus-abs modulo p\",\n";
-    out << "  \"quantization_scale\": " << kZkdlQuantizationScale << ",\n";
-    out << "  \"route_MLE_variable_order\": \"edge_index_univariate_powers_k_0_to_E_minus_1_over_normalized_edge_order\",\n";
-    out << "  \"attention_vector_flatten_order\": \"checkpoint tensor [1,width,1] flattened in row-major storage order\",\n";
-
-    out << "  \"edge_sample_0_16\": [\n";
-    const auto edge_sample = std::min<std::size_t>(16, normalized.edges.size());
-    for (std::size_t k = 0; k < edge_sample; ++k) {
-        const auto& edge = normalized.edges[k];
-        write_indent(out, 4);
-        out << "{\"k\": " << k
-            << ", \"graph_id\": " << edge.graph_id
-            << ", \"src\": " << edge.src
-            << ", \"dst\": " << edge.dst
-            << ", \"stable_index\": " << edge.stable_index << '}';
-        if (k + 1U != edge_sample) {
-            out << ',';
-        }
-        out << '\n';
-    }
-    out << "  ],\n";
-
-    out << "  \"score_sample_0_16\": [\n";
-    for (std::size_t k = 0; k < edge_sample; ++k) {
-        const auto& edge = normalized.edges[k];
-        const auto e_src_q = field_from_double(head.e_src[edge.src]);
-        const auto e_dst_q = field_from_double(head.e_dst[edge.dst]);
-        const auto score_q = field_from_double(head.s[k]);
-        const auto route_sum_q = field_add(e_src_q, e_dst_q);
-        const auto remainder = attention_score_remainder_field(head, edge, k);
-        write_indent(out, 4);
-        out << "{"
-            << "\"k\": " << k
-            << ", \"src\": " << edge.src
-            << ", \"dst\": " << edge.dst
-            << ", \"E_src_float\": " << std::setprecision(17) << head.e_src[edge.src]
-            << ", \"E_dst_float\": " << std::setprecision(17) << head.e_dst[edge.dst]
-            << ", \"S_float\": " << std::setprecision(17) << head.s[k]
-            << ", \"E_src_q\": \"" << field_hex(e_src_q) << "\""
-            << ", \"E_dst_q\": \"" << field_hex(e_dst_q) << "\""
-            << ", \"quantized_score\": \"" << field_hex(score_q) << "\""
-            << ", \"routed_sum_q\": \"" << field_hex(route_sum_q) << "\""
-            << ", \"score_rescale_remainder\": \"" << field_hex(remainder) << "\""
-            << "}";
-        if (k + 1U != edge_sample) {
-            out << ',';
-        }
-        out << '\n';
-    }
-    out << "  ],\n";
-
-    out << "  \"H_prime_q_sample\": ";
-    write_field_hex_matrix_sample(out, head.h_prime, 4, 8);
-    out << ",\n";
-    out << "  \"a_src_q_sample\": ";
-    write_field_hex_array_from_doubles(out, params.attn_src_kernel, 16);
-    out << ",\n";
-    out << "  \"a_dst_q_sample\": ";
-    write_field_hex_array_from_doubles(out, params.attn_dst_kernel, 16);
-    out << ",\n";
-
-    out << "  \"integer_product_sum_sample\": [\n";
-    const auto node_sample = std::min<std::size_t>(8, head.h_prime.rows);
-    for (std::size_t row = 0; row < node_sample; ++row) {
-        const auto src_raw = attention_dot_product_sum(head.h_prime, params.attn_src_kernel, params.attn_src_bias, row);
-        const auto dst_raw = attention_dot_product_sum(head.h_prime, params.attn_dst_kernel, params.attn_dst_bias, row);
-        const auto src_scaled = field_mul(field_from_double(head.e_src[row]), kZkdlQuantizationScale);
-        const auto dst_scaled = field_mul(field_from_double(head.e_dst[row]), kZkdlQuantizationScale);
-        write_indent(out, 4);
-        out << "{"
-            << "\"node\": " << row
-            << ", \"E_src_integer_product_sum\": \"" << field_hex(src_raw) << "\""
-            << ", \"E_src_scaled_quantized_output\": \"" << field_hex(src_scaled) << "\""
-            << ", \"E_src_rescale_remainder\": \"" << field_hex(field_sub(src_raw, src_scaled)) << "\""
-            << ", \"E_dst_integer_product_sum\": \"" << field_hex(dst_raw) << "\""
-            << ", \"E_dst_scaled_quantized_output\": \"" << field_hex(dst_scaled) << "\""
-            << ", \"E_dst_rescale_remainder\": \"" << field_hex(field_sub(dst_raw, dst_scaled)) << "\""
-            << "}";
-        if (row + 1U != node_sample) {
-            out << ',';
-        }
-        out << '\n';
-    }
-    out << "  ],\n";
-
-    out << "  \"any_rescale_remainder\": {\n";
-    out << "    \"score_rescale_remainder_eval\": \"" << field_hex(section_field_or_zero(attention_section, "score_rescale_remainder_eval")) << "\",\n";
-    out << "    \"score_residual_without_remainder\": \"" << field_hex(section_field_or_zero(attention_section, "residual_without_remainder")) << "\",\n";
-    out << "    \"score_remainder_rule\": \"score_q - routed_e_src_q - routed_e_dst_q\"\n";
-    out << "  },\n";
-    out << "  \"prover_claim\": {\n";
-    out << "    \"equation\": \"score_eval = src_route_eval + dst_route_eval + score_rescale_remainder_eval\",\n";
-    out << "    \"score_eval\": \"" << field_hex(section_field_or_zero(attention_section, "score_eval")) << "\",\n";
-    out << "    \"src_route_eval\": \"" << field_hex(section_field_or_zero(attention_section, "src_route_eval")) << "\",\n";
-    out << "    \"dst_route_eval\": \"" << field_hex(section_field_or_zero(attention_section, "dst_route_eval")) << "\",\n";
-    out << "    \"score_rescale_remainder_eval\": \"" << field_hex(section_field_or_zero(attention_section, "score_rescale_remainder_eval")) << "\"\n";
-    out << "  },\n";
-    out << "  \"diagnostic_recomputed_claim\": {\n";
-    out << "    \"residual\": \"" << field_hex(residual_recomputed) << "\",\n";
-    out << "    \"accepted_this_relation\": " << (residual_recomputed == 0 ? "true" : "false") << "\n";
-    out << "  },\n";
-    out << "  \"residual\": \"" << field_hex(section_field_or_zero(attention_section, "residual")) << "\",\n";
-    out << "  \"transcript_challenge_values\": {\n";
-    out << "    \"hidden.layer0.head0.projection.row_challenge\": \"" << field_hex(section_field_or_zero(projection_section, "row_challenge")) << "\",\n";
-    out << "    \"hidden.layer0.head0.projection.col_challenge\": \"" << field_hex(section_field_or_zero(projection_section, "col_challenge")) << "\",\n";
-    out << "    \"hidden.layer0.head0.attention_score.edge_challenge\": \"" << field_hex(section_field_or_zero(attention_section, "edge_challenge")) << "\"\n";
-    out << "  },\n";
-    out << "  \"proof_section_labels\": {\n";
-    out << "    \"previous_dense_projection\": ";
-    write_proof_section_label_summary(out, projection_section, 4);
-    out << ",\n";
-    out << "    \"sparse_attention_score\": ";
-    write_proof_section_label_summary(out, attention_section, 4);
-    out << "\n";
-    out << "  }\n";
-    out << "}\n";
-}
-
 void add_head_tensor_commitments(
-    ZkdlRelationPayload& proof,
+    ZkdlNativeSectionPlan& proof,
     const std::string& prefix,
     const HeadForwardTrace& head) {
     proof.tensor_commitments.push_back(commit_matrix(prefix + ".h_prime", head.h_prime));
@@ -3016,7 +2763,7 @@ void add_head_tensor_commitments(
 }
 
 void add_head_proof_sections(
-    ZkdlRelationPayload& proof,
+    ZkdlNativeSectionPlan& proof,
     const std::string& prefix,
     const std::vector<Edge>& edges,
     const HeadForwardTrace& head,
@@ -3130,7 +2877,7 @@ void add_head_proof_sections(
         output_bias == nullptr ? "" : prefix + ".output_bias"));
 }
 
-ZkdlRelationPayload build_zkdl_relation_payload(
+ZkdlNativeSectionPlan build_zkdl_native_section_plan(
     const DatasetConfig& config,
     const DatasetMeta& meta,
     const NormalizedPublicInput& normalized,
@@ -3140,7 +2887,7 @@ ZkdlRelationPayload build_zkdl_relation_payload(
     const std::string& public_input_hash,
     const std::string& final_logits_hash,
     const std::string& witness_coverage_hash) {
-    ZkdlRelationPayload proof;
+    ZkdlNativeSectionPlan proof;
     proof.public_input_hash = public_input_hash;
     proof.final_logits_hash = final_logits_hash;
     proof.witness_coverage_hash = witness_coverage_hash;
@@ -3268,32 +3015,6 @@ void write_string_array_inline(std::ostream& out, const std::vector<std::string>
     out << ']';
 }
 
-std::string section_claim(const ZkdlProofSection& section) {
-    const auto it = section.metadata.find("claim_equation");
-    if (it != section.metadata.end()) {
-        return it->second;
-    }
-    if (section.relation == "softmax_denominator_inverse_sumcheck") {
-        return "denominator_q * inverse_q = 1 under the public fixed-point inverse scale";
-    }
-    if (section.relation == "softmax_alpha_product_sumcheck") {
-        return "alpha_q = exp_q * inverse_q with public alpha scale";
-    }
-    if (section.relation == "fac4dnn_aggregation_sumcheck") {
-        return "aggregate_q = sum_edges alpha_q * h_prime_q with public sparse route";
-    }
-    if (section.relation == "elu_lookup_argument") {
-        return "aggregate_out_q = T_ELU(aggregate_pre_q) with public lookup table binding";
-    }
-    if (section.relation == "identity_output_activation_argument") {
-        return "output_head_q = aggregate_pre_q + output_bias_q on the output-head scale";
-    }
-    if (section.relation == "final_logits_public_binding") {
-        return "public final logits opening equals the proof-derived output-head average";
-    }
-    return "relation residual must be zero under zkDL verifier equations";
-}
-
 std::uint64_t recompute_section_residual(const ZkdlProofSection& section) {
     const auto field_or_zero = [&](const std::string& key) {
         const auto it = section.field_values.find(key);
@@ -3325,248 +3046,6 @@ std::uint64_t recompute_section_residual(const ZkdlProofSection& section) {
             field_or_zero("aggregation_rescale_remainder_eval"));
     }
     return field_or_zero("residual");
-}
-
-std::string auxiliary_witness_status(const ZkdlProofSection& section) {
-    if (section.relation == "dense_matmul_sumcheck") {
-        return "rescale_remainder_tensor_present_and_native_range_bound";
-    }
-    if (section.relation == "sparse_attention_score_sumcheck") {
-        return "score_route_remainder_derived_from_operands_and_native_range_bound";
-    }
-    if (section.relation == "softmax_denominator_inverse_sumcheck") {
-        return "scaled_inverse_remainder_derived_from_denominator_inverse_product";
-    }
-    if (section.relation == "softmax_alpha_product_sumcheck") {
-        return "alpha_rescale_remainder_derived_from_exp_inverse_product";
-    }
-    if (section.relation == "fac4dnn_aggregation_sumcheck") {
-        return "aggregation_remainder_derived_from_sparse_alpha_hprime_products";
-    }
-    if (section.relation == "elu_lookup_argument" || section.relation == "identity_output_activation_argument") {
-        return "activation_or_output_bias_witness_bound_to_section";
-    }
-    if (section.relation == "final_logits_public_binding") {
-        return "final_logits_witness_bound_to_public_hash_and_opening";
-    }
-    return "no_auxiliary_witness_required";
-}
-
-std::string range_lookup_binding_status(const ZkdlProofSection& section) {
-    if (section.relation.find("lookup") != std::string::npos || section.relation.find("activation") != std::string::npos) {
-        return "native_lookup_or_identity_binding_present";
-    }
-    if (section.relation.find("inverse") != std::string::npos) {
-        return "native_scaled_inverse_binding_present_with_rescale_range_section";
-    }
-    if (section.relation == "dense_matmul_sumcheck" || section.relation == "sparse_attention_score_sumcheck") {
-        return "native_rescale_remainder_range_binding_present";
-    }
-    if (section.relation == "fac4dnn_aggregation_sumcheck") {
-        return "native_sparse_route_and_aggregation_remainder_binding_present";
-    }
-    if (section.relation == "final_logits_public_binding") {
-        return "native_public_logits_hash_and_mle_opening_binding_present";
-    }
-    return "no_range_or_lookup_binding_recorded";
-}
-
-void write_fixed_point_policy_json(std::ostream& out, int indent) {
-    const auto& policy = fixed_point_policy();
-    out << "{\n";
-    write_indent(out, indent + 2);
-    out << "\"policy_id\": \"" << json_escape(policy.policy_id) << "\",\n";
-    write_indent(out, indent + 2);
-    out << "\"scale\": " << policy.scale << ",\n";
-    write_indent(out, indent + 2);
-    out << "\"rounding\": \"" << json_escape(policy.rounding) << "\",\n";
-    write_indent(out, indent + 2);
-    out << "\"signed_encoding\": \"" << json_escape(policy.signed_encoding) << "\",\n";
-    write_indent(out, indent + 2);
-    out << "\"rescale_remainder_rule\": \"" << json_escape(policy.rescale_remainder_rule) << "\",\n";
-    write_indent(out, indent + 2);
-    out << "\"lookup_binding_rule\": \"" << json_escape(policy.lookup_binding_rule) << "\",\n";
-    write_indent(out, indent + 2);
-    out << "\"inverse_rule\": \"" << json_escape(policy.inverse_rule) << "\",\n";
-    write_indent(out, indent + 2);
-    out << "\"unrestricted_remainder_allowed\": " << (policy.unrestricted_remainder_allowed ? "true" : "false") << '\n';
-    write_indent(out, indent);
-    out << '}';
-}
-
-void write_transcript_challenge_summary(std::ostream& out, const ZkdlProofSection& section, int indent) {
-    out << "{\n";
-    std::size_t count = 0;
-    for (const auto& [key, value] : section.field_values) {
-        if (key.find("challenge") == std::string::npos) {
-            continue;
-        }
-        if (count != 0) {
-            out << ",\n";
-        }
-        write_indent(out, indent + 2);
-        out << '"' << json_escape(key) << "\": \"" << field_hex(value) << '"';
-        ++count;
-    }
-    if (count != 0) {
-        out << '\n';
-    }
-    write_indent(out, indent);
-    out << '}';
-}
-
-void write_all_relations_diagnostic(
-    const std::filesystem::path& path,
-    const DatasetConfig& config,
-    const std::string& route,
-    const NormalizedPublicInput& normalized,
-    const ZkdlRelationPayload& proof) {
-    std::filesystem::create_directories(path.parent_path());
-    std::ofstream out(path);
-    if (!out) {
-        throw std::runtime_error("failed to write all-relations diagnostic: " + path.string());
-    }
-
-    std::size_t passed = 0;
-    std::size_t failed = 0;
-    std::string first_failure;
-    for (const auto& section : proof.proof_sections) {
-        if (section.relation_passed) {
-            ++passed;
-        } else {
-            ++failed;
-            if (first_failure.empty()) {
-                first_failure = section.section_id;
-            }
-        }
-    }
-
-    out << "{\n";
-    out << "  \"artifact_type\": \"all_relations_diagnostic_not_a_proof\",\n";
-    out << "  \"dataset\": \"" << json_escape(config.dataset_id) << "\",\n";
-    out << "  \"route\": \"" << json_escape(route) << "\",\n";
-    out << "  \"diagnostic_scope\": \"full_dataset_gat_forward_all_relation_sections\",\n";
-    out << "  \"proof_acceptance\": false,\n";
-    out << "  \"node_count\": " << normalized.node_count << ",\n";
-    out << "  \"edge_count\": " << normalized.edge_count << ",\n";
-    out << "  \"graph_count\": " << normalized.graph_count << ",\n";
-    out << "  \"quant_policy\": ";
-    write_fixed_point_policy_json(out, 2);
-    out << ",\n";
-    out << "  \"zkdl_source_coverage_evidence\": {\n";
-    out << "    \"native_files\": \"proof.cuh,commitment.cuh,zkmatmul.cuh,zkprod.cuh,zkrelu.cuh\",\n";
-    out << "    \"available_primitives\": \"inner_product_sumcheck,hadamard_product_sumcheck,binary_sumcheck,zkMatMul,zkProd,zkReLU,Hyrax-style opening\",\n";
-    out << "    \"native_adapter_coverage\": \"sparse route verifier,dst max argument,LeakyReLU/ELU/Exp static table lookup binding,scaled inverse argument,rescale range binding,FAC4DNN aggregation,hidden concat,output bias average,final logits public MLE binding\"\n";
-    out << "  },\n";
-    out << "  \"section_count\": " << proof.proof_sections.size() << ",\n";
-    out << "  \"passed_count\": " << passed << ",\n";
-    out << "  \"failed_count\": " << failed << ",\n";
-    out << "  \"first_failing_section\": \"" << json_escape(first_failure) << "\",\n";
-    out << "  \"relations\": [\n";
-    for (std::size_t i = 0; i < proof.proof_sections.size(); ++i) {
-        const auto& section = proof.proof_sections[i];
-        const auto claimed_residual = section_field_or_zero(&section, "residual");
-        const auto recomputed_residual = recompute_section_residual(section);
-        out << "    {\n";
-        out << "      \"relation_name\": \"" << json_escape(section.relation) << "\",\n";
-        out << "      \"section_id\": \"" << json_escape(section.section_id) << "\",\n";
-        out << "      \"passed\": " << (section.relation_passed ? "true" : "false") << ",\n";
-        out << "      \"residual\": \"" << field_hex(claimed_residual) << "\",\n";
-        out << "      \"claim\": \"" << json_escape(section_claim(section)) << "\",\n";
-        out << "      \"recomputed_value\": \"" << field_hex(recomputed_residual) << "\",\n";
-        out << "      \"scale_quant_policy_id\": \"" << json_escape(fixed_point_policy().policy_id) << "\",\n";
-        out << "      \"auxiliary_witness_status\": \"" << json_escape(auxiliary_witness_status(section)) << "\",\n";
-        out << "      \"range_lookup_binding_status\": \"" << json_escape(range_lookup_binding_status(section)) << "\",\n";
-        out << "      \"first_failing_index_or_section\": \"" << (section.relation_passed ? "" : json_escape(section.section_id)) << "\",\n";
-        out << "      \"proof_section_labels\": ";
-        write_string_array_inline(out, section.tensor_labels);
-        out << ",\n";
-        out << "      \"transcript_challenge_summary\": ";
-        write_transcript_challenge_summary(out, section, 6);
-        out << "\n";
-        out << "    }";
-        if (i + 1U != proof.proof_sections.size()) {
-            out << ',';
-        }
-        out << '\n';
-    }
-    out << "  ]\n";
-    out << "}\n";
-}
-
-void write_zkdl_relation_payload_artifact(
-    const std::filesystem::path& path,
-    const DatasetConfig& config,
-    const std::string& route,
-    const NormalizedPublicInput& normalized,
-    const ZkdlRelationPayload& proof) {
-    std::filesystem::create_directories(path.parent_path());
-    std::ofstream out(path);
-    if (!out) {
-        throw std::runtime_error("failed to write zkDL relation payload artifact: " + path.string());
-    }
-    out << "{\n";
-    out << "  \"artifact_type\": \"zkdl_relation_payload_diagnostic_not_a_proof\",\n";
-    out << "  \"proof_format_id\": \"" << json_escape(proof.format_id) << "\",\n";
-    out << "  \"proof_backend\": \"zkDL_relation_adapter_blocked_before_native_proof\",\n";
-    out << "  \"verifier_backend\": \"" << json_escape(proof.verifier_backend_id) << "\",\n";
-    out << "  \"commitment_backend_id\": \"" << json_escape(proof.commitment_backend_id) << "\",\n";
-    out << "  \"field_id\": \"" << json_escape(proof.field_id) << "\",\n";
-    out << "  \"dataset\": \"" << json_escape(config.dataset_id) << "\",\n";
-    out << "  \"route\": \"" << json_escape(route) << "\",\n";
-    out << "  \"full_dataset\": true,\n";
-    out << "  \"node_count\": " << normalized.node_count << ",\n";
-    out << "  \"edge_count\": " << normalized.edge_count << ",\n";
-    out << "  \"graph_count\": " << normalized.graph_count << ",\n";
-    out << "  \"public_input_hash\": \"" << json_escape(proof.public_input_hash) << "\",\n";
-    out << "  \"witness_coverage_hash\": \"" << json_escape(proof.witness_coverage_hash) << "\",\n";
-    out << "  \"final_logits_hash\": \"" << json_escape(proof.final_logits_hash) << "\",\n";
-    out << "  \"payload_kind\": \"diagnostic_tensor_commitments_and_relation_payload_not_accepted_as_proof\",\n";
-    out << "  \"zkdl_proof\": false,\n";
-    out << "  \"zkdl_verifier_acceptance\": false,\n";
-    out << "  \"tensor_commitments\": [\n";
-    for (std::size_t i = 0; i < proof.tensor_commitments.size(); ++i) {
-        const auto& item = proof.tensor_commitments[i];
-        out << "    {\n";
-        out << "      \"label\": \"" << json_escape(item.label) << "\",\n";
-        out << "      \"shape\": ";
-        write_size_array_inline(out, item.shape);
-        out << ",\n";
-        out << "      \"value_count\": " << item.value_count << ",\n";
-        out << "      \"commitment\": \"" << field_hex(item.commitment) << "\",\n";
-        out << "      \"blinding\": \"" << field_hex(item.blinding) << "\"\n";
-        out << "    }";
-        if (i + 1U != proof.tensor_commitments.size()) {
-            out << ',';
-        }
-        out << '\n';
-    }
-    out << "  ],\n";
-    out << "  \"proof_sections\": [\n";
-    for (std::size_t i = 0; i < proof.proof_sections.size(); ++i) {
-        const auto& section = proof.proof_sections[i];
-        out << "    {\n";
-        out << "      \"section_id\": \"" << json_escape(section.section_id) << "\",\n";
-        out << "      \"relation\": \"" << json_escape(section.relation) << "\",\n";
-        out << "      \"label\": \"" << json_escape(section.label) << "\",\n";
-        out << "      \"tensor_labels\": ";
-        write_string_array_inline(out, section.tensor_labels);
-        out << ",\n";
-        out << "      \"relation_passed\": " << (section.relation_passed ? "true" : "false") << ",\n";
-        out << "      \"field_values\": ";
-        write_field_map(out, section.field_values, 6);
-        out << ",\n";
-        out << "      \"metadata\": ";
-        write_string_map(out, section.metadata, 6);
-        out << '\n';
-        out << "    }";
-        if (i + 1U != proof.proof_sections.size()) {
-            out << ',';
-        }
-        out << '\n';
-    }
-    out << "  ]\n";
-    out << "}\n";
 }
 
 const ZkdlTensorCommitment* find_tensor_commitment(
@@ -3667,11 +3146,11 @@ std::string compute_native_transcript_root(const ZkdlNativeProofObject& proof) {
 
 ZkdlNativeProofObject build_zkdl_native_proof_object(
     const NormalizedPublicInput& normalized,
-    const ZkdlRelationPayload& relation_payload) {
+    const ZkdlNativeSectionPlan& section_plan) {
     ZkdlNativeProofObject proof;
-    proof.public_input_hash = relation_payload.public_input_hash;
-    proof.final_logits_hash = relation_payload.final_logits_hash;
-    proof.witness_coverage_hash = relation_payload.witness_coverage_hash;
+    proof.public_input_hash = section_plan.public_input_hash;
+    proof.final_logits_hash = section_plan.final_logits_hash;
+    proof.witness_coverage_hash = section_plan.witness_coverage_hash;
 
     const auto packed_route = commit_sparse_route(normalized, "public_sparse_route");
     const auto src_route = commit_sparse_route(normalized, "public_sparse_route.R_src");
@@ -3680,8 +3159,8 @@ ZkdlNativeProofObject build_zkdl_native_proof_object(
     proof.tensor_commitments = {packed_route, src_route, dst_route, graph_route};
     proof.tensor_commitments.insert(
         proof.tensor_commitments.end(),
-        relation_payload.tensor_commitments.begin(),
-        relation_payload.tensor_commitments.end());
+        section_plan.tensor_commitments.begin(),
+        section_plan.tensor_commitments.end());
 
     proof.proof_sections.push_back(build_public_input_binding_section(
         proof.public_input_hash,
@@ -3695,8 +3174,8 @@ ZkdlNativeProofObject build_zkdl_native_proof_object(
         dst_route));
     proof.proof_sections.insert(
         proof.proof_sections.end(),
-        relation_payload.proof_sections.begin(),
-        relation_payload.proof_sections.end());
+        section_plan.proof_sections.begin(),
+        section_plan.proof_sections.end());
 
     proof.openings.reserve(proof.tensor_commitments.size());
     for (const auto& commitment : proof.tensor_commitments) {
@@ -3786,6 +3265,21 @@ ZkdlNativeVerifyResult verify_zkdl_native_full_gat_proof(
         }
     }
 
+    const auto expected_challenges = collect_transcript_challenges(proof.proof_sections);
+    if (expected_challenges.size() != proof.transcript_challenges.size()) {
+        return fail("transcript.challenge_binding.verify", "transcript_challenge_count_mismatch");
+    }
+    for (std::size_t index = 0; index < expected_challenges.size(); ++index) {
+        const auto& expected = expected_challenges[index];
+        const auto& actual = proof.transcript_challenges[index];
+        if (expected.challenge_id != actual.challenge_id
+            || expected.section_id != actual.section_id
+            || expected.field_name != actual.field_name
+            || expected.value != actual.value) {
+            return fail("transcript.challenge_binding.verify", "transcript_challenge_value_mismatch");
+        }
+    }
+
     if (compute_native_transcript_root(proof) != proof.transcript_root) {
         return fail("transcript.binding.verify", "transcript_root_mismatch");
     }
@@ -3800,6 +3294,10 @@ ZkdlNativeVerifyResult verify_zkdl_native_full_gat_proof(
             }
         }
         const auto recomputed_residual = recompute_section_residual(section);
+        const auto claimed_residual = section.field_values.find("residual");
+        if (claimed_residual != section.field_values.end() && claimed_residual->second != recomputed_residual) {
+            return fail(section.section_id + ".verify", "section_residual_claim_mismatch");
+        }
         if (section.relation_passed != (recomputed_residual == 0)) {
             return fail(section.section_id + ".verify", "section_pass_flag_mismatch");
         }
@@ -3975,9 +3473,6 @@ ZkdlProofRunResult run_zkdl_cpu_full_gat_proof(
     ZkdlProofRunResult result;
     result.attempted = true;
     result.artifact_path = (std::filesystem::path("runs") / config.dataset_id / route / "full_gat_forward.zkdl_proof.json").string();
-    result.relation_payload_path =
-        (std::filesystem::path("runs") / config.dataset_id / route / "full_gat_forward.zkdl_relation_payload.json").string();
-    result.diagnostic_path = (std::filesystem::path("runs") / config.dataset_id / route / "debug_all_relations.json").string();
     result.attempted_stages = {
         "config_load",
         "dataset_load",
@@ -3987,13 +3482,13 @@ ZkdlProofRunResult run_zkdl_cpu_full_gat_proof(
         "semantic_precheck_full_forward",
         "semantic_precheck_relation_checker",
         "fixed_point_policy_rebuild",
-        "zkdl_relation_payload_diagnostic",
+        "zkdl_native_section_plan",
         "zkdl_native_proof_object_build",
         "zkdl_native_tensor_commitment_openings",
         "zkdl_native_transcript_binding",
         "zkdl_native_proof_artifact_write",
-        "all_relations_diagnostic",
         "zkdl_native_full_gat_verifier",
+        "zkdl_native_in_memory_tamper_audit",
     };
 
     try {
@@ -4006,7 +3501,7 @@ ZkdlProofRunResult run_zkdl_cpu_full_gat_proof(
         const auto witness_hash = hash_witness_coverage(config, normalized, trace, commitments);
 
         const auto commitment_start = Clock::now();
-        auto proof = build_zkdl_relation_payload(
+        auto section_plan = build_zkdl_native_section_plan(
             config,
             meta,
             normalized,
@@ -4017,16 +3512,13 @@ ZkdlProofRunResult run_zkdl_cpu_full_gat_proof(
             final_hash,
             witness_hash);
         result.commitment_time_ms = elapsed_ms(commitment_start, Clock::now());
-        result.full_gat_payload_generated = true;
+        result.full_gat_statement_generated = true;
         result.final_logits_payload_generated = true;
 
-        auto native_proof = build_zkdl_native_proof_object(normalized, proof);
-        write_zkdl_relation_payload_artifact(result.relation_payload_path, config, route, normalized, proof);
-        write_all_relations_diagnostic(result.diagnostic_path, config, route, normalized, proof);
+        auto native_proof = build_zkdl_native_proof_object(normalized, section_plan);
         write_zkdl_native_proof_artifact(result.artifact_path, config, route, normalized, native_proof);
         result.prove_time_ms = elapsed_ms(prove_start, Clock::now());
         result.generated = true;
-        result.diagnostic_generated = true;
         result.proof_size_bytes = std::filesystem::file_size(result.artifact_path);
 
         std::size_t relation_failed_count = 0;
@@ -4049,11 +3541,27 @@ ZkdlProofRunResult run_zkdl_cpu_full_gat_proof(
             result.artifact_path);
         result.verify_time_ms = elapsed_ms(verify_start, Clock::now());
         result.verifier_called = verifier_result.called;
-        result.verified = verifier_result.accepted;
+        auto tampered_proof = native_proof;
+        if (!tampered_proof.proof_sections.empty()) {
+            tampered_proof.proof_sections.front().field_values["residual"] =
+                field_add(tampered_proof.proof_sections.front().field_values["residual"], 1U);
+        }
+        const auto tamper_result = verify_zkdl_native_full_gat_proof(
+            tampered_proof,
+            normalized,
+            public_input_hash,
+            final_hash,
+            result.artifact_path);
+        const bool tamper_rejected = !tamper_result.accepted;
+        result.verified = verifier_result.accepted && tamper_rejected;
         if (result.verified) {
             result.failure_step.clear();
             result.block_reason.clear();
             result.unsupported_protocol_requirements.clear();
+        } else if (verifier_result.accepted && !tamper_rejected) {
+            result.failure_step = "proof_authenticity.tamper_reject.verify";
+            result.block_reason = "tampered_in_memory_zkdl_proof_object_was_accepted";
+            result.unsupported_protocol_requirements = {"zkdl_proof_tamper_rejection"};
         } else {
             result.failure_step = verifier_result.failure_step;
             result.block_reason = verifier_result.failure_reason;
@@ -4064,13 +3572,10 @@ ZkdlProofRunResult run_zkdl_cpu_full_gat_proof(
         result.stats["zkdl_first_failure_section"] = first_failing_section;
         result.stats["zkdl_relation_failure_count"] = std::to_string(relation_failed_count);
         result.stats["zkdl_proof_artifact_path"] = result.artifact_path;
-        result.stats["zkdl_relation_payload_path"] = result.relation_payload_path;
-        result.stats["all_relations_diagnostic_path"] = result.diagnostic_path;
-        result.stats["all_relations_diagnostic_generated"] = "true";
         result.stats["fixed_point_policy_id"] = fixed_point_policy().policy_id;
         result.stats["unrestricted_remainder_allowed"] =
             fixed_point_policy().unrestricted_remainder_allowed ? "true" : "false";
-        result.stats["zkdl_relation_payload_format_id"] = proof.format_id;
+        result.stats["zkdl_native_section_plan_format_id"] = section_plan.format_id;
         result.stats["zkdl_native_proof_format_id"] = native_proof.format_id;
         result.stats["zkdl_commitment_backend_id"] = native_proof.commitment_backend_id;
         result.stats["zkdl_field_id"] = native_proof.field_id;
@@ -4093,11 +3598,16 @@ ZkdlProofRunResult run_zkdl_cpu_full_gat_proof(
         result.stats["zkdl_verifier_failure_step"] = verifier_result.failure_step;
         result.stats["zkdl_verifier_failure_reason"] = verifier_result.failure_reason;
         result.stats["zkdl_proof_bytes_sha256"] = verifier_result.proof_bytes_sha256;
+        result.stats["proof_authenticity_checked"] = "true";
+        result.stats["proof_tamper_check_mode"] = "in_memory_section_residual_flip";
+        result.stats["proof_tamper_rejected"] = tamper_rejected ? "true" : "false";
+        result.stats["proof_artifact_contains_full_private_witness"] = "false";
+        result.stats["proof_artifact_contains_full_intermediate_tensors"] = "false";
+        result.stats["proof_artifact_contains_debug_evidence"] = "false";
+        result.stats["proof_artifact_contains_relation_payload"] = "false";
+        result.stats["proof_artifact_canonical_transfer_encoding"] = "zkdl_proof_json_v1";
         result.stats["debug_proof_attempt_size_bytes"] = result.proof_size_bytes.has_value()
             ? std::to_string(*result.proof_size_bytes)
-            : "";
-        result.stats["debug_relation_payload_size_bytes"] = std::filesystem::exists(result.relation_payload_path)
-            ? std::to_string(std::filesystem::file_size(result.relation_payload_path))
             : "";
     } catch (const std::exception& error) {
         result.failure_step = "zkdl_native_proof_object_build";
@@ -4105,41 +3615,6 @@ ZkdlProofRunResult run_zkdl_cpu_full_gat_proof(
         result.unsupported_protocol_requirements = {"zkdl_cpu_full_gat_proof_generation_exception"};
     }
     return result;
-}
-
-void write_semantic_precheck_artifact(
-    const std::filesystem::path& path,
-    const DatasetConfig& config,
-    const std::string& route,
-    const NormalizedPublicInput& normalized,
-    const FullForwardTrace& trace,
-    const StageCommitments& commitments,
-    const std::string& public_input_hash,
-    const std::string& witness_coverage_hash,
-    const std::string& final_logits_hash) {
-    std::filesystem::create_directories(path.parent_path());
-    std::ofstream out(path);
-    if (!out) {
-        throw std::runtime_error("failed to write semantic precheck artifact: " + path.string());
-    }
-    out << "{\n";
-    out << "  \"artifact_type\": \"semantic_precheck_not_zkdl_proof\",\n";
-    out << "  \"dataset\": \"" << json_escape(config.dataset_id) << "\",\n";
-    out << "  \"route\": \"" << json_escape(route) << "\",\n";
-    out << "  \"zkdl_proof\": false,\n";
-    out << "  \"zkdl_verifier_acceptance\": false,\n";
-    out << "  \"full_dataset_forward_evaluated\": true,\n";
-    out << "  \"node_count\": " << normalized.node_count << ",\n";
-    out << "  \"edge_count\": " << normalized.edge_count << ",\n";
-    out << "  \"output_rows\": " << trace.y.rows << ",\n";
-    out << "  \"output_cols\": " << trace.y.cols << ",\n";
-    out << "  \"public_input_hash\": \"" << json_escape(public_input_hash) << "\",\n";
-    out << "  \"witness_coverage_hash\": \"" << json_escape(witness_coverage_hash) << "\",\n";
-    out << "  \"final_logits_hash\": \"" << json_escape(final_logits_hash) << '"';
-    for (const auto& [name, commitment] : commitments.values) {
-        out << ",\n  \"semantic_stage_" << json_escape(name) << "\": \"" << json_escape(commitment) << '"';
-    }
-    out << "\n}\n";
 }
 
 SemanticPrecheckResult run_full_gat_semantic_precheck(
@@ -4152,8 +3627,8 @@ SemanticPrecheckResult run_full_gat_semantic_precheck(
     const std::string& route) {
     using Clock = std::chrono::steady_clock;
     SemanticPrecheckResult result;
+    (void)route;
     result.ran = true;
-    result.artifact_path = (std::filesystem::path("runs") / config.dataset_id / route / "full_gat_semantic_precheck.json").string();
     result.attempted_stages = {
         "config_load",
         "dataset_load",
@@ -4181,19 +3656,7 @@ SemanticPrecheckResult run_full_gat_semantic_precheck(
         const auto public_hash = hash_normalized_public_input(config, meta, normalized);
         const auto final_hash = hash_final_logits(trace.y);
         const auto witness_hash = hash_witness_coverage(config, normalized, trace, commitments);
-        write_semantic_precheck_artifact(
-            result.artifact_path,
-            config,
-            route,
-            normalized,
-            trace,
-            commitments,
-            public_hash,
-            witness_hash,
-            final_hash);
-        result.artifact_generated = true;
         result.passed = true;
-        result.stats["semantic_precheck_artifact_path"] = result.artifact_path;
         result.stats["semantic_forward_time_ms"] = std::to_string(*result.forward_time_ms);
         result.stats["semantic_checker_time_ms"] = std::to_string(*result.checker_time_ms);
         result.stats["semantic_stage_count"] = std::to_string(commitments.values.size());
@@ -4570,7 +4033,7 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.bool_values["zkdl_proof_verified"] = cpu_zkdl_verified;
     manifest.bool_values["zkdl_verifier_called"] = cpu_zkdl_verifier_called;
     manifest.bool_values["full_gat_forward_in_zkdl_proof"] =
-        cpu_zkdl_proof_generated && proof_result.full_gat_payload_generated;
+        cpu_zkdl_proof_generated && proof_result.full_gat_statement_generated;
     manifest.bool_values["final_logits_derivation_complete"] =
         cpu_zkdl_proof_generated && proof_result.final_logits_payload_generated;
     manifest.bool_values["no_precomputed_logits_bypass"] = semantic_result.passed;
@@ -4659,9 +4122,6 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     manifest.dataset_stats["attempted_stages"] = join_strings(attempt.attempted_stages);
     manifest.dataset_stats["proof_artifact_generated"] = cpu_zkdl_proof_generated ? "true" : "false";
     manifest.dataset_stats["proof_artifact_path"] = cpu_zkdl_proof_generated ? proof_result.artifact_path : "";
-    manifest.dataset_stats["relation_payload_generated"] = proof_result.diagnostic_generated ? "true" : "false";
-    manifest.dataset_stats["relation_payload_path"] = proof_result.diagnostic_generated ? proof_result.relation_payload_path : "";
-    manifest.dataset_stats["all_relations_diagnostic_path"] = proof_result.diagnostic_path;
     manifest.dataset_stats["verifier_called"] = cpu_zkdl_verifier_called ? "true" : "false";
     manifest.dataset_stats["zkdl_proof_generated"] = cpu_zkdl_proof_generated ? "true" : "false";
     manifest.dataset_stats["zkdl_proof_verified"] = cpu_zkdl_verified ? "true" : "false";
@@ -4744,17 +4204,8 @@ Manifest build_manifest(const DatasetConfig& config, const std::string& route, c
     add_source(manifest, "checkpoint_manifest", checkpoint_manifest);
     add_source(manifest, "checkpoint_tensors", checkpoint_tensors);
     add_source(manifest, route == "gpu" ? "main_gpu_manifest" : "main_cpu_manifest", main_manifest);
-    if (semantic_result.artifact_generated && !semantic_result.artifact_path.empty()) {
-        add_source(manifest, "semantic_precheck_artifact", semantic_result.artifact_path);
-    }
     if (cpu_zkdl_proof_generated && !proof_result.artifact_path.empty()) {
         add_source(manifest, "zkdl_proof_artifact", proof_result.artifact_path);
-    }
-    if (proof_result.diagnostic_generated && !proof_result.relation_payload_path.empty()) {
-        add_source(manifest, "zkdl_relation_payload_diagnostic", proof_result.relation_payload_path);
-    }
-    if (proof_result.diagnostic_generated && !proof_result.diagnostic_path.empty()) {
-        add_source(manifest, "all_relations_diagnostic", proof_result.diagnostic_path);
     }
 
     return manifest;

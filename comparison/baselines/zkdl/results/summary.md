@@ -1,16 +1,14 @@
 # zkDL Full GAT Baseline Summary
 
-Generated at: `2026-05-06T06:36:13.211513+00:00`
+Generated at: `2026-05-07T04:36:20.036820+00:00`
 
 Correct baseline directory: `comparison/baselines/zkdl`.
 
 The full-dataset statement is attempted for `cora_full`, `citeseer_full`, `pubmed_full`, `ppi_full_formal`, and `ogbn_arxiv_full`. No row is marked verified unless a real zkDL proof and verifier acceptance path succeeds.
 
-`semantic_precheck_passed=true` only means the baseline recomputed the full-dataset forward and local semantic checker accepted it. It is not a zkDL proof and never contributes to `proof_size_bytes`.
+`semantic_precheck_passed=true` records an in-memory full-forward consistency gate. It is not a proof artifact and never contributes to `proof_size_bytes`.
 
-CPU runs also emit `runs/<dataset>/cpu/debug_all_relations.json`, an all-relations diagnostic covering the full GAT relation payload in one pass. That diagnostic is not a proof and is not used for `status=verified`.
-
-Relation payload files named `full_gat_forward.zkdl_relation_payload.json` are deliberately typed as diagnostics. CPU proof attempts now emit a separate `full_gat_forward.zkdl_proof.json` artifact and call the native zkDL verifier before status is decided.
+CPU runs emit one formal proof artifact per dataset: `runs/<dataset>/cpu/full_gat_forward.zkdl_proof.json`. Native section planning stays in memory, and no relation-payload or debug side artifact is written by the formal runner.
 
 Formal commitment/prove/verify/proof-size metrics are populated only for `status=verified`. Failed proof-attempt timings are debug fields in each run manifest and are excluded from the comparison tables.
 
@@ -31,14 +29,14 @@ Formal commitment/prove/verify/proof-size metrics are populated only for `status
 | GAT forward | src/model/gat.cpp::forward_note_style | src/zkdl_gat/baseline.cpp::compute_full_forward | ported | hidden heads, concat, output attention, and output head average are computed locally |
 | output bias/head average | src/model/gat.cpp::attention_head_forward_impl/average_matrices | src/zkdl_gat/baseline.cpp::compute_head_forward/compute_full_forward | ported | output heads add bias before arithmetic average; hidden heads do not add output bias |
 | public input | src/protocol/challenges.cpp and run_manifest public topology fields | src/zkdl_gat/baseline.cpp::hash_normalized_public_input/build_manifest | rewritten | public topology hash is derived after gate-equivalent node/edge normalization |
-| final logits | src/model/gat.cpp::forward_note_style | src/zkdl_gat/baseline.cpp::hash_final_logits/run_full_gat_semantic_precheck | rewritten | semantic precheck hashes locally derived final logits; not accepted as proof |
+| final logits | src/model/gat.cpp::forward_note_style | src/zkdl_gat/baseline.cpp::hash_final_logits/build_zkdl_native_section_plan | rewritten | proof statement binds locally derived final logits without exposing them as a side artifact |
 | metric scope | src/main.cpp metrics and src/protocol/prover.cpp::proof_size_bytes | scripts/run_full_baseline.py + src/zkdl_gat/baseline.cpp metrics gating | rewritten | formal four metrics remain null unless status=verified with real zkDL proof/verifier |
 
 ## zkDL Proof Retention Map
 
 | item | zkdl_source_file_or_api | proof_section | verifier_check | status |
 | --- | --- | --- | --- | --- |
-| proof object | src/zkdl_gat/baseline.cpp::build_zkdl_native_proof_object | full_gat_forward.zkdl_proof.json | native proof artifact is generated separately from relation diagnostics | implemented |
+| proof object | src/zkdl_gat/baseline.cpp::build_zkdl_native_proof_object | full_gat_forward.zkdl_proof.json | native proof artifact is the only CPU proof artifact emitted by the formal run | implemented |
 | commitment | commitment.cuh::Commitment::commit + portable adapter | tensor commitments | verifier checks committed labels and opening claims | implemented |
 | opening | commitment.cuh::Commitment::open/me_open + portable opening records | MLE opening claims | verifier checks opening digest consistency for transported proof bytes | implemented |
 | transcript | proof.cuh sumcheck challenges + native transcript root | Fiat-Shamir transcript values | verifier recomputes transcript root and hashes proof artifact bytes | implemented |
@@ -61,11 +59,11 @@ Formal commitment/prove/verify/proof-size metrics are populated only for `status
 
 | dataset | status | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes |
 | --- | --- | --- | --- | --- | --- |
-| cora_full | verified | 670.201 | 1038.766 | 2.562 | 290685 |
-| citeseer_full | verified | 2054.282 | 3055.256 | 2.978 | 290685 |
-| pubmed_full | verified | 1762.117 | 2212.08 | 6.48 | 291284 |
-| ppi_full_formal | verified | 1445.703 | 1790.991 | 35.243 | 74318 |
-| ogbn_arxiv_full | verified | 2439.309 | 3233.389 | 63.508 | 74481 |
+| cora_full | verified | 663.066 | 1047.761 | 2.646 | 290685 |
+| citeseer_full | verified | 2052.269 | 3049.405 | 2.421 | 290685 |
+| pubmed_full | verified | 1767.254 | 2275.398 | 6.259 | 291284 |
+| ppi_full_formal | verified | 1408.22 | 1748.726 | 35.713 | 74318 |
+| ogbn_arxiv_full | verified | 2469.506 | 3267.96 | 63.916 | 74481 |
 
 ## GPU
 
