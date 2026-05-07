@@ -173,6 +173,17 @@ def main():
                     errors.append(f"{path}: verified status without commitment/prove metrics")
                 if manifest.get("verify_time_ms") is None or manifest.get("proof_size_bytes") in (None, 0):
                     errors.append(f"{path}: verified status without verify metrics and proof bytes")
+                stats = manifest.get("dataset_stats", {})
+                if stats.get("proof_tamper_rejected") != "true":
+                    errors.append(f"{path}: verified status without in-memory proof tamper rejection")
+                for key in [
+                    "proof_artifact_contains_full_private_witness",
+                    "proof_artifact_contains_full_intermediate_tensors",
+                    "proof_artifact_contains_debug_evidence",
+                    "proof_artifact_contains_relation_payload",
+                ]:
+                    if stats.get(key) != "false":
+                        errors.append(f"{path}: proof authenticity field {key} must be false")
             else:
                 if manifest.get("proof_backend") == "zkDL" and not manifest.get("zkdl_proof_generated"):
                     errors.append(f"{path}: blocked row cannot claim zkDL proof backend without a generated proof")
@@ -212,6 +223,18 @@ def main():
 
     for legacy in (root / "runs").glob("*/**/zkdl_gat_composed_proof.json"):
         errors.append(f"legacy misleading proof artifact still present: {legacy}")
+    forbidden_run_names = {
+        "debug_all_relations.json",
+        "full_gat_forward.zkdl_relation_payload.json",
+        "full_gat_semantic_precheck.json",
+        "gpu_probe.json",
+    }
+    for path in (root / "runs").rglob("*"):
+        if path.is_file() and path.name in forbidden_run_names:
+            errors.append(f"non-formal residual artifact still present: {path}")
+    for path in root.rglob("__pycache__"):
+        if path.is_dir():
+            errors.append(f"python cache directory still present: {path}")
 
     if errors:
         for error in errors:

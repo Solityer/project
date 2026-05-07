@@ -21,7 +21,7 @@ int main(int argc, char** argv) {
         std::string config_path;
         std::string route;
         std::string output_path;
-        std::string gpu_probe_path = "runs/gpu_probe.json";
+        std::string gpu_probe_path = "/tmp/zkdl_gat_gpu_probe.json";
 
         for (int i = 1; i < argc; ++i) {
             const std::string arg = argv[i];

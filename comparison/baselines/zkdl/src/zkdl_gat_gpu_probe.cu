@@ -76,7 +76,7 @@ void write_probe(
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::string out_path = "runs/gpu_probe.json";
+    std::string out_path = "/tmp/zkdl_gat_gpu_probe.json";
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--out" && i + 1 < argc) {

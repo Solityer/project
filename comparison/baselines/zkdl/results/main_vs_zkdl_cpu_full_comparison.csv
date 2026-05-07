@@ -1,6 +1,6 @@
 dataset,main_route,zkdl_route_id,zkdl_status,comparison_status,zkdl_proof_backend,zkdl_verifier_backend,full_dataset_gate_passed,semantic_precheck_passed,main_commitment_time_ms,main_prove_time_ms,main_verify_time_ms,main_proof_size_bytes,zkdl_commitment_time_ms,zkdl_prove_time_ms,zkdl_verify_time_ms,zkdl_proof_size_bytes,failure_step,block_reason
-cora_full,cpu,zkdl_gat_full_forward_cpu,verified,verified,zkDL,zkDL,True,True,283.786,1207.818,153.379,90755,670.201,1038.766,2.562,290685,,
-citeseer_full,cpu,zkdl_gat_full_forward_cpu,verified,verified,zkDL,zkDL,True,True,453.773,1418.744,153.837,90763,2054.282,3055.256,2.978,290685,,
-pubmed_full,cpu,zkdl_gat_full_forward_cpu,verified,verified,zkDL,zkDL,True,True,2962.933,5604.074,175.454,90760,1762.117,2212.08,6.48,291284,,
-ppi_full_formal,cpu,zkdl_gat_full_forward_cpu,verified,verified,zkDL,zkDL,True,True,3563.973,7111.447,424.71,21360,1445.703,1790.991,35.243,74318,,
-ogbn_arxiv_full,cpu,zkdl_gat_full_forward_cpu,verified,verified,zkDL,zkDL,True,True,18071.562,66540.6,417.38,21361,2439.309,3233.389,63.508,74481,,
+cora_full,cpu,zkdl_gat_full_forward_cpu,verified,verified,zkDL,zkDL,True,True,283.786,1207.818,153.379,90755,663.066,1047.761,2.646,290685,,
+citeseer_full,cpu,zkdl_gat_full_forward_cpu,verified,verified,zkDL,zkDL,True,True,453.773,1418.744,153.837,90763,2052.269,3049.405,2.421,290685,,
+pubmed_full,cpu,zkdl_gat_full_forward_cpu,verified,verified,zkDL,zkDL,True,True,2962.933,5604.074,175.454,90760,1767.254,2275.398,6.259,291284,,
+ppi_full_formal,cpu,zkdl_gat_full_forward_cpu,verified,verified,zkDL,zkDL,True,True,3563.973,7111.447,424.71,21360,1408.22,1748.726,35.713,74318,,
+ogbn_arxiv_full,cpu,zkdl_gat_full_forward_cpu,verified,verified,zkDL,zkDL,True,True,18071.562,66540.6,417.38,21361,2469.506,3267.96,63.916,74481,,

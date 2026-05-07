@@ -3,6 +3,7 @@ import argparse
 import csv
 import json
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,12 +30,12 @@ MAIN_REPO_METHOD_ROWS = [
     ("GAT forward", "src/model/gat.cpp::forward_note_style", "src/zkdl_gat/baseline.cpp::compute_full_forward", "ported", "hidden heads, concat, output attention, and output head average are computed locally"),
     ("output bias/head average", "src/model/gat.cpp::attention_head_forward_impl/average_matrices", "src/zkdl_gat/baseline.cpp::compute_head_forward/compute_full_forward", "ported", "output heads add bias before arithmetic average; hidden heads do not add output bias"),
     ("public input", "src/protocol/challenges.cpp and run_manifest public topology fields", "src/zkdl_gat/baseline.cpp::hash_normalized_public_input/build_manifest", "rewritten", "public topology hash is derived after gate-equivalent node/edge normalization"),
-    ("final logits", "src/model/gat.cpp::forward_note_style", "src/zkdl_gat/baseline.cpp::hash_final_logits/run_full_gat_semantic_precheck", "rewritten", "semantic precheck hashes locally derived final logits; not accepted as proof"),
+    ("final logits", "src/model/gat.cpp::forward_note_style", "src/zkdl_gat/baseline.cpp::hash_final_logits/build_zkdl_native_section_plan", "rewritten", "proof statement binds locally derived final logits without exposing them as a side artifact"),
     ("metric scope", "src/main.cpp metrics and src/protocol/prover.cpp::proof_size_bytes", "scripts/run_full_baseline.py + src/zkdl_gat/baseline.cpp metrics gating", "rewritten", "formal four metrics remain null unless status=verified with real zkDL proof/verifier"),
 ]
 
 ZKDL_PROOF_ROWS = [
-    ("proof object", "src/zkdl_gat/baseline.cpp::build_zkdl_native_proof_object", "full_gat_forward.zkdl_proof.json", "native proof artifact is generated separately from relation diagnostics", "implemented"),
+    ("proof object", "src/zkdl_gat/baseline.cpp::build_zkdl_native_proof_object", "full_gat_forward.zkdl_proof.json", "native proof artifact is the only CPU proof artifact emitted by the formal run", "implemented"),
     ("commitment", "commitment.cuh::Commitment::commit + portable adapter", "tensor commitments", "verifier checks committed labels and opening claims", "implemented"),
     ("opening", "commitment.cuh::Commitment::open/me_open + portable opening records", "MLE opening claims", "verifier checks opening digest consistency for transported proof bytes", "implemented"),
     ("transcript", "proof.cuh sumcheck challenges + native transcript root", "Fiat-Shamir transcript values", "verifier recomputes transcript root and hashes proof artifact bytes", "implemented"),
@@ -186,27 +187,38 @@ def run_route(root, build_dir, route):
     if not runner.exists():
         raise SystemExit(f"runner not found: {runner}")
 
-    if route == "gpu":
-        probe = root / build_dir / "zkdl_gat_gpu_probe"
-        if probe.exists():
-            run([str(probe), "--out", "runs/gpu_probe.json"], root)
+    obsolete_root_probe = root / "runs" / "gpu_probe.json"
+    if obsolete_root_probe.exists():
+        obsolete_root_probe.unlink()
 
-    manifests = []
-    for dataset_id, _ in DATASETS:
-        cfg = root / "configs" / f"{dataset_id}.cfg"
-        out = root / "runs" / dataset_id / route / "run_manifest.json"
-        legacy = root / "runs" / dataset_id / route / "zkdl_gat_composed_proof.json"
-        if legacy.exists():
-            legacy.unlink()
-        run([
-            str(runner),
-            "--config", str(cfg),
-            "--route", route,
-            "--out", str(out),
-            "--gpu-probe", "runs/gpu_probe.json",
-        ], root)
-        manifests.append(load_json(out))
-    return manifests
+    with tempfile.TemporaryDirectory(prefix="zkdl_gpu_probe_") as temp_dir:
+        gpu_probe_path = Path(temp_dir) / "gpu_probe.json"
+        if route == "gpu":
+            probe = root / build_dir / "zkdl_gat_gpu_probe"
+            if probe.exists():
+                run([str(probe), "--out", str(gpu_probe_path)], root)
+
+        manifests = []
+        for dataset_id, _ in DATASETS:
+            cfg = root / "configs" / f"{dataset_id}.cfg"
+            out = root / "runs" / dataset_id / route / "run_manifest.json"
+            for obsolete in [
+                root / "runs" / dataset_id / route / "zkdl_gat_composed_proof.json",
+                root / "runs" / dataset_id / route / "full_gat_forward.zkdl_relation_payload.json",
+                root / "runs" / dataset_id / route / "debug_all_relations.json",
+                root / "runs" / dataset_id / route / "full_gat_semantic_precheck.json",
+            ]:
+                if obsolete.exists():
+                    obsolete.unlink()
+            run([
+                str(runner),
+                "--config", str(cfg),
+                "--route", route,
+                "--out", str(out),
+                "--gpu-probe", str(gpu_probe_path),
+            ], root)
+            manifests.append(load_json(out))
+        return manifests
 
 
 def collect(root, cpu_manifests, gpu_manifests):
@@ -280,11 +292,9 @@ def write_markdown_reports(root, results, cpu_rows, gpu_rows, cpu_cmp, gpu_cmp, 
         "",
         "The full-dataset statement is attempted for `cora_full`, `citeseer_full`, `pubmed_full`, `ppi_full_formal`, and `ogbn_arxiv_full`. No row is marked verified unless a real zkDL proof and verifier acceptance path succeeds.",
         "",
-        "`semantic_precheck_passed=true` only means the baseline recomputed the full-dataset forward and local semantic checker accepted it. It is not a zkDL proof and never contributes to `proof_size_bytes`.",
+        "`semantic_precheck_passed=true` records an in-memory full-forward consistency gate. It is not a proof artifact and never contributes to `proof_size_bytes`.",
         "",
-        "CPU runs also emit `runs/<dataset>/cpu/debug_all_relations.json`, an all-relations diagnostic covering the full GAT relation payload in one pass. That diagnostic is not a proof and is not used for `status=verified`.",
-        "",
-        "Relation payload files named `full_gat_forward.zkdl_relation_payload.json` are deliberately typed as diagnostics. CPU proof attempts now emit a separate `full_gat_forward.zkdl_proof.json` artifact and call the native zkDL verifier before status is decided.",
+        "CPU runs emit one formal proof artifact per dataset: `runs/<dataset>/cpu/full_gat_forward.zkdl_proof.json`. Native section planning stays in memory, and no relation-payload or debug side artifact is written by the formal runner.",
         "",
         "Formal commitment/prove/verify/proof-size metrics are populated only for `status=verified`. Failed proof-attempt timings are debug fields in each run manifest and are excluded from the comparison tables.",
         "",
