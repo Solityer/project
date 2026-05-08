@@ -14,7 +14,7 @@ typedef blstrs__scalar__Scalar Fr_t;
 typedef blstrs__g1__G1Affine_affine G1Affine_t;
 typedef blstrs__g1__G1Affine_jacobian G1Jacobian_t;
 
-const uint FrNumThread = 256;
+const uint FrNumThread = 4;
 const uint FrSharedMemorySize = 2 * sizeof(Fr_t) * FrNumThread; 
 
 ostream& operator<<(ostream& os, const Fr_t& x)
@@ -395,7 +395,7 @@ KERNEL void random_kernel(Fr_t* gpu_data, uint n, unsigned long seed)
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     curandState state;
 
-    if (tid > n) return;
+    if (tid >= static_cast<int>(n)) return;
     
     // Initialize the RNG state for this thread.
     curand_init(seed, tid, 0, &state);  
@@ -425,7 +425,11 @@ FrTensor FrTensor::random(uint size)
 
 FrTensor FrTensor::partial_me(vector<Fr_t> u, uint window_size) const
 {
-    if (size <= window_size * (1 << (u.size() - 1))) throw std::runtime_error("Incompatible dimensions");
+    if (window_size == 0) throw std::runtime_error("Invalid window size");
+    if (u.empty()) return *this;
+    const std::size_t max_size = static_cast<std::size_t>(window_size) << u.size();
+    const std::size_t min_size = static_cast<std::size_t>(window_size) << (u.size() - 1);
+    if (size <= min_size || static_cast<std::size_t>(size) > max_size) throw std::runtime_error("Incompatible dimensions");
     return Fr_partial_me(*this, u.begin(), u.end(), window_size);
 }
 
@@ -446,10 +450,23 @@ std::pair<FrTensor, FrTensor> FrTensor::split(uint window_size) const
 {
     if (window_size < 1 || window_size >= size) throw std::runtime_error("Invalid window size.");
     uint out_size = (size + 1) / 2;
-    std::pair<FrTensor, FrTensor> out {out_size, out_size};
-    Fr_split_by_window<<<(out_size+FrNumThread-1)/FrNumThread,FrNumThread>>>(gpu_data, out.first.gpu_data, out.second.gpu_data, size, out_size, window_size);
-    cudaDeviceSynchronize();
-    return out;
+    std::vector<Fr_t> host_in(size);
+    cudaMemcpy(host_in.data(), gpu_data, sizeof(Fr_t) * size, cudaMemcpyDeviceToHost);
+    std::vector<Fr_t> host0(out_size, blstrs__scalar__Scalar_ZERO);
+    std::vector<Fr_t> host1(out_size, blstrs__scalar__Scalar_ZERO);
+    for (uint gid = 0; gid < out_size; ++gid)
+    {
+        const uint window_id = gid / window_size;
+        const uint idx_in_window = gid % window_size;
+        const uint gid0 = 2 * window_id * window_size + idx_in_window;
+        const uint gid1 = (2 * window_id + 1) * window_size + idx_in_window;
+        if (gid0 < size) host0[gid] = host_in[gid0];
+        if (gid1 < size) host1[gid] = host_in[gid1];
+    }
+    return {
+        FrTensor(out_size, host0.data()),
+        FrTensor(out_size, host1.data())
+    };
 }
 
 KERNEL void Fr_me_step(GLOBAL Fr_t *arr_in, GLOBAL Fr_t *arr_out, Fr_t x, uint in_size, uint out_size)
@@ -468,7 +485,8 @@ Fr_t Fr_me(const FrTensor& t, vector<Fr_t>::const_iterator begin, vector<Fr_t>::
 {
     FrTensor t_new((t.size + 1) / 2);
     if (begin >= end) return t(0);
-    Fr_me_step<<<(t_new.size+FrNumThread-1)/FrNumThread,FrNumThread>>>(t.gpu_data, t_new.gpu_data, *begin, t.size, t_new.size);
+    const uint block_size = t_new.size < 32U ? t_new.size : 32U;
+    Fr_me_step<<<(t_new.size + block_size - 1) / block_size, block_size>>>(t.gpu_data, t_new.gpu_data, *begin, t.size, t_new.size);
     cudaDeviceSynchronize();
     return Fr_me(t_new, begin + 1, end);
 }
@@ -490,11 +508,8 @@ KERNEL void Fr_partial_me_step(GLOBAL Fr_t *arr_in, GLOBAL Fr_t *arr_out, Fr_t x
 FrTensor Fr_partial_me(const FrTensor& t, vector<Fr_t>::const_iterator begin, vector<Fr_t>::const_iterator end, uint window_size)
 {
     if (begin >= end) return t;
-    uint num_windows = (t.size + 2 * window_size - 1) / (2 * window_size);
-    uint out_size = window_size * num_windows;
-    FrTensor t_new(out_size);
-    Fr_partial_me_step<<<(t_new.size+FrNumThread-1)/FrNumThread,FrNumThread>>>(t.gpu_data, t_new.gpu_data, *begin, t.size, t_new.size, window_size);
-    cudaDeviceSynchronize();
+    auto halves = t.split(window_size);
+    auto t_new = halves.first + ((halves.second - halves.first) * (*begin));
     return Fr_partial_me(t_new, begin + 1, end, window_size);
 }
 

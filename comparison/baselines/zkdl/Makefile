@@ -14,14 +14,16 @@ LIBS := -L$(CUDA_PATH)/lib64 -lcudart # -L$(LIBTORCH_PATH)/lib -ltorch -ltorch_c
 # NVCC compiler flags
 NVCC_FLAGS ?= -arch=sm_80 -std=c++17 -O3 -Xcompiler=-Wall -Xcompiler=-Wextra
 
-# Source and target files
-SRCS := $(wildcard *.cu)
-TARGETS := $(SRCS:.cu=)
+# Formal targets used by the adapter.
+TARGETS := gat_zkdl formal_opening_selftest
 
 all: $(TARGETS)
 
-%: %.cu
-	$(NVCC)  $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $< -o $@
+gat_zkdl: gat_zkdl.cu
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $< -o $@
+
+formal_opening_selftest: formal_opening_selftest.cu
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $< -o $@
 	
 clean:
 	rm -f $(TARGETS)

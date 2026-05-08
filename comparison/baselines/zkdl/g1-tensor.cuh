@@ -8,7 +8,7 @@
 using namespace std;
 
 typedef blstrs__fp__Fp Fp_t;
-const uint G1NumThread = 64;
+const uint G1NumThread = 4;
 const uint G1AffineSharedMemorySize = 2 * sizeof(G1Affine_t) * G1NumThread; 
 const uint G1JacobianSharedMemorySize = 2 * sizeof(G1Jacobian_t) * G1NumThread;
 
@@ -629,7 +629,8 @@ G1Jacobian_t G1_me(const G1TensorJacobian& t, vector<Fr_t>::const_iterator begin
 {
     G1TensorJacobian t_new((t.size + 1) / 2);
     if (begin >= end) return t(0);
-    G1_me_step<<<(t_new.size+G1NumThread-1)/G1NumThread,G1NumThread>>>(t.gpu_data, t_new.gpu_data, *begin, t.size, t_new.size);
+    const uint block_size = t_new.size < 32U ? t_new.size : 32U;
+    G1_me_step<<<(t_new.size + block_size - 1) / block_size, block_size>>>(t.gpu_data, t_new.gpu_data, *begin, t.size, t_new.size);
     cudaDeviceSynchronize();
     return G1_me(t_new, begin + 1, end);
 }
@@ -637,6 +638,11 @@ G1Jacobian_t G1_me(const G1TensorJacobian& t, vector<Fr_t>::const_iterator begin
 G1Jacobian_t G1TensorJacobian::operator()(const vector<Fr_t>& u) const
 {
     uint log_dim = u.size();
+    if (log_dim == 0)
+    {
+        if (size != 1) throw std::runtime_error("Incompatible dimensions");
+        return (*this)(0);
+    }
     if (size <= (1 << (log_dim - 1)) || size > (1 << log_dim)) throw std::runtime_error("Incompatible dimensions");
     return G1_me(*this, u.begin(), u.end());
 }
