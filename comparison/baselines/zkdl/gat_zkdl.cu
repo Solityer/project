@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -10,6 +11,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <regex>
 #include <sstream>
@@ -117,6 +119,19 @@ Fr_t fr_mont_one_minus_host(Fr_t u) {
     cuda_check(cudaMemcpy(&host, device, sizeof(Fr_t), cudaMemcpyDeviceToHost), "cudaMemcpy fr_mont_one_minus");
     cudaFree(device);
     return host;
+}
+
+Fr_t fr_unmont_host(Fr_t value) {
+    FrTensor tensor(1, &value);
+    tensor.unmont();
+    return tensor(0);
+}
+
+G1Jacobian_t g1_add_host(G1Jacobian_t lhs, G1Jacobian_t rhs) {
+    G1TensorJacobian a(1, &lhs);
+    G1TensorJacobian b(1, &rhs);
+    auto sum = a + b;
+    return sum(0);
 }
 
 std::string trim(std::string value) {
@@ -1172,6 +1187,32 @@ Fr_t evaluate_public_tensor_row_mle(
     return tensor(point);
 }
 
+bool fr_is_zero_host(const Fr_t& value) {
+    return fr_equal_host(value, fr_from_signed_host(0));
+}
+
+bool point_is_all_zero(const std::vector<Fr_t>& point) {
+    return std::all_of(point.begin(), point.end(), [](const Fr_t& value) {
+        return fr_is_zero_host(value);
+    });
+}
+
+Fr_t encode_public_tensor_row_first_value_mont(
+    const std::vector<double>& values,
+    std::size_t rows,
+    std::size_t cols,
+    std::size_t row) {
+    if (row >= rows || cols == 0 || values.size() != rows * cols) {
+        throw std::runtime_error("public tensor first-value evaluation shape mismatch");
+    }
+    const double scaled = values[row * cols] * 16.0;
+    const auto fixed = static_cast<std::int64_t>(scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5);
+    auto raw = fr_from_signed_host(fixed);
+    FrTensor tensor(1, &raw);
+    tensor.mont();
+    return tensor(0);
+}
+
 struct TensorCommitmentProof {
     std::string label;
     std::vector<std::size_t> shape;
@@ -1183,8 +1224,8 @@ struct TensorCommitmentProof {
 };
 
 struct LevelBProofArtifact {
-    std::string level = "Level B";
-    std::string benchmark_mode = "warm_level_b_output_binding_kout_average_only";
+    std::string level = "Debug Level B";
+    std::string benchmark_mode = "diagnostic_level_b_output_binding_kout_average_only";
     std::vector<TensorCommitmentProof> tensors;
     bool proof_generation_ok = false;
     bool verification_ok = false;
@@ -1197,6 +1238,114 @@ struct LevelBProofArtifact {
     std::vector<std::string> uncovered_relations;
     std::string blocker;
 };
+
+std::vector<G1Jacobian_t> fold_generators_standard(
+    const std::vector<G1Jacobian_t>& left,
+    const std::vector<G1Jacobian_t>& right,
+    Fr_t u_mont) {
+    if (left.size() != right.size()) {
+        throw std::runtime_error("generator fold size mismatch");
+    }
+    const auto one_minus_u_raw = fr_unmont_host(fr_mont_one_minus_host(u_mont));
+    const auto u_raw = fr_unmont_host(u_mont);
+    std::vector<Fr_t> left_coeff(left.size(), one_minus_u_raw);
+    std::vector<Fr_t> right_coeff(right.size(), u_raw);
+    G1TensorJacobian left_tensor(static_cast<uint>(left.size()), left.data());
+    G1TensorJacobian right_tensor(static_cast<uint>(right.size()), right.data());
+    FrTensor left_scalar(static_cast<uint>(left_coeff.size()), left_coeff.data());
+    FrTensor right_scalar(static_cast<uint>(right_coeff.size()), right_coeff.data());
+    auto folded = (left_tensor * left_scalar) + (right_tensor * right_scalar);
+    cuda_sync("fold_generators_standard");
+    return Commitment::host_points(folded);
+}
+
+void split_generators_standard(
+    const std::vector<G1Jacobian_t>& in,
+    std::vector<G1Jacobian_t>* left,
+    std::vector<G1Jacobian_t>* right) {
+    if (in.empty() || (in.size() % 2) != 0) {
+        throw std::runtime_error("standard generator split requires a non-empty even vector");
+    }
+    const std::size_t out_size = (in.size() + 1) / 2;
+    left->resize(out_size);
+    right->resize(out_size);
+    for (std::size_t i = 0; i < out_size; ++i) {
+        const auto left_index = 2 * i;
+        const auto right_index = left_index + 1;
+        (*left)[i] = in[left_index];
+        (*right)[i] = in[right_index];
+    }
+}
+
+G1Jacobian_t commit_one_point(const Commitment& generators, const FrTensor& scalars) {
+    auto commitment = generators.commit(scalars);
+    if (commitment.size != 1) {
+        throw std::runtime_error("expected one-point row commitment");
+    }
+    return commitment(0);
+}
+
+CommitmentOpeningProof prove_standard_row_opening(
+    const FrTensor& row_tensor_mont,
+    const Commitment& generators,
+    const std::vector<Fr_t>& point,
+    std::ofstream* debug) {
+    if (generators.size != row_tensor_mont.size) {
+        throw std::runtime_error("standard row opening dimension mismatch");
+    }
+    if (generators.size == 0 || generators.size != (1U << point.size())) {
+        throw std::runtime_error("standard row opening requires a power-of-two row and matching challenge length");
+    }
+    auto dbg = [&](const std::string& line) {
+        if (debug != nullptr && *debug) {
+            *debug << line << '\n';
+            debug->flush();
+        }
+    };
+
+    CommitmentOpeningProof proof;
+    proof.point = point;
+    proof.transcript.clear();
+    proof.transcript.reserve(3 * point.size() + 1);
+
+    auto current_scalars = std::make_unique<FrTensor>(row_tensor_mont);
+    auto current_generators = Commitment::host_points(generators);
+    for (std::size_t round = 0; round < point.size(); ++round) {
+        dbg("standard_row_open round=" + std::to_string(round) + " width=" + std::to_string(current_generators.size()));
+        auto split_scalars = current_scalars->split(1);
+        std::vector<G1Jacobian_t> left_generators;
+        std::vector<G1Jacobian_t> right_generators;
+        split_generators_standard(current_generators, &left_generators, &right_generators);
+        Commitment left_gen(static_cast<uint>(left_generators.size()), left_generators.data());
+        Commitment right_gen(static_cast<uint>(right_generators.size()), right_generators.data());
+
+        const auto c_left = commit_one_point(left_gen, split_scalars.first);
+        const auto c_right = commit_one_point(right_gen, split_scalars.second);
+        const auto c_cross_lr = commit_one_point(right_gen, split_scalars.first);
+        const auto c_cross_rl = commit_one_point(left_gen, split_scalars.second);
+        const auto c_cross = g1_add_host(c_cross_lr, c_cross_rl);
+        proof.transcript.push_back(c_left);
+        proof.transcript.push_back(c_cross);
+        proof.transcript.push_back(c_right);
+
+        auto folded_scalars = split_scalars.first + ((split_scalars.second - split_scalars.first) * point[round]);
+        current_scalars = std::make_unique<FrTensor>(folded_scalars);
+        current_generators = fold_generators_standard(left_generators, right_generators, point[round]);
+        {
+            const auto expected_next = g1_open_expected_next_host(c_cross, c_left, c_right, point[round]);
+            Commitment folded_gen(static_cast<uint>(current_generators.size()), current_generators.data());
+            const auto actual_next = commit_one_point(folded_gen, *current_scalars);
+            dbg("standard_row_open round=" + std::to_string(round)
+                + " prover_recurrence_match=" + (g1_equal_host(expected_next, actual_next) ? std::string("true") : std::string("false")));
+        }
+    }
+    if (current_generators.size() != 1 || current_scalars->size != 1) {
+        throw std::runtime_error("standard row opening did not fold to one element");
+    }
+    proof.value = (*current_scalars)(0);
+    proof.transcript.push_back(current_generators.front());
+    return proof;
+}
 
 void write_bytes(std::ofstream& out, const void* data, std::size_t size) {
     out.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(size));
@@ -1300,17 +1449,39 @@ TensorCommitmentProof prove_tensor_opening(
     proof.generator_label = generator_label;
     dbg("prove_tensor_opening stage=copy_commitment_points opened_row=" + std::to_string(proof.opened_row));
     proof.commitment_points = Commitment::host_points(commitment);
-    dbg("prove_tensor_opening stage=open_row_skipped reason=zkDL_opening_kernel_unstable_for_full_dataset_values");
-    proof.opening.point.clear();
-    proof.opening.value = fr_from_signed_host(0);
-    proof.opening.transcript.clear();
+    dbg("prove_tensor_opening stage=open_row_begin mode=row_mle_cpu_sized_gpu_fallback");
+    {
+        ScopedTimer timer;
+        std::vector<Fr_t> row_encoded(padded_cols, fr_from_signed_host(0));
+        const auto row_begin = encoded.begin() + static_cast<std::ptrdiff_t>(proof.opened_row * padded_cols);
+        std::copy(row_begin, row_begin + static_cast<std::ptrdiff_t>(padded_cols), row_encoded.begin());
+        FrTensor row_tensor(static_cast<uint>(row_encoded.size()), row_encoded.data());
+        row_tensor.mont();
+        const uint inner_log = ceilLog2(static_cast<uint>(padded_cols));
+        std::vector<Fr_t> point(inner_log, fr_from_signed_host(0));
+        const char* enable_opening_probe = std::getenv("ZKDL_GAT_ENABLE_ROW_OPENING_PROBE");
+        if (enable_opening_probe != nullptr && std::string(enable_opening_probe) == "1") {
+            point = deterministic_mont_fr_vec(inner_log, dataset + ":" + label + ":row-opening-point");
+            proof.opening = prove_standard_row_opening(row_tensor, generators, point, debug);
+        } else {
+            proof.opening.point = point;
+            proof.opening.value = row_tensor(0);
+            proof.opening.transcript.clear();
+            dbg("prove_tensor_opening stage=standard_row_opening_probe_skipped reason=probe_rejected_on_cora_and_triggered_cuda_illegal_memory_on_citeseer fallback_point=all_zero_first_value");
+        }
+        cuda_sync("prove_tensor_opening row open " + label);
+        *prove_ms += timer.elapsed_ms();
+    }
+    dbg("prove_tensor_opening stage=open_row_done transcript_points=" + std::to_string(proof.opening.transcript.size())
+        + " challenge_dim=" + std::to_string(proof.opening.point.size()));
     return proof;
 }
 
 bool verify_tensor_opening(
     const TensorCommitmentProof& proof,
     const std::vector<double>* public_values,
-    std::string* failure) {
+    std::string* failure,
+    bool allow_public_commitment_fallback) {
     if (proof.shape.size() != 2) {
         *failure = "tensor proof has non-matrix shape: " + proof.label;
         return false;
@@ -1321,6 +1492,41 @@ bool verify_tensor_opening(
         *failure = "invalid padded inner dimension for " + proof.label;
         return false;
     }
+    auto fail_or_fallback = [&](const std::string& reason, bool public_commitment_ok) {
+        if (allow_public_commitment_fallback && public_commitment_ok && public_values != nullptr
+            && !proof.opening.point.empty() && !point_is_all_zero(proof.opening.point)) {
+            try {
+                const auto public_eval = evaluate_public_tensor_row_mle(
+                    *public_values, rows, cols, proof.padded_inner, proof.opened_row, proof.opening.point);
+                if (fr_equal_host(public_eval, proof.opening.value)) {
+                    *failure = reason + "; fallback public commitment plus public row MLE evaluation accepted as debug-only output binding";
+                    return true;
+                }
+                *failure = reason + "; fallback public row MLE evaluation mismatch";
+                return false;
+            } catch (const std::exception& error) {
+                *failure = reason + "; fallback public row MLE evaluation failed: " + std::string(error.what());
+                return false;
+            }
+        }
+        if (allow_public_commitment_fallback && public_commitment_ok && public_values != nullptr && point_is_all_zero(proof.opening.point)) {
+            try {
+                const auto public_eval = encode_public_tensor_row_first_value_mont(
+                    *public_values, rows, cols, proof.opened_row);
+                if (fr_equal_host(public_eval, proof.opening.value)) {
+                    *failure = reason + "; fallback public commitment plus public row first-value evaluation accepted as debug-only output binding";
+                    return true;
+                }
+                *failure = reason + "; fallback public row first-value evaluation mismatch";
+                return false;
+            } catch (const std::exception& error) {
+                *failure = reason + "; fallback public row first-value evaluation failed: " + std::string(error.what());
+                return false;
+            }
+        }
+        *failure = reason;
+        return false;
+    };
     auto generators = deterministic_generators(static_cast<uint>(proof.padded_inner), proof.generator_label);
     bool public_commitment_ok = false;
     std::string opening_failure;
@@ -1354,67 +1560,52 @@ bool verify_tensor_opening(
     const uint inner_log = static_cast<uint>(proof.opening.point.size()) - outer_log;
     if (proof.opening.transcript.size() != static_cast<std::size_t>(3 * inner_log + 1)) {
         opening_failure = "Hyrax opening transcript length mismatch for " + proof.label;
-        if (public_commitment_ok) {
-            *failure = opening_failure + "; fallback full public commitment verification accepted";
-            return true;
-        }
-        *failure = opening_failure;
-        return false;
+        return fail_or_fallback(opening_failure, public_commitment_ok);
     }
-    if (!g1_equal_host(commitment(0), proof.opening.transcript.front())) {
-        opening_failure = "Hyrax opening first commitment mismatch for " + proof.label;
-        if (public_commitment_ok) {
-            *failure = opening_failure + "; fallback full public commitment verification accepted";
-            return true;
-        }
-        *failure = opening_failure;
-        return false;
-    }
+    G1Jacobian_t current_commitment = commitment(0);
     for (uint round = 0; round < inner_log; ++round) {
-        const auto current = proof.opening.transcript.at(3 * round);
-        const auto cross0 = proof.opening.transcript.at(3 * round + 1);
-        const auto cross1 = proof.opening.transcript.at(3 * round + 2);
-        const auto expected_next = g1_open_expected_next_host(current, cross0, cross1, proof.opening.point.at(round));
+        const auto left = proof.opening.transcript.at(3 * round);
+        const auto cross = proof.opening.transcript.at(3 * round + 1);
+        const auto right = proof.opening.transcript.at(3 * round + 2);
+        const auto reconstructed_current = g1_add_host(left, right);
+        if (!g1_equal_host(reconstructed_current, current_commitment)) {
+            opening_failure = "Hyrax opening left/right commitment sum mismatch for " + proof.label
+                + " at round " + std::to_string(round);
+            return fail_or_fallback(opening_failure, public_commitment_ok);
+        }
+        const auto expected_next = g1_open_expected_next_host(cross, left, right, proof.opening.point.at(round));
         const G1Jacobian_t actual_next = (round + 1 < inner_log)
-            ? proof.opening.transcript.at(3 * (round + 1))
+            ? g1_add_host(proof.opening.transcript.at(3 * (round + 1)), proof.opening.transcript.at(3 * (round + 1) + 2))
             : g1_final_commitment_host(proof.opening.transcript.back(), proof.opening.value);
         if (!g1_equal_host(expected_next, actual_next)) {
-            const auto swapped_next = g1_open_expected_next_host(current, cross1, cross0, proof.opening.point.at(round));
+            const auto swapped_next = g1_open_expected_next_host(cross, right, left, proof.opening.point.at(round));
             const auto complement = fr_mont_one_minus_host(proof.opening.point.at(round));
-            const auto complement_next = g1_open_expected_next_host(current, cross0, cross1, complement);
-            const auto swapped_complement_next = g1_open_expected_next_host(current, cross1, cross0, complement);
+            const auto complement_next = g1_open_expected_next_host(cross, left, right, complement);
+            const auto swapped_complement_next = g1_open_expected_next_host(cross, right, left, complement);
             opening_failure = "Hyrax opening recurrence mismatch for " + proof.label + " at round " + std::to_string(round)
                 + " variants{swapped=" + (g1_equal_host(swapped_next, actual_next) ? std::string("match") : std::string("no"))
                 + ", complement=" + (g1_equal_host(complement_next, actual_next) ? std::string("match") : std::string("no"))
                 + ", swapped_complement=" + (g1_equal_host(swapped_complement_next, actual_next) ? std::string("match") : std::string("no"))
                 + "}";
-            if (public_commitment_ok) {
-                *failure = opening_failure + "; fallback full public commitment verification accepted";
-                return true;
-            }
-            *failure = opening_failure;
-            return false;
+            return fail_or_fallback(opening_failure, public_commitment_ok);
         }
+        current_commitment = expected_next;
     }
-    if (!Commitment::verify_opening(generators, commitment, proof.opening)) {
-        opening_failure = "Hyrax opening verifier rejected " + proof.label + " after detailed checks";
-        if (public_commitment_ok) {
-            *failure = opening_failure + "; fallback full public commitment verification accepted";
-            return true;
-        }
-        *failure = opening_failure;
-        return false;
+    const auto expected_final_generator = generators(proof.opening.point);
+    if (!g1_equal_host(expected_final_generator, proof.opening.transcript.back())) {
+        opening_failure = "Hyrax opening final folded generator mismatch for " + proof.label;
+        return fail_or_fallback(opening_failure, public_commitment_ok);
+    }
+    const auto expected_final_commitment = g1_final_commitment_host(expected_final_generator, proof.opening.value);
+    if (!g1_equal_host(expected_final_commitment, current_commitment)) {
+        opening_failure = "Hyrax opening final value commitment mismatch for " + proof.label;
+        return fail_or_fallback(opening_failure, public_commitment_ok);
     }
     if (public_values != nullptr) {
         const auto public_eval = evaluate_public_tensor_row_mle(*public_values, rows, cols, proof.padded_inner, proof.opened_row, proof.opening.point);
         if (!fr_equal_host(public_eval, proof.opening.value)) {
             opening_failure = "public logits MLE did not match opened value for " + proof.label;
-            if (public_commitment_ok) {
-                *failure = opening_failure + "; fallback full public commitment verification accepted";
-                return true;
-            }
-            *failure = opening_failure;
-            return false;
+            return fail_or_fallback(opening_failure, public_commitment_ok);
         }
     }
     failure->clear();
@@ -1437,11 +1628,12 @@ LevelBProofArtifact run_level_b_output_binding_proof(
     };
     artifact.covered_relations = {
         "zkDL Hyrax tensor commitment for final output-head tensor",
+        "debug-only public row MLE evaluation for final output-head tensor",
         "verifier-side full public logits commitment recomputation",
         "K_out=1 output-head arithmetic mean identity"
     };
     artifact.uncovered_relations = {
-        "zkDL Hyrax MLE opening proof: outer partial_me kernel has invalid local read and row opening can hang on full-dataset values",
+        "zkDL Hyrax row MLE opening transcript: standard and mixed folding attempts still fail recurrence replay on current curve kernels",
         "hidden/output projection matmul sumcheck not yet bound to quantized GAT tensors",
         "sparse src/dst routing and FAC4DNN aggregation relations",
         "LeakyReLU lookup/range relation",
@@ -1480,7 +1672,15 @@ LevelBProofArtifact run_level_b_output_binding_proof(
             dbg("level_b stage=verify_begin");
             ScopedTimer timer;
             std::string failure;
-            artifact.verification_ok = verify_tensor_opening(artifact.tensors.front(), &trace.logits, &failure);
+            artifact.verification_ok = verify_tensor_opening(artifact.tensors.front(), &trace.logits, &failure, false);
+            if (!artifact.verification_ok) {
+                std::string fallback_failure;
+                const bool fallback_ok = verify_tensor_opening(artifact.tensors.front(), &trace.logits, &fallback_failure, true);
+                if (fallback_ok) {
+                    artifact.verification_ok = true;
+                    failure = fallback_failure;
+                }
+            }
             if (!artifact.verification_ok) {
                 artifact.blocker = failure;
             } else if (!failure.empty()) {
@@ -1490,7 +1690,7 @@ LevelBProofArtifact run_level_b_output_binding_proof(
             dbg("level_b stage=verify_done ms=" + format_ms(artifact.verify_ms));
         }
 
-        artifact.proof_path = run_dir / "proof" / "zkdl_level_b_output_binding.proof";
+        artifact.proof_path = run_dir / "debug_artifacts" / "zkdl_level_b_output_binding.debug_proof";
         {
             dbg("level_b stage=serialize_begin");
             ScopedTimer timer;
@@ -1503,9 +1703,9 @@ LevelBProofArtifact run_level_b_output_binding_proof(
 
         if (artifact.verification_ok) {
             artifact.blocker = std::string(
-                "Level B partial proof/verify completed for final output-head full public commitment verification, public logits binding, and K_out=1 average identity"
+                "Debug Level B proof/verify completed for final output-head commitment, public row MLE evaluation, public logits binding, and K_out=1 average identity"
             )
-                + (artifact.blocker.empty() ? std::string("") : std::string("; opening verifier boundary: ") + artifact.blocker)
+            + (artifact.blocker.empty() ? std::string("") : std::string("; verifier note: ") + artifact.blocker)
                 + "; "
                 "full Level A remains blocked by missing zkDL GAT gadgets for projection binding, sparse routing, softmax max/sum/inverse/ExpMap, ELU, rescale, and bias-addition relations.";
         }
@@ -1575,6 +1775,14 @@ struct RunRow {
     bool partial_commitment_ok = false;
     bool proof_generation_ok = false;
     bool verification_ok = false;
+    std::string debug_level_b_status = "not_run";
+    std::string debug_level_b_blocker;
+    std::string debug_level_b_benchmark_mode = "diagnostic_level_b_output_binding_kout_average_only";
+    std::string debug_level_b_commitment_time_ms = "NA";
+    std::string debug_level_b_prove_time_ms = "NA";
+    std::string debug_level_b_verify_time_ms = "NA";
+    std::string debug_level_b_proof_size_bytes = "NA";
+    std::string debug_level_b_proof_path;
 };
 
 std::string join_sizes(const std::vector<std::size_t>& values) {
@@ -1655,6 +1863,14 @@ void write_manifest(
     kv("partial_open_ms", format_ms(proof.partial_open_ms));
     kv("partial_proof_size_bytes", std::to_string(proof.partial_proof_size_bytes));
     kv("level_b_proof_path", proof.level_b.proof_path.empty() ? "" : proof.level_b.proof_path.string());
+    kv("debug_level_b_status", row.debug_level_b_status);
+    kv("debug_level_b_blocker", row.debug_level_b_blocker);
+    kv("debug_level_b_benchmark_mode", row.debug_level_b_benchmark_mode);
+    kv("debug_level_b_commitment_time_ms", row.debug_level_b_commitment_time_ms);
+    kv("debug_level_b_prove_time_ms", row.debug_level_b_prove_time_ms);
+    kv("debug_level_b_verify_time_ms", row.debug_level_b_verify_time_ms);
+    kv("debug_level_b_proof_size_bytes", row.debug_level_b_proof_size_bytes);
+    kv("debug_level_b_proof_path", row.debug_level_b_proof_path);
     kv("level_b_covered_relations", [&]() {
         std::ostringstream relations;
         for (std::size_t i = 0; i < proof.level_b.covered_relations.size(); ++i) {
@@ -1687,6 +1903,113 @@ void write_manifest(
     bench << "status = " << (row.status == "success" ? "VERIFY_OK" : row.status) << "\n";
     bench << "verify_time_ms = " << row.verify_time_ms << "\n";
     bench << "blocker = " << row.blocker << "\n";
+    bench << "debug_level_b_status = " << row.debug_level_b_status << "\n";
+    bench << "debug_level_b_commitment_time_ms = " << row.debug_level_b_commitment_time_ms << "\n";
+    bench << "debug_level_b_prove_time_ms = " << row.debug_level_b_prove_time_ms << "\n";
+    bench << "debug_level_b_verify_time_ms = " << row.debug_level_b_verify_time_ms << "\n";
+    bench << "debug_level_b_proof_size_bytes = " << row.debug_level_b_proof_size_bytes << "\n";
+    bench << "debug_level_b_proof_path = " << row.debug_level_b_proof_path << "\n";
+    bench << "debug_level_b_blocker = " << row.debug_level_b_blocker << "\n";
+}
+
+struct CoverageRow {
+    std::string relation;
+    bool formal_prover_supported = false;
+    bool formal_verifier_supported = false;
+    bool reused_from_zkdl = false;
+    bool newly_added_in_zkdl_adapter = false;
+    bool debug_only = false;
+    bool blocked = true;
+    std::string blocker_reason;
+};
+
+std::vector<CoverageRow> gat_proof_coverage_rows() {
+    return {
+        {"feature lookup", false, false, false, false, false, true, "No zkDL lookup argument is integrated for global feature table/query equality; main repository lookup semantics were inspected but its KZG lookup protocol is not ported to Hyrax."},
+        {"hidden projection", false, false, true, false, false, true, "zkDL has a matmul sumcheck prover fragment, but there is no verifier, transcript binding, tensor-shape binding, or integration with quantized GAT hidden projection tensors."},
+        {"source attention dot product", false, false, true, false, false, true, "Can be reduced to inner-product/matmul fragments, but source-attention witness columns are not committed and verified under a GAT transcript."},
+        {"target attention dot product", false, false, true, false, false, true, "Can be reduced to inner-product/matmul fragments, but target-attention witness columns are not committed and verified under a GAT transcript."},
+        {"source sparse routing", false, false, false, false, false, true, "No Hyrax/FAC4DNN sparse route proof is available in zkDL; main repository route2/PSQ implementation is KZG-specific and not safely portable without a new commitment layer."},
+        {"destination sparse routing", false, false, false, false, false, true, "No Hyrax/FAC4DNN sparse route proof is available in zkDL; destination grouping and edge_gid/dst stable order are only enforced by the adapter's public preprocessing."},
+        {"LeakyReLU", false, false, true, false, false, true, "zkReLU contains a prover-side binary/range-style fragment but has no verifier path and is not wired to attention scores or static tables."},
+        {"softmax group max", false, false, false, false, false, true, "No max/range comparison gadget exists in zkDL for per-destination sparse softmax groups."},
+        {"ExpMap", false, false, false, false, false, true, "No zkDL table lookup argument is available for QuantExp(-delta); main repository lookup tables are KZG transcript objects."},
+        {"softmax denominator sum", false, false, true, false, false, true, "Sum relation can use arithmetic fragments, but grouped sparse denominator constraints are not committed/opened as a verifiable gadget."},
+        {"inverse", false, false, false, false, false, true, "No inverse witness/range/denominator nonzero proof is present in zkDL for softmax normalization."},
+        {"alpha multiplication", false, false, true, false, false, true, "zkProd provides a prover fragment, but no verifier and no integration for alpha = exp * inverse over sparse edges."},
+        {"weighted aggregation", false, false, true, false, false, true, "Aggregation can be decomposed into product and sparse routing, but the required FAC4DNN-style relation is absent under Hyrax."},
+        {"ELU", false, false, false, false, false, true, "No ELU lookup/range gadget exists in zkDL; hidden activation is only computed by the GPU forward adapter."},
+        {"concat", false, false, false, false, true, true, "Head concat is implemented in forward/debug trace only; no equality/copy proof binds head outputs to concatenated hidden tensor."},
+        {"output projection", false, false, true, false, false, true, "zkDL matmul fragment is not connected to output attention-head projection tensors with a verifier and openings."},
+        {"output source/target attention", false, false, true, false, false, true, "Output attention dot products are forward-computed, but no formal zkDL verifier checks them."},
+        {"output sparse routing", false, false, false, false, false, true, "No Hyrax sparse route proof for output heads is implemented."},
+        {"output softmax", false, false, false, false, false, true, "Max/ExpMap/sum/inverse chain for output-head softmax is not supported by zkDL gadgets."},
+        {"output aggregation", false, false, true, false, false, true, "Weighted output aggregation needs product plus sparse routing proofs; both remain unverified under zkDL."},
+        {"rescale", false, false, false, false, false, true, "No fixed-point rescale/rounding proof gadget is available for output pre-bias scale alignment."},
+        {"bias add", false, false, false, false, false, true, "Bias addition is present in the GPU forward output tensor, but no committed pre/post-bias equality proof is available."},
+        {"output-head average", false, false, false, true, true, true, "Adapter checks the K_out=1 identity as a diagnostic only; a formal multi-head average proof is not implemented."},
+        {"public logits binding", false, false, true, true, true, true, "Debug-only binding recomputes the full public logits commitment and public row MLE value; this is not a formal proof that the hidden GAT computation produced those logits."},
+        {"commitment/evaluation binding", false, false, true, true, false, true, "A standard Hyrax row opening prover/verifier was added and tested, but recurrence replay still mismatches on the current zkDL curve/folding kernels; the remaining accepted path is debug-only public recomputation."},
+        {"transcript binding", false, false, true, true, false, true, "Opening transcript replay is implemented as a checker and currently rejects generated transcripts; full transcript binding for GAT remains blocked."},
+        {"verifier replay", false, false, true, true, false, true, "Verifier replay exists and catches the row-opening recurrence mismatch; no successful formal full-proof verifier replay is available."},
+    };
+}
+
+std::string bool_string(bool value) {
+    return value ? "true" : "false";
+}
+
+void write_coverage_matrix(const fs::path& output_root) {
+    ensure_dir(output_root / "results");
+    const auto rows = gat_proof_coverage_rows();
+    {
+        std::ofstream csv(output_root / "results" / "gat_proof_coverage_matrix.csv");
+        csv << "relation,formal_prover_supported,formal_verifier_supported,reused_from_zkdl,newly_added_in_zkdl_adapter,debug_only,blocked,blocker_reason\n";
+        for (const auto& row : rows) {
+            csv << row.relation
+                << ',' << bool_string(row.formal_prover_supported)
+                << ',' << bool_string(row.formal_verifier_supported)
+                << ',' << bool_string(row.reused_from_zkdl)
+                << ',' << bool_string(row.newly_added_in_zkdl_adapter)
+                << ',' << bool_string(row.debug_only)
+                << ',' << bool_string(row.blocked)
+                << ",\"" << json_escape(row.blocker_reason) << "\"\n";
+        }
+    }
+    {
+        std::ofstream json(output_root / "results" / "gat_proof_coverage_matrix.json");
+        json << "{\n  \"coverage_level\": \"formal_level_a_blocked_with_debug_level_b_binding\",\n  \"rows\": [\n";
+        for (std::size_t i = 0; i < rows.size(); ++i) {
+            const auto& row = rows[i];
+            json << "    {\n";
+            json << "      \"relation\": \"" << json_escape(row.relation) << "\",\n";
+            json << "      \"formal_prover_supported\": " << bool_string(row.formal_prover_supported) << ",\n";
+            json << "      \"formal_verifier_supported\": " << bool_string(row.formal_verifier_supported) << ",\n";
+            json << "      \"reused_from_zkdl\": " << bool_string(row.reused_from_zkdl) << ",\n";
+            json << "      \"newly_added_in_zkdl_adapter\": " << bool_string(row.newly_added_in_zkdl_adapter) << ",\n";
+            json << "      \"debug_only\": " << bool_string(row.debug_only) << ",\n";
+            json << "      \"blocked\": " << bool_string(row.blocked) << ",\n";
+            json << "      \"blocker_reason\": \"" << json_escape(row.blocker_reason) << "\"\n";
+            json << "    }" << (i + 1 == rows.size() ? "\n" : ",\n");
+        }
+        json << "  ]\n}\n";
+    }
+    {
+        std::ofstream md(output_root / "results" / "gat_proof_coverage_matrix.md");
+        md << "# GAT Proof Coverage Matrix\n\n";
+        md << "| relation | formal prover | formal verifier | reused from zkDL | newly added | debug only | blocked | blocker reason |\n";
+        md << "| --- | --- | --- | --- | --- | --- | --- | --- |\n";
+        for (const auto& row : rows) {
+            md << "| " << row.relation
+               << " | " << bool_string(row.formal_prover_supported)
+               << " | " << bool_string(row.formal_verifier_supported)
+               << " | " << bool_string(row.reused_from_zkdl)
+               << " | " << bool_string(row.newly_added_in_zkdl_adapter)
+               << " | " << bool_string(row.debug_only)
+               << " | " << bool_string(row.blocked)
+               << " | " << row.blocker_reason << " |\n";
+        }
+    }
 }
 
 void write_result_tables(const fs::path& output_root, const std::vector<RunRow>& rows) {
@@ -1704,7 +2027,7 @@ void write_result_tables(const fs::path& output_root, const std::vector<RunRow>&
     }
     {
         std::ofstream json(output_root / "results" / "latest.json");
-        json << "{\n  \"benchmark_mode\": \"mixed_warm_level_b_partial\",\n  \"rows\": [\n";
+        json << "{\n  \"benchmark_mode\": \"formal_level_a_full_gat_proof_verify_only\",\n  \"policy\": \"formal four metrics are NA unless complete Level A proof generation and verification succeeds\",\n  \"rows\": [\n";
         for (std::size_t i = 0; i < rows.size(); ++i) {
             const auto& row = rows[i];
             json << "    {\n";
@@ -1719,8 +2042,43 @@ void write_result_tables(const fs::path& output_root, const std::vector<RunRow>&
             json << "      \"is_full_dataset\": " << (row.full_dataset ? "true" : "false") << ",\n";
             json << "      \"gpu_forward_ok\": " << (row.gpu_forward_ok ? "true" : "false") << ",\n";
             json << "      \"partial_output_commitment_ok\": " << (row.partial_commitment_ok ? "true" : "false") << ",\n";
-            json << "      \"proof_generation_ok\": " << (row.proof_generation_ok ? "true" : "false") << ",\n";
-            json << "      \"verification_ok\": " << (row.verification_ok ? "true" : "false") << "\n";
+            json << "      \"formal_proof_generation_ok\": " << (row.proof_generation_ok ? "true" : "false") << ",\n";
+            json << "      \"formal_verification_ok\": " << (row.verification_ok ? "true" : "false") << ",\n";
+            json << "      \"debug_level_b_status\": \"" << json_escape(row.debug_level_b_status) << "\"\n";
+            json << "    }" << (i + 1 == rows.size() ? "\n" : ",\n");
+        }
+        json << "  ]\n}\n";
+    }
+    {
+        std::ofstream csv(output_root / "results" / "debug_level_b.csv");
+        csv << "dataset,status,blocker,benchmark_mode,commitment_time_ms,prove_time_ms,verify_time_ms,proof_size_bytes,proof_path\n";
+        for (const auto& row : rows) {
+            csv << row.dataset
+                << ',' << row.debug_level_b_status
+                << ",\"" << json_escape(row.debug_level_b_blocker) << "\","
+                << row.debug_level_b_benchmark_mode
+                << ',' << row.debug_level_b_commitment_time_ms
+                << ',' << row.debug_level_b_prove_time_ms
+                << ',' << row.debug_level_b_verify_time_ms
+                << ',' << row.debug_level_b_proof_size_bytes
+                << ",\"" << json_escape(row.debug_level_b_proof_path) << "\"\n";
+        }
+    }
+    {
+        std::ofstream json(output_root / "results" / "debug_level_b.json");
+        json << "{\n  \"benchmark_mode\": \"diagnostic_level_b_output_binding_only_not_formal_level_a\",\n  \"policy\": \"diagnostic numbers must not be used in the formal comparison table\",\n  \"rows\": [\n";
+        for (std::size_t i = 0; i < rows.size(); ++i) {
+            const auto& row = rows[i];
+            json << "    {\n";
+            json << "      \"dataset\": \"" << json_escape(row.dataset) << "\",\n";
+            json << "      \"status\": \"" << json_escape(row.debug_level_b_status) << "\",\n";
+            json << "      \"blocker\": \"" << json_escape(row.debug_level_b_blocker) << "\",\n";
+            json << "      \"benchmark_mode\": \"" << json_escape(row.debug_level_b_benchmark_mode) << "\",\n";
+            json << "      \"commitment_time_ms\": \"" << row.debug_level_b_commitment_time_ms << "\",\n";
+            json << "      \"prove_time_ms\": \"" << row.debug_level_b_prove_time_ms << "\",\n";
+            json << "      \"verify_time_ms\": \"" << row.debug_level_b_verify_time_ms << "\",\n";
+            json << "      \"proof_size_bytes\": \"" << row.debug_level_b_proof_size_bytes << "\",\n";
+            json << "      \"proof_path\": \"" << json_escape(row.debug_level_b_proof_path) << "\"\n";
             json << "    }" << (i + 1 == rows.size() ? "\n" : ",\n");
         }
         json << "  ]\n}\n";
@@ -1728,20 +2086,36 @@ void write_result_tables(const fs::path& output_root, const std::vector<RunRow>&
     {
         std::ofstream md(output_root / "results" / "summary.md");
         md << "# 最新正式结果\n\n";
-        md << "| 数据集 | full dataset loaded | GPU GAT forward | tensor commitments | proof generation | verification | proof size | result row emitted | blocker |\n";
-        md << "| --- | --- | --- | --- | --- | --- | ---: | --- | --- |\n";
+        md << "Formal Level A has not been reached in this zkDL adapter run. The official four fields below are `NA` because the implemented proof does not cover the full sparse GAT forward relation.\n\n";
+        md << "| 数据集 | full dataset loaded | GPU GAT forward | formal proof generation | formal verification | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes | blocker |\n";
+        md << "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n";
         for (const auto& row : rows) {
             md << "| " << row.dataset
                << " | " << (row.full_dataset ? "yes" : "no")
                << " | " << (row.gpu_forward_ok ? "yes" : "no")
-               << " | " << (row.partial_commitment_ok ? "yes" : "no")
-               << " | " << (row.proof_generation_ok ? "partial" : "no")
-               << " | " << (row.verification_ok ? "partial" : "no")
+               << " | " << (row.proof_generation_ok ? "yes" : "no")
+               << " | " << (row.verification_ok ? "yes" : "no")
+               << " | " << row.commitment_time_ms
+               << " | " << row.prove_time_ms
+               << " | " << row.verify_time_ms
                << " | " << row.proof_size_bytes
-               << " | yes"
                << " | " << row.blocker << " |\n";
         }
+        md << "\n## Diagnostic Level B\n\n";
+        md << "The following debug numbers are retained separately and are not formal Level A comparison results.\n\n";
+        md << "| dataset | status | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes | proof_path |\n";
+        md << "| --- | --- | ---: | ---: | ---: | ---: | --- |\n";
+        for (const auto& row : rows) {
+            md << "| " << row.dataset
+               << " | " << row.debug_level_b_status
+               << " | " << row.debug_level_b_commitment_time_ms
+               << " | " << row.debug_level_b_prove_time_ms
+               << " | " << row.debug_level_b_verify_time_ms
+               << " | " << row.debug_level_b_proof_size_bytes
+               << " | " << row.debug_level_b_proof_path << " |\n";
+        }
     }
+    write_coverage_matrix(output_root);
 }
 
 void write_audit_files(const fs::path& output_root, const std::vector<RunRow>& rows) {
@@ -1755,31 +2129,38 @@ void write_audit_files(const fs::path& output_root, const std::vector<RunRow>& r
         out << "- No main repository file is copied back or overwritten by this runner.\n";
         out << "- Modified source files: `Makefile`, `commitment.cuh`, `gat_zkdl.cu`.\n";
         out << "- Generated output families: `zkdl_gat_outputs/results/*`, `zkdl_gat_outputs/runs/*/warm/*`, `zkdl_gat_outputs/audit/*`.\n";
+        out << "- Stale formal-looking `runs/*/warm/proof` directories from earlier Level B runs are removed by the runner; new Level B artifacts are written under `debug_artifacts` only.\n";
         out << "- Build note: this run was compiled with an overrideable `NVCC_FLAGS`; audit logs record the exact command.\n";
+        out << "- Formal result policy: `latest.csv` and `latest.json` only expose complete Level A metrics. Diagnostic Level B metrics are isolated in `results/debug_level_b.*`.\n";
     }
     {
         std::ofstream out(output_root / "README_ZKDL_GAT_ADAPTER.md");
         out << "# zkDL GAT Adapter Run Notes\n\n";
-        out << "This artifact records the zkDL baseline adaptation for full-dataset GAT-ZKML comparison. The current result level is **Level B / partial proof-verify**, not full Level A.\n\n";
+        out << "This artifact records the zkDL baseline adaptation for full-dataset GAT-ZKML comparison. The current formal result level is **blocked before Level A**, not success.\n\n";
+        out << "Result correction: prior Level B timing/proof-size numbers are no longer emitted in the official `latest.csv` / `latest.json` four metric fields. Those fields are `NA` unless a complete Level A GAT proof and verifier succeed. The previous diagnostic line is retained only in `results/debug_level_b.csv` and `results/debug_level_b.json`.\n\n";
         out << "This round added a serializable proof artifact for the final output-head tensor commitment, deterministic generator/challenge derivation, verifier-side full public logits commitment recomputation, proof-size accounting from the actual proof file, and per-dataset proof/debug logs.\n\n";
+        out << "This round attempted to replace the old skipped/fallback Hyrax row opening with a standard row MLE opening proof for the final output tensor. The new verifier checks the opening transcript recurrence and final folded generator, and it currently rejects the generated transcript; the diagnostic Level B row therefore records public commitment plus public row MLE fallback as debug-only evidence, not as formal commitment/evaluation binding.\n\n";
         out << "Migrated capabilities from the main repository: full dataset cache loading, row normalization, self-loop insertion, graph/dst stable edge ordering, checkpoint tensor loading, multi-head sparse GAT GPU forward, output-head bias plus arithmetic mean, and main benchmark table formatting.\n\n";
         out << "Retained zkDL components: `FrTensor`, `G1Tensor`, `Commitment::commit`, commitment generator tensors, and existing GPU MLE/sumcheck/opening helpers. `Commitment::open_with_proof` and verifier helpers were added locally around these primitives.\n\n";
-        out << "Covered relations in the reported Level B rows: final output-head tensor commitment, verifier-side full public logits commitment recomputation, public logits binding, and the `K_out=1` output-head average identity used by all five current checkpoint bundles.\n\n";
+        out << "Covered relations in the diagnostic Level B rows: final output-head tensor commitment, verifier-side full public logits commitment recomputation, public row MLE evaluation for the selected output row, public logits binding for the committed output tensor, and the `K_out=1` output-head average identity used by all five current checkpoint bundles.\n\n";
         out << "Uncovered relations: hidden/output projection matmul sumcheck binding, sparse src/dst routing, FAC4DNN aggregation, LeakyReLU lookup/range, softmax max/sum/inverse/ExpMap, ELU lookup/range, rescale/rounding, and output-head bias-addition relation before the final head tensor.\n\n";
-        out << "Opening boundary evidence: the original zkDL outer `Fr_partial_me_step` path produced an invalid local read under compute-sanitizer, and row opening kernels can hang on full-dataset values. The proof object therefore records the commitment proof payload and marks MLE opening as uncovered instead of pretending it verified.\n\n";
+        out << "Opening boundary update: the original zkDL outer `Fr_partial_me_step` full-tensor path remains unsuitable for the complete GAT proof. A row-only standard Hyrax opening was isolated and implemented, but recurrence replay still mismatches, so it is preserved as failure evidence rather than counted as a formal proof.\n\n";
         out << "Reproduce: build inside this directory, for example `TMPDIR=/home/pzh/project/comparison/baselines/zkdl/.tmp make gat_zkdl NVCC_FLAGS='-arch=sm_80 -std=c++17 -O1 -Xcompiler=-Wall -Xcompiler=-Wextra'`, then run `./gat_zkdl --run-all --output-root zkdl_gat_outputs`.\n\n";
-        out << "Four-metric mouthful: `commitment_time_ms`, `prove_time_ms`, `verify_time_ms`, and `proof_size_bytes` are real for the Level B benchmark mode shown in `latest.csv`; they are not full Level A GAT proof timings and should not be compared as complete protocol results.\n\n";
+        out << "Four-metric policy: official `commitment_time_ms`, `prove_time_ms`, `verify_time_ms`, and `proof_size_bytes` are `NA` in `latest.*` until full Level A succeeds. Diagnostic Level B metrics are real for their limited output-binding path, but they are not full GAT proof timings and must not be compared as complete protocol results.\n\n";
         out << "Dataset status:\n\n";
-        out << "| dataset | status | gpu_forward | commitment | proof_generation | verification | proof_size_bytes |\n";
-        out << "| --- | --- | --- | --- | --- | --- | ---: |\n";
+        out << "| dataset | formal status | gpu_forward | formal commitment_time_ms | formal prove_time_ms | formal verify_time_ms | formal proof_size_bytes | debug Level B status |\n";
+        out << "| --- | --- | --- | --- | --- | --- | --- | --- |\n";
         for (const auto& row : rows) {
-            out << "| " << row.dataset << " | " << row.status << " | "
-                << (row.gpu_forward_ok ? "ok" : "failed") << " | "
-                << (row.partial_commitment_ok ? "ok" : "failed") << " | "
-                << (row.proof_generation_ok ? "partial" : "failed") << " | "
-                << (row.verification_ok ? "partial" : "failed") << " | "
-                << row.proof_size_bytes << " |\n";
+            out << "| " << row.dataset
+                << " | " << row.status
+                << " | " << (row.gpu_forward_ok ? "ok" : "failed")
+                << " | " << row.commitment_time_ms
+                << " | " << row.prove_time_ms
+                << " | " << row.verify_time_ms
+                << " | " << row.proof_size_bytes
+                << " | " << row.debug_level_b_status << " |\n";
         }
+        out << "\nCoverage matrix files: `results/gat_proof_coverage_matrix.csv`, `results/gat_proof_coverage_matrix.json`, and `results/gat_proof_coverage_matrix.md`.\n";
     }
 }
 
@@ -1788,6 +2169,7 @@ RunRow run_one(const fs::path& project_root, const fs::path& output_root, const 
     row.dataset = spec.dataset;
     const auto run_dir = output_root / "runs" / spec.dataset / "warm";
     ensure_dir(run_dir);
+    fs::remove_all(run_dir / "proof");
     std::ofstream log(run_dir / "run.log");
     auto log_line = [&](const std::string& line) {
         log << line << '\n';
@@ -1842,25 +2224,39 @@ RunRow run_one(const fs::path& project_root, const fs::path& output_root, const 
         ProofAttempt proof;
         proof.level_b = run_level_b_output_binding_proof(spec, model, graph, trace, run_dir);
         row.partial_commitment_ok = proof.level_b.commitment_ms > 0.0;
-        row.proof_generation_ok = proof.level_b.proof_generation_ok;
-        row.verification_ok = proof.level_b.verification_ok;
-        row.benchmark_mode = proof.level_b.benchmark_mode;
-        row.commitment_time_ms = proof.level_b.proof_generation_ok ? format_ms(proof.level_b.commitment_ms) : "NA";
-        row.prove_time_ms = proof.level_b.proof_generation_ok ? format_ms(proof.level_b.prove_ms) : "NA";
-        row.verify_time_ms = proof.level_b.verification_ok ? format_ms(proof.level_b.verify_ms) : "NA";
-        row.proof_size_bytes = proof.level_b.proof_size_bytes != 0 ? std::to_string(proof.level_b.proof_size_bytes) : "NA";
-        row.status = proof.level_b.verification_ok ? "partial" : "blocked";
-        row.blocker = proof.level_b.blocker;
+        row.debug_level_b_status = proof.level_b.verification_ok ? "success_debug_only" : (proof.level_b.proof_generation_ok ? "blocked_debug" : "failed_debug");
+        row.debug_level_b_blocker = proof.level_b.blocker;
+        row.debug_level_b_benchmark_mode = proof.level_b.benchmark_mode;
+        row.debug_level_b_commitment_time_ms = proof.level_b.proof_generation_ok ? format_ms(proof.level_b.commitment_ms) : "NA";
+        row.debug_level_b_prove_time_ms = proof.level_b.proof_generation_ok ? format_ms(proof.level_b.prove_ms) : "NA";
+        row.debug_level_b_verify_time_ms = proof.level_b.verification_ok ? format_ms(proof.level_b.verify_ms) : "NA";
+        row.debug_level_b_proof_size_bytes = proof.level_b.proof_size_bytes != 0 ? std::to_string(proof.level_b.proof_size_bytes) : "NA";
+        row.debug_level_b_proof_path = proof.level_b.proof_path.empty() ? "" : proof.level_b.proof_path.string();
+        row.proof_generation_ok = false;
+        row.verification_ok = false;
+        row.benchmark_mode = "formal_level_a_full_gat_proof_verify_blocked";
+        row.commitment_time_ms = "NA";
+        row.prove_time_ms = "NA";
+        row.verify_time_ms = "NA";
+        row.proof_size_bytes = "NA";
+        row.status = "blocked";
+        row.blocker =
+            "Formal Level A zkDL-GAT proof is not complete: final output binding is debug-only public commitment/public row MLE recomputation because both mixed and standard Hyrax row-opening replay remain mismatched; hidden/output projection, sparse routing, LeakyReLU, softmax max/ExpMap/sum/inverse, alpha multiplication, weighted aggregation, ELU, concat, rescale, bias-add, and output-head average gadgets are not all available with zkDL prover+verifier+transcript binding. Diagnostic Level B result is isolated in debug_level_b.* and must not be used as a formal comparison metric.";
         log_line("dataset=" + spec.dataset
             + " commitment_status=" + (row.partial_commitment_ok ? "ok" : "failed")
-            + " prover_status=" + (row.proof_generation_ok ? "partial_ok" : "failed")
-            + " verifier_status=" + (row.verification_ok ? "partial_ok" : "failed")
-            + " proof_size_bytes=" + row.proof_size_bytes
+            + " debug_level_b_status=" + row.debug_level_b_status
+            + " debug_level_b_proof_size_bytes=" + row.debug_level_b_proof_size_bytes
+            + " formal_status=" + row.status
             + " failure=\"" + row.blocker + "\"");
         log_line("dataset=" + spec.dataset
             + " commitment_time_ms=" + row.commitment_time_ms
             + " prove_time_ms=" + row.prove_time_ms
             + " verify_time_ms=" + row.verify_time_ms);
+        log_line("dataset=" + spec.dataset
+            + " debug_level_b_commitment_time_ms=" + row.debug_level_b_commitment_time_ms
+            + " debug_level_b_prove_time_ms=" + row.debug_level_b_prove_time_ms
+            + " debug_level_b_verify_time_ms=" + row.debug_level_b_verify_time_ms
+            + " debug_level_b_proof_path=\"" + row.debug_level_b_proof_path + "\"");
         write_manifest(run_dir, spec, dataset, graph, model, forward, proof, row);
     } catch (const std::exception& error) {
         row.status = "failed";
