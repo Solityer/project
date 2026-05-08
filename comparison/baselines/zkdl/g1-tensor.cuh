@@ -3,6 +3,7 @@
 
 #include <iostream>
 #include <iomanip>
+#include <cstdint>
 #include "bls12-381.cuh"
 #include "fr-tensor.cuh"
 using namespace std;
@@ -11,6 +12,144 @@ typedef blstrs__fp__Fp Fp_t;
 const uint G1NumThread = 4;
 const uint G1AffineSharedMemorySize = 2 * sizeof(G1Affine_t) * G1NumThread; 
 const uint G1JacobianSharedMemorySize = 2 * sizeof(G1Jacobian_t) * G1NumThread;
+
+inline Fp_t Fp_host_zero()
+{
+    return {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}};
+}
+
+inline Fp_t Fp_host_one()
+{
+    return {{196605U, 1980301312U, 3289120770U, 3958636555U, 1405573306U, 1598593111U, 1884444485U, 2010011731U, 2723605613U, 1543969431U, 4202751123U, 368467651U}};
+}
+
+inline Fp_t Fp_host_modulus()
+{
+    return {{4294945451U, 3120496639U, 2975072255U, 514588670U, 4138792484U, 1731252896U, 4085584575U, 1685539716U, 1129032919U, 1260103606U, 964683418U, 436277738U}};
+}
+
+inline bool Fp_host_eq(const Fp_t& a, const Fp_t& b)
+{
+    for (uint i = 0; i < 12; ++i)
+    {
+        if (a.val[i] != b.val[i]) return false;
+    }
+    return true;
+}
+
+inline bool Fp_host_gte(const Fp_t& a, const Fp_t& b)
+{
+    for (int i = 11; i >= 0; --i)
+    {
+        if (a.val[i] > b.val[i]) return true;
+        if (a.val[i] < b.val[i]) return false;
+    }
+    return true;
+}
+
+inline Fp_t Fp_host_add_raw(Fp_t a, const Fp_t& b)
+{
+    std::uint64_t carry = 0;
+    for (uint i = 0; i < 12; ++i)
+    {
+        const std::uint64_t sum = static_cast<std::uint64_t>(a.val[i]) + b.val[i] + carry;
+        a.val[i] = static_cast<uint>(sum & 0xffffffffULL);
+        carry = sum >> 32U;
+    }
+    return a;
+}
+
+inline Fp_t Fp_host_sub_raw(Fp_t a, const Fp_t& b)
+{
+    std::uint64_t borrow = 0;
+    for (uint i = 0; i < 12; ++i)
+    {
+        const std::uint64_t lhs = a.val[i];
+        const std::uint64_t rhs = static_cast<std::uint64_t>(b.val[i]) + borrow;
+        if (lhs >= rhs)
+        {
+            a.val[i] = static_cast<uint>(lhs - rhs);
+            borrow = 0;
+        }
+        else
+        {
+            a.val[i] = static_cast<uint>((1ULL << 32U) + lhs - rhs);
+            borrow = 1;
+        }
+    }
+    return a;
+}
+
+inline Fp_t Fp_host_add(const Fp_t& a, const Fp_t& b)
+{
+    Fp_t out = Fp_host_add_raw(a, b);
+    const Fp_t p = Fp_host_modulus();
+    if (Fp_host_gte(out, p)) out = Fp_host_sub_raw(out, p);
+    return out;
+}
+
+inline Fp_t Fp_host_sub(const Fp_t& a, const Fp_t& b)
+{
+    Fp_t out = Fp_host_sub_raw(a, b);
+    if (!Fp_host_gte(a, b)) out = Fp_host_add_raw(out, Fp_host_modulus());
+    return out;
+}
+
+inline uint Fp_host_add_with_carry(uint a, uint* carry)
+{
+    const std::uint64_t sum = static_cast<std::uint64_t>(a) + *carry;
+    *carry = static_cast<uint>(sum >> 32U);
+    return static_cast<uint>(sum & 0xffffffffULL);
+}
+
+inline uint Fp_host_mac_with_carry(uint a, uint b, uint c, uint* carry)
+{
+    const std::uint64_t result = static_cast<std::uint64_t>(a) * b + c + *carry;
+    *carry = static_cast<uint>(result >> 32U);
+    return static_cast<uint>(result & 0xffffffffULL);
+}
+
+inline Fp_t Fp_host_mul(const Fp_t& a, const Fp_t& b)
+{
+    const Fp_t p = Fp_host_modulus();
+    uint t[14] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    for (uint i = 0; i < 12; ++i)
+    {
+        uint carry = 0;
+        for (uint j = 0; j < 12; ++j)
+        {
+            t[j] = Fp_host_mac_with_carry(a.val[j], b.val[i], t[j], &carry);
+        }
+        t[12] = Fp_host_add_with_carry(t[12], &carry);
+        t[13] = carry;
+
+        carry = 0;
+        const uint m = 4294770685U * t[0];
+        Fp_host_mac_with_carry(m, p.val[0], t[0], &carry);
+        for (uint j = 1; j < 12; ++j)
+        {
+            t[j - 1] = Fp_host_mac_with_carry(m, p.val[j], t[j], &carry);
+        }
+
+        t[11] = Fp_host_add_with_carry(t[12], &carry);
+        t[12] = t[13] + carry;
+    }
+
+    Fp_t out = Fp_host_zero();
+    for (uint i = 0; i < 12; ++i) out.val[i] = t[i];
+    if (Fp_host_gte(out, p)) out = Fp_host_sub_raw(out, p);
+    return out;
+}
+
+inline Fp_t Fp_host_sqr(const Fp_t& a)
+{
+    return Fp_host_mul(a, a);
+}
+
+inline Fp_t Fp_host_double(const Fp_t& a)
+{
+    return Fp_host_add(a, a);
+}
 
 DEVICE Fp_t Fp_minus(Fp_t a) {
 	return blstrs__fp__Fp_sub(blstrs__fp__Fp_ZERO, a);
@@ -83,6 +222,139 @@ const Fp_t G1_ONE = {196605, 1980301312, 3289120770, 3958636555, 1405573306, 159
 
 const G1Affine_t G1Affine_generator {G1_generator_x_mont, G1_generator_y_mont};
 const G1Jacobian_t G1Jacobian_generator {G1_generator_x_mont, G1_generator_y_mont, G1_ONE};
+
+inline G1Jacobian_t G1Jacobian_host_zero()
+{
+    return {Fp_host_zero(), Fp_host_one(), Fp_host_zero()};
+}
+
+inline bool G1Jacobian_host_is_zero(const G1Jacobian_t& p)
+{
+    return Fp_host_eq(p.z, Fp_host_zero());
+}
+
+inline G1Jacobian_t G1Jacobian_host_minus(G1Jacobian_t p)
+{
+    if (G1Jacobian_host_is_zero(p)) return p;
+    p.y = Fp_host_sub(Fp_host_zero(), p.y);
+    return p;
+}
+
+inline G1Jacobian_t G1Jacobian_host_double(G1Jacobian_t inp)
+{
+    if (G1Jacobian_host_is_zero(inp)) return inp;
+
+    const Fp_t a = Fp_host_sqr(inp.x);
+    const Fp_t b = Fp_host_sqr(inp.y);
+    Fp_t c = Fp_host_sqr(b);
+
+    Fp_t d = Fp_host_add(inp.x, b);
+    d = Fp_host_sqr(d);
+    d = Fp_host_sub(Fp_host_sub(d, a), c);
+    d = Fp_host_double(d);
+
+    const Fp_t e = Fp_host_add(Fp_host_double(a), a);
+    const Fp_t f = Fp_host_sqr(e);
+
+    inp.z = Fp_host_mul(inp.y, inp.z);
+    inp.z = Fp_host_double(inp.z);
+    inp.x = Fp_host_sub(Fp_host_sub(f, d), d);
+
+    c = Fp_host_double(c);
+    c = Fp_host_double(c);
+    c = Fp_host_double(c);
+    inp.y = Fp_host_sub(Fp_host_mul(Fp_host_sub(d, inp.x), e), c);
+    return inp;
+}
+
+inline G1Jacobian_t G1Jacobian_host_add(G1Jacobian_t a, G1Jacobian_t b)
+{
+    if (G1Jacobian_host_is_zero(a)) return b;
+    if (G1Jacobian_host_is_zero(b)) return a;
+
+    const Fp_t z1z1 = Fp_host_sqr(a.z);
+    const Fp_t z2z2 = Fp_host_sqr(b.z);
+    const Fp_t u1 = Fp_host_mul(a.x, z2z2);
+    const Fp_t u2 = Fp_host_mul(b.x, z1z1);
+    Fp_t s1 = Fp_host_mul(Fp_host_mul(a.y, b.z), z2z2);
+    const Fp_t s2 = Fp_host_mul(Fp_host_mul(b.y, a.z), z1z1);
+
+    if (Fp_host_eq(u1, u2) && Fp_host_eq(s1, s2)) return G1Jacobian_host_double(a);
+    if (Fp_host_eq(u1, u2)) return G1Jacobian_host_zero();
+
+    const Fp_t h = Fp_host_sub(u2, u1);
+    Fp_t i = Fp_host_double(h);
+    i = Fp_host_sqr(i);
+    const Fp_t j = Fp_host_mul(h, i);
+    Fp_t r = Fp_host_sub(s2, s1);
+    r = Fp_host_double(r);
+    const Fp_t v = Fp_host_mul(u1, i);
+
+    a.x = Fp_host_sub(Fp_host_sub(Fp_host_sub(Fp_host_sqr(r), j), v), v);
+    a.y = Fp_host_mul(Fp_host_sub(v, a.x), r);
+    s1 = Fp_host_mul(s1, j);
+    s1 = Fp_host_double(s1);
+    a.y = Fp_host_sub(a.y, s1);
+    a.z = Fp_host_add(a.z, b.z);
+    a.z = Fp_host_sqr(a.z);
+    a.z = Fp_host_sub(Fp_host_sub(a.z, z1z1), z2z2);
+    a.z = Fp_host_mul(a.z, h);
+    return a;
+}
+
+inline G1Jacobian_t G1Jacobian_host_mul(G1Jacobian_t base, const Fr_t& raw_scalar)
+{
+    G1Jacobian_t out = G1Jacobian_host_zero();
+    for (uint i = 0; i < 256; ++i)
+    {
+        if ((raw_scalar.val[i / 32U] >> (i % 32U)) & 1U)
+        {
+            out = G1Jacobian_host_add(out, base);
+        }
+        base = G1Jacobian_host_double(base);
+    }
+    return out;
+}
+
+inline bool G1Jacobian_host_eq(const G1Jacobian_t& a, const G1Jacobian_t& b)
+{
+    const bool a_zero = G1Jacobian_host_is_zero(a);
+    const bool b_zero = G1Jacobian_host_is_zero(b);
+    if (a_zero || b_zero) return a_zero && b_zero;
+
+    const Fp_t z1z1 = Fp_host_sqr(a.z);
+    const Fp_t z2z2 = Fp_host_sqr(b.z);
+    const Fp_t lhs_x = Fp_host_mul(a.x, z2z2);
+    const Fp_t rhs_x = Fp_host_mul(b.x, z1z1);
+    if (!Fp_host_eq(lhs_x, rhs_x)) return false;
+
+    const Fp_t z1z1z1 = Fp_host_mul(z1z1, a.z);
+    const Fp_t z2z2z2 = Fp_host_mul(z2z2, b.z);
+    const Fp_t lhs_y = Fp_host_mul(a.y, z2z2z2);
+    const Fp_t rhs_y = Fp_host_mul(b.y, z1z1z1);
+    return Fp_host_eq(lhs_y, rhs_y);
+}
+
+inline G1Jacobian_t G1Jacobian_host_mle(std::vector<G1Jacobian_t> current, vector<Fr_t>::const_iterator begin, vector<Fr_t>::const_iterator end)
+{
+    for (auto it = begin; it != end; ++it)
+    {
+        const Fr_t u_raw = Fr_host_unmont(*it);
+        const Fr_t one_minus_raw = Fr_host_unmont(Fr_host_sub(Fr_host_one_mont(), *it));
+        const uint out_size = static_cast<uint>((current.size() + 1U) / 2U);
+        std::vector<G1Jacobian_t> next(out_size, G1Jacobian_host_zero());
+        for (uint i = 0; i < out_size; ++i)
+        {
+            const G1Jacobian_t low = (2U * i < current.size()) ? current[2U * i] : G1Jacobian_host_zero();
+            const G1Jacobian_t high = (2U * i + 1U < current.size()) ? current[2U * i + 1U] : G1Jacobian_host_zero();
+            next[i] = G1Jacobian_host_add(
+                G1Jacobian_host_mul(low, one_minus_raw),
+                G1Jacobian_host_mul(high, u_raw));
+        }
+        current.swap(next);
+    }
+    return current.empty() ? G1Jacobian_host_zero() : current.front();
+}
 
 class G1Tensor
 {
@@ -629,8 +901,7 @@ G1Jacobian_t G1_me(const G1TensorJacobian& t, vector<Fr_t>::const_iterator begin
 {
     G1TensorJacobian t_new((t.size + 1) / 2);
     if (begin >= end) return t(0);
-    const uint block_size = t_new.size < 32U ? t_new.size : 32U;
-    G1_me_step<<<(t_new.size + block_size - 1) / block_size, block_size>>>(t.gpu_data, t_new.gpu_data, *begin, t.size, t_new.size);
+    G1_me_step<<<t_new.size, 1>>>(t.gpu_data, t_new.gpu_data, *begin, t.size, t_new.size);
     cudaDeviceSynchronize();
     return G1_me(t_new, begin + 1, end);
 }
