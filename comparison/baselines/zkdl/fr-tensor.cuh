@@ -7,6 +7,8 @@
 #include <vector>
 #include <curand_kernel.h>
 #include <random>
+#include <cstring>
+#include <cstdint>
 #include "bls12-381.cuh"
 using namespace std;
 
@@ -16,6 +18,162 @@ typedef blstrs__g1__G1Affine_jacobian G1Jacobian_t;
 
 const uint FrNumThread = 4;
 const uint FrSharedMemorySize = 2 * sizeof(Fr_t) * FrNumThread; 
+
+inline Fr_t Fr_host_zero()
+{
+    return {{0, 0, 0, 0, 0, 0, 0, 0}};
+}
+
+inline Fr_t Fr_host_one_mont()
+{
+    return {{4294967294U, 1U, 215042U, 1485092858U, 3971764213U, 2576109551U, 2898593135U, 405057881U}};
+}
+
+inline Fr_t Fr_host_one_raw()
+{
+    return {{1U, 0, 0, 0, 0, 0, 0, 0}};
+}
+
+inline Fr_t Fr_host_modulus()
+{
+    return {{1U, 4294967295U, 4294859774U, 1404937218U, 161601541U, 859428872U, 698187080U, 1944954707U}};
+}
+
+inline Fr_t Fr_host_r2()
+{
+    return {{4092763245U, 3382307216U, 2274516003U, 728559051U, 1918122383U, 97719446U, 2673475345U, 122214873U}};
+}
+
+inline bool Fr_host_eq(const Fr_t& a, const Fr_t& b)
+{
+    return std::memcmp(&a, &b, sizeof(Fr_t)) == 0;
+}
+
+inline bool Fr_host_gte(const Fr_t& a, const Fr_t& b)
+{
+    for (int i = 7; i >= 0; --i)
+    {
+        if (a.val[i] > b.val[i]) return true;
+        if (a.val[i] < b.val[i]) return false;
+    }
+    return true;
+}
+
+inline Fr_t Fr_host_add_raw(Fr_t a, const Fr_t& b)
+{
+    std::uint64_t carry = 0;
+    for (uint i = 0; i < 8; ++i)
+    {
+        const std::uint64_t sum = static_cast<std::uint64_t>(a.val[i]) + b.val[i] + carry;
+        a.val[i] = static_cast<uint>(sum & 0xffffffffULL);
+        carry = sum >> 32U;
+    }
+    return a;
+}
+
+inline Fr_t Fr_host_sub_raw(Fr_t a, const Fr_t& b)
+{
+    std::uint64_t borrow = 0;
+    for (uint i = 0; i < 8; ++i)
+    {
+        const std::uint64_t lhs = a.val[i];
+        const std::uint64_t rhs = static_cast<std::uint64_t>(b.val[i]) + borrow;
+        if (lhs >= rhs)
+        {
+            a.val[i] = static_cast<uint>(lhs - rhs);
+            borrow = 0;
+        }
+        else
+        {
+            a.val[i] = static_cast<uint>((1ULL << 32U) + lhs - rhs);
+            borrow = 1;
+        }
+    }
+    return a;
+}
+
+inline Fr_t Fr_host_add(const Fr_t& a, const Fr_t& b)
+{
+    Fr_t out = Fr_host_add_raw(a, b);
+    const Fr_t p = Fr_host_modulus();
+    if (Fr_host_gte(out, p)) out = Fr_host_sub_raw(out, p);
+    return out;
+}
+
+inline Fr_t Fr_host_sub(const Fr_t& a, const Fr_t& b)
+{
+    Fr_t out = Fr_host_sub_raw(a, b);
+    if (!Fr_host_gte(a, b)) out = Fr_host_add_raw(out, Fr_host_modulus());
+    return out;
+}
+
+inline uint Fr_host_add_with_carry(uint a, uint* carry)
+{
+    const std::uint64_t sum = static_cast<std::uint64_t>(a) + *carry;
+    *carry = static_cast<uint>(sum >> 32U);
+    return static_cast<uint>(sum & 0xffffffffULL);
+}
+
+inline uint Fr_host_mac_with_carry(uint a, uint b, uint c, uint* carry)
+{
+    const std::uint64_t result = static_cast<std::uint64_t>(a) * b + c + *carry;
+    *carry = static_cast<uint>(result >> 32U);
+    return static_cast<uint>(result & 0xffffffffULL);
+}
+
+inline Fr_t Fr_host_mul(const Fr_t& a, const Fr_t& b)
+{
+    const Fr_t p = Fr_host_modulus();
+    uint t[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    for (uint i = 0; i < 8; ++i)
+    {
+        uint carry = 0;
+        for (uint j = 0; j < 8; ++j)
+        {
+            t[j] = Fr_host_mac_with_carry(a.val[j], b.val[i], t[j], &carry);
+        }
+        t[8] = Fr_host_add_with_carry(t[8], &carry);
+        t[9] = carry;
+
+        carry = 0;
+        const uint m = 4294967295U * t[0];
+        Fr_host_mac_with_carry(m, p.val[0], t[0], &carry);
+        for (uint j = 1; j < 8; ++j)
+        {
+            t[j - 1] = Fr_host_mac_with_carry(m, p.val[j], t[j], &carry);
+        }
+
+        t[7] = Fr_host_add_with_carry(t[8], &carry);
+        t[8] = t[9] + carry;
+    }
+
+    Fr_t out = Fr_host_zero();
+    for (uint i = 0; i < 8; ++i) out.val[i] = t[i];
+    if (Fr_host_gte(out, p)) out = Fr_host_sub_raw(out, p);
+    return out;
+}
+
+inline Fr_t Fr_host_mont(const Fr_t& a)
+{
+    return Fr_host_mul(a, Fr_host_r2());
+}
+
+inline Fr_t Fr_host_unmont(const Fr_t& a)
+{
+    return Fr_host_mul(a, Fr_host_one_raw());
+}
+
+inline Fr_t Fr_host_mle_step(const Fr_t& low, const Fr_t& high, const Fr_t& challenge)
+{
+    return Fr_host_add(low, Fr_host_mul(challenge, Fr_host_sub(high, low)));
+}
+
+inline uint Fr_partial_me_out_size(uint size, uint window_size)
+{
+    if (window_size == 0) throw std::runtime_error("Invalid window size");
+    const uint windows = (size + window_size - 1U) / window_size;
+    return ((windows + 1U) / 2U) * window_size;
+}
 
 ostream& operator<<(ostream& os, const Fr_t& x)
 {
@@ -274,6 +432,8 @@ class FrTensor
 
     FrTensor partial_me(vector<Fr_t> u, uint window_size) const;
 
+    std::vector<Fr_t> to_host() const;
+
     static FrTensor random_int(uint size, uint num_bits);
     static FrTensor random(uint size);
 
@@ -449,11 +609,11 @@ KERNEL void Fr_split_by_window(GLOBAL Fr_t *arr_in, GLOBAL Fr_t *arr0, GLOBAL Fr
 std::pair<FrTensor, FrTensor> FrTensor::split(uint window_size) const
 {
     if (window_size < 1 || window_size >= size) throw std::runtime_error("Invalid window size.");
-    uint out_size = (size + 1) / 2;
+    uint out_size = Fr_partial_me_out_size(size, window_size);
     std::vector<Fr_t> host_in(size);
     cudaMemcpy(host_in.data(), gpu_data, sizeof(Fr_t) * size, cudaMemcpyDeviceToHost);
-    std::vector<Fr_t> host0(out_size, blstrs__scalar__Scalar_ZERO);
-    std::vector<Fr_t> host1(out_size, blstrs__scalar__Scalar_ZERO);
+    std::vector<Fr_t> host0(out_size, Fr_host_zero());
+    std::vector<Fr_t> host1(out_size, Fr_host_zero());
     for (uint gid = 0; gid < out_size; ++gid)
     {
         const uint window_id = gid / window_size;
@@ -467,6 +627,16 @@ std::pair<FrTensor, FrTensor> FrTensor::split(uint window_size) const
         FrTensor(out_size, host0.data()),
         FrTensor(out_size, host1.data())
     };
+}
+
+std::vector<Fr_t> FrTensor::to_host() const
+{
+    std::vector<Fr_t> out(size);
+    if (!out.empty())
+    {
+        cudaMemcpy(out.data(), gpu_data, sizeof(Fr_t) * size, cudaMemcpyDeviceToHost);
+    }
+    return out;
 }
 
 KERNEL void Fr_me_step(GLOBAL Fr_t *arr_in, GLOBAL Fr_t *arr_out, Fr_t x, uint in_size, uint out_size)
@@ -483,12 +653,26 @@ KERNEL void Fr_me_step(GLOBAL Fr_t *arr_in, GLOBAL Fr_t *arr_out, Fr_t x, uint i
 
 Fr_t Fr_me(const FrTensor& t, vector<Fr_t>::const_iterator begin, vector<Fr_t>::const_iterator end)
 {
-    FrTensor t_new((t.size + 1) / 2);
-    if (begin >= end) return t(0);
-    const uint block_size = t_new.size < 32U ? t_new.size : 32U;
-    Fr_me_step<<<(t_new.size + block_size - 1) / block_size, block_size>>>(t.gpu_data, t_new.gpu_data, *begin, t.size, t_new.size);
-    cudaDeviceSynchronize();
-    return Fr_me(t_new, begin + 1, end);
+    std::vector<Fr_t> current(t.size);
+    if (!current.empty())
+    {
+        cudaMemcpy(current.data(), t.gpu_data, sizeof(Fr_t) * current.size(), cudaMemcpyDeviceToHost);
+    }
+    for (auto it = begin; it != end; ++it)
+    {
+        const uint out_size = static_cast<uint>((current.size() + 1U) / 2U);
+        std::vector<Fr_t> next(out_size, Fr_host_zero());
+        for (uint gid = 0; gid < out_size; ++gid)
+        {
+            const uint gid0 = 2U * gid;
+            const uint gid1 = gid0 + 1U;
+            const Fr_t low = (gid0 < current.size()) ? current[gid0] : Fr_host_zero();
+            const Fr_t high = (gid1 < current.size()) ? current[gid1] : Fr_host_zero();
+            next[gid] = Fr_host_mle_step(low, high, *it);
+        }
+        current.swap(next);
+    }
+    return current.empty() ? Fr_host_zero() : current.front();
 }
 
 KERNEL void Fr_partial_me_step(GLOBAL Fr_t *arr_in, GLOBAL Fr_t *arr_out, Fr_t x, uint in_size, uint out_size, uint window_size)
@@ -508,9 +692,31 @@ KERNEL void Fr_partial_me_step(GLOBAL Fr_t *arr_in, GLOBAL Fr_t *arr_out, Fr_t x
 FrTensor Fr_partial_me(const FrTensor& t, vector<Fr_t>::const_iterator begin, vector<Fr_t>::const_iterator end, uint window_size)
 {
     if (begin >= end) return t;
-    auto halves = t.split(window_size);
-    auto t_new = halves.first + ((halves.second - halves.first) * (*begin));
-    return Fr_partial_me(t_new, begin + 1, end, window_size);
+    if (window_size == 0) throw std::runtime_error("Invalid window size");
+
+    std::vector<Fr_t> current(t.size);
+    if (!current.empty())
+    {
+        cudaMemcpy(current.data(), t.gpu_data, sizeof(Fr_t) * current.size(), cudaMemcpyDeviceToHost);
+    }
+    for (auto it = begin; it != end; ++it)
+    {
+        const uint in_size = static_cast<uint>(current.size());
+        const uint out_size = Fr_partial_me_out_size(in_size, window_size);
+        std::vector<Fr_t> next(out_size, Fr_host_zero());
+        for (uint gid = 0; gid < out_size; ++gid)
+        {
+            const uint window_id = gid / window_size;
+            const uint idx_in_window = gid % window_size;
+            const uint gid0 = 2U * window_id * window_size + idx_in_window;
+            const uint gid1 = (2U * window_id + 1U) * window_size + idx_in_window;
+            const Fr_t low = (gid0 < in_size) ? current[gid0] : Fr_host_zero();
+            const Fr_t high = (gid1 < in_size) ? current[gid1] : Fr_host_zero();
+            next[gid] = Fr_host_mle_step(low, high, *it);
+        }
+        current.swap(next);
+    }
+    return FrTensor(static_cast<uint>(current.size()), current.data());
 }
 
 ostream& operator<<(ostream& os, const FrTensor& A)

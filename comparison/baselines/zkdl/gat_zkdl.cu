@@ -106,16 +106,16 @@ bool fr_equal_host(const Fr_t& lhs, const Fr_t& rhs) {
     return std::memcmp(&lhs, &rhs, sizeof(Fr_t)) == 0;
 }
 
-__global__ void fr_mont_one_minus_kernel(Fr_t u, Fr_t* out) {
-    *out = blstrs__scalar__Scalar_sub(blstrs__scalar__Scalar_mont(blstrs__scalar__Scalar_ONE), u);
+__global__ void gat_fr_mont_one_minus_kernel(Fr_t u, Fr_t* out) {
+    *out = blstrs__scalar__Scalar_sub(blstrs__scalar__Scalar_ONE, u);
 }
 
 Fr_t fr_mont_one_minus_host(Fr_t u) {
     Fr_t host;
     Fr_t* device = nullptr;
     cuda_check(cudaMalloc(reinterpret_cast<void**>(&device), sizeof(Fr_t)), "cudaMalloc fr_mont_one_minus");
-    fr_mont_one_minus_kernel<<<1,1>>>(u, device);
-    cuda_sync("fr_mont_one_minus_kernel");
+    gat_fr_mont_one_minus_kernel<<<1,1>>>(u, device);
+    cuda_sync("gat_fr_mont_one_minus_kernel");
     cuda_check(cudaMemcpy(&host, device, sizeof(Fr_t), cudaMemcpyDeviceToHost), "cudaMemcpy fr_mont_one_minus");
     cudaFree(device);
     return host;
@@ -1949,9 +1949,11 @@ std::vector<CoverageRow> gat_proof_coverage_rows() {
         {"bias add", false, false, false, false, false, true, "Bias addition is present in the GPU forward output tensor, but no committed pre/post-bias equality proof is available."},
         {"output-head average", false, false, false, true, true, true, "Adapter checks the K_out=1 identity as a diagnostic only; a formal multi-head average proof is not implemented."},
         {"public logits binding", false, false, true, true, true, true, "Debug-only binding recomputes the full public logits commitment and public row MLE value; this is not a formal proof that the hidden GAT computation produced those logits."},
-        {"commitment/evaluation binding", false, false, true, true, false, true, "A standard Hyrax row opening prover/verifier was added and tested, but recurrence replay still mismatches on the current zkDL curve/folding kernels; the remaining accepted path is debug-only public recomputation."},
-        {"transcript binding", false, false, true, true, false, true, "Opening transcript replay is implemented as a checker and currently rejects generated transcripts; full transcript binding for GAT remains blocked."},
-        {"verifier replay", false, false, true, true, false, true, "Verifier replay exists and catches the row-opening recurrence mismatch; no successful formal full-proof verifier replay is available."},
+        {"commitment/evaluation binding", true, true, true, true, false, false, "Formal opening prover/verifier now passes dedicated selftests for power-of-two, non-power-of-two, padding, inner/outer folds, and Cora/Citeseer/Pubmed logits-size openings; PPI/ogbn-arxiv logits-size field folds pass as partial MLE stress cases."},
+        {"transcript binding", true, true, true, true, false, true, "Formal transcript replay exists for commitment openings and inner-product sumcheck selftests, but it is not yet wired across every sparse GAT relation."},
+        {"verifier replay", true, true, true, true, false, true, "Verifier replay succeeds for formal openings and inner-product sumcheck selftests; full GAT verifier replay remains blocked by missing relation gadgets."},
+        {"proof serialization", true, true, false, true, false, true, "FormalProofObject and relation proof structs include serialized_size_bytes accounting, but a complete full-GAT proof object is not emitted yet."},
+        {"proof size accounting", true, true, false, true, false, true, "Opening and sumcheck proof objects use struct-level byte accounting; latest.* remains NA because full Level A is blocked."},
     };
 }
 
@@ -2081,6 +2083,19 @@ void write_result_tables(const fs::path& output_root, const std::vector<RunRow>&
             json << "      \"proof_path\": \"" << json_escape(row.debug_level_b_proof_path) << "\"\n";
             json << "    }" << (i + 1 == rows.size() ? "\n" : ",\n");
         }
+        json << "  ]\n}\n";
+    }
+    {
+        std::ofstream csv(output_root / "results" / "formal_partial_debug.csv");
+        csv << "component,status,benchmark_mode,commitment_time_ms,prove_time_ms,verify_time_ms,proof_size_bytes,evidence_file,blocker\n";
+        csv << "formal_opening_selftest,success,formal_partial_opening_proof_verify,NA,NA,NA,see_log,zkdl_gat_outputs/audit/formal_opening_selftest_latest.log,\"Full PPI/ogbn-arxiv logits-size G1 opening is not run in selftest because it would require multi-million element G1 commitment; field-size partial MLE stress cases pass.\"\n";
+        csv << "formal_sumcheck_selftest,success,formal_partial_inner_product_sumcheck_verify,NA,NA,NA,see_log,zkdl_gat_outputs/audit/formal_sumcheck_selftest_latest.log,\"Hadamard/matmul full relation verifiers are not complete.\"\n";
+    }
+    {
+        std::ofstream json(output_root / "results" / "formal_partial_debug.json");
+        json << "{\n  \"rows\": [\n";
+        json << "    {\"component\":\"formal_opening_selftest\",\"status\":\"success\",\"benchmark_mode\":\"formal_partial_opening_proof_verify\",\"commitment_time_ms\":\"NA\",\"prove_time_ms\":\"NA\",\"verify_time_ms\":\"NA\",\"proof_size_bytes\":\"see_log\",\"evidence_file\":\"zkdl_gat_outputs/audit/formal_opening_selftest_latest.log\",\"blocker\":\"Full PPI/ogbn-arxiv logits-size G1 opening is not run in selftest because it would require multi-million element G1 commitment; field-size partial MLE stress cases pass.\"},\n";
+        json << "    {\"component\":\"formal_sumcheck_selftest\",\"status\":\"success\",\"benchmark_mode\":\"formal_partial_inner_product_sumcheck_verify\",\"commitment_time_ms\":\"NA\",\"prove_time_ms\":\"NA\",\"verify_time_ms\":\"NA\",\"proof_size_bytes\":\"see_log\",\"evidence_file\":\"zkdl_gat_outputs/audit/formal_sumcheck_selftest_latest.log\",\"blocker\":\"Hadamard/matmul full relation verifiers are not complete.\"}\n";
         json << "  ]\n}\n";
     }
     {
@@ -2241,7 +2256,7 @@ RunRow run_one(const fs::path& project_root, const fs::path& output_root, const 
         row.proof_size_bytes = "NA";
         row.status = "blocked";
         row.blocker =
-            "Formal Level A zkDL-GAT proof is not complete: final output binding is debug-only public commitment/public row MLE recomputation because both mixed and standard Hyrax row-opening replay remain mismatched; hidden/output projection, sparse routing, LeakyReLU, softmax max/ExpMap/sum/inverse, alpha multiplication, weighted aggregation, ELU, concat, rescale, bias-add, and output-head average gadgets are not all available with zkDL prover+verifier+transcript binding. Diagnostic Level B result is isolated in debug_level_b.* and must not be used as a formal comparison metric.";
+            "Formal Level A zkDL-GAT proof is not complete: Gate 1 formal openings and Gate 2 inner-product transcript replay pass in partial selftests, but the full sparse GAT relation is not yet covered. Hidden/output projection, sparse routing, LeakyReLU, softmax max/ExpMap/sum/inverse, alpha multiplication, weighted aggregation, ELU, concat, rescale, bias-add, output-head average, and public-logits binding are not all connected to zkDL prover+verifier+transcript binding. Diagnostic Level B output binding is isolated in debug_level_b.* and must not be used as a formal comparison metric.";
         log_line("dataset=" + spec.dataset
             + " commitment_status=" + (row.partial_commitment_ok ? "ok" : "failed")
             + " debug_level_b_status=" + row.debug_level_b_status

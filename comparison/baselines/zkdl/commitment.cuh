@@ -8,22 +8,6 @@
 #include <cstring>
 #include <sstream>
 
-struct CommitmentOpeningProof
-{
-    vector<Fr_t> point;
-    Fr_t value;
-    vector<G1Jacobian_t> transcript;
-
-    std::size_t serialized_size_bytes() const
-    {
-        return sizeof(uint32_t)
-            + point.size() * sizeof(Fr_t)
-            + sizeof(Fr_t)
-            + sizeof(uint32_t)
-            + transcript.size() * sizeof(G1Jacobian_t);
-    }
-};
-
 class Commitment: public G1TensorJacobian
 {   
     public:
@@ -51,7 +35,7 @@ class Commitment: public G1TensorJacobian
 
 KERNEL void fr_mont_one_minus_kernel(Fr_t u, GLOBAL Fr_t* out)
 {
-    *out = blstrs__scalar__Scalar_sub(blstrs__scalar__Scalar_mont(blstrs__scalar__Scalar_ONE), u);
+    *out = blstrs__scalar__Scalar_sub(blstrs__scalar__Scalar_ONE, u);
 }
 
 KERNEL void sum_axis_n_optimized(GLOBAL G1Jacobian_t* arr, GLOBAL G1Jacobian_t* arr_out, uint n, uint m) {
@@ -118,6 +102,63 @@ Fr_t Commitment::me_open(const FrTensor& t, const Commitment& generators, vector
     return me_open_fixed(t, generators, begin, end, proof);
 }
 
+Fr_t me_open_fixed_host_recursive(const vector<Fr_t>& scalars, const Commitment& generators,
+    vector<Fr_t>::const_iterator begin, vector<Fr_t>::const_iterator end, vector<G1Jacobian_t>& proof)
+{
+    if (scalars.size() != generators.size) throw std::runtime_error("Incompatible dimensions");
+    if (begin >= end)
+    {
+        proof.push_back(generators(0));
+        return scalars.empty() ? Fr_host_zero() : scalars.front();
+    }
+    if (scalars.size() % 2U != 0U) throw std::runtime_error("Inner opening requires power-of-two generator size");
+
+    const uint new_size = static_cast<uint>(scalars.size() / 2U);
+    vector<Fr_t> left_scalars(new_size, Fr_host_zero());
+    vector<Fr_t> right_scalars(new_size, Fr_host_zero());
+    vector<Fr_t> folded_scalars(new_size, Fr_host_zero());
+    for (uint i = 0; i < new_size; ++i)
+    {
+        left_scalars[i] = scalars[2U * i];
+        right_scalars[i] = scalars[2U * i + 1U];
+        folded_scalars[i] = Fr_host_mle_step(left_scalars[i], right_scalars[i], *begin);
+    }
+
+    FrTensor scalar_tensor(static_cast<uint>(scalars.size()), scalars.data());
+    FrTensor left_tensor(new_size, left_scalars.data());
+    FrTensor right_tensor(new_size, right_scalars.data());
+
+    const auto generator_points = Commitment::host_points(generators);
+    vector<G1Jacobian_t> left_points(new_size), right_points(new_size);
+    for (uint i = 0; i < new_size; ++i)
+    {
+        left_points[i] = generator_points[2U * i];
+        right_points[i] = generator_points[2U * i + 1U];
+    }
+
+    Commitment left_generators(new_size, left_points.data());
+    Commitment right_generators(new_size, right_points.data());
+    const auto current_commitment = generators.commit(scalar_tensor);
+    const auto cross0_commitment = right_generators.commit(left_tensor);
+    const auto cross1_commitment = left_generators.commit(right_tensor);
+    proof.push_back(current_commitment(0));
+    proof.push_back(cross0_commitment(0));
+    proof.push_back(cross1_commitment(0));
+
+    const Fr_t u_raw = Fr_host_unmont(*begin);
+    const Fr_t one_minus_u = Fr_host_sub(Fr_host_one_mont(), *begin);
+    const Fr_t one_minus_u_raw = Fr_host_unmont(one_minus_u);
+    vector<G1Jacobian_t> folded_points(new_size);
+    for (uint i = 0; i < new_size; ++i)
+    {
+        folded_points[i] = G1Jacobian_host_add(
+            G1Jacobian_host_mul(left_points[i], u_raw),
+            G1Jacobian_host_mul(right_points[i], one_minus_u_raw));
+    }
+    Commitment new_generators(new_size, folded_points.data());
+    return me_open_fixed_host_recursive(folded_scalars, new_generators, begin + 1, end, proof);
+}
+
 KERNEL void me_open_fixed_step(GLOBAL Fr_t* scalars, GLOBAL G1Jacobian_t* generators, Fr_t u,
     GLOBAL Fr_t* new_scalars, GLOBAL G1Jacobian_t* new_generators,
     GLOBAL G1Jacobian_t* temp_out, GLOBAL G1Jacobian_t* temp_out0, GLOBAL G1Jacobian_t* temp_out1,
@@ -142,51 +183,7 @@ KERNEL void me_open_fixed_step(GLOBAL Fr_t* scalars, GLOBAL G1Jacobian_t* genera
 Fr_t Commitment::me_open_fixed(const FrTensor& t, const Commitment& generators, vector<Fr_t>::const_iterator begin, vector<Fr_t>::const_iterator end, vector<G1Jacobian_t>& proof)
 {
     if (t.size != generators.size) throw std::runtime_error("Incompatible dimensions");
-    if (begin >= end)
-    {
-        proof.push_back(generators(0));
-        return t(0);
-    }
-    cudaGetLastError();
-    const auto split_scalars = t.split(1);
-    const auto generator_points = host_points(generators);
-    const uint new_size = static_cast<uint>(generator_points.size() / 2);
-    vector<G1Jacobian_t> left_points(new_size), right_points(new_size);
-    for (uint i = 0; i < new_size; ++i)
-    {
-        left_points[i] = generator_points[2 * i];
-        right_points[i] = generator_points[2 * i + 1];
-    }
-
-    Commitment left_generators(new_size, left_points.data());
-    Commitment right_generators(new_size, right_points.data());
-    const auto current_commitment = generators.commit(t);
-    const auto cross0_commitment = right_generators.commit(split_scalars.first);
-    const auto cross1_commitment = left_generators.commit(split_scalars.second);
-    proof.push_back(current_commitment(0));
-    proof.push_back(cross0_commitment(0));
-    proof.push_back(cross1_commitment(0));
-
-    auto new_scalars = split_scalars.first + ((split_scalars.second - split_scalars.first) * (*begin));
-
-    Fr_t one_minus_u;
-    Fr_t* device_one_minus_u = nullptr;
-    cudaMalloc((void**)&device_one_minus_u, sizeof(Fr_t));
-    fr_mont_one_minus_kernel<<<1,1>>>(*begin, device_one_minus_u);
-    cudaDeviceSynchronize();
-    cudaMemcpy(&one_minus_u, device_one_minus_u, sizeof(Fr_t), cudaMemcpyDeviceToHost);
-    cudaFree(device_one_minus_u);
-
-    vector<G1Jacobian_t> folded_points(new_size);
-    for (uint i = 0; i < new_size; ++i)
-    {
-        G1Jacobian_t pair_points[2] = {left_points[i], right_points[i]};
-        G1TensorJacobian pair_tensor(2, pair_points);
-        vector<Fr_t> fold_point = {one_minus_u};
-        folded_points[i] = pair_tensor(fold_point);
-    }
-    Commitment new_generators(new_size, folded_points.data());
-    return me_open_fixed(new_scalars, new_generators, begin + 1, end, proof);
+    return me_open_fixed_host_recursive(t.to_host(), generators, begin, end, proof);
 }
 
 Fr_t Commitment::open(const FrTensor& t, const G1TensorJacobian& com, const vector<Fr_t>& u, uint& proof_size_count) const
@@ -205,69 +202,24 @@ Fr_t Commitment::open(const FrTensor& t, const G1TensorJacobian& com, const vect
 FrTensor Commitment::partial_me_checked(const FrTensor& t, vector<Fr_t>::const_iterator begin, vector<Fr_t>::const_iterator end, uint window_size, uint round)
 {
     if (begin >= end) return t;
-    cudaGetLastError();
-    auto halves = t.split(window_size);
-    cudaError_t status = cudaGetLastError();
-    if (status != cudaSuccess)
+    if (window_size == 0)
     {
-        std::ostringstream out;
-        out << "partial_me_checked split failed round=" << round
-            << " in_size=" << t.size
-            << " out_size=" << halves.first.size
-            << " window_size=" << window_size
-            << ": " << cudaGetErrorString(status);
-        throw std::runtime_error(out.str());
+        throw std::runtime_error("partial_me_checked invalid window_size=0");
     }
-    FrTensor delta(halves.first.size);
-    FrTensor scaled(halves.first.size);
-    FrTensor t_new(halves.first.size);
-    const uint chunk_limit = 256U;
-    for (uint offset = 0; offset < halves.first.size; offset += chunk_limit)
+    const auto current = t.to_host();
+    const uint out_size = Fr_partial_me_out_size(t.size, window_size);
+    vector<Fr_t> folded(out_size, Fr_host_zero());
+    for (uint gid = 0; gid < out_size; ++gid)
     {
-        const uint chunk = std::min(chunk_limit, halves.first.size - offset);
-        Fr_elementwise_sub<<<1, chunk>>>(halves.second.gpu_data + offset, halves.first.gpu_data + offset, delta.gpu_data + offset, chunk);
-        status = cudaDeviceSynchronize();
-        if (status != cudaSuccess)
-        {
-            std::ostringstream out;
-            out << "partial_me_checked delta failed round=" << round
-                << " in_size=" << t.size
-                << " out_size=" << halves.first.size
-                << " window_size=" << window_size
-                << " offset=" << offset
-                << " chunk=" << chunk
-                << ": " << cudaGetErrorString(status);
-            throw std::runtime_error(out.str());
-        }
-        Fr_broadcast_mont_mul<<<1, chunk>>>(delta.gpu_data + offset, *begin, scaled.gpu_data + offset, chunk);
-        status = cudaDeviceSynchronize();
-        if (status != cudaSuccess)
-        {
-            std::ostringstream out;
-            out << "partial_me_checked scale failed round=" << round
-                << " in_size=" << t.size
-                << " out_size=" << halves.first.size
-                << " window_size=" << window_size
-                << " offset=" << offset
-                << " chunk=" << chunk
-                << ": " << cudaGetErrorString(status);
-            throw std::runtime_error(out.str());
-        }
-        Fr_elementwise_add<<<1, chunk>>>(halves.first.gpu_data + offset, scaled.gpu_data + offset, t_new.gpu_data + offset, chunk);
-        status = cudaDeviceSynchronize();
-        if (status != cudaSuccess)
-        {
-            std::ostringstream out;
-            out << "partial_me_checked add failed round=" << round
-                << " in_size=" << t.size
-                << " out_size=" << halves.first.size
-                << " window_size=" << window_size
-                << " offset=" << offset
-                << " chunk=" << chunk
-                << ": " << cudaGetErrorString(status);
-            throw std::runtime_error(out.str());
-        }
+        const uint window_id = gid / window_size;
+        const uint idx_in_window = gid % window_size;
+        const uint gid0 = 2U * window_id * window_size + idx_in_window;
+        const uint gid1 = (2U * window_id + 1U) * window_size + idx_in_window;
+        const Fr_t low = (gid0 < t.size) ? current[gid0] : Fr_host_zero();
+        const Fr_t high = (gid1 < t.size) ? current[gid1] : Fr_host_zero();
+        folded[gid] = Fr_host_mle_step(low, high, *begin);
     }
+    FrTensor t_new(out_size, folded.data());
     return partial_me_checked(t_new, begin + 1, end, window_size, round + 1);
 }
 
@@ -320,7 +272,7 @@ KERNEL void g1_equal_kernel(G1Jacobian_t a, G1Jacobian_t b, GLOBAL bool* out)
 
 KERNEL void g1_open_expected_next_kernel(G1Jacobian_t p0, G1Jacobian_t p1, G1Jacobian_t p2, Fr_t u, GLOBAL G1Jacobian_t* out)
 {
-    Fr_t one = blstrs__scalar__Scalar_mont(blstrs__scalar__Scalar_ONE);
+    Fr_t one = blstrs__scalar__Scalar_ONE;
     Fr_t one_minus_u = blstrs__scalar__Scalar_sub(one, u);
     Fr_t c0 = blstrs__scalar__Scalar_unmont(blstrs__scalar__Scalar_mul(one_minus_u, one_minus_u));
     Fr_t c1 = blstrs__scalar__Scalar_unmont(blstrs__scalar__Scalar_mul(u, one_minus_u));
@@ -338,38 +290,24 @@ KERNEL void g1_final_commitment_kernel(G1Jacobian_t generator, Fr_t value, GLOBA
 
 bool g1_equal_host(G1Jacobian_t a, G1Jacobian_t b)
 {
-    bool host = false;
-    bool* device = nullptr;
-    cudaMalloc((void**)&device, sizeof(bool));
-    g1_equal_kernel<<<1,1>>>(a, b, device);
-    cudaDeviceSynchronize();
-    cudaMemcpy(&host, device, sizeof(bool), cudaMemcpyDeviceToHost);
-    cudaFree(device);
-    return host;
+    return G1Jacobian_host_eq(a, b);
 }
 
 G1Jacobian_t g1_open_expected_next_host(G1Jacobian_t p0, G1Jacobian_t p1, G1Jacobian_t p2, Fr_t u)
 {
-    G1Jacobian_t host;
-    G1Jacobian_t* device = nullptr;
-    cudaMalloc((void**)&device, sizeof(G1Jacobian_t));
-    g1_open_expected_next_kernel<<<1,1>>>(p0, p1, p2, u, device);
-    cudaDeviceSynchronize();
-    cudaMemcpy(&host, device, sizeof(G1Jacobian_t), cudaMemcpyDeviceToHost);
-    cudaFree(device);
-    return host;
+    const Fr_t one_minus_u = Fr_host_sub(Fr_host_one_mont(), u);
+    const Fr_t c0 = Fr_host_unmont(Fr_host_mul(one_minus_u, one_minus_u));
+    const Fr_t c1 = Fr_host_unmont(Fr_host_mul(u, one_minus_u));
+    const Fr_t c2 = Fr_host_unmont(Fr_host_mul(u, u));
+    G1Jacobian_t acc = G1Jacobian_host_mul(p1, c0);
+    acc = G1Jacobian_host_add(acc, G1Jacobian_host_mul(p0, c1));
+    acc = G1Jacobian_host_add(acc, G1Jacobian_host_mul(p2, c2));
+    return acc;
 }
 
 G1Jacobian_t g1_final_commitment_host(G1Jacobian_t generator, Fr_t value)
 {
-    G1Jacobian_t host;
-    G1Jacobian_t* device = nullptr;
-    cudaMalloc((void**)&device, sizeof(G1Jacobian_t));
-    g1_final_commitment_kernel<<<1,1>>>(generator, value, device);
-    cudaDeviceSynchronize();
-    cudaMemcpy(&host, device, sizeof(G1Jacobian_t), cudaMemcpyDeviceToHost);
-    cudaFree(device);
-    return host;
+    return G1Jacobian_host_mul(generator, Fr_host_unmont(value));
 }
 
 bool Commitment::verify_opening(const Commitment& generators, const G1TensorJacobian& com, const CommitmentOpeningProof& proof)
@@ -381,7 +319,9 @@ bool Commitment::verify_opening(const Commitment& generators, const G1TensorJaco
     if (proof.transcript.size() != static_cast<std::size_t>(3 * inner_log + 1)) return false;
 
     vector<Fr_t> u_out(proof.point.end() - outer_log, proof.point.end());
-    G1Jacobian_t public_commitment = outer_log == 0 ? com(0) : com(u_out);
+    G1Jacobian_t public_commitment = outer_log == 0
+        ? com(0)
+        : G1Jacobian_host_mle(host_points(com), u_out.begin(), u_out.end());
     if (inner_log == 0)
     {
         if (!g1_equal_host(generators(0), proof.transcript.back())) return false;
@@ -417,12 +357,7 @@ vector<G1Jacobian_t> Commitment::host_points(const G1TensorJacobian& tensor)
 
 vector<Fr_t> Commitment::host_scalars(const FrTensor& tensor)
 {
-    vector<Fr_t> out(tensor.size);
-    if (!out.empty())
-    {
-        cudaMemcpy(out.data(), tensor.gpu_data, sizeof(Fr_t) * out.size(), cudaMemcpyDeviceToHost);
-    }
-    return out;
+    return tensor.to_host();
 }
 
 Commitment Commitment::random_generators(uint size)

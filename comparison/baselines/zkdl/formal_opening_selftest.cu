@@ -152,9 +152,14 @@ bool run_opening_case(const OpeningCase& test_case, std::ostream& log)
     log << "OPENING label=" << test_case.label
         << " rows=" << test_case.rows
         << " inner_size=" << test_case.inner_size
+        << " tensor_size=" << total_size
+        << " padded_size=" << ((std::size_t{1} << outer_log) * (std::size_t{1} << inner_log))
+        << " com.size=" << commitment.size
         << " outer_log=" << outer_log
         << " inner_log=" << inner_log
-        << " total_size=" << total_size
+        << " window_size=" << test_case.inner_size
+        << " round=all"
+        << " backend=hybrid_cpu_field_gpu_g1"
         << " status=" << (opened && verified && value_match ? "PASS" : "FAIL");
     if (!failure.empty()) {
         log << " failure=\"" << failure << "\"";
@@ -205,8 +210,14 @@ bool run_partial_case(const PartialCase& test_case, std::ostream& log)
 
     log << "PARTIAL label=" << test_case.label
         << " size=" << test_case.size
+        << " padded_size=" << (static_cast<std::size_t>(test_case.window_size) << test_case.rounds)
+        << " com.size=NA"
+        << " inner_log=NA"
+        << " outer_log=" << test_case.rounds
         << " rounds=" << test_case.rounds
         << " window_size=" << test_case.window_size
+        << " round=all"
+        << " backend=cpu_field"
         << " status=" << (passed ? "PASS" : "FAIL");
     if (!failure.empty()) {
         log << " failure=\"" << failure << "\"";
@@ -228,11 +239,20 @@ int main(int argc, char** argv)
         {"size_8_row_vector", 8, 1},
         {"size_15_row_vector", 15, 1},
         {"size_16_row_vector", 16, 1},
+        {"size_31_row_vector", 31, 1},
+        {"size_32_row_vector", 32, 1},
         {"com1_inner2", 1, 2},
         {"com1_inner4", 1, 4},
+        {"com1_inner8", 1, 8},
+        {"com1_inner16", 1, 16},
         {"rows3_inner2", 3, 2},
         {"rows3_inner4", 3, 4},
+        {"rows3_inner8", 3, 8},
+        {"rows3_inner16", 3, 16},
         {"rows5_inner4", 5, 4},
+        {"dataset_cora_logits_size", 18956, 1},
+        {"dataset_citeseer_logits_size", 19962, 1},
+        {"dataset_pubmed_logits_size", 59151, 1},
     };
 
     std::vector<PartialCase> partial_cases = {
@@ -242,6 +262,10 @@ int main(int argc, char** argv)
         {"window2_size10", 10, 3, 2},
         {"window4_size12", 12, 2, 4},
         {"window4_size20", 20, 3, 4},
+        {"window8_size24", 24, 2, 8},
+        {"window16_size48", 48, 2, 16},
+        {"dataset_ppi_logits_size_partial", 6890224, 23, 1},
+        {"dataset_ogbn_arxiv_logits_size_partial", 6773720, 23, 1},
     };
 
     bool ok = true;

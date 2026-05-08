@@ -1487,6 +1487,9 @@ DEVICE blstrs__g1__G1Affine_jacobian blstrs__g1__G1Affine_add_mixed(blstrs__g1__
   if(blstrs__fp__Fp_eq(a.x, u2) && blstrs__fp__Fp_eq(a.y, s2)) {
       return blstrs__g1__G1Affine_double(a);
   }
+  if(blstrs__fp__Fp_eq(a.x, u2)) {
+      return blstrs__g1__G1Affine_ZERO;
+  }
 
   const blstrs__fp__Fp h = blstrs__fp__Fp_sub(u2, a.x); // H = U2-X1
   const blstrs__fp__Fp hh = blstrs__fp__Fp_sqr(h); // HH = H^2
@@ -1525,6 +1528,8 @@ DEVICE blstrs__g1__G1Affine_jacobian blstrs__g1__G1Affine_add(blstrs__g1__G1Affi
 
   if(blstrs__fp__Fp_eq(u1, u2) && blstrs__fp__Fp_eq(s1, s2))
     return blstrs__g1__G1Affine_double(a);
+  if(blstrs__fp__Fp_eq(u1, u2))
+    return blstrs__g1__G1Affine_ZERO;
   else {
     const blstrs__fp__Fp h = blstrs__fp__Fp_sub(u2, u1); // H = U2-U1
     blstrs__fp__Fp i = blstrs__fp__Fp_double(h); i = blstrs__fp__Fp_sqr(i); // I = (2*H)^2
