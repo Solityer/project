@@ -317,6 +317,14 @@ inline Fr_t Fr_host_sum_quadratic_endpoints(const SumcheckQuadraticRound& round)
     return Fr_host_add(Fr_host_double_value(round.c0), Fr_host_add(round.c1, round.c2));
 }
 
+inline Fr_t Fr_host_weighted_quadratic_endpoints(const SumcheckQuadraticRound& round, const Fr_t& u)
+{
+    const Fr_t one_minus_u = Fr_host_sub(Fr_host_one_mont(), u);
+    const Fr_t at_zero = round.c0;
+    const Fr_t at_one = Fr_host_add(round.c0, Fr_host_add(round.c1, round.c2));
+    return Fr_host_add(Fr_host_mul(one_minus_u, at_zero), Fr_host_mul(u, at_one));
+}
+
 struct InnerProductSumcheckProof
 {
     uint size = 0;
@@ -343,11 +351,21 @@ struct InnerProductSumcheckProof
 
 struct HadamardSumcheckProof
 {
+    std::string label;
     uint size = 0;
+    vector<uint> shape;
+    std::string commitment_a_label;
+    std::string commitment_b_label;
+    std::string commitment_c_label;
     vector<Fr_t> point;
+    vector<SumcheckQuadraticRound> rounds;
+    vector<Fr_t> challenges;
+    Fr_t claimed_eval_c = Fr_host_zero();
     Fr_t eval_a = Fr_host_zero();
     Fr_t eval_b = Fr_host_zero();
     Fr_t eval_c = Fr_host_zero();
+    Fr_t final_a = Fr_host_zero();
+    Fr_t final_b = Fr_host_zero();
     CommitmentOpeningProof opening_a;
     CommitmentOpeningProof opening_b;
     CommitmentOpeningProof opening_c;
@@ -355,13 +373,22 @@ struct HadamardSumcheckProof
 
     std::size_t serialized_size_bytes() const
     {
-        return sizeof(uint32_t)
+        std::size_t out = sizeof(uint32_t) + label.size()
+            + sizeof(uint32_t)
+            + sizeof(uint32_t) + shape.size() * sizeof(uint32_t)
+            + sizeof(uint32_t) + commitment_a_label.size()
+            + sizeof(uint32_t) + commitment_b_label.size()
+            + sizeof(uint32_t) + commitment_c_label.size()
             + sizeof(uint32_t) + point.size() * sizeof(Fr_t)
-            + 3 * sizeof(Fr_t)
+            + sizeof(uint32_t);
+        for (const auto& round : rounds) out += round.serialized_size_bytes();
+        out += sizeof(uint32_t) + challenges.size() * sizeof(Fr_t)
+            + 6 * sizeof(Fr_t)
             + opening_a.serialized_size_bytes()
             + opening_b.serialized_size_bytes()
             + opening_c.serialized_size_bytes()
             + sizeof(uint64_t);
+        return out;
     }
 };
 
@@ -370,13 +397,28 @@ using BinarySumcheckProof = HadamardSumcheckProof;
 struct LinearRelationProof
 {
     std::string label;
+    vector<uint> shape;
+    vector<std::string> tensor_labels;
     vector<Fr_t> coefficients;
+    vector<vector<Fr_t>> points;
+    vector<Fr_t> evaluations;
+    Fr_t public_evaluation = Fr_host_zero();
+    Fr_t public_coefficient = Fr_host_zero();
+    Fr_t constant = Fr_host_zero();
     vector<CommitmentOpeningProof> openings;
     std::string transcript_digest;
 
     std::size_t serialized_size_bytes() const
     {
-        std::size_t out = sizeof(uint32_t) + label.size() + sizeof(uint32_t) + coefficients.size() * sizeof(Fr_t);
+        std::size_t out = sizeof(uint32_t) + label.size()
+            + sizeof(uint32_t) + shape.size() * sizeof(uint32_t)
+            + sizeof(uint32_t);
+        for (const auto& tensor_label : tensor_labels) out += sizeof(uint32_t) + tensor_label.size();
+        out += sizeof(uint32_t) + coefficients.size() * sizeof(Fr_t);
+        out += sizeof(uint32_t);
+        for (const auto& point : points) out += sizeof(uint32_t) + point.size() * sizeof(Fr_t);
+        out += sizeof(uint32_t) + evaluations.size() * sizeof(Fr_t);
+        out += 3 * sizeof(Fr_t);
         out += sizeof(uint32_t);
         for (const auto& opening : openings) out += opening.serialized_size_bytes();
         out += sizeof(uint64_t);
@@ -391,14 +433,47 @@ struct MatmulRelationProof
     uint m = 0;
     uint n = 0;
     uint k = 0;
+    uint padded_num = 0;
+    uint padded_m = 0;
+    uint padded_n = 0;
+    uint padded_k = 0;
+    std::string commitment_a_label;
+    std::string commitment_b_label;
+    std::string commitment_c_label;
+    vector<Fr_t> point_num;
+    vector<Fr_t> point_m;
+    vector<Fr_t> point_k;
+    vector<Fr_t> point_c;
+    Fr_t eval_c = Fr_host_zero();
+    vector<SumcheckQuadraticRound> batch_rounds;
+    vector<Fr_t> batch_challenges;
+    Fr_t reduced_inner_product_claim = Fr_host_zero();
     InnerProductSumcheckProof inner_product;
+    CommitmentOpeningProof opening_a;
+    CommitmentOpeningProof opening_b;
+    CommitmentOpeningProof opening_c;
     vector<CommitmentOpeningProof> openings;
     std::string transcript_digest;
 
     std::size_t serialized_size_bytes() const
     {
-        std::size_t out = sizeof(uint32_t) + label.size() + 4 * sizeof(uint32_t);
+        std::size_t out = sizeof(uint32_t) + label.size() + 8 * sizeof(uint32_t)
+            + sizeof(uint32_t) + commitment_a_label.size()
+            + sizeof(uint32_t) + commitment_b_label.size()
+            + sizeof(uint32_t) + commitment_c_label.size()
+            + sizeof(uint32_t) + point_num.size() * sizeof(Fr_t)
+            + sizeof(uint32_t) + point_m.size() * sizeof(Fr_t)
+            + sizeof(uint32_t) + point_k.size() * sizeof(Fr_t)
+            + sizeof(uint32_t) + point_c.size() * sizeof(Fr_t)
+            + sizeof(Fr_t)
+            + sizeof(uint32_t);
+        for (const auto& round : batch_rounds) out += round.serialized_size_bytes();
+        out += sizeof(uint32_t) + batch_challenges.size() * sizeof(Fr_t)
+            + sizeof(Fr_t);
         out += inner_product.serialized_size_bytes();
+        out += opening_a.serialized_size_bytes()
+            + opening_b.serialized_size_bytes()
+            + opening_c.serialized_size_bytes();
         out += sizeof(uint32_t);
         for (const auto& opening : openings) out += opening.serialized_size_bytes();
         out += sizeof(uint64_t);
