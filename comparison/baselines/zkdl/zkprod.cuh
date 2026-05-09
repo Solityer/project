@@ -5,6 +5,7 @@
 #include "fr-tensor.cuh" 
 #include "g1-tensor.cuh"
 #include "proof.cuh"
+#include "formal_relations.cuh"
 #include "timer.hpp"
 #include "commitment.cuh"
 
@@ -25,6 +26,31 @@ public:
     // static std::pair<FrTensor, FrTensor> phase1(const FrTensor& A_reduced, const FrTensor& B_reduced, uint num, uint n, vector<Fr_t>::const_iterator u_begin, vector<Fr_t>::const_iterator u_end, vector<Fr_t>::const_iterator v_begin, vector<Fr_t>::const_iterator v_end, vector<Fr_t>& proof);
     void prove(const Commitment& genA, const Commitment& genB, uint& proof_size_count);
 };
+
+inline HadamardSumcheckProof zkprod_formal_prove(
+    const FrTensor& A,
+    const FrTensor& B,
+    const FrTensor& C,
+    const Commitment& generators,
+    const G1TensorJacobian& comA,
+    const G1TensorJacobian& comB,
+    const G1TensorJacobian& comC,
+    const std::string& relation_label)
+{
+    return formal_hadamard_relation_prove(A, B, C, generators, comA, comB, comC, relation_label);
+}
+
+inline bool zkprod_formal_verify(
+    const HadamardSumcheckProof& proof,
+    const Commitment& generators,
+    const G1TensorJacobian& comA,
+    const G1TensorJacobian& comB,
+    const G1TensorJacobian& comC,
+    const std::string& relation_label,
+    std::string* failure = nullptr)
+{
+    return formal_hadamard_relation_verify(proof, generators, comA, comB, comC, relation_label, failure);
+}
 
 void zkProd::prove(const Commitment& genA, const Commitment& genB, uint& proof_size_count)
 {

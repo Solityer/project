@@ -21,7 +21,7 @@
 #include <unordered_set>
 #include <vector>
 
-#include "commitment.cuh"
+#include "formal_relations.cuh"
 #include "timer.hpp"
 
 namespace fs = std::filesystem;
@@ -679,6 +679,11 @@ struct HeadTraceHost {
 };
 
 struct ForwardTraceHost {
+    std::vector<std::vector<double>> hidden_layer_inputs;
+    std::vector<std::size_t> hidden_layer_input_dims;
+    std::vector<std::vector<HeadTraceHost>> hidden_heads;
+    std::vector<double> output_layer_input;
+    std::size_t output_layer_input_dim = 0;
     std::vector<HeadTraceHost> output_heads;
     std::vector<double> logits;
 };
@@ -1004,7 +1009,17 @@ std::vector<double> run_gat_forward_gpu(const LocalGraph& graph, const ModelPara
     const auto d_dst = to_device(dst_host);
 
     DeviceBuffer<double> current = std::move(features);
+    if (trace != nullptr) {
+        trace->hidden_layer_inputs.clear();
+        trace->hidden_layer_input_dims.clear();
+        trace->hidden_heads.clear();
+    }
     for (std::size_t layer = 0; layer < model.hidden_profile.size(); ++layer) {
+        if (trace != nullptr) {
+            trace->hidden_layer_inputs.push_back(to_host(current));
+            trace->hidden_layer_input_dims.push_back(static_cast<std::size_t>(current_dim));
+            trace->hidden_heads.emplace_back();
+        }
         std::vector<const HeadParams*> layer_heads;
         for (const auto& head : model.hidden_heads) {
             if (head.layer_index == layer) {
@@ -1016,13 +1031,17 @@ std::vector<double> run_gat_forward_gpu(const LocalGraph& graph, const ModelPara
         DeviceBuffer<double> concat(static_cast<std::size_t>(rows) * concat_width);
         int offset = 0;
         for (const auto* head : layer_heads) {
+            HeadTraceHost hidden_head_trace;
             auto out = run_attention_head(
                 current, rows, current_dim, *head, d_src, d_dst, graph.edges.size(),
                 false, true,
                 &metrics->hidden_projection_ms,
                 &metrics->hidden_attention_ms,
                 &metrics->hidden_activation_ms,
-                nullptr);
+                trace == nullptr ? nullptr : &hidden_head_trace);
+            if (trace != nullptr) {
+                trace->hidden_heads.back().push_back(std::move(hidden_head_trace));
+            }
             ScopedTimer concat_timer;
             copy_head_to_concat_kernel<<<(static_cast<std::size_t>(rows) * head_width + 255) / 256, 256>>>(
                 out.ptr, concat.ptr, rows, head_width, concat_width, offset);
@@ -1041,6 +1060,8 @@ std::vector<double> run_gat_forward_gpu(const LocalGraph& graph, const ModelPara
     if (trace != nullptr) {
         trace->output_heads.clear();
         trace->output_heads.reserve(model.output_heads.size());
+        trace->output_layer_input = to_host(current);
+        trace->output_layer_input_dim = static_cast<std::size_t>(current_dim);
     }
     for (const auto& head : model.output_heads) {
         HeadTraceHost head_trace;
@@ -1715,6 +1736,19 @@ LevelBProofArtifact run_level_b_output_binding_proof(
     return artifact;
 }
 
+struct FormalPartialArtifact {
+    bool proof_generation_ok = false;
+    bool verification_ok = false;
+    double commitment_ms = 0.0;
+    double prove_ms = 0.0;
+    double verify_ms = 0.0;
+    std::uintmax_t proof_size_bytes = 0;
+    fs::path proof_path;
+    std::vector<std::string> covered_relations;
+    std::vector<std::string> blocked_relations;
+    std::string blocker;
+};
+
 struct ProofAttempt {
     bool partial_commitment_ok = false;
     bool full_proof_ok = false;
@@ -1724,6 +1758,7 @@ struct ProofAttempt {
     std::size_t partial_proof_size_bytes = 0;
     std::string blocker;
     LevelBProofArtifact level_b;
+    FormalPartialArtifact formal_partial;
 };
 
 ProofAttempt run_zkdl_output_binding_attempt(const std::vector<double>& logits, std::size_t rows, std::size_t cols) {
@@ -1761,6 +1796,437 @@ ProofAttempt run_zkdl_output_binding_attempt(const std::vector<double>& logits, 
     return out;
 }
 
+struct FormalTensorRecord {
+    std::string label;
+    std::size_t rows = 0;
+    std::size_t cols = 0;
+    std::size_t padded_cols = 0;
+    std::unique_ptr<FrTensor> tensor;
+    std::unique_ptr<Commitment> generators;
+    std::unique_ptr<G1TensorJacobian> commitment;
+};
+
+class FormalTensorRegistry {
+public:
+    FormalTensorRecord& add_matrix(
+        const std::string& dataset,
+        const std::string& label,
+        const std::vector<double>& values,
+        std::size_t rows,
+        std::size_t cols,
+        double* commitment_ms,
+        std::ofstream* debug)
+    {
+        if (values.size() != rows * cols) {
+            throw std::runtime_error("formal tensor shape mismatch for " + label);
+        }
+        auto dbg = [&](const std::string& line) {
+            if (debug != nullptr && *debug) {
+                *debug << line << '\n';
+                debug->flush();
+            }
+        };
+        const std::size_t padded_cols = next_power_of_two(std::max<std::size_t>(1, cols));
+        if (padded_cols > std::numeric_limits<uint>::max() || rows > std::numeric_limits<uint>::max()) {
+            throw std::runtime_error("formal tensor exceeds zkDL uint dimensions for " + label);
+        }
+        dbg("formal_registry add_matrix label=" + label
+            + " rows=" + std::to_string(rows)
+            + " cols=" + std::to_string(cols)
+            + " padded_cols=" + std::to_string(padded_cols));
+        auto encoded = encode_padded_tensor(values, rows, cols, padded_cols);
+        auto record = std::make_unique<FormalTensorRecord>();
+        record->label = label;
+        record->rows = rows;
+        record->cols = cols;
+        record->padded_cols = padded_cols;
+        record->tensor = std::make_unique<FrTensor>(static_cast<uint>(encoded.size()), encoded.data());
+        record->tensor->mont();
+        record->generators = std::make_unique<Commitment>(
+            deterministic_generators(static_cast<uint>(padded_cols),
+                dataset + ":formal:matrix_inner" + std::to_string(padded_cols)));
+        ScopedTimer timer;
+        record->commitment = std::make_unique<G1TensorJacobian>(record->generators->commit(*record->tensor));
+        cuda_sync("formal registry commit " + label);
+        if (commitment_ms != nullptr) *commitment_ms += timer.elapsed_ms();
+        records_.push_back(std::move(record));
+        return *records_.back();
+    }
+
+private:
+    std::vector<std::unique_ptr<FormalTensorRecord>> records_;
+};
+
+Fr_t fr_inverse_uint_mont(std::uint32_t denominator)
+{
+    if (denominator == 0) throw std::runtime_error("zero denominator inversion");
+    if (denominator == 1) return Fr_host_one_mont();
+    const Fr_t p = Fr_host_modulus();
+    std::uint64_t p_mod = 0;
+    for (int i = 7; i >= 0; --i) {
+        p_mod = ((p_mod << 32U) + p.val[i]) % denominator;
+    }
+    std::uint32_t q = 0;
+    for (; q < denominator; ++q) {
+        if (((p_mod * q) + 1U) % denominator == 0) break;
+    }
+    if (q == denominator) throw std::runtime_error("failed to invert small integer");
+    std::uint32_t limbs[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+    std::uint64_t carry = 1U;
+    for (int i = 0; i < 8; ++i) {
+        const std::uint64_t cur = static_cast<std::uint64_t>(p.val[i]) * q + carry;
+        limbs[i] = static_cast<std::uint32_t>(cur & 0xffffffffULL);
+        carry = cur >> 32U;
+    }
+    limbs[8] = static_cast<std::uint32_t>(carry);
+    Fr_t inv_raw = Fr_host_zero();
+    std::uint64_t rem = 0;
+    for (int i = 8; i >= 0; --i) {
+        const std::uint64_t cur = (rem << 32U) | limbs[i];
+        const std::uint32_t quotient = static_cast<std::uint32_t>(cur / denominator);
+        rem = cur % denominator;
+        if (i < 8) inv_raw.val[i] = quotient;
+    }
+    if (rem != 0) throw std::runtime_error("small integer inverse division left remainder");
+    return Fr_host_mont(inv_raw);
+}
+
+Fr_t evaluate_public_vector_mle(
+    const std::vector<double>& values,
+    std::size_t cols,
+    std::size_t padded_cols,
+    const std::vector<Fr_t>& point)
+{
+    auto encoded = encode_padded_tensor(values, 1, cols, padded_cols);
+    FrTensor tensor(static_cast<uint>(encoded.size()), encoded.data());
+    tensor.mont();
+    return tensor(point);
+}
+
+Fr_t fr_neg_one_mont()
+{
+    return Fr_host_sub(Fr_host_zero(), Fr_host_one_mont());
+}
+
+std::vector<Fr_t> formal_encode_matmul_matrix(
+    const std::vector<double>& values,
+    std::size_t rows,
+    std::size_t cols,
+    std::size_t padded_rows,
+    std::size_t padded_cols)
+{
+    if (values.size() != rows * cols) throw std::runtime_error("matmul encode shape mismatch");
+    std::vector<Fr_t> out(padded_rows * padded_cols, fr_from_signed_host(0));
+    for (std::size_t row = 0; row < rows; ++row) {
+        for (std::size_t col = 0; col < cols; ++col) {
+            const double scaled = values[row * cols + col] * 16.0;
+            const auto fixed = static_cast<std::int64_t>(scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5);
+            out[row * padded_cols + col] = fr_from_signed_host(fixed);
+        }
+    }
+    return out;
+}
+
+bool run_formal_matmul_trace_attempt(
+    const std::string& dataset,
+    const std::string& label,
+    const std::vector<double>& a_values,
+    std::size_t rows,
+    std::size_t shared,
+    const std::vector<double>& b_values,
+    std::size_t cols,
+    const std::vector<double>& c_values,
+    FormalPartialArtifact* artifact,
+    std::ofstream* debug)
+{
+    auto dbg = [&](const std::string& line) {
+        if (debug != nullptr && *debug) {
+            *debug << line << '\n';
+            debug->flush();
+        }
+    };
+    const std::size_t padded_rows = next_power_of_two(std::max<std::size_t>(1, rows));
+    const std::size_t padded_shared = next_power_of_two(std::max<std::size_t>(1, shared));
+    const std::size_t padded_cols = next_power_of_two(std::max<std::size_t>(1, cols));
+    const std::size_t a_size = padded_rows * padded_shared;
+    const std::size_t b_size = padded_shared * padded_cols;
+    const std::size_t c_size = padded_rows * padded_cols;
+    constexpr std::size_t kMaxFlatCommitmentPoints = 50000;
+    if (std::max({a_size, b_size, c_size}) > kMaxFlatCommitmentPoints) {
+        artifact->blocked_relations.push_back(label + ": blocked because current formal matmul uses flat gen=1 commitments and padded tensor size "
+            + std::to_string(std::max({a_size, b_size, c_size})) + " exceeds cap "
+            + std::to_string(kMaxFlatCommitmentPoints) + "; row-generator matmul openings are not implemented yet");
+        dbg("formal_matmul label=" + label + " status=BLOCKED reason=flat_commitment_cap");
+        return false;
+    }
+    try {
+        dbg("formal_matmul label=" + label + " stage=encode");
+        auto a_host = formal_encode_matmul_matrix(a_values, rows, shared, padded_rows, padded_shared);
+        auto b_host = formal_encode_matmul_matrix(b_values, shared, cols, padded_shared, padded_cols);
+        auto c_host = formal_encode_matmul_matrix(c_values, rows, cols, padded_rows, padded_cols);
+        FrTensor a(static_cast<uint>(a_host.size()), a_host.data());
+        FrTensor b(static_cast<uint>(b_host.size()), b_host.data());
+        FrTensor c(static_cast<uint>(c_host.size()), c_host.data());
+        a.mont();
+        b.mont();
+        c.mont();
+        Commitment gen(1, G1Jacobian_generator);
+        ScopedTimer commit_timer;
+        const auto com_a = gen.commit(a);
+        const auto com_b = gen.commit(b);
+        const auto com_c = gen.commit(c);
+        cuda_sync("formal matmul commit " + label);
+        artifact->commitment_ms += commit_timer.elapsed_ms();
+        ScopedTimer prove_timer;
+        auto proof = formal_matmul_relation_prove(a, b, c, gen, com_a, com_b, com_c,
+            1U,
+            static_cast<uint>(rows),
+            static_cast<uint>(shared),
+            static_cast<uint>(cols),
+            1U,
+            static_cast<uint>(padded_rows),
+            static_cast<uint>(padded_shared),
+            static_cast<uint>(padded_cols),
+            dataset + ":" + label);
+        artifact->prove_ms += prove_timer.elapsed_ms();
+        ScopedTimer verify_timer;
+        std::string failure;
+        const bool ok = formal_matmul_relation_verify(proof, gen, com_a, com_b, com_c, dataset + ":" + label, &failure);
+        artifact->verify_ms += verify_timer.elapsed_ms();
+        if (!ok) {
+            artifact->blocked_relations.push_back(label + ": verifier rejected formal matmul: " + failure);
+            dbg("formal_matmul label=" + label + " status=REJECT failure=\"" + failure + "\"");
+            return false;
+        }
+        artifact->proof_size_bytes += proof.serialized_size_bytes();
+        artifact->covered_relations.push_back(label + ": formal MatmulRelationProof verifier passed");
+        dbg("formal_matmul label=" + label + " status=PASS proof_size_bytes=" + std::to_string(proof.serialized_size_bytes()));
+        return true;
+    } catch (const std::exception& error) {
+        artifact->blocked_relations.push_back(label + ": formal matmul attempt failed: " + std::string(error.what()));
+        dbg("formal_matmul label=" + label + " status=FAILED reason=\"" + std::string(error.what()) + "\"");
+        return false;
+    }
+}
+
+void serialize_formal_partial_artifact(const FormalPartialArtifact& artifact, const fs::path& path)
+{
+    ensure_dir(path.parent_path());
+    std::ofstream out(path, std::ios::binary);
+    if (!out) throw std::runtime_error("failed to write formal partial proof artifact: " + path.string());
+    out << "ZKDLGATF\n";
+    out << "version=1\n";
+    out << "proof_generation_ok=" << (artifact.proof_generation_ok ? "true" : "false") << "\n";
+    out << "verification_ok=" << (artifact.verification_ok ? "true" : "false") << "\n";
+    out << "proof_size_bytes=" << artifact.proof_size_bytes << "\n";
+    out << "covered_relations=" << artifact.covered_relations.size() << "\n";
+    for (const auto& relation : artifact.covered_relations) out << relation << "\n";
+    out << "blocked_relations=" << artifact.blocked_relations.size() << "\n";
+    for (const auto& relation : artifact.blocked_relations) out << relation << "\n";
+    out << "blocker=" << artifact.blocker << "\n";
+}
+
+FormalPartialArtifact run_formal_partial_trace_proof(
+    const DatasetRunSpec& spec,
+    const ModelParams& model,
+    const LocalGraph& graph,
+    const ForwardTraceHost& trace,
+    const fs::path& run_dir)
+{
+    FormalPartialArtifact artifact;
+    std::ofstream debug(run_dir / "proof_debug.log", std::ios::app);
+    auto dbg = [&](const std::string& line) {
+        if (debug) {
+            debug << line << '\n';
+            debug.flush();
+        }
+    };
+    dbg("formal_partial stage=begin");
+    FormalTensorRegistry registry;
+    try {
+        if (trace.output_heads.size() != model.K_out) {
+            throw std::runtime_error("output head trace count mismatch");
+        }
+        const std::size_t rows = graph.num_nodes;
+        const std::size_t cols = model.C;
+        const std::size_t padded_cols = next_power_of_two(std::max<std::size_t>(1, cols));
+        constexpr std::size_t kMaxFormalLinearValues = 250000;
+        if (rows * cols > kMaxFormalLinearValues) {
+            artifact.blocked_relations.push_back(
+                "output-head average/public logits binding not run with full opening verifier because logits values="
+                + std::to_string(rows * cols) + " exceeds formal linear cap "
+                + std::to_string(kMaxFormalLinearValues)
+                + "; full dataset forward completed and this blocked evidence is recorded without using a subset");
+            artifact.blocked_relations.push_back(
+                "bias/projection/dot-product trace relations blocked at the same full logits scale; row-generator batched openings are required before marking supported");
+            artifact.blocked_relations.push_back("sparse routing/softmax/ELU/rescale gadgets remain unimplemented under zkDL Hyrax");
+            artifact.proof_generation_ok = false;
+            artifact.verification_ok = false;
+            artifact.blocker = "Formal partial trace proof blocked by full-dataset tensor scale before relation proving; no smoke/subset path was used.";
+            artifact.proof_path = run_dir / "formal_artifacts" / "zkdl_formal_partial.blocked.txt";
+            serialize_formal_partial_artifact(artifact, artifact.proof_path);
+            dbg("formal_partial stage=blocked_full_scale values=" + std::to_string(rows * cols));
+            return artifact;
+        }
+        const auto full_point = deterministic_mont_fr_vec(
+            ceilLog2(static_cast<uint>(padded_cols)) + ceilLog2(static_cast<uint>(rows)),
+            spec.dataset + ":formal:output-linear-point");
+        const std::vector<Fr_t> col_point(full_point.begin(), full_point.begin() + ceilLog2(static_cast<uint>(padded_cols)));
+        std::vector<FormalTensorRecord*> head_post_bias_records;
+        for (std::size_t head = 0; head < trace.output_heads.size(); ++head) {
+            const auto& head_trace = trace.output_heads[head];
+            auto& pre = registry.add_matrix(spec.dataset, "output_head" + std::to_string(head) + "_Y_pre",
+                head_trace.h_pre, rows, cols, &artifact.commitment_ms, &debug);
+            auto& post = registry.add_matrix(spec.dataset, "output_head" + std::to_string(head) + "_Y_head",
+                head_trace.h_out, rows, cols, &artifact.commitment_ms, &debug);
+            head_post_bias_records.push_back(&post);
+            const Fr_t bias_eval = evaluate_public_vector_mle(model.output_heads[head].output_bias, cols, padded_cols, col_point);
+            std::vector<FormalLinearTerm> terms;
+            terms.push_back({"Y_head", post.tensor.get(), post.commitment.get(), Fr_host_one_mont(), full_point});
+            terms.push_back({"Y_pre", pre.tensor.get(), pre.commitment.get(), fr_neg_one_mont(), full_point});
+            ScopedTimer prove_timer;
+            auto proof = formal_linear_relation_prove(
+                spec.dataset + ":output_head" + std::to_string(head) + ":bias_add",
+                {static_cast<uint>(rows), static_cast<uint>(cols)},
+                terms,
+                *post.generators,
+                fr_neg_one_mont(),
+                bias_eval,
+                Fr_host_zero());
+            artifact.prove_ms += prove_timer.elapsed_ms();
+            ScopedTimer verify_timer;
+            std::string failure;
+            const bool ok = formal_linear_relation_verify(
+                proof,
+                *post.generators,
+                {post.commitment.get(), pre.commitment.get()},
+                bias_eval,
+                &failure);
+            artifact.verify_ms += verify_timer.elapsed_ms();
+            if (ok) {
+                artifact.covered_relations.push_back("output head " + std::to_string(head) + " bias add: LinearRelationProof verifier passed");
+                artifact.proof_size_bytes += proof.serialized_size_bytes();
+                dbg("formal_linear label=output_head" + std::to_string(head) + "_bias_add status=PASS");
+            } else {
+                artifact.blocked_relations.push_back("output head " + std::to_string(head) + " bias add rejected: " + failure
+                    + "; likely fixed-point rounding/rescale alignment is not yet formalized");
+                dbg("formal_linear label=output_head" + std::to_string(head) + "_bias_add status=REJECT failure=\"" + failure + "\"");
+            }
+        }
+
+        {
+            const Fr_t inv_k = fr_inverse_uint_mont(static_cast<std::uint32_t>(model.K_out));
+            const Fr_t public_logits_eval = evaluate_public_tensor_mle(trace.logits, rows, cols, padded_cols, full_point);
+            std::vector<FormalLinearTerm> terms;
+            for (std::size_t head = 0; head < head_post_bias_records.size(); ++head) {
+                auto* record = head_post_bias_records[head];
+                terms.push_back({"Y_head_" + std::to_string(head), record->tensor.get(), record->commitment.get(), inv_k, full_point});
+            }
+            ScopedTimer prove_timer;
+            auto proof = formal_linear_relation_prove(
+                spec.dataset + ":output_head_average_public_logits",
+                {static_cast<uint>(rows), static_cast<uint>(cols)},
+                terms,
+                *head_post_bias_records.front()->generators,
+                fr_neg_one_mont(),
+                public_logits_eval,
+                Fr_host_zero());
+            artifact.prove_ms += prove_timer.elapsed_ms();
+            std::vector<const G1TensorJacobian*> commitments;
+            for (const auto* record : head_post_bias_records) commitments.push_back(record->commitment.get());
+            ScopedTimer verify_timer;
+            std::string failure;
+            const bool ok = formal_linear_relation_verify(proof, *head_post_bias_records.front()->generators, commitments, public_logits_eval, &failure);
+            artifact.verify_ms += verify_timer.elapsed_ms();
+            if (ok) {
+                artifact.covered_relations.push_back("output-head average and public logits binding: LinearRelationProof verifier passed");
+                artifact.proof_size_bytes += proof.serialized_size_bytes();
+                dbg("formal_linear label=output_head_average_public_logits status=PASS");
+            } else {
+                artifact.blocked_relations.push_back("output-head average/public logits binding rejected: " + failure);
+                dbg("formal_linear label=output_head_average_public_logits status=REJECT failure=\"" + failure + "\"");
+            }
+        }
+
+        if (!trace.output_layer_input.empty() && !model.output_heads.empty() && !trace.output_heads.empty()) {
+            run_formal_matmul_trace_attempt(
+                spec.dataset,
+                "output_head0_projection",
+                trace.output_layer_input,
+                rows,
+                trace.output_layer_input_dim,
+                model.output_heads.front().W,
+                cols,
+                trace.output_heads.front().h_prime,
+                &artifact,
+                &debug);
+            std::vector<double> e_src_pre(trace.output_heads.front().e_src.size(), 0.0);
+            std::vector<double> e_dst_pre(trace.output_heads.front().e_dst.size(), 0.0);
+            for (std::size_t i = 0; i < e_src_pre.size(); ++i) {
+                e_src_pre[i] = trace.output_heads.front().e_src[i] - model.output_heads.front().attn_src_bias;
+                e_dst_pre[i] = trace.output_heads.front().e_dst[i] - model.output_heads.front().attn_dst_bias;
+            }
+            run_formal_matmul_trace_attempt(
+                spec.dataset,
+                "output_head0_source_attention_dot",
+                trace.output_heads.front().h_prime,
+                rows,
+                cols,
+                model.output_heads.front().attn_src,
+                1,
+                e_src_pre,
+                &artifact,
+                &debug);
+            run_formal_matmul_trace_attempt(
+                spec.dataset,
+                "output_head0_destination_attention_dot",
+                trace.output_heads.front().h_prime,
+                rows,
+                cols,
+                model.output_heads.front().attn_dst,
+                1,
+                e_dst_pre,
+                &artifact,
+                &debug);
+        }
+
+        if (!trace.hidden_heads.empty() && !trace.hidden_heads.front().empty() && !model.hidden_heads.empty()) {
+            artifact.blocked_relations.push_back(
+                "hidden projection matmul connected to trace labels H and hidden H' but not proved on full tensors in this run because feature quantization/rescale and row-generator matmul openings are not complete");
+            artifact.blocked_relations.push_back(
+                "hidden source/destination attention dot products connected to hidden E_src/E_dst trace labels but remain blocked by the same quantization/rescale boundary for full GAT Level A");
+        } else {
+            artifact.blocked_relations.push_back("hidden trace unavailable for formal hidden projection/dot-product relation");
+        }
+        artifact.blocked_relations.push_back("sparse source routing blocked: no Hyrax sparse route MLE verifier over public src");
+        artifact.blocked_relations.push_back("sparse destination routing blocked: no Hyrax sparse route MLE verifier over public dst");
+        artifact.blocked_relations.push_back("softmax/LeakyReLU/ExpMap/denominator/inverse/weighted aggregation/ELU/rescale blocked: gadgets are not implemented under zkDL Hyrax");
+
+        artifact.proof_generation_ok = !artifact.covered_relations.empty();
+        artifact.verification_ok = !artifact.covered_relations.empty();
+        artifact.blocker = "Partial formal trace proof only: "
+            + std::to_string(artifact.covered_relations.size())
+            + " relation group(s) verified, but Level A remains blocked by "
+            + std::to_string(artifact.blocked_relations.size())
+            + " missing or rejected GAT relation group(s).";
+        artifact.proof_path = run_dir / "formal_artifacts" / "zkdl_formal_partial.proof.txt";
+        serialize_formal_partial_artifact(artifact, artifact.proof_path);
+        dbg("formal_partial stage=done covered=" + std::to_string(artifact.covered_relations.size())
+            + " blocked=" + std::to_string(artifact.blocked_relations.size())
+            + " proof_path=" + artifact.proof_path.string());
+    } catch (const std::exception& error) {
+        artifact.blocker = std::string("formal partial trace proof failed: ") + error.what();
+        artifact.blocked_relations.push_back(artifact.blocker);
+        artifact.proof_path = run_dir / "formal_artifacts" / "zkdl_formal_partial.blocked.txt";
+        try {
+            serialize_formal_partial_artifact(artifact, artifact.proof_path);
+        } catch (...) {
+        }
+        dbg("formal_partial stage=failed reason=\"" + artifact.blocker + "\"");
+    }
+    return artifact;
+}
+
 struct RunRow {
     std::string dataset;
     std::string status = "blocked";
@@ -1783,6 +2249,15 @@ struct RunRow {
     std::string debug_level_b_verify_time_ms = "NA";
     std::string debug_level_b_proof_size_bytes = "NA";
     std::string debug_level_b_proof_path;
+    std::string formal_partial_status = "not_run";
+    std::string formal_partial_blocker;
+    std::string formal_partial_commitment_time_ms = "NA";
+    std::string formal_partial_prove_time_ms = "NA";
+    std::string formal_partial_verify_time_ms = "NA";
+    std::string formal_partial_proof_size_bytes = "NA";
+    std::string formal_partial_proof_path;
+    std::string formal_partial_covered_relations;
+    std::string formal_partial_blocked_relations;
 };
 
 std::string join_sizes(const std::vector<std::size_t>& values) {
@@ -1871,6 +2346,15 @@ void write_manifest(
     kv("debug_level_b_verify_time_ms", row.debug_level_b_verify_time_ms);
     kv("debug_level_b_proof_size_bytes", row.debug_level_b_proof_size_bytes);
     kv("debug_level_b_proof_path", row.debug_level_b_proof_path);
+    kv("formal_partial_status", row.formal_partial_status);
+    kv("formal_partial_blocker", row.formal_partial_blocker);
+    kv("formal_partial_commitment_time_ms", row.formal_partial_commitment_time_ms);
+    kv("formal_partial_prove_time_ms", row.formal_partial_prove_time_ms);
+    kv("formal_partial_verify_time_ms", row.formal_partial_verify_time_ms);
+    kv("formal_partial_proof_size_bytes", row.formal_partial_proof_size_bytes);
+    kv("formal_partial_proof_path", row.formal_partial_proof_path);
+    kv("formal_partial_covered_relations", row.formal_partial_covered_relations);
+    kv("formal_partial_blocked_relations", row.formal_partial_blocked_relations);
     kv("level_b_covered_relations", [&]() {
         std::ostringstream relations;
         for (std::size_t i = 0; i < proof.level_b.covered_relations.size(); ++i) {
@@ -1910,50 +2394,64 @@ void write_manifest(
     bench << "debug_level_b_proof_size_bytes = " << row.debug_level_b_proof_size_bytes << "\n";
     bench << "debug_level_b_proof_path = " << row.debug_level_b_proof_path << "\n";
     bench << "debug_level_b_blocker = " << row.debug_level_b_blocker << "\n";
+    bench << "formal_partial_status = " << row.formal_partial_status << "\n";
+    bench << "formal_partial_commitment_time_ms = " << row.formal_partial_commitment_time_ms << "\n";
+    bench << "formal_partial_prove_time_ms = " << row.formal_partial_prove_time_ms << "\n";
+    bench << "formal_partial_verify_time_ms = " << row.formal_partial_verify_time_ms << "\n";
+    bench << "formal_partial_proof_size_bytes = " << row.formal_partial_proof_size_bytes << "\n";
+    bench << "formal_partial_proof_path = " << row.formal_partial_proof_path << "\n";
+    bench << "formal_partial_blocker = " << row.formal_partial_blocker << "\n";
 }
 
 struct CoverageRow {
     std::string relation;
     bool formal_prover_supported = false;
     bool formal_verifier_supported = false;
+    bool gpu_supported = true;
+    bool cpu_fallback_supported = false;
     bool reused_from_zkdl = false;
     bool newly_added_in_zkdl_adapter = false;
     bool debug_only = false;
     bool blocked = true;
     std::string blocker_reason;
+    std::string evidence_file;
+    std::string source_file;
 };
 
 std::vector<CoverageRow> gat_proof_coverage_rows() {
     return {
-        {"feature lookup", false, false, false, false, false, true, "No zkDL lookup argument is integrated for global feature table/query equality; main repository lookup semantics were inspected but its KZG lookup protocol is not ported to Hyrax."},
-        {"hidden projection", false, false, true, false, false, true, "zkDL has a matmul sumcheck prover fragment, but there is no verifier, transcript binding, tensor-shape binding, or integration with quantized GAT hidden projection tensors."},
-        {"source attention dot product", false, false, true, false, false, true, "Can be reduced to inner-product/matmul fragments, but source-attention witness columns are not committed and verified under a GAT transcript."},
-        {"target attention dot product", false, false, true, false, false, true, "Can be reduced to inner-product/matmul fragments, but target-attention witness columns are not committed and verified under a GAT transcript."},
-        {"source sparse routing", false, false, false, false, false, true, "No Hyrax/FAC4DNN sparse route proof is available in zkDL; main repository route2/PSQ implementation is KZG-specific and not safely portable without a new commitment layer."},
-        {"destination sparse routing", false, false, false, false, false, true, "No Hyrax/FAC4DNN sparse route proof is available in zkDL; destination grouping and edge_gid/dst stable order are only enforced by the adapter's public preprocessing."},
-        {"LeakyReLU", false, false, true, false, false, true, "zkReLU contains a prover-side binary/range-style fragment but has no verifier path and is not wired to attention scores or static tables."},
-        {"softmax group max", false, false, false, false, false, true, "No max/range comparison gadget exists in zkDL for per-destination sparse softmax groups."},
-        {"ExpMap", false, false, false, false, false, true, "No zkDL table lookup argument is available for QuantExp(-delta); main repository lookup tables are KZG transcript objects."},
-        {"softmax denominator sum", false, false, true, false, false, true, "Sum relation can use arithmetic fragments, but grouped sparse denominator constraints are not committed/opened as a verifiable gadget."},
-        {"inverse", false, false, false, false, false, true, "No inverse witness/range/denominator nonzero proof is present in zkDL for softmax normalization."},
-        {"alpha multiplication", false, false, true, false, false, true, "zkProd provides a prover fragment, but no verifier and no integration for alpha = exp * inverse over sparse edges."},
-        {"weighted aggregation", false, false, true, false, false, true, "Aggregation can be decomposed into product and sparse routing, but the required FAC4DNN-style relation is absent under Hyrax."},
-        {"ELU", false, false, false, false, false, true, "No ELU lookup/range gadget exists in zkDL; hidden activation is only computed by the GPU forward adapter."},
-        {"concat", false, false, false, false, true, true, "Head concat is implemented in forward/debug trace only; no equality/copy proof binds head outputs to concatenated hidden tensor."},
-        {"output projection", false, false, true, false, false, true, "zkDL matmul fragment is not connected to output attention-head projection tensors with a verifier and openings."},
-        {"output source/target attention", false, false, true, false, false, true, "Output attention dot products are forward-computed, but no formal zkDL verifier checks them."},
-        {"output sparse routing", false, false, false, false, false, true, "No Hyrax sparse route proof for output heads is implemented."},
-        {"output softmax", false, false, false, false, false, true, "Max/ExpMap/sum/inverse chain for output-head softmax is not supported by zkDL gadgets."},
-        {"output aggregation", false, false, true, false, false, true, "Weighted output aggregation needs product plus sparse routing proofs; both remain unverified under zkDL."},
-        {"rescale", false, false, false, false, false, true, "No fixed-point rescale/rounding proof gadget is available for output pre-bias scale alignment."},
-        {"bias add", false, false, false, false, false, true, "Bias addition is present in the GPU forward output tensor, but no committed pre/post-bias equality proof is available."},
-        {"output-head average", false, false, false, true, true, true, "Adapter checks the K_out=1 identity as a diagnostic only; a formal multi-head average proof is not implemented."},
-        {"public logits binding", false, false, true, true, true, true, "Debug-only binding recomputes the full public logits commitment and public row MLE value; this is not a formal proof that the hidden GAT computation produced those logits."},
-        {"commitment/evaluation binding", true, true, true, true, false, false, "Formal opening prover/verifier now passes dedicated selftests for power-of-two, non-power-of-two, padding, inner/outer folds, and Cora/Citeseer/Pubmed logits-size openings; PPI/ogbn-arxiv logits-size field folds pass as partial MLE stress cases."},
-        {"transcript binding", true, true, true, true, false, true, "Formal transcript replay exists for commitment openings and inner-product sumcheck selftests, but it is not yet wired across every sparse GAT relation."},
-        {"verifier replay", true, true, true, true, false, true, "Verifier replay succeeds for formal openings and inner-product sumcheck selftests; full GAT verifier replay remains blocked by missing relation gadgets."},
-        {"proof serialization", true, true, false, true, false, true, "FormalProofObject and relation proof structs include serialized_size_bytes accounting, but a complete full-GAT proof object is not emitted yet."},
-        {"proof size accounting", true, true, false, true, false, true, "Opening and sumcheck proof objects use struct-level byte accounting; latest.* remains NA because full Level A is blocked."},
+        {"feature lookup", false, false, true, false, false, false, false, true, "No zkDL lookup argument is integrated for global feature table/query equality.", "", "gat_zkdl.cu"},
+        {"HadamardRelationProof", true, true, false, true, true, true, false, false, "Formal C=A*B relation prover/verifier passes selftest with C opening and tamper rejection.", "zkdl_gat_outputs/audit/formal_relation_selftest_latest.log", "formal_relations.cuh;zkprod.cuh"},
+        {"MatmulRelationProof", true, true, false, true, true, true, false, false, "Formal C=A*B matmul relation prover/verifier passes selftest for batched, non-square, padding, and dot-product cases.", "zkdl_gat_outputs/audit/formal_relation_selftest_latest.log", "formal_relations.cuh;zkmatmul.cuh"},
+        {"LinearRelationProof", true, true, false, true, false, true, false, false, "Formal linear relation prover/verifier passes output-head average K_out=1 and K_out=2 selftests with tamper rejection.", "zkdl_gat_outputs/audit/formal_relation_selftest_latest.log", "formal_relations.cuh"},
+        {"hidden projection", false, false, true, false, true, true, false, true, "Trace labels are captured, but full hidden projection proof is blocked by quantized matmul/rescale alignment and row-generator matmul openings.", "zkdl_gat_outputs/runs/*/warm/proof_debug.log", "gat_zkdl.cu"},
+        {"source attention dot product", false, false, true, false, true, true, false, true, "Trace labels are captured; dot-product formalization is attempted through MatmulRelationProof but full GAT trace binding remains blocked by quantization/rescale.", "zkdl_gat_outputs/runs/*/warm/proof_debug.log", "gat_zkdl.cu;formal_relations.cuh"},
+        {"target attention dot product", false, false, true, false, true, true, false, true, "Trace labels are captured; dot-product formalization is attempted through MatmulRelationProof but full GAT trace binding remains blocked by quantization/rescale.", "zkdl_gat_outputs/runs/*/warm/proof_debug.log", "gat_zkdl.cu;formal_relations.cuh"},
+        {"source sparse routing", false, false, true, false, false, false, false, true, "No Hyrax/FAC4DNN sparse route proof is available; routing must be an MLE over public src without materializing E x N dense matrices.", "", "gat_zkdl.cu"},
+        {"destination sparse routing", false, false, true, false, false, false, false, true, "No Hyrax/FAC4DNN sparse route proof is available for public dst and grouped edge order.", "", "gat_zkdl.cu"},
+        {"LeakyReLU", false, false, true, false, true, false, false, true, "zkReLU contains prover-side fragments but no verifier path wired to attention scores or static tables.", "", "zkrelu.cuh"},
+        {"softmax group max", false, false, true, false, false, false, false, true, "No max/range comparison gadget exists for per-destination sparse softmax groups.", "", "gat_zkdl.cu"},
+        {"ExpMap", false, false, true, false, false, false, false, true, "No zkDL table lookup argument is available for QuantExp(-delta).", "", "gat_zkdl.cu"},
+        {"softmax denominator sum", false, false, true, false, true, false, false, true, "Grouped sparse denominator constraints are not committed/opened as a verifier gadget.", "", "gat_zkdl.cu"},
+        {"inverse", false, false, true, false, false, false, false, true, "No inverse witness/range/denominator nonzero proof is present for softmax normalization.", "", "gat_zkdl.cu"},
+        {"alpha multiplication", false, false, true, false, true, true, false, true, "HadamardRelationProof is available, but sparse alpha = exp * inverse is not connected to routed softmax witnesses.", "zkdl_gat_outputs/audit/formal_relation_selftest_latest.log", "formal_relations.cuh;zkprod.cuh"},
+        {"weighted aggregation", false, false, true, false, true, false, false, true, "Aggregation still needs product plus sparse routing proofs under Hyrax.", "", "gat_zkdl.cu"},
+        {"ELU", false, false, true, false, false, false, false, true, "No ELU lookup/range gadget exists in zkDL.", "", "gat_zkdl.cu"},
+        {"concat", false, false, true, false, false, true, false, true, "Concat trace capture exists, but full equality/copy proof over transformed MLE points is not wired to GAT Level A.", "zkdl_gat_outputs/audit/formal_relation_selftest_latest.log", "gat_zkdl.cu;formal_relations.cuh"},
+        {"output projection", false, false, true, false, true, true, false, true, "MatmulRelationProof is attempted on real output projection trace; current double-to-field quantization/rescale mismatch prevents marking the GAT relation supported.", "zkdl_gat_outputs/runs/*/warm/proof_debug.log", "gat_zkdl.cu;formal_relations.cuh"},
+        {"output source/target attention", false, false, true, false, true, true, false, true, "Output dot products are attempted via MatmulRelationProof over E_src/E_dst pre-bias traces; quantization/rescale and large-row openings remain blockers.", "zkdl_gat_outputs/runs/*/warm/proof_debug.log", "gat_zkdl.cu;formal_relations.cuh"},
+        {"output sparse routing", false, false, true, false, false, false, false, true, "No Hyrax sparse route proof for output heads is implemented.", "", "gat_zkdl.cu"},
+        {"output softmax", false, false, true, false, false, false, false, true, "Max/ExpMap/sum/inverse chain for output-head softmax is not supported.", "", "gat_zkdl.cu"},
+        {"output aggregation", false, false, true, false, true, false, false, true, "Weighted output aggregation needs product plus sparse routing proofs; sparse component is missing.", "", "gat_zkdl.cu"},
+        {"rescale", false, false, true, false, false, false, false, true, "No fixed-point rescale/rounding proof gadget is available for output pre-bias scale alignment.", "", "gat_zkdl.cu"},
+        {"bias add", false, false, true, false, false, true, false, true, "LinearRelationProof is implemented, but real trace bias-add may reject under current round(x*16) field encoding until fixed-point alignment is formalized.", "zkdl_gat_outputs/runs/*/warm/proof_debug.log", "gat_zkdl.cu;formal_relations.cuh"},
+        {"output-head average", true, true, true, true, false, true, false, false, "Output-head average/public logits binding uses LinearRelationProof; K_out=1 and K_out>1 synthetic cases pass, and current full datasets use the generic path.", "zkdl_gat_outputs/audit/formal_relation_selftest_latest.log;zkdl_gat_outputs/runs/*/warm/proof_debug.log", "gat_zkdl.cu;formal_relations.cuh"},
+        {"public logits binding", true, true, true, true, false, true, false, false, "Public logits are bound through LinearRelationProof in the partial formal trace artifact; official Level A remains blocked by earlier GAT relations.", "zkdl_gat_outputs/runs/*/warm/formal_artifacts/zkdl_formal_partial.proof.txt", "gat_zkdl.cu;formal_relations.cuh"},
+        {"commitment/evaluation binding", true, true, false, true, true, true, false, false, "Formal opening prover/verifier passes dedicated selftests for power-of-two, non-power-of-two, padding, mixed inner/outer folds, and logits-size openings/stress.", "zkdl_gat_outputs/audit/formal_opening_selftest_latest.log", "commitment.cuh"},
+        {"transcript binding", true, true, false, true, true, true, false, false, "Formal transcript replay exists for openings, inner-product, Hadamard, Matmul, and Linear relation selftests.", "zkdl_gat_outputs/audit/formal_sumcheck_selftest_latest.log;zkdl_gat_outputs/audit/formal_relation_selftest_latest.log", "proof.cuh;formal_relations.cuh"},
+        {"verifier replay", true, true, false, true, true, true, false, false, "Verifier replay succeeds for formal openings and relation selftests; full GAT verifier replay remains blocked by sparse/lookup/rescale gadgets.", "zkdl_gat_outputs/audit/formal_relation_selftest_latest.log", "formal_relations.cuh"},
+        {"proof serialization", true, true, false, true, false, true, false, false, "Formal proof structs include serialized_size_bytes accounting and partial proof artifacts exclude witnesses.", "zkdl_gat_outputs/runs/*/warm/formal_artifacts/zkdl_formal_partial.proof.txt", "proof.cuh;gat_zkdl.cu"},
+        {"proof size accounting", true, true, false, true, false, true, false, false, "Proof sizes use proof object/file serialized sizes, not proof.size()*8 or witness/debug dump sizes.", "zkdl_gat_outputs/results/formal_partial_debug.csv", "proof.cuh;gat_zkdl.cu"},
     };
 }
 
@@ -1966,16 +2464,20 @@ void write_coverage_matrix(const fs::path& output_root) {
     const auto rows = gat_proof_coverage_rows();
     {
         std::ofstream csv(output_root / "results" / "gat_proof_coverage_matrix.csv");
-        csv << "relation,formal_prover_supported,formal_verifier_supported,reused_from_zkdl,newly_added_in_zkdl_adapter,debug_only,blocked,blocker_reason\n";
+        csv << "relation_name,formal_prover_supported,formal_verifier_supported,gpu_supported,cpu_fallback_supported,reused_from_zkdl,newly_added_in_adapter,debug_only,blocked,blocker_reason,evidence_file,source_file\n";
         for (const auto& row : rows) {
             csv << row.relation
                 << ',' << bool_string(row.formal_prover_supported)
                 << ',' << bool_string(row.formal_verifier_supported)
+                << ',' << bool_string(row.gpu_supported)
+                << ',' << bool_string(row.cpu_fallback_supported)
                 << ',' << bool_string(row.reused_from_zkdl)
                 << ',' << bool_string(row.newly_added_in_zkdl_adapter)
                 << ',' << bool_string(row.debug_only)
                 << ',' << bool_string(row.blocked)
-                << ",\"" << json_escape(row.blocker_reason) << "\"\n";
+                << ",\"" << json_escape(row.blocker_reason) << "\""
+                << ",\"" << json_escape(row.evidence_file) << "\""
+                << ",\"" << json_escape(row.source_file) << "\"\n";
         }
     }
     {
@@ -1985,13 +2487,19 @@ void write_coverage_matrix(const fs::path& output_root) {
             const auto& row = rows[i];
             json << "    {\n";
             json << "      \"relation\": \"" << json_escape(row.relation) << "\",\n";
+            json << "      \"relation_name\": \"" << json_escape(row.relation) << "\",\n";
             json << "      \"formal_prover_supported\": " << bool_string(row.formal_prover_supported) << ",\n";
             json << "      \"formal_verifier_supported\": " << bool_string(row.formal_verifier_supported) << ",\n";
+            json << "      \"gpu_supported\": " << bool_string(row.gpu_supported) << ",\n";
+            json << "      \"cpu_fallback_supported\": " << bool_string(row.cpu_fallback_supported) << ",\n";
             json << "      \"reused_from_zkdl\": " << bool_string(row.reused_from_zkdl) << ",\n";
+            json << "      \"newly_added_in_adapter\": " << bool_string(row.newly_added_in_zkdl_adapter) << ",\n";
             json << "      \"newly_added_in_zkdl_adapter\": " << bool_string(row.newly_added_in_zkdl_adapter) << ",\n";
             json << "      \"debug_only\": " << bool_string(row.debug_only) << ",\n";
             json << "      \"blocked\": " << bool_string(row.blocked) << ",\n";
-            json << "      \"blocker_reason\": \"" << json_escape(row.blocker_reason) << "\"\n";
+            json << "      \"blocker_reason\": \"" << json_escape(row.blocker_reason) << "\",\n";
+            json << "      \"evidence_file\": \"" << json_escape(row.evidence_file) << "\",\n";
+            json << "      \"source_file\": \"" << json_escape(row.source_file) << "\"\n";
             json << "    }" << (i + 1 == rows.size() ? "\n" : ",\n");
         }
         json << "  ]\n}\n";
@@ -1999,16 +2507,19 @@ void write_coverage_matrix(const fs::path& output_root) {
     {
         std::ofstream md(output_root / "results" / "gat_proof_coverage_matrix.md");
         md << "# GAT Proof Coverage Matrix\n\n";
-        md << "| relation | formal prover | formal verifier | reused from zkDL | newly added | debug only | blocked | blocker reason |\n";
-        md << "| --- | --- | --- | --- | --- | --- | --- | --- |\n";
+        md << "| relation | formal prover | formal verifier | gpu | cpu fallback | reused from zkDL | newly added | debug only | blocked | evidence | blocker reason |\n";
+        md << "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n";
         for (const auto& row : rows) {
             md << "| " << row.relation
                << " | " << bool_string(row.formal_prover_supported)
                << " | " << bool_string(row.formal_verifier_supported)
+               << " | " << bool_string(row.gpu_supported)
+               << " | " << bool_string(row.cpu_fallback_supported)
                << " | " << bool_string(row.reused_from_zkdl)
                << " | " << bool_string(row.newly_added_in_zkdl_adapter)
                << " | " << bool_string(row.debug_only)
                << " | " << bool_string(row.blocked)
+               << " | " << row.evidence_file
                << " | " << row.blocker_reason << " |\n";
         }
     }
@@ -2089,13 +2600,41 @@ void write_result_tables(const fs::path& output_root, const std::vector<RunRow>&
         std::ofstream csv(output_root / "results" / "formal_partial_debug.csv");
         csv << "component,status,benchmark_mode,commitment_time_ms,prove_time_ms,verify_time_ms,proof_size_bytes,evidence_file,blocker\n";
         csv << "formal_opening_selftest,success,formal_partial_opening_proof_verify,NA,NA,NA,see_log,zkdl_gat_outputs/audit/formal_opening_selftest_latest.log,\"Full PPI/ogbn-arxiv logits-size G1 opening is not run in selftest because it would require multi-million element G1 commitment; field-size partial MLE stress cases pass.\"\n";
-        csv << "formal_sumcheck_selftest,success,formal_partial_inner_product_sumcheck_verify,NA,NA,NA,see_log,zkdl_gat_outputs/audit/formal_sumcheck_selftest_latest.log,\"Hadamard/matmul full relation verifiers are not complete.\"\n";
+        csv << "formal_sumcheck_selftest,success,formal_partial_inner_product_sumcheck_verify,NA,NA,NA,see_log,zkdl_gat_outputs/audit/formal_sumcheck_selftest_latest.log,\"Inner-product transcript replay verifier passes.\"\n";
+        csv << "formal_relation_selftest,success,formal_partial_hadamard_matmul_linear_verify,NA,NA,NA,see_log,zkdl_gat_outputs/audit/formal_relation_selftest_latest.log,\"HadamardRelationProof, MatmulRelationProof, and LinearRelationProof prover/verifier selftests pass including tamper rejection.\"\n";
+        for (const auto& row : rows) {
+            csv << row.dataset
+                << ',' << row.formal_partial_status
+                << ",partial_formal_relations_only,"
+                << row.formal_partial_commitment_time_ms
+                << ',' << row.formal_partial_prove_time_ms
+                << ',' << row.formal_partial_verify_time_ms
+                << ',' << row.formal_partial_proof_size_bytes
+                << ",\"" << json_escape(row.formal_partial_proof_path) << "\","
+                << "\"" << json_escape(row.formal_partial_blocker) << "\"\n";
+        }
     }
     {
         std::ofstream json(output_root / "results" / "formal_partial_debug.json");
         json << "{\n  \"rows\": [\n";
         json << "    {\"component\":\"formal_opening_selftest\",\"status\":\"success\",\"benchmark_mode\":\"formal_partial_opening_proof_verify\",\"commitment_time_ms\":\"NA\",\"prove_time_ms\":\"NA\",\"verify_time_ms\":\"NA\",\"proof_size_bytes\":\"see_log\",\"evidence_file\":\"zkdl_gat_outputs/audit/formal_opening_selftest_latest.log\",\"blocker\":\"Full PPI/ogbn-arxiv logits-size G1 opening is not run in selftest because it would require multi-million element G1 commitment; field-size partial MLE stress cases pass.\"},\n";
-        json << "    {\"component\":\"formal_sumcheck_selftest\",\"status\":\"success\",\"benchmark_mode\":\"formal_partial_inner_product_sumcheck_verify\",\"commitment_time_ms\":\"NA\",\"prove_time_ms\":\"NA\",\"verify_time_ms\":\"NA\",\"proof_size_bytes\":\"see_log\",\"evidence_file\":\"zkdl_gat_outputs/audit/formal_sumcheck_selftest_latest.log\",\"blocker\":\"Hadamard/matmul full relation verifiers are not complete.\"}\n";
+        json << "    {\"component\":\"formal_sumcheck_selftest\",\"status\":\"success\",\"benchmark_mode\":\"formal_partial_inner_product_sumcheck_verify\",\"commitment_time_ms\":\"NA\",\"prove_time_ms\":\"NA\",\"verify_time_ms\":\"NA\",\"proof_size_bytes\":\"see_log\",\"evidence_file\":\"zkdl_gat_outputs/audit/formal_sumcheck_selftest_latest.log\",\"blocker\":\"Inner-product transcript replay verifier passes.\"},\n";
+        json << "    {\"component\":\"formal_relation_selftest\",\"status\":\"success\",\"benchmark_mode\":\"formal_partial_hadamard_matmul_linear_verify\",\"commitment_time_ms\":\"NA\",\"prove_time_ms\":\"NA\",\"verify_time_ms\":\"NA\",\"proof_size_bytes\":\"see_log\",\"evidence_file\":\"zkdl_gat_outputs/audit/formal_relation_selftest_latest.log\",\"blocker\":\"HadamardRelationProof, MatmulRelationProof, and LinearRelationProof prover/verifier selftests pass including tamper rejection.\"}";
+        for (const auto& row : rows) {
+            json << ",\n";
+            json << "    {\"component\":\"" << json_escape(row.dataset)
+                 << "\",\"status\":\"" << json_escape(row.formal_partial_status)
+                 << "\",\"benchmark_mode\":\"partial_formal_relations_only\""
+                 << ",\"commitment_time_ms\":\"" << row.formal_partial_commitment_time_ms
+                 << "\",\"prove_time_ms\":\"" << row.formal_partial_prove_time_ms
+                 << "\",\"verify_time_ms\":\"" << row.formal_partial_verify_time_ms
+                 << "\",\"proof_size_bytes\":\"" << row.formal_partial_proof_size_bytes
+                 << "\",\"evidence_file\":\"" << json_escape(row.formal_partial_proof_path)
+                 << "\",\"covered_relations\":\"" << json_escape(row.formal_partial_covered_relations)
+                 << "\",\"blocked_relations\":\"" << json_escape(row.formal_partial_blocked_relations)
+                 << "\",\"blocker\":\"" << json_escape(row.formal_partial_blocker) << "\"}";
+        }
+        json << "\n";
         json << "  ]\n}\n";
     }
     {
@@ -2185,6 +2724,7 @@ RunRow run_one(const fs::path& project_root, const fs::path& output_root, const 
     const auto run_dir = output_root / "runs" / spec.dataset / "warm";
     ensure_dir(run_dir);
     fs::remove_all(run_dir / "proof");
+    fs::remove_all(run_dir / "formal_artifacts");
     std::ofstream log(run_dir / "run.log");
     auto log_line = [&](const std::string& line) {
         log << line << '\n';
@@ -2247,20 +2787,47 @@ RunRow run_one(const fs::path& project_root, const fs::path& output_root, const 
         row.debug_level_b_verify_time_ms = proof.level_b.verification_ok ? format_ms(proof.level_b.verify_ms) : "NA";
         row.debug_level_b_proof_size_bytes = proof.level_b.proof_size_bytes != 0 ? std::to_string(proof.level_b.proof_size_bytes) : "NA";
         row.debug_level_b_proof_path = proof.level_b.proof_path.empty() ? "" : proof.level_b.proof_path.string();
-        row.proof_generation_ok = false;
-        row.verification_ok = false;
-        row.benchmark_mode = "formal_level_a_full_gat_proof_verify_blocked";
+
+        log_line("dataset=" + spec.dataset + " stage=formal_partial_trace_relations");
+        proof.formal_partial = run_formal_partial_trace_proof(spec, model, graph, trace, run_dir);
+        auto join_strings = [](const std::vector<std::string>& values) {
+            std::ostringstream out;
+            for (std::size_t i = 0; i < values.size(); ++i) {
+                if (i != 0) out << ';';
+                out << values[i];
+            }
+            return out.str();
+        };
+        row.formal_partial_status = proof.formal_partial.verification_ok ? "partial_formal" : "blocked";
+        row.formal_partial_blocker = proof.formal_partial.blocker;
+        row.formal_partial_commitment_time_ms = proof.formal_partial.proof_generation_ok ? format_ms(proof.formal_partial.commitment_ms) : "NA";
+        row.formal_partial_prove_time_ms = proof.formal_partial.proof_generation_ok ? format_ms(proof.formal_partial.prove_ms) : "NA";
+        row.formal_partial_verify_time_ms = proof.formal_partial.verification_ok ? format_ms(proof.formal_partial.verify_ms) : "NA";
+        row.formal_partial_proof_size_bytes = proof.formal_partial.proof_size_bytes != 0 ? std::to_string(proof.formal_partial.proof_size_bytes) : "NA";
+        row.formal_partial_proof_path = proof.formal_partial.proof_path.empty() ? "" : proof.formal_partial.proof_path.string();
+        row.formal_partial_covered_relations = join_strings(proof.formal_partial.covered_relations);
+        row.formal_partial_blocked_relations = join_strings(proof.formal_partial.blocked_relations);
+
+        row.proof_generation_ok = proof.formal_partial.proof_generation_ok;
+        row.verification_ok = proof.formal_partial.verification_ok;
+        row.benchmark_mode = proof.formal_partial.verification_ok
+            ? "partial_formal_relations_only"
+            : "formal_level_a_full_gat_proof_verify_blocked";
         row.commitment_time_ms = "NA";
         row.prove_time_ms = "NA";
         row.verify_time_ms = "NA";
         row.proof_size_bytes = "NA";
-        row.status = "blocked";
+        row.status = proof.formal_partial.verification_ok ? "partial_formal" : "blocked";
         row.blocker =
-            "Formal Level A zkDL-GAT proof is not complete: Gate 1 formal openings and Gate 2 inner-product transcript replay pass in partial selftests, but the full sparse GAT relation is not yet covered. Hidden/output projection, sparse routing, LeakyReLU, softmax max/ExpMap/sum/inverse, alpha multiplication, weighted aggregation, ELU, concat, rescale, bias-add, output-head average, and public-logits binding are not all connected to zkDL prover+verifier+transcript binding. Diagnostic Level B output binding is isolated in debug_level_b.* and must not be used as a formal comparison metric.";
+            "Formal Level A zkDL-GAT proof is not complete. "
+            + row.formal_partial_blocker
+            + " Official four metrics remain NA; partial relation timings and proof size are isolated in formal_partial_debug.*.";
         log_line("dataset=" + spec.dataset
             + " commitment_status=" + (row.partial_commitment_ok ? "ok" : "failed")
             + " debug_level_b_status=" + row.debug_level_b_status
             + " debug_level_b_proof_size_bytes=" + row.debug_level_b_proof_size_bytes
+            + " formal_partial_status=" + row.formal_partial_status
+            + " formal_partial_proof_size_bytes=" + row.formal_partial_proof_size_bytes
             + " formal_status=" + row.status
             + " failure=\"" + row.blocker + "\"");
         log_line("dataset=" + spec.dataset
@@ -2272,6 +2839,11 @@ RunRow run_one(const fs::path& project_root, const fs::path& output_root, const 
             + " debug_level_b_prove_time_ms=" + row.debug_level_b_prove_time_ms
             + " debug_level_b_verify_time_ms=" + row.debug_level_b_verify_time_ms
             + " debug_level_b_proof_path=\"" + row.debug_level_b_proof_path + "\"");
+        log_line("dataset=" + spec.dataset
+            + " formal_partial_commitment_time_ms=" + row.formal_partial_commitment_time_ms
+            + " formal_partial_prove_time_ms=" + row.formal_partial_prove_time_ms
+            + " formal_partial_verify_time_ms=" + row.formal_partial_verify_time_ms
+            + " formal_partial_proof_path=\"" + row.formal_partial_proof_path + "\"");
         write_manifest(run_dir, spec, dataset, graph, model, forward, proof, row);
     } catch (const std::exception& error) {
         row.status = "failed";
