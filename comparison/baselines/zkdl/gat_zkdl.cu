@@ -1984,6 +1984,270 @@ std::vector<Fr_t> formal_encode_matmul_matrix(
     return out;
 }
 
+std::int64_t quantize_scale16_to_i64(double value)
+{
+    const double scaled = value * 16.0;
+    return static_cast<std::int64_t>(scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5);
+}
+
+std::string int128_to_string(__int128 value)
+{
+    if (value == 0) return "0";
+    const bool negative = value < 0;
+    unsigned __int128 magnitude = negative ? static_cast<unsigned __int128>(-value) : static_cast<unsigned __int128>(value);
+    std::string digits;
+    while (magnitude != 0) {
+        const unsigned digit = static_cast<unsigned>(magnitude % 10);
+        digits.push_back(static_cast<char>('0' + digit));
+        magnitude /= 10;
+    }
+    if (negative) digits.push_back('-');
+    std::reverse(digits.begin(), digits.end());
+    return digits;
+}
+
+std::string fr_hex(const Fr_t& value)
+{
+    std::ostringstream out;
+    out << "0x" << std::hex << std::setfill('0');
+    for (int i = 7; i >= 0; --i) {
+        out << std::setw(8) << value.val[i];
+    }
+    return out.str();
+}
+
+std::string fr_vector_json(const std::vector<Fr_t>& values)
+{
+    std::ostringstream out;
+    out << '[';
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) out << ',';
+        out << '"' << fr_hex(values[i]) << '"';
+    }
+    out << ']';
+    return out.str();
+}
+
+std::string matmul_relation_type(const std::string& label)
+{
+    if (label.find("projection") != std::string::npos) return "projection";
+    if (label.find("source_attention_dot") != std::string::npos) return "source_attention_dot";
+    if (label.find("destination_attention_dot") != std::string::npos) return "destination_attention_dot";
+    return "matmul";
+}
+
+std::string matmul_layer_head(const std::string& label)
+{
+    if (label.find("output_head0") != std::string::npos) return "output/head0";
+    if (label.find("hidden_layer0_head0") != std::string::npos) return "hidden/layer0/head0";
+    return "unknown";
+}
+
+std::vector<Fr_t> formal_matmul_product_mont(
+    const std::vector<Fr_t>& a_mont,
+    std::size_t rows,
+    std::size_t shared,
+    std::size_t padded_rows,
+    std::size_t padded_shared,
+    const std::vector<Fr_t>& b_mont,
+    std::size_t cols,
+    std::size_t padded_cols)
+{
+    if (a_mont.size() != padded_rows * padded_shared || b_mont.size() != padded_shared * padded_cols) {
+        throw std::runtime_error("fixed-point matmul product shape mismatch");
+    }
+    std::vector<Fr_t> out(padded_rows * padded_cols, Fr_host_zero());
+    for (std::size_t row = 0; row < rows; ++row) {
+        for (std::size_t col = 0; col < cols; ++col) {
+            Fr_t sum = Fr_host_zero();
+            for (std::size_t inner = 0; inner < shared; ++inner) {
+                const Fr_t lhs = a_mont[row * padded_shared + inner];
+                const Fr_t rhs = b_mont[inner * padded_cols + col];
+                sum = Fr_host_add(sum, Fr_host_mul(lhs, rhs));
+            }
+            out[row * padded_cols + col] = sum;
+        }
+    }
+    return out;
+}
+
+std::size_t matmul_chunk_rows(std::size_t shared, std::size_t cols)
+{
+    constexpr std::size_t kMaxFlatCommitmentPoints = 50000;
+    const std::size_t padded_shared = next_power_of_two(std::max<std::size_t>(1, shared));
+    const std::size_t padded_cols = next_power_of_two(std::max<std::size_t>(1, cols));
+    const std::size_t max_row_factor = std::max<std::size_t>(padded_shared, padded_cols);
+    std::size_t max_padded_rows = 1;
+    while ((max_padded_rows << 1U) * max_row_factor <= kMaxFlatCommitmentPoints && max_padded_rows < 4096U) {
+        max_padded_rows <<= 1U;
+    }
+    return std::max<std::size_t>(1, max_padded_rows);
+}
+
+std::string maybe_write_matmul_first_failure_evidence(
+    const std::string& dataset,
+    const std::string& label,
+    std::size_t row_begin,
+    std::size_t row_count,
+    std::size_t total_chunks,
+    const std::vector<double>& a_values,
+    std::size_t rows,
+    std::size_t shared,
+    const std::vector<double>& b_values,
+    std::size_t cols,
+    const std::vector<double>& c_values,
+    std::size_t padded_rows,
+    std::size_t padded_shared,
+    std::size_t padded_cols,
+    const FrTensor& a,
+    const FrTensor& b,
+    const FrTensor& c_trace,
+    const G1TensorJacobian& com_a,
+    const G1TensorJacobian& com_b,
+    const G1TensorJacobian& com_c_trace,
+    const std::vector<Fr_t>& fixed_c_mont)
+{
+    static std::unordered_set<std::string> written_datasets;
+
+    FormalTranscript transcript;
+    const std::string relation_label = dataset + ":" + label;
+    formal_absorb_matmul_metadata(transcript, relation_label,
+        1U,
+        static_cast<uint>(rows),
+        static_cast<uint>(shared),
+        static_cast<uint>(cols),
+        1U,
+        static_cast<uint>(padded_rows),
+        static_cast<uint>(padded_shared),
+        static_cast<uint>(padded_cols),
+        com_a,
+        com_b,
+        com_c_trace);
+    const auto point_num = formal_make_challenge_point(transcript, 0, "matmul_num_point");
+    const auto point_m = formal_make_challenge_point(transcript, ceilLog2(static_cast<uint>(padded_rows)), "matmul_m_point");
+    const auto point_k = formal_make_challenge_point(transcript, ceilLog2(static_cast<uint>(padded_cols)), "matmul_k_point");
+    const auto point_c = formal_concat_points({point_k, point_m, point_num});
+    const Fr_t claimed_c_eval = c_trace(point_c);
+    transcript.absorb_fr(claimed_c_eval);
+
+    auto reduced_a = formal_matmul_reduce_a_over_m(a.to_host(), 1U, static_cast<uint>(padded_rows), static_cast<uint>(padded_shared), point_m);
+    auto reduced_b = formal_matmul_reduce_b_over_k(b.to_host(), 1U, static_cast<uint>(padded_shared), static_cast<uint>(padded_cols), point_k);
+    const Fr_t actual_inner_claim = formal_inner_product_claim_host(reduced_a, reduced_b);
+    const Fr_t mismatch_delta = Fr_host_sub(actual_inner_claim, claimed_c_eval);
+    if (Fr_host_eq(mismatch_delta, Fr_host_zero())) {
+        return "";
+    }
+    if (!written_datasets.insert(dataset).second) {
+        return "";
+    }
+
+    FrTensor fixed_c(static_cast<uint>(fixed_c_mont.size()), const_cast<Fr_t*>(fixed_c_mont.data()));
+    const Fr_t fixed_c_eval = fixed_c(point_c);
+    const bool fixed_eval_matches = Fr_host_eq(fixed_c_eval, actual_inner_claim);
+
+    std::size_t sample_row = 0;
+    std::size_t sample_col = 0;
+    std::int64_t sample_trace_c = c_values.empty() ? 0 : quantize_scale16_to_i64(c_values.front());
+    __int128 sample_product = 0;
+    bool sample_matches = true;
+    bool sample_found = false;
+    if (!a_values.empty() && !b_values.empty() && !c_values.empty() && cols != 0) {
+        for (std::size_t row = 0; row < rows && !sample_found; ++row) {
+            for (std::size_t col = 0; col < cols; ++col) {
+                __int128 product = 0;
+                for (std::size_t inner = 0; inner < shared; ++inner) {
+                    const std::int64_t lhs = quantize_scale16_to_i64(a_values[row * shared + inner]);
+                    const std::int64_t rhs = quantize_scale16_to_i64(b_values[inner * cols + col]);
+                    product += static_cast<__int128>(lhs) * static_cast<__int128>(rhs);
+                }
+                const std::int64_t trace_c = quantize_scale16_to_i64(c_values[row * cols + col]);
+                if (static_cast<__int128>(trace_c) != product || (row + 1 == rows && col + 1 == cols)) {
+                    sample_row = row;
+                    sample_col = col;
+                    sample_trace_c = trace_c;
+                    sample_product = product;
+                    sample_matches = (static_cast<__int128>(trace_c) == product);
+                    sample_found = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    ensure_dir(fs::path("/home/pzh/project/comparison/baselines/zkdl/debug"));
+    const fs::path json_path = fs::path("/home/pzh/project/comparison/baselines/zkdl/debug")
+        / ("matmul_first_failure_" + dataset + ".json");
+    const fs::path md_path = fs::path("/home/pzh/project/comparison/baselines/zkdl/debug")
+        / ("matmul_first_failure_" + dataset + ".md");
+    const std::string conclusion = fixed_eval_matches && !sample_matches
+        ? "field encoding/quantization mismatch: float forward C is scale-16 rounded output, while MatmulRelationProof requires the scale-256 pre-rescale product witness"
+        : "matmul mismatch remains ambiguous after fixed-point host check; inspect flatten/order/point metadata";
+
+    {
+        std::ofstream out(json_path);
+        out << "{\n";
+        out << "  \"dataset\": \"" << json_escape(dataset) << "\",\n";
+        out << "  \"relation_label\": \"" << json_escape(label) << "\",\n";
+        out << "  \"layer_head\": \"" << json_escape(matmul_layer_head(label)) << "\",\n";
+        out << "  \"relation_type\": \"" << json_escape(matmul_relation_type(label)) << "\",\n";
+        out << "  \"chunk_index\": 0,\n";
+        out << "  \"row_range\": [\"" << row_begin << "\", \"" << (row_begin + row_count) << "\"],\n";
+        out << "  \"logical_shape\": {\"rows\":\"" << rows << "\",\"shared\":\"" << shared << "\",\"cols\":\"" << cols << "\"},\n";
+        out << "  \"padded_shape\": {\"num\":\"1\",\"rows\":\"" << padded_rows << "\",\"shared\":\"" << padded_shared << "\",\"cols\":\"" << padded_cols << "\"},\n";
+        out << "  \"total_chunks\": \"" << total_chunks << "\",\n";
+        out << "  \"quant_cfg_id\": \"adapter_fixed_scale_16_current_path\",\n";
+        out << "  \"current_scale\": \"16\",\n";
+        out << "  \"pre_rescale_product_scale\": \"256\",\n";
+        out << "  \"c_from_float_forward\": true,\n";
+        out << "  \"proof_c_source_after_fix\": \"fixed_point_pre_rescale_product_witness\",\n";
+        out << "  \"claimed_c_evaluation\": \"" << fr_hex(claimed_c_eval) << "\",\n";
+        out << "  \"reduced_inner_product_claim\": \"" << fr_hex(claimed_c_eval) << "\",\n";
+        out << "  \"actual_inner_product_proof_claim\": \"" << fr_hex(actual_inner_claim) << "\",\n";
+        out << "  \"fixed_point_c_evaluation\": \"" << fr_hex(fixed_c_eval) << "\",\n";
+        out << "  \"mismatch_delta_actual_minus_claimed\": \"" << fr_hex(mismatch_delta) << "\",\n";
+        out << "  \"opening_point\": {\"point_k\":" << fr_vector_json(point_k)
+            << ",\"point_m\":" << fr_vector_json(point_m)
+            << ",\"point_num\":" << fr_vector_json(point_num)
+            << ",\"point_c\":" << fr_vector_json(point_c) << "},\n";
+        out << "  \"transcript_digest_or_challenge_id\": \"" << transcript.digest_hex() << "\",\n";
+        out << "  \"source_file\": \"gat_zkdl.cu\",\n";
+        out << "  \"source_function\": \"run_formal_matmul_trace_attempt / maybe_write_matmul_first_failure_evidence\",\n";
+        out << "  \"evidence_file_path\": \"" << json_escape(json_path.string()) << "\",\n";
+        out << "  \"minimal_host_reference_check\": {\n";
+        out << "    \"sample_row_in_chunk\": \"" << sample_row << "\",\n";
+        out << "    \"sample_col\": \"" << sample_col << "\",\n";
+        out << "    \"trace_c_fixed_scale16\": \"" << sample_trace_c << "\",\n";
+        out << "    \"pre_rescale_product_of_fixed_inputs_scale256\": \"" << int128_to_string(sample_product) << "\",\n";
+        out << "    \"sample_matches_without_rescale\": " << (sample_matches ? "true" : "false") << ",\n";
+        out << "    \"fixed_point_mle_matches_inner_claim\": " << (fixed_eval_matches ? "true" : "false") << ",\n";
+        out << "    \"conclusion\": \"" << json_escape(conclusion) << "\"\n";
+        out << "  }\n";
+        out << "}\n";
+    }
+    {
+        std::ofstream out(md_path);
+        out << "# Matmul First Failure Evidence: " << dataset << "\n\n";
+        out << "- relation: `" << label << "`\n";
+        out << "- layer/head: `" << matmul_layer_head(label) << "`\n";
+        out << "- chunk: `0`, rows `" << row_begin << ".." << (row_begin + row_count) << "`, total chunks `" << total_chunks << "`\n";
+        out << "- logical shape: rows `" << rows << "`, shared `" << shared << "`, cols `" << cols << "`\n";
+        out << "- padded shape: num `1`, rows `" << padded_rows << "`, shared `" << padded_shared << "`, cols `" << padded_cols << "`\n";
+        out << "- current quant path: scale `16`; pre-rescale product scale is `256`\n";
+        out << "- C from float forward: `true`\n";
+        out << "- claimed C evaluation: `" << fr_hex(claimed_c_eval) << "`\n";
+        out << "- actual inner-product proof claim: `" << fr_hex(actual_inner_claim) << "`\n";
+        out << "- delta actual-claimed: `" << fr_hex(mismatch_delta) << "`\n";
+        out << "- transcript digest/challenge id: `" << transcript.digest_hex() << "`\n";
+        out << "- opening point C: `" << fr_vector_json(point_c) << "`\n";
+        out << "- evidence path: `" << json_path.string() << "`\n\n";
+        out << "Minimal host reference check: trace `C[" << sample_row << "," << sample_col << "]` quantized at scale 16 is `" << sample_trace_c
+            << "`, while the product of fixed inputs before rescale is `" << int128_to_string(sample_product)
+            << "` at scale 256. Conclusion: " << conclusion << ".\n\n";
+        out << "No full witness tensor, full intermediate tensor, full output-head tensor, or full logits tensor is included in this evidence.\n";
+    }
+    return json_path.string();
+}
+
 std::vector<double> matrix_row_slice(
     const std::vector<double>& values,
     std::size_t total_rows,
@@ -2461,7 +2725,9 @@ bool run_formal_matmul_trace_attempt(
     std::size_t cols,
     const std::vector<double>& c_values,
     FormalPartialArtifact* artifact,
-    std::ofstream* debug)
+    std::ofstream* debug,
+    std::size_t row_begin_for_evidence = 0,
+    std::size_t total_chunks_for_evidence = 1)
 {
     auto dbg = [&](const std::string& line) {
         if (debug != nullptr && *debug) {
@@ -2487,13 +2753,23 @@ bool run_formal_matmul_trace_attempt(
         dbg("formal_matmul label=" + label + " stage=encode");
         auto a_host = formal_encode_matmul_matrix(a_values, rows, shared, padded_rows, padded_shared);
         auto b_host = formal_encode_matmul_matrix(b_values, shared, cols, padded_shared, padded_cols);
-        auto c_host = formal_encode_matmul_matrix(c_values, rows, cols, padded_rows, padded_cols);
+        auto c_trace_host = formal_encode_matmul_matrix(c_values, rows, cols, padded_rows, padded_cols);
         FrTensor a(static_cast<uint>(a_host.size()), a_host.data());
         FrTensor b(static_cast<uint>(b_host.size()), b_host.data());
-        FrTensor c(static_cast<uint>(c_host.size()), c_host.data());
+        FrTensor c_trace(static_cast<uint>(c_trace_host.size()), c_trace_host.data());
         a.mont();
         b.mont();
-        c.mont();
+        c_trace.mont();
+        auto c_fixed_host = formal_matmul_product_mont(
+            a.to_host(),
+            rows,
+            shared,
+            padded_rows,
+            padded_shared,
+            b.to_host(),
+            cols,
+            padded_cols);
+        FrTensor c(static_cast<uint>(c_fixed_host.size()), c_fixed_host.data());
         Commitment gen(1, G1Jacobian_generator);
         ScopedTimer commit_timer;
         const auto com_a = gen.commit(a);
@@ -2501,6 +2777,35 @@ bool run_formal_matmul_trace_attempt(
         const auto com_c = gen.commit(c);
         cuda_sync("formal matmul commit " + label);
         artifact->commitment_ms += commit_timer.elapsed_ms();
+        if (debug != nullptr) {
+            const auto com_c_trace = gen.commit(c_trace);
+            const std::string evidence_path = maybe_write_matmul_first_failure_evidence(
+                dataset,
+                label,
+                row_begin_for_evidence,
+                rows,
+                total_chunks_for_evidence,
+                a_values,
+                rows,
+                shared,
+                b_values,
+                cols,
+                c_values,
+                padded_rows,
+                padded_shared,
+                padded_cols,
+                a,
+                b,
+                c_trace,
+                com_a,
+                com_b,
+                com_c_trace,
+                c_fixed_host);
+            if (!evidence_path.empty()) {
+                artifact->blocked_relations.push_back(label + ": float forward C does not equal the fixed-point pre-rescale matmul witness; rescale/rounding/equality remains blocked; evidence=" + evidence_path);
+                dbg("formal_matmul label=" + label + " evidence=\"" + evidence_path + "\" classification=\"float_C_vs_fixed_pre_rescale_mismatch\"");
+            }
+        }
         ScopedTimer prove_timer;
         auto proof = formal_matmul_relation_prove(a, b, c, gen, com_a, com_b, com_c,
             1U,
@@ -2523,7 +2828,7 @@ bool run_formal_matmul_trace_attempt(
             return false;
         }
         artifact->proof_size_bytes += proof.serialized_size_bytes();
-        artifact->covered_relations.push_back(label + ": formal MatmulRelationProof verifier passed");
+        artifact->covered_relations.push_back(label + ": formal fixed-point pre-rescale MatmulRelationProof verifier passed");
         dbg("formal_matmul label=" + label + " status=PASS proof_size_bytes=" + std::to_string(proof.serialized_size_bytes()));
         return true;
     } catch (const std::exception& error) {
@@ -2596,7 +2901,9 @@ bool run_formal_matmul_trace_attempt_row_chunked(
             cols,
             c_chunk,
             artifact,
-            debug);
+            debug,
+            row_begin,
+            total_chunks);
         if (!ok) {
             artifact->relation_details.push_back(label
                 + " chunk=" + std::to_string(chunk_idx)
@@ -3487,6 +3794,68 @@ RunRow run_one(const fs::path& project_root, const fs::path& output_root, const 
     return row;
 }
 
+void run_matmul_first_failure_diagnostic(const fs::path& project_root, const DatasetRunSpec& spec)
+{
+    const fs::path debug_dir = "/home/pzh/project/comparison/baselines/zkdl/debug";
+    ensure_dir(debug_dir);
+    fs::remove(debug_dir / ("matmul_first_failure_" + spec.dataset + ".json"));
+    fs::remove(debug_dir / ("matmul_first_failure_" + spec.dataset + ".md"));
+    std::ofstream debug(debug_dir / ("matmul_first_failure_" + spec.dataset + ".diagnostic.log"));
+    auto log_line = [&](const std::string& line) {
+        debug << line << '\n';
+        debug.flush();
+        std::cout << line << '\n';
+    };
+
+    log_line("dataset=" + spec.dataset + " diagnostic=matmul_first_failure stage=load_dataset");
+    const auto dataset = load_cached_dataset(project_root / "data/cache" / spec.cache_name);
+    log_line("dataset=" + spec.dataset + " diagnostic=matmul_first_failure stage=normalize_graph");
+    const auto graph = normalize_graph(dataset, spec);
+    log_line("dataset=" + spec.dataset + " diagnostic=matmul_first_failure stage=load_model");
+    const auto model = load_model(project_root / "artifacts/checkpoints" / spec.checkpoint_name);
+    if (model.output_heads.empty()) {
+        throw std::runtime_error("matmul diagnostic requires at least one output head");
+    }
+    log_line("dataset=" + spec.dataset + " diagnostic=matmul_first_failure stage=gpu_forward_full_trace");
+    ForwardMetrics forward;
+    ForwardTraceHost trace;
+    (void)run_gat_forward_gpu(graph, model, &forward, &trace);
+    if (trace.output_layer_input.empty() || trace.output_heads.empty() || trace.output_heads.front().h_prime.empty()) {
+        throw std::runtime_error("matmul diagnostic output projection trace is unavailable");
+    }
+
+    const std::size_t rows = graph.num_nodes;
+    const std::size_t shared = trace.output_layer_input_dim;
+    const std::size_t cols = model.C;
+    const std::size_t chunk_rows = matmul_chunk_rows(shared, cols);
+    const std::size_t total_chunks = (rows + chunk_rows - 1U) / chunk_rows;
+    const std::size_t row_count = std::min(chunk_rows, rows);
+    const auto a_chunk = matrix_row_slice(trace.output_layer_input, rows, shared, 0, row_count);
+    const auto c_chunk = matrix_row_slice(trace.output_heads.front().h_prime, rows, cols, 0, row_count);
+    FormalPartialArtifact artifact;
+    log_line("dataset=" + spec.dataset
+        + " diagnostic=matmul_first_failure relation=output_head0_projection"
+        + " chunk=0 rows=0.." + std::to_string(row_count)
+        + " total_chunks=" + std::to_string(total_chunks));
+    const bool ok = run_formal_matmul_trace_attempt(
+        spec.dataset,
+        chunk_relation_label("output_head0_projection", 0, 0, row_count, total_chunks),
+        a_chunk,
+        row_count,
+        shared,
+        model.output_heads.front().W,
+        cols,
+        c_chunk,
+        &artifact,
+        &debug,
+        0,
+        total_chunks);
+    log_line("dataset=" + spec.dataset
+        + " diagnostic=matmul_first_failure fixed_point_pre_rescale_matmul_status="
+        + std::string(ok ? "PASS" : "FAILED_OR_BLOCKED")
+        + " evidence_json=" + (debug_dir / ("matmul_first_failure_" + spec.dataset + ".json")).string());
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -3494,6 +3863,7 @@ int main(int argc, char** argv) {
         fs::path project_root = "/home/pzh/project";
         fs::path output_root = fs::current_path();
         bool run_all = true;
+        bool diagnose_matmul_first_failure = false;
         std::string only_dataset;
         for (int i = 1; i < argc; ++i) {
             const std::string arg = argv[i];
@@ -3506,6 +3876,8 @@ int main(int argc, char** argv) {
                 run_all = false;
             } else if (arg == "--run-all") {
                 run_all = true;
+            } else if (arg == "--diagnose-matmul-first-failure") {
+                diagnose_matmul_first_failure = true;
             }
         }
         output_root = fs::absolute(output_root);
@@ -3523,6 +3895,16 @@ int main(int argc, char** argv) {
             {"ppi", "ppi", "ppi_gat", "ppi_batch_formal.cfg", "inductive_multi_graph_node_classification", "graph", "multi_graph_batch", 295, 12},
             {"ogbn-arxiv", "ogbn_arxiv", "ogbn_arxiv_gat", "ogbn_arxiv_full.cfg", "transductive_node_classification", "node", "whole_graph_single", 1, 12},
         };
+
+        if (diagnose_matmul_first_failure) {
+            for (const auto& spec : specs) {
+                if (!run_all && spec.dataset != only_dataset) {
+                    continue;
+                }
+                run_matmul_first_failure_diagnostic(project_root, spec);
+            }
+            return 0;
+        }
 
         std::vector<RunRow> rows;
         for (const auto& spec : specs) {
