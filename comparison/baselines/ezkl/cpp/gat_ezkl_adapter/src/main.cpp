@@ -21,107 +21,110 @@
 #include "gat_ezkl/quant.hpp"
 #include "gat_ezkl/segment_softmax.hpp"
 
-namespace {
+namespace 
+{
 
-std::map<std::string, std::string> parse_args(int argc, char** argv) {
-    std::map<std::string, std::string> out;
-    for (int i = 1; i < argc; ++i) {
-        const std::string key = argv[i];
-        if (key.rfind("--", 0) != 0) {
-            throw std::runtime_error("expected --key value argument, got: " + key);
+    std::map<std::string, std::string> parse_args(int argc, char** argv) {
+        std::map<std::string, std::string> out;
+        for (int i = 1; i < argc; ++i) {
+            const std::string key = argv[i];
+            if (key.rfind("--", 0) != 0) {
+                throw std::runtime_error("expected --key value argument, got: " + key);
+            }
+            const auto normalized = key.substr(2);
+            if (i + 1 >= argc) {
+                throw std::runtime_error("expected value for argument: " + key);
+            }
+            const std::string value = argv[++i];
+            if (value.rfind("--", 0) == 0) {
+                throw std::runtime_error("expected value for argument: " + key);
+            }
+            out[normalized] = value;
         }
-        const auto normalized = key.substr(2);
-        if (i + 1 >= argc) {
-            throw std::runtime_error("expected value for argument: " + key);
+        return out;
+    }
+
+    std::filesystem::path require_path_arg(
+        const std::map<std::string, std::string>& args,
+        const std::string& key) {
+        const auto it = args.find(key);
+        if (it == args.end() || it->second.empty()) {
+            throw std::runtime_error("missing required argument --" + key);
         }
-        const std::string value = argv[++i];
-        if (value.rfind("--", 0) == 0) {
-            throw std::runtime_error("expected value for argument: " + key);
+        return std::filesystem::path(it->second);
+    }
+
+    std::string require_string_arg(
+        const std::map<std::string, std::string>& args,
+        const std::string& key) {
+        const auto it = args.find(key);
+        if (it == args.end() || it->second.empty()) {
+            throw std::runtime_error("missing required argument --" + key);
         }
-        out[normalized] = value;
+        return it->second;
     }
-    return out;
-}
 
-std::filesystem::path require_path_arg(
-    const std::map<std::string, std::string>& args,
-    const std::string& key) {
-    const auto it = args.find(key);
-    if (it == args.end() || it->second.empty()) {
-        throw std::runtime_error("missing required argument --" + key);
+    std::string optional_string_arg(
+        const std::map<std::string, std::string>& args,
+        const std::string& key,
+        const std::string& fallback) {
+        const auto it = args.find(key);
+        return it == args.end() ? fallback : it->second;
     }
-    return std::filesystem::path(it->second);
-}
 
-std::string require_string_arg(
-    const std::map<std::string, std::string>& args,
-    const std::string& key) {
-    const auto it = args.find(key);
-    if (it == args.end() || it->second.empty()) {
-        throw std::runtime_error("missing required argument --" + key);
+    bool is_native_graph_route(const std::string& route) {
+        return route == "ezkl_gat_native_compressed_csr_attention_full";
     }
-    return it->second;
-}
 
-std::string optional_string_arg(
-    const std::map<std::string, std::string>& args,
-    const std::string& key,
-    const std::string& fallback) {
-    const auto it = args.find(key);
-    return it == args.end() ? fallback : it->second;
-}
+    std::string native_primitive_for_route(const std::string& route) {
+        (void)route;
+        return "GraphSegmentAttentionCompressedCSR";
+    }
 
-bool is_native_graph_route(const std::string& route) {
-    return route == "ezkl_gat_native_compressed_csr_attention_full";
-}
+    std::string native_primitive_version_for_route(const std::string& route) {
+        (void)route;
+        return "csr_segment_attention_compressed_v1";
+    }
 
-std::string native_primitive_for_route(const std::string& route) {
-    (void)route;
-    return "GraphSegmentAttentionCompressedCSR";
-}
-
-std::string native_primitive_version_for_route(const std::string& route) {
-    (void)route;
-    return "csr_segment_attention_compressed_v1";
-}
-
-std::size_t public_degree_bound_from_graph(const gat_ezkl::NormalizedGraph& graph) {
-    std::vector<std::size_t> degrees(graph.node_count, 0);
-    std::size_t max_degree = 0;
-    for (const auto& edge : graph.edges) {
-        if (edge.dst >= degrees.size()) {
-            throw std::runtime_error("edge dst out of range while deriving inverse table degree bound");
+    std::size_t public_degree_bound_from_graph(const gat_ezkl::NormalizedGraph& graph) {
+        std::vector<std::size_t> degrees(graph.node_count, 0);
+        std::size_t max_degree = 0;
+        for (const auto& edge : graph.edges) {
+            if (edge.dst >= degrees.size()) {
+                throw std::runtime_error("edge dst out of range while deriving inverse table degree bound");
+            }
+            auto& degree = degrees[edge.dst];
+            ++degree;
+            max_degree = std::max(max_degree, degree);
         }
-        auto& degree = degrees[edge.dst];
-        ++degree;
-        max_degree = std::max(max_degree, degree);
-    }
-    if (max_degree == 0) {
-        throw std::runtime_error("cannot derive inverse table degree bound from an edgeless graph");
-    }
-    return max_degree;
-}
-
-bool path_is_within(const std::filesystem::path& child, const std::filesystem::path& parent) {
-    const auto abs_child = std::filesystem::weakly_canonical(child);
-    const auto abs_parent = std::filesystem::weakly_canonical(parent);
-    auto child_it = abs_child.begin();
-    for (auto parent_it = abs_parent.begin(); parent_it != abs_parent.end(); ++parent_it, ++child_it) {
-        if (child_it == abs_child.end() || *child_it != *parent_it) {
-            return false;
+        if (max_degree == 0) {
+            throw std::runtime_error("cannot derive inverse table degree bound from an edgeless graph");
         }
+        return max_degree;
     }
-    return true;
-}
 
-std::string null_metric_json() {
-    return "null";
-}
+    bool path_is_within(const std::filesystem::path& child, const std::filesystem::path& parent) {
+        const auto abs_child = std::filesystem::weakly_canonical(child);
+        const auto abs_parent = std::filesystem::weakly_canonical(parent);
+        auto child_it = abs_child.begin();
+        for (auto parent_it = abs_parent.begin(); parent_it != abs_parent.end(); ++parent_it, ++child_it) {
+            if (child_it == abs_child.end() || *child_it != *parent_it) {
+                return false;
+            }
+        }
+        return true;
+    }
 
+    std::string null_metric_json() {
+        return "null";
+    }
 }  // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) 
+{
     try {
+
+        // 1. 解析命令行参数，做基础校验
         const auto args = parse_args(argc, argv);
         const auto run_id = require_string_arg(args, "dataset");
         const auto project_root = std::filesystem::weakly_canonical(require_path_arg(args, "project-root"));
@@ -138,6 +141,8 @@ int main(int argc, char** argv) {
         }
 
         std::filesystem::create_directories(output_dir);
+
+        // 2. 加载配置、检查点、数据集
         const auto spec = gat_ezkl::official_dataset_spec(run_id);
         auto config = gat_ezkl::load_config_file(gat_ezkl::config_path_for_dataset(project_root, run_id));
         gat_ezkl::validate_full_dataset_contract(config, spec);
@@ -147,6 +152,7 @@ int main(int argc, char** argv) {
         gat_ezkl::validate_checkpoint_against_config(checkpoint, &config);
 
         const auto dataset = gat_ezkl::load_dataset_from_cache(project_root, config);
+        // 数据集名称一致性校验
         if (dataset.name != spec.display_name && dataset.name != spec.main_dataset_name && !(run_id == "ogbn_arxiv_full" && dataset.name == "ogbn-arxiv")) {
             throw std::runtime_error("dataset cache name does not match official dataset spec");
         }
@@ -156,6 +162,8 @@ int main(int argc, char** argv) {
         if (dataset.num_classes != config.num_classes) {
             throw std::runtime_error("dataset class count does not match config");
         }
+
+        // 3. 图归一化与结构校验
         const auto graph = gat_ezkl::normalize_full_graph(dataset, config);
         if (graph.node_count != dataset.num_nodes) {
             throw std::runtime_error("normalized graph is not full dataset");
@@ -168,6 +176,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("normalized graph sort validation failed: " + graph_reason);
         }
 
+        // 4. 量化配置、GAT 语义摘要
         const auto quant = gat_ezkl::quant_config_from_id(config.quant_cfg_id, config.range_bits);
         const auto gat_summary = gat_ezkl::summarize_gat_semantics(graph, checkpoint);
         if (!analysis_only.empty()) {
@@ -177,11 +186,14 @@ int main(int argc, char** argv) {
             throw std::runtime_error("only the strict CPU compressed CSR route is allowed for the final comparison");
         }
         const bool wants_native_csr_route = true;
+
+        // 5. 计算多维哈希指纹
         const auto graph_hash = gat_ezkl::hash_graph_hex(graph);
         const auto checkpoint_hash = gat_ezkl::hash_files_hex({checkpoint_root / "manifest.json", checkpoint_root / "tensors.txt"});
         const auto shape_hash = gat_ezkl::hash_shape_hex(graph, checkpoint);
         const auto output_hash = gat_ezkl::hash_output_shape_hex(graph);
 
+        // 6. 形式化逆表（1/x 查找表），用于 ZK 中替换除法
         std::optional<gat_ezkl::FormalTablesSummary> formal_tables;
         if (wants_native_csr_route) {
             formal_tables = gat_ezkl::write_formal_table_artifacts(
@@ -190,6 +202,7 @@ int main(int argc, char** argv) {
                 public_degree_bound_from_graph(graph));
         }
 
+        // 7. 构建并写出各类元信息 JSON
         const auto metadata_json = gat_ezkl::build_metadata_json(
             run_id,
             config,
@@ -233,6 +246,7 @@ int main(int argc, char** argv) {
             checkpoint,
             gat_summary);
 
+        // 8. 写出各类结果文件
         gat_ezkl::write_text_file(output_dir / "metadata.json", metadata_json);
         gat_ezkl::write_text_file(output_dir / "model_info.json", model_info_json);
         gat_ezkl::write_text_file(output_dir / "input.json", input_json);
@@ -240,6 +254,7 @@ int main(int argc, char** argv) {
         gat_ezkl::write_text_file(output_dir / "graph_hash.txt", graph_hash + "\n");
         gat_ezkl::write_text_file(output_dir / "checkpoint_hash.txt", checkpoint_hash + "\n");
 
+        // 9. 记录量化、逆表策略等信息
         std::ostringstream settings;
         settings << "{\n"
             << "  \"settings_kind\": \"blocked_strict_route_preflight\",\n"
@@ -263,6 +278,7 @@ int main(int argc, char** argv) {
         settings << "}\n";
         gat_ezkl::write_text_file(output_dir / "settings.json", settings.str());
 
+        // 10. 导出决策信息
         std::ostringstream export_status;
         export_status << "{\n"
             << "  \"route_id\": \"" << decision.route_id << "\",\n"
@@ -275,6 +291,7 @@ int main(int argc, char** argv) {
             << "}\n";
         gat_ezkl::write_text_file(output_dir / "export_status.json", export_status.str());
 
+        // 11. 计算公共实例的列分块参数
         constexpr std::size_t kPublicInstanceChunkSize = 1u << 22;
         const auto public_instance_length = graph.node_count * graph.class_count;
         const auto public_instance_chunk_size = std::min<std::size_t>(
@@ -283,6 +300,7 @@ int main(int argc, char** argv) {
         const auto public_instance_column_count =
             (public_instance_length + public_instance_chunk_size - 1) / public_instance_chunk_size;
 
+            // 12. 全流程元数据清单
         std::ostringstream manifest;
         manifest << "{\n"
             << "  \"generated_at\": \"" << gat_ezkl::now_utc_iso8601() << "\",\n"
