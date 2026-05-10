@@ -1,26 +1,11 @@
 # GAT-ZKML 的 ezkl CPU 严格全量数据集对比实验
 
-本目录是主仓库 GAT-ZKML 的 ezkl CPU strict baseline。主仓库提供 formal 语义真源；本目录只改变证明系统承载方式，以及 ezkl/Halo2 对稀疏图、公开实例列和查找表的必要适配。
+本目录是主仓库 GAT-ZKML 的 ezkl CPU 严格基准。主仓库提供正式语义真源；本目录只改变证明系统承载方式，以及 ezkl/Halo2 对稀疏图、公开实例列和查找表的必要适配。
 
 ## 正式路线
 
-唯一保留路线：
-
-```text
-ezkl_gat_native_compressed_csr_attention_full
-```
-
-该路线证明 full GAT forward。final logits 在电路内完整推导并公开绑定，`strict_public_input_equivalent=true` 只在真实 prove 与 verify 完成后成立。
-
-禁用项：
-
-- 没有 output-binding workaround。
-- 没有 digest。
-- 没有 folding。
-- 没有 identity。
-- 没有 precomputed logits。
-- 没有 subset、shard 或 sample。
-- 没有 toy、smoke、partial 或 scaled graph。
+唯一保留路线：`ezkl_gat_native_compressed_csr_attention_full`
+。该路线证明 full GAT forward。最终分数在电路内完整推导并公开绑定，`strict_public_input_equivalent=true` 只在真实 prove 与 verify 完成后成立。
 
 ## 全量数据集状态
 
@@ -55,9 +40,9 @@ ezkl_gat_native_compressed_csr_attention_full
 - `results/cleanup_report.md`
 - `results/code_cleanliness_audit.md`
 
-## 每个数据集的审计 artifact
+## 每个数据集的审计结果
 
-每个 full dataset 目录均保留以下审计 artifact：
+每个数据集目录均保留以下审计结果：
 
 - `runs/<dataset>/run_manifest.json`
 - `runs/<dataset>/model_info.json`
@@ -66,14 +51,6 @@ ezkl_gat_native_compressed_csr_attention_full
 - `runs/<dataset>/formal_tables.json`
 - `runs/<dataset>/formal_table_hashes.json`
 - `runs/<dataset>/native_full_witness_preflight.json`
-
-适用的 `<dataset>`：
-
-- `cora_full`
-- `citeseer_full`
-- `pubmed_full`
-- `ppi_full_formal`
-- `ogbn_arxiv_full`
 
 ## 构建与静态检查
 
@@ -98,7 +75,6 @@ python3 scripts/validate_final_results.py
 ```
 
 期望验证输出：
-
 ```text
 final_result_validation=OK cpu_verified=5/5
 ```

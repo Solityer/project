@@ -10,7 +10,7 @@
 
 - `gat_native_compressed_csr_attention_full_v1`
 
-本目录以主仓库作为 formal 语义真源。除证明系统与 ezkl/Halo2 必要适配外，数据集、checkpoint、图预处理、量化配置、最终 logits 语义和公开输出策略均与主仓库对齐。
+本目录以主仓库作为正式语义真源。除证明系统与 ezkl/Halo2 必要适配外，数据集、checkpoint、图预处理、量化配置、最终 logits 语义和公开输出策略均与主仓库对齐。
 
 ## 全量数据集覆盖
 
@@ -22,7 +22,6 @@
 | `ppi_full_formal` | `runs/ppi_full_formal/run_manifest.json` |
 | `ogbn_arxiv_full` | `runs/ogbn_arxiv_full/run_manifest.json` |
 
-最终结果未使用 toy、smoke、subset、sample、shard、partial、debug 数据集或缩放图。
 
 ## 保持不变的对象
 
@@ -59,17 +58,3 @@
 | `pubmed_full` | `verified` | `true` | `true` | `true` |
 | `ppi_full_formal` | `verified` | `true` | `true` | `true` |
 | `ogbn_arxiv_full` | `verified` | `true` | `true` | `true` |
-
-## 禁用项确认
-
-正式结果未启用：
-
-- output-binding replacement
-- digest-only output
-- folding
-- identity route
-- precomputed logits bypass
-- subset
-- shard
-- sample
-- toy、smoke、debug 数据集
