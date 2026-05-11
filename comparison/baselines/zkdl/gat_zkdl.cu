@@ -1964,6 +1964,25 @@ Fr_t evaluate_valid_selector_mle(std::size_t valid_count, const std::vector<Fr_t
     return formal_host_mle_vector(values, point.begin(), point.end());
 }
 
+Fr_t evaluate_valid_matrix_selector_mle(
+    std::size_t rows,
+    std::size_t cols,
+    std::size_t padded_rows,
+    std::size_t padded_cols,
+    const std::vector<Fr_t>& point)
+{
+    if (rows > padded_rows || cols > padded_cols || point.size() != ceilLog2(static_cast<uint>(padded_rows * padded_cols))) {
+        throw std::runtime_error("valid matrix selector MLE shape mismatch");
+    }
+    std::vector<Fr_t> values(padded_rows * padded_cols, Fr_host_zero());
+    for (std::size_t row = 0; row < rows; ++row) {
+        for (std::size_t col = 0; col < cols; ++col) {
+            values[row * padded_cols + col] = Fr_host_one_mont();
+        }
+    }
+    return formal_host_mle_vector(values, point.begin(), point.end());
+}
+
 Fr_t fr_neg_one_mont()
 {
     return Fr_host_sub(Fr_host_zero(), Fr_host_one_mont());
@@ -2258,6 +2277,7 @@ std::string maybe_write_matmul_first_failure_evidence(
 struct ScaleDecompositionStats {
     std::size_t checked_values = 0;
     std::size_t outside_nearest_rounding_bound = 0;
+    std::string max_abs_residual = "0";
     std::string sample_row = "0";
     std::string sample_col = "0";
     std::string sample_product_scale256 = "0";
@@ -2278,6 +2298,7 @@ ScaleDecompositionStats compute_scale_decomposition_stats(
         return stats;
     }
     bool sampled = false;
+    __int128 max_abs_residual = 0;
     for (std::size_t row = 0; row < rows; ++row) {
         for (std::size_t col = 0; col < cols; ++col) {
             __int128 product = 0;
@@ -2289,6 +2310,9 @@ ScaleDecompositionStats compute_scale_decomposition_stats(
             const std::int64_t trace = quantize_scale16_to_i64(c_values[row * cols + col]);
             const __int128 residual = product - static_cast<__int128>(16) * static_cast<__int128>(trace);
             const __int128 abs_residual = residual < 0 ? -residual : residual;
+            if (abs_residual > max_abs_residual) {
+                max_abs_residual = abs_residual;
+            }
             ++stats.checked_values;
             if (abs_residual > 8) {
                 ++stats.outside_nearest_rounding_bound;
@@ -2310,7 +2334,270 @@ ScaleDecompositionStats compute_scale_decomposition_stats(
             }
         }
     }
+    stats.max_abs_residual = int128_to_string(max_abs_residual);
     return stats;
+}
+
+std::uint64_t checked_int128_to_u64(__int128 value, const std::string& label)
+{
+    if (value < 0 || value > static_cast<__int128>(std::numeric_limits<std::uint64_t>::max())) {
+        throw std::runtime_error(label + " is outside uint64 range");
+    }
+    return static_cast<std::uint64_t>(value);
+}
+
+Fr_t fr_from_u64_mont_host(std::uint64_t value)
+{
+    if (value > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+        throw std::runtime_error("field conversion value exceeds signed int64 helper range");
+    }
+    return fr_from_signed_mont_host(static_cast<std::int64_t>(value));
+}
+
+struct ResidualRangeWitness {
+    std::vector<std::vector<Fr_t>> bit_raw_values;
+    std::size_t checked_values = 0;
+    std::size_t bit_count = 0;
+    std::uint64_t offset = 0;
+    __int128 max_abs_residual = 0;
+    std::string sample_row = "0";
+    std::string sample_col = "0";
+    std::string sample_residual = "0";
+    std::string sample_shifted = "0";
+};
+
+ResidualRangeWitness build_residual_range_witness(
+    const std::vector<double>& a_values,
+    std::size_t rows,
+    std::size_t shared,
+    const std::vector<double>& b_values,
+    std::size_t cols,
+    const std::vector<double>& c_values,
+    std::size_t padded_rows,
+    std::size_t padded_cols)
+{
+    if (a_values.size() != rows * shared || b_values.size() != shared * cols || c_values.size() != rows * cols) {
+        throw std::runtime_error("residual range witness shape mismatch");
+    }
+    std::vector<__int128> residuals(rows * cols, 0);
+    ResidualRangeWitness witness;
+    for (std::size_t row = 0; row < rows; ++row) {
+        for (std::size_t col = 0; col < cols; ++col) {
+            __int128 product = 0;
+            for (std::size_t inner = 0; inner < shared; ++inner) {
+                const std::int64_t lhs = quantize_scale16_to_i64(a_values[row * shared + inner]);
+                const std::int64_t rhs = quantize_scale16_to_i64(b_values[inner * cols + col]);
+                product += static_cast<__int128>(lhs) * static_cast<__int128>(rhs);
+            }
+            const std::int64_t trace = quantize_scale16_to_i64(c_values[row * cols + col]);
+            const __int128 residual = product - static_cast<__int128>(16) * static_cast<__int128>(trace);
+            const __int128 abs_residual = residual < 0 ? -residual : residual;
+            residuals[row * cols + col] = residual;
+            if (abs_residual > witness.max_abs_residual) {
+                witness.max_abs_residual = abs_residual;
+                witness.sample_row = std::to_string(row);
+                witness.sample_col = std::to_string(col);
+                witness.sample_residual = int128_to_string(residual);
+            }
+            ++witness.checked_values;
+        }
+    }
+
+    std::uint64_t offset = 1;
+    const auto max_abs = checked_int128_to_u64(witness.max_abs_residual, "max residual magnitude");
+    while (offset <= max_abs) {
+        if (offset > (std::uint64_t{1} << 62U)) {
+            throw std::runtime_error("residual range proof exceeds supported 63-bit shifted range");
+        }
+        offset <<= 1U;
+    }
+    witness.offset = offset;
+    const std::uint64_t shifted_max = offset + max_abs;
+    std::size_t bit_count = 1;
+    while (bit_count < 63 && (std::uint64_t{1} << bit_count) <= shifted_max) {
+        ++bit_count;
+    }
+    if (bit_count > 63 || (bit_count == 63 && shifted_max >= (std::uint64_t{1} << 63U))) {
+        throw std::runtime_error("residual range proof bit width exceeds supported field helper range");
+    }
+    witness.bit_count = bit_count;
+    witness.bit_raw_values.assign(bit_count, std::vector<Fr_t>(padded_rows * padded_cols, fr_from_signed_host(0)));
+
+    for (std::size_t row = 0; row < rows; ++row) {
+        for (std::size_t col = 0; col < cols; ++col) {
+            const __int128 shifted_signed = residuals[row * cols + col] + static_cast<__int128>(offset);
+            const std::uint64_t shifted = checked_int128_to_u64(shifted_signed, "shifted residual");
+            if (shifted > shifted_max) {
+                throw std::runtime_error("shifted residual exceeds declared range");
+            }
+            if (row == std::stoull(witness.sample_row) && col == std::stoull(witness.sample_col)) {
+                witness.sample_shifted = std::to_string(shifted);
+            }
+            const std::size_t flat = row * padded_cols + col;
+            for (std::size_t bit = 0; bit < bit_count; ++bit) {
+                if (((shifted >> bit) & 1ULL) != 0ULL) {
+                    witness.bit_raw_values[bit][flat] = fr_from_signed_host(1);
+                }
+            }
+        }
+    }
+    return witness;
+}
+
+bool run_residual_range_bound_relation(
+    const std::string& dataset,
+    const std::string& label,
+    const std::vector<double>& a_values,
+    std::size_t rows,
+    std::size_t shared,
+    const std::vector<double>& b_values,
+    std::size_t cols,
+    const std::vector<double>& c_values,
+    std::size_t padded_rows,
+    std::size_t padded_cols,
+    FrTensor& residual,
+    const G1TensorJacobian& com_residual,
+    const Commitment& gen,
+    FormalPartialArtifact* artifact,
+    std::ofstream* debug)
+{
+    auto dbg = [&](const std::string& line) {
+        if (debug != nullptr && *debug) {
+            *debug << line << '\n';
+            debug->flush();
+        }
+    };
+    if (artifact == nullptr) return false;
+    try {
+        auto witness = build_residual_range_witness(
+            a_values, rows, shared, b_values, cols, c_values, padded_rows, padded_cols);
+        std::vector<std::unique_ptr<FrTensor>> bit_tensors;
+        std::vector<std::unique_ptr<G1TensorJacobian>> bit_commitments;
+        bit_tensors.reserve(witness.bit_count);
+        bit_commitments.reserve(witness.bit_count);
+
+        for (std::size_t bit = 0; bit < witness.bit_count; ++bit) {
+            auto bit_tensor = std::make_unique<FrTensor>(
+                static_cast<uint>(witness.bit_raw_values[bit].size()),
+                witness.bit_raw_values[bit].data());
+            bit_tensor->mont();
+            ScopedTimer commit_timer;
+            auto bit_commitment = std::make_unique<G1TensorJacobian>(gen.commit(*bit_tensor));
+            cuda_sync("formal residual range bit commit " + label + " bit " + std::to_string(bit));
+            artifact->commitment_ms += commit_timer.elapsed_ms();
+
+            ++artifact->total_chunks;
+            ScopedTimer prove_timer;
+            auto bit_proof = formal_hadamard_relation_prove(
+                *bit_tensor,
+                *bit_tensor,
+                *bit_tensor,
+                gen,
+                *bit_commitment,
+                *bit_commitment,
+                *bit_commitment,
+                dataset + ":" + label + ":residual_range_bit_" + std::to_string(bit));
+            artifact->prove_ms += prove_timer.elapsed_ms();
+            ScopedTimer verify_timer;
+            std::string failure;
+            const bool ok = formal_hadamard_relation_verify(
+                bit_proof,
+                gen,
+                *bit_commitment,
+                *bit_commitment,
+                *bit_commitment,
+                dataset + ":" + label + ":residual_range_bit_" + std::to_string(bit),
+                &failure);
+            artifact->verify_ms += verify_timer.elapsed_ms();
+            if (!ok) {
+                artifact->blocked_relations.push_back(
+                    label + ": residual range bitness verifier rejected bit "
+                    + std::to_string(bit) + ": " + failure);
+                dbg("formal_residual_range label=" + label + " bit=" + std::to_string(bit)
+                    + " status=REJECT failure=\"" + failure + "\"");
+                return false;
+            }
+            ++artifact->verified_chunks;
+            artifact->proof_size_bytes += bit_proof.serialized_size_bytes();
+            bit_tensors.push_back(std::move(bit_tensor));
+            bit_commitments.push_back(std::move(bit_commitment));
+        }
+
+        const auto point = deterministic_mont_fr_vec(
+            ceilLog2(static_cast<uint>(padded_rows * padded_cols)),
+            dataset + ":" + label + ":residual_range_decomposition_point");
+        const Fr_t selector_eval = evaluate_valid_matrix_selector_mle(rows, cols, padded_rows, padded_cols, point);
+        std::vector<FormalLinearTerm> terms;
+        std::vector<const G1TensorJacobian*> commitments;
+        terms.push_back({"residual_signed", &residual, &com_residual, Fr_host_one_mont(), point});
+        commitments.push_back(&com_residual);
+        for (std::size_t bit = 0; bit < witness.bit_count; ++bit) {
+            const std::uint64_t coeff = std::uint64_t{1} << bit;
+            const Fr_t neg_coeff = Fr_host_sub(Fr_host_zero(), fr_from_u64_mont_host(coeff));
+            terms.push_back({
+                "shifted_residual_bit_" + std::to_string(bit),
+                bit_tensors[bit].get(),
+                bit_commitments[bit].get(),
+                neg_coeff,
+                point});
+            commitments.push_back(bit_commitments[bit].get());
+        }
+
+        ++artifact->total_chunks;
+        ScopedTimer prove_timer;
+        auto decomposition_proof = formal_linear_relation_prove(
+            dataset + ":" + label + ":residual_range_shifted_decomposition",
+            {static_cast<uint>(padded_rows), static_cast<uint>(padded_cols)},
+            terms,
+            gen,
+            fr_from_u64_mont_host(witness.offset),
+            selector_eval,
+            Fr_host_zero());
+        artifact->prove_ms += prove_timer.elapsed_ms();
+        ScopedTimer verify_timer;
+        std::string failure;
+        const bool ok = formal_linear_relation_verify(
+            decomposition_proof,
+            gen,
+            commitments,
+            selector_eval,
+            &failure);
+        artifact->verify_ms += verify_timer.elapsed_ms();
+        if (!ok) {
+            artifact->blocked_relations.push_back(
+                label + ": residual shifted range decomposition verifier rejected: " + failure);
+            dbg("formal_residual_range label=" + label + " decomposition status=REJECT failure=\"" + failure + "\"");
+            return false;
+        }
+        ++artifact->verified_chunks;
+        artifact->proof_size_bytes += decomposition_proof.serialized_size_bytes();
+        artifact->covered_relations.push_back(
+            label + ": partial residual bounded range proof verified by bitness plus residual+offset decomposition");
+        artifact->relation_details.push_back(
+            label
+            + " residual_range_bound status=PASS bit_count=" + std::to_string(witness.bit_count)
+            + " offset=" + std::to_string(witness.offset)
+            + " max_abs_residual=" + int128_to_string(witness.max_abs_residual)
+            + " checked_values=" + std::to_string(witness.checked_values)
+            + " sample[row=" + witness.sample_row
+            + ",col=" + witness.sample_col
+            + ",residual=" + witness.sample_residual
+            + ",shifted=" + witness.sample_shifted
+            + "] proof_size_bytes="
+            + std::to_string(decomposition_proof.serialized_size_bytes())
+            + " transcript_digest=" + decomposition_proof.transcript_digest);
+        artifact->blocked_relations.push_back(
+            label + ": residual bounded range is verifier-bound, but sign-specific rounding mode and tie-breaking are still not proven");
+        dbg("formal_residual_range label=" + label
+            + " status=PASS bit_count=" + std::to_string(witness.bit_count)
+            + " offset=" + std::to_string(witness.offset)
+            + " max_abs_residual=" + int128_to_string(witness.max_abs_residual));
+        return true;
+    } catch (const std::exception& error) {
+        artifact->blocked_relations.push_back(label + ": residual range proof failed: " + std::string(error.what()));
+        dbg("formal_residual_range label=" + label + " status=FAILED reason=\"" + std::string(error.what()) + "\"");
+        return false;
+    }
 }
 
 bool run_fixed_to_trace_scale_decomposition_relation(
@@ -2411,6 +2698,7 @@ bool run_fixed_to_trace_scale_decomposition_relation(
             + " residual_outside_nearest_rounding_bound="
             + std::to_string(stats.outside_nearest_rounding_bound)
             + "/" + std::to_string(stats.checked_values)
+            + " max_abs_residual=" + stats.max_abs_residual
             + " sample[row=" + stats.sample_row
             + ",col=" + stats.sample_col
             + ",product_scale256=" + stats.sample_product_scale256
@@ -2426,6 +2714,22 @@ bool run_fixed_to_trace_scale_decomposition_relation(
             + " residual_outside_nearest_rounding_bound="
             + std::to_string(stats.outside_nearest_rounding_bound)
             + "/" + std::to_string(stats.checked_values));
+        run_residual_range_bound_relation(
+            dataset,
+            label,
+            a_values,
+            rows,
+            shared,
+            b_values,
+            cols,
+            c_values,
+            padded_rows,
+            padded_cols,
+            residual,
+            com_residual,
+            gen,
+            artifact,
+            debug);
         return true;
     } catch (const std::exception& error) {
         artifact->blocked_relations.push_back(label + ": fixed-to-trace scale decomposition failed: " + std::string(error.what()));
@@ -3516,7 +3820,7 @@ std::vector<CoverageRow> gat_proof_coverage_rows() {
         {"HadamardRelationProof", true, true, false, true, false, "selftest", "selftest", true, true, false, false, "Formal C=A*B relation prover/verifier passes selftest with C opening and tamper rejection.", "zkdl_gat_outputs/audit/formal_relation_selftest_latest.log", "formal_relations.cuh;zkprod.cuh"},
         {"MatmulRelationProof", true, true, false, true, false, "selftest", "selftest", true, true, false, false, "Formal C=A*B matmul relation prover/verifier passes selftest for batched, non-square, padding, and dot-product cases.", "zkdl_gat_outputs/audit/formal_relation_selftest_latest.log", "formal_relations.cuh;zkmatmul.cuh"},
         {"LinearRelationProof", true, true, false, true, true, "see_formal_partial_debug", "see_formal_partial_debug", false, true, false, false, "Formal linear relation prover/verifier passes output-head average K_out=1 and K_out=2 selftests with tamper rejection and is used for full-dataset chunked public-logits binding.", "zkdl_gat_outputs/audit/formal_relation_selftest_latest.log;zkdl_gat_outputs/results/formal_partial_debug.csv", "formal_relations.cuh;gat_zkdl.cu"},
-        {"hidden projection", false, false, true, false, true, "see_formal_partial_debug", "first_chunk_rejected", true, true, false, true, "Layer0/head0 hidden projection is row-chunk attempted on real full traces, but the first chunk rejects because rounded field tensors do not satisfy the matmul claim.", "zkdl_gat_outputs/runs/*/warm/proof_debug.log;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
+        {"hidden projection", false, false, true, false, true, "cora 26/170; citeseer 4/416", "fixed/scale 30 chunks; residual range 29 chunks", true, true, false, true, "仅 layer0/head0 的 targeted chunks 通过；全层全头、全 chunk 与 rounding closure 未完成。", "zkdl_gat_outputs_cora_latest_fixed/RESUME_POINT.md;zkdl_gat_outputs_citeseer_latest_fixed/RESUME_POINT.md", "gat_zkdl.cu;formal_relations.cuh"},
         {"source attention dot product", false, false, true, false, true, "see_formal_partial_debug", "first_chunk_rejected", true, true, false, true, "Source attention dot products are row-chunk attempted through MatmulRelationProof on real traces, but full-dataset support remains blocked by field quantization mismatch.", "zkdl_gat_outputs/runs/*/warm/proof_debug.log;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
         {"target attention dot product", false, false, true, false, true, "see_formal_partial_debug", "partial_dataset_dependent", true, true, false, true, "Destination attention dot products are row-chunk attempted; some chunks may verify on specific datasets, but not all five datasets/all heads, so the GAT relation is partial only.", "zkdl_gat_outputs/runs/*/warm/proof_debug.log;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
         {"source sparse routing", false, false, true, false, false, "NA", "NA", false, false, false, true, "No Hyrax/FAC4DNN sparse route proof is available; routing must be an MLE over public src without materializing E x N dense matrices.", "", "gat_zkdl.cu"},
@@ -3530,13 +3834,13 @@ std::vector<CoverageRow> gat_proof_coverage_rows() {
         {"weighted aggregation", false, false, true, false, false, "NA", "NA", true, false, false, true, "Aggregation still needs product plus sparse routing proofs under Hyrax.", "", "gat_zkdl.cu"},
         {"ELU", false, false, true, false, false, "NA", "NA", false, false, false, true, "No ELU lookup/range gadget exists in zkDL.", "", "gat_zkdl.cu"},
         {"concat", true, true, true, true, true, "see_formal_partial_debug", "see_formal_partial_debug", false, true, false, false, "Hidden multi-head concat is verified in full-dataset row chunks by mapping each head-width MLE point into the corresponding concat column block.", "zkdl_gat_outputs/runs/*/warm/formal_artifacts/zkdl_formal_partial.proof.txt;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
-        {"output projection", false, false, true, false, true, "see_formal_partial_debug", "first_chunk_rejected", true, true, false, true, "Output projection is row-chunk attempted on real output-layer input/Y' trace; the first chunk rejects due field quantization/rescale mismatch, not tensor scale.", "zkdl_gat_outputs/runs/*/warm/proof_debug.log;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
+        {"output projection", false, false, true, false, true, "cora 6/6; citeseer 7/7 fixed, 2/7 range; pubmed 3/39; ppi 2/223; ogbn 2/331", "unique fixed chunks 20; residual range chunks 11", true, true, false, true, "fixed pre-rescale 与 scale decomposition 覆盖增加；完整 output attention chain 仍缺 sparse softmax/aggregation/rescale rounding。", "zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
         {"output source/target attention", false, false, true, false, true, "see_formal_partial_debug", "first_chunk_rejected", true, true, false, true, "Output E_src/E_dst dot products are row-chunk attempted via MatmulRelationProof over real traces; first chunks reject under current double-to-field encoding.", "zkdl_gat_outputs/runs/*/warm/proof_debug.log;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
         {"output sparse routing", false, false, true, false, false, "NA", "NA", false, false, false, true, "No Hyrax sparse route proof for output heads is implemented.", "", "gat_zkdl.cu"},
         {"output softmax", false, false, true, false, false, "NA", "NA", false, false, false, true, "Max/ExpMap/sum/inverse chain for output-head softmax is not supported.", "", "gat_zkdl.cu"},
         {"output aggregation", false, false, true, false, false, "NA", "NA", true, false, false, true, "Weighted output aggregation needs product plus sparse routing proofs; sparse component is missing.", "", "gat_zkdl.cu"},
-        {"fixed-to-rounded trace scale decomposition", true, true, true, true, true, "see_formal_partial_debug+latest_fixed_schedule", "partial_scale_decomposition_verified", false, true, false, true, "Partial LinearRelationProof binds C_fixed - 16*C_trace - residual = 0 for fixed-point pre-rescale products, but residual range/sign constraints required for real rounding are not implemented as a zkDL verifier gadget.", "zkdl_gat_outputs/runs/*/warm/proof_debug.log;zkdl_gat_outputs_cora_latest_fixed/RESUME_POINT.md", "gat_zkdl.cu;formal_relations.cuh"},
-        {"rescale/rounding range binding", false, false, true, false, false, "NA", "NA", false, false, false, true, "Full fixed-point rescale/rounding remains blocked: quotient/remainder range, sign, and tie-breaking constraints are not implemented for output pre-bias scale alignment or fixed product to rounded trace equality.", "zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu"},
+        {"fixed-to-rounded trace scale decomposition", true, true, true, true, true, "targeted schedules", "所有本轮通过 matmul chunk 均含 C_fixed - 16*C_trace - residual = 0", false, true, false, true, "已证明 exact decomposition；尚未单独证明 sign-specific rounding mode 与 tie-breaking。", "zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
+        {"residual bounded range binding", true, true, true, true, true, "targeted schedules", "Cora output 6; Cora hidden 25; Citeseer output 2; Citeseer hidden 4; Pubmed/PPI/ogbn output 各 1", false, true, false, true, "本轮新增 bitness + residual+offset decomposition；sign-specific rounding mode 和 tie-breaking 仍阻塞，不能标 Level A。", "zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu"},
         {"bias add", true, true, true, true, true, "see_formal_partial_debug", "see_formal_partial_debug", false, true, false, false, "Output bias add is verified in full-dataset chunks as Y_head = Y_pre_rescaled + b with padding-aware public row selector binding; the separate Y_pre -> Y_pre_rescaled rescale relation remains blocked.", "zkdl_gat_outputs/runs/*/warm/formal_artifacts/zkdl_formal_partial.proof.txt;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
         {"output-head average", true, true, true, true, true, "see_formal_partial_debug", "see_formal_partial_debug", false, true, false, false, "Output-head average/public logits binding uses chunked LinearRelationProof; chunk labels bind index, offset, length, and total chunk count. K_out=1 and K_out>1 synthetic cases pass, and current full datasets use the generic path.", "zkdl_gat_outputs/audit/formal_relation_selftest_latest.log;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
         {"public logits binding", true, true, true, true, true, "see_formal_partial_debug", "see_formal_partial_debug", false, true, false, false, "Public logits are bound through chunked LinearRelationProof with verifier-computed public MLE values; official Level A remains blocked by earlier GAT relations.", "zkdl_gat_outputs/runs/*/warm/formal_artifacts/zkdl_formal_partial.proof.txt;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
@@ -4146,11 +4450,11 @@ void run_formal_matmul_schedule(
     }
     artifact.proof_generation_ok = completed != 0;
     artifact.verification_ok = completed != 0;
-    artifact.blocker = "Targeted formal matmul schedule verified "
+    artifact.blocker = "targeted formal matmul schedule 已验证 "
         + std::to_string(completed)
-        + " chunk(s) from chunk "
+        + " 个 matmul chunk，起始 chunk 为 "
         + std::to_string(start_chunk)
-        + "; fixed-to-trace scale decomposition is partial and full rounding/range binding remains blocked.";
+        + "；fixed-to-trace scale decomposition 与 residual bounded range 为 partial formal，完整 rounding mode、sign 与 tie-breaking 仍阻塞。";
     artifact.proof_path = run_dir / "formal_artifacts" / (
         "zkdl_formal_matmul_schedule_"
         + relation
@@ -4162,19 +4466,19 @@ void run_formal_matmul_schedule(
     serialize_formal_partial_artifact(artifact, artifact.proof_path);
 
     std::ofstream resume(output_root / "RESUME_POINT.md");
-    resume << "# zkDL GAT Formal Matmul Schedule Resume Point\n\n";
-    resume << "- Dataset: `" << spec.dataset << "`\n";
-    resume << "- Relation: `" << relation << "`\n";
-    resume << "- Chunk rows: `" << chunk_rows << "`\n";
-    resume << "- Total chunks: `" << total_chunks << "`\n";
-    resume << "- Requested chunks: `" << start_chunk << ".." << stop_chunk << "`\n";
-    resume << "- Newly verified matmul chunks: `" << completed << "`\n";
-    resume << "- Newly verified formal relation chunks including scale decomposition: `"
+    resume << "# zkDL GAT formal matmul schedule 继续点\n\n";
+    resume << "- 数据集: `" << spec.dataset << "`\n";
+    resume << "- relation: `" << relation << "`\n";
+    resume << "- 每个 chunk 的行数: `" << chunk_rows << "`\n";
+    resume << "- matmul 总 chunk 数: `" << total_chunks << "`\n";
+    resume << "- 本轮请求 chunk 范围: `" << start_chunk << ".." << stop_chunk << "`\n";
+    resume << "- 本轮新增验证的 matmul chunk 数: `" << completed << "`\n";
+    resume << "- 本轮新增验证的 formal relation chunk 数（含 scale decomposition 与 residual range bitness/decomposition）: `"
            << artifact.verified_chunks << "/" << artifact.total_chunks << "`\n";
-    resume << "- Current next chunk: `" << (next_chunk >= total_chunks ? std::string("complete") : std::to_string(next_chunk)) << "`\n";
-    resume << "- Proof artifact: `" << artifact.proof_path.string() << "`\n";
-    resume << "- Proof debug log: `" << (run_dir / "proof_debug.log").string() << "`\n";
-    resume << "- Level A status: blocked; exact scale decomposition is verifier-bound, but residual range/sign/tie-breaking proof for rounding is still missing.\n";
+    resume << "- 当前下一个 chunk: `" << (next_chunk >= total_chunks ? std::string("complete") : std::to_string(next_chunk)) << "`\n";
+    resume << "- proof artifact: `" << artifact.proof_path.string() << "`\n";
+    resume << "- proof debug log: `" << (run_dir / "proof_debug.log").string() << "`\n";
+    resume << "- Level A 状态: blocked；exact scale decomposition 和 residual bounded range 已由 verifier 绑定到本轮 chunk，但 sign-specific rounding mode 与 tie-breaking 仍未证明。\n";
 }
 
 void run_matmul_first_failure_diagnostic(const fs::path& project_root, const DatasetRunSpec& spec)
