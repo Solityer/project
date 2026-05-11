@@ -1116,6 +1116,10 @@ Fr_t fr_from_signed_host(std::int64_t value) {
     return out;
 }
 
+Fr_t fr_from_signed_mont_host(std::int64_t value) {
+    return Fr_host_mont(fr_from_signed_host(value));
+}
+
 std::uint64_t fnv1a64(const std::string& value) {
     std::uint64_t hash = 1469598103934665603ULL;
     for (const unsigned char ch : value) {
@@ -2179,6 +2183,9 @@ std::string maybe_write_matmul_first_failure_evidence(
         / ("matmul_first_failure_" + dataset + ".json");
     const fs::path md_path = fs::path("/home/pzh/project/comparison/baselines/zkdl/debug")
         / ("matmul_first_failure_" + dataset + ".md");
+    if (fs::exists(json_path) || fs::exists(md_path)) {
+        return "";
+    }
     const std::string conclusion = fixed_eval_matches && !sample_matches
         ? "field encoding/quantization mismatch: float forward C is scale-16 rounded output, while MatmulRelationProof requires the scale-256 pre-rescale product witness"
         : "matmul mismatch remains ambiguous after fixed-point host check; inspect flatten/order/point metadata";
@@ -2246,6 +2253,185 @@ std::string maybe_write_matmul_first_failure_evidence(
         out << "No full witness tensor, full intermediate tensor, full output-head tensor, or full logits tensor is included in this evidence.\n";
     }
     return json_path.string();
+}
+
+struct ScaleDecompositionStats {
+    std::size_t checked_values = 0;
+    std::size_t outside_nearest_rounding_bound = 0;
+    std::string sample_row = "0";
+    std::string sample_col = "0";
+    std::string sample_product_scale256 = "0";
+    std::string sample_trace_scale16 = "0";
+    std::string sample_residual = "0";
+};
+
+ScaleDecompositionStats compute_scale_decomposition_stats(
+    const std::vector<double>& a_values,
+    std::size_t rows,
+    std::size_t shared,
+    const std::vector<double>& b_values,
+    std::size_t cols,
+    const std::vector<double>& c_values)
+{
+    ScaleDecompositionStats stats;
+    if (a_values.size() != rows * shared || b_values.size() != shared * cols || c_values.size() != rows * cols) {
+        return stats;
+    }
+    bool sampled = false;
+    for (std::size_t row = 0; row < rows; ++row) {
+        for (std::size_t col = 0; col < cols; ++col) {
+            __int128 product = 0;
+            for (std::size_t inner = 0; inner < shared; ++inner) {
+                const std::int64_t lhs = quantize_scale16_to_i64(a_values[row * shared + inner]);
+                const std::int64_t rhs = quantize_scale16_to_i64(b_values[inner * cols + col]);
+                product += static_cast<__int128>(lhs) * static_cast<__int128>(rhs);
+            }
+            const std::int64_t trace = quantize_scale16_to_i64(c_values[row * cols + col]);
+            const __int128 residual = product - static_cast<__int128>(16) * static_cast<__int128>(trace);
+            const __int128 abs_residual = residual < 0 ? -residual : residual;
+            ++stats.checked_values;
+            if (abs_residual > 8) {
+                ++stats.outside_nearest_rounding_bound;
+                if (!sampled) {
+                    stats.sample_row = std::to_string(row);
+                    stats.sample_col = std::to_string(col);
+                    stats.sample_product_scale256 = int128_to_string(product);
+                    stats.sample_trace_scale16 = std::to_string(trace);
+                    stats.sample_residual = int128_to_string(residual);
+                    sampled = true;
+                }
+            }
+            if (!sampled && row + 1 == rows && col + 1 == cols) {
+                stats.sample_row = std::to_string(row);
+                stats.sample_col = std::to_string(col);
+                stats.sample_product_scale256 = int128_to_string(product);
+                stats.sample_trace_scale16 = std::to_string(trace);
+                stats.sample_residual = int128_to_string(residual);
+            }
+        }
+    }
+    return stats;
+}
+
+bool run_fixed_to_trace_scale_decomposition_relation(
+    const std::string& dataset,
+    const std::string& label,
+    const std::vector<double>& a_values,
+    std::size_t rows,
+    std::size_t shared,
+    const std::vector<double>& b_values,
+    std::size_t cols,
+    const std::vector<double>& c_values,
+    std::size_t padded_rows,
+    std::size_t padded_cols,
+    const std::vector<Fr_t>& c_fixed_mont,
+    const FrTensor& c_trace,
+    const G1TensorJacobian& com_c_fixed,
+    const G1TensorJacobian& com_c_trace,
+    const Commitment& gen,
+    FormalPartialArtifact* artifact,
+    std::ofstream* debug)
+{
+    auto dbg = [&](const std::string& line) {
+        if (debug != nullptr && *debug) {
+            *debug << line << '\n';
+            debug->flush();
+        }
+    };
+    if (artifact == nullptr) {
+        return false;
+    }
+    const auto c_trace_mont = c_trace.to_host();
+    if (c_fixed_mont.size() != c_trace_mont.size() || c_fixed_mont.size() != padded_rows * padded_cols) {
+        artifact->blocked_relations.push_back(label + ": fixed-to-trace scale decomposition shape mismatch");
+        return false;
+    }
+    const Fr_t sixteen = fr_from_signed_mont_host(16);
+    std::vector<Fr_t> residual_mont(c_fixed_mont.size(), Fr_host_zero());
+    for (std::size_t i = 0; i < c_fixed_mont.size(); ++i) {
+        residual_mont[i] = Fr_host_sub(c_fixed_mont[i], Fr_host_mul(sixteen, c_trace_mont[i]));
+    }
+
+    FrTensor residual(static_cast<uint>(residual_mont.size()), residual_mont.data());
+    ScopedTimer commit_timer;
+    const auto com_residual = gen.commit(residual);
+    cuda_sync("formal fixed-to-trace residual commit " + label);
+    artifact->commitment_ms += commit_timer.elapsed_ms();
+
+    ++artifact->total_chunks;
+    const auto point = deterministic_mont_fr_vec(
+        ceilLog2(static_cast<uint>(c_fixed_mont.size())),
+        dataset + ":" + label + ":fixed_to_trace_scale_decomposition_point");
+    const Fr_t neg_sixteen = Fr_host_sub(Fr_host_zero(), sixteen);
+    std::vector<FormalLinearTerm> terms;
+    terms.push_back({"C_fixed_pre_rescale", nullptr, &com_c_fixed, Fr_host_one_mont(), point});
+    terms.push_back({"C_trace_rounded_scale16", &c_trace, &com_c_trace, neg_sixteen, point});
+    terms.push_back({"residual_unranged", &residual, &com_residual, fr_neg_one_mont(), point});
+
+    // `formal_linear_relation_prove` requires tensor pointers for all terms. C_fixed is not
+    // owned by this helper, so create a lightweight tensor wrapper around the already-montgomery values.
+    FrTensor c_fixed_tensor(static_cast<uint>(c_fixed_mont.size()), const_cast<Fr_t*>(c_fixed_mont.data()));
+    terms[0].tensor = &c_fixed_tensor;
+
+    try {
+        ScopedTimer prove_timer;
+        auto proof = formal_linear_relation_prove(
+            dataset + ":" + label + ":fixed_to_trace_scale_decomposition",
+            {static_cast<uint>(padded_rows), static_cast<uint>(padded_cols)},
+            terms,
+            gen,
+            Fr_host_zero(),
+            Fr_host_zero(),
+            Fr_host_zero());
+        artifact->prove_ms += prove_timer.elapsed_ms();
+        ScopedTimer verify_timer;
+        std::string failure;
+        const bool ok = formal_linear_relation_verify(
+            proof,
+            gen,
+            {&com_c_fixed, &com_c_trace, &com_residual},
+            Fr_host_zero(),
+            &failure);
+        artifact->verify_ms += verify_timer.elapsed_ms();
+        if (!ok) {
+            artifact->blocked_relations.push_back(label + ": fixed-to-trace scale decomposition verifier rejected: " + failure);
+            dbg("formal_rescale_decomposition label=" + label + " status=REJECT failure=\"" + failure + "\"");
+            return false;
+        }
+        const auto stats = compute_scale_decomposition_stats(a_values, rows, shared, b_values, cols, c_values);
+        ++artifact->verified_chunks;
+        artifact->proof_size_bytes += proof.serialized_size_bytes();
+        artifact->covered_relations.push_back(
+            label + ": partial fixed-to-trace scale decomposition LinearRelationProof verified C_fixed - 16*C_trace - residual = 0");
+        artifact->relation_details.push_back(
+            label
+            + " fixed_to_trace_scale_decomposition status=PASS proof_size_bytes="
+            + std::to_string(proof.serialized_size_bytes())
+            + " transcript_digest=" + proof.transcript_digest
+            + " residual_outside_nearest_rounding_bound="
+            + std::to_string(stats.outside_nearest_rounding_bound)
+            + "/" + std::to_string(stats.checked_values)
+            + " sample[row=" + stats.sample_row
+            + ",col=" + stats.sample_col
+            + ",product_scale256=" + stats.sample_product_scale256
+            + ",trace_scale16=" + stats.sample_trace_scale16
+            + ",residual=" + stats.sample_residual + "]");
+        artifact->blocked_relations.push_back(
+            label
+            + ": fixed-to-trace scale decomposition is verifier-bound, but full rounding remains blocked because residual range/sign constraints are not implemented as a zkDL verifier gadget; residual_outside_nearest_rounding_bound="
+            + std::to_string(stats.outside_nearest_rounding_bound)
+            + "/" + std::to_string(stats.checked_values));
+        dbg("formal_rescale_decomposition label=" + label + " status=PASS proof_size_bytes="
+            + std::to_string(proof.serialized_size_bytes())
+            + " residual_outside_nearest_rounding_bound="
+            + std::to_string(stats.outside_nearest_rounding_bound)
+            + "/" + std::to_string(stats.checked_values));
+        return true;
+    } catch (const std::exception& error) {
+        artifact->blocked_relations.push_back(label + ": fixed-to-trace scale decomposition failed: " + std::string(error.what()));
+        dbg("formal_rescale_decomposition label=" + label + " status=FAILED reason=\"" + std::string(error.what()) + "\"");
+        return false;
+    }
 }
 
 std::vector<double> matrix_row_slice(
@@ -2775,10 +2961,10 @@ bool run_formal_matmul_trace_attempt(
         const auto com_a = gen.commit(a);
         const auto com_b = gen.commit(b);
         const auto com_c = gen.commit(c);
+        const auto com_c_trace = gen.commit(c_trace);
         cuda_sync("formal matmul commit " + label);
         artifact->commitment_ms += commit_timer.elapsed_ms();
         if (debug != nullptr) {
-            const auto com_c_trace = gen.commit(c_trace);
             const std::string evidence_path = maybe_write_matmul_first_failure_evidence(
                 dataset,
                 label,
@@ -2830,6 +3016,24 @@ bool run_formal_matmul_trace_attempt(
         artifact->proof_size_bytes += proof.serialized_size_bytes();
         artifact->covered_relations.push_back(label + ": formal fixed-point pre-rescale MatmulRelationProof verifier passed");
         dbg("formal_matmul label=" + label + " status=PASS proof_size_bytes=" + std::to_string(proof.serialized_size_bytes()));
+        run_fixed_to_trace_scale_decomposition_relation(
+            dataset,
+            label,
+            a_values,
+            rows,
+            shared,
+            b_values,
+            cols,
+            c_values,
+            padded_rows,
+            padded_cols,
+            c_fixed_host,
+            c_trace,
+            com_c,
+            com_c_trace,
+            gen,
+            artifact,
+            debug);
         return true;
     } catch (const std::exception& error) {
         artifact->blocked_relations.push_back(label + ": formal matmul attempt failed: " + std::string(error.what()));
@@ -3331,7 +3535,8 @@ std::vector<CoverageRow> gat_proof_coverage_rows() {
         {"output sparse routing", false, false, true, false, false, "NA", "NA", false, false, false, true, "No Hyrax sparse route proof for output heads is implemented.", "", "gat_zkdl.cu"},
         {"output softmax", false, false, true, false, false, "NA", "NA", false, false, false, true, "Max/ExpMap/sum/inverse chain for output-head softmax is not supported.", "", "gat_zkdl.cu"},
         {"output aggregation", false, false, true, false, false, "NA", "NA", true, false, false, true, "Weighted output aggregation needs product plus sparse routing proofs; sparse component is missing.", "", "gat_zkdl.cu"},
-        {"rescale", false, false, true, false, false, "NA", "NA", false, false, false, true, "No fixed-point rescale/rounding proof gadget is available for output pre-bias scale alignment.", "", "gat_zkdl.cu"},
+        {"fixed-to-rounded trace scale decomposition", true, true, true, true, true, "see_formal_partial_debug+latest_fixed_schedule", "partial_scale_decomposition_verified", false, true, false, true, "Partial LinearRelationProof binds C_fixed - 16*C_trace - residual = 0 for fixed-point pre-rescale products, but residual range/sign constraints required for real rounding are not implemented as a zkDL verifier gadget.", "zkdl_gat_outputs/runs/*/warm/proof_debug.log;zkdl_gat_outputs_cora_latest_fixed/RESUME_POINT.md", "gat_zkdl.cu;formal_relations.cuh"},
+        {"rescale/rounding range binding", false, false, true, false, false, "NA", "NA", false, false, false, true, "Full fixed-point rescale/rounding remains blocked: quotient/remainder range, sign, and tie-breaking constraints are not implemented for output pre-bias scale alignment or fixed product to rounded trace equality.", "zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu"},
         {"bias add", true, true, true, true, true, "see_formal_partial_debug", "see_formal_partial_debug", false, true, false, false, "Output bias add is verified in full-dataset chunks as Y_head = Y_pre_rescaled + b with padding-aware public row selector binding; the separate Y_pre -> Y_pre_rescaled rescale relation remains blocked.", "zkdl_gat_outputs/runs/*/warm/formal_artifacts/zkdl_formal_partial.proof.txt;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
         {"output-head average", true, true, true, true, true, "see_formal_partial_debug", "see_formal_partial_debug", false, true, false, false, "Output-head average/public logits binding uses chunked LinearRelationProof; chunk labels bind index, offset, length, and total chunk count. K_out=1 and K_out>1 synthetic cases pass, and current full datasets use the generic path.", "zkdl_gat_outputs/audit/formal_relation_selftest_latest.log;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
         {"public logits binding", true, true, true, true, true, "see_formal_partial_debug", "see_formal_partial_debug", false, true, false, false, "Public logits are bound through chunked LinearRelationProof with verifier-computed public MLE values; official Level A remains blocked by earlier GAT relations.", "zkdl_gat_outputs/runs/*/warm/formal_artifacts/zkdl_formal_partial.proof.txt;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
@@ -3350,13 +3555,24 @@ std::string bool_string(bool value) {
 void write_coverage_matrix(const fs::path& output_root) {
     ensure_dir(output_root / "results");
     const auto rows = gat_proof_coverage_rows();
+    auto transcript_bound = [](const CoverageRow& row) {
+        return row.formal_verifier_supported && !row.debug_only;
+    };
+    auto opening_bound = [](const CoverageRow& row) {
+        return row.formal_verifier_supported && !row.debug_only;
+    };
+    auto partial_formal = [](const CoverageRow& row) {
+        return row.formal_verifier_supported && (row.chunked_supported || row.blocked || row.total_chunks != "selftest");
+    };
     {
         std::ofstream csv(output_root / "results" / "gat_proof_coverage_matrix.csv");
-        csv << "relation_name,formal_prover_supported,formal_verifier_supported,gpu_supported,cpu_fallback_supported,chunked_supported,total_chunks,verified_chunks,reused_from_zkdl,newly_added_in_adapter,debug_only,blocked,blocker_reason,evidence_file,source_file\n";
+        csv << "relation_name,formal_prover_supported,formal_verifier_supported,transcript_bound,opening_bound,gpu_supported,cpu_fallback_supported,chunked_supported,total_chunks,verified_chunks,reused_from_zkdl,newly_added_in_adapter,partial_formal,debug_only,blocked,blocker_reason,evidence_file,source_file\n";
         for (const auto& row : rows) {
             csv << row.relation
                 << ',' << bool_string(row.formal_prover_supported)
                 << ',' << bool_string(row.formal_verifier_supported)
+                << ',' << bool_string(transcript_bound(row))
+                << ',' << bool_string(opening_bound(row))
                 << ',' << bool_string(row.gpu_supported)
                 << ',' << bool_string(row.cpu_fallback_supported)
                 << ',' << bool_string(row.chunked_supported)
@@ -3364,6 +3580,7 @@ void write_coverage_matrix(const fs::path& output_root) {
                 << ",\"" << json_escape(row.verified_chunks) << "\""
                 << ',' << bool_string(row.reused_from_zkdl)
                 << ',' << bool_string(row.newly_added_in_zkdl_adapter)
+                << ',' << bool_string(partial_formal(row))
                 << ',' << bool_string(row.debug_only)
                 << ',' << bool_string(row.blocked)
                 << ",\"" << json_escape(row.blocker_reason) << "\""
@@ -3381,6 +3598,8 @@ void write_coverage_matrix(const fs::path& output_root) {
             json << "      \"relation_name\": \"" << json_escape(row.relation) << "\",\n";
             json << "      \"formal_prover_supported\": " << bool_string(row.formal_prover_supported) << ",\n";
             json << "      \"formal_verifier_supported\": " << bool_string(row.formal_verifier_supported) << ",\n";
+            json << "      \"transcript_bound\": " << bool_string(transcript_bound(row)) << ",\n";
+            json << "      \"opening_bound\": " << bool_string(opening_bound(row)) << ",\n";
             json << "      \"gpu_supported\": " << bool_string(row.gpu_supported) << ",\n";
             json << "      \"cpu_fallback_supported\": " << bool_string(row.cpu_fallback_supported) << ",\n";
             json << "      \"chunked_supported\": " << bool_string(row.chunked_supported) << ",\n";
@@ -3389,6 +3608,7 @@ void write_coverage_matrix(const fs::path& output_root) {
             json << "      \"reused_from_zkdl\": " << bool_string(row.reused_from_zkdl) << ",\n";
             json << "      \"newly_added_in_adapter\": " << bool_string(row.newly_added_in_zkdl_adapter) << ",\n";
             json << "      \"newly_added_in_zkdl_adapter\": " << bool_string(row.newly_added_in_zkdl_adapter) << ",\n";
+            json << "      \"partial_formal\": " << bool_string(partial_formal(row)) << ",\n";
             json << "      \"debug_only\": " << bool_string(row.debug_only) << ",\n";
             json << "      \"blocked\": " << bool_string(row.blocked) << ",\n";
             json << "      \"blocker_reason\": \"" << json_escape(row.blocker_reason) << "\",\n";
@@ -3401,12 +3621,14 @@ void write_coverage_matrix(const fs::path& output_root) {
     {
         std::ofstream md(output_root / "results" / "gat_proof_coverage_matrix.md");
         md << "# GAT Proof Coverage Matrix\n\n";
-        md << "| relation | formal prover | formal verifier | gpu | cpu fallback | chunked | total chunks | verified chunks | reused from zkDL | newly added | debug only | blocked | evidence | blocker reason |\n";
-        md << "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n";
+        md << "| relation | formal prover | formal verifier | transcript bound | opening bound | gpu | cpu fallback | chunked | total chunks | verified chunks | reused from zkDL | newly added | partial formal | debug only | blocked | evidence | blocker reason |\n";
+        md << "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n";
         for (const auto& row : rows) {
             md << "| " << row.relation
                << " | " << bool_string(row.formal_prover_supported)
                << " | " << bool_string(row.formal_verifier_supported)
+               << " | " << bool_string(transcript_bound(row))
+               << " | " << bool_string(opening_bound(row))
                << " | " << bool_string(row.gpu_supported)
                << " | " << bool_string(row.cpu_fallback_supported)
                << " | " << bool_string(row.chunked_supported)
@@ -3414,12 +3636,25 @@ void write_coverage_matrix(const fs::path& output_root) {
                << " | " << row.verified_chunks
                << " | " << bool_string(row.reused_from_zkdl)
                << " | " << bool_string(row.newly_added_in_zkdl_adapter)
+               << " | " << bool_string(partial_formal(row))
                << " | " << bool_string(row.debug_only)
                << " | " << bool_string(row.blocked)
                << " | " << row.evidence_file
                << " | " << row.blocker_reason << " |\n";
         }
     }
+    fs::copy_file(
+        output_root / "results" / "gat_proof_coverage_matrix.csv",
+        output_root / "results" / "coverage_matrix.csv",
+        fs::copy_options::overwrite_existing);
+    fs::copy_file(
+        output_root / "results" / "gat_proof_coverage_matrix.json",
+        output_root / "results" / "coverage_matrix.json",
+        fs::copy_options::overwrite_existing);
+    fs::copy_file(
+        output_root / "results" / "gat_proof_coverage_matrix.md",
+        output_root / "results" / "coverage_matrix.md",
+        fs::copy_options::overwrite_existing);
 }
 
 void write_result_tables(const fs::path& output_root, const std::vector<RunRow>& rows) {
@@ -3437,7 +3672,7 @@ void write_result_tables(const fs::path& output_root, const std::vector<RunRow>&
     }
     {
         std::ofstream json(output_root / "results" / "latest.json");
-        json << "{\n  \"benchmark_mode\": \"formal_level_a_full_gat_proof_verify_only\",\n  \"policy\": \"formal four metrics are NA unless complete Level A proof generation and verification succeeds\",\n  \"rows\": [\n";
+        json << "{\n  \"benchmark_mode\": \"warm\",\n  \"policy\": \"official rows follow the main repository benchmark schema; formal four metrics are NA unless complete Level A proof generation and verification succeeds\",\n  \"rows\": [\n";
         for (std::size_t i = 0; i < rows.size(); ++i) {
             const auto& row = rows[i];
             json << "    {\n";
@@ -3495,12 +3730,13 @@ void write_result_tables(const fs::path& output_root, const std::vector<RunRow>&
     }
     {
         std::ofstream csv(output_root / "results" / "formal_partial_debug.csv");
-        csv << "component,status,benchmark_mode,commitment_time_ms,prove_time_ms,verify_time_ms,proof_size_bytes,total_chunks,verified_chunks,verified_relations,blocked_relations,evidence_file,blocker\n";
-        csv << "formal_opening_selftest,success,formal_partial_opening_proof_verify,NA,NA,NA,see_log,NA,NA,\"commitment/evaluation binding\",\"large full G1 openings for PPI/ogbn are stress-only\",zkdl_gat_outputs/audit/formal_opening_selftest_latest.log,\"Full PPI/ogbn-arxiv logits-size G1 opening is not run in selftest because it would require multi-million element G1 commitment; field-size partial MLE stress cases pass.\"\n";
-        csv << "formal_sumcheck_selftest,success,formal_partial_inner_product_sumcheck_verify,NA,NA,NA,see_log,NA,NA,\"inner-product sumcheck transcript replay\",\"\",zkdl_gat_outputs/audit/formal_sumcheck_selftest_latest.log,\"Inner-product transcript replay verifier passes.\"\n";
-        csv << "formal_relation_selftest,success,formal_partial_hadamard_matmul_linear_verify,NA,NA,NA,see_log,NA,NA,\"HadamardRelationProof;MatmulRelationProof;LinearRelationProof\",\"\",zkdl_gat_outputs/audit/formal_relation_selftest_latest.log,\"HadamardRelationProof, MatmulRelationProof, and LinearRelationProof prover/verifier selftests pass including tamper rejection.\"\n";
+        csv << "dataset,component,status,benchmark_mode,commitment_time_ms,prove_time_ms,verify_time_ms,proof_size_bytes,total_chunks,verified_chunks,newly_verified_chunks,verified_relations,blocked_relations,proof_artifact_paths,evidence_paths,blocker_evidence,resume_point,blocker\n";
+        csv << "NA,formal_opening_selftest,success,formal_partial_opening_proof_verify,NA,NA,NA,see_log,NA,NA,NA,\"commitment/evaluation binding\",\"large full G1 openings for PPI/ogbn are stress-only\",\"zkdl_gat_outputs/audit/formal_opening_selftest_latest.log\",\"zkdl_gat_outputs/audit/formal_opening_selftest_latest.log\",\"\",,\"Full PPI/ogbn-arxiv logits-size G1 opening is not run in selftest because it would require multi-million element G1 commitment; field-size partial MLE stress cases pass.\"\n";
+        csv << "NA,formal_sumcheck_selftest,success,formal_partial_inner_product_sumcheck_verify,NA,NA,NA,see_log,NA,NA,NA,\"inner-product sumcheck transcript replay\",\"\",\"zkdl_gat_outputs/audit/formal_sumcheck_selftest_latest.log\",\"zkdl_gat_outputs/audit/formal_sumcheck_selftest_latest.log\",\"\",,\"Inner-product transcript replay verifier passes.\"\n";
+        csv << "NA,formal_relation_selftest,success,formal_partial_hadamard_matmul_linear_verify,NA,NA,NA,see_log,NA,NA,NA,\"HadamardRelationProof;MatmulRelationProof;LinearRelationProof\",\"\",\"zkdl_gat_outputs/audit/formal_relation_selftest_latest.log\",\"zkdl_gat_outputs/audit/formal_relation_selftest_latest.log\",\"\",,\"HadamardRelationProof, MatmulRelationProof, and LinearRelationProof prover/verifier selftests pass including tamper rejection.\"\n";
         for (const auto& row : rows) {
             csv << row.dataset
+                << ",formal_partial_trace"
                 << ',' << row.formal_partial_status
                 << ",partial_formal_relations_only,"
                 << row.formal_partial_commitment_time_ms
@@ -3509,21 +3745,27 @@ void write_result_tables(const fs::path& output_root, const std::vector<RunRow>&
                 << ',' << row.formal_partial_proof_size_bytes
                 << ',' << row.formal_partial_total_chunks
                 << ',' << row.formal_partial_verified_chunks
+                << ',' << row.formal_partial_verified_chunks
                 << ",\"" << json_escape(row.formal_partial_covered_relations) << "\""
                 << ",\"" << json_escape(row.formal_partial_blocked_relations) << "\""
-                << ",\"" << json_escape(row.formal_partial_proof_path) << "\","
+                << ",\"" << json_escape(row.formal_partial_proof_path) << "\""
+                << ",\"" << json_escape(row.formal_partial_proof_path + ";zkdl_gat_outputs/runs/" + row.dataset + "/warm/proof_debug.log") << "\""
+                << ",\"" << json_escape("debug/matmul_first_failure_" + row.dataset + ".json") << "\""
+                << ",\"" << (row.dataset == "cora" ? "zkdl_gat_outputs_cora_latest_fixed/RESUME_POINT.md" : "") << "\""
+                << ","
                 << "\"" << json_escape(row.formal_partial_blocker) << "\"\n";
         }
     }
     {
         std::ofstream json(output_root / "results" / "formal_partial_debug.json");
         json << "{\n  \"rows\": [\n";
-        json << "    {\"component\":\"formal_opening_selftest\",\"status\":\"success\",\"benchmark_mode\":\"formal_partial_opening_proof_verify\",\"commitment_time_ms\":\"NA\",\"prove_time_ms\":\"NA\",\"verify_time_ms\":\"NA\",\"proof_size_bytes\":\"see_log\",\"evidence_file\":\"zkdl_gat_outputs/audit/formal_opening_selftest_latest.log\",\"blocker\":\"Full PPI/ogbn-arxiv logits-size G1 opening is not run in selftest because it would require multi-million element G1 commitment; field-size partial MLE stress cases pass.\"},\n";
-        json << "    {\"component\":\"formal_sumcheck_selftest\",\"status\":\"success\",\"benchmark_mode\":\"formal_partial_inner_product_sumcheck_verify\",\"commitment_time_ms\":\"NA\",\"prove_time_ms\":\"NA\",\"verify_time_ms\":\"NA\",\"proof_size_bytes\":\"see_log\",\"evidence_file\":\"zkdl_gat_outputs/audit/formal_sumcheck_selftest_latest.log\",\"blocker\":\"Inner-product transcript replay verifier passes.\"},\n";
-        json << "    {\"component\":\"formal_relation_selftest\",\"status\":\"success\",\"benchmark_mode\":\"formal_partial_hadamard_matmul_linear_verify\",\"commitment_time_ms\":\"NA\",\"prove_time_ms\":\"NA\",\"verify_time_ms\":\"NA\",\"proof_size_bytes\":\"see_log\",\"evidence_file\":\"zkdl_gat_outputs/audit/formal_relation_selftest_latest.log\",\"blocker\":\"HadamardRelationProof, MatmulRelationProof, and LinearRelationProof prover/verifier selftests pass including tamper rejection.\"}";
+        json << "    {\"dataset\":\"NA\",\"component\":\"formal_opening_selftest\",\"status\":\"success\",\"benchmark_mode\":\"formal_partial_opening_proof_verify\",\"commitment_time_ms\":\"NA\",\"prove_time_ms\":\"NA\",\"verify_time_ms\":\"NA\",\"proof_size_bytes\":\"see_log\",\"total_chunks\":\"NA\",\"verified_chunks\":\"NA\",\"newly_verified_chunks\":\"NA\",\"proof_artifact_paths\":\"zkdl_gat_outputs/audit/formal_opening_selftest_latest.log\",\"evidence_paths\":\"zkdl_gat_outputs/audit/formal_opening_selftest_latest.log\",\"blocker_evidence\":\"\",\"resume_point\":\"\",\"blocker\":\"Full PPI/ogbn-arxiv logits-size G1 opening is not run in selftest because it would require multi-million element G1 commitment; field-size partial MLE stress cases pass.\"},\n";
+        json << "    {\"dataset\":\"NA\",\"component\":\"formal_sumcheck_selftest\",\"status\":\"success\",\"benchmark_mode\":\"formal_partial_inner_product_sumcheck_verify\",\"commitment_time_ms\":\"NA\",\"prove_time_ms\":\"NA\",\"verify_time_ms\":\"NA\",\"proof_size_bytes\":\"see_log\",\"total_chunks\":\"NA\",\"verified_chunks\":\"NA\",\"newly_verified_chunks\":\"NA\",\"proof_artifact_paths\":\"zkdl_gat_outputs/audit/formal_sumcheck_selftest_latest.log\",\"evidence_paths\":\"zkdl_gat_outputs/audit/formal_sumcheck_selftest_latest.log\",\"blocker_evidence\":\"\",\"resume_point\":\"\",\"blocker\":\"Inner-product transcript replay verifier passes.\"},\n";
+        json << "    {\"dataset\":\"NA\",\"component\":\"formal_relation_selftest\",\"status\":\"success\",\"benchmark_mode\":\"formal_partial_hadamard_matmul_linear_verify\",\"commitment_time_ms\":\"NA\",\"prove_time_ms\":\"NA\",\"verify_time_ms\":\"NA\",\"proof_size_bytes\":\"see_log\",\"total_chunks\":\"NA\",\"verified_chunks\":\"NA\",\"newly_verified_chunks\":\"NA\",\"proof_artifact_paths\":\"zkdl_gat_outputs/audit/formal_relation_selftest_latest.log\",\"evidence_paths\":\"zkdl_gat_outputs/audit/formal_relation_selftest_latest.log\",\"blocker_evidence\":\"\",\"resume_point\":\"\",\"blocker\":\"HadamardRelationProof, MatmulRelationProof, and LinearRelationProof prover/verifier selftests pass including tamper rejection.\"}";
         for (const auto& row : rows) {
             json << ",\n";
-            json << "    {\"component\":\"" << json_escape(row.dataset)
+            json << "    {\"dataset\":\"" << json_escape(row.dataset)
+                 << "\",\"component\":\"formal_partial_trace"
                  << "\",\"status\":\"" << json_escape(row.formal_partial_status)
                  << "\",\"benchmark_mode\":\"partial_formal_relations_only\""
                  << ",\"commitment_time_ms\":\"" << row.formal_partial_commitment_time_ms
@@ -3532,7 +3774,12 @@ void write_result_tables(const fs::path& output_root, const std::vector<RunRow>&
                  << "\",\"proof_size_bytes\":\"" << row.formal_partial_proof_size_bytes
                  << "\",\"total_chunks\":\"" << row.formal_partial_total_chunks
                  << "\",\"verified_chunks\":\"" << row.formal_partial_verified_chunks
+                 << "\",\"newly_verified_chunks\":\"" << row.formal_partial_verified_chunks
+                 << "\",\"proof_artifact_paths\":\"" << json_escape(row.formal_partial_proof_path)
                  << "\",\"evidence_file\":\"" << json_escape(row.formal_partial_proof_path)
+                 << "\",\"evidence_paths\":\"" << json_escape(row.formal_partial_proof_path + ";zkdl_gat_outputs/runs/" + row.dataset + "/warm/proof_debug.log")
+                 << "\",\"blocker_evidence\":\"" << json_escape("debug/matmul_first_failure_" + row.dataset + ".json")
+                 << "\",\"resume_point\":\"" << (row.dataset == "cora" ? "zkdl_gat_outputs_cora_latest_fixed/RESUME_POINT.md" : "")
                  << "\",\"covered_relations\":\"" << json_escape(row.formal_partial_covered_relations)
                  << "\",\"blocked_relations\":\"" << json_escape(row.formal_partial_blocked_relations)
                  << "\",\"blocker\":\"" << json_escape(row.formal_partial_blocker) << "\"}";
@@ -3543,48 +3790,16 @@ void write_result_tables(const fs::path& output_root, const std::vector<RunRow>&
     {
         std::ofstream md(output_root / "results" / "summary.md");
         md << "# 最新正式结果\n\n";
-        md << "Formal Level A has not been reached in this zkDL adapter run. The official four fields below are `NA` because the implemented proof does not cover the full sparse GAT forward relation.\n\n";
-        md << "| 数据集 | full dataset loaded | GPU GAT forward | formal proof generation | formal verification | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes | blocker |\n";
-        md << "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n";
+        md << "| 数据集 | 状态 | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes | 阻塞说明 |\n";
+        md << "| --- | --- | ---: | ---: | ---: | ---: | --- |\n";
         for (const auto& row : rows) {
             md << "| " << row.dataset
-               << " | " << (row.full_dataset ? "yes" : "no")
-               << " | " << (row.gpu_forward_ok ? "yes" : "no")
-               << " | " << (row.proof_generation_ok ? "yes" : "no")
-               << " | " << (row.verification_ok ? "yes" : "no")
+               << " | " << (row.status == "blocked" ? "阻塞" : row.status)
                << " | " << row.commitment_time_ms
                << " | " << row.prove_time_ms
                << " | " << row.verify_time_ms
                << " | " << row.proof_size_bytes
                << " | " << row.blocker << " |\n";
-        }
-        md << "\n## Partial Formal Relations\n\n";
-        md << "These numbers are verifier-backed for the listed relation subset only and are not copied into the official Level A fields.\n\n";
-        md << "| dataset | status | commitment_ms | prove_ms | verify_ms | proof_size_bytes | verified_chunks | total_chunks | evidence |\n";
-        md << "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n";
-        for (const auto& row : rows) {
-            md << "| " << row.dataset
-               << " | " << row.formal_partial_status
-               << " | " << row.formal_partial_commitment_time_ms
-               << " | " << row.formal_partial_prove_time_ms
-               << " | " << row.formal_partial_verify_time_ms
-               << " | " << row.formal_partial_proof_size_bytes
-               << " | " << row.formal_partial_verified_chunks
-               << " | " << row.formal_partial_total_chunks
-               << " | " << row.formal_partial_proof_path << " |\n";
-        }
-        md << "\n## Diagnostic Level B\n\n";
-        md << "The following debug numbers are retained separately and are not formal Level A comparison results.\n\n";
-        md << "| dataset | status | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes | proof_path |\n";
-        md << "| --- | --- | ---: | ---: | ---: | ---: | --- |\n";
-        for (const auto& row : rows) {
-            md << "| " << row.dataset
-               << " | " << row.debug_level_b_status
-               << " | " << row.debug_level_b_commitment_time_ms
-               << " | " << row.debug_level_b_prove_time_ms
-               << " | " << row.debug_level_b_verify_time_ms
-               << " | " << row.debug_level_b_proof_size_bytes
-               << " | " << row.debug_level_b_proof_path << " |\n";
         }
     }
     write_coverage_matrix(output_root);
@@ -3732,14 +3947,12 @@ RunRow run_one(const fs::path& project_root, const fs::path& output_root, const 
 
         row.proof_generation_ok = proof.formal_partial.proof_generation_ok;
         row.verification_ok = proof.formal_partial.verification_ok;
-        row.benchmark_mode = proof.formal_partial.verification_ok
-            ? "partial_formal_relations_only"
-            : "formal_level_a_full_gat_proof_verify_blocked";
+        row.benchmark_mode = "warm";
         row.commitment_time_ms = "NA";
         row.prove_time_ms = "NA";
         row.verify_time_ms = "NA";
         row.proof_size_bytes = "NA";
-        row.status = proof.formal_partial.verification_ok ? "partial_formal" : "blocked";
+        row.status = "blocked";
         row.blocker =
             "Formal Level A zkDL-GAT proof is not complete. "
             + row.formal_partial_blocker
@@ -3792,6 +4005,176 @@ RunRow run_one(const fs::path& project_root, const fs::path& output_root, const 
         << " proof_size_bytes=" << row.proof_size_bytes
         << '\n';
     return row;
+}
+
+void run_formal_matmul_schedule(
+    const fs::path& project_root,
+    const fs::path& output_root,
+    const DatasetRunSpec& spec,
+    const std::string& relation,
+    std::size_t start_chunk,
+    std::size_t max_chunks)
+{
+    const auto dataset = load_cached_dataset(project_root / "data/cache" / spec.cache_name);
+    const auto graph = normalize_graph(dataset, spec);
+    const auto model = load_model(project_root / "artifacts/checkpoints" / spec.checkpoint_name);
+    ForwardMetrics forward;
+    ForwardTraceHost trace;
+    (void)run_gat_forward_gpu(graph, model, &forward, &trace);
+
+    std::vector<double> a_values;
+    std::vector<double> b_values;
+    std::vector<double> c_values;
+    std::size_t rows = graph.num_nodes;
+    std::size_t shared = 0;
+    std::size_t cols = 0;
+    std::string label = relation;
+    if (relation == "output_head0_projection") {
+        if (model.output_heads.empty() || trace.output_heads.empty() || trace.output_layer_input.empty()) {
+            throw std::runtime_error("output projection schedule requires output head trace");
+        }
+        a_values = trace.output_layer_input;
+        shared = trace.output_layer_input_dim;
+        b_values = model.output_heads.front().W;
+        cols = model.C;
+        c_values = trace.output_heads.front().h_prime;
+    } else if (relation == "output_head0_source_attention_dot") {
+        if (model.output_heads.empty() || trace.output_heads.empty()) {
+            throw std::runtime_error("output source attention schedule requires output head trace");
+        }
+        a_values = trace.output_heads.front().h_prime;
+        shared = model.C;
+        b_values = model.output_heads.front().attn_src;
+        cols = 1;
+        c_values.resize(trace.output_heads.front().e_src.size(), 0.0);
+        for (std::size_t i = 0; i < c_values.size(); ++i) {
+            c_values[i] = trace.output_heads.front().e_src[i] - model.output_heads.front().attn_src_bias;
+        }
+    } else if (relation == "output_head0_destination_attention_dot") {
+        if (model.output_heads.empty() || trace.output_heads.empty()) {
+            throw std::runtime_error("output destination attention schedule requires output head trace");
+        }
+        a_values = trace.output_heads.front().h_prime;
+        shared = model.C;
+        b_values = model.output_heads.front().attn_dst;
+        cols = 1;
+        c_values.resize(trace.output_heads.front().e_dst.size(), 0.0);
+        for (std::size_t i = 0; i < c_values.size(); ++i) {
+            c_values[i] = trace.output_heads.front().e_dst[i] - model.output_heads.front().attn_dst_bias;
+        }
+    } else if (relation == "hidden_layer0_head0_projection") {
+        if (trace.hidden_heads.empty() || trace.hidden_heads.front().empty() || model.hidden_heads.empty()) {
+            throw std::runtime_error("hidden projection schedule requires hidden head trace");
+        }
+        const auto hidden_model_it = std::find_if(model.hidden_heads.begin(), model.hidden_heads.end(), [](const HeadParams& head) {
+            return head.layer_index == 0 && head.head_index == 0;
+        });
+        if (hidden_model_it == model.hidden_heads.end()) {
+            throw std::runtime_error("hidden layer0/head0 model parameters not found");
+        }
+        const auto& hidden0 = trace.hidden_heads.front().front();
+        rows = hidden0.rows;
+        a_values = trace.hidden_layer_inputs.front();
+        shared = trace.hidden_layer_input_dims.front();
+        b_values = hidden_model_it->W;
+        cols = hidden0.width;
+        c_values = hidden0.h_prime;
+    } else {
+        throw std::runtime_error("unsupported formal matmul schedule relation: " + relation);
+    }
+    if (a_values.size() != rows * shared || b_values.size() != shared * cols || c_values.size() != rows * cols) {
+        throw std::runtime_error("formal matmul schedule shape mismatch for " + relation);
+    }
+
+    const std::size_t chunk_rows = matmul_chunk_rows(shared, cols);
+    const std::size_t total_chunks = (rows + chunk_rows - 1U) / chunk_rows;
+    if (start_chunk >= total_chunks) {
+        throw std::runtime_error("start chunk is beyond total chunks for " + relation);
+    }
+    const std::size_t stop_chunk = std::min(total_chunks, start_chunk + std::max<std::size_t>(1, max_chunks));
+    const auto run_dir = output_root / "runs" / spec.dataset / "warm";
+    ensure_dir(run_dir / "formal_artifacts");
+    std::ofstream debug(run_dir / "proof_debug.log", std::ios::app);
+    auto dbg = [&](const std::string& line) {
+        if (debug) {
+            debug << line << '\n';
+            debug.flush();
+        }
+        std::cout << line << '\n';
+    };
+    FormalPartialArtifact artifact;
+    dbg("formal_matmul_schedule dataset=" + spec.dataset
+        + " relation=" + relation
+        + " rows=" + std::to_string(rows)
+        + " shared=" + std::to_string(shared)
+        + " cols=" + std::to_string(cols)
+        + " start_chunk=" + std::to_string(start_chunk)
+        + " stop_chunk=" + std::to_string(stop_chunk)
+        + " total_chunks=" + std::to_string(total_chunks));
+
+    std::size_t completed = 0;
+    std::size_t next_chunk = start_chunk;
+    for (std::size_t chunk_idx = start_chunk; chunk_idx < stop_chunk; ++chunk_idx) {
+        const std::size_t row_begin = chunk_idx * chunk_rows;
+        const std::size_t row_count = std::min(chunk_rows, rows - row_begin);
+        const auto a_chunk = matrix_row_slice(a_values, rows, shared, row_begin, row_count);
+        const auto c_chunk = matrix_row_slice(c_values, rows, cols, row_begin, row_count);
+        const auto chunked_label = chunk_relation_label(label, chunk_idx, row_begin, row_count, total_chunks);
+        ++artifact.total_chunks;
+        const bool ok = run_formal_matmul_trace_attempt(
+            spec.dataset,
+            chunked_label,
+            a_chunk,
+            row_count,
+            shared,
+            b_values,
+            cols,
+            c_chunk,
+            &artifact,
+            &debug,
+            row_begin,
+            total_chunks);
+        if (!ok) {
+            artifact.relation_details.push_back(label + " schedule chunk=" + std::to_string(chunk_idx) + " status=REJECT_OR_BLOCKED");
+            next_chunk = chunk_idx;
+            break;
+        }
+        ++artifact.verified_chunks;
+        ++completed;
+        next_chunk = chunk_idx + 1;
+        artifact.relation_details.push_back(label + " schedule chunk=" + std::to_string(chunk_idx) + " status=PASS");
+    }
+    artifact.proof_generation_ok = completed != 0;
+    artifact.verification_ok = completed != 0;
+    artifact.blocker = "Targeted formal matmul schedule verified "
+        + std::to_string(completed)
+        + " chunk(s) from chunk "
+        + std::to_string(start_chunk)
+        + "; fixed-to-trace scale decomposition is partial and full rounding/range binding remains blocked.";
+    artifact.proof_path = run_dir / "formal_artifacts" / (
+        "zkdl_formal_matmul_schedule_"
+        + relation
+        + "_chunks"
+        + std::to_string(start_chunk)
+        + "_"
+        + std::to_string(stop_chunk - 1U)
+        + ".proof.txt");
+    serialize_formal_partial_artifact(artifact, artifact.proof_path);
+
+    std::ofstream resume(output_root / "RESUME_POINT.md");
+    resume << "# zkDL GAT Formal Matmul Schedule Resume Point\n\n";
+    resume << "- Dataset: `" << spec.dataset << "`\n";
+    resume << "- Relation: `" << relation << "`\n";
+    resume << "- Chunk rows: `" << chunk_rows << "`\n";
+    resume << "- Total chunks: `" << total_chunks << "`\n";
+    resume << "- Requested chunks: `" << start_chunk << ".." << stop_chunk << "`\n";
+    resume << "- Newly verified matmul chunks: `" << completed << "`\n";
+    resume << "- Newly verified formal relation chunks including scale decomposition: `"
+           << artifact.verified_chunks << "/" << artifact.total_chunks << "`\n";
+    resume << "- Current next chunk: `" << (next_chunk >= total_chunks ? std::string("complete") : std::to_string(next_chunk)) << "`\n";
+    resume << "- Proof artifact: `" << artifact.proof_path.string() << "`\n";
+    resume << "- Proof debug log: `" << (run_dir / "proof_debug.log").string() << "`\n";
+    resume << "- Level A status: blocked; exact scale decomposition is verifier-bound, but residual range/sign/tie-breaking proof for rounding is still missing.\n";
 }
 
 void run_matmul_first_failure_diagnostic(const fs::path& project_root, const DatasetRunSpec& spec)
@@ -3864,10 +4247,20 @@ int main(int argc, char** argv) {
         fs::path output_root = fs::current_path();
         bool run_all = true;
         bool diagnose_matmul_first_failure = false;
+        bool formal_matmul_schedule = false;
         std::string only_dataset;
+        std::string schedule_relation = "output_head0_projection";
+        std::size_t schedule_start_chunk = 0;
+        std::size_t schedule_max_chunks = std::numeric_limits<std::size_t>::max() / 4U;
         for (int i = 1; i < argc; ++i) {
             const std::string arg = argv[i];
-            if (arg == "--project-root" && i + 1 < argc) {
+            if (arg == "--help") {
+                std::cout
+                    << "usage: ./gat_zkdl [--run-all|--dataset DATASET] [--output-root DIR]\n"
+                    << "       ./gat_zkdl --diagnose-matmul-first-failure [--dataset DATASET]\n"
+                    << "       ./gat_zkdl --formal-matmul-schedule --dataset DATASET --relation REL --start-chunk N [--max-chunks N] --output-root DIR\n";
+                return 0;
+            } else if (arg == "--project-root" && i + 1 < argc) {
                 project_root = argv[++i];
             } else if (arg == "--output-root" && i + 1 < argc) {
                 output_root = argv[++i];
@@ -3878,6 +4271,15 @@ int main(int argc, char** argv) {
                 run_all = true;
             } else if (arg == "--diagnose-matmul-first-failure") {
                 diagnose_matmul_first_failure = true;
+            } else if (arg == "--formal-matmul-schedule") {
+                formal_matmul_schedule = true;
+                run_all = false;
+            } else if (arg == "--relation" && i + 1 < argc) {
+                schedule_relation = argv[++i];
+            } else if (arg == "--start-chunk" && i + 1 < argc) {
+                schedule_start_chunk = static_cast<std::size_t>(std::stoull(argv[++i]));
+            } else if (arg == "--max-chunks" && i + 1 < argc) {
+                schedule_max_chunks = static_cast<std::size_t>(std::stoull(argv[++i]));
             }
         }
         output_root = fs::absolute(output_root);
@@ -3902,6 +4304,30 @@ int main(int argc, char** argv) {
                     continue;
                 }
                 run_matmul_first_failure_diagnostic(project_root, spec);
+            }
+            return 0;
+        }
+
+        if (formal_matmul_schedule) {
+            if (only_dataset.empty()) {
+                throw std::runtime_error("--formal-matmul-schedule requires --dataset");
+            }
+            bool found = false;
+            for (const auto& spec : specs) {
+                if (spec.dataset != only_dataset) {
+                    continue;
+                }
+                found = true;
+                run_formal_matmul_schedule(
+                    project_root,
+                    output_root,
+                    spec,
+                    schedule_relation,
+                    schedule_start_chunk,
+                    schedule_max_chunks);
+            }
+            if (!found) {
+                throw std::runtime_error("unknown dataset for formal matmul schedule: " + only_dataset);
             }
             return 0;
         }
