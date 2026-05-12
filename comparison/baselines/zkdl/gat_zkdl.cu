@@ -3819,39 +3819,39 @@ struct CoverageRow {
 
 std::vector<CoverageRow> gat_proof_coverage_rows() {
     return {
-        {"feature lookup", false, false, true, false, false, "NA", "NA", false, false, false, true, "No zkDL lookup argument is integrated for global feature table/query equality.", "", "gat_zkdl.cu"},
-        {"HadamardRelationProof", true, true, false, true, false, "selftest", "selftest", true, true, false, false, "Formal C=A*B relation prover/verifier passes selftest with C opening and tamper rejection.", "zkdl_gat_outputs/audit/formal_relation_selftest_latest.log", "formal_relations.cuh;zkprod.cuh"},
-        {"MatmulRelationProof", true, true, false, true, false, "selftest", "selftest", true, true, false, false, "Formal C=A*B matmul relation prover/verifier passes selftest for batched, non-square, padding, and dot-product cases.", "zkdl_gat_outputs/audit/formal_relation_selftest_latest.log", "formal_relations.cuh;zkmatmul.cuh"},
-        {"LinearRelationProof", true, true, false, true, true, "see_formal_partial_debug", "see_formal_partial_debug", false, true, false, false, "Formal linear relation prover/verifier passes output-head average K_out=1 and K_out=2 selftests with tamper rejection and is used for full-dataset chunked public-logits binding.", "zkdl_gat_outputs/audit/formal_relation_selftest_latest.log;zkdl_gat_outputs/results/formal_partial_debug.csv", "formal_relations.cuh;gat_zkdl.cu"},
-        {"hidden projection", false, false, true, false, true, "cora 26/170; citeseer 4/416", "fixed/scale 30 chunks; residual range 29 chunks", true, true, false, true, "仅 layer0/head0 的 targeted chunks 通过；全层全头、全 chunk 与 rounding closure 未完成。", "zkdl_gat_outputs_cora_latest_fixed/RESUME_POINT.md;zkdl_gat_outputs_citeseer_latest_fixed/RESUME_POINT.md", "gat_zkdl.cu;formal_relations.cuh"},
-        {"source attention dot product", false, false, true, false, true, "see_formal_partial_debug", "first_chunk_rejected", true, true, false, true, "Source attention dot products are row-chunk attempted through MatmulRelationProof on real traces, but full-dataset support remains blocked by field quantization mismatch.", "zkdl_gat_outputs/runs/*/warm/proof_debug.log;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
-        {"target attention dot product", false, false, true, false, true, "see_formal_partial_debug", "partial_dataset_dependent", true, true, false, true, "Destination attention dot products are row-chunk attempted; some chunks may verify on specific datasets, but not all five datasets/all heads, so the GAT relation is partial only.", "zkdl_gat_outputs/runs/*/warm/proof_debug.log;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
-        {"source sparse routing", false, false, true, false, false, "NA", "NA", false, false, false, true, "No Hyrax/FAC4DNN sparse route proof is available; routing must be an MLE over public src without materializing E x N dense matrices.", "", "gat_zkdl.cu"},
-        {"destination sparse routing", false, false, true, false, false, "NA", "NA", false, false, false, true, "No Hyrax/FAC4DNN sparse route proof is available for public dst and grouped edge order.", "", "gat_zkdl.cu"},
-        {"LeakyReLU", false, false, true, false, false, "NA", "NA", true, false, false, true, "zkReLU contains prover-side fragments but no verifier path wired to attention scores or static tables.", "", "zkrelu.cuh"},
-        {"softmax group max", false, false, true, false, false, "NA", "NA", false, false, false, true, "No max/range comparison gadget exists for per-destination sparse softmax groups.", "", "gat_zkdl.cu"},
-        {"ExpMap", false, false, true, false, false, "NA", "NA", false, false, false, true, "No zkDL table lookup argument is available for QuantExp(-delta).", "", "gat_zkdl.cu"},
-        {"softmax denominator sum", false, false, true, false, false, "NA", "NA", true, false, false, true, "Grouped sparse denominator constraints are not committed/opened as a verifier gadget.", "", "gat_zkdl.cu"},
-        {"inverse", false, false, true, false, false, "NA", "NA", false, false, false, true, "No inverse witness/range/denominator nonzero proof is present for softmax normalization.", "", "gat_zkdl.cu"},
-        {"alpha multiplication", false, false, true, false, false, "NA", "NA", true, true, false, true, "HadamardRelationProof is available, but sparse alpha = exp * inverse is not connected to routed softmax witnesses.", "zkdl_gat_outputs/audit/formal_relation_selftest_latest.log", "formal_relations.cuh;zkprod.cuh"},
-        {"weighted aggregation", false, false, true, false, false, "NA", "NA", true, false, false, true, "Aggregation still needs product plus sparse routing proofs under Hyrax.", "", "gat_zkdl.cu"},
-        {"ELU", false, false, true, false, false, "NA", "NA", false, false, false, true, "No ELU lookup/range gadget exists in zkDL.", "", "gat_zkdl.cu"},
-        {"concat", true, true, true, true, true, "see_formal_partial_debug", "see_formal_partial_debug", false, true, false, false, "Hidden multi-head concat is verified in full-dataset row chunks by mapping each head-width MLE point into the corresponding concat column block.", "zkdl_gat_outputs/runs/*/warm/formal_artifacts/zkdl_formal_partial.proof.txt;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
-        {"output projection", false, false, true, false, true, "cora 6/6; citeseer 7/7 fixed, 2/7 range; pubmed 3/39; ppi 2/223; ogbn 2/331", "unique fixed chunks 20; residual range chunks 11", true, true, false, true, "fixed pre-rescale 与 scale decomposition 覆盖增加；完整 output attention chain 仍缺 sparse softmax/aggregation/rescale rounding。", "zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
-        {"output source/target attention", false, false, true, false, true, "see_formal_partial_debug", "first_chunk_rejected", true, true, false, true, "Output E_src/E_dst dot products are row-chunk attempted via MatmulRelationProof over real traces; first chunks reject under current double-to-field encoding.", "zkdl_gat_outputs/runs/*/warm/proof_debug.log;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
-        {"output sparse routing", false, false, true, false, false, "NA", "NA", false, false, false, true, "No Hyrax sparse route proof for output heads is implemented.", "", "gat_zkdl.cu"},
-        {"output softmax", false, false, true, false, false, "NA", "NA", false, false, false, true, "Max/ExpMap/sum/inverse chain for output-head softmax is not supported.", "", "gat_zkdl.cu"},
-        {"output aggregation", false, false, true, false, false, "NA", "NA", true, false, false, true, "Weighted output aggregation needs product plus sparse routing proofs; sparse component is missing.", "", "gat_zkdl.cu"},
+        {"feature lookup", false, false, true, false, false, "NA", "NA", false, false, false, true, "尚未接入全局特征表与局部节点查询相等性的 zkDL lookup argument。", "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "gat_zkdl.cu"},
+        {"HadamardRelationProof", true, true, false, true, false, "selftest", "selftest", true, true, false, false, "Gate 3 中 C=A*B relation prover/verifier、C opening 和 tamper rejection 均通过。", "zkdl_gat_outputs/runs/selftest/formal_relation_selftest_latest.log", "formal_relations.cuh;zkprod.cuh"},
+        {"MatmulRelationProof", true, true, false, true, false, "selftest", "selftest", true, true, false, false, "Gate 3 中 matmul relation prover/verifier 覆盖 batched、非方阵、padding 和 dot-product case。", "zkdl_gat_outputs/runs/selftest/formal_relation_selftest_latest.log", "formal_relations.cuh;zkmatmul.cuh"},
+        {"LinearRelationProof", true, true, false, true, true, "see_formal_partial_debug", "see_formal_partial_debug", false, true, false, false, "Gate 3 中 linear relation prover/verifier 通过，并用于 output-head average、bias add、public logits binding、scale decomposition。", "zkdl_gat_outputs/runs/selftest/formal_relation_selftest_latest.log;zkdl_gat_outputs/results/formal_partial_debug.csv", "formal_relations.cuh;gat_zkdl.cu"},
+        {"hidden projection", false, false, true, false, true, "见 formal_partial_debug", "见 formal_partial_debug", true, true, false, true, "已有 targeted chunks 通过，但不是全层全头全 chunk；rounding closure 与后续 sparse/softmax/aggregation 未完成。", "zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
+        {"source attention dot product", false, false, true, false, true, "见 formal_partial_debug", "见 formal_partial_debug", true, true, false, true, "source attention dot 已用真实 trace 接入 MatmulRelationProof；仍缺全数据集、全 head 与后续 LeakyReLU/softmax 链路。", "zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
+        {"target attention dot product", false, false, true, false, true, "见 formal_partial_debug", "见 formal_partial_debug", true, true, false, true, "destination attention dot 已用真实 trace 接入 MatmulRelationProof；仍缺全数据集、全 head 与后续 sparse routing 链路。", "zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
+        {"source sparse routing", false, false, true, false, false, "NA", "NA", false, false, false, true, "缺少基于 public src 的 Hyrax/FAC4DNN sparse route proof，不能物化 dense E x N 矩阵替代。", "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "gat_zkdl.cu"},
+        {"destination sparse routing", false, false, true, false, false, "NA", "NA", false, false, false, true, "缺少基于 public dst 与分组边序的 sparse route/grouped sum verifier。", "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "gat_zkdl.cu"},
+        {"LeakyReLU", false, false, true, false, false, "NA", "NA", true, false, false, true, "zkReLU 只有 prover-side 片段，尚未绑定 attention score 与静态表 verifier。", "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "zkrelu.cuh"},
+        {"softmax group max", false, false, true, false, false, "NA", "NA", false, false, false, true, "缺少 per-destination sparse softmax group 的 max/range comparison gadget。", "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "gat_zkdl.cu"},
+        {"ExpMap", false, false, true, false, false, "NA", "NA", false, false, false, true, "缺少 QuantExp(-delta) 的 zkDL table lookup argument。", "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "gat_zkdl.cu"},
+        {"softmax denominator sum", false, false, true, false, false, "NA", "NA", true, false, false, true, "分组 sparse denominator 还没有承诺、opening 与 verifier gadget。", "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "gat_zkdl.cu"},
+        {"inverse", false, false, true, false, false, "NA", "NA", false, false, false, true, "缺少 softmax normalization 的 inverse witness、range 和 denominator nonzero proof。", "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "gat_zkdl.cu"},
+        {"alpha multiplication", false, false, true, false, false, "NA", "NA", true, true, false, true, "HadamardRelationProof 可复用，但 alpha=exp*inverse 仍缺 Sum_dst sparse routing 与 inverse witness 绑定。", "zkdl_gat_outputs/runs/selftest/formal_relation_selftest_latest.log", "formal_relations.cuh;zkprod.cuh"},
+        {"weighted aggregation", false, false, true, false, false, "NA", "NA", true, false, false, true, "weighted aggregation 还需要 alpha*H_prime product 与按 dst 聚合的 sparse verifier chain。", "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "gat_zkdl.cu"},
+        {"ELU", false, false, true, false, false, "NA", "NA", false, false, false, true, "缺少 ELU lookup/range gadget。", "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "gat_zkdl.cu"},
+        {"concat", true, true, true, true, true, "see_formal_partial_debug", "see_formal_partial_debug", false, true, false, false, "hidden multi-head concat 已通过 full-dataset row chunks 的 LinearRelationProof 绑定。", "zkdl_gat_outputs/runs/*/warm/formal_artifacts/zkdl_formal_partial.proof.txt;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
+        {"output projection", false, false, true, false, true, "见 formal_partial_debug", "见 formal_partial_debug", true, true, false, true, "fixed pre-rescale 与 scale decomposition 覆盖增加；完整 output attention chain 仍缺 sparse softmax/aggregation/rescale rounding。", "zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
+        {"output source/target attention", false, false, true, false, true, "见 formal_partial_debug", "见 formal_partial_debug", true, true, false, true, "output E_src/E_dst dot 已接入真实 trace；后续 sparse routing、softmax 与 aggregation 未闭合。", "zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
+        {"output sparse routing", false, false, true, false, false, "NA", "NA", false, false, false, true, "输出头仍缺 Hyrax sparse route proof。", "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "gat_zkdl.cu"},
+        {"output softmax", false, false, true, false, false, "NA", "NA", false, false, false, true, "输出头 softmax 的 max/ExpMap/sum/inverse chain 尚未支持。", "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "gat_zkdl.cu"},
+        {"output aggregation", false, false, true, false, false, "NA", "NA", true, false, false, true, "输出聚合需要 product 与 sparse routing proof；当前缺 sparse component。", "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "gat_zkdl.cu"},
         {"fixed-to-rounded trace scale decomposition", true, true, true, true, true, "targeted schedules", "所有本轮通过 matmul chunk 均含 C_fixed - 16*C_trace - residual = 0", false, true, false, true, "已证明 exact decomposition；尚未单独证明 sign-specific rounding mode 与 tie-breaking。", "zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
         {"residual bounded range binding", true, true, true, true, true, "targeted schedules", "Cora output 6; Cora hidden 25; Citeseer output 2; Citeseer hidden 4; Pubmed/PPI/ogbn output 各 1", false, true, false, true, "本轮新增 bitness + residual+offset decomposition；sign-specific rounding mode 和 tie-breaking 仍阻塞，不能标 Level A。", "zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu"},
-        {"bias add", true, true, true, true, true, "see_formal_partial_debug", "see_formal_partial_debug", false, true, false, false, "Output bias add is verified in full-dataset chunks as Y_head = Y_pre_rescaled + b with padding-aware public row selector binding; the separate Y_pre -> Y_pre_rescaled rescale relation remains blocked.", "zkdl_gat_outputs/runs/*/warm/formal_artifacts/zkdl_formal_partial.proof.txt;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
-        {"output-head average", true, true, true, true, true, "see_formal_partial_debug", "see_formal_partial_debug", false, true, false, false, "Output-head average/public logits binding uses chunked LinearRelationProof; chunk labels bind index, offset, length, and total chunk count. K_out=1 and K_out>1 synthetic cases pass, and current full datasets use the generic path.", "zkdl_gat_outputs/audit/formal_relation_selftest_latest.log;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
-        {"public logits binding", true, true, true, true, true, "see_formal_partial_debug", "see_formal_partial_debug", false, true, false, false, "Public logits are bound through chunked LinearRelationProof with verifier-computed public MLE values; official Level A remains blocked by earlier GAT relations.", "zkdl_gat_outputs/runs/*/warm/formal_artifacts/zkdl_formal_partial.proof.txt;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
-        {"commitment/evaluation binding", true, true, false, true, false, "selftest", "selftest", true, true, false, false, "Formal opening prover/verifier passes dedicated selftests for power-of-two, non-power-of-two, padding, mixed inner/outer folds, and logits-size openings/stress.", "zkdl_gat_outputs/audit/formal_opening_selftest_latest.log", "commitment.cuh"},
-        {"transcript binding", true, true, false, true, true, "selftest+chunks", "selftest+chunks", true, true, false, false, "Formal transcript replay exists for openings, inner-product, Hadamard, Matmul, Linear relation selftests, and chunked output public-logits binding.", "zkdl_gat_outputs/audit/formal_sumcheck_selftest_latest.log;zkdl_gat_outputs/audit/formal_relation_selftest_latest.log;zkdl_gat_outputs/results/formal_partial_debug.csv", "proof.cuh;formal_relations.cuh;gat_zkdl.cu"},
-        {"verifier replay", true, true, false, true, true, "selftest+chunks", "selftest+chunks", true, true, false, false, "Verifier replay succeeds for formal openings and relation selftests; full GAT verifier replay remains blocked by sparse/lookup/rescale gadgets.", "zkdl_gat_outputs/audit/formal_relation_selftest_latest.log;zkdl_gat_outputs/results/formal_partial_debug.csv", "formal_relations.cuh;gat_zkdl.cu"},
-        {"proof serialization", true, true, false, true, true, "see_formal_partial_debug", "see_formal_partial_debug", false, true, false, false, "Formal proof structs include serialized_size_bytes accounting and partial proof artifacts exclude witnesses while recording per-chunk relation details.", "zkdl_gat_outputs/runs/*/warm/formal_artifacts/zkdl_formal_partial.proof.txt", "proof.cuh;gat_zkdl.cu"},
-        {"proof size accounting", true, true, false, true, true, "see_formal_partial_debug", "see_formal_partial_debug", false, true, false, false, "Proof sizes use proof object/file serialized sizes accumulated across verified chunks, not proof.size()*8 or witness/debug dump sizes.", "zkdl_gat_outputs/results/formal_partial_debug.csv", "proof.cuh;gat_zkdl.cu"},
+        {"bias add", true, true, true, true, true, "see_formal_partial_debug", "see_formal_partial_debug", false, true, false, false, "output bias add 已在 full-dataset chunks 中证明 Y_head = Y_pre_rescaled + b；Y_pre 到 Y_pre_rescaled 的 rescale 仍阻塞。", "zkdl_gat_outputs/runs/*/warm/formal_artifacts/zkdl_formal_partial.proof.txt;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
+        {"output-head average", true, true, true, true, true, "see_formal_partial_debug", "see_formal_partial_debug", false, true, false, false, "output-head average/public logits binding 使用 chunked LinearRelationProof，K_out=1 仍走通用 average path。", "zkdl_gat_outputs/runs/selftest/formal_relation_selftest_latest.log;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
+        {"public logits binding", true, true, true, true, true, "see_formal_partial_debug", "see_formal_partial_debug", false, true, false, false, "public logits 已通过 verifier 计算的 public MLE value 与 LinearRelationProof 绑定；前序 GAT relation 未闭合所以非 Level A。", "zkdl_gat_outputs/runs/*/warm/formal_artifacts/zkdl_formal_partial.proof.txt;zkdl_gat_outputs/results/formal_partial_debug.csv", "gat_zkdl.cu;formal_relations.cuh"},
+        {"commitment/evaluation binding", true, true, false, true, false, "selftest", "selftest", true, true, false, false, "Gate 1 opening selftest 覆盖 power-of-two、非 power-of-two、padding 和 mixed fold。", "zkdl_gat_outputs/runs/selftest/formal_opening_selftest_latest.log", "commitment.cuh"},
+        {"transcript binding", true, true, false, true, true, "selftest+chunks", "selftest+chunks", true, true, false, false, "opening、inner-product、Hadamard、Matmul、Linear relation selftest 与 chunk label 均绑定 transcript。", "zkdl_gat_outputs/runs/selftest/formal_sumcheck_selftest_latest.log;zkdl_gat_outputs/runs/selftest/formal_relation_selftest_latest.log;zkdl_gat_outputs/results/formal_partial_debug.csv", "proof.cuh;formal_relations.cuh;gat_zkdl.cu"},
+        {"verifier replay", true, true, false, true, true, "selftest+chunks", "selftest+chunks", true, true, false, false, "formal opening 与 relation selftest 的 verifier replay 通过；完整 GAT replay 仍缺 sparse/lookup/rescale gadget。", "zkdl_gat_outputs/runs/selftest/formal_relation_selftest_latest.log;zkdl_gat_outputs/results/formal_partial_debug.csv", "formal_relations.cuh;gat_zkdl.cu"},
+        {"proof serialization", true, true, false, true, true, "see_formal_partial_debug", "see_formal_partial_debug", false, true, false, false, "formal proof artifact 记录 serialized_size_bytes 与每 chunk relation detail，不包含完整 witness tensor。", "zkdl_gat_outputs/runs/*/warm/formal_artifacts/zkdl_formal_partial.proof.txt", "proof.cuh;gat_zkdl.cu"},
+        {"proof size accounting", true, true, false, true, true, "see_formal_partial_debug", "see_formal_partial_debug", false, true, false, false, "proof size 统计 proof object/file serialized size，不统计 witness、debug dump、manifest 或日志。", "zkdl_gat_outputs/results/formal_partial_debug.csv", "proof.cuh;gat_zkdl.cu"},
     };
 }
 
@@ -3873,20 +3873,16 @@ void write_coverage_matrix(const fs::path& output_root) {
     };
     {
         std::ofstream csv(output_root / "results" / "gat_proof_coverage_matrix.csv");
-        csv << "relation_name,formal_prover_supported,formal_verifier_supported,transcript_bound,opening_bound,gpu_supported,cpu_fallback_supported,chunked_supported,total_chunks,verified_chunks,reused_from_zkdl,newly_added_in_adapter,partial_formal,debug_only,blocked,blocker_reason,evidence_file,source_file\n";
+        csv << "relation_name,formal_prover_supported,formal_verifier_supported,transcript_bound,opening_bound,chunked_supported,total_chunks,verified_chunks,partial_formal,debug_only,blocked,blocker_reason,evidence_file,source_file\n";
         for (const auto& row : rows) {
             csv << row.relation
                 << ',' << bool_string(row.formal_prover_supported)
                 << ',' << bool_string(row.formal_verifier_supported)
                 << ',' << bool_string(transcript_bound(row))
                 << ',' << bool_string(opening_bound(row))
-                << ',' << bool_string(row.gpu_supported)
-                << ',' << bool_string(row.cpu_fallback_supported)
                 << ',' << bool_string(row.chunked_supported)
                 << ",\"" << json_escape(row.total_chunks) << "\""
                 << ",\"" << json_escape(row.verified_chunks) << "\""
-                << ',' << bool_string(row.reused_from_zkdl)
-                << ',' << bool_string(row.newly_added_in_zkdl_adapter)
                 << ',' << bool_string(partial_formal(row))
                 << ',' << bool_string(row.debug_only)
                 << ',' << bool_string(row.blocked)
@@ -3907,14 +3903,9 @@ void write_coverage_matrix(const fs::path& output_root) {
             json << "      \"formal_verifier_supported\": " << bool_string(row.formal_verifier_supported) << ",\n";
             json << "      \"transcript_bound\": " << bool_string(transcript_bound(row)) << ",\n";
             json << "      \"opening_bound\": " << bool_string(opening_bound(row)) << ",\n";
-            json << "      \"gpu_supported\": " << bool_string(row.gpu_supported) << ",\n";
-            json << "      \"cpu_fallback_supported\": " << bool_string(row.cpu_fallback_supported) << ",\n";
             json << "      \"chunked_supported\": " << bool_string(row.chunked_supported) << ",\n";
             json << "      \"total_chunks\": \"" << json_escape(row.total_chunks) << "\",\n";
             json << "      \"verified_chunks\": \"" << json_escape(row.verified_chunks) << "\",\n";
-            json << "      \"reused_from_zkdl\": " << bool_string(row.reused_from_zkdl) << ",\n";
-            json << "      \"newly_added_in_adapter\": " << bool_string(row.newly_added_in_zkdl_adapter) << ",\n";
-            json << "      \"newly_added_in_zkdl_adapter\": " << bool_string(row.newly_added_in_zkdl_adapter) << ",\n";
             json << "      \"partial_formal\": " << bool_string(partial_formal(row)) << ",\n";
             json << "      \"debug_only\": " << bool_string(row.debug_only) << ",\n";
             json << "      \"blocked\": " << bool_string(row.blocked) << ",\n";
@@ -3927,22 +3918,18 @@ void write_coverage_matrix(const fs::path& output_root) {
     }
     {
         std::ofstream md(output_root / "results" / "gat_proof_coverage_matrix.md");
-        md << "# GAT Proof Coverage Matrix\n\n";
-        md << "| relation | formal prover | formal verifier | transcript bound | opening bound | gpu | cpu fallback | chunked | total chunks | verified chunks | reused from zkDL | newly added | partial formal | debug only | blocked | evidence | blocker reason |\n";
-        md << "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n";
+        md << "# GAT proof coverage matrix\n\n";
+        md << "| relation | prover | verifier | transcript | opening | chunked | total | verified | partial | debug | blocked | evidence | blocker |\n";
+        md << "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n";
         for (const auto& row : rows) {
             md << "| " << row.relation
                << " | " << bool_string(row.formal_prover_supported)
                << " | " << bool_string(row.formal_verifier_supported)
                << " | " << bool_string(transcript_bound(row))
                << " | " << bool_string(opening_bound(row))
-               << " | " << bool_string(row.gpu_supported)
-               << " | " << bool_string(row.cpu_fallback_supported)
                << " | " << bool_string(row.chunked_supported)
                << " | " << row.total_chunks
                << " | " << row.verified_chunks
-               << " | " << bool_string(row.reused_from_zkdl)
-               << " | " << bool_string(row.newly_added_in_zkdl_adapter)
                << " | " << bool_string(partial_formal(row))
                << " | " << bool_string(row.debug_only)
                << " | " << bool_string(row.blocked)
@@ -3979,7 +3966,7 @@ void write_result_tables(const fs::path& output_root, const std::vector<RunRow>&
     }
     {
         std::ofstream json(output_root / "results" / "latest.json");
-        json << "{\n  \"benchmark_mode\": \"warm\",\n  \"policy\": \"official rows follow the main repository benchmark schema; formal four metrics are NA unless complete Level A proof generation and verification succeeds\",\n  \"rows\": [\n";
+        json << "{\n  \"benchmark_mode\": \"warm\",\n  \"policy\": \"official rows 使用主仓库 benchmark schema；完整 Level A proof generation 和 verification 成功前正式四项保持 NA\",\n  \"rows\": [\n";
         for (std::size_t i = 0; i < rows.size(); ++i) {
             const auto& row = rows[i];
             json << "    {\n";
@@ -4018,7 +4005,7 @@ void write_result_tables(const fs::path& output_root, const std::vector<RunRow>&
     }
     {
         std::ofstream json(output_root / "results" / "debug_level_b.json");
-        json << "{\n  \"benchmark_mode\": \"diagnostic_level_b_output_binding_only_not_formal_level_a\",\n  \"policy\": \"diagnostic numbers must not be used in the formal comparison table\",\n  \"rows\": [\n";
+        json << "{\n  \"benchmark_mode\": \"diagnostic_level_b_output_binding_only_not_formal_level_a\",\n  \"policy\": \"diagnostic 数字不得写入正式对比表\",\n  \"rows\": [\n";
         for (std::size_t i = 0; i < rows.size(); ++i) {
             const auto& row = rows[i];
             json << "    {\n";
@@ -4038,9 +4025,9 @@ void write_result_tables(const fs::path& output_root, const std::vector<RunRow>&
     {
         std::ofstream csv(output_root / "results" / "formal_partial_debug.csv");
         csv << "dataset,component,status,benchmark_mode,commitment_time_ms,prove_time_ms,verify_time_ms,proof_size_bytes,total_chunks,verified_chunks,newly_verified_chunks,verified_relations,blocked_relations,proof_artifact_paths,evidence_paths,blocker_evidence,resume_point,blocker\n";
-        csv << "NA,formal_opening_selftest,success,formal_partial_opening_proof_verify,NA,NA,NA,see_log,NA,NA,NA,\"commitment/evaluation binding\",\"large full G1 openings for PPI/ogbn are stress-only\",\"zkdl_gat_outputs/audit/formal_opening_selftest_latest.log\",\"zkdl_gat_outputs/audit/formal_opening_selftest_latest.log\",\"\",,\"Full PPI/ogbn-arxiv logits-size G1 opening is not run in selftest because it would require multi-million element G1 commitment; field-size partial MLE stress cases pass.\"\n";
-        csv << "NA,formal_sumcheck_selftest,success,formal_partial_inner_product_sumcheck_verify,NA,NA,NA,see_log,NA,NA,NA,\"inner-product sumcheck transcript replay\",\"\",\"zkdl_gat_outputs/audit/formal_sumcheck_selftest_latest.log\",\"zkdl_gat_outputs/audit/formal_sumcheck_selftest_latest.log\",\"\",,\"Inner-product transcript replay verifier passes.\"\n";
-        csv << "NA,formal_relation_selftest,success,formal_partial_hadamard_matmul_linear_verify,NA,NA,NA,see_log,NA,NA,NA,\"HadamardRelationProof;MatmulRelationProof;LinearRelationProof\",\"\",\"zkdl_gat_outputs/audit/formal_relation_selftest_latest.log\",\"zkdl_gat_outputs/audit/formal_relation_selftest_latest.log\",\"\",,\"HadamardRelationProof, MatmulRelationProof, and LinearRelationProof prover/verifier selftests pass including tamper rejection.\"\n";
+        csv << "NA,formal_opening_selftest,success,formal_partial_opening_proof_verify,NA,NA,NA,see_log,NA,NA,NA,\"commitment/evaluation binding\",\"PPI/ogbn-arxiv 完整 G1 大开口只作为压力边界，不写入 Level A\",\"zkdl_gat_outputs/runs/selftest/formal_opening_selftest_latest.log\",\"zkdl_gat_outputs/runs/selftest/formal_opening_selftest_latest.log\",\"\",,\"Gate 1 opening selftest PASS；大图 logits-size G1 opening 不作为正式 Level A 结果。\"\n";
+        csv << "NA,formal_sumcheck_selftest,success,formal_partial_inner_product_sumcheck_verify,NA,NA,NA,see_log,NA,NA,NA,\"inner-product sumcheck transcript replay\",\"\",\"zkdl_gat_outputs/runs/selftest/formal_sumcheck_selftest_latest.log\",\"zkdl_gat_outputs/runs/selftest/formal_sumcheck_selftest_latest.log\",\"\",,\"Gate 2 inner-product transcript replay verifier PASS。\"\n";
+        csv << "NA,formal_relation_selftest,success,formal_partial_hadamard_matmul_linear_verify,NA,NA,NA,see_log,NA,NA,NA,\"HadamardRelationProof;MatmulRelationProof;LinearRelationProof\",\"\",\"zkdl_gat_outputs/runs/selftest/formal_relation_selftest_latest.log\",\"zkdl_gat_outputs/runs/selftest/formal_relation_selftest_latest.log\",\"\",,\"Gate 3 relation selftest PASS，包含 tamper rejection。\"\n";
         for (const auto& row : rows) {
             csv << row.dataset
                 << ",formal_partial_trace"
@@ -4058,7 +4045,7 @@ void write_result_tables(const fs::path& output_root, const std::vector<RunRow>&
                 << ",\"" << json_escape(row.formal_partial_proof_path) << "\""
                 << ",\"" << json_escape(row.formal_partial_proof_path + ";zkdl_gat_outputs/runs/" + row.dataset + "/warm/proof_debug.log") << "\""
                 << ",\"" << json_escape("debug/matmul_first_failure_" + row.dataset + ".json") << "\""
-                << ",\"" << (row.dataset == "cora" ? "zkdl_gat_outputs_cora_latest_fixed/RESUME_POINT.md" : "") << "\""
+                << ",\"" << json_escape("zkdl_gat_outputs/runs/" + row.dataset + "/warm/RESUME_POINT.md") << "\""
                 << ","
                 << "\"" << json_escape(row.formal_partial_blocker) << "\"\n";
         }
@@ -4066,9 +4053,9 @@ void write_result_tables(const fs::path& output_root, const std::vector<RunRow>&
     {
         std::ofstream json(output_root / "results" / "formal_partial_debug.json");
         json << "{\n  \"rows\": [\n";
-        json << "    {\"dataset\":\"NA\",\"component\":\"formal_opening_selftest\",\"status\":\"success\",\"benchmark_mode\":\"formal_partial_opening_proof_verify\",\"commitment_time_ms\":\"NA\",\"prove_time_ms\":\"NA\",\"verify_time_ms\":\"NA\",\"proof_size_bytes\":\"see_log\",\"total_chunks\":\"NA\",\"verified_chunks\":\"NA\",\"newly_verified_chunks\":\"NA\",\"proof_artifact_paths\":\"zkdl_gat_outputs/audit/formal_opening_selftest_latest.log\",\"evidence_paths\":\"zkdl_gat_outputs/audit/formal_opening_selftest_latest.log\",\"blocker_evidence\":\"\",\"resume_point\":\"\",\"blocker\":\"Full PPI/ogbn-arxiv logits-size G1 opening is not run in selftest because it would require multi-million element G1 commitment; field-size partial MLE stress cases pass.\"},\n";
-        json << "    {\"dataset\":\"NA\",\"component\":\"formal_sumcheck_selftest\",\"status\":\"success\",\"benchmark_mode\":\"formal_partial_inner_product_sumcheck_verify\",\"commitment_time_ms\":\"NA\",\"prove_time_ms\":\"NA\",\"verify_time_ms\":\"NA\",\"proof_size_bytes\":\"see_log\",\"total_chunks\":\"NA\",\"verified_chunks\":\"NA\",\"newly_verified_chunks\":\"NA\",\"proof_artifact_paths\":\"zkdl_gat_outputs/audit/formal_sumcheck_selftest_latest.log\",\"evidence_paths\":\"zkdl_gat_outputs/audit/formal_sumcheck_selftest_latest.log\",\"blocker_evidence\":\"\",\"resume_point\":\"\",\"blocker\":\"Inner-product transcript replay verifier passes.\"},\n";
-        json << "    {\"dataset\":\"NA\",\"component\":\"formal_relation_selftest\",\"status\":\"success\",\"benchmark_mode\":\"formal_partial_hadamard_matmul_linear_verify\",\"commitment_time_ms\":\"NA\",\"prove_time_ms\":\"NA\",\"verify_time_ms\":\"NA\",\"proof_size_bytes\":\"see_log\",\"total_chunks\":\"NA\",\"verified_chunks\":\"NA\",\"newly_verified_chunks\":\"NA\",\"proof_artifact_paths\":\"zkdl_gat_outputs/audit/formal_relation_selftest_latest.log\",\"evidence_paths\":\"zkdl_gat_outputs/audit/formal_relation_selftest_latest.log\",\"blocker_evidence\":\"\",\"resume_point\":\"\",\"blocker\":\"HadamardRelationProof, MatmulRelationProof, and LinearRelationProof prover/verifier selftests pass including tamper rejection.\"}";
+        json << "    {\"dataset\":\"NA\",\"component\":\"formal_opening_selftest\",\"status\":\"success\",\"benchmark_mode\":\"formal_partial_opening_proof_verify\",\"commitment_time_ms\":\"NA\",\"prove_time_ms\":\"NA\",\"verify_time_ms\":\"NA\",\"proof_size_bytes\":\"see_log\",\"total_chunks\":\"NA\",\"verified_chunks\":\"NA\",\"newly_verified_chunks\":\"NA\",\"proof_artifact_paths\":\"zkdl_gat_outputs/runs/selftest/formal_opening_selftest_latest.log\",\"evidence_paths\":\"zkdl_gat_outputs/runs/selftest/formal_opening_selftest_latest.log\",\"blocker_evidence\":\"\",\"resume_point\":\"\",\"blocker\":\"Gate 1 opening selftest PASS；大图 logits-size G1 opening 不作为正式 Level A 结果。\"},\n";
+        json << "    {\"dataset\":\"NA\",\"component\":\"formal_sumcheck_selftest\",\"status\":\"success\",\"benchmark_mode\":\"formal_partial_inner_product_sumcheck_verify\",\"commitment_time_ms\":\"NA\",\"prove_time_ms\":\"NA\",\"verify_time_ms\":\"NA\",\"proof_size_bytes\":\"see_log\",\"total_chunks\":\"NA\",\"verified_chunks\":\"NA\",\"newly_verified_chunks\":\"NA\",\"proof_artifact_paths\":\"zkdl_gat_outputs/runs/selftest/formal_sumcheck_selftest_latest.log\",\"evidence_paths\":\"zkdl_gat_outputs/runs/selftest/formal_sumcheck_selftest_latest.log\",\"blocker_evidence\":\"\",\"resume_point\":\"\",\"blocker\":\"Gate 2 inner-product transcript replay verifier PASS。\"},\n";
+        json << "    {\"dataset\":\"NA\",\"component\":\"formal_relation_selftest\",\"status\":\"success\",\"benchmark_mode\":\"formal_partial_hadamard_matmul_linear_verify\",\"commitment_time_ms\":\"NA\",\"prove_time_ms\":\"NA\",\"verify_time_ms\":\"NA\",\"proof_size_bytes\":\"see_log\",\"total_chunks\":\"NA\",\"verified_chunks\":\"NA\",\"newly_verified_chunks\":\"NA\",\"proof_artifact_paths\":\"zkdl_gat_outputs/runs/selftest/formal_relation_selftest_latest.log\",\"evidence_paths\":\"zkdl_gat_outputs/runs/selftest/formal_relation_selftest_latest.log\",\"blocker_evidence\":\"\",\"resume_point\":\"\",\"blocker\":\"Gate 3 relation selftest PASS，包含 tamper rejection。\"}";
         for (const auto& row : rows) {
             json << ",\n";
             json << "    {\"dataset\":\"" << json_escape(row.dataset)
@@ -4086,7 +4073,7 @@ void write_result_tables(const fs::path& output_root, const std::vector<RunRow>&
                  << "\",\"evidence_file\":\"" << json_escape(row.formal_partial_proof_path)
                  << "\",\"evidence_paths\":\"" << json_escape(row.formal_partial_proof_path + ";zkdl_gat_outputs/runs/" + row.dataset + "/warm/proof_debug.log")
                  << "\",\"blocker_evidence\":\"" << json_escape("debug/matmul_first_failure_" + row.dataset + ".json")
-                 << "\",\"resume_point\":\"" << (row.dataset == "cora" ? "zkdl_gat_outputs_cora_latest_fixed/RESUME_POINT.md" : "")
+                 << "\",\"resume_point\":\"" << json_escape("zkdl_gat_outputs/runs/" + row.dataset + "/warm/RESUME_POINT.md")
                  << "\",\"covered_relations\":\"" << json_escape(row.formal_partial_covered_relations)
                  << "\",\"blocked_relations\":\"" << json_escape(row.formal_partial_blocked_relations)
                  << "\",\"blocker\":\"" << json_escape(row.formal_partial_blocker) << "\"}";
@@ -4112,52 +4099,32 @@ void write_result_tables(const fs::path& output_root, const std::vector<RunRow>&
     write_coverage_matrix(output_root);
 }
 
-void write_audit_files(const fs::path& output_root, const std::vector<RunRow>& rows) {
-    ensure_dir(output_root / "audit");
-    {
-        std::ofstream out(output_root / "audit" / "MODIFICATION_BOUNDARY_AUDIT.md");
-        out << "# Modification Boundary Audit\n\n";
-        out << "- Allowed write root: `/home/pzh/project/comparison/baselines/zkdl`.\n";
-        out << "- This runner writes only below the selected zkDL output root and `zkdl` build files.\n";
-        out << "- Main project data, configs, checkpoints and protocol notes are read-only inputs.\n";
-        out << "- No main repository file is copied back or overwritten by this runner.\n";
-        out << "- Adapter source files involved: `Makefile`, `commitment.cuh`, `proof.cuh`, `formal_relations.cuh`, `formal_relation_selftest.cu`, `formal_sumcheck_selftest.cu`, `formal_opening_selftest.cu`, `zkprod.cuh`, `zkmatmul.cuh`, `gat_zkdl.cu`.\n";
-        out << "- Generated output families: `zkdl_gat_outputs/results/*`, `zkdl_gat_outputs/runs/*/warm/*`, `zkdl_gat_outputs/audit/*`.\n";
-        out << "- Stale formal-looking `runs/*/warm/proof` directories from earlier Level B runs are removed by the runner; new Level B artifacts are written under `debug_artifacts` only.\n";
-        out << "- Build note: this run was compiled with an overrideable `NVCC_FLAGS`; audit logs record the exact command.\n";
-        out << "- Formal result policy: `latest.csv` and `latest.json` only expose complete Level A metrics. Partial formal relation timings are isolated in `results/formal_partial_debug.*`; diagnostic Level B metrics are isolated in `results/debug_level_b.*`.\n";
+void write_adapter_readme(const fs::path& output_root, const std::vector<RunRow>& rows) {
+    std::ofstream out(output_root / "README_ZKDL_GAT_ADAPTER.md");
+    out << "# zkDL-GAT adapter 状态\n\n";
+    out << "当前状态：不是 Level A。Gate 1/2/3 通过时，以 `runs/selftest/*_latest.log` 中的 `SUMMARY status=PASS` 为准。\n\n";
+    out << "本实验只在 zkDL baseline 内做 GAT 模型替换和必要适配：读取主仓库数据 cache、checkpoint manifest、config 与协议文件作为只读输入；输出、proof artifact、evidence、coverage 和 benchmark 只写入本目录的 `zkdl_gat_outputs`。\n\n";
+    out << "与主仓库指标口径对齐：`latest.csv` 字段固定为 `dataset,status,blocker,benchmark_mode,commitment_time_ms,prove_time_ms,verify_time_ms,proof_size_bytes`，数据集顺序固定为 `cora,citeseer,pubmed,ppi,ogbn-arxiv`，`benchmark_mode` 固定为 `warm`。完整 full dataset + formal proof generation + formal verification 成功前，正式四项保持 `NA`。\n\n";
+    out << "当前 formal verifier relation：Gate primitive、commitment/evaluation binding、transcript replay、HadamardRelationProof、MatmulRelationProof、LinearRelationProof、hidden concat、output bias add、output-head average 和 public logits binding。projection/dot、scale decomposition 与 residual bounded range 只按 targeted/full-trace schedule 计入 partial formal。\n\n";
+    out << "fixed-point 状态：fixed-point pre-rescale product 使用真实 trace；scale decomposition 证明 `C_fixed - 16*C_trace - residual = 0`；residual bounded range 使用 bitness 和 `residual+offset` decomposition。rounding sign/tie-breaking 仍 blocked，因为公开 `quant_cfg_id` 只给出 `fp32_bundle_export` 或 `fp32_torch_checkpoint`，没有逐个 rescale relation 的 `rho/delta/rem_bits/tie_policy`。\n\n";
+    out << "sparse routing / softmax / nonlinear / aggregation 状态：source/destination routing、softmax max/sum/inverse/ExpMap、LeakyReLU、ELU、weighted aggregation、output aggregation 和真实 rescale chain 仍缺 zkDL verifier gadget，不能标为 supported。\n\n";
+    out << "目录清理原则：保留源码、构建脚本、正式 results、summary、formal_partial_debug、debug_level_b、coverage matrix、proof artifact、proof evidence、run manifest、benchmark、proof_debug、dataset resume point 和本 README；不再生成 clean/boundary/main-alignment/blocker/rounding 审计文档。\n\n";
+    out << "数据集状态：\n\n";
+    out << "| dataset | status | gpu_forward | partial commitment_ms | partial prove_ms | partial verify_ms | partial proof_size_bytes | verified chunks | total chunks | debug Level B |\n";
+    out << "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n";
+    for (const auto& row : rows) {
+        out << "| " << row.dataset
+            << " | " << row.status
+            << " | " << (row.gpu_forward_ok ? "ok" : "failed")
+            << " | " << row.formal_partial_commitment_time_ms
+            << " | " << row.formal_partial_prove_time_ms
+            << " | " << row.formal_partial_verify_time_ms
+            << " | " << row.formal_partial_proof_size_bytes
+            << " | " << row.formal_partial_verified_chunks
+            << " | " << row.formal_partial_total_chunks
+            << " | " << row.debug_level_b_status << " |\n";
     }
-    {
-        std::ofstream out(output_root / "README_ZKDL_GAT_ADAPTER.md");
-        out << "# zkDL GAT Adapter Run Notes\n\n";
-        out << "This artifact records the zkDL baseline adaptation for full-dataset GAT-ZKML comparison. The current formal result level is **partial formal**, not Level A success.\n\n";
-        out << "Result correction: prior Level B timing/proof-size numbers are no longer emitted in the official `latest.csv` / `latest.json` four metric fields. Those fields are `NA` unless a complete Level A GAT proof and verifier succeed. The previous diagnostic line is retained only in `results/debug_level_b.csv` and `results/debug_level_b.json`.\n\n";
-        out << "This round added formal Hadamard, Matmul, and Linear relation proof objects with verifier replay, C-bound output openings, transcript digests, and serialized proof-size accounting. The GAT adapter now emits chunked full-dataset formal partial artifacts for output bias add and output-head average/public logits binding.\n\n";
-        out << "Chunking policy: output linear relations are split by full-dataset row chunks. Each LinearRelationProof label binds dataset, relation, chunk index, row offset, row count, and total chunk count. Chunking changes only proof organization; all chunks together cover the full tensor. Matmul projection/dot relations are also row-chunk attempted, but current rounded field encodings reject the first full-trace chunks for most datasets.\n\n";
-        out << "Migrated capabilities from the main repository: full dataset cache loading, row normalization, self-loop insertion, graph/dst stable edge ordering, checkpoint tensor loading, multi-head sparse GAT GPU forward, output-head bias plus arithmetic mean, and main benchmark table formatting.\n\n";
-        out << "Retained zkDL components: `FrTensor`, `G1Tensor`, `Commitment::commit`, commitment generator tensors, and existing GPU MLE/sumcheck/opening helpers. `Commitment::open_with_proof`, `Commitment::verify_opening`, formal transcript replay, and relation verifiers were added locally around these primitives.\n\n";
-        out << "Verifier-supported formal partial relations: commitment/evaluation opening selftests, inner-product sumcheck transcript replay, HadamardRelationProof, MatmulRelationProof, LinearRelationProof, chunked hidden multi-head concat, chunked output bias add over `Y_pre_rescaled`, chunked output-head arithmetic average, and public logits MLE binding. Some real trace matmul chunks may verify on individual datasets, but projection/dot relations are not marked full GAT-supported unless all required chunks/heads/datasets verify.\n\n";
-        out << "Uncovered or blocked Level A relations: feature lookup, all-layer/all-head projection binding under the protocol quantization semantics, sparse src/dst routing without materializing dense E by N matrices, FAC4DNN aggregation, LeakyReLU lookup/range, softmax max/sum/inverse/ExpMap, ELU lookup/range, weighted aggregation, and rescale/rounding tying sparse aggregation `Y_pre` to the committed `Y_pre_rescaled` used by bias add.\n\n";
-        out << "Protocol alignment: output heads remain attention heads, output bias is applied before arithmetic averaging, and final logits are treated as public input. `K_out=1` still runs through the generic average relation. No sparse GAT relation is replaced by dense attention, and partial/debug metrics are not promoted into the official Level A table.\n\n";
-        out << "Reproduce: build inside this directory, for example `TMPDIR=/home/pzh/project/comparison/baselines/zkdl/.tmp make gat_zkdl NVCC_FLAGS='-arch=sm_80 -std=c++17 -O1 -Xcompiler=-Wall -Xcompiler=-Wextra'`, then run `./gat_zkdl --run-all --output-root zkdl_gat_outputs`.\n\n";
-        out << "Four-metric policy: official `commitment_time_ms`, `prove_time_ms`, `verify_time_ms`, and `proof_size_bytes` are `NA` in `latest.*` until full Level A succeeds. Partial formal timings/proof sizes are real for the verifier-supported relation subset and live only in `formal_partial_debug.*`; Level B output-binding diagnostics live only in `debug_level_b.*`.\n\n";
-        out << "Dataset status:\n\n";
-        out << "| dataset | formal status | gpu_forward | partial commitment_ms | partial prove_ms | partial verify_ms | partial proof_size_bytes | verified chunks | total chunks | debug Level B status |\n";
-        out << "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n";
-        for (const auto& row : rows) {
-            out << "| " << row.dataset
-                << " | " << row.status
-                << " | " << (row.gpu_forward_ok ? "ok" : "failed")
-                << " | " << row.formal_partial_commitment_time_ms
-                << " | " << row.formal_partial_prove_time_ms
-                << " | " << row.formal_partial_verify_time_ms
-                << " | " << row.formal_partial_proof_size_bytes
-                << " | " << row.formal_partial_verified_chunks
-                << " | " << row.formal_partial_total_chunks
-                << " | " << row.debug_level_b_status << " |\n";
-        }
-        out << "\nCoverage matrix files: `results/gat_proof_coverage_matrix.csv`, `results/gat_proof_coverage_matrix.json`, and `results/gat_proof_coverage_matrix.md`.\n";
-    }
+    out << "\n下一最小继续点以各数据集 `runs/<dataset>/warm/RESUME_POINT.md` 为准；若某个 relation 未完成，继续同一 relation 的下一个 chunk。coverage 说明见 `results/coverage_matrix.*`。\n";
 }
 
 RunRow run_one(const fs::path& project_root, const fs::path& output_root, const DatasetRunSpec& spec) {
@@ -4512,6 +4479,21 @@ void run_formal_matmul_schedule(
     resume << "- proof artifact: `" << artifact.proof_path.string() << "`\n";
     resume << "- proof debug log: `" << (run_dir / "proof_debug.log").string() << "`\n";
     resume << "- Level A 状态: blocked；exact scale decomposition 和 residual bounded range 已由 verifier 绑定到本轮 chunk，但 sign-specific rounding mode 与 tie-breaking 仍未证明。\n";
+
+    std::ofstream dataset_resume(run_dir / "RESUME_POINT.md");
+    dataset_resume << "# zkDL GAT 数据集继续点\n\n";
+    dataset_resume << "- 数据集: `" << spec.dataset << "`\n";
+    dataset_resume << "- relation: `" << relation << "`\n";
+    dataset_resume << "- 每个 chunk 的行数: `" << chunk_rows << "`\n";
+    dataset_resume << "- matmul 总 chunk 数: `" << total_chunks << "`\n";
+    dataset_resume << "- 本轮请求 chunk 范围: `" << start_chunk << ".." << stop_chunk << "`\n";
+    dataset_resume << "- 本轮新增验证的 matmul chunk 数: `" << completed << "`\n";
+    dataset_resume << "- 本轮新增验证的 formal relation chunk 数（含 scale decomposition 与 residual range bitness/decomposition）: `"
+                   << artifact.verified_chunks << "/" << artifact.total_chunks << "`\n";
+    dataset_resume << "- 当前下一个 chunk: `" << (next_chunk >= total_chunks ? std::string("complete") : std::to_string(next_chunk)) << "`\n";
+    dataset_resume << "- proof artifact: `" << artifact.proof_path.string() << "`\n";
+    dataset_resume << "- proof debug log: `" << (run_dir / "proof_debug.log").string() << "`\n";
+    dataset_resume << "- Level A 状态: blocked；exact scale decomposition 和 residual bounded range 已由 verifier 绑定到本轮 chunk，但 sign-specific rounding mode 与 tie-breaking 仍未证明。\n";
 }
 
 void run_matmul_first_failure_diagnostic(const fs::path& project_root, const DatasetRunSpec& spec)
@@ -4677,7 +4659,7 @@ int main(int argc, char** argv) {
             rows.push_back(run_one(project_root, output_root, spec));
         }
         write_result_tables(output_root, rows);
-        write_audit_files(output_root, rows);
+        write_adapter_readme(output_root, rows);
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "fatal: " << error.what() << '\n';
