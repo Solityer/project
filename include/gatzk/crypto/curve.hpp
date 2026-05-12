@@ -55,12 +55,14 @@ namespace gatzk::crypto
     std::size_t serialized_size(const G1Point& point);
     std::size_t serialized_size(const G2Point& point);
     PreparedG2 prepare_g2(const G2Point& point);
+
     // 检查两项 pairing 是否相等，是 KZG batch verification 的基础原语。
     bool pairing_equal(
         const G1Point& lhs_a,
         const G2Point& rhs_a,
         const G1Point& lhs_b,
         const G2Point& rhs_b);
+        
     // 将固定 G2 端预处理后参与 pairing，可减少 verifier 热路径的重复准备成本。
     bool pairing_product_is_one_mixed_prepared(
         const G1Point& lhs_dynamic,

@@ -1,6 +1,5 @@
 #pragma once
-// 本文件实现 CUDA 侧 BLS12-381 Fr Montgomery 算术原语，
-// 只服务 full_gpu 执行层热点，不改变 proving / verifying 的 formal 语义。
+// CUDA 侧 BLS12-381 Fr Montgomery 算术原语
 // 模数 p = 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001，
 // Montgomery 基底 R = 2^256，mu = -p^{-1} mod 2^64 = 0xfffffffeffffffff。
 

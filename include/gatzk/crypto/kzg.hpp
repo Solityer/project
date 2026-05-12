@@ -96,6 +96,7 @@ namespace gatzk::crypto
         static G1Point open_external_fold(
             const std::vector<std::pair<Commitment, algebra::FieldElement>>& commitments_and_values,
             const std::vector<algebra::FieldElement>& points,
+            
             const algebra::FieldElement& folding_challenge,
             const KZGKeyPair& key);
 
