@@ -3444,6 +3444,9 @@ void serialize_formal_partial_artifact(const FormalPartialArtifact& artifact, co
     out << "version=1\n";
     out << "proof_generation_ok=" << (artifact.proof_generation_ok ? "true" : "false") << "\n";
     out << "verification_ok=" << (artifact.verification_ok ? "true" : "false") << "\n";
+    out << "commitment_time_ms=" << format_ms(artifact.commitment_ms) << "\n";
+    out << "prove_time_ms=" << format_ms(artifact.prove_ms) << "\n";
+    out << "verify_time_ms=" << format_ms(artifact.verify_ms) << "\n";
     out << "proof_size_bytes=" << artifact.proof_size_bytes << "\n";
     out << "total_chunks=" << artifact.total_chunks << "\n";
     out << "verified_chunks=" << artifact.verified_chunks << "\n";
@@ -4333,56 +4336,86 @@ void run_formal_matmul_schedule(
     std::size_t shared = 0;
     std::size_t cols = 0;
     std::string label = relation;
-    if (relation == "output_head0_projection") {
-        if (model.output_heads.empty() || trace.output_heads.empty() || trace.output_layer_input.empty()) {
-            throw std::runtime_error("output projection schedule requires output head trace");
+    std::smatch match;
+    const std::regex output_relation(R"(output_head([0-9]+)_(projection|source_attention_dot|destination_attention_dot))");
+    const std::regex hidden_relation(R"(hidden_layer([0-9]+)_head([0-9]+)_(projection|source_attention_dot|destination_attention_dot))");
+    if (std::regex_match(relation, match, output_relation)) {
+        const std::size_t head_index = static_cast<std::size_t>(std::stoull(match[1].str()));
+        const std::string kind = match[2].str();
+        if (head_index >= model.output_heads.size() || head_index >= trace.output_heads.size()) {
+            throw std::runtime_error("output head index out of range for schedule relation: " + relation);
         }
-        a_values = trace.output_layer_input;
-        shared = trace.output_layer_input_dim;
-        b_values = model.output_heads.front().W;
-        cols = model.C;
-        c_values = trace.output_heads.front().h_prime;
-    } else if (relation == "output_head0_source_attention_dot") {
-        if (model.output_heads.empty() || trace.output_heads.empty()) {
-            throw std::runtime_error("output source attention schedule requires output head trace");
+        const auto& output_model = model.output_heads[head_index];
+        const auto& output_trace = trace.output_heads[head_index];
+        if (kind == "projection") {
+            if (trace.output_layer_input.empty()) {
+                throw std::runtime_error("output projection schedule requires output layer input trace");
+            }
+            a_values = trace.output_layer_input;
+            shared = trace.output_layer_input_dim;
+            b_values = output_model.W;
+            cols = output_trace.width;
+            c_values = output_trace.h_prime;
+        } else {
+            a_values = output_trace.h_prime;
+            shared = output_trace.width;
+            cols = 1;
+            const bool source_dot = kind == "source_attention_dot";
+            b_values = source_dot ? output_model.attn_src : output_model.attn_dst;
+            const auto& e_values = source_dot ? output_trace.e_src : output_trace.e_dst;
+            const double bias = source_dot ? output_model.attn_src_bias : output_model.attn_dst_bias;
+            c_values.resize(e_values.size(), 0.0);
+            for (std::size_t i = 0; i < c_values.size(); ++i) {
+                c_values[i] = e_values[i] - bias;
+            }
         }
-        a_values = trace.output_heads.front().h_prime;
-        shared = model.C;
-        b_values = model.output_heads.front().attn_src;
-        cols = 1;
-        c_values.resize(trace.output_heads.front().e_src.size(), 0.0);
-        for (std::size_t i = 0; i < c_values.size(); ++i) {
-            c_values[i] = trace.output_heads.front().e_src[i] - model.output_heads.front().attn_src_bias;
+    } else if (std::regex_match(relation, match, hidden_relation)) {
+        const std::size_t layer_index = static_cast<std::size_t>(std::stoull(match[1].str()));
+        const std::size_t head_index = static_cast<std::size_t>(std::stoull(match[2].str()));
+        const std::string kind = match[3].str();
+        if (layer_index >= trace.hidden_heads.size()
+            || layer_index >= trace.hidden_layer_inputs.size()
+            || layer_index >= trace.hidden_layer_input_dims.size()) {
+            throw std::runtime_error("hidden layer index out of range for schedule relation: " + relation);
         }
-    } else if (relation == "output_head0_destination_attention_dot") {
-        if (model.output_heads.empty() || trace.output_heads.empty()) {
-            throw std::runtime_error("output destination attention schedule requires output head trace");
+        const HeadParams* hidden_model = nullptr;
+        std::size_t trace_head_ordinal = 0;
+        std::size_t layer_head_ordinal = 0;
+        for (const auto& head : model.hidden_heads) {
+            if (head.layer_index != layer_index) {
+                continue;
+            }
+            if (head.head_index == head_index) {
+                hidden_model = &head;
+                trace_head_ordinal = layer_head_ordinal;
+                break;
+            }
+            ++layer_head_ordinal;
         }
-        a_values = trace.output_heads.front().h_prime;
-        shared = model.C;
-        b_values = model.output_heads.front().attn_dst;
-        cols = 1;
-        c_values.resize(trace.output_heads.front().e_dst.size(), 0.0);
-        for (std::size_t i = 0; i < c_values.size(); ++i) {
-            c_values[i] = trace.output_heads.front().e_dst[i] - model.output_heads.front().attn_dst_bias;
+        if (hidden_model == nullptr || trace_head_ordinal >= trace.hidden_heads[layer_index].size()) {
+            throw std::runtime_error("hidden head model/trace not found for schedule relation: " + relation);
         }
-    } else if (relation == "hidden_layer0_head0_projection") {
-        if (trace.hidden_heads.empty() || trace.hidden_heads.front().empty() || model.hidden_heads.empty()) {
-            throw std::runtime_error("hidden projection schedule requires hidden head trace");
+        const auto& hidden_trace = trace.hidden_heads[layer_index][trace_head_ordinal];
+        rows = hidden_trace.rows;
+        if (kind == "projection") {
+            a_values = trace.hidden_layer_inputs[layer_index];
+            shared = trace.hidden_layer_input_dims[layer_index];
+            b_values = hidden_model->W;
+            cols = hidden_trace.width;
+            c_values = hidden_trace.h_prime;
+        } else {
+            a_values = hidden_trace.h_prime;
+            shared = hidden_trace.width;
+            cols = 1;
+            const bool source_dot = kind == "source_attention_dot";
+            b_values = source_dot ? hidden_model->attn_src : hidden_model->attn_dst;
+            const auto& e_values = source_dot ? hidden_trace.e_src : hidden_trace.e_dst;
+            const double bias = source_dot ? hidden_model->attn_src_bias : hidden_model->attn_dst_bias;
+            c_values.resize(e_values.size(), 0.0);
+            for (std::size_t i = 0; i < c_values.size(); ++i) {
+                c_values[i] = e_values[i] - bias;
+            }
         }
-        const auto hidden_model_it = std::find_if(model.hidden_heads.begin(), model.hidden_heads.end(), [](const HeadParams& head) {
-            return head.layer_index == 0 && head.head_index == 0;
-        });
-        if (hidden_model_it == model.hidden_heads.end()) {
-            throw std::runtime_error("hidden layer0/head0 model parameters not found");
-        }
-        const auto& hidden0 = trace.hidden_heads.front().front();
-        rows = hidden0.rows;
-        a_values = trace.hidden_layer_inputs.front();
-        shared = trace.hidden_layer_input_dims.front();
-        b_values = hidden_model_it->W;
-        cols = hidden0.width;
-        c_values = hidden0.h_prime;
     } else {
         throw std::runtime_error("unsupported formal matmul schedule relation: " + relation);
     }
