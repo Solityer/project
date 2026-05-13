@@ -2061,8 +2061,13 @@ std::string matmul_relation_type(const std::string& label)
 
 std::string matmul_layer_head(const std::string& label)
 {
-    if (label.find("output_head0") != std::string::npos) return "output/head0";
-    if (label.find("hidden_layer0_head0") != std::string::npos) return "hidden/layer0/head0";
+    std::smatch match;
+    if (std::regex_search(label, match, std::regex(R"(output_head([0-9]+))"))) {
+        return "output/head" + match[1].str();
+    }
+    if (std::regex_search(label, match, std::regex(R"(hidden_layer([0-9]+)_head([0-9]+))"))) {
+        return "hidden/layer" + match[1].str() + "/head" + match[2].str();
+    }
     return "unknown";
 }
 
@@ -2206,8 +2211,8 @@ std::string maybe_write_matmul_first_failure_evidence(
         return "";
     }
     const std::string conclusion = fixed_eval_matches && !sample_matches
-        ? "field encoding/quantization mismatch: float forward C is scale-16 rounded output, while MatmulRelationProof requires the scale-256 pre-rescale product witness"
-        : "matmul mismatch remains ambiguous after fixed-point host check; inspect flatten/order/point metadata";
+        ? "域编码与量化路径不一致：float forward 中的 C 是 scale-16 rounded output，而 MatmulRelationProof 需要 scale-256 pre-rescale product witness"
+        : "fixed-point host check 后仍无法唯一定位 matmul mismatch，需要继续检查 flatten、order 与 point metadata";
 
     {
         std::ofstream out(json_path);
@@ -2252,24 +2257,24 @@ std::string maybe_write_matmul_first_failure_evidence(
     }
     {
         std::ofstream out(md_path);
-        out << "# Matmul First Failure Evidence: " << dataset << "\n\n";
+        out << "# Matmul 首个失败证据：" << dataset << "\n\n";
         out << "- relation: `" << label << "`\n";
         out << "- layer/head: `" << matmul_layer_head(label) << "`\n";
-        out << "- chunk: `0`, rows `" << row_begin << ".." << (row_begin + row_count) << "`, total chunks `" << total_chunks << "`\n";
-        out << "- logical shape: rows `" << rows << "`, shared `" << shared << "`, cols `" << cols << "`\n";
-        out << "- padded shape: num `1`, rows `" << padded_rows << "`, shared `" << padded_shared << "`, cols `" << padded_cols << "`\n";
-        out << "- current quant path: scale `16`; pre-rescale product scale is `256`\n";
-        out << "- C from float forward: `true`\n";
+        out << "- chunk: `0`，rows `" << row_begin << ".." << (row_begin + row_count) << "`，total chunks `" << total_chunks << "`\n";
+        out << "- logical shape: rows `" << rows << "`，shared `" << shared << "`，cols `" << cols << "`\n";
+        out << "- padded shape: num `1`，rows `" << padded_rows << "`，shared `" << padded_shared << "`，cols `" << padded_cols << "`\n";
+        out << "- 当前量化路径：scale `16`；pre-rescale product scale 为 `256`\n";
+        out << "- C 来自 float forward：`true`\n";
         out << "- claimed C evaluation: `" << fr_hex(claimed_c_eval) << "`\n";
         out << "- actual inner-product proof claim: `" << fr_hex(actual_inner_claim) << "`\n";
         out << "- delta actual-claimed: `" << fr_hex(mismatch_delta) << "`\n";
         out << "- transcript digest/challenge id: `" << transcript.digest_hex() << "`\n";
         out << "- opening point C: `" << fr_vector_json(point_c) << "`\n";
         out << "- evidence path: `" << json_path.string() << "`\n\n";
-        out << "Minimal host reference check: trace `C[" << sample_row << "," << sample_col << "]` quantized at scale 16 is `" << sample_trace_c
-            << "`, while the product of fixed inputs before rescale is `" << int128_to_string(sample_product)
-            << "` at scale 256. Conclusion: " << conclusion << ".\n\n";
-        out << "No full witness tensor, full intermediate tensor, full output-head tensor, or full logits tensor is included in this evidence.\n";
+        out << "最小 host reference check：trace `C[" << sample_row << "," << sample_col << "]` 在 scale 16 下的量化值是 `" << sample_trace_c
+            << "`，fixed input 在 rescale 前的乘积是 `" << int128_to_string(sample_product)
+            << "`，其 scale 为 256。结论：" << conclusion << "。\n\n";
+        out << "本证据不包含完整 witness tensor、完整 intermediate tensor、完整 output-head tensor 或完整 logits tensor。\n";
     }
     return json_path.string();
 }
