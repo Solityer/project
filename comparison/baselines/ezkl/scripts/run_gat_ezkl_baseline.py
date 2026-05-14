@@ -10,12 +10,14 @@ and writes orchestration status files.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import shutil
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 
@@ -72,6 +74,15 @@ def tail(text: str, limit: int = 4000) -> str:
     return text[-limit:]
 
 
+def now_utc_iso8601() -> str:
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def make_run_id(dataset: str) -> str:
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{dataset}-{stamp}-{uuid.uuid4().hex[:12]}"
+
+
 def read_json(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
@@ -89,6 +100,50 @@ def run_command(command: list[str], cwd: Path, env: dict[str, str] | None = None
     completed = subprocess.run(command, cwd=cwd, text=True, capture_output=True, env=env)
     elapsed_ms = (time.perf_counter() - start) * 1000.0
     return completed.returncode, elapsed_ms, completed.stdout, completed.stderr
+
+
+def contains_manual_continuation(text: str) -> bool:
+    return "manual continuation" in text.lower()
+
+
+def write_stage_logs(run_dir: Path, timing_key: str, stdout: str, stderr: str) -> tuple[str, str]:
+    phase = timing_key.removesuffix("_ms")
+    stdout_path = run_dir / f"{phase}.stdout.txt"
+    stderr_path = run_dir / f"{phase}.stderr.txt"
+    stdout_path.write_text(stdout, encoding="utf-8")
+    stderr_path.write_text(stderr, encoding="utf-8")
+    return stdout_path.name, stderr_path.name
+
+
+def clean_pipeline_outputs(run_dir: Path) -> None:
+    names = [
+        "settings.json",
+        "model.compiled",
+        "witness.json",
+        "proof.json",
+        "verify.json",
+        "pk.key",
+        "vk.key",
+        "pk.srs",
+        "vk.srs",
+        "compressed_row_estimate.json",
+        "keygen_memory_profile.json",
+        "keygen_memory_profile.time.txt",
+        "prove_memory_profile.json",
+        "prove_memory_profile.time.txt",
+        "prove_memory_profile_internal.json",
+        "native_constraint_failure.json",
+    ]
+    for name in names:
+        path = run_dir / name
+        if path.exists():
+            path.unlink()
+    for path in run_dir.glob("*.stdout.txt"):
+        path.unlink()
+    for path in run_dir.glob("*.stderr.txt"):
+        path.unlink()
+    for path in run_dir.glob("*.time.txt"):
+        path.unlink()
 
 
 def parse_time_verbose(path: Path) -> dict:
@@ -145,7 +200,11 @@ def native_command_env(
     env.setdefault("OPENBLAS_NUM_THREADS", "1")
     env.setdefault("RUST_BACKTRACE", "0")
     run_parts = set(run_dir.parts) if run_dir is not None else set()
-    if run_dir is not None and "ogbn_arxiv_full" in run_parts and timing_key == "prove_time_ms":
+    if (
+        run_dir is not None
+        and {"ppi_full_formal", "ogbn_arxiv_full"}.intersection(run_parts)
+        and timing_key == "prove_time_ms"
+    ):
         env["RAYON_NUM_THREADS"] = "1"
         env["MALLOC_ARENA_MAX"] = "1"
         env.setdefault("MALLOC_CONF", "background_thread:false,narenas:1,dirty_decay_ms:0,muzzy_decay_ms:0")
@@ -367,6 +426,22 @@ def update_manifest(run_dir: Path, **updates: object) -> dict:
     return manifest
 
 
+def attach_artifact_snapshots(run_dir: Path, manifest: dict) -> None:
+    artifact_map = {
+        "native_compile_plan": run_dir / "model.compiled",
+        "compressed_row_estimate": run_dir / "compressed_row_estimate.json",
+        "formal_table_hashes": run_dir / "formal_table_hashes.json",
+        "keygen_memory_profile": run_dir / "keygen_memory_profile.json",
+        "prove_memory_profile": run_dir / "prove_memory_profile.json",
+    }
+    for key, path in artifact_map.items():
+        if path.exists():
+            try:
+                manifest[key] = read_json(path)
+            except json.JSONDecodeError:
+                manifest[f"{key}_json_error"] = "invalid_json"
+
+
 def write_blocked_artifacts(run_dir: Path, manifest: dict) -> None:
     proof = {
         "status": manifest.get("status", "blocked"),
@@ -482,6 +557,7 @@ def run_native_graph_pipeline(
         "prove_time_ms": None,
         "verify_time_ms": None,
     }
+    stage_records: list[dict[str, object]] = []
     scope_flags = []
     if native_debug_scope:
         scope_flags = ["--native-debug-scope", native_debug_scope]
@@ -576,6 +652,7 @@ def run_native_graph_pipeline(
     stdout_all = []
     stderr_all = []
     for timing_key, command in commands:
+        stage_started_at = now_utc_iso8601()
         if timing_key == "setup_ms":
             env = native_command_env(run_dir, timing_key)
             code, elapsed_ms, stdout, stderr, profile = run_command_profiled(
@@ -634,7 +711,28 @@ def run_native_graph_pipeline(
             )
         stdout_all.append(f"$ {' '.join(command)}\n{stdout}")
         stderr_all.append(f"$ {' '.join(command)}\n{stderr}")
+        stdout_log, stderr_log = write_stage_logs(run_dir, timing_key, stdout, stderr)
         timings[timing_key] = elapsed_ms
+        stage_record: dict[str, object] = {
+            "phase": timing_key.removesuffix("_ms"),
+            "timing_key": timing_key,
+            "command": " ".join(command),
+            "started_at": stage_started_at,
+            "completed_at": now_utc_iso8601(),
+            "elapsed_ms": elapsed_ms,
+            "returncode": code,
+            "stdout_log": stdout_log,
+            "stderr_log": stderr_log,
+            "stdout_tail": tail(stdout),
+            "stderr_tail": tail(stderr),
+            "manual_continuation_detected": contains_manual_continuation(stdout)
+            or contains_manual_continuation(stderr),
+        }
+        if timing_key == "setup_ms":
+            stage_record["memory_profile"] = "keygen_memory_profile.json"
+        if timing_key == "prove_time_ms":
+            stage_record["memory_profile"] = "prove_memory_profile.json"
+        stage_records.append(stage_record)
         if code != 0:
             failure = classify_native_failure(timing_key, stdout, stderr)
             native_failure = read_native_failure(run_dir)
@@ -671,6 +769,7 @@ def run_native_graph_pipeline(
                     "failed_command": " ".join(command),
                     "command": " && ".join(" ".join(cmd) for _, cmd in commands),
                     "backend": "cpu",
+                    "proof_generated": False,
                     "native_debug_scope": native_debug_scope or manifest.get("native_debug_scope") or "full_model",
                     "strict_public_input_equivalent": False,
                     "full_gat_forward_in_ezkl_proof": False,
@@ -680,6 +779,8 @@ def run_native_graph_pipeline(
                     "commitment_time_ms": timings.get("setup_ms"),
                     "stdout_tail": tail("\n".join(stdout_all)),
                     "stderr_tail": tail("\n".join(stderr_all)),
+                    "stage_records": stage_records,
+                    "run_completed_at": now_utc_iso8601(),
                     "failure_gate": native_failure.get("gate_name"),
                     "failure_region": native_failure.get("region_name"),
                     "failure_row": native_failure.get("row_offset"),
@@ -725,43 +826,85 @@ def run_native_graph_pipeline(
     final_binding = read_json(run_dir / "final_logits_binding.json") if (run_dir / "final_logits_binding.json").exists() else {}
     strict_public = bool(verify.get("strict_public_input_equivalent", False))
     full_forward = bool(verify.get("full_gat_forward_in_ezkl_proof", False))
+    verify_passed = verify.get("verify_passed") is True
+    final_logits_complete = bool(final_binding.get("final_logits_derivation_complete", False))
+    no_precomputed_bypass = bool(final_binding.get("no_precomputed_logits_bypass", False))
+    manual_detected = any(record.get("manual_continuation_detected") for record in stage_records)
+    missing_timings = [key for key, value in timings.items() if value is None]
+    postcondition_failures = []
+    if missing_timings:
+        postcondition_failures.append(f"missing_timings={','.join(missing_timings)}")
+    if proof_size is None:
+        postcondition_failures.append("missing_proof_json")
+    if not (run_dir / "verify.json").exists():
+        postcondition_failures.append("missing_verify_json")
+    if not verify_passed:
+        postcondition_failures.append("verify_passed_not_true")
+    if not strict_public:
+        postcondition_failures.append("strict_public_input_equivalent_not_true")
+    if not full_forward:
+        postcondition_failures.append("full_gat_forward_in_ezkl_proof_not_true")
+    if not final_logits_complete:
+        postcondition_failures.append("final_logits_derivation_complete_not_true")
+    if not no_precomputed_bypass:
+        postcondition_failures.append("no_precomputed_logits_bypass_not_true")
+    if manual_detected:
+        postcondition_failures.append("manual_continuation_detected")
+    if postcondition_failures:
+        manifest.update(timings)
+        manifest.update(
+            {
+                "status": "failed",
+                "block_reason": "strict_verified_postcondition_failed",
+                "failure_step": "post_verify_strict_check",
+                "failed_command": "",
+                "strict_postcondition_failures": postcondition_failures,
+                "proof_generated": proof_size is not None,
+                "proof_size_bytes": proof_size,
+                "commitment_time_ms": timings.get("setup_ms"),
+                "verify_passed": verify_passed,
+                "proof_verification_status": "not_verified",
+                "backend": "cpu",
+                "command": " && ".join(" ".join(cmd) for _, cmd in commands),
+                "stdout_tail": tail("\n".join(stdout_all)),
+                "stderr_tail": tail("\n".join(stderr_all)),
+                "stage_records": stage_records,
+                "run_completed_at": now_utc_iso8601(),
+            }
+        )
+        attach_artifact_snapshots(run_dir, manifest)
+        write_json(run_dir / "run_manifest.json", manifest)
+        return manifest
     manifest.update(timings)
-    if (run_dir / "keygen_memory_profile.json").exists():
-        try:
-            manifest["keygen_memory_profile"] = read_json(run_dir / "keygen_memory_profile.json")
-        except json.JSONDecodeError:
-            pass
-    if (run_dir / "prove_memory_profile.json").exists():
-        try:
-            manifest["prove_memory_profile"] = read_json(run_dir / "prove_memory_profile.json")
-        except json.JSONDecodeError:
-            pass
+    attach_artifact_snapshots(run_dir, manifest)
     manifest.update(
         {
             "status": "verified",
             "block_reason": "",
+            "failure_step": None,
+            "failed_command": None,
+            "proof_generated": True,
             "proof_size_bytes": proof_size,
             "commitment_time_ms": timings.get("setup_ms"),
             "check_mode": "safe",
             "strict_public_input_equivalent": strict_public,
             "full_gat_forward_in_ezkl_proof": full_forward,
-            "final_logits_derivation_complete": bool(
-                final_binding.get("final_logits_derivation_complete", False)
-            ),
-            "no_precomputed_logits_bypass": bool(
-                final_binding.get("no_precomputed_logits_bypass", False)
-            ),
-            "verify_passed": bool(verify.get("verify_passed", True)),
+            "final_logits_derivation_complete": final_logits_complete,
+            "no_precomputed_logits_bypass": no_precomputed_bypass,
+            "verify_passed": verify_passed,
             "proof_verification_status": "verified",
             "native_debug_scope": native_debug_scope or verify.get("native_debug_scope") or manifest.get("native_debug_scope") or "full_model",
             "backend": "cpu",
             "command": " && ".join(" ".join(cmd) for _, cmd in commands),
             "stdout_tail": tail("\n".join(stdout_all)),
             "stderr_tail": tail("\n".join(stderr_all)),
+            "stage_records": stage_records,
+            "run_completed_at": now_utc_iso8601(),
         }
     )
     write_json(run_dir / "run_manifest.json", manifest)
-    write_json(run_dir / "verify.json", {"status": "verified", "verified": True})
+    verify["verified"] = verify_passed
+    write_json(run_dir / "verify.json", verify)
     return manifest
 
 
@@ -787,6 +930,9 @@ def main() -> int:
     if args.clean and run_dir.exists():
         shutil.rmtree(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
+    clean_pipeline_outputs(run_dir)
+    run_id = make_run_id(args.dataset)
+    run_started_at = now_utc_iso8601()
 
     command = [
         str(EXPORTER),
@@ -806,9 +952,18 @@ def main() -> int:
     (run_dir / "exporter.stderr.txt").write_text(stderr, encoding="utf-8")
     if code != 0:
         manifest = {
+            "run_id": run_id,
+            "run_started_at": run_started_at,
+            "run_completed_at": now_utc_iso8601(),
             "dataset": args.dataset,
             "status": "failed",
             "block_reason": "exporter_failure",
+            "failure_step": "exporter",
+            "failed_command": " ".join(command),
+            "route_id": args.route,
+            "backend": route_cfg["backend"],
+            "proof_generated": False,
+            "verify_passed": False,
             "exporter_ms": exporter_ms,
             "stdout_tail": tail(stdout),
             "stderr_tail": tail(stderr),
@@ -821,6 +976,10 @@ def main() -> int:
 
     manifest = update_manifest(
         run_dir,
+        run_id=run_id,
+        run_started_at=run_started_at,
+        clean_run=bool(args.clean),
+        runner="scripts/run_gat_ezkl_baseline.py",
         exporter_ms=exporter_ms,
         backend=route_cfg["backend"],
         statement_route_id=route_cfg["statement_route_id"],
@@ -831,6 +990,14 @@ def main() -> int:
         stderr_tail=tail(stderr),
     )
     if manifest.get("status") == "blocked":
+        manifest.update(
+            {
+                "run_completed_at": now_utc_iso8601(),
+                "proof_generated": False,
+                "verify_passed": False,
+            }
+        )
+        write_json(run_dir / "run_manifest.json", manifest)
         write_blocked_artifacts(run_dir, manifest)
         print(
             f"dataset={args.dataset} status=blocked "
