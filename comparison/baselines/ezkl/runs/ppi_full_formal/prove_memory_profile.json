@@ -1,10 +1,19 @@
 {
   "advice_columns": 4,
   "assigned_row_upper_bound": 29591968,
+  "attempted_optimizations": [
+    "prove-time payload deduplication for output derivation/public instance/binding/circuit",
+    "compact witness metadata; binary witness conversion not used because witness.json is small",
+    "drop setup-only data before prove; setup uses shape-only plan",
+    "chunked public instance columns without logits duplication in runner",
+    "ogbn low-memory environment and single-thread prove",
+    "large full-dataset MockProver diagnostic precheck skipped for ogbn while proof and verify remain strict"
+  ],
   "circuit_rows": 16777216,
-  "command": "../../target/release/ezkl graph-gat-prove --compiled-circuit model.compiled --witness witness.json --pk-path pk.key --proof-path proof.json",
+  "command": "/home/pzh/project/comparison/baselines/ezkl/target/release/ezkl graph-gat-prove --compiled-circuit model.compiled --witness witness.json --pk-path pk.key --proof-path proof.json",
   "compiled_circuit_size": 5842,
-  "current_rss_bytes": 71462518784,
+  "elapsed_ms": 1384312.234527024,
+  "elapsed_wall_clock": "04.27",
   "fixed_columns": 12,
   "instance_columns": 2,
   "largest_payloads_loaded": [
@@ -46,21 +55,28 @@
     {
       "name": "model.compiled",
       "path": "./model.compiled",
-      "size_bytes": 5835
+      "size_bytes": 5842
     }
   ],
   "logrows": 24,
   "lookup_table_columns": 3,
   "mock_precheck_policy": "skipped_for_large_full_dataset_memory_policy",
   "payload_deduplication": "single NativeOutputDerivationWitness reused for public instance, binding, MockProver when enabled, and create_proof circuit assignment",
-  "phase": "proof_serialized",
+  "peak_rss_bytes": 119402041344,
+  "phase": "create_proof_start",
   "pk_size": 51564774651,
   "proof_backend": "halo2_kzg_shplonk_blake2b",
+  "proof_generated": false,
   "proof_serialization_policy": "snark_json_written_after_create_proof_completes",
   "public_instance_length": 6890224,
+  "returncode": 137,
   "setup_only_data_policy": "shape-only setup artifacts are not retained by graph-gat-prove",
+  "signal": 9,
+  "stderr_tail": "",
+  "stdout_tail": "",
   "thread_env_settings": {
     "MALLOC_ARENA_MAX": "1",
+    "MALLOC_CONF": "background_thread:false,narenas:1,dirty_decay_ms:0,muzzy_decay_ms:0",
     "OMP_NUM_THREADS": "1",
     "OPENBLAS_NUM_THREADS": "1",
     "RAYON_NUM_THREADS": "1",
@@ -68,21 +84,5 @@
     "RUST_LOG": "warn"
   },
   "witness_payload_policy": "compact metadata JSON; tensor payloads remain in binary/text run artifacts and are loaded once into the reused derivation",
-  "witness_payload_size": 10556,
-  "peak_rss_bytes": 123818070016,
-  "elapsed_ms": 1921540,
-  "elapsed_wall_clock": "32:01.54",
-  "returncode": 0,
-  "signal": null,
-  "proof_generated": true,
-  "stderr_tail": "",
-  "stdout_tail": "",
-  "attempted_optimizations": [
-    "deterministic inverse table range from public degree/ExpMap bound",
-    "single tagged lookup table for inverse/LReLU/Exp/ELU reduced lookup table columns from 8 to 3",
-    "prove-time output derivation/public instance/binding payload deduplication",
-    "compact metadata witness; large tensor payloads loaded from run artifacts once",
-    "large full-dataset MockProver diagnostic precheck skipped while strict KZG proof and verify remain enabled",
-    "single-thread low-memory prove environment"
-  ]
+  "witness_payload_size": 10556
 }
