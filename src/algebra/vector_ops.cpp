@@ -67,7 +67,7 @@ namespace gatzk::algebra
             throw std::runtime_error("unsupported GATZK_ALGEBRA_BACKEND value: " + backend);
         }
 
-        // 串行计算两个域元素向量在区间[begin, end)上的点积
+        // 串行计算两个域元素向量在区间[begin, end)上的点积（--parallel-fft on）
         FieldElement dot_product_range(
             const std::vector<FieldElement>& lhs,
             const std::vector<FieldElement>& rhs,
@@ -308,7 +308,7 @@ namespace gatzk::algebra
         return sum;
     }
 
-    // 计算左向量（FieldElement）与右向量（mcl::Fr 原生权重）的点积
+    // 计算左向量（FieldElement）与右向量（mcl::Fr 原生权重）的点积（--parallel-fft on）
     FieldElement dot_product_native_weights(
         const std::vector<FieldElement>& lhs,
         const std::vector<mcl::Fr>& rhs)

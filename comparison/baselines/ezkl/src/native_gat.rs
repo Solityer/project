@@ -4259,15 +4259,8 @@ impl Circuit<Fr> for FullNativeCircuit {
                 .map_err(|_| Error::Synthesis)?
                 .ok_or(Error::Synthesis)?;
             let mut head_logits_cells: Vec<Vec<AssignedCell<Fr, Fr>>> = Vec::new();
-            let bind_single_output_head_directly = self.plan.k_out.max(1) == 1
-                && matches!(
-                    scope,
-                    NativeDebugScope::OutputOnly
-                        | NativeDebugScope::OutputAverageOnly
-                        | NativeDebugScope::FinalLogitsPublicBindingOnly
-                        | NativeDebugScope::OutputFullDerivation
-                        | NativeDebugScope::FullModel
-                );
+            let bind_single_output_head_directly =
+                single_output_head_binds_public_instance_directly(&self.plan, scope);
             for head in &witness.output_heads {
                 if matches!(
                     scope,
@@ -5099,23 +5092,35 @@ fn output_head_derivation(
     }
 }
 
+fn trim_output_trace_to_assigned_values(trace: &mut NativeHeadForwardTrace) {
+    trace.s = Vec::new();
+    trace.u = Vec::new();
+    trace.inv = Vec::new();
+    trace.alpha = Vec::new();
+    trace.h_agg = Vec::new();
+}
+
 fn synthetic_output_derivation_witness(
     plan: &NativeCompiledPlan,
 ) -> Result<NativeOutputDerivationWitness, EZKLError> {
     let final_logits = native_final_logits_witness(plan)?;
-    let mut output_average = Vec::with_capacity(final_logits.flat_values_q.len());
-    for node in 0..plan.node_count.max(1) {
-        for class_index in 0..plan.class_count.max(1) {
-            output_average.push(output_average_witness_for_logit(plan, node, class_index)?);
+    let head_count = plan.k_out.max(1);
+    let mut output_average = if head_count == 1 {
+        Vec::new()
+    } else {
+        Vec::with_capacity(final_logits.flat_values_q.len())
+    };
+    if head_count > 1 {
+        for node in 0..plan.node_count.max(1) {
+            for class_index in 0..plan.class_count.max(1) {
+                output_average.push(output_average_witness_for_logit(plan, node, class_index)?);
+            }
         }
     }
     Ok(NativeOutputDerivationWitness {
         output_layer_input_source: "synthetic_last_hidden_concat".to_string(),
         output_layer_input_dim: plan.class_count.max(1),
-        last_hidden_concat: vec![
-            vec![0.0; plan.class_count.max(1) as usize];
-            plan.node_count.max(1) as usize
-        ],
+        last_hidden_concat: Vec::new(),
         output_heads: Vec::new(),
         final_logits,
         output_average,
@@ -5161,6 +5166,9 @@ fn shape_only_output_derivation_witness(
             parameters,
             trace,
         ));
+        if let Some(head) = output_heads.last_mut() {
+            trim_output_trace_to_assigned_values(&mut head.trace);
+        }
     }
     let final_len = node_count.saturating_mul(class_count);
     let mut output_average = Vec::with_capacity(if head_count == 1 { 0 } else { final_len });
@@ -5344,6 +5352,9 @@ fn native_output_derivation_witness(
         let params = load_output_head_parameters(&tensors, head)?;
         let trace = attention_head_forward_f64(&layer_input, &csr, &params, true, false)?;
         output_heads.push(output_head_derivation(plan, head.head_index, params, trace));
+        if let Some(head) = output_heads.last_mut() {
+            trim_output_trace_to_assigned_values(&mut head.trace);
+        }
     }
 
     if output_heads.is_empty() {
@@ -5353,41 +5364,57 @@ fn native_output_derivation_witness(
     let class_count = plan.class_count.max(1) as usize;
     let head_count = output_heads.len();
     let mut flat_values_q = Vec::with_capacity(node_count * class_count);
-    let mut output_average = Vec::with_capacity(node_count * class_count);
+    let mut output_average = if head_count == 1 {
+        Vec::new()
+    } else {
+        Vec::with_capacity(node_count * class_count)
+    };
     for node in 0..node_count {
         for class_index in 0..class_count {
-            let mut head_values_q = Vec::with_capacity(head_count);
+            let mut head_values_q = if head_count == 1 {
+                Vec::new()
+            } else {
+                Vec::with_capacity(head_count)
+            };
+            let mut single_head_q = 0i64;
             for head in &output_heads {
                 let pre_q = quantize_trace_scalar(head.trace.h_agg_pre_bias[node][class_index]);
                 let bias_q = quantize_trace_scalar(head.parameters.output_bias[class_index]);
-                head_values_q.push(pre_q.saturating_add(bias_q));
+                let value_q = pre_q.saturating_add(bias_q);
+                if head_count == 1 {
+                    single_head_q = value_q;
+                } else {
+                    head_values_q.push(value_q);
+                }
             }
             let average_q = if head_count == 1 {
-                head_values_q[0]
+                single_head_q
             } else {
                 average_output_head_values_q(&head_values_q)?
             };
             let sum_q = if head_count == 1 {
-                head_values_q[0]
+                single_head_q
             } else {
                 head_values_q.iter().sum()
             };
             flat_values_q.push(average_q);
-            output_average.push(NativeOutputAverageWitness {
-                node_index: node as u64,
-                class_index: class_index as u64,
-                head_values_q,
-                sum_q,
-                average_q,
-                policy: "per_head_bias_then_arithmetic_mean".to_string(),
-                rounding_policy: output_rounding_policy().to_string(),
-            });
+            if head_count > 1 {
+                output_average.push(NativeOutputAverageWitness {
+                    node_index: node as u64,
+                    class_index: class_index as u64,
+                    head_values_q,
+                    sum_q,
+                    average_q,
+                    policy: "per_head_bias_then_arithmetic_mean".to_string(),
+                    rounding_policy: output_rounding_policy().to_string(),
+                });
+            }
         }
     }
     Ok(NativeOutputDerivationWitness {
         output_layer_input_source: "last_hidden_concat".to_string(),
         output_layer_input_dim: output_input_dim,
-        last_hidden_concat: layer_input,
+        last_hidden_concat: Vec::new(),
         output_heads,
         final_logits: NativeFinalLogitsWitness {
             shape: [plan.node_count.max(1), plan.class_count.max(1)],
@@ -5622,7 +5649,13 @@ fn native_full_public_instance_columns_from_values(
 ) -> Result<Vec<Vec<Fr>>, EZKLError> {
     let layout = public_instance_layout_for_plan(plan);
     let configured_columns = layout.column_count.max(MAX_PUBLIC_INSTANCE_COLUMNS);
-    let mut columns = vec![Vec::new(); configured_columns];
+    let mut columns = (0..configured_columns)
+        .map(|column| {
+            let start = column.saturating_mul(layout.chunk_size.max(1));
+            let remaining = values.len().saturating_sub(start);
+            Vec::with_capacity(remaining.min(layout.chunk_size.max(1)))
+        })
+        .collect::<Vec<_>>();
     for (index, value) in values.iter().copied().enumerate() {
         let column = index / layout.chunk_size.max(1);
         if column >= columns.len() {
@@ -5631,6 +5664,21 @@ fn native_full_public_instance_columns_from_values(
         columns[column].push(fr_i64(value));
     }
     Ok(columns)
+}
+
+fn single_output_head_binds_public_instance_directly(
+    plan: &NativeCompiledPlan,
+    scope: NativeDebugScope,
+) -> bool {
+    plan.k_out.max(1) == 1
+        && matches!(
+            scope,
+            NativeDebugScope::OutputOnly
+                | NativeDebugScope::OutputAverageOnly
+                | NativeDebugScope::FinalLogitsPublicBindingOnly
+                | NativeDebugScope::OutputFullDerivation
+                | NativeDebugScope::FullModel
+        )
 }
 
 fn native_srs_path_for_key(key_path: &Path) -> PathBuf {
@@ -6451,7 +6499,7 @@ pub(crate) fn graph_gat_prove(
                 &pk_path,
                 mock_precheck_policy,
             );
-            let derivation = Arc::new(native_output_derivation_witness(&plan, &run_dir)?);
+            let mut derivation = native_output_derivation_witness(&plan, &run_dir)?;
             let public_instances = native_full_public_instance_columns_from_values(
                 &plan,
                 &derivation.final_logits.flat_values_q,
@@ -6464,6 +6512,11 @@ pub(crate) fn graph_gat_prove(
                 .take(16)
                 .collect::<Vec<_>>();
             let binding = public_instance_binding_from_final_logits(&plan, &derivation.final_logits)?;
+            if single_output_head_binds_public_instance_directly(&plan, scope) {
+                derivation.final_logits.flat_values_q = Vec::new();
+                derivation.output_average = Vec::new();
+            }
+            let derivation = Arc::new(derivation);
             let circuit = FullNativeCircuit::new_with_output_derivation(
                 plan.clone(),
                 &run_dir,

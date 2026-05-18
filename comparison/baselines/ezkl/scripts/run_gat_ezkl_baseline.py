@@ -208,6 +208,9 @@ def native_command_env(
         env["RAYON_NUM_THREADS"] = "1"
         env["MALLOC_ARENA_MAX"] = "1"
         env.setdefault("MALLOC_CONF", "background_thread:false,narenas:1,dirty_decay_ms:0,muzzy_decay_ms:0")
+        env.setdefault("MALLOC_TRIM_THRESHOLD_", "131072")
+        env.setdefault("MALLOC_MMAP_THRESHOLD_", "131072")
+        env.setdefault("MALLOC_TOP_PAD_", "0")
         env["OMP_NUM_THREADS"] = "1"
         env["OPENBLAS_NUM_THREADS"] = "1"
         env["RUST_BACKTRACE"] = "0"
@@ -312,6 +315,9 @@ def env_profile(env: dict[str, str]) -> dict[str, str]:
         "RUST_BACKTRACE",
         "RUST_LOG",
         "EZKL_NATIVE_MOCK_PRECHECK",
+        "MALLOC_TRIM_THRESHOLD_",
+        "MALLOC_MMAP_THRESHOLD_",
+        "MALLOC_TOP_PAD_",
     ]
     return {key: env[key] for key in keys if key in env}
 
@@ -412,6 +418,7 @@ def write_prove_memory_profile(
             "chunked public instance columns without logits duplication in runner",
             "ogbn low-memory environment and single-thread prove",
             "large full-dataset MockProver diagnostic precheck skipped for ogbn while proof and verify remain strict",
+            "glibc allocator trim/mmap/top-pad limits for large CPU prove subprocesses",
         ],
     }
     write_json(run_dir / "prove_memory_profile.json", profile)

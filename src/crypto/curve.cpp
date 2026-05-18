@@ -137,7 +137,7 @@ namespace gatzk::crypto
         return out;
     }
 
-    // 同基点批量乘法是 KZG 承诺与 witness 构造的典型热点。
+    // 同基点批量乘法是 KZG 承诺与 witness 构造的典型热点。（--fast-msm on）
     std::vector<G1Point> g1_mul_same_base_batch(const G1Point& point, const std::vector<algebra::FieldElement>& scalars)
     {
         algebra::ensure_mcl_field_ready();

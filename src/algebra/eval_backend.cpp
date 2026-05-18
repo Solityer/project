@@ -190,7 +190,7 @@ namespace gatzk::algebra
         return evaluate_with_native_weights(labels, native_weights);
     }
 
-    // 使用原生权重（mcl::Fr）计算加权和：根据后端选择CUDA或CPU
+    // 使用原生权重（mcl::Fr）计算加权和（--parallel-fft on）
     std::vector<FieldElement> PackedEvaluationBackend::evaluate_with_native_weights(
         const std::vector<std::string>& labels,
         const std::vector<mcl::Fr>& weights) const
@@ -387,7 +387,7 @@ namespace gatzk::algebra
         return evaluate_with_native_weight_rotations(labels, native_weights, rotations);
     }
 
-      // CPU 实现的带权重旋转求值（核心算法）
+      // CPU 实现的带权重旋转求值（核心算法）（--parallel-fft on）（--fft-kernel-upgrade on）
     std::vector<std::vector<FieldElement>> PackedEvaluationBackend::evaluate_with_native_weight_rotations(
         const std::vector<std::string>& labels,
         const std::vector<mcl::Fr>& representative_weights,
