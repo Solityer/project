@@ -1732,7 +1732,7 @@ LevelBProofArtifact run_level_b_output_binding_proof(
             )
             + (artifact.blocker.empty() ? std::string("") : std::string("；verifier note: ") + artifact.blocker)
                 + "; "
-                "Level A 仍被 sparse routing、softmax max/sum/inverse/ExpMap、LeakyReLU/ELU、aggregation 与 rescale gadget 缺失阻塞。";
+                "Level A 仍被完整 softmax max/sum/inverse/ExpMap、LeakyReLU/ELU、weighted/output aggregation 与 rescale gadget 缺失阻塞；sparse routing/grouped sum 需以 formal sparse evidence 单独判断。";
         }
     } catch (const std::exception& error) {
         artifact.blocker = error.what();
@@ -3429,6 +3429,301 @@ void serialize_formal_partial_artifact(const FormalPartialArtifact& artifact, co
     out << "blocker=" << artifact.blocker << "\n";
 }
 
+std::vector<Fr_t> encode_padded_vector_scale16_raw(
+    const std::vector<double>& values,
+    std::size_t logical_count,
+    std::size_t padded_count)
+{
+    if (values.size() != logical_count || logical_count > padded_count) {
+        throw std::runtime_error("一维向量编码形状不一致");
+    }
+    std::vector<Fr_t> out(padded_count, fr_from_signed_host(0));
+    for (std::size_t i = 0; i < logical_count; ++i) {
+        out[i] = fr_from_signed_host(quantize_scale16_to_i64(values[i]));
+    }
+    return out;
+}
+
+std::vector<std::uint32_t> graph_src_u32(const LocalGraph& graph)
+{
+    std::vector<std::uint32_t> out(graph.edges.size(), 0);
+    for (std::size_t i = 0; i < graph.edges.size(); ++i) {
+        if (graph.edges[i].src > std::numeric_limits<std::uint32_t>::max()) {
+            throw std::runtime_error("src index 超出 uint32 范围");
+        }
+        out[i] = static_cast<std::uint32_t>(graph.edges[i].src);
+    }
+    return out;
+}
+
+std::vector<std::uint32_t> graph_dst_u32(const LocalGraph& graph)
+{
+    std::vector<std::uint32_t> out(graph.edges.size(), 0);
+    for (std::size_t i = 0; i < graph.edges.size(); ++i) {
+        if (graph.edges[i].dst > std::numeric_limits<std::uint32_t>::max()) {
+            throw std::runtime_error("dst index 超出 uint32 范围");
+        }
+        out[i] = static_cast<std::uint32_t>(graph.edges[i].dst);
+    }
+    return out;
+}
+
+std::vector<Fr_t> route_vector_by_topology_raw(
+    const std::vector<Fr_t>& node_raw,
+    const LocalGraph& graph,
+    std::size_t padded_edge_count,
+    bool use_source)
+{
+    std::vector<Fr_t> out(padded_edge_count, fr_from_signed_host(0));
+    for (std::size_t edge = 0; edge < graph.edges.size(); ++edge) {
+        const std::size_t node = use_source ? graph.edges[edge].src : graph.edges[edge].dst;
+        if (node >= node_raw.size()) throw std::runtime_error("sparse routing node index 超出 witness 范围");
+        out[edge] = node_raw[node];
+    }
+    return out;
+}
+
+std::vector<Fr_t> grouped_sum_by_dst_raw(
+    const std::vector<Fr_t>& edge_raw,
+    const LocalGraph& graph,
+    std::size_t padded_node_count)
+{
+    std::vector<Fr_t> out(padded_node_count, fr_from_signed_host(0));
+    for (std::size_t edge = 0; edge < graph.edges.size(); ++edge) {
+        const std::size_t dst = graph.edges[edge].dst;
+        if (dst >= padded_node_count || edge >= edge_raw.size()) {
+            throw std::runtime_error("grouped sum index 超出 witness 范围");
+        }
+        out[dst] = Fr_host_add(out[dst], edge_raw[edge]);
+    }
+    return out;
+}
+
+struct SparseGroupedGadgetRun
+{
+    bool source_ok = false;
+    bool destination_ok = false;
+    bool grouped_sum_ok = false;
+    double commitment_ms = 0.0;
+    double prove_ms = 0.0;
+    double verify_ms = 0.0;
+    std::uintmax_t proof_size_bytes = 0;
+    std::uint64_t topology_hash = 0;
+    std::string source_digest;
+    std::string destination_digest;
+    std::string grouped_sum_digest;
+    fs::path proof_path;
+    fs::path evidence_path;
+};
+
+SparseGroupedGadgetRun run_sparse_grouped_relations_with_trace(
+    const DatasetRunSpec& spec,
+    const LocalGraph& graph,
+    const ForwardTraceHost& trace,
+    const fs::path& output_root)
+{
+    if (trace.hidden_heads.empty() || trace.hidden_heads.front().empty()) {
+        throw std::runtime_error("缺少 hidden layer0/head0 trace，无法生成 sparse routing evidence");
+    }
+    const auto& head = trace.hidden_heads.front().front();
+    if (head.e_src.size() != graph.num_nodes || head.e_dst.size() != graph.num_nodes) {
+        throw std::runtime_error("attention node trace 与 graph node_count 不一致");
+    }
+    const std::size_t padded_node_count = next_power_of_two(std::max<std::size_t>(1, graph.num_nodes));
+    const std::size_t padded_edge_count = next_power_of_two(std::max<std::size_t>(1, graph.edges.size()));
+    if (padded_node_count > std::numeric_limits<uint>::max() || padded_edge_count > std::numeric_limits<uint>::max()) {
+        throw std::runtime_error("sparse routing 当前实现超过 uint 形状上限");
+    }
+    const auto src = graph_src_u32(graph);
+    const auto dst = graph_dst_u32(graph);
+    const uint node_count_u32 = static_cast<uint>(graph.num_nodes);
+    const uint edge_count_u32 = static_cast<uint>(graph.edges.size());
+
+    auto node_src_raw = encode_padded_vector_scale16_raw(head.e_src, graph.num_nodes, padded_node_count);
+    auto node_dst_raw = encode_padded_vector_scale16_raw(head.e_dst, graph.num_nodes, padded_node_count);
+    auto edge_src_raw = route_vector_by_topology_raw(node_src_raw, graph, padded_edge_count, true);
+    auto edge_dst_raw = route_vector_by_topology_raw(node_dst_raw, graph, padded_edge_count, false);
+    auto grouped_sum_raw = grouped_sum_by_dst_raw(edge_src_raw, graph, padded_node_count);
+
+    FrTensor node_src_tensor(static_cast<uint>(node_src_raw.size()), node_src_raw.data());
+    FrTensor node_dst_tensor(static_cast<uint>(node_dst_raw.size()), node_dst_raw.data());
+    FrTensor edge_src_tensor(static_cast<uint>(edge_src_raw.size()), edge_src_raw.data());
+    FrTensor edge_dst_tensor(static_cast<uint>(edge_dst_raw.size()), edge_dst_raw.data());
+    FrTensor grouped_input_tensor(static_cast<uint>(edge_src_raw.size()), edge_src_raw.data());
+    FrTensor grouped_output_tensor(static_cast<uint>(grouped_sum_raw.size()), grouped_sum_raw.data());
+    node_src_tensor.mont();
+    node_dst_tensor.mont();
+    edge_src_tensor.mont();
+    edge_dst_tensor.mont();
+    grouped_input_tensor.mont();
+    grouped_output_tensor.mont();
+
+    SparseGroupedGadgetRun result;
+    result.topology_hash = formal_sparse_topology_hash(src, dst, node_count_u32, edge_count_u32);
+    Commitment gen(1, G1Jacobian_generator);
+    ScopedTimer commit_timer;
+    const auto com_node_src = gen.commit(node_src_tensor);
+    const auto com_node_dst = gen.commit(node_dst_tensor);
+    const auto com_edge_src = gen.commit(edge_src_tensor);
+    const auto com_edge_dst = gen.commit(edge_dst_tensor);
+    const auto com_grouped_input = gen.commit(grouped_input_tensor);
+    const auto com_grouped_output = gen.commit(grouped_output_tensor);
+    cuda_sync("formal sparse/grouped commit " + spec.dataset);
+    result.commitment_ms = commit_timer.elapsed_ms();
+
+    const std::string source_label = spec.dataset + ":hidden_layer0_head0:source_sparse_routing:full_edges";
+    const std::string destination_label = spec.dataset + ":hidden_layer0_head0:destination_sparse_routing:full_edges";
+    const std::string grouped_label = spec.dataset + ":hidden_layer0_head0:grouped_sum_by_dst:source_attention_edge_values";
+    SparseRoutingRelationProof source_proof;
+    SparseRoutingRelationProof destination_proof;
+    GroupedSumRelationProof grouped_proof;
+    {
+        ScopedTimer timer;
+        source_proof = formal_sparse_routing_relation_prove(
+            node_src_tensor, edge_src_tensor, gen, com_node_src, gen, com_edge_src,
+            src, dst, node_count_u32, edge_count_u32, "source", source_label);
+        destination_proof = formal_sparse_routing_relation_prove(
+            node_dst_tensor, edge_dst_tensor, gen, com_node_dst, gen, com_edge_dst,
+            src, dst, node_count_u32, edge_count_u32, "destination", destination_label);
+        grouped_proof = formal_grouped_sum_relation_prove(
+            grouped_input_tensor, grouped_output_tensor, gen, com_grouped_input, gen, com_grouped_output,
+            src, dst, node_count_u32, edge_count_u32, grouped_label);
+        result.prove_ms = timer.elapsed_ms();
+    }
+    {
+        ScopedTimer timer;
+        std::string failure;
+        result.source_ok = formal_sparse_routing_relation_verify(
+            source_proof, gen, com_node_src, gen, com_edge_src, src, dst, "source", source_label, &failure);
+        if (!result.source_ok) throw std::runtime_error("source sparse routing verifier rejected: " + failure);
+        result.destination_ok = formal_sparse_routing_relation_verify(
+            destination_proof, gen, com_node_dst, gen, com_edge_dst, src, dst, "destination", destination_label, &failure);
+        if (!result.destination_ok) throw std::runtime_error("destination sparse routing verifier rejected: " + failure);
+        result.grouped_sum_ok = formal_grouped_sum_relation_verify(
+            grouped_proof, gen, com_grouped_input, gen, com_grouped_output, src, dst, grouped_label, &failure);
+        if (!result.grouped_sum_ok) throw std::runtime_error("grouped sum verifier rejected: " + failure);
+        result.verify_ms = timer.elapsed_ms();
+    }
+
+    result.proof_size_bytes = source_proof.serialized_size_bytes()
+        + destination_proof.serialized_size_bytes()
+        + grouped_proof.serialized_size_bytes();
+    result.source_digest = source_proof.transcript_digest;
+    result.destination_digest = destination_proof.transcript_digest;
+    result.grouped_sum_digest = grouped_proof.transcript_digest;
+    const auto run_dir = output_root / "runs" / spec.dataset / "warm";
+    ensure_dir(run_dir / "formal_artifacts");
+    ensure_dir(output_root / "evidence");
+    result.proof_path = run_dir / "formal_artifacts" / "zkdl_sparse_grouped_relations.proof.txt";
+    {
+        std::ofstream out(result.proof_path);
+        out << "ZKDLGATS\n";
+        out << "version=1\n";
+        out << "dataset=" << spec.dataset << "\n";
+        out << "relation_scope=hidden_layer0_head0_sparse_routing_and_one_dim_grouped_sum\n";
+        out << "node_count=" << graph.num_nodes << "\n";
+        out << "edge_count=" << graph.edges.size() << "\n";
+        out << "padded_node_count=" << padded_node_count << "\n";
+        out << "padded_edge_count=" << padded_edge_count << "\n";
+        out << "edge_range=0.." << graph.edges.size() << "\n";
+        out << "topology_hash=" << result.topology_hash << "\n";
+        out << "source_sparse_routing_status=PASS\n";
+        out << "destination_sparse_routing_status=PASS\n";
+        out << "grouped_sum_status=PASS\n";
+        out << "source_transcript_digest=" << result.source_digest << "\n";
+        out << "destination_transcript_digest=" << result.destination_digest << "\n";
+        out << "grouped_sum_transcript_digest=" << result.grouped_sum_digest << "\n";
+        out << "proof_size_bytes=" << result.proof_size_bytes << "\n";
+        out << "说明=本 proof artifact 只包含 relation metadata、承诺/opening/sumcheck 证明大小与 transcript 摘要，不包含完整 witness、完整 tensor 或 debug dump。\n";
+    }
+    result.evidence_path = output_root / "evidence" / ("sparse_grouped_relation_" + spec.dataset + ".json");
+    {
+        std::ofstream out(result.evidence_path);
+        out << "{\n";
+        out << "  \"dataset\": \"" << json_escape(spec.dataset) << "\",\n";
+        out << "  \"status\": \"partial_formal\",\n";
+        out << "  \"relation_scope\": \"hidden_layer0_head0_sparse_routing_and_one_dim_grouped_sum\",\n";
+        out << "  \"node_count\": \"" << graph.num_nodes << "\",\n";
+        out << "  \"edge_count\": \"" << graph.edges.size() << "\",\n";
+        out << "  \"edge_range\": \"0.." << graph.edges.size() << "\",\n";
+        out << "  \"topology_hash\": \"" << result.topology_hash << "\",\n";
+        out << "  \"source_sparse_routing\": \"PASS\",\n";
+        out << "  \"destination_sparse_routing\": \"PASS\",\n";
+        out << "  \"grouped_sum_by_dst\": \"PASS\",\n";
+        out << "  \"commitment_time_ms\": \"" << format_ms(result.commitment_ms) << "\",\n";
+        out << "  \"prove_time_ms\": \"" << format_ms(result.prove_ms) << "\",\n";
+        out << "  \"verify_time_ms\": \"" << format_ms(result.verify_ms) << "\",\n";
+        out << "  \"proof_size_bytes\": \"" << result.proof_size_bytes << "\",\n";
+        out << "  \"proof_path\": \"" << json_escape(result.proof_path.string()) << "\",\n";
+        out << "  \"note\": \"一维 grouped sum 使用 hidden layer0 head0 的 source attention edge 值作为输入；它证明 grouped sum gadget 本身，不等同于 softmax denominator 或 weighted aggregation。\"\n";
+        out << "}\n";
+    }
+    {
+        std::ofstream debug(run_dir / "proof_debug.log");
+        debug << "dataset=" << spec.dataset << " stage=formal_sparse_grouped status=PASS\n";
+        debug << "nodes=" << graph.num_nodes << " edges=" << graph.edges.size()
+              << " topology_hash=" << result.topology_hash << "\n";
+        debug << "source_sparse_routing_digest=" << result.source_digest << "\n";
+        debug << "destination_sparse_routing_digest=" << result.destination_digest << "\n";
+        debug << "grouped_sum_digest=" << result.grouped_sum_digest << "\n";
+        debug << "commitment_ms=" << format_ms(result.commitment_ms)
+              << " prove_ms=" << format_ms(result.prove_ms)
+              << " verify_ms=" << format_ms(result.verify_ms)
+              << " proof_size_bytes=" << result.proof_size_bytes << "\n";
+    }
+    {
+        std::ofstream resume(run_dir / "RESUME_POINT.md");
+        resume << "# zkDL GAT 数据集继续点\n\n";
+        resume << "- 数据集: `" << spec.dataset << "`\n";
+        resume << "- 本轮 relation: `SparseSourceRoutingRelationProof`, `SparseDestinationRoutingRelationProof`, `GroupedSumRelationProof`\n";
+        resume << "- 证明范围: full graph / full edge set，edge range `0.." << graph.edges.size() << "`\n";
+        resume << "- 结果: `PASS`\n";
+        resume << "- proof artifact: `" << result.proof_path.string() << "`\n";
+        resume << "- evidence: `" << result.evidence_path.string() << "`\n";
+        resume << "- Level A 状态: blocked；softmax ExpMap/inverse、LeakyReLU/ELU lookup-range、weighted/output aggregation、real rescale chain 与 rounding sign/tie-breaking 仍未闭合。\n";
+    }
+    return result;
+}
+
+void run_formal_sparse_grouped_gadget(
+    const fs::path& project_root,
+    const fs::path& output_root,
+    const DatasetRunSpec& spec)
+{
+    const auto run_dir = output_root / "runs" / spec.dataset / "warm";
+    ensure_dir(run_dir);
+    std::cout << "formal_sparse_grouped dataset=" << spec.dataset << " stage=load_dataset\n";
+    const auto dataset = load_cached_dataset(project_root / "data/cache" / spec.cache_name);
+    std::cout << "formal_sparse_grouped dataset=" << spec.dataset << " stage=normalize_graph\n";
+    const auto graph = normalize_graph(dataset, spec);
+    std::cout << "formal_sparse_grouped dataset=" << spec.dataset
+              << " nodes=" << graph.num_nodes
+              << " edges=" << graph.edges.size()
+              << " full_dataset=" << (graph.num_nodes == dataset.num_nodes ? "true" : "false")
+              << "\n";
+    if (graph.num_nodes != dataset.num_nodes) {
+        throw std::runtime_error("formal sparse/grouped gadget 只允许 full dataset/full graph");
+    }
+    std::cout << "formal_sparse_grouped dataset=" << spec.dataset << " stage=load_model\n";
+    const auto model = load_model(project_root / "artifacts/checkpoints" / spec.checkpoint_name);
+    std::cout << "formal_sparse_grouped dataset=" << spec.dataset << " stage=gpu_forward_trace\n";
+    ForwardMetrics forward;
+    ForwardTraceHost trace;
+    (void)run_gat_forward_gpu(graph, model, &forward, &trace);
+    std::cout << "formal_sparse_grouped dataset=" << spec.dataset
+              << " forward_ms=" << format_ms(forward.total_ms)
+              << " stage=prove_verify\n";
+    const auto result = run_sparse_grouped_relations_with_trace(spec, graph, trace, output_root);
+    std::cout << "formal_sparse_grouped dataset=" << spec.dataset
+              << " status=PASS"
+              << " commitment_ms=" << format_ms(result.commitment_ms)
+              << " prove_ms=" << format_ms(result.prove_ms)
+              << " verify_ms=" << format_ms(result.verify_ms)
+              << " proof_size_bytes=" << result.proof_size_bytes
+              << " proof_path=" << result.proof_path.string()
+              << "\n";
+}
+
 FormalPartialArtifact run_formal_partial_trace_proof(
     const DatasetRunSpec& spec,
     const ModelParams& model,
@@ -3554,9 +3849,8 @@ FormalPartialArtifact run_formal_partial_trace_proof(
         } else {
             artifact.blocked_relations.push_back("hidden trace 不可用，无法生成 formal hidden projection/dot-product relation evidence");
         }
-        artifact.blocked_relations.push_back("sparse source routing blocked：缺少 public src 上的 zkDL sparse route verifier");
-        artifact.blocked_relations.push_back("sparse destination routing blocked：缺少 public dst 分组上的 zkDL routing/grouped sum verifier");
-        artifact.blocked_relations.push_back("softmax/LeakyReLU/ExpMap/denominator/inverse/weighted aggregation/ELU/rescale blocked：缺少 zkDL verifier gadget");
+        artifact.blocked_relations.push_back("sparse routing/grouped sum 已有独立 zkDL relation gadget；本 legacy partial trace runner 尚未把它并入完整 GAT proof object");
+        artifact.blocked_relations.push_back("softmax/LeakyReLU/ExpMap/denominator/inverse/weighted aggregation/ELU/rescale blocked：缺少 zkDL verifier gadget 或公开量化契约");
 
         artifact.proof_generation_ok = !artifact.covered_relations.empty();
         artifact.verification_ok = !artifact.covered_relations.empty();
@@ -3794,16 +4088,16 @@ void write_coverage_matrix(const fs::path& output_root) {
         {"HadamardRelationProof", "supported", "selftest", "selftest", true, true, true, true, true, "zkdl_gat_outputs/runs/selftest/formal_relation_selftest_latest.log", "zkDL 自身 Hadamard relation 通过。"},
         {"MatmulRelationProof", "supported", "selftest+targeted", "selftest+targeted", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "zkDL 自身 matmul relation 可验证；用于 GAT 时仍只是子关系。"},
         {"LinearRelationProof", "supported", "selftest+partial", "selftest+partial", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "zkDL 自身 linear relation 可验证。"},
-        {"hidden projection", "partial_formal", "see remaining_coverage_queue", "see formal_partial_debug", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv;zkdl_gat_outputs/results/remaining_coverage_queue.csv", "只证明 projection 子关系；完整 sparse attention 未闭合。"},
-        {"hidden source attention dot", "partial_formal", "see remaining_coverage_queue", "see formal_partial_debug", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "只证明 source dot 子关系。"},
-        {"hidden destination attention dot", "partial_formal", "see remaining_coverage_queue", "see formal_partial_debug", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "只证明 destination dot 子关系。"},
-        {"output projection", "partial_formal", "see remaining_coverage_queue", "see formal_partial_debug", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "只证明 output projection 子关系。"},
-        {"output source attention dot", "partial_formal", "see remaining_coverage_queue", "see formal_partial_debug", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "只证明 output source dot 子关系。"},
-        {"output destination attention dot", "partial_formal", "see remaining_coverage_queue", "see formal_partial_debug", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "只证明 output destination dot 子关系。"},
-        {"hidden concat", "supported", "full-dataset relation chunks", "see formal_partial_debug", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "hidden concat 子关系已绑定。"},
-        {"output bias add", "supported", "full-dataset relation chunks", "see formal_partial_debug", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "bias add 子关系已绑定；前序 rescale 仍阻塞。"},
-        {"output-head average", "supported", "full-dataset relation chunks", "see formal_partial_debug", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "output-head average 子关系已绑定。"},
-        {"public logits binding", "supported", "full-dataset relation chunks", "see formal_partial_debug", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "public logits 子关系已绑定；前序 GAT relation 未闭合。"},
+        {"hidden projection", "partial_formal", "历史 targeted chunks", "see formal_partial_debug", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "只证明 projection 子关系；完整 attention 链路未闭合。"},
+        {"hidden source attention dot", "partial_formal", "历史 targeted chunks", "see formal_partial_debug", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "只证明 source dot 子关系。"},
+        {"hidden destination attention dot", "partial_formal", "历史 targeted chunks", "see formal_partial_debug", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "只证明 destination dot 子关系。"},
+        {"output projection", "partial_formal", "历史 targeted chunks", "see formal_partial_debug", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "只证明 output projection 子关系。"},
+        {"output source attention dot", "partial_formal", "历史 targeted chunks", "see formal_partial_debug", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "只证明 output source dot 子关系。"},
+        {"output destination attention dot", "partial_formal", "历史 targeted chunks", "see formal_partial_debug", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "只证明 output destination dot 子关系。"},
+        {"hidden concat", "partial_formal", "LinearRelationProof primitive", "supporting evidence only", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "hidden concat 子关系可表达；不代表完整 GAT proof。"},
+        {"output bias add", "partial_formal", "LinearRelationProof primitive", "supporting evidence only", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "bias add 子关系可表达；前序 rescale 仍阻塞。"},
+        {"output-head average", "partial_formal", "LinearRelationProof primitive", "supporting evidence only", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "output-head average 子关系可表达；前序 output attention chain 未闭合。"},
+        {"public logits binding", "partial_formal", "LinearRelationProof primitive", "supporting evidence only", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "public logits 子关系可表达；前序 GAT relation 未闭合。"},
         {"fixed-to-rounded trace scale decomposition", "partial_formal", "targeted schedules", "see formal_partial_debug", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "只证明 exact decomposition；未证明 sign/tie policy。"},
         {"residual bounded range binding", "partial_formal", "targeted schedules", "see formal_partial_debug", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "residual range 子关系不能替代 rounding proof。"},
         {"proof serialization", "partial_formal", "partial artifacts", "partial artifacts", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "没有完整 GAT proof object。"},
@@ -3811,15 +4105,18 @@ void write_coverage_matrix(const fs::path& output_root) {
         {"verifier 不读取 witness", "partial_formal", "partial artifacts", "partial artifacts", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "完整 GAT verifier 尚未存在。"},
         {"proof object 不含完整 tensor/debug dump", "partial_formal", "partial artifacts", "partial artifacts", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "当前只对 partial artifact 成立。"},
         {"debug_level_b output binding", "debug_only", "diagnostic", "diagnostic", false, false, false, false, false, "zkdl_gat_outputs/results/debug_level_b.csv", "不是 formal benchmark。"},
-        {"source sparse routing", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "缺少 public src sparse route verifier。"},
-        {"destination sparse routing", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "缺少 public dst routing/grouped sum verifier。"},
+        {"SparseSourceRoutingRelationProof", "supported", "selftest+Cora/Citeseer/Pubmed full graph after run", "see sparse evidence", true, true, true, true, true, "zkdl_gat_outputs/evidence/sparse_grouped_relation_cora.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_citeseer.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_pubmed.json", "zkDL sparse source routing gadget 使用 public src 和 topology hash；不使用 dense attention。"},
+        {"SparseDestinationRoutingRelationProof", "supported", "selftest+Cora/Citeseer/Pubmed full graph after run", "see sparse evidence", true, true, true, true, true, "zkdl_gat_outputs/evidence/sparse_grouped_relation_cora.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_citeseer.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_pubmed.json", "zkDL sparse destination routing gadget 使用 public dst 和 topology hash；不使用 dense attention。"},
+        {"GroupedSumRelationProof", "supported", "selftest+Cora/Citeseer/Pubmed full graph after run", "see sparse evidence", true, true, true, true, true, "zkdl_gat_outputs/evidence/sparse_grouped_relation_cora.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_citeseer.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_pubmed.json", "一维 grouped sum gadget 已实现；尚未等同于 softmax denominator 或 weighted aggregation。"},
+        {"source sparse routing", "partial_formal", "Cora/Citeseer/Pubmed full graph after run", "see sparse evidence", true, true, true, true, true, "zkdl_gat_outputs/evidence/sparse_grouped_relation_cora.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_citeseer.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_pubmed.json", "已局部实现并验证 hidden layer0/head0 source attention routing；完整所有层/头接入仍未完成。"},
+        {"destination sparse routing", "partial_formal", "Cora/Citeseer/Pubmed full graph after run", "see sparse evidence", true, true, true, true, true, "zkdl_gat_outputs/evidence/sparse_grouped_relation_cora.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_citeseer.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_pubmed.json", "已局部实现并验证 hidden layer0/head0 destination attention routing；完整所有层/头接入仍未完成。"},
         {"target-node softmax group", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "缺少完整 softmax group relation。"},
         {"softmax group max", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "缺少 max/range comparison gadget。"},
         {"ExpMap", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "缺少 QuantExp lookup argument。"},
-        {"softmax denominator sum", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "缺少 grouped denominator sum verifier。"},
+        {"softmax denominator sum", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "一维 GroupedSumRelationProof 已有；仍缺 ExpMap 输出、denominator 与 inverse chain 绑定。"},
         {"inverse", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "缺少 denominator nonzero 与 inverse witness 绑定。"},
         {"alpha multiplication", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "缺少前序 denominator/inverse 绑定。"},
-        {"weighted aggregation", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "缺少 product 与 sparse aggregation verifier。"},
+        {"weighted aggregation", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "一维 GroupedSumRelationProof 已有；仍缺 alpha*message product 与完整 aggregation chain 绑定。"},
         {"LeakyReLU", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "缺少 lookup/range verifier gadget。"},
         {"ELU", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "缺少 ELU lookup/range verifier gadget。"},
         {"output attention aggregation", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "缺少 output attention aggregation verifier。"},
@@ -4047,10 +4344,16 @@ void write_adapter_readme(const fs::path& output_root, const std::vector<RunRow>
     out << "当前状态：不是 Level A。Gate 1/2/3 通过时，以 `runs/selftest/*_latest.log` 中的 `SUMMARY status=PASS` 为准。\n\n";
     out << "本目录是 zkDL baseline 的 GAT 适配，只替换模型入口并补齐运行五个全量数据集所需的数据、checkpoint、trace、relation evidence、artifact 与 benchmark 输出。\n\n";
     out << "本目录没有混入主仓库 GAT-ZKML 证明方案：不使用主仓库 KZG proof schema、quotient polynomial、verifier equation、opening proof 规则、transcript challenge 语义或 proof object layout。当前保留的是 zkDL 自身 commitment、opening、transcript、sumcheck 与 relation proof 语义。\n\n";
+    out << "## 协议边界\n\n";
+    out << "- 本适配严格以 `/home/pzh/project/comparison/GAT-ZKML-zkDL.md` 为最高协议边界。\n";
+    out << "- 本轮修改未改变该文件规定的 GAT 前向语义。\n";
+    out << "- 本轮修改未混入主仓库 GAT-ZKML 证明方案。\n";
+    out << "- 本轮结果如果仍未 Level A，则 latest.csv/json 保持 NA。\n";
+    out << "- 所有 partial_formal 只作为 supporting evidence。\n\n";
     out << "与主仓库指标口径对齐：`latest.csv` 字段固定为 `dataset,status,blocker,benchmark_mode,commitment_time_ms,prove_time_ms,verify_time_ms,proof_size_bytes`，数据集顺序固定为 `cora,citeseer,pubmed,ppi,ogbn-arxiv`，`benchmark_mode` 固定为 `warm`。只有 full dataset + complete formal proof generation + complete formal verification 成功后才填写 official 四项。\n\n";
-    out << "当前 supported relation：commitment/evaluation binding、transcript binding、HadamardRelationProof、MatmulRelationProof、LinearRelationProof、hidden concat、output bias add、output-head average 和 public logits binding。projection/dot、scale decomposition 与 residual bounded range 只计入 partial formal。\n\n";
-    out << "当前 blocked relation：sparse routing、target-node softmax group、softmax max/sum/inverse/ExpMap、LeakyReLU、ELU、weighted aggregation、output aggregation、real rescale chain 与 rounding sign/tie-breaking 仍缺 zkDL verifier gadget 或公开量化契约。\n\n";
-    out << "目录清理原则：保留源码、构建脚本、正式 results、summary、formal_partial_debug、debug_level_b、coverage matrix、必要 proof artifact、proof evidence、run manifest、benchmark、proof_debug、dataset resume point 和本 README；不保留审计文档、错误调度日志或临时 debug 目录。\n\n";
+    out << "当前 supported relation：commitment/evaluation binding、transcript binding、HadamardRelationProof、MatmulRelationProof、LinearRelationProof、SparseSourceRoutingRelationProof、SparseDestinationRoutingRelationProof 和一维 GroupedSumRelationProof。hidden concat、output bias add、output-head average、public logits binding、projection/dot、scale decomposition 与 residual bounded range 只计入 partial formal。\n\n";
+    out << "当前 blocked relation：target-node softmax group、softmax max、ExpMap、denominator sum 与 inverse 绑定、alpha multiplication chain、LeakyReLU、ELU、weighted/output aggregation、real rescale chain 与 rounding sign/tie-breaking 仍缺 zkDL verifier gadget、lookup/range primitive 或公开量化契约；sparse routing/grouped sum 已作为独立 relation gadget 实现，但尚未并入完整所有层/头的 GAT proof object。\n\n";
+    out << "目录清理原则：保留源码、构建脚本、正式 results、summary、formal_partial_debug、debug_level_b、coverage matrix、必要 proof artifact、proof evidence、run manifest、benchmark、proof_debug、dataset resume point 和本 README；不保留错误调度日志、过期 proof artifact 或临时 debug 目录。\n\n";
     out << "数据集状态：\n\n";
     out << "| dataset | status | gpu_forward | partial commitment_ms | partial prove_ms | partial verify_ms | partial proof_size_bytes | verified chunks | total chunks | debug Level B |\n";
     out << "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n";
@@ -4066,7 +4369,7 @@ void write_adapter_readme(const fs::path& output_root, const std::vector<RunRow>
             << " | " << row.formal_partial_total_chunks
             << " | " << row.debug_level_b_status << " |\n";
     }
-    out << "\n下一最小继续点以各数据集 `runs/<dataset>/warm/RESUME_POINT.md` 为准；若某个 relation 未完成，继续同一 relation 的下一个 chunk。coverage 说明见 `results/coverage_matrix.*`。\n";
+    out << "\n下一最小继续点以 `RESUME_POINT.md` 为准：优先补 softmax、lookup/range、aggregation、rescale 与 rounding 契约，不继续堆 projection/dot 长队列。coverage 说明见 `results/coverage_matrix.*`。\n";
 }
 
 RunRow run_one(const fs::path& project_root, const fs::path& output_root, const DatasetRunSpec& spec) {
@@ -4610,6 +4913,7 @@ int main(int argc, char** argv) {
         bool diagnose_matmul_first_failure = false;
         bool formal_matmul_schedule = false;
         bool formal_matmul_schedule_batch = false;
+        bool formal_sparse_grouped = false;
         std::string only_dataset;
         std::string schedule_relation = "output_head0_projection";
         fs::path schedule_plan;
@@ -4621,6 +4925,7 @@ int main(int argc, char** argv) {
                 std::cout
                     << "usage: ./gat_zkdl [--run-all|--dataset DATASET] [--output-root DIR]\n"
                     << "       ./gat_zkdl --diagnose-matmul-first-failure [--dataset DATASET]\n"
+                    << "       ./gat_zkdl --formal-sparse-grouped --dataset DATASET --output-root DIR\n"
                     << "       ./gat_zkdl --formal-matmul-schedule --dataset DATASET --relation REL --start-chunk N [--max-chunks N] --output-root DIR\n"
                     << "       ./gat_zkdl --formal-matmul-schedule-batch --dataset DATASET --schedule-plan CSV --output-root DIR\n";
                 return 0;
@@ -4640,6 +4945,9 @@ int main(int argc, char** argv) {
                 run_all = false;
             } else if (arg == "--formal-matmul-schedule-batch") {
                 formal_matmul_schedule_batch = true;
+                run_all = false;
+            } else if (arg == "--formal-sparse-grouped") {
+                formal_sparse_grouped = true;
                 run_all = false;
             } else if (arg == "--relation" && i + 1 < argc) {
                 schedule_relation = argv[++i];
@@ -4673,6 +4981,24 @@ int main(int argc, char** argv) {
                     continue;
                 }
                 run_matmul_first_failure_diagnostic(project_root, spec);
+            }
+            return 0;
+        }
+
+        if (formal_sparse_grouped) {
+            if (only_dataset.empty()) {
+                throw std::runtime_error("--formal-sparse-grouped requires --dataset");
+            }
+            bool found = false;
+            for (const auto& spec : specs) {
+                if (spec.dataset != only_dataset) {
+                    continue;
+                }
+                found = true;
+                run_formal_sparse_grouped_gadget(project_root, output_root, spec);
+            }
+            if (!found) {
+                throw std::runtime_error("unknown dataset for formal sparse grouped gadget: " + only_dataset);
             }
             return 0;
         }

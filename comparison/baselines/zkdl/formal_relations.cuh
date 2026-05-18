@@ -4,8 +4,10 @@
 #include "commitment.cuh"
 
 #include <algorithm>
+#include <cstdint>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 
 inline uint formal_next_power_of_two_u32(uint value)
 {
@@ -744,6 +746,401 @@ inline bool formal_linear_relation_verify(
     }
     if (!Fr_host_eq(acc, Fr_host_zero())) return fail("linear relation equation mismatch");
     if (proof.transcript_digest != transcript.digest_hex()) return fail("linear transcript digest mismatch");
+    return true;
+}
+
+inline void formal_hash_absorb_u64(std::uint64_t* state, std::uint64_t value)
+{
+    for (uint i = 0; i < 8U; ++i)
+    {
+        const unsigned char byte = static_cast<unsigned char>((value >> (8U * i)) & 0xffU);
+        *state ^= byte;
+        *state *= 1099511628211ULL;
+    }
+}
+
+inline std::uint64_t formal_sparse_topology_hash(
+    const vector<std::uint32_t>& src,
+    const vector<std::uint32_t>& dst,
+    uint node_count,
+    uint edge_count)
+{
+    if (src.size() < edge_count || dst.size() < edge_count)
+    {
+        throw std::runtime_error("sparse topology vector is shorter than edge_count");
+    }
+    std::uint64_t state = 1469598103934665603ULL;
+    formal_hash_absorb_u64(&state, node_count);
+    formal_hash_absorb_u64(&state, edge_count);
+    for (uint i = 0; i < edge_count; ++i)
+    {
+        formal_hash_absorb_u64(&state, src[i]);
+        formal_hash_absorb_u64(&state, dst[i]);
+    }
+    return state;
+}
+
+inline Fr_t formal_eq_basis_eval(const vector<Fr_t>& point, uint index)
+{
+    Fr_t acc = Fr_host_one_mont();
+    for (uint bit = 0; bit < point.size(); ++bit)
+    {
+        const bool one = ((index >> bit) & 1U) != 0U;
+        const Fr_t factor = one ? point[bit] : Fr_host_sub(Fr_host_one_mont(), point[bit]);
+        acc = Fr_host_mul(acc, factor);
+    }
+    return acc;
+}
+
+inline vector<Fr_t> formal_sparse_route_public_coefficients(
+    const vector<std::uint32_t>& src,
+    const vector<std::uint32_t>& dst,
+    uint node_count,
+    uint edge_count,
+    uint padded_node_count,
+    uint padded_edge_count,
+    const vector<Fr_t>& edge_point,
+    const std::string& direction)
+{
+    if (src.size() < edge_count || dst.size() < edge_count) throw std::runtime_error("route topology vector too short");
+    if (edge_point.size() != ceilLog2(padded_edge_count)) throw std::runtime_error("route edge point dimension mismatch");
+    vector<Fr_t> coeff(padded_node_count, Fr_host_zero());
+    for (uint edge = 0; edge < edge_count; ++edge)
+    {
+        const std::uint32_t node = direction == "source" ? src[edge] : dst[edge];
+        if (node >= node_count) throw std::runtime_error("route topology node index out of range");
+        coeff[node] = Fr_host_add(coeff[node], formal_eq_basis_eval(edge_point, edge));
+    }
+    return coeff;
+}
+
+inline vector<Fr_t> formal_grouped_sum_public_coefficients(
+    const vector<std::uint32_t>& dst,
+    uint node_count,
+    uint edge_count,
+    uint padded_edge_count,
+    const vector<Fr_t>& node_point)
+{
+    if (dst.size() < edge_count) throw std::runtime_error("grouped-sum topology vector too short");
+    if (node_point.size() != ceilLog2(formal_next_power_of_two_u32(node_count)))
+    {
+        throw std::runtime_error("grouped-sum node point dimension mismatch");
+    }
+    vector<Fr_t> coeff(padded_edge_count, Fr_host_zero());
+    for (uint edge = 0; edge < edge_count; ++edge)
+    {
+        if (dst[edge] >= node_count) throw std::runtime_error("grouped-sum dst index out of range");
+        coeff[edge] = formal_eq_basis_eval(node_point, dst[edge]);
+    }
+    return coeff;
+}
+
+inline void formal_absorb_sparse_routing_metadata(
+    FormalTranscript& transcript,
+    const std::string& label,
+    const std::string& direction,
+    std::uint64_t topology_hash,
+    uint node_count,
+    uint edge_count,
+    uint padded_node_count,
+    uint padded_edge_count,
+    uint edge_begin,
+    uint edge_end,
+    const G1TensorJacobian& com_node,
+    const G1TensorJacobian& com_edge)
+{
+    transcript.absorb_label("sparse_routing_relation");
+    transcript.absorb_label(label);
+    transcript.absorb_label(direction);
+    transcript.absorb_u64(topology_hash);
+    transcript.absorb_u64(node_count);
+    transcript.absorb_u64(edge_count);
+    transcript.absorb_u64(padded_node_count);
+    transcript.absorb_u64(padded_edge_count);
+    transcript.absorb_u64(edge_begin);
+    transcript.absorb_u64(edge_end);
+    formal_absorb_g1_tensor(transcript, com_node);
+    formal_absorb_g1_tensor(transcript, com_edge);
+}
+
+inline void formal_absorb_grouped_sum_metadata(
+    FormalTranscript& transcript,
+    const std::string& label,
+    std::uint64_t topology_hash,
+    uint node_count,
+    uint edge_count,
+    uint padded_node_count,
+    uint padded_edge_count,
+    uint edge_begin,
+    uint edge_end,
+    const G1TensorJacobian& com_edge_input,
+    const G1TensorJacobian& com_node_output)
+{
+    transcript.absorb_label("grouped_sum_relation");
+    transcript.absorb_label(label);
+    transcript.absorb_u64(topology_hash);
+    transcript.absorb_u64(node_count);
+    transcript.absorb_u64(edge_count);
+    transcript.absorb_u64(padded_node_count);
+    transcript.absorb_u64(padded_edge_count);
+    transcript.absorb_u64(edge_begin);
+    transcript.absorb_u64(edge_end);
+    formal_absorb_g1_tensor(transcript, com_edge_input);
+    formal_absorb_g1_tensor(transcript, com_node_output);
+}
+
+inline SparseRoutingRelationProof formal_sparse_routing_relation_prove(
+    const FrTensor& node_values,
+    const FrTensor& edge_values,
+    const Commitment& node_generators,
+    const G1TensorJacobian& com_node,
+    const Commitment& edge_generators,
+    const G1TensorJacobian& com_edge,
+    const vector<std::uint32_t>& src,
+    const vector<std::uint32_t>& dst,
+    uint node_count,
+    uint edge_count,
+    const std::string& direction,
+    const std::string& relation_label)
+{
+    if (direction != "source" && direction != "destination") throw std::runtime_error("sparse routing direction must be source or destination");
+    const uint padded_node_count = formal_next_power_of_two_u32(node_count);
+    const uint padded_edge_count = formal_next_power_of_two_u32(edge_count);
+    if (node_values.size != padded_node_count || edge_values.size != padded_edge_count)
+    {
+        throw std::runtime_error("sparse routing tensor size mismatch");
+    }
+
+    SparseRoutingRelationProof proof;
+    proof.label = relation_label;
+    proof.direction = direction;
+    proof.topology_hash = formal_sparse_topology_hash(src, dst, node_count, edge_count);
+    proof.node_count = node_count;
+    proof.edge_count = edge_count;
+    proof.padded_node_count = padded_node_count;
+    proof.padded_edge_count = padded_edge_count;
+    proof.edge_begin = 0;
+    proof.edge_end = edge_count;
+    proof.commitment_node_label = relation_label + ":node";
+    proof.commitment_edge_label = relation_label + ":edge";
+
+    FormalTranscript transcript;
+    formal_absorb_sparse_routing_metadata(transcript, relation_label, direction, proof.topology_hash,
+        node_count, edge_count, padded_node_count, padded_edge_count, proof.edge_begin, proof.edge_end, com_node, com_edge);
+    proof.edge_point = formal_make_challenge_point(transcript, ceilLog2(padded_edge_count), "sparse_route_edge_point");
+    proof.edge_eval = edge_generators.open_with_proof(edge_values, com_edge, proof.edge_point, proof.opening_edge);
+    transcript.absorb_fr(proof.edge_eval);
+
+    const auto coeff = formal_sparse_route_public_coefficients(
+        src, dst, node_count, edge_count, padded_node_count, padded_edge_count, proof.edge_point, direction);
+    FrTensor public_coeff(static_cast<uint>(coeff.size()), coeff.data());
+    proof.inner_product = formal_inner_product_sumcheck_prove(public_coeff, node_values, relation_label + ":inner");
+    if (!Fr_host_eq(proof.inner_product.claimed_sum, proof.edge_eval))
+    {
+        throw std::runtime_error("sparse routing witness does not satisfy public topology relation");
+    }
+    proof.public_weight_eval = formal_host_mle_vector(coeff, proof.inner_product.challenges.begin(), proof.inner_product.challenges.end());
+    if (!Fr_host_eq(proof.public_weight_eval, proof.inner_product.final_a))
+    {
+        throw std::runtime_error("sparse routing public coefficient terminal mismatch");
+    }
+    const Fr_t node_eval = node_generators.open_with_proof(
+        node_values, com_node, proof.inner_product.challenges, proof.opening_node);
+    if (!Fr_host_eq(node_eval, proof.inner_product.final_b))
+    {
+        throw std::runtime_error("sparse routing node opening mismatch");
+    }
+    transcript.absorb_label(proof.inner_product.transcript_digest);
+    transcript.absorb_fr(proof.public_weight_eval);
+    transcript.absorb_fr(node_eval);
+    proof.transcript_digest = transcript.digest_hex();
+    return proof;
+}
+
+inline bool formal_sparse_routing_relation_verify(
+    const SparseRoutingRelationProof& proof,
+    const Commitment& node_generators,
+    const G1TensorJacobian& com_node,
+    const Commitment& edge_generators,
+    const G1TensorJacobian& com_edge,
+    const vector<std::uint32_t>& src,
+    const vector<std::uint32_t>& dst,
+    const std::string& direction,
+    const std::string& relation_label,
+    std::string* failure = nullptr)
+{
+    const auto fail = [&](const std::string& message) {
+        if (failure != nullptr) *failure = message;
+        return false;
+    };
+    if (proof.label != relation_label) return fail("sparse routing label mismatch");
+    if (proof.direction != direction) return fail("sparse routing direction mismatch");
+    if (direction != "source" && direction != "destination") return fail("invalid sparse routing direction");
+    if (proof.node_count == 0 || proof.edge_count == 0) return fail("empty sparse routing relation");
+    if (proof.padded_node_count != formal_next_power_of_two_u32(proof.node_count)
+        || proof.padded_edge_count != formal_next_power_of_two_u32(proof.edge_count))
+    {
+        return fail("sparse routing padded shape mismatch");
+    }
+    if (proof.edge_begin != 0 || proof.edge_end != proof.edge_count) return fail("sparse routing verifier currently expects full edge range");
+    const auto expected_hash = formal_sparse_topology_hash(src, dst, proof.node_count, proof.edge_count);
+    if (proof.topology_hash != expected_hash) return fail("sparse routing topology hash mismatch");
+
+    FormalTranscript transcript;
+    formal_absorb_sparse_routing_metadata(transcript, relation_label, direction, proof.topology_hash,
+        proof.node_count, proof.edge_count, proof.padded_node_count, proof.padded_edge_count,
+        proof.edge_begin, proof.edge_end, com_node, com_edge);
+    const auto expected_edge_point = formal_make_challenge_point(transcript, ceilLog2(proof.padded_edge_count), "sparse_route_edge_point");
+    if (!formal_points_equal(expected_edge_point, proof.edge_point)) return fail("sparse routing edge point replay mismatch");
+    if (!formal_points_equal(proof.opening_edge.point, proof.edge_point)) return fail("sparse routing edge opening point mismatch");
+    if (!Fr_host_eq(proof.opening_edge.value, proof.edge_eval)) return fail("sparse routing edge opening value mismatch");
+    if (!Commitment::verify_opening(edge_generators, com_edge, proof.opening_edge)) return fail("sparse routing edge opening rejected");
+    transcript.absorb_fr(proof.edge_eval);
+
+    const auto coeff = formal_sparse_route_public_coefficients(
+        src, dst, proof.node_count, proof.edge_count, proof.padded_node_count, proof.padded_edge_count, proof.edge_point, direction);
+    if (proof.inner_product.size != proof.padded_node_count) return fail("sparse routing inner-product size mismatch");
+    if (!Fr_host_eq(proof.inner_product.claimed_sum, proof.edge_eval)) return fail("sparse routing claim does not match edge evaluation");
+    std::string inner_failure;
+    if (!formal_inner_product_sumcheck_verify(proof.inner_product, relation_label + ":inner", &inner_failure))
+    {
+        return fail("sparse routing inner sumcheck failed: " + inner_failure);
+    }
+    const Fr_t public_eval = formal_host_mle_vector(coeff, proof.inner_product.challenges.begin(), proof.inner_product.challenges.end());
+    if (!Fr_host_eq(public_eval, proof.public_weight_eval)) return fail("sparse routing stored public coefficient evaluation mismatch");
+    if (!Fr_host_eq(public_eval, proof.inner_product.final_a)) return fail("sparse routing terminal public coefficient mismatch");
+    if (!formal_points_equal(proof.opening_node.point, proof.inner_product.challenges)) return fail("sparse routing node opening point mismatch");
+    if (!Fr_host_eq(proof.opening_node.value, proof.inner_product.final_b)) return fail("sparse routing node opening value mismatch");
+    if (!Commitment::verify_opening(node_generators, com_node, proof.opening_node)) return fail("sparse routing node opening rejected");
+
+    transcript.absorb_label(proof.inner_product.transcript_digest);
+    transcript.absorb_fr(proof.public_weight_eval);
+    transcript.absorb_fr(proof.opening_node.value);
+    if (proof.transcript_digest != transcript.digest_hex()) return fail("sparse routing transcript digest mismatch");
+    return true;
+}
+
+inline GroupedSumRelationProof formal_grouped_sum_relation_prove(
+    const FrTensor& edge_input,
+    const FrTensor& node_output,
+    const Commitment& edge_generators,
+    const G1TensorJacobian& com_edge_input,
+    const Commitment& node_generators,
+    const G1TensorJacobian& com_node_output,
+    const vector<std::uint32_t>& src,
+    const vector<std::uint32_t>& dst,
+    uint node_count,
+    uint edge_count,
+    const std::string& relation_label)
+{
+    const uint padded_node_count = formal_next_power_of_two_u32(node_count);
+    const uint padded_edge_count = formal_next_power_of_two_u32(edge_count);
+    if (edge_input.size != padded_edge_count || node_output.size != padded_node_count)
+    {
+        throw std::runtime_error("grouped-sum tensor size mismatch");
+    }
+
+    GroupedSumRelationProof proof;
+    proof.label = relation_label;
+    proof.topology_hash = formal_sparse_topology_hash(src, dst, node_count, edge_count);
+    proof.node_count = node_count;
+    proof.edge_count = edge_count;
+    proof.padded_node_count = padded_node_count;
+    proof.padded_edge_count = padded_edge_count;
+    proof.edge_begin = 0;
+    proof.edge_end = edge_count;
+    proof.commitment_edge_input_label = relation_label + ":edge_input";
+    proof.commitment_node_output_label = relation_label + ":node_output";
+
+    FormalTranscript transcript;
+    formal_absorb_grouped_sum_metadata(transcript, relation_label, proof.topology_hash,
+        node_count, edge_count, padded_node_count, padded_edge_count, proof.edge_begin, proof.edge_end,
+        com_edge_input, com_node_output);
+    proof.node_point = formal_make_challenge_point(transcript, ceilLog2(padded_node_count), "grouped_sum_node_point");
+    proof.output_eval = node_generators.open_with_proof(node_output, com_node_output, proof.node_point, proof.opening_node_output);
+    transcript.absorb_fr(proof.output_eval);
+
+    const auto coeff = formal_grouped_sum_public_coefficients(dst, node_count, edge_count, padded_edge_count, proof.node_point);
+    FrTensor public_coeff(static_cast<uint>(coeff.size()), coeff.data());
+    proof.inner_product = formal_inner_product_sumcheck_prove(public_coeff, edge_input, relation_label + ":inner");
+    if (!Fr_host_eq(proof.inner_product.claimed_sum, proof.output_eval))
+    {
+        throw std::runtime_error("grouped-sum witness does not satisfy public dst grouping relation");
+    }
+    proof.public_weight_eval = formal_host_mle_vector(coeff, proof.inner_product.challenges.begin(), proof.inner_product.challenges.end());
+    if (!Fr_host_eq(proof.public_weight_eval, proof.inner_product.final_a))
+    {
+        throw std::runtime_error("grouped-sum public coefficient terminal mismatch");
+    }
+    const Fr_t edge_eval = edge_generators.open_with_proof(
+        edge_input, com_edge_input, proof.inner_product.challenges, proof.opening_edge_input);
+    if (!Fr_host_eq(edge_eval, proof.inner_product.final_b))
+    {
+        throw std::runtime_error("grouped-sum edge opening mismatch");
+    }
+    transcript.absorb_label(proof.inner_product.transcript_digest);
+    transcript.absorb_fr(proof.public_weight_eval);
+    transcript.absorb_fr(edge_eval);
+    proof.transcript_digest = transcript.digest_hex();
+    return proof;
+}
+
+inline bool formal_grouped_sum_relation_verify(
+    const GroupedSumRelationProof& proof,
+    const Commitment& edge_generators,
+    const G1TensorJacobian& com_edge_input,
+    const Commitment& node_generators,
+    const G1TensorJacobian& com_node_output,
+    const vector<std::uint32_t>& src,
+    const vector<std::uint32_t>& dst,
+    const std::string& relation_label,
+    std::string* failure = nullptr)
+{
+    const auto fail = [&](const std::string& message) {
+        if (failure != nullptr) *failure = message;
+        return false;
+    };
+    if (proof.label != relation_label) return fail("grouped-sum label mismatch");
+    if (proof.node_count == 0 || proof.edge_count == 0) return fail("empty grouped-sum relation");
+    if (proof.padded_node_count != formal_next_power_of_two_u32(proof.node_count)
+        || proof.padded_edge_count != formal_next_power_of_two_u32(proof.edge_count))
+    {
+        return fail("grouped-sum padded shape mismatch");
+    }
+    if (proof.edge_begin != 0 || proof.edge_end != proof.edge_count) return fail("grouped-sum verifier currently expects full edge range");
+    const auto expected_hash = formal_sparse_topology_hash(src, dst, proof.node_count, proof.edge_count);
+    if (proof.topology_hash != expected_hash) return fail("grouped-sum topology hash mismatch");
+
+    FormalTranscript transcript;
+    formal_absorb_grouped_sum_metadata(transcript, relation_label, proof.topology_hash,
+        proof.node_count, proof.edge_count, proof.padded_node_count, proof.padded_edge_count,
+        proof.edge_begin, proof.edge_end, com_edge_input, com_node_output);
+    const auto expected_node_point = formal_make_challenge_point(transcript, ceilLog2(proof.padded_node_count), "grouped_sum_node_point");
+    if (!formal_points_equal(expected_node_point, proof.node_point)) return fail("grouped-sum node point replay mismatch");
+    if (!formal_points_equal(proof.opening_node_output.point, proof.node_point)) return fail("grouped-sum output opening point mismatch");
+    if (!Fr_host_eq(proof.opening_node_output.value, proof.output_eval)) return fail("grouped-sum output opening value mismatch");
+    if (!Commitment::verify_opening(node_generators, com_node_output, proof.opening_node_output)) return fail("grouped-sum output opening rejected");
+    transcript.absorb_fr(proof.output_eval);
+
+    const auto coeff = formal_grouped_sum_public_coefficients(dst, proof.node_count, proof.edge_count, proof.padded_edge_count, proof.node_point);
+    if (proof.inner_product.size != proof.padded_edge_count) return fail("grouped-sum inner-product size mismatch");
+    if (!Fr_host_eq(proof.inner_product.claimed_sum, proof.output_eval)) return fail("grouped-sum claim does not match output evaluation");
+    std::string inner_failure;
+    if (!formal_inner_product_sumcheck_verify(proof.inner_product, relation_label + ":inner", &inner_failure))
+    {
+        return fail("grouped-sum inner sumcheck failed: " + inner_failure);
+    }
+    const Fr_t public_eval = formal_host_mle_vector(coeff, proof.inner_product.challenges.begin(), proof.inner_product.challenges.end());
+    if (!Fr_host_eq(public_eval, proof.public_weight_eval)) return fail("grouped-sum stored public coefficient evaluation mismatch");
+    if (!Fr_host_eq(public_eval, proof.inner_product.final_a)) return fail("grouped-sum terminal public coefficient mismatch");
+    if (!formal_points_equal(proof.opening_edge_input.point, proof.inner_product.challenges)) return fail("grouped-sum edge opening point mismatch");
+    if (!Fr_host_eq(proof.opening_edge_input.value, proof.inner_product.final_b)) return fail("grouped-sum edge opening value mismatch");
+    if (!Commitment::verify_opening(edge_generators, com_edge_input, proof.opening_edge_input)) return fail("grouped-sum edge opening rejected");
+
+    transcript.absorb_label(proof.inner_product.transcript_digest);
+    transcript.absorb_fr(proof.public_weight_eval);
+    transcript.absorb_fr(proof.opening_edge_input.value);
+    if (proof.transcript_digest != transcript.digest_hex()) return fail("grouped-sum transcript digest mismatch");
     return true;
 }
 

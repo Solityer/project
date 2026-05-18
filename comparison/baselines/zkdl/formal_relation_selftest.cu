@@ -428,6 +428,170 @@ bool run_linear_concat_case(const std::string& label, std::ostream& log)
     return passed;
 }
 
+bool run_sparse_routing_case(const std::string& label, const std::string& direction, std::ostream& log)
+{
+    bool passed = true;
+    std::string failure;
+    try {
+        const uint node_count = 5;
+        const uint edge_count = 9;
+        const uint padded_node_count = formal_next_power_of_two_u32(node_count);
+        const uint padded_edge_count = formal_next_power_of_two_u32(edge_count);
+        const std::vector<std::uint32_t> src = {0, 2, 1, 3, 4, 0, 2, 4, 1};
+        const std::vector<std::uint32_t> dst = {1, 1, 2, 2, 3, 3, 4, 4, 4};
+        auto node_host = deterministic_mont_vec_local(node_count, label + ":node");
+        node_host.resize(padded_node_count, Fr_host_zero());
+        std::vector<Fr_t> edge_host(padded_edge_count, Fr_host_zero());
+        for (uint edge = 0; edge < edge_count; ++edge) {
+            const auto node = direction == "source" ? src[edge] : dst[edge];
+            edge_host[edge] = node_host[node];
+        }
+        FrTensor node_tensor(padded_node_count, node_host.data());
+        FrTensor edge_tensor(padded_edge_count, edge_host.data());
+        Commitment gen(1, G1Jacobian_generator);
+        const auto com_node = gen.commit(node_tensor);
+        const auto com_edge = gen.commit(edge_tensor);
+        auto proof = formal_sparse_routing_relation_prove(
+            node_tensor,
+            edge_tensor,
+            gen,
+            com_node,
+            gen,
+            com_edge,
+            src,
+            dst,
+            node_count,
+            edge_count,
+            direction,
+            label + ":" + direction);
+        passed = formal_sparse_routing_relation_verify(
+            proof,
+            gen,
+            com_node,
+            gen,
+            com_edge,
+            src,
+            dst,
+            direction,
+            label + ":" + direction,
+            &failure);
+        auto tampered = proof;
+        tampered.inner_product.final_b = Fr_host_add(tampered.inner_product.final_b, one_mont());
+        if (formal_sparse_routing_relation_verify(
+                tampered, gen, com_node, gen, com_edge, src, dst, direction, label + ":" + direction, nullptr)) {
+            passed = false;
+            failure = "tampered sparse routing proof accepted";
+        }
+        auto edge_bad_host = edge_host;
+        edge_bad_host[0] = Fr_host_add(edge_bad_host[0], one_mont());
+        FrTensor edge_bad(padded_edge_count, edge_bad_host.data());
+        const auto com_edge_bad = gen.commit(edge_bad);
+        if (formal_sparse_routing_relation_verify(
+                proof, gen, com_node, gen, com_edge_bad, src, dst, direction, label + ":" + direction, nullptr)) {
+            passed = false;
+            failure = "tampered sparse routing edge commitment accepted";
+        }
+        log << "SPARSE_ROUTING_RELATION label=" << label
+            << " direction=" << direction
+            << " nodes=" << node_count
+            << " edges=" << edge_count
+            << " padded_nodes=" << padded_node_count
+            << " padded_edges=" << padded_edge_count
+            << " topology_hash=" << proof.topology_hash
+            << " inner_rounds=" << proof.inner_product.rounds.size()
+            << " transcript_digest=" << proof.transcript_digest
+            << " proof_size_bytes=" << proof.serialized_size_bytes()
+            << " tamper_reject=PASS"
+            << " status=" << (passed ? "PASS" : "FAIL");
+    } catch (const std::exception& error) {
+        passed = false;
+        failure = error.what();
+        log << "SPARSE_ROUTING_RELATION label=" << label << " direction=" << direction << " status=FAIL";
+    }
+    if (!failure.empty()) log << " failure=\"" << failure << "\"";
+    log << '\n';
+    return passed;
+}
+
+bool run_grouped_sum_case(const std::string& label, std::ostream& log)
+{
+    bool passed = true;
+    std::string failure;
+    try {
+        const uint node_count = 5;
+        const uint edge_count = 9;
+        const uint padded_node_count = formal_next_power_of_two_u32(node_count);
+        const uint padded_edge_count = formal_next_power_of_two_u32(edge_count);
+        const std::vector<std::uint32_t> src = {0, 2, 1, 3, 4, 0, 2, 4, 1};
+        const std::vector<std::uint32_t> dst = {1, 1, 2, 2, 3, 3, 4, 4, 4};
+        auto edge_host = deterministic_mont_vec_local(edge_count, label + ":edge");
+        edge_host.resize(padded_edge_count, Fr_host_zero());
+        std::vector<Fr_t> out_host(padded_node_count, Fr_host_zero());
+        for (uint edge = 0; edge < edge_count; ++edge) {
+            out_host[dst[edge]] = Fr_host_add(out_host[dst[edge]], edge_host[edge]);
+        }
+        FrTensor edge_tensor(padded_edge_count, edge_host.data());
+        FrTensor out_tensor(padded_node_count, out_host.data());
+        Commitment gen(1, G1Jacobian_generator);
+        const auto com_edge = gen.commit(edge_tensor);
+        const auto com_out = gen.commit(out_tensor);
+        auto proof = formal_grouped_sum_relation_prove(
+            edge_tensor,
+            out_tensor,
+            gen,
+            com_edge,
+            gen,
+            com_out,
+            src,
+            dst,
+            node_count,
+            edge_count,
+            label);
+        passed = formal_grouped_sum_relation_verify(
+            proof,
+            gen,
+            com_edge,
+            gen,
+            com_out,
+            src,
+            dst,
+            label,
+            &failure);
+        auto tampered = proof;
+        tampered.inner_product.final_b = Fr_host_add(tampered.inner_product.final_b, one_mont());
+        if (formal_grouped_sum_relation_verify(tampered, gen, com_edge, gen, com_out, src, dst, label, nullptr)) {
+            passed = false;
+            failure = "tampered grouped-sum proof accepted";
+        }
+        auto out_bad_host = out_host;
+        out_bad_host[1] = Fr_host_add(out_bad_host[1], one_mont());
+        FrTensor out_bad(padded_node_count, out_bad_host.data());
+        const auto com_out_bad = gen.commit(out_bad);
+        if (formal_grouped_sum_relation_verify(proof, gen, com_edge, gen, com_out_bad, src, dst, label, nullptr)) {
+            passed = false;
+            failure = "tampered grouped-sum output commitment accepted";
+        }
+        log << "GROUPED_SUM_RELATION label=" << label
+            << " nodes=" << node_count
+            << " edges=" << edge_count
+            << " padded_nodes=" << padded_node_count
+            << " padded_edges=" << padded_edge_count
+            << " topology_hash=" << proof.topology_hash
+            << " inner_rounds=" << proof.inner_product.rounds.size()
+            << " transcript_digest=" << proof.transcript_digest
+            << " proof_size_bytes=" << proof.serialized_size_bytes()
+            << " tamper_reject=PASS"
+            << " status=" << (passed ? "PASS" : "FAIL");
+    } catch (const std::exception& error) {
+        passed = false;
+        failure = error.what();
+        log << "GROUPED_SUM_RELATION label=" << label << " status=FAIL";
+    }
+    if (!failure.empty()) log << " failure=\"" << failure << "\"";
+    log << '\n';
+    return passed;
+}
+
 }  // namespace
 
 int main()
@@ -450,6 +614,9 @@ int main()
     ok = run_linear_average_case("average_k2", 2, 7, std::cout) && ok;
     ok = run_linear_bias_case("bias_add", 7, std::cout) && ok;
     ok = run_linear_concat_case("concat_copy", std::cout) && ok;
+    ok = run_sparse_routing_case("sparse_source_route", "source", std::cout) && ok;
+    ok = run_sparse_routing_case("sparse_destination_route", "destination", std::cout) && ok;
+    ok = run_grouped_sum_case("grouped_sum_by_dst", std::cout) && ok;
     std::cout << "SUMMARY status=" << (ok ? "PASS" : "FAIL") << '\n';
     return ok ? 0 : 1;
 }
