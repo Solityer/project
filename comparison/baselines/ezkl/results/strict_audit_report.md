@@ -1,16 +1,16 @@
 # Strict Reproducibility Audit
 
-- Generated at: `2026-05-14T07:10:01Z`
+- Generated at: `2026-05-18T03:07:05Z`
 - Required route: `ezkl_gat_native_compressed_csr_attention_full`
 - The collector writes an audit report for blocked resource runs, but returns a non-zero BLOCKED status unless every dataset is a verified benchmark row.
 
 | Dataset | status | proof_file_size_bytes | block_reason | failure_step | failed_checks |
 | --- | --- | ---: | --- | --- | --- |
-| cora_full | passed | 1280277 |  | None |  |
-| citeseer_full | passed | 1347710 |  | None |  |
-| pubmed_full | passed | 3973380 |  | None |  |
-| ppi_full_formal | blocked | 698 | native_prove_memory_phase_resource_failure | prove_time_ms |  |
-| ogbn_arxiv_full | passed | 453849473 |  | None |  |
+| cora_full | passed | 1280317 |  | None |  |
+| citeseer_full | passed | 1347633 |  | None |  |
+| pubmed_full | passed | 3973375 |  | None |  |
+| ppi_full_formal | passed | 461655281 |  | None |  |
+| ogbn_arxiv_full | passed | 453849491 |  | None |  |
 
 ## Enforced Rules
 

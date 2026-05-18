@@ -10,7 +10,7 @@
 | cora_full | verified | cpu | ezkl_gat_native_compressed_csr_attention_full | true | safe | true | true |
 | citeseer_full | verified | cpu | ezkl_gat_native_compressed_csr_attention_full | true | safe | true | true |
 | pubmed_full | verified | cpu | ezkl_gat_native_compressed_csr_attention_full | true | safe | true | true |
-| ppi_full_formal | blocked | cpu | ezkl_gat_native_compressed_csr_attention_full | true | not_started | false | false |
+| ppi_full_formal | verified | cpu | ezkl_gat_native_compressed_csr_attention_full | true | safe | true | true |
 | ogbn_arxiv_full | verified | cpu | ezkl_gat_native_compressed_csr_attention_full | true | safe | true | true |
 
 Only `manifest_strict_check=passed` rows are included as final benchmark rows; blocked rows are retained only as audit evidence.

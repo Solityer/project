@@ -481,6 +481,7 @@ def ppi_ogbn_row(dataset: str, manifest: dict) -> dict:
     final_shape = manifest.get("final_logits_shape") or []
     return {
         "dataset": dataset,
+        "status": manifest.get("status"),
         "N": manifest.get("N"),
         "E": manifest.get("E"),
         "G_batch": manifest.get("G_batch"),
@@ -502,6 +503,7 @@ def ppi_ogbn_row(dataset: str, manifest: dict) -> dict:
         "node_features.f64.bin size": size_by_name(manifest, "node_features.f64.bin"),
         "csr_segment_layout.bin size": size_by_name(manifest, "csr_segment_layout.bin"),
         "peak_rss_bytes": profile.get("peak_rss_bytes"),
+        "final_judgment": "verified benchmark row" if manifest.get("status") == "verified" else "resource-blocked audit row",
     }
 
 
@@ -521,20 +523,36 @@ def write_ppi_ogbn_audit(manifests: dict[str, dict]) -> None:
         lines.append("| " + " | ".join(str(row.get(header, "")) for header in headers) + " |")
     ppi = rows[0]
     ogbn = rows[1]
-    prove_delta = abs(float(ppi["prove_time_ms"]) - float(ogbn["prove_time_ms"]))
     ppi_status = manifests["ppi_full_formal"].get("status")
     ogbn_status = manifests["ogbn_arxiv_full"].get("status")
+    ppi_verified = ppi_status == "verified"
+    ogbn_verified = ogbn_status == "verified"
+    prove_delta = ""
+    if isinstance(ppi.get("prove_time_ms"), (int, float)) and isinstance(ogbn.get("prove_time_ms"), (int, float)):
+        prove_delta = f"{abs(float(ppi['prove_time_ms']) - float(ogbn['prove_time_ms'])):.3f} ms"
+    ppi_outcome = (
+        "- PPI is a verified benchmark row: `proof.json`, `verify.json`, final logits binding, formal tables, run manifest, and memory profiles all pass strict audit."
+        if ppi_verified
+        else "- PPI remains a resource-blocked audit row and is excluded from verified benchmark metrics."
+    )
+    ogbn_outcome = (
+        "- ogbn-arxiv is a verified benchmark row after this clean rerun and remains the large-graph regression/control case."
+        if ogbn_verified
+        else "- ogbn-arxiv is not verified in this run; final collection must remain non-OK."
+    )
     lines.extend(
         [
             "",
             "## Interpretation",
             "",
             f"- PPI status is `{ppi_status}` and ogbn-arxiv status is `{ogbn_status}` in this clean run.",
-            f"- PPI prove elapsed before resource termination differs from ogbn-arxiv verified prove time by {prove_delta:.3f} ms; this is not a verified PPI benchmark comparison.",
+            f"- PPI/ogbn-arxiv prove-time delta: {prove_delta or 'not available because one side lacks a numeric prove time'}.",
+            ppi_outcome,
+            ogbn_outcome,
             "- The two large attempts use the same CPU strict route, same Halo2/KZG backend family, and large chunked public-instance columns.",
             "- `public_instance_total_length`, proof size, PK/SRS scale, fixed logrows/circuit row class, and class-count differences are the primary controls to inspect before treating close proving times as suspicious.",
             "- `compressed_row_estimate.total_rows_estimated` is a static planner estimate. `logrows` and `circuit_rows` come from the instantiated Halo2 circuit profile. They need not be equal because the compressed native backend uses a separate diagnostic/full-model layout bound by the selected logrows.",
-            "- No manual continuation, forbidden fallback, or precomputed-logits bypass is present. PPI intentionally retains the real failed command and resource block reason because it is blocked, not verified.",
+            "- No manual continuation, forbidden fallback, or precomputed-logits bypass is present. Verified rows must have empty failed-command/block fields and proof sizes matching the real proof files.",
         ]
     )
     (RESULTS / "ppi_ogbn_arxiv_audit.md").write_text("\n".join(lines) + "\n", encoding="utf-8")

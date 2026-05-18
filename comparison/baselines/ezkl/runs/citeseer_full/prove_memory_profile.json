@@ -7,13 +7,14 @@
     "drop setup-only data before prove; setup uses shape-only plan",
     "chunked public instance columns without logits duplication in runner",
     "ogbn low-memory environment and single-thread prove",
-    "large full-dataset MockProver diagnostic precheck skipped for ogbn while proof and verify remain strict"
+    "large full-dataset MockProver diagnostic precheck skipped for ogbn while proof and verify remain strict",
+    "glibc allocator trim/mmap/top-pad limits for large CPU prove subprocesses"
   ],
   "circuit_rows": 524288,
   "command": "/home/pzh/project/comparison/baselines/ezkl/target/release/ezkl graph-gat-prove --compiled-circuit model.compiled --witness witness.json --pk-path pk.key --proof-path proof.json",
   "compiled_circuit_size": 5822,
-  "elapsed_ms": 20777.445927989902,
-  "elapsed_wall_clock": "20.77",
+  "elapsed_ms": 20785.287906008307,
+  "elapsed_wall_clock": "20.78",
   "fixed_columns": 12,
   "instance_columns": 2,
   "largest_payloads_loaded": [
@@ -62,7 +63,7 @@
   "lookup_table_columns": 3,
   "mock_precheck_policy": "enabled_for_dataset_size",
   "payload_deduplication": "single NativeOutputDerivationWitness reused for public instance, binding, MockProver when enabled, and create_proof circuit assignment",
-  "peak_rss_bytes": 4831277056,
+  "peak_rss_bytes": 4839907328,
   "phase": "proof_serialized",
   "pk_size": 1611400443,
   "proof_backend": "halo2_kzg_shplonk_blake2b",
