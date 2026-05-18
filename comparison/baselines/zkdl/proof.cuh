@@ -481,6 +481,80 @@ struct MatmulRelationProof
     }
 };
 
+struct SparseRoutingRelationProof
+{
+    std::string label;
+    std::string direction;
+    std::uint64_t topology_hash = 0;
+    uint node_count = 0;
+    uint edge_count = 0;
+    uint padded_node_count = 0;
+    uint padded_edge_count = 0;
+    uint edge_begin = 0;
+    uint edge_end = 0;
+    std::string commitment_node_label;
+    std::string commitment_edge_label;
+    vector<Fr_t> edge_point;
+    Fr_t edge_eval = Fr_host_zero();
+    Fr_t public_weight_eval = Fr_host_zero();
+    InnerProductSumcheckProof inner_product;
+    CommitmentOpeningProof opening_node;
+    CommitmentOpeningProof opening_edge;
+    std::string transcript_digest;
+
+    std::size_t serialized_size_bytes() const
+    {
+        return sizeof(uint32_t) + label.size()
+            + sizeof(uint32_t) + direction.size()
+            + sizeof(std::uint64_t)
+            + 6 * sizeof(uint32_t)
+            + sizeof(uint32_t) + commitment_node_label.size()
+            + sizeof(uint32_t) + commitment_edge_label.size()
+            + sizeof(uint32_t) + edge_point.size() * sizeof(Fr_t)
+            + 2 * sizeof(Fr_t)
+            + inner_product.serialized_size_bytes()
+            + opening_node.serialized_size_bytes()
+            + opening_edge.serialized_size_bytes()
+            + sizeof(uint64_t);
+    }
+};
+
+struct GroupedSumRelationProof
+{
+    std::string label;
+    std::uint64_t topology_hash = 0;
+    uint node_count = 0;
+    uint edge_count = 0;
+    uint padded_node_count = 0;
+    uint padded_edge_count = 0;
+    uint edge_begin = 0;
+    uint edge_end = 0;
+    std::string commitment_edge_input_label;
+    std::string commitment_node_output_label;
+    vector<Fr_t> node_point;
+    Fr_t output_eval = Fr_host_zero();
+    Fr_t public_weight_eval = Fr_host_zero();
+    InnerProductSumcheckProof inner_product;
+    CommitmentOpeningProof opening_edge_input;
+    CommitmentOpeningProof opening_node_output;
+    std::string transcript_digest;
+
+    std::size_t serialized_size_bytes() const
+    {
+        return sizeof(uint32_t) + label.size()
+            + sizeof(std::uint64_t)
+            + 6 * sizeof(uint32_t)
+            + sizeof(uint32_t) + commitment_edge_input_label.size()
+            + sizeof(uint32_t) + commitment_node_output_label.size()
+            + sizeof(uint32_t) + node_point.size() * sizeof(Fr_t)
+            + 2 * sizeof(Fr_t)
+            + inner_product.serialized_size_bytes()
+            + opening_edge_input.serialized_size_bytes()
+            + opening_node_output.serialized_size_bytes()
+            + sizeof(uint64_t);
+    }
+};
+
 struct FormalProofObject
 {
     std::string protocol = "zkdl-gat-formal-partial";
@@ -490,6 +564,8 @@ struct FormalProofObject
     vector<HadamardSumcheckProof> hadamards;
     vector<LinearRelationProof> linear_relations;
     vector<MatmulRelationProof> matmuls;
+    vector<SparseRoutingRelationProof> sparse_routings;
+    vector<GroupedSumRelationProof> grouped_sums;
     vector<CommitmentOpeningProof> openings;
     std::string transcript_digest;
 
@@ -505,6 +581,10 @@ struct FormalProofObject
         for (const auto& proof : linear_relations) out += proof.serialized_size_bytes();
         out += sizeof(uint32_t);
         for (const auto& proof : matmuls) out += proof.serialized_size_bytes();
+        out += sizeof(uint32_t);
+        for (const auto& proof : sparse_routings) out += proof.serialized_size_bytes();
+        out += sizeof(uint32_t);
+        for (const auto& proof : grouped_sums) out += proof.serialized_size_bytes();
         out += sizeof(uint32_t);
         for (const auto& opening : openings) out += opening.serialized_size_bytes();
         out += sizeof(uint64_t);
