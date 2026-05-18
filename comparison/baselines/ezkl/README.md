@@ -15,18 +15,18 @@
 | Cora | verified | true | true | true | true | true | passed |
 | Citeseer | verified | true | true | true | true | true | passed |
 | Pubmed | verified | true | true | true | true | true | passed |
-| PPI | blocked | false | false | false | true | true | blocked |
+| PPI | verified | true | true | true | true | true | passed |
 | ogbn-arxiv | verified | true | true | true | true | true | passed |
 
 ## CPU 四项指标
 
 | 数据集 | status | final benchmark | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
-| Cora | verified | true | 39075.786 | 19686.690 | 362.892 | 1280277 |
-| Citeseer | verified | true | 39120.864 | 20777.446 | 453.699 | 1347710 |
-| Pubmed | verified | true | 79577.150 | 44588.471 | 893.838 | 3973380 |
-| PPI | blocked | false | 1322255.020 | 1384312.235 |  |  |
-| ogbn-arxiv | verified | true | 1276740.830 | 1941818.225 | 24279.105 | 453849473 |
+| Cora | verified | true | 39610.144 | 19551.087 | 399.098 | 1280317 |
+| Citeseer | verified | true | 39191.259 | 20785.288 | 492.913 | 1347633 |
+| Pubmed | verified | true | 80007.432 | 42373.141 | 989.291 | 3973375 |
+| PPI | verified | true | 1280185.848 | 1956645.759 | 24571.380 | 461655281 |
+| ogbn-arxiv | verified | true | 1287653.770 | 1947900.981 | 25975.184 | 453849491 |
 
 ## 结果可信性检查
 

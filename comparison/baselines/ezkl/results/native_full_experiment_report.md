@@ -5,7 +5,7 @@
 | Cora | verified | true | true | true | passed |
 | Citeseer | verified | true | true | true | passed |
 | Pubmed | verified | true | true | true | passed |
-| PPI | blocked | false | false | true | blocked |
+| PPI | verified | true | true | true | passed |
 | ogbn-arxiv | verified | true | true | true | passed |
 
 ## Final Logits Binding
