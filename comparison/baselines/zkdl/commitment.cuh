@@ -41,27 +41,13 @@ KERNEL void fr_mont_one_minus_kernel(Fr_t u, GLOBAL Fr_t* out)
 KERNEL void sum_axis_n_optimized(GLOBAL G1Jacobian_t* arr, GLOBAL G1Jacobian_t* arr_out, uint n, uint m) {
     const uint gid = GET_GROUP_ID();
     if (gid >= m) return;
-    
-    __shared__ G1Jacobian_t shared_data[G1NumThread];
-    uint local_id = threadIdx.x;
-    
-    G1Jacobian_t sum = (local_id < n) ? arr[gid * n + local_id] : blstrs__g1__G1Affine_ZERO;
-    for (uint i = local_id + G1NumThread; i < n; i += G1NumThread) {
+
+    if (threadIdx.x != 0) return;
+    G1Jacobian_t sum = blstrs__g1__G1Affine_ZERO;
+    for (uint i = 0; i < n; ++i) {
         sum = blstrs__g1__G1Affine_add(sum, arr[gid * n + i]);
     }
-    shared_data[local_id] = sum;
-    
-    __syncthreads();
-    
-    // Reduce shared_data to a single value
-    for (uint s = G1NumThread / 2; s > 0; s >>= 1) {
-        if (local_id < s) {
-            shared_data[local_id] = blstrs__g1__G1Affine_add(shared_data[local_id], shared_data[local_id + s]);
-        }
-        __syncthreads();
-    }
-    
-    if (local_id == 0) arr_out[gid] = shared_data[0];
+    arr_out[gid] = sum;
 }
 
 G1TensorJacobian Commitment::commit(const FrTensor& t) const

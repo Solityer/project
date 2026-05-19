@@ -592,6 +592,123 @@ bool run_grouped_sum_case(const std::string& label, std::ostream& log)
     return passed;
 }
 
+bool run_multi_column_grouped_sum_case(const std::string& label, std::ostream& log)
+{
+    bool passed = true;
+    std::string failure;
+    try {
+        const uint node_count = 5;
+        const uint edge_count = 9;
+        const uint column_count = 3;
+        const uint padded_node_count = formal_next_power_of_two_u32(node_count);
+        const uint padded_edge_count = formal_next_power_of_two_u32(edge_count);
+        const uint padded_column_count = formal_next_power_of_two_u32(column_count);
+        const std::vector<std::uint32_t> src = {0, 2, 1, 3, 4, 0, 2, 4, 1};
+        const std::vector<std::uint32_t> dst = {1, 1, 2, 2, 3, 3, 4, 4, 4};
+        auto dense_values = deterministic_mont_vec_local(edge_count * column_count, label + ":edge_matrix");
+        std::vector<Fr_t> edge_matrix_host(padded_edge_count * padded_column_count, Fr_host_zero());
+        for (uint edge = 0; edge < edge_count; ++edge) {
+            for (uint col = 0; col < column_count; ++col) {
+                edge_matrix_host[edge * padded_column_count + col] = dense_values[edge * column_count + col];
+            }
+        }
+        std::vector<Fr_t> node_matrix_host(padded_node_count * padded_column_count, Fr_host_zero());
+        for (uint edge = 0; edge < edge_count; ++edge) {
+            for (uint col = 0; col < column_count; ++col) {
+                const auto idx = dst[edge] * padded_column_count + col;
+                node_matrix_host[idx] = Fr_host_add(node_matrix_host[idx], edge_matrix_host[edge * padded_column_count + col]);
+            }
+        }
+
+        FrTensor edge_matrix(padded_edge_count * padded_column_count, edge_matrix_host.data());
+        FrTensor node_matrix(padded_node_count * padded_column_count, node_matrix_host.data());
+        Commitment vector_gen(1, G1Jacobian_generator);
+        Commitment matrix_gen(padded_column_count, G1Jacobian_generator);
+        const auto com_edge_matrix = matrix_gen.commit(edge_matrix);
+        const auto com_node_matrix = matrix_gen.commit(node_matrix);
+        auto proof = formal_multi_column_grouped_sum_relation_prove(
+            edge_matrix,
+            node_matrix,
+            matrix_gen,
+            com_edge_matrix,
+            matrix_gen,
+            com_node_matrix,
+            vector_gen,
+            src,
+            dst,
+            node_count,
+            edge_count,
+            column_count,
+            padded_column_count,
+            label);
+        passed = formal_multi_column_grouped_sum_relation_verify(
+            proof,
+            matrix_gen,
+            com_edge_matrix,
+            matrix_gen,
+            com_node_matrix,
+            vector_gen,
+            src,
+            dst,
+            label,
+            &failure);
+        auto tampered = proof;
+        tampered.node_matrix_eval = Fr_host_add(tampered.node_matrix_eval, one_mont());
+        if (formal_multi_column_grouped_sum_relation_verify(
+                tampered,
+                matrix_gen,
+                com_edge_matrix,
+                matrix_gen,
+                com_node_matrix,
+                vector_gen,
+                src,
+                dst,
+                label,
+                nullptr)) {
+            passed = false;
+            failure = "tampered multi-column grouped-sum proof accepted";
+        }
+        auto node_bad_host = node_matrix_host;
+        node_bad_host[padded_column_count] = Fr_host_add(node_bad_host[padded_column_count], one_mont());
+        FrTensor node_bad(padded_node_count * padded_column_count, node_bad_host.data());
+        const auto com_node_bad = matrix_gen.commit(node_bad);
+        if (formal_multi_column_grouped_sum_relation_verify(
+                proof,
+                matrix_gen,
+                com_edge_matrix,
+                matrix_gen,
+                com_node_bad,
+                vector_gen,
+                src,
+                dst,
+                label,
+                nullptr)) {
+            passed = false;
+            failure = "tampered multi-column grouped-sum matrix commitment accepted";
+        }
+        log << "MULTI_COLUMN_GROUPED_SUM_RELATION label=" << label
+            << " nodes=" << node_count
+            << " edges=" << edge_count
+            << " columns=" << column_count
+            << " padded_nodes=" << padded_node_count
+            << " padded_edges=" << padded_edge_count
+            << " padded_columns=" << padded_column_count
+            << " topology_hash=" << proof.topology_hash
+            << " compressed_inner_rounds=" << proof.compressed_grouped_sum.inner_product.rounds.size()
+            << " transcript_digest=" << proof.transcript_digest
+            << " proof_size_bytes=" << proof.serialized_size_bytes()
+            << " tamper_reject=PASS"
+            << " status=" << (passed ? "PASS" : "FAIL");
+    } catch (const std::exception& error) {
+        passed = false;
+        failure = error.what();
+        log << "MULTI_COLUMN_GROUPED_SUM_RELATION label=" << label << " status=FAIL";
+    }
+    if (!failure.empty()) log << " failure=\"" << failure << "\"";
+    log << '\n';
+    return passed;
+}
+
 }  // namespace
 
 int main()
@@ -617,6 +734,7 @@ int main()
     ok = run_sparse_routing_case("sparse_source_route", "source", std::cout) && ok;
     ok = run_sparse_routing_case("sparse_destination_route", "destination", std::cout) && ok;
     ok = run_grouped_sum_case("grouped_sum_by_dst", std::cout) && ok;
+    ok = run_multi_column_grouped_sum_case("multi_column_grouped_sum_by_dst", std::cout) && ok;
     std::cout << "SUMMARY status=" << (ok ? "PASS" : "FAIL") << '\n';
     return ok ? 0 : 1;
 }
