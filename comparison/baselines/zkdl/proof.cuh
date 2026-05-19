@@ -555,6 +555,50 @@ struct GroupedSumRelationProof
     }
 };
 
+struct MultiColumnGroupedSumRelationProof
+{
+    std::string label;
+    std::uint64_t topology_hash = 0;
+    uint node_count = 0;
+    uint edge_count = 0;
+    uint column_count = 0;
+    uint padded_node_count = 0;
+    uint padded_edge_count = 0;
+    uint padded_column_count = 0;
+    std::string commitment_edge_matrix_label;
+    std::string commitment_node_matrix_label;
+    std::string commitment_compressed_edge_label;
+    std::string commitment_compressed_node_label;
+    vector<Fr_t> column_point;
+    vector<G1Jacobian_t> compressed_edge_commitment_points;
+    vector<G1Jacobian_t> compressed_node_commitment_points;
+    GroupedSumRelationProof compressed_grouped_sum;
+    Fr_t edge_matrix_eval = Fr_host_zero();
+    Fr_t node_matrix_eval = Fr_host_zero();
+    CommitmentOpeningProof opening_edge_matrix;
+    CommitmentOpeningProof opening_node_matrix;
+    std::string transcript_digest;
+
+    std::size_t serialized_size_bytes() const
+    {
+        return sizeof(uint32_t) + label.size()
+            + sizeof(std::uint64_t)
+            + 6 * sizeof(uint32_t)
+            + sizeof(uint32_t) + commitment_edge_matrix_label.size()
+            + sizeof(uint32_t) + commitment_node_matrix_label.size()
+            + sizeof(uint32_t) + commitment_compressed_edge_label.size()
+            + sizeof(uint32_t) + commitment_compressed_node_label.size()
+            + sizeof(uint32_t) + column_point.size() * sizeof(Fr_t)
+            + sizeof(uint32_t) + compressed_edge_commitment_points.size() * sizeof(G1Jacobian_t)
+            + sizeof(uint32_t) + compressed_node_commitment_points.size() * sizeof(G1Jacobian_t)
+            + compressed_grouped_sum.serialized_size_bytes()
+            + 2 * sizeof(Fr_t)
+            + opening_edge_matrix.serialized_size_bytes()
+            + opening_node_matrix.serialized_size_bytes()
+            + sizeof(uint64_t);
+    }
+};
+
 struct FormalProofObject
 {
     std::string protocol = "zkdl-gat-formal-partial";
@@ -566,6 +610,7 @@ struct FormalProofObject
     vector<MatmulRelationProof> matmuls;
     vector<SparseRoutingRelationProof> sparse_routings;
     vector<GroupedSumRelationProof> grouped_sums;
+    vector<MultiColumnGroupedSumRelationProof> multi_column_grouped_sums;
     vector<CommitmentOpeningProof> openings;
     std::string transcript_digest;
 
@@ -585,6 +630,8 @@ struct FormalProofObject
         for (const auto& proof : sparse_routings) out += proof.serialized_size_bytes();
         out += sizeof(uint32_t);
         for (const auto& proof : grouped_sums) out += proof.serialized_size_bytes();
+        out += sizeof(uint32_t);
+        for (const auto& proof : multi_column_grouped_sums) out += proof.serialized_size_bytes();
         out += sizeof(uint32_t);
         for (const auto& opening : openings) out += opening.serialized_size_bytes();
         out += sizeof(uint64_t);

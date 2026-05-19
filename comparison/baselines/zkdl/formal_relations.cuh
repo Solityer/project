@@ -1144,4 +1144,282 @@ inline bool formal_grouped_sum_relation_verify(
     return true;
 }
 
+inline vector<Fr_t> formal_matrix_column_compression_host(
+    const FrTensor& matrix,
+    uint logical_rows,
+    uint padded_rows,
+    uint logical_columns,
+    uint padded_columns,
+    const vector<Fr_t>& column_point)
+{
+    if (logical_rows > padded_rows || logical_columns > padded_columns)
+    {
+        throw std::runtime_error("multi-column compression logical shape exceeds padded shape");
+    }
+    if (matrix.size != padded_rows * padded_columns)
+    {
+        throw std::runtime_error("multi-column compression matrix size mismatch");
+    }
+    if (column_point.size() != ceilLog2(padded_columns))
+    {
+        throw std::runtime_error("multi-column compression column point dimension mismatch");
+    }
+    const auto host = matrix.to_host();
+    vector<Fr_t> out(padded_rows, Fr_host_zero());
+    vector<Fr_t> row_values(padded_columns, Fr_host_zero());
+    for (uint row = 0; row < padded_rows; ++row)
+    {
+        for (uint col = 0; col < padded_columns; ++col)
+        {
+            row_values[col] = host[static_cast<std::size_t>(row) * padded_columns + col];
+        }
+        out[row] = formal_host_mle_vector(row_values, column_point.begin(), column_point.end());
+    }
+    return out;
+}
+
+inline void formal_absorb_multi_column_grouped_sum_metadata(
+    FormalTranscript& transcript,
+    const std::string& label,
+    std::uint64_t topology_hash,
+    uint node_count,
+    uint edge_count,
+    uint column_count,
+    uint padded_node_count,
+    uint padded_edge_count,
+    uint padded_column_count,
+    const G1TensorJacobian& com_edge_matrix,
+    const G1TensorJacobian& com_node_matrix)
+{
+    transcript.absorb_label("multi_column_grouped_sum_relation");
+    transcript.absorb_label(label);
+    transcript.absorb_u64(topology_hash);
+    transcript.absorb_u64(node_count);
+    transcript.absorb_u64(edge_count);
+    transcript.absorb_u64(column_count);
+    transcript.absorb_u64(padded_node_count);
+    transcript.absorb_u64(padded_edge_count);
+    transcript.absorb_u64(padded_column_count);
+    formal_absorb_g1_tensor(transcript, com_edge_matrix);
+    formal_absorb_g1_tensor(transcript, com_node_matrix);
+}
+
+inline MultiColumnGroupedSumRelationProof formal_multi_column_grouped_sum_relation_prove(
+    const FrTensor& edge_matrix,
+    const FrTensor& node_matrix,
+    const Commitment& edge_matrix_generators,
+    const G1TensorJacobian& com_edge_matrix,
+    const Commitment& node_matrix_generators,
+    const G1TensorJacobian& com_node_matrix,
+    const Commitment& vector_generators,
+    const vector<std::uint32_t>& src,
+    const vector<std::uint32_t>& dst,
+    uint node_count,
+    uint edge_count,
+    uint column_count,
+    uint padded_column_count,
+    const std::string& relation_label)
+{
+    (void)src;
+    const uint padded_node_count = formal_next_power_of_two_u32(node_count);
+    const uint padded_edge_count = formal_next_power_of_two_u32(edge_count);
+    if (padded_column_count != formal_next_power_of_two_u32(column_count))
+    {
+        throw std::runtime_error("multi-column grouped-sum padded column mismatch");
+    }
+    if (edge_matrix.size != padded_edge_count * padded_column_count
+        || node_matrix.size != padded_node_count * padded_column_count)
+    {
+        throw std::runtime_error("multi-column grouped-sum matrix size mismatch");
+    }
+    MultiColumnGroupedSumRelationProof proof;
+    proof.label = relation_label;
+    proof.topology_hash = formal_sparse_topology_hash(src, dst, node_count, edge_count);
+    proof.node_count = node_count;
+    proof.edge_count = edge_count;
+    proof.column_count = column_count;
+    proof.padded_node_count = padded_node_count;
+    proof.padded_edge_count = padded_edge_count;
+    proof.padded_column_count = padded_column_count;
+    proof.commitment_edge_matrix_label = relation_label + ":edge_matrix";
+    proof.commitment_node_matrix_label = relation_label + ":node_matrix";
+    proof.commitment_compressed_edge_label = relation_label + ":compressed_edge";
+    proof.commitment_compressed_node_label = relation_label + ":compressed_node";
+
+    FormalTranscript transcript;
+    formal_absorb_multi_column_grouped_sum_metadata(
+        transcript,
+        relation_label,
+        proof.topology_hash,
+        node_count,
+        edge_count,
+        column_count,
+        padded_node_count,
+        padded_edge_count,
+        padded_column_count,
+        com_edge_matrix,
+        com_node_matrix);
+    proof.column_point = formal_make_challenge_point(
+        transcript,
+        ceilLog2(padded_column_count),
+        "multi_column_grouped_sum_column_point");
+
+    const auto compressed_edge_host = formal_matrix_column_compression_host(
+        edge_matrix, edge_count, padded_edge_count, column_count, padded_column_count, proof.column_point);
+    const auto compressed_node_host = formal_matrix_column_compression_host(
+        node_matrix, node_count, padded_node_count, column_count, padded_column_count, proof.column_point);
+    FrTensor compressed_edge(static_cast<uint>(compressed_edge_host.size()), compressed_edge_host.data());
+    FrTensor compressed_node(static_cast<uint>(compressed_node_host.size()), compressed_node_host.data());
+    const auto com_compressed_edge = vector_generators.commit(compressed_edge);
+    const auto com_compressed_node = vector_generators.commit(compressed_node);
+    proof.compressed_edge_commitment_points = Commitment::host_points(com_compressed_edge);
+    proof.compressed_node_commitment_points = Commitment::host_points(com_compressed_node);
+
+    proof.compressed_grouped_sum = formal_grouped_sum_relation_prove(
+        compressed_edge,
+        compressed_node,
+        vector_generators,
+        com_compressed_edge,
+        vector_generators,
+        com_compressed_node,
+        src,
+        dst,
+        node_count,
+        edge_count,
+        relation_label + ":compressed_grouped_sum");
+
+    const auto edge_matrix_point = formal_concat_points({proof.column_point, proof.compressed_grouped_sum.opening_edge_input.point});
+    const auto node_matrix_point = formal_concat_points({proof.column_point, proof.compressed_grouped_sum.opening_node_output.point});
+    proof.edge_matrix_eval = edge_matrix_generators.open_with_proof(
+        edge_matrix, com_edge_matrix, edge_matrix_point, proof.opening_edge_matrix);
+    proof.node_matrix_eval = node_matrix_generators.open_with_proof(
+        node_matrix, com_node_matrix, node_matrix_point, proof.opening_node_matrix);
+    if (!Fr_host_eq(proof.edge_matrix_eval, proof.compressed_grouped_sum.opening_edge_input.value)
+        || !Fr_host_eq(proof.node_matrix_eval, proof.compressed_grouped_sum.opening_node_output.value))
+    {
+        throw std::runtime_error("multi-column grouped-sum compression binding mismatch");
+    }
+    transcript.absorb_label(proof.compressed_grouped_sum.transcript_digest);
+    transcript.absorb_fr(proof.edge_matrix_eval);
+    transcript.absorb_fr(proof.node_matrix_eval);
+    proof.transcript_digest = transcript.digest_hex();
+    return proof;
+}
+
+inline bool formal_multi_column_grouped_sum_relation_verify(
+    const MultiColumnGroupedSumRelationProof& proof,
+    const Commitment& edge_matrix_generators,
+    const G1TensorJacobian& com_edge_matrix,
+    const Commitment& node_matrix_generators,
+    const G1TensorJacobian& com_node_matrix,
+    const Commitment& vector_generators,
+    const vector<std::uint32_t>& src,
+    const vector<std::uint32_t>& dst,
+    const std::string& relation_label,
+    std::string* failure = nullptr)
+{
+    const auto fail = [&](const std::string& message) {
+        if (failure != nullptr) *failure = message;
+        return false;
+    };
+    if (proof.label != relation_label) return fail("multi-column grouped-sum label mismatch");
+    if (proof.node_count == 0 || proof.edge_count == 0 || proof.column_count == 0)
+    {
+        return fail("empty multi-column grouped-sum relation");
+    }
+    if (proof.padded_node_count != formal_next_power_of_two_u32(proof.node_count)
+        || proof.padded_edge_count != formal_next_power_of_two_u32(proof.edge_count)
+        || proof.padded_column_count != formal_next_power_of_two_u32(proof.column_count))
+    {
+        return fail("multi-column grouped-sum padded shape mismatch");
+    }
+    const auto expected_hash = formal_sparse_topology_hash(src, dst, proof.node_count, proof.edge_count);
+    if (proof.topology_hash != expected_hash) return fail("multi-column grouped-sum topology hash mismatch");
+
+    FormalTranscript transcript;
+    formal_absorb_multi_column_grouped_sum_metadata(
+        transcript,
+        relation_label,
+        proof.topology_hash,
+        proof.node_count,
+        proof.edge_count,
+        proof.column_count,
+        proof.padded_node_count,
+        proof.padded_edge_count,
+        proof.padded_column_count,
+        com_edge_matrix,
+        com_node_matrix);
+    const auto expected_column_point = formal_make_challenge_point(
+        transcript,
+        ceilLog2(proof.padded_column_count),
+        "multi_column_grouped_sum_column_point");
+    if (!formal_points_equal(expected_column_point, proof.column_point))
+    {
+        return fail("multi-column grouped-sum column point replay mismatch");
+    }
+
+    G1TensorJacobian com_compressed_edge(
+        static_cast<uint>(proof.compressed_edge_commitment_points.size()),
+        proof.compressed_edge_commitment_points.data());
+    G1TensorJacobian com_compressed_node(
+        static_cast<uint>(proof.compressed_node_commitment_points.size()),
+        proof.compressed_node_commitment_points.data());
+    std::string grouped_failure;
+    if (!formal_grouped_sum_relation_verify(
+            proof.compressed_grouped_sum,
+            vector_generators,
+            com_compressed_edge,
+            vector_generators,
+            com_compressed_node,
+            src,
+            dst,
+            relation_label + ":compressed_grouped_sum",
+            &grouped_failure))
+    {
+        return fail("multi-column grouped-sum compressed verifier failed: " + grouped_failure);
+    }
+
+    const auto expected_edge_matrix_point = formal_concat_points({
+        proof.column_point,
+        proof.compressed_grouped_sum.opening_edge_input.point});
+    const auto expected_node_matrix_point = formal_concat_points({
+        proof.column_point,
+        proof.compressed_grouped_sum.opening_node_output.point});
+    if (!formal_points_equal(proof.opening_edge_matrix.point, expected_edge_matrix_point))
+    {
+        return fail("multi-column grouped-sum edge matrix opening point mismatch");
+    }
+    if (!formal_points_equal(proof.opening_node_matrix.point, expected_node_matrix_point))
+    {
+        return fail("multi-column grouped-sum node matrix opening point mismatch");
+    }
+    if (!Fr_host_eq(proof.opening_edge_matrix.value, proof.edge_matrix_eval)
+        || !Fr_host_eq(proof.opening_node_matrix.value, proof.node_matrix_eval))
+    {
+        return fail("multi-column grouped-sum matrix opening value mismatch");
+    }
+    if (!Fr_host_eq(proof.edge_matrix_eval, proof.compressed_grouped_sum.opening_edge_input.value)
+        || !Fr_host_eq(proof.node_matrix_eval, proof.compressed_grouped_sum.opening_node_output.value))
+    {
+        return fail("multi-column grouped-sum compression binding mismatch");
+    }
+    if (!Commitment::verify_opening(edge_matrix_generators, com_edge_matrix, proof.opening_edge_matrix))
+    {
+        return fail("multi-column grouped-sum edge matrix opening rejected");
+    }
+    if (!Commitment::verify_opening(node_matrix_generators, com_node_matrix, proof.opening_node_matrix))
+    {
+        return fail("multi-column grouped-sum node matrix opening rejected");
+    }
+
+    transcript.absorb_label(proof.compressed_grouped_sum.transcript_digest);
+    transcript.absorb_fr(proof.edge_matrix_eval);
+    transcript.absorb_fr(proof.node_matrix_eval);
+    if (proof.transcript_digest != transcript.digest_hex())
+    {
+        return fail("multi-column grouped-sum transcript digest mismatch");
+    }
+    return true;
+}
+
 #endif

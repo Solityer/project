@@ -3572,12 +3572,112 @@ std::vector<Fr_t> column_scale16_raw(
     return out;
 }
 
+std::vector<Fr_t> matrix_scale16_raw(
+    const std::vector<double>& values,
+    std::size_t rows,
+    std::size_t cols,
+    std::size_t padded_rows,
+    std::size_t padded_cols)
+{
+    if (values.size() != rows * cols || rows > padded_rows || cols > padded_cols) {
+        throw std::runtime_error("矩阵编码形状不一致");
+    }
+    std::vector<Fr_t> out(padded_rows * padded_cols, fr_from_signed_host(0));
+    for (std::size_t row = 0; row < rows; ++row) {
+        for (std::size_t col = 0; col < cols; ++col) {
+            out[row * padded_cols + col] = fr_from_signed_host(
+                quantize_scale16_to_i64(values[row * cols + col]));
+        }
+    }
+    return out;
+}
+
+std::vector<Fr_t> route_matrix_by_topology_raw(
+    const std::vector<Fr_t>& node_matrix_raw,
+    const LocalGraph& graph,
+    std::size_t padded_node_count,
+    std::size_t padded_edge_count,
+    std::size_t padded_cols,
+    bool use_source)
+{
+    if (node_matrix_raw.size() != padded_node_count * padded_cols) {
+        throw std::runtime_error("矩阵 sparse routing 输入形状不一致");
+    }
+    std::vector<Fr_t> out(padded_edge_count * padded_cols, fr_from_signed_host(0));
+    for (std::size_t edge = 0; edge < graph.edges.size(); ++edge) {
+        const std::size_t node = use_source ? graph.edges[edge].src : graph.edges[edge].dst;
+        if (node >= padded_node_count) throw std::runtime_error("矩阵 sparse routing node index 超出范围");
+        for (std::size_t col = 0; col < padded_cols; ++col) {
+            out[edge * padded_cols + col] = node_matrix_raw[node * padded_cols + col];
+        }
+    }
+    return out;
+}
+
+std::vector<Fr_t> grouped_sum_matrix_by_dst_mont(
+    const std::vector<Fr_t>& edge_matrix_mont,
+    const LocalGraph& graph,
+    std::size_t padded_node_count,
+    std::size_t padded_edge_count,
+    std::size_t padded_cols)
+{
+    if (edge_matrix_mont.size() != padded_edge_count * padded_cols) {
+        throw std::runtime_error("矩阵 grouped sum 输入形状不一致");
+    }
+    std::vector<Fr_t> out(padded_node_count * padded_cols, Fr_host_zero());
+    for (std::size_t edge = 0; edge < graph.edges.size(); ++edge) {
+        const std::size_t dst = graph.edges[edge].dst;
+        if (dst >= padded_node_count) throw std::runtime_error("矩阵 grouped sum dst index 超出范围");
+        for (std::size_t col = 0; col < padded_cols; ++col) {
+            out[dst * padded_cols + col] = Fr_host_add(
+                out[dst * padded_cols + col],
+                edge_matrix_mont[edge * padded_cols + col]);
+        }
+    }
+    return out;
+}
+
+std::vector<Fr_t> weighted_matrix_by_alpha_mont(
+    const std::vector<Fr_t>& alpha_mont,
+    const std::vector<Fr_t>& message_edge_matrix_mont,
+    std::size_t logical_edge_count,
+    std::size_t padded_edge_count,
+    std::size_t padded_cols)
+{
+    if (alpha_mont.size() != padded_edge_count
+        || message_edge_matrix_mont.size() != padded_edge_count * padded_cols) {
+        throw std::runtime_error("alpha 矩阵乘法输入形状不一致");
+    }
+    std::vector<Fr_t> out(padded_edge_count * padded_cols, Fr_host_zero());
+    for (std::size_t edge = 0; edge < logical_edge_count; ++edge) {
+        for (std::size_t col = 0; col < padded_cols; ++col) {
+            out[edge * padded_cols + col] = Fr_host_mul(
+                alpha_mont[edge],
+                message_edge_matrix_mont[edge * padded_cols + col]);
+        }
+    }
+    return out;
+}
+
 std::size_t floor_power_of_two_size(std::size_t value)
 {
     if (value == 0) return 0;
     std::size_t out = 1;
     while (out <= value / 2) out <<= 1U;
     return out;
+}
+
+std::size_t formal_effective_matrix_commitment_block_size(
+    std::size_t requested_row_block,
+    std::size_t padded_rows,
+    std::size_t padded_cols)
+{
+    if (padded_rows == 0 || padded_cols == 0) {
+        throw std::runtime_error("matrix commitment block size needs non-empty tensors");
+    }
+    const std::size_t row_block = std::min(requested_row_block == 0 ? 64 : requested_row_block, padded_rows);
+    const std::size_t row_block_pow2 = std::max<std::size_t>(1, floor_power_of_two_size(row_block));
+    return row_block_pow2 * padded_cols;
 }
 
 std::size_t formal_effective_commitment_block_size(
@@ -3600,6 +3700,426 @@ Commitment make_formal_commitment_generators(std::size_t block_size)
     }
     if (block_size == 1) return Commitment(1, G1Jacobian_generator);
     return Commitment::random_generators(static_cast<uint>(block_size));
+}
+
+struct MultiColumnSparseRoutingGadgetProof
+{
+    std::string label;
+    std::string direction;
+    std::uint64_t topology_hash = 0;
+    uint node_count = 0;
+    uint edge_count = 0;
+    uint column_count = 0;
+    uint padded_node_count = 0;
+    uint padded_edge_count = 0;
+    uint padded_column_count = 0;
+    std::vector<Fr_t> column_point;
+    std::vector<G1Jacobian_t> compressed_node_commitment_points;
+    std::vector<G1Jacobian_t> compressed_edge_commitment_points;
+    SparseRoutingRelationProof compressed_routing;
+    Fr_t node_matrix_eval = Fr_host_zero();
+    Fr_t edge_matrix_eval = Fr_host_zero();
+    CommitmentOpeningProof opening_node_matrix;
+    CommitmentOpeningProof opening_edge_matrix;
+    std::string transcript_digest;
+
+    std::size_t serialized_size_bytes() const
+    {
+        return sizeof(uint32_t) + label.size()
+            + sizeof(uint32_t) + direction.size()
+            + sizeof(std::uint64_t)
+            + 6 * sizeof(uint32_t)
+            + sizeof(uint32_t) + column_point.size() * sizeof(Fr_t)
+            + sizeof(uint32_t) + compressed_node_commitment_points.size() * sizeof(G1Jacobian_t)
+            + sizeof(uint32_t) + compressed_edge_commitment_points.size() * sizeof(G1Jacobian_t)
+            + compressed_routing.serialized_size_bytes()
+            + 2 * sizeof(Fr_t)
+            + opening_node_matrix.serialized_size_bytes()
+            + opening_edge_matrix.serialized_size_bytes()
+            + sizeof(uint64_t);
+    }
+};
+
+struct MultiColumnHadamardGadgetProof
+{
+    std::string label;
+    uint edge_count = 0;
+    uint column_count = 0;
+    uint padded_edge_count = 0;
+    uint padded_column_count = 0;
+    std::vector<Fr_t> column_point;
+    std::vector<G1Jacobian_t> compressed_message_commitment_points;
+    std::vector<G1Jacobian_t> compressed_weighted_commitment_points;
+    HadamardSumcheckProof compressed_hadamard;
+    Fr_t message_matrix_eval = Fr_host_zero();
+    Fr_t weighted_matrix_eval = Fr_host_zero();
+    CommitmentOpeningProof opening_message_matrix;
+    CommitmentOpeningProof opening_weighted_matrix;
+    std::string transcript_digest;
+
+    std::size_t serialized_size_bytes() const
+    {
+        return sizeof(uint32_t) + label.size()
+            + 4 * sizeof(uint32_t)
+            + sizeof(uint32_t) + column_point.size() * sizeof(Fr_t)
+            + sizeof(uint32_t) + compressed_message_commitment_points.size() * sizeof(G1Jacobian_t)
+            + sizeof(uint32_t) + compressed_weighted_commitment_points.size() * sizeof(G1Jacobian_t)
+            + compressed_hadamard.serialized_size_bytes()
+            + 2 * sizeof(Fr_t)
+            + opening_message_matrix.serialized_size_bytes()
+            + opening_weighted_matrix.serialized_size_bytes()
+            + sizeof(uint64_t);
+    }
+};
+
+void absorb_multi_column_sparse_metadata(
+    FormalTranscript& transcript,
+    const std::string& label,
+    const std::string& direction,
+    std::uint64_t topology_hash,
+    uint node_count,
+    uint edge_count,
+    uint column_count,
+    uint padded_node_count,
+    uint padded_edge_count,
+    uint padded_column_count,
+    const G1TensorJacobian& com_node_matrix,
+    const G1TensorJacobian& com_edge_matrix)
+{
+    transcript.absorb_label("zkdl_gat_multi_column_sparse_routing");
+    transcript.absorb_label(label);
+    transcript.absorb_label(direction);
+    transcript.absorb_u64(topology_hash);
+    transcript.absorb_u64(node_count);
+    transcript.absorb_u64(edge_count);
+    transcript.absorb_u64(column_count);
+    transcript.absorb_u64(padded_node_count);
+    transcript.absorb_u64(padded_edge_count);
+    transcript.absorb_u64(padded_column_count);
+    formal_absorb_g1_tensor(transcript, com_node_matrix);
+    formal_absorb_g1_tensor(transcript, com_edge_matrix);
+}
+
+void absorb_multi_column_hadamard_metadata(
+    FormalTranscript& transcript,
+    const std::string& label,
+    uint edge_count,
+    uint column_count,
+    uint padded_edge_count,
+    uint padded_column_count,
+    const G1TensorJacobian& com_alpha,
+    const G1TensorJacobian& com_message_matrix,
+    const G1TensorJacobian& com_weighted_matrix)
+{
+    transcript.absorb_label("zkdl_gat_multi_column_hadamard");
+    transcript.absorb_label(label);
+    transcript.absorb_u64(edge_count);
+    transcript.absorb_u64(column_count);
+    transcript.absorb_u64(padded_edge_count);
+    transcript.absorb_u64(padded_column_count);
+    formal_absorb_g1_tensor(transcript, com_alpha);
+    formal_absorb_g1_tensor(transcript, com_message_matrix);
+    formal_absorb_g1_tensor(transcript, com_weighted_matrix);
+}
+
+MultiColumnSparseRoutingGadgetProof prove_multi_column_sparse_routing(
+    const FrTensor& node_matrix,
+    const FrTensor& edge_matrix,
+    const Commitment& matrix_generators,
+    const G1TensorJacobian& com_node_matrix,
+    const G1TensorJacobian& com_edge_matrix,
+    const Commitment& vector_generators,
+    const std::vector<std::uint32_t>& src,
+    const std::vector<std::uint32_t>& dst,
+    uint node_count,
+    uint edge_count,
+    uint column_count,
+    uint padded_column_count,
+    const std::string& direction,
+    const std::string& relation_label)
+{
+    if (direction != "source" && direction != "destination") {
+        throw std::runtime_error("multi-column sparse routing direction 必须是 source 或 destination");
+    }
+    const uint padded_node_count = formal_next_power_of_two_u32(node_count);
+    const uint padded_edge_count = formal_next_power_of_two_u32(edge_count);
+    if (padded_column_count != formal_next_power_of_two_u32(column_count)) {
+        throw std::runtime_error("multi-column sparse routing padded column mismatch");
+    }
+    if (node_matrix.size != padded_node_count * padded_column_count
+        || edge_matrix.size != padded_edge_count * padded_column_count) {
+        throw std::runtime_error("multi-column sparse routing matrix size mismatch");
+    }
+
+    MultiColumnSparseRoutingGadgetProof proof;
+    proof.label = relation_label;
+    proof.direction = direction;
+    proof.topology_hash = formal_sparse_topology_hash(src, dst, node_count, edge_count);
+    proof.node_count = node_count;
+    proof.edge_count = edge_count;
+    proof.column_count = column_count;
+    proof.padded_node_count = padded_node_count;
+    proof.padded_edge_count = padded_edge_count;
+    proof.padded_column_count = padded_column_count;
+
+    FormalTranscript transcript;
+    absorb_multi_column_sparse_metadata(
+        transcript, relation_label, direction, proof.topology_hash,
+        node_count, edge_count, column_count, padded_node_count, padded_edge_count,
+        padded_column_count, com_node_matrix, com_edge_matrix);
+    proof.column_point = formal_make_challenge_point(
+        transcript, ceilLog2(padded_column_count), "multi_column_sparse_column_point");
+
+    const auto compressed_node_host = formal_matrix_column_compression_host(
+        node_matrix, node_count, padded_node_count, column_count, padded_column_count, proof.column_point);
+    const auto compressed_edge_host = formal_matrix_column_compression_host(
+        edge_matrix, edge_count, padded_edge_count, column_count, padded_column_count, proof.column_point);
+    FrTensor compressed_node(static_cast<uint>(compressed_node_host.size()), compressed_node_host.data());
+    FrTensor compressed_edge(static_cast<uint>(compressed_edge_host.size()), compressed_edge_host.data());
+    const auto com_compressed_node = vector_generators.commit(compressed_node);
+    const auto com_compressed_edge = vector_generators.commit(compressed_edge);
+    proof.compressed_node_commitment_points = Commitment::host_points(com_compressed_node);
+    proof.compressed_edge_commitment_points = Commitment::host_points(com_compressed_edge);
+    proof.compressed_routing = formal_sparse_routing_relation_prove(
+        compressed_node, compressed_edge,
+        vector_generators, com_compressed_node,
+        vector_generators, com_compressed_edge,
+        src, dst, node_count, edge_count, direction,
+        relation_label + ":compressed_sparse_routing");
+
+    const auto node_matrix_point = formal_concat_points({proof.column_point, proof.compressed_routing.opening_node.point});
+    const auto edge_matrix_point = formal_concat_points({proof.column_point, proof.compressed_routing.opening_edge.point});
+    proof.node_matrix_eval = matrix_generators.open_with_proof(
+        node_matrix, com_node_matrix, node_matrix_point, proof.opening_node_matrix);
+    proof.edge_matrix_eval = matrix_generators.open_with_proof(
+        edge_matrix, com_edge_matrix, edge_matrix_point, proof.opening_edge_matrix);
+    if (!Fr_host_eq(proof.node_matrix_eval, proof.compressed_routing.opening_node.value)
+        || !Fr_host_eq(proof.edge_matrix_eval, proof.compressed_routing.opening_edge.value)) {
+        throw std::runtime_error("multi-column sparse routing compression binding mismatch");
+    }
+    transcript.absorb_label(proof.compressed_routing.transcript_digest);
+    transcript.absorb_fr(proof.node_matrix_eval);
+    transcript.absorb_fr(proof.edge_matrix_eval);
+    proof.transcript_digest = transcript.digest_hex();
+    return proof;
+}
+
+bool verify_multi_column_sparse_routing(
+    const MultiColumnSparseRoutingGadgetProof& proof,
+    const Commitment& matrix_generators,
+    const G1TensorJacobian& com_node_matrix,
+    const G1TensorJacobian& com_edge_matrix,
+    const Commitment& vector_generators,
+    const std::vector<std::uint32_t>& src,
+    const std::vector<std::uint32_t>& dst,
+    const std::string& direction,
+    const std::string& relation_label,
+    std::string* failure)
+{
+    const auto fail = [&](const std::string& message) {
+        if (failure != nullptr) *failure = message;
+        return false;
+    };
+    if (proof.label != relation_label || proof.direction != direction) {
+        return fail("multi-column sparse routing label/direction mismatch");
+    }
+    if (proof.padded_node_count != formal_next_power_of_two_u32(proof.node_count)
+        || proof.padded_edge_count != formal_next_power_of_two_u32(proof.edge_count)
+        || proof.padded_column_count != formal_next_power_of_two_u32(proof.column_count)) {
+        return fail("multi-column sparse routing padded shape mismatch");
+    }
+    const auto expected_hash = formal_sparse_topology_hash(src, dst, proof.node_count, proof.edge_count);
+    if (proof.topology_hash != expected_hash) return fail("multi-column sparse routing topology hash mismatch");
+
+    FormalTranscript transcript;
+    absorb_multi_column_sparse_metadata(
+        transcript, relation_label, direction, proof.topology_hash,
+        proof.node_count, proof.edge_count, proof.column_count, proof.padded_node_count,
+        proof.padded_edge_count, proof.padded_column_count, com_node_matrix, com_edge_matrix);
+    const auto expected_column_point = formal_make_challenge_point(
+        transcript, ceilLog2(proof.padded_column_count), "multi_column_sparse_column_point");
+    if (!formal_points_equal(expected_column_point, proof.column_point)) {
+        return fail("multi-column sparse routing column point mismatch");
+    }
+    G1TensorJacobian com_compressed_node(
+        static_cast<uint>(proof.compressed_node_commitment_points.size()),
+        proof.compressed_node_commitment_points.data());
+    G1TensorJacobian com_compressed_edge(
+        static_cast<uint>(proof.compressed_edge_commitment_points.size()),
+        proof.compressed_edge_commitment_points.data());
+    std::string inner_failure;
+    if (!formal_sparse_routing_relation_verify(
+            proof.compressed_routing,
+            vector_generators, com_compressed_node,
+            vector_generators, com_compressed_edge,
+            src, dst, direction,
+            relation_label + ":compressed_sparse_routing",
+            &inner_failure)) {
+        return fail("multi-column sparse routing compressed verifier failed: " + inner_failure);
+    }
+    const auto expected_node_matrix_point = formal_concat_points({proof.column_point, proof.compressed_routing.opening_node.point});
+    const auto expected_edge_matrix_point = formal_concat_points({proof.column_point, proof.compressed_routing.opening_edge.point});
+    if (!formal_points_equal(proof.opening_node_matrix.point, expected_node_matrix_point)
+        || !formal_points_equal(proof.opening_edge_matrix.point, expected_edge_matrix_point)) {
+        return fail("multi-column sparse routing matrix opening point mismatch");
+    }
+    if (!Fr_host_eq(proof.opening_node_matrix.value, proof.node_matrix_eval)
+        || !Fr_host_eq(proof.opening_edge_matrix.value, proof.edge_matrix_eval)) {
+        return fail("multi-column sparse routing matrix opening value mismatch");
+    }
+    if (!Fr_host_eq(proof.node_matrix_eval, proof.compressed_routing.opening_node.value)
+        || !Fr_host_eq(proof.edge_matrix_eval, proof.compressed_routing.opening_edge.value)) {
+        return fail("multi-column sparse routing compression binding mismatch");
+    }
+    if (!Commitment::verify_opening(matrix_generators, com_node_matrix, proof.opening_node_matrix)
+        || !Commitment::verify_opening(matrix_generators, com_edge_matrix, proof.opening_edge_matrix)) {
+        return fail("multi-column sparse routing matrix opening rejected");
+    }
+    transcript.absorb_label(proof.compressed_routing.transcript_digest);
+    transcript.absorb_fr(proof.node_matrix_eval);
+    transcript.absorb_fr(proof.edge_matrix_eval);
+    if (proof.transcript_digest != transcript.digest_hex()) {
+        return fail("multi-column sparse routing transcript digest mismatch");
+    }
+    return true;
+}
+
+MultiColumnHadamardGadgetProof prove_multi_column_alpha_hadamard(
+    const FrTensor& alpha,
+    const FrTensor& message_matrix,
+    const FrTensor& weighted_matrix,
+    const Commitment& vector_generators,
+    const G1TensorJacobian& com_alpha,
+    const Commitment& matrix_generators,
+    const G1TensorJacobian& com_message_matrix,
+    const G1TensorJacobian& com_weighted_matrix,
+    uint edge_count,
+    uint column_count,
+    uint padded_column_count,
+    const std::string& relation_label)
+{
+    const uint padded_edge_count = formal_next_power_of_two_u32(edge_count);
+    if (padded_column_count != formal_next_power_of_two_u32(column_count)) {
+        throw std::runtime_error("multi-column Hadamard padded column mismatch");
+    }
+    if (alpha.size != padded_edge_count
+        || message_matrix.size != padded_edge_count * padded_column_count
+        || weighted_matrix.size != padded_edge_count * padded_column_count) {
+        throw std::runtime_error("multi-column Hadamard tensor size mismatch");
+    }
+
+    MultiColumnHadamardGadgetProof proof;
+    proof.label = relation_label;
+    proof.edge_count = edge_count;
+    proof.column_count = column_count;
+    proof.padded_edge_count = padded_edge_count;
+    proof.padded_column_count = padded_column_count;
+
+    FormalTranscript transcript;
+    absorb_multi_column_hadamard_metadata(
+        transcript, relation_label, edge_count, column_count, padded_edge_count,
+        padded_column_count, com_alpha, com_message_matrix, com_weighted_matrix);
+    proof.column_point = formal_make_challenge_point(
+        transcript, ceilLog2(padded_column_count), "multi_column_hadamard_column_point");
+    const auto compressed_message_host = formal_matrix_column_compression_host(
+        message_matrix, edge_count, padded_edge_count, column_count, padded_column_count, proof.column_point);
+    const auto compressed_weighted_host = formal_matrix_column_compression_host(
+        weighted_matrix, edge_count, padded_edge_count, column_count, padded_column_count, proof.column_point);
+    FrTensor compressed_message(static_cast<uint>(compressed_message_host.size()), compressed_message_host.data());
+    FrTensor compressed_weighted(static_cast<uint>(compressed_weighted_host.size()), compressed_weighted_host.data());
+    const auto com_compressed_message = vector_generators.commit(compressed_message);
+    const auto com_compressed_weighted = vector_generators.commit(compressed_weighted);
+    proof.compressed_message_commitment_points = Commitment::host_points(com_compressed_message);
+    proof.compressed_weighted_commitment_points = Commitment::host_points(com_compressed_weighted);
+    proof.compressed_hadamard = formal_hadamard_relation_prove(
+        alpha, compressed_message, compressed_weighted,
+        vector_generators, com_alpha, com_compressed_message, com_compressed_weighted,
+        relation_label + ":compressed_alpha_times_message");
+    const auto message_matrix_point = formal_concat_points({proof.column_point, proof.compressed_hadamard.opening_b.point});
+    const auto weighted_matrix_point = formal_concat_points({proof.column_point, proof.compressed_hadamard.opening_c.point});
+    proof.message_matrix_eval = matrix_generators.open_with_proof(
+        message_matrix, com_message_matrix, message_matrix_point, proof.opening_message_matrix);
+    proof.weighted_matrix_eval = matrix_generators.open_with_proof(
+        weighted_matrix, com_weighted_matrix, weighted_matrix_point, proof.opening_weighted_matrix);
+    if (!Fr_host_eq(proof.message_matrix_eval, proof.compressed_hadamard.opening_b.value)
+        || !Fr_host_eq(proof.weighted_matrix_eval, proof.compressed_hadamard.opening_c.value)) {
+        throw std::runtime_error("multi-column Hadamard compression binding mismatch");
+    }
+    transcript.absorb_label(proof.compressed_hadamard.transcript_digest);
+    transcript.absorb_fr(proof.message_matrix_eval);
+    transcript.absorb_fr(proof.weighted_matrix_eval);
+    proof.transcript_digest = transcript.digest_hex();
+    return proof;
+}
+
+bool verify_multi_column_alpha_hadamard(
+    const MultiColumnHadamardGadgetProof& proof,
+    const Commitment& vector_generators,
+    const G1TensorJacobian& com_alpha,
+    const Commitment& matrix_generators,
+    const G1TensorJacobian& com_message_matrix,
+    const G1TensorJacobian& com_weighted_matrix,
+    const std::string& relation_label,
+    std::string* failure)
+{
+    const auto fail = [&](const std::string& message) {
+        if (failure != nullptr) *failure = message;
+        return false;
+    };
+    if (proof.label != relation_label) return fail("multi-column Hadamard label mismatch");
+    if (proof.padded_edge_count != formal_next_power_of_two_u32(proof.edge_count)
+        || proof.padded_column_count != formal_next_power_of_two_u32(proof.column_count)) {
+        return fail("multi-column Hadamard padded shape mismatch");
+    }
+    FormalTranscript transcript;
+    absorb_multi_column_hadamard_metadata(
+        transcript, relation_label, proof.edge_count, proof.column_count,
+        proof.padded_edge_count, proof.padded_column_count,
+        com_alpha, com_message_matrix, com_weighted_matrix);
+    const auto expected_column_point = formal_make_challenge_point(
+        transcript, ceilLog2(proof.padded_column_count), "multi_column_hadamard_column_point");
+    if (!formal_points_equal(expected_column_point, proof.column_point)) {
+        return fail("multi-column Hadamard column point mismatch");
+    }
+    G1TensorJacobian com_compressed_message(
+        static_cast<uint>(proof.compressed_message_commitment_points.size()),
+        proof.compressed_message_commitment_points.data());
+    G1TensorJacobian com_compressed_weighted(
+        static_cast<uint>(proof.compressed_weighted_commitment_points.size()),
+        proof.compressed_weighted_commitment_points.data());
+    std::string inner_failure;
+    if (!formal_hadamard_relation_verify(
+            proof.compressed_hadamard,
+            vector_generators, com_alpha, com_compressed_message, com_compressed_weighted,
+            relation_label + ":compressed_alpha_times_message",
+            &inner_failure)) {
+        return fail("multi-column Hadamard compressed verifier failed: " + inner_failure);
+    }
+    const auto expected_message_matrix_point = formal_concat_points({proof.column_point, proof.compressed_hadamard.opening_b.point});
+    const auto expected_weighted_matrix_point = formal_concat_points({proof.column_point, proof.compressed_hadamard.opening_c.point});
+    if (!formal_points_equal(proof.opening_message_matrix.point, expected_message_matrix_point)
+        || !formal_points_equal(proof.opening_weighted_matrix.point, expected_weighted_matrix_point)) {
+        return fail("multi-column Hadamard matrix opening point mismatch");
+    }
+    if (!Fr_host_eq(proof.opening_message_matrix.value, proof.message_matrix_eval)
+        || !Fr_host_eq(proof.opening_weighted_matrix.value, proof.weighted_matrix_eval)) {
+        return fail("multi-column Hadamard matrix opening value mismatch");
+    }
+    if (!Fr_host_eq(proof.message_matrix_eval, proof.compressed_hadamard.opening_b.value)
+        || !Fr_host_eq(proof.weighted_matrix_eval, proof.compressed_hadamard.opening_c.value)) {
+        return fail("multi-column Hadamard compression binding mismatch");
+    }
+    if (!Commitment::verify_opening(matrix_generators, com_message_matrix, proof.opening_message_matrix)
+        || !Commitment::verify_opening(matrix_generators, com_weighted_matrix, proof.opening_weighted_matrix)) {
+        return fail("multi-column Hadamard matrix opening rejected");
+    }
+    transcript.absorb_label(proof.compressed_hadamard.transcript_digest);
+    transcript.absorb_fr(proof.message_matrix_eval);
+    transcript.absorb_fr(proof.weighted_matrix_eval);
+    if (proof.transcript_digest != transcript.digest_hex()) {
+        return fail("multi-column Hadamard transcript digest mismatch");
+    }
+    return true;
 }
 
 struct GatSoftmaxAggregationGadgetRun
@@ -3757,6 +4277,121 @@ GatSoftmaxAggregationGadgetRun run_softmax_aggregation_relations_with_trace(
     result.relation_details.push_back("alpha_times_denominator status=PASS transcript_digest=" + alpha_times_denom_proof.transcript_digest);
 
     bool weighted_all_ok = true;
+    if (result.feature_columns == result.available_feature_columns && result.feature_columns > 0) {
+        const std::size_t padded_feature_columns = next_power_of_two(result.available_feature_columns);
+        if (padded_feature_columns > std::numeric_limits<uint>::max()) {
+            throw std::runtime_error("multi-column feature columns 超出 uint 范围");
+        }
+        const std::size_t matrix_block_size = formal_effective_matrix_commitment_block_size(
+            result.commitment_block_size,
+            std::min(padded_node_count, padded_edge_count),
+            padded_feature_columns);
+        Commitment matrix_gen = make_formal_commitment_generators(matrix_block_size);
+        auto message_node_matrix_raw = matrix_scale16_raw(
+            head.h_prime, graph.num_nodes, head.width, padded_node_count, padded_feature_columns);
+        auto message_edge_matrix_raw = route_matrix_by_topology_raw(
+            message_node_matrix_raw, graph, padded_node_count, padded_edge_count,
+            padded_feature_columns, true);
+        auto message_node_matrix_mont = mont_vector_from_raw(message_node_matrix_raw);
+        auto message_edge_matrix_mont = mont_vector_from_raw(message_edge_matrix_raw);
+        auto weighted_edge_matrix_mont = weighted_matrix_by_alpha_mont(
+            alpha_mont, message_edge_matrix_mont, graph.edges.size(),
+            padded_edge_count, padded_feature_columns);
+        auto aggregated_matrix_mont = grouped_sum_matrix_by_dst_mont(
+            weighted_edge_matrix_mont, graph, padded_node_count,
+            padded_edge_count, padded_feature_columns);
+
+        FrTensor message_node_matrix_tensor(
+            static_cast<uint>(message_node_matrix_mont.size()), message_node_matrix_mont.data());
+        FrTensor message_edge_matrix_tensor(
+            static_cast<uint>(message_edge_matrix_mont.size()), message_edge_matrix_mont.data());
+        FrTensor weighted_edge_matrix_tensor(
+            static_cast<uint>(weighted_edge_matrix_mont.size()), weighted_edge_matrix_mont.data());
+        FrTensor aggregated_matrix_tensor(
+            static_cast<uint>(aggregated_matrix_mont.size()), aggregated_matrix_mont.data());
+
+        ScopedTimer feature_commit_timer;
+        const auto com_message_node_matrix = matrix_gen.commit(message_node_matrix_tensor);
+        const auto com_message_edge_matrix = matrix_gen.commit(message_edge_matrix_tensor);
+        const auto com_weighted_edge_matrix = matrix_gen.commit(weighted_edge_matrix_tensor);
+        const auto com_aggregated_matrix = matrix_gen.commit(aggregated_matrix_tensor);
+        cuda_sync("formal multi-column weighted aggregation commit " + spec.dataset);
+        result.commitment_ms += feature_commit_timer.elapsed_ms();
+
+        const std::string message_route_label = prefix + ":weighted_aggregation:multi_column_message_source_routing";
+        const std::string alpha_message_label = prefix + ":alpha_multiplication:multi_column_alpha_times_message";
+        const std::string aggregation_label = prefix + ":weighted_aggregation:multi_column_weighted_by_dst";
+        MultiColumnSparseRoutingGadgetProof message_route_proof;
+        MultiColumnHadamardGadgetProof alpha_message_proof;
+        MultiColumnGroupedSumRelationProof aggregation_proof;
+        {
+            ScopedTimer timer;
+            message_route_proof = prove_multi_column_sparse_routing(
+                message_node_matrix_tensor, message_edge_matrix_tensor,
+                matrix_gen, com_message_node_matrix, com_message_edge_matrix,
+                gen, src, dst, node_count_u32, edge_count_u32,
+                static_cast<uint>(result.available_feature_columns),
+                static_cast<uint>(padded_feature_columns),
+                "source", message_route_label);
+            alpha_message_proof = prove_multi_column_alpha_hadamard(
+                alpha_tensor, message_edge_matrix_tensor, weighted_edge_matrix_tensor,
+                gen, com_alpha, matrix_gen, com_message_edge_matrix, com_weighted_edge_matrix,
+                edge_count_u32,
+                static_cast<uint>(result.available_feature_columns),
+                static_cast<uint>(padded_feature_columns),
+                alpha_message_label);
+            aggregation_proof = formal_multi_column_grouped_sum_relation_prove(
+                weighted_edge_matrix_tensor, aggregated_matrix_tensor,
+                matrix_gen, com_weighted_edge_matrix,
+                matrix_gen, com_aggregated_matrix,
+                gen, src, dst, node_count_u32, edge_count_u32,
+                static_cast<uint>(result.available_feature_columns),
+                static_cast<uint>(padded_feature_columns),
+                aggregation_label);
+            result.prove_ms += timer.elapsed_ms();
+        }
+        {
+            ScopedTimer timer;
+            std::string failure;
+            const bool message_ok = verify_multi_column_sparse_routing(
+                message_route_proof, matrix_gen, com_message_node_matrix, com_message_edge_matrix,
+                gen, src, dst, "source", message_route_label, &failure);
+            if (!message_ok) {
+                weighted_all_ok = false;
+                result.relation_details.push_back("multi_column_weighted_aggregation message_source_routing status=REJECT failure=\"" + failure + "\"");
+            }
+            const bool alpha_message_ok = message_ok && verify_multi_column_alpha_hadamard(
+                alpha_message_proof, gen, com_alpha, matrix_gen,
+                com_message_edge_matrix, com_weighted_edge_matrix,
+                alpha_message_label, &failure);
+            if (message_ok && !alpha_message_ok) {
+                weighted_all_ok = false;
+                result.relation_details.push_back("multi_column_weighted_aggregation alpha_times_message status=REJECT failure=\"" + failure + "\"");
+            }
+            const bool aggregation_ok = alpha_message_ok && formal_multi_column_grouped_sum_relation_verify(
+                aggregation_proof,
+                matrix_gen, com_weighted_edge_matrix,
+                matrix_gen, com_aggregated_matrix,
+                gen, src, dst, aggregation_label, &failure);
+            if (alpha_message_ok && !aggregation_ok) {
+                weighted_all_ok = false;
+                result.relation_details.push_back("multi_column_weighted_aggregation weighted_grouped_sum status=REJECT failure=\"" + failure + "\"");
+            }
+            if (message_ok && alpha_message_ok && aggregation_ok) {
+                result.verified_feature_columns = result.available_feature_columns;
+                result.proof_size_bytes += message_route_proof.serialized_size_bytes()
+                    + alpha_message_proof.serialized_size_bytes()
+                    + aggregation_proof.serialized_size_bytes();
+                result.relation_details.push_back("multi_column_weighted_aggregation status=PASS feature_columns="
+                    + std::to_string(result.verified_feature_columns)
+                    + " matrix_commitment_block_size=" + std::to_string(matrix_block_size)
+                    + " message_route_digest=" + message_route_proof.transcript_digest
+                    + " alpha_message_digest=" + alpha_message_proof.transcript_digest
+                    + " aggregation_digest=" + aggregation_proof.transcript_digest);
+            }
+            result.verify_ms += timer.elapsed_ms();
+        }
+    } else {
     for (std::size_t col = 0; col < result.feature_columns; ++col) {
         auto message_node_raw = column_scale16_raw(head.h_prime, graph.num_nodes, head.width, col, padded_node_count);
         auto message_edge_raw = route_vector_by_topology_raw(message_node_raw, graph, padded_edge_count, true);
@@ -3836,6 +4471,7 @@ GatSoftmaxAggregationGadgetRun run_softmax_aggregation_relations_with_trace(
             }
             result.verify_ms += timer.elapsed_ms();
         }
+    }
     }
     result.weighted_aggregation_ok = weighted_all_ok
         && result.verified_feature_columns == result.feature_columns
@@ -4598,18 +5234,19 @@ void write_coverage_matrix(const fs::path& output_root) {
         {"verifier 不读取 witness", "partial_formal", "partial artifacts", "partial artifacts", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "完整 GAT verifier 尚未存在。"},
         {"proof object 不含完整 tensor/debug dump", "partial_formal", "partial artifacts", "partial artifacts", true, true, true, true, true, "zkdl_gat_outputs/results/formal_partial_debug.csv", "当前只对 partial artifact 成立。"},
         {"debug_level_b output binding", "debug_only", "diagnostic", "diagnostic", false, false, false, false, false, "zkdl_gat_outputs/results/debug_level_b.csv", "不是 formal benchmark。"},
-        {"SparseSourceRoutingRelationProof", "supported", "selftest+Cora/Citeseer/Pubmed full graph after run", "see sparse evidence", true, true, true, true, true, "zkdl_gat_outputs/evidence/sparse_grouped_relation_cora.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_citeseer.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_pubmed.json", "zkDL sparse source routing gadget 使用 public src 和 topology hash；不使用 dense attention。"},
-        {"SparseDestinationRoutingRelationProof", "supported", "selftest+Cora/Citeseer/Pubmed full graph after run", "see sparse evidence", true, true, true, true, true, "zkdl_gat_outputs/evidence/sparse_grouped_relation_cora.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_citeseer.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_pubmed.json", "zkDL sparse destination routing gadget 使用 public dst 和 topology hash；不使用 dense attention。"},
-        {"GroupedSumRelationProof", "supported", "selftest+Cora/Citeseer/Pubmed full graph after run", "see sparse evidence", true, true, true, true, true, "zkdl_gat_outputs/evidence/sparse_grouped_relation_cora.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_citeseer.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_pubmed.json", "一维 grouped sum gadget 已实现；尚未等同于 softmax denominator 或 weighted aggregation。"},
-        {"source sparse routing", "partial_formal", "Cora/Citeseer/Pubmed full graph after run", "see sparse evidence", true, true, true, true, true, "zkdl_gat_outputs/evidence/sparse_grouped_relation_cora.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_citeseer.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_pubmed.json", "已局部实现并验证 hidden layer0/head0 source attention routing；完整所有层/头接入仍未完成。"},
-        {"destination sparse routing", "partial_formal", "Cora/Citeseer/Pubmed full graph after run", "see sparse evidence", true, true, true, true, true, "zkdl_gat_outputs/evidence/sparse_grouped_relation_cora.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_citeseer.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_pubmed.json", "已局部实现并验证 hidden layer0/head0 destination attention routing；完整所有层/头接入仍未完成。"},
+        {"SparseSourceRoutingRelationProof", "supported", "five full datasets hidden_layer0/head0", "see sparse evidence", true, true, true, true, true, "zkdl_gat_outputs/evidence/sparse_grouped_relation_cora.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_citeseer.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_pubmed.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_ppi.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_ogbn-arxiv.json", "zkDL sparse source routing gadget 使用 public src 和 topology hash；不使用 dense attention。"},
+        {"SparseDestinationRoutingRelationProof", "supported", "five full datasets hidden_layer0/head0", "see sparse evidence", true, true, true, true, true, "zkdl_gat_outputs/evidence/sparse_grouped_relation_cora.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_citeseer.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_pubmed.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_ppi.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_ogbn-arxiv.json", "zkDL sparse destination routing gadget 使用 public dst 和 topology hash；不使用 dense attention。"},
+        {"GroupedSumRelationProof", "supported", "five full datasets hidden_layer0/head0", "see sparse evidence", true, true, true, true, true, "zkdl_gat_outputs/evidence/sparse_grouped_relation_cora.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_citeseer.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_pubmed.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_ppi.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_ogbn-arxiv.json", "一维 grouped sum gadget 已实现；尚未等同于完整 softmax/aggregation 链条。"},
+        {"MultiColumnGroupedSumRelationProof", "supported", "selftest + five full datasets", "hidden layer0/head0 8/8 feature", true, true, true, true, true, "zkdl_gat_outputs/runs/selftest/formal_relation_selftest_latest.log;zkdl_gat_outputs/evidence/softmax_aggregation_relation_cora.json;zkdl_gat_outputs/evidence/softmax_aggregation_relation_citeseer.json;zkdl_gat_outputs/evidence/softmax_aggregation_relation_pubmed.json;zkdl_gat_outputs/evidence/softmax_aggregation_relation_ppi.json;zkdl_gat_outputs/evidence/softmax_aggregation_relation_ogbn-arxiv.json", "multi-column grouped sum 使用 zkDL 自身 column compression + matrix opening 绑定。"},
+        {"source sparse routing", "partial_formal", "five full datasets hidden_layer0/head0", "see sparse evidence", true, true, true, true, true, "zkdl_gat_outputs/evidence/sparse_grouped_relation_cora.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_citeseer.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_pubmed.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_ppi.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_ogbn-arxiv.json", "已局部实现并验证 hidden layer0/head0 source attention routing；完整所有层/头接入仍未完成。"},
+        {"destination sparse routing", "partial_formal", "five full datasets hidden_layer0/head0", "see sparse evidence", true, true, true, true, true, "zkdl_gat_outputs/evidence/sparse_grouped_relation_cora.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_citeseer.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_pubmed.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_ppi.json;zkdl_gat_outputs/evidence/sparse_grouped_relation_ogbn-arxiv.json", "已局部实现并验证 hidden layer0/head0 destination attention routing；完整所有层/头接入仍未完成。"},
         {"target-node softmax group", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "缺少完整 softmax group relation。"},
         {"softmax group max", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "缺少 max/range comparison gadget。"},
         {"ExpMap", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "缺少 QuantExp lookup argument。"},
-        {"softmax denominator sum", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "一维 GroupedSumRelationProof 已有；仍缺 ExpMap 输出、denominator 与 inverse chain 绑定。"},
-        {"inverse", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "缺少 denominator nonzero 与 inverse witness 绑定。"},
-        {"alpha multiplication", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "缺少前序 denominator/inverse 绑定。"},
-        {"weighted aggregation", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "一维 GroupedSumRelationProof 已有；仍缺 alpha*message product 与完整 aggregation chain 绑定。"},
+        {"softmax denominator sum", "partial_formal", "five full datasets hidden_layer0/head0", "5/5 dataset；U_by_dst", true, true, true, true, true, "zkdl_gat_outputs/evidence/softmax_aggregation_relation_cora.json;zkdl_gat_outputs/evidence/softmax_aggregation_relation_citeseer.json;zkdl_gat_outputs/evidence/softmax_aggregation_relation_pubmed.json;zkdl_gat_outputs/evidence/softmax_aggregation_relation_ppi.json;zkdl_gat_outputs/evidence/softmax_aggregation_relation_ogbn-arxiv.json", "已证明 U -> denominator；U 的 ExpMap 来源与所有层/头仍未闭合。"},
+        {"inverse", "partial_formal", "five full datasets hidden_layer0/head0", "5/5 dataset；denominator*inv=valid_one", true, true, true, true, true, "zkdl_gat_outputs/evidence/softmax_aggregation_relation_cora.json;zkdl_gat_outputs/evidence/softmax_aggregation_relation_citeseer.json;zkdl_gat_outputs/evidence/softmax_aggregation_relation_pubmed.json;zkdl_gat_outputs/evidence/softmax_aggregation_relation_ppi.json;zkdl_gat_outputs/evidence/softmax_aggregation_relation_ogbn-arxiv.json", "已证明 denominator inverse 与 destination routing；仍缺完整 softmax max/ExpMap 链。"},
+        {"alpha multiplication", "partial_formal", "five full datasets hidden_layer0/head0", "5/5 dataset；U*inv_edge=alpha 与 alpha*denom=U", true, true, true, true, true, "zkdl_gat_outputs/evidence/softmax_aggregation_relation_cora.json;zkdl_gat_outputs/evidence/softmax_aggregation_relation_citeseer.json;zkdl_gat_outputs/evidence/softmax_aggregation_relation_pubmed.json;zkdl_gat_outputs/evidence/softmax_aggregation_relation_ppi.json;zkdl_gat_outputs/evidence/softmax_aggregation_relation_ogbn-arxiv.json", "alpha 乘法 relation 已验证；U 的 ExpMap 来源与所有层/头仍未闭合。"},
+        {"weighted aggregation", "partial_formal", "five full datasets hidden_layer0/head0", "8/8 feature via multi-column compressed relation", true, true, true, true, true, "zkdl_gat_outputs/evidence/softmax_aggregation_relation_cora.json;zkdl_gat_outputs/evidence/softmax_aggregation_relation_citeseer.json;zkdl_gat_outputs/evidence/softmax_aggregation_relation_pubmed.json;zkdl_gat_outputs/evidence/softmax_aggregation_relation_ppi.json;zkdl_gat_outputs/evidence/softmax_aggregation_relation_ogbn-arxiv.json", "已验证 multi-column message routing、alpha*message 与 weighted_by_dst；所有层/头、output aggregation 与 rescale 仍 blocked。"},
         {"LeakyReLU", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "缺少 lookup/range verifier gadget。"},
         {"ELU", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "缺少 ELU lookup/range verifier gadget。"},
         {"output attention aggregation", "blocked", "NA", "NA", false, false, false, false, false, "zkdl_gat_outputs/evidence/rounding_sparse_blocker_evidence.md", "缺少 output attention aggregation verifier。"},
@@ -4844,8 +5481,8 @@ void write_adapter_readme(const fs::path& output_root, const std::vector<RunRow>
     out << "- 本轮结果如果仍未 Level A，则 latest.csv/json 保持 NA。\n";
     out << "- 所有 partial_formal 只作为 supporting evidence。\n\n";
     out << "与主仓库指标口径对齐：`latest.csv` 字段固定为 `dataset,status,blocker,benchmark_mode,commitment_time_ms,prove_time_ms,verify_time_ms,proof_size_bytes`，数据集顺序固定为 `cora,citeseer,pubmed,ppi,ogbn-arxiv`，`benchmark_mode` 固定为 `warm`。只有 full dataset + complete formal proof generation + complete formal verification 成功后才填写 official 四项。\n\n";
-    out << "当前 supported relation：commitment/evaluation binding、transcript binding、HadamardRelationProof、MatmulRelationProof、LinearRelationProof、SparseSourceRoutingRelationProof、SparseDestinationRoutingRelationProof 和一维 GroupedSumRelationProof。hidden concat、output bias add、output-head average、public logits binding、projection/dot、scale decomposition 与 residual bounded range 只计入 partial formal。\n\n";
-    out << "当前 blocked relation：target-node softmax group、softmax max、ExpMap、denominator sum 与 inverse 绑定、alpha multiplication chain、LeakyReLU、ELU、weighted/output aggregation、real rescale chain 与 rounding sign/tie-breaking 仍缺 zkDL verifier gadget、lookup/range primitive 或公开量化契约；sparse routing/grouped sum 已作为独立 relation gadget 实现，但尚未并入完整所有层/头的 GAT proof object。\n\n";
+    out << "当前 supported relation：commitment/evaluation binding、transcript binding、HadamardRelationProof、MatmulRelationProof、LinearRelationProof、SparseSourceRoutingRelationProof、SparseDestinationRoutingRelationProof、一维 GroupedSumRelationProof 与 MultiColumnGroupedSumRelationProof。hidden concat、output bias add、output-head average、public logits binding、projection/dot、scale decomposition 与 residual bounded range 只计入 partial formal。\n\n";
+    out << "当前 partial formal：五个数据集 hidden layer0/head0 已验证 sparse/grouped、denominator/inverse/alpha 与 8/8 feature multi-column weighted aggregation。当前 blocked relation：target-node softmax group、softmax max、ExpMap、LeakyReLU、ELU、所有层/头 weighted/output aggregation、real rescale chain 与 rounding sign/tie-breaking 仍缺 zkDL verifier gadget、lookup/range primitive 或公开量化契约；这些 partial relation 尚未并入完整所有层/头的 GAT proof object。\n\n";
     out << "目录清理原则：保留源码、构建脚本、正式 results、summary、formal_partial_debug、debug_level_b、coverage matrix、必要 proof artifact、proof evidence、run manifest、benchmark、proof_debug、dataset resume point 和本 README；不保留错误调度日志、过期 proof artifact 或临时 debug 目录。\n\n";
     out << "数据集状态：\n\n";
     out << "| dataset | status | gpu_forward | partial commitment_ms | partial prove_ms | partial verify_ms | partial proof_size_bytes | verified chunks | total chunks | debug Level B |\n";
@@ -5413,7 +6050,7 @@ int main(int argc, char** argv) {
         fs::path schedule_plan;
         std::size_t schedule_start_chunk = 0;
         std::size_t schedule_max_chunks = std::numeric_limits<std::size_t>::max() / 4U;
-        std::size_t softmax_max_feature_columns = 1;
+        std::size_t softmax_max_feature_columns = 0;
         std::size_t formal_commitment_block_size = 64;
         for (int i = 1; i < argc; ++i) {
             const std::string arg = argv[i];
