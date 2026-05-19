@@ -3572,6 +3572,36 @@ std::vector<Fr_t> column_scale16_raw(
     return out;
 }
 
+std::size_t floor_power_of_two_size(std::size_t value)
+{
+    if (value == 0) return 0;
+    std::size_t out = 1;
+    while (out <= value / 2) out <<= 1U;
+    return out;
+}
+
+std::size_t formal_effective_commitment_block_size(
+    std::size_t requested,
+    std::size_t padded_node_count,
+    std::size_t padded_edge_count)
+{
+    const std::size_t min_size = std::min(padded_node_count, padded_edge_count);
+    if (min_size == 0) throw std::runtime_error("commitment block size needs non-empty tensors");
+    if (requested == 0) requested = 64;
+    const std::size_t capped = std::min(requested, min_size);
+    const std::size_t block = floor_power_of_two_size(capped);
+    return std::max<std::size_t>(1, block);
+}
+
+Commitment make_formal_commitment_generators(std::size_t block_size)
+{
+    if (block_size == 0 || block_size > std::numeric_limits<uint>::max()) {
+        throw std::runtime_error("formal commitment block size 超出 uint 范围");
+    }
+    if (block_size == 1) return Commitment(1, G1Jacobian_generator);
+    return Commitment::random_generators(static_cast<uint>(block_size));
+}
+
 struct GatSoftmaxAggregationGadgetRun
 {
     bool denominator_ok = false;
@@ -3588,6 +3618,7 @@ struct GatSoftmaxAggregationGadgetRun
     double verify_ms = 0.0;
     std::uintmax_t proof_size_bytes = 0;
     std::uint64_t topology_hash = 0;
+    std::size_t commitment_block_size = 1;
     std::vector<std::string> relation_details;
     fs::path proof_path;
     fs::path evidence_path;
@@ -3598,7 +3629,8 @@ GatSoftmaxAggregationGadgetRun run_softmax_aggregation_relations_with_trace(
     const LocalGraph& graph,
     const ForwardTraceHost& trace,
     const fs::path& output_root,
-    std::size_t max_feature_columns)
+    std::size_t max_feature_columns,
+    std::size_t requested_commitment_block_size)
 {
     if (trace.hidden_heads.empty() || trace.hidden_heads.front().empty()) {
         throw std::runtime_error("缺少 hidden layer0/head0 trace，无法生成 softmax/aggregation relation evidence");
@@ -3642,7 +3674,9 @@ GatSoftmaxAggregationGadgetRun run_softmax_aggregation_relations_with_trace(
     result.available_feature_columns = head.width;
     result.feature_columns = max_feature_columns == 0 ? head.width : std::min(head.width, max_feature_columns);
     result.topology_hash = formal_sparse_topology_hash(src, dst, node_count_u32, edge_count_u32);
-    Commitment gen(1, G1Jacobian_generator);
+    result.commitment_block_size = formal_effective_commitment_block_size(
+        requested_commitment_block_size, padded_node_count, padded_edge_count);
+    Commitment gen = make_formal_commitment_generators(result.commitment_block_size);
 
     FrTensor u_tensor(static_cast<uint>(u_mont.size()), u_mont.data());
     FrTensor denom_tensor(static_cast<uint>(denom_mont.size()), denom_mont.data());
@@ -3825,6 +3859,7 @@ GatSoftmaxAggregationGadgetRun run_softmax_aggregation_relations_with_trace(
         out << "feature_columns=" << result.feature_columns << "\n";
         out << "available_feature_columns=" << result.available_feature_columns << "\n";
         out << "verified_feature_columns=" << result.verified_feature_columns << "\n";
+        out << "commitment_block_size=" << result.commitment_block_size << "\n";
         out << "topology_hash=" << result.topology_hash << "\n";
         out << "denominator_grouped_sum_status=" << (result.denominator_ok ? "PASS" : "FAIL") << "\n";
         out << "inverse_status=" << (result.inverse_ok ? "PASS" : "FAIL") << "\n";
@@ -3850,6 +3885,7 @@ GatSoftmaxAggregationGadgetRun run_softmax_aggregation_relations_with_trace(
         out << "  \"feature_columns\": \"" << result.feature_columns << "\",\n";
         out << "  \"available_feature_columns\": \"" << result.available_feature_columns << "\",\n";
         out << "  \"verified_feature_columns\": \"" << result.verified_feature_columns << "\",\n";
+        out << "  \"commitment_block_size\": \"" << result.commitment_block_size << "\",\n";
         out << "  \"topology_hash\": \"" << result.topology_hash << "\",\n";
         out << "  \"denominator_grouped_sum\": \"" << (result.denominator_ok ? "PASS" : "FAIL") << "\",\n";
         out << "  \"inverse\": \"" << (result.inverse_ok ? "PASS" : "FAIL") << "\",\n";
@@ -3872,6 +3908,7 @@ GatSoftmaxAggregationGadgetRun run_softmax_aggregation_relations_with_trace(
               << (result.weighted_aggregation_ok ? "PASS" : "PARTIAL") << "\n";
         debug << "nodes=" << graph.num_nodes << " edges=" << graph.edges.size()
               << " topology_hash=" << result.topology_hash
+              << " commitment_block_size=" << result.commitment_block_size
               << " feature_columns=" << result.feature_columns
               << " available_feature_columns=" << result.available_feature_columns
               << " verified_feature_columns=" << result.verified_feature_columns << "\n";
@@ -3887,6 +3924,7 @@ GatSoftmaxAggregationGadgetRun run_softmax_aggregation_relations_with_trace(
         resume << "- 证明范围: hidden layer0/head0 full graph / full edge set，feature columns `"
                << result.verified_feature_columns << "/" << result.available_feature_columns
                << "`；本次实际运行 columns `" << result.feature_columns << "`\n";
+        resume << "- commitment block size: `" << result.commitment_block_size << "`\n";
         resume << "- 结果: `" << (result.weighted_aggregation_ok ? "PASS" : "PARTIAL") << "`\n";
         resume << "- proof artifact: `" << result.proof_path.string() << "`\n";
         resume << "- evidence: `" << result.evidence_path.string() << "`\n";
@@ -3905,6 +3943,7 @@ struct SparseGroupedGadgetRun
     double verify_ms = 0.0;
     std::uintmax_t proof_size_bytes = 0;
     std::uint64_t topology_hash = 0;
+    std::size_t commitment_block_size = 1;
     std::string source_digest;
     std::string destination_digest;
     std::string grouped_sum_digest;
@@ -3916,7 +3955,8 @@ SparseGroupedGadgetRun run_sparse_grouped_relations_with_trace(
     const DatasetRunSpec& spec,
     const LocalGraph& graph,
     const ForwardTraceHost& trace,
-    const fs::path& output_root)
+    const fs::path& output_root,
+    std::size_t requested_commitment_block_size)
 {
     if (trace.hidden_heads.empty() || trace.hidden_heads.front().empty()) {
         throw std::runtime_error("缺少 hidden layer0/head0 trace，无法生成 sparse routing evidence");
@@ -3956,7 +3996,9 @@ SparseGroupedGadgetRun run_sparse_grouped_relations_with_trace(
 
     SparseGroupedGadgetRun result;
     result.topology_hash = formal_sparse_topology_hash(src, dst, node_count_u32, edge_count_u32);
-    Commitment gen(1, G1Jacobian_generator);
+    result.commitment_block_size = formal_effective_commitment_block_size(
+        requested_commitment_block_size, padded_node_count, padded_edge_count);
+    Commitment gen = make_formal_commitment_generators(result.commitment_block_size);
     ScopedTimer commit_timer;
     const auto com_node_src = gen.commit(node_src_tensor);
     const auto com_node_dst = gen.commit(node_dst_tensor);
@@ -4022,6 +4064,7 @@ SparseGroupedGadgetRun run_sparse_grouped_relations_with_trace(
         out << "padded_node_count=" << padded_node_count << "\n";
         out << "padded_edge_count=" << padded_edge_count << "\n";
         out << "edge_range=0.." << graph.edges.size() << "\n";
+        out << "commitment_block_size=" << result.commitment_block_size << "\n";
         out << "topology_hash=" << result.topology_hash << "\n";
         out << "source_sparse_routing_status=PASS\n";
         out << "destination_sparse_routing_status=PASS\n";
@@ -4042,6 +4085,7 @@ SparseGroupedGadgetRun run_sparse_grouped_relations_with_trace(
         out << "  \"node_count\": \"" << graph.num_nodes << "\",\n";
         out << "  \"edge_count\": \"" << graph.edges.size() << "\",\n";
         out << "  \"edge_range\": \"0.." << graph.edges.size() << "\",\n";
+        out << "  \"commitment_block_size\": \"" << result.commitment_block_size << "\",\n";
         out << "  \"topology_hash\": \"" << result.topology_hash << "\",\n";
         out << "  \"source_sparse_routing\": \"PASS\",\n";
         out << "  \"destination_sparse_routing\": \"PASS\",\n";
@@ -4058,7 +4102,8 @@ SparseGroupedGadgetRun run_sparse_grouped_relations_with_trace(
         std::ofstream debug(run_dir / "proof_debug.log");
         debug << "dataset=" << spec.dataset << " stage=formal_sparse_grouped status=PASS\n";
         debug << "nodes=" << graph.num_nodes << " edges=" << graph.edges.size()
-              << " topology_hash=" << result.topology_hash << "\n";
+              << " topology_hash=" << result.topology_hash
+              << " commitment_block_size=" << result.commitment_block_size << "\n";
         debug << "source_sparse_routing_digest=" << result.source_digest << "\n";
         debug << "destination_sparse_routing_digest=" << result.destination_digest << "\n";
         debug << "grouped_sum_digest=" << result.grouped_sum_digest << "\n";
@@ -4073,6 +4118,7 @@ SparseGroupedGadgetRun run_sparse_grouped_relations_with_trace(
         resume << "- 数据集: `" << spec.dataset << "`\n";
         resume << "- 本轮 relation: `SparseSourceRoutingRelationProof`, `SparseDestinationRoutingRelationProof`, `GroupedSumRelationProof`\n";
         resume << "- 证明范围: full graph / full edge set，edge range `0.." << graph.edges.size() << "`\n";
+        resume << "- commitment block size: `" << result.commitment_block_size << "`\n";
         resume << "- 结果: `PASS`\n";
         resume << "- proof artifact: `" << result.proof_path.string() << "`\n";
         resume << "- evidence: `" << result.evidence_path.string() << "`\n";
@@ -4084,7 +4130,8 @@ SparseGroupedGadgetRun run_sparse_grouped_relations_with_trace(
 void run_formal_sparse_grouped_gadget(
     const fs::path& project_root,
     const fs::path& output_root,
-    const DatasetRunSpec& spec)
+    const DatasetRunSpec& spec,
+    std::size_t requested_commitment_block_size)
 {
     const auto run_dir = output_root / "runs" / spec.dataset / "warm";
     ensure_dir(run_dir);
@@ -4109,9 +4156,11 @@ void run_formal_sparse_grouped_gadget(
     std::cout << "formal_sparse_grouped dataset=" << spec.dataset
               << " forward_ms=" << format_ms(forward.total_ms)
               << " stage=prove_verify\n";
-    const auto result = run_sparse_grouped_relations_with_trace(spec, graph, trace, output_root);
+    const auto result = run_sparse_grouped_relations_with_trace(
+        spec, graph, trace, output_root, requested_commitment_block_size);
     std::cout << "formal_sparse_grouped dataset=" << spec.dataset
               << " status=PASS"
+              << " commitment_block_size=" << result.commitment_block_size
               << " commitment_ms=" << format_ms(result.commitment_ms)
               << " prove_ms=" << format_ms(result.prove_ms)
               << " verify_ms=" << format_ms(result.verify_ms)
@@ -4124,7 +4173,8 @@ void run_formal_softmax_aggregation_gadget(
     const fs::path& project_root,
     const fs::path& output_root,
     const DatasetRunSpec& spec,
-    std::size_t max_feature_columns)
+    std::size_t max_feature_columns,
+    std::size_t requested_commitment_block_size)
 {
     const auto run_dir = output_root / "runs" / spec.dataset / "warm";
     ensure_dir(run_dir);
@@ -4149,9 +4199,11 @@ void run_formal_softmax_aggregation_gadget(
     std::cout << "formal_softmax_aggregation dataset=" << spec.dataset
               << " forward_ms=" << format_ms(forward.total_ms)
               << " stage=prove_verify\n";
-    const auto result = run_softmax_aggregation_relations_with_trace(spec, graph, trace, output_root, max_feature_columns);
+    const auto result = run_softmax_aggregation_relations_with_trace(
+        spec, graph, trace, output_root, max_feature_columns, requested_commitment_block_size);
     std::cout << "formal_softmax_aggregation dataset=" << spec.dataset
               << " status=" << (result.weighted_aggregation_ok ? "PASS" : "PARTIAL")
+              << " commitment_block_size=" << result.commitment_block_size
               << " denominator=" << (result.denominator_ok ? "PASS" : "FAIL")
               << " inverse=" << (result.inverse_ok ? "PASS" : "FAIL")
               << " alpha=" << (result.alpha_from_inverse_ok && result.alpha_times_denominator_ok ? "PASS" : "FAIL")
@@ -5362,14 +5414,15 @@ int main(int argc, char** argv) {
         std::size_t schedule_start_chunk = 0;
         std::size_t schedule_max_chunks = std::numeric_limits<std::size_t>::max() / 4U;
         std::size_t softmax_max_feature_columns = 1;
+        std::size_t formal_commitment_block_size = 64;
         for (int i = 1; i < argc; ++i) {
             const std::string arg = argv[i];
             if (arg == "--help") {
                 std::cout
                     << "usage: ./gat_zkdl [--run-all|--dataset DATASET] [--output-root DIR]\n"
                     << "       ./gat_zkdl --diagnose-matmul-first-failure [--dataset DATASET]\n"
-                    << "       ./gat_zkdl --formal-sparse-grouped --dataset DATASET --output-root DIR\n"
-                    << "       ./gat_zkdl --formal-softmax-aggregation --dataset DATASET [--max-feature-columns N] --output-root DIR\n"
+                    << "       ./gat_zkdl --formal-sparse-grouped --dataset DATASET [--formal-commitment-block-size N] --output-root DIR\n"
+                    << "       ./gat_zkdl --formal-softmax-aggregation --dataset DATASET [--max-feature-columns N] [--formal-commitment-block-size N] --output-root DIR\n"
                     << "       ./gat_zkdl --formal-matmul-schedule --dataset DATASET --relation REL --start-chunk N [--max-chunks N] --output-root DIR\n"
                     << "       ./gat_zkdl --formal-matmul-schedule-batch --dataset DATASET --schedule-plan CSV --output-root DIR\n";
                 return 0;
@@ -5406,6 +5459,8 @@ int main(int argc, char** argv) {
                 schedule_max_chunks = static_cast<std::size_t>(std::stoull(argv[++i]));
             } else if (arg == "--max-feature-columns" && i + 1 < argc) {
                 softmax_max_feature_columns = static_cast<std::size_t>(std::stoull(argv[++i]));
+            } else if (arg == "--formal-commitment-block-size" && i + 1 < argc) {
+                formal_commitment_block_size = static_cast<std::size_t>(std::stoull(argv[++i]));
             }
         }
         output_root = fs::absolute(output_root);
@@ -5444,7 +5499,7 @@ int main(int argc, char** argv) {
                     continue;
                 }
                 found = true;
-                run_formal_sparse_grouped_gadget(project_root, output_root, spec);
+                run_formal_sparse_grouped_gadget(project_root, output_root, spec, formal_commitment_block_size);
             }
             if (!found) {
                 throw std::runtime_error("unknown dataset for formal sparse grouped gadget: " + only_dataset);
@@ -5462,7 +5517,8 @@ int main(int argc, char** argv) {
                     continue;
                 }
                 found = true;
-                run_formal_softmax_aggregation_gadget(project_root, output_root, spec, softmax_max_feature_columns);
+                run_formal_softmax_aggregation_gadget(
+                    project_root, output_root, spec, softmax_max_feature_columns, formal_commitment_block_size);
             }
             if (!found) {
                 throw std::runtime_error("unknown dataset for formal softmax aggregation gadget: " + only_dataset);
