@@ -71,36 +71,18 @@ void run_cpu_formal_chain(
 
         const auto result = run_cpu_formal_relations_with_trace(
             spec, graph, head_trace, output_root, requested_commitment_block_size);
-        {
-            std::ofstream debug(run_dir / "proof_debug.log");
-            debug << "dataset=" << spec.dataset << " device=cpu status=partial_formal official=blocked\n";
-            debug << "backend=cpu_only_host_fr_g1_commitment\n";
-            debug << "nodes=" << graph.num_nodes << " edges=" << graph.edges.size()
-                  << " topology_hash=" << result.topology_hash
-                  << " commitment_block_size=" << result.commitment_block_size << "\n";
-            debug << "commitment_ms=" << format_ms(result.commitment_ms)
-                  << " prove_ms=" << format_ms(result.prove_ms)
-                  << " verify_ms=" << format_ms(result.verify_ms)
-                  << " proof_size_bytes=" << result.proof_size_bytes << "\n";
-            for (const auto& detail : result.relation_details) {
-                debug << detail << "\n";
-            }
-            debug << "note=CPU relation-level partial formal 仅用于调试结果表；不是 official Level A\n";
-        }
-        {
-            std::ofstream resume(run_dir / "RESUME_POINT.md");
-            resume << "# zkDL-GAT CPU 继续点\n\n";
-            resume << "- 数据集: `" << spec.dataset << "`\n";
-            resume << "- 当前状态: `partial_formal`，official 仍为 `blocked + NA`。\n";
-            resume << "- CPU backend: `CpuFrTensor` + host `G1Jacobian` + `CpuCommitment::commit/open/verify_opening`。\n";
-            resume << "- commitment block size: `" << result.commitment_block_size << "`；用于减少 host G1 opening replay 的外层承诺行数。\n";
-            resume << "- 已完成 relation: source/destination sparse routing、denominator grouped sum、inverse soundness、inverse destination routing、alpha from inverse 与 alpha*denominator consistency。\n";
-            resume << "- 证明范围: hidden layer0/head0 full graph / full edge set。\n";
-            resume << "- proof artifact: `" << result.proof_path.string() << "`\n";
-            resume << "- evidence: `" << result.evidence_path.string() << "`\n";
-            resume << "- runner log: `" << (run_dir / "cpu_formal_chain.log").string() << "`\n";
-            resume << "- Level A blocker: max/range、ExpMap lookup/range、LeakyReLU/ELU lookup-range、output aggregation、rescale/rounding 和所有层/头 full proof object 仍未闭合。\n";
-        }
+        CpuPartialArtifactPayload debug_payload;
+        debug_payload.node_count = graph.num_nodes;
+        debug_payload.edge_count = graph.edges.size();
+        debug_payload.commitment_block_size = result.commitment_block_size;
+        debug_payload.topology_hash = result.topology_hash;
+        debug_payload.commitment_ms = result.commitment_ms;
+        debug_payload.prove_ms = result.prove_ms;
+        debug_payload.verify_ms = result.verify_ms;
+        debug_payload.proof_size_bytes = result.proof_size_bytes;
+        debug_payload.relation_details = result.relation_details;
+        write_cpu_partial_debug_resume(
+            spec, output_root, debug_payload, result.proof_path, result.evidence_path);
         log_line("cpu_formal_chain dataset=" + spec.dataset
             + " status=PARTIAL_FORMAL"
             + " backend=cpu_only_host_fr_g1_commitment"

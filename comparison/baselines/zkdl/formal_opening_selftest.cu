@@ -110,6 +110,8 @@ bool run_opening_case(const OpeningCase& test_case, std::ostream& log)
 
     auto raw_scalars = deterministic_raw_fr_vec(total_size, test_case.label + ":scalars");
     FrTensor tensor(static_cast<uint>(raw_scalars.size()), raw_scalars.data());
+    // 先清掉进入 selftest 前残留的 CUDA error，后面的检查只对应本次 mont。
+    (void)cudaGetLastError();
     tensor.mont();
     cudaError_t status = cudaGetLastError();
     if (status != cudaSuccess) {
@@ -172,6 +174,8 @@ bool run_partial_case(const PartialCase& test_case, std::ostream& log)
 {
     auto raw_scalars = deterministic_raw_fr_vec(test_case.size, test_case.label + ":partial-scalars");
     FrTensor tensor(test_case.size, raw_scalars.data());
+    // 先清掉进入 selftest 前残留的 CUDA error，后面的检查只对应本次 mont。
+    (void)cudaGetLastError();
     tensor.mont();
     cudaError_t status = cudaGetLastError();
     if (status != cudaSuccess) {

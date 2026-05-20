@@ -968,70 +968,22 @@ CpuFormalRelationRun run_cpu_formal_relations_with_trace(
         "alpha_times_denominator status=PASS digest=" + alpha_times_denominator_proof.transcript_digest,
     };
 
-    const auto run_dir = device_run_dir(output_root, spec.dataset, "cpu");
-    ensure_dir(run_dir / "formal_artifacts");
-    ensure_dir(output_root / "evidence");
-    result.proof_path = run_dir / "formal_artifacts" / "zkdl_cpu_relation_partial.proof.txt";
-    {
-        std::ofstream out(result.proof_path);
-        out << "ZKDLGATCPUFORMAL\n";
-        out << "version=1\n";
-        out << "dataset=" << spec.dataset << "\n";
-        out << "backend=cpu_only_host_fr_g1_commitment\n";
-        out << "relation_scope=hidden_layer0_head0_sparse_softmax_partial\n";
-        out << "node_count=" << graph.num_nodes << "\n";
-        out << "edge_count=" << graph.edges.size() << "\n";
-        out << "padded_node_count=" << padded_node_count << "\n";
-        out << "padded_edge_count=" << padded_edge_count << "\n";
-        out << "commitment_block_size=" << result.commitment_block_size << "\n";
-        out << "topology_hash=" << result.topology_hash << "\n";
-        out << "source_sparse_routing_status=PASS\n";
-        out << "destination_sparse_routing_status=PASS\n";
-        out << "grouped_sum_status=PASS\n";
-        out << "denominator_grouped_sum_status=PASS\n";
-        out << "inverse_status=PASS\n";
-        out << "inverse_destination_routing_status=PASS\n";
-        out << "alpha_from_inverse_status=PASS\n";
-        out << "alpha_times_denominator_status=PASS\n";
-        out << "weighted_aggregation_status=NOT_RUN_CPU_EXTENSION\n";
-        out << "available_feature_columns=" << result.available_feature_columns << "\n";
-        out << "verified_feature_columns=" << result.verified_feature_columns << "\n";
-        out << "proof_size_bytes=" << result.proof_size_bytes << "\n";
-        out << "relation_details=" << result.relation_details.size() << "\n";
-        for (const auto& detail : result.relation_details) out << detail << "\n";
-        out << "说明=CPU proof artifact 只包含 relation metadata、证明大小和 transcript 摘要；不包含完整 witness、完整 tensor 或 debug dump。\n";
-    }
-    result.evidence_path = output_root / "evidence" / ("cpu_relation_partial_" + spec.dataset + ".json");
-    {
-        std::ofstream out(result.evidence_path);
-        out << "{\n";
-        out << "  \"dataset\": \"" << json_escape(spec.dataset) << "\",\n";
-        out << "  \"device\": \"cpu\",\n";
-        out << "  \"status\": \"partial_formal\",\n";
-        out << "  \"backend\": \"cpu_only_host_fr_g1_commitment\",\n";
-        out << "  \"relation_scope\": \"hidden_layer0_head0_sparse_softmax_partial\",\n";
-        out << "  \"node_count\": \"" << graph.num_nodes << "\",\n";
-        out << "  \"edge_count\": \"" << graph.edges.size() << "\",\n";
-        out << "  \"commitment_block_size\": \"" << result.commitment_block_size << "\",\n";
-        out << "  \"topology_hash\": \"" << result.topology_hash << "\",\n";
-        out << "  \"source_sparse_routing\": \"PASS\",\n";
-        out << "  \"destination_sparse_routing\": \"PASS\",\n";
-        out << "  \"grouped_sum_by_dst\": \"PASS\",\n";
-        out << "  \"denominator_grouped_sum\": \"PASS\",\n";
-        out << "  \"inverse\": \"PASS\",\n";
-        out << "  \"inverse_destination_routing\": \"PASS\",\n";
-        out << "  \"alpha_from_inverse\": \"PASS\",\n";
-        out << "  \"alpha_times_denominator\": \"PASS\",\n";
-        out << "  \"weighted_aggregation\": \"NOT_RUN_CPU_EXTENSION\",\n";
-        out << "  \"available_feature_columns\": \"" << result.available_feature_columns << "\",\n";
-        out << "  \"verified_feature_columns\": \"" << result.verified_feature_columns << "\",\n";
-        out << "  \"commitment_time_ms\": \"" << format_ms(result.commitment_ms) << "\",\n";
-        out << "  \"prove_time_ms\": \"" << format_ms(result.prove_ms) << "\",\n";
-        out << "  \"verify_time_ms\": \"" << format_ms(result.verify_ms) << "\",\n";
-        out << "  \"proof_size_bytes\": \"" << result.proof_size_bytes << "\",\n";
-        out << "  \"proof_path\": \"" << json_escape(result.proof_path.string()) << "\",\n";
-        out << "  \"note\": \"CPU-only hidden layer0/head0 sparse + denominator/inverse/alpha relation-level formal result；weighted aggregation、max/ExpMap/lookup/range/ELU/output aggregation/rescale remain open.\"\n";
-        out << "}\n";
-    }
+    CpuPartialArtifactPayload payload;
+    payload.node_count = graph.num_nodes;
+    payload.edge_count = graph.edges.size();
+    payload.padded_node_count = padded_node_count;
+    payload.padded_edge_count = padded_edge_count;
+    payload.commitment_block_size = result.commitment_block_size;
+    payload.topology_hash = result.topology_hash;
+    payload.available_feature_columns = result.available_feature_columns;
+    payload.verified_feature_columns = result.verified_feature_columns;
+    payload.commitment_ms = result.commitment_ms;
+    payload.prove_ms = result.prove_ms;
+    payload.verify_ms = result.verify_ms;
+    payload.proof_size_bytes = result.proof_size_bytes;
+    payload.relation_details = result.relation_details;
+    const auto paths = write_cpu_partial_artifact(spec, output_root, payload);
+    result.proof_path = paths.first;
+    result.evidence_path = paths.second;
     return result;
 }

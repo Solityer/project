@@ -1,9 +1,9 @@
 dataset=cora stage=formal_sparse_grouped status=PASS
 nodes=2708 edges=13264 topology_hash=10841621610450798504 commitment_block_size=64
-source_sparse_routing_digest=da728aee101c4db5
-destination_sparse_routing_digest=2b7423f443a81c03
-grouped_sum_digest=524b57cf59bad151
-commitment_ms=909.235 prove_ms=5058.987 verify_ms=808.448 proof_size_bytes=26885
+source_sparse_routing_digest=a2a3dc430eef063d
+destination_sparse_routing_digest=538e334af347f41c
+grouped_sum_digest=2be5c91c8a932c1e
+commitment_ms=1289.224 prove_ms=5321.016 verify_ms=826.891 proof_size_bytes=26885
 dataset=cora stage=formal_softmax_aggregation status=PASS
 nodes=2708 edges=13264 topology_hash=10841621610450798504 commitment_block_size=64 feature_columns=8 available_feature_columns=8 verified_feature_columns=8
-commitment_ms=7178.602 prove_ms=28708.574 verify_ms=4510.607 proof_size_bytes=280185
+commitment_ms=8267.784 prove_ms=31196.720 verify_ms=4697.636 proof_size_bytes=280185

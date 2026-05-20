@@ -19,6 +19,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "formal_relations.cuh"
@@ -36,6 +37,7 @@ namespace {
 #include "gat_modules/gpu_forward.cuh"
 #include "gat_modules/formal_common.cuh"
 #include "gat_modules/formal_sparse_utils.cuh"
+#include "gat_modules/artifact_writer.cuh"
 #include "gat_modules/cpu_formal_backend.cuh"
 #include "gat_modules/cpu_formal_runner.cuh"
 #include "gat_modules/formal_softmax_runners.cuh"

@@ -19,9 +19,9 @@
   "weighted_aggregation": "NOT_RUN_CPU_EXTENSION",
   "available_feature_columns": "8",
   "verified_feature_columns": "0",
-  "commitment_time_ms": "17921.029",
-  "prove_time_ms": "3934.555",
-  "verify_time_ms": "2713.481",
+  "commitment_time_ms": "18339.089",
+  "prove_time_ms": "4237.375",
+  "verify_time_ms": "2936.218",
   "proof_size_bytes": "97398",
   "proof_path": "/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/cora/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt",
   "note": "CPU-only hidden layer0/head0 sparse + denominator/inverse/alpha relation-level formal result；weighted aggregation、max/ExpMap/lookup/range/ELU/output aggregation/rescale remain open."

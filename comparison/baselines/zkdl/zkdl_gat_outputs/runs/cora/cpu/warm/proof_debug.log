@@ -1,7 +1,7 @@
 dataset=cora device=cpu status=partial_formal official=blocked
 backend=cpu_only_host_fr_g1_commitment
 nodes=2708 edges=13264 topology_hash=10841621610450798504 commitment_block_size=64
-commitment_ms=17921.029 prove_ms=3934.555 verify_ms=2713.481 proof_size_bytes=97398
+commitment_ms=18339.089 prove_ms=4237.375 verify_ms=2936.218 proof_size_bytes=97398
 source_sparse_routing status=PASS digest=4ac9eac19b3a1610
 destination_sparse_routing status=PASS digest=5d9ffeab71eca52d
 grouped_sum_by_dst status=PASS digest=c4e2e186b1fb9ab8
