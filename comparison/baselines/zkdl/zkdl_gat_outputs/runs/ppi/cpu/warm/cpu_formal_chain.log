@@ -1,0 +1,9 @@
+cpu_formal_chain dataset=ppi stage=load_dataset
+cpu_formal_chain dataset=ppi loaded_nodes=56944 loaded_edges=818716 features=50 classes=121
+cpu_formal_chain dataset=ppi stage=normalize_graph
+cpu_formal_chain dataset=ppi full_dataset=true normalized_nodes=56944 normalized_edges=850576 graphs=295
+cpu_formal_chain dataset=ppi stage=load_model
+cpu_formal_chain dataset=ppi model=gat_family_L2_hid1x8_kout1_c121 L=2 K_out=1 C=121
+cpu_formal_chain dataset=ppi stage=cpu_forward_trace
+cpu_formal_chain dataset=ppi cpu_forward_ms=21.080 stage=cpu_relation_prove_verify
+cpu_formal_chain dataset=ppi status=FAILED_WITH_EVIDENCE timeout_seconds=240

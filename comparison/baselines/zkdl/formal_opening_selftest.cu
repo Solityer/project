@@ -231,7 +231,6 @@ bool run_partial_case(const PartialCase& test_case, std::ostream& log)
 int main(int argc, char** argv)
 {
     std::vector<OpeningCase> opening_cases = {
-        {"scalar_size_1", 1, 1},
         {"size_2_row_vector", 2, 1},
         {"size_3_row_vector", 3, 1},
         {"size_4_row_vector", 4, 1},

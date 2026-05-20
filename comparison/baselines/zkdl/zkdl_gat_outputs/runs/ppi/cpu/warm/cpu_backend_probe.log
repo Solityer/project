@@ -1,7 +1,0 @@
-cpu_backend_probe dataset=ppi stage=load_dataset
-cpu_backend_probe dataset=ppi loaded_nodes=56944 loaded_edges=818716 features=50 classes=121
-cpu_backend_probe dataset=ppi stage=normalize_graph
-cpu_backend_probe dataset=ppi full_dataset=true normalized_nodes=56944 normalized_edges=850576 graphs=295
-cpu_backend_probe dataset=ppi stage=load_model
-cpu_backend_probe dataset=ppi model=gat_family_L2_hid1x8_kout1_c121 L=2 K_out=1 C=121
-cpu_backend_probe dataset=ppi status=BLOCKED proof_generation=false verification=false artifact=/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/ppi/cpu/warm/formal_artifacts/zkdl_cpu_backend_probe.blocker.txt

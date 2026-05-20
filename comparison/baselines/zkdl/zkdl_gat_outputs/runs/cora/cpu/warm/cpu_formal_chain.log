@@ -1,0 +1,9 @@
+cpu_formal_chain dataset=cora stage=load_dataset
+cpu_formal_chain dataset=cora loaded_nodes=2708 loaded_edges=10858 features=1433 classes=7
+cpu_formal_chain dataset=cora stage=normalize_graph
+cpu_formal_chain dataset=cora full_dataset=true normalized_nodes=2708 normalized_edges=13264 graphs=1
+cpu_formal_chain dataset=cora stage=load_model
+cpu_formal_chain dataset=cora model=gat_family_L2_hid8x8_kout1_c7 L=2 K_out=1 C=7
+cpu_formal_chain dataset=cora stage=cpu_forward_trace
+cpu_formal_chain dataset=cora cpu_forward_ms=31.500 stage=cpu_relation_prove_verify
+cpu_formal_chain dataset=cora status=PARTIAL_FORMAL backend=cpu_only_host_fr_g1_commitment commitment_ms=18976.773 prove_ms=137.547 verify_ms=166686.168 proof_size_bytes=35190 artifact=/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/cora/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt

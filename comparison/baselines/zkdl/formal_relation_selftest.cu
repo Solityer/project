@@ -1,7 +1,6 @@
 #include "formal_relations.cuh"
 
 #include <cstdint>
-#include <cstring>
 #include <iostream>
 #include <memory>
 #include <random>
@@ -10,11 +9,6 @@
 #include <vector>
 
 namespace {
-
-bool fr_equal_host_local(const Fr_t& lhs, const Fr_t& rhs)
-{
-    return std::memcmp(&lhs, &rhs, sizeof(Fr_t)) == 0;
-}
 
 std::uint64_t fnv1a64_local(const std::string& value)
 {
@@ -57,6 +51,16 @@ std::vector<Fr_t> deterministic_mont_vec_local(std::size_t n, const std::string&
 Fr_t one_mont()
 {
     return Fr_host_one_mont();
+}
+
+Fr_t const_mont(std::int64_t value)
+{
+    return Fr_host_mont(fr_from_signed_local(value));
+}
+
+Fr_t neg_mont(std::int64_t value)
+{
+    return Fr_host_sub(Fr_host_zero(), const_mont(value));
 }
 
 Fr_t inverse_two_mont()
@@ -709,6 +713,278 @@ bool run_multi_column_grouped_sum_case(const std::string& label, std::ostream& l
     return passed;
 }
 
+bool run_range_bit_decomposition_case(const std::string& label, std::ostream& log)
+{
+    bool passed = true;
+    std::string failure;
+    try {
+        const uint size = 4;
+        const uint bit_width = 4;
+        const std::vector<std::uint32_t> raw_values = {0, 3, 10, 15};
+        std::vector<Fr_t> x_host(size, Fr_host_zero());
+        std::vector<std::vector<Fr_t>> bit_hosts(bit_width, std::vector<Fr_t>(size, Fr_host_zero()));
+        for (uint i = 0; i < size; ++i) {
+            x_host[i] = const_mont(raw_values[i]);
+            for (uint bit = 0; bit < bit_width; ++bit) {
+                bit_hosts[bit][i] = ((raw_values[i] >> bit) & 1U) ? one_mont() : Fr_host_zero();
+            }
+        }
+
+        Commitment gen(1, G1Jacobian_generator);
+        FrTensor x_tensor(size, x_host.data());
+        const auto com_x = gen.commit(x_tensor);
+        std::vector<std::unique_ptr<FrTensor>> bit_tensors;
+        std::vector<std::unique_ptr<G1TensorJacobian>> bit_commitments;
+        bit_tensors.reserve(bit_width);
+        bit_commitments.reserve(bit_width);
+        for (uint bit = 0; bit < bit_width; ++bit) {
+            bit_tensors.emplace_back(std::make_unique<FrTensor>(size, bit_hosts[bit].data()));
+            bit_commitments.emplace_back(std::make_unique<G1TensorJacobian>(gen.commit(*bit_tensors.back())));
+            auto bitness = formal_hadamard_relation_prove(
+                *bit_tensors.back(), *bit_tensors.back(), *bit_tensors.back(),
+                gen, *bit_commitments.back(), *bit_commitments.back(), *bit_commitments.back(),
+                label + ":bit" + std::to_string(bit) + ":boolean");
+            if (!formal_hadamard_relation_verify(
+                    bitness, gen, *bit_commitments.back(), *bit_commitments.back(), *bit_commitments.back(),
+                    label + ":bit" + std::to_string(bit) + ":boolean", &failure)) {
+                passed = false;
+            }
+            auto tampered = bitness;
+            tampered.final_a = Fr_host_add(tampered.final_a, one_mont());
+            if (formal_hadamard_relation_verify(
+                    tampered, gen, *bit_commitments.back(), *bit_commitments.back(), *bit_commitments.back(),
+                    label + ":bit" + std::to_string(bit) + ":boolean", nullptr)) {
+                passed = false;
+                failure = "tampered range bitness proof accepted";
+            }
+        }
+
+        const auto point = deterministic_mont_vec_local(ceilLog2(size), label + ":decomposition_point");
+        std::vector<FormalLinearTerm> terms;
+        terms.push_back({"x", &x_tensor, &com_x, one_mont(), point});
+        std::vector<const G1TensorJacobian*> commitments = {&com_x};
+        for (uint bit = 0; bit < bit_width; ++bit) {
+            terms.push_back({
+                "bit" + std::to_string(bit),
+                bit_tensors[bit].get(),
+                bit_commitments[bit].get(),
+                neg_mont(static_cast<std::int64_t>(1U << bit)),
+                point,
+            });
+            commitments.push_back(bit_commitments[bit].get());
+        }
+        auto decomposition = formal_linear_relation_prove(
+            label + ":decomposition", {size}, terms, gen, Fr_host_zero(), Fr_host_zero(), Fr_host_zero());
+        if (!formal_linear_relation_verify(decomposition, gen, commitments, Fr_host_zero(), &failure)) {
+            passed = false;
+        }
+        auto tampered_decomposition = decomposition;
+        tampered_decomposition.evaluations[0] = Fr_host_add(tampered_decomposition.evaluations[0], one_mont());
+        if (formal_linear_relation_verify(tampered_decomposition, gen, commitments, Fr_host_zero(), nullptr)) {
+            passed = false;
+            failure = "tampered range decomposition proof accepted";
+        }
+        log << "RANGE_BIT_DECOMPOSITION_RELATION label=" << label
+            << " size=" << size
+            << " bit_width=" << bit_width
+            << " decomposition_digest=" << decomposition.transcript_digest
+            << " proof_size_bytes=" << decomposition.serialized_size_bytes()
+            << " tamper_reject=PASS"
+            << " status=" << (passed ? "PASS" : "FAIL");
+    } catch (const std::exception& error) {
+        passed = false;
+        failure = error.what();
+        log << "RANGE_BIT_DECOMPOSITION_RELATION label=" << label << " status=FAIL";
+    }
+    if (!failure.empty()) log << " failure=\"" << failure << "\"";
+    log << '\n';
+    return passed;
+}
+
+bool run_lookup_selection_case(const std::string& label, std::ostream& log)
+{
+    bool passed = true;
+    std::string failure;
+    try {
+        const uint table_size = 4;
+        const std::vector<std::int64_t> table = {3, 7, 11, 13};
+        const uint selected = 1;
+        std::vector<Fr_t> selector_host(table_size, Fr_host_zero());
+        selector_host[selected] = one_mont();
+        std::vector<Fr_t> value_host = {const_mont(table[selected])};
+
+        Commitment gen(1, G1Jacobian_generator);
+        FrTensor selector_tensor(table_size, selector_host.data());
+        FrTensor value_tensor(1, value_host.data());
+        const auto com_selector = gen.commit(selector_tensor);
+        const auto com_value = gen.commit(value_tensor);
+        auto bitness = formal_hadamard_relation_prove(
+            selector_tensor, selector_tensor, selector_tensor,
+            gen, com_selector, com_selector, com_selector, label + ":selector_boolean");
+        if (!formal_hadamard_relation_verify(
+                bitness, gen, com_selector, com_selector, com_selector, label + ":selector_boolean", &failure)) {
+            passed = false;
+        }
+
+        std::vector<FormalLinearTerm> onehot_terms;
+        std::vector<FormalLinearTerm> lookup_terms;
+        std::vector<const G1TensorJacobian*> onehot_commitments;
+        std::vector<const G1TensorJacobian*> lookup_commitments;
+        lookup_terms.push_back({"selected_value", &value_tensor, &com_value, one_mont(), {}});
+        lookup_commitments.push_back(&com_value);
+        for (uint idx = 0; idx < table_size; ++idx) {
+            const auto point = boolean_point_for_index(idx, ceilLog2(table_size));
+            onehot_terms.push_back({"selector" + std::to_string(idx), &selector_tensor, &com_selector, one_mont(), point});
+            onehot_commitments.push_back(&com_selector);
+            lookup_terms.push_back({
+                "selector" + std::to_string(idx),
+                &selector_tensor,
+                &com_selector,
+                neg_mont(table[idx]),
+                point,
+            });
+            lookup_commitments.push_back(&com_selector);
+        }
+        auto onehot = formal_linear_relation_prove(
+            label + ":onehot_sum", {table_size}, onehot_terms, gen, Fr_host_zero(), Fr_host_zero(), neg_mont(1));
+        if (!formal_linear_relation_verify(onehot, gen, onehot_commitments, Fr_host_zero(), &failure)) {
+            passed = false;
+        }
+        auto lookup = formal_linear_relation_prove(
+            label + ":table_value", {table_size}, lookup_terms, gen, Fr_host_zero(), Fr_host_zero(), Fr_host_zero());
+        if (!formal_linear_relation_verify(lookup, gen, lookup_commitments, Fr_host_zero(), &failure)) {
+            passed = false;
+        }
+        auto tampered_lookup = lookup;
+        tampered_lookup.evaluations[0] = Fr_host_add(tampered_lookup.evaluations[0], one_mont());
+        if (formal_linear_relation_verify(tampered_lookup, gen, lookup_commitments, Fr_host_zero(), nullptr)) {
+            passed = false;
+            failure = "tampered lookup output proof accepted";
+        }
+        log << "LOOKUP_SELECTION_RELATION label=" << label
+            << " table_size=" << table_size
+            << " selected_index=" << selected
+            << " onehot_digest=" << onehot.transcript_digest
+            << " lookup_digest=" << lookup.transcript_digest
+            << " proof_size_bytes=" << (bitness.serialized_size_bytes() + onehot.serialized_size_bytes() + lookup.serialized_size_bytes())
+            << " tamper_reject=PASS"
+            << " status=" << (passed ? "PASS" : "FAIL");
+    } catch (const std::exception& error) {
+        passed = false;
+        failure = error.what();
+        log << "LOOKUP_SELECTION_RELATION label=" << label << " status=FAIL";
+    }
+    if (!failure.empty()) log << " failure=\"" << failure << "\"";
+    log << '\n';
+    return passed;
+}
+
+bool run_max_comparison_case(const std::string& label, std::ostream& log)
+{
+    bool passed = true;
+    std::string failure;
+    try {
+        const uint edge_count = 4;
+        const std::vector<std::uint32_t> scores = {5, 3, 5, 1};
+        const std::uint32_t max_value = 5;
+        std::vector<Fr_t> score_host(edge_count, Fr_host_zero());
+        std::vector<Fr_t> max_host(edge_count, Fr_host_zero());
+        std::vector<Fr_t> delta_host(edge_count, Fr_host_zero());
+        std::vector<Fr_t> representative_host(edge_count, Fr_host_zero());
+        representative_host[0] = one_mont();
+        for (uint edge = 0; edge < edge_count; ++edge) {
+            score_host[edge] = const_mont(scores[edge]);
+            max_host[edge] = const_mont(max_value);
+            delta_host[edge] = const_mont(max_value - scores[edge]);
+        }
+
+        Commitment gen(1, G1Jacobian_generator);
+        FrTensor score_tensor(edge_count, score_host.data());
+        FrTensor max_tensor(edge_count, max_host.data());
+        FrTensor delta_tensor(edge_count, delta_host.data());
+        FrTensor representative_tensor(edge_count, representative_host.data());
+        std::vector<Fr_t> zero_host(edge_count, Fr_host_zero());
+        FrTensor zero_tensor(edge_count, zero_host.data());
+        const auto com_score = gen.commit(score_tensor);
+        const auto com_max = gen.commit(max_tensor);
+        const auto com_delta = gen.commit(delta_tensor);
+        const auto com_representative = gen.commit(representative_tensor);
+        const auto com_zero = gen.commit(zero_tensor);
+
+        const auto point = deterministic_mont_vec_local(ceilLog2(edge_count), label + ":difference_point");
+        std::vector<FormalLinearTerm> difference_terms = {
+            {"max", &max_tensor, &com_max, one_mont(), point},
+            {"score", &score_tensor, &com_score, neg_mont(1), point},
+            {"delta", &delta_tensor, &com_delta, neg_mont(1), point},
+        };
+        auto difference = formal_linear_relation_prove(
+            label + ":max_minus_score_equals_delta", {edge_count}, difference_terms,
+            gen, Fr_host_zero(), Fr_host_zero(), Fr_host_zero());
+        if (!formal_linear_relation_verify(
+                difference, gen, {&com_max, &com_score, &com_delta}, Fr_host_zero(), &failure)) {
+            passed = false;
+        }
+
+        auto rep_bitness = formal_hadamard_relation_prove(
+            representative_tensor, representative_tensor, representative_tensor,
+            gen, com_representative, com_representative, com_representative,
+            label + ":representative_boolean");
+        if (!formal_hadamard_relation_verify(
+                rep_bitness, gen, com_representative, com_representative, com_representative,
+                label + ":representative_boolean", &failure)) {
+            passed = false;
+        }
+        auto rep_delta_zero = formal_hadamard_relation_prove(
+            representative_tensor, delta_tensor, zero_tensor,
+            gen, com_representative, com_delta, com_zero,
+            label + ":representative_delta_zero");
+        if (!formal_hadamard_relation_verify(
+                rep_delta_zero, gen, com_representative, com_delta, com_zero,
+                label + ":representative_delta_zero", &failure)) {
+            passed = false;
+        }
+
+        std::vector<FormalLinearTerm> onehot_terms;
+        std::vector<const G1TensorJacobian*> onehot_commitments;
+        for (uint idx = 0; idx < edge_count; ++idx) {
+            const auto index_point = boolean_point_for_index(idx, ceilLog2(edge_count));
+            onehot_terms.push_back({"representative" + std::to_string(idx), &representative_tensor, &com_representative, one_mont(), index_point});
+            onehot_commitments.push_back(&com_representative);
+        }
+        auto onehot = formal_linear_relation_prove(
+            label + ":representative_onehot", {edge_count}, onehot_terms, gen, Fr_host_zero(), Fr_host_zero(), neg_mont(1));
+        if (!formal_linear_relation_verify(onehot, gen, onehot_commitments, Fr_host_zero(), &failure)) {
+            passed = false;
+        }
+        auto tampered = rep_delta_zero;
+        tampered.final_b = Fr_host_add(tampered.final_b, one_mont());
+        if (formal_hadamard_relation_verify(
+                tampered, gen, com_representative, com_delta, com_zero,
+                label + ":representative_delta_zero", nullptr)) {
+            passed = false;
+            failure = "tampered max representative proof accepted";
+        }
+        log << "MAX_COMPARISON_RELATION label=" << label
+            << " edges=" << edge_count
+            << " max_value=" << max_value
+            << " difference_digest=" << difference.transcript_digest
+            << " representative_digest=" << rep_delta_zero.transcript_digest
+            << " proof_size_bytes=" << (difference.serialized_size_bytes()
+                + rep_bitness.serialized_size_bytes()
+                + rep_delta_zero.serialized_size_bytes()
+                + onehot.serialized_size_bytes())
+            << " tamper_reject=PASS"
+            << " status=" << (passed ? "PASS" : "FAIL");
+    } catch (const std::exception& error) {
+        passed = false;
+        failure = error.what();
+        log << "MAX_COMPARISON_RELATION label=" << label << " status=FAIL";
+    }
+    if (!failure.empty()) log << " failure=\"" << failure << "\"";
+    log << '\n';
+    return passed;
+}
+
 }  // namespace
 
 int main()
@@ -735,6 +1011,9 @@ int main()
     ok = run_sparse_routing_case("sparse_destination_route", "destination", std::cout) && ok;
     ok = run_grouped_sum_case("grouped_sum_by_dst", std::cout) && ok;
     ok = run_multi_column_grouped_sum_case("multi_column_grouped_sum_by_dst", std::cout) && ok;
+    ok = run_range_bit_decomposition_case("range_u4", std::cout) && ok;
+    ok = run_lookup_selection_case("lookup_onehot_table", std::cout) && ok;
+    ok = run_max_comparison_case("max_representative_edge", std::cout) && ok;
     std::cout << "SUMMARY status=" << (ok ? "PASS" : "FAIL") << '\n';
     return ok ? 0 : 1;
 }

@@ -735,6 +735,9 @@ struct CpuFormalRelationRun {
     bool inverse_routing_ok = false;
     bool alpha_from_inverse_ok = false;
     bool alpha_times_denominator_ok = false;
+    bool weighted_aggregation_ok = false;
+    std::size_t available_feature_columns = 0;
+    std::size_t verified_feature_columns = 0;
     double commitment_ms = 0.0;
     double prove_ms = 0.0;
     double verify_ms = 0.0;
@@ -768,6 +771,26 @@ CpuFormalRelationRun run_cpu_formal_relations_with_trace(
     auto edge_src_raw = route_vector_by_topology_raw(node_src_raw, graph, padded_edge_count, true);
     auto edge_dst_raw = route_vector_by_topology_raw(node_dst_raw, graph, padded_edge_count, false);
     auto grouped_sum_raw = grouped_sum_by_dst_raw(edge_src_raw, graph, padded_node_count);
+    std::vector<std::uint32_t> u_quantized;
+    auto u_raw = encode_nonnegative_scale16_raw(head.u, graph.edges.size(), padded_edge_count, &u_quantized);
+    auto denominator_raw = grouped_sum_by_dst_raw(u_raw, graph, padded_node_count);
+    const auto denominator_u64 = grouped_sum_by_dst_u64(u_quantized, graph, padded_node_count);
+    auto denominator_mont = mont_vector_from_raw(denominator_raw);
+    std::vector<Fr_t> inverse_node_mont(padded_node_count, Fr_host_zero());
+    for (std::size_t node = 0; node < graph.num_nodes; ++node) {
+        if (denominator_u64[node] == 0) {
+            throw std::runtime_error("CPU denominator 为 0，不能生成 inverse relation");
+        }
+        inverse_node_mont[node] = fr_inverse_uint_mont(static_cast<std::uint32_t>(denominator_u64[node]));
+    }
+    auto u_mont = mont_vector_from_raw(u_raw);
+    auto inverse_edge_mont = route_vector_by_topology_raw(inverse_node_mont, graph, padded_edge_count, false);
+    auto denominator_edge_mont = route_vector_by_topology_raw(denominator_mont, graph, padded_edge_count, false);
+    auto valid_one_mont = valid_one_mont_vector(graph.num_nodes, padded_node_count);
+    std::vector<Fr_t> alpha_mont(padded_edge_count, Fr_host_zero());
+    for (std::size_t edge = 0; edge < graph.edges.size(); ++edge) {
+        alpha_mont[edge] = Fr_host_mul(u_mont[edge], inverse_edge_mont[edge]);
+    }
 
     CpuFormalRelationRun result;
     result.topology_hash = formal_sparse_topology_hash(src, dst, node_count_u32, edge_count_u32);
@@ -781,6 +804,13 @@ CpuFormalRelationRun run_cpu_formal_relations_with_trace(
     CpuFrTensor edge_dst(mont_vector_from_raw(edge_dst_raw));
     CpuFrTensor grouped_input(mont_vector_from_raw(edge_src_raw));
     CpuFrTensor grouped_output(mont_vector_from_raw(grouped_sum_raw));
+    CpuFrTensor u_tensor(u_mont);
+    CpuFrTensor denominator_tensor(denominator_mont);
+    CpuFrTensor denominator_edge_tensor(denominator_edge_mont);
+    CpuFrTensor inverse_node_tensor(inverse_node_mont);
+    CpuFrTensor inverse_edge_tensor(inverse_edge_mont);
+    CpuFrTensor valid_one_tensor(valid_one_mont);
+    CpuFrTensor alpha_tensor(alpha_mont);
     ScopedTimer commit_timer;
     const auto com_node_src = gen.commit(node_src);
     const auto com_node_dst = gen.commit(node_dst);
@@ -788,16 +818,33 @@ CpuFormalRelationRun run_cpu_formal_relations_with_trace(
     const auto com_edge_dst = gen.commit(edge_dst);
     const auto com_grouped_input = gen.commit(grouped_input);
     const auto com_grouped_output = gen.commit(grouped_output);
+    const auto com_u = gen.commit(u_tensor);
+    const auto com_denominator = gen.commit(denominator_tensor);
+    const auto com_denominator_edge = gen.commit(denominator_edge_tensor);
+    const auto com_inverse_node = gen.commit(inverse_node_tensor);
+    const auto com_inverse_edge = gen.commit(inverse_edge_tensor);
+    const auto com_valid_one = gen.commit(valid_one_tensor);
+    const auto com_alpha = gen.commit(alpha_tensor);
     result.commitment_ms = commit_timer.elapsed_ms();
 
     const std::string prefix = spec.dataset + ":cpu:hidden_layer0_head0";
     const std::string source_label = prefix + ":source_sparse_routing:full_edges";
     const std::string destination_label = prefix + ":destination_sparse_routing:full_edges";
     const std::string grouped_label = prefix + ":grouped_sum_by_dst:source_attention_edge_values";
+    const std::string denom_label = prefix + ":softmax_denominator_grouped_sum:U_by_dst";
+    const std::string inverse_label = prefix + ":softmax_inverse:denominator_times_inverse";
+    const std::string inv_route_label = prefix + ":softmax_inverse:inverse_destination_routing";
+    const std::string alpha_from_inv_label = prefix + ":alpha_from_inverse:U_times_inv_edge";
+    const std::string alpha_times_denom_label = prefix + ":alpha_times_denom_equals_U";
 
     SparseRoutingRelationProof source_proof;
     SparseRoutingRelationProof destination_proof;
     GroupedSumRelationProof grouped_proof;
+    GroupedSumRelationProof denominator_proof;
+    HadamardSumcheckProof inverse_proof;
+    SparseRoutingRelationProof inverse_route_proof;
+    HadamardSumcheckProof alpha_from_inverse_proof;
+    HadamardSumcheckProof alpha_times_denominator_proof;
     {
         ScopedTimer timer;
         source_proof = cpu_sparse_routing_relation_prove(
@@ -809,6 +856,21 @@ CpuFormalRelationRun run_cpu_formal_relations_with_trace(
         grouped_proof = cpu_grouped_sum_relation_prove(
             grouped_input, grouped_output, gen, com_grouped_input, gen, com_grouped_output,
             src, dst, node_count_u32, edge_count_u32, grouped_label);
+        denominator_proof = cpu_grouped_sum_relation_prove(
+            u_tensor, denominator_tensor, gen, com_u, gen, com_denominator,
+            src, dst, node_count_u32, edge_count_u32, denom_label);
+        inverse_proof = cpu_hadamard_relation_prove(
+            denominator_tensor, inverse_node_tensor, valid_one_tensor,
+            gen, com_denominator, com_inverse_node, com_valid_one, inverse_label);
+        inverse_route_proof = cpu_sparse_routing_relation_prove(
+            inverse_node_tensor, inverse_edge_tensor, gen, com_inverse_node, gen, com_inverse_edge,
+            src, dst, node_count_u32, edge_count_u32, "destination", inv_route_label);
+        alpha_from_inverse_proof = cpu_hadamard_relation_prove(
+            u_tensor, inverse_edge_tensor, alpha_tensor,
+            gen, com_u, com_inverse_edge, com_alpha, alpha_from_inv_label);
+        alpha_times_denominator_proof = cpu_hadamard_relation_prove(
+            alpha_tensor, denominator_edge_tensor, u_tensor,
+            gen, com_alpha, com_denominator_edge, com_u, alpha_times_denom_label);
         result.prove_ms = timer.elapsed_ms();
     }
     {
@@ -823,17 +885,44 @@ CpuFormalRelationRun run_cpu_formal_relations_with_trace(
         result.grouped_sum_ok = cpu_grouped_sum_relation_verify(
             grouped_proof, gen, com_grouped_input, gen, com_grouped_output, src, dst, grouped_label, &failure);
         if (!result.grouped_sum_ok) throw std::runtime_error("CPU grouped verifier rejected: " + failure);
+        result.denominator_ok = cpu_grouped_sum_relation_verify(
+            denominator_proof, gen, com_u, gen, com_denominator, src, dst, denom_label, &failure);
+        if (!result.denominator_ok) throw std::runtime_error("CPU denominator verifier rejected: " + failure);
+        result.inverse_ok = cpu_hadamard_relation_verify(
+            inverse_proof, gen, com_denominator, com_inverse_node, com_valid_one, inverse_label, &failure);
+        if (!result.inverse_ok) throw std::runtime_error("CPU inverse verifier rejected: " + failure);
+        result.inverse_routing_ok = cpu_sparse_routing_relation_verify(
+            inverse_route_proof, gen, com_inverse_node, gen, com_inverse_edge,
+            src, dst, "destination", inv_route_label, &failure);
+        if (!result.inverse_routing_ok) throw std::runtime_error("CPU inverse routing verifier rejected: " + failure);
+        result.alpha_from_inverse_ok = cpu_hadamard_relation_verify(
+            alpha_from_inverse_proof, gen, com_u, com_inverse_edge, com_alpha, alpha_from_inv_label, &failure);
+        if (!result.alpha_from_inverse_ok) throw std::runtime_error("CPU alpha-from-inverse verifier rejected: " + failure);
+        result.alpha_times_denominator_ok = cpu_hadamard_relation_verify(
+            alpha_times_denominator_proof, gen, com_alpha, com_denominator_edge, com_u, alpha_times_denom_label, &failure);
+        if (!result.alpha_times_denominator_ok) throw std::runtime_error("CPU alpha-times-denominator verifier rejected: " + failure);
         result.verify_ms = timer.elapsed_ms();
     }
 
     result.proof_size_bytes =
         source_proof.serialized_size_bytes()
         + destination_proof.serialized_size_bytes()
-        + grouped_proof.serialized_size_bytes();
+        + grouped_proof.serialized_size_bytes()
+        + denominator_proof.serialized_size_bytes()
+        + inverse_proof.serialized_size_bytes()
+        + inverse_route_proof.serialized_size_bytes()
+        + alpha_from_inverse_proof.serialized_size_bytes()
+        + alpha_times_denominator_proof.serialized_size_bytes();
+    result.available_feature_columns = head.width;
     result.relation_details = {
         "source_sparse_routing status=PASS digest=" + source_proof.transcript_digest,
         "destination_sparse_routing status=PASS digest=" + destination_proof.transcript_digest,
         "grouped_sum_by_dst status=PASS digest=" + grouped_proof.transcript_digest,
+        "denominator_grouped_sum status=PASS digest=" + denominator_proof.transcript_digest,
+        "inverse_denominator_times_inverse status=PASS digest=" + inverse_proof.transcript_digest,
+        "inverse_destination_routing status=PASS digest=" + inverse_route_proof.transcript_digest,
+        "alpha_from_inverse status=PASS digest=" + alpha_from_inverse_proof.transcript_digest,
+        "alpha_times_denominator status=PASS digest=" + alpha_times_denominator_proof.transcript_digest,
     };
 
     const auto run_dir = device_run_dir(output_root, spec.dataset, "cpu");
@@ -846,7 +935,7 @@ CpuFormalRelationRun run_cpu_formal_relations_with_trace(
         out << "version=1\n";
         out << "dataset=" << spec.dataset << "\n";
         out << "backend=cpu_only_host_fr_g1_commitment\n";
-        out << "relation_scope=hidden_layer0_head0_sparse_grouped\n";
+        out << "relation_scope=hidden_layer0_head0_sparse_softmax_partial\n";
         out << "node_count=" << graph.num_nodes << "\n";
         out << "edge_count=" << graph.edges.size() << "\n";
         out << "padded_node_count=" << padded_node_count << "\n";
@@ -856,11 +945,14 @@ CpuFormalRelationRun run_cpu_formal_relations_with_trace(
         out << "source_sparse_routing_status=PASS\n";
         out << "destination_sparse_routing_status=PASS\n";
         out << "grouped_sum_status=PASS\n";
-        out << "denominator_grouped_sum_status=NOT_RUN_CPU_EXTENSION\n";
-        out << "inverse_status=NOT_RUN_CPU_EXTENSION\n";
-        out << "inverse_destination_routing_status=NOT_RUN_CPU_EXTENSION\n";
-        out << "alpha_from_inverse_status=NOT_RUN_CPU_EXTENSION\n";
-        out << "alpha_times_denominator_status=NOT_RUN_CPU_EXTENSION\n";
+        out << "denominator_grouped_sum_status=PASS\n";
+        out << "inverse_status=PASS\n";
+        out << "inverse_destination_routing_status=PASS\n";
+        out << "alpha_from_inverse_status=PASS\n";
+        out << "alpha_times_denominator_status=PASS\n";
+        out << "weighted_aggregation_status=NOT_RUN_CPU_EXTENSION\n";
+        out << "available_feature_columns=" << result.available_feature_columns << "\n";
+        out << "verified_feature_columns=" << result.verified_feature_columns << "\n";
         out << "proof_size_bytes=" << result.proof_size_bytes << "\n";
         out << "relation_details=" << result.relation_details.size() << "\n";
         for (const auto& detail : result.relation_details) out << detail << "\n";
@@ -874,7 +966,7 @@ CpuFormalRelationRun run_cpu_formal_relations_with_trace(
         out << "  \"device\": \"cpu\",\n";
         out << "  \"status\": \"partial_formal\",\n";
         out << "  \"backend\": \"cpu_only_host_fr_g1_commitment\",\n";
-        out << "  \"relation_scope\": \"hidden_layer0_head0_sparse_grouped\",\n";
+        out << "  \"relation_scope\": \"hidden_layer0_head0_sparse_softmax_partial\",\n";
         out << "  \"node_count\": \"" << graph.num_nodes << "\",\n";
         out << "  \"edge_count\": \"" << graph.edges.size() << "\",\n";
         out << "  \"commitment_block_size\": \"" << result.commitment_block_size << "\",\n";
@@ -882,17 +974,20 @@ CpuFormalRelationRun run_cpu_formal_relations_with_trace(
         out << "  \"source_sparse_routing\": \"PASS\",\n";
         out << "  \"destination_sparse_routing\": \"PASS\",\n";
         out << "  \"grouped_sum_by_dst\": \"PASS\",\n";
-        out << "  \"denominator_grouped_sum\": \"NOT_RUN_CPU_EXTENSION\",\n";
-        out << "  \"inverse\": \"NOT_RUN_CPU_EXTENSION\",\n";
-        out << "  \"inverse_destination_routing\": \"NOT_RUN_CPU_EXTENSION\",\n";
-        out << "  \"alpha_from_inverse\": \"NOT_RUN_CPU_EXTENSION\",\n";
-        out << "  \"alpha_times_denominator\": \"NOT_RUN_CPU_EXTENSION\",\n";
+        out << "  \"denominator_grouped_sum\": \"PASS\",\n";
+        out << "  \"inverse\": \"PASS\",\n";
+        out << "  \"inverse_destination_routing\": \"PASS\",\n";
+        out << "  \"alpha_from_inverse\": \"PASS\",\n";
+        out << "  \"alpha_times_denominator\": \"PASS\",\n";
+        out << "  \"weighted_aggregation\": \"NOT_RUN_CPU_EXTENSION\",\n";
+        out << "  \"available_feature_columns\": \"" << result.available_feature_columns << "\",\n";
+        out << "  \"verified_feature_columns\": \"" << result.verified_feature_columns << "\",\n";
         out << "  \"commitment_time_ms\": \"" << format_ms(result.commitment_ms) << "\",\n";
         out << "  \"prove_time_ms\": \"" << format_ms(result.prove_ms) << "\",\n";
         out << "  \"verify_time_ms\": \"" << format_ms(result.verify_ms) << "\",\n";
         out << "  \"proof_size_bytes\": \"" << result.proof_size_bytes << "\",\n";
         out << "  \"proof_path\": \"" << json_escape(result.proof_path.string()) << "\",\n";
-        out << "  \"note\": \"CPU-only sparse/grouped relation-level formal result; denominator/inverse/alpha remain GPU partial or future CPU extension, and max/ExpMap/lookup/range/ELU/output aggregation/rescale remain open.\"\n";
+        out << "  \"note\": \"CPU-only hidden layer0/head0 sparse + denominator/inverse/alpha relation-level formal result; weighted aggregation、max/ExpMap/lookup/range/ELU/output aggregation/rescale remain open.\"\n";
         out << "}\n";
     }
     return result;
