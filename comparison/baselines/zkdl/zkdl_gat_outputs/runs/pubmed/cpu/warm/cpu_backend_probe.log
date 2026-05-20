@@ -1,0 +1,8 @@
+cpu_backend_probe dataset=pubmed stage=load_dataset
+cpu_backend_probe dataset=pubmed loaded_nodes=19717 loaded_edges=88676 features=500 classes=3
+cpu_backend_probe dataset=pubmed stage=normalize_graph
+cpu_backend_probe dataset=pubmed full_dataset=true normalized_nodes=19717 normalized_edges=108365 graphs=1
+cpu_backend_probe dataset=pubmed stage=load_model
+cpu_backend_probe dataset=pubmed model=gat_family_L2_hid8x8_kout1_c3 L=2 K_out=1 C=3
+cpu_backend_probe dataset=pubmed stage=cpu_forward_trace
+cpu_backend_probe dataset=pubmed cpu_forward_ms=40.940 stage=cpu_relation_prove_verify

@@ -1,0 +1,4 @@
+dataset=cora device=gpu status=partial_formal official=blocked
+stage=formal_sparse_grouped status=PASS nodes=2708 edges=13264 commitment_ms=214.651 prove_ms=1058.992 verify_ms=837.638 proof_size_bytes=26885
+stage=formal_softmax_aggregation status=PASS nodes=2708 edges=13264 features=8/8 commitment_ms=1507.717 prove_ms=8244.618 verify_ms=4734.040 proof_size_bytes=280185
+note=partial_formal_only_not_official_gpu_proof

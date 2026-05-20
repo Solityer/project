@@ -1,0 +1,12 @@
+ZKDLGATCPU
+version=2
+dataset=pubmed
+status=blocked_after_cpu_backend_attempt_timeout
+full_dataset=true
+node_count=19717
+edge_count=108365
+backend=cpu_only_host_fr_g1_commitment
+blocker=CPU-only sparse/grouped relation prover/verifier entered full-dataset proof attempt but host G1 opening replay did not finish within the interactive run window
+proof_generation=attempted
+verification=not_completed
+note=This is minimal failure evidence for a real full-dataset CPU attempt; it is not a proof and contains no witness/tensor/debug dump.

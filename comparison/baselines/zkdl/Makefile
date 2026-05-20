@@ -17,10 +17,11 @@ NVCC_FLAGS ?= -arch=sm_80 -std=c++17 -O3 -Xcompiler=-Wall -Xcompiler=-Wextra
 # Formal targets used by the adapter.
 TARGETS := gat_zkdl formal_opening_selftest formal_sumcheck_selftest formal_relation_selftest
 COMMON_HEADERS := bls12-381.cuh fr-tensor.cuh g1-tensor.cuh commitment.cuh proof.cuh formal_relations.cuh zkfc.cuh zkmatmul.cuh zkrelu.cuh
+GAT_MODULE_HEADERS := $(wildcard gat_modules/*.cuh)
 
 all: $(TARGETS)
 
-gat_zkdl: gat_zkdl.cu $(COMMON_HEADERS)
+gat_zkdl: gat_zkdl.cu $(COMMON_HEADERS) $(GAT_MODULE_HEADERS)
 	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $< -o $@
 
 formal_opening_selftest: formal_opening_selftest.cu $(COMMON_HEADERS)

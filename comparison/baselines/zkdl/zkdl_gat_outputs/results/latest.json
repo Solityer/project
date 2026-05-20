@@ -1,0 +1,119 @@
+{
+  "benchmark_mode": "warm",
+  "device_layout": {
+    "cpu": "zkdl_gat_outputs/results/cpu/latest.csv",
+    "gpu": "zkdl_gat_outputs/results/gpu/latest.csv"
+  },
+  "rows": [
+    {
+      "device": "cpu",
+      "dataset": "cora",
+      "status": "blocked",
+      "blocker": "cpu_full_gat_proof_incomplete：本轮已在 zkDL 目录内实现 CPU-only host Fr/G1/Commitment/opening 与 relation prover/verifier，并在 Cora/Citeseer full dataset 的 hidden layer0/head0 sparse/grouped relation 上跑出独立 CPU proof/verify。CPU official Level A 仍 blocked：Pubmed CPU full-dataset attempt 进入 proof/verify 后因 host G1 opening replay 超过交互窗口未完成；CPU denominator/inverse/alpha、lookup/range/max/comparison、ExpMap、LeakyReLU/ELU、output aggregation、all-layer/all-head、real rescale/rounding public contract 与完整 proof object 仍未闭合。official 四项保持 NA，不能复用 GPU partial timing。",
+      "benchmark_mode": "warm",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA"
+    },
+    {
+      "device": "cpu",
+      "dataset": "citeseer",
+      "status": "blocked",
+      "blocker": "cpu_full_gat_proof_incomplete：本轮已在 zkDL 目录内实现 CPU-only host Fr/G1/Commitment/opening 与 relation prover/verifier，并在 Cora/Citeseer full dataset 的 hidden layer0/head0 sparse/grouped relation 上跑出独立 CPU proof/verify。CPU official Level A 仍 blocked：Pubmed CPU full-dataset attempt 进入 proof/verify 后因 host G1 opening replay 超过交互窗口未完成；CPU denominator/inverse/alpha、lookup/range/max/comparison、ExpMap、LeakyReLU/ELU、output aggregation、all-layer/all-head、real rescale/rounding public contract 与完整 proof object 仍未闭合。official 四项保持 NA，不能复用 GPU partial timing。",
+      "benchmark_mode": "warm",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA"
+    },
+    {
+      "device": "cpu",
+      "dataset": "pubmed",
+      "status": "blocked",
+      "blocker": "cpu_full_gat_proof_incomplete：本轮已在 zkDL 目录内实现 CPU-only host Fr/G1/Commitment/opening 与 relation prover/verifier，并在 Cora/Citeseer full dataset 的 hidden layer0/head0 sparse/grouped relation 上跑出独立 CPU proof/verify。CPU official Level A 仍 blocked：Pubmed CPU full-dataset attempt 进入 proof/verify 后因 host G1 opening replay 超过交互窗口未完成；CPU denominator/inverse/alpha、lookup/range/max/comparison、ExpMap、LeakyReLU/ELU、output aggregation、all-layer/all-head、real rescale/rounding public contract 与完整 proof object 仍未闭合。official 四项保持 NA，不能复用 GPU partial timing。",
+      "benchmark_mode": "warm",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA"
+    },
+    {
+      "device": "cpu",
+      "dataset": "ppi",
+      "status": "blocked",
+      "blocker": "cpu_full_gat_proof_incomplete：本轮已在 zkDL 目录内实现 CPU-only host Fr/G1/Commitment/opening 与 relation prover/verifier，并在 Cora/Citeseer full dataset 的 hidden layer0/head0 sparse/grouped relation 上跑出独立 CPU proof/verify。CPU official Level A 仍 blocked：Pubmed CPU full-dataset attempt 进入 proof/verify 后因 host G1 opening replay 超过交互窗口未完成；CPU denominator/inverse/alpha、lookup/range/max/comparison、ExpMap、LeakyReLU/ELU、output aggregation、all-layer/all-head、real rescale/rounding public contract 与完整 proof object 仍未闭合。official 四项保持 NA，不能复用 GPU partial timing。",
+      "benchmark_mode": "warm",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA"
+    },
+    {
+      "device": "cpu",
+      "dataset": "ogbn-arxiv",
+      "status": "blocked",
+      "blocker": "cpu_full_gat_proof_incomplete：本轮已在 zkDL 目录内实现 CPU-only host Fr/G1/Commitment/opening 与 relation prover/verifier，并在 Cora/Citeseer full dataset 的 hidden layer0/head0 sparse/grouped relation 上跑出独立 CPU proof/verify。CPU official Level A 仍 blocked：Pubmed CPU full-dataset attempt 进入 proof/verify 后因 host G1 opening replay 超过交互窗口未完成；CPU denominator/inverse/alpha、lookup/range/max/comparison、ExpMap、LeakyReLU/ELU、output aggregation、all-layer/all-head、real rescale/rounding public contract 与完整 proof object 仍未闭合。official 四项保持 NA，不能复用 GPU partial timing。",
+      "benchmark_mode": "warm",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA"
+    },
+    {
+      "device": "gpu",
+      "dataset": "cora",
+      "status": "blocked",
+      "blocker": "proof_gadget_missing：GPU 路径当前只有 relation-level partial formal evidence。CUDA forward trace 与 zkDL 原生 Fr/G1 commitment/opening kernel 已参与 partial prover，但仍没有完整 GAT proof object、完整 proof generation 与完整 verification。当前缺 target-node softmax group、softmax max/shift、ExpMap lookup/range、LeakyReLU/ELU lookup-range、所有层/头 weighted aggregation、output aggregation、real rescale chain 与 rounding sign/tie-breaking 公开契约；official 四项保持 NA。",
+      "benchmark_mode": "warm",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA"
+    },
+    {
+      "device": "gpu",
+      "dataset": "citeseer",
+      "status": "blocked",
+      "blocker": "proof_gadget_missing：GPU 路径当前只有 relation-level partial formal evidence。CUDA forward trace 与 zkDL 原生 Fr/G1 commitment/opening kernel 已参与 partial prover，但仍没有完整 GAT proof object、完整 proof generation 与完整 verification。当前缺 target-node softmax group、softmax max/shift、ExpMap lookup/range、LeakyReLU/ELU lookup-range、所有层/头 weighted aggregation、output aggregation、real rescale chain 与 rounding sign/tie-breaking 公开契约；official 四项保持 NA。",
+      "benchmark_mode": "warm",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA"
+    },
+    {
+      "device": "gpu",
+      "dataset": "pubmed",
+      "status": "blocked",
+      "blocker": "proof_gadget_missing：GPU 路径当前只有 relation-level partial formal evidence。CUDA forward trace 与 zkDL 原生 Fr/G1 commitment/opening kernel 已参与 partial prover，但仍没有完整 GAT proof object、完整 proof generation 与完整 verification。当前缺 target-node softmax group、softmax max/shift、ExpMap lookup/range、LeakyReLU/ELU lookup-range、所有层/头 weighted aggregation、output aggregation、real rescale chain 与 rounding sign/tie-breaking 公开契约；official 四项保持 NA。",
+      "benchmark_mode": "warm",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA"
+    },
+    {
+      "device": "gpu",
+      "dataset": "ppi",
+      "status": "blocked",
+      "blocker": "proof_gadget_missing：GPU 路径当前只有 relation-level partial formal evidence。CUDA forward trace 与 zkDL 原生 Fr/G1 commitment/opening kernel 已参与 partial prover，但仍没有完整 GAT proof object、完整 proof generation 与完整 verification。当前缺 target-node softmax group、softmax max/shift、ExpMap lookup/range、LeakyReLU/ELU lookup-range、所有层/头 weighted aggregation、output aggregation、real rescale chain 与 rounding sign/tie-breaking 公开契约；official 四项保持 NA。",
+      "benchmark_mode": "warm",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA"
+    },
+    {
+      "device": "gpu",
+      "dataset": "ogbn-arxiv",
+      "status": "blocked",
+      "blocker": "proof_gadget_missing：GPU 路径当前只有 relation-level partial formal evidence。CUDA forward trace 与 zkDL 原生 Fr/G1 commitment/opening kernel 已参与 partial prover，但仍没有完整 GAT proof object、完整 proof generation 与完整 verification。当前缺 target-node softmax group、softmax max/shift、ExpMap lookup/range、LeakyReLU/ELU lookup-range、所有层/头 weighted aggregation、output aggregation、real rescale chain 与 rounding sign/tie-breaking 公开契约；official 四项保持 NA。",
+      "benchmark_mode": "warm",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA"
+    }
+  ]
+}

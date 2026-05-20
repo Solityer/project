@@ -1,0 +1,4 @@
+dataset=pubmed device=gpu status=partial_formal official=blocked
+stage=formal_sparse_grouped status=PASS nodes=19717 edges=108365 commitment_ms=2057.175 prove_ms=1382.246 verify_ms=6988.849 proof_size_bytes=28919
+stage=formal_softmax_aggregation status=PASS nodes=19717 edges=108365 features=8/8 commitment_ms=11304.127 prove_ms=12535.613 verify_ms=35135.303 proof_size_bytes=1447807
+note=partial_formal_only_not_official_gpu_proof

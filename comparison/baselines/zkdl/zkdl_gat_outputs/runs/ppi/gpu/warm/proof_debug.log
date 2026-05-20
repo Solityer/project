@@ -1,0 +1,4 @@
+dataset=ppi device=gpu status=partial_formal official=blocked
+stage=formal_sparse_grouped status=PASS nodes=56944 edges=850576 commitment_ms=8091.479 prove_ms=4329.571 verify_ms=49075.976 proof_size_bytes=30140
+stage=formal_softmax_aggregation status=PASS nodes=56944 edges=850576 features=8/8 commitment_ms=80826.597 prove_ms=43087.596 verify_ms=261444.942 proof_size_bytes=9857494
+note=partial_formal_only_not_official_gpu_proof

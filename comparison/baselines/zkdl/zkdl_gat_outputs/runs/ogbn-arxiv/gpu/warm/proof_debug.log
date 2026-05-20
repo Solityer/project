@@ -1,0 +1,4 @@
+dataset=ogbn-arxiv device=gpu status=partial_formal official=blocked
+stage=formal_sparse_grouped status=PASS nodes=169343 edges=1335586 commitment_ms=23067.313 prove_ms=6871.957 verify_ms=83059.013 proof_size_bytes=31259
+stage=formal_softmax_aggregation status=PASS nodes=169343 edges=1335586 features=8/8 commitment_ms=162922.338 prove_ms=75629.638 verify_ms=406350.312 proof_size_bytes=20182539
+note=partial_formal_only_not_official_gpu_proof

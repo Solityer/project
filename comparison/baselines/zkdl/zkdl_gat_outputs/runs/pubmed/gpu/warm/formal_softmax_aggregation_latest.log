@@ -1,0 +1,7 @@
+formal_softmax_aggregation dataset=pubmed stage=load_dataset
+formal_softmax_aggregation dataset=pubmed stage=normalize_graph
+formal_softmax_aggregation dataset=pubmed nodes=19717 edges=108365 full_dataset=true
+formal_softmax_aggregation dataset=pubmed stage=load_model
+formal_softmax_aggregation dataset=pubmed stage=gpu_forward_trace
+formal_softmax_aggregation dataset=pubmed forward_ms=399.753 stage=prove_verify
+formal_softmax_aggregation dataset=pubmed status=PASS commitment_block_size=64 denominator=PASS inverse=PASS alpha=PASS weighted_columns=8/8 executed_feature_columns=8 commitment_ms=11304.127 prove_ms=12535.613 verify_ms=35135.303 proof_size_bytes=1447807 proof_path=/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/pubmed/gpu/warm/formal_artifacts/zkdl_softmax_aggregation_relations.proof.txt

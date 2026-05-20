@@ -1,0 +1,7 @@
+formal_sparse_grouped dataset=ppi stage=load_dataset
+formal_sparse_grouped dataset=ppi stage=normalize_graph
+formal_sparse_grouped dataset=ppi nodes=56944 edges=850576 full_dataset=true
+formal_sparse_grouped dataset=ppi stage=load_model
+formal_sparse_grouped dataset=ppi stage=gpu_forward_trace
+formal_sparse_grouped dataset=ppi forward_ms=387.933 stage=prove_verify
+formal_sparse_grouped dataset=ppi status=PASS commitment_block_size=64 commitment_ms=8091.479 prove_ms=4329.571 verify_ms=49075.976 proof_size_bytes=30140 proof_path=/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/ppi/gpu/warm/formal_artifacts/zkdl_sparse_grouped_relations.proof.txt

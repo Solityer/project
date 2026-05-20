@@ -1,0 +1,8 @@
+dataset=cora device=cpu status=partial_formal official=blocked
+backend=cpu_only_host_fr_g1_commitment
+nodes=2708 edges=13264 topology_hash=10841621610450798504 commitment_block_size=1
+commitment_ms=13.960 prove_ms=45.593 verify_ms=26257.734 proof_size_bytes=13017
+source_sparse_routing status=PASS digest=4a7e6e531d7037b1
+destination_sparse_routing status=PASS digest=25f16dc4a125e733
+grouped_sum_by_dst status=PASS digest=cf38dab878fde986
+note=CPU relation-level partial formal only; not official Level A
