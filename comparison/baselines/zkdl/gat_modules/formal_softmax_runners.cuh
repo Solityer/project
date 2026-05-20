@@ -358,94 +358,34 @@ GatSoftmaxAggregationGadgetRun run_softmax_aggregation_relations_with_trace(
         && result.feature_columns == result.available_feature_columns;
     const bool weighted_executed_ok = weighted_all_ok && result.verified_feature_columns == result.feature_columns;
 
-    const auto run_dir = device_run_dir(output_root, spec.dataset);
-    ensure_dir(run_dir / "formal_artifacts");
-    ensure_dir(output_root / "evidence");
-    result.proof_path = run_dir / "formal_artifacts" / "zkdl_softmax_aggregation_relations.proof.txt";
-    {
-        std::ofstream out(result.proof_path);
-        out << "ZKDLGATA\n";
-        out << "version=1\n";
-        out << "dataset=" << spec.dataset << "\n";
-        out << "relation_scope=hidden_layer0_head0_softmax_denominator_inverse_alpha_weighted_aggregation\n";
-        out << "node_count=" << graph.num_nodes << "\n";
-        out << "edge_count=" << graph.edges.size() << "\n";
-        out << "padded_node_count=" << padded_node_count << "\n";
-        out << "padded_edge_count=" << padded_edge_count << "\n";
-        out << "feature_columns=" << result.feature_columns << "\n";
-        out << "available_feature_columns=" << result.available_feature_columns << "\n";
-        out << "verified_feature_columns=" << result.verified_feature_columns << "\n";
-        out << "commitment_block_size=" << result.commitment_block_size << "\n";
-        out << "topology_hash=" << result.topology_hash << "\n";
-        out << "denominator_grouped_sum_status=" << (result.denominator_ok ? "PASS" : "FAIL") << "\n";
-        out << "inverse_status=" << (result.inverse_ok ? "PASS" : "FAIL") << "\n";
-        out << "inverse_destination_routing_status=" << (result.inverse_routing_ok ? "PASS" : "FAIL") << "\n";
-        out << "alpha_from_inverse_status=" << (result.alpha_from_inverse_ok ? "PASS" : "FAIL") << "\n";
-        out << "alpha_times_denominator_status=" << (result.alpha_times_denominator_ok ? "PASS" : "FAIL") << "\n";
-        out << "weighted_aggregation_status="
-            << (result.weighted_aggregation_ok ? "PASS" : (weighted_executed_ok ? "PARTIAL_PASS" : "FAIL")) << "\n";
-        out << "proof_size_bytes=" << result.proof_size_bytes << "\n";
-        out << "relation_details=" << result.relation_details.size() << "\n";
-        for (const auto& detail : result.relation_details) out << detail << "\n";
-        out << "说明=本 proof artifact 只包含 relation metadata、证明大小与 transcript 摘要，不包含完整 witness、完整 tensor 或 debug dump。\n";
-    }
-    result.evidence_path = output_root / "evidence" / ("softmax_aggregation_relation_" + spec.dataset + ".json");
-    {
-        std::ofstream out(result.evidence_path);
-        out << "{\n";
-        out << "  \"dataset\": \"" << json_escape(spec.dataset) << "\",\n";
-        out << "  \"status\": \"partial_formal\",\n";
-        out << "  \"relation_scope\": \"hidden_layer0_head0_softmax_denominator_inverse_alpha_weighted_aggregation\",\n";
-        out << "  \"node_count\": \"" << graph.num_nodes << "\",\n";
-        out << "  \"edge_count\": \"" << graph.edges.size() << "\",\n";
-        out << "  \"feature_columns\": \"" << result.feature_columns << "\",\n";
-        out << "  \"available_feature_columns\": \"" << result.available_feature_columns << "\",\n";
-        out << "  \"verified_feature_columns\": \"" << result.verified_feature_columns << "\",\n";
-        out << "  \"commitment_block_size\": \"" << result.commitment_block_size << "\",\n";
-        out << "  \"topology_hash\": \"" << result.topology_hash << "\",\n";
-        out << "  \"denominator_grouped_sum\": \"" << (result.denominator_ok ? "PASS" : "FAIL") << "\",\n";
-        out << "  \"inverse\": \"" << (result.inverse_ok ? "PASS" : "FAIL") << "\",\n";
-        out << "  \"inverse_destination_routing\": \"" << (result.inverse_routing_ok ? "PASS" : "FAIL") << "\",\n";
-        out << "  \"alpha_from_inverse\": \"" << (result.alpha_from_inverse_ok ? "PASS" : "FAIL") << "\",\n";
-        out << "  \"alpha_times_denominator\": \"" << (result.alpha_times_denominator_ok ? "PASS" : "FAIL") << "\",\n";
-        out << "  \"weighted_aggregation\": \""
-            << (result.weighted_aggregation_ok ? "PASS" : (weighted_executed_ok ? "PARTIAL_PASS" : "FAIL")) << "\",\n";
-        out << "  \"commitment_time_ms\": \"" << format_ms(result.commitment_ms) << "\",\n";
-        out << "  \"prove_time_ms\": \"" << format_ms(result.prove_ms) << "\",\n";
-        out << "  \"verify_time_ms\": \"" << format_ms(result.verify_ms) << "\",\n";
-        out << "  \"proof_size_bytes\": \"" << result.proof_size_bytes << "\",\n";
-        out << "  \"proof_path\": \"" << json_escape(result.proof_path.string()) << "\",\n";
-        out << "  \"note\": \"该 evidence 证明 hidden layer0/head0 的 U 分母、inverse、alpha 与 weighted aggregation 的 zkDL relation-level 链条；ExpMap、max/range、ELU、output aggregation、rescale 与 rounding 仍未闭合，因此不写入 official latest。\"\n";
-        out << "}\n";
-    }
-    {
-        std::ofstream debug(run_dir / "proof_debug.log", std::ios::app);
-        debug << "dataset=" << spec.dataset << " stage=formal_softmax_aggregation status="
-              << (result.weighted_aggregation_ok ? "PASS" : "PARTIAL") << "\n";
-        debug << "nodes=" << graph.num_nodes << " edges=" << graph.edges.size()
-              << " topology_hash=" << result.topology_hash
-              << " commitment_block_size=" << result.commitment_block_size
-              << " feature_columns=" << result.feature_columns
-              << " available_feature_columns=" << result.available_feature_columns
-              << " verified_feature_columns=" << result.verified_feature_columns << "\n";
-        debug << "commitment_ms=" << format_ms(result.commitment_ms)
-              << " prove_ms=" << format_ms(result.prove_ms)
-              << " verify_ms=" << format_ms(result.verify_ms)
-              << " proof_size_bytes=" << result.proof_size_bytes << "\n";
-    }
-    {
-        std::ofstream resume(run_dir / "RESUME_POINT.md", std::ios::app);
-        resume << "\n## softmax/aggregation relation 继续点\n\n";
-        resume << "- 本轮 relation: `denominator grouped sum`, `inverse Hadamard`, `alpha multiplication`, `weighted aggregation`\n";
-        resume << "- 证明范围: hidden layer0/head0 full graph / full edge set，feature columns `"
-               << result.verified_feature_columns << "/" << result.available_feature_columns
-               << "`；本次实际运行 columns `" << result.feature_columns << "`\n";
-        resume << "- commitment block size: `" << result.commitment_block_size << "`\n";
-        resume << "- 结果: `" << (result.weighted_aggregation_ok ? "PASS" : "PARTIAL") << "`\n";
-        resume << "- proof artifact: `" << result.proof_path.string() << "`\n";
-        resume << "- evidence: `" << result.evidence_path.string() << "`\n";
-        resume << "- Level A 状态: blocked；softmax max/ExpMap、LeakyReLU/ELU lookup-range、output aggregation、real rescale chain 与 rounding sign/tie-breaking 仍未闭合。\n";
-    }
+    GpuSoftmaxArtifactPayload payload;
+    payload.node_count = graph.num_nodes;
+    payload.edge_count = graph.edges.size();
+    payload.padded_node_count = padded_node_count;
+    payload.padded_edge_count = padded_edge_count;
+    payload.feature_columns = result.feature_columns;
+    payload.available_feature_columns = result.available_feature_columns;
+    payload.verified_feature_columns = result.verified_feature_columns;
+    payload.commitment_block_size = result.commitment_block_size;
+    payload.topology_hash = result.topology_hash;
+    payload.denominator_ok = result.denominator_ok;
+    payload.inverse_ok = result.inverse_ok;
+    payload.inverse_routing_ok = result.inverse_routing_ok;
+    payload.alpha_from_inverse_ok = result.alpha_from_inverse_ok;
+    payload.alpha_times_denominator_ok = result.alpha_times_denominator_ok;
+    payload.weighted_aggregation_ok = result.weighted_aggregation_ok;
+    payload.weighted_executed_ok = weighted_executed_ok;
+    payload.commitment_ms = result.commitment_ms;
+    payload.prove_ms = result.prove_ms;
+    payload.verify_ms = result.verify_ms;
+    payload.proof_size_bytes = result.proof_size_bytes;
+    payload.relation_details = result.relation_details;
+    const auto paths = write_gpu_softmax_artifact(spec, output_root, payload);
+    result.proof_path = paths.first;
+    result.evidence_path = paths.second;
+
+    write_gpu_softmax_debug_resume(
+        spec, output_root, payload, result.proof_path, result.evidence_path);
     return result;
 }
 
@@ -565,80 +505,25 @@ SparseGroupedGadgetRun run_sparse_grouped_relations_with_trace(
     result.source_digest = source_proof.transcript_digest;
     result.destination_digest = destination_proof.transcript_digest;
     result.grouped_sum_digest = grouped_proof.transcript_digest;
-    const auto run_dir = device_run_dir(output_root, spec.dataset);
-    ensure_dir(run_dir / "formal_artifacts");
-    ensure_dir(output_root / "evidence");
-    result.proof_path = run_dir / "formal_artifacts" / "zkdl_sparse_grouped_relations.proof.txt";
-    {
-        std::ofstream out(result.proof_path);
-        out << "ZKDLGATS\n";
-        out << "version=1\n";
-        out << "dataset=" << spec.dataset << "\n";
-        out << "relation_scope=hidden_layer0_head0_sparse_routing_and_one_dim_grouped_sum\n";
-        out << "node_count=" << graph.num_nodes << "\n";
-        out << "edge_count=" << graph.edges.size() << "\n";
-        out << "padded_node_count=" << padded_node_count << "\n";
-        out << "padded_edge_count=" << padded_edge_count << "\n";
-        out << "edge_range=0.." << graph.edges.size() << "\n";
-        out << "commitment_block_size=" << result.commitment_block_size << "\n";
-        out << "topology_hash=" << result.topology_hash << "\n";
-        out << "source_sparse_routing_status=PASS\n";
-        out << "destination_sparse_routing_status=PASS\n";
-        out << "grouped_sum_status=PASS\n";
-        out << "source_transcript_digest=" << result.source_digest << "\n";
-        out << "destination_transcript_digest=" << result.destination_digest << "\n";
-        out << "grouped_sum_transcript_digest=" << result.grouped_sum_digest << "\n";
-        out << "proof_size_bytes=" << result.proof_size_bytes << "\n";
-        out << "说明=本 proof artifact 只包含 relation metadata、承诺/opening/sumcheck 证明大小与 transcript 摘要，不包含完整 witness、完整 tensor 或 debug dump。\n";
-    }
-    result.evidence_path = output_root / "evidence" / ("sparse_grouped_relation_" + spec.dataset + ".json");
-    {
-        std::ofstream out(result.evidence_path);
-        out << "{\n";
-        out << "  \"dataset\": \"" << json_escape(spec.dataset) << "\",\n";
-        out << "  \"status\": \"partial_formal\",\n";
-        out << "  \"relation_scope\": \"hidden_layer0_head0_sparse_routing_and_one_dim_grouped_sum\",\n";
-        out << "  \"node_count\": \"" << graph.num_nodes << "\",\n";
-        out << "  \"edge_count\": \"" << graph.edges.size() << "\",\n";
-        out << "  \"edge_range\": \"0.." << graph.edges.size() << "\",\n";
-        out << "  \"commitment_block_size\": \"" << result.commitment_block_size << "\",\n";
-        out << "  \"topology_hash\": \"" << result.topology_hash << "\",\n";
-        out << "  \"source_sparse_routing\": \"PASS\",\n";
-        out << "  \"destination_sparse_routing\": \"PASS\",\n";
-        out << "  \"grouped_sum_by_dst\": \"PASS\",\n";
-        out << "  \"commitment_time_ms\": \"" << format_ms(result.commitment_ms) << "\",\n";
-        out << "  \"prove_time_ms\": \"" << format_ms(result.prove_ms) << "\",\n";
-        out << "  \"verify_time_ms\": \"" << format_ms(result.verify_ms) << "\",\n";
-        out << "  \"proof_size_bytes\": \"" << result.proof_size_bytes << "\",\n";
-        out << "  \"proof_path\": \"" << json_escape(result.proof_path.string()) << "\",\n";
-        out << "  \"note\": \"一维 grouped sum 使用 hidden layer0 head0 的 source attention edge 值作为输入；它证明 grouped sum gadget 本身，不等同于 softmax denominator 或 weighted aggregation。\"\n";
-        out << "}\n";
-    }
-    {
-        std::ofstream debug(run_dir / "proof_debug.log");
-        debug << "dataset=" << spec.dataset << " stage=formal_sparse_grouped status=PASS\n";
-        debug << "nodes=" << graph.num_nodes << " edges=" << graph.edges.size()
-              << " topology_hash=" << result.topology_hash
-              << " commitment_block_size=" << result.commitment_block_size << "\n";
-        debug << "source_sparse_routing_digest=" << result.source_digest << "\n";
-        debug << "destination_sparse_routing_digest=" << result.destination_digest << "\n";
-        debug << "grouped_sum_digest=" << result.grouped_sum_digest << "\n";
-        debug << "commitment_ms=" << format_ms(result.commitment_ms)
-              << " prove_ms=" << format_ms(result.prove_ms)
-              << " verify_ms=" << format_ms(result.verify_ms)
-              << " proof_size_bytes=" << result.proof_size_bytes << "\n";
-    }
-    {
-        std::ofstream resume(run_dir / "RESUME_POINT.md");
-        resume << "# zkDL GAT 数据集继续点\n\n";
-        resume << "- 数据集: `" << spec.dataset << "`\n";
-        resume << "- 本轮 relation: `SparseSourceRoutingRelationProof`, `SparseDestinationRoutingRelationProof`, `GroupedSumRelationProof`\n";
-        resume << "- 证明范围: full graph / full edge set，edge range `0.." << graph.edges.size() << "`\n";
-        resume << "- commitment block size: `" << result.commitment_block_size << "`\n";
-        resume << "- 结果: `PASS`\n";
-        resume << "- proof artifact: `" << result.proof_path.string() << "`\n";
-        resume << "- evidence: `" << result.evidence_path.string() << "`\n";
-        resume << "- Level A 状态: blocked；softmax ExpMap/inverse、LeakyReLU/ELU lookup-range、weighted/output aggregation、real rescale chain 与 rounding sign/tie-breaking 仍未闭合。\n";
-    }
+    GpuSparseArtifactPayload payload;
+    payload.node_count = graph.num_nodes;
+    payload.edge_count = graph.edges.size();
+    payload.padded_node_count = padded_node_count;
+    payload.padded_edge_count = padded_edge_count;
+    payload.commitment_block_size = result.commitment_block_size;
+    payload.topology_hash = result.topology_hash;
+    payload.commitment_ms = result.commitment_ms;
+    payload.prove_ms = result.prove_ms;
+    payload.verify_ms = result.verify_ms;
+    payload.proof_size_bytes = result.proof_size_bytes;
+    payload.source_digest = result.source_digest;
+    payload.destination_digest = result.destination_digest;
+    payload.grouped_sum_digest = result.grouped_sum_digest;
+    const auto paths = write_gpu_sparse_artifact(spec, output_root, payload);
+    result.proof_path = paths.first;
+    result.evidence_path = paths.second;
+
+    write_gpu_sparse_debug_resume(
+        spec, output_root, payload, result.proof_path, result.evidence_path);
     return result;
 }
