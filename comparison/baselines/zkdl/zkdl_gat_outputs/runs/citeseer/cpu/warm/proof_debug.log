@@ -1,8 +1,13 @@
 dataset=citeseer device=cpu status=partial_formal official=blocked
 backend=cpu_only_host_fr_g1_commitment
 nodes=3327 edges=12431 topology_hash=15417799544957100067 commitment_block_size=1
-commitment_ms=103.438 prove_ms=43.651 verify_ms=36045.114 proof_size_bytes=13053
+commitment_ms=18475.233 prove_ms=110.745 verify_ms=166546.122 proof_size_bytes=35298
 source_sparse_routing status=PASS digest=3cef84210d8ecfcd
 destination_sparse_routing status=PASS digest=49862484a1aab95f
 grouped_sum_by_dst status=PASS digest=8b7e6402ddf9a3cb
+denominator_grouped_sum status=PASS digest=0f2f61b4e2a89a38
+inverse_denominator_times_inverse status=PASS digest=90691106844a06f4
+inverse_destination_routing status=PASS digest=20cdc7825dcd355d
+alpha_from_inverse status=PASS digest=48871315cf4120b5
+alpha_times_denominator status=PASS digest=b7aa92cdc961a04a
 note=CPU relation-level partial formal only; not official Level A

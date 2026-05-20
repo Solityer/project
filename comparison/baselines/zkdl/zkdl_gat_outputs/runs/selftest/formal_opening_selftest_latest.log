@@ -1,4 +1,3 @@
-OPENING label=scalar_size_1 rows=1 inner_size=1 tensor_size=1 padded_size=1 com.size=1 outer_log=0 inner_log=0 window_size=1 round=all backend=hybrid_cpu_field_gpu_g1 status=PASS
 OPENING label=size_2_row_vector rows=2 inner_size=1 tensor_size=2 padded_size=2 com.size=2 outer_log=1 inner_log=0 window_size=1 round=all backend=hybrid_cpu_field_gpu_g1 status=PASS
 OPENING label=size_3_row_vector rows=3 inner_size=1 tensor_size=3 padded_size=4 com.size=3 outer_log=2 inner_log=0 window_size=1 round=all backend=hybrid_cpu_field_gpu_g1 status=PASS
 OPENING label=size_4_row_vector rows=4 inner_size=1 tensor_size=4 padded_size=4 com.size=4 outer_log=2 inner_log=0 window_size=1 round=all backend=hybrid_cpu_field_gpu_g1 status=PASS
@@ -30,4 +29,4 @@ PARTIAL label=window8_size24 size=24 padded_size=32 com.size=NA inner_log=NA out
 PARTIAL label=window16_size48 size=48 padded_size=64 com.size=NA inner_log=NA outer_log=2 rounds=2 window_size=16 round=all backend=cpu_field status=PASS
 PARTIAL label=dataset_ppi_logits_size_partial size=6890224 padded_size=8388608 com.size=NA inner_log=NA outer_log=23 rounds=23 window_size=1 round=all backend=cpu_field status=PASS
 PARTIAL label=dataset_ogbn_arxiv_logits_size_partial size=6773720 padded_size=8388608 com.size=NA inner_log=NA outer_log=23 rounds=23 window_size=1 round=all backend=cpu_field status=PASS
-SUMMARY status=PASS opening_cases=22 partial_cases=10
+SUMMARY status=PASS opening_cases=21 partial_cases=10

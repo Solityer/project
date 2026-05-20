@@ -1,9 +1,0 @@
-ZKDLGATCPU
-version=2
-dataset=ppi
-status=not_run_after_pubmed_cpu_timeout
-backend=cpu_only_host_fr_g1_commitment_available
-proof_generation=not_run
-verification=not_run
-blocker=CPU backend is no longer missing, but Pubmed full-dataset CPU proof/verify timed out in host G1 opening replay; larger PPI/ogbn CPU runs were not started to avoid blind long runs.
-note=This supersedes the old backend-missing probe artifact and is not an official proof result.

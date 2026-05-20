@@ -1,12 +1,11 @@
 {
   "device": "gpu",
-  "benchmark_mode": "warm",
-  "official_policy": "只有 full dataset + complete formal proof generation + complete formal verification 成功才填写四项指标。",
+  "policy": "只有 full dataset + complete proof generation + complete verification 才能写 official 四项。",
   "rows": [
     {
       "dataset": "cora",
       "status": "blocked",
-      "blocker": "proof_gadget_missing：GPU 路径当前只有 relation-level partial formal evidence。CUDA forward trace 与 zkDL 原生 Fr/G1 commitment/opening kernel 已参与 partial prover，但仍没有完整 GAT proof object、完整 proof generation 与完整 verification。当前缺 target-node softmax group、softmax max/shift、ExpMap lookup/range、LeakyReLU/ELU lookup-range、所有层/头 weighted aggregation、output aggregation、real rescale chain 与 rounding sign/tie-breaking 公开契约；official 四项保持 NA。",
+      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped、denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation partial formal evidence，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding public contract 与完整 verifier；official 四项保持 NA。",
       "benchmark_mode": "warm",
       "commitment_time_ms": "NA",
       "prove_time_ms": "NA",
@@ -16,7 +15,7 @@
     {
       "dataset": "citeseer",
       "status": "blocked",
-      "blocker": "proof_gadget_missing：GPU 路径当前只有 relation-level partial formal evidence。CUDA forward trace 与 zkDL 原生 Fr/G1 commitment/opening kernel 已参与 partial prover，但仍没有完整 GAT proof object、完整 proof generation 与完整 verification。当前缺 target-node softmax group、softmax max/shift、ExpMap lookup/range、LeakyReLU/ELU lookup-range、所有层/头 weighted aggregation、output aggregation、real rescale chain 与 rounding sign/tie-breaking 公开契约；official 四项保持 NA。",
+      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped、denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation partial formal evidence，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding public contract 与完整 verifier；official 四项保持 NA。",
       "benchmark_mode": "warm",
       "commitment_time_ms": "NA",
       "prove_time_ms": "NA",
@@ -26,7 +25,7 @@
     {
       "dataset": "pubmed",
       "status": "blocked",
-      "blocker": "proof_gadget_missing：GPU 路径当前只有 relation-level partial formal evidence。CUDA forward trace 与 zkDL 原生 Fr/G1 commitment/opening kernel 已参与 partial prover，但仍没有完整 GAT proof object、完整 proof generation 与完整 verification。当前缺 target-node softmax group、softmax max/shift、ExpMap lookup/range、LeakyReLU/ELU lookup-range、所有层/头 weighted aggregation、output aggregation、real rescale chain 与 rounding sign/tie-breaking 公开契约；official 四项保持 NA。",
+      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped、denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation partial formal evidence，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding public contract 与完整 verifier；official 四项保持 NA。",
       "benchmark_mode": "warm",
       "commitment_time_ms": "NA",
       "prove_time_ms": "NA",
@@ -36,7 +35,7 @@
     {
       "dataset": "ppi",
       "status": "blocked",
-      "blocker": "proof_gadget_missing：GPU 路径当前只有 relation-level partial formal evidence。CUDA forward trace 与 zkDL 原生 Fr/G1 commitment/opening kernel 已参与 partial prover，但仍没有完整 GAT proof object、完整 proof generation 与完整 verification。当前缺 target-node softmax group、softmax max/shift、ExpMap lookup/range、LeakyReLU/ELU lookup-range、所有层/头 weighted aggregation、output aggregation、real rescale chain 与 rounding sign/tie-breaking 公开契约；official 四项保持 NA。",
+      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped、denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation partial formal evidence，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding public contract 与完整 verifier；official 四项保持 NA。",
       "benchmark_mode": "warm",
       "commitment_time_ms": "NA",
       "prove_time_ms": "NA",
@@ -46,7 +45,7 @@
     {
       "dataset": "ogbn-arxiv",
       "status": "blocked",
-      "blocker": "proof_gadget_missing：GPU 路径当前只有 relation-level partial formal evidence。CUDA forward trace 与 zkDL 原生 Fr/G1 commitment/opening kernel 已参与 partial prover，但仍没有完整 GAT proof object、完整 proof generation 与完整 verification。当前缺 target-node softmax group、softmax max/shift、ExpMap lookup/range、LeakyReLU/ELU lookup-range、所有层/头 weighted aggregation、output aggregation、real rescale chain 与 rounding sign/tie-breaking 公开契约；official 四项保持 NA。",
+      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped、denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation partial formal evidence，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding public contract 与完整 verifier；official 四项保持 NA。",
       "benchmark_mode": "warm",
       "commitment_time_ms": "NA",
       "prove_time_ms": "NA",

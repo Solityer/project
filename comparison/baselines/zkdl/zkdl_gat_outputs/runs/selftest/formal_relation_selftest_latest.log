@@ -22,4 +22,7 @@ SPARSE_ROUTING_RELATION label=sparse_source_route direction=source nodes=5 edges
 SPARSE_ROUTING_RELATION label=sparse_destination_route direction=destination nodes=5 edges=9 padded_nodes=8 padded_edges=16 topology_hash=17750176775455861352 inner_rounds=3 transcript_digest=0b620668fa63d40d proof_size_bytes=1553 tamper_reject=PASS status=PASS
 GROUPED_SUM_RELATION label=grouped_sum_by_dst nodes=5 edges=9 padded_nodes=8 padded_edges=16 topology_hash=17750176775455861352 inner_rounds=4 transcript_digest=af48d1ba57f06f30 proof_size_bytes=1593 tamper_reject=PASS status=PASS
 MULTI_COLUMN_GROUPED_SUM_RELATION label=multi_column_grouped_sum_by_dst nodes=5 edges=9 columns=3 padded_nodes=8 padded_edges=16 padded_columns=4 topology_hash=17750176775455861352 compressed_inner_rounds=4 transcript_digest=53e6bca6683bbf11 proof_size_bytes=8016 tamper_reject=PASS status=PASS
+RANGE_BIT_DECOMPOSITION_RELATION label=range_u4 size=4 bit_width=4 decomposition_digest=6b256d522df567b6 proof_size_bytes=2095 tamper_reject=PASS status=PASS
+LOOKUP_SELECTION_RELATION label=lookup_onehot_table table_size=4 selected_index=1 onehot_digest=98b23eef962a77a3 lookup_digest=03a2420cc3b596bd proof_size_bytes=5201 tamper_reject=PASS status=PASS
+MAX_COMPARISON_RELATION label=max_representative_edge edges=4 max_value=5 difference_digest=8ce092d8c3114631 representative_digest=01a780ff7a26d758 proof_size_bytes=6130 tamper_reject=PASS status=PASS
 SUMMARY status=PASS

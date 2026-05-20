@@ -1,11 +1,21 @@
-# zkDL-GAT CPU 最新正式结果
+# zkDL-GAT CPU latest official
 
-当前不是 Level A；下表只展示 official 四项，未把 partial/debug 数字写入正式结果。
+当前没有 Level A official 行；partial/debug 数字不进入 official latest。
 
-| 数据集 | 状态 | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes | blocker |
+| dataset | status | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes | blocker |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| cora | blocked | NA | NA | NA | NA | cpu_full_gat_proof_incomplete：本轮已在 zkDL 目录内实现 CPU-only host Fr/G1/Commitment/opening 与 relation prover/verifier，并在 Cora/Citeseer full dataset 的 hidden layer0/head0 sparse/grouped relation 上跑出独立 CPU proof/verify。CPU official Level A 仍 blocked：Pubmed CPU full-dataset attempt 进入 proof/verify 后因 host G1 opening replay 超过交互窗口未完成；CPU denominator/inverse/alpha、lookup/range/max/comparison、ExpMap、LeakyReLU/ELU、output aggregation、all-layer/all-head、real rescale/rounding public contract 与完整 proof object 仍未闭合。official 四项保持 NA，不能复用 GPU partial timing。 |
-| citeseer | blocked | NA | NA | NA | NA | cpu_full_gat_proof_incomplete：本轮已在 zkDL 目录内实现 CPU-only host Fr/G1/Commitment/opening 与 relation prover/verifier，并在 Cora/Citeseer full dataset 的 hidden layer0/head0 sparse/grouped relation 上跑出独立 CPU proof/verify。CPU official Level A 仍 blocked：Pubmed CPU full-dataset attempt 进入 proof/verify 后因 host G1 opening replay 超过交互窗口未完成；CPU denominator/inverse/alpha、lookup/range/max/comparison、ExpMap、LeakyReLU/ELU、output aggregation、all-layer/all-head、real rescale/rounding public contract 与完整 proof object 仍未闭合。official 四项保持 NA，不能复用 GPU partial timing。 |
-| pubmed | blocked | NA | NA | NA | NA | cpu_full_gat_proof_incomplete：本轮已在 zkDL 目录内实现 CPU-only host Fr/G1/Commitment/opening 与 relation prover/verifier，并在 Cora/Citeseer full dataset 的 hidden layer0/head0 sparse/grouped relation 上跑出独立 CPU proof/verify。CPU official Level A 仍 blocked：Pubmed CPU full-dataset attempt 进入 proof/verify 后因 host G1 opening replay 超过交互窗口未完成；CPU denominator/inverse/alpha、lookup/range/max/comparison、ExpMap、LeakyReLU/ELU、output aggregation、all-layer/all-head、real rescale/rounding public contract 与完整 proof object 仍未闭合。official 四项保持 NA，不能复用 GPU partial timing。 |
-| ppi | blocked | NA | NA | NA | NA | cpu_full_gat_proof_incomplete：本轮已在 zkDL 目录内实现 CPU-only host Fr/G1/Commitment/opening 与 relation prover/verifier，并在 Cora/Citeseer full dataset 的 hidden layer0/head0 sparse/grouped relation 上跑出独立 CPU proof/verify。CPU official Level A 仍 blocked：Pubmed CPU full-dataset attempt 进入 proof/verify 后因 host G1 opening replay 超过交互窗口未完成；CPU denominator/inverse/alpha、lookup/range/max/comparison、ExpMap、LeakyReLU/ELU、output aggregation、all-layer/all-head、real rescale/rounding public contract 与完整 proof object 仍未闭合。official 四项保持 NA，不能复用 GPU partial timing。 |
-| ogbn-arxiv | blocked | NA | NA | NA | NA | cpu_full_gat_proof_incomplete：本轮已在 zkDL 目录内实现 CPU-only host Fr/G1/Commitment/opening 与 relation prover/verifier，并在 Cora/Citeseer full dataset 的 hidden layer0/head0 sparse/grouped relation 上跑出独立 CPU proof/verify。CPU official Level A 仍 blocked：Pubmed CPU full-dataset attempt 进入 proof/verify 后因 host G1 opening replay 超过交互窗口未完成；CPU denominator/inverse/alpha、lookup/range/max/comparison、ExpMap、LeakyReLU/ELU、output aggregation、all-layer/all-head、real rescale/rounding public contract 与完整 proof object 仍未闭合。official 四项保持 NA，不能复用 GPU partial timing。 |
+| cora | blocked | NA | NA | NA | NA | cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison 接入和 real rescale/rounding；official 四项保持 NA。 |
+| citeseer | blocked | NA | NA | NA | NA | cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison 接入和 real rescale/rounding；official 四项保持 NA。 |
+| pubmed | blocked | NA | NA | NA | NA | cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison 接入和 real rescale/rounding；official 四项保持 NA。 |
+| ppi | blocked | NA | NA | NA | NA | cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison 接入和 real rescale/rounding；official 四项保持 NA。 |
+| ogbn-arxiv | blocked | NA | NA | NA | NA | cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison 接入和 real rescale/rounding；official 四项保持 NA。 |
+
+五个全量数据集的非 official 状态：
+
+| dataset | formal/debug state | artifact |
+| --- | --- | --- |
+| cora | partial_formal | zkdl_gat_outputs/runs/cora/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt |
+| citeseer | partial_formal | zkdl_gat_outputs/runs/citeseer/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt |
+| pubmed | failed_with_evidence | zkdl_gat_outputs/runs/pubmed/cpu/warm/formal_artifacts/zkdl_cpu_formal_chain.timeout.txt |
+| ppi | failed_with_evidence | zkdl_gat_outputs/runs/ppi/cpu/warm/formal_artifacts/zkdl_cpu_formal_chain.timeout.txt |
+| ogbn-arxiv | failed_with_evidence | zkdl_gat_outputs/runs/ogbn-arxiv/cpu/warm/formal_artifacts/zkdl_cpu_formal_chain.timeout.txt |

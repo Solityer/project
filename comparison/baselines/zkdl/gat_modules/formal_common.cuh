@@ -164,7 +164,7 @@ struct TensorCommitmentProof {
 
 struct LevelBProofArtifact {
     std::string level = "debug_level_b";
-    std::string benchmark_mode = "diagnostic_level_b_output_binding_only_not_formal_level_a";
+    std::string benchmark_mode = "debug_level_b_output_binding_only_not_formal_level_a";
     std::vector<TensorCommitmentProof> tensors;
     bool proof_generation_ok = false;
     bool verification_ok = false;
@@ -642,7 +642,7 @@ LevelBProofArtifact run_level_b_output_binding_proof(
 
         if (artifact.verification_ok) {
             artifact.blocker = std::string(
-                "debug_level_b 已完成 final output-head commitment、public row evaluation、public logits binding 与 K_out=1 average identity 的 diagnostic 检查"
+                "debug_level_b 已完成 final output-head commitment、public row evaluation、public logits binding 与 K_out=1 average identity 的调试级检查"
             )
             + (artifact.blocker.empty() ? std::string("") : std::string("；verifier note: ") + artifact.blocker)
                 + "; "
