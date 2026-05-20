@@ -1,0 +1,33 @@
+ZKDLGATCPUFORMAL
+version=1
+dataset=ppi
+backend=cpu_only_host_fr_g1_commitment
+relation_scope=hidden_layer0_head0_sparse_softmax_partial
+node_count=56944
+edge_count=850576
+padded_node_count=65536
+padded_edge_count=1048576
+commitment_block_size=64
+topology_hash=11025618763431202790
+source_sparse_routing_status=PASS
+destination_sparse_routing_status=PASS
+grouped_sum_status=PASS
+denominator_grouped_sum_status=PASS
+inverse_status=PASS
+inverse_destination_routing_status=PASS
+alpha_from_inverse_status=PASS
+alpha_times_denominator_status=PASS
+weighted_aggregation_status=NOT_RUN_CPU_EXTENSION
+available_feature_columns=8
+verified_feature_columns=0
+proof_size_bytes=107739
+relation_details=8
+source_sparse_routing status=PASS digest=bb8ca00a84e4d860
+destination_sparse_routing status=PASS digest=fe15f6194e736f0a
+grouped_sum_by_dst status=PASS digest=48157918aa01acd6
+denominator_grouped_sum status=PASS digest=f6e92da087b70e0f
+inverse_denominator_times_inverse status=PASS digest=eee297f0c8a6a66a
+inverse_destination_routing status=PASS digest=719174be4623645b
+alpha_from_inverse status=PASS digest=a2d36eb5eb393a86
+alpha_times_denominator status=PASS digest=6fab4b0551f736d3
+说明=CPU proof artifact 只包含 relation metadata、证明大小和 transcript 摘要；不包含完整 witness、完整 tensor 或 debug dump。

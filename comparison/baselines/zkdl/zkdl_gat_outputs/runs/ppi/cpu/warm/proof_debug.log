@@ -1,0 +1,13 @@
+dataset=ppi device=cpu status=partial_formal official=blocked
+backend=cpu_only_host_fr_g1_commitment
+nodes=56944 edges=850576 topology_hash=11025618763431202790 commitment_block_size=64
+commitment_ms=135072.048 prove_ms=10937.069 verify_ms=156433.656 proof_size_bytes=107739
+source_sparse_routing status=PASS digest=bb8ca00a84e4d860
+destination_sparse_routing status=PASS digest=fe15f6194e736f0a
+grouped_sum_by_dst status=PASS digest=48157918aa01acd6
+denominator_grouped_sum status=PASS digest=f6e92da087b70e0f
+inverse_denominator_times_inverse status=PASS digest=eee297f0c8a6a66a
+inverse_destination_routing status=PASS digest=719174be4623645b
+alpha_from_inverse status=PASS digest=a2d36eb5eb393a86
+alpha_times_denominator status=PASS digest=6fab4b0551f736d3
+note=CPU relation-level partial formal 仅用于调试结果表；不是 official Level A

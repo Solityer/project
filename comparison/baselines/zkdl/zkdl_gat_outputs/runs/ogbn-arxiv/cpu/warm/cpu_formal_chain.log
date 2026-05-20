@@ -5,5 +5,5 @@ cpu_formal_chain dataset=ogbn-arxiv full_dataset=true normalized_nodes=169343 no
 cpu_formal_chain dataset=ogbn-arxiv stage=load_model
 cpu_formal_chain dataset=ogbn-arxiv model=gat_family_L2_hid1x8_kout1_c40 L=2 K_out=1 C=40
 cpu_formal_chain dataset=ogbn-arxiv stage=cpu_forward_trace
-cpu_formal_chain dataset=ogbn-arxiv cpu_forward_ms=90.349 stage=cpu_relation_prove_verify
-cpu_formal_chain dataset=ogbn-arxiv status=FAILED_WITH_EVIDENCE timeout_seconds=240
+cpu_formal_chain dataset=ogbn-arxiv cpu_forward_ms=87.505 stage=cpu_relation_prove_verify
+cpu_formal_chain dataset=ogbn-arxiv status=PARTIAL_FORMAL backend=cpu_only_host_fr_g1_commitment commitment_ms=204663.149 prove_ms=19975.321 verify_ms=253820.006 proof_size_bytes=110936 artifact=/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/ogbn-arxiv/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt

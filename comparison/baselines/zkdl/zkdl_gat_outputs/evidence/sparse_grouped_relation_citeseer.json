@@ -10,11 +10,10 @@
   "source_sparse_routing": "PASS",
   "destination_sparse_routing": "PASS",
   "grouped_sum_by_dst": "PASS",
-  "commitment_time_ms": "159.714",
-  "prove_time_ms": "924.190",
-  "verify_time_ms": "586.782",
+  "commitment_time_ms": "929.100",
+  "prove_time_ms": "4482.501",
+  "verify_time_ms": "592.356",
   "proof_size_bytes": "26921",
   "proof_path": "/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/citeseer/gpu/warm/formal_artifacts/zkdl_sparse_grouped_relations.proof.txt",
-  "note": "一维 grouped sum 使用 hidden layer0 head0 的 source attention edge 值作为输入；它证明 grouped sum gadget 本身，不等同于 softmax denominator 或 weighted aggregation。",
-  "device": "gpu"
+  "note": "一维 grouped sum 使用 hidden layer0 head0 的 source attention edge 值作为输入；它证明 grouped sum gadget 本身，不等同于 softmax denominator 或 weighted aggregation。"
 }

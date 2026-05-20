@@ -1,11 +1,13 @@
 {
+  "generated_at": "2026-05-20T07:33:27.335652+00:00",
   "device": "gpu",
+  "benchmark_mode": "warm",
   "policy": "只有 full dataset + complete proof generation + complete verification 才能写 official 四项。",
   "rows": [
     {
       "dataset": "cora",
       "status": "blocked",
-      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped、denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation partial formal evidence，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding public contract 与完整 verifier；official 四项保持 NA。",
+      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped partial formal evidence；denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation 覆盖范围以 formal_partial_debug 和 coverage_matrix 为准，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding public contract 与完整 verifier；official 四项保持 NA。",
       "benchmark_mode": "warm",
       "commitment_time_ms": "NA",
       "prove_time_ms": "NA",
@@ -15,7 +17,7 @@
     {
       "dataset": "citeseer",
       "status": "blocked",
-      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped、denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation partial formal evidence，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding public contract 与完整 verifier；official 四项保持 NA。",
+      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped partial formal evidence；denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation 覆盖范围以 formal_partial_debug 和 coverage_matrix 为准，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding public contract 与完整 verifier；official 四项保持 NA。",
       "benchmark_mode": "warm",
       "commitment_time_ms": "NA",
       "prove_time_ms": "NA",
@@ -25,7 +27,7 @@
     {
       "dataset": "pubmed",
       "status": "blocked",
-      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped、denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation partial formal evidence，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding public contract 与完整 verifier；official 四项保持 NA。",
+      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped partial formal evidence；denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation 覆盖范围以 formal_partial_debug 和 coverage_matrix 为准，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding public contract 与完整 verifier；official 四项保持 NA。",
       "benchmark_mode": "warm",
       "commitment_time_ms": "NA",
       "prove_time_ms": "NA",
@@ -35,7 +37,7 @@
     {
       "dataset": "ppi",
       "status": "blocked",
-      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped、denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation partial formal evidence，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding public contract 与完整 verifier；official 四项保持 NA。",
+      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped partial formal evidence；denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation 覆盖范围以 formal_partial_debug 和 coverage_matrix 为准，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding public contract 与完整 verifier；official 四项保持 NA。",
       "benchmark_mode": "warm",
       "commitment_time_ms": "NA",
       "prove_time_ms": "NA",
@@ -45,7 +47,7 @@
     {
       "dataset": "ogbn-arxiv",
       "status": "blocked",
-      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped、denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation partial formal evidence，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding public contract 与完整 verifier；official 四项保持 NA。",
+      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped partial formal evidence；denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation 覆盖范围以 formal_partial_debug 和 coverage_matrix 为准，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding public contract 与完整 verifier；official 四项保持 NA。",
       "benchmark_mode": "warm",
       "commitment_time_ms": "NA",
       "prove_time_ms": "NA",

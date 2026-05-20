@@ -3,9 +3,9 @@
 ## CPU
 - `cora`: `partial_formal`
 - `citeseer`: `partial_formal`
-- `pubmed`: `failed_with_evidence`
-- `ppi`: `failed_with_evidence`
-- `ogbn-arxiv`: `failed_with_evidence`
+- `pubmed`: `partial_formal`
+- `ppi`: `partial_formal`
+- `ogbn-arxiv`: `partial_formal`
 
 ## GPU
 - `cora`: `partial_formal`

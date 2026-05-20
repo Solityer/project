@@ -1,4 +1,6 @@
-dataset=pubmed device=gpu status=partial_formal official=blocked
-stage=formal_sparse_grouped status=PASS nodes=19717 edges=108365 commitment_ms=2057.175 prove_ms=1382.246 verify_ms=6988.849 proof_size_bytes=28919
-stage=formal_softmax_aggregation status=PASS nodes=19717 edges=108365 features=8/8 commitment_ms=11304.127 prove_ms=12535.613 verify_ms=35135.303 proof_size_bytes=1447807
-note=partial_formal_only_not_official_gpu_proof
+dataset=pubmed stage=formal_sparse_grouped status=PASS
+nodes=19717 edges=108365 topology_hash=15839030271933821924 commitment_block_size=64
+source_sparse_routing_digest=9c156b2d48c2cc3c
+destination_sparse_routing_digest=d44f5a7893824c53
+grouped_sum_digest=4a8d17736fcc311e
+commitment_ms=9428.435 prove_ms=5473.266 verify_ms=6266.863 proof_size_bytes=28919

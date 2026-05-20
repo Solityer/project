@@ -16,6 +16,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -29,13 +30,16 @@ namespace {
 
 #include "gat_modules/common.cuh"
 #include "gat_modules/data_cache.cuh"
+#include "gat_modules/experiment_specs.cuh"
 #include "gat_modules/model_bundle.cuh"
 #include "gat_modules/cpu_forward.cuh"
 #include "gat_modules/gpu_forward.cuh"
 #include "gat_modules/formal_common.cuh"
 #include "gat_modules/formal_sparse_utils.cuh"
 #include "gat_modules/cpu_formal_backend.cuh"
+#include "gat_modules/cpu_formal_runner.cuh"
 #include "gat_modules/formal_softmax_runners.cuh"
+#include "gat_modules/gpu_formal_runner.cuh"
 #include "gat_modules/run_dispatch.cuh"
 
 } // namespace
@@ -87,66 +91,24 @@ int main(int argc, char** argv) {
         }
         ensure_dir(output_root);
 
-        const std::vector<DatasetRunSpec> specs = {
-            {"cora", "cora", "cora_gat", "cora_full.cfg", "transductive_node_classification", "node", "whole_graph_single", 1, 12},
-            {"citeseer", "citeseer", "citeseer_gat", "citeseer_full.cfg", "transductive_node_classification", "node", "whole_graph_single", 1, 12},
-            {"pubmed", "pubmed", "pubmed_gat", "pubmed_full.cfg", "transductive_node_classification", "node", "whole_graph_single", 1, 12},
-            {"ppi", "ppi", "ppi_gat", "ppi_batch_formal.cfg", "inductive_multi_graph_node_classification", "graph", "multi_graph_batch", 295, 12},
-            {"ogbn-arxiv", "ogbn_arxiv", "ogbn_arxiv_gat", "ogbn_arxiv_full.cfg", "transductive_node_classification", "node", "whole_graph_single", 1, 12},
-        };
+        const auto specs = default_dataset_run_specs();
 
         if (formal_cpu_chain) {
-            if (only_dataset.empty()) {
-                throw std::runtime_error("--formal-cpu-chain requires --dataset");
-            }
-            bool found = false;
-            for (const auto& spec : specs) {
-                if (spec.dataset != only_dataset) {
-                    continue;
-                }
-                found = true;
-                run_cpu_formal_chain(project_root, output_root, spec);
-            }
-            if (!found) {
-                throw std::runtime_error("unknown dataset for CPU formal chain: " + only_dataset);
-            }
+            run_selected_cpu_formal_chain(
+                project_root, output_root, specs, only_dataset, formal_commitment_block_size);
             return 0;
         }
 
         if (formal_sparse_grouped) {
-            if (only_dataset.empty()) {
-                throw std::runtime_error("--formal-sparse-grouped requires --dataset");
-            }
-            bool found = false;
-            for (const auto& spec : specs) {
-                if (spec.dataset != only_dataset) {
-                    continue;
-                }
-                found = true;
-                run_formal_sparse_grouped_gadget(project_root, output_root, spec, formal_commitment_block_size);
-            }
-            if (!found) {
-                throw std::runtime_error("unknown dataset for formal sparse grouped gadget: " + only_dataset);
-            }
+            run_selected_sparse_grouped(
+                project_root, output_root, specs, only_dataset, formal_commitment_block_size);
             return 0;
         }
 
         if (formal_softmax_aggregation) {
-            if (only_dataset.empty()) {
-                throw std::runtime_error("--formal-softmax-aggregation requires --dataset");
-            }
-            bool found = false;
-            for (const auto& spec : specs) {
-                if (spec.dataset != only_dataset) {
-                    continue;
-                }
-                found = true;
-                run_formal_softmax_aggregation_gadget(
-                    project_root, output_root, spec, softmax_max_feature_columns, formal_commitment_block_size);
-            }
-            if (!found) {
-                throw std::runtime_error("unknown dataset for formal softmax aggregation gadget: " + only_dataset);
-            }
+            run_selected_softmax_aggregation(
+                project_root, output_root, specs, only_dataset,
+                softmax_max_feature_columns, formal_commitment_block_size);
             return 0;
         }
 

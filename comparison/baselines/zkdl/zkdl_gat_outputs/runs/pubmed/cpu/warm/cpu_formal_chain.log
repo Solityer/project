@@ -5,5 +5,5 @@ cpu_formal_chain dataset=pubmed full_dataset=true normalized_nodes=19717 normali
 cpu_formal_chain dataset=pubmed stage=load_model
 cpu_formal_chain dataset=pubmed model=gat_family_L2_hid8x8_kout1_c3 L=2 K_out=1 C=3
 cpu_formal_chain dataset=pubmed stage=cpu_forward_trace
-cpu_formal_chain dataset=pubmed cpu_forward_ms=50.874 stage=cpu_relation_prove_verify
-cpu_formal_chain dataset=pubmed status=FAILED_WITH_EVIDENCE timeout_seconds=240
+cpu_formal_chain dataset=pubmed cpu_forward_ms=41.400 stage=cpu_relation_prove_verify
+cpu_formal_chain dataset=pubmed status=PARTIAL_FORMAL backend=cpu_only_host_fr_g1_commitment commitment_ms=32144.253 prove_ms=5332.132 verify_ms=22419.162 proof_size_bytes=103596 artifact=/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/pubmed/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt
