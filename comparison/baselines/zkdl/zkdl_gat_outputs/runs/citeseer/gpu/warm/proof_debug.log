@@ -1,4 +1,9 @@
-dataset=citeseer device=gpu status=partial_formal official=blocked
-stage=formal_sparse_grouped status=PASS nodes=3327 edges=12431 commitment_ms=159.714 prove_ms=924.190 verify_ms=586.782 proof_size_bytes=26921
-stage=formal_softmax_aggregation status=PASS nodes=3327 edges=12431 features=8/8 commitment_ms=1422.316 prove_ms=8429.009 verify_ms=4301.289 proof_size_bytes=280325
-note=partial_formal_only_not_official_gpu_proof
+dataset=citeseer stage=formal_sparse_grouped status=PASS
+nodes=3327 edges=12431 topology_hash=15417799544957100067 commitment_block_size=64
+source_sparse_routing_digest=26fe3aa4c51ea627
+destination_sparse_routing_digest=edce85a4e499752d
+grouped_sum_digest=6107881510e8069d
+commitment_ms=929.100 prove_ms=4482.501 verify_ms=592.356 proof_size_bytes=26921
+dataset=citeseer stage=formal_softmax_aggregation status=PASS
+nodes=3327 edges=12431 topology_hash=15417799544957100067 commitment_block_size=64 feature_columns=8 available_feature_columns=8 verified_feature_columns=8
+commitment_ms=7475.191 prove_ms=28725.840 verify_ms=4302.137 proof_size_bytes=280325

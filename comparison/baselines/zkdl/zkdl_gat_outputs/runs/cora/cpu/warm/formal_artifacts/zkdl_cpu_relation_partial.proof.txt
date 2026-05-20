@@ -7,7 +7,7 @@ node_count=2708
 edge_count=13264
 padded_node_count=4096
 padded_edge_count=16384
-commitment_block_size=1
+commitment_block_size=64
 topology_hash=10841621610450798504
 source_sparse_routing_status=PASS
 destination_sparse_routing_status=PASS
@@ -20,14 +20,14 @@ alpha_times_denominator_status=PASS
 weighted_aggregation_status=NOT_RUN_CPU_EXTENSION
 available_feature_columns=8
 verified_feature_columns=0
-proof_size_bytes=35190
+proof_size_bytes=97398
 relation_details=8
-source_sparse_routing status=PASS digest=4a7e6e531d7037b1
-destination_sparse_routing status=PASS digest=25f16dc4a125e733
-grouped_sum_by_dst status=PASS digest=cf38dab878fde986
-denominator_grouped_sum status=PASS digest=bf0f13eff8c5e247
-inverse_denominator_times_inverse status=PASS digest=32fc9135981d0252
-inverse_destination_routing status=PASS digest=5f8e99a0520cdd0c
-alpha_from_inverse status=PASS digest=8648525303f53c63
-alpha_times_denominator status=PASS digest=7f84c9b5c09b3e74
+source_sparse_routing status=PASS digest=4ac9eac19b3a1610
+destination_sparse_routing status=PASS digest=5d9ffeab71eca52d
+grouped_sum_by_dst status=PASS digest=c4e2e186b1fb9ab8
+denominator_grouped_sum status=PASS digest=be3848fb4f0c15f0
+inverse_denominator_times_inverse status=PASS digest=9986ec2475687c9a
+inverse_destination_routing status=PASS digest=1132dc07e4e14b1c
+alpha_from_inverse status=PASS digest=d18b3f44b3fdd584
+alpha_times_denominator status=PASS digest=f2666603251a8f7e
 说明=CPU proof artifact 只包含 relation metadata、证明大小和 transcript 摘要；不包含完整 witness、完整 tensor 或 debug dump。

@@ -1,4 +1,9 @@
-dataset=ogbn-arxiv device=gpu status=partial_formal official=blocked
-stage=formal_sparse_grouped status=PASS nodes=169343 edges=1335586 commitment_ms=23067.313 prove_ms=6871.957 verify_ms=83059.013 proof_size_bytes=31259
-stage=formal_softmax_aggregation status=PASS nodes=169343 edges=1335586 features=8/8 commitment_ms=162922.338 prove_ms=75629.638 verify_ms=406350.312 proof_size_bytes=20182539
-note=partial_formal_only_not_official_gpu_proof
+dataset=ogbn-arxiv stage=formal_sparse_grouped status=PASS
+nodes=169343 edges=1335586 topology_hash=16665990528860688949 commitment_block_size=64
+source_sparse_routing_digest=96fd4c388ffe0a01
+destination_sparse_routing_digest=44aee4e674a22e7a
+grouped_sum_digest=e1632861e04b804f
+commitment_ms=486287.390 prove_ms=11760.666 verify_ms=77503.553 proof_size_bytes=31259
+dataset=ogbn-arxiv stage=formal_softmax_aggregation status=PASS
+nodes=169343 edges=1335586 topology_hash=16665990528860688949 commitment_block_size=64 feature_columns=8 available_feature_columns=8 verified_feature_columns=8
+commitment_ms=469713.320 prove_ms=244258.399 verify_ms=379556.313 proof_size_bytes=20182539

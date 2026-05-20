@@ -1,4 +1,9 @@
-dataset=ppi device=gpu status=partial_formal official=blocked
-stage=formal_sparse_grouped status=PASS nodes=56944 edges=850576 commitment_ms=8091.479 prove_ms=4329.571 verify_ms=49075.976 proof_size_bytes=30140
-stage=formal_softmax_aggregation status=PASS nodes=56944 edges=850576 features=8/8 commitment_ms=80826.597 prove_ms=43087.596 verify_ms=261444.942 proof_size_bytes=9857494
-note=partial_formal_only_not_official_gpu_proof
+dataset=ppi stage=formal_sparse_grouped status=PASS
+nodes=56944 edges=850576 topology_hash=11025618763431202790 commitment_block_size=64
+source_sparse_routing_digest=9dec56bad29cff3a
+destination_sparse_routing_digest=1e2f336c1dce21b2
+grouped_sum_digest=b2915d920aa40884
+commitment_ms=42291.791 prove_ms=8290.002 verify_ms=43579.890 proof_size_bytes=30140
+dataset=ppi stage=formal_softmax_aggregation status=PASS
+nodes=56944 edges=850576 topology_hash=11025618763431202790 commitment_block_size=64 feature_columns=8 available_feature_columns=8 verified_feature_columns=8
+commitment_ms=426986.467 prove_ms=144403.083 verify_ms=245572.799 proof_size_bytes=9857494

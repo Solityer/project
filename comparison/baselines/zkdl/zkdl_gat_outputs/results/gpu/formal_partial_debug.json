@@ -7,9 +7,9 @@
       "status": "partial_formal",
       "blocker": "gpu_partial_formal_relation_only_not_full_gat",
       "benchmark_mode": "gpu_formal_relation_proof_verify_host_verifier",
-      "commitment_time_ms": "1507.717",
-      "prove_time_ms": "8244.618",
-      "verify_time_ms": "4734.040",
+      "commitment_time_ms": "7178.602",
+      "prove_time_ms": "28708.574",
+      "verify_time_ms": "4510.607",
       "proof_size_bytes": "280185",
       "total_chunks": "13",
       "verified_chunks": "13",
@@ -18,7 +18,7 @@
       "proof_artifact_paths": "zkdl_gat_outputs/runs/cora/gpu/warm/formal_artifacts/zkdl_softmax_aggregation_relations.proof.txt",
       "evidence_paths": "zkdl_gat_outputs/evidence/softmax_aggregation_relation_cora.json",
       "resume_point": "zkdl_gat_outputs/runs/cora/gpu/warm/RESUME_POINT.md",
-      "note": "GPU prover 使用 CUDA Fr/G1 commitment/opening；当前 verifier 在 host 重放，不能写成 GPU official verifier。"
+      "note": "GPU prover 使用 CUDA Fr/G1 commitment/opening；当前 verifier 在 host 重放。该行只描述当前 artifact 覆盖范围，不能写成 GPU official verifier。"
     },
     {
       "dataset": "citeseer",
@@ -26,9 +26,9 @@
       "status": "partial_formal",
       "blocker": "gpu_partial_formal_relation_only_not_full_gat",
       "benchmark_mode": "gpu_formal_relation_proof_verify_host_verifier",
-      "commitment_time_ms": "1422.316",
-      "prove_time_ms": "8429.009",
-      "verify_time_ms": "4301.289",
+      "commitment_time_ms": "7475.191",
+      "prove_time_ms": "28725.840",
+      "verify_time_ms": "4302.137",
       "proof_size_bytes": "280325",
       "total_chunks": "13",
       "verified_chunks": "13",
@@ -37,26 +37,26 @@
       "proof_artifact_paths": "zkdl_gat_outputs/runs/citeseer/gpu/warm/formal_artifacts/zkdl_softmax_aggregation_relations.proof.txt",
       "evidence_paths": "zkdl_gat_outputs/evidence/softmax_aggregation_relation_citeseer.json",
       "resume_point": "zkdl_gat_outputs/runs/citeseer/gpu/warm/RESUME_POINT.md",
-      "note": "GPU prover 使用 CUDA Fr/G1 commitment/opening；当前 verifier 在 host 重放，不能写成 GPU official verifier。"
+      "note": "GPU prover 使用 CUDA Fr/G1 commitment/opening；当前 verifier 在 host 重放。该行只描述当前 artifact 覆盖范围，不能写成 GPU official verifier。"
     },
     {
       "dataset": "pubmed",
-      "component": "gpu_sparse_softmax_aggregation_hidden_layer0_head0_full_graph",
+      "component": "gpu_sparse_grouped_hidden_layer0_head0_full_graph",
       "status": "partial_formal",
       "blocker": "gpu_partial_formal_relation_only_not_full_gat",
       "benchmark_mode": "gpu_formal_relation_proof_verify_host_verifier",
-      "commitment_time_ms": "11304.127",
-      "prove_time_ms": "12535.613",
-      "verify_time_ms": "35135.303",
-      "proof_size_bytes": "1447807",
-      "total_chunks": "13",
-      "verified_chunks": "13",
-      "verified_relations": "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof;denominator GroupedSumRelationProof;inverse HadamardRelationProof;inverse SparseDestinationRoutingRelationProof;alpha HadamardRelationProof;multi-column weighted aggregation relation",
+      "commitment_time_ms": "9428.435",
+      "prove_time_ms": "5473.266",
+      "verify_time_ms": "6266.863",
+      "proof_size_bytes": "28919",
+      "total_chunks": "3",
+      "verified_chunks": "3",
+      "verified_relations": "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof",
       "blocked_relations": "target-node max/shift; ExpMap lookup/range table; LeakyReLU/ELU lookup-range table; all-layer/all-head runner; output attention aggregation; output bias/average binding; real rescale chain; rounding sign/tie-breaking public contract",
-      "proof_artifact_paths": "zkdl_gat_outputs/runs/pubmed/gpu/warm/formal_artifacts/zkdl_softmax_aggregation_relations.proof.txt",
-      "evidence_paths": "zkdl_gat_outputs/evidence/softmax_aggregation_relation_pubmed.json",
+      "proof_artifact_paths": "zkdl_gat_outputs/runs/pubmed/gpu/warm/formal_artifacts/zkdl_sparse_grouped_relations.proof.txt",
+      "evidence_paths": "zkdl_gat_outputs/evidence/sparse_grouped_relation_pubmed.json",
       "resume_point": "zkdl_gat_outputs/runs/pubmed/gpu/warm/RESUME_POINT.md",
-      "note": "GPU prover 使用 CUDA Fr/G1 commitment/opening；当前 verifier 在 host 重放，不能写成 GPU official verifier。"
+      "note": "GPU prover 使用 CUDA Fr/G1 commitment/opening；当前 verifier 在 host 重放。该行只描述当前 artifact 覆盖范围，不能写成 GPU official verifier。"
     },
     {
       "dataset": "ppi",
@@ -64,9 +64,9 @@
       "status": "partial_formal",
       "blocker": "gpu_partial_formal_relation_only_not_full_gat",
       "benchmark_mode": "gpu_formal_relation_proof_verify_host_verifier",
-      "commitment_time_ms": "80826.597",
-      "prove_time_ms": "43087.596",
-      "verify_time_ms": "261444.942",
+      "commitment_time_ms": "426986.467",
+      "prove_time_ms": "144403.083",
+      "verify_time_ms": "245572.799",
       "proof_size_bytes": "9857494",
       "total_chunks": "13",
       "verified_chunks": "13",
@@ -75,7 +75,7 @@
       "proof_artifact_paths": "zkdl_gat_outputs/runs/ppi/gpu/warm/formal_artifacts/zkdl_softmax_aggregation_relations.proof.txt",
       "evidence_paths": "zkdl_gat_outputs/evidence/softmax_aggregation_relation_ppi.json",
       "resume_point": "zkdl_gat_outputs/runs/ppi/gpu/warm/RESUME_POINT.md",
-      "note": "GPU prover 使用 CUDA Fr/G1 commitment/opening；当前 verifier 在 host 重放，不能写成 GPU official verifier。"
+      "note": "GPU prover 使用 CUDA Fr/G1 commitment/opening；当前 verifier 在 host 重放。该行只描述当前 artifact 覆盖范围，不能写成 GPU official verifier。"
     },
     {
       "dataset": "ogbn-arxiv",
@@ -83,9 +83,9 @@
       "status": "partial_formal",
       "blocker": "gpu_partial_formal_relation_only_not_full_gat",
       "benchmark_mode": "gpu_formal_relation_proof_verify_host_verifier",
-      "commitment_time_ms": "162922.338",
-      "prove_time_ms": "75629.638",
-      "verify_time_ms": "406350.312",
+      "commitment_time_ms": "469713.320",
+      "prove_time_ms": "244258.399",
+      "verify_time_ms": "379556.313",
       "proof_size_bytes": "20182539",
       "total_chunks": "13",
       "verified_chunks": "13",
@@ -94,7 +94,7 @@
       "proof_artifact_paths": "zkdl_gat_outputs/runs/ogbn-arxiv/gpu/warm/formal_artifacts/zkdl_softmax_aggregation_relations.proof.txt",
       "evidence_paths": "zkdl_gat_outputs/evidence/softmax_aggregation_relation_ogbn-arxiv.json",
       "resume_point": "zkdl_gat_outputs/runs/ogbn-arxiv/gpu/warm/RESUME_POINT.md",
-      "note": "GPU prover 使用 CUDA Fr/G1 commitment/opening；当前 verifier 在 host 重放，不能写成 GPU official verifier。"
+      "note": "GPU prover 使用 CUDA Fr/G1 commitment/opening；当前 verifier 在 host 重放。该行只描述当前 artifact 覆盖范围，不能写成 GPU official verifier。"
     }
   ]
 }

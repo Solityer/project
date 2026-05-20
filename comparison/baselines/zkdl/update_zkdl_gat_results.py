@@ -6,6 +6,7 @@ from __future__ import annotations
 import csv
 import json
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -61,7 +62,8 @@ DEBUG_COLUMNS = [
 
 GPU_OFFICIAL_BLOCKER = (
     "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、"
-    "sparse/grouped、denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation partial formal evidence，"
+    "sparse/grouped partial formal evidence；denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation "
+    "覆盖范围以 formal_partial_debug 和 coverage_matrix 为准，"
     "但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、"
     "target-node max/shift、real rescale/rounding public contract 与完整 verifier；official 四项保持 NA。"
 )
@@ -88,6 +90,9 @@ GPU_VERIFIED_RELATIONS = (
     "inverse HadamardRelationProof;inverse SparseDestinationRoutingRelationProof;"
     "alpha HadamardRelationProof;multi-column weighted aggregation relation"
 )
+GPU_SPARSE_VERIFIED_RELATIONS = (
+    "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof"
+)
 
 
 def rel(path: Path) -> str:
@@ -107,6 +112,16 @@ def read_json(path: Path) -> dict[str, str]:
     if not isinstance(data, dict):
         return {}
     return {str(key): str(value) for key, value in data.items()}
+
+
+def read_json_object(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def read_keyvals(path: Path) -> dict[str, str]:
@@ -161,6 +176,11 @@ def cpu_timeout(dataset: str) -> Path:
 
 def cpu_log(dataset: str) -> Path:
     return cpu_run_dir(dataset) / "cpu_formal_chain.log"
+
+
+def official_manifest(device: str, dataset: str) -> Path:
+    run_dir = cpu_run_dir(dataset) if device == "cpu" else gpu_run_dir(dataset)
+    return run_dir / "run_manifest.json"
 
 
 def gpu_proof(dataset: str, kind: str) -> Path:
@@ -286,10 +306,41 @@ def all_statuses() -> dict[str, dict[str, dict[str, str]]]:
     }
 
 
+def official_row_from_manifest(device: str, dataset: str) -> dict[str, object] | None:
+    manifest = read_json_object(official_manifest(device, dataset))
+    if not manifest:
+        return None
+    if str(manifest.get("benchmark_mode", "")) != "warm":
+        return None
+    if str(manifest.get("status", "")).lower() not in {"ok", "verify_ok"}:
+        return None
+    if str(manifest.get("is_full_dataset", "")).lower() != "true":
+        return None
+    if str(manifest.get("verified", "")).lower() != "true":
+        return None
+    if str(manifest.get("proof_scope", "")) != "zkdl_gat_full":
+        return None
+    return {
+        "dataset": dataset,
+        "status": "ok",
+        "blocker": "",
+        "benchmark_mode": "warm",
+        "commitment_time_ms": manifest.get("commitment_time_ms", "NA"),
+        "prove_time_ms": manifest.get("prove_time_ms", "NA"),
+        "verify_time_ms": manifest.get("verify_time_ms", "NA"),
+        "proof_size_bytes": manifest.get("proof_size_bytes", "NA"),
+    }
+
+
 def official_rows(device: str) -> list[dict[str, object]]:
     blocker = CPU_OFFICIAL_BLOCKER if device == "cpu" else GPU_OFFICIAL_BLOCKER
-    return [
-        {
+    rows: list[dict[str, object]] = []
+    for dataset in DATASETS:
+        official = official_row_from_manifest(device, dataset)
+        if official is not None:
+            rows.append(official)
+        else:
+            rows.append({
             "dataset": dataset,
             "status": "blocked",
             "blocker": blocker,
@@ -298,9 +349,16 @@ def official_rows(device: str) -> list[dict[str, object]]:
             "prove_time_ms": "NA",
             "verify_time_ms": "NA",
             "proof_size_bytes": "NA",
-        }
-        for dataset in DATASETS
-    ]
+            })
+    return rows
+
+
+def status_label(status: object) -> str:
+    if str(status) == "ok":
+        return "已完成"
+    if str(status) == "blocked":
+        return "阻塞"
+    return str(status)
 
 
 def write_latest_and_summary(statuses: dict[str, dict[str, dict[str, str]]]) -> None:
@@ -311,22 +369,24 @@ def write_latest_and_summary(statuses: dict[str, dict[str, dict[str, str]]]) -> 
         write_json(
             RESULTS / device / "latest.json",
             {
+                "generated_at": datetime.now(timezone.utc).isoformat(),
                 "device": device,
+                "benchmark_mode": "warm",
                 "policy": "只有 full dataset + complete proof generation + complete verification 才能写 official 四项。",
                 "rows": rows,
             },
         )
         lines = [
-            f"# zkDL-GAT {device.upper()} latest official",
+            "# 最新正式结果",
             "",
-            "当前没有 Level A official 行；partial/debug 数字不进入 official latest。",
+            f"device: `{device}`；partial/debug 数字不进入 official latest。",
             "",
-            "| dataset | status | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes | blocker |",
+            "| 数据集 | 状态 | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes | 阻塞说明 |",
             "| --- | --- | ---: | ---: | ---: | ---: | --- |",
         ]
         for row in rows:
             lines.append(
-                f"| {row['dataset']} | {row['status']} | {row['commitment_time_ms']} | "
+                f"| {row['dataset']} | {status_label(row['status'])} | {row['commitment_time_ms']} | "
                 f"{row['prove_time_ms']} | {row['verify_time_ms']} | {row['proof_size_bytes']} | {row['blocker']} |"
             )
             aggregate.append({"device": device, **row})
@@ -346,11 +406,14 @@ def write_latest_and_summary(statuses: dict[str, dict[str, dict[str, str]]]) -> 
         (RESULTS / device / "summary.md").parent.mkdir(parents=True, exist_ok=True)
         (RESULTS / device / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     write_csv(RESULTS / "latest.csv", ["device", *OFFICIAL_COLUMNS], aggregate)
-    write_json(RESULTS / "latest.json", {"rows": aggregate})
+    write_json(
+        RESULTS / "latest.json",
+        {"generated_at": datetime.now(timezone.utc).isoformat(), "benchmark_mode": "warm", "rows": aggregate},
+    )
     summary = [
-        "# zkDL-GAT latest official summary",
+        "# 最新正式结果",
         "",
-        "CPU/GPU official 均为 blocked + NA；原因是还没有完整 GAT proof generation + complete verification。",
+        "CPU/GPU 分表见 `results/cpu/summary.md` 与 `results/gpu/summary.md`。",
         "五个全量数据集 cora、citeseer、pubmed、ppi、ogbn-arxiv 均保留单独状态，不能用前三个数据集替代。",
     ]
     (RESULTS / "summary.md").write_text("\n".join(summary) + "\n", encoding="utf-8")
@@ -400,11 +463,13 @@ def formal_row_for_cpu(dataset: str, state: dict[str, str]) -> dict[str, object]
 
 def formal_row_for_gpu(dataset: str, state: dict[str, str]) -> dict[str, object]:
     if state.get("status") == "partial_formal":
-        total = "13" if state.get("weighted_aggregation") == "PASS" else "3"
+        has_weighted = state.get("weighted_aggregation") == "PASS"
+        total = "13" if has_weighted else "3"
         verified = total
         return {
             "dataset": dataset,
-            "component": "gpu_sparse_softmax_aggregation_hidden_layer0_head0_full_graph",
+            "component": "gpu_sparse_softmax_aggregation_hidden_layer0_head0_full_graph"
+            if has_weighted else "gpu_sparse_grouped_hidden_layer0_head0_full_graph",
             "status": "partial_formal",
             "blocker": "gpu_partial_formal_relation_only_not_full_gat",
             "benchmark_mode": "gpu_formal_relation_proof_verify_host_verifier",
@@ -414,12 +479,12 @@ def formal_row_for_gpu(dataset: str, state: dict[str, str]) -> dict[str, object]
             "proof_size_bytes": state.get("proof_size_bytes", "NA"),
             "total_chunks": total,
             "verified_chunks": verified,
-            "verified_relations": GPU_VERIFIED_RELATIONS,
+            "verified_relations": GPU_VERIFIED_RELATIONS if has_weighted else GPU_SPARSE_VERIFIED_RELATIONS,
             "blocked_relations": PARTIAL_BLOCKED,
             "proof_artifact_paths": state.get("proof_path", ""),
             "evidence_paths": state.get("evidence_path", ""),
             "resume_point": rel(gpu_run_dir(dataset) / "RESUME_POINT.md"),
-            "note": "GPU prover 使用 CUDA Fr/G1 commitment/opening；当前 verifier 在 host 重放，不能写成 GPU official verifier。",
+            "note": "GPU prover 使用 CUDA Fr/G1 commitment/opening；当前 verifier 在 host 重放。该行只描述当前 artifact 覆盖范围，不能写成 GPU official verifier。",
         }
     return {
         "dataset": dataset,
@@ -483,6 +548,15 @@ def write_debug_level_b() -> None:
 def write_coverage(statuses: dict[str, dict[str, dict[str, str]]]) -> None:
     cpu_partial = sum(1 for dataset in DATASETS if statuses["cpu"][dataset].get("status") == "partial_formal")
     gpu_partial = sum(1 for dataset in DATASETS if statuses["gpu"][dataset].get("status") == "partial_formal")
+    gpu_softmax = sum(
+        1 for dataset in DATASETS
+        if statuses["gpu"][dataset].get("denominator_grouped_sum") == "PASS"
+        and statuses["gpu"][dataset].get("alpha_times_denominator") == "PASS"
+    )
+    gpu_weighted = sum(
+        1 for dataset in DATASETS
+        if statuses["gpu"][dataset].get("weighted_aggregation") == "PASS"
+    )
     cpu_failed = sum(1 for dataset in DATASETS if statuses["cpu"][dataset].get("status") == "failed_with_evidence")
     rows = [
         {
@@ -533,15 +607,15 @@ def write_coverage(statuses: dict[str, dict[str, dict[str, str]]]) -> None:
         {
             "relation_name": "denominator / inverse / alpha",
             "cpu_status": f"partial_formal_{cpu_partial}/5_failed_{cpu_failed}/5",
-            "gpu_status": f"partial_formal_{gpu_partial}/5",
+            "gpu_status": f"partial_formal_{gpu_softmax}/5",
             "total_scope": "hidden layer0/head0 denominator, inverse, alpha consistency",
             "verified_scope": "relation-level",
             "blocker": "softmax max/shift 与 ExpMap lookup/range 未闭合",
-            "cora": True,
-            "citeseer": True,
-            "pubmed": True,
-            "ppi": True,
-            "ogbn_arxiv": True,
+            "cora": statuses["gpu"]["cora"].get("denominator_grouped_sum") == "PASS",
+            "citeseer": statuses["gpu"]["citeseer"].get("denominator_grouped_sum") == "PASS",
+            "pubmed": statuses["gpu"]["pubmed"].get("denominator_grouped_sum") == "PASS",
+            "ppi": statuses["gpu"]["ppi"].get("denominator_grouped_sum") == "PASS",
+            "ogbn_arxiv": statuses["gpu"]["ogbn-arxiv"].get("denominator_grouped_sum") == "PASS",
             "evidence_file": "zkdl_gat_outputs/results/formal_partial_debug.csv",
             "notes": "inverse relation 使用 denom * inv = 1；verifier 不读取 witness。",
         },
@@ -563,15 +637,15 @@ def write_coverage(statuses: dict[str, dict[str, dict[str, str]]]) -> None:
         {
             "relation_name": "weighted aggregation",
             "cpu_status": "blocked",
-            "gpu_status": f"partial_formal_{gpu_partial}/5",
+            "gpu_status": f"partial_formal_{gpu_weighted}/5",
             "total_scope": "hidden layer0/head0",
             "verified_scope": "GPU multi-column relation where artifact exists",
             "blocker": "CPU weighted aggregation 未完成；output aggregation 未完成",
-            "cora": True,
-            "citeseer": True,
-            "pubmed": True,
-            "ppi": True,
-            "ogbn_arxiv": True,
+            "cora": statuses["gpu"]["cora"].get("weighted_aggregation") == "PASS",
+            "citeseer": statuses["gpu"]["citeseer"].get("weighted_aggregation") == "PASS",
+            "pubmed": statuses["gpu"]["pubmed"].get("weighted_aggregation") == "PASS",
+            "ppi": statuses["gpu"]["ppi"].get("weighted_aggregation") == "PASS",
+            "ogbn_arxiv": statuses["gpu"]["ogbn-arxiv"].get("weighted_aggregation") == "PASS",
             "evidence_file": "zkdl_gat_outputs/results/gpu/formal_partial_debug.csv",
             "notes": "GPU partial 不等于 full GAT official。",
         },
@@ -696,8 +770,24 @@ def dataset_status_table(statuses: dict[str, dict[str, dict[str, str]]]) -> list
     return lines
 
 
+def official_status_table() -> list[str]:
+    lines = [
+        "| device | dataset | status | benchmark_mode | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes | blocker |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
+    ]
+    for device in DEVICES:
+        for row in official_rows(device):
+            lines.append(
+                f"| {device} | {row['dataset']} | {row['status']} | {row['benchmark_mode']} | "
+                f"{row['commitment_time_ms']} | {row['prove_time_ms']} | {row['verify_time_ms']} | "
+                f"{row['proof_size_bytes']} | {row['blocker']} |"
+            )
+    return lines
+
+
 def write_readmes(statuses: dict[str, dict[str, dict[str, str]]]) -> None:
     rows = dataset_status_table(statuses)
+    official_rows_text = official_status_table()
     readme = [
         "# zkDL-GAT baseline",
         "",
@@ -724,8 +814,11 @@ def write_readmes(statuses: dict[str, dict[str, dict[str, str]]]) -> None:
         "- GPU forward / trace：`gat_modules/gpu_forward.cuh`。",
         "- CPU formal backend：`gat_modules/cpu_formal_backend.cuh`。",
         "- GPU formal backend：`gat_modules/formal_softmax_runners.cuh`。",
-        "- prover/verifier runner：`gat_modules/run_dispatch.cuh`，`gat_zkdl.cu` 只保留清晰 CLI 入口。",
+        "- CPU formal runner：`gat_modules/cpu_formal_runner.cuh` 调用 CPU-only relation backend。",
+        "- GPU formal runner：`gat_modules/gpu_formal_runner.cuh` 调用 GPU trace 与 relation gadget。",
+        "- CLI 调度：`gat_modules/run_dispatch.cuh` 只做 dataset/device 选择，`gat_zkdl.cu` 只保留薄 CLI 入口。",
         "- result/export/artifact/resume 管理：`update_zkdl_gat_results.py` 从真实 artifact 同源导出。",
+        "- 五数据集调度脚本：`run_zkdl_gat_experiments.py` 负责自测、per-dataset/per-device 执行与 exporter。",
         "- selftest：`formal_opening_selftest.cu`、`formal_sumcheck_selftest.cu`、`formal_relation_selftest.cu`。",
         "",
         "## CPU path",
@@ -748,16 +841,10 @@ def write_readmes(statuses: dict[str, dict[str, dict[str, str]]]) -> None:
         "",
         "```bash",
         "make clean && make all",
-        "./formal_opening_selftest",
-        "./formal_sumcheck_selftest",
-        "./formal_relation_selftest",
-        "for dataset in cora citeseer pubmed ppi ogbn-arxiv; do",
-        "  ./gat_zkdl --formal-cpu-chain --dataset \"$dataset\" --output-root zkdl_gat_outputs",
-        "  ./gat_zkdl --formal-sparse-grouped --dataset \"$dataset\" --output-root zkdl_gat_outputs",
-        "  ./gat_zkdl --formal-softmax-aggregation --dataset \"$dataset\" --output-root zkdl_gat_outputs",
-        "done",
-        "./update_zkdl_gat_results.py",
+        "./run_zkdl_gat_experiments.py --dataset all --device all --output-root zkdl_gat_outputs --commitment-block-size 64",
         "```",
+        "",
+        "也可以按 dataset/device 分阶段执行；任一 dataset/device 失败后，runner 会继续调度剩余项，最后统一导出 result 表。",
         "",
         "## result 文件说明",
         "",
@@ -773,7 +860,7 @@ def write_readmes(statuses: dict[str, dict[str, dict[str, str]]]) -> None:
         "",
         "## partial_formal relation",
         "",
-        "CPU partial formal 覆盖 hidden layer0/head0 sparse + denominator/inverse/alpha。GPU partial formal 覆盖 hidden layer0/head0 sparse + denominator/inverse/alpha + weighted aggregation。lookup/range/max/comparison 已有 selftest 级 tamper rejection，但尚未接入 full GAT table/context。",
+        "CPU partial formal 覆盖 hidden layer0/head0 sparse + denominator/inverse/alpha。GPU partial formal 当前五个数据集都有 sparse/grouped artifact；denominator/inverse/alpha 与 weighted aggregation 覆盖范围以 coverage_matrix 为准。lookup/range/max/comparison 已有 selftest 级 tamper rejection，但尚未接入 full GAT table/context。",
         "",
         "## blocked relation",
         "",
@@ -783,13 +870,17 @@ def write_readmes(statuses: dict[str, dict[str, dict[str, str]]]) -> None:
         "",
         *rows,
         "",
+        "## official 结果表",
+        "",
+        *official_rows_text,
+        "",
         "## CPU 当前状态",
         "",
-        "CPU path 已实现 `--formal-cpu-chain`，并按五个全量数据集逐一尝试。Cora/Citeseer 达到 relation-level `partial_formal`；Pubmed/PPI/ogbn-arxiv 均有各自的 `failed_with_evidence` timeout artifact。CPU official 仍为 NA。",
+        "CPU path 已实现 `--formal-cpu-chain`，并按五个全量数据集逐一运行。当前五个数据集均有 full graph/full edge set 的 relation-level `partial_formal` artifact；CPU official 仍为 NA，因为 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison 接入和 real rescale/rounding 尚未闭合。",
         "",
         "## GPU 当前状态",
         "",
-        "GPU path 已有五个全量数据集的 relation-level `partial_formal` artifact，覆盖 sparse/grouped、denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation。GPU verifier 当前是 host replay，不写成 GPU full verifier；GPU official 仍为 NA。",
+        "GPU path 当前五个全量数据集都有 relation-level `partial_formal` sparse/grouped artifact；cora、citeseer、ppi、ogbn-arxiv 还有 denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation artifact。pubmed 本轮 softmax/aggregation 两次因当前显存占用 OOM，旧 softmax artifact 已移除，只保留本轮 sparse/grouped artifact。GPU verifier 当前是 host replay，不写成 GPU full verifier；GPU official 仍为 NA。",
         "",
         "## Level A 状态",
         "",
@@ -797,7 +888,7 @@ def write_readmes(statuses: dict[str, dict[str, dict[str, str]]]) -> None:
         "",
         "## 已迁移的 proof-system-neutral 优化",
         "",
-        "已迁移或保留：模块化组织、一次加载 dataset/cache/checkpoint、public topology/context 复用、trace 复用、CPU/GPU 分目录、relation-level batch、multi-column grouped sum、compact artifact、proof_size 只统计 proof object、同源导出、五数据集失败不中断的结果口径。",
+        "已迁移或保留：模块化组织、一次加载 dataset/cache/checkpoint、public topology/context 复用、trace 复用、CPU/GPU 分目录、relation-level batch、multi-column grouped sum、CPU commitment block-size 调度、CPU commitment 按行并行与零/一标量跳过、compact artifact、proof_size 只统计 proof object、同源导出、五数据集失败不中断的结果口径。",
         "",
         "## 不能迁移的主仓库优化",
         "",

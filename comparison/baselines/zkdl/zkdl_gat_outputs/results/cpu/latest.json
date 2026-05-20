@@ -1,5 +1,7 @@
 {
+  "generated_at": "2026-05-20T07:33:27.335405+00:00",
   "device": "cpu",
+  "benchmark_mode": "warm",
   "policy": "只有 full dataset + complete proof generation + complete verification 才能写 official 四项。",
   "rows": [
     {

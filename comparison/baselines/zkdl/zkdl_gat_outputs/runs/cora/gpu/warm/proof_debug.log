@@ -1,4 +1,9 @@
-dataset=cora device=gpu status=partial_formal official=blocked
-stage=formal_sparse_grouped status=PASS nodes=2708 edges=13264 commitment_ms=214.651 prove_ms=1058.992 verify_ms=837.638 proof_size_bytes=26885
-stage=formal_softmax_aggregation status=PASS nodes=2708 edges=13264 features=8/8 commitment_ms=1507.717 prove_ms=8244.618 verify_ms=4734.040 proof_size_bytes=280185
-note=partial_formal_only_not_official_gpu_proof
+dataset=cora stage=formal_sparse_grouped status=PASS
+nodes=2708 edges=13264 topology_hash=10841621610450798504 commitment_block_size=64
+source_sparse_routing_digest=da728aee101c4db5
+destination_sparse_routing_digest=2b7423f443a81c03
+grouped_sum_digest=524b57cf59bad151
+commitment_ms=909.235 prove_ms=5058.987 verify_ms=808.448 proof_size_bytes=26885
+dataset=cora stage=formal_softmax_aggregation status=PASS
+nodes=2708 edges=13264 topology_hash=10841621610450798504 commitment_block_size=64 feature_columns=8 available_feature_columns=8 verified_feature_columns=8
+commitment_ms=7178.602 prove_ms=28708.574 verify_ms=4510.607 proof_size_bytes=280185

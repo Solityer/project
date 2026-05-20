@@ -15,11 +15,10 @@
   "alpha_from_inverse": "PASS",
   "alpha_times_denominator": "PASS",
   "weighted_aggregation": "PASS",
-  "commitment_time_ms": "1507.717",
-  "prove_time_ms": "8244.618",
-  "verify_time_ms": "4734.040",
+  "commitment_time_ms": "7178.602",
+  "prove_time_ms": "28708.574",
+  "verify_time_ms": "4510.607",
   "proof_size_bytes": "280185",
   "proof_path": "/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/cora/gpu/warm/formal_artifacts/zkdl_softmax_aggregation_relations.proof.txt",
-  "note": "该 evidence 证明 hidden layer0/head0 的 U 分母、inverse、alpha 与 weighted aggregation 的 zkDL relation-level 链条；ExpMap、max/range、ELU、output aggregation、rescale 与 rounding 仍未闭合，因此不写入 official latest。",
-  "device": "gpu"
+  "note": "该 evidence 证明 hidden layer0/head0 的 U 分母、inverse、alpha 与 weighted aggregation 的 zkDL relation-level 链条；ExpMap、max/range、ELU、output aggregation、rescale 与 rounding 仍未闭合，因此不写入 official latest。"
 }

@@ -1,8 +1,8 @@
 #pragma once
 
-// CPU-only zkDL-native relation backend. This mirrors the local Hyrax-style
-// tensor commitment/opening semantics without using FrTensor/G1Tensor CUDA
-// storage, so CPU results remain independent from GPU partial artifacts.
+// CPU-only zkDL-native relation backend：复用本地 Hyrax-style tensor
+// commitment/opening 语义，但不依赖 FrTensor/G1Tensor CUDA storage，
+// 因此 CPU 结果与 GPU partial artifact 保持独立。
 
 struct CpuFrTensor {
     std::vector<Fr_t> values;
@@ -40,6 +40,23 @@ bool cpu_raw_fr_to_u64(const Fr_t& value, std::uint64_t* out)
         if (value.val[i] != 0U) return false;
     }
     *out = (static_cast<std::uint64_t>(value.val[1]) << 32U) | value.val[0];
+    return true;
+}
+
+bool cpu_raw_fr_is_zero(const Fr_t& value)
+{
+    for (uint i = 0; i < 8; ++i) {
+        if (value.val[i] != 0U) return false;
+    }
+    return true;
+}
+
+bool cpu_raw_fr_is_one(const Fr_t& value)
+{
+    if (value.val[0] != 1U) return false;
+    for (uint i = 1; i < 8; ++i) {
+        if (value.val[i] != 0U) return false;
+    }
     return true;
 }
 
@@ -136,13 +153,37 @@ struct CpuCommitment {
         }
         const std::size_t rows = tensor.values.size() / generators.size();
         std::vector<G1Jacobian_t> out(rows, G1Jacobian_host_zero());
-        for (std::size_t row = 0; row < rows; ++row) {
+        const std::size_t cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+        const std::size_t worker_count = std::min<std::size_t>(rows == 0 ? 1 : rows, cpu_count);
+        auto commit_rows = [&](std::size_t begin, std::size_t end) {
+        for (std::size_t row = begin; row < end; ++row) {
             G1Jacobian_t acc = G1Jacobian_host_zero();
             for (std::size_t col = 0; col < generators.size(); ++col) {
                 const Fr_t raw = Fr_host_unmont(tensor.values[row * generators.size() + col]);
-                acc = G1Jacobian_host_add(acc, cpu_g1_mul_fr_raw(generators[col], raw));
+                if (cpu_raw_fr_is_zero(raw)) {
+                    continue;
+                }
+                const G1Jacobian_t term = cpu_raw_fr_is_one(raw)
+                    ? generators[col]
+                    : cpu_g1_mul_fr_raw(generators[col], raw);
+                acc = G1Jacobian_host_add(acc, term);
             }
             out[row] = acc;
+        }
+        };
+        if (worker_count <= 1 || rows < 1024) {
+            commit_rows(0, rows);
+        } else {
+            std::vector<std::thread> workers;
+            workers.reserve(worker_count);
+            const std::size_t chunk = (rows + worker_count - 1) / worker_count;
+            for (std::size_t worker = 0; worker < worker_count; ++worker) {
+                const std::size_t begin = worker * chunk;
+                const std::size_t end = std::min(rows, begin + chunk);
+                if (begin >= end) break;
+                workers.emplace_back(commit_rows, begin, end);
+            }
+            for (auto& worker : workers) worker.join();
         }
         return CpuG1Tensor(std::move(out));
     }
@@ -753,7 +794,8 @@ CpuFormalRelationRun run_cpu_formal_relations_with_trace(
     const DatasetRunSpec& spec,
     const LocalGraph& graph,
     const HeadTraceHost& head,
-    const fs::path& output_root)
+    const fs::path& output_root,
+    std::size_t requested_commitment_block_size)
 {
     if (head.e_src.size() != graph.num_nodes || head.e_dst.size() != graph.num_nodes
         || head.u.size() != graph.edges.size() || head.sum.size() != graph.num_nodes) {
@@ -794,9 +836,10 @@ CpuFormalRelationRun run_cpu_formal_relations_with_trace(
 
     CpuFormalRelationRun result;
     result.topology_hash = formal_sparse_topology_hash(src, dst, node_count_u32, edge_count_u32);
-    result.commitment_block_size = 1;
+    result.commitment_block_size = formal_effective_commitment_block_size(
+        requested_commitment_block_size, padded_node_count, padded_edge_count);
     const auto gen = CpuCommitment::deterministic(static_cast<uint>(result.commitment_block_size),
-        spec.dataset + ":cpu_formal_block1");
+        spec.dataset + ":cpu_formal_block" + std::to_string(result.commitment_block_size));
 
     CpuFrTensor node_src(mont_vector_from_raw(node_src_raw));
     CpuFrTensor node_dst(mont_vector_from_raw(node_dst_raw));
@@ -987,7 +1030,7 @@ CpuFormalRelationRun run_cpu_formal_relations_with_trace(
         out << "  \"verify_time_ms\": \"" << format_ms(result.verify_ms) << "\",\n";
         out << "  \"proof_size_bytes\": \"" << result.proof_size_bytes << "\",\n";
         out << "  \"proof_path\": \"" << json_escape(result.proof_path.string()) << "\",\n";
-        out << "  \"note\": \"CPU-only hidden layer0/head0 sparse + denominator/inverse/alpha relation-level formal result; weighted aggregation、max/ExpMap/lookup/range/ELU/output aggregation/rescale remain open.\"\n";
+        out << "  \"note\": \"CPU-only hidden layer0/head0 sparse + denominator/inverse/alpha relation-level formal result；weighted aggregation、max/ExpMap/lookup/range/ELU/output aggregation/rescale remain open.\"\n";
         out << "}\n";
     }
     return result;
