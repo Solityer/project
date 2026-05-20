@@ -1,0 +1,124 @@
+{
+  "rows": [
+    {
+      "device": "cpu",
+      "dataset": "cora",
+      "status": "not_run_after_cleanup",
+      "blocker": "debug_level_b 不是 formal benchmark，不写入 official latest；cpu 结果保持独立，不复用另一 device 的 timing。",
+      "benchmark_mode": "cpu_diagnostic_level_b_output_binding_only_not_formal_level_a",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA",
+      "proof_path": ""
+    },
+    {
+      "device": "cpu",
+      "dataset": "citeseer",
+      "status": "not_run_after_cleanup",
+      "blocker": "debug_level_b 不是 formal benchmark，不写入 official latest；cpu 结果保持独立，不复用另一 device 的 timing。",
+      "benchmark_mode": "cpu_diagnostic_level_b_output_binding_only_not_formal_level_a",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA",
+      "proof_path": ""
+    },
+    {
+      "device": "cpu",
+      "dataset": "pubmed",
+      "status": "not_run_after_cleanup",
+      "blocker": "debug_level_b 不是 formal benchmark，不写入 official latest；cpu 结果保持独立，不复用另一 device 的 timing。",
+      "benchmark_mode": "cpu_diagnostic_level_b_output_binding_only_not_formal_level_a",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA",
+      "proof_path": ""
+    },
+    {
+      "device": "cpu",
+      "dataset": "ppi",
+      "status": "not_run_after_cleanup",
+      "blocker": "debug_level_b 不是 formal benchmark，不写入 official latest；cpu 结果保持独立，不复用另一 device 的 timing。",
+      "benchmark_mode": "cpu_diagnostic_level_b_output_binding_only_not_formal_level_a",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA",
+      "proof_path": ""
+    },
+    {
+      "device": "cpu",
+      "dataset": "ogbn-arxiv",
+      "status": "not_run_after_cleanup",
+      "blocker": "debug_level_b 不是 formal benchmark，不写入 official latest；cpu 结果保持独立，不复用另一 device 的 timing。",
+      "benchmark_mode": "cpu_diagnostic_level_b_output_binding_only_not_formal_level_a",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA",
+      "proof_path": ""
+    },
+    {
+      "device": "gpu",
+      "dataset": "cora",
+      "status": "not_run_after_cleanup",
+      "blocker": "debug_level_b 不是 formal benchmark，不写入 official latest；gpu 结果保持独立，不复用另一 device 的 timing。",
+      "benchmark_mode": "gpu_diagnostic_level_b_output_binding_only_not_formal_level_a",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA",
+      "proof_path": ""
+    },
+    {
+      "device": "gpu",
+      "dataset": "citeseer",
+      "status": "not_run_after_cleanup",
+      "blocker": "debug_level_b 不是 formal benchmark，不写入 official latest；gpu 结果保持独立，不复用另一 device 的 timing。",
+      "benchmark_mode": "gpu_diagnostic_level_b_output_binding_only_not_formal_level_a",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA",
+      "proof_path": ""
+    },
+    {
+      "device": "gpu",
+      "dataset": "pubmed",
+      "status": "not_run_after_cleanup",
+      "blocker": "debug_level_b 不是 formal benchmark，不写入 official latest；gpu 结果保持独立，不复用另一 device 的 timing。",
+      "benchmark_mode": "gpu_diagnostic_level_b_output_binding_only_not_formal_level_a",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA",
+      "proof_path": ""
+    },
+    {
+      "device": "gpu",
+      "dataset": "ppi",
+      "status": "not_run_after_cleanup",
+      "blocker": "debug_level_b 不是 formal benchmark，不写入 official latest；gpu 结果保持独立，不复用另一 device 的 timing。",
+      "benchmark_mode": "gpu_diagnostic_level_b_output_binding_only_not_formal_level_a",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA",
+      "proof_path": ""
+    },
+    {
+      "device": "gpu",
+      "dataset": "ogbn-arxiv",
+      "status": "not_run_after_cleanup",
+      "blocker": "debug_level_b 不是 formal benchmark，不写入 official latest；gpu 结果保持独立，不复用另一 device 的 timing。",
+      "benchmark_mode": "gpu_diagnostic_level_b_output_binding_only_not_formal_level_a",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA",
+      "proof_path": ""
+    }
+  ]
+}

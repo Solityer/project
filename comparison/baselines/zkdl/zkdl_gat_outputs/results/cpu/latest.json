@@ -1,0 +1,57 @@
+{
+  "device": "cpu",
+  "benchmark_mode": "warm",
+  "official_policy": "只有 full dataset + complete formal proof generation + complete formal verification 成功才填写四项指标。",
+  "rows": [
+    {
+      "dataset": "cora",
+      "status": "blocked",
+      "blocker": "cpu_full_gat_proof_incomplete：本轮已在 zkDL 目录内实现 CPU-only host Fr/G1/Commitment/opening 与 relation prover/verifier，并在 Cora/Citeseer full dataset 的 hidden layer0/head0 sparse/grouped relation 上跑出独立 CPU proof/verify。CPU official Level A 仍 blocked：Pubmed CPU full-dataset attempt 进入 proof/verify 后因 host G1 opening replay 超过交互窗口未完成；CPU denominator/inverse/alpha、lookup/range/max/comparison、ExpMap、LeakyReLU/ELU、output aggregation、all-layer/all-head、real rescale/rounding public contract 与完整 proof object 仍未闭合。official 四项保持 NA，不能复用 GPU partial timing。",
+      "benchmark_mode": "warm",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA"
+    },
+    {
+      "dataset": "citeseer",
+      "status": "blocked",
+      "blocker": "cpu_full_gat_proof_incomplete：本轮已在 zkDL 目录内实现 CPU-only host Fr/G1/Commitment/opening 与 relation prover/verifier，并在 Cora/Citeseer full dataset 的 hidden layer0/head0 sparse/grouped relation 上跑出独立 CPU proof/verify。CPU official Level A 仍 blocked：Pubmed CPU full-dataset attempt 进入 proof/verify 后因 host G1 opening replay 超过交互窗口未完成；CPU denominator/inverse/alpha、lookup/range/max/comparison、ExpMap、LeakyReLU/ELU、output aggregation、all-layer/all-head、real rescale/rounding public contract 与完整 proof object 仍未闭合。official 四项保持 NA，不能复用 GPU partial timing。",
+      "benchmark_mode": "warm",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA"
+    },
+    {
+      "dataset": "pubmed",
+      "status": "blocked",
+      "blocker": "cpu_full_gat_proof_incomplete：本轮已在 zkDL 目录内实现 CPU-only host Fr/G1/Commitment/opening 与 relation prover/verifier，并在 Cora/Citeseer full dataset 的 hidden layer0/head0 sparse/grouped relation 上跑出独立 CPU proof/verify。CPU official Level A 仍 blocked：Pubmed CPU full-dataset attempt 进入 proof/verify 后因 host G1 opening replay 超过交互窗口未完成；CPU denominator/inverse/alpha、lookup/range/max/comparison、ExpMap、LeakyReLU/ELU、output aggregation、all-layer/all-head、real rescale/rounding public contract 与完整 proof object 仍未闭合。official 四项保持 NA，不能复用 GPU partial timing。",
+      "benchmark_mode": "warm",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA"
+    },
+    {
+      "dataset": "ppi",
+      "status": "blocked",
+      "blocker": "cpu_full_gat_proof_incomplete：本轮已在 zkDL 目录内实现 CPU-only host Fr/G1/Commitment/opening 与 relation prover/verifier，并在 Cora/Citeseer full dataset 的 hidden layer0/head0 sparse/grouped relation 上跑出独立 CPU proof/verify。CPU official Level A 仍 blocked：Pubmed CPU full-dataset attempt 进入 proof/verify 后因 host G1 opening replay 超过交互窗口未完成；CPU denominator/inverse/alpha、lookup/range/max/comparison、ExpMap、LeakyReLU/ELU、output aggregation、all-layer/all-head、real rescale/rounding public contract 与完整 proof object 仍未闭合。official 四项保持 NA，不能复用 GPU partial timing。",
+      "benchmark_mode": "warm",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA"
+    },
+    {
+      "dataset": "ogbn-arxiv",
+      "status": "blocked",
+      "blocker": "cpu_full_gat_proof_incomplete：本轮已在 zkDL 目录内实现 CPU-only host Fr/G1/Commitment/opening 与 relation prover/verifier，并在 Cora/Citeseer full dataset 的 hidden layer0/head0 sparse/grouped relation 上跑出独立 CPU proof/verify。CPU official Level A 仍 blocked：Pubmed CPU full-dataset attempt 进入 proof/verify 后因 host G1 opening replay 超过交互窗口未完成；CPU denominator/inverse/alpha、lookup/range/max/comparison、ExpMap、LeakyReLU/ELU、output aggregation、all-layer/all-head、real rescale/rounding public contract 与完整 proof object 仍未闭合。official 四项保持 NA，不能复用 GPU partial timing。",
+      "benchmark_mode": "warm",
+      "commitment_time_ms": "NA",
+      "prove_time_ms": "NA",
+      "verify_time_ms": "NA",
+      "proof_size_bytes": "NA"
+    }
+  ]
+}

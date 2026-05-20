@@ -7,6 +7,13 @@
 !Makefile
 !.gitignore
 !README.md
+!update_zkdl_gat_results.py
+!configs/
+!configs/**
+!gat_modules/
+!gat_modules/**
+!zkdl_gat_outputs/
+!zkdl_gat_outputs/**
 !/images
 !/images/*
 !CMakeLists.txts

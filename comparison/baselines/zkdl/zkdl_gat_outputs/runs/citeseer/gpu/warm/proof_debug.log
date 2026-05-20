@@ -1,0 +1,4 @@
+dataset=citeseer device=gpu status=partial_formal official=blocked
+stage=formal_sparse_grouped status=PASS nodes=3327 edges=12431 commitment_ms=159.714 prove_ms=924.190 verify_ms=586.782 proof_size_bytes=26921
+stage=formal_softmax_aggregation status=PASS nodes=3327 edges=12431 features=8/8 commitment_ms=1422.316 prove_ms=8429.009 verify_ms=4301.289 proof_size_bytes=280325
+note=partial_formal_only_not_official_gpu_proof

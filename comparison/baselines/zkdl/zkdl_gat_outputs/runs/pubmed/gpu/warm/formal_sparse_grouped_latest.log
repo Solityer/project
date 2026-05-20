@@ -1,0 +1,7 @@
+formal_sparse_grouped dataset=pubmed stage=load_dataset
+formal_sparse_grouped dataset=pubmed stage=normalize_graph
+formal_sparse_grouped dataset=pubmed nodes=19717 edges=108365 full_dataset=true
+formal_sparse_grouped dataset=pubmed stage=load_model
+formal_sparse_grouped dataset=pubmed stage=gpu_forward_trace
+formal_sparse_grouped dataset=pubmed forward_ms=400.852 stage=prove_verify
+formal_sparse_grouped dataset=pubmed status=PASS commitment_block_size=64 commitment_ms=2057.175 prove_ms=1382.246 verify_ms=6988.849 proof_size_bytes=28919 proof_path=/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/pubmed/gpu/warm/formal_artifacts/zkdl_sparse_grouped_relations.proof.txt

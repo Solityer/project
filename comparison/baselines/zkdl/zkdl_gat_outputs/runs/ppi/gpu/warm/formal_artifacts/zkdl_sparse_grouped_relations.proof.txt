@@ -1,0 +1,19 @@
+ZKDLGATS
+version=1
+dataset=ppi
+relation_scope=hidden_layer0_head0_sparse_routing_and_one_dim_grouped_sum
+node_count=56944
+edge_count=850576
+padded_node_count=65536
+padded_edge_count=1048576
+edge_range=0..850576
+commitment_block_size=64
+topology_hash=11025618763431202790
+source_sparse_routing_status=PASS
+destination_sparse_routing_status=PASS
+grouped_sum_status=PASS
+source_transcript_digest=3830c55ed44bed10
+destination_transcript_digest=bf3209e6a22b8fbb
+grouped_sum_transcript_digest=dcfef0a18d00c789
+proof_size_bytes=30140
+说明=本 proof artifact 只包含 relation metadata、承诺/opening/sumcheck 证明大小与 transcript 摘要，不包含完整 witness、完整 tensor 或 debug dump。

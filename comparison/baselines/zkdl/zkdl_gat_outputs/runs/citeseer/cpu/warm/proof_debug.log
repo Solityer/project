@@ -1,0 +1,8 @@
+dataset=citeseer device=cpu status=partial_formal official=blocked
+backend=cpu_only_host_fr_g1_commitment
+nodes=3327 edges=12431 topology_hash=15417799544957100067 commitment_block_size=1
+commitment_ms=103.438 prove_ms=43.651 verify_ms=36045.114 proof_size_bytes=13053
+source_sparse_routing status=PASS digest=3cef84210d8ecfcd
+destination_sparse_routing status=PASS digest=49862484a1aab95f
+grouped_sum_by_dst status=PASS digest=8b7e6402ddf9a3cb
+note=CPU relation-level partial formal only; not official Level A

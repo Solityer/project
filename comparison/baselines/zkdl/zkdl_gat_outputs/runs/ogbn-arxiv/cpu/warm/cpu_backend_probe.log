@@ -1,0 +1,7 @@
+cpu_backend_probe dataset=ogbn-arxiv stage=load_dataset
+cpu_backend_probe dataset=ogbn-arxiv loaded_nodes=169343 loaded_edges=1166243 features=128 classes=40
+cpu_backend_probe dataset=ogbn-arxiv stage=normalize_graph
+cpu_backend_probe dataset=ogbn-arxiv full_dataset=true normalized_nodes=169343 normalized_edges=1335586 graphs=1
+cpu_backend_probe dataset=ogbn-arxiv stage=load_model
+cpu_backend_probe dataset=ogbn-arxiv model=gat_family_L2_hid1x8_kout1_c40 L=2 K_out=1 C=40
+cpu_backend_probe dataset=ogbn-arxiv status=BLOCKED proof_generation=false verification=false artifact=/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/ogbn-arxiv/cpu/warm/formal_artifacts/zkdl_cpu_backend_probe.blocker.txt

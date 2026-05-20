@@ -1,0 +1,28 @@
+ZKDLGATA
+version=1
+dataset=cora
+relation_scope=hidden_layer0_head0_softmax_denominator_inverse_alpha_weighted_aggregation
+node_count=2708
+edge_count=13264
+padded_node_count=4096
+padded_edge_count=16384
+feature_columns=8
+available_feature_columns=8
+verified_feature_columns=8
+commitment_block_size=64
+topology_hash=10841621610450798504
+denominator_grouped_sum_status=PASS
+inverse_status=PASS
+inverse_destination_routing_status=PASS
+alpha_from_inverse_status=PASS
+alpha_times_denominator_status=PASS
+weighted_aggregation_status=PASS
+proof_size_bytes=280185
+relation_details=6
+denominator_grouped_sum status=PASS transcript_digest=3463bfcc6e60929f
+inverse_denominator_times_inverse status=PASS transcript_digest=07716bb1ca6f804e
+inverse_destination_routing status=PASS transcript_digest=6b678de60465c968
+alpha_from_inverse status=PASS transcript_digest=930f340847f202b4
+alpha_times_denominator status=PASS transcript_digest=10e619c8a0936e6d
+multi_column_weighted_aggregation status=PASS feature_columns=8 matrix_commitment_block_size=512 message_route_digest=176f057a4ba4369c alpha_message_digest=72430278ac9b4869 aggregation_digest=2f4a44e31d831dbd
+说明=本 proof artifact 只包含 relation metadata、证明大小与 transcript 摘要，不包含完整 witness、完整 tensor 或 debug dump。

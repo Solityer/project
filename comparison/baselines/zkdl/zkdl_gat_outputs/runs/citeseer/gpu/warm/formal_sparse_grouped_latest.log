@@ -1,0 +1,7 @@
+formal_sparse_grouped dataset=citeseer stage=load_dataset
+formal_sparse_grouped dataset=citeseer stage=normalize_graph
+formal_sparse_grouped dataset=citeseer nodes=3327 edges=12431 full_dataset=true
+formal_sparse_grouped dataset=citeseer stage=load_model
+formal_sparse_grouped dataset=citeseer stage=gpu_forward_trace
+formal_sparse_grouped dataset=citeseer forward_ms=341.284 stage=prove_verify
+formal_sparse_grouped dataset=citeseer status=PASS commitment_block_size=64 commitment_ms=159.714 prove_ms=924.190 verify_ms=586.782 proof_size_bytes=26921 proof_path=/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/citeseer/gpu/warm/formal_artifacts/zkdl_sparse_grouped_relations.proof.txt
