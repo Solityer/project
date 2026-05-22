@@ -7,3 +7,5 @@ commitment_ms=929.100 prove_ms=4482.501 verify_ms=592.356 proof_size_bytes=26921
 dataset=citeseer stage=formal_softmax_aggregation status=PASS
 nodes=3327 edges=12431 topology_hash=15417799544957100067 commitment_block_size=64 feature_columns=8 available_feature_columns=8 verified_feature_columns=8
 commitment_ms=7475.191 prove_ms=28725.840 verify_ms=4302.137 proof_size_bytes=280325
+dataset=citeseer device=gpu stage=full_chain_scope status=blocked missing_clause_count=13 status_path=/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/citeseer/gpu/warm/formal_artifacts/zkdl_full_chain_scope.status.txt evidence_path=/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/evidence/full_chain_scope_gpu_citeseer.json
+dataset=citeseer stage=formal_output_binding status=PASS output_heads=1 classes=6 commitment_block_size=512 proof_size_bytes=5313 digest=e2e94a8e7b50d719

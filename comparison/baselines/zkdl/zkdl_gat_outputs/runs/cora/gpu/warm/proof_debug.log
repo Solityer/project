@@ -7,3 +7,5 @@ commitment_ms=1289.224 prove_ms=5321.016 verify_ms=826.891 proof_size_bytes=2688
 dataset=cora stage=formal_softmax_aggregation status=PASS
 nodes=2708 edges=13264 topology_hash=10841621610450798504 commitment_block_size=64 feature_columns=8 available_feature_columns=8 verified_feature_columns=8
 commitment_ms=8267.784 prove_ms=31196.720 verify_ms=4697.636 proof_size_bytes=280185
+dataset=cora device=gpu stage=full_chain_scope status=blocked missing_clause_count=13 status_path=/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/cora/gpu/warm/formal_artifacts/zkdl_full_chain_scope.status.txt evidence_path=/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/evidence/full_chain_scope_gpu_cora.json
+dataset=cora stage=formal_output_binding status=PASS output_heads=1 classes=7 commitment_block_size=512 proof_size_bytes=5309 digest=62c7fb6268f37435

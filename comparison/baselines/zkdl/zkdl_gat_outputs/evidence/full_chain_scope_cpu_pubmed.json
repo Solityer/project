@@ -1,0 +1,18 @@
+{
+  "dataset": "pubmed",
+  "device": "cpu",
+  "status": "blocked",
+  "official_manifest_written": "false",
+  "full_dataset": "true",
+  "node_count": "19717",
+  "edge_count": "108365",
+  "feature_count": "500",
+  "class_count": "3",
+  "graph_count": "1",
+  "hidden_layer_count": "1",
+  "hidden_head_count": "8",
+  "output_head_count": "1",
+  "required_clauses": ["M_pub/Topo/VK_static/VK_model/Y public binding", "Com_base/Com_comp/Com_aux/Com_tbl/Com_agg zkDL proof object layout", "Pi_slice feature retrieval and topology slice consistency", "all hidden layers and all hidden heads", "hidden projection matmul relations", "hidden attention dot relations", "source and destination sparse routing for every head", "LeakyReLU lookup-range relation", "target-node max/shift comparison relation", "ExpMap table lookup and range relation", "softmax denominator grouped sum and nonzero inverse soundness", "alpha consistency and weighted aggregation", "ELU lookup-range relation for hidden activation", "hidden concat binding", "all output attention heads", "output aggregation and output bias binding", "head average relation", "public logits binding", "real fixed-point rescale chain", "rounding sign/tie-breaking public contract", "verifier replay without witness tensor access", "proof_size_bytes from serialized zkDL proof object only"],
+  "partial_artifacts": ["/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/pubmed/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt"],
+  "missing_clauses": ["缺少协议定义的 pi_GAT^zkDL 完整 proof object 序列化", "缺少 Com_base/Com_comp/Com_aux/Com_tbl/Com_agg 的全链承诺布局", "lookup/range/max/comparison 仍未绑定真实 GAT VK_static/table/context", "ExpMap table/range 尚未接入 softmax runner", "LeakyReLU/ELU lookup-range 尚未接入隐藏层和输出层语义", "target-node max/shift 仍缺 per-destination representative selector", "all-layer/all-head relation runner 尚未生成全链 sumcheck/eval proof", "output attention aggregation 尚未进入 zkDL relation proof", "output bias/head average/public logits binding 尚未进入 verifier 可复验对象", "real rescale/rounding sign/tie-breaking public contract 尚未落到 proof", "clean verifier 尚未按协议重放 full-chain transcript 与所有 relation", "proof_size_bytes 尚无完整 zkDL proof object 可统计", "CPU full-chain batched opening/verifier 仍未闭合到 all-layer/all-head proof"]
+}

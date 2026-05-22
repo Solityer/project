@@ -4,3 +4,5 @@ source_sparse_routing_digest=9c156b2d48c2cc3c
 destination_sparse_routing_digest=d44f5a7893824c53
 grouped_sum_digest=4a8d17736fcc311e
 commitment_ms=9428.435 prove_ms=5473.266 verify_ms=6266.863 proof_size_bytes=28919
+dataset=pubmed device=gpu stage=full_chain_scope status=blocked missing_clause_count=13 status_path=/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/pubmed/gpu/warm/formal_artifacts/zkdl_full_chain_scope.status.txt evidence_path=/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/evidence/full_chain_scope_gpu_pubmed.json
+dataset=pubmed stage=formal_output_binding status=PASS output_heads=1 classes=3 commitment_block_size=256 proof_size_bytes=5007 digest=7808bb0114941a72

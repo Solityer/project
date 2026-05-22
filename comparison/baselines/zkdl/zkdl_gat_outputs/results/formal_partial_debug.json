@@ -16,9 +16,9 @@
       "verified_relations": "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof;denominator GroupedSumRelationProof;inverse HadamardRelationProof;inverse SparseDestinationRoutingRelationProof;alpha HadamardRelationProof;alpha-denominator HadamardRelationProof",
       "blocked_relations": "target-node max/shift; ExpMap lookup/range table; LeakyReLU/ELU lookup-range table; all-layer/all-head runner; output attention aggregation; output bias/average binding; real rescale chain; rounding sign/tie-breaking public contract",
       "proof_artifact_paths": "zkdl_gat_outputs/runs/cora/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt",
-      "evidence_paths": "zkdl_gat_outputs/evidence/cpu_relation_partial_cora.json;zkdl_gat_outputs/runs/cora/cpu/warm/cpu_formal_chain.log",
+      "evidence_paths": "zkdl_gat_outputs/evidence/cpu_relation_partial_cora.json;zkdl_gat_outputs/runs/cora/cpu/warm/cpu_formal_chain.log;zkdl_gat_outputs/evidence/full_chain_scope_cpu_cora.json;zkdl_gat_outputs/runs/cora/cpu/warm/formal_artifacts/zkdl_full_chain_scope.status.txt",
       "resume_point": "zkdl_gat_outputs/runs/cora/cpu/warm/RESUME_POINT.md",
-      "note": "CPU-only host Fr/G1/Commitment/opening relation proof/verify 已运行；不是完整 GAT official proof。"
+      "note": "CPU-only host Fr/G1/Commitment/opening relation proof/verify 已运行；full-chain scope 已单独记录，但不是完整 GAT official proof。"
     },
     {
       "device": "cpu",
@@ -36,9 +36,9 @@
       "verified_relations": "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof;denominator GroupedSumRelationProof;inverse HadamardRelationProof;inverse SparseDestinationRoutingRelationProof;alpha HadamardRelationProof;alpha-denominator HadamardRelationProof",
       "blocked_relations": "target-node max/shift; ExpMap lookup/range table; LeakyReLU/ELU lookup-range table; all-layer/all-head runner; output attention aggregation; output bias/average binding; real rescale chain; rounding sign/tie-breaking public contract",
       "proof_artifact_paths": "zkdl_gat_outputs/runs/citeseer/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt",
-      "evidence_paths": "zkdl_gat_outputs/evidence/cpu_relation_partial_citeseer.json;zkdl_gat_outputs/runs/citeseer/cpu/warm/cpu_formal_chain.log",
+      "evidence_paths": "zkdl_gat_outputs/evidence/cpu_relation_partial_citeseer.json;zkdl_gat_outputs/runs/citeseer/cpu/warm/cpu_formal_chain.log;zkdl_gat_outputs/evidence/full_chain_scope_cpu_citeseer.json;zkdl_gat_outputs/runs/citeseer/cpu/warm/formal_artifacts/zkdl_full_chain_scope.status.txt",
       "resume_point": "zkdl_gat_outputs/runs/citeseer/cpu/warm/RESUME_POINT.md",
-      "note": "CPU-only host Fr/G1/Commitment/opening relation proof/verify 已运行；不是完整 GAT official proof。"
+      "note": "CPU-only host Fr/G1/Commitment/opening relation proof/verify 已运行；full-chain scope 已单独记录，但不是完整 GAT official proof。"
     },
     {
       "device": "cpu",
@@ -56,9 +56,9 @@
       "verified_relations": "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof;denominator GroupedSumRelationProof;inverse HadamardRelationProof;inverse SparseDestinationRoutingRelationProof;alpha HadamardRelationProof;alpha-denominator HadamardRelationProof",
       "blocked_relations": "target-node max/shift; ExpMap lookup/range table; LeakyReLU/ELU lookup-range table; all-layer/all-head runner; output attention aggregation; output bias/average binding; real rescale chain; rounding sign/tie-breaking public contract",
       "proof_artifact_paths": "zkdl_gat_outputs/runs/pubmed/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt",
-      "evidence_paths": "zkdl_gat_outputs/evidence/cpu_relation_partial_pubmed.json;zkdl_gat_outputs/runs/pubmed/cpu/warm/cpu_formal_chain.log",
+      "evidence_paths": "zkdl_gat_outputs/evidence/cpu_relation_partial_pubmed.json;zkdl_gat_outputs/runs/pubmed/cpu/warm/cpu_formal_chain.log;zkdl_gat_outputs/evidence/full_chain_scope_cpu_pubmed.json;zkdl_gat_outputs/runs/pubmed/cpu/warm/formal_artifacts/zkdl_full_chain_scope.status.txt",
       "resume_point": "zkdl_gat_outputs/runs/pubmed/cpu/warm/RESUME_POINT.md",
-      "note": "CPU-only host Fr/G1/Commitment/opening relation proof/verify 已运行；不是完整 GAT official proof。"
+      "note": "CPU-only host Fr/G1/Commitment/opening relation proof/verify 已运行；full-chain scope 已单独记录，但不是完整 GAT official proof。"
     },
     {
       "device": "cpu",
@@ -76,9 +76,9 @@
       "verified_relations": "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof;denominator GroupedSumRelationProof;inverse HadamardRelationProof;inverse SparseDestinationRoutingRelationProof;alpha HadamardRelationProof;alpha-denominator HadamardRelationProof",
       "blocked_relations": "target-node max/shift; ExpMap lookup/range table; LeakyReLU/ELU lookup-range table; all-layer/all-head runner; output attention aggregation; output bias/average binding; real rescale chain; rounding sign/tie-breaking public contract",
       "proof_artifact_paths": "zkdl_gat_outputs/runs/ppi/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt",
-      "evidence_paths": "zkdl_gat_outputs/evidence/cpu_relation_partial_ppi.json;zkdl_gat_outputs/runs/ppi/cpu/warm/cpu_formal_chain.log",
+      "evidence_paths": "zkdl_gat_outputs/evidence/cpu_relation_partial_ppi.json;zkdl_gat_outputs/runs/ppi/cpu/warm/cpu_formal_chain.log;zkdl_gat_outputs/evidence/full_chain_scope_cpu_ppi.json;zkdl_gat_outputs/runs/ppi/cpu/warm/formal_artifacts/zkdl_full_chain_scope.status.txt",
       "resume_point": "zkdl_gat_outputs/runs/ppi/cpu/warm/RESUME_POINT.md",
-      "note": "CPU-only host Fr/G1/Commitment/opening relation proof/verify 已运行；不是完整 GAT official proof。"
+      "note": "CPU-only host Fr/G1/Commitment/opening relation proof/verify 已运行；full-chain scope 已单独记录，但不是完整 GAT official proof。"
     },
     {
       "device": "cpu",
@@ -96,9 +96,9 @@
       "verified_relations": "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof;denominator GroupedSumRelationProof;inverse HadamardRelationProof;inverse SparseDestinationRoutingRelationProof;alpha HadamardRelationProof;alpha-denominator HadamardRelationProof",
       "blocked_relations": "target-node max/shift; ExpMap lookup/range table; LeakyReLU/ELU lookup-range table; all-layer/all-head runner; output attention aggregation; output bias/average binding; real rescale chain; rounding sign/tie-breaking public contract",
       "proof_artifact_paths": "zkdl_gat_outputs/runs/ogbn-arxiv/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt",
-      "evidence_paths": "zkdl_gat_outputs/evidence/cpu_relation_partial_ogbn-arxiv.json;zkdl_gat_outputs/runs/ogbn-arxiv/cpu/warm/cpu_formal_chain.log",
+      "evidence_paths": "zkdl_gat_outputs/evidence/cpu_relation_partial_ogbn-arxiv.json;zkdl_gat_outputs/runs/ogbn-arxiv/cpu/warm/cpu_formal_chain.log;zkdl_gat_outputs/evidence/full_chain_scope_cpu_ogbn-arxiv.json;zkdl_gat_outputs/runs/ogbn-arxiv/cpu/warm/formal_artifacts/zkdl_full_chain_scope.status.txt",
       "resume_point": "zkdl_gat_outputs/runs/ogbn-arxiv/cpu/warm/RESUME_POINT.md",
-      "note": "CPU-only host Fr/G1/Commitment/opening relation proof/verify 已运行；不是完整 GAT official proof。"
+      "note": "CPU-only host Fr/G1/Commitment/opening relation proof/verify 已运行；full-chain scope 已单独记录，但不是完整 GAT official proof。"
     },
     {
       "device": "gpu",
@@ -113,12 +113,12 @@
       "proof_size_bytes": "280185",
       "total_chunks": "13",
       "verified_chunks": "13",
-      "verified_relations": "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof;denominator GroupedSumRelationProof;inverse HadamardRelationProof;inverse SparseDestinationRoutingRelationProof;alpha HadamardRelationProof;multi-column weighted aggregation relation",
+      "verified_relations": "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof;denominator GroupedSumRelationProof;inverse HadamardRelationProof;inverse SparseDestinationRoutingRelationProof;alpha HadamardRelationProof;multi-column weighted aggregation relation;output average LinearRelationProof;public logits MLE binding",
       "blocked_relations": "target-node max/shift; ExpMap lookup/range table; LeakyReLU/ELU lookup-range table; all-layer/all-head runner; output attention aggregation; output bias/average binding; real rescale chain; rounding sign/tie-breaking public contract",
       "proof_artifact_paths": "zkdl_gat_outputs/runs/cora/gpu/warm/formal_artifacts/zkdl_softmax_aggregation_relations.proof.txt",
-      "evidence_paths": "zkdl_gat_outputs/evidence/softmax_aggregation_relation_cora.json",
+      "evidence_paths": "zkdl_gat_outputs/evidence/softmax_aggregation_relation_cora.json;zkdl_gat_outputs/evidence/output_binding_relation_cora.json;zkdl_gat_outputs/runs/cora/gpu/warm/formal_artifacts/zkdl_output_binding_relations.proof.txt;zkdl_gat_outputs/evidence/full_chain_scope_gpu_cora.json;zkdl_gat_outputs/runs/cora/gpu/warm/formal_artifacts/zkdl_full_chain_scope.status.txt",
       "resume_point": "zkdl_gat_outputs/runs/cora/gpu/warm/RESUME_POINT.md",
-      "note": "GPU prover 使用 CUDA Fr/G1 commitment/opening；当前 verifier 在 host 重放。该行只描述当前 artifact 覆盖范围，不能写成 GPU official verifier。"
+      "note": "GPU prover 使用 CUDA Fr/G1 commitment/opening；当前 verifier 在 host 重放。output binding 与 full-chain scope 已单独记录，仍不能写成 GPU official verifier。"
     },
     {
       "device": "gpu",
@@ -133,12 +133,12 @@
       "proof_size_bytes": "280325",
       "total_chunks": "13",
       "verified_chunks": "13",
-      "verified_relations": "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof;denominator GroupedSumRelationProof;inverse HadamardRelationProof;inverse SparseDestinationRoutingRelationProof;alpha HadamardRelationProof;multi-column weighted aggregation relation",
+      "verified_relations": "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof;denominator GroupedSumRelationProof;inverse HadamardRelationProof;inverse SparseDestinationRoutingRelationProof;alpha HadamardRelationProof;multi-column weighted aggregation relation;output average LinearRelationProof;public logits MLE binding",
       "blocked_relations": "target-node max/shift; ExpMap lookup/range table; LeakyReLU/ELU lookup-range table; all-layer/all-head runner; output attention aggregation; output bias/average binding; real rescale chain; rounding sign/tie-breaking public contract",
       "proof_artifact_paths": "zkdl_gat_outputs/runs/citeseer/gpu/warm/formal_artifacts/zkdl_softmax_aggregation_relations.proof.txt",
-      "evidence_paths": "zkdl_gat_outputs/evidence/softmax_aggregation_relation_citeseer.json",
+      "evidence_paths": "zkdl_gat_outputs/evidence/softmax_aggregation_relation_citeseer.json;zkdl_gat_outputs/evidence/output_binding_relation_citeseer.json;zkdl_gat_outputs/runs/citeseer/gpu/warm/formal_artifacts/zkdl_output_binding_relations.proof.txt;zkdl_gat_outputs/evidence/full_chain_scope_gpu_citeseer.json;zkdl_gat_outputs/runs/citeseer/gpu/warm/formal_artifacts/zkdl_full_chain_scope.status.txt",
       "resume_point": "zkdl_gat_outputs/runs/citeseer/gpu/warm/RESUME_POINT.md",
-      "note": "GPU prover 使用 CUDA Fr/G1 commitment/opening；当前 verifier 在 host 重放。该行只描述当前 artifact 覆盖范围，不能写成 GPU official verifier。"
+      "note": "GPU prover 使用 CUDA Fr/G1 commitment/opening；当前 verifier 在 host 重放。output binding 与 full-chain scope 已单独记录，仍不能写成 GPU official verifier。"
     },
     {
       "device": "gpu",
@@ -153,12 +153,12 @@
       "proof_size_bytes": "28919",
       "total_chunks": "3",
       "verified_chunks": "3",
-      "verified_relations": "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof",
+      "verified_relations": "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof;output average LinearRelationProof;public logits MLE binding",
       "blocked_relations": "target-node max/shift; ExpMap lookup/range table; LeakyReLU/ELU lookup-range table; all-layer/all-head runner; output attention aggregation; output bias/average binding; real rescale chain; rounding sign/tie-breaking public contract",
       "proof_artifact_paths": "zkdl_gat_outputs/runs/pubmed/gpu/warm/formal_artifacts/zkdl_sparse_grouped_relations.proof.txt",
-      "evidence_paths": "zkdl_gat_outputs/evidence/sparse_grouped_relation_pubmed.json",
+      "evidence_paths": "zkdl_gat_outputs/evidence/sparse_grouped_relation_pubmed.json;zkdl_gat_outputs/evidence/output_binding_relation_pubmed.json;zkdl_gat_outputs/runs/pubmed/gpu/warm/formal_artifacts/zkdl_output_binding_relations.proof.txt;zkdl_gat_outputs/evidence/full_chain_scope_gpu_pubmed.json;zkdl_gat_outputs/runs/pubmed/gpu/warm/formal_artifacts/zkdl_full_chain_scope.status.txt",
       "resume_point": "zkdl_gat_outputs/runs/pubmed/gpu/warm/RESUME_POINT.md",
-      "note": "GPU prover 使用 CUDA Fr/G1 commitment/opening；当前 verifier 在 host 重放。该行只描述当前 artifact 覆盖范围，不能写成 GPU official verifier。"
+      "note": "GPU prover 使用 CUDA Fr/G1 commitment/opening；当前 verifier 在 host 重放。output binding 与 full-chain scope 已单独记录，仍不能写成 GPU official verifier。"
     },
     {
       "device": "gpu",
@@ -173,12 +173,12 @@
       "proof_size_bytes": "9857494",
       "total_chunks": "13",
       "verified_chunks": "13",
-      "verified_relations": "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof;denominator GroupedSumRelationProof;inverse HadamardRelationProof;inverse SparseDestinationRoutingRelationProof;alpha HadamardRelationProof;multi-column weighted aggregation relation",
+      "verified_relations": "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof;denominator GroupedSumRelationProof;inverse HadamardRelationProof;inverse SparseDestinationRoutingRelationProof;alpha HadamardRelationProof;multi-column weighted aggregation relation;output average LinearRelationProof;public logits MLE binding",
       "blocked_relations": "target-node max/shift; ExpMap lookup/range table; LeakyReLU/ELU lookup-range table; all-layer/all-head runner; output attention aggregation; output bias/average binding; real rescale chain; rounding sign/tie-breaking public contract",
       "proof_artifact_paths": "zkdl_gat_outputs/runs/ppi/gpu/warm/formal_artifacts/zkdl_softmax_aggregation_relations.proof.txt",
-      "evidence_paths": "zkdl_gat_outputs/evidence/softmax_aggregation_relation_ppi.json",
+      "evidence_paths": "zkdl_gat_outputs/evidence/softmax_aggregation_relation_ppi.json;zkdl_gat_outputs/evidence/output_binding_relation_ppi.json;zkdl_gat_outputs/runs/ppi/gpu/warm/formal_artifacts/zkdl_output_binding_relations.proof.txt;zkdl_gat_outputs/evidence/full_chain_scope_gpu_ppi.json;zkdl_gat_outputs/runs/ppi/gpu/warm/formal_artifacts/zkdl_full_chain_scope.status.txt",
       "resume_point": "zkdl_gat_outputs/runs/ppi/gpu/warm/RESUME_POINT.md",
-      "note": "GPU prover 使用 CUDA Fr/G1 commitment/opening；当前 verifier 在 host 重放。该行只描述当前 artifact 覆盖范围，不能写成 GPU official verifier。"
+      "note": "GPU prover 使用 CUDA Fr/G1 commitment/opening；当前 verifier 在 host 重放。output binding 与 full-chain scope 已单独记录，仍不能写成 GPU official verifier。"
     },
     {
       "device": "gpu",
@@ -193,12 +193,12 @@
       "proof_size_bytes": "20182539",
       "total_chunks": "13",
       "verified_chunks": "13",
-      "verified_relations": "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof;denominator GroupedSumRelationProof;inverse HadamardRelationProof;inverse SparseDestinationRoutingRelationProof;alpha HadamardRelationProof;multi-column weighted aggregation relation",
+      "verified_relations": "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof;denominator GroupedSumRelationProof;inverse HadamardRelationProof;inverse SparseDestinationRoutingRelationProof;alpha HadamardRelationProof;multi-column weighted aggregation relation;output average LinearRelationProof;public logits MLE binding",
       "blocked_relations": "target-node max/shift; ExpMap lookup/range table; LeakyReLU/ELU lookup-range table; all-layer/all-head runner; output attention aggregation; output bias/average binding; real rescale chain; rounding sign/tie-breaking public contract",
       "proof_artifact_paths": "zkdl_gat_outputs/runs/ogbn-arxiv/gpu/warm/formal_artifacts/zkdl_softmax_aggregation_relations.proof.txt",
-      "evidence_paths": "zkdl_gat_outputs/evidence/softmax_aggregation_relation_ogbn-arxiv.json",
+      "evidence_paths": "zkdl_gat_outputs/evidence/softmax_aggregation_relation_ogbn-arxiv.json;zkdl_gat_outputs/evidence/output_binding_relation_ogbn-arxiv.json;zkdl_gat_outputs/runs/ogbn-arxiv/gpu/warm/formal_artifacts/zkdl_output_binding_relations.proof.txt;zkdl_gat_outputs/evidence/full_chain_scope_gpu_ogbn-arxiv.json;zkdl_gat_outputs/runs/ogbn-arxiv/gpu/warm/formal_artifacts/zkdl_full_chain_scope.status.txt",
       "resume_point": "zkdl_gat_outputs/runs/ogbn-arxiv/gpu/warm/RESUME_POINT.md",
-      "note": "GPU prover 使用 CUDA Fr/G1 commitment/opening；当前 verifier 在 host 重放。该行只描述当前 artifact 覆盖范围，不能写成 GPU official verifier。"
+      "note": "GPU prover 使用 CUDA Fr/G1 commitment/opening；当前 verifier 在 host 重放。output binding 与 full-chain scope 已单独记录，仍不能写成 GPU official verifier。"
     }
   ]
 }
