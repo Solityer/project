@@ -7,9 +7,10 @@
   "proof_generated": false,
   "verified": false,
   "verifier_reads_witness": false,
-  "relation_verify_count": 9,
+  "witness_included_in_proof": false,
+  "relation_verify_count": 10,
   "missing_relation_count": 9,
-  "verify_time_ms": 41906.074,
+  "verify_time_ms": 39998.310,
   "relations": [
     {
       "stage": "attention_softmax_weighted_aggregation",
@@ -19,11 +20,11 @@
       "head_index": 0,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 1470.570,
-      "prove_time_ms": 8226.710,
-      "verify_time_ms": 4652.542,
+      "commitment_time_ms": 1462.034,
+      "prove_time_ms": 8266.162,
+      "verify_time_ms": 4432.567,
       "proof_size_bytes": 279572,
-      "proof_digests": ["denominator=322e73298ff366ea", "inverse=a7714966c571e559", "inverse_route=62b0226ba660732b", "alpha_from_inverse=c3ef2d203def3fd8", "alpha_times_denominator=2b229c7d855e3ea8", "message_route=e651a9472aad76ed", "alpha_message=7e731f1605c01bfb", "weighted_aggregation=1b35a25b52261a15"]
+      "proof_digests": ["denominator=70a7c3aa3732b6f5", "inverse=dc4302ccd61601a4", "inverse_route=1e20ccd0e29f7f33", "alpha_from_inverse=4c4b2c52b1008229", "alpha_times_denominator=4a06eec04bc86746", "message_route=3e1fc0bd6450ff84", "alpha_message=d0f3cf3799d2fc25", "weighted_aggregation=112fedc8d2ce8803"]
     },
     {
       "stage": "attention_softmax_weighted_aggregation",
@@ -33,11 +34,11 @@
       "head_index": 1,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 1508.809,
-      "prove_time_ms": 8204.050,
-      "verify_time_ms": 4651.935,
+      "commitment_time_ms": 1503.346,
+      "prove_time_ms": 8239.167,
+      "verify_time_ms": 4443.076,
       "proof_size_bytes": 279572,
-      "proof_digests": ["denominator=55a41dac5565f277", "inverse=142a456ef3c93c26", "inverse_route=43de52d0371b340b", "alpha_from_inverse=586eb5607123a174", "alpha_times_denominator=62013d024d18ade6", "message_route=b4a3776c223da1ff", "alpha_message=e939a5e48771229f", "weighted_aggregation=3f8b7c3576a075f2"]
+      "proof_digests": ["denominator=82dccb031b347b30", "inverse=9a437fa3fe972287", "inverse_route=121eda9bd1fb42e7", "alpha_from_inverse=4586b0cdd454f642", "alpha_times_denominator=838f3ace3fe97b3a", "message_route=7dc05aca388db8a3", "alpha_message=7f31db03517dd9ca", "weighted_aggregation=c8f4b4310dd6203e"]
     },
     {
       "stage": "attention_softmax_weighted_aggregation",
@@ -47,11 +48,11 @@
       "head_index": 2,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 1470.120,
-      "prove_time_ms": 8221.852,
-      "verify_time_ms": 4647.436,
+      "commitment_time_ms": 1462.322,
+      "prove_time_ms": 8250.571,
+      "verify_time_ms": 4448.741,
       "proof_size_bytes": 279572,
-      "proof_digests": ["denominator=58427434d86e1564", "inverse=ab86ca112a74b291", "inverse_route=91f315dcb54a18b1", "alpha_from_inverse=ac056f603bc60644", "alpha_times_denominator=1f8362b1f05336e0", "message_route=16a186983af4bda1", "alpha_message=9a36895da41f728c", "weighted_aggregation=d4c8a5d3c74fadfb"]
+      "proof_digests": ["denominator=b732812664965ae8", "inverse=d28531b0cd6899d9", "inverse_route=71b49b8604d5574e", "alpha_from_inverse=3e4cfbbe2aa2589c", "alpha_times_denominator=90034751d580e27e", "message_route=41725160fb134018", "alpha_message=59697b9179d7591b", "weighted_aggregation=50f491c52847c874"]
     },
     {
       "stage": "attention_softmax_weighted_aggregation",
@@ -61,11 +62,11 @@
       "head_index": 3,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 1486.003,
-      "prove_time_ms": 8213.444,
-      "verify_time_ms": 4658.126,
+      "commitment_time_ms": 1482.197,
+      "prove_time_ms": 8242.245,
+      "verify_time_ms": 4443.499,
       "proof_size_bytes": 279572,
-      "proof_digests": ["denominator=5347acbe6e9d195b", "inverse=bf9c579dd5d1b1fb", "inverse_route=86bacefaa31d1f4d", "alpha_from_inverse=63484f148eed604b", "alpha_times_denominator=5f5d189faea7b8de", "message_route=3f953e2698ae6639", "alpha_message=8f8f9d46588dd400", "weighted_aggregation=4ad3d69e3ccfff2e"]
+      "proof_digests": ["denominator=20ac18ba7e6556a8", "inverse=bd8bcfc92d176574", "inverse_route=38bd70418a8393c7", "alpha_from_inverse=bb8d13e460fbeea5", "alpha_times_denominator=b7ac29df9bfb7c87", "message_route=b477e3c3b0585926", "alpha_message=3d5ad99191987bce", "weighted_aggregation=08db3e3c0b538c12"]
     },
     {
       "stage": "attention_softmax_weighted_aggregation",
@@ -75,11 +76,11 @@
       "head_index": 4,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 1505.828,
-      "prove_time_ms": 8240.051,
-      "verify_time_ms": 4641.495,
+      "commitment_time_ms": 1499.327,
+      "prove_time_ms": 8231.670,
+      "verify_time_ms": 4434.059,
       "proof_size_bytes": 279572,
-      "proof_digests": ["denominator=6917c7fb2ecb1dbd", "inverse=d03f95245e05fa32", "inverse_route=4d576f1aedf03c6f", "alpha_from_inverse=d5e07a6486b6dc59", "alpha_times_denominator=033f925d35a656fc", "message_route=2b6af110a46d2812", "alpha_message=a32c6ea68d8468b1", "weighted_aggregation=c8157714cc153318"]
+      "proof_digests": ["denominator=9e001a27e0a302ba", "inverse=063789ea52efc5a9", "inverse_route=54de0d4369f96767", "alpha_from_inverse=6b069cdb07a92709", "alpha_times_denominator=e8f9cf4e9da8aa3d", "message_route=3fc0fb46db4184ae", "alpha_message=6cf04d217166c5a1", "weighted_aggregation=e3017423abaf6fd1"]
     },
     {
       "stage": "attention_softmax_weighted_aggregation",
@@ -89,11 +90,11 @@
       "head_index": 5,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 1478.742,
-      "prove_time_ms": 8217.828,
-      "verify_time_ms": 4649.443,
+      "commitment_time_ms": 1470.890,
+      "prove_time_ms": 8246.467,
+      "verify_time_ms": 4432.510,
       "proof_size_bytes": 279572,
-      "proof_digests": ["denominator=a6e5b91bde14223f", "inverse=38ff2190c55a3877", "inverse_route=9d02a1862eb47507", "alpha_from_inverse=88c3a52cb75e926f", "alpha_times_denominator=9237315f3b73f3b7", "message_route=85883924f7f483b9", "alpha_message=00468de7e2048b02", "weighted_aggregation=379bd16b233b1340"]
+      "proof_digests": ["denominator=23f0a2f5d062d0cf", "inverse=6de7cff7df5dd321", "inverse_route=65c27eced51bdb12", "alpha_from_inverse=db02f340ceebe910", "alpha_times_denominator=b5775e45d8b6d860", "message_route=1e031a589f8aa028", "alpha_message=d84b0f519704d1c7", "weighted_aggregation=9ce57fb28975670c"]
     },
     {
       "stage": "attention_softmax_weighted_aggregation",
@@ -103,11 +104,11 @@
       "head_index": 6,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 1491.288,
-      "prove_time_ms": 8172.991,
-      "verify_time_ms": 4687.400,
+      "commitment_time_ms": 1485.426,
+      "prove_time_ms": 8176.335,
+      "verify_time_ms": 4442.740,
       "proof_size_bytes": 279572,
-      "proof_digests": ["denominator=cc9b3eaddae93f7f", "inverse=5ab0d1d77b6ec57d", "inverse_route=4444c023b2bc820c", "alpha_from_inverse=6c12cc926d2becc7", "alpha_times_denominator=b7490bc3068e33ee", "message_route=bfc8e586ead0bda5", "alpha_message=b0d9c38ee5673f69", "weighted_aggregation=e192251fd476be1e"]
+      "proof_digests": ["denominator=6fe8f011d6a70838", "inverse=481525bf92e2ff76", "inverse_route=d6be201712bbb301", "alpha_from_inverse=296e8bb16490d0f3", "alpha_times_denominator=7404bc2c26fa3c58", "message_route=160937677ec8ba2a", "alpha_message=c26c2d3ec6541ac8", "weighted_aggregation=ed2913481a5f0575"]
     },
     {
       "stage": "attention_softmax_weighted_aggregation",
@@ -117,11 +118,11 @@
       "head_index": 7,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 1501.782,
-      "prove_time_ms": 8227.940,
-      "verify_time_ms": 4651.082,
+      "commitment_time_ms": 1494.846,
+      "prove_time_ms": 8245.917,
+      "verify_time_ms": 4424.616,
       "proof_size_bytes": 279572,
-      "proof_digests": ["denominator=06352cdf9d74c73b", "inverse=051416da181de6b4", "inverse_route=f44ba789987ecad0", "alpha_from_inverse=e4a6bb86594c0fe8", "alpha_times_denominator=d8fcb3d3e4f577d6", "message_route=7d412d60ba80bf7d", "alpha_message=09546f5b165aa536", "weighted_aggregation=5d998a925578419d"]
+      "proof_digests": ["denominator=8ed5fd76fdf6dfda", "inverse=711eae6b7589cb73", "inverse_route=cc8290e8438eac7d", "alpha_from_inverse=44ed81748d4efed9", "alpha_times_denominator=bd85bd2e91b8562c", "message_route=f50ae71b9171dd05", "alpha_message=d9125b637675c3b2", "weighted_aggregation=ecd51e1607ccd4b6"]
     },
     {
       "stage": "attention_softmax_weighted_aggregation",
@@ -131,12 +132,26 @@
       "head_index": 0,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 1708.847,
-      "prove_time_ms": 8201.402,
-      "verify_time_ms": 4666.616,
+      "commitment_time_ms": 1698.215,
+      "prove_time_ms": 8243.861,
+      "verify_time_ms": 4436.827,
       "proof_size_bytes": 279572,
-      "proof_digests": ["denominator=41ed3ac70a0971c0", "inverse=ec89825a942184b1", "inverse_route=a0f66175ccb9492a", "alpha_from_inverse=7b69f5b74df608e0", "alpha_times_denominator=996563327e4d6c1a", "message_route=d982189f6f0fbac1", "alpha_message=0008ea8424b8a3cd", "weighted_aggregation=b0e36f5814d5f849"]
+      "proof_digests": ["denominator=8250fc006a84bc73", "inverse=c45613bfb9c22623", "inverse_route=5fb475cce4c5c600", "alpha_from_inverse=071ff5ff3b1b8a26", "alpha_times_denominator=0875c4a8e49d9cdd", "message_route=b0e3432c8bfb51fe", "alpha_message=c43cef9b9ca4492b", "weighted_aggregation=a3f3ab4926423874"]
+    },
+    {
+      "stage": "output_head_average_public_logits_binding",
+      "relation_scope": "cora:output_layer:all_heads:public_logits",
+      "layer_kind": "output",
+      "layer_index": 0,
+      "head_index": 0,
+      "proof_generated": true,
+      "verified": true,
+      "commitment_time_ms": 131.685,
+      "prove_time_ms": 716.317,
+      "verify_time_ms": 59.675,
+      "proof_size_bytes": 5314,
+      "proof_digests": ["head_average_public_logits=d2cc3e62c95f1dda"]
     }
   ],
-  "missing_relations": ["hidden projection matmul relation 尚未纳入 full proof object", "attention dot / LeakyReLU lookup-range proof 尚未纳入 full proof object", "target-node max/shift comparison proof 尚未纳入 full proof object", "ExpMap lookup/range proof 尚未纳入 full proof object", "ELU lookup-range proof 尚未纳入 full proof object", "hidden concat binding 尚未纳入 full proof object", "output bias/head average/public logits clean verifier 尚未纳入 full proof object", "real rescale/rounding proof 尚未纳入 full proof object", "GPU verifier 仍未实现 device/batched verifier 口径"]
+  "missing_relations": ["hidden projection matmul relation 尚未纳入 full proof object", "attention dot / LeakyReLU lookup-range proof 尚未纳入 full proof object", "target-node max/shift comparison proof 尚未纳入 full proof object", "ExpMap lookup/range proof 尚未纳入 full proof object", "ELU lookup-range proof 尚未纳入 full proof object", "hidden concat binding 尚未纳入 full proof object", "output attention bias 前序链与尺度对齐尚未纳入 full proof object", "real rescale/rounding proof 尚未纳入 full proof object", "GPU verifier 仍未实现 device/batched verifier 口径"]
 }

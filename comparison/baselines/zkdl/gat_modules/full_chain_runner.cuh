@@ -72,6 +72,12 @@ ZkdlFullProofObject run_gpu_full_chain_proof(
             prove_gpu_attention_softmax_chain(
                 spec, graph, trace.output_heads[head], "output", 0, head, requested_commitment_block_size));
     }
+    log_line("full_chain_runner dataset=" + spec.dataset
+        + " device=gpu stage=prove_output_head_average_public_logits");
+    append_full_relation_record(
+        proof,
+        prove_gpu_output_logits_binding_full_record(
+            spec, graph, model, trace, requested_commitment_block_size));
 
     proof.missing_relations = {
         "hidden projection matmul relation 尚未纳入 full proof object",
@@ -80,7 +86,7 @@ ZkdlFullProofObject run_gpu_full_chain_proof(
         "ExpMap lookup/range proof 尚未纳入 full proof object",
         "ELU lookup-range proof 尚未纳入 full proof object",
         "hidden concat binding 尚未纳入 full proof object",
-        "output bias/head average/public logits clean verifier 尚未纳入 full proof object",
+        "output attention bias 前序链与尺度对齐尚未纳入 full proof object",
         "real rescale/rounding proof 尚未纳入 full proof object",
         "GPU verifier 仍未实现 device/batched verifier 口径"
     };
