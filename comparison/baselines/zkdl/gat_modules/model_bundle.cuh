@@ -127,6 +127,7 @@ struct ModelParams {
     std::string model_arch_id;
     std::string model_param_id;
     std::string quant_cfg_id;
+    std::string static_table_id;
     std::string output_average_rule;
 };
 
@@ -218,6 +219,7 @@ ModelParams load_model(const fs::path& checkpoint_root) {
     model.model_arch_id = parse_required_string(manifest, "model_arch_id");
     model.model_param_id = parse_required_string(manifest, "model_param_id");
     model.quant_cfg_id = parse_required_string(manifest, "quant_cfg_id");
+    model.static_table_id = parse_required_string(manifest, "static_table_id");
     model.output_average_rule = parse_required_string(manifest, "output_average_rule");
     for (const auto& entry : parse_object_array(manifest, "hidden_layers")) {
         model.hidden_profile.push_back({

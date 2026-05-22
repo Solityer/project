@@ -18,11 +18,17 @@ struct FullChainScopeStatus
     std::size_t output_head_count = 0;
     bool is_full_dataset = false;
     bool official_ready = false;
+    std::string metadata_id;
+    std::string vk_static_id;
+    std::string vk_model_id;
+    std::string quant_contract_id;
+    std::string table_context_id;
     std::vector<std::string> required_clauses;
     std::vector<std::string> partial_artifacts;
     std::vector<std::string> missing_clauses;
     fs::path status_path;
     fs::path evidence_path;
+    fs::path protocol_context_path;
 };
 
 std::string join_semicolon(const std::vector<std::string>& values)
@@ -80,14 +86,14 @@ std::vector<std::string> zkdl_full_chain_missing_clauses(const std::string& devi
     std::vector<std::string> missing = {
         "缺少协议定义的 pi_GAT^zkDL 完整 proof object 序列化",
         "缺少 Com_base/Com_comp/Com_aux/Com_tbl/Com_agg 的全链承诺布局",
-        "lookup/range/max/comparison 仍未绑定真实 GAT VK_static/table/context",
-        "ExpMap table/range 尚未接入 softmax runner",
-        "LeakyReLU/ELU lookup-range 尚未接入隐藏层和输出层语义",
+        "lookup/range/max/comparison 尚未把已记录的 GAT VK_static/table/context 消费进 proof",
+        "ExpMap table/range contract 已记录，但尚未接入 softmax proof runner",
+        "LeakyReLU/ELU lookup-range contract 已记录，但尚未接入隐藏层和输出层 proof",
         "target-node max/shift 仍缺 per-destination representative selector",
         "all-layer/all-head relation runner 尚未生成全链 sumcheck/eval proof",
         "output attention aggregation 尚未进入 zkDL relation proof",
         "output bias/head average/public logits binding 尚未进入 verifier 可复验对象",
-        "real rescale/rounding sign/tie-breaking public contract 尚未落到 proof",
+        "real rescale/rounding sign/tie-breaking public contract 已记录，但尚未落到 proof",
         "clean verifier 尚未按协议重放 full-chain transcript 与所有 relation",
         "proof_size_bytes 尚无完整 zkDL proof object 可统计"
     };
@@ -151,6 +157,17 @@ FullChainScopeStatus write_full_chain_scope_status(
     status.official_ready = status.is_full_dataset && status.missing_clauses.empty();
     status.status_path = run_dir / "formal_artifacts" / "zkdl_full_chain_scope.status.txt";
     status.evidence_path = output_root / "evidence" / ("full_chain_scope_" + device + "_" + spec.dataset + ".json");
+    status.protocol_context_path = run_dir / "formal_artifacts" / "zkdl_full_chain_public_metadata.json";
+
+    const auto public_metadata = build_zkdl_gat_public_metadata(spec, dataset, graph, model);
+    const auto quant_contract = build_zkdl_gat_quant_contract(spec, model);
+    const auto table_context = build_zkdl_gat_table_context(spec, model);
+    status.metadata_id = public_metadata.metadata_id;
+    status.vk_static_id = table_context.context_id;
+    status.vk_model_id = model.model_param_id;
+    status.quant_contract_id = quant_contract.contract_id;
+    status.table_context_id = table_context.context_id;
+    write_zkdl_gat_protocol_context_json(status.protocol_context_path, public_metadata, quant_contract, table_context);
 
     {
         std::ofstream out(status.status_path);
@@ -169,6 +186,12 @@ FullChainScopeStatus write_full_chain_scope_status(
         out << "hidden_layer_count=" << status.hidden_layer_count << "\n";
         out << "hidden_head_count=" << status.hidden_head_count << "\n";
         out << "output_head_count=" << status.output_head_count << "\n";
+        out << "metadata_id=" << status.metadata_id << "\n";
+        out << "vk_static_id=" << status.vk_static_id << "\n";
+        out << "vk_model_id=" << status.vk_model_id << "\n";
+        out << "quant_contract_id=" << status.quant_contract_id << "\n";
+        out << "table_context_id=" << status.table_context_id << "\n";
+        out << "protocol_context=" << status.protocol_context_path.string() << "\n";
         out << "partial_artifacts=" << join_semicolon(status.partial_artifacts) << "\n";
         out << "missing_clause_count=" << status.missing_clauses.size() << "\n";
         for (const auto& clause : status.missing_clauses) {
@@ -192,6 +215,12 @@ FullChainScopeStatus write_full_chain_scope_status(
         out << "  \"hidden_layer_count\": \"" << status.hidden_layer_count << "\",\n";
         out << "  \"hidden_head_count\": \"" << status.hidden_head_count << "\",\n";
         out << "  \"output_head_count\": \"" << status.output_head_count << "\",\n";
+        out << "  \"metadata_id\": \"" << json_escape(status.metadata_id) << "\",\n";
+        out << "  \"vk_static_id\": \"" << json_escape(status.vk_static_id) << "\",\n";
+        out << "  \"vk_model_id\": \"" << json_escape(status.vk_model_id) << "\",\n";
+        out << "  \"quant_contract_id\": \"" << json_escape(status.quant_contract_id) << "\",\n";
+        out << "  \"table_context_id\": \"" << json_escape(status.table_context_id) << "\",\n";
+        out << "  \"protocol_context_path\": \"" << json_escape(status.protocol_context_path.string()) << "\",\n";
         write_json_string_array(out, "required_clauses", status.required_clauses, true);
         write_json_string_array(out, "partial_artifacts", status.partial_artifacts, true);
         write_json_string_array(out, "missing_clauses", status.missing_clauses, false);
@@ -203,7 +232,9 @@ FullChainScopeStatus write_full_chain_scope_status(
               << " device=" << status.device
               << " stage=full_chain_scope status=" << (status.official_ready ? "official_ready" : "blocked")
               << " missing_clause_count=" << status.missing_clauses.size()
+              << " metadata_id=" << status.metadata_id
               << " status_path=" << status.status_path.string()
+              << " protocol_context=" << status.protocol_context_path.string()
               << " evidence_path=" << status.evidence_path.string() << "\n";
     }
     return status;
