@@ -38,13 +38,18 @@ namespace {
 #include "gat_modules/formal_common.cuh"
 #include "gat_modules/protocol_context.cuh"
 #include "gat_modules/formal_sparse_utils.cuh"
+#include "gat_modules/full_proof_object.cuh"
+#include "gat_modules/softmax_lookup_runner.cuh"
 #include "gat_modules/artifact_writer.cuh"
 #include "gat_modules/cpu_formal_backend.cuh"
+#include "gat_modules/cpu_multi_column_relations.cuh"
 #include "gat_modules/cpu_formal_runner.cuh"
 #include "gat_modules/formal_softmax_runners.cuh"
 #include "gat_modules/gpu_formal_runner.cuh"
 #include "gat_modules/output_binding_runner.cuh"
 #include "gat_modules/full_chain_scope.cuh"
+#include "gat_modules/full_chain_runner.cuh"
+#include "gat_modules/cpu_full_chain_runner.cuh"
 #include "gat_modules/run_dispatch.cuh"
 
 } // namespace
@@ -58,6 +63,7 @@ int main(int argc, char** argv) {
         bool formal_softmax_aggregation = false;
         bool formal_output_binding = false;
         bool formal_full_chain_scope = false;
+        bool formal_full_chain = false;
         std::string formal_device = "gpu";
         std::string only_dataset;
         std::size_t softmax_max_feature_columns = 0;
@@ -71,7 +77,8 @@ int main(int argc, char** argv) {
                     << "       ./gat_zkdl --formal-sparse-grouped --dataset DATASET [--formal-commitment-block-size N] --output-root DIR\n"
                     << "       ./gat_zkdl --formal-softmax-aggregation --dataset DATASET [--max-feature-columns N] [--formal-commitment-block-size N] --output-root DIR\n"
                     << "       ./gat_zkdl --formal-output-binding --dataset DATASET [--formal-commitment-block-size N] --output-root DIR\n"
-                    << "       ./gat_zkdl --formal-full-chain-scope --device cpu|gpu --dataset DATASET --output-root DIR\n";
+                    << "       ./gat_zkdl --formal-full-chain-scope --device cpu|gpu --dataset DATASET --output-root DIR\n"
+                    << "       ./gat_zkdl --formal-full-chain --device cpu|gpu --dataset DATASET --output-root DIR\n";
                 return 0;
             } else if (arg == "--project-root" && i + 1 < argc) {
                 project_root = argv[++i];
@@ -93,6 +100,8 @@ int main(int argc, char** argv) {
                 formal_output_binding = true;
             } else if (arg == "--formal-full-chain-scope") {
                 formal_full_chain_scope = true;
+            } else if (arg == "--formal-full-chain") {
+                formal_full_chain = true;
             } else if (arg == "--max-feature-columns" && i + 1 < argc) {
                 softmax_max_feature_columns = static_cast<std::size_t>(std::stoull(argv[++i]));
             } else if (arg == "--formal-commitment-block-size" && i + 1 < argc) {
@@ -139,10 +148,15 @@ int main(int argc, char** argv) {
             return 0;
         }
 
+        if (formal_full_chain) {
+            run_selected_full_chain(project_root, output_root, specs, only_dataset, formal_device, formal_commitment_block_size);
+            return 0;
+        }
+
         throw std::runtime_error(
             "默认 --run-all 旧调度会混写 GPU forward/debug 与正式结果，已禁用；"
             "请使用 --formal-cpu-chain、--formal-sparse-grouped、"
-            "--formal-softmax-aggregation、--formal-output-binding 或 --formal-full-chain-scope，"
+            "--formal-softmax-aggregation、--formal-output-binding、--formal-full-chain-scope 或 --formal-full-chain，"
             "并通过 update_zkdl_gat_results.py 导出 CPU/GPU 分目录结果");
     } catch (const std::exception& error) {
         std::cerr << "fatal: " << error.what() << '\n';

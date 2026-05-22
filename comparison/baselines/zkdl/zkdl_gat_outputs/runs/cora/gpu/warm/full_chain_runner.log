@@ -1,0 +1,14 @@
+full_chain_runner dataset=cora device=gpu stage=load_dataset
+full_chain_runner dataset=cora device=gpu stage=load_model
+full_chain_runner dataset=cora device=gpu stage=gpu_forward_trace
+full_chain_runner dataset=cora device=gpu forward_ms=369.531 hidden_layers=1 output_heads=1
+full_chain_runner dataset=cora device=gpu stage=prove_hidden_attention layer=0 head=0
+full_chain_runner dataset=cora device=gpu stage=prove_hidden_attention layer=0 head=1
+full_chain_runner dataset=cora device=gpu stage=prove_hidden_attention layer=0 head=2
+full_chain_runner dataset=cora device=gpu stage=prove_hidden_attention layer=0 head=3
+full_chain_runner dataset=cora device=gpu stage=prove_hidden_attention layer=0 head=4
+full_chain_runner dataset=cora device=gpu stage=prove_hidden_attention layer=0 head=5
+full_chain_runner dataset=cora device=gpu stage=prove_hidden_attention layer=0 head=6
+full_chain_runner dataset=cora device=gpu stage=prove_hidden_attention layer=0 head=7
+full_chain_runner dataset=cora device=gpu stage=prove_output_attention head=0
+full_chain_runner dataset=cora device=gpu proof_generated=false verified=false relation_records=9 missing_relations=9 proof_size_bytes=2516148

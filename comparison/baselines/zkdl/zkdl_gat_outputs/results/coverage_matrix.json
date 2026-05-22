@@ -96,7 +96,7 @@
       "gpu_status": "partial_formal_5/5",
       "total_scope": "hidden layer0/head0",
       "verified_scope": "GPU multi-column relation where artifact exists",
-      "blocker": "CPU weighted aggregation 未完成；output aggregation 未完成",
+      "blocker": "CPU multi-column relation 已接入 full-chain runner，但当前 CPU commitment 过慢，尚无完成 artifact；output aggregation 未完成",
       "cora": true,
       "citeseer": true,
       "pubmed": true,
@@ -119,6 +119,21 @@
       "ogbn_arxiv": true,
       "evidence_file": "zkdl_gat_outputs/evidence/full_chain_scope_<device>_<dataset>.json",
       "notes": "该行是正式流程的 full-chain 范围门禁；它防止 partial artifact 被导出为 official。"
+    },
+    {
+      "relation_name": "full proof manifest / verifier manifest",
+      "cpu_status": "relation_manifest_0/5",
+      "gpu_status": "relation_manifest_1/5",
+      "total_scope": "five full datasets × CPU/GPU",
+      "verified_scope": "only relation_proofs_generated; proof_generated requires missing_relations empty",
+      "blocker": "full proof object 尚未覆盖 Com_base/Com_comp/Com_aux/Com_tbl/Com_agg 全部子句，clean verifier 未通过",
+      "cora": false,
+      "citeseer": false,
+      "pubmed": false,
+      "ppi": false,
+      "ogbn_arxiv": false,
+      "evidence_file": "zkdl_gat_outputs/runs/<dataset>/<device>/warm/full_proof_manifest.json;full_verifier_manifest.json",
+      "notes": "`relation_proofs_generated=true` 只表示已纳入子证明生成成功；`proof_generated=false` 时不得导出 official。"
     },
     {
       "relation_name": "output average / public logits binding",
