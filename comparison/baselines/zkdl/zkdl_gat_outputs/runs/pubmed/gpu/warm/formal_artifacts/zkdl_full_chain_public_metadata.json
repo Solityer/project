@@ -1,0 +1,55 @@
+{
+  "protocol_id": "GAT-ZKML-zkDL",
+  "proof_scope_id": "zkdl_gat_full",
+  "metadata_id": "zkdl_public_metadata:c0f749b4efff8a14",
+  "dataset": "pubmed",
+  "public_input": {
+    "M_pub": "pubmed:features/labels/public-split-metadata",
+    "Topo": "edge_gid_then_dst_stable;self_loop=per_node",
+    "VK_static": "zkdl_table_context:09a4e8e58b2e34c4",
+    "VK_model": "pubmed_gat",
+    "Y": "public_logits_commitment_target"
+  },
+  "dataset_shape": {
+    "node_count": 19717,
+    "edge_count": 108365,
+    "feature_count": 500,
+    "class_count": 3,
+    "graph_count": 1
+  },
+  "model_shape": {
+    "L": 2,
+    "hidden_profile": "8x8",
+    "hidden_head_count": 8,
+    "output_head_count": 1,
+    "output_average_rule": "per_head_bias_then_arithmetic_mean"
+  },
+  "VK_model": {
+    "model_arch_id": "gat_family_L2_hid8x8_kout1_c3",
+    "model_param_id": "pubmed_gat",
+    "dim_cfg": "L=2;hidden_profile=8x8;K_out=1;C=3"
+  },
+  "VK_static": {
+    "static_table_id": "tables:lrelu+elu+exp+range",
+    "table_context_id": "zkdl_table_context:09a4e8e58b2e34c4",
+    "range_size": 4096,
+    "lrelu_entry_count": 8191,
+    "elu_entry_count": 24573,
+    "exp_entry_count": 20480,
+    "range_digest": "range:05acc4ecc695d97d",
+    "lrelu_digest": "lrelu:31ea27e145b17d06",
+    "elu_digest": "elu:f2d3a3c6cab780cc",
+    "exp_digest": "exp:cc60cce696f8a102"
+  },
+  "quantization_contract": {
+    "contract_id": "zkdl_quant_contract:300a40e16882538f",
+    "quant_cfg_id": "fp32_bundle_export",
+    "encoding_id": "signed_fixed_point_scale_16_to_Fr",
+    "scale": 16,
+    "range_bits": 12,
+    "rounding_policy": "round_half_away_from_zero",
+    "rescale_policy": "trace_contract_recorded_no_full_rescale_proof_yet"
+  },
+  "commitment_backend": "zkDL_Hyrax_style_tensor_commitment",
+  "说明": "该文件只记录 full-chain public metadata/VK/table/rounding contract；不是 proof object，也不会写入 official latest。"
+}

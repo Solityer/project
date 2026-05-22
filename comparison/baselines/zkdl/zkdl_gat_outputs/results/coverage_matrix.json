@@ -1,6 +1,21 @@
 {
   "rows": [
     {
+      "relation_name": "public metadata / VK_static / VK_model",
+      "cpu_status": "scope_context_5/5",
+      "gpu_status": "scope_context_5/5",
+      "total_scope": "five full datasets × CPU/GPU",
+      "verified_scope": "public metadata and table/quant contract recorded; no proof object",
+      "blocker": "尚未由 full pi_GAT^zkDL proof object 消费并验证",
+      "cora": true,
+      "citeseer": true,
+      "pubmed": true,
+      "ppi": true,
+      "ogbn_arxiv": true,
+      "evidence_file": "zkdl_gat_outputs/runs/<dataset>/<device>/warm/formal_artifacts/zkdl_full_chain_public_metadata.json",
+      "notes": "迁移主实验的 public metadata、VK_static/VK_model、table context、quant/rounding contract 组织；未迁移 KZG/quotient/transcript/proof layout。"
+    },
+    {
       "relation_name": "commitment / evaluation binding",
       "cpu_status": "supported",
       "gpu_status": "supported",
@@ -48,13 +63,13 @@
     {
       "relation_name": "denominator / inverse / alpha",
       "cpu_status": "partial_formal_5/5_failed_0/5",
-      "gpu_status": "partial_formal_4/5",
+      "gpu_status": "partial_formal_5/5",
       "total_scope": "hidden layer0/head0 denominator, inverse, alpha consistency",
       "verified_scope": "relation-level",
       "blocker": "softmax max/shift 与 ExpMap lookup/range 未闭合",
       "cora": true,
       "citeseer": true,
-      "pubmed": false,
+      "pubmed": true,
       "ppi": true,
       "ogbn_arxiv": true,
       "evidence_file": "zkdl_gat_outputs/results/formal_partial_debug.csv",
@@ -78,13 +93,13 @@
     {
       "relation_name": "weighted aggregation",
       "cpu_status": "blocked",
-      "gpu_status": "partial_formal_4/5",
+      "gpu_status": "partial_formal_5/5",
       "total_scope": "hidden layer0/head0",
       "verified_scope": "GPU multi-column relation where artifact exists",
       "blocker": "CPU weighted aggregation 未完成；output aggregation 未完成",
       "cora": true,
       "citeseer": true,
-      "pubmed": false,
+      "pubmed": true,
       "ppi": true,
       "ogbn_arxiv": true,
       "evidence_file": "zkdl_gat_outputs/results/gpu/formal_partial_debug.csv",
@@ -141,14 +156,14 @@
       "gpu_status": "blocked",
       "total_scope": "full GAT fixed-point chain",
       "verified_scope": "NA",
-      "blocker": "缺公开 rho/delta/rem_bits/tie_policy 字段；不能用 host equality 或 debug comparison 代替 proof",
+      "blocker": "public rounding contract 已记录；rho/delta/rem_bits/tie_policy proof 尚未接入，不能用 host equality 或 debug comparison 代替",
       "cora": false,
       "citeseer": false,
       "pubmed": false,
       "ppi": false,
       "ogbn_arxiv": false,
       "evidence_file": "README.md;zkdl_gat_outputs/results/coverage_matrix.md",
-      "notes": "该 blocker 来自协议字段缺口，不是主仓库 proof scheme 可迁移项。"
+      "notes": "该 blocker 来自 proof 接入缺口，不是主仓库 proof scheme 可迁移项。"
     },
     {
       "relation_name": "debug_level_b output binding",

@@ -36,6 +36,7 @@ namespace {
 #include "gat_modules/cpu_forward.cuh"
 #include "gat_modules/gpu_forward.cuh"
 #include "gat_modules/formal_common.cuh"
+#include "gat_modules/protocol_context.cuh"
 #include "gat_modules/formal_sparse_utils.cuh"
 #include "gat_modules/artifact_writer.cuh"
 #include "gat_modules/cpu_formal_backend.cuh"
