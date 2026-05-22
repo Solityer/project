@@ -31,6 +31,8 @@ struct ZkdlFullProofObject {
     bool relation_proofs_generated = false;
     bool proof_generated = false;
     bool verified = false;
+    bool verifier_reads_witness = false;
+    bool witness_included_in_proof = false;
     double commitment_ms = 0.0;
     double prove_ms = 0.0;
     double verify_ms = 0.0;
@@ -113,6 +115,8 @@ void write_zkdl_full_proof_object(const ZkdlFullProofObject& proof)
         out << "relation_proofs_generated=" << (proof.relation_proofs_generated ? "true" : "false") << "\n";
         out << "proof_generated=" << (proof.proof_generated ? "true" : "false") << "\n";
         out << "verified=" << (proof.verified ? "true" : "false") << "\n";
+        out << "verifier_reads_witness=" << (proof.verifier_reads_witness ? "true" : "false") << "\n";
+        out << "witness_included_in_proof=" << (proof.witness_included_in_proof ? "true" : "false") << "\n";
         out << "relation_record_count=" << proof.records.size() << "\n";
         out << "missing_relation_count=" << proof.missing_relations.size() << "\n";
         out << "commitment_time_ms=" << format_ms(proof.commitment_ms) << "\n";
@@ -148,6 +152,8 @@ void write_zkdl_full_proof_object(const ZkdlFullProofObject& proof)
         out << "  \"relation_proofs_generated\": " << (proof.relation_proofs_generated ? "true" : "false") << ",\n";
         out << "  \"proof_generated\": " << (proof.proof_generated ? "true" : "false") << ",\n";
         out << "  \"verified\": " << (proof.verified ? "true" : "false") << ",\n";
+        out << "  \"verifier_reads_witness\": " << (proof.verifier_reads_witness ? "true" : "false") << ",\n";
+        out << "  \"witness_included_in_proof\": " << (proof.witness_included_in_proof ? "true" : "false") << ",\n";
         out << "  \"benchmark_mode\": \"warm\",\n";
         out << "  \"commitment_time_ms\": " << format_ms(proof.commitment_ms) << ",\n";
         out << "  \"prove_time_ms\": " << format_ms(proof.prove_ms) << ",\n";
@@ -174,7 +180,8 @@ void write_zkdl_full_proof_object(const ZkdlFullProofObject& proof)
         out << "  \"relation_proofs_generated\": " << (proof.relation_proofs_generated ? "true" : "false") << ",\n";
         out << "  \"proof_generated\": " << (proof.proof_generated ? "true" : "false") << ",\n";
         out << "  \"verified\": " << (proof.verified ? "true" : "false") << ",\n";
-        out << "  \"verifier_reads_witness\": false,\n";
+        out << "  \"verifier_reads_witness\": " << (proof.verifier_reads_witness ? "true" : "false") << ",\n";
+        out << "  \"witness_included_in_proof\": " << (proof.witness_included_in_proof ? "true" : "false") << ",\n";
         out << "  \"relation_verify_count\": " << proof.records.size() << ",\n";
         out << "  \"missing_relation_count\": " << proof.missing_relations.size() << ",\n";
         out << "  \"verify_time_ms\": " << format_ms(proof.verify_ms) << ",\n";

@@ -1,0 +1,42 @@
+ZKDLGATFULLPROOF
+version=1
+protocol_id=GAT-ZKML-zkDL
+proof_scope=zkdl_gat_full
+dataset=cora
+device=cpu
+metadata_id=zkdl_public_metadata:681da38dd372b340
+vk_static_id=zkdl_table_context:09a4e8e58b2e34c4
+vk_model_id=cora_gat
+quant_contract_id=zkdl_quant_contract:300a40e16882538f
+full_dataset=true
+relation_proofs_generated=true
+proof_generated=false
+verified=false
+verifier_reads_witness=false
+witness_included_in_proof=false
+relation_record_count=10
+missing_relation_count=9
+commitment_time_ms=574163.289
+prove_time_ms=466533.413
+verify_time_ms=42203.239
+proof_size_bytes=2634938
+relation=cpu_attention_softmax_weighted_aggregation;scope=cora:hidden_layer0_head0;layer_kind=hidden;layer=0;head=0;verified=true;proof_size_bytes=292180
+relation=cpu_attention_softmax_weighted_aggregation;scope=cora:hidden_layer0_head1;layer_kind=hidden;layer=0;head=1;verified=true;proof_size_bytes=292180
+relation=cpu_attention_softmax_weighted_aggregation;scope=cora:hidden_layer0_head2;layer_kind=hidden;layer=0;head=2;verified=true;proof_size_bytes=292180
+relation=cpu_attention_softmax_weighted_aggregation;scope=cora:hidden_layer0_head3;layer_kind=hidden;layer=0;head=3;verified=true;proof_size_bytes=292180
+relation=cpu_attention_softmax_weighted_aggregation;scope=cora:hidden_layer0_head4;layer_kind=hidden;layer=0;head=4;verified=true;proof_size_bytes=292180
+relation=cpu_attention_softmax_weighted_aggregation;scope=cora:hidden_layer0_head5;layer_kind=hidden;layer=0;head=5;verified=true;proof_size_bytes=292180
+relation=cpu_attention_softmax_weighted_aggregation;scope=cora:hidden_layer0_head6;layer_kind=hidden;layer=0;head=6;verified=true;proof_size_bytes=292180
+relation=cpu_attention_softmax_weighted_aggregation;scope=cora:hidden_layer0_head7;layer_kind=hidden;layer=0;head=7;verified=true;proof_size_bytes=292180
+relation=cpu_attention_softmax_weighted_aggregation;scope=cora:output_layer0_head0;layer_kind=output;layer=0;head=0;verified=true;proof_size_bytes=292180
+relation=cpu_output_head_average_public_logits_binding;scope=cora:output_layer:all_heads:public_logits;layer_kind=output;layer=0;head=0;verified=true;proof_size_bytes=5318
+missing=hidden projection matmul relation 尚未纳入 full proof object
+missing=attention dot / LeakyReLU lookup-range proof 尚未纳入 full proof object
+missing=target-node max/shift comparison proof 尚未纳入 full proof object
+missing=ExpMap lookup/range proof 尚未纳入 full proof object
+missing=ELU lookup-range proof 尚未纳入 full proof object
+missing=hidden concat binding 尚未纳入 full proof object
+missing=output attention bias 前序链与尺度对齐尚未纳入 full proof object
+missing=real rescale/rounding proof 尚未纳入 full proof object
+missing=CPU batched opening/verifier 尚未覆盖 all-layer/all-head full proof
+说明=该 proof object 只保存 proof metadata、子证明摘要和 proof_size；不包含完整 witness 或完整 tensor。verified=false 时不得导出 official。

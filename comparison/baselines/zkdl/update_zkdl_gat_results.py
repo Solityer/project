@@ -412,6 +412,10 @@ def official_row_from_manifest(device: str, dataset: str) -> dict[str, object] |
         return None
     if str(verifier_manifest.get("verifier_reads_witness", "")).lower() != "false":
         return None
+    if str(proof_manifest.get("witness_included_in_proof", "")).lower() != "false":
+        return None
+    if str(verifier_manifest.get("witness_included_in_proof", "")).lower() != "false":
+        return None
     return {
         "dataset": dataset,
         "status": "ok",
