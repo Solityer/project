@@ -76,3 +76,24 @@ void run_selected_full_chain_scope(
     const auto& spec = dataset_spec_or_throw(specs, dataset, "formal full-chain scope");
     run_formal_full_chain_scope(project_root, output_root, spec, device);
 }
+
+void run_selected_full_chain(
+    const fs::path& project_root,
+    const fs::path& output_root,
+    const std::vector<DatasetRunSpec>& specs,
+    const std::string& dataset,
+    const std::string& device,
+    std::size_t requested_commitment_block_size)
+{
+    if (dataset.empty()) {
+        throw std::runtime_error("--formal-full-chain requires --dataset");
+    }
+    const auto& spec = dataset_spec_or_throw(specs, dataset, "formal full-chain runner");
+    if (device == "gpu") {
+        (void)run_gpu_full_chain_proof(project_root, output_root, spec, requested_commitment_block_size);
+    } else if (device == "cpu") {
+        (void)run_cpu_full_chain_proof(project_root, output_root, spec, requested_commitment_block_size);
+    } else {
+        throw std::runtime_error("--formal-full-chain requires --device cpu|gpu");
+    }
+}

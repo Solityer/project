@@ -184,6 +184,16 @@ def official_manifest(device: str, dataset: str) -> Path:
     return run_dir / "run_manifest.json"
 
 
+def full_proof_manifest(device: str, dataset: str) -> Path:
+    run_dir = cpu_run_dir(dataset) if device == "cpu" else gpu_run_dir(dataset)
+    return run_dir / "full_proof_manifest.json"
+
+
+def full_verifier_manifest(device: str, dataset: str) -> Path:
+    run_dir = cpu_run_dir(dataset) if device == "cpu" else gpu_run_dir(dataset)
+    return run_dir / "full_verifier_manifest.json"
+
+
 def gpu_proof(dataset: str, kind: str) -> Path:
     filename = {
         "sparse": "zkdl_sparse_grouped_relations.proof.txt",
@@ -375,28 +385,42 @@ def all_statuses() -> dict[str, dict[str, dict[str, str]]]:
 
 
 def official_row_from_manifest(device: str, dataset: str) -> dict[str, object] | None:
-    manifest = read_json_object(official_manifest(device, dataset))
-    if not manifest:
+    proof_manifest = read_json_object(full_proof_manifest(device, dataset))
+    verifier_manifest = read_json_object(full_verifier_manifest(device, dataset))
+    if not proof_manifest or not verifier_manifest:
         return None
-    if str(manifest.get("benchmark_mode", "")) != "warm":
+    if str(proof_manifest.get("benchmark_mode", "")) != "warm":
         return None
-    if str(manifest.get("status", "")).lower() not in {"ok", "verify_ok"}:
+    if str(proof_manifest.get("proof_scope", "")) != "zkdl_gat_full":
         return None
-    if str(manifest.get("is_full_dataset", "")).lower() != "true":
+    if str(verifier_manifest.get("proof_scope", "")) != "zkdl_gat_full":
         return None
-    if str(manifest.get("verified", "")).lower() != "true":
+    if str(proof_manifest.get("dataset", "")) != dataset or str(verifier_manifest.get("dataset", "")) != dataset:
         return None
-    if str(manifest.get("proof_scope", "")) != "zkdl_gat_full":
+    if str(proof_manifest.get("device", "")) != device or str(verifier_manifest.get("device", "")) != device:
+        return None
+    if str(proof_manifest.get("is_full_dataset", "")).lower() != "true":
+        return None
+    if str(proof_manifest.get("proof_generated", "")).lower() != "true":
+        return None
+    if str(proof_manifest.get("verified", "")).lower() != "true":
+        return None
+    if str(verifier_manifest.get("verified", "")).lower() != "true":
+        return None
+    missing = proof_manifest.get("missing_relations", [])
+    if isinstance(missing, list) and len(missing) != 0:
+        return None
+    if str(verifier_manifest.get("verifier_reads_witness", "")).lower() != "false":
         return None
     return {
         "dataset": dataset,
         "status": "ok",
         "blocker": "",
         "benchmark_mode": "warm",
-        "commitment_time_ms": manifest.get("commitment_time_ms", "NA"),
-        "prove_time_ms": manifest.get("prove_time_ms", "NA"),
-        "verify_time_ms": manifest.get("verify_time_ms", "NA"),
-        "proof_size_bytes": manifest.get("proof_size_bytes", "NA"),
+        "commitment_time_ms": proof_manifest.get("commitment_time_ms", "NA"),
+        "prove_time_ms": proof_manifest.get("prove_time_ms", "NA"),
+        "verify_time_ms": verifier_manifest.get("verify_time_ms", "NA"),
+        "proof_size_bytes": proof_manifest.get("proof_size_bytes", "NA"),
     }
 
 
@@ -647,6 +671,14 @@ def write_coverage(statuses: dict[str, dict[str, dict[str, str]]]) -> None:
         1 for dataset in DATASETS
         if statuses["gpu"][dataset].get("output_binding") == "PASS"
     )
+    cpu_full_manifest = sum(
+        1 for dataset in DATASETS
+        if read_json_object(full_proof_manifest("cpu", dataset)).get("relation_proofs_generated") is True
+    )
+    gpu_full_manifest = sum(
+        1 for dataset in DATASETS
+        if read_json_object(full_proof_manifest("gpu", dataset)).get("relation_proofs_generated") is True
+    )
     cpu_failed = sum(1 for dataset in DATASETS if statuses["cpu"][dataset].get("status") == "failed_with_evidence")
     rows = [
         {
@@ -745,7 +777,7 @@ def write_coverage(statuses: dict[str, dict[str, dict[str, str]]]) -> None:
             "gpu_status": f"partial_formal_{gpu_weighted}/5",
             "total_scope": "hidden layer0/head0",
             "verified_scope": "GPU multi-column relation where artifact exists",
-            "blocker": "CPU weighted aggregation 未完成；output aggregation 未完成",
+            "blocker": "CPU multi-column relation 已接入 full-chain runner，但当前 CPU commitment 过慢，尚无完成 artifact；output aggregation 未完成",
             "cora": statuses["gpu"]["cora"].get("weighted_aggregation") == "PASS",
             "citeseer": statuses["gpu"]["citeseer"].get("weighted_aggregation") == "PASS",
             "pubmed": statuses["gpu"]["pubmed"].get("weighted_aggregation") == "PASS",
@@ -768,6 +800,26 @@ def write_coverage(statuses: dict[str, dict[str, dict[str, str]]]) -> None:
             "ogbn_arxiv": bool(statuses["cpu"]["ogbn-arxiv"].get("full_chain_evidence_path")) and bool(statuses["gpu"]["ogbn-arxiv"].get("full_chain_evidence_path")),
             "evidence_file": "zkdl_gat_outputs/evidence/full_chain_scope_<device>_<dataset>.json",
             "notes": "该行是正式流程的 full-chain 范围门禁；它防止 partial artifact 被导出为 official。",
+        },
+        {
+            "relation_name": "full proof manifest / verifier manifest",
+            "cpu_status": f"relation_manifest_{cpu_full_manifest}/5",
+            "gpu_status": f"relation_manifest_{gpu_full_manifest}/5",
+            "total_scope": "five full datasets × CPU/GPU",
+            "verified_scope": "only relation_proofs_generated; proof_generated requires missing_relations empty",
+            "blocker": "full proof object 尚未覆盖 Com_base/Com_comp/Com_aux/Com_tbl/Com_agg 全部子句，clean verifier 未通过",
+            "cora": bool(read_json_object(full_proof_manifest("cpu", "cora")).get("relation_proofs_generated"))
+                and bool(read_json_object(full_proof_manifest("gpu", "cora")).get("relation_proofs_generated")),
+            "citeseer": bool(read_json_object(full_proof_manifest("cpu", "citeseer")).get("relation_proofs_generated"))
+                and bool(read_json_object(full_proof_manifest("gpu", "citeseer")).get("relation_proofs_generated")),
+            "pubmed": bool(read_json_object(full_proof_manifest("cpu", "pubmed")).get("relation_proofs_generated"))
+                and bool(read_json_object(full_proof_manifest("gpu", "pubmed")).get("relation_proofs_generated")),
+            "ppi": bool(read_json_object(full_proof_manifest("cpu", "ppi")).get("relation_proofs_generated"))
+                and bool(read_json_object(full_proof_manifest("gpu", "ppi")).get("relation_proofs_generated")),
+            "ogbn_arxiv": bool(read_json_object(full_proof_manifest("cpu", "ogbn-arxiv")).get("relation_proofs_generated"))
+                and bool(read_json_object(full_proof_manifest("gpu", "ogbn-arxiv")).get("relation_proofs_generated")),
+            "evidence_file": "zkdl_gat_outputs/runs/<dataset>/<device>/warm/full_proof_manifest.json;full_verifier_manifest.json",
+            "notes": "`relation_proofs_generated=true` 只表示已纳入子证明生成成功；`proof_generated=false` 时不得导出 official。",
         },
         {
             "relation_name": "output average / public logits binding",
@@ -868,6 +920,7 @@ def write_resumes(statuses: dict[str, dict[str, dict[str, str]]]) -> None:
         for dataset in DATASETS:
             state = statuses[device][dataset]
             run_dir = cpu_run_dir(dataset) if device == "cpu" else gpu_run_dir(dataset)
+            manifest = read_json_object(full_proof_manifest(device, dataset))
             run_dir.mkdir(parents=True, exist_ok=True)
             lines = [
                 f"# zkDL-GAT {device.upper()} 继续点",
@@ -876,6 +929,7 @@ def write_resumes(statuses: dict[str, dict[str, dict[str, str]]]) -> None:
                 f"- 当前状态: `{state.get('status', 'blocked')}`；official 仍为 `blocked + NA`。",
                 f"- artifact: `{state.get('proof_path') or state.get('evidence_path') or 'NA'}`",
                 f"- full-chain scope: `{state.get('full_chain_evidence_path') or 'NA'}`；missing clauses `{state.get('full_chain_missing_clause_count') or 'NA'}`。",
+                f"- full proof manifest: `{rel(full_proof_manifest(device, dataset)) if full_proof_manifest(device, dataset).exists() else 'NA'}`；relation_proofs_generated `{manifest.get('relation_proofs_generated', 'NA')}`；proof_generated `{manifest.get('proof_generated', 'NA')}`；verified `{manifest.get('verified', 'NA')}`。",
                 "- 五个全量数据集缺一不可；该文件只描述当前 dataset/device，不可替代其他行。",
                 "- Level A blocker: full GAT proof object、all-layer/all-head、output aggregation、real rescale/rounding 仍未闭合。",
             ]
@@ -951,8 +1005,12 @@ def write_readmes(statuses: dict[str, dict[str, dict[str, str]]]) -> None:
         "- GPU forward / trace：`gat_modules/gpu_forward.cuh`。",
         "- CPU formal backend：`gat_modules/cpu_formal_backend.cuh`。",
         "- GPU formal backend：`gat_modules/formal_softmax_runners.cuh`。",
+        "- CPU multi-column relation：`gat_modules/cpu_multi_column_relations.cuh` 提供 CPU-only sparse/grouped/hadamard 的列压缩版本。",
         "- CPU formal runner：`gat_modules/cpu_formal_runner.cuh` 调用 CPU-only relation backend。",
         "- GPU formal runner：`gat_modules/gpu_formal_runner.cuh` 调用 GPU trace 与 relation gadget。",
+        "- full proof object：`gat_modules/full_proof_object.cuh` 写 `full_proof_manifest.json`、`full_verifier_manifest.json` 与不含完整 witness/tensor 的 proof object 摘要。",
+        "- full-chain runner：`gat_modules/full_chain_runner.cuh` 与 `gat_modules/cpu_full_chain_runner.cuh` 遍历 hidden/output 所有 head，并把已实现子证明写入 full manifest。",
+        "- attention 子链 runner：`gat_modules/softmax_lookup_runner.cuh` 负责 GPU denominator/inverse/alpha/weighted aggregation 子链。",
         "- GPU output binding runner：`gat_modules/output_binding_runner.cuh` 在真实 full graph output trace 上生成 output-head average / public logits MLE relation artifact。",
         "- full-chain scope runner：`gat_modules/full_chain_scope.cuh` 为每个 dataset/device 记录完整协议范围、public metadata/VK/table/rounding contract、已有 partial artifact 和未闭合协议子句；它不写 official manifest。",
         "- CLI 调度：`gat_modules/run_dispatch.cuh` 只做 dataset/device 选择，`gat_zkdl.cu` 只保留薄 CLI 入口。",
@@ -963,11 +1021,11 @@ def write_readmes(statuses: dict[str, dict[str, dict[str, str]]]) -> None:
         "",
         "## CPU path",
         "",
-        "`--formal-cpu-chain` 使用 CPU-only host Fr/G1/Commitment/opening，不依赖 CUDA proof backend。当前可生成并验证 hidden layer0/head0 full graph/full edge set 的 sparse routing、grouped sum、denominator、inverse、inverse routing、alpha consistency relation proof。`--formal-full-chain-scope --device cpu` 会额外记录 CPU 全链协议范围、public metadata/VK_static/VK_model/table context 和缺失子句，但不会写 official manifest。CPU verifier 不读取 witness，proof object 不包含完整 tensor。",
+        "`--formal-cpu-chain` 使用 CPU-only host Fr/G1/Commitment/opening，不依赖 CUDA proof backend。当前可生成并验证 hidden layer0/head0 full graph/full edge set 的 sparse routing、grouped sum、denominator、inverse、inverse routing、alpha consistency relation proof。`--formal-full-chain --device cpu` 已接入 all-head denominator/inverse/alpha 与 CPU multi-column weighted aggregation 子链，但 CPU commitment/opening 对大矩阵仍过慢，当前没有可导出 official 的 CPU full manifest。`--formal-full-chain-scope --device cpu` 只记录协议范围和缺失子句，不写 official。CPU verifier 不读取 witness，proof object 不包含完整 tensor。",
         "",
         "## GPU path",
         "",
-        "`--formal-sparse-grouped`、`--formal-softmax-aggregation` 与 `--formal-output-binding` 使用 GPU Fr/G1 commitment/opening 与 CUDA trace，host 侧重放 verifier。`--formal-output-binding` 证明 output-head average 与 public logits MLE 的线性关系；`--formal-full-chain-scope --device gpu` 会额外记录 GPU 全链协议范围、public metadata/VK_static/VK_model/table context 和缺失子句，但不会写 official manifest。GPU kernel timing 不写入 official proof/verify timing；host replay verifier 也不会被写成 GPU full verifier。",
+        "`--formal-sparse-grouped`、`--formal-softmax-aggregation` 与 `--formal-output-binding` 使用 GPU Fr/G1 commitment/opening 与 CUDA trace，host 侧重放 verifier。`--formal-full-chain --device gpu` 遍历 hidden/output 所有 head，写入 full proof/verifier manifest；manifest 中 `relation_proofs_generated=true` 仅表示已实现子链生成并验证，`proof_generated=false` 时不会进入 official。GPU kernel timing 不写入 official proof/verify timing；host replay verifier 也不会被写成 GPU full verifier。",
         "",
         "## CPU/GPU 结果口径",
         "",
@@ -982,9 +1040,10 @@ def write_readmes(statuses: dict[str, dict[str, dict[str, str]]]) -> None:
         "```bash",
         "make clean && make all",
         "./run_zkdl_gat_experiments.py --dataset all --device all --output-root zkdl_gat_outputs --commitment-block-size 64",
+        "./run_zkdl_gat_experiments.py --dataset cora --device gpu --full-chain --output-root zkdl_gat_outputs --commitment-block-size 64",
         "```",
         "",
-        "也可以按 dataset/device 分阶段执行；每个 dataset/device 的 relation runner 之后会执行 full-chain scope 记录。任一 dataset/device 失败后，runner 会继续调度剩余项，最后统一导出 result 表。",
+        "也可以按 dataset/device 分阶段执行；默认流程运行 relation runner 与 full-chain scope，`--full-chain` 运行 full proof/verifier manifest 生成。任一 dataset/device 失败后，runner 会继续调度剩余项，最后统一导出 result 表。",
         "",
         "## result 文件说明",
         "",
@@ -994,18 +1053,19 @@ def write_readmes(statuses: dict[str, dict[str, dict[str, str]]]) -> None:
         "- `results/<device>/debug_level_b.csv|json`：debug_only，不进入 official。",
         "- `results/coverage_matrix.*`：按 CPU/GPU 区分 supported、partial_formal、debug_only、blocked。",
         "- `runs/<dataset>/<device>/warm/formal_artifacts/zkdl_full_chain_public_metadata.json`：记录 full-chain public metadata、VK_static/VK_model、table context、quant/rounding contract；它不是 proof object。",
+        "- `runs/<dataset>/<device>/warm/full_proof_manifest.json` 与 `full_verifier_manifest.json`：official 唯一入口；必须 `proof_generated=true`、`verified=true` 且 `missing_relations=[]` 才会写 latest。",
         "",
         "## supported relation",
         "",
-        "当前支持 zkDL-native commitment/opening、transcript/sumcheck、HadamardRelationProof、MatmulRelationProof、LinearRelationProof、SparseSourceRoutingRelationProof、SparseDestinationRoutingRelationProof、GroupedSumRelationProof、MultiColumnGroupedSumRelationProof。已记录 full-chain public metadata、VK_static/VK_model、range/LReLU/ELU/Exp table context 与 quant/rounding contract；GPU 路径已有真实 GAT output-head average / public logits MLE binding 的 LinearRelationProof artifact。",
+        "当前支持 zkDL-native commitment/opening、transcript/sumcheck、HadamardRelationProof、MatmulRelationProof、LinearRelationProof、SparseSourceRoutingRelationProof、SparseDestinationRoutingRelationProof、GroupedSumRelationProof、MultiColumnGroupedSumRelationProof。CPU 已新增 multi-column sparse routing、alpha hadamard 与 grouped sum relation 接口；GPU full-chain runner 已在 cora 上生成 all-head attention softmax/weighted aggregation 子证明 manifest。已记录 full-chain public metadata、VK_static/VK_model、range/LReLU/ELU/Exp table context 与 quant/rounding contract。",
         "",
         "## partial_formal relation",
         "",
-        "CPU partial formal 覆盖 hidden layer0/head0 sparse + denominator/inverse/alpha。GPU partial formal 当前五个数据集都有 sparse/grouped artifact；denominator/inverse/alpha、weighted aggregation 与 output binding 覆盖范围以 coverage_matrix 为准。lookup/range/max/comparison 已有 selftest 级 tamper rejection，但尚未接入 full GAT table/context。",
+        "CPU partial formal 覆盖 hidden layer0/head0 sparse + denominator/inverse/alpha；CPU full-chain weighted aggregation 子链已接入但尚无完成 artifact。GPU partial formal 当前五个数据集都有 sparse/grouped artifact；denominator/inverse/alpha、weighted aggregation 与 output binding 覆盖范围以 coverage_matrix 为准。lookup/range/max/comparison 已有 selftest 级 tamper rejection，但尚未接入 full GAT table/context。",
         "",
         "## blocked relation",
         "",
-        "blocked 项包括 target-node max/shift、ExpMap lookup/range table proof、LeakyReLU/ELU lookup-range table proof、all-layer/all-head proof runner、output attention aggregation、bias/average/public logits binding、real rescale chain、rounding sign/tie-breaking proof 和 clean verifier。full-chain scope 已记录 public contract 与这些子句，但尚未生成可 official 的 proof object。",
+        "blocked 项包括 hidden/output projection matmul 与模型承诺绑定、attention dot、target-node max/shift、ExpMap lookup/range table proof、LeakyReLU/ELU lookup-range table proof、hidden concat、output bias/final average/public logits clean verifier、real rescale chain、rounding sign/tie-breaking proof 和 clean verifier。full-chain scope 已记录 public contract；GPU cora full manifest 仍因这些缺失保持 `proof_generated=false`。",
         "",
         "## 当前五数据集状态",
         "",
@@ -1017,11 +1077,11 @@ def write_readmes(statuses: dict[str, dict[str, dict[str, str]]]) -> None:
         "",
         "## CPU 当前状态",
         "",
-        "CPU path 已实现 `--formal-cpu-chain`，并按五个全量数据集逐一运行。`--formal-full-chain-scope --device cpu` 记录每个数据集的 full-chain 范围、public metadata/VK/table/rounding contract、hidden/output head 数和 missing clauses。当前五个数据集均有 full graph/full edge set 的 relation-level `partial_formal` artifact；CPU official 仍为 NA，因为 full GAT proof object、all-layer/all-head proof、output aggregation、lookup/range/max/comparison proof 接入和 real rescale/rounding proof 尚未闭合。",
+        "CPU path 已实现 `--formal-cpu-chain`，并按五个全量数据集逐一运行。`--formal-full-chain --device cpu` 已把 all-head attention denominator/inverse/alpha 与 CPU multi-column weighted aggregation 接入 runner，但当前 CPU commitment/opening 对矩阵子链过慢，cora 试跑在 head0 阶段停止，未生成新的 CPU full manifest。当前五个数据集均有 full graph/full edge set 的 relation-level `partial_formal` artifact；CPU official 仍为 NA，因为 full GAT proof object、lookup/range/max/comparison、projection、output final aggregation 和 real rescale/rounding proof 尚未闭合。",
         "",
         "## GPU 当前状态",
         "",
-        "GPU path 当前五个全量数据集都有 relation-level `partial_formal` sparse/grouped artifact，并且五个数据集都有 denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation artifact。`--formal-output-binding` 在真实 output trace 上生成 output-head average / public logits MLE binding artifact；`--formal-full-chain-scope --device gpu` 记录每个数据集的 full-chain 范围、public metadata/VK/table/rounding contract、hidden/output head 数和 missing clauses。GPU verifier 当前是 host replay，不写成 GPU full verifier；GPU official 仍为 NA。",
+        "GPU path 当前五个全量数据集都有 relation-level `partial_formal` sparse/grouped artifact，并且五个数据集都有 denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation artifact。`--formal-full-chain --device gpu --dataset cora` 已生成 all-head attention softmax/weighted aggregation 的 full proof/verifier manifest，`relation_proofs_generated=true`、`proof_generated=false`、`verified=false`；缺失 relation 阻止 official 导出。GPU verifier 当前是 host replay，不写成 GPU full verifier；GPU official 仍为 NA。",
         "",
         "## Level A 状态",
         "",

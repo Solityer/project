@@ -1,0 +1,5 @@
+full_chain_runner dataset=cora device=cpu stage=load_dataset
+full_chain_runner dataset=cora device=cpu stage=load_model
+full_chain_runner dataset=cora device=cpu stage=cpu_forward_trace
+full_chain_runner dataset=cora device=cpu forward_ms=165.086 hidden_layers=1 output_heads=1
+full_chain_runner dataset=cora device=cpu stage=prove_hidden_attention layer=0 head=0
