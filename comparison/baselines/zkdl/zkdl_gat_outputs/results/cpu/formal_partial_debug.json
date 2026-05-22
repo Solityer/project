@@ -16,9 +16,9 @@
       "verified_relations": "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof;denominator GroupedSumRelationProof;inverse HadamardRelationProof;inverse SparseDestinationRoutingRelationProof;alpha HadamardRelationProof;alpha-denominator HadamardRelationProof",
       "blocked_relations": "target-node max/shift; ExpMap lookup/range table; LeakyReLU/ELU lookup-range table; all-layer/all-head runner; output attention aggregation; output bias/average binding; real rescale chain; rounding sign/tie-breaking public contract",
       "proof_artifact_paths": "zkdl_gat_outputs/runs/cora/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt",
-      "evidence_paths": "zkdl_gat_outputs/evidence/cpu_relation_partial_cora.json;zkdl_gat_outputs/runs/cora/cpu/warm/cpu_formal_chain.log",
+      "evidence_paths": "zkdl_gat_outputs/evidence/cpu_relation_partial_cora.json;zkdl_gat_outputs/runs/cora/cpu/warm/cpu_formal_chain.log;zkdl_gat_outputs/evidence/full_chain_scope_cpu_cora.json;zkdl_gat_outputs/runs/cora/cpu/warm/formal_artifacts/zkdl_full_chain_scope.status.txt",
       "resume_point": "zkdl_gat_outputs/runs/cora/cpu/warm/RESUME_POINT.md",
-      "note": "CPU-only host Fr/G1/Commitment/opening relation proof/verify 已运行；不是完整 GAT official proof。"
+      "note": "CPU-only host Fr/G1/Commitment/opening relation proof/verify 已运行；full-chain scope 已单独记录，但不是完整 GAT official proof。"
     },
     {
       "dataset": "citeseer",
@@ -35,9 +35,9 @@
       "verified_relations": "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof;denominator GroupedSumRelationProof;inverse HadamardRelationProof;inverse SparseDestinationRoutingRelationProof;alpha HadamardRelationProof;alpha-denominator HadamardRelationProof",
       "blocked_relations": "target-node max/shift; ExpMap lookup/range table; LeakyReLU/ELU lookup-range table; all-layer/all-head runner; output attention aggregation; output bias/average binding; real rescale chain; rounding sign/tie-breaking public contract",
       "proof_artifact_paths": "zkdl_gat_outputs/runs/citeseer/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt",
-      "evidence_paths": "zkdl_gat_outputs/evidence/cpu_relation_partial_citeseer.json;zkdl_gat_outputs/runs/citeseer/cpu/warm/cpu_formal_chain.log",
+      "evidence_paths": "zkdl_gat_outputs/evidence/cpu_relation_partial_citeseer.json;zkdl_gat_outputs/runs/citeseer/cpu/warm/cpu_formal_chain.log;zkdl_gat_outputs/evidence/full_chain_scope_cpu_citeseer.json;zkdl_gat_outputs/runs/citeseer/cpu/warm/formal_artifacts/zkdl_full_chain_scope.status.txt",
       "resume_point": "zkdl_gat_outputs/runs/citeseer/cpu/warm/RESUME_POINT.md",
-      "note": "CPU-only host Fr/G1/Commitment/opening relation proof/verify 已运行；不是完整 GAT official proof。"
+      "note": "CPU-only host Fr/G1/Commitment/opening relation proof/verify 已运行；full-chain scope 已单独记录，但不是完整 GAT official proof。"
     },
     {
       "dataset": "pubmed",
@@ -54,9 +54,9 @@
       "verified_relations": "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof;denominator GroupedSumRelationProof;inverse HadamardRelationProof;inverse SparseDestinationRoutingRelationProof;alpha HadamardRelationProof;alpha-denominator HadamardRelationProof",
       "blocked_relations": "target-node max/shift; ExpMap lookup/range table; LeakyReLU/ELU lookup-range table; all-layer/all-head runner; output attention aggregation; output bias/average binding; real rescale chain; rounding sign/tie-breaking public contract",
       "proof_artifact_paths": "zkdl_gat_outputs/runs/pubmed/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt",
-      "evidence_paths": "zkdl_gat_outputs/evidence/cpu_relation_partial_pubmed.json;zkdl_gat_outputs/runs/pubmed/cpu/warm/cpu_formal_chain.log",
+      "evidence_paths": "zkdl_gat_outputs/evidence/cpu_relation_partial_pubmed.json;zkdl_gat_outputs/runs/pubmed/cpu/warm/cpu_formal_chain.log;zkdl_gat_outputs/evidence/full_chain_scope_cpu_pubmed.json;zkdl_gat_outputs/runs/pubmed/cpu/warm/formal_artifacts/zkdl_full_chain_scope.status.txt",
       "resume_point": "zkdl_gat_outputs/runs/pubmed/cpu/warm/RESUME_POINT.md",
-      "note": "CPU-only host Fr/G1/Commitment/opening relation proof/verify 已运行；不是完整 GAT official proof。"
+      "note": "CPU-only host Fr/G1/Commitment/opening relation proof/verify 已运行；full-chain scope 已单独记录，但不是完整 GAT official proof。"
     },
     {
       "dataset": "ppi",
@@ -73,9 +73,9 @@
       "verified_relations": "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof;denominator GroupedSumRelationProof;inverse HadamardRelationProof;inverse SparseDestinationRoutingRelationProof;alpha HadamardRelationProof;alpha-denominator HadamardRelationProof",
       "blocked_relations": "target-node max/shift; ExpMap lookup/range table; LeakyReLU/ELU lookup-range table; all-layer/all-head runner; output attention aggregation; output bias/average binding; real rescale chain; rounding sign/tie-breaking public contract",
       "proof_artifact_paths": "zkdl_gat_outputs/runs/ppi/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt",
-      "evidence_paths": "zkdl_gat_outputs/evidence/cpu_relation_partial_ppi.json;zkdl_gat_outputs/runs/ppi/cpu/warm/cpu_formal_chain.log",
+      "evidence_paths": "zkdl_gat_outputs/evidence/cpu_relation_partial_ppi.json;zkdl_gat_outputs/runs/ppi/cpu/warm/cpu_formal_chain.log;zkdl_gat_outputs/evidence/full_chain_scope_cpu_ppi.json;zkdl_gat_outputs/runs/ppi/cpu/warm/formal_artifacts/zkdl_full_chain_scope.status.txt",
       "resume_point": "zkdl_gat_outputs/runs/ppi/cpu/warm/RESUME_POINT.md",
-      "note": "CPU-only host Fr/G1/Commitment/opening relation proof/verify 已运行；不是完整 GAT official proof。"
+      "note": "CPU-only host Fr/G1/Commitment/opening relation proof/verify 已运行；full-chain scope 已单独记录，但不是完整 GAT official proof。"
     },
     {
       "dataset": "ogbn-arxiv",
@@ -92,9 +92,9 @@
       "verified_relations": "SparseSourceRoutingRelationProof;SparseDestinationRoutingRelationProof;GroupedSumRelationProof;denominator GroupedSumRelationProof;inverse HadamardRelationProof;inverse SparseDestinationRoutingRelationProof;alpha HadamardRelationProof;alpha-denominator HadamardRelationProof",
       "blocked_relations": "target-node max/shift; ExpMap lookup/range table; LeakyReLU/ELU lookup-range table; all-layer/all-head runner; output attention aggregation; output bias/average binding; real rescale chain; rounding sign/tie-breaking public contract",
       "proof_artifact_paths": "zkdl_gat_outputs/runs/ogbn-arxiv/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt",
-      "evidence_paths": "zkdl_gat_outputs/evidence/cpu_relation_partial_ogbn-arxiv.json;zkdl_gat_outputs/runs/ogbn-arxiv/cpu/warm/cpu_formal_chain.log",
+      "evidence_paths": "zkdl_gat_outputs/evidence/cpu_relation_partial_ogbn-arxiv.json;zkdl_gat_outputs/runs/ogbn-arxiv/cpu/warm/cpu_formal_chain.log;zkdl_gat_outputs/evidence/full_chain_scope_cpu_ogbn-arxiv.json;zkdl_gat_outputs/runs/ogbn-arxiv/cpu/warm/formal_artifacts/zkdl_full_chain_scope.status.txt",
       "resume_point": "zkdl_gat_outputs/runs/ogbn-arxiv/cpu/warm/RESUME_POINT.md",
-      "note": "CPU-only host Fr/G1/Commitment/opening relation proof/verify 已运行；不是完整 GAT official proof。"
+      "note": "CPU-only host Fr/G1/Commitment/opening relation proof/verify 已运行；full-chain scope 已单独记录，但不是完整 GAT official proof。"
     }
   ]
 }

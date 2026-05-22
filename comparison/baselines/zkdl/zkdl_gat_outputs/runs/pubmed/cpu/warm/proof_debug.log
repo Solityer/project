@@ -11,3 +11,4 @@ inverse_destination_routing status=PASS digest=ac479950fb453fa3
 alpha_from_inverse status=PASS digest=4de049cb5e03e9a8
 alpha_times_denominator status=PASS digest=405d861947ce34ff
 note=CPU relation-level partial formal 仅用于调试结果表；不是 official Level A
+dataset=pubmed device=cpu stage=full_chain_scope status=blocked missing_clause_count=13 status_path=/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/pubmed/cpu/warm/formal_artifacts/zkdl_full_chain_scope.status.txt evidence_path=/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/evidence/full_chain_scope_cpu_pubmed.json

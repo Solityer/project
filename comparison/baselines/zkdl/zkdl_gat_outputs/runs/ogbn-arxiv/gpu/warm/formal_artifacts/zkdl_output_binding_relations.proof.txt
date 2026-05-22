@@ -1,0 +1,15 @@
+ZKDLGATOUTPUTBINDING
+version=1
+dataset=ogbn-arxiv
+relation_scope=output_head_average_public_logits_binding
+node_count=169343
+class_count=40
+padded_node_count=262144
+padded_class_count=64
+output_head_count=1
+commitment_block_size=4096
+output_average_status=PASS
+public_logits_binding_status=PASS
+linear_relation_digest=e0b69b2cf38b738d
+proof_size_bytes=7187
+说明=本 artifact 证明输出头平均后的承诺开值等于 public logits 的公开 MLE 取值；它不包含完整 logits tensor 或 witness dump，也不是 full GAT official proof。

@@ -1,4 +1,4 @@
-INNER_PRODUCT label=size4_power2 size=4 padded_size=4 rounds=2 transcript_digest=820d0c5ef85dec4f proof_size_bytes=868 backend=cpu_sumcheck_hybrid_opening status=PASS
+INNER_PRODUCT label=size4_power2 size=4 padded_size=4 rounds=2 transcript_digest=333638f91a30a049 proof_size_bytes=868 backend=cpu_sumcheck_hybrid_opening status=PASS
 INNER_PRODUCT label=size7_non_power2 size=7 padded_size=8 rounds=3 transcript_digest=a90f73dcf0dababd proof_size_bytes=1060 backend=cpu_sumcheck_hybrid_opening status=PASS
 INNER_PRODUCT label=size15_non_power2 size=15 padded_size=16 rounds=4 transcript_digest=2df3387065644666 proof_size_bytes=1252 backend=cpu_sumcheck_hybrid_opening status=PASS
 SUMMARY status=PASS

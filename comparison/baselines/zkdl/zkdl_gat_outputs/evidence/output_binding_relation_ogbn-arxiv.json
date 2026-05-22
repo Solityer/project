@@ -1,0 +1,20 @@
+{
+  "dataset": "ogbn-arxiv",
+  "status": "partial_formal",
+  "relation_scope": "output_head_average_public_logits_binding",
+  "node_count": "169343",
+  "class_count": "40",
+  "padded_node_count": "262144",
+  "padded_class_count": "64",
+  "output_head_count": "1",
+  "commitment_block_size": "4096",
+  "output_average": "PASS",
+  "public_logits_binding": "PASS",
+  "commitment_time_ms": "302583.780",
+  "prove_time_ms": "9273.594",
+  "verify_time_ms": "2870.031",
+  "proof_size_bytes": "7187",
+  "transcript_digest": "e0b69b2cf38b738d",
+  "proof_path": "/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/ogbn-arxiv/gpu/warm/formal_artifacts/zkdl_output_binding_relations.proof.txt",
+  "note": "该 evidence 使用 zkDL linear relation 绑定 output head average 与 public logits MLE；output attention 前序、bias 前序、rescale/rounding 和完整 verifier 仍未闭合。"
+}

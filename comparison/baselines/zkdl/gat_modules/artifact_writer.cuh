@@ -59,6 +59,22 @@ struct GpuSoftmaxArtifactPayload {
     std::vector<std::string> relation_details;
 };
 
+struct GpuOutputBindingArtifactPayload {
+    std::size_t node_count = 0;
+    std::size_t class_count = 0;
+    std::size_t padded_node_count = 0;
+    std::size_t padded_class_count = 0;
+    std::size_t output_head_count = 0;
+    std::size_t commitment_block_size = 1;
+    bool output_average_ok = false;
+    bool public_logits_binding_ok = false;
+    double commitment_ms = 0.0;
+    double prove_ms = 0.0;
+    double verify_ms = 0.0;
+    std::uintmax_t proof_size_bytes = 0;
+    std::string transcript_digest;
+};
+
 std::pair<fs::path, fs::path> write_cpu_partial_artifact(
     const DatasetRunSpec& spec,
     const fs::path& output_root,
@@ -371,5 +387,91 @@ void write_gpu_softmax_debug_resume(
         resume << "- proof artifact: `" << proof_path.string() << "`\n";
         resume << "- evidence: `" << evidence_path.string() << "`\n";
         resume << "- Level A 状态: blocked；softmax max/ExpMap、LeakyReLU/ELU lookup-range、output aggregation、real rescale chain 与 rounding sign/tie-breaking 仍未闭合。\n";
+    }
+}
+
+std::pair<fs::path, fs::path> write_gpu_output_binding_artifact(
+    const DatasetRunSpec& spec,
+    const fs::path& output_root,
+    const GpuOutputBindingArtifactPayload& payload)
+{
+    const auto run_dir = device_run_dir(output_root, spec.dataset);
+    ensure_dir(run_dir / "formal_artifacts");
+    ensure_dir(output_root / "evidence");
+    const auto proof_path = run_dir / "formal_artifacts" / "zkdl_output_binding_relations.proof.txt";
+    {
+        std::ofstream out(proof_path);
+        out << "ZKDLGATOUTPUTBINDING\n";
+        out << "version=1\n";
+        out << "dataset=" << spec.dataset << "\n";
+        out << "relation_scope=output_head_average_public_logits_binding\n";
+        out << "node_count=" << payload.node_count << "\n";
+        out << "class_count=" << payload.class_count << "\n";
+        out << "padded_node_count=" << payload.padded_node_count << "\n";
+        out << "padded_class_count=" << payload.padded_class_count << "\n";
+        out << "output_head_count=" << payload.output_head_count << "\n";
+        out << "commitment_block_size=" << payload.commitment_block_size << "\n";
+        out << "output_average_status=" << (payload.output_average_ok ? "PASS" : "FAIL") << "\n";
+        out << "public_logits_binding_status=" << (payload.public_logits_binding_ok ? "PASS" : "FAIL") << "\n";
+        out << "linear_relation_digest=" << payload.transcript_digest << "\n";
+        out << "proof_size_bytes=" << payload.proof_size_bytes << "\n";
+        out << "说明=本 artifact 证明输出头平均后的承诺开值等于 public logits 的公开 MLE 取值；它不包含完整 logits tensor 或 witness dump，也不是 full GAT official proof。\n";
+    }
+
+    const auto evidence_path = output_root / "evidence" / ("output_binding_relation_" + spec.dataset + ".json");
+    {
+        std::ofstream out(evidence_path);
+        out << "{\n";
+        out << "  \"dataset\": \"" << json_escape(spec.dataset) << "\",\n";
+        out << "  \"status\": \"partial_formal\",\n";
+        out << "  \"relation_scope\": \"output_head_average_public_logits_binding\",\n";
+        out << "  \"node_count\": \"" << payload.node_count << "\",\n";
+        out << "  \"class_count\": \"" << payload.class_count << "\",\n";
+        out << "  \"padded_node_count\": \"" << payload.padded_node_count << "\",\n";
+        out << "  \"padded_class_count\": \"" << payload.padded_class_count << "\",\n";
+        out << "  \"output_head_count\": \"" << payload.output_head_count << "\",\n";
+        out << "  \"commitment_block_size\": \"" << payload.commitment_block_size << "\",\n";
+        out << "  \"output_average\": \"" << (payload.output_average_ok ? "PASS" : "FAIL") << "\",\n";
+        out << "  \"public_logits_binding\": \"" << (payload.public_logits_binding_ok ? "PASS" : "FAIL") << "\",\n";
+        out << "  \"commitment_time_ms\": \"" << format_ms(payload.commitment_ms) << "\",\n";
+        out << "  \"prove_time_ms\": \"" << format_ms(payload.prove_ms) << "\",\n";
+        out << "  \"verify_time_ms\": \"" << format_ms(payload.verify_ms) << "\",\n";
+        out << "  \"proof_size_bytes\": \"" << payload.proof_size_bytes << "\",\n";
+        out << "  \"transcript_digest\": \"" << json_escape(payload.transcript_digest) << "\",\n";
+        out << "  \"proof_path\": \"" << json_escape(proof_path.string()) << "\",\n";
+        out << "  \"note\": \"该 evidence 使用 zkDL linear relation 绑定 output head average 与 public logits MLE；output attention 前序、bias 前序、rescale/rounding 和完整 verifier 仍未闭合。\"\n";
+        out << "}\n";
+    }
+    return {proof_path, evidence_path};
+}
+
+void write_gpu_output_binding_debug_resume(
+    const DatasetRunSpec& spec,
+    const fs::path& output_root,
+    const GpuOutputBindingArtifactPayload& payload,
+    const fs::path& proof_path,
+    const fs::path& evidence_path)
+{
+    const auto run_dir = device_run_dir(output_root, spec.dataset);
+    {
+        std::ofstream debug(run_dir / "proof_debug.log", std::ios::app);
+        debug << "dataset=" << spec.dataset << " stage=formal_output_binding status="
+              << (payload.output_average_ok && payload.public_logits_binding_ok ? "PASS" : "FAIL")
+              << " output_heads=" << payload.output_head_count
+              << " classes=" << payload.class_count
+              << " commitment_block_size=" << payload.commitment_block_size
+              << " proof_size_bytes=" << payload.proof_size_bytes
+              << " digest=" << payload.transcript_digest << "\n";
+    }
+    {
+        std::ofstream resume(run_dir / "RESUME_POINT.md", std::ios::app);
+        resume << "\n## output binding relation 继续点\n\n";
+        resume << "- 本轮 relation: `output_head_average_public_logits_binding`\n";
+        resume << "- 证明范围: full graph / all output heads / public logits MLE。\n";
+        resume << "- output heads: `" << payload.output_head_count << "`；classes `" << payload.class_count << "`\n";
+        resume << "- 结果: `" << (payload.output_average_ok && payload.public_logits_binding_ok ? "PASS" : "FAIL") << "`\n";
+        resume << "- proof artifact: `" << proof_path.string() << "`\n";
+        resume << "- evidence: `" << evidence_path.string() << "`\n";
+        resume << "- Level A 状态: blocked；output attention 前序链、bias 前序链、rescale/rounding 与 clean verifier 仍未闭合。\n";
     }
 }
