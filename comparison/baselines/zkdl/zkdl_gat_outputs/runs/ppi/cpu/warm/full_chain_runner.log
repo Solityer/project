@@ -1,0 +1,21 @@
+full_chain_runner dataset=ppi device=cpu stage=load_dataset
+full_chain_runner dataset=ppi device=cpu stage=load_model
+full_chain_runner dataset=ppi device=cpu stage=cpu_forward_trace
+full_chain_runner dataset=ppi device=cpu forward_ms=257.784 hidden_layers=1 output_heads=1
+full_chain_runner dataset=ppi device=cpu stage=prove_hidden_projection layer=0 head=0
+full_chain_runner dataset=ppi device=cpu stage=prove_hidden_rescale_rounding layer=0 head=0
+full_chain_runner dataset=ppi device=cpu stage=prove_hidden_attention_dot_lrelu layer=0 head=0
+full_chain_runner dataset=ppi device=cpu stage=prove_hidden_target_max_shift layer=0 head=0
+full_chain_runner dataset=ppi device=cpu stage=prove_hidden_expmap_lookup layer=0 head=0
+full_chain_runner dataset=ppi device=cpu stage=prove_hidden_attention layer=0 head=0
+full_chain_runner dataset=ppi device=cpu stage=prove_hidden_elu_lookup layer=0 head=0
+full_chain_runner dataset=ppi device=cpu stage=prove_hidden_concat layer=0
+full_chain_runner dataset=ppi device=cpu stage=prove_output_projection head=0
+full_chain_runner dataset=ppi device=cpu stage=prove_output_rescale_rounding head=0
+full_chain_runner dataset=ppi device=cpu stage=prove_output_attention_dot_lrelu head=0
+full_chain_runner dataset=ppi device=cpu stage=prove_output_target_max_shift head=0
+full_chain_runner dataset=ppi device=cpu stage=prove_output_expmap_lookup head=0
+full_chain_runner dataset=ppi device=cpu stage=prove_output_attention head=0
+full_chain_runner dataset=ppi device=cpu stage=prove_output_attention_bias head=0
+full_chain_runner dataset=ppi device=cpu stage=prove_output_head_average_public_logits
+full_chain_runner dataset=ppi device=cpu proof_generated=true verified=true relation_records=16 missing_relations=0 proof_size_bytes=30728091

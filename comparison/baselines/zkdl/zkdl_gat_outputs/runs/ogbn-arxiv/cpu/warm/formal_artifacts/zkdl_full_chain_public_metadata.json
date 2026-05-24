@@ -6,7 +6,7 @@
   "public_input": {
     "M_pub": "ogbn-arxiv:features/labels/public-split-metadata",
     "Topo": "edge_gid_then_dst_stable;self_loop=per_node",
-    "VK_static": "zkdl_table_context:09a4e8e58b2e34c4",
+    "VK_static": "zkdl_table_context:728e754ec2ca81ab",
     "VK_model": "ogbn_arxiv_seed11",
     "Y": "public_logits_commitment_target"
   },
@@ -31,22 +31,22 @@
   },
   "VK_static": {
     "static_table_id": "tables:lrelu+elu+exp+range",
-    "table_context_id": "zkdl_table_context:09a4e8e58b2e34c4",
-    "range_size": 4096,
-    "lrelu_entry_count": 8191,
-    "elu_entry_count": 24573,
-    "exp_entry_count": 20480,
-    "range_digest": "range:05acc4ecc695d97d",
-    "lrelu_digest": "lrelu:31ea27e145b17d06",
-    "elu_digest": "elu:f2d3a3c6cab780cc",
-    "exp_digest": "exp:cc60cce696f8a102"
+    "table_context_id": "zkdl_table_context:728e754ec2ca81ab",
+    "range_size": 524288,
+    "lrelu_entry_count": 1048575,
+    "elu_entry_count": 3145725,
+    "exp_entry_count": 2621440,
+    "range_digest": "range:75c9e85a7456a0fb",
+    "lrelu_digest": "lrelu:b7cf334beca27447",
+    "elu_digest": "elu:fa39b325347b4eee",
+    "exp_digest": "exp:2f912c382456cdf8"
   },
   "quantization_contract": {
-    "contract_id": "zkdl_quant_contract:d3963b0b0fee2e95",
+    "contract_id": "zkdl_quant_contract:a891160dea40b6e8",
     "quant_cfg_id": "fp32_torch_checkpoint",
     "encoding_id": "signed_fixed_point_scale_16_to_Fr",
     "scale": 16,
-    "range_bits": 12,
+    "range_bits": 19,
     "rounding_policy": "round_half_away_from_zero",
     "rescale_policy": "trace_contract_recorded_no_full_rescale_proof_yet"
   },

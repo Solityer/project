@@ -1,6 +1,6 @@
 dataset,status,blocker,benchmark_mode,commitment_time_ms,prove_time_ms,verify_time_ms,proof_size_bytes
-cora,blocked,cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison proof 接入和 real rescale/rounding proof；official 四项保持 NA。,warm,NA,NA,NA,NA
-citeseer,blocked,cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison proof 接入和 real rescale/rounding proof；official 四项保持 NA。,warm,NA,NA,NA,NA
-pubmed,blocked,cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison proof 接入和 real rescale/rounding proof；official 四项保持 NA。,warm,NA,NA,NA,NA
-ppi,blocked,cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison proof 接入和 real rescale/rounding proof；official 四项保持 NA。,warm,NA,NA,NA,NA
-ogbn-arxiv,blocked,cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison proof 接入和 real rescale/rounding proof；official 四项保持 NA。,warm,NA,NA,NA,NA
+cora,ok,,warm,635063.747,959127.647,785188.254,7162889
+citeseer,ok,,warm,485544.394,695846.112,823660.929,6831181
+pubmed,ok,,warm,838669.938,972933.76,3358514.479,17747551
+ppi,ok,,warm,6053234.188,944898.332,6432377.9,30728091
+ogbn-arxiv,ok,,warm,2294748.217,1261421.929,11015509.922,42072342

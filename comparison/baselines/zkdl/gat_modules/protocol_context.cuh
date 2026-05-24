@@ -88,6 +88,69 @@ std::string hidden_profile_string(const ModelParams& model)
     return out.str();
 }
 
+std::int64_t zkdl_public_context_checked_i128_to_i64(__int128 value, const std::string& label)
+{
+    const __int128 lo = static_cast<__int128>(std::numeric_limits<std::int64_t>::min());
+    const __int128 hi = static_cast<__int128>(std::numeric_limits<std::int64_t>::max());
+    if (value < lo || value > hi) {
+        throw std::runtime_error(label + " 超出 int64 fixed-point 范围");
+    }
+    return static_cast<std::int64_t>(value);
+}
+
+std::uint64_t zkdl_trace_head_max_delta_scale16(const LocalGraph& graph, const HeadTraceHost& head)
+{
+    if (head.z.size() != graph.edges.size()) {
+        throw std::runtime_error("table range 计算发现 attention trace 形状不一致");
+    }
+    std::vector<std::int64_t> node_max(graph.num_nodes, std::numeric_limits<std::int64_t>::min());
+    std::vector<std::uint32_t> incoming_count(graph.num_nodes, 0);
+    std::vector<std::int64_t> z_i64(graph.edges.size(), 0);
+    for (std::size_t edge = 0; edge < graph.edges.size(); ++edge) {
+        const auto dst = graph.edges[edge].dst;
+        z_i64[edge] = quantize_scale16_to_i64(head.z[edge]);
+        node_max[dst] = std::max(node_max[dst], z_i64[edge]);
+        ++incoming_count[dst];
+    }
+    std::uint64_t max_delta = 0;
+    for (std::size_t edge = 0; edge < graph.edges.size(); ++edge) {
+        const auto dst = graph.edges[edge].dst;
+        if (incoming_count[dst] == 0) throw std::runtime_error("table range 计算发现无入边节点");
+        const auto delta = zkdl_public_context_checked_i128_to_i64(
+            static_cast<__int128>(node_max[dst]) - static_cast<__int128>(z_i64[edge]),
+            "table range attention delta");
+        if (delta < 0) throw std::runtime_error("table range attention delta 为负");
+        max_delta = std::max(max_delta, static_cast<std::uint64_t>(delta));
+    }
+    return max_delta;
+}
+
+std::size_t zkdl_required_trace_range_bits(
+    const LocalGraph& graph,
+    const ForwardTraceHost& trace,
+    std::size_t minimum_bits)
+{
+    std::uint64_t max_delta = 0;
+    for (const auto& layer : trace.hidden_heads) {
+        for (const auto& head : layer) {
+            max_delta = std::max(max_delta, zkdl_trace_head_max_delta_scale16(graph, head));
+        }
+    }
+    for (const auto& head : trace.output_heads) {
+        max_delta = std::max(max_delta, zkdl_trace_head_max_delta_scale16(graph, head));
+    }
+    std::size_t bits = 1;
+    while (bits < 30 && (std::uint64_t{1} << bits) <= max_delta) ++bits;
+    return std::max(minimum_bits, bits);
+}
+
+DatasetRunSpec zkdl_spec_with_range_bits(const DatasetRunSpec& spec, std::size_t range_bits)
+{
+    DatasetRunSpec out = spec;
+    out.range_bits = range_bits;
+    return out;
+}
+
 ZkdlGatQuantContract build_zkdl_gat_quant_contract(const DatasetRunSpec& spec, const ModelParams& model)
 {
     ZkdlGatQuantContract contract;

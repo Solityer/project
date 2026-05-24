@@ -19,32 +19,25 @@
 - zkDL baseline 核心：`bls12-381.cuh`、`fr-tensor.cuh`、`g1-tensor.cuh`、`commitment.cuh`、`proof.cuh`、`formal_relations.cuh`。
 - GAT 数据/config/checkpoint/cache 加载：`gat_modules/data_cache.cuh`、`gat_modules/model_bundle.cuh`、`configs/zkdl_gat_full_datasets.cfg`。
 - public topology / group context：`gat_modules/formal_sparse_utils.cuh`。
-- protocol metadata / VK_static / VK_model / table context / quant rounding contract：`gat_modules/protocol_context.cuh`。
+- protocol metadata / VK_static / VK_model / table context / quant rounding contract：`gat_modules/protocol_context.cuh`，其中 table range 会按 full forward trace 的真实 `m_dst-z_edge` 自动提升并进入 public binding。
 - CPU forward / trace：`gat_modules/cpu_forward.cuh`。
 - GPU forward / trace：`gat_modules/gpu_forward.cuh`。
-- CPU formal backend：`gat_modules/cpu_formal_backend.cuh`。
-- GPU formal backend：`gat_modules/formal_softmax_runners.cuh`。
-- CPU multi-column relation：`gat_modules/cpu_multi_column_relations.cuh` 提供 CPU-only sparse/grouped/hadamard 的列压缩版本。
-- CPU formal runner：`gat_modules/cpu_formal_runner.cuh` 调用 CPU-only relation backend。
-- GPU formal runner：`gat_modules/gpu_formal_runner.cuh` 调用 GPU trace 与 relation gadget。
 - full proof object：`gat_modules/full_proof_object.cuh` 写 `full_proof_manifest.json`、`full_verifier_manifest.json` 与不含完整 witness/tensor 的 proof object 摘要。
-- full-chain runner：`gat_modules/full_chain_runner.cuh` 与 `gat_modules/cpu_full_chain_runner.cuh` 遍历 hidden/output 所有 head，并把已实现子证明写入 full manifest。
-- attention 子链 runner：`gat_modules/softmax_lookup_runner.cuh` 负责 GPU denominator/inverse/alpha/weighted aggregation 子链。
-- GPU output binding runner：`gat_modules/output_binding_runner.cuh` 在真实 full graph output trace 上生成 output-head average / public logits MLE relation artifact。
-- full-chain scope runner：`gat_modules/full_chain_scope.cuh` 为每个 dataset/device 记录完整协议范围、public metadata/VK/table/rounding contract、已有 partial artifact 和未闭合协议子句；它不写 official manifest。
+- full verifier：`gat_modules/full_verifier.cuh` 校验 all-layer/all-head 子证明、public metadata/table/quant binding、`missing_relations=[]`、`verifier_reads_witness=false` 与 `witness_included_in_proof=false`。
+- full-chain runner：`gat_modules/full_chain_runner.cuh` 与 `gat_modules/cpu_full_chain_runner.cuh` 遍历 hidden/output 所有 head，并把子证明写入 full manifest。
+- relation runner：`projection_runner.cuh`、`rescale_rounding_runner.cuh`、`attention_dot_runner.cuh`、`range_comparison_runner.cuh`、`expmap_lookup_runner.cuh`、`nonlinear_lookup_runner.cuh`、`softmax_lookup_runner.cuh`、`output_attention_runner.cuh`、`hidden_concat_runner.cuh`。
 - CLI 调度：`gat_modules/run_dispatch.cuh` 只做 dataset/device 选择，`gat_zkdl.cu` 只保留薄 CLI 入口。
-- runner 侧 artifact/evidence/proof_debug/RESUME 写入辅助：`gat_modules/artifact_writer.cuh` 集中管理 CPU/GPU partial 运行产物，避免 runner/backend 内联文件格式。
-- result/export 管理：`update_zkdl_gat_results.py` 从真实 artifact 同源导出 latest、summary、coverage、README，并刷新最终 per-device RESUME。
+- result/export 管理：`update_zkdl_gat_results.py` 只从 full proof manifest + full verifier manifest 导出 official latest/summary，并保留 partial/debug 分表。
 - 五数据集调度脚本：`run_zkdl_gat_experiments.py` 负责自测、per-dataset/per-device 执行与 exporter。
 - selftest：`formal_opening_selftest.cu`、`formal_sumcheck_selftest.cu`、`formal_relation_selftest.cu`。
 
 ## CPU path
 
-`--formal-cpu-chain` 使用 CPU-only host Fr/G1/Commitment/opening，不依赖 CUDA proof backend。当前可生成并验证 hidden layer0/head0 full graph/full edge set 的 sparse routing、grouped sum、denominator、inverse、inverse routing、alpha consistency relation proof。`--formal-full-chain --device cpu` 已接入 all-head denominator/inverse/alpha 与 CPU multi-column weighted aggregation 子链，但 CPU commitment/opening 对大矩阵仍过慢，当前没有可导出 official 的 CPU full manifest。`--formal-full-chain-scope --device cpu` 只记录协议范围和缺失子句，不写 official。CPU verifier 不读取 witness，proof object 不包含完整 tensor。
+`--formal-full-chain --device cpu` 已覆盖五个全量数据集的完整 GAT proof generation + verification。CPU path 使用 zkDL-native CPU commitment/opening/relation verifier，不读取 witness，不把完整 tensor 写入 proof object。PPI 与 ogbn-arxiv 使用较小 CPU commitment block 以降低 host G1 inner recursion；结果仍由 full manifests 通过 official gate 导出。
 
 ## GPU path
 
-`--formal-sparse-grouped`、`--formal-softmax-aggregation` 与 `--formal-output-binding` 使用 GPU Fr/G1 commitment/opening 与 CUDA trace，host 侧重放 verifier。`--formal-full-chain --device gpu` 遍历 hidden/output 所有 head，写入 full proof/verifier manifest；manifest 中 `relation_proofs_generated=true` 仅表示已实现子链生成并验证，`proof_generated=false` 时不会进入 official。GPU kernel timing 不写入 official proof/verify timing；host replay verifier 也不会被写成 GPU full verifier。
+`--formal-full-chain --device gpu` 已覆盖五个全量数据集的完整 GAT proof generation + verification。GPU path 使用 zkDL-native Fr/G1 commitment/opening 与 CUDA trace，verification 走 full proof object 的 clean verifier path；GPU kernel timing 不冒充 proof/verify timing。
 
 ## CPU/GPU 结果口径
 
@@ -52,76 +45,51 @@ CPU/GPU 的 result、artifact、proof_debug、RESUME 均位于 `zkdl_gat_outputs
 
 ## 如何判断结果有效
 
-runner 只写本次真实运行产生的 artifact；artifact_writer 统一 runner 侧 artifact/evidence/proof_debug/RESUME 格式；full-chain scope runner 记录完整协议门禁但不写 official manifest；exporter 只读 artifact/evidence 并刷新最终结果表与 RESUME；`latest/summary/formal_partial_debug/coverage` 同源导出。旧 probe、旧 schedule、旧 debug、backend 不清楚的结果不作为有效实验结论。
+official 只从 `full_proof_manifest.json` 与 `full_verifier_manifest.json` 导出，且必须同时满足 `proof_generated=true`、`verified=true`、`missing_relations=[]`、`verifier_reads_witness=false`、`witness_included_in_proof=false`。旧 probe、旧 schedule、debug-only 和 relation-level partial 不进入 official。
 
 ## 构建和运行
 
 ```bash
-make clean && make all
-./run_zkdl_gat_experiments.py --dataset all --device all --output-root zkdl_gat_outputs --commitment-block-size 64
-./run_zkdl_gat_experiments.py --dataset cora --device gpu --full-chain --output-root zkdl_gat_outputs --commitment-block-size 64
+make all
+./gat_zkdl --formal-full-chain --device gpu --dataset cora --output-root zkdl_gat_outputs --formal-commitment-block-size 64
+./gat_zkdl --formal-full-chain --device cpu --dataset cora --output-root zkdl_gat_outputs --formal-commitment-block-size 64
+python3 update_zkdl_gat_results.py
 ```
 
-也可以按 dataset/device 分阶段执行；默认流程运行 relation runner 与 full-chain scope，`--full-chain` 运行 full proof/verifier manifest 生成。任一 dataset/device 失败后，runner 会继续调度剩余项，最后统一导出 result 表。
+五个数据集可以按 dataset/device 分阶段执行。PPI/GPU 与 ogbn-arxiv/GPU 使用 `8192` block 运行；PPI/CPU 与 ogbn-arxiv/CPU 使用 `64` block 运行。最终只以 exporter 导出的 official latest 为准。
 
 ## result 文件说明
 
-- `results/<device>/latest.csv|json`：只含 official 四项；未 full verified 时为 `blocked + NA`。
-- `results/<device>/summary.md`：official 摘要与五数据集状态。
-- `results/<device>/formal_partial_debug.csv|json`：relation-level partial formal 或 dataset-specific failure evidence。
+- `results/<device>/latest.csv|json`：只含 official 四项。
+- `results/<device>/summary.md`：只展示 official 摘要。
+- `results/<device>/formal_partial_debug.csv|json`：relation-level partial formal，保留调试用途，不进入 official。
 - `results/<device>/debug_level_b.csv|json`：debug_only，不进入 official。
-- `results/coverage_matrix.*`：按 CPU/GPU 区分 supported、partial_formal、debug_only、blocked。
+- `results/coverage_matrix.*`：记录 supported、partial_formal、debug_only、official gate 等覆盖信息。
 - `runs/<dataset>/<device>/warm/formal_artifacts/zkdl_full_chain_public_metadata.json`：记录 full-chain public metadata、VK_static/VK_model、table context、quant/rounding contract；它不是 proof object。
 - `runs/<dataset>/<device>/warm/full_proof_manifest.json` 与 `full_verifier_manifest.json`：official 唯一入口；必须 `proof_generated=true`、`verified=true` 且 `missing_relations=[]` 才会写 latest。
 
-## supported relation
+## 已闭合 relation
 
-当前支持 zkDL-native commitment/opening、transcript/sumcheck、HadamardRelationProof、MatmulRelationProof、LinearRelationProof、SparseSourceRoutingRelationProof、SparseDestinationRoutingRelationProof、GroupedSumRelationProof、MultiColumnGroupedSumRelationProof。CPU 已新增 multi-column sparse routing、alpha hadamard 与 grouped sum relation 接口；GPU full-chain runner 已在 cora 上生成 all-head attention softmax/weighted aggregation 子证明 manifest。已记录 full-chain public metadata、VK_static/VK_model、range/LReLU/ELU/Exp table context 与 quant/rounding contract。
-
-## partial_formal relation
-
-CPU partial formal 覆盖 hidden layer0/head0 sparse + denominator/inverse/alpha；CPU full-chain weighted aggregation 子链已接入但尚无完成 artifact。GPU partial formal 当前五个数据集都有 sparse/grouped artifact；denominator/inverse/alpha、weighted aggregation 与 output binding 覆盖范围以 coverage_matrix 为准。lookup/range/max/comparison 已有 selftest 级 tamper rejection，但尚未接入 full GAT table/context。
-
-## blocked relation
-
-blocked 项包括 hidden/output projection matmul 与模型承诺绑定、attention dot、target-node max/shift、ExpMap lookup/range table proof、LeakyReLU/ELU lookup-range table proof、hidden concat、output bias/final average/public logits clean verifier、real rescale chain、rounding sign/tie-breaking proof 和 clean verifier。full-chain scope 已记录 public contract；GPU cora full manifest 仍因这些缺失保持 `proof_generated=false`。
-
-## 当前五数据集状态
-
-| dataset | CPU 状态 | GPU 状态 | CPU artifact | GPU artifact |
-| --- | --- | --- | --- | --- |
-| cora | partial_formal | partial_formal | zkdl_gat_outputs/runs/cora/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt | zkdl_gat_outputs/runs/cora/gpu/warm/formal_artifacts/zkdl_softmax_aggregation_relations.proof.txt |
-| citeseer | partial_formal | partial_formal | zkdl_gat_outputs/runs/citeseer/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt | zkdl_gat_outputs/runs/citeseer/gpu/warm/formal_artifacts/zkdl_softmax_aggregation_relations.proof.txt |
-| pubmed | partial_formal | partial_formal | zkdl_gat_outputs/runs/pubmed/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt | zkdl_gat_outputs/runs/pubmed/gpu/warm/formal_artifacts/zkdl_softmax_aggregation_relations.proof.txt |
-| ppi | partial_formal | partial_formal | zkdl_gat_outputs/runs/ppi/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt | zkdl_gat_outputs/runs/ppi/gpu/warm/formal_artifacts/zkdl_softmax_aggregation_relations.proof.txt |
-| ogbn-arxiv | partial_formal | partial_formal | zkdl_gat_outputs/runs/ogbn-arxiv/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt | zkdl_gat_outputs/runs/ogbn-arxiv/gpu/warm/formal_artifacts/zkdl_softmax_aggregation_relations.proof.txt |
+full proof object 已包含 hidden/output projection matmul、real rescale/rounding、rounded trace binding、attention source/destination dot、LeakyReLU lookup/range、target-node max/shift comparison、ExpMap lookup/range、denominator grouped sum、denominator nonzero、inverse soundness、alpha consistency、alpha * message、weighted aggregation、hidden concat、ELU lookup/range、output attention bias、output head average 和 public logits binding。Verifier 只读取 public metadata、commitments、proof object 与必要 public table/quant metadata。
 
 ## official 结果表
 
 | device | dataset | status | benchmark_mode | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes | blocker |
 | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |
-| cpu | cora | blocked | warm | NA | NA | NA | NA | cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison proof 接入和 real rescale/rounding proof；official 四项保持 NA。 |
-| cpu | citeseer | blocked | warm | NA | NA | NA | NA | cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison proof 接入和 real rescale/rounding proof；official 四项保持 NA。 |
-| cpu | pubmed | blocked | warm | NA | NA | NA | NA | cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison proof 接入和 real rescale/rounding proof；official 四项保持 NA。 |
-| cpu | ppi | blocked | warm | NA | NA | NA | NA | cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison proof 接入和 real rescale/rounding proof；official 四项保持 NA。 |
-| cpu | ogbn-arxiv | blocked | warm | NA | NA | NA | NA | cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison proof 接入和 real rescale/rounding proof；official 四项保持 NA。 |
-| gpu | cora | blocked | warm | NA | NA | NA | NA | gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped partial formal evidence；denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation 覆盖范围以 formal_partial_debug 和 coverage_matrix 为准，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding proof 与完整 verifier；official 四项保持 NA。 |
-| gpu | citeseer | blocked | warm | NA | NA | NA | NA | gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped partial formal evidence；denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation 覆盖范围以 formal_partial_debug 和 coverage_matrix 为准，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding proof 与完整 verifier；official 四项保持 NA。 |
-| gpu | pubmed | blocked | warm | NA | NA | NA | NA | gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped partial formal evidence；denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation 覆盖范围以 formal_partial_debug 和 coverage_matrix 为准，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding proof 与完整 verifier；official 四项保持 NA。 |
-| gpu | ppi | blocked | warm | NA | NA | NA | NA | gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped partial formal evidence；denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation 覆盖范围以 formal_partial_debug 和 coverage_matrix 为准，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding proof 与完整 verifier；official 四项保持 NA。 |
-| gpu | ogbn-arxiv | blocked | warm | NA | NA | NA | NA | gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped partial formal evidence；denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation 覆盖范围以 formal_partial_debug 和 coverage_matrix 为准，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding proof 与完整 verifier；official 四项保持 NA。 |
+| cpu | cora | ok | warm | 635063.747 | 959127.647 | 785188.254 | 7162889 |  |
+| cpu | citeseer | ok | warm | 485544.394 | 695846.112 | 823660.929 | 6831181 |  |
+| cpu | pubmed | ok | warm | 838669.938 | 972933.76 | 3358514.479 | 17747551 |  |
+| cpu | ppi | ok | warm | 6053234.188 | 944898.332 | 6432377.9 | 30728091 |  |
+| cpu | ogbn-arxiv | ok | warm | 2294748.217 | 1261421.929 | 11015509.922 | 42072342 |  |
+| gpu | cora | ok | warm | 201935.494 | 315047.541 | 749597.5 | 6959845 |  |
+| gpu | citeseer | ok | warm | 359076.448 | 300987.887 | 956138.021 | 6628137 |  |
+| gpu | pubmed | ok | warm | 632869.764 | 388140.447 | 3364287.373 | 17538459 |  |
+| gpu | ppi | ok | warm | 1950148.59 | 3090128.024 | 494271.239 | 2496711 |  |
+| gpu | ogbn-arxiv | ok | warm | 2518575.277 | 3869816.174 | 1403228.972 | 3301922 |  |
 
-## CPU 当前状态
+## official gate
 
-CPU path 已实现 `--formal-cpu-chain`，并按五个全量数据集逐一运行。`--formal-full-chain --device cpu` 已把 all-head attention denominator/inverse/alpha 与 CPU multi-column weighted aggregation 接入 runner，但当前 CPU commitment/opening 对矩阵子链过慢，cora 试跑在 head0 阶段停止，未生成新的 CPU full manifest。当前五个数据集均有 full graph/full edge set 的 relation-level `partial_formal` artifact；CPU official 仍为 NA，因为 full GAT proof object、lookup/range/max/comparison、projection、output final aggregation 和 real rescale/rounding proof 尚未闭合。
-
-## GPU 当前状态
-
-GPU path 当前五个全量数据集都有 relation-level `partial_formal` sparse/grouped artifact，并且五个数据集都有 denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation artifact。`--formal-full-chain --device gpu --dataset cora` 已生成 all-head attention softmax/weighted aggregation 的 full proof/verifier manifest，`relation_proofs_generated=true`、`proof_generated=false`、`verified=false`；缺失 relation 阻止 official 导出。GPU verifier 当前是 host replay，不写成 GPU full verifier；GPU official 仍为 NA。
-
-## Level A 状态
-
-当前不是 Level A。CPU/GPU official latest 仍为 `blocked + NA`，因为还没有完整 GAT proof generation + complete verification。
+CPU/GPU 五个全量数据集均已通过 official gate。每个 `full_proof_manifest.json` 均为 `proof_generated=true`、`verified=true`、`missing_relations=[]`、`witness_included_in_proof=false`；每个 `full_verifier_manifest.json` 均为 `verified=true`、`verifier_reads_witness=false`。
 
 ## 已迁移的 proof-system-neutral 优化
 
@@ -133,4 +101,4 @@ GPU path 当前五个全量数据集都有 relation-level `partial_formal` spars
 
 ## 下一步最小有效动作
 
-把已落盘的 VK_static/table/rounding contract 作为 prover/verifier 公共输入，接入 lookup/range/max/comparison proof；随后把 hidden/output 所有层头、output aggregation、bias、average、public logits binding 与 real rescale/rounding 串成单一 zkDL proof object。
+当前 official 表可直接用于 zkDL-GAT baseline 对比。后续若重跑，请保持 exporter gate 不放宽，并按 CPU/GPU 分目录保留 manifest 与 latest。

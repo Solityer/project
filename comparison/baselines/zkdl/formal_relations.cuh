@@ -114,6 +114,25 @@ inline vector<Fr_t> formal_partial_mle_by_window_host(
     return current;
 }
 
+inline vector<Fr_t> formal_mle_basis_weights_host(const vector<Fr_t>& point)
+{
+    vector<Fr_t> weights(std::size_t{1} << point.size(), Fr_host_zero());
+    weights[0] = Fr_host_one_mont();
+    std::size_t active = 1;
+    for (const auto& u : point)
+    {
+        const Fr_t one_minus_u = Fr_host_sub(Fr_host_one_mont(), u);
+        for (std::size_t i = 0; i < active; ++i)
+        {
+            const Fr_t base = weights[i];
+            weights[i] = Fr_host_mul(base, one_minus_u);
+            weights[i + active] = Fr_host_mul(base, u);
+        }
+        active <<= 1U;
+    }
+    return weights;
+}
+
 inline Fr_t formal_host_sum(const vector<Fr_t>& values)
 {
     Fr_t out = Fr_host_zero();
@@ -314,17 +333,19 @@ inline vector<Fr_t> formal_matmul_reduce_a_over_m(
         throw std::runtime_error("matmul A padded shape mismatch");
     }
     vector<Fr_t> out(static_cast<std::size_t>(padded_num) * padded_n, Fr_host_zero());
-    vector<Fr_t> column(padded_m, Fr_host_zero());
+    const auto row_weights = formal_mle_basis_weights_host(point_m);
+    if (row_weights.size() != padded_m) throw std::runtime_error("matmul A row basis size mismatch");
     for (uint batch = 0; batch < padded_num; ++batch)
     {
         for (uint t = 0; t < padded_n; ++t)
         {
+            Fr_t acc = Fr_host_zero();
             for (uint row = 0; row < padded_m; ++row)
             {
-                column[row] = a[(static_cast<std::size_t>(batch) * padded_m + row) * padded_n + t];
+                const auto value = a[(static_cast<std::size_t>(batch) * padded_m + row) * padded_n + t];
+                acc = Fr_host_add(acc, Fr_host_mul(value, row_weights[row]));
             }
-            out[static_cast<std::size_t>(batch) * padded_n + t] =
-                formal_host_mle_vector(column, point_m.begin(), point_m.end());
+            out[static_cast<std::size_t>(batch) * padded_n + t] = acc;
         }
     }
     return out;
@@ -342,17 +363,19 @@ inline vector<Fr_t> formal_matmul_reduce_b_over_k(
         throw std::runtime_error("matmul B padded shape mismatch");
     }
     vector<Fr_t> out(static_cast<std::size_t>(padded_num) * padded_n, Fr_host_zero());
-    vector<Fr_t> row_values(padded_k, Fr_host_zero());
+    const auto column_weights = formal_mle_basis_weights_host(point_k);
+    if (column_weights.size() != padded_k) throw std::runtime_error("matmul B column basis size mismatch");
     for (uint batch = 0; batch < padded_num; ++batch)
     {
         for (uint t = 0; t < padded_n; ++t)
         {
+            Fr_t acc = Fr_host_zero();
             for (uint col = 0; col < padded_k; ++col)
             {
-                row_values[col] = b[(static_cast<std::size_t>(batch) * padded_n + t) * padded_k + col];
+                const auto value = b[(static_cast<std::size_t>(batch) * padded_n + t) * padded_k + col];
+                acc = Fr_host_add(acc, Fr_host_mul(value, column_weights[col]));
             }
-            out[static_cast<std::size_t>(batch) * padded_n + t] =
-                formal_host_mle_vector(row_values, point_k.begin(), point_k.end());
+            out[static_cast<std::size_t>(batch) * padded_n + t] = acc;
         }
     }
     return out;

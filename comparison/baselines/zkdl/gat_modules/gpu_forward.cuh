@@ -138,6 +138,7 @@ DeviceBuffer<double> run_attention_head(
     int rows,
     int input_dim,
     const HeadParams& head,
+    const LocalGraph& graph,
     const DeviceBuffer<std::uint32_t>& src,
     const DeviceBuffer<std::uint32_t>& dst,
     std::size_t edge_count,
@@ -148,16 +149,19 @@ DeviceBuffer<double> run_attention_head(
     double* activation_ms,
     HeadTraceHost* trace) {
     const int width = static_cast<int>(head.output_dim);
-    auto d_W = to_device(head.W);
-    auto d_a_src = to_device(head.attn_src);
-    auto d_a_dst = to_device(head.attn_dst);
-    DeviceBuffer<double> H_prime(static_cast<std::size_t>(rows) * width);
+    DeviceBuffer<double> H_prime;
+    std::vector<double> h_prime_host;
     {
         ScopedTimer timer;
-        dim3 block(16, 16);
-        dim3 grid((width + block.x - 1) / block.x, (rows + block.y - 1) / block.y);
-        dense_matmul_kernel<<<grid, block>>>(features.ptr, d_W.ptr, H_prime.ptr, rows, input_dim, width);
-        cuda_sync("dense_matmul_kernel");
+        const auto feature_host = to_host(features);
+        h_prime_host = zkdl_fixed_point_projection_scale16(
+            feature_host,
+            static_cast<std::size_t>(rows),
+            static_cast<std::size_t>(input_dim),
+            head.W,
+            static_cast<std::size_t>(width));
+        H_prime = to_device(h_prime_host);
+        cuda_sync("fixed_point_projection_scale16");
         *projection_ms += timer.elapsed_ms();
     }
 
@@ -170,31 +174,39 @@ DeviceBuffer<double> run_attention_head(
     DeviceBuffer<double> H_pre(static_cast<std::size_t>(rows) * width);
     {
         ScopedTimer timer;
-        node_attention_kernel<<<(rows + 255) / 256, 256>>>(
-            H_prime.ptr, d_a_src.ptr, d_a_dst.ptr, head.attn_src_bias, head.attn_dst_bias,
-            E_src.ptr, E_dst.ptr, rows, width);
-        cuda_sync("node_attention_kernel");
-        fill_double_kernel<<<(rows + 255) / 256, 256>>>(M.ptr, -std::numeric_limits<double>::infinity(), rows);
-        fill_double_kernel<<<(rows + 255) / 256, 256>>>(Sum.ptr, 0.0, rows);
+        const auto fixed_attention = zkdl_fixed_point_attention_trace_scale16(
+            h_prime_host,
+            static_cast<std::size_t>(rows),
+            static_cast<std::size_t>(width),
+            head,
+            graph);
+        E_src = to_device(fixed_attention.e_src);
+        E_dst = to_device(fixed_attention.e_dst);
+        Z = to_device(fixed_attention.z);
+        M = to_device(fixed_attention.m);
+        U = to_device(fixed_attention.u);
+        Sum = to_device(fixed_attention.sum);
         fill_double_kernel<<<(static_cast<std::size_t>(rows) * width + 255) / 256, 256>>>(H_pre.ptr, 0.0, static_cast<std::size_t>(rows) * width);
-        cuda_sync("attention_init");
-        edge_score_kernel<<<(edge_count + 255) / 256, 256>>>(src.ptr, dst.ptr, E_src.ptr, E_dst.ptr, Z.ptr, M.ptr, edge_count);
-        cuda_sync("edge_score_kernel");
-        softmax_sum_kernel<<<(edge_count + 255) / 256, 256>>>(dst.ptr, Z.ptr, M.ptr, U.ptr, Sum.ptr, edge_count);
-        cuda_sync("softmax_sum_kernel");
+        cuda_sync("fixed_point_attention_trace_scale16");
         aggregate_kernel<<<(edge_count * static_cast<std::size_t>(width) + 255) / 256, 256>>>(
             src.ptr, dst.ptr, U.ptr, Sum.ptr, H_prime.ptr, H_pre.ptr, width, edge_count);
         cuda_sync("aggregate_kernel");
         *attention_ms += timer.elapsed_ms();
     }
 
-    auto d_bias = to_device(head.output_bias);
     DeviceBuffer<double> H_out(static_cast<std::size_t>(rows) * width);
     {
         ScopedTimer timer;
-        activation_kernel<<<(static_cast<std::size_t>(rows) * width + 255) / 256, 256>>>(
-            H_pre.ptr, d_bias.ptr, H_out.ptr, rows, width, apply_bias, apply_elu);
-        cuda_sync("activation_kernel");
+        const auto h_pre_host = to_host(H_pre);
+        const auto h_out_host = zkdl_fixed_point_activation_scale16(
+            h_pre_host,
+            static_cast<std::size_t>(rows),
+            static_cast<std::size_t>(width),
+            head.output_bias,
+            apply_bias,
+            apply_elu);
+        H_out = to_device(h_out_host);
+        cuda_sync("fixed_point_activation_scale16");
         *activation_ms += timer.elapsed_ms();
     }
     if (trace != nullptr) {
@@ -264,7 +276,7 @@ std::vector<double> run_gat_forward_gpu(const LocalGraph& graph, const ModelPara
         for (const auto* head : layer_heads) {
             HeadTraceHost hidden_head_trace;
             auto out = run_attention_head(
-                current, rows, current_dim, *head, d_src, d_dst, graph.edges.size(),
+                current, rows, current_dim, *head, graph, d_src, d_dst, graph.edges.size(),
                 false, true,
                 &metrics->hidden_projection_ms,
                 &metrics->hidden_attention_ms,
@@ -297,7 +309,7 @@ std::vector<double> run_gat_forward_gpu(const LocalGraph& graph, const ModelPara
     for (const auto& head : model.output_heads) {
         HeadTraceHost head_trace;
         auto out = run_attention_head(
-            current, rows, current_dim, head, d_src, d_dst, graph.edges.size(),
+            current, rows, current_dim, head, graph, d_src, d_dst, graph.edges.size(),
             true, false,
             &metrics->output_projection_ms,
             &metrics->output_attention_ms,

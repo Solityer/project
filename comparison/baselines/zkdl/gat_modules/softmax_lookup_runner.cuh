@@ -1,8 +1,13 @@
 #pragma once
 
 // 单个 attention head 的 zkDL-native softmax/weighted aggregation 子链。
-// 当前实现证明 denominator、nonzero inverse、inverse routing、alpha consistency 和 weighted aggregation；
-// lookup/range/max 仍作为 missing relation 阻止 full proof 导出 official。
+// 当前实现证明 denominator、nonzero inverse、inverse routing、alpha consistency 和 weighted aggregation。
+
+std::size_t attention_softmax_column_chunk_limit(std::size_t width)
+{
+    if (width == 0) throw std::runtime_error("attention softmax column chunk width 为空");
+    return std::min<std::size_t>(width, 64);
+}
 
 ZkdlFullRelationRecord prove_gpu_attention_softmax_chain(
     const DatasetRunSpec& spec,
@@ -29,8 +34,7 @@ ZkdlFullRelationRecord prove_gpu_attention_softmax_chain(
     const auto dst = graph_dst_u32(graph);
     const uint node_count_u32 = static_cast<uint>(graph.num_nodes);
     const uint edge_count_u32 = static_cast<uint>(graph.edges.size());
-    const uint column_count_u32 = static_cast<uint>(head.width);
-    const uint padded_column_count_u32 = static_cast<uint>(padded_feature_columns);
+    (void)padded_feature_columns;
 
     std::vector<std::uint32_t> u_quantized;
     auto u_raw = encode_nonnegative_scale16_raw(head.u, graph.edges.size(), padded_edge_count, &u_quantized);
@@ -140,87 +144,104 @@ ZkdlFullRelationRecord prove_gpu_attention_softmax_chain(
     record.proof_digests.push_back("alpha_from_inverse=" + alpha_from_inv_proof.transcript_digest);
     record.proof_digests.push_back("alpha_times_denominator=" + alpha_times_denom_proof.transcript_digest);
 
-    const std::size_t matrix_block = formal_effective_matrix_commitment_block_size(
-        vector_block,
-        std::min(padded_node_count, padded_edge_count),
-        padded_feature_columns);
-    Commitment matrix_gen = make_formal_commitment_generators(matrix_block);
-    auto message_node_matrix_raw = matrix_scale16_raw(
-        head.h_prime, graph.num_nodes, head.width, padded_node_count, padded_feature_columns);
-    auto message_edge_matrix_raw = route_matrix_by_topology_raw(
-        message_node_matrix_raw, graph, padded_node_count, padded_edge_count, padded_feature_columns, true);
-    auto message_node_matrix_mont = mont_vector_from_raw(message_node_matrix_raw);
-    auto message_edge_matrix_mont = mont_vector_from_raw(message_edge_matrix_raw);
-    auto weighted_edge_matrix_mont = weighted_matrix_by_alpha_mont(
-        alpha_mont, message_edge_matrix_mont, graph.edges.size(), padded_edge_count, padded_feature_columns);
-    auto aggregated_matrix_mont = grouped_sum_matrix_by_dst_mont(
-        weighted_edge_matrix_mont, graph, padded_node_count, padded_edge_count, padded_feature_columns);
-    FrTensor message_node_matrix_tensor(static_cast<uint>(message_node_matrix_mont.size()), message_node_matrix_mont.data());
-    FrTensor message_edge_matrix_tensor(static_cast<uint>(message_edge_matrix_mont.size()), message_edge_matrix_mont.data());
-    FrTensor weighted_edge_matrix_tensor(static_cast<uint>(weighted_edge_matrix_mont.size()), weighted_edge_matrix_mont.data());
-    FrTensor aggregated_matrix_tensor(static_cast<uint>(aggregated_matrix_mont.size()), aggregated_matrix_mont.data());
+    const std::size_t column_chunk_limit = attention_softmax_column_chunk_limit(head.width);
+    for (std::size_t col_begin = 0; col_begin < head.width; col_begin += column_chunk_limit) {
+        const std::size_t chunk_columns = std::min(column_chunk_limit, head.width - col_begin);
+        const std::size_t padded_chunk_columns = next_power_of_two(std::max<std::size_t>(1, chunk_columns));
+        const uint chunk_column_count_u32 = static_cast<uint>(chunk_columns);
+        const uint padded_chunk_column_count_u32 = static_cast<uint>(padded_chunk_columns);
+        const std::string chunk_suffix = ":cols" + std::to_string(col_begin)
+            + "_" + std::to_string(col_begin + chunk_columns);
+        std::cout << "full_chain_runner dataset=" << spec.dataset
+                  << " device=gpu stage=prove_" << layer_kind
+                  << "_attention_chunk layer=" << layer_index
+                  << " head=" << head_index
+                  << " cols=" << col_begin << "_" << (col_begin + chunk_columns)
+                  << "\n";
+        const std::size_t matrix_block = formal_effective_matrix_commitment_block_size(
+            vector_block,
+            std::min(padded_node_count, padded_edge_count),
+            padded_chunk_columns);
+        Commitment matrix_gen = make_formal_commitment_generators(matrix_block);
+        const auto h_prime_chunk = slice_matrix_columns(
+            head.h_prime, graph.num_nodes, head.width, col_begin, chunk_columns);
+        auto message_node_matrix_raw = matrix_scale16_raw(
+            h_prime_chunk, graph.num_nodes, chunk_columns, padded_node_count, padded_chunk_columns);
+        auto message_edge_matrix_raw = route_matrix_by_topology_raw(
+            message_node_matrix_raw, graph, padded_node_count, padded_edge_count, padded_chunk_columns, true);
+        auto message_node_matrix_mont = mont_vector_from_raw(message_node_matrix_raw);
+        auto message_edge_matrix_mont = mont_vector_from_raw(message_edge_matrix_raw);
+        auto weighted_edge_matrix_mont = weighted_matrix_by_alpha_mont(
+            alpha_mont, message_edge_matrix_mont, graph.edges.size(), padded_edge_count, padded_chunk_columns);
+        auto aggregated_matrix_mont = grouped_sum_matrix_by_dst_mont(
+            weighted_edge_matrix_mont, graph, padded_node_count, padded_edge_count, padded_chunk_columns);
+        FrTensor message_node_matrix_tensor(static_cast<uint>(message_node_matrix_mont.size()), message_node_matrix_mont.data());
+        FrTensor message_edge_matrix_tensor(static_cast<uint>(message_edge_matrix_mont.size()), message_edge_matrix_mont.data());
+        FrTensor weighted_edge_matrix_tensor(static_cast<uint>(weighted_edge_matrix_mont.size()), weighted_edge_matrix_mont.data());
+        FrTensor aggregated_matrix_tensor(static_cast<uint>(aggregated_matrix_mont.size()), aggregated_matrix_mont.data());
 
-    ScopedTimer matrix_commit_timer;
-    const auto com_message_node_matrix = matrix_gen.commit(message_node_matrix_tensor);
-    const auto com_message_edge_matrix = matrix_gen.commit(message_edge_matrix_tensor);
-    const auto com_weighted_edge_matrix = matrix_gen.commit(weighted_edge_matrix_tensor);
-    const auto com_aggregated_matrix = matrix_gen.commit(aggregated_matrix_tensor);
-    cuda_sync("full-chain attention weighted aggregation commit " + record.relation_scope);
-    record.commitment_ms += matrix_commit_timer.elapsed_ms();
+        ScopedTimer matrix_commit_timer;
+        const auto com_message_node_matrix = matrix_gen.commit(message_node_matrix_tensor);
+        const auto com_message_edge_matrix = matrix_gen.commit(message_edge_matrix_tensor);
+        const auto com_weighted_edge_matrix = matrix_gen.commit(weighted_edge_matrix_tensor);
+        const auto com_aggregated_matrix = matrix_gen.commit(aggregated_matrix_tensor);
+        cuda_sync("full-chain attention weighted aggregation commit " + record.relation_scope + chunk_suffix);
+        record.commitment_ms += matrix_commit_timer.elapsed_ms();
 
-    const std::string message_route_label = prefix + ":weighted_message_source_routing";
-    const std::string alpha_message_label = prefix + ":alpha_times_message";
-    const std::string aggregation_label = prefix + ":weighted_aggregation_by_dst";
-    MultiColumnSparseRoutingGadgetProof message_route_proof;
-    MultiColumnHadamardGadgetProof alpha_message_proof;
-    MultiColumnGroupedSumRelationProof aggregation_proof;
-    {
-        ScopedTimer timer;
-        message_route_proof = prove_multi_column_sparse_routing(
-            message_node_matrix_tensor, message_edge_matrix_tensor,
-            matrix_gen, com_message_node_matrix, com_message_edge_matrix,
-            gen, src, dst, node_count_u32, edge_count_u32,
-            column_count_u32, padded_column_count_u32,
-            "source", message_route_label);
-        alpha_message_proof = prove_multi_column_alpha_hadamard(
-            alpha_tensor, message_edge_matrix_tensor, weighted_edge_matrix_tensor,
-            gen, com_alpha, matrix_gen, com_message_edge_matrix, com_weighted_edge_matrix,
-            edge_count_u32, column_count_u32, padded_column_count_u32, alpha_message_label);
-        aggregation_proof = formal_multi_column_grouped_sum_relation_prove(
-            weighted_edge_matrix_tensor, aggregated_matrix_tensor,
-            matrix_gen, com_weighted_edge_matrix,
-            matrix_gen, com_aggregated_matrix,
-            gen, src, dst, node_count_u32, edge_count_u32,
-            column_count_u32, padded_column_count_u32, aggregation_label);
-        record.prove_ms += timer.elapsed_ms();
+        const std::string message_route_label = prefix + ":weighted_message_source_routing" + chunk_suffix;
+        const std::string alpha_message_label = prefix + ":alpha_times_message" + chunk_suffix;
+        const std::string aggregation_label = prefix + ":weighted_aggregation_by_dst" + chunk_suffix;
+        MultiColumnSparseRoutingGadgetProof message_route_proof;
+        MultiColumnHadamardGadgetProof alpha_message_proof;
+        MultiColumnGroupedSumRelationProof aggregation_proof;
+        {
+            ScopedTimer timer;
+            message_route_proof = prove_multi_column_sparse_routing(
+                message_node_matrix_tensor, message_edge_matrix_tensor,
+                matrix_gen, com_message_node_matrix, com_message_edge_matrix,
+                gen, src, dst, node_count_u32, edge_count_u32,
+                chunk_column_count_u32, padded_chunk_column_count_u32,
+                "source", message_route_label);
+            alpha_message_proof = prove_multi_column_alpha_hadamard(
+                alpha_tensor, message_edge_matrix_tensor, weighted_edge_matrix_tensor,
+                gen, com_alpha, matrix_gen, com_message_edge_matrix, com_weighted_edge_matrix,
+                edge_count_u32, chunk_column_count_u32, padded_chunk_column_count_u32, alpha_message_label);
+            aggregation_proof = formal_multi_column_grouped_sum_relation_prove(
+                weighted_edge_matrix_tensor, aggregated_matrix_tensor,
+                matrix_gen, com_weighted_edge_matrix,
+                matrix_gen, com_aggregated_matrix,
+                gen, src, dst, node_count_u32, edge_count_u32,
+                chunk_column_count_u32, padded_chunk_column_count_u32, aggregation_label);
+            record.prove_ms += timer.elapsed_ms();
+        }
+        {
+            ScopedTimer timer;
+            std::string failure;
+            if (!verify_multi_column_sparse_routing(
+                    message_route_proof, matrix_gen, com_message_node_matrix, com_message_edge_matrix,
+                    gen, src, dst, "source", message_route_label, &failure)) {
+                throw std::runtime_error("weighted message routing verifier rejected: " + failure);
+            }
+            if (!verify_multi_column_alpha_hadamard(
+                    alpha_message_proof, gen, com_alpha, matrix_gen,
+                    com_message_edge_matrix, com_weighted_edge_matrix,
+                    alpha_message_label, &failure)) {
+                throw std::runtime_error("alpha-message verifier rejected: " + failure);
+            }
+            if (!formal_multi_column_grouped_sum_relation_verify(
+                    aggregation_proof, matrix_gen, com_weighted_edge_matrix,
+                    matrix_gen, com_aggregated_matrix, gen, src, dst, aggregation_label, &failure)) {
+                throw std::runtime_error("weighted aggregation verifier rejected: " + failure);
+            }
+            record.verify_ms += timer.elapsed_ms();
+        }
+        record.proof_size_bytes += message_route_proof.serialized_size_bytes()
+            + alpha_message_proof.serialized_size_bytes()
+            + aggregation_proof.serialized_size_bytes();
+        record.proof_digests.push_back("message_route" + chunk_suffix + "=" + message_route_proof.transcript_digest);
+        record.proof_digests.push_back("alpha_message" + chunk_suffix + "=" + alpha_message_proof.transcript_digest);
+        record.proof_digests.push_back("weighted_aggregation" + chunk_suffix + "=" + aggregation_proof.transcript_digest);
     }
-    {
-        ScopedTimer timer;
-        std::string failure;
-        if (!verify_multi_column_sparse_routing(
-                message_route_proof, matrix_gen, com_message_node_matrix, com_message_edge_matrix,
-                gen, src, dst, "source", message_route_label, &failure)) {
-            throw std::runtime_error("weighted message routing verifier rejected: " + failure);
-        }
-        if (!verify_multi_column_alpha_hadamard(
-                alpha_message_proof, gen, com_alpha, matrix_gen,
-                com_message_edge_matrix, com_weighted_edge_matrix,
-                alpha_message_label, &failure)) {
-            throw std::runtime_error("alpha-message verifier rejected: " + failure);
-        }
-        if (!formal_multi_column_grouped_sum_relation_verify(
-                aggregation_proof, matrix_gen, com_weighted_edge_matrix,
-                matrix_gen, com_aggregated_matrix, gen, src, dst, aggregation_label, &failure)) {
-            throw std::runtime_error("weighted aggregation verifier rejected: " + failure);
-        }
-        record.verify_ms += timer.elapsed_ms();
-    }
-    record.proof_size_bytes += message_route_proof.serialized_size_bytes()
-        + alpha_message_proof.serialized_size_bytes()
-        + aggregation_proof.serialized_size_bytes();
-    record.proof_digests.push_back("message_route=" + message_route_proof.transcript_digest);
-    record.proof_digests.push_back("alpha_message=" + alpha_message_proof.transcript_digest);
-    record.proof_digests.push_back("weighted_aggregation=" + aggregation_proof.transcript_digest);
     record.proof_generated = true;
     record.verified = true;
     return record;

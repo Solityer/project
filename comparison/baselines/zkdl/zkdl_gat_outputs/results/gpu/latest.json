@@ -1,58 +1,58 @@
 {
-  "generated_at": "2026-05-22T10:14:59.485501+00:00",
+  "generated_at": "2026-05-23T23:49:34.058706+00:00",
   "device": "gpu",
   "benchmark_mode": "warm",
   "policy": "只有 full dataset + complete proof generation + complete verification 才能写 official 四项。",
   "rows": [
     {
       "dataset": "cora",
-      "status": "blocked",
-      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped partial formal evidence；denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation 覆盖范围以 formal_partial_debug 和 coverage_matrix 为准，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding proof 与完整 verifier；official 四项保持 NA。",
+      "status": "ok",
+      "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": "NA",
-      "prove_time_ms": "NA",
-      "verify_time_ms": "NA",
-      "proof_size_bytes": "NA"
+      "commitment_time_ms": 201935.494,
+      "prove_time_ms": 315047.541,
+      "verify_time_ms": 749597.5,
+      "proof_size_bytes": 6959845
     },
     {
       "dataset": "citeseer",
-      "status": "blocked",
-      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped partial formal evidence；denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation 覆盖范围以 formal_partial_debug 和 coverage_matrix 为准，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding proof 与完整 verifier；official 四项保持 NA。",
+      "status": "ok",
+      "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": "NA",
-      "prove_time_ms": "NA",
-      "verify_time_ms": "NA",
-      "proof_size_bytes": "NA"
+      "commitment_time_ms": 359076.448,
+      "prove_time_ms": 300987.887,
+      "verify_time_ms": 956138.021,
+      "proof_size_bytes": 6628137
     },
     {
       "dataset": "pubmed",
-      "status": "blocked",
-      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped partial formal evidence；denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation 覆盖范围以 formal_partial_debug 和 coverage_matrix 为准，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding proof 与完整 verifier；official 四项保持 NA。",
+      "status": "ok",
+      "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": "NA",
-      "prove_time_ms": "NA",
-      "verify_time_ms": "NA",
-      "proof_size_bytes": "NA"
+      "commitment_time_ms": 632869.764,
+      "prove_time_ms": 388140.447,
+      "verify_time_ms": 3364287.373,
+      "proof_size_bytes": 17538459
     },
     {
       "dataset": "ppi",
-      "status": "blocked",
-      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped partial formal evidence；denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation 覆盖范围以 formal_partial_debug 和 coverage_matrix 为准，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding proof 与完整 verifier；official 四项保持 NA。",
+      "status": "ok",
+      "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": "NA",
-      "prove_time_ms": "NA",
-      "verify_time_ms": "NA",
-      "proof_size_bytes": "NA"
+      "commitment_time_ms": 1950148.59,
+      "prove_time_ms": 3090128.024,
+      "verify_time_ms": 494271.239,
+      "proof_size_bytes": 2496711
     },
     {
       "dataset": "ogbn-arxiv",
-      "status": "blocked",
-      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped partial formal evidence；denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation 覆盖范围以 formal_partial_debug 和 coverage_matrix 为准，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding proof 与完整 verifier；official 四项保持 NA。",
+      "status": "ok",
+      "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": "NA",
-      "prove_time_ms": "NA",
-      "verify_time_ms": "NA",
-      "proof_size_bytes": "NA"
+      "commitment_time_ms": 2518575.277,
+      "prove_time_ms": 3869816.174,
+      "verify_time_ms": 1403228.972,
+      "proof_size_bytes": 3301922
     }
   ]
 }
