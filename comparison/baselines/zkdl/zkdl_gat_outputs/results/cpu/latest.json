@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-23T23:49:34.057606+00:00",
+  "generated_at": "2026-05-24T06:31:18.172698+00:00",
   "device": "cpu",
   "benchmark_mode": "warm",
   "policy": "只有 full dataset + complete proof generation + complete verification 才能写 official 四项。",
@@ -9,10 +9,10 @@
       "status": "ok",
       "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": 635063.747,
-      "prove_time_ms": 959127.647,
-      "verify_time_ms": 785188.254,
-      "proof_size_bytes": 7162889
+      "commitment_time_ms": 613551.758,
+      "prove_time_ms": 907390.762,
+      "verify_time_ms": 786008.575,
+      "proof_size_bytes": 7015379
     },
     {
       "dataset": "citeseer",

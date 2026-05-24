@@ -1,7 +1,0 @@
-formal_softmax_aggregation dataset=cora stage=load_dataset
-formal_softmax_aggregation dataset=cora stage=normalize_graph
-formal_softmax_aggregation dataset=cora nodes=2708 edges=13264 full_dataset=true
-formal_softmax_aggregation dataset=cora stage=load_model
-formal_softmax_aggregation dataset=cora stage=gpu_forward_trace
-formal_softmax_aggregation dataset=cora forward_ms=312.837 stage=prove_verify
-formal_softmax_aggregation dataset=cora status=PASS commitment_block_size=64 denominator=PASS inverse=PASS alpha=PASS weighted_columns=8/8 executed_feature_columns=8 commitment_ms=1507.717 prove_ms=8244.618 verify_ms=4734.040 proof_size_bytes=280185 proof_path=/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/cora/gpu/warm/formal_artifacts/zkdl_softmax_aggregation_relations.proof.txt

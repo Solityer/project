@@ -1,8 +1,10 @@
 #pragma once
 
 // zkDL-GAT full proof object 与 verifier manifest 的最小结构层。
-// 这里记录真实 relation proof 的摘要、大小与 verify 结果；未闭合的协议子句会阻止 official 导出。
+// 这里记录真实 relation proof 的摘要、大小与 verify 结果；缺失或失败的协议子句会阻止 official 导出。
 
+// 单个 full-chain relation proof 的摘要。
+// 记录只包含 proof 摘要、timing 和 verifier 结果，不包含 witness 或完整 tensor。
 struct ZkdlFullRelationRecord {
     std::string stage;
     std::string relation_scope;
@@ -18,6 +20,8 @@ struct ZkdlFullRelationRecord {
     std::vector<std::string> proof_digests;
 };
 
+// 一个 dataset/device 的 full proof object 聚合状态。
+// exporter 只读取这里生成的 manifest；proof_generated/verified 为 official gate 的核心字段。
 struct ZkdlFullProofObject {
     std::string protocol_id = "GAT-ZKML-zkDL";
     std::string proof_scope = "zkdl_gat_full";
@@ -44,6 +48,7 @@ struct ZkdlFullProofObject {
     fs::path verifier_manifest_path;
 };
 
+// 追加一个 relation record，并把三段 timing 与 proof_size 汇总到 proof object。
 void append_full_relation_record(ZkdlFullProofObject& proof, ZkdlFullRelationRecord record)
 {
     proof.commitment_ms += record.commitment_ms;
@@ -53,6 +58,7 @@ void append_full_relation_record(ZkdlFullProofObject& proof, ZkdlFullRelationRec
     proof.records.push_back(std::move(record));
 }
 
+// 写 JSON 字符串数组；用于 manifest 中的 proof_digests 与 missing_relations。
 void write_json_string_list_inline(std::ofstream& out, const std::vector<std::string>& values)
 {
     out << "[";
@@ -63,6 +69,8 @@ void write_json_string_list_inline(std::ofstream& out, const std::vector<std::st
     out << "]";
 }
 
+// 将单个 relation record 序列化进 full proof/verifier manifest。
+// 这些字段用于 clean verifier 复查 all-layer/all-head 是否完整覆盖。
 void write_full_relation_record_json(std::ofstream& out, const ZkdlFullRelationRecord& record, std::size_t indent)
 {
     const std::string pad(indent, ' ');
@@ -83,6 +91,8 @@ void write_full_relation_record_json(std::ofstream& out, const ZkdlFullRelationR
     out << "\n" << pad << "}";
 }
 
+// 根据 relation record 与 missing_relations 汇总 full proof gate。
+// 注意该函数不放宽语义：存在任何 missing relation 时 proof_generated 仍为 false。
 void finalize_full_proof_status(ZkdlFullProofObject& proof)
 {
     proof.relation_proofs_generated = proof.is_full_dataset
@@ -97,6 +107,8 @@ void finalize_full_proof_status(ZkdlFullProofObject& proof)
         });
 }
 
+// 写 proof object 摘要、full proof manifest 和 full verifier manifest。
+// 副作用是 official exporter 的唯一输入；写出的 proof object 明确不包含完整 witness/tensor。
 void write_zkdl_full_proof_object(const ZkdlFullProofObject& proof)
 {
     {

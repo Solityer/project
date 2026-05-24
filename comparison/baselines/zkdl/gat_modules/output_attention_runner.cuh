@@ -13,6 +13,8 @@ struct OutputBiasWitness {
     std::size_t bias_mismatch_count = 0;
 };
 
+// 构造输出头偏置见证，证明协议定义的 h_out = h_pre + b_out。
+// 输出层没有 ELU；该函数只处理 bias/尺度已对齐后的线性绑定。
 OutputBiasWitness build_output_bias_witness(
     const LocalGraph& graph,
     const HeadParams& head,
@@ -48,6 +50,7 @@ OutputBiasWitness build_output_bias_witness(
     return witness;
 }
 
+// GPU full-chain output bias relation：计入 output attention head 的 official proof_size/timing。
 ZkdlFullRelationRecord prove_gpu_output_attention_bias_full_record(
     const DatasetRunSpec& spec,
     const LocalGraph& graph,
@@ -110,6 +113,7 @@ ZkdlFullRelationRecord prove_gpu_output_attention_bias_full_record(
     return record;
 }
 
+// CPU full-chain output bias relation：与 GPU 使用相同 public logits 前序语义。
 ZkdlFullRelationRecord prove_cpu_output_attention_bias_full_record(
     const DatasetRunSpec& spec,
     const LocalGraph& graph,

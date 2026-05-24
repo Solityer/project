@@ -7,7 +7,7 @@ struct ZkdlGatQuantContract {
     std::string quant_cfg_id;
     std::string encoding_id = "signed_fixed_point_scale_16_to_Fr";
     std::string rounding_policy = "round_half_away_from_zero";
-    std::string rescale_policy = "trace_contract_recorded_no_full_rescale_proof_yet";
+    std::string rescale_policy = "scale16_full_relation_with_remainder_range";
     std::size_t scale = 16;
     std::size_t range_bits = 12;
     std::size_t exp_band = 2;
@@ -28,6 +28,8 @@ struct ZkdlGatTableContext {
     std::string context_id;
 };
 
+// proof object 的公共元数据：绑定数据集形状、模型结构、VK、量化配置和 padding 规则。
+// 这些字段进入 public metadata 文件，并由 clean verifier 与 full manifest 双向检查。
 struct ZkdlGatPublicMetadata {
     std::string protocol_id = "GAT-ZKML-zkDL";
     std::string proof_scope_id = "zkdl_gat_full";
@@ -66,6 +68,7 @@ std::int64_t zkdl_round_half_away_from_zero(double value)
     return static_cast<std::int64_t>(value >= 0.0 ? std::floor(value + 0.5) : std::ceil(value - 0.5));
 }
 
+// 轻量 hash 只用于稳定生成本目录 metadata/table/contract ID，不替代密码学承诺。
 std::string hash_u64_hex(std::uint64_t value)
 {
     std::ostringstream out;
@@ -73,11 +76,13 @@ std::string hash_u64_hex(std::uint64_t value)
     return out.str();
 }
 
+// 从 canonical text 派生可读 ID；full verifier 只检查 ID 一致性，不改变 proof 语义。
 std::string hash_text_id(const std::string& prefix, const std::string& text)
 {
     return prefix + ":" + hash_u64_hex(fnv1a64(text));
 }
 
+// 将模型 hidden profile 规范化为 README/metadata 中的维度字符串。
 std::string hidden_profile_string(const ModelParams& model)
 {
     std::ostringstream out;
@@ -98,6 +103,7 @@ std::int64_t zkdl_public_context_checked_i128_to_i64(__int128 value, const std::
     return static_cast<std::int64_t>(value);
 }
 
+// 统计单个 attention head 的 max(Z_dst)-Z_edge 最大差值，用于确定 lookup/range 表范围。
 std::uint64_t zkdl_trace_head_max_delta_scale16(const LocalGraph& graph, const HeadTraceHost& head)
 {
     if (head.z.size() != graph.edges.size()) {
@@ -125,6 +131,7 @@ std::uint64_t zkdl_trace_head_max_delta_scale16(const LocalGraph& graph, const H
     return max_delta;
 }
 
+// 根据完整 CPU/GPU forward trace 提升 range_bits，保证 ExpMap/max/range 关系覆盖真实差分。
 std::size_t zkdl_required_trace_range_bits(
     const LocalGraph& graph,
     const ForwardTraceHost& trace,
@@ -144,6 +151,7 @@ std::size_t zkdl_required_trace_range_bits(
     return std::max(minimum_bits, bits);
 }
 
+// 复制 dataset spec 并替换 range_bits；不改变数据集、模型或 proof scope。
 DatasetRunSpec zkdl_spec_with_range_bits(const DatasetRunSpec& spec, std::size_t range_bits)
 {
     DatasetRunSpec out = spec;
@@ -151,6 +159,7 @@ DatasetRunSpec zkdl_spec_with_range_bits(const DatasetRunSpec& spec, std::size_t
     return out;
 }
 
+// 构造量化/rounding contract；relation proof 会把 contract_id 写入 proof_digests。
 ZkdlGatQuantContract build_zkdl_gat_quant_contract(const DatasetRunSpec& spec, const ModelParams& model)
 {
     ZkdlGatQuantContract contract;
@@ -169,6 +178,7 @@ ZkdlGatQuantContract build_zkdl_gat_quant_contract(const DatasetRunSpec& spec, c
     return contract;
 }
 
+// 构造 VK_static/table context，包括 LReLU、ELU、ExpMap 与 range 表的公开 digest。
 ZkdlGatTableContext build_zkdl_gat_table_context(const DatasetRunSpec& spec, const ModelParams& model)
 {
     const auto quant = build_zkdl_gat_quant_contract(spec, model);
@@ -229,6 +239,8 @@ ZkdlGatTableContext build_zkdl_gat_table_context(const DatasetRunSpec& spec, con
     return context;
 }
 
+// 构造 proof 公共输入 M_pub/Topo/VK/Y 的 metadata 摘要。
+// 该函数不读取或写入 witness，只绑定 full dataset 的公开形状与模型配置。
 ZkdlGatPublicMetadata build_zkdl_gat_public_metadata(
     const DatasetRunSpec& spec,
     const GraphDataset& dataset,
@@ -290,6 +302,7 @@ ZkdlGatPublicMetadata build_zkdl_gat_public_metadata(
     return metadata;
 }
 
+// 写 full-chain public metadata 文件；它不是 proof object，但 verifier gate 会检查其存在和 ID。
 void write_zkdl_gat_protocol_context_json(
     const fs::path& path,
     const ZkdlGatPublicMetadata& metadata,

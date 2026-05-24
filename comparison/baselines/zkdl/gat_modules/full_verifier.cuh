@@ -3,6 +3,7 @@
 // full verifier 汇总层只检查 public metadata 与 proof object 中的子证明摘要。
 // 它不读取 witness、不读取完整 tensor，只确认 all-layer/all-head 必需 relation 已生成并验证。
 
+// CPU relation record 使用 cpu_ 前缀；clean verifier 归一化后与 GPU 共用同一 gate 表。
 std::string zkdl_normalized_stage_name(const std::string& stage)
 {
     const std::string cpu_prefix = "cpu_";
@@ -12,17 +13,20 @@ std::string zkdl_normalized_stage_name(const std::string& stage)
     return stage;
 }
 
+// 检查 proof_digests 中的 key=value 绑定，例如 table_context_id 或 quant_contract_id。
 bool zkdl_digest_has_kv(const ZkdlFullRelationRecord& record, const std::string& key, const std::string& value)
 {
     const std::string needle = key + "=" + value;
     return std::find(record.proof_digests.begin(), record.proof_digests.end(), needle) != record.proof_digests.end();
 }
 
+// 检查某个 mismatch counter 是否显式记录为 0。
 bool zkdl_digest_has_zero_counter(const ZkdlFullRelationRecord& record, const std::string& key)
 {
     return zkdl_digest_has_kv(record, key, "0");
 }
 
+// 查找已生成且已验证的 relation record；未验证记录不能满足 official gate。
 const ZkdlFullRelationRecord* zkdl_find_full_relation_record(
     const ZkdlFullProofObject& proof,
     const std::string& normalized_stage,
@@ -39,6 +43,7 @@ const ZkdlFullRelationRecord* zkdl_find_full_relation_record(
     return nullptr;
 }
 
+// 要求某个 all-layer/all-head relation 存在、已验证且 proof_size/proof_digests 非空。
 void zkdl_require_full_relation_record(
     const ZkdlFullProofObject& proof,
     const std::string& normalized_stage,
@@ -58,6 +63,7 @@ void zkdl_require_full_relation_record(
     }
 }
 
+// 要求 relation proof 摘要绑定 public metadata、VK_static/table 或 quant contract。
 void zkdl_require_digest_binding(
     const ZkdlFullProofObject& proof,
     const std::string& normalized_stage,
@@ -74,6 +80,7 @@ void zkdl_require_digest_binding(
     }
 }
 
+// 要求 relation 内部 mismatch counter 为 0，防止 host equality/debug 比较冒充 proof。
 void zkdl_require_zero_counter(
     const ZkdlFullProofObject& proof,
     const std::string& normalized_stage,
@@ -89,6 +96,9 @@ void zkdl_require_zero_counter(
     }
 }
 
+// full verifier 的 clean gate。
+// 输入是 proof object 摘要、public metadata、模型与 forward trace；不会读取 witness 文件。
+// 返回值为空才允许 finalize_full_proof_status 将 proof_generated/verified 置为 true。
 std::vector<std::string> zkdl_verify_full_proof_manifest_clean(
     const ZkdlFullProofObject& proof,
     const DatasetRunSpec& spec,

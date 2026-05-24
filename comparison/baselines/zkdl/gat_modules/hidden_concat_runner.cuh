@@ -1,5 +1,6 @@
 #pragma once
 
+// 将 head 在 concat 宽度中的固定 offset 编码成布尔评值点。
 std::vector<Fr_t> boolean_offset_point_bits(std::size_t offset, std::size_t bit_count)
 {
     std::vector<Fr_t> out(bit_count, Fr_host_zero());
@@ -9,6 +10,7 @@ std::vector<Fr_t> boolean_offset_point_bits(std::size_t offset, std::size_t bit_
     return out;
 }
 
+// 将局部 head 列点映射到 concat 张量的全局列点，绑定 H_cat 的拼接位置。
 std::vector<Fr_t> concat_points_for_hidden_head(
     const std::vector<Fr_t>& row_point,
     const std::vector<Fr_t>& local_col_point,
@@ -36,6 +38,7 @@ std::vector<Fr_t> concat_points_for_hidden_head(
     return out;
 }
 
+// hidden head 自身的 MLE 点：先列维、后行维，匹配本目录行优先展平规则。
 std::vector<Fr_t> hidden_head_point(
     const std::vector<Fr_t>& row_point,
     const std::vector<Fr_t>& local_col_point)
@@ -47,6 +50,7 @@ std::vector<Fr_t> hidden_head_point(
     return out;
 }
 
+// GPU full-chain hidden concat relation：证明每个 hidden head 的 h_out 进入 H_cat 正确列段。
 ZkdlFullRelationRecord prove_gpu_hidden_concat_binding_full_record(
     const DatasetRunSpec& spec,
     const LocalGraph& graph,
@@ -144,6 +148,7 @@ ZkdlFullRelationRecord prove_gpu_hidden_concat_binding_full_record(
     return record;
 }
 
+// CPU full-chain hidden concat relation：保持与 GPU 相同的列段和 padding 语义。
 ZkdlFullRelationRecord prove_cpu_hidden_concat_binding_full_record(
     const DatasetRunSpec& spec,
     const LocalGraph& graph,

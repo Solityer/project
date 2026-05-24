@@ -46,6 +46,8 @@ std::vector<Fr_t> attention_i64_to_mont(const std::vector<std::int64_t>& values)
     return signed_i64_to_mont_vector(values);
 }
 
+// 构造 source/destination attention dot、bias、score 与 LeakyReLU 分支见证。
+// 该见证只参与 relation proof，official proof object 只保留摘要与 mismatch counter。
 AttentionDotWitness build_attention_dot_witness(
     const LocalGraph& graph,
     const HeadParams& head,
@@ -171,6 +173,7 @@ AttentionDotWitness build_attention_dot_witness(
     return witness;
 }
 
+// GPU full-chain attention-dot/LReLU relation：绑定 dot product、bias、routing 与 LReLU lookup/range。
 ZkdlFullRelationRecord prove_gpu_attention_dot_lrelu_full_record(
     const DatasetRunSpec& spec,
     const LocalGraph& graph,
@@ -411,6 +414,7 @@ ZkdlFullRelationRecord prove_gpu_attention_dot_lrelu_full_record(
     return record;
 }
 
+// CPU full-chain attention-dot/LReLU relation：与 GPU 共享 public table/quant digest gate。
 ZkdlFullRelationRecord prove_cpu_attention_dot_lrelu_full_record(
     const DatasetRunSpec& spec,
     const LocalGraph& graph,

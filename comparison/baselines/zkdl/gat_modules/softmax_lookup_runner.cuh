@@ -3,12 +3,15 @@
 // 单个 attention head 的 zkDL-native softmax/weighted aggregation 子链。
 // 当前实现证明 denominator、nonzero inverse、inverse routing、alpha consistency 和 weighted aggregation。
 
+// 大维度 message 聚合按列分块，避免单个 Hyrax opening 过大。
 std::size_t attention_softmax_column_chunk_limit(std::size_t width)
 {
     if (width == 0) throw std::runtime_error("attention softmax column chunk width 为空");
     return std::min<std::size_t>(width, 64);
 }
 
+// GPU full-chain softmax/weighted aggregation relation。
+// 证明 denominator、inverse、alpha、alpha*message 和按 dst 聚合；不单独提交虚拟 R_src 稠密矩阵。
 ZkdlFullRelationRecord prove_gpu_attention_softmax_chain(
     const DatasetRunSpec& spec,
     const LocalGraph& graph,

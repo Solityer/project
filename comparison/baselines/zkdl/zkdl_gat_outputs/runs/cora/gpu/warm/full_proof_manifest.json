@@ -6,7 +6,7 @@
   "metadata_id": "zkdl_public_metadata:681da38dd372b340",
   "vk_static_id": "zkdl_table_context:09a4e8e58b2e34c4",
   "vk_model_id": "cora_gat",
-  "quant_contract_id": "zkdl_quant_contract:300a40e16882538f",
+  "quant_contract_id": "zkdl_quant_contract:cd67875015a5c49f",
   "is_full_dataset": true,
   "relation_proofs_generated": true,
   "proof_generated": true,
@@ -14,10 +14,10 @@
   "verifier_reads_witness": false,
   "witness_included_in_proof": false,
   "benchmark_mode": "warm",
-  "commitment_time_ms": 201935.494,
-  "prove_time_ms": 315047.541,
-  "verify_time_ms": 749597.500,
-  "proof_size_bytes": 6959845,
+  "commitment_time_ms": 204132.063,
+  "prove_time_ms": 321156.710,
+  "verify_time_ms": 673768.749,
+  "proof_size_bytes": 6812335,
   "proof_object_path": "/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/cora/gpu/warm/formal_artifacts/zkdl_full_proof_object.txt",
   "relations": [
     {
@@ -28,11 +28,11 @@
       "head_index": 0,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 19879.305,
-      "prove_time_ms": 1887.318,
-      "verify_time_ms": 50645.386,
+      "commitment_time_ms": 20133.181,
+      "prove_time_ms": 1919.452,
+      "verify_time_ms": 44659.133,
       "proof_size_bytes": 29562,
-      "proof_digests": ["matmul=fdb83e215b3348f9"]
+      "proof_digests": ["matmul=f3ee7c8eb860fa72"]
     },
     {
       "stage": "rescale_rounding",
@@ -42,11 +42,11 @@
       "head_index": 0,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 913.070,
-      "prove_time_ms": 5197.840,
-      "verify_time_ms": 11026.364,
-      "proof_size_bytes": 122704,
-      "proof_digests": ["bitness0=5edde80abfb98d16", "bitness1=6a95e4fe3eab8d59", "bitness2=cb97de5c7cdc6f8d", "bitness3=f9cbdcc563ab1e97", "bitness4=a0f38cb4358a4545", "bitness5=7fd792e679b4c6a3", "identity=cad629018e6860e8", "shifted=f5827b2e39941fe1", "decomposition=69df46230e266a54", "quant_contract_id=zkdl_quant_contract:300a40e16882538f", "scale=16", "rem_bits=6", "tie_policy=round_half_away_from_zero", "max_abs_residual=8", "canonical_rounding_mismatch_count=0"]
+      "commitment_time_ms": 846.832,
+      "prove_time_ms": 4480.611,
+      "verify_time_ms": 9679.958,
+      "proof_size_bytes": 106178,
+      "proof_digests": ["bitness0=b581014d8eb91159", "bitness1=c7ff42edd2795150", "bitness2=8b7cc551cb0cb544", "bitness3=fca453ffe72d8f33", "bitness4=66ff9d3d8a9f47c3", "identity=a61e19041ce1ec3e", "shifted=33da4f1c44b3c0e2", "decomposition=0fca8a56603580e3", "quant_contract_id=zkdl_quant_contract:cd67875015a5c49f", "scale=16", "rem_bits=5", "tie_policy=round_half_away_from_zero", "max_abs_residual=8", "canonical_rounding_mismatch_count=0"]
     },
     {
       "stage": "attention_dot_lrelu_lookup_range",
@@ -56,11 +56,11 @@
       "head_index": 0,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 808.589,
-      "prove_time_ms": 6308.480,
-      "verify_time_ms": 16156.412,
+      "commitment_time_ms": 814.186,
+      "prove_time_ms": 6159.837,
+      "verify_time_ms": 15189.515,
       "proof_size_bytes": 188056,
-      "proof_digests": ["source_dot=a369efdb3bc146b1", "destination_dot=b4b4b05f861b6d61", "source_dot_rescale_identity=9f744b95f822e1f5", "destination_dot_rescale_identity=df1152797b2aa19f", "source_attention_bias_binding=78a9a1a3cede9efe", "destination_attention_bias_binding=0781f789f5102a21", "attention_score_binding=f03480d24d8e00ed", "lrelu_selector_partition=96410035eccb4b19", "lrelu_positive_branch=703c0490998beb68", "lrelu_negative_branch_rescale=bbc74b7ef9bab074", "source_route=f1cd651c871fb27a", "destination_route=912e8d5242765b5a", "pos_selector_boolean=896feebdaf4089c1", "neg_selector_boolean=7c56730a258683fc", "positive_score_mask=2120f8d90b11d505", "positive_z_mask=f5770a109884ec09", "negative_score_mask=707f9985fc1d3c6c", "negative_z_mask=4302e8e3ec602768", "quant_contract_id=zkdl_quant_contract:300a40e16882538f", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "lrelu_table_digest=lrelu:31ea27e145b17d06", "attention_dot_mismatch_count=0", "lrelu_mismatch_count=0", "max_abs_dot_residual=8", "max_abs_lrelu_residual=2"]
+      "proof_digests": ["source_dot=f57a20c085a65935", "destination_dot=4538b1d9a4220d84", "source_dot_rescale_identity=a71409cbb5621e66", "destination_dot_rescale_identity=5b8bfae17a944bed", "source_attention_bias_binding=afd1b4cd48fcec46", "destination_attention_bias_binding=75066258c8b39939", "attention_score_binding=8ffedc89ff870dbd", "lrelu_selector_partition=9e0a6c45462194e9", "lrelu_positive_branch=a66e775f560d7eb4", "lrelu_negative_branch_rescale=b94236dd596052ec", "source_route=e06adfe2093cb2c9", "destination_route=95be12b7dc38d744", "pos_selector_boolean=7efd1c9af6dc341c", "neg_selector_boolean=7db45d44143e9fa3", "positive_score_mask=e76472d6c7b168a1", "positive_z_mask=74a2408374a38b2d", "negative_score_mask=6810cf46b713a942", "negative_z_mask=e1090975d20759a4", "quant_contract_id=zkdl_quant_contract:cd67875015a5c49f", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "lrelu_table_digest=lrelu:31ea27e145b17d06", "attention_dot_mismatch_count=0", "lrelu_mismatch_count=0", "max_abs_dot_residual=8", "max_abs_lrelu_residual=2"]
     },
     {
       "stage": "target_max_shift_comparison",
@@ -70,11 +70,11 @@
       "head_index": 0,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 384.573,
-      "prove_time_ms": 4982.695,
-      "verify_time_ms": 4817.544,
+      "commitment_time_ms": 385.488,
+      "prove_time_ms": 4874.659,
+      "verify_time_ms": 4659.695,
       "proof_size_bytes": 122868,
-      "proof_digests": ["max_route=e0fad774763bdd87", "representative_grouped=d14de8e723b08268", "representative_boolean=b21a425cf0007807", "representative_delta_zero=67738eb09ecc527c", "delta_identity=f8a14cce6a37587c", "delta_decomposition=7874352763c17836", "delta_bit0=8426460169a56af3", "delta_bit1=3571c2cea57d4890", "delta_bit2=8dbc6690e8b6c892", "delta_bit3=4b8139d41a678523", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "max_mismatch_count=0", "max_delta=6", "delta_bit_width=4"]
+      "proof_digests": ["max_route=56ad29061dbc6407", "representative_grouped=d2d9791632f9fbab", "representative_boolean=b81a28f9b996e67a", "representative_delta_zero=a406554d58d1ee61", "delta_identity=ddd1a486e2f7b858", "delta_decomposition=d2ca9c6ec8d16aaa", "delta_bit0=5d845ca13839354b", "delta_bit1=85edee7ed622d876", "delta_bit2=fe2d1222cd34d118", "delta_bit3=4b8139d41a678523", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "max_mismatch_count=0", "max_delta=6", "delta_bit_width=4"]
     },
     {
       "stage": "expmap_lookup_range",
@@ -84,11 +84,11 @@
       "head_index": 0,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 134.512,
-      "prove_time_ms": 521.643,
-      "verify_time_ms": 485.252,
+      "commitment_time_ms": 135.243,
+      "prove_time_ms": 515.028,
+      "verify_time_ms": 438.735,
       "proof_size_bytes": 10859,
-      "proof_digests": ["u_binding=8825664890dadf65", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "exp_table_digest=exp:cc60cce696f8a102", "table_opening_value_recorded=true", "exp_mismatch_count=0", "max_delta=6", "max_u=16"]
+      "proof_digests": ["u_binding=06dd2ad76bd8a565", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "exp_table_digest=exp:cc60cce696f8a102", "table_opening_value_recorded=true", "exp_mismatch_count=0", "max_delta=6", "max_u=16"]
     },
     {
       "stage": "attention_softmax_weighted_aggregation",
@@ -98,11 +98,11 @@
       "head_index": 0,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 1559.882,
-      "prove_time_ms": 8070.517,
-      "verify_time_ms": 4736.295,
-      "proof_size_bytes": 279572,
-      "proof_digests": ["denominator=9b2c167c140d36b8", "inverse=a90913c957d15fb2", "inverse_route=fa2e78457ebbadb2", "alpha_from_inverse=16840e8de1a9dfa5", "alpha_times_denominator=8e256edd252387a2", "message_route=fd6e8cc455412492", "alpha_message=7f22e06548b5761e", "weighted_aggregation=8fa51d84fa57ee24"]
+      "commitment_time_ms": 1586.094,
+      "prove_time_ms": 8339.134,
+      "verify_time_ms": 4400.730,
+      "proof_size_bytes": 279708,
+      "proof_digests": ["denominator=06a8ab622ec242a6", "inverse=a11fd6ef0685f07c", "inverse_route=308ed3c0969f5878", "alpha_from_inverse=f8859521c10aeb8d", "alpha_times_denominator=a6d3e990fb9585a2", "message_route:cols0_8=43ccf7dcc89f98f5", "alpha_message:cols0_8=36915f8ac9cc2b82", "weighted_aggregation:cols0_8=57fa580c61ddf561"]
     },
     {
       "stage": "elu_lookup_range",
@@ -112,11 +112,11 @@
       "head_index": 0,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 442.358,
-      "prove_time_ms": 529.408,
-      "verify_time_ms": 1249.161,
+      "commitment_time_ms": 449.817,
+      "prove_time_ms": 525.296,
+      "verify_time_ms": 1125.722,
       "proof_size_bytes": 11089,
-      "proof_digests": ["elu_binding=6f2359ff0bb482a4", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "elu_table_digest=elu:f2d3a3c6cab780cc", "elu_mismatch_count=0", "max_abs_input=6"]
+      "proof_digests": ["elu_binding=802e615e58798db0", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "elu_table_digest=elu:f2d3a3c6cab780cc", "elu_mismatch_count=0", "max_abs_input=6"]
     },
     {
       "stage": "projection_matmul",
@@ -126,11 +126,11 @@
       "head_index": 1,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 19949.218,
-      "prove_time_ms": 1898.098,
-      "verify_time_ms": 51005.640,
+      "commitment_time_ms": 20238.916,
+      "prove_time_ms": 1882.963,
+      "verify_time_ms": 44544.433,
       "proof_size_bytes": 29562,
-      "proof_digests": ["matmul=924ce335ec7c28c4"]
+      "proof_digests": ["matmul=8d1e1f396b97b070"]
     },
     {
       "stage": "rescale_rounding",
@@ -140,11 +140,11 @@
       "head_index": 1,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 920.568,
-      "prove_time_ms": 5195.706,
-      "verify_time_ms": 11027.289,
-      "proof_size_bytes": 122704,
-      "proof_digests": ["bitness0=7fb305e1ac6ae09d", "bitness1=31d15a61e72621e8", "bitness2=f765606483502723", "bitness3=bedc2f811a027f85", "bitness4=22e39581edcb11af", "bitness5=ceda0c2956b04452", "identity=3ddb695767e05455", "shifted=4ac16188f8ad45e3", "decomposition=2025dfbf53baf02b", "quant_contract_id=zkdl_quant_contract:300a40e16882538f", "scale=16", "rem_bits=6", "tie_policy=round_half_away_from_zero", "max_abs_residual=8", "canonical_rounding_mismatch_count=0"]
+      "commitment_time_ms": 859.773,
+      "prove_time_ms": 4488.728,
+      "verify_time_ms": 9692.351,
+      "proof_size_bytes": 106178,
+      "proof_digests": ["bitness0=100419a0df5d560c", "bitness1=7c7e0e4a8aab9e49", "bitness2=0e76dbf1a47a9e7b", "bitness3=27680c260fbabd6d", "bitness4=c59aeab1a89407b5", "identity=ee61cb5d45b336d4", "shifted=21ba78efe8322d0b", "decomposition=9b70992ed6af21ef", "quant_contract_id=zkdl_quant_contract:cd67875015a5c49f", "scale=16", "rem_bits=5", "tie_policy=round_half_away_from_zero", "max_abs_residual=8", "canonical_rounding_mismatch_count=0"]
     },
     {
       "stage": "attention_dot_lrelu_lookup_range",
@@ -154,11 +154,11 @@
       "head_index": 1,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 836.218,
-      "prove_time_ms": 6309.611,
-      "verify_time_ms": 17242.120,
+      "commitment_time_ms": 848.490,
+      "prove_time_ms": 6180.954,
+      "verify_time_ms": 16255.304,
       "proof_size_bytes": 188056,
-      "proof_digests": ["source_dot=00979943b1ae8a4e", "destination_dot=8ff1bbcf61ad984d", "source_dot_rescale_identity=7d2c6bcc60eadf24", "destination_dot_rescale_identity=0599e7cb753c5de9", "source_attention_bias_binding=8affe12458e12e51", "destination_attention_bias_binding=f85bb9924f0799dc", "attention_score_binding=b9ace35b19c0ce00", "lrelu_selector_partition=4cbd547d988b71d8", "lrelu_positive_branch=30a7654d3f81f7a9", "lrelu_negative_branch_rescale=fea8a603b3294f39", "source_route=9b99c8936e45851e", "destination_route=a9b8f9389a375c49", "pos_selector_boolean=275bc839597920f0", "neg_selector_boolean=9266e47b0eaeed36", "positive_score_mask=b18243903b367958", "positive_z_mask=c2e439f209d512db", "negative_score_mask=0038297eb090e8e9", "negative_z_mask=009e4c14d05af243", "quant_contract_id=zkdl_quant_contract:300a40e16882538f", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "lrelu_table_digest=lrelu:31ea27e145b17d06", "attention_dot_mismatch_count=0", "lrelu_mismatch_count=0", "max_abs_dot_residual=8", "max_abs_lrelu_residual=2"]
+      "proof_digests": ["source_dot=1c5e67e62d224794", "destination_dot=756601db44dcc004", "source_dot_rescale_identity=9e7db0fe935ded6a", "destination_dot_rescale_identity=cd909d9de2a7822d", "source_attention_bias_binding=dd0474b21b1eb05d", "destination_attention_bias_binding=8709c5e04e5d50c8", "attention_score_binding=034f165a1884bb4e", "lrelu_selector_partition=4bd952ea5b126f5f", "lrelu_positive_branch=cbd5c9e8a7a51aa9", "lrelu_negative_branch_rescale=afa91c89e5ae0ced", "source_route=66b25f9318526985", "destination_route=f1157d3d8eec9dc1", "pos_selector_boolean=91b1dcb5e5205991", "neg_selector_boolean=766ab2e9fe303424", "positive_score_mask=61e113020bdcb73a", "positive_z_mask=46501d9bd9c3c78f", "negative_score_mask=1b85640e65c58cc2", "negative_z_mask=75d0dcf4e4823c03", "quant_contract_id=zkdl_quant_contract:cd67875015a5c49f", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "lrelu_table_digest=lrelu:31ea27e145b17d06", "attention_dot_mismatch_count=0", "lrelu_mismatch_count=0", "max_abs_dot_residual=8", "max_abs_lrelu_residual=2"]
     },
     {
       "stage": "target_max_shift_comparison",
@@ -168,11 +168,11 @@
       "head_index": 1,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 386.971,
-      "prove_time_ms": 4976.186,
-      "verify_time_ms": 4727.603,
+      "commitment_time_ms": 389.088,
+      "prove_time_ms": 4887.761,
+      "verify_time_ms": 4598.931,
       "proof_size_bytes": 122868,
-      "proof_digests": ["max_route=9b46d22b6b0c7d42", "representative_grouped=db7687db9abdbf7b", "representative_boolean=d65292cd75440d7d", "representative_delta_zero=70528783b177c109", "delta_identity=f08f0adf513a46cb", "delta_decomposition=e7b019204b0b8b64", "delta_bit0=58641a0e3d6f4427", "delta_bit1=d13aa2fbdae54edc", "delta_bit2=6467cbdb26d6880d", "delta_bit3=9b0b72173c40b723", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "max_mismatch_count=0", "max_delta=5", "delta_bit_width=4"]
+      "proof_digests": ["max_route=f10186ca0344f0f3", "representative_grouped=f581c567e9490d00", "representative_boolean=f21178f68eee174c", "representative_delta_zero=e556723286bb659d", "delta_identity=3ab689b6f401b846", "delta_decomposition=da2952586af0df82", "delta_bit0=0255290ab7efdd02", "delta_bit1=54fff6b0b5b301a3", "delta_bit2=da6d58b77de76477", "delta_bit3=9b0b72173c40b723", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "max_mismatch_count=0", "max_delta=5", "delta_bit_width=4"]
     },
     {
       "stage": "expmap_lookup_range",
@@ -182,11 +182,11 @@
       "head_index": 1,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 134.537,
-      "prove_time_ms": 522.730,
-      "verify_time_ms": 483.744,
+      "commitment_time_ms": 135.197,
+      "prove_time_ms": 516.522,
+      "verify_time_ms": 441.452,
       "proof_size_bytes": 10859,
-      "proof_digests": ["u_binding=db9f07db211e939a", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "exp_table_digest=exp:cc60cce696f8a102", "table_opening_value_recorded=true", "exp_mismatch_count=0", "max_delta=5", "max_u=16"]
+      "proof_digests": ["u_binding=15ee148ab0f23fea", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "exp_table_digest=exp:cc60cce696f8a102", "table_opening_value_recorded=true", "exp_mismatch_count=0", "max_delta=5", "max_u=16"]
     },
     {
       "stage": "attention_softmax_weighted_aggregation",
@@ -196,11 +196,11 @@
       "head_index": 1,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 1596.959,
-      "prove_time_ms": 8061.571,
-      "verify_time_ms": 4717.898,
-      "proof_size_bytes": 279572,
-      "proof_digests": ["denominator=f794570547aeb6bf", "inverse=02630b3f31c995da", "inverse_route=e5cb1af582718abf", "alpha_from_inverse=cf5845a8f3882869", "alpha_times_denominator=a06067860aa5db1d", "message_route=7a4e072af5f3b152", "alpha_message=5c6919a05155c94f", "weighted_aggregation=0d0a899f57a78e20"]
+      "commitment_time_ms": 1636.168,
+      "prove_time_ms": 8315.248,
+      "verify_time_ms": 4392.286,
+      "proof_size_bytes": 279708,
+      "proof_digests": ["denominator=e4d799d90c8a14ff", "inverse=72490e152bcbb6fe", "inverse_route=a434a90c56bea8b0", "alpha_from_inverse=c0637c4d062b3bda", "alpha_times_denominator=0da3b79b156c2c89", "message_route:cols0_8=9327222672c02081", "alpha_message:cols0_8=6438c137cc97329c", "weighted_aggregation:cols0_8=0cecf2bd6a918948"]
     },
     {
       "stage": "elu_lookup_range",
@@ -210,11 +210,11 @@
       "head_index": 1,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 450.743,
-      "prove_time_ms": 529.785,
-      "verify_time_ms": 1239.067,
+      "commitment_time_ms": 460.759,
+      "prove_time_ms": 525.312,
+      "verify_time_ms": 1131.715,
       "proof_size_bytes": 11089,
-      "proof_digests": ["elu_binding=48e297e697b5320b", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "elu_table_digest=elu:f2d3a3c6cab780cc", "elu_mismatch_count=0", "max_abs_input=5"]
+      "proof_digests": ["elu_binding=000ce6afcb6074eb", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "elu_table_digest=elu:f2d3a3c6cab780cc", "elu_mismatch_count=0", "max_abs_input=5"]
     },
     {
       "stage": "projection_matmul",
@@ -224,11 +224,11 @@
       "head_index": 2,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 19981.172,
-      "prove_time_ms": 1925.172,
-      "verify_time_ms": 51276.477,
+      "commitment_time_ms": 20238.398,
+      "prove_time_ms": 1921.347,
+      "verify_time_ms": 44664.840,
       "proof_size_bytes": 29562,
-      "proof_digests": ["matmul=039b08f1091cb52b"]
+      "proof_digests": ["matmul=b078e0771f6b3f34"]
     },
     {
       "stage": "rescale_rounding",
@@ -238,11 +238,11 @@
       "head_index": 2,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 912.474,
-      "prove_time_ms": 5197.346,
-      "verify_time_ms": 11032.912,
-      "proof_size_bytes": 122704,
-      "proof_digests": ["bitness0=5cf8b637cfa94db4", "bitness1=fbc5c42fffe49025", "bitness2=1533b41ef104b77a", "bitness3=a7a5fc048068e702", "bitness4=a5e4a0cfafbf98e8", "bitness5=24c38a1044dece07", "identity=88ce91d48728ae4d", "shifted=0e36aad0f226ddf1", "decomposition=2a4b6253ab0a48ba", "quant_contract_id=zkdl_quant_contract:300a40e16882538f", "scale=16", "rem_bits=6", "tie_policy=round_half_away_from_zero", "max_abs_residual=8", "canonical_rounding_mismatch_count=0"]
+      "commitment_time_ms": 851.880,
+      "prove_time_ms": 4496.780,
+      "verify_time_ms": 9696.419,
+      "proof_size_bytes": 106178,
+      "proof_digests": ["bitness0=954b0122cfd5eb73", "bitness1=70e435604d92eeb4", "bitness2=73716d2d1b76e2a8", "bitness3=4924ff96835e9f2c", "bitness4=17b29376faa3c938", "identity=4e97810cb0722da8", "shifted=7395016ffb410b5b", "decomposition=c360aa3b3fdcd7cb", "quant_contract_id=zkdl_quant_contract:cd67875015a5c49f", "scale=16", "rem_bits=5", "tie_policy=round_half_away_from_zero", "max_abs_residual=8", "canonical_rounding_mismatch_count=0"]
     },
     {
       "stage": "attention_dot_lrelu_lookup_range",
@@ -252,11 +252,11 @@
       "head_index": 2,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 767.622,
-      "prove_time_ms": 6048.520,
-      "verify_time_ms": 15127.413,
+      "commitment_time_ms": 778.058,
+      "prove_time_ms": 5905.044,
+      "verify_time_ms": 14241.225,
       "proof_size_bytes": 188056,
-      "proof_digests": ["source_dot=199b28fba747cd15", "destination_dot=db8507c7803c0278", "source_dot_rescale_identity=45a1bda7d4d4e28d", "destination_dot_rescale_identity=b623e16d43b69448", "source_attention_bias_binding=129241ff032309bf", "destination_attention_bias_binding=45793aa9665eae24", "attention_score_binding=2ca637620f87e41d", "lrelu_selector_partition=2b7f933852987d3d", "lrelu_positive_branch=e6ad74742a1a6ce6", "lrelu_negative_branch_rescale=89dc395380150889", "source_route=74240e70c8019e48", "destination_route=8882de25df104bee", "pos_selector_boolean=f55501d3834ef979", "neg_selector_boolean=56c9b3323ee06842", "positive_score_mask=dcf0ed968ecd1ff7", "positive_z_mask=bb783abbf3cbe1df", "negative_score_mask=7a55aed4520f854f", "negative_z_mask=0d8dfce7d76c647c", "quant_contract_id=zkdl_quant_contract:300a40e16882538f", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "lrelu_table_digest=lrelu:31ea27e145b17d06", "attention_dot_mismatch_count=0", "lrelu_mismatch_count=0", "max_abs_dot_residual=8", "max_abs_lrelu_residual=2"]
+      "proof_digests": ["source_dot=41e9cf5ee4d548a4", "destination_dot=7eaf8a4386141b71", "source_dot_rescale_identity=798c9de9889b2b26", "destination_dot_rescale_identity=57f6838e48f32f21", "source_attention_bias_binding=8ed3a57427169a6b", "destination_attention_bias_binding=5022ad1bda2edfc4", "attention_score_binding=c61b3c9fc0568656", "lrelu_selector_partition=7139f089e07edd8f", "lrelu_positive_branch=9ea1f9ea6a0aef42", "lrelu_negative_branch_rescale=a93d548e6cad6e41", "source_route=62e9afa3111a5e5b", "destination_route=f7df6c5ece5a073a", "pos_selector_boolean=c76c0db0fea6d2b9", "neg_selector_boolean=76eee95c0cc0d027", "positive_score_mask=bcd94b7c01d9d426", "positive_z_mask=119c5f0dbced514c", "negative_score_mask=6e9ad32a2a5354e2", "negative_z_mask=b124d4fc738eef97", "quant_contract_id=zkdl_quant_contract:cd67875015a5c49f", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "lrelu_table_digest=lrelu:31ea27e145b17d06", "attention_dot_mismatch_count=0", "lrelu_mismatch_count=0", "max_abs_dot_residual=8", "max_abs_lrelu_residual=2"]
     },
     {
       "stage": "target_max_shift_comparison",
@@ -266,11 +266,11 @@
       "head_index": 2,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 343.921,
-      "prove_time_ms": 4270.172,
-      "verify_time_ms": 3976.950,
+      "commitment_time_ms": 345.724,
+      "prove_time_ms": 4202.246,
+      "verify_time_ms": 3871.567,
       "proof_size_bytes": 106716,
-      "proof_digests": ["max_route=57dc4a05011eb433", "representative_grouped=5c7607205c328b66", "representative_boolean=d4d7fb754be4aeaf", "representative_delta_zero=c88c304c45cceff1", "delta_identity=54e717fc8f019e32", "delta_decomposition=9e58060a663bd145", "delta_bit0=b0520e351fb8784d", "delta_bit1=acabdee6a22aa1e0", "delta_bit2=77166564cecdec77", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "max_mismatch_count=0", "max_delta=2", "delta_bit_width=3"]
+      "proof_digests": ["max_route=698b08c51467b64a", "representative_grouped=0c0da3b4c53ec79c", "representative_boolean=e923961c38d0f4b7", "representative_delta_zero=a63b69c217b1ea62", "delta_identity=2fbaa30aa4986afe", "delta_decomposition=e409a23dac8eb56a", "delta_bit0=1812a04ecefd9069", "delta_bit1=31a359374ee51ea8", "delta_bit2=77166564cecdec77", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "max_mismatch_count=0", "max_delta=2", "delta_bit_width=3"]
     },
     {
       "stage": "expmap_lookup_range",
@@ -280,11 +280,11 @@
       "head_index": 2,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 134.842,
-      "prove_time_ms": 521.284,
-      "verify_time_ms": 488.184,
+      "commitment_time_ms": 135.093,
+      "prove_time_ms": 516.529,
+      "verify_time_ms": 439.832,
       "proof_size_bytes": 10859,
-      "proof_digests": ["u_binding=2e02d3c18b5e4d5b", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "exp_table_digest=exp:cc60cce696f8a102", "table_opening_value_recorded=true", "exp_mismatch_count=0", "max_delta=2", "max_u=16"]
+      "proof_digests": ["u_binding=393260ea2e7b176b", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "exp_table_digest=exp:cc60cce696f8a102", "table_opening_value_recorded=true", "exp_mismatch_count=0", "max_delta=2", "max_u=16"]
     },
     {
       "stage": "attention_softmax_weighted_aggregation",
@@ -294,11 +294,11 @@
       "head_index": 2,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 1550.276,
-      "prove_time_ms": 8094.933,
-      "verify_time_ms": 4723.244,
-      "proof_size_bytes": 279572,
-      "proof_digests": ["denominator=9f7eb3b574ccda31", "inverse=05bb98525bd9a3ad", "inverse_route=c7fccdf1ba0c58ac", "alpha_from_inverse=8b14dc7b9427fc63", "alpha_times_denominator=f91c2b8a9c239bbb", "message_route=1f009f5c2b8d9c76", "alpha_message=cca437fe1bd6b965", "weighted_aggregation=7382966ac32aa8db"]
+      "commitment_time_ms": 1584.997,
+      "prove_time_ms": 8335.088,
+      "verify_time_ms": 4423.529,
+      "proof_size_bytes": 279708,
+      "proof_digests": ["denominator=596862e208eaf24f", "inverse=2a97d87952ab787b", "inverse_route=99fae179dec4a07b", "alpha_from_inverse=853b4ce6bec05a11", "alpha_times_denominator=fa263162900981e7", "message_route:cols0_8=ee0a6def88a121bb", "alpha_message:cols0_8=15cb1a2554e9735b", "weighted_aggregation:cols0_8=fc52b0782ea110a4"]
     },
     {
       "stage": "elu_lookup_range",
@@ -308,11 +308,11 @@
       "head_index": 2,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 434.782,
-      "prove_time_ms": 527.167,
-      "verify_time_ms": 1243.684,
+      "commitment_time_ms": 444.383,
+      "prove_time_ms": 524.084,
+      "verify_time_ms": 1134.831,
       "proof_size_bytes": 11089,
-      "proof_digests": ["elu_binding=09125634148ba0ae", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "elu_table_digest=elu:f2d3a3c6cab780cc", "elu_mismatch_count=0", "max_abs_input=5"]
+      "proof_digests": ["elu_binding=ee8c7b7a999fd94a", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "elu_table_digest=elu:f2d3a3c6cab780cc", "elu_mismatch_count=0", "max_abs_input=5"]
     },
     {
       "stage": "projection_matmul",
@@ -322,11 +322,11 @@
       "head_index": 3,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 19996.370,
-      "prove_time_ms": 1914.737,
-      "verify_time_ms": 51195.363,
+      "commitment_time_ms": 20243.686,
+      "prove_time_ms": 1886.090,
+      "verify_time_ms": 44450.223,
       "proof_size_bytes": 29562,
-      "proof_digests": ["matmul=0664c264223f3a7e"]
+      "proof_digests": ["matmul=8ffe0296b82cf4d7"]
     },
     {
       "stage": "rescale_rounding",
@@ -336,11 +336,11 @@
       "head_index": 3,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 914.394,
-      "prove_time_ms": 5213.501,
-      "verify_time_ms": 11065.449,
-      "proof_size_bytes": 122704,
-      "proof_digests": ["bitness0=2c74b62fdb5459af", "bitness1=721b6884fe89e8c9", "bitness2=e4f59857c66e947e", "bitness3=c0ce8ddd2727d0a0", "bitness4=bd98f75a74849757", "bitness5=dc2a2695030f4b33", "identity=fe7fbbd5f24591f7", "shifted=278c5e4196c8a4ca", "decomposition=1e00d8f920f1324a", "quant_contract_id=zkdl_quant_contract:300a40e16882538f", "scale=16", "rem_bits=6", "tie_policy=round_half_away_from_zero", "max_abs_residual=8", "canonical_rounding_mismatch_count=0"]
+      "commitment_time_ms": 855.350,
+      "prove_time_ms": 4490.884,
+      "verify_time_ms": 9667.607,
+      "proof_size_bytes": 106178,
+      "proof_digests": ["bitness0=cb4594399dd155a8", "bitness1=b7f554cebdd9bf8d", "bitness2=4e8faa13c3b79507", "bitness3=0d6cfe6740846f1a", "bitness4=1d4e71819d9939be", "identity=af5e3f095e014e05", "shifted=a4524ba86543a482", "decomposition=048373b924f7b394", "quant_contract_id=zkdl_quant_contract:cd67875015a5c49f", "scale=16", "rem_bits=5", "tie_policy=round_half_away_from_zero", "max_abs_residual=8", "canonical_rounding_mismatch_count=0"]
     },
     {
       "stage": "attention_dot_lrelu_lookup_range",
@@ -350,11 +350,11 @@
       "head_index": 3,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 928.756,
-      "prove_time_ms": 6321.981,
-      "verify_time_ms": 17092.654,
+      "commitment_time_ms": 941.413,
+      "prove_time_ms": 6151.725,
+      "verify_time_ms": 16037.862,
       "proof_size_bytes": 188056,
-      "proof_digests": ["source_dot=ed26f1fe15b78493", "destination_dot=ef5dc6067ad170c2", "source_dot_rescale_identity=ffc8a6336181da96", "destination_dot_rescale_identity=767f837b360bc474", "source_attention_bias_binding=b68a1fc00f8705ac", "destination_attention_bias_binding=4b30b03f2dcc33bb", "attention_score_binding=8ba1142b96559f2d", "lrelu_selector_partition=440916a10896232b", "lrelu_positive_branch=03a900c1b968fe7f", "lrelu_negative_branch_rescale=492916c7f4c90426", "source_route=edeaff1b0ea01350", "destination_route=9a1cfa3f051a895c", "pos_selector_boolean=46bf1cf8b44de6c0", "neg_selector_boolean=506a60ab7f724c3b", "positive_score_mask=d7c81fb446a90c34", "positive_z_mask=e100455711cef6fa", "negative_score_mask=384be0bcc05fd5a0", "negative_z_mask=e48df43420d82771", "quant_contract_id=zkdl_quant_contract:300a40e16882538f", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "lrelu_table_digest=lrelu:31ea27e145b17d06", "attention_dot_mismatch_count=0", "lrelu_mismatch_count=0", "max_abs_dot_residual=8", "max_abs_lrelu_residual=2"]
+      "proof_digests": ["source_dot=274196ceb8c145a2", "destination_dot=9daf177351085e78", "source_dot_rescale_identity=24adf5615714af40", "destination_dot_rescale_identity=653fd96d6a5c343e", "source_attention_bias_binding=3b7da745051b3018", "destination_attention_bias_binding=432bcb912bd9e0bb", "attention_score_binding=a8ebc7ef95f63a85", "lrelu_selector_partition=e6dc691d948e5ffd", "lrelu_positive_branch=6553eaa9decbe75b", "lrelu_negative_branch_rescale=554664caf5d8bcac", "source_route=1310d6c3d5c014ba", "destination_route=68b64d6786337cec", "pos_selector_boolean=19ada5779775e20b", "neg_selector_boolean=fa643028af76f0f2", "positive_score_mask=d9bd7d734b144007", "positive_z_mask=85e893d3817b1597", "negative_score_mask=bbfcc0f894a811eb", "negative_z_mask=8e97eea27646424d", "quant_contract_id=zkdl_quant_contract:cd67875015a5c49f", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "lrelu_table_digest=lrelu:31ea27e145b17d06", "attention_dot_mismatch_count=0", "lrelu_mismatch_count=0", "max_abs_dot_residual=8", "max_abs_lrelu_residual=2"]
     },
     {
       "stage": "target_max_shift_comparison",
@@ -364,11 +364,11 @@
       "head_index": 3,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 455.430,
-      "prove_time_ms": 5698.535,
-      "verify_time_ms": 5024.753,
+      "commitment_time_ms": 460.038,
+      "prove_time_ms": 5571.278,
+      "verify_time_ms": 4813.800,
       "proof_size_bytes": 139020,
-      "proof_digests": ["max_route=151fd836a4fcd22b", "representative_grouped=ed7cb871d205cd33", "representative_boolean=0895018f2e6463fe", "representative_delta_zero=4e3fa28ae1de5d4f", "delta_identity=0d6c01bdc99c8e22", "delta_decomposition=1a18fb4ddb4bc7b2", "delta_bit0=20f0ecc78bdf20be", "delta_bit1=5cf8839f18d87873", "delta_bit2=c0d116b4bc27792f", "delta_bit3=95cc17648a507803", "delta_bit4=734220b12136c4da", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "max_mismatch_count=0", "max_delta=12", "delta_bit_width=5"]
+      "proof_digests": ["max_route=b5177b1a114f2e4e", "representative_grouped=baaf3f68eb83477f", "representative_boolean=538744c3660da195", "representative_delta_zero=4693f72c8da4f987", "delta_identity=ec4c389bca5652cd", "delta_decomposition=b1b33094b3635291", "delta_bit0=4a39ed659ce44c96", "delta_bit1=b9a9c782f527d087", "delta_bit2=5c8e86e34c1d325e", "delta_bit3=003412cf0480a346", "delta_bit4=734220b12136c4da", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "max_mismatch_count=0", "max_delta=12", "delta_bit_width=5"]
     },
     {
       "stage": "expmap_lookup_range",
@@ -378,11 +378,11 @@
       "head_index": 3,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 135.270,
-      "prove_time_ms": 525.001,
-      "verify_time_ms": 483.067,
+      "commitment_time_ms": 136.044,
+      "prove_time_ms": 519.601,
+      "verify_time_ms": 435.003,
       "proof_size_bytes": 10859,
-      "proof_digests": ["u_binding=b3091731fd16da64", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "exp_table_digest=exp:cc60cce696f8a102", "table_opening_value_recorded=true", "exp_mismatch_count=0", "max_delta=12", "max_u=16"]
+      "proof_digests": ["u_binding=bc55963428ba1730", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "exp_table_digest=exp:cc60cce696f8a102", "table_opening_value_recorded=true", "exp_mismatch_count=0", "max_delta=12", "max_u=16"]
     },
     {
       "stage": "attention_softmax_weighted_aggregation",
@@ -392,11 +392,11 @@
       "head_index": 3,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 1594.326,
-      "prove_time_ms": 8079.439,
-      "verify_time_ms": 4745.311,
-      "proof_size_bytes": 279572,
-      "proof_digests": ["denominator=63c98e38544938db", "inverse=060f421cd7bc5035", "inverse_route=3ddbc52f446754d5", "alpha_from_inverse=f40f48e10b1326d1", "alpha_times_denominator=bb9b41b310408428", "message_route=1432256acd96b0f9", "alpha_message=4c49e2ddd21f9c75", "weighted_aggregation=14b72437648c0daa"]
+      "commitment_time_ms": 1632.193,
+      "prove_time_ms": 8278.469,
+      "verify_time_ms": 4368.489,
+      "proof_size_bytes": 279708,
+      "proof_digests": ["denominator=fe545cb6f7ba093f", "inverse=1ff44c0cb9f11f18", "inverse_route=4497a0557c8f94d2", "alpha_from_inverse=c1309bcd0b71c900", "alpha_times_denominator=c806311ee58d2149", "message_route:cols0_8=44e42558f0ed828f", "alpha_message:cols0_8=2ece177ecedc466f", "weighted_aggregation:cols0_8=3b562e9aca514c34"]
     },
     {
       "stage": "elu_lookup_range",
@@ -406,11 +406,11 @@
       "head_index": 3,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 440.544,
-      "prove_time_ms": 531.463,
-      "verify_time_ms": 1239.004,
+      "commitment_time_ms": 450.833,
+      "prove_time_ms": 518.940,
+      "verify_time_ms": 1120.436,
       "proof_size_bytes": 11089,
-      "proof_digests": ["elu_binding=0f5f35e2eec50979", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "elu_table_digest=elu:f2d3a3c6cab780cc", "elu_mismatch_count=0", "max_abs_input=6"]
+      "proof_digests": ["elu_binding=2ec3c4ecb4d5c6b5", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "elu_table_digest=elu:f2d3a3c6cab780cc", "elu_mismatch_count=0", "max_abs_input=6"]
     },
     {
       "stage": "projection_matmul",
@@ -420,11 +420,11 @@
       "head_index": 4,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 20011.001,
-      "prove_time_ms": 1928.890,
-      "verify_time_ms": 51057.999,
+      "commitment_time_ms": 20257.659,
+      "prove_time_ms": 1914.606,
+      "verify_time_ms": 44896.075,
       "proof_size_bytes": 29562,
-      "proof_digests": ["matmul=ec47811a5b3881ac"]
+      "proof_digests": ["matmul=cb3bad85683b566c"]
     },
     {
       "stage": "rescale_rounding",
@@ -434,11 +434,11 @@
       "head_index": 4,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 917.338,
-      "prove_time_ms": 5199.361,
-      "verify_time_ms": 11043.882,
-      "proof_size_bytes": 122704,
-      "proof_digests": ["bitness0=298c92555b727b9f", "bitness1=a1fb2e64192f6f55", "bitness2=c8cabffc049dbe61", "bitness3=30f464f32b985d3c", "bitness4=8fcd02d585e719c5", "bitness5=e85e473dc94dd580", "identity=e4196ce513c55a17", "shifted=c842090e9a389a52", "decomposition=936170e29587e37d", "quant_contract_id=zkdl_quant_contract:300a40e16882538f", "scale=16", "rem_bits=6", "tie_policy=round_half_away_from_zero", "max_abs_residual=8", "canonical_rounding_mismatch_count=0"]
+      "commitment_time_ms": 857.398,
+      "prove_time_ms": 4498.531,
+      "verify_time_ms": 9702.065,
+      "proof_size_bytes": 106178,
+      "proof_digests": ["bitness0=3a490d499a68fa94", "bitness1=a4cd0b2c17fa0dbf", "bitness2=8ef519e1704fd632", "bitness3=2f54a896b737248c", "bitness4=9989dccc0a9fc606", "identity=49ec0920bc384bce", "shifted=125e60b30f84889c", "decomposition=6573df101c385bb6", "quant_contract_id=zkdl_quant_contract:cd67875015a5c49f", "scale=16", "rem_bits=5", "tie_policy=round_half_away_from_zero", "max_abs_residual=8", "canonical_rounding_mismatch_count=0"]
     },
     {
       "stage": "attention_dot_lrelu_lookup_range",
@@ -448,11 +448,11 @@
       "head_index": 4,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 728.055,
-      "prove_time_ms": 5455.886,
-      "verify_time_ms": 14673.903,
+      "commitment_time_ms": 736.066,
+      "prove_time_ms": 5294.280,
+      "verify_time_ms": 13615.700,
       "proof_size_bytes": 188056,
-      "proof_digests": ["source_dot=9024eb3249b5ecfd", "destination_dot=f6e416b750aeacc3", "source_dot_rescale_identity=9e80b742fd579779", "destination_dot_rescale_identity=a57b33b8e3ee8acb", "source_attention_bias_binding=14afc65fa2a9d085", "destination_attention_bias_binding=5fb5b80d33ec94a9", "attention_score_binding=91c64d3496cc2e54", "lrelu_selector_partition=a42149893cedbd86", "lrelu_positive_branch=043f9f9fb6e8f778", "lrelu_negative_branch_rescale=cbe17c260384557b", "source_route=a84a50851588e271", "destination_route=a981e29c19d98342", "pos_selector_boolean=051f7b1727a7f47c", "neg_selector_boolean=a6d61897f718bcb8", "positive_score_mask=e8fd634653601412", "positive_z_mask=7033fc50ef75307d", "negative_score_mask=a9f0dc62e95a614b", "negative_z_mask=028bbbf02315dbdc", "quant_contract_id=zkdl_quant_contract:300a40e16882538f", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "lrelu_table_digest=lrelu:31ea27e145b17d06", "attention_dot_mismatch_count=0", "lrelu_mismatch_count=0", "max_abs_dot_residual=8", "max_abs_lrelu_residual=0"]
+      "proof_digests": ["source_dot=d7259a4f9c102971", "destination_dot=e03a2bb6f30de62e", "source_dot_rescale_identity=8176a84a69b5667b", "destination_dot_rescale_identity=449feb444ac23c9c", "source_attention_bias_binding=2b8a9aef63148a60", "destination_attention_bias_binding=950ba3c5dcbe4e92", "attention_score_binding=6cb74851b2ccd224", "lrelu_selector_partition=84ff85141562369a", "lrelu_positive_branch=93a557130e39abb4", "lrelu_negative_branch_rescale=cbe17c260384557b", "source_route=44895590e73e387f", "destination_route=e2ab652b3d5ed997", "pos_selector_boolean=fabced049b6f2a83", "neg_selector_boolean=a6d61897f718bcb8", "positive_score_mask=9319b93493d2c5fa", "positive_z_mask=f0b7133cfaae8bb8", "negative_score_mask=574e738edf2afea7", "negative_z_mask=4905f87f7f802cc8", "quant_contract_id=zkdl_quant_contract:cd67875015a5c49f", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "lrelu_table_digest=lrelu:31ea27e145b17d06", "attention_dot_mismatch_count=0", "lrelu_mismatch_count=0", "max_abs_dot_residual=8", "max_abs_lrelu_residual=0"]
     },
     {
       "stage": "target_max_shift_comparison",
@@ -462,11 +462,11 @@
       "head_index": 4,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 384.734,
-      "prove_time_ms": 4854.551,
-      "verify_time_ms": 4534.260,
+      "commitment_time_ms": 387.314,
+      "prove_time_ms": 4769.511,
+      "verify_time_ms": 4406.522,
       "proof_size_bytes": 122868,
-      "proof_digests": ["max_route=b2383068ebb92402", "representative_grouped=df7edcf5beefad9c", "representative_boolean=1e9a90b818f407a6", "representative_delta_zero=4343aaf64e5976bc", "delta_identity=389f1a9325218eb0", "delta_decomposition=4a84e145e4edca02", "delta_bit0=a317dcd93cd4835c", "delta_bit1=8f0eb6944849c6d5", "delta_bit2=278940268c1d2b73", "delta_bit3=0dcf2c1bb8740697", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "max_mismatch_count=0", "max_delta=4", "delta_bit_width=4"]
+      "proof_digests": ["max_route=12d0562f1c52ea3e", "representative_grouped=887789b6a01896bd", "representative_boolean=4970ceb5e9ce1692", "representative_delta_zero=23eaa6f3d4c45434", "delta_identity=ea9a936e4ff9900f", "delta_decomposition=2d0622fea35b63f9", "delta_bit0=2c731b4f29a7a765", "delta_bit1=36a11c4e92181028", "delta_bit2=41ed5615acfe9d47", "delta_bit3=0dcf2c1bb8740697", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "max_mismatch_count=0", "max_delta=4", "delta_bit_width=4"]
     },
     {
       "stage": "expmap_lookup_range",
@@ -476,11 +476,11 @@
       "head_index": 4,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 135.278,
-      "prove_time_ms": 523.618,
-      "verify_time_ms": 491.958,
+      "commitment_time_ms": 136.163,
+      "prove_time_ms": 518.496,
+      "verify_time_ms": 443.856,
       "proof_size_bytes": 10859,
-      "proof_digests": ["u_binding=a42267f4747c45f5", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "exp_table_digest=exp:cc60cce696f8a102", "table_opening_value_recorded=true", "exp_mismatch_count=0", "max_delta=4", "max_u=16"]
+      "proof_digests": ["u_binding=9c6d725398314a29", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "exp_table_digest=exp:cc60cce696f8a102", "table_opening_value_recorded=true", "exp_mismatch_count=0", "max_delta=4", "max_u=16"]
     },
     {
       "stage": "attention_softmax_weighted_aggregation",
@@ -490,11 +490,11 @@
       "head_index": 4,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 1602.798,
-      "prove_time_ms": 8099.484,
-      "verify_time_ms": 4726.063,
-      "proof_size_bytes": 279572,
-      "proof_digests": ["denominator=a5f61950e740ea19", "inverse=681bf8eb94c3100f", "inverse_route=95b3cc7a206a2b32", "alpha_from_inverse=2a2fbacc977ab16e", "alpha_times_denominator=b0821ca2d266882c", "message_route=6717cf91774c19ff", "alpha_message=73d0fb04c35b27fd", "weighted_aggregation=d7ea691595dd0164"]
+      "commitment_time_ms": 1636.394,
+      "prove_time_ms": 8324.277,
+      "verify_time_ms": 4413.736,
+      "proof_size_bytes": 279708,
+      "proof_digests": ["denominator=f1fe26a1a8847443", "inverse=643aba2efd446566", "inverse_route=6e16b48d9dcde2b3", "alpha_from_inverse=f02d77b4cd1f22a8", "alpha_times_denominator=2c87128236f702df", "message_route:cols0_8=a14aa967f16a6bfa", "alpha_message:cols0_8=554f8af3c107ebb2", "weighted_aggregation:cols0_8=35dd8702e132d397"]
     },
     {
       "stage": "elu_lookup_range",
@@ -504,11 +504,11 @@
       "head_index": 4,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 447.942,
-      "prove_time_ms": 528.507,
-      "verify_time_ms": 1247.149,
+      "commitment_time_ms": 459.076,
+      "prove_time_ms": 522.670,
+      "verify_time_ms": 1135.563,
       "proof_size_bytes": 11089,
-      "proof_digests": ["elu_binding=c13e814e92154cbc", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "elu_table_digest=elu:f2d3a3c6cab780cc", "elu_mismatch_count=0", "max_abs_input=6"]
+      "proof_digests": ["elu_binding=ed11251e1140d0c0", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "elu_table_digest=elu:f2d3a3c6cab780cc", "elu_mismatch_count=0", "max_abs_input=6"]
     },
     {
       "stage": "projection_matmul",
@@ -518,11 +518,11 @@
       "head_index": 5,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 20003.410,
-      "prove_time_ms": 1886.400,
-      "verify_time_ms": 50546.007,
+      "commitment_time_ms": 20286.006,
+      "prove_time_ms": 1886.921,
+      "verify_time_ms": 44783.655,
       "proof_size_bytes": 29562,
-      "proof_digests": ["matmul=d63e82ed95830504"]
+      "proof_digests": ["matmul=ddc3eeac5c2c2823"]
     },
     {
       "stage": "rescale_rounding",
@@ -532,11 +532,11 @@
       "head_index": 5,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 920.476,
-      "prove_time_ms": 5208.412,
-      "verify_time_ms": 10993.120,
-      "proof_size_bytes": 122704,
-      "proof_digests": ["bitness0=fe75b44630e05a31", "bitness1=cf7e1e7de9df13c2", "bitness2=ae4dd268578212d8", "bitness3=b81c3093b87a6954", "bitness4=4e6af9796895cdf6", "bitness5=553be6b8d0b9bc61", "identity=e618d261ba25a4c5", "shifted=e5fb9330625ebea8", "decomposition=c1a29a03d0a0fac6", "quant_contract_id=zkdl_quant_contract:300a40e16882538f", "scale=16", "rem_bits=6", "tie_policy=round_half_away_from_zero", "max_abs_residual=8", "canonical_rounding_mismatch_count=0"]
+      "commitment_time_ms": 853.424,
+      "prove_time_ms": 4501.296,
+      "verify_time_ms": 9706.634,
+      "proof_size_bytes": 106178,
+      "proof_digests": ["bitness0=b57b3c7532ef25ae", "bitness1=520597105f86ec62", "bitness2=2a444609736afdef", "bitness3=51e0462be5877942", "bitness4=cdf0c4f75fd2bed0", "identity=b75407a3104de96e", "shifted=9a9a94fa25dd5abf", "decomposition=d45353311d27ee65", "quant_contract_id=zkdl_quant_contract:cd67875015a5c49f", "scale=16", "rem_bits=5", "tie_policy=round_half_away_from_zero", "max_abs_residual=8", "canonical_rounding_mismatch_count=0"]
     },
     {
       "stage": "attention_dot_lrelu_lookup_range",
@@ -546,11 +546,11 @@
       "head_index": 5,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 798.791,
-      "prove_time_ms": 6315.212,
-      "verify_time_ms": 16574.856,
+      "commitment_time_ms": 811.905,
+      "prove_time_ms": 6181.258,
+      "verify_time_ms": 15643.313,
       "proof_size_bytes": 188056,
-      "proof_digests": ["source_dot=8e5ad7ed47bb72ff", "destination_dot=36f7043bb747de8c", "source_dot_rescale_identity=eff720b036e3c43b", "destination_dot_rescale_identity=a1ad346d3ca09ce1", "source_attention_bias_binding=35444b1e5ea475ef", "destination_attention_bias_binding=44a8ecce8a63148a", "attention_score_binding=553712e390c640fb", "lrelu_selector_partition=616573cd5163933f", "lrelu_positive_branch=b970651b6e73f3e5", "lrelu_negative_branch_rescale=b0ec957c3b376a30", "source_route=819613c939b37d6b", "destination_route=7c23999a25ab57f8", "pos_selector_boolean=1c61c34877b2c59a", "neg_selector_boolean=c2254fc573d48361", "positive_score_mask=ad47af8228c2c8b0", "positive_z_mask=3c4755df224887af", "negative_score_mask=75eefa2db030ad9b", "negative_z_mask=9f8cebfddefd7232", "quant_contract_id=zkdl_quant_contract:300a40e16882538f", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "lrelu_table_digest=lrelu:31ea27e145b17d06", "attention_dot_mismatch_count=0", "lrelu_mismatch_count=0", "max_abs_dot_residual=8", "max_abs_lrelu_residual=2"]
+      "proof_digests": ["source_dot=3f145e2ff86ecb09", "destination_dot=c63a3e6681a97fcb", "source_dot_rescale_identity=1c773ff2ad49f186", "destination_dot_rescale_identity=4c373f63d7aa5520", "source_attention_bias_binding=5493bf40a2474fdf", "destination_attention_bias_binding=a61236bed3b45566", "attention_score_binding=f750ef9c85e601c4", "lrelu_selector_partition=f9308e31670cff27", "lrelu_positive_branch=35b624df77cd1f01", "lrelu_negative_branch_rescale=9af53620a9f599dc", "source_route=fbbcfcf2f00627f0", "destination_route=e1d61ee761a13e22", "pos_selector_boolean=fc946127b1efbad0", "neg_selector_boolean=521cc5606254bc79", "positive_score_mask=3615401aff977dfb", "positive_z_mask=e93a10e2a7de3ca0", "negative_score_mask=8901b7051fa161dc", "negative_z_mask=34444e0f1158f393", "quant_contract_id=zkdl_quant_contract:cd67875015a5c49f", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "lrelu_table_digest=lrelu:31ea27e145b17d06", "attention_dot_mismatch_count=0", "lrelu_mismatch_count=0", "max_abs_dot_residual=8", "max_abs_lrelu_residual=2"]
     },
     {
       "stage": "target_max_shift_comparison",
@@ -560,11 +560,11 @@
       "head_index": 5,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 385.865,
-      "prove_time_ms": 4988.524,
-      "verify_time_ms": 4612.408,
+      "commitment_time_ms": 389.284,
+      "prove_time_ms": 4909.330,
+      "verify_time_ms": 4489.479,
       "proof_size_bytes": 122868,
-      "proof_digests": ["max_route=fab19fcad94c6a85", "representative_grouped=2286a8bf0154a3ca", "representative_boolean=4c1973783798c8dd", "representative_delta_zero=8b618917b00530a1", "delta_identity=12cfa06b4a54c6e6", "delta_decomposition=68058d3abb154dab", "delta_bit0=45b7cadaa32c4990", "delta_bit1=57a5784c87aadcc8", "delta_bit2=d86c371e2b2ab671", "delta_bit3=9ebc3be7db7a8f8d", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "max_mismatch_count=0", "max_delta=6", "delta_bit_width=4"]
+      "proof_digests": ["max_route=d6fe4c3b364a9451", "representative_grouped=d00625066a9e73ad", "representative_boolean=b40b27aa2e8d47f4", "representative_delta_zero=1205b0b680f5e1d8", "delta_identity=8ca6e7bf34cb31ab", "delta_decomposition=6efdf555fe9f2bc3", "delta_bit0=7e35a1e2d482268e", "delta_bit1=f578e24bb9a4fec6", "delta_bit2=17951028075cf437", "delta_bit3=9ebc3be7db7a8f8d", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "max_mismatch_count=0", "max_delta=6", "delta_bit_width=4"]
     },
     {
       "stage": "expmap_lookup_range",
@@ -574,11 +574,11 @@
       "head_index": 5,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 135.465,
-      "prove_time_ms": 526.420,
-      "verify_time_ms": 491.023,
+      "commitment_time_ms": 135.735,
+      "prove_time_ms": 520.793,
+      "verify_time_ms": 443.312,
       "proof_size_bytes": 10859,
-      "proof_digests": ["u_binding=4127f7940936d95e", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "exp_table_digest=exp:cc60cce696f8a102", "table_opening_value_recorded=true", "exp_mismatch_count=0", "max_delta=6", "max_u=16"]
+      "proof_digests": ["u_binding=46144f1da8a21b9a", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "exp_table_digest=exp:cc60cce696f8a102", "table_opening_value_recorded=true", "exp_mismatch_count=0", "max_delta=6", "max_u=16"]
     },
     {
       "stage": "attention_softmax_weighted_aggregation",
@@ -588,11 +588,11 @@
       "head_index": 5,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 1574.087,
-      "prove_time_ms": 8113.454,
-      "verify_time_ms": 4711.367,
-      "proof_size_bytes": 279572,
-      "proof_digests": ["denominator=26f9827007466100", "inverse=5fb8abb21af503e8", "inverse_route=59fe189dd234b8bc", "alpha_from_inverse=5a0c8150f4bf369a", "alpha_times_denominator=dfcaf2d8ca037102", "message_route=df775e768cb18945", "alpha_message=b6132cf6740e3b27", "weighted_aggregation=70e77934cb57b5e9"]
+      "commitment_time_ms": 1605.954,
+      "prove_time_ms": 8332.822,
+      "verify_time_ms": 4387.033,
+      "proof_size_bytes": 279708,
+      "proof_digests": ["denominator=4e5c6599f27863c4", "inverse=d4715fb94d9fe268", "inverse_route=ce5279e80909267c", "alpha_from_inverse=fc70f0987708eb21", "alpha_times_denominator=3e8842999be79f57", "message_route:cols0_8=7f120d3f256e100b", "alpha_message:cols0_8=b91f93ed9ccf5fbb", "weighted_aggregation:cols0_8=9fa027b1c236450e"]
     },
     {
       "stage": "elu_lookup_range",
@@ -602,11 +602,11 @@
       "head_index": 5,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 439.827,
-      "prove_time_ms": 530.496,
-      "verify_time_ms": 1235.306,
+      "commitment_time_ms": 449.824,
+      "prove_time_ms": 525.246,
+      "verify_time_ms": 1131.630,
       "proof_size_bytes": 11089,
-      "proof_digests": ["elu_binding=46afb6a5764e8af7", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "elu_table_digest=elu:f2d3a3c6cab780cc", "elu_mismatch_count=0", "max_abs_input=5"]
+      "proof_digests": ["elu_binding=5cd2493ba42c57bb", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "elu_table_digest=elu:f2d3a3c6cab780cc", "elu_mismatch_count=0", "max_abs_input=5"]
     },
     {
       "stage": "projection_matmul",
@@ -616,11 +616,11 @@
       "head_index": 6,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 19998.463,
-      "prove_time_ms": 1834.712,
-      "verify_time_ms": 50204.206,
+      "commitment_time_ms": 20293.523,
+      "prove_time_ms": 1934.542,
+      "verify_time_ms": 44719.164,
       "proof_size_bytes": 29562,
-      "proof_digests": ["matmul=e3c1f3e9527a954f"]
+      "proof_digests": ["matmul=61915d881e98b080"]
     },
     {
       "stage": "rescale_rounding",
@@ -630,11 +630,11 @@
       "head_index": 6,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 926.445,
-      "prove_time_ms": 5197.369,
-      "verify_time_ms": 10932.824,
-      "proof_size_bytes": 122704,
-      "proof_digests": ["bitness0=d39943d013ceb21b", "bitness1=1181e70ddf88c449", "bitness2=bd9955d8a0e46f7e", "bitness3=6862f4f10403a5e0", "bitness4=5818047146add122", "bitness5=1be933ca0988e953", "identity=6cfb52221c263544", "shifted=d2123e555dc9b166", "decomposition=57e9d3e0f32a863e", "quant_contract_id=zkdl_quant_contract:300a40e16882538f", "scale=16", "rem_bits=6", "tie_policy=round_half_away_from_zero", "max_abs_residual=8", "canonical_rounding_mismatch_count=0"]
+      "commitment_time_ms": 860.150,
+      "prove_time_ms": 4487.329,
+      "verify_time_ms": 9747.969,
+      "proof_size_bytes": 106178,
+      "proof_digests": ["bitness0=100f62e2a5f37418", "bitness1=5c740bf8ab1c9d60", "bitness2=6b00d30021c85d25", "bitness3=1d0eccf9ea8f847f", "bitness4=e684ce1bd0f2175c", "identity=db9de273622341f9", "shifted=ad662f57c787a57b", "decomposition=ffc0168915b70442", "quant_contract_id=zkdl_quant_contract:cd67875015a5c49f", "scale=16", "rem_bits=5", "tie_policy=round_half_away_from_zero", "max_abs_residual=8", "canonical_rounding_mismatch_count=0"]
     },
     {
       "stage": "attention_dot_lrelu_lookup_range",
@@ -644,11 +644,11 @@
       "head_index": 6,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 872.875,
-      "prove_time_ms": 5315.627,
-      "verify_time_ms": 12692.541,
+      "commitment_time_ms": 880.141,
+      "prove_time_ms": 5144.010,
+      "verify_time_ms": 11835.717,
       "proof_size_bytes": 188056,
-      "proof_digests": ["source_dot=236895d50a82ce3b", "destination_dot=6c97a0e8d346dd10", "source_dot_rescale_identity=e4024dcacda84c60", "destination_dot_rescale_identity=4be8a550ebb3ae90", "source_attention_bias_binding=f43ad6cd14ccf923", "destination_attention_bias_binding=22701e53dfe39ec1", "attention_score_binding=1e2ec2b74ced3aa1", "lrelu_selector_partition=45464fe5dfc17723", "lrelu_positive_branch=b4048b009c724a8e", "lrelu_negative_branch_rescale=87a0e9fc709b122b", "source_route=359ca55be0fa48fc", "destination_route=788a418c156403e1", "pos_selector_boolean=7c438fe34030ee28", "neg_selector_boolean=68e72fc89dae3ff8", "positive_score_mask=e8369926f17fd874", "positive_z_mask=5e860cc4ec7884dd", "negative_score_mask=dba81b24a760d384", "negative_z_mask=13b2a4a3811f2c92", "quant_contract_id=zkdl_quant_contract:300a40e16882538f", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "lrelu_table_digest=lrelu:31ea27e145b17d06", "attention_dot_mismatch_count=0", "lrelu_mismatch_count=0", "max_abs_dot_residual=8", "max_abs_lrelu_residual=2"]
+      "proof_digests": ["source_dot=6d0acdd618ed8184", "destination_dot=a5e07ab8504ddd98", "source_dot_rescale_identity=4c923ff5b920c9e8", "destination_dot_rescale_identity=4be8a550ebb3ae90", "source_attention_bias_binding=fb25d6b7dcfb061f", "destination_attention_bias_binding=32e173f1bfb921ec", "attention_score_binding=2c99958c092055ec", "lrelu_selector_partition=6e8a6bea257270c7", "lrelu_positive_branch=b4048b009c724a8e", "lrelu_negative_branch_rescale=394eea953ec366a8", "source_route=8ae6ba7bb92d476d", "destination_route=57a4fa96b19eda53", "pos_selector_boolean=7c438fe34030ee28", "neg_selector_boolean=0db03d107c00f4bd", "positive_score_mask=ac360f1434b66421", "positive_z_mask=962b0863d2b8927d", "negative_score_mask=5e45e4d9fd781e3f", "negative_z_mask=7cb621bcf3f02328", "quant_contract_id=zkdl_quant_contract:cd67875015a5c49f", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "lrelu_table_digest=lrelu:31ea27e145b17d06", "attention_dot_mismatch_count=0", "lrelu_mismatch_count=0", "max_abs_dot_residual=8", "max_abs_lrelu_residual=2"]
     },
     {
       "stage": "target_max_shift_comparison",
@@ -658,11 +658,11 @@
       "head_index": 6,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 303.112,
-      "prove_time_ms": 3367.871,
-      "verify_time_ms": 2157.275,
+      "commitment_time_ms": 304.773,
+      "prove_time_ms": 3283.317,
+      "verify_time_ms": 2177.522,
       "proof_size_bytes": 90564,
-      "proof_digests": ["max_route=44b93b5f9b4289ff", "representative_grouped=5c6a2bfd31b76b83", "representative_boolean=909f423db0ec0a45", "representative_delta_zero=1702495b8735f2dd", "delta_identity=8cbe546c5a29d5ce", "delta_decomposition=74a4dbdcbef90e68", "delta_bit0=fabff0fdabcd48df", "delta_bit1=181a4117791d292a", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "max_mismatch_count=0", "max_delta=1", "delta_bit_width=2"]
+      "proof_digests": ["max_route=44b93b5f9b4289ff", "representative_grouped=f9ff64847797dc66", "representative_boolean=ff2118278fdfe451", "representative_delta_zero=8b9d5dc129516f16", "delta_identity=9226d7f631f8856f", "delta_decomposition=89f6f93eaa420638", "delta_bit0=42d79677a3072188", "delta_bit1=181a4117791d292a", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "max_mismatch_count=0", "max_delta=1", "delta_bit_width=2"]
     },
     {
       "stage": "expmap_lookup_range",
@@ -672,11 +672,11 @@
       "head_index": 6,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 133.667,
-      "prove_time_ms": 523.597,
-      "verify_time_ms": 493.413,
+      "commitment_time_ms": 134.535,
+      "prove_time_ms": 515.961,
+      "verify_time_ms": 444.017,
       "proof_size_bytes": 10859,
-      "proof_digests": ["u_binding=4d0261446f41c667", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "exp_table_digest=exp:cc60cce696f8a102", "table_opening_value_recorded=true", "exp_mismatch_count=0", "max_delta=1", "max_u=16"]
+      "proof_digests": ["u_binding=425cd2f0da574043", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "exp_table_digest=exp:cc60cce696f8a102", "table_opening_value_recorded=true", "exp_mismatch_count=0", "max_delta=1", "max_u=16"]
     },
     {
       "stage": "attention_softmax_weighted_aggregation",
@@ -686,11 +686,11 @@
       "head_index": 6,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 1583.996,
-      "prove_time_ms": 8098.278,
-      "verify_time_ms": 4695.230,
-      "proof_size_bytes": 279572,
-      "proof_digests": ["denominator=d9ddb3be74ba1991", "inverse=415a50d2a563a137", "inverse_route=7e1bb65e333ddea9", "alpha_from_inverse=c493ce7c96b7fe35", "alpha_times_denominator=659b4c8f36ef2a6e", "message_route=e5ba77547650b158", "alpha_message=5894c7e5c09e6df7", "weighted_aggregation=88ea2c9cdb97b538"]
+      "commitment_time_ms": 1614.756,
+      "prove_time_ms": 8313.096,
+      "verify_time_ms": 4420.711,
+      "proof_size_bytes": 279708,
+      "proof_digests": ["denominator=bdaf2939639ab7d1", "inverse=0ffb4300f028bd91", "inverse_route=0ce8a9ec5b30e623", "alpha_from_inverse=c3971ddc1b0b5dc2", "alpha_times_denominator=1d817047988b5137", "message_route:cols0_8=7f5d786ce8eb4400", "alpha_message:cols0_8=aaafab354e47d8b0", "weighted_aggregation:cols0_8=25bcba08d6a1c99e"]
     },
     {
       "stage": "elu_lookup_range",
@@ -700,11 +700,11 @@
       "head_index": 6,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 455.908,
-      "prove_time_ms": 526.831,
-      "verify_time_ms": 1243.488,
+      "commitment_time_ms": 464.477,
+      "prove_time_ms": 524.360,
+      "verify_time_ms": 1132.727,
       "proof_size_bytes": 11089,
-      "proof_digests": ["elu_binding=0dbfa189f82a75b6", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "elu_table_digest=elu:f2d3a3c6cab780cc", "elu_mismatch_count=0", "max_abs_input=6"]
+      "proof_digests": ["elu_binding=486bb936331578a2", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "elu_table_digest=elu:f2d3a3c6cab780cc", "elu_mismatch_count=0", "max_abs_input=6"]
     },
     {
       "stage": "projection_matmul",
@@ -714,11 +714,11 @@
       "head_index": 7,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 20015.802,
-      "prove_time_ms": 1856.913,
-      "verify_time_ms": 50844.573,
+      "commitment_time_ms": 20328.473,
+      "prove_time_ms": 1897.166,
+      "verify_time_ms": 44682.002,
       "proof_size_bytes": 29562,
-      "proof_digests": ["matmul=84bc30035f900373"]
+      "proof_digests": ["matmul=3b50a033e7036f18"]
     },
     {
       "stage": "rescale_rounding",
@@ -728,11 +728,11 @@
       "head_index": 7,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 923.382,
-      "prove_time_ms": 5219.946,
-      "verify_time_ms": 11038.677,
-      "proof_size_bytes": 122704,
-      "proof_digests": ["bitness0=026ad36f2eaa5b2d", "bitness1=a00b71c9f32eb58b", "bitness2=a5838f60604b4067", "bitness3=5d6fd7c6473ac95c", "bitness4=b6de09d0eda379bb", "bitness5=69b1655f7349261e", "identity=33bba147127cb3b2", "shifted=a339f52209ea8d81", "decomposition=f59e0fa90f2d89e1", "quant_contract_id=zkdl_quant_contract:300a40e16882538f", "scale=16", "rem_bits=6", "tie_policy=round_half_away_from_zero", "max_abs_residual=8", "canonical_rounding_mismatch_count=0"]
+      "commitment_time_ms": 858.061,
+      "prove_time_ms": 4499.396,
+      "verify_time_ms": 9706.255,
+      "proof_size_bytes": 106178,
+      "proof_digests": ["bitness0=dae2dec2a99b3316", "bitness1=c1f61deec391edee", "bitness2=7164c95dba344e83", "bitness3=e1ed07ee6f04792f", "bitness4=9924e43320b2bcca", "identity=f5f274a54c35bf41", "shifted=77079af31d94d0c4", "decomposition=01f08e74cf98921c", "quant_contract_id=zkdl_quant_contract:cd67875015a5c49f", "scale=16", "rem_bits=5", "tie_policy=round_half_away_from_zero", "max_abs_residual=8", "canonical_rounding_mismatch_count=0"]
     },
     {
       "stage": "attention_dot_lrelu_lookup_range",
@@ -742,11 +742,11 @@
       "head_index": 7,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 815.132,
-      "prove_time_ms": 6317.479,
-      "verify_time_ms": 16168.895,
+      "commitment_time_ms": 823.584,
+      "prove_time_ms": 6154.399,
+      "verify_time_ms": 15224.754,
       "proof_size_bytes": 188056,
-      "proof_digests": ["source_dot=f89f55facacc7f6d", "destination_dot=eb2c22aea2de7b19", "source_dot_rescale_identity=8cf4a9f5baabf0cc", "destination_dot_rescale_identity=f411e244effb834a", "source_attention_bias_binding=8d1d973e5ef53bc7", "destination_attention_bias_binding=ab989abe9c311aba", "attention_score_binding=0045b2d77f81681e", "lrelu_selector_partition=f2526a4a29786f64", "lrelu_positive_branch=79d6e779364cc243", "lrelu_negative_branch_rescale=8ebea05034577ea5", "source_route=d87da222709f1f23", "destination_route=1fe3f8658542fd67", "pos_selector_boolean=84ddb04b64d81702", "neg_selector_boolean=d9333b09bd3a5643", "positive_score_mask=1554b4b83a50d5d3", "positive_z_mask=8fad91bd6a7e6f52", "negative_score_mask=02a43056edd86cc1", "negative_z_mask=8cea6e8269f32bf2", "quant_contract_id=zkdl_quant_contract:300a40e16882538f", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "lrelu_table_digest=lrelu:31ea27e145b17d06", "attention_dot_mismatch_count=0", "lrelu_mismatch_count=0", "max_abs_dot_residual=8", "max_abs_lrelu_residual=2"]
+      "proof_digests": ["source_dot=88e02946039c4e2c", "destination_dot=66806cc6891b3a1e", "source_dot_rescale_identity=905859d9efd52636", "destination_dot_rescale_identity=1af1060bb8910f24", "source_attention_bias_binding=37e47be3c6c4eff7", "destination_attention_bias_binding=268d23f6ee4e8c3e", "attention_score_binding=9d6d5ab26cad76d7", "lrelu_selector_partition=b0f930250fed4796", "lrelu_positive_branch=96b3d6fa26a840cb", "lrelu_negative_branch_rescale=1f508974b7f44cfd", "source_route=be018e376759349f", "destination_route=91ba9b8ed6278061", "pos_selector_boolean=7634d13a2fe550b5", "neg_selector_boolean=7ea62105822b341a", "positive_score_mask=c3fe7c8532513643", "positive_z_mask=f95e46ce099b5f54", "negative_score_mask=7ab96dff9d068b0c", "negative_z_mask=26896e9ea0b20736", "quant_contract_id=zkdl_quant_contract:cd67875015a5c49f", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "lrelu_table_digest=lrelu:31ea27e145b17d06", "attention_dot_mismatch_count=0", "lrelu_mismatch_count=0", "max_abs_dot_residual=8", "max_abs_lrelu_residual=2"]
     },
     {
       "stage": "target_max_shift_comparison",
@@ -756,11 +756,11 @@
       "head_index": 7,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 384.381,
-      "prove_time_ms": 4984.128,
-      "verify_time_ms": 4472.967,
+      "commitment_time_ms": 387.506,
+      "prove_time_ms": 4890.155,
+      "verify_time_ms": 4353.620,
       "proof_size_bytes": 122868,
-      "proof_digests": ["max_route=bc51c695b5cf85c3", "representative_grouped=89cda97f352de506", "representative_boolean=e7b0a1253c672e60", "representative_delta_zero=2011900602370390", "delta_identity=96e59fdcb41bf030", "delta_decomposition=6add3b17e6cbcc20", "delta_bit0=d9e8f893e172b411", "delta_bit1=f6b9ea1c2a805135", "delta_bit2=ecab843c046031b2", "delta_bit3=447909590b882f8f", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "max_mismatch_count=0", "max_delta=5", "delta_bit_width=4"]
+      "proof_digests": ["max_route=1e15da54aeb56cb9", "representative_grouped=96394756c3dd388c", "representative_boolean=581431697174da66", "representative_delta_zero=89945e02e98e8495", "delta_identity=215d9c8ce4e2be3a", "delta_decomposition=ff70eb6f1768807e", "delta_bit0=42f44e578055bcb1", "delta_bit1=e610560b4d244ef3", "delta_bit2=2f6948b5cc0d3837", "delta_bit3=447909590b882f8f", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "max_mismatch_count=0", "max_delta=5", "delta_bit_width=4"]
     },
     {
       "stage": "expmap_lookup_range",
@@ -770,11 +770,11 @@
       "head_index": 7,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 134.802,
-      "prove_time_ms": 518.934,
-      "verify_time_ms": 489.617,
+      "commitment_time_ms": 136.056,
+      "prove_time_ms": 516.745,
+      "verify_time_ms": 441.798,
       "proof_size_bytes": 10859,
-      "proof_digests": ["u_binding=b3dab93dd7dd56c0", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "exp_table_digest=exp:cc60cce696f8a102", "table_opening_value_recorded=true", "exp_mismatch_count=0", "max_delta=5", "max_u=16"]
+      "proof_digests": ["u_binding=ae313e40ac4bcf48", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "exp_table_digest=exp:cc60cce696f8a102", "table_opening_value_recorded=true", "exp_mismatch_count=0", "max_delta=5", "max_u=16"]
     },
     {
       "stage": "attention_softmax_weighted_aggregation",
@@ -784,11 +784,11 @@
       "head_index": 7,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 1593.386,
-      "prove_time_ms": 8098.508,
-      "verify_time_ms": 4733.514,
-      "proof_size_bytes": 279572,
-      "proof_digests": ["denominator=3754e0a4b6a3b73c", "inverse=bc9447459c4bc84d", "inverse_route=bd0c1e0345dd9c50", "alpha_from_inverse=ad365578915d8004", "alpha_times_denominator=8a5b2c155e06e187", "message_route=ecb39ba33827d99e", "alpha_message=6cb9ea3a8fb81189", "weighted_aggregation=2454dba0fa354f52"]
+      "commitment_time_ms": 1622.768,
+      "prove_time_ms": 8334.226,
+      "verify_time_ms": 4409.206,
+      "proof_size_bytes": 279708,
+      "proof_digests": ["denominator=cb520eac39e74332", "inverse=c95d2d9a831f4d84", "inverse_route=dc133d3e2a333f9c", "alpha_from_inverse=30fc4b3d818ac1d9", "alpha_times_denominator=f6cb1467c0768e76", "message_route:cols0_8=ddd5a8c129eadc75", "alpha_message:cols0_8=5525e1134d8da642", "weighted_aggregation:cols0_8=78f5602f277779ad"]
     },
     {
       "stage": "elu_lookup_range",
@@ -798,11 +798,11 @@
       "head_index": 7,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 448.008,
-      "prove_time_ms": 529.252,
-      "verify_time_ms": 1244.432,
+      "commitment_time_ms": 457.330,
+      "prove_time_ms": 526.800,
+      "verify_time_ms": 1125.657,
       "proof_size_bytes": 11089,
-      "proof_digests": ["elu_binding=e51893840f93d6d1", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "elu_table_digest=elu:f2d3a3c6cab780cc", "elu_mismatch_count=0", "max_abs_input=4"]
+      "proof_digests": ["elu_binding=d6a4b201e1989e55", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "elu_table_digest=elu:f2d3a3c6cab780cc", "elu_mismatch_count=0", "max_abs_input=4"]
     },
     {
       "stage": "hidden_concat_binding",
@@ -812,11 +812,11 @@
       "head_index": 0,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 2106.837,
-      "prove_time_ms": 71741.291,
-      "verify_time_ms": 704.626,
+      "commitment_time_ms": 2144.877,
+      "prove_time_ms": 84452.443,
+      "verify_time_ms": 707.015,
       "proof_size_bytes": 105480,
-      "proof_digests": ["head0=4aca20d02091dc90", "head1=67c4a03aa8d240db", "head2=09903e86d6158942", "head3=f67a6d800641f1d7", "head4=bcbbc71d8fc97674", "head5=3ef67eeea1b3d639", "head6=c37d8dfaf5ffd9b0", "head7=787e5255bd4a127f"]
+      "proof_digests": ["head0=4c4bae71cb23b776", "head1=532fce551159c5ef", "head2=444c1f27e7162ca2", "head3=1dcbb83e7005635a", "head4=e641a9fef8385b8c", "head5=6484e3e040c87290", "head6=720b5afeb093a9cd", "head7=1e53731aa4737bc3"]
     },
     {
       "stage": "projection_matmul",
@@ -826,11 +826,11 @@
       "head_index": 0,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 1019.483,
-      "prove_time_ms": 556.851,
-      "verify_time_ms": 3411.195,
+      "commitment_time_ms": 1044.386,
+      "prove_time_ms": 573.543,
+      "verify_time_ms": 2975.274,
       "proof_size_bytes": 27962,
-      "proof_digests": ["matmul=10c65690a8634b83"]
+      "proof_digests": ["matmul=3fa8b234c1e095d8"]
     },
     {
       "stage": "rescale_rounding",
@@ -840,11 +840,11 @@
       "head_index": 0,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 935.270,
-      "prove_time_ms": 5183.516,
-      "verify_time_ms": 11018.269,
-      "proof_size_bytes": 122704,
-      "proof_digests": ["bitness0=97373c54644fd6cd", "bitness1=4363e0d9eae213fa", "bitness2=5e762981729b77d8", "bitness3=662a7346883ea60c", "bitness4=b567908c7bff6dbb", "bitness5=8769c5c46c44de28", "identity=9bcc70d388a13ee6", "shifted=d8ac3313e3d53323", "decomposition=f1013c218d86c5e4", "quant_contract_id=zkdl_quant_contract:300a40e16882538f", "scale=16", "rem_bits=6", "tie_policy=round_half_away_from_zero", "max_abs_residual=8", "canonical_rounding_mismatch_count=0"]
+      "commitment_time_ms": 875.090,
+      "prove_time_ms": 4475.727,
+      "verify_time_ms": 9715.944,
+      "proof_size_bytes": 106178,
+      "proof_digests": ["bitness0=1b887acfe4b08eb4", "bitness1=58f0f44e7162f7ee", "bitness2=066de96d27e9a212", "bitness3=1eab5784cc77ccab", "bitness4=e53a3fc3779bb0cd", "identity=68aa37878220046a", "shifted=4d4b657d15a561d5", "decomposition=263d53bdb0a00fa9", "quant_contract_id=zkdl_quant_contract:cd67875015a5c49f", "scale=16", "rem_bits=5", "tie_policy=round_half_away_from_zero", "max_abs_residual=8", "canonical_rounding_mismatch_count=0"]
     },
     {
       "stage": "attention_dot_lrelu_lookup_range",
@@ -854,11 +854,11 @@
       "head_index": 0,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 970.745,
-      "prove_time_ms": 6316.553,
-      "verify_time_ms": 17099.616,
+      "commitment_time_ms": 985.685,
+      "prove_time_ms": 6160.535,
+      "verify_time_ms": 16078.061,
       "proof_size_bytes": 188056,
-      "proof_digests": ["source_dot=83606edb18e756e7", "destination_dot=5d2919285026fe8e", "source_dot_rescale_identity=037a34f7b771ad39", "destination_dot_rescale_identity=adb74d7ecbb96a2e", "source_attention_bias_binding=0ebdc62613d3d565", "destination_attention_bias_binding=c68a3ab79c319c18", "attention_score_binding=df24cfaada9149e9", "lrelu_selector_partition=5c274af3ee71d6b3", "lrelu_positive_branch=3182c8e5b700a8cd", "lrelu_negative_branch_rescale=d82c948ad9309a4a", "source_route=fb6800691590ff99", "destination_route=3c6e638e1899c9c7", "pos_selector_boolean=a520c324229f854a", "neg_selector_boolean=334565092c0e0429", "positive_score_mask=d6098daaae958866", "positive_z_mask=7926f918bc810750", "negative_score_mask=8a8f2343620cb07f", "negative_z_mask=15694fc983cb8830", "quant_contract_id=zkdl_quant_contract:300a40e16882538f", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "lrelu_table_digest=lrelu:31ea27e145b17d06", "attention_dot_mismatch_count=0", "lrelu_mismatch_count=0", "max_abs_dot_residual=8", "max_abs_lrelu_residual=2"]
+      "proof_digests": ["source_dot=6665a3c28c2d269c", "destination_dot=3bf4d2771fc4f367", "source_dot_rescale_identity=2cf43237eeb3bfdb", "destination_dot_rescale_identity=4f4c103860402bda", "source_attention_bias_binding=ae7dea465804b72c", "destination_attention_bias_binding=08253a7c3411f098", "attention_score_binding=1afb1a87a4aa4041", "lrelu_selector_partition=57bd777d7c997919", "lrelu_positive_branch=3def551c85bd05b9", "lrelu_negative_branch_rescale=f58c3109cad438ba", "source_route=6e32c1b331efc645", "destination_route=3db223435f551b7e", "pos_selector_boolean=1536aa21c14c7ef9", "neg_selector_boolean=c406827d5032d2a5", "positive_score_mask=221f9a1552cf141b", "positive_z_mask=7042fc7bd4daab2f", "negative_score_mask=3ed95aca5d749f94", "negative_z_mask=bae0746cb812bfd8", "quant_contract_id=zkdl_quant_contract:cd67875015a5c49f", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "lrelu_table_digest=lrelu:31ea27e145b17d06", "attention_dot_mismatch_count=0", "lrelu_mismatch_count=0", "max_abs_dot_residual=8", "max_abs_lrelu_residual=2"]
     },
     {
       "stage": "target_max_shift_comparison",
@@ -868,11 +868,11 @@
       "head_index": 0,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 445.782,
-      "prove_time_ms": 4908.715,
-      "verify_time_ms": 4282.351,
+      "commitment_time_ms": 452.095,
+      "prove_time_ms": 4826.010,
+      "verify_time_ms": 4159.095,
       "proof_size_bytes": 122868,
-      "proof_digests": ["max_route=695de3b72fd8d540", "representative_grouped=5898a4b58f1be682", "representative_boolean=a27746129476d189", "representative_delta_zero=65c1f56241566352", "delta_identity=666b31de644c64ca", "delta_decomposition=f630cd6f9487b0c1", "delta_bit0=457120f2c21a8b9f", "delta_bit1=5792f6a18bfad75b", "delta_bit2=ede68ed67f49a66c", "delta_bit3=fcfd3dc32df8073d", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "max_mismatch_count=0", "max_delta=4", "delta_bit_width=4"]
+      "proof_digests": ["max_route=91615ae230cad722", "representative_grouped=fc754267afa1cf28", "representative_boolean=028cf953cd036956", "representative_delta_zero=07f401c3ef79e6d6", "delta_identity=c6d66d88a8f9bf27", "delta_decomposition=64c7e9488ae81969", "delta_bit0=4ab663d6d5e889fe", "delta_bit1=7a0ec8fa0902de32", "delta_bit2=ef140bfbf8ef8142", "delta_bit3=fcfd3dc32df8073d", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "max_mismatch_count=0", "max_delta=4", "delta_bit_width=4"]
     },
     {
       "stage": "expmap_lookup_range",
@@ -882,11 +882,11 @@
       "head_index": 0,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 134.809,
-      "prove_time_ms": 524.560,
-      "verify_time_ms": 487.910,
+      "commitment_time_ms": 135.572,
+      "prove_time_ms": 517.695,
+      "verify_time_ms": 436.863,
       "proof_size_bytes": 10859,
-      "proof_digests": ["u_binding=5100c48ce4fee202", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "exp_table_digest=exp:cc60cce696f8a102", "table_opening_value_recorded=true", "exp_mismatch_count=0", "max_delta=4", "max_u=16"]
+      "proof_digests": ["u_binding=9ce2601aa4608a16", "table_context_id=zkdl_table_context:09a4e8e58b2e34c4", "exp_table_digest=exp:cc60cce696f8a102", "table_opening_value_recorded=true", "exp_mismatch_count=0", "max_delta=4", "max_u=16"]
     },
     {
       "stage": "attention_softmax_weighted_aggregation",
@@ -896,11 +896,11 @@
       "head_index": 0,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 1763.355,
-      "prove_time_ms": 8079.545,
-      "verify_time_ms": 4741.865,
-      "proof_size_bytes": 279572,
-      "proof_digests": ["denominator=3343b801cfe7c343", "inverse=257510bf5f59cdb3", "inverse_route=4edcba9c3203f7a0", "alpha_from_inverse=4b62f895ab30eede", "alpha_times_denominator=15c5deeeba56973f", "message_route=194bb3d485354afa", "alpha_message=1f24057319f540fb", "weighted_aggregation=2a9f06cd49eac453"]
+      "commitment_time_ms": 1801.014,
+      "prove_time_ms": 8327.858,
+      "verify_time_ms": 4421.976,
+      "proof_size_bytes": 279708,
+      "proof_digests": ["denominator=f1582a65051ca8d4", "inverse=add8ecb9641bb824", "inverse_route=55d95df5a39c7921", "alpha_from_inverse=724b0cfe5d4c76d3", "alpha_times_denominator=5fb43e511e6f3d8e", "message_route:cols0_7=16d754c887d6881f", "alpha_message:cols0_7=64e67b659850ddee", "weighted_aggregation:cols0_7=20a0d4e53c2b328f"]
     },
     {
       "stage": "output_attention_bias_scale_binding",
@@ -910,11 +910,11 @@
       "head_index": 0,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 362.206,
-      "prove_time_ms": 543.501,
-      "verify_time_ms": 1160.280,
+      "commitment_time_ms": 369.489,
+      "prove_time_ms": 498.451,
+      "verify_time_ms": 1016.610,
       "proof_size_bytes": 11654,
-      "proof_digests": ["bias_binding=952ae305e5d81e8c", "bias_mismatch_count=0"]
+      "proof_digests": ["bias_binding=1e31e8db9647ac03", "bias_mismatch_count=0"]
     },
     {
       "stage": "output_head_average_public_logits_binding",
@@ -924,11 +924,11 @@
       "head_index": 0,
       "proof_generated": true,
       "verified": true,
-      "commitment_time_ms": 134.901,
-      "prove_time_ms": 783.512,
-      "verify_time_ms": 66.066,
+      "commitment_time_ms": 138.199,
+      "prove_time_ms": 673.297,
+      "verify_time_ms": 62.443,
       "proof_size_bytes": 5314,
-      "proof_digests": ["head_average_public_logits=3a029270237ac449"]
+      "proof_digests": ["head_average_public_logits=dbb8e538f90ae07a"]
     }
   ],
   "missing_relations": []
