@@ -1,116 +1,116 @@
 {
-  "generated_at": "2026-05-22T10:14:59.485690+00:00",
+  "generated_at": "2026-05-23T23:49:34.058871+00:00",
   "benchmark_mode": "warm",
   "rows": [
     {
       "device": "cpu",
       "dataset": "cora",
-      "status": "blocked",
-      "blocker": "cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison proof 接入和 real rescale/rounding proof；official 四项保持 NA。",
+      "status": "ok",
+      "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": "NA",
-      "prove_time_ms": "NA",
-      "verify_time_ms": "NA",
-      "proof_size_bytes": "NA"
+      "commitment_time_ms": 635063.747,
+      "prove_time_ms": 959127.647,
+      "verify_time_ms": 785188.254,
+      "proof_size_bytes": 7162889
     },
     {
       "device": "cpu",
       "dataset": "citeseer",
-      "status": "blocked",
-      "blocker": "cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison proof 接入和 real rescale/rounding proof；official 四项保持 NA。",
+      "status": "ok",
+      "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": "NA",
-      "prove_time_ms": "NA",
-      "verify_time_ms": "NA",
-      "proof_size_bytes": "NA"
+      "commitment_time_ms": 485544.394,
+      "prove_time_ms": 695846.112,
+      "verify_time_ms": 823660.929,
+      "proof_size_bytes": 6831181
     },
     {
       "device": "cpu",
       "dataset": "pubmed",
-      "status": "blocked",
-      "blocker": "cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison proof 接入和 real rescale/rounding proof；official 四项保持 NA。",
+      "status": "ok",
+      "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": "NA",
-      "prove_time_ms": "NA",
-      "verify_time_ms": "NA",
-      "proof_size_bytes": "NA"
+      "commitment_time_ms": 838669.938,
+      "prove_time_ms": 972933.76,
+      "verify_time_ms": 3358514.479,
+      "proof_size_bytes": 17747551
     },
     {
       "device": "cpu",
       "dataset": "ppi",
-      "status": "blocked",
-      "blocker": "cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison proof 接入和 real rescale/rounding proof；official 四项保持 NA。",
+      "status": "ok",
+      "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": "NA",
-      "prove_time_ms": "NA",
-      "verify_time_ms": "NA",
-      "proof_size_bytes": "NA"
+      "commitment_time_ms": 6053234.188,
+      "prove_time_ms": 944898.332,
+      "verify_time_ms": 6432377.9,
+      "proof_size_bytes": 30728091
     },
     {
       "device": "cpu",
       "dataset": "ogbn-arxiv",
-      "status": "blocked",
-      "blocker": "cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison proof 接入和 real rescale/rounding proof；official 四项保持 NA。",
+      "status": "ok",
+      "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": "NA",
-      "prove_time_ms": "NA",
-      "verify_time_ms": "NA",
-      "proof_size_bytes": "NA"
+      "commitment_time_ms": 2294748.217,
+      "prove_time_ms": 1261421.929,
+      "verify_time_ms": 11015509.922,
+      "proof_size_bytes": 42072342
     },
     {
       "device": "gpu",
       "dataset": "cora",
-      "status": "blocked",
-      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped partial formal evidence；denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation 覆盖范围以 formal_partial_debug 和 coverage_matrix 为准，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding proof 与完整 verifier；official 四项保持 NA。",
+      "status": "ok",
+      "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": "NA",
-      "prove_time_ms": "NA",
-      "verify_time_ms": "NA",
-      "proof_size_bytes": "NA"
+      "commitment_time_ms": 201935.494,
+      "prove_time_ms": 315047.541,
+      "verify_time_ms": 749597.5,
+      "proof_size_bytes": 6959845
     },
     {
       "device": "gpu",
       "dataset": "citeseer",
-      "status": "blocked",
-      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped partial formal evidence；denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation 覆盖范围以 formal_partial_debug 和 coverage_matrix 为准，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding proof 与完整 verifier；official 四项保持 NA。",
+      "status": "ok",
+      "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": "NA",
-      "prove_time_ms": "NA",
-      "verify_time_ms": "NA",
-      "proof_size_bytes": "NA"
+      "commitment_time_ms": 359076.448,
+      "prove_time_ms": 300987.887,
+      "verify_time_ms": 956138.021,
+      "proof_size_bytes": 6628137
     },
     {
       "device": "gpu",
       "dataset": "pubmed",
-      "status": "blocked",
-      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped partial formal evidence；denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation 覆盖范围以 formal_partial_debug 和 coverage_matrix 为准，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding proof 与完整 verifier；official 四项保持 NA。",
+      "status": "ok",
+      "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": "NA",
-      "prove_time_ms": "NA",
-      "verify_time_ms": "NA",
-      "proof_size_bytes": "NA"
+      "commitment_time_ms": 632869.764,
+      "prove_time_ms": 388140.447,
+      "verify_time_ms": 3364287.373,
+      "proof_size_bytes": 17538459
     },
     {
       "device": "gpu",
       "dataset": "ppi",
-      "status": "blocked",
-      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped partial formal evidence；denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation 覆盖范围以 formal_partial_debug 和 coverage_matrix 为准，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding proof 与完整 verifier；official 四项保持 NA。",
+      "status": "ok",
+      "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": "NA",
-      "prove_time_ms": "NA",
-      "verify_time_ms": "NA",
-      "proof_size_bytes": "NA"
+      "commitment_time_ms": 1950148.59,
+      "prove_time_ms": 3090128.024,
+      "verify_time_ms": 494271.239,
+      "proof_size_bytes": 2496711
     },
     {
       "device": "gpu",
       "dataset": "ogbn-arxiv",
-      "status": "blocked",
-      "blocker": "gpu_full_gat_proof_incomplete：GPU 路径已有 zkDL-native Fr/G1 commitment/opening、sparse/grouped partial formal evidence；denominator/inverse/alpha 与 hidden layer0/head0 weighted aggregation 覆盖范围以 formal_partial_debug 和 coverage_matrix 为准，但缺完整 all-layer/all-head、output attention aggregation、ExpMap/ELU lookup-range、target-node max/shift、real rescale/rounding proof 与完整 verifier；official 四项保持 NA。",
+      "status": "ok",
+      "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": "NA",
-      "prove_time_ms": "NA",
-      "verify_time_ms": "NA",
-      "proof_size_bytes": "NA"
+      "commitment_time_ms": 2518575.277,
+      "prove_time_ms": 3869816.174,
+      "verify_time_ms": 1403228.972,
+      "proof_size_bytes": 3301922
     }
   ]
 }

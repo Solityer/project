@@ -1,58 +1,58 @@
 {
-  "generated_at": "2026-05-22T10:14:59.485146+00:00",
+  "generated_at": "2026-05-23T23:49:34.057606+00:00",
   "device": "cpu",
   "benchmark_mode": "warm",
   "policy": "只有 full dataset + complete proof generation + complete verification 才能写 official 四项。",
   "rows": [
     {
       "dataset": "cora",
-      "status": "blocked",
-      "blocker": "cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison proof 接入和 real rescale/rounding proof；official 四项保持 NA。",
+      "status": "ok",
+      "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": "NA",
-      "prove_time_ms": "NA",
-      "verify_time_ms": "NA",
-      "proof_size_bytes": "NA"
+      "commitment_time_ms": 635063.747,
+      "prove_time_ms": 959127.647,
+      "verify_time_ms": 785188.254,
+      "proof_size_bytes": 7162889
     },
     {
       "dataset": "citeseer",
-      "status": "blocked",
-      "blocker": "cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison proof 接入和 real rescale/rounding proof；official 四项保持 NA。",
+      "status": "ok",
+      "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": "NA",
-      "prove_time_ms": "NA",
-      "verify_time_ms": "NA",
-      "proof_size_bytes": "NA"
+      "commitment_time_ms": 485544.394,
+      "prove_time_ms": 695846.112,
+      "verify_time_ms": 823660.929,
+      "proof_size_bytes": 6831181
     },
     {
       "dataset": "pubmed",
-      "status": "blocked",
-      "blocker": "cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison proof 接入和 real rescale/rounding proof；official 四项保持 NA。",
+      "status": "ok",
+      "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": "NA",
-      "prove_time_ms": "NA",
-      "verify_time_ms": "NA",
-      "proof_size_bytes": "NA"
+      "commitment_time_ms": 838669.938,
+      "prove_time_ms": 972933.76,
+      "verify_time_ms": 3358514.479,
+      "proof_size_bytes": 17747551
     },
     {
       "dataset": "ppi",
-      "status": "blocked",
-      "blocker": "cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison proof 接入和 real rescale/rounding proof；official 四项保持 NA。",
+      "status": "ok",
+      "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": "NA",
-      "prove_time_ms": "NA",
-      "verify_time_ms": "NA",
-      "proof_size_bytes": "NA"
+      "commitment_time_ms": 6053234.188,
+      "prove_time_ms": 944898.332,
+      "verify_time_ms": 6432377.9,
+      "proof_size_bytes": 30728091
     },
     {
       "dataset": "ogbn-arxiv",
-      "status": "blocked",
-      "blocker": "cpu_full_gat_proof_incomplete：CPU 路径已有 CPU-only host Fr/G1/Commitment/opening 与 hidden layer0/head0 relation prover/verifier 实现尝试；未完成 full GAT proof object、all-layer/all-head、output aggregation、lookup/range/max/comparison proof 接入和 real rescale/rounding proof；official 四项保持 NA。",
+      "status": "ok",
+      "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": "NA",
-      "prove_time_ms": "NA",
-      "verify_time_ms": "NA",
-      "proof_size_bytes": "NA"
+      "commitment_time_ms": 2294748.217,
+      "prove_time_ms": 1261421.929,
+      "verify_time_ms": 11015509.922,
+      "proof_size_bytes": 42072342
     }
   ]
 }

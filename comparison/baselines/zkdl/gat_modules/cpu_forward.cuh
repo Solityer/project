@@ -33,43 +33,15 @@ HeadTraceHost run_attention_head_cpu(
     trace.h_pre.assign(rows * width, 0.0);
     trace.h_out.assign(rows * width, 0.0);
 
-    for (std::size_t row = 0; row < rows; ++row) {
-        for (std::size_t col = 0; col < width; ++col) {
-            double acc = 0.0;
-            for (std::size_t k = 0; k < input_dim; ++k) {
-                acc += features[row * input_dim + k] * head.W[k * width + col];
-            }
-            trace.h_prime[row * width + col] = acc;
-        }
-    }
-    for (std::size_t row = 0; row < rows; ++row) {
-        double src = head.attn_src_bias;
-        double dst = head.attn_dst_bias;
-        for (std::size_t col = 0; col < width; ++col) {
-            const double value = trace.h_prime[row * width + col];
-            src += value * head.attn_src[col];
-            dst += value * head.attn_dst[col];
-        }
-        trace.e_src[row] = src;
-        trace.e_dst[row] = dst;
-    }
-    for (std::size_t edge = 0; edge < graph.edges.size(); ++edge) {
-        const auto src = graph.edges[edge].src;
-        const auto dst = graph.edges[edge].dst;
-        if (src >= rows || dst >= rows) {
-            throw std::runtime_error("CPU attention edge index out of range");
-        }
-        const double score = trace.e_src[src] + trace.e_dst[dst];
-        const double z = score >= 0.0 ? score : 0.2 * score;
-        trace.z[edge] = z;
-        trace.m[dst] = std::max(trace.m[dst], z);
-    }
-    for (std::size_t edge = 0; edge < graph.edges.size(); ++edge) {
-        const auto dst = graph.edges[edge].dst;
-        const double u = std::exp(trace.z[edge] - trace.m[dst]);
-        trace.u[edge] = u;
-        trace.sum[dst] += u;
-    }
+    trace.h_prime = zkdl_fixed_point_projection_scale16(features, rows, input_dim, head.W, width);
+    const auto fixed_attention = zkdl_fixed_point_attention_trace_scale16(
+        trace.h_prime, rows, width, head, graph);
+    trace.e_src = fixed_attention.e_src;
+    trace.e_dst = fixed_attention.e_dst;
+    trace.z = fixed_attention.z;
+    trace.m = fixed_attention.m;
+    trace.u = fixed_attention.u;
+    trace.sum = fixed_attention.sum;
     for (std::size_t edge = 0; edge < graph.edges.size(); ++edge) {
         const auto src = graph.edges[edge].src;
         const auto dst = graph.edges[edge].dst;
@@ -81,18 +53,8 @@ HeadTraceHost run_attention_head_cpu(
             trace.h_pre[dst * width + col] += alpha * trace.h_prime[src * width + col];
         }
     }
-    for (std::size_t row = 0; row < rows; ++row) {
-        for (std::size_t col = 0; col < width; ++col) {
-            double value = trace.h_pre[row * width + col];
-            if (apply_bias) {
-                value += head.output_bias.at(col);
-            }
-            if (apply_elu && value < 0.0) {
-                value = std::exp(value) - 1.0;
-            }
-            trace.h_out[row * width + col] = value;
-        }
-    }
+    trace.h_out = zkdl_fixed_point_activation_scale16(
+        trace.h_pre, rows, width, head.output_bias, apply_bias, apply_elu);
     return trace;
 }
 

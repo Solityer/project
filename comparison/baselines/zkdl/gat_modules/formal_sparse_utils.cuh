@@ -165,6 +165,25 @@ std::vector<Fr_t> matrix_scale16_raw(
     return out;
 }
 
+std::vector<double> slice_matrix_columns(
+    const std::vector<double>& values,
+    std::size_t rows,
+    std::size_t cols,
+    std::size_t col_begin,
+    std::size_t col_count)
+{
+    if (values.size() != rows * cols || col_begin > cols || col_count > cols - col_begin) {
+        throw std::runtime_error("矩阵列切片形状不一致");
+    }
+    std::vector<double> out(rows * col_count, 0.0);
+    for (std::size_t row = 0; row < rows; ++row) {
+        for (std::size_t local_col = 0; local_col < col_count; ++local_col) {
+            out[row * col_count + local_col] = values[row * cols + col_begin + local_col];
+        }
+    }
+    return out;
+}
+
 std::vector<Fr_t> route_matrix_by_topology_raw(
     const std::vector<Fr_t>& node_matrix_raw,
     const LocalGraph& graph,
@@ -249,7 +268,13 @@ std::size_t formal_effective_matrix_commitment_block_size(
         throw std::runtime_error("matrix commitment block size needs non-empty tensors");
     }
     const std::size_t row_block = std::min(requested_row_block == 0 ? 64 : requested_row_block, padded_rows);
-    const std::size_t row_block_pow2 = std::max<std::size_t>(1, floor_power_of_two_size(row_block));
+    std::size_t row_block_pow2 = std::max<std::size_t>(1, floor_power_of_two_size(row_block));
+    // 矩阵 opening 的 inner proof 复杂度随 row_block * padded_cols 增长。
+    // 这里限制总 inner block，避免 PPI/ogbn-arxiv 输出层宽列块把 opening 放大到不可完成。
+    const std::size_t max_inner_block = 8192;
+    if (row_block_pow2 > max_inner_block / padded_cols) {
+        row_block_pow2 = std::max<std::size_t>(1, floor_power_of_two_size(max_inner_block / padded_cols));
+    }
     return row_block_pow2 * padded_cols;
 }
 

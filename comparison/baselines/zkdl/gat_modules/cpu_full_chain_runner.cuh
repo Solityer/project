@@ -140,90 +140,105 @@ ZkdlFullRelationRecord prove_cpu_attention_softmax_chain(
     if (padded_feature_columns > std::numeric_limits<uint>::max()) {
         throw std::runtime_error("CPU attention feature column count 超过 uint 上限");
     }
-    const uint column_count_u32 = static_cast<uint>(head.width);
-    const uint padded_column_count_u32 = static_cast<uint>(padded_feature_columns);
-    const std::size_t matrix_block = formal_effective_matrix_commitment_block_size(
-        vector_block,
-        std::min(padded_node_count, padded_edge_count),
-        padded_feature_columns);
-    CpuCommitment matrix_gen = CpuCommitment::deterministic(
-        static_cast<uint>(matrix_block),
-        record.relation_scope + ":cpu_matrix_gen");
-    auto message_node_matrix_raw = matrix_scale16_raw(
-        head.h_prime, graph.num_nodes, head.width, padded_node_count, padded_feature_columns);
-    auto message_edge_matrix_raw = route_matrix_by_topology_raw(
-        message_node_matrix_raw, graph, padded_node_count, padded_edge_count, padded_feature_columns, true);
-    auto message_node_matrix_mont = mont_vector_from_raw(message_node_matrix_raw);
-    auto message_edge_matrix_mont = mont_vector_from_raw(message_edge_matrix_raw);
-    auto weighted_edge_matrix_mont = weighted_matrix_by_alpha_mont(
-        alpha_mont, message_edge_matrix_mont, graph.edges.size(), padded_edge_count, padded_feature_columns);
-    auto aggregated_matrix_mont = grouped_sum_matrix_by_dst_mont(
-        weighted_edge_matrix_mont, graph, padded_node_count, padded_edge_count, padded_feature_columns);
-    CpuFrTensor message_node_matrix_tensor(message_node_matrix_mont);
-    CpuFrTensor message_edge_matrix_tensor(message_edge_matrix_mont);
-    CpuFrTensor weighted_edge_matrix_tensor(weighted_edge_matrix_mont);
-    CpuFrTensor aggregated_matrix_tensor(aggregated_matrix_mont);
+    const std::size_t column_chunk_limit = attention_softmax_column_chunk_limit(head.width);
+    for (std::size_t col_begin = 0; col_begin < head.width; col_begin += column_chunk_limit) {
+        const std::size_t chunk_columns = std::min(column_chunk_limit, head.width - col_begin);
+        const std::size_t padded_chunk_columns = next_power_of_two(std::max<std::size_t>(1, chunk_columns));
+        const uint chunk_column_count_u32 = static_cast<uint>(chunk_columns);
+        const uint padded_chunk_column_count_u32 = static_cast<uint>(padded_chunk_columns);
+        const std::string chunk_suffix = ":cols" + std::to_string(col_begin)
+            + "_" + std::to_string(col_begin + chunk_columns);
+        std::cout << "full_chain_runner dataset=" << spec.dataset
+                  << " device=cpu stage=prove_" << layer_kind
+                  << "_attention_chunk layer=" << layer_index
+                  << " head=" << head_index
+                  << " cols=" << col_begin << "_" << (col_begin + chunk_columns)
+                  << "\n";
+        const std::size_t matrix_block = formal_effective_matrix_commitment_block_size(
+            vector_block,
+            std::min(padded_node_count, padded_edge_count),
+            padded_chunk_columns);
+        CpuCommitment matrix_gen = CpuCommitment::deterministic(
+            static_cast<uint>(matrix_block),
+            record.relation_scope + ":cpu_matrix_gen" + chunk_suffix);
+        const auto h_prime_chunk = slice_matrix_columns(
+            head.h_prime, graph.num_nodes, head.width, col_begin, chunk_columns);
+        auto message_node_matrix_raw = matrix_scale16_raw(
+            h_prime_chunk, graph.num_nodes, chunk_columns, padded_node_count, padded_chunk_columns);
+        auto message_edge_matrix_raw = route_matrix_by_topology_raw(
+            message_node_matrix_raw, graph, padded_node_count, padded_edge_count, padded_chunk_columns, true);
+        auto message_node_matrix_mont = mont_vector_from_raw(message_node_matrix_raw);
+        auto message_edge_matrix_mont = mont_vector_from_raw(message_edge_matrix_raw);
+        auto weighted_edge_matrix_mont = weighted_matrix_by_alpha_mont(
+            alpha_mont, message_edge_matrix_mont, graph.edges.size(), padded_edge_count, padded_chunk_columns);
+        auto aggregated_matrix_mont = grouped_sum_matrix_by_dst_mont(
+            weighted_edge_matrix_mont, graph, padded_node_count, padded_edge_count, padded_chunk_columns);
+        CpuFrTensor message_node_matrix_tensor(message_node_matrix_mont);
+        CpuFrTensor message_edge_matrix_tensor(message_edge_matrix_mont);
+        CpuFrTensor weighted_edge_matrix_tensor(weighted_edge_matrix_mont);
+        CpuFrTensor aggregated_matrix_tensor(aggregated_matrix_mont);
 
-    ScopedTimer matrix_commit_timer;
-    const auto com_message_node_matrix = matrix_gen.commit(message_node_matrix_tensor);
-    const auto com_message_edge_matrix = matrix_gen.commit(message_edge_matrix_tensor);
-    const auto com_weighted_edge_matrix = matrix_gen.commit(weighted_edge_matrix_tensor);
-    const auto com_aggregated_matrix = matrix_gen.commit(aggregated_matrix_tensor);
-    record.commitment_ms += matrix_commit_timer.elapsed_ms();
+        ScopedTimer matrix_commit_timer;
+        const auto com_message_node_matrix = matrix_gen.commit(message_node_matrix_tensor);
+        const auto com_message_edge_matrix = matrix_gen.commit(message_edge_matrix_tensor);
+        const auto com_weighted_edge_matrix = matrix_gen.commit(weighted_edge_matrix_tensor);
+        const auto com_aggregated_matrix = matrix_gen.commit(aggregated_matrix_tensor);
+        record.commitment_ms += matrix_commit_timer.elapsed_ms();
 
-    const std::string message_route_label = prefix + ":weighted_message_source_routing";
-    const std::string alpha_message_label = prefix + ":alpha_times_message";
-    const std::string aggregation_label = prefix + ":weighted_aggregation_by_dst";
-    MultiColumnSparseRoutingGadgetProof message_route_proof;
-    MultiColumnHadamardGadgetProof alpha_message_proof;
-    MultiColumnGroupedSumRelationProof aggregation_proof;
-    {
-        ScopedTimer timer;
-        message_route_proof = cpu_prove_multi_column_sparse_routing(
-            message_node_matrix_tensor, message_edge_matrix_tensor,
-            matrix_gen, com_message_node_matrix, com_message_edge_matrix,
-            gen, src, dst, node_count_u32, edge_count_u32,
-            column_count_u32, padded_column_count_u32,
-            "source", message_route_label);
-        alpha_message_proof = cpu_prove_multi_column_alpha_hadamard(
-            alpha_tensor, message_edge_matrix_tensor, weighted_edge_matrix_tensor,
-            gen, com_alpha, matrix_gen, com_message_edge_matrix, com_weighted_edge_matrix,
-            edge_count_u32, column_count_u32, padded_column_count_u32, alpha_message_label);
-        aggregation_proof = cpu_multi_column_grouped_sum_relation_prove(
-            weighted_edge_matrix_tensor, aggregated_matrix_tensor,
-            matrix_gen, com_weighted_edge_matrix,
-            matrix_gen, com_aggregated_matrix,
-            gen, src, dst, node_count_u32, edge_count_u32,
-            column_count_u32, padded_column_count_u32, aggregation_label);
-        record.prove_ms += timer.elapsed_ms();
+        const std::string message_route_label = prefix + ":weighted_message_source_routing" + chunk_suffix;
+        const std::string alpha_message_label = prefix + ":alpha_times_message" + chunk_suffix;
+        const std::string aggregation_label = prefix + ":weighted_aggregation_by_dst" + chunk_suffix;
+        MultiColumnSparseRoutingGadgetProof message_route_proof;
+        MultiColumnHadamardGadgetProof alpha_message_proof;
+        MultiColumnGroupedSumRelationProof aggregation_proof;
+        {
+            ScopedTimer timer;
+            message_route_proof = cpu_prove_multi_column_sparse_routing(
+                message_node_matrix_tensor, message_edge_matrix_tensor,
+                matrix_gen, com_message_node_matrix, com_message_edge_matrix,
+                gen, src, dst, node_count_u32, edge_count_u32,
+                chunk_column_count_u32, padded_chunk_column_count_u32,
+                "source", message_route_label);
+            alpha_message_proof = cpu_prove_multi_column_alpha_hadamard(
+                alpha_tensor, message_edge_matrix_tensor, weighted_edge_matrix_tensor,
+                gen, com_alpha, matrix_gen, com_message_edge_matrix, com_weighted_edge_matrix,
+                edge_count_u32, chunk_column_count_u32, padded_chunk_column_count_u32, alpha_message_label);
+            aggregation_proof = cpu_multi_column_grouped_sum_relation_prove(
+                weighted_edge_matrix_tensor, aggregated_matrix_tensor,
+                matrix_gen, com_weighted_edge_matrix,
+                matrix_gen, com_aggregated_matrix,
+                gen, src, dst, node_count_u32, edge_count_u32,
+                chunk_column_count_u32, padded_chunk_column_count_u32, aggregation_label);
+            record.prove_ms += timer.elapsed_ms();
+        }
+        {
+            ScopedTimer timer;
+            std::string failure;
+            if (!cpu_verify_multi_column_sparse_routing(
+                    message_route_proof, matrix_gen, com_message_node_matrix, com_message_edge_matrix,
+                    gen, src, dst, "source", message_route_label, &failure)) {
+                throw std::runtime_error("CPU weighted message routing verifier rejected: " + failure);
+            }
+            if (!cpu_verify_multi_column_alpha_hadamard(
+                    alpha_message_proof, gen, com_alpha, matrix_gen,
+                    com_message_edge_matrix, com_weighted_edge_matrix,
+                    alpha_message_label, &failure)) {
+                throw std::runtime_error("CPU alpha-message verifier rejected: " + failure);
+            }
+            if (!cpu_multi_column_grouped_sum_relation_verify(
+                    aggregation_proof, matrix_gen, com_weighted_edge_matrix,
+                    matrix_gen, com_aggregated_matrix, gen, src, dst, aggregation_label, &failure)) {
+                throw std::runtime_error("CPU weighted aggregation verifier rejected: " + failure);
+            }
+            record.verify_ms += timer.elapsed_ms();
+        }
+        record.proof_size_bytes += message_route_proof.serialized_size_bytes()
+            + alpha_message_proof.serialized_size_bytes()
+            + aggregation_proof.serialized_size_bytes();
+        record.proof_digests.push_back("message_route" + chunk_suffix + "=" + message_route_proof.transcript_digest);
+        record.proof_digests.push_back("alpha_message" + chunk_suffix + "=" + alpha_message_proof.transcript_digest);
+        record.proof_digests.push_back("weighted_aggregation" + chunk_suffix + "=" + aggregation_proof.transcript_digest);
     }
-    {
-        ScopedTimer timer;
-        std::string failure;
-        if (!cpu_verify_multi_column_sparse_routing(
-                message_route_proof, matrix_gen, com_message_node_matrix, com_message_edge_matrix,
-                gen, src, dst, "source", message_route_label, &failure)) {
-            throw std::runtime_error("CPU weighted message routing verifier rejected: " + failure);
-        }
-        if (!cpu_verify_multi_column_alpha_hadamard(
-                alpha_message_proof, gen, com_alpha, matrix_gen,
-                com_message_edge_matrix, com_weighted_edge_matrix,
-                alpha_message_label, &failure)) {
-            throw std::runtime_error("CPU alpha-message verifier rejected: " + failure);
-        }
-        if (!cpu_multi_column_grouped_sum_relation_verify(
-                aggregation_proof, matrix_gen, com_weighted_edge_matrix,
-                matrix_gen, com_aggregated_matrix, gen, src, dst, aggregation_label, &failure)) {
-            throw std::runtime_error("CPU weighted aggregation verifier rejected: " + failure);
-        }
-        record.verify_ms += timer.elapsed_ms();
-    }
-    record.proof_size_bytes += message_route_proof.serialized_size_bytes()
-        + alpha_message_proof.serialized_size_bytes()
-        + aggregation_proof.serialized_size_bytes();
-    record.proof_digests.push_back("message_route=" + message_route_proof.transcript_digest);
-    record.proof_digests.push_back("alpha_message=" + alpha_message_proof.transcript_digest);
-    record.proof_digests.push_back("weighted_aggregation=" + aggregation_proof.transcript_digest);
     record.proof_generated = true;
     record.verified = true;
     return record;
@@ -252,9 +267,24 @@ ZkdlFullProofObject run_cpu_full_chain_proof(
     }
     log_line("full_chain_runner dataset=" + spec.dataset + " device=cpu stage=load_model");
     const auto model = load_model(project_root / "artifacts/checkpoints" / spec.checkpoint_name);
-    const auto metadata = build_zkdl_gat_public_metadata(spec, dataset, graph, model);
-    const auto quant = build_zkdl_gat_quant_contract(spec, model);
-    const auto table = build_zkdl_gat_table_context(spec, model);
+
+    log_line("full_chain_runner dataset=" + spec.dataset + " device=cpu stage=cpu_forward_trace");
+    ScopedTimer forward_timer;
+    const auto trace = run_gat_forward_cpu_trace(graph, model);
+    log_line("full_chain_runner dataset=" + spec.dataset
+        + " device=cpu forward_ms=" + format_ms(forward_timer.elapsed_ms())
+        + " hidden_layers=" + std::to_string(trace.hidden_heads.size())
+        + " output_heads=" + std::to_string(trace.output_heads.size()));
+
+    const auto effective_range_bits = zkdl_required_trace_range_bits(graph, trace, spec.range_bits);
+    const auto effective_spec = zkdl_spec_with_range_bits(spec, effective_range_bits);
+    if (effective_range_bits != spec.range_bits) {
+        log_line("full_chain_runner dataset=" + spec.dataset
+            + " device=cpu stage=table_context_range_bits value=" + std::to_string(effective_range_bits));
+    }
+    const auto metadata = build_zkdl_gat_public_metadata(effective_spec, dataset, graph, model);
+    const auto quant = build_zkdl_gat_quant_contract(effective_spec, model);
+    const auto table = build_zkdl_gat_table_context(effective_spec, model);
     write_zkdl_gat_protocol_context_json(run_dir / "formal_artifacts" / "zkdl_full_chain_public_metadata.json", metadata, quant, table);
 
     ZkdlFullProofObject proof;
@@ -269,16 +299,85 @@ ZkdlFullProofObject run_cpu_full_chain_proof(
     proof.proof_manifest_path = run_dir / "full_proof_manifest.json";
     proof.verifier_manifest_path = run_dir / "full_verifier_manifest.json";
 
-    log_line("full_chain_runner dataset=" + spec.dataset + " device=cpu stage=cpu_forward_trace");
-    ScopedTimer forward_timer;
-    const auto trace = run_gat_forward_cpu_trace(graph, model);
-    log_line("full_chain_runner dataset=" + spec.dataset
-        + " device=cpu forward_ms=" + format_ms(forward_timer.elapsed_ms())
-        + " hidden_layers=" + std::to_string(trace.hidden_heads.size())
-        + " output_heads=" + std::to_string(trace.output_heads.size()));
-
     for (std::size_t layer = 0; layer < trace.hidden_heads.size(); ++layer) {
         for (std::size_t head = 0; head < trace.hidden_heads[layer].size(); ++head) {
+            log_line("full_chain_runner dataset=" + spec.dataset
+                + " device=cpu stage=prove_hidden_projection layer=" + std::to_string(layer)
+                + " head=" + std::to_string(head));
+            append_full_relation_record(
+                proof,
+                prove_cpu_projection_matmul_full_record(
+                    spec,
+                    graph,
+                    trace.hidden_layer_inputs.at(layer),
+                    trace.hidden_layer_input_dims.at(layer),
+                    require_hidden_head_params(model, layer, head),
+                    "hidden",
+                    layer,
+                    head,
+                    requested_commitment_block_size));
+            log_line("full_chain_runner dataset=" + spec.dataset
+                + " device=cpu stage=prove_hidden_rescale_rounding layer=" + std::to_string(layer)
+                + " head=" + std::to_string(head));
+            append_full_relation_record(
+                proof,
+                prove_cpu_rescale_rounding_full_record(
+                    spec,
+                    graph,
+                    trace.hidden_layer_inputs.at(layer),
+                    trace.hidden_layer_input_dims.at(layer),
+                    require_hidden_head_params(model, layer, head),
+                    trace.hidden_heads[layer][head],
+                    quant,
+                    "hidden",
+                    layer,
+                    head,
+                    requested_commitment_block_size));
+            log_line("full_chain_runner dataset=" + spec.dataset
+                + " device=cpu stage=prove_hidden_attention_dot_lrelu layer=" + std::to_string(layer)
+                + " head=" + std::to_string(head));
+            append_full_relation_record(
+                proof,
+                prove_cpu_attention_dot_lrelu_full_record(
+                    spec,
+                    graph,
+                    require_hidden_head_params(model, layer, head),
+                    trace.hidden_heads[layer][head],
+                    quant,
+                    table,
+                    "hidden",
+                    layer,
+                    head,
+                    requested_commitment_block_size));
+            log_line("full_chain_runner dataset=" + spec.dataset
+                + " device=cpu stage=prove_hidden_target_max_shift layer=" + std::to_string(layer)
+                + " head=" + std::to_string(head));
+            append_full_relation_record(
+                proof,
+                prove_cpu_target_max_shift_full_record(
+                    spec,
+                    graph,
+                    trace.hidden_heads[layer][head],
+                    table,
+                    "hidden",
+                    layer,
+                    head,
+                    requested_commitment_block_size));
+            log_line("full_chain_runner dataset=" + spec.dataset
+                + " device=cpu stage=prove_hidden_expmap_lookup layer=" + std::to_string(layer)
+                + " head=" + std::to_string(head));
+            append_full_relation_record(
+                proof,
+                prove_cpu_expmap_lookup_full_record(
+                    spec,
+                    graph,
+                    trace.hidden_heads[layer][head],
+                    quant,
+                    table,
+                    "hidden",
+                    layer,
+                    head,
+                    requested_commitment_block_size));
             log_line("full_chain_runner dataset=" + spec.dataset
                 + " device=cpu stage=prove_hidden_attention layer=" + std::to_string(layer)
                 + " head=" + std::to_string(head));
@@ -286,15 +385,124 @@ ZkdlFullProofObject run_cpu_full_chain_proof(
                 proof,
                 prove_cpu_attention_softmax_chain(
                     spec, graph, trace.hidden_heads[layer][head], "hidden", layer, head, requested_commitment_block_size));
+            log_line("full_chain_runner dataset=" + spec.dataset
+                + " device=cpu stage=prove_hidden_elu_lookup layer=" + std::to_string(layer)
+                + " head=" + std::to_string(head));
+            append_full_relation_record(
+                proof,
+                prove_cpu_hidden_elu_lookup_full_record(
+                    spec,
+                    trace.hidden_heads[layer][head],
+                    quant,
+                    table,
+                    layer,
+                    head,
+                    requested_commitment_block_size));
         }
+        const bool final_hidden_layer = layer + 1 == trace.hidden_heads.size();
+        log_line("full_chain_runner dataset=" + spec.dataset
+            + " device=cpu stage=prove_hidden_concat layer=" + std::to_string(layer));
+        append_full_relation_record(
+            proof,
+            prove_cpu_hidden_concat_binding_full_record(
+                spec,
+                graph,
+                trace.hidden_heads[layer],
+                final_hidden_layer ? trace.output_layer_input : trace.hidden_layer_inputs.at(layer + 1),
+                final_hidden_layer ? trace.output_layer_input_dim : trace.hidden_layer_input_dims.at(layer + 1),
+                layer,
+                requested_commitment_block_size));
     }
     for (std::size_t head = 0; head < trace.output_heads.size(); ++head) {
+        log_line("full_chain_runner dataset=" + spec.dataset
+            + " device=cpu stage=prove_output_projection head=" + std::to_string(head));
+        append_full_relation_record(
+            proof,
+            prove_cpu_projection_matmul_full_record(
+                spec,
+                graph,
+                trace.output_layer_input,
+                trace.output_layer_input_dim,
+                model.output_heads.at(head),
+                "output",
+                0,
+                head,
+                requested_commitment_block_size));
+        log_line("full_chain_runner dataset=" + spec.dataset
+            + " device=cpu stage=prove_output_rescale_rounding head=" + std::to_string(head));
+        append_full_relation_record(
+            proof,
+            prove_cpu_rescale_rounding_full_record(
+                spec,
+                graph,
+                trace.output_layer_input,
+                trace.output_layer_input_dim,
+                model.output_heads.at(head),
+                trace.output_heads[head],
+                quant,
+                "output",
+                0,
+                head,
+                requested_commitment_block_size));
+        log_line("full_chain_runner dataset=" + spec.dataset
+            + " device=cpu stage=prove_output_attention_dot_lrelu head=" + std::to_string(head));
+        append_full_relation_record(
+            proof,
+            prove_cpu_attention_dot_lrelu_full_record(
+                spec,
+                graph,
+                model.output_heads.at(head),
+                trace.output_heads[head],
+                quant,
+                table,
+                "output",
+                0,
+                head,
+                requested_commitment_block_size));
+        log_line("full_chain_runner dataset=" + spec.dataset
+            + " device=cpu stage=prove_output_target_max_shift head=" + std::to_string(head));
+        append_full_relation_record(
+            proof,
+            prove_cpu_target_max_shift_full_record(
+                spec,
+                graph,
+                trace.output_heads[head],
+                table,
+                "output",
+                0,
+                head,
+                requested_commitment_block_size));
+        log_line("full_chain_runner dataset=" + spec.dataset
+            + " device=cpu stage=prove_output_expmap_lookup head=" + std::to_string(head));
+        append_full_relation_record(
+            proof,
+            prove_cpu_expmap_lookup_full_record(
+                spec,
+                graph,
+                trace.output_heads[head],
+                quant,
+                table,
+                "output",
+                0,
+                head,
+                requested_commitment_block_size));
         log_line("full_chain_runner dataset=" + spec.dataset
             + " device=cpu stage=prove_output_attention head=" + std::to_string(head));
         append_full_relation_record(
             proof,
             prove_cpu_attention_softmax_chain(
                 spec, graph, trace.output_heads[head], "output", 0, head, requested_commitment_block_size));
+        log_line("full_chain_runner dataset=" + spec.dataset
+            + " device=cpu stage=prove_output_attention_bias head=" + std::to_string(head));
+        append_full_relation_record(
+            proof,
+            prove_cpu_output_attention_bias_full_record(
+                spec,
+                graph,
+                model.output_heads.at(head),
+                trace.output_heads[head],
+                head,
+                requested_commitment_block_size));
     }
     log_line("full_chain_runner dataset=" + spec.dataset
         + " device=cpu stage=prove_output_head_average_public_logits");
@@ -303,17 +511,12 @@ ZkdlFullProofObject run_cpu_full_chain_proof(
         prove_cpu_output_logits_binding_full_record(
             spec, graph, model, trace, requested_commitment_block_size));
 
-    proof.missing_relations = {
-        "hidden projection matmul relation 尚未纳入 full proof object",
-        "attention dot / LeakyReLU lookup-range proof 尚未纳入 full proof object",
-        "target-node max/shift comparison proof 尚未纳入 full proof object",
-        "ExpMap lookup/range proof 尚未纳入 full proof object",
-        "ELU lookup-range proof 尚未纳入 full proof object",
-        "hidden concat binding 尚未纳入 full proof object",
-        "output attention bias 前序链与尺度对齐尚未纳入 full proof object",
-        "real rescale/rounding proof 尚未纳入 full proof object",
-        "CPU batched opening/verifier 尚未覆盖 all-layer/all-head full proof"
-    };
+    {
+        ScopedTimer verifier_timer;
+        proof.missing_relations = zkdl_verify_full_proof_manifest_clean(
+            proof, spec, model, trace, metadata, quant, table, "cpu");
+        proof.verify_ms += verifier_timer.elapsed_ms();
+    }
     finalize_full_proof_status(proof);
     write_zkdl_full_proof_object(proof);
     {

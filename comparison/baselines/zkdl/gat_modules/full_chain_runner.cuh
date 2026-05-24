@@ -27,9 +27,25 @@ ZkdlFullProofObject run_gpu_full_chain_proof(
     }
     log_line("full_chain_runner dataset=" + spec.dataset + " device=gpu stage=load_model");
     const auto model = load_model(project_root / "artifacts/checkpoints" / spec.checkpoint_name);
-    const auto metadata = build_zkdl_gat_public_metadata(spec, dataset, graph, model);
-    const auto quant = build_zkdl_gat_quant_contract(spec, model);
-    const auto table = build_zkdl_gat_table_context(spec, model);
+
+    log_line("full_chain_runner dataset=" + spec.dataset + " device=gpu stage=gpu_forward_trace");
+    ForwardMetrics forward;
+    ForwardTraceHost trace;
+    (void)run_gat_forward_gpu(graph, model, &forward, &trace);
+    log_line("full_chain_runner dataset=" + spec.dataset
+        + " device=gpu forward_ms=" + format_ms(forward.total_ms)
+        + " hidden_layers=" + std::to_string(trace.hidden_heads.size())
+        + " output_heads=" + std::to_string(trace.output_heads.size()));
+
+    const auto effective_range_bits = zkdl_required_trace_range_bits(graph, trace, spec.range_bits);
+    const auto effective_spec = zkdl_spec_with_range_bits(spec, effective_range_bits);
+    if (effective_range_bits != spec.range_bits) {
+        log_line("full_chain_runner dataset=" + spec.dataset
+            + " device=gpu stage=table_context_range_bits value=" + std::to_string(effective_range_bits));
+    }
+    const auto metadata = build_zkdl_gat_public_metadata(effective_spec, dataset, graph, model);
+    const auto quant = build_zkdl_gat_quant_contract(effective_spec, model);
+    const auto table = build_zkdl_gat_table_context(effective_spec, model);
     write_zkdl_gat_protocol_context_json(run_dir / "formal_artifacts" / "zkdl_full_chain_public_metadata.json", metadata, quant, table);
 
     ZkdlFullProofObject proof;
@@ -44,17 +60,85 @@ ZkdlFullProofObject run_gpu_full_chain_proof(
     proof.proof_manifest_path = run_dir / "full_proof_manifest.json";
     proof.verifier_manifest_path = run_dir / "full_verifier_manifest.json";
 
-    log_line("full_chain_runner dataset=" + spec.dataset + " device=gpu stage=gpu_forward_trace");
-    ForwardMetrics forward;
-    ForwardTraceHost trace;
-    (void)run_gat_forward_gpu(graph, model, &forward, &trace);
-    log_line("full_chain_runner dataset=" + spec.dataset
-        + " device=gpu forward_ms=" + format_ms(forward.total_ms)
-        + " hidden_layers=" + std::to_string(trace.hidden_heads.size())
-        + " output_heads=" + std::to_string(trace.output_heads.size()));
-
     for (std::size_t layer = 0; layer < trace.hidden_heads.size(); ++layer) {
         for (std::size_t head = 0; head < trace.hidden_heads[layer].size(); ++head) {
+            log_line("full_chain_runner dataset=" + spec.dataset
+                + " device=gpu stage=prove_hidden_projection layer=" + std::to_string(layer)
+                + " head=" + std::to_string(head));
+            append_full_relation_record(
+                proof,
+                prove_gpu_projection_matmul_full_record(
+                    spec,
+                    graph,
+                    trace.hidden_layer_inputs.at(layer),
+                    trace.hidden_layer_input_dims.at(layer),
+                    require_hidden_head_params(model, layer, head),
+                    "hidden",
+                    layer,
+                    head,
+                    requested_commitment_block_size));
+            log_line("full_chain_runner dataset=" + spec.dataset
+                + " device=gpu stage=prove_hidden_rescale_rounding layer=" + std::to_string(layer)
+                + " head=" + std::to_string(head));
+            append_full_relation_record(
+                proof,
+                prove_gpu_rescale_rounding_full_record(
+                    spec,
+                    graph,
+                    trace.hidden_layer_inputs.at(layer),
+                    trace.hidden_layer_input_dims.at(layer),
+                    require_hidden_head_params(model, layer, head),
+                    trace.hidden_heads[layer][head],
+                    quant,
+                    "hidden",
+                    layer,
+                    head,
+                    requested_commitment_block_size));
+            log_line("full_chain_runner dataset=" + spec.dataset
+                + " device=gpu stage=prove_hidden_attention_dot_lrelu layer=" + std::to_string(layer)
+                + " head=" + std::to_string(head));
+            append_full_relation_record(
+                proof,
+                prove_gpu_attention_dot_lrelu_full_record(
+                    spec,
+                    graph,
+                    require_hidden_head_params(model, layer, head),
+                    trace.hidden_heads[layer][head],
+                    quant,
+                    table,
+                    "hidden",
+                    layer,
+                    head,
+                    requested_commitment_block_size));
+            log_line("full_chain_runner dataset=" + spec.dataset
+                + " device=gpu stage=prove_hidden_target_max_shift layer=" + std::to_string(layer)
+                + " head=" + std::to_string(head));
+            append_full_relation_record(
+                proof,
+                prove_gpu_target_max_shift_full_record(
+                    spec,
+                    graph,
+                    trace.hidden_heads[layer][head],
+                    table,
+                    "hidden",
+                    layer,
+                    head,
+                    requested_commitment_block_size));
+            log_line("full_chain_runner dataset=" + spec.dataset
+                + " device=gpu stage=prove_hidden_expmap_lookup layer=" + std::to_string(layer)
+                + " head=" + std::to_string(head));
+            append_full_relation_record(
+                proof,
+                prove_gpu_expmap_lookup_full_record(
+                    spec,
+                    graph,
+                    trace.hidden_heads[layer][head],
+                    quant,
+                    table,
+                    "hidden",
+                    layer,
+                    head,
+                    requested_commitment_block_size));
             log_line("full_chain_runner dataset=" + spec.dataset
                 + " device=gpu stage=prove_hidden_attention layer=" + std::to_string(layer)
                 + " head=" + std::to_string(head));
@@ -62,15 +146,124 @@ ZkdlFullProofObject run_gpu_full_chain_proof(
                 proof,
                 prove_gpu_attention_softmax_chain(
                     spec, graph, trace.hidden_heads[layer][head], "hidden", layer, head, requested_commitment_block_size));
+            log_line("full_chain_runner dataset=" + spec.dataset
+                + " device=gpu stage=prove_hidden_elu_lookup layer=" + std::to_string(layer)
+                + " head=" + std::to_string(head));
+            append_full_relation_record(
+                proof,
+                prove_gpu_hidden_elu_lookup_full_record(
+                    spec,
+                    trace.hidden_heads[layer][head],
+                    quant,
+                    table,
+                    layer,
+                    head,
+                    requested_commitment_block_size));
         }
+        const bool final_hidden_layer = layer + 1 == trace.hidden_heads.size();
+        log_line("full_chain_runner dataset=" + spec.dataset
+            + " device=gpu stage=prove_hidden_concat layer=" + std::to_string(layer));
+        append_full_relation_record(
+            proof,
+            prove_gpu_hidden_concat_binding_full_record(
+                spec,
+                graph,
+                trace.hidden_heads[layer],
+                final_hidden_layer ? trace.output_layer_input : trace.hidden_layer_inputs.at(layer + 1),
+                final_hidden_layer ? trace.output_layer_input_dim : trace.hidden_layer_input_dims.at(layer + 1),
+                layer,
+                requested_commitment_block_size));
     }
     for (std::size_t head = 0; head < trace.output_heads.size(); ++head) {
+        log_line("full_chain_runner dataset=" + spec.dataset
+            + " device=gpu stage=prove_output_projection head=" + std::to_string(head));
+        append_full_relation_record(
+            proof,
+            prove_gpu_projection_matmul_full_record(
+                spec,
+                graph,
+                trace.output_layer_input,
+                trace.output_layer_input_dim,
+                model.output_heads.at(head),
+                "output",
+                0,
+                head,
+                requested_commitment_block_size));
+        log_line("full_chain_runner dataset=" + spec.dataset
+            + " device=gpu stage=prove_output_rescale_rounding head=" + std::to_string(head));
+        append_full_relation_record(
+            proof,
+            prove_gpu_rescale_rounding_full_record(
+                spec,
+                graph,
+                trace.output_layer_input,
+                trace.output_layer_input_dim,
+                model.output_heads.at(head),
+                trace.output_heads[head],
+                quant,
+                "output",
+                0,
+                head,
+                requested_commitment_block_size));
+        log_line("full_chain_runner dataset=" + spec.dataset
+            + " device=gpu stage=prove_output_attention_dot_lrelu head=" + std::to_string(head));
+        append_full_relation_record(
+            proof,
+            prove_gpu_attention_dot_lrelu_full_record(
+                spec,
+                graph,
+                model.output_heads.at(head),
+                trace.output_heads[head],
+                quant,
+                table,
+                "output",
+                0,
+                head,
+                requested_commitment_block_size));
+        log_line("full_chain_runner dataset=" + spec.dataset
+            + " device=gpu stage=prove_output_target_max_shift head=" + std::to_string(head));
+        append_full_relation_record(
+            proof,
+            prove_gpu_target_max_shift_full_record(
+                spec,
+                graph,
+                trace.output_heads[head],
+                table,
+                "output",
+                0,
+                head,
+                requested_commitment_block_size));
+        log_line("full_chain_runner dataset=" + spec.dataset
+            + " device=gpu stage=prove_output_expmap_lookup head=" + std::to_string(head));
+        append_full_relation_record(
+            proof,
+            prove_gpu_expmap_lookup_full_record(
+                spec,
+                graph,
+                trace.output_heads[head],
+                quant,
+                table,
+                "output",
+                0,
+                head,
+                requested_commitment_block_size));
         log_line("full_chain_runner dataset=" + spec.dataset
             + " device=gpu stage=prove_output_attention head=" + std::to_string(head));
         append_full_relation_record(
             proof,
             prove_gpu_attention_softmax_chain(
                 spec, graph, trace.output_heads[head], "output", 0, head, requested_commitment_block_size));
+        log_line("full_chain_runner dataset=" + spec.dataset
+            + " device=gpu stage=prove_output_attention_bias head=" + std::to_string(head));
+        append_full_relation_record(
+            proof,
+            prove_gpu_output_attention_bias_full_record(
+                spec,
+                graph,
+                model.output_heads.at(head),
+                trace.output_heads[head],
+                head,
+                requested_commitment_block_size));
     }
     log_line("full_chain_runner dataset=" + spec.dataset
         + " device=gpu stage=prove_output_head_average_public_logits");
@@ -79,17 +272,12 @@ ZkdlFullProofObject run_gpu_full_chain_proof(
         prove_gpu_output_logits_binding_full_record(
             spec, graph, model, trace, requested_commitment_block_size));
 
-    proof.missing_relations = {
-        "hidden projection matmul relation 尚未纳入 full proof object",
-        "attention dot / LeakyReLU lookup-range proof 尚未纳入 full proof object",
-        "target-node max/shift comparison proof 尚未纳入 full proof object",
-        "ExpMap lookup/range proof 尚未纳入 full proof object",
-        "ELU lookup-range proof 尚未纳入 full proof object",
-        "hidden concat binding 尚未纳入 full proof object",
-        "output attention bias 前序链与尺度对齐尚未纳入 full proof object",
-        "real rescale/rounding proof 尚未纳入 full proof object",
-        "GPU verifier 仍未实现 device/batched verifier 口径"
-    };
+    {
+        ScopedTimer verifier_timer;
+        proof.missing_relations = zkdl_verify_full_proof_manifest_clean(
+            proof, spec, model, trace, metadata, quant, table, "gpu");
+        proof.verify_ms += verifier_timer.elapsed_ms();
+    }
     finalize_full_proof_status(proof);
     write_zkdl_full_proof_object(proof);
     {
