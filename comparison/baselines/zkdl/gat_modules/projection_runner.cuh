@@ -15,6 +15,7 @@ std::size_t projection_common_commitment_block_size(
     return std::max<std::size_t>(1, floor_power_of_two_size(capped));
 }
 
+// 计算投影矩阵乘法的 scale16 Fr witness；只在 prover 侧构造，不写入 proof object。
 std::vector<Fr_t> projection_product_mont(
     const std::vector<Fr_t>& a_mont,
     const std::vector<Fr_t>& b_mont,
@@ -92,6 +93,7 @@ void cpu_absorb_matmul_metadata(
     cpu_absorb_g1_tensor(transcript, com_c);
 }
 
+// CPU matmul prover 使用与 GPU full-chain 相同的 MLE 关系，避免 CPU 结果借用 GPU artifact。
 MatmulRelationProof cpu_matmul_relation_prove(
     const CpuFrTensor& a,
     const CpuFrTensor& b,
@@ -223,6 +225,7 @@ MatmulRelationProof cpu_matmul_relation_prove(
     return proof;
 }
 
+// CPU matmul verifier 重放 sumcheck/opening；失败会阻止对应 relation record 写入 verified=true。
 bool cpu_matmul_relation_verify(
     const MatmulRelationProof& proof,
     const CpuCommitment& generators,
@@ -302,6 +305,7 @@ bool cpu_matmul_relation_verify(
     return true;
 }
 
+// GPU full-chain projection relation：承诺输入、权重和投影输出，并记录 matmul proof 摘要。
 ZkdlFullRelationRecord prove_gpu_projection_matmul_full_record(
     const DatasetRunSpec& spec,
     const LocalGraph& graph,
@@ -374,6 +378,7 @@ ZkdlFullRelationRecord prove_gpu_projection_matmul_full_record(
     return record;
 }
 
+// CPU full-chain projection relation：语义与 GPU 相同，后端换成 CPU commitment/opening。
 ZkdlFullRelationRecord prove_cpu_projection_matmul_full_record(
     const DatasetRunSpec& spec,
     const LocalGraph& graph,
@@ -447,6 +452,7 @@ ZkdlFullRelationRecord prove_cpu_projection_matmul_full_record(
     return record;
 }
 
+// 从模型参数中按层/头取 hidden head；缺失时直接失败，避免 proof scope 静默缩小。
 const HeadParams& require_hidden_head_params(
     const ModelParams& model,
     std::size_t layer_index,

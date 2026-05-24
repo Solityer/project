@@ -1,9 +1,11 @@
 #pragma once
 
-// CPU full-chain runner 当前覆盖所有 hidden/output head 的 softmax denominator/inverse/alpha
-// 与 multi-column weighted aggregation 子链。lookup/range/max、非线性和 rescale
-// 仍列入 missing_relations，阻止 official 导出。
+// CPU full-chain runner 使用 CPU commitment/opening 后端复现与 GPU 相同的 official proof scope。
+// 它覆盖 hidden/output 全部 head、lookup/range、rescale/rounding、softmax、concat 与 public logits binding。
 
+// CPU attention softmax/weighted aggregation 子链。
+// 输入为单个 head 的 forward trace；输出 relation record 会进入 full proof manifest，
+// 其中 commitment/prove/verify 时间和 proof_size 都计入 official 四项。
 ZkdlFullRelationRecord prove_cpu_attention_softmax_chain(
     const DatasetRunSpec& spec,
     const LocalGraph& graph,
@@ -244,6 +246,8 @@ ZkdlFullRelationRecord prove_cpu_attention_softmax_chain(
     return record;
 }
 
+// CPU official 路径：读取 full dataset/cache/checkpoint，生成 CPU forward trace，
+// 遍历所有 hidden/output relation，并写 proof object、full proof manifest 和 verifier manifest。
 ZkdlFullProofObject run_cpu_full_chain_proof(
     const fs::path& project_root,
     const fs::path& output_root,
@@ -519,18 +523,6 @@ ZkdlFullProofObject run_cpu_full_chain_proof(
     }
     finalize_full_proof_status(proof);
     write_zkdl_full_proof_object(proof);
-    {
-        std::ofstream debug(run_dir / "proof_debug.log", std::ios::app);
-        debug << "dataset=" << spec.dataset
-              << " device=cpu stage=full_chain_runner proof_generated=" << (proof.proof_generated ? "true" : "false")
-              << " verified=" << (proof.verified ? "true" : "false")
-              << " relation_records=" << proof.records.size()
-              << " missing_relations=" << proof.missing_relations.size()
-              << " proof_size_bytes=" << proof.proof_size_bytes
-              << " full_proof_manifest=" << proof.proof_manifest_path.string()
-              << " full_verifier_manifest=" << proof.verifier_manifest_path.string()
-              << "\n";
-    }
     log_line("full_chain_runner dataset=" + spec.dataset
         + " device=cpu proof_generated=" + std::string(proof.proof_generated ? "true" : "false")
         + " verified=" + std::string(proof.verified ? "true" : "false")

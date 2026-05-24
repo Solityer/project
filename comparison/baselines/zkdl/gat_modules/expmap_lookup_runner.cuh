@@ -16,6 +16,8 @@ struct ExpMapLookupWitness {
     std::uint64_t max_u = 0;
 };
 
+// 构造 ExpMap 查询见证：delta=m-z，u=QuantExp(-delta)，以及公开表中的 expected 值。
+// mismatch counter 必须为 0，否则 full verifier 不允许 official 导出。
 ExpMapLookupWitness build_expmap_lookup_witness(
     const LocalGraph& graph,
     const HeadTraceHost& trace,
@@ -81,6 +83,7 @@ ExpMapLookupWitness build_expmap_lookup_witness(
     return witness;
 }
 
+// GPU full-chain ExpMap lookup/range relation：绑定 table_context_id 与 exp_table_digest。
 ZkdlFullRelationRecord prove_gpu_expmap_lookup_full_record(
     const DatasetRunSpec& spec,
     const LocalGraph& graph,
@@ -172,6 +175,7 @@ ZkdlFullRelationRecord prove_gpu_expmap_lookup_full_record(
     return record;
 }
 
+// CPU full-chain ExpMap lookup/range relation：与 GPU 使用同一 public table 语义。
 ZkdlFullRelationRecord prove_cpu_expmap_lookup_full_record(
     const DatasetRunSpec& spec,
     const LocalGraph& graph,

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-23T23:49:34.058871+00:00",
+  "generated_at": "2026-05-24T06:31:18.174001+00:00",
   "benchmark_mode": "warm",
   "rows": [
     {
@@ -8,10 +8,10 @@
       "status": "ok",
       "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": 635063.747,
-      "prove_time_ms": 959127.647,
-      "verify_time_ms": 785188.254,
-      "proof_size_bytes": 7162889
+      "commitment_time_ms": 613551.758,
+      "prove_time_ms": 907390.762,
+      "verify_time_ms": 786008.575,
+      "proof_size_bytes": 7015379
     },
     {
       "device": "cpu",
@@ -63,10 +63,10 @@
       "status": "ok",
       "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": 201935.494,
-      "prove_time_ms": 315047.541,
-      "verify_time_ms": 749597.5,
-      "proof_size_bytes": 6959845
+      "commitment_time_ms": 204132.063,
+      "prove_time_ms": 321156.71,
+      "verify_time_ms": 673768.749,
+      "proof_size_bytes": 6812335
     },
     {
       "device": "gpu",

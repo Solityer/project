@@ -1,6 +1,0 @@
-dataset,status,blocker,benchmark_mode,commitment_time_ms,prove_time_ms,verify_time_ms,proof_size_bytes,proof_path
-cora,debug_only,debug_level_b 不是 formal benchmark，不进入 official latest；CPU/GPU 结果保持独立。,cpu_debug_level_b_output_binding_only_not_formal_level_a,NA,NA,NA,NA,
-citeseer,debug_only,debug_level_b 不是 formal benchmark，不进入 official latest；CPU/GPU 结果保持独立。,cpu_debug_level_b_output_binding_only_not_formal_level_a,NA,NA,NA,NA,
-pubmed,debug_only,debug_level_b 不是 formal benchmark，不进入 official latest；CPU/GPU 结果保持独立。,cpu_debug_level_b_output_binding_only_not_formal_level_a,NA,NA,NA,NA,
-ppi,debug_only,debug_level_b 不是 formal benchmark，不进入 official latest；CPU/GPU 结果保持独立。,cpu_debug_level_b_output_binding_only_not_formal_level_a,NA,NA,NA,NA,
-ogbn-arxiv,debug_only,debug_level_b 不是 formal benchmark，不进入 official latest；CPU/GPU 结果保持独立。,cpu_debug_level_b_output_binding_only_not_formal_level_a,NA,NA,NA,NA,

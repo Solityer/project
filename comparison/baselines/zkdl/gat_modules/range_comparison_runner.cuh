@@ -32,6 +32,8 @@ uint unsigned_bit_width_u64(std::uint64_t value)
     return std::max<uint>(1U, bits);
 }
 
+// 构造每个 dst 组的 M、M_edge-Z_edge、代表最大边与位分解见证。
+// 该子关系保证 Softmax 稳定化使用的是公开目标组内最大值，而不是调试比较。
 TargetMaxShiftWitness build_target_max_shift_witness(
     const LocalGraph& graph,
     const HeadTraceHost& trace)
@@ -108,6 +110,7 @@ TargetMaxShiftWitness build_target_max_shift_witness(
     return witness;
 }
 
+// GPU full-chain target max/shift relation：证明差分非负、代表边达到最大值且 mismatch 为 0。
 ZkdlFullRelationRecord prove_gpu_target_max_shift_full_record(
     const DatasetRunSpec& spec,
     const LocalGraph& graph,
@@ -289,6 +292,7 @@ ZkdlFullRelationRecord prove_gpu_target_max_shift_full_record(
     return record;
 }
 
+// CPU full-chain target max/shift relation：使用相同 table_context_id 绑定 range 位宽。
 ZkdlFullRelationRecord prove_cpu_target_max_shift_full_record(
     const DatasetRunSpec& spec,
     const LocalGraph& graph,

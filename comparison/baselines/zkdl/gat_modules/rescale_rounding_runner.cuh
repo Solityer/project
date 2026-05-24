@@ -19,6 +19,7 @@ struct RescaleRoundingWitness {
     std::size_t canonical_rounding_mismatch_count = 0;
 };
 
+// 将矩阵按 scale16 量化为 int64，用于构造 rescale/rounding 的商余数见证。
 std::vector<std::int64_t> matrix_scale16_i64(
     const std::vector<double>& values,
     std::size_t rows,
@@ -128,6 +129,8 @@ std::size_t rescale_aligned_extent(std::size_t logical, std::size_t alignment)
     return rem == 0 ? logical : logical + (align - rem);
 }
 
+// 构造 projection product 与 rounded output 的完整重缩放见证。
+// 见证只用于生成 relation proof，manifest 仅记录 digest、counter 和 timing。
 RescaleRoundingWitness build_rescale_rounding_witness(
     const std::vector<double>& input_matrix,
     std::size_t input_dim,
@@ -212,6 +215,7 @@ std::size_t rescale_common_commitment_block_size(std::size_t requested, std::siz
     return std::max<std::size_t>(1, floor_power_of_two_size(capped));
 }
 
+// GPU full-chain rescale/rounding relation：证明商余数、符号残差和 canonical rounding counter 为 0。
 ZkdlFullRelationRecord prove_gpu_rescale_rounding_full_record(
     const DatasetRunSpec& spec,
     const LocalGraph& graph,
@@ -387,6 +391,7 @@ ZkdlFullRelationRecord prove_gpu_rescale_rounding_full_record(
     return record;
 }
 
+// CPU full-chain rescale/rounding relation：使用 CPU 后端复查同一 rounding contract。
 ZkdlFullRelationRecord prove_cpu_rescale_rounding_full_record(
     const DatasetRunSpec& spec,
     const LocalGraph& graph,

@@ -1,8 +1,24 @@
 #pragma once
 
 // full proof object 的 output-head average / public logits binding 子关系。
-// 该文件只生成 proof record，不把该子关系冒充 output attention aggregation。
+// 该文件只生成 official full-chain proof record：验证者从 public logits 本地计算 MLE，
+// 并检查所有 output head 在共同尺度上的算术平均，不读取 witness。
 
+// 按协议的 N x C 行优先展平规则编码 output head 或 public logits。
+// 输入是 CPU/GPU forward trace 中的 double 值；输出是 scale16 后的 Fr montgomery 向量。
+std::vector<Fr_t> encode_output_matrix_mont(
+    const std::vector<double>& values,
+    std::size_t rows,
+    std::size_t cols,
+    std::size_t padded_rows,
+    std::size_t padded_cols)
+{
+    return mont_vector_from_raw(matrix_scale16_raw(values, rows, cols, padded_rows, padded_cols));
+}
+
+// GPU full-chain 的 output-head average/public logits 绑定。
+// 该函数承诺每个 output head 的 h_out，不把 public logits 作为 witness；
+// proof_size 与三段 timing 会进入 full_proof_manifest 的 official 统计。
 ZkdlFullRelationRecord prove_gpu_output_logits_binding_full_record(
     const DatasetRunSpec& spec,
     const LocalGraph& graph,
@@ -102,6 +118,8 @@ ZkdlFullRelationRecord prove_gpu_output_logits_binding_full_record(
     return record;
 }
 
+// CPU full-chain 的 output-head average/public logits 绑定。
+// 语义与 GPU 版本一致，只是使用 CPU commitment/opening 后端，保证 CPU/GPU 分表互不借用。
 ZkdlFullRelationRecord prove_cpu_output_logits_binding_full_record(
     const DatasetRunSpec& spec,
     const LocalGraph& graph,

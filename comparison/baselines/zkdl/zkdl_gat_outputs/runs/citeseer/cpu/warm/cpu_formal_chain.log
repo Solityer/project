@@ -1,9 +1,0 @@
-cpu_formal_chain dataset=citeseer stage=load_dataset
-cpu_formal_chain dataset=citeseer loaded_nodes=3327 loaded_edges=9464 features=3703 classes=6
-cpu_formal_chain dataset=citeseer stage=normalize_graph
-cpu_formal_chain dataset=citeseer full_dataset=true normalized_nodes=3327 normalized_edges=12431 graphs=1
-cpu_formal_chain dataset=citeseer stage=load_model
-cpu_formal_chain dataset=citeseer model=gat_family_L2_hid8x8_kout1_c6 L=2 K_out=1 C=6
-cpu_formal_chain dataset=citeseer stage=cpu_forward_trace
-cpu_formal_chain dataset=citeseer cpu_forward_ms=55.684 stage=cpu_relation_prove_verify
-cpu_formal_chain dataset=citeseer status=PARTIAL_FORMAL backend=cpu_only_host_fr_g1_commitment commitment_ms=16631.984 prove_ms=3905.912 verify_ms=2638.854 proof_size_bytes=97506 artifact=/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/citeseer/cpu/warm/formal_artifacts/zkdl_cpu_relation_partial.proof.txt

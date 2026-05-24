@@ -16,6 +16,7 @@ struct EluLookupWitness {
     std::uint64_t max_abs_input = 0;
 };
 
+// 构造 hidden ELU 查询见证：h_pre、h_out、公开 ELU 表 expected 值与 mismatch counter。
 EluLookupWitness build_elu_lookup_witness(
     const HeadTraceHost& trace,
     const ZkdlGatQuantContract& quant,
@@ -73,6 +74,7 @@ EluLookupWitness build_elu_lookup_witness(
     return witness;
 }
 
+// GPU full-chain ELU lookup/range relation：绑定 ELU table digest 并证明 h_out 来自 table。
 ZkdlFullRelationRecord prove_gpu_hidden_elu_lookup_full_record(
     const DatasetRunSpec& spec,
     const HeadTraceHost& trace,
@@ -158,6 +160,7 @@ ZkdlFullRelationRecord prove_gpu_hidden_elu_lookup_full_record(
     return record;
 }
 
+// CPU full-chain ELU lookup/range relation：只处理 hidden head，输出层激活按协议为恒等。
 ZkdlFullRelationRecord prove_cpu_hidden_elu_lookup_full_record(
     const DatasetRunSpec& spec,
     const HeadTraceHost& trace,

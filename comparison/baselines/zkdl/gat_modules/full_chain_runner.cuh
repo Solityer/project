@@ -1,8 +1,10 @@
 #pragma once
 
-// full-chain runner 负责遍历 hidden/output 所有 attention head，并写 full proof / verifier manifest。
-// 该 runner 不负责 official 导出；只有 proof.generated && verifier.verified && missing_relations 为空时 exporter 才能接收。
+// GPU full-chain runner 负责遍历 hidden/output 所有 attention head，并写 full proof/verifier manifest。
+// 该 runner 不负责 official 导出；只有 proof_generated && verified && missing_relations 为空时 exporter 才能接收。
 
+// GPU official 路径：读取主仓库 cache/checkpoint，生成 CUDA forward trace，
+// 再对每个 full-chain stage 写入 ZkdlFullRelationRecord。副作用只在本 dataset/device run 目录内。
 ZkdlFullProofObject run_gpu_full_chain_proof(
     const fs::path& project_root,
     const fs::path& output_root,
@@ -280,18 +282,6 @@ ZkdlFullProofObject run_gpu_full_chain_proof(
     }
     finalize_full_proof_status(proof);
     write_zkdl_full_proof_object(proof);
-    {
-        std::ofstream debug(run_dir / "proof_debug.log", std::ios::app);
-        debug << "dataset=" << spec.dataset
-              << " device=gpu stage=full_chain_runner proof_generated=" << (proof.proof_generated ? "true" : "false")
-              << " verified=" << (proof.verified ? "true" : "false")
-              << " relation_records=" << proof.records.size()
-              << " missing_relations=" << proof.missing_relations.size()
-              << " proof_size_bytes=" << proof.proof_size_bytes
-              << " full_proof_manifest=" << proof.proof_manifest_path.string()
-              << " full_verifier_manifest=" << proof.verifier_manifest_path.string()
-              << "\n";
-    }
     log_line("full_chain_runner dataset=" + spec.dataset
         + " device=gpu proof_generated=" + std::string(proof.proof_generated ? "true" : "false")
         + " verified=" + std::string(proof.verified ? "true" : "false")

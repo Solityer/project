@@ -1,5 +1,5 @@
 dataset,status,blocker,benchmark_mode,commitment_time_ms,prove_time_ms,verify_time_ms,proof_size_bytes
-cora,ok,,warm,635063.747,959127.647,785188.254,7162889
+cora,ok,,warm,613551.758,907390.762,786008.575,7015379
 citeseer,ok,,warm,485544.394,695846.112,823660.929,6831181
 pubmed,ok,,warm,838669.938,972933.76,3358514.479,17747551
 ppi,ok,,warm,6053234.188,944898.332,6432377.9,30728091

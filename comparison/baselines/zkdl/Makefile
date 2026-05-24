@@ -14,9 +14,9 @@ LIBS := -L$(CUDA_PATH)/lib64 -lcudart # -L$(LIBTORCH_PATH)/lib -ltorch -ltorch_c
 # NVCC compiler flags
 NVCC_FLAGS ?= -arch=sm_80 -std=c++17 -O3 -Xcompiler=-Wall -Xcompiler=-Wextra
 
-# Formal targets used by the adapter.
+# zkDL-GAT official 目标：主程序和三个 Gate 自测。
 TARGETS := gat_zkdl formal_opening_selftest formal_sumcheck_selftest formal_relation_selftest
-COMMON_HEADERS := bls12-381.cuh fr-tensor.cuh g1-tensor.cuh commitment.cuh proof.cuh formal_relations.cuh zkfc.cuh zkmatmul.cuh zkrelu.cuh
+COMMON_HEADERS := bls12-381.cuh fr-tensor.cuh g1-tensor.cuh commitment.cuh proof.cuh formal_relations.cuh
 GAT_MODULE_HEADERS := $(wildcard gat_modules/*.cuh)
 
 all: $(TARGETS)

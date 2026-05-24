@@ -1,7 +1,0 @@
-formal_softmax_aggregation dataset=citeseer stage=load_dataset
-formal_softmax_aggregation dataset=citeseer stage=normalize_graph
-formal_softmax_aggregation dataset=citeseer nodes=3327 edges=12431 full_dataset=true
-formal_softmax_aggregation dataset=citeseer stage=load_model
-formal_softmax_aggregation dataset=citeseer stage=gpu_forward_trace
-formal_softmax_aggregation dataset=citeseer forward_ms=339.600 stage=prove_verify
-formal_softmax_aggregation dataset=citeseer status=PASS commitment_block_size=64 denominator=PASS inverse=PASS alpha=PASS weighted_columns=8/8 executed_feature_columns=8 commitment_ms=1422.316 prove_ms=8429.009 verify_ms=4301.289 proof_size_bytes=280325 proof_path=/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/citeseer/gpu/warm/formal_artifacts/zkdl_softmax_aggregation_relations.proof.txt

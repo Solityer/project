@@ -1,7 +1,0 @@
-formal_softmax_aggregation dataset=ppi stage=load_dataset
-formal_softmax_aggregation dataset=ppi stage=normalize_graph
-formal_softmax_aggregation dataset=ppi nodes=56944 edges=850576 full_dataset=true
-formal_softmax_aggregation dataset=ppi stage=load_model
-formal_softmax_aggregation dataset=ppi stage=gpu_forward_trace
-formal_softmax_aggregation dataset=ppi forward_ms=388.148 stage=prove_verify
-formal_softmax_aggregation dataset=ppi status=PASS commitment_block_size=64 denominator=PASS inverse=PASS alpha=PASS weighted_columns=8/8 executed_feature_columns=8 commitment_ms=80826.597 prove_ms=43087.596 verify_ms=261444.942 proof_size_bytes=9857494 proof_path=/home/pzh/project/comparison/baselines/zkdl/zkdl_gat_outputs/runs/ppi/gpu/warm/formal_artifacts/zkdl_softmax_aggregation_relations.proof.txt
