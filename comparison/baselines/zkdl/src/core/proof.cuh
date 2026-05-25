@@ -13,7 +13,7 @@
 
 #ifndef COMMITMENT_OPENING_PROOF_DEFINED
 #define COMMITMENT_OPENING_PROOF_DEFINED
-// 承诺打开证明记录评值点、声明值和 G1 transcript；serialized_size_bytes 直接影响 proof_size_bytes。
+// 承诺打开证明记录评值点、声明值和 G1 transcript
 struct CommitmentOpeningProof
 {
     vector<Fr_t> point;
@@ -31,7 +31,7 @@ struct CommitmentOpeningProof
 };
 #endif
 
-// 计算 MLE/sumcheck 所需的向上取整 log2；输入为逻辑长度，输出为轮数。
+// 计算 MLE/sumcheck 所需的向上取整 log2
 uint ceilLog2(uint num) {
     if (num == 0) return 0;
 
@@ -48,7 +48,7 @@ uint ceilLog2(uint num) {
     return result;
 }
 
-// 轻量 Fiat-Shamir transcript；吸入标签、承诺和声明后派生 relation 内部挑战。
+// Fiat-Shamir transcript吸入标签、承诺和声明后派生 relation 内部挑战值域
 struct FormalTranscript
 {
     std::uint64_t state = 1469598103934665603ULL;
@@ -111,7 +111,7 @@ struct FormalTranscript
     }
 };
 
-// 单轮二次多项式声明；serialized_size_bytes 是 relation proof_size 的组成部分。
+// 单轮二次多项式声明
 struct SumcheckQuadraticRound
 {
     Fr_t c0 = Fr_host_zero();
@@ -124,25 +124,25 @@ struct SumcheckQuadraticRound
     }
 };
 
-// 域元素乘以 2；用于 verifier 复核 sumcheck 端点和。
+// 域元素乘以2
 inline Fr_t Fr_host_double_value(const Fr_t& x)
 {
     return Fr_host_add(x, x);
 }
 
-// 在给定 challenge 上计算一轮二次多项式；verifier 用它重放 sumcheck。
+// 在给定挑战上计算一轮二次多项式；verifier 用它重放 sumcheck
 inline Fr_t Fr_host_quadratic_eval(const SumcheckQuadraticRound& round, const Fr_t& x)
 {
     return Fr_host_add(round.c0, Fr_host_add(Fr_host_mul(round.c1, x), Fr_host_mul(round.c2, Fr_host_mul(x, x))));
 }
 
-// 计算 g(0)+g(1)；用于检查 sumcheck 每轮声明是否闭合。
+// 计算 g(0)+g(1)
 inline Fr_t Fr_host_sum_quadratic_endpoints(const SumcheckQuadraticRound& round)
 {
     return Fr_host_add(Fr_host_double_value(round.c0), Fr_host_add(round.c1, round.c2));
 }
 
-// 计算 (1-u)g(0)+u g(1)；用于把上一轮声明折叠到下一轮。
+// 计算 (1-u)g(0)+u g(1)
 inline Fr_t Fr_host_weighted_quadratic_endpoints(const SumcheckQuadraticRound& round, const Fr_t& u)
 {
     const Fr_t one_minus_u = Fr_host_sub(Fr_host_one_mont(), u);
@@ -151,7 +151,7 @@ inline Fr_t Fr_host_weighted_quadratic_endpoints(const SumcheckQuadraticRound& r
     return Fr_host_add(Fr_host_mul(one_minus_u, at_zero), Fr_host_mul(u, at_one));
 }
 
-// 内积 sumcheck proof record；包含两个张量 opening，verifier 不读取 witness。
+// 内积
 struct InnerProductSumcheckProof
 {
     uint size = 0;
@@ -176,7 +176,6 @@ struct InnerProductSumcheckProof
     }
 };
 
-// Hadamard relation proof record；写入 A/B/C 三个 opening，proof_size 按结构化 payload 计算。
 struct HadamardSumcheckProof
 {
     std::string label;
@@ -222,7 +221,7 @@ struct HadamardSumcheckProof
 
 using BinarySumcheckProof = HadamardSumcheckProof;
 
-// 线性 relation proof record；记录多张量线性组合的 opening，proof_size 使用结构化字段求和。
+// 记录多张量线性组合的 opening
 struct LinearRelationProof
 {
     std::string label;
@@ -255,7 +254,7 @@ struct LinearRelationProof
     }
 };
 
-// 矩阵乘法 relation proof record；包含 batch sumcheck、inner product 与 A/B/C opening。
+// 矩阵乘法
 struct MatmulRelationProof
 {
     std::string label;
@@ -311,7 +310,7 @@ struct MatmulRelationProof
     }
 };
 
-// 稀疏路由 relation proof record；绑定公开 src/dst 拓扑，verifier 只读公开拓扑和承诺 opening。
+// 稀疏路由，绑定公开 src/dst 拓扑
 struct SparseRoutingRelationProof
 {
     std::string label;
@@ -350,7 +349,7 @@ struct SparseRoutingRelationProof
     }
 };
 
-// 按目标节点聚合 relation proof record；用于 softmax 分母和聚合输出绑定。
+// 按目标节点聚合，用于softmax分母和聚合输出绑定
 struct GroupedSumRelationProof
 {
     std::string label;
@@ -387,7 +386,6 @@ struct GroupedSumRelationProof
     }
 };
 
-// 多列 grouped-sum proof record；先压缩列再验证公开拓扑聚合，避免承诺稠密路由矩阵。
 struct MultiColumnGroupedSumRelationProof
 {
     std::string label;
@@ -432,7 +430,7 @@ struct MultiColumnGroupedSumRelationProof
     }
 };
 
-// 在 CPU 上计算内积声明；输入为已补零 Fr 向量，输出进入 inner-product sumcheck。
+// 在 CPU 上计算内积
 inline Fr_t formal_inner_product_claim_host(const vector<Fr_t>& a, const vector<Fr_t>& b)
 {
     if (a.size() != b.size()) throw std::runtime_error("Incompatible dimensions");
