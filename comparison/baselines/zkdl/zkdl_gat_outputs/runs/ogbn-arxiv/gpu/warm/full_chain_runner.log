@@ -1,2 +1,0 @@
-full_chain_runner dataset=ogbn-arxiv device=gpu stage=deterministic_v2_manifest_normalization
-full_chain_runner dataset=ogbn-arxiv device=gpu proof_generated=true verified=true relation_records=16 missing_relations=0 proof_size_bytes=3320343
