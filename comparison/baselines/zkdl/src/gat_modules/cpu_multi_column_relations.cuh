@@ -1,7 +1,6 @@
 #pragma once
 
 // CPU 多列 relation：把矩阵列维先用 transcript 挑战压缩，再复用 CPU-only
-// sparse/grouped/hadamard relation。该模块不依赖 CUDA storage，也不引入主仓库证明方案。
 
 // CPU 多列矩阵列压缩；输入矩阵和列挑战，输出每行压缩值。
 std::vector<Fr_t> cpu_matrix_column_compression_host(
