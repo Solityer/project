@@ -1,2 +1,0 @@
-full_chain_runner dataset=citeseer device=cpu stage=deterministic_v2_manifest_normalization
-full_chain_runner dataset=citeseer device=cpu proof_generated=true verified=true relation_records=65 missing_relations=0 proof_size_bytes=8218353
