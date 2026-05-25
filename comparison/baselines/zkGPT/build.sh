@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 # Default to debug mode if no argument provided
 BUILD_TYPE=${1:-Debug}
@@ -8,8 +9,8 @@ echo "Building in ${BUILD_TYPE} mode..."
 
 mkdir -p ${BUILD_DIR}
 cd ${BUILD_DIR}
-cmake -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -G "CodeBlocks - Unix Makefiles" ..
-make
+cmake -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -G "Unix Makefiles" ..
+make gat_zkgpt_check
 cd ..
 
 #if [ ! -d "./data" ]

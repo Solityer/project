@@ -1,6 +1,6 @@
 # zkDL-GAT baseline
 
-本目录是 zkDL baseline 的 GAT 正式对比实验目录。实验对象固定为五个全量数据集：`cora`、`citeseer`、`pubmed`、`ppi`、`ogbn-arxiv`。CPU 与 GPU 是两条独立 official 路径，结果分别写入 `zkdl_gat_outputs/runs/<dataset>/<device>/warm/`，再由 exporter 从 full proof/verifier manifest 导出 latest 与 summary。
+本目录是 zkDL baseline 的 GAT 正式对比实验目录。根目录只保留 `README.md` 和必要子目录；源码、测试、工具、构建入口、配置与 official artifact 分别放入对应子目录。实验对象固定为五个全量数据集：`cora`、`citeseer`、`pubmed`、`ppi`、`ogbn-arxiv`。CPU 与 GPU 是两条独立 official 路径，结果分别写入 `zkdl_gat_outputs/runs/<dataset>/<device>/warm/`，再由 exporter 从 full proof/verifier manifest 导出 latest 与 summary。
 
 ## 实验目的
 
@@ -20,16 +20,16 @@
 
 ## 目录结构
 
-- zkDL 核心：`bls12-381.cuh`、`fr-tensor.cuh`、`g1-tensor.cuh`、`commitment.cuh`、`proof.cuh`、`formal_relations.cuh`。
-- GAT 加载与前向：`gat_modules/data_cache.cuh`、`gat_modules/model_bundle.cuh`、`gat_modules/cpu_forward.cuh`、`gat_modules/gpu_forward.cuh`。
-- 协议公共上下文：`gat_modules/protocol_context.cuh` 生成 public metadata、VK_static/VK_model、table context 与 quant/rounding contract。
-- relation proof：`projection_runner.cuh`、`rescale_rounding_runner.cuh`、`attention_dot_runner.cuh`、`range_comparison_runner.cuh`、`expmap_lookup_runner.cuh`、`nonlinear_lookup_runner.cuh`、`softmax_lookup_runner.cuh`、`output_attention_runner.cuh`、`hidden_concat_runner.cuh`、`full_output_binding_runner.cuh`。
-- full-chain runner：`gat_modules/full_chain_runner.cuh` 和 `gat_modules/cpu_full_chain_runner.cuh` 遍历 hidden/output 全部 head 并写 full proof/verifier manifest。
-- proof object 与 gate：`gat_modules/full_proof_object.cuh` 写 proof object 摘要、`full_proof_manifest.json`、`full_verifier_manifest.json`；`gat_modules/full_verifier.cuh` 执行 clean verifier gate。
-- CLI 与调度：`gat_zkdl.cu` 是薄 CLI，`gat_modules/run_dispatch.cuh` 只分发 `--formal-full-chain`。
-- 全量调度：`run_zkdl_gat_experiments.py` 可按 dataset/device 调度 full-chain 运行，并在末尾调用 exporter。
-- 结果导出：`update_zkdl_gat_results.py` 只从 full proof/verifier manifest 导出 official latest/summary，并同步重写本 README。
-- 构建与自测：`Makefile`、`formal_opening_selftest.cu`、`formal_sumcheck_selftest.cu`、`formal_relation_selftest.cu`。
+- `src/core/`：zkDL 核心有限域、G1 张量、commitment/opening、sumcheck 与 relation proof 头文件。
+- `src/gat_modules/`：GAT 数据加载、CPU/GPU forward、protocol context、relation runner、full-chain runner、proof object 与 clean verifier gate。
+- `src/cli/gat_zkdl.cu`：薄 CLI，只解析 official full-chain 参数并分发 CPU/GPU 路径。
+- `tests/gates/`：Gate 1/2/3 自测源码，分别覆盖 commitment/opening、sumcheck、relation proof/verifier。
+- `tools/run_zkdl_gat_experiments.py`：五数据集 CPU/GPU full-chain 调度入口，不生成 partial/debug official。
+- `tools/update_zkdl_gat_results.py`：只从 full proof/verifier manifest 导出 official latest/summary，并同步重写本 README。
+- `build/Makefile`：构建入口，输出可执行文件到 `bin/`。
+- `configs/`：复现用 dataset/device 配置说明。
+- `zkdl_gat_outputs/results/`：official latest/summary 表。
+- `zkdl_gat_outputs/runs/`：十个 dataset/device 的 full proof/verifier manifest、proof object 摘要与 public metadata。
 
 ## CPU/GPU official 路径
 
@@ -46,7 +46,7 @@
 
 ## official gate
 
-exporter 的 official gate 在 `update_zkdl_gat_results.py` 中实现，只接受同时满足以下条件的行：
+exporter 的 official gate 在 `tools/update_zkdl_gat_results.py` 中实现，只接受同时满足以下条件的行：
 
 - proof manifest 与 verifier manifest 均存在且 JSON 格式有效。
 - `protocol_id=GAT-ZKML-zkDL`。
@@ -63,7 +63,7 @@ exporter 的 official gate 在 `update_zkdl_gat_results.py` 中实现，只接�
 - `proof_payload_version=2` 且 `proof_size_definition=deterministic_relation_payload_sum_v2`。
 - `proof_size_bytes` 必须等于 `relations[].proof_size_bytes` 的确定性求和。
 
-partial、debug、relation-level evidence、旧失败日志和临时诊断产物不能进入 official；exporter 不从这些文件回填 official 四项指标。
+partial、debug、relation-level evidence、非 official 日志和诊断产物不能进入 official；exporter 不从这些文件回填 official 四项指标。
 
 ## 结果文件
 
@@ -81,28 +81,28 @@ partial、debug、relation-level evidence、旧失败日志和临时诊断产物
 推荐的完整流程如下：
 
 ```bash
-make all
-./formal_opening_selftest
-./formal_sumcheck_selftest
-./formal_relation_selftest
-python3 run_zkdl_gat_experiments.py --dataset all --device all --output-root zkdl_gat_outputs --commitment-block-size 64 --skip-selftests
-python3 update_zkdl_gat_results.py
+make -C build all
+./bin/formal_opening_selftest
+./bin/formal_sumcheck_selftest
+./bin/formal_relation_selftest
+python3 tools/run_zkdl_gat_experiments.py --dataset all --device all --output-root zkdl_gat_outputs --commitment-block-size 64 --skip-selftests
+python3 tools/update_zkdl_gat_results.py
 ```
 
-`run_zkdl_gat_experiments.py` 的等价显式命令清单如下。每条命令都会运行一个完整 dataset/device 的 full-chain proof，不会调用 partial/debug runner。
+`tools/run_zkdl_gat_experiments.py` 的等价显式命令清单如下。每条命令都会运行一个完整 dataset/device 的 full-chain proof，不会调用 partial/debug runner。
 
 ```bash
-./gat_zkdl --formal-full-chain --device cpu --dataset cora --output-root zkdl_gat_outputs --formal-commitment-block-size 64
-./gat_zkdl --formal-full-chain --device cpu --dataset citeseer --output-root zkdl_gat_outputs --formal-commitment-block-size 64
-./gat_zkdl --formal-full-chain --device cpu --dataset pubmed --output-root zkdl_gat_outputs --formal-commitment-block-size 64
-./gat_zkdl --formal-full-chain --device cpu --dataset ppi --output-root zkdl_gat_outputs --formal-commitment-block-size 64
-./gat_zkdl --formal-full-chain --device cpu --dataset ogbn-arxiv --output-root zkdl_gat_outputs --formal-commitment-block-size 64
-./gat_zkdl --formal-full-chain --device gpu --dataset cora --output-root zkdl_gat_outputs --formal-commitment-block-size 64
-./gat_zkdl --formal-full-chain --device gpu --dataset citeseer --output-root zkdl_gat_outputs --formal-commitment-block-size 64
-./gat_zkdl --formal-full-chain --device gpu --dataset pubmed --output-root zkdl_gat_outputs --formal-commitment-block-size 64
-./gat_zkdl --formal-full-chain --device gpu --dataset ppi --output-root zkdl_gat_outputs --formal-commitment-block-size 64
-./gat_zkdl --formal-full-chain --device gpu --dataset ogbn-arxiv --output-root zkdl_gat_outputs --formal-commitment-block-size 64
-python3 update_zkdl_gat_results.py
+./bin/gat_zkdl --formal-full-chain --device cpu --dataset cora --output-root zkdl_gat_outputs --formal-commitment-block-size 64
+./bin/gat_zkdl --formal-full-chain --device cpu --dataset citeseer --output-root zkdl_gat_outputs --formal-commitment-block-size 64
+./bin/gat_zkdl --formal-full-chain --device cpu --dataset pubmed --output-root zkdl_gat_outputs --formal-commitment-block-size 64
+./bin/gat_zkdl --formal-full-chain --device cpu --dataset ppi --output-root zkdl_gat_outputs --formal-commitment-block-size 64
+./bin/gat_zkdl --formal-full-chain --device cpu --dataset ogbn-arxiv --output-root zkdl_gat_outputs --formal-commitment-block-size 64
+./bin/gat_zkdl --formal-full-chain --device gpu --dataset cora --output-root zkdl_gat_outputs --formal-commitment-block-size 64
+./bin/gat_zkdl --formal-full-chain --device gpu --dataset citeseer --output-root zkdl_gat_outputs --formal-commitment-block-size 64
+./bin/gat_zkdl --formal-full-chain --device gpu --dataset pubmed --output-root zkdl_gat_outputs --formal-commitment-block-size 64
+./bin/gat_zkdl --formal-full-chain --device gpu --dataset ppi --output-root zkdl_gat_outputs --formal-commitment-block-size 64
+./bin/gat_zkdl --formal-full-chain --device gpu --dataset ogbn-arxiv --output-root zkdl_gat_outputs --formal-commitment-block-size 64
+python3 tools/update_zkdl_gat_results.py
 ```
 
 ## 单数据集单设备复现
@@ -110,8 +110,8 @@ python3 update_zkdl_gat_results.py
 单个 dataset/device 的模板命令如下：
 
 ```bash
-./gat_zkdl --formal-full-chain --device <cpu|gpu> --dataset <cora|citeseer|pubmed|ppi|ogbn-arxiv> --output-root zkdl_gat_outputs --formal-commitment-block-size 64
-python3 update_zkdl_gat_results.py
+./bin/gat_zkdl --formal-full-chain --device <cpu|gpu> --dataset <cora|citeseer|pubmed|ppi|ogbn-arxiv> --output-root zkdl_gat_outputs --formal-commitment-block-size 64
+python3 tools/update_zkdl_gat_results.py
 ```
 
 单独运行某个 dataset/device 只验证该组合的复现能力。完整实验必须覆盖 `cora`、`citeseer`、`pubmed`、`ppi`、`ogbn-arxiv` 的 CPU/GPU 十个组合。
@@ -121,13 +121,13 @@ python3 update_zkdl_gat_results.py
 GPU 路径：
 
 ```bash
-./gat_zkdl --formal-full-chain --device gpu --dataset cora --output-root zkdl_gat_outputs --formal-commitment-block-size 64
+./bin/gat_zkdl --formal-full-chain --device gpu --dataset cora --output-root zkdl_gat_outputs --formal-commitment-block-size 64
 ```
 
 CPU 路径：
 
 ```bash
-./gat_zkdl --formal-full-chain --device cpu --dataset cora --output-root zkdl_gat_outputs --formal-commitment-block-size 64
+./bin/gat_zkdl --formal-full-chain --device cpu --dataset cora --output-root zkdl_gat_outputs --formal-commitment-block-size 64
 ```
 
 参数含义如下：
@@ -143,7 +143,7 @@ CPU 路径：
 运行或重跑任意 dataset/device 后，用同源 exporter 重新导出 official 表：
 
 ```bash
-python3 update_zkdl_gat_results.py
+python3 tools/update_zkdl_gat_results.py
 ```
 
 exporter 会重新生成 `zkdl_gat_outputs/results/latest.csv`、`zkdl_gat_outputs/results/latest.json`、`zkdl_gat_outputs/results/summary.md`，以及 `results/cpu/`、`results/gpu/` 下的分表。它只从 full proof/verifier manifest 读取数据；不读取 partial/debug 产物。
@@ -205,4 +205,4 @@ PY
 
 ## selftest / Gate
 
-Gate 1 为 commitment/opening 自测，Gate 2 为 sumcheck 自测，Gate 3 为 relation proof/verifier 自测；日志位于 `zkdl_gat_outputs/runs/selftest/`。这些 Gate 不替代 full-chain official gate，只证明基础 zkDL 后端可用。
+Gate 1 为 commitment/opening 自测，Gate 2 为 sumcheck 自测，Gate 3 为 relation proof/verifier 自测。Gate 输出只用于构建后即时检查，不写入 official 结果；full-chain official gate 仍由 exporter 读取 manifest 执行。

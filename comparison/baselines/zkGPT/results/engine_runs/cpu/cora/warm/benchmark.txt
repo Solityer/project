@@ -1,0 +1,8 @@
+backend = cpu
+commitment_time_ms = 268.804
+config = cpu/cora_full.cfg
+dataset = cora
+proof_size_bytes = 90773
+prove_time_ms = 1187.374
+status = VERIFY_OK
+verify_time_ms = 153.435

@@ -1,0 +1,8 @@
+backend = gpu
+commitment_time_ms = 3371.995
+config = gpu/ogbn_arxiv_full.cfg
+dataset = ogbn-arxiv
+proof_size_bytes = 21361
+prove_time_ms = 50982.873
+status = VERIFY_OK
+verify_time_ms = 400.092

@@ -1,0 +1,77 @@
+{
+  "challenge_digest": "f38fa8bce8411368c6ed12f85ef140fe104afb85818c5c8e3af8acedb63261c6",
+  "commitment_digest": "36ad855dffc96e34c40a1c26b24b207d21af23feb1d464159f1e7c764621ab67",
+  "engine_manifest_digest": "085b123b74dae6e3689a70f8b8b26bf534429f3614b9f54e5d3360431e6a138d",
+  "masked_opening_segments": [
+    "T_H",
+    "W",
+    "Aux_base",
+    "Aux_comp",
+    "Aux_psq",
+    "L_qry"
+  ],
+  "metadata_digest": "43c72c197efe3d9d355179cfee13a993cc0497a1ff15b625b00bf9a8eff3f486",
+  "proof_order": {
+    "Com_in": [
+      "com_T_H",
+      "com_W",
+      "com_base",
+      "com_comp",
+      "com_psq",
+      "com_qry"
+    ],
+    "Open_in": [
+      "T_H",
+      "W",
+      "Aux_base",
+      "Aux_comp",
+      "Aux_psq",
+      "L_qry"
+    ],
+    "Pi_GKR": [
+      "routing_wiring",
+      "feature_indexed_access",
+      "score_lrelu_query_consistency",
+      "max_unique_state_machine",
+      "inverse",
+      "alpha",
+      "psq_state_machine",
+      "elu_query_consistency",
+      "concat",
+      "output_bias_add",
+      "output_head_average"
+    ],
+    "Pi_Lasso": [
+      "hidden_range/l1/h0",
+      "output_range/h0",
+      "hidden_lrelu/l1/h0",
+      "output_lrelu/h0",
+      "hidden_elu/l1/h0",
+      "hidden_exp/l1/h0",
+      "output_exp/h0"
+    ],
+    "Pi_MatMul": [
+      "hidden_projection",
+      "hidden_attention_src_dst",
+      "hidden_compression",
+      "output_projection",
+      "output_attention_src_dst",
+      "output_compression"
+    ],
+    "top_level": [
+      "M_pub",
+      "Y",
+      "Com_in",
+      "Pi_Lasso",
+      "Pi_MatMul",
+      "Pi_GKR",
+      "Pi_combine",
+      "Open_in"
+    ]
+  },
+  "proof_type": "pi_GAT_zkGPT",
+  "public_segments": [
+    "X_pub",
+    "Y"
+  ]
+}

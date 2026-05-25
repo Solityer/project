@@ -1,0 +1,16 @@
+{
+  "checks": {
+    "challenges_replay": true,
+    "commitment_order": true,
+    "cpu_backend": true,
+    "edge_ptr_bounds": true,
+    "engine_verified": true,
+    "full_dataset": true,
+    "negative_metadata_check_rejects": true,
+    "node_ptr_bounds": true,
+    "proof_backend_id": true,
+    "proof_order": true,
+    "protocol_id": true
+  },
+  "status": "VERIFY_OK"
+}
