@@ -14,6 +14,10 @@
 
 本目录不迁移主仓库 KZG proof schema、quotient polynomial、verifier equation、opening proof rule、transcript challenge 语义和 proof object layout。主仓库只提供数据、checkpoint、config 与结果口径参照。
 
+## 工程优化迁移边界
+
+可以迁移的内容只限 proof-system-neutral 工程优化，包括数据/cache/checkpoint 读取、全量 dataset/device 调度、CPU/GPU 目录隔离、计时字段分列、manifest gate、结果表导出、固定 dataset 顺序和复现脚本组织。禁止迁移的内容包括主仓库 KZG 承诺布局、quotient polynomial、verifier equation、opening proof rule、transcript challenge 语义、proof object layout 以及任何 proof-system-specific 字节结构。
+
 ## 目录结构
 
 - zkDL 核心：`bls12-381.cuh`、`fr-tensor.cuh`、`g1-tensor.cuh`、`commitment.cuh`、`proof.cuh`、`formal_relations.cuh`。
@@ -56,6 +60,8 @@ exporter 的 official gate 在 `update_zkdl_gat_results.py` 中实现，只接�
 - `verifier_reads_witness=false`。
 - proof manifest 与 verifier manifest 均满足 `witness_included_in_proof=false`。
 - proof object 文件与 public metadata 文件真实存在。
+- `proof_payload_version=2` 且 `proof_size_definition=deterministic_relation_payload_sum_v2`。
+- `proof_size_bytes` 必须等于 `relations[].proof_size_bytes` 的确定性求和。
 
 partial、debug、relation-level evidence、旧失败日志和临时诊断产物不能进入 official；exporter 不从这些文件回填 official 四项指标。
 
@@ -175,24 +181,27 @@ PY
 - `commitment_time_ms` 来自 full proof manifest 中所有 relation commitment 时间之和。
 - `prove_time_ms` 来自 full proof manifest 中 proof generation 时间之和。
 - `verify_time_ms` 来自 full verifier manifest；该值表示 clean verifier 重放 full-chain proof 的时间。
-- `proof_size_bytes` 统计 zkDL full proof object 摘要及子证明大小；不包含完整 witness、完整 tensor、debug evidence 或 public metadata。
+- `proof_size_bytes` 使用 `deterministic_relation_payload_sum_v2` 口径：每个 relation 的 `proof_size_bytes` 来自 zkDL relation proof payload 的结构化 `serialized_size_bytes()`，full proof size 只等于固定 relation 顺序下的 `relations[].proof_size_bytes` 求和。
+- `proof_size_bytes` 不统计 witness、完整 tensor、debug dump、日志、manifest 文件文本长度、proof object 文件文本长度、README、路径、时间戳、`generated_at` 或机器环境信息。
+- range/max 与 rescale 的位宽来自 public quant/table contract；同一代码、同一参数、同一 dataset/device 下，`proof_size_bytes` 应稳定。
 - CUDA/CPU forward timing 只服务于运行日志与诊断，不写入 official 四项。
-- Cora 或其他单数据集重跑后 timing 可能自然变化；official 表只能由真实 full-chain 运行后的 manifest 通过 exporter 生成，不能手写。
+- Cora 或其他单数据集重跑后 timing 可能自然变化；如果论文需要 prover 总耗时，可以使用 `commitment_time_ms + prove_time_ms`，但 official 表保留分列，不覆盖原字段。
+- official 表只能由真实 full-chain 运行后的 manifest 通过 exporter 生成，不能手写。
 
 ## official 结果表
 
 | device | dataset | status | benchmark_mode | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes |
 | --- | --- | --- | --- | ---: | ---: | ---: | ---: |
-| cpu | cora | ok | warm | 613551.758 | 907390.762 | 786008.575 | 7015379 |
-| cpu | citeseer | ok | warm | 485544.394 | 695846.112 | 823660.929 | 6831181 |
-| cpu | pubmed | ok | warm | 838669.938 | 972933.76 | 3358514.479 | 17747551 |
-| cpu | ppi | ok | warm | 6053234.188 | 944898.332 | 6432377.9 | 30728091 |
-| cpu | ogbn-arxiv | ok | warm | 2294748.217 | 1261421.929 | 11015509.922 | 42072342 |
-| gpu | cora | ok | warm | 204132.063 | 321156.71 | 673768.749 | 6812335 |
-| gpu | citeseer | ok | warm | 359076.448 | 300987.887 | 956138.021 | 6628137 |
-| gpu | pubmed | ok | warm | 632869.764 | 388140.447 | 3364287.373 | 17538459 |
-| gpu | ppi | ok | warm | 1950148.59 | 3090128.024 | 494271.239 | 2496711 |
-| gpu | ogbn-arxiv | ok | warm | 2518575.277 | 3869816.174 | 1403228.972 | 3301922 |
+| cpu | cora | ok | warm | 708671.239 | 926476.54 | 740723.891 | 8210717 |
+| cpu | citeseer | ok | warm | 485544.394 | 695846.112 | 823660.929 | 8218353 |
+| cpu | pubmed | ok | warm | 838669.938 | 972933.76 | 3358514.479 | 19011475 |
+| cpu | ppi | ok | warm | 6053234.188 | 944898.332 | 6432377.9 | 30962995 |
+| cpu | ogbn-arxiv | ok | warm | 2294748.217 | 1261421.929 | 11015509.922 | 42090763 |
+| gpu | cora | ok | warm | 203114.562 | 346084.162 | 750609.4 | 8007673 |
+| gpu | citeseer | ok | warm | 359076.448 | 300987.887 | 956138.021 | 8015309 |
+| gpu | pubmed | ok | warm | 632869.764 | 388140.447 | 3364287.373 | 18802383 |
+| gpu | ppi | ok | warm | 1950148.59 | 3090128.024 | 494271.239 | 2731615 |
+| gpu | ogbn-arxiv | ok | warm | 2518575.277 | 3869816.174 | 1403228.972 | 3320343 |
 
 ## selftest / Gate
 

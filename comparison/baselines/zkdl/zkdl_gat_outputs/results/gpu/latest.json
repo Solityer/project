@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-24T06:31:18.173846+00:00",
+  "generated_at": "2026-05-24T15:17:32.420814+00:00",
   "device": "gpu",
   "benchmark_mode": "warm",
   "policy": "只有 full dataset + complete proof generation + complete verification 才能写 official 四项。",
@@ -9,10 +9,10 @@
       "status": "ok",
       "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": 204132.063,
-      "prove_time_ms": 321156.71,
-      "verify_time_ms": 673768.749,
-      "proof_size_bytes": 6812335
+      "commitment_time_ms": 203114.562,
+      "prove_time_ms": 346084.162,
+      "verify_time_ms": 750609.4,
+      "proof_size_bytes": 8007673
     },
     {
       "dataset": "citeseer",
@@ -22,7 +22,7 @@
       "commitment_time_ms": 359076.448,
       "prove_time_ms": 300987.887,
       "verify_time_ms": 956138.021,
-      "proof_size_bytes": 6628137
+      "proof_size_bytes": 8015309
     },
     {
       "dataset": "pubmed",
@@ -32,7 +32,7 @@
       "commitment_time_ms": 632869.764,
       "prove_time_ms": 388140.447,
       "verify_time_ms": 3364287.373,
-      "proof_size_bytes": 17538459
+      "proof_size_bytes": 18802383
     },
     {
       "dataset": "ppi",
@@ -42,7 +42,7 @@
       "commitment_time_ms": 1950148.59,
       "prove_time_ms": 3090128.024,
       "verify_time_ms": 494271.239,
-      "proof_size_bytes": 2496711
+      "proof_size_bytes": 2731615
     },
     {
       "dataset": "ogbn-arxiv",
@@ -52,7 +52,7 @@
       "commitment_time_ms": 2518575.277,
       "prove_time_ms": 3869816.174,
       "verify_time_ms": 1403228.972,
-      "proof_size_bytes": 3301922
+      "proof_size_bytes": 3320343
     }
   ]
 }

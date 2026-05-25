@@ -1,7 +1,7 @@
 full_chain_runner dataset=cora device=gpu stage=load_dataset
 full_chain_runner dataset=cora device=gpu stage=load_model
 full_chain_runner dataset=cora device=gpu stage=gpu_forward_trace
-full_chain_runner dataset=cora device=gpu forward_ms=607.505 hidden_layers=1 output_heads=1
+full_chain_runner dataset=cora device=gpu forward_ms=607.710 hidden_layers=1 output_heads=1
 full_chain_runner dataset=cora device=gpu stage=prove_hidden_projection layer=0 head=0
 full_chain_runner dataset=cora device=gpu stage=prove_hidden_rescale_rounding layer=0 head=0
 full_chain_runner dataset=cora device=gpu stage=prove_hidden_attention_dot_lrelu layer=0 head=0
@@ -67,4 +67,4 @@ full_chain_runner dataset=cora device=gpu stage=prove_output_expmap_lookup head=
 full_chain_runner dataset=cora device=gpu stage=prove_output_attention head=0
 full_chain_runner dataset=cora device=gpu stage=prove_output_attention_bias head=0
 full_chain_runner dataset=cora device=gpu stage=prove_output_head_average_public_logits
-full_chain_runner dataset=cora device=gpu proof_generated=true verified=true relation_records=65 missing_relations=0 proof_size_bytes=6812335
+full_chain_runner dataset=cora device=gpu proof_generated=true verified=true relation_records=65 missing_relations=0 proof_size_bytes=8007673

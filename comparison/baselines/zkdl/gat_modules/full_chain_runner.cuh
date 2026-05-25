@@ -13,7 +13,6 @@ ZkdlFullProofObject run_gpu_full_chain_proof(
 {
     const auto run_dir = device_run_dir(output_root, spec.dataset, "gpu");
     ensure_dir(run_dir / "formal_artifacts");
-    ensure_dir(output_root / "evidence");
     std::ofstream log(run_dir / "full_chain_runner.log");
     auto log_line = [&](const std::string& line) {
         log << line << "\n";
@@ -39,15 +38,10 @@ ZkdlFullProofObject run_gpu_full_chain_proof(
         + " hidden_layers=" + std::to_string(trace.hidden_heads.size())
         + " output_heads=" + std::to_string(trace.output_heads.size()));
 
-    const auto effective_range_bits = zkdl_required_trace_range_bits(graph, trace, spec.range_bits);
-    const auto effective_spec = zkdl_spec_with_range_bits(spec, effective_range_bits);
-    if (effective_range_bits != spec.range_bits) {
-        log_line("full_chain_runner dataset=" + spec.dataset
-            + " device=gpu stage=table_context_range_bits value=" + std::to_string(effective_range_bits));
-    }
-    const auto metadata = build_zkdl_gat_public_metadata(effective_spec, dataset, graph, model);
-    const auto quant = build_zkdl_gat_quant_contract(effective_spec, model);
-    const auto table = build_zkdl_gat_table_context(effective_spec, model);
+    zkdl_require_trace_range_bits_within_spec(graph, trace, spec);
+    const auto metadata = build_zkdl_gat_public_metadata(spec, dataset, graph, model);
+    const auto quant = build_zkdl_gat_quant_contract(spec, model);
+    const auto table = build_zkdl_gat_table_context(spec, model);
     write_zkdl_gat_protocol_context_json(run_dir / "formal_artifacts" / "zkdl_full_chain_public_metadata.json", metadata, quant, table);
 
     ZkdlFullProofObject proof;
