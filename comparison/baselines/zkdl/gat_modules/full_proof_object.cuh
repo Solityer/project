@@ -3,6 +3,9 @@
 // zkDL-GAT full proof object 与 verifier manifest 的最小结构层。
 // 这里记录真实 relation proof 的摘要、大小与 verify 结果；缺失或失败的协议子句会阻止 official 导出。
 
+const char* ZKDL_PROOF_PAYLOAD_VERSION = "2";
+const char* ZKDL_PROOF_SIZE_DEFINITION = "deterministic_relation_payload_sum_v2";
+
 // 单个 full-chain relation proof 的摘要。
 // 记录只包含 proof 摘要、timing 和 verifier 结果，不包含 witness 或完整 tensor。
 struct ZkdlFullRelationRecord {
@@ -37,6 +40,8 @@ struct ZkdlFullProofObject {
     bool verified = false;
     bool verifier_reads_witness = false;
     bool witness_included_in_proof = false;
+    std::string proof_payload_version = ZKDL_PROOF_PAYLOAD_VERSION;
+    std::string proof_size_definition = ZKDL_PROOF_SIZE_DEFINITION;
     double commitment_ms = 0.0;
     double prove_ms = 0.0;
     double verify_ms = 0.0;
@@ -129,11 +134,10 @@ void write_zkdl_full_proof_object(const ZkdlFullProofObject& proof)
         out << "verified=" << (proof.verified ? "true" : "false") << "\n";
         out << "verifier_reads_witness=" << (proof.verifier_reads_witness ? "true" : "false") << "\n";
         out << "witness_included_in_proof=" << (proof.witness_included_in_proof ? "true" : "false") << "\n";
+        out << "proof_payload_version=" << proof.proof_payload_version << "\n";
+        out << "proof_size_definition=" << proof.proof_size_definition << "\n";
         out << "relation_record_count=" << proof.records.size() << "\n";
         out << "missing_relation_count=" << proof.missing_relations.size() << "\n";
-        out << "commitment_time_ms=" << format_ms(proof.commitment_ms) << "\n";
-        out << "prove_time_ms=" << format_ms(proof.prove_ms) << "\n";
-        out << "verify_time_ms=" << format_ms(proof.verify_ms) << "\n";
         out << "proof_size_bytes=" << proof.proof_size_bytes << "\n";
         for (const auto& record : proof.records) {
             out << "relation=" << record.stage
@@ -147,7 +151,6 @@ void write_zkdl_full_proof_object(const ZkdlFullProofObject& proof)
         for (const auto& missing : proof.missing_relations) {
             out << "missing=" << missing << "\n";
         }
-        out << "说明=该 proof object 只保存 proof metadata、子证明摘要和 proof_size；不包含完整 witness 或完整 tensor。verified=false 时不得导出 official。\n";
     }
     {
         std::ofstream out(proof.proof_manifest_path);
@@ -166,6 +169,9 @@ void write_zkdl_full_proof_object(const ZkdlFullProofObject& proof)
         out << "  \"verified\": " << (proof.verified ? "true" : "false") << ",\n";
         out << "  \"verifier_reads_witness\": " << (proof.verifier_reads_witness ? "true" : "false") << ",\n";
         out << "  \"witness_included_in_proof\": " << (proof.witness_included_in_proof ? "true" : "false") << ",\n";
+        out << "  \"proof_payload_version\": \"" << json_escape(proof.proof_payload_version) << "\",\n";
+        out << "  \"proof_size_definition\": \"" << json_escape(proof.proof_size_definition) << "\",\n";
+        out << "  \"proof_size_components\": \"sum(relations[].proof_size_bytes)\",\n";
         out << "  \"benchmark_mode\": \"warm\",\n";
         out << "  \"commitment_time_ms\": " << format_ms(proof.commitment_ms) << ",\n";
         out << "  \"prove_time_ms\": " << format_ms(proof.prove_ms) << ",\n";
@@ -194,6 +200,8 @@ void write_zkdl_full_proof_object(const ZkdlFullProofObject& proof)
         out << "  \"verified\": " << (proof.verified ? "true" : "false") << ",\n";
         out << "  \"verifier_reads_witness\": " << (proof.verifier_reads_witness ? "true" : "false") << ",\n";
         out << "  \"witness_included_in_proof\": " << (proof.witness_included_in_proof ? "true" : "false") << ",\n";
+        out << "  \"proof_payload_version\": \"" << json_escape(proof.proof_payload_version) << "\",\n";
+        out << "  \"proof_size_definition\": \"" << json_escape(proof.proof_size_definition) << "\",\n";
         out << "  \"relation_verify_count\": " << proof.records.size() << ",\n";
         out << "  \"missing_relation_count\": " << proof.missing_relations.size() << ",\n";
         out << "  \"verify_time_ms\": " << format_ms(proof.verify_ms) << ",\n";

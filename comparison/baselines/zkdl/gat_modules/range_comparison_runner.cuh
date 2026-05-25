@@ -32,11 +32,29 @@ uint unsigned_bit_width_u64(std::uint64_t value)
     return std::max<uint>(1U, bits);
 }
 
+uint zkdl_table_range_bits(const ZkdlGatTableContext& table)
+{
+    if (table.range_size == 0 || (table.range_size & (table.range_size - 1U)) != 0) {
+        throw std::runtime_error("table context range_size 必须为非零二次幂");
+    }
+    uint bits = 0;
+    std::size_t value = table.range_size;
+    while (value > 1U) {
+        value >>= 1U;
+        ++bits;
+    }
+    if (bits == 0 || bits >= 63U) {
+        throw std::runtime_error("table context range_bits 超出支持范围");
+    }
+    return bits;
+}
+
 // 构造每个 dst 组的 M、M_edge-Z_edge、代表最大边与位分解见证。
 // 该子关系保证 Softmax 稳定化使用的是公开目标组内最大值，而不是调试比较。
 TargetMaxShiftWitness build_target_max_shift_witness(
     const LocalGraph& graph,
-    const HeadTraceHost& trace)
+    const HeadTraceHost& trace,
+    uint public_bit_width)
 {
     if (trace.z.size() != graph.edges.size() || trace.m.size() != graph.num_nodes) {
         throw std::runtime_error("target max/shift trace 形状不一致");
@@ -92,7 +110,13 @@ TargetMaxShiftWitness build_target_max_shift_witness(
         }
     }
 
-    witness.bit_width = unsigned_bit_width_u64(witness.max_delta);
+    if (public_bit_width == 0 || public_bit_width >= 63U) {
+        throw std::runtime_error("target max/shift public bit width 非法");
+    }
+    if (witness.max_delta >= (std::uint64_t{1} << public_bit_width)) {
+        throw std::runtime_error("target max/shift delta 超出 public range_bits");
+    }
+    witness.bit_width = public_bit_width;
     witness.delta_bits_mont.assign(witness.bit_width, std::vector<Fr_t>(witness.padded_edges, Fr_host_zero()));
     for (std::size_t edge = 0; edge < graph.edges.size(); ++edge) {
         const auto value = static_cast<std::uint64_t>(delta_i64[edge]);
@@ -121,7 +145,7 @@ ZkdlFullRelationRecord prove_gpu_target_max_shift_full_record(
     std::size_t head_index,
     std::size_t requested_commitment_block_size)
 {
-    auto witness = build_target_max_shift_witness(graph, trace);
+    auto witness = build_target_max_shift_witness(graph, trace, zkdl_table_range_bits(table));
     const auto src = graph_src_u32(graph);
     const auto dst = graph_dst_u32(graph);
     const auto block = formal_effective_commitment_block_size(
@@ -303,7 +327,7 @@ ZkdlFullRelationRecord prove_cpu_target_max_shift_full_record(
     std::size_t head_index,
     std::size_t requested_commitment_block_size)
 {
-    auto witness = build_target_max_shift_witness(graph, trace);
+    auto witness = build_target_max_shift_witness(graph, trace, zkdl_table_range_bits(table));
     const auto src = graph_src_u32(graph);
     const auto dst = graph_dst_u32(graph);
     const auto block = formal_effective_commitment_block_size(

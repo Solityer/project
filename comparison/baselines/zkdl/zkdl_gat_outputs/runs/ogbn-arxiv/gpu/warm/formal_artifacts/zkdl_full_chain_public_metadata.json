@@ -42,13 +42,13 @@
     "exp_digest": "exp:2f912c382456cdf8"
   },
   "quantization_contract": {
-    "contract_id": "zkdl_quant_contract:a891160dea40b6e8",
+    "contract_id": "zkdl_quant_contract:bd6527e60f1900e0",
     "quant_cfg_id": "fp32_torch_checkpoint",
     "encoding_id": "signed_fixed_point_scale_16_to_Fr",
     "scale": 16,
     "range_bits": 19,
     "rounding_policy": "round_half_away_from_zero",
-    "rescale_policy": "trace_contract_recorded_no_full_rescale_proof_yet"
+    "rescale_policy": "scale16_full_relation_with_remainder_range"
   },
   "commitment_backend": "zkDL_Hyrax_style_tensor_commitment",
   "说明": "该文件只记录 full-chain public metadata/VK/table/rounding contract；不是 proof object，也不会写入 official latest。"

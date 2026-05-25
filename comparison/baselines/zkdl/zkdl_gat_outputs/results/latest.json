@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-24T06:31:18.174001+00:00",
+  "generated_at": "2026-05-24T15:17:32.420953+00:00",
   "benchmark_mode": "warm",
   "rows": [
     {
@@ -8,10 +8,10 @@
       "status": "ok",
       "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": 613551.758,
-      "prove_time_ms": 907390.762,
-      "verify_time_ms": 786008.575,
-      "proof_size_bytes": 7015379
+      "commitment_time_ms": 708671.239,
+      "prove_time_ms": 926476.54,
+      "verify_time_ms": 740723.891,
+      "proof_size_bytes": 8210717
     },
     {
       "device": "cpu",
@@ -22,7 +22,7 @@
       "commitment_time_ms": 485544.394,
       "prove_time_ms": 695846.112,
       "verify_time_ms": 823660.929,
-      "proof_size_bytes": 6831181
+      "proof_size_bytes": 8218353
     },
     {
       "device": "cpu",
@@ -33,7 +33,7 @@
       "commitment_time_ms": 838669.938,
       "prove_time_ms": 972933.76,
       "verify_time_ms": 3358514.479,
-      "proof_size_bytes": 17747551
+      "proof_size_bytes": 19011475
     },
     {
       "device": "cpu",
@@ -44,7 +44,7 @@
       "commitment_time_ms": 6053234.188,
       "prove_time_ms": 944898.332,
       "verify_time_ms": 6432377.9,
-      "proof_size_bytes": 30728091
+      "proof_size_bytes": 30962995
     },
     {
       "device": "cpu",
@@ -55,7 +55,7 @@
       "commitment_time_ms": 2294748.217,
       "prove_time_ms": 1261421.929,
       "verify_time_ms": 11015509.922,
-      "proof_size_bytes": 42072342
+      "proof_size_bytes": 42090763
     },
     {
       "device": "gpu",
@@ -63,10 +63,10 @@
       "status": "ok",
       "blocker": "",
       "benchmark_mode": "warm",
-      "commitment_time_ms": 204132.063,
-      "prove_time_ms": 321156.71,
-      "verify_time_ms": 673768.749,
-      "proof_size_bytes": 6812335
+      "commitment_time_ms": 203114.562,
+      "prove_time_ms": 346084.162,
+      "verify_time_ms": 750609.4,
+      "proof_size_bytes": 8007673
     },
     {
       "device": "gpu",
@@ -77,7 +77,7 @@
       "commitment_time_ms": 359076.448,
       "prove_time_ms": 300987.887,
       "verify_time_ms": 956138.021,
-      "proof_size_bytes": 6628137
+      "proof_size_bytes": 8015309
     },
     {
       "device": "gpu",
@@ -88,7 +88,7 @@
       "commitment_time_ms": 632869.764,
       "prove_time_ms": 388140.447,
       "verify_time_ms": 3364287.373,
-      "proof_size_bytes": 17538459
+      "proof_size_bytes": 18802383
     },
     {
       "device": "gpu",
@@ -99,7 +99,7 @@
       "commitment_time_ms": 1950148.59,
       "prove_time_ms": 3090128.024,
       "verify_time_ms": 494271.239,
-      "proof_size_bytes": 2496711
+      "proof_size_bytes": 2731615
     },
     {
       "device": "gpu",
@@ -110,7 +110,7 @@
       "commitment_time_ms": 2518575.277,
       "prove_time_ms": 3869816.174,
       "verify_time_ms": 1403228.972,
-      "proof_size_bytes": 3301922
+      "proof_size_bytes": 3320343
     }
   ]
 }

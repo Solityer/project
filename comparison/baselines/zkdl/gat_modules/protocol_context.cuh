@@ -151,12 +151,20 @@ std::size_t zkdl_required_trace_range_bits(
     return std::max(minimum_bits, bits);
 }
 
-// 复制 dataset spec 并替换 range_bits；不改变数据集、模型或 proof scope。
-DatasetRunSpec zkdl_spec_with_range_bits(const DatasetRunSpec& spec, std::size_t range_bits)
+// range_bits 是 public quant/table contract 的一部分，不能由单次运行的 trace 改写。
+// 若当前 trace 需要更大的位宽，直接失败，要求先更新五数据集固定配置并重跑 official。
+void zkdl_require_trace_range_bits_within_spec(
+    const LocalGraph& graph,
+    const ForwardTraceHost& trace,
+    const DatasetRunSpec& spec)
 {
-    DatasetRunSpec out = spec;
-    out.range_bits = range_bits;
-    return out;
+    const auto required = zkdl_required_trace_range_bits(graph, trace, spec.range_bits);
+    if (required > spec.range_bits) {
+        throw std::runtime_error("dataset=" + spec.dataset
+            + " 的 public range_bits=" + std::to_string(spec.range_bits)
+            + " 小于 trace 需要的 range_bits=" + std::to_string(required)
+            + "；必须先更新固定 dataset spec 后重跑 official");
+    }
 }
 
 // 构造量化/rounding contract；relation proof 会把 contract_id 写入 proof_digests。

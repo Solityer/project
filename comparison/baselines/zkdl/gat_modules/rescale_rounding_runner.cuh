@@ -121,6 +121,15 @@ uint rescale_residual_bit_width(std::int64_t max_abs)
     return std::max<uint>(2U, bits);
 }
 
+uint zkdl_rescale_public_remainder_bit_width(const ZkdlGatQuantContract& quant)
+{
+    if (quant.scale == 0 || quant.scale > (std::numeric_limits<std::uint64_t>::max() - 1ULL) / 2ULL) {
+        throw std::runtime_error("rescale public scale 非法");
+    }
+    const auto max_abs_bound = static_cast<std::uint64_t>((quant.scale + 1U) / 2U);
+    return rescale_residual_bit_width(static_cast<std::int64_t>(max_abs_bound));
+}
+
 std::size_t rescale_aligned_extent(std::size_t logical, std::size_t alignment)
 {
     if (logical == 0) return alignment;
@@ -180,8 +189,11 @@ RescaleRoundingWitness build_rescale_rounding_witness(
         witness.max_abs_residual = std::max(witness.max_abs_residual, abs_residual);
     }
 
-    witness.bit_width = rescale_residual_bit_width(witness.max_abs_residual);
+    witness.bit_width = zkdl_rescale_public_remainder_bit_width(quant);
     witness.residual_offset = static_cast<std::int64_t>(1ULL << (witness.bit_width - 1U));
+    if (static_cast<std::uint64_t>(witness.max_abs_residual) >= (std::uint64_t{1} << (witness.bit_width - 1U))) {
+        throw std::runtime_error("rescale residual 超出 public remainder bit width");
+    }
     std::vector<std::int64_t> shifted_i64(pre_i64.size(), 0);
     witness.shifted_bits.assign(witness.bit_width, std::vector<Fr_t>(pre_i64.size(), Fr_host_zero()));
     for (std::size_t idx = 0; idx < pre_i64.size(); ++idx) {

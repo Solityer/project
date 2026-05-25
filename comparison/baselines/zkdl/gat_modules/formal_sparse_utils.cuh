@@ -297,7 +297,14 @@ Commitment make_formal_commitment_generators(std::size_t block_size)
         throw std::runtime_error("formal commitment block size 超出 uint 范围");
     }
     if (block_size == 1) return Commitment(1, G1Jacobian_generator);
-    return Commitment::random_generators(static_cast<uint>(block_size));
+    auto scalars = deterministic_raw_fr_vec(
+        block_size,
+        "zkdl-gat-gpu-generators:block:" + std::to_string(block_size));
+    std::vector<G1Jacobian_t> points(block_size, G1Jacobian_host_zero());
+    for (std::size_t i = 0; i < block_size; ++i) {
+        points[i] = G1Jacobian_host_mul(G1Jacobian_generator, scalars[i]);
+    }
+    return Commitment(static_cast<uint>(block_size), points.data());
 }
 
 struct MultiColumnSparseRoutingGadgetProof
