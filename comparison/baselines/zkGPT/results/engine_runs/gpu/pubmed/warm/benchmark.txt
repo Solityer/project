@@ -1,0 +1,8 @@
+backend = gpu
+commitment_time_ms = 901.917
+config = gpu/pubmed_full.cfg
+dataset = pubmed
+proof_size_bytes = 90778
+prove_time_ms = 3194.438
+status = VERIFY_OK
+verify_time_ms = 175.630

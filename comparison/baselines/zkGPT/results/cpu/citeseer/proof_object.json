@@ -1,0 +1,105 @@
+{
+  "challenge_digest": "175c224f12eed4bf4f1008f5724c3031fd9447a3cb0e6ad421c22f34e2224e62",
+  "commitment_digest": "ff88f1b2c82a4c46ece3d960be44cbb5b0d37676008ab857f3ef6cd23d299e50",
+  "engine_manifest_digest": "7b620aa031ed36adbb839df6b50d3b2ff238e82b4e17ec798bc2079d1af9a9c3",
+  "masked_opening_segments": [
+    "T_H",
+    "W",
+    "Aux_base",
+    "Aux_comp",
+    "Aux_psq",
+    "L_qry"
+  ],
+  "metadata_digest": "7109adce9e76096c2b2a2d39b9b6f70c90ea5051bd79abd600a9bd6ba0826351",
+  "proof_order": {
+    "Com_in": [
+      "com_T_H",
+      "com_W",
+      "com_base",
+      "com_comp",
+      "com_psq",
+      "com_qry"
+    ],
+    "Open_in": [
+      "T_H",
+      "W",
+      "Aux_base",
+      "Aux_comp",
+      "Aux_psq",
+      "L_qry"
+    ],
+    "Pi_GKR": [
+      "routing_wiring",
+      "feature_indexed_access",
+      "score_lrelu_query_consistency",
+      "max_unique_state_machine",
+      "inverse",
+      "alpha",
+      "psq_state_machine",
+      "elu_query_consistency",
+      "concat",
+      "output_bias_add",
+      "output_head_average"
+    ],
+    "Pi_Lasso": [
+      "hidden_range/l1/h0",
+      "hidden_range/l1/h1",
+      "hidden_range/l1/h2",
+      "hidden_range/l1/h3",
+      "hidden_range/l1/h4",
+      "hidden_range/l1/h5",
+      "hidden_range/l1/h6",
+      "hidden_range/l1/h7",
+      "output_range/h0",
+      "hidden_lrelu/l1/h0",
+      "hidden_lrelu/l1/h1",
+      "hidden_lrelu/l1/h2",
+      "hidden_lrelu/l1/h3",
+      "hidden_lrelu/l1/h4",
+      "hidden_lrelu/l1/h5",
+      "hidden_lrelu/l1/h6",
+      "hidden_lrelu/l1/h7",
+      "output_lrelu/h0",
+      "hidden_elu/l1/h0",
+      "hidden_elu/l1/h1",
+      "hidden_elu/l1/h2",
+      "hidden_elu/l1/h3",
+      "hidden_elu/l1/h4",
+      "hidden_elu/l1/h5",
+      "hidden_elu/l1/h6",
+      "hidden_elu/l1/h7",
+      "hidden_exp/l1/h0",
+      "hidden_exp/l1/h1",
+      "hidden_exp/l1/h2",
+      "hidden_exp/l1/h3",
+      "hidden_exp/l1/h4",
+      "hidden_exp/l1/h5",
+      "hidden_exp/l1/h6",
+      "hidden_exp/l1/h7",
+      "output_exp/h0"
+    ],
+    "Pi_MatMul": [
+      "hidden_projection",
+      "hidden_attention_src_dst",
+      "hidden_compression",
+      "output_projection",
+      "output_attention_src_dst",
+      "output_compression"
+    ],
+    "top_level": [
+      "M_pub",
+      "Y",
+      "Com_in",
+      "Pi_Lasso",
+      "Pi_MatMul",
+      "Pi_GKR",
+      "Pi_combine",
+      "Open_in"
+    ]
+  },
+  "proof_type": "pi_GAT_zkGPT",
+  "public_segments": [
+    "X_pub",
+    "Y"
+  ]
+}

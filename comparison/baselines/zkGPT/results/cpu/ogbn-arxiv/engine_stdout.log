@@ -1,0 +1,1 @@
+dataset=ogbn-arxiv config=/home/pzh/project/comparison/baselines/zkGPT/generated_configs/cpu/ogbn_arxiv_full.cfg backend=cpu status=VERIFY_OK commitment_time_ms=17738.997 prove_time_ms=65477.886 verify_time_ms=414.962 proof_size_bytes=21361

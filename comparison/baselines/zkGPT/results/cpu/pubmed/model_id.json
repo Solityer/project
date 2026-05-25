@@ -1,0 +1,14 @@
+{
+  "checkpoint_bundle": "/home/pzh/project/artifacts/checkpoints/pubmed_gat",
+  "id": "a5928f0fd01d1a59c7703a125df56e10f7538167b9412a2dad4177ba5d1fbf7f",
+  "manifest": {
+    "path": "/home/pzh/project/artifacts/checkpoints/pubmed_gat/manifest.json",
+    "sha256": "4c2bf0deea15753b99721e79f1e2d21675432e50a08d2c402abbe130c05a02a4",
+    "size_bytes": 11772
+  },
+  "tensors": {
+    "path": "/home/pzh/project/artifacts/checkpoints/pubmed_gat/tensors.txt",
+    "sha256": "c8c1b5d627cbbb211feb1f13d825e3a4d904dc2820f876c362ad09bdaf0f6c24",
+    "size_bytes": 687944
+  }
+}

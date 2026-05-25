@@ -1,0 +1,127 @@
+{
+  "compression": {
+    "xi_cat_l1": "f8096d405594db32d99188238a52782b5c5b65ebb00d9be5cbb17083f90ce44e",
+    "xi_l1_h0": "c0daaa96d4eaa8646d96278b6f29e3a8c1d247b0fd71ea17fa32897ae61dfecc",
+    "xi_out": "d4f2ee53995e09391d1c6cf5beec63920b0283fc343f19b8b7761362bb4bc9ce"
+  },
+  "gkr": {
+    "rho_gkr": "889e755ff39e9e07abcd3c8ef06bfbe6efe3ee6bb76a71042b1da8f48102b73e"
+  },
+  "lasso": {
+    "eta_hidden_elu": "62e4fd988b26abb232ad5077dd69d3b2ad0d8b87214e1813163fe069f7d31607",
+    "eta_hidden_exp": "059056f9251c1503aa5347594f4113a1cf962007f0782d85f6b1ce391a9ee520",
+    "eta_hidden_lrelu": "4ad1d0d55d5996cc0f43e5ce4a8d522a709c108f66e7328ee7957722bc5b1080",
+    "eta_hidden_range": "d90ee9d5fe3db841821f8c45483f2360a3e202839e79395b61e32e9fa4b09eaa",
+    "eta_output_exp": "9e91f4e96b782f43224f24ee3ae5517508fa2c8d8cf6d5819601e980f8ba752d",
+    "eta_output_lrelu": "e144954a32ff90d7dd1aa156d10a73887ad405918968a3e4d61347b0f780bb8b",
+    "eta_output_range": "a2c702d725183c41896989431188983a15cd20a66470f672b96a4aa13220436e",
+    "eta_rescale_rounding_range": "ca07ece3be65fa51366045182d7ea64d21a2c91d3c7c593ae90988123ce07fc6"
+  },
+  "matmul": {
+    "rho_matmul": "ca40421a57d252fa5e0cfa3703a943b8ab00e7252d52bb9bb0e2f680f2025be2"
+  },
+  "open": {
+    "rho_combine": "e4c4252d2b7fb2bec9f37355638b3ef30254af1d6eedb3bcc3ea9f526296df2a",
+    "rho_masked_open": "29e799d3ba32da9f7a5ffdd2fac9be046c0aae5f386383bb6fe539b24f757549"
+  },
+  "psq": {
+    "lambda_psq_l1_h0": "ab9e16bc324881b8f2c9d2251f46e835949d81c36726545044905e1a72350554",
+    "lambda_psq_out_h0": "7ed636ee09d733f642f3aa97a53953dbe7c91e55dbbb89c58718ff081a9306ff"
+  },
+  "transcript": [
+    {
+      "challenge": "9e910c9ba622290d4f80b01825cb24e4ad844d0b9511dcdcfa9844820219b195",
+      "label": "gat-zkgpt/meta"
+    },
+    {
+      "challenge": "5f36f19c3072c54c59d7bfd6161b43dba9578eff6d8390280ecfc02bb1a0b53f",
+      "label": "gat-zkgpt/model-commit"
+    },
+    {
+      "challenge": "c0daaa96d4eaa8646d96278b6f29e3a8c1d247b0fd71ea17fa32897ae61dfecc",
+      "label": "xi/layer/1/head/0"
+    },
+    {
+      "challenge": "f8096d405594db32d99188238a52782b5c5b65ebb00d9be5cbb17083f90ce44e",
+      "label": "xi/cat/1"
+    },
+    {
+      "challenge": "d4f2ee53995e09391d1c6cf5beec63920b0283fc343f19b8b7761362bb4bc9ce",
+      "label": "xi/out"
+    },
+    {
+      "challenge": "9786890321bec0490e0a4dcbb41863f1219ccd5ed86216feb4d8ef67480174fc",
+      "label": "gat-zkgpt/input-commit/comp"
+    },
+    {
+      "challenge": "ab9e16bc324881b8f2c9d2251f46e835949d81c36726545044905e1a72350554",
+      "label": "lambda/psq/layer/1/head/0"
+    },
+    {
+      "challenge": "7ed636ee09d733f642f3aa97a53953dbe7c91e55dbbb89c58718ff081a9306ff",
+      "label": "lambda/psq/out/0"
+    },
+    {
+      "challenge": "8d1dbbb05d29418774d9a66cb568f1f76d7f7b4646a291d9a1a6726a05ddc771",
+      "label": "gat-zkgpt/input-commit/psq-qry"
+    },
+    {
+      "challenge": "d90ee9d5fe3db841821f8c45483f2360a3e202839e79395b61e32e9fa4b09eaa",
+      "label": "lasso/hidden_range"
+    },
+    {
+      "challenge": "a2c702d725183c41896989431188983a15cd20a66470f672b96a4aa13220436e",
+      "label": "lasso/output_range"
+    },
+    {
+      "challenge": "4ad1d0d55d5996cc0f43e5ce4a8d522a709c108f66e7328ee7957722bc5b1080",
+      "label": "lasso/hidden_lrelu"
+    },
+    {
+      "challenge": "e144954a32ff90d7dd1aa156d10a73887ad405918968a3e4d61347b0f780bb8b",
+      "label": "lasso/output_lrelu"
+    },
+    {
+      "challenge": "62e4fd988b26abb232ad5077dd69d3b2ad0d8b87214e1813163fe069f7d31607",
+      "label": "lasso/hidden_elu"
+    },
+    {
+      "challenge": "059056f9251c1503aa5347594f4113a1cf962007f0782d85f6b1ce391a9ee520",
+      "label": "lasso/hidden_exp"
+    },
+    {
+      "challenge": "9e91f4e96b782f43224f24ee3ae5517508fa2c8d8cf6d5819601e980f8ba752d",
+      "label": "lasso/output_exp"
+    },
+    {
+      "challenge": "ca07ece3be65fa51366045182d7ea64d21a2c91d3c7c593ae90988123ce07fc6",
+      "label": "lasso/rescale_rounding_range"
+    },
+    {
+      "challenge": "ca40421a57d252fa5e0cfa3703a943b8ab00e7252d52bb9bb0e2f680f2025be2",
+      "label": "matmul/sumcheck"
+    },
+    {
+      "challenge": "889e755ff39e9e07abcd3c8ef06bfbe6efe3ee6bb76a71042b1da8f48102b73e",
+      "label": "gkr/layered-sumcheck"
+    },
+    {
+      "challenge": "e4c4252d2b7fb2bec9f37355638b3ef30254af1d6eedb3bcc3ea9f526296df2a",
+      "label": "open/combine"
+    },
+    {
+      "challenge": "29e799d3ba32da9f7a5ffdd2fac9be046c0aae5f386383bb6fe539b24f757549",
+      "label": "open/masked"
+    }
+  ],
+  "transcript_domain_order": [
+    "gat-zkgpt/meta",
+    "gat-zkgpt/model-commit",
+    "gat-zkgpt/static-table",
+    "gat-zkgpt/input-commit",
+    "gat-zkgpt/lasso",
+    "gat-zkgpt/matmul",
+    "gat-zkgpt/gkr",
+    "gat-zkgpt/open"
+  ]
+}

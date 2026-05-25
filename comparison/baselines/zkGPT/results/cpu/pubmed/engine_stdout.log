@@ -1,0 +1,1 @@
+dataset=pubmed config=/home/pzh/project/comparison/baselines/zkGPT/generated_configs/cpu/pubmed_full.cfg backend=cpu status=VERIFY_OK commitment_time_ms=2932.136 prove_time_ms=5498.757 verify_time_ms=173.610 proof_size_bytes=90778

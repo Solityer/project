@@ -1,0 +1,8 @@
+backend = gpu
+commitment_time_ms = 471.972
+config = gpu/citeseer_full.cfg
+dataset = citeseer
+proof_size_bytes = 90781
+prove_time_ms = 1370.378
+status = VERIFY_OK
+verify_time_ms = 153.165

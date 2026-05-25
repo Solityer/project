@@ -1,0 +1,1 @@
+dataset=citeseer config=/home/pzh/project/comparison/baselines/zkGPT/generated_configs/cpu/citeseer_full.cfg backend=cpu status=VERIFY_OK commitment_time_ms=450.838 prove_time_ms=1263.176 verify_time_ms=153.610 proof_size_bytes=90781
