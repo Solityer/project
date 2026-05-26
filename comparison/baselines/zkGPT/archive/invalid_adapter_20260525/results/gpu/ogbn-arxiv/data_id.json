@@ -1,0 +1,26 @@
+{
+  "cache_dir": "/home/pzh/project/data/cache/ogbn_arxiv",
+  "files": {
+    "edges.txt": {
+      "path": "/home/pzh/project/data/cache/ogbn_arxiv/edges.txt",
+      "sha256": "b847b26c612b78a52fd785590bc4fbb6d6fc607337cda1b6d5ba5b6524151bf5",
+      "size_bytes": 14773350
+    },
+    "features.npy": {
+      "path": "/home/pzh/project/data/cache/ogbn_arxiv/features.npy",
+      "sha256": "e2e4dda733eff8130a8e3ff0167ce091ee145eb6f0e6eedb8e04fef36100e40b",
+      "size_bytes": 86703744
+    },
+    "labels.txt": {
+      "path": "/home/pzh/project/data/cache/ogbn_arxiv/labels.txt",
+      "sha256": "7d16a4e399d6f89d2204735ca01e8e4667efae291ab154b56c2bd9110c47767c",
+      "size_bytes": 477779
+    },
+    "meta.cfg": {
+      "path": "/home/pzh/project/data/cache/ogbn_arxiv/meta.cfg",
+      "sha256": "9836338b8ac2a10875b226da753a15993969156b4e7f7fabc6a896ebc14ee74c",
+      "size_bytes": 153
+    }
+  },
+  "id": "3e1ed9251a1670dd32a781e82760c0a3e48d2531953a8848348ce1a6885b9714"
+}

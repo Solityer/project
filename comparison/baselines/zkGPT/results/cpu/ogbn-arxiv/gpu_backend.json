@@ -1,0 +1,6 @@
+{
+  "backend": "cpu",
+  "cuda_kernel_executed": false,
+  "gpu_runtime_present": false,
+  "note": "CPU proof path"
+}

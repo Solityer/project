@@ -1,190 +1,17 @@
 {
   "compression": {
-    "xi_cat_l1": "8f7d95c56520c1e50c66cc3c89a848bf4c3b3f176543f91ac31d4d0a5bed5245",
-    "xi_l1_h0": "400424e869fa75c293f970f79d1d44d95d2a3ccdd8b7b6319f660c8a802dffe8",
-    "xi_l1_h1": "794b4a096582593b25a2f8d0d3192b7edd5562a0561ea73c2b07807a64fe5fe6",
-    "xi_l1_h2": "726f50f846b66b417c4a5ada4cd3bcf1bf1a6de22fd03357f8a626d0b7cc1f02",
-    "xi_l1_h3": "f54f940599305f64124f8b1e887c68a62114801edb79152805131439b52d4f0f",
-    "xi_l1_h4": "ecc7da4b91ab0d9c7790347feb9d44c8f87687ce9c5b41fc24c856ec876e46ed",
-    "xi_l1_h5": "a9ba66d429315f83c73ec9c8c865b7fb82e0aa4e1e4abef8c047655ae3d524b9",
-    "xi_l1_h6": "3072e2fcaa7324f999e3c947a73207b2fca6144c5ab9481208a861fceff502fb",
-    "xi_l1_h7": "7361b0fe048f9ccfb39c1aca5fd4e6d97bc2d44253c4c9c54f66ed66892dc478",
-    "xi_out": "d2fdeb6dc7a09ad83dfed6f168cad095245e5a11bccff174a72f8a3beeddcc7b"
+    "xi_cat_l1": 4049828237630480329,
+    "xi_l1_h0": 11811983480146886029,
+    "xi_l1_h1": 5919279452476056142,
+    "xi_l1_h2": 15112401279192520338,
+    "xi_l1_h3": 2197944047768940313,
+    "xi_l1_h4": 7669105058616324555,
+    "xi_l1_h5": 3956738589495077569,
+    "xi_l1_h6": 11972391293541844569,
+    "xi_l1_h7": 18100114112922880890,
+    "xi_out": 9282680648448228208
   },
-  "gkr": {
-    "rho_gkr": "6bf5ec42f89cc74ce3bf62ac36650181668fb7e4e8c65c7e0cafbb3f03674647"
-  },
-  "lasso": {
-    "eta_hidden_elu": "e6c884464359176389a996b27beccd184585d18e6823f75669159b6e3d98ca72",
-    "eta_hidden_exp": "7c0ad09e9d966dcf42f3d02e4505ec12a1dbb4cc5baba2c9c5867412f06726ef",
-    "eta_hidden_lrelu": "682e86360087ae2d76cb63940a2e9e35f1c9708ae67723be720eabbbf96b2fbf",
-    "eta_hidden_range": "6e37c298dcd3f2e1dfa966717e1ba93c6cbbee619bb44aa71901fb3abc5f2c41",
-    "eta_output_exp": "b97407af33b6f4f0fe7a2538ef1c443bdb39800c676b0f231c49b0245f059c8a",
-    "eta_output_lrelu": "4c2e05abb0b3b3d3c5ab4af2a2537645b2b08d937dfbe54b5cb362bf9be10ab6",
-    "eta_output_range": "e450e925941db6104671f95d7bdb73393f1a4093eefc7deea455fcdc7b1d15c1",
-    "eta_rescale_rounding_range": "6a9b95414f3493957f520fafc70949c8bb3495e3126b9480d21c4c7029a769a4"
-  },
-  "matmul": {
-    "rho_matmul": "a88deedd5932dcf9e324f5d6038b46af5e17dfbc35953629b3175d54ea4be664"
-  },
-  "open": {
-    "rho_combine": "0f23629fac0b2ce05d2ae273d0ce055a59541dcfbd2f2c37312971ab28d7e74c",
-    "rho_masked_open": "212fe337315e98614e118f367e5c8df14b6939762697491ffcff0505a76e0c94"
-  },
-  "psq": {
-    "lambda_psq_l1_h0": "ccc7cde711a30b5e21ef2b6a97c11233f60a2c23ead1a1e41ce76125047dc242",
-    "lambda_psq_l1_h1": "5bd037c87bcf3317268402c1bbdabb1172c3e1694e635beaec280b5b833a2053",
-    "lambda_psq_l1_h2": "5f4825bf27ec41f2d84818acefa1eba7881d1ccefbf8cb6bf44107f44a1e677b",
-    "lambda_psq_l1_h3": "0cdf30b92d5d1a0cd0723dd517f99d47a92e041350aa3dc6c378a8a8fc62694b",
-    "lambda_psq_l1_h4": "d72e2db601970ce988b7d8d493db8238f792f7df496f0d92cc08e1c4c14016f3",
-    "lambda_psq_l1_h5": "b84cbc5a9a13dfe85eb44205d37335225c83728610df8437669fdbdbd80f5023",
-    "lambda_psq_l1_h6": "65868cfcf6af740160b9443226e0a0079df9d2a0a36110887f286ff5d0c85754",
-    "lambda_psq_l1_h7": "81b7bc173881eb3295ca251a952ad600ed58adf58e1948de058dd15fc5732e3c",
-    "lambda_psq_out_h0": "793c60b428d150d853d03fc9095ea095bc70621e353e36c429c090ccac3830db"
-  },
-  "transcript": [
-    {
-      "challenge": "f2befc520da04b280efca016bbf5baf9efd71b12c6a97a5fc2c385821386be5d",
-      "label": "gat-zkgpt/meta"
-    },
-    {
-      "challenge": "9dd67441ae2dcf66a3fb23947cf4efdf4021f785c419cf1309cad8e90a2bacc4",
-      "label": "gat-zkgpt/model-commit"
-    },
-    {
-      "challenge": "400424e869fa75c293f970f79d1d44d95d2a3ccdd8b7b6319f660c8a802dffe8",
-      "label": "xi/layer/1/head/0"
-    },
-    {
-      "challenge": "794b4a096582593b25a2f8d0d3192b7edd5562a0561ea73c2b07807a64fe5fe6",
-      "label": "xi/layer/1/head/1"
-    },
-    {
-      "challenge": "726f50f846b66b417c4a5ada4cd3bcf1bf1a6de22fd03357f8a626d0b7cc1f02",
-      "label": "xi/layer/1/head/2"
-    },
-    {
-      "challenge": "f54f940599305f64124f8b1e887c68a62114801edb79152805131439b52d4f0f",
-      "label": "xi/layer/1/head/3"
-    },
-    {
-      "challenge": "ecc7da4b91ab0d9c7790347feb9d44c8f87687ce9c5b41fc24c856ec876e46ed",
-      "label": "xi/layer/1/head/4"
-    },
-    {
-      "challenge": "a9ba66d429315f83c73ec9c8c865b7fb82e0aa4e1e4abef8c047655ae3d524b9",
-      "label": "xi/layer/1/head/5"
-    },
-    {
-      "challenge": "3072e2fcaa7324f999e3c947a73207b2fca6144c5ab9481208a861fceff502fb",
-      "label": "xi/layer/1/head/6"
-    },
-    {
-      "challenge": "7361b0fe048f9ccfb39c1aca5fd4e6d97bc2d44253c4c9c54f66ed66892dc478",
-      "label": "xi/layer/1/head/7"
-    },
-    {
-      "challenge": "8f7d95c56520c1e50c66cc3c89a848bf4c3b3f176543f91ac31d4d0a5bed5245",
-      "label": "xi/cat/1"
-    },
-    {
-      "challenge": "d2fdeb6dc7a09ad83dfed6f168cad095245e5a11bccff174a72f8a3beeddcc7b",
-      "label": "xi/out"
-    },
-    {
-      "challenge": "94c6f31680c75389570832358d38e12282a440c2a77892afc74dc40fcfe33c48",
-      "label": "gat-zkgpt/input-commit/comp"
-    },
-    {
-      "challenge": "ccc7cde711a30b5e21ef2b6a97c11233f60a2c23ead1a1e41ce76125047dc242",
-      "label": "lambda/psq/layer/1/head/0"
-    },
-    {
-      "challenge": "5bd037c87bcf3317268402c1bbdabb1172c3e1694e635beaec280b5b833a2053",
-      "label": "lambda/psq/layer/1/head/1"
-    },
-    {
-      "challenge": "5f4825bf27ec41f2d84818acefa1eba7881d1ccefbf8cb6bf44107f44a1e677b",
-      "label": "lambda/psq/layer/1/head/2"
-    },
-    {
-      "challenge": "0cdf30b92d5d1a0cd0723dd517f99d47a92e041350aa3dc6c378a8a8fc62694b",
-      "label": "lambda/psq/layer/1/head/3"
-    },
-    {
-      "challenge": "d72e2db601970ce988b7d8d493db8238f792f7df496f0d92cc08e1c4c14016f3",
-      "label": "lambda/psq/layer/1/head/4"
-    },
-    {
-      "challenge": "b84cbc5a9a13dfe85eb44205d37335225c83728610df8437669fdbdbd80f5023",
-      "label": "lambda/psq/layer/1/head/5"
-    },
-    {
-      "challenge": "65868cfcf6af740160b9443226e0a0079df9d2a0a36110887f286ff5d0c85754",
-      "label": "lambda/psq/layer/1/head/6"
-    },
-    {
-      "challenge": "81b7bc173881eb3295ca251a952ad600ed58adf58e1948de058dd15fc5732e3c",
-      "label": "lambda/psq/layer/1/head/7"
-    },
-    {
-      "challenge": "793c60b428d150d853d03fc9095ea095bc70621e353e36c429c090ccac3830db",
-      "label": "lambda/psq/out/0"
-    },
-    {
-      "challenge": "9450fef7d450ad6cf319f101deca1367142f3b19be7b2caec477c69ebca83adb",
-      "label": "gat-zkgpt/input-commit/psq-qry"
-    },
-    {
-      "challenge": "6e37c298dcd3f2e1dfa966717e1ba93c6cbbee619bb44aa71901fb3abc5f2c41",
-      "label": "lasso/hidden_range"
-    },
-    {
-      "challenge": "e450e925941db6104671f95d7bdb73393f1a4093eefc7deea455fcdc7b1d15c1",
-      "label": "lasso/output_range"
-    },
-    {
-      "challenge": "682e86360087ae2d76cb63940a2e9e35f1c9708ae67723be720eabbbf96b2fbf",
-      "label": "lasso/hidden_lrelu"
-    },
-    {
-      "challenge": "4c2e05abb0b3b3d3c5ab4af2a2537645b2b08d937dfbe54b5cb362bf9be10ab6",
-      "label": "lasso/output_lrelu"
-    },
-    {
-      "challenge": "e6c884464359176389a996b27beccd184585d18e6823f75669159b6e3d98ca72",
-      "label": "lasso/hidden_elu"
-    },
-    {
-      "challenge": "7c0ad09e9d966dcf42f3d02e4505ec12a1dbb4cc5baba2c9c5867412f06726ef",
-      "label": "lasso/hidden_exp"
-    },
-    {
-      "challenge": "b97407af33b6f4f0fe7a2538ef1c443bdb39800c676b0f231c49b0245f059c8a",
-      "label": "lasso/output_exp"
-    },
-    {
-      "challenge": "6a9b95414f3493957f520fafc70949c8bb3495e3126b9480d21c4c7029a769a4",
-      "label": "lasso/rescale_rounding_range"
-    },
-    {
-      "challenge": "a88deedd5932dcf9e324f5d6038b46af5e17dfbc35953629b3175d54ea4be664",
-      "label": "matmul/sumcheck"
-    },
-    {
-      "challenge": "6bf5ec42f89cc74ce3bf62ac36650181668fb7e4e8c65c7e0cafbb3f03674647",
-      "label": "gkr/layered-sumcheck"
-    },
-    {
-      "challenge": "0f23629fac0b2ce05d2ae273d0ce055a59541dcfbd2f2c37312971ab28d7e74c",
-      "label": "open/combine"
-    },
-    {
-      "challenge": "212fe337315e98614e118f367e5c8df14b6939762697491ffcff0505a76e0c94",
-      "label": "open/masked"
-    }
-  ],
-  "transcript_domain_order": [
+  "domain_order": [
     "gat-zkgpt/meta",
     "gat-zkgpt/model-commit",
     "gat-zkgpt/static-table",
@@ -193,5 +20,223 @@
     "gat-zkgpt/matmul",
     "gat-zkgpt/gkr",
     "gat-zkgpt/open"
-  ]
+  ],
+  "gkr": {
+    "rho_gkr": 6299218953868580215
+  },
+  "lasso": {
+    "eta_hidden_elu": 1759607674109017720,
+    "eta_hidden_exp": 4017823016335834294,
+    "eta_hidden_lrelu": 14870304050760972747,
+    "eta_hidden_range": 17640847895879387988,
+    "eta_output_exp": 4791493534650198926,
+    "eta_output_lrelu": 2059566938724347873,
+    "eta_output_range": 231366715649932313,
+    "eta_rescale_rounding_range": 17773343680628075491
+  },
+  "log": [
+    {
+      "challenge_hex": "1abd86db7ff74e47442dcf833d454c1b2dd00b21742da2e74beac842529a6254",
+      "challenge_u64": 1926844492887313991,
+      "label": "gat-zkgpt/meta"
+    },
+    {
+      "challenge_hex": "c779027ed2873fcf78f8314abd932477e8c6673dcf10e85c39b8bc7f7c17402d",
+      "challenge_u64": 14373522429450862543,
+      "label": "gat-zkgpt/model-commit"
+    },
+    {
+      "challenge_hex": "73bdef15bc31d9de8e48370ddd258f49dbbcab37bc002277b69bd9b189e2b587",
+      "challenge_u64": 8340084961590761950,
+      "label": "gat-zkgpt/static-table"
+    },
+    {
+      "challenge_hex": "5ed6976964c1c48281e75522c9f2f90ad72a1b53ce2011b46cb562049ee16f18",
+      "challenge_u64": 6833815963499086978,
+      "label": "gat-zkgpt/input-commit/base"
+    },
+    {
+      "challenge_hex": "a3ec986482effd8d7a593ee4aec6fa5ca5060d0d81fb2b7a79b9b4bba70de276",
+      "challenge_u64": 11811983480146886029,
+      "label": "xi/layer/1/head/0"
+    },
+    {
+      "challenge_hex": "5225814ce31aa24eb4be46563b42296db5f15ef948e8ea7eec5057b27200417b",
+      "challenge_u64": 5919279452476056142,
+      "label": "xi/layer/1/head/1"
+    },
+    {
+      "challenge_hex": "d1ba08e4fd6dd69296c0eb0ae99dd1c2d3ae981e81d1fbac0cf29aa4206405da",
+      "challenge_u64": 15112401279192520338,
+      "label": "xi/layer/1/head/2"
+    },
+    {
+      "challenge_hex": "1e80aa775b73af196ff140b8b3318342f11e0adb374c388a0d289fa773a623d8",
+      "challenge_u64": 2197944047768940313,
+      "label": "xi/layer/1/head/3"
+    },
+    {
+      "challenge_hex": "6a6e226b0bfa31cbfc64cfec293060ef9b4ca5fd17210a1b23906110f4c0e00a",
+      "challenge_u64": 7669105058616324555,
+      "label": "xi/layer/1/head/4"
+    },
+    {
+      "challenge_hex": "36e928c88fef2ac1e2bf0877242ba92cac1a90c7fc36d77987be32a0f1e9cc6d",
+      "challenge_u64": 3956738589495077569,
+      "label": "xi/layer/1/head/5"
+    },
+    {
+      "challenge_hex": "a6267a72f38a86590868564dfddadfdf58b969e188b527e9e03769f08c1793a0",
+      "challenge_u64": 11972391293541844569,
+      "label": "xi/layer/1/head/6"
+    },
+    {
+      "challenge_hex": "fb3085e31ecd8b7ad1b125f7328d9f14819ef8bdd4e83e6c65497a49aa9ed532",
+      "challenge_u64": 18100114112922880890,
+      "label": "xi/layer/1/head/7"
+    },
+    {
+      "challenge_hex": "3833e153414f9fc918709bbfe77821b78961af29388747c2acc2407ede0af3b2",
+      "challenge_u64": 4049828237630480329,
+      "label": "xi/cat/1"
+    },
+    {
+      "challenge_hex": "80d2b4de36263b70a28e82efdb02e5c180d600205c4aa5faddfa330a948756d2",
+      "challenge_u64": 9282680648448228208,
+      "label": "xi/out"
+    },
+    {
+      "challenge_hex": "9039836f3adec10b8cc2f2ba2009428d44517a96bb0c790707236d7a503dd120",
+      "challenge_u64": 10392482128886415627,
+      "label": "gat-zkgpt/input-commit/comp"
+    },
+    {
+      "challenge_hex": "63c99dbf6a7ad42bb7a89e92ed5a9227595bc6372a242419054a1d0837457ae0",
+      "challenge_u64": 7190451725524456491,
+      "label": "lambda/psq/layer/1/head/0"
+    },
+    {
+      "challenge_hex": "ecc9b066afdf9c93184342331b18a4e0bc07a9c7968016b7e85a29a6b7798920",
+      "challenge_u64": 17062362618353654931,
+      "label": "lambda/psq/layer/1/head/1"
+    },
+    {
+      "challenge_hex": "302bcad49c8109ae7529f294f503999c2547f6caccddaf716389cf76d1dcf2b7",
+      "challenge_u64": 3471090952326678958,
+      "label": "lambda/psq/layer/1/head/2"
+    },
+    {
+      "challenge_hex": "21d1bc7392fdda6ccafabae987f08b46cacbd7cd95df58a84431c4f5407b20f3",
+      "challenge_u64": 2436936077957519980,
+      "label": "lambda/psq/layer/1/head/3"
+    },
+    {
+      "challenge_hex": "00cf490c08c07a99902ba1b8bf1f5a9727439cca37bff5ad9e1c51745b2b649b",
+      "challenge_u64": 58345636214373017,
+      "label": "lambda/psq/layer/1/head/4"
+    },
+    {
+      "challenge_hex": "92f05013ecaaa52d63d3d2fb66faed8a4fd68edb13ffdf7abbfd7ac3ac577cf3",
+      "challenge_u64": 10588050770453243181,
+      "label": "lambda/psq/layer/1/head/5"
+    },
+    {
+      "challenge_hex": "bc4b21dbcb5a972814478fcd8c0f6dab458b6e8398ecbf3d170e9b8cfa440b1e",
+      "challenge_u64": 13567975530277017384,
+      "label": "lambda/psq/layer/1/head/6"
+    },
+    {
+      "challenge_hex": "e9f9fb7cbe5daa1d4293e30aeecb2cb7f709d036466c98fadacf5e8b93f42e49",
+      "challenge_u64": 16859783193226488349,
+      "label": "lambda/psq/layer/1/head/7"
+    },
+    {
+      "challenge_hex": "c6465c1d33b382fe5ee9e4b45ff3045d1d29db7b5659035be319d2505623ffec",
+      "challenge_u64": 14287208148370686718,
+      "label": "lambda/psq/out/0"
+    },
+    {
+      "challenge_hex": "a1f7180af32ead395bc6c7e07c5ee025ac583f93578988b5c3d1912917ea7471",
+      "challenge_u64": 11670823394662591801,
+      "label": "gat-zkgpt/input-commit/psq-qry"
+    },
+    {
+      "challenge_hex": "f4d0e1b232968b542d1b07617c950a794f772457df06ed1a15854fda957ff85d",
+      "challenge_u64": 17640847895879387988,
+      "label": "lasso/hidden_range"
+    },
+    {
+      "challenge_hex": "0335facd5329bc190cd2ca46d41a85b8ddc99b888081e1905e6054579250dbb7",
+      "challenge_u64": 231366715649932313,
+      "label": "lasso/output_range"
+    },
+    {
+      "challenge_hex": "ce5deebf77a8f9cb82738a8083718264aa2b48adf85f949c9ccdb4c5ae3bf2f1",
+      "challenge_u64": 14870304050760972747,
+      "label": "lasso/hidden_lrelu"
+    },
+    {
+      "challenge_hex": "1c950d37fdcdafe1843f11ab837293e2532f1da84536e645de91504b6e7a4d01",
+      "challenge_u64": 2059566938724347873,
+      "label": "lasso/output_lrelu"
+    },
+    {
+      "challenge_hex": "186b61db5751be78f4ff0f924273ec58952393ddff34b9d845bd6add000562a1",
+      "challenge_u64": 1759607674109017720,
+      "label": "lasso/hidden_elu"
+    },
+    {
+      "challenge_hex": "37c22cbefb15fcb65dcf595a38d2bbe4bade9902a944627ec8e647d947d02b40",
+      "challenge_u64": 4017823016335834294,
+      "label": "lasso/hidden_exp"
+    },
+    {
+      "challenge_hex": "427ecdfbbc67eb8ef31f926d2ab776fa253e83300e9204097c171dbeeb22be60",
+      "challenge_u64": 4791493534650198926,
+      "label": "lasso/output_exp"
+    },
+    {
+      "challenge_hex": "f6a799e90ac52be3ab1c91ae007324ca8ca5a6182399c48f4743b42a7296838f",
+      "challenge_u64": 17773343680628075491,
+      "label": "lasso/rescale_rounding_range"
+    },
+    {
+      "challenge_hex": "d586318d636bda8e895aa2749b61850cf03dcaefd834d78f6084071ffeaa4408",
+      "challenge_u64": 15386039660286040718,
+      "label": "matmul/sumcheck"
+    },
+    {
+      "challenge_hex": "576b52438bbe9577fedc2e6d9a2c04027c40c8f687ab36d80bf93eb7fea3711e",
+      "challenge_u64": 6299218953868580215,
+      "label": "gkr/layered-sumcheck"
+    },
+    {
+      "challenge_hex": "60499a0f72e638daf4a9a4324cf7f9903019c675636443686e915de4a7ef57e8",
+      "challenge_u64": 6938246092083837146,
+      "label": "open/combine"
+    },
+    {
+      "challenge_hex": "3e9a31a23d7eb40bf88a8fd62b01f42b1baeb51a9681da6d3346ca95c6b2e4ff",
+      "challenge_u64": 4510972549651149835,
+      "label": "open/masked"
+    }
+  ],
+  "matmul": {
+    "rho_matmul": 15386039660286040718
+  },
+  "open": {
+    "rho_combine": 6938246092083837146,
+    "rho_masked_open": 4510972549651149835
+  },
+  "psq": {
+    "lambda_psq_l1_h0": 7190451725524456491,
+    "lambda_psq_l1_h1": 17062362618353654931,
+    "lambda_psq_l1_h2": 3471090952326678958,
+    "lambda_psq_l1_h3": 2436936077957519980,
+    "lambda_psq_l1_h4": 58345636214373017,
+    "lambda_psq_l1_h5": 10588050770453243181,
+    "lambda_psq_l1_h6": 13567975530277017384,
+    "lambda_psq_l1_h7": 16859783193226488349,
+    "lambda_psq_out_h0": 14287208148370686718
+  }
 }

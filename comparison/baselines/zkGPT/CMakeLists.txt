@@ -16,10 +16,20 @@ add_custom_target(
     COMMENT "Checking GAT-ZKML-zkGPT experiment entrypoint"
 )
 
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/3rd/mcl/CMakeLists.txt")
-    link_directories(3rd/mcl)
-    add_subdirectory(src)
-    add_subdirectory(3rd/mcl)
-else()
-    message(WARNING "3rd/mcl is not populated; skipping legacy LLM demo target. GAT-ZKML-zkGPT experiment scripts remain available.")
+add_custom_target(
+    zkgpt_cuda_backend
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/build_cuda_backend.sh
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMENT "Building zkGPT CUDA backend helper"
+)
+
+option(ZKGPT_BUILD_LEGACY_LLM_DEMO "Build the original zkGPT LLM demo against 3rd/mcl" OFF)
+if(ZKGPT_BUILD_LEGACY_LLM_DEMO)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/3rd/mcl/CMakeLists.txt")
+        link_directories(3rd/mcl)
+        add_subdirectory(3rd/mcl)
+        add_subdirectory(src)
+    else()
+        message(FATAL_ERROR "ZKGPT_BUILD_LEGACY_LLM_DEMO=ON requires populated 3rd/mcl")
+    endif()
 endif()

@@ -1,190 +1,17 @@
 {
   "compression": {
-    "xi_cat_l1": "ab51180be4eb061687e091770bfb43585e4643347823842a5b4a2152ea3bffbb",
-    "xi_l1_h0": "d6f158970f3044e617290e3a40713ec879af946c0e61c830e0d512b8383d8d8c",
-    "xi_l1_h1": "a0bc487cecbc73e98591f934cd81dc633d83c2ecaa84d1b7b2adb55815df7764",
-    "xi_l1_h2": "75eabc2aeb928019208ed72f141a2c3f3f698cd48e48025dd9fd09cf3da55ef7",
-    "xi_l1_h3": "7924752df22195d21d16f728ebcfcca482bf959a624b7fc9571073c1f55922a5",
-    "xi_l1_h4": "41444287dbd0c2e08a1658f11eb1a9563e45b54069ba360132aacb70dcd1f279",
-    "xi_l1_h5": "9bd82c9105ac7ae2e27b39213d4e3369bc7f5e84df1a58f8a3a0b8f08b9d4ee6",
-    "xi_l1_h6": "b33b33570b325c04e65797dc346e7efcca4c10e2deb2573f415f44305650f378",
-    "xi_l1_h7": "93fe98674dc1ffd90caf320306d77695553d5154a468cbf6bd5dc8aa8739e6ae",
-    "xi_out": "7dabe654cfa2255b11e67b974013f28ea420c73ca86f3411ed036665d333f07b"
+    "xi_cat_l1": 16358510985520312516,
+    "xi_l1_h0": 5662557610592069520,
+    "xi_l1_h1": 9056226237884363587,
+    "xi_l1_h2": 9112142415536219110,
+    "xi_l1_h3": 14808494888748840125,
+    "xi_l1_h4": 16600601019079081890,
+    "xi_l1_h5": 17269249330110339518,
+    "xi_l1_h6": 10142958297862790433,
+    "xi_l1_h7": 16284128099498287269,
+    "xi_out": 14603400827998632231
   },
-  "gkr": {
-    "rho_gkr": "685e900fdcc24d9a3dd15b01da46f07bb64aa87b16e9a23bb277b41acca5a122"
-  },
-  "lasso": {
-    "eta_hidden_elu": "8f2117bcf2d39238d7872ac99716205fbf4003d09d7ab74eeda78f2f532acfe5",
-    "eta_hidden_exp": "68124d54975f3b3172db26d9791c7507639aa6b89c0dfff6330120912e4bac47",
-    "eta_hidden_lrelu": "d92a95932f2c7b56ba9521c6a3b9b266ce5ff81cc32db6e31ed1e8409f0c9d64",
-    "eta_hidden_range": "90d116c0cf707433a7b224e26434fdbbce3fc4b58188d4437bf03c3d3591acc8",
-    "eta_output_exp": "e557abb5470c2d3768606d8f6305353636dc33bd1d3364fb61f0fe8cc422447b",
-    "eta_output_lrelu": "0b771baa45f07c82645fc057ed547179bfadd215763436748f82ac4f8e0c8331",
-    "eta_output_range": "b0db3bb219f54c591eea34cf663ec05565a584c896db68017ea8ff2bcddcb428",
-    "eta_rescale_rounding_range": "b2b6e99d3ab070371e1e9c0909da533561193266b2ff487aca76d1f0d7c55c90"
-  },
-  "matmul": {
-    "rho_matmul": "6f957c3ea303a0feaba803fc7ed3bb501c7f1c461f1dd6de6b3ac09bd243c594"
-  },
-  "open": {
-    "rho_combine": "d0ca283134fe4f84c7603649f21dc5c8636acfb786f3e3185c23c4ca4a29e83c",
-    "rho_masked_open": "fb8ef5c21635dee449d3879de688d574587d058d7a6e89a41e969584cc802959"
-  },
-  "psq": {
-    "lambda_psq_l1_h0": "f4210f513310a691999946e58d440f7688b3180b99c06d8379f0940d6ad69b8e",
-    "lambda_psq_l1_h1": "8a97a63b025f49293edf1249af5e6bd32916ee0184e6b95f1f6818ea49cb374f",
-    "lambda_psq_l1_h2": "0dce09b7a7b3f17b4f92022c35392f088a6a9b7670d46db580665efbb7253195",
-    "lambda_psq_l1_h3": "3a42582827fbb8c85c01ae99f224cb3630842bab4fcf24e40cd6f5440773920e",
-    "lambda_psq_l1_h4": "8b920536c9bb773db28d48f12bfd33b3eece402bc7e300212aff538c396c75ed",
-    "lambda_psq_l1_h5": "79e2205b87c13098f55b47e30ab92587c9502f76c8dd4fdee7355d5d49c89a36",
-    "lambda_psq_l1_h6": "c193dfbb9d3729ed7d0ee20fb3d3f19edde8706a4a94ab727e1027045a0e8555",
-    "lambda_psq_l1_h7": "cd64fa05dadd106bff16d6ce7d8ebd66437b1412caa111e0d5bf2549e955932b",
-    "lambda_psq_out_h0": "b19bb8c22d477a75a910066ea0cbf1176dcc25159407e93894d30be51fe947f0"
-  },
-  "transcript": [
-    {
-      "challenge": "7311dac5a1d0468361f3a8a6a38d22e504439d44f1b47092f2dafcb92a67a5e0",
-      "label": "gat-zkgpt/meta"
-    },
-    {
-      "challenge": "0b85ecb433961b10aa3416382b2b020f0162fef5077e1e4b06ca61bb491be152",
-      "label": "gat-zkgpt/model-commit"
-    },
-    {
-      "challenge": "d6f158970f3044e617290e3a40713ec879af946c0e61c830e0d512b8383d8d8c",
-      "label": "xi/layer/1/head/0"
-    },
-    {
-      "challenge": "a0bc487cecbc73e98591f934cd81dc633d83c2ecaa84d1b7b2adb55815df7764",
-      "label": "xi/layer/1/head/1"
-    },
-    {
-      "challenge": "75eabc2aeb928019208ed72f141a2c3f3f698cd48e48025dd9fd09cf3da55ef7",
-      "label": "xi/layer/1/head/2"
-    },
-    {
-      "challenge": "7924752df22195d21d16f728ebcfcca482bf959a624b7fc9571073c1f55922a5",
-      "label": "xi/layer/1/head/3"
-    },
-    {
-      "challenge": "41444287dbd0c2e08a1658f11eb1a9563e45b54069ba360132aacb70dcd1f279",
-      "label": "xi/layer/1/head/4"
-    },
-    {
-      "challenge": "9bd82c9105ac7ae2e27b39213d4e3369bc7f5e84df1a58f8a3a0b8f08b9d4ee6",
-      "label": "xi/layer/1/head/5"
-    },
-    {
-      "challenge": "b33b33570b325c04e65797dc346e7efcca4c10e2deb2573f415f44305650f378",
-      "label": "xi/layer/1/head/6"
-    },
-    {
-      "challenge": "93fe98674dc1ffd90caf320306d77695553d5154a468cbf6bd5dc8aa8739e6ae",
-      "label": "xi/layer/1/head/7"
-    },
-    {
-      "challenge": "ab51180be4eb061687e091770bfb43585e4643347823842a5b4a2152ea3bffbb",
-      "label": "xi/cat/1"
-    },
-    {
-      "challenge": "7dabe654cfa2255b11e67b974013f28ea420c73ca86f3411ed036665d333f07b",
-      "label": "xi/out"
-    },
-    {
-      "challenge": "fff8870698618a0301a19a4819147fc9dcebdc070cbe658e1093604bc0f215a8",
-      "label": "gat-zkgpt/input-commit/comp"
-    },
-    {
-      "challenge": "f4210f513310a691999946e58d440f7688b3180b99c06d8379f0940d6ad69b8e",
-      "label": "lambda/psq/layer/1/head/0"
-    },
-    {
-      "challenge": "8a97a63b025f49293edf1249af5e6bd32916ee0184e6b95f1f6818ea49cb374f",
-      "label": "lambda/psq/layer/1/head/1"
-    },
-    {
-      "challenge": "0dce09b7a7b3f17b4f92022c35392f088a6a9b7670d46db580665efbb7253195",
-      "label": "lambda/psq/layer/1/head/2"
-    },
-    {
-      "challenge": "3a42582827fbb8c85c01ae99f224cb3630842bab4fcf24e40cd6f5440773920e",
-      "label": "lambda/psq/layer/1/head/3"
-    },
-    {
-      "challenge": "8b920536c9bb773db28d48f12bfd33b3eece402bc7e300212aff538c396c75ed",
-      "label": "lambda/psq/layer/1/head/4"
-    },
-    {
-      "challenge": "79e2205b87c13098f55b47e30ab92587c9502f76c8dd4fdee7355d5d49c89a36",
-      "label": "lambda/psq/layer/1/head/5"
-    },
-    {
-      "challenge": "c193dfbb9d3729ed7d0ee20fb3d3f19edde8706a4a94ab727e1027045a0e8555",
-      "label": "lambda/psq/layer/1/head/6"
-    },
-    {
-      "challenge": "cd64fa05dadd106bff16d6ce7d8ebd66437b1412caa111e0d5bf2549e955932b",
-      "label": "lambda/psq/layer/1/head/7"
-    },
-    {
-      "challenge": "b19bb8c22d477a75a910066ea0cbf1176dcc25159407e93894d30be51fe947f0",
-      "label": "lambda/psq/out/0"
-    },
-    {
-      "challenge": "a93da38f37cebc80ec0f171ca1f89e9639cbd3d027b4712efb33fd3380db8630",
-      "label": "gat-zkgpt/input-commit/psq-qry"
-    },
-    {
-      "challenge": "90d116c0cf707433a7b224e26434fdbbce3fc4b58188d4437bf03c3d3591acc8",
-      "label": "lasso/hidden_range"
-    },
-    {
-      "challenge": "b0db3bb219f54c591eea34cf663ec05565a584c896db68017ea8ff2bcddcb428",
-      "label": "lasso/output_range"
-    },
-    {
-      "challenge": "d92a95932f2c7b56ba9521c6a3b9b266ce5ff81cc32db6e31ed1e8409f0c9d64",
-      "label": "lasso/hidden_lrelu"
-    },
-    {
-      "challenge": "0b771baa45f07c82645fc057ed547179bfadd215763436748f82ac4f8e0c8331",
-      "label": "lasso/output_lrelu"
-    },
-    {
-      "challenge": "8f2117bcf2d39238d7872ac99716205fbf4003d09d7ab74eeda78f2f532acfe5",
-      "label": "lasso/hidden_elu"
-    },
-    {
-      "challenge": "68124d54975f3b3172db26d9791c7507639aa6b89c0dfff6330120912e4bac47",
-      "label": "lasso/hidden_exp"
-    },
-    {
-      "challenge": "e557abb5470c2d3768606d8f6305353636dc33bd1d3364fb61f0fe8cc422447b",
-      "label": "lasso/output_exp"
-    },
-    {
-      "challenge": "b2b6e99d3ab070371e1e9c0909da533561193266b2ff487aca76d1f0d7c55c90",
-      "label": "lasso/rescale_rounding_range"
-    },
-    {
-      "challenge": "6f957c3ea303a0feaba803fc7ed3bb501c7f1c461f1dd6de6b3ac09bd243c594",
-      "label": "matmul/sumcheck"
-    },
-    {
-      "challenge": "685e900fdcc24d9a3dd15b01da46f07bb64aa87b16e9a23bb277b41acca5a122",
-      "label": "gkr/layered-sumcheck"
-    },
-    {
-      "challenge": "d0ca283134fe4f84c7603649f21dc5c8636acfb786f3e3185c23c4ca4a29e83c",
-      "label": "open/combine"
-    },
-    {
-      "challenge": "fb8ef5c21635dee449d3879de688d574587d058d7a6e89a41e969584cc802959",
-      "label": "open/masked"
-    }
-  ],
-  "transcript_domain_order": [
+  "domain_order": [
     "gat-zkgpt/meta",
     "gat-zkgpt/model-commit",
     "gat-zkgpt/static-table",
@@ -193,5 +20,223 @@
     "gat-zkgpt/matmul",
     "gat-zkgpt/gkr",
     "gat-zkgpt/open"
-  ]
+  ],
+  "gkr": {
+    "rho_gkr": 657588198649378665
+  },
+  "lasso": {
+    "eta_hidden_elu": 2128987387839537201,
+    "eta_hidden_exp": 420444203811273890,
+    "eta_hidden_lrelu": 4885445026329444458,
+    "eta_hidden_range": 866704877075487849,
+    "eta_output_exp": 14132009521794748983,
+    "eta_output_lrelu": 15775799494356101040,
+    "eta_output_range": 4550768613094466892,
+    "eta_rescale_rounding_range": 4013154864489913530
+  },
+  "log": [
+    {
+      "challenge_hex": "0fb9eeaa1646bb97a773c94d72b0cbfa16d3ee807cbbe08f77bd9945c31e37ed",
+      "challenge_u64": 1133199195545975703,
+      "label": "gat-zkgpt/meta"
+    },
+    {
+      "challenge_hex": "6352896c8f55765286f9b03d4b4ab1d1b3cd65ff802800654c57e6d1fdd7bc02",
+      "challenge_u64": 7156933857199355474,
+      "label": "gat-zkgpt/model-commit"
+    },
+    {
+      "challenge_hex": "ebe7785cdf612a6e4440ed003c0299ab8f31cc1f18bcfcc6b11c521a86221eb2",
+      "challenge_u64": 16998687658813237870,
+      "label": "gat-zkgpt/static-table"
+    },
+    {
+      "challenge_hex": "03fcc650def2d71f7354ab97fbac78a5e6c3ba78247ca3f586dcebc16377ff53",
+      "challenge_u64": 287322526885009183,
+      "label": "gat-zkgpt/input-commit/base"
+    },
+    {
+      "challenge_hex": "4e95722533866790aeccd8aa6edb10164cf1fb37164cc62e2bb26355ddd64d79",
+      "challenge_u64": 5662557610592069520,
+      "label": "xi/layer/1/head/0"
+    },
+    {
+      "challenge_hex": "7dae2dc80aab7343e240c9275ae83870e1c3ab4239ddf1db135647332b003b7f",
+      "challenge_u64": 9056226237884363587,
+      "label": "xi/layer/1/head/1"
+    },
+    {
+      "challenge_hex": "7e74d53facce63e6f107a67cd292c9a1cd45b22dc3b53472fc676722f58ead4a",
+      "challenge_u64": 9112142415536219110,
+      "label": "xi/layer/1/head/2"
+    },
+    {
+      "challenge_hex": "cd8257a47e0ff4bd09cbcdad9ea4199fc9947c5d219de16f895869e7f42c4366",
+      "challenge_u64": 14808494888748840125,
+      "label": "xi/layer/1/head/3"
+    },
+    {
+      "challenge_hex": "e6612eac50323fa28fc16d9d19b0352d0568d1b149c6ff5a42258a65a411c34f",
+      "challenge_u64": 16600601019079081890,
+      "label": "xi/layer/1/head/4"
+    },
+    {
+      "challenge_hex": "efa8b2c4f2e119be1b6ab9ed0efd206d6ba630d2139cec4cd7cf9bd46b081394",
+      "challenge_u64": 17269249330110339518,
+      "label": "xi/layer/1/head/5"
+    },
+    {
+      "challenge_hex": "8cc306d50bb65d212ae832ade68c664281b9148b275a7e4fe820aa5284367093",
+      "challenge_u64": 10142958297862790433,
+      "label": "xi/layer/1/head/6"
+    },
+    {
+      "challenge_hex": "e1fcd83abf8d60a56043a4d090bf8ae15da93c91ff3e8a05b07122eb011cd207",
+      "challenge_u64": 16284128099498287269,
+      "label": "xi/layer/1/head/7"
+    },
+    {
+      "challenge_hex": "e3051b11fa4370c42a3f3dc324c8c2a3c64b029a28ccd981e1643b115883702e",
+      "challenge_u64": 16358510985520312516,
+      "label": "xi/cat/1"
+    },
+    {
+      "challenge_hex": "caa9b3ae5180f9277542e51e63311b6e185009b781f4994ad692008c2054ad7d",
+      "challenge_u64": 14603400827998632231,
+      "label": "xi/out"
+    },
+    {
+      "challenge_hex": "1a94af216ad7f220f6973571fc91120137042fe0591e4c18b6d337bd1c909583",
+      "challenge_u64": 1915348299600622112,
+      "label": "gat-zkgpt/input-commit/comp"
+    },
+    {
+      "challenge_hex": "875e37e0066c963881e5d974c61993509bcaf615551a21db7104e966649a3733",
+      "challenge_u64": 9754295278251054648,
+      "label": "lambda/psq/layer/1/head/0"
+    },
+    {
+      "challenge_hex": "bbe819d10b73d2ee1582ee3876478b79a90fbe5e208c38a6c681c5521d29f968",
+      "challenge_u64": 13540100665320395502,
+      "label": "lambda/psq/layer/1/head/1"
+    },
+    {
+      "challenge_hex": "31da4b57417f5bf6e3a6c462b38bb60dcb035d15a2586297a7c4a6622c0f19cc",
+      "challenge_u64": 3592266490914495478,
+      "label": "lambda/psq/layer/1/head/2"
+    },
+    {
+      "challenge_hex": "edad4f2fac178e7fc48dfc7d9959b19510141916abfbcd462eea40aff21cd008",
+      "challenge_u64": 17126432024129146495,
+      "label": "lambda/psq/layer/1/head/3"
+    },
+    {
+      "challenge_hex": "fd334e66054ef6ca5a2507358f90161a43f78587d874e1f276cdbe1b2c56f831",
+      "challenge_u64": 18245012715490703050,
+      "label": "lambda/psq/layer/1/head/4"
+    },
+    {
+      "challenge_hex": "3352118a733df1e5fdbb7564a444a9967473a33fdcb585180d197409342d1ab8",
+      "challenge_u64": 3698037530361197029,
+      "label": "lambda/psq/layer/1/head/5"
+    },
+    {
+      "challenge_hex": "1ca88a18469b8b4b27f18291bcba707473be22fd27c20b52c00dd089ec9b3077",
+      "challenge_u64": 2065052266017819467,
+      "label": "lambda/psq/layer/1/head/6"
+    },
+    {
+      "challenge_hex": "97e826157d7fa17fadcc88721acf15b83de1b66b82a6f4fe1df0fe3b89ae9ebb",
+      "challenge_u64": 10946040768065675647,
+      "label": "lambda/psq/layer/1/head/7"
+    },
+    {
+      "challenge_hex": "0ec05c6e38071a86b129935f23f3964e1d63b456203d8544c66accaad1ca54e0",
+      "challenge_u64": 1062951140515584646,
+      "label": "lambda/psq/out/0"
+    },
+    {
+      "challenge_hex": "0bc4566c03b3fa4269e121bcc9fd7becaae68323979563bf14e544d36a505618",
+      "challenge_u64": 847897651771079234,
+      "label": "gat-zkgpt/input-commit/psq-qry"
+    },
+    {
+      "challenge_hex": "0c07277e632edc69790dccf6267c9efba5ea26f406fee976a7886f074cd79ab0",
+      "challenge_u64": 866704877075487849,
+      "label": "lasso/hidden_range"
+    },
+    {
+      "challenge_hex": "3f2793f14e7e254c503ec41e18f601f8ddb543d2197648ac8c65ef1ffd442ba8",
+      "challenge_u64": 4550768613094466892,
+      "label": "lasso/output_range"
+    },
+    {
+      "challenge_hex": "43cc965e0410c06adeb28a38c3305d9c03c3803fd11497f4a83f735fcd3f6e56",
+      "challenge_u64": 4885445026329444458,
+      "label": "lasso/hidden_lrelu"
+    },
+    {
+      "challenge_hex": "daeee60e6ce1e7b00e356ead4dd51170951600e9f542d477509bab2e25276901",
+      "challenge_u64": 15775799494356101040,
+      "label": "lasso/output_lrelu"
+    },
+    {
+      "challenge_hex": "1d8baebfd776603137f0a19fdec2ed99b618a060b26adeb85c349d639a770605",
+      "challenge_u64": 2128987387839537201,
+      "label": "lasso/hidden_elu"
+    },
+    {
+      "challenge_hex": "05d5b7c6980afca24397bd8f6aad753af1a82be1424decbb2a4753171ea3e938",
+      "challenge_u64": 420444203811273890,
+      "label": "lasso/hidden_exp"
+    },
+    {
+      "challenge_hex": "c41efbc91503923700de29f0aaaf1c9279b979ebc43d771d163a3b3119b17cf9",
+      "challenge_u64": 14132009521794748983,
+      "label": "lasso/output_exp"
+    },
+    {
+      "challenge_hex": "37b197162e8d5cba00ae364b25c4227348ab7ad8e515d426ef7edb0da6dfd92d",
+      "challenge_u64": 4013154864489913530,
+      "label": "lasso/rescale_rounding_range"
+    },
+    {
+      "challenge_hex": "2d34ebf27e56dbadc5338f818e43046985607b820d73e8f4593f1eeb9cd9081a",
+      "challenge_u64": 3257487857229945773,
+      "label": "matmul/sumcheck"
+    },
+    {
+      "challenge_hex": "092038fb8cfc3769ee7a36bf75deaadd8a698105927409230ec195152da097c8",
+      "challenge_u64": 657588198649378665,
+      "label": "gkr/layered-sumcheck"
+    },
+    {
+      "challenge_hex": "bac2706c87349b1382e40fa8f497e265f50aecc108564ecc60fa474e20043e19",
+      "challenge_u64": 13457442247963613971,
+      "label": "open/combine"
+    },
+    {
+      "challenge_hex": "025e15281a9b42b746705d9535fc16a9aac9287dfe409d10531eee64091afa51",
+      "challenge_u64": 170597097875915447,
+      "label": "open/masked"
+    }
+  ],
+  "matmul": {
+    "rho_matmul": 3257487857229945773
+  },
+  "open": {
+    "rho_combine": 13457442247963613971,
+    "rho_masked_open": 170597097875915447
+  },
+  "psq": {
+    "lambda_psq_l1_h0": 9754295278251054648,
+    "lambda_psq_l1_h1": 13540100665320395502,
+    "lambda_psq_l1_h2": 3592266490914495478,
+    "lambda_psq_l1_h3": 17126432024129146495,
+    "lambda_psq_l1_h4": 18245012715490703050,
+    "lambda_psq_l1_h5": 3698037530361197029,
+    "lambda_psq_l1_h6": 2065052266017819467,
+    "lambda_psq_l1_h7": 10946040768065675647,
+    "lambda_psq_out_h0": 1062951140515584646
+  }
 }

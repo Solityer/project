@@ -1,0 +1,24 @@
+{
+  "forward_metric_keys": [
+    "hidden.l1.concat_ms",
+    "hidden.l1.h0.activation_ms",
+    "hidden.l1.h0.attention_ms",
+    "hidden.l1.h0.projection_ms",
+    "output.average_ms",
+    "output.h0.activation_ms",
+    "output.h0.attention_ms",
+    "output.h0.projection_ms"
+  ],
+  "output_digest": "2fa0305d2302c828da361c576f012d21a600e34f98ddcd5f9b80694eae463aea",
+  "public_input_digest": "8c9758baf65d8b9bdac05be8d0084adec41f41e6911a0bc804d126c616c4e931",
+  "segment_payload_digests": {
+    "com_T_H": "c422340aaed7f87339645c04ba5269f34627460ef2b3808ed87344270ab887f7",
+    "com_W": "f4e6c46635617bbe67d8a053fd496dcae57d8e1da9dc5d0ccc85e9b6775e6cd9",
+    "com_base": "b6a4c5b4eaa8a891948a3e0889d724b1d9f124bbfe3ef8551747c4638bcc7186",
+    "com_comp": "66ede7f79a6f126cf8d006198091ccaa837eea1488c0d33101f1235787b46dbf",
+    "com_psq": "809e0669f4ff276245dd87bed359c0fcf04bb206cf64869eaf625d6bef6085a7",
+    "com_qry": "4c5cc9e672415d1e970bbc5549d2e9271e834d5bb600b27f1fe63573dd968401"
+  },
+  "storage_policy": "not serialized; committed by segment digests and verified during local replay",
+  "witness_generated": true
+}

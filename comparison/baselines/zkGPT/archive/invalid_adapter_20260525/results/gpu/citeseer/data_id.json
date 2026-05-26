@@ -1,0 +1,26 @@
+{
+  "cache_dir": "/home/pzh/project/data/cache/citeseer",
+  "files": {
+    "edges.txt": {
+      "path": "/home/pzh/project/data/cache/citeseer/edges.txt",
+      "sha256": "7a22a7fa347c89d013a87f5e475be356ad48714987afab990f0ec64978b9d0bd",
+      "size_bytes": 88206
+    },
+    "features.txt": {
+      "path": "/home/pzh/project/data/cache/citeseer/features.txt",
+      "sha256": "c2773bda52e719c5c2c5f007a152ee2a356106440cdf670af7752ab75b300daa",
+      "size_bytes": 700967
+    },
+    "labels.txt": {
+      "path": "/home/pzh/project/data/cache/citeseer/labels.txt",
+      "sha256": "bb47cb2abf66935d45a9e09ff2cde1874560d24e791838b01edd44a2076419eb",
+      "size_bytes": 6654
+    },
+    "meta.cfg": {
+      "path": "/home/pzh/project/data/cache/citeseer/meta.cfg",
+      "sha256": "378ac8a68837069bc02bcd06317f16af9c9101f7f52f7b2684dfc846ceab1c78",
+      "size_bytes": 87
+    }
+  },
+  "id": "ddfc8dfd2c375c51105ef4616ba6104725bbc22f94cdf5675b7deb40ac15ae0d"
+}

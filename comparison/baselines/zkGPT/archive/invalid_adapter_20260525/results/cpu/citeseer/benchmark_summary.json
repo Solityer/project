@@ -1,0 +1,10 @@
+{
+  "artifact_path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/citeseer",
+  "backend": "cpu",
+  "commitment_time_ms": 450.838,
+  "dataset": "citeseer",
+  "proof_size_bytes": 90781,
+  "prove_time_ms": 1263.176,
+  "status": "VERIFY_OK",
+  "verify_time_ms": 153.61
+}

@@ -1,0 +1,10 @@
+{
+  "backend": "gpu",
+  "bytes_processed": 139,
+  "cuda_kernel_executed": true,
+  "device_count": 1,
+  "device_name": "NVIDIA GB10",
+  "gpu_digest_hex": "948e46402eb72d8f",
+  "gpu_runtime_present": true,
+  "helper_stdout": "cuda_digest_ok device=\"NVIDIA GB10\" bytes=139 digest=948e46402eb72d8f"
+}

@@ -1,0 +1,158 @@
+{
+  "compression": {
+    "xi_cat_l1": 15128837449217011939,
+    "xi_l1_h0": 5866696673163779533,
+    "xi_out": 9894471783057869771
+  },
+  "domain_order": [
+    "gat-zkgpt/meta",
+    "gat-zkgpt/model-commit",
+    "gat-zkgpt/static-table",
+    "gat-zkgpt/input-commit",
+    "gat-zkgpt/lasso",
+    "gat-zkgpt/matmul",
+    "gat-zkgpt/gkr",
+    "gat-zkgpt/open"
+  ],
+  "gkr": {
+    "rho_gkr": 10649573637626560590
+  },
+  "lasso": {
+    "eta_hidden_elu": 14485831761511714392,
+    "eta_hidden_exp": 16915358834869400506,
+    "eta_hidden_lrelu": 15793782702157157743,
+    "eta_hidden_range": 1478698290239172138,
+    "eta_output_exp": 5182898356222481645,
+    "eta_output_lrelu": 3886886849302618233,
+    "eta_output_range": 3160287083252100666,
+    "eta_rescale_rounding_range": 4114910496678544034
+  },
+  "log": [
+    {
+      "challenge_hex": "b5098ca413cdb8cf8e96e831fdd185f7ce055bd073fb36e8c97ecddd4a254c96",
+      "challenge_u64": 13045112431990126799,
+      "label": "gat-zkgpt/meta"
+    },
+    {
+      "challenge_hex": "0615789b4a14f9bccdd22c116908db76ced7237300bac9a661acdd7dfb101d6e",
+      "challenge_u64": 438389147096644028,
+      "label": "gat-zkgpt/model-commit"
+    },
+    {
+      "challenge_hex": "d48493155d1c909fdc05fa880885a0b5af47b0efd4f7d92f73e1643d2a0ab26a",
+      "challenge_u64": 15313526352932278431,
+      "label": "gat-zkgpt/static-table"
+    },
+    {
+      "challenge_hex": "215179903ee88403eb9c73f44c0a8c06da6825ed2c1cbc564aea8fcff09b86e9",
+      "challenge_u64": 2400833736802862083,
+      "label": "gat-zkgpt/input-commit/base"
+    },
+    {
+      "challenge_hex": "516ab18a88e49dcd539cc3e01c8670ef5194aa41dfed3b11f1d76f4e4fe6823f",
+      "challenge_u64": 5866696673163779533,
+      "label": "xi/layer/1/head/0"
+    },
+    {
+      "challenge_hex": "d1f46d810934f0e3a9f86d93dc6b3e4b3a577ca1a28495c24c26ab9cfe7550a2",
+      "challenge_u64": 15128837449217011939,
+      "label": "xi/cat/1"
+    },
+    {
+      "challenge_hex": "895039a9dd4a4bcbfe6f9dd67b81bb3e2e4d2ca0098f86a308b74ac32e7cb3cc",
+      "challenge_u64": 9894471783057869771,
+      "label": "xi/out"
+    },
+    {
+      "challenge_hex": "5110d165fe5b7e50ddd46d3736479aba26046ffc00ce9c74ff435f67dd7dd203",
+      "challenge_u64": 5841398952688844368,
+      "label": "gat-zkgpt/input-commit/comp"
+    },
+    {
+      "challenge_hex": "af1e50e8a82f6b26bbb2eba95bf29275fff19681dd8ae31e8d52fd8b7b6c50d4",
+      "challenge_u64": 12618612166123023142,
+      "label": "lambda/psq/layer/1/head/0"
+    },
+    {
+      "challenge_hex": "0f84ba89419d1d19a43e057a4346798cc25339b69043e88753010af3d2f36dc3",
+      "challenge_u64": 1118223706168827161,
+      "label": "lambda/psq/out/0"
+    },
+    {
+      "challenge_hex": "4f2cf165cd702b93882222248c4350f917b00bd681e99236193b92498431b41d",
+      "challenge_u64": 5705200247512247187,
+      "label": "gat-zkgpt/input-commit/psq-qry"
+    },
+    {
+      "challenge_hex": "14856442afaeee2ab81bbf31f1e822365c4bd7b00603aca83d05e695e4325c92",
+      "challenge_u64": 1478698290239172138,
+      "label": "lasso/hidden_range"
+    },
+    {
+      "challenge_hex": "2bdb985bb97f2e3a559091081bc4d5f0818130fa244fca65e84a10088059bbc1",
+      "challenge_u64": 3160287083252100666,
+      "label": "lasso/output_range"
+    },
+    {
+      "challenge_hex": "db2ec9b045c9556f02ba16bb64d98e60d5c8381e0715dc42c6bdba419cc81a9d",
+      "challenge_u64": 15793782702157157743,
+      "label": "lasso/hidden_lrelu"
+    },
+    {
+      "challenge_hex": "35f0fefeeed1e0794d9abc1025edcb771af008b76b2d0a0793d81be04e3da2ff",
+      "challenge_u64": 3886886849302618233,
+      "label": "lasso/output_lrelu"
+    },
+    {
+      "challenge_hex": "c908033ce4fa0e58b24b35422b7ba3a5f9a9b19e600e6f0517c62f018cefc9be",
+      "challenge_u64": 14485831761511714392,
+      "label": "lasso/hidden_elu"
+    },
+    {
+      "challenge_hex": "eabf6d3d28a7f3ba7a710dd83d8579b6aface0d4e6cb65ca29202e1b7174e220",
+      "challenge_u64": 16915358834869400506,
+      "label": "lasso/hidden_exp"
+    },
+    {
+      "challenge_hex": "47ed5a984598d4edae5da19b3c73b28a043cb00d27f39c3aa29ff70dc4a90901",
+      "challenge_u64": 5182898356222481645,
+      "label": "lasso/output_exp"
+    },
+    {
+      "challenge_hex": "391b194b850d02a25b087d76325fa572ec1568fa18f27fae02e49139713e34a9",
+      "challenge_u64": 4114910496678544034,
+      "label": "lasso/rescale_rounding_range"
+    },
+    {
+      "challenge_hex": "f4edc6655b1d41261b82f9d7d0f65a583b592be7e8eb54e2a4db4b326e320690",
+      "challenge_u64": 17648980653357482278,
+      "label": "matmul/sumcheck"
+    },
+    {
+      "challenge_hex": "93cae2ccb018804e034c0846452749f46823d9406c31b8784b9ac709c4d39550",
+      "challenge_u64": 10649573637626560590,
+      "label": "gkr/layered-sumcheck"
+    },
+    {
+      "challenge_hex": "8bfa1112af0d46df1286e76162fc1709f8d479f1f3c0974345deb1f211f63fa4",
+      "challenge_u64": 10086393087393613535,
+      "label": "open/combine"
+    },
+    {
+      "challenge_hex": "4def8f9e87b1452a474232f4965ce7c382b2250ca913284020a386f07195afc3",
+      "challenge_u64": 5615865171398444330,
+      "label": "open/masked"
+    }
+  ],
+  "matmul": {
+    "rho_matmul": 17648980653357482278
+  },
+  "open": {
+    "rho_combine": 10086393087393613535,
+    "rho_masked_open": 5615865171398444330
+  },
+  "psq": {
+    "lambda_psq_l1_h0": 12618612166123023142,
+    "lambda_psq_out_h0": 1118223706168827161
+  }
+}
