@@ -1,60 +1,56 @@
 {
-  "commitments": [
-    {
-      "commitment": "54c5f42f95022d0beb4e8681ebb00f54019eed9a460b18e72bca7bc90e328997",
-      "hiding_randomness_id": "794e059d4575063ae336499b7926556c250b9a4a0a546e7e78136a7f51ebc869",
-      "opening_mode": "public-local-eval",
+  "commitment_backend_id": "hyrax-style-mle-sha256-merkle-masked-open-v1",
+  "items": {
+    "com_T_H": {
+      "commitment": "27d7e9d562a2bb371d0b554d91ebf994ab803915fb2d7fc9b752d50c83adc069",
+      "hiding_randomness_id": "99c68691a5998555f89a628f4de1b0e45bc7cbb5dfb9fd3b4a7101f200556f24",
+      "opening_mode": "OpenMasked",
       "order": 0,
-      "payload_digest": "7b9bd12e3c159a566a3e6c6fb0f74b4b4d34f54381ad5b4472487d908c87dab1",
-      "segment": "X_pub"
+      "payload_digest": "1babfec3869b1ca27db1e95bd53662a2d94db1d658e697a4b67dfbaaf249f3ca"
     },
-    {
-      "commitment": "564e85931564d60c86ba6e6b791a7656fbbde746bec8ed6290abdf3441736b0c",
-      "hiding_randomness_id": "c42c2b7cc3e529be539cfdd69a8a132d038a0a047a4c17513031054d98fbf414",
+    "com_W": {
+      "commitment": "a66b0eeef8c1f44e575d5557ab14b49baebd11615edf4bf793d4c181753fa85d",
+      "hiding_randomness_id": "fe8cf9f21119d89068c5bb42cbd7b21837324948c72143fd175a5b23805814ca",
       "opening_mode": "OpenMasked",
       "order": 1,
-      "payload_digest": "05fa9c50bf9c4428330d29d58f7ad0dd60b449e069ae2c3c65b5da6987eaad6c",
-      "segment": "T_H"
+      "payload_digest": "cacb2b23edb51af607ab1eeaff037d6d45d2edb60f96135305421ea37af26f1f"
     },
-    {
-      "commitment": "eb51035d318280f196b699a9d09ebdad8ff034cea561b7d697552c448a27896f",
-      "hiding_randomness_id": "4848fdb6e6a90aee2e019c9d61246dc73dc843b7d8c1261b0f4227e14e025c1e",
+    "com_base": {
+      "commitment": "397f0a2ac3878cdf02f95d594882e5311fa205d4bef06d353a0d666e25eb4050",
+      "hiding_randomness_id": "ae693618cfb877bcb898a8eb946a032b52fd8bf97d671f418fc4caede4ddc390",
       "opening_mode": "OpenMasked",
       "order": 2,
-      "payload_digest": "d3ed01ded37936f811cf51296984bb6c6d9cd759ae2a9ca9f5e4fc79fb4fba7d",
-      "segment": "W"
+      "payload_digest": "1032795f06a70f3d58c1d0db963b234e7a7b3218a0b1797d55edb9ac340d72cf"
     },
-    {
-      "commitment": "62cc9187e38070d160597a0cdef325554fe07a3d0909058be16500c740077557",
-      "hiding_randomness_id": "1d8f17e6f36ec731c3ae34d022a7c1c880245484411b80a175201dce679342c6",
+    "com_comp": {
+      "commitment": "44a733846b3b1df85b631b38212de269b3817f8739e46ecc41570cd71f46cc41",
+      "hiding_randomness_id": "623b7f9535c3aea5ddcdbf445cce15389b16996905f47d84d632925ad4db406c",
       "opening_mode": "OpenMasked",
       "order": 3,
-      "payload_digest": "5c5f88e49cc8df241e1868d96226b21258dd1f6e12362b751ae0997ef99a10c0",
-      "segment": "Aux_base"
+      "payload_digest": "a52af43b9d8e4c883f2d1ca36de4d26bec3860dd181b62a35b6e462e906a26aa"
     },
-    {
-      "commitment": "a883063a40c45c5d71438cce0bda2581a6295953852777a3f2be15959cbf93f4",
-      "hiding_randomness_id": "7b001a838c620e429f46bc0bf5591aa3deb38db30b8b366927057474be928da1",
+    "com_psq": {
+      "commitment": "665a301f5549ec27a8e88fb1e3314d0c03cecbe8411d9faf44a46dc299915264",
+      "hiding_randomness_id": "e59f3c73973ece447d94ea54ab80b8f117d40dcb03ddc2e3a6df5cc3a11187c6",
       "opening_mode": "OpenMasked",
       "order": 4,
-      "payload_digest": "2e8ecbfcd40a825340a460ff0aa2ce52d517d539544c2cab9098375392567a15",
-      "segment": "Aux_comp"
+      "payload_digest": "3eb897c96c42ec2db021ce46af678ae6209c796a84606d38ceb397e9217b22cb"
     },
-    {
-      "commitment": "4e1325364e6f8b9863648fb4cc5c3b92d86b57196fbb4c6b46750a1ce8c96355",
-      "hiding_randomness_id": "482bcbe5d02b1b175b6e6bea0f30e036f72709fbdcbfa9f2fe5d59752a44e096",
+    "com_qry": {
+      "commitment": "5d72ea2a81212acb8952d010accb870b8764d0955946b354c4d765b741952f0e",
+      "hiding_randomness_id": "208c93876eb6af8ac6e71963ba716926ac8222ba0e193d87209a6c5c4839fc08",
       "opening_mode": "OpenMasked",
       "order": 5,
-      "payload_digest": "94efb460d07198ad62d294b93a2eaf704d7be5a0dcaba8aba7a6f160b9c94c32",
-      "segment": "Aux_psq"
-    },
-    {
-      "commitment": "038ed83c27bde61a620ad06af61d06c6f9d3ac53fcc7412fa924f88479852a33",
-      "hiding_randomness_id": "324b105198115aa59aa5c587f146fc6dbba7899565e4a0c5b14d3bafcf40ef59",
-      "opening_mode": "OpenMasked",
-      "order": 6,
-      "payload_digest": "d14e2adfaf68ae56bda8a0e371e8a13103b0d45434e8ce4d18398718aba2c62a",
-      "segment": "L_qry"
+      "payload_digest": "235881382d11edba9d93ae842331fd9c72c0d0f0d07e9994bf464397ca97823b"
     }
+  },
+  "metadata_digest": "e4b8238ae8b34f368125598361df28d80e218da80b828de828518257c0acac15",
+  "order": [
+    "com_T_H",
+    "com_W",
+    "com_base",
+    "com_comp",
+    "com_psq",
+    "com_qry"
   ]
 }

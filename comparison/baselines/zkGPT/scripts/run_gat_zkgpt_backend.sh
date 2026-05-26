@@ -2,27 +2,20 @@
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
-  echo "usage: $0 <cpu|gpu> [dataset-list|all] [extra args...]" >&2
+  echo "usage: $0 <cpu|gpu|all> [dataset|all] [extra args...]" >&2
   exit 2
 fi
 
 BACKEND="$1"
 DATASETS="${2:-all}"
 shift || true
-shift || true
-
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROJECT_ROOT="${PROJECT_ROOT:-/home/pzh/project}"
-PYTHON_BIN="${PYTHON_BIN:-${PROJECT_ROOT}/.venv/bin/python}"
-
-if [[ ! -x "${PYTHON_BIN}" ]]; then
-  PYTHON_BIN="python3"
+if [[ $# -gt 0 ]]; then
+  shift || true
 fi
 
-cd "${ROOT_DIR}"
-"${PYTHON_BIN}" scripts/gat_zkgpt_experiment.py \
-  --project-root "${PROJECT_ROOT}" \
-  --results-dir "${ROOT_DIR}/results" \
-  --datasets "${DATASETS}" \
-  --backends "${BACKEND}" \
-  "$@"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ "${BACKEND}" == "gpu" || "${BACKEND}" == "all" ]]; then
+  "${ROOT}/scripts/build_cuda_backend.sh"
+fi
+"${ROOT}/scripts/gat_zkgpt_experiment.py" --datasets "${DATASETS}" --backends "${BACKEND}" "$@"
+

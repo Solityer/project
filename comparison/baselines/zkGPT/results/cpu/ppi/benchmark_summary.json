@@ -1,10 +1,12 @@
 {
   "artifact_path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/ppi",
   "backend": "cpu",
-  "commitment_time_ms": 3563.732,
+  "commitment_time_ms": 30.57345829787664,
   "dataset": "ppi",
-  "proof_size_bytes": 21360,
-  "prove_time_ms": 7055.067,
+  "forward_time_ms": 712.5857180217281,
+  "proof_size_bytes": 6681,
+  "prove_time_ms": 138.97026499034837,
   "status": "VERIFY_OK",
-  "verify_time_ms": 452.733
+  "verify_time_ms": 25.014647698262706,
+  "wall_time_ms": 1876.7307889647782
 }

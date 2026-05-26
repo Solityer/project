@@ -1,16 +1,16 @@
 {
   "checks": {
-    "challenges_replay": true,
     "commitment_order": true,
-    "cpu_backend": true,
-    "edge_ptr_bounds": true,
-    "engine_verified": true,
     "full_dataset": true,
-    "negative_metadata_check_rejects": true,
-    "node_ptr_bounds": true,
-    "proof_backend_id": true,
-    "proof_order": true,
-    "protocol_id": true
+    "gkr": true,
+    "gpu_no_fallback": true,
+    "lasso": true,
+    "masked_open": true,
+    "matmul": true,
+    "metadata_complete": true,
+    "sparse_public_edges": true,
+    "transcript_replay": true
   },
-  "status": "VERIFY_OK"
+  "status": "VERIFY_OK",
+  "verifier": "zkgpt_gat.verifier.local_replay"
 }

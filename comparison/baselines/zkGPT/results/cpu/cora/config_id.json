@@ -1,6 +1,6 @@
 {
-  "id": "ce82f8a383f90e432e3d98b74254fa85f78b6e40423a1d84d0337a1e671938b4",
-  "path": "/home/pzh/project/comparison/baselines/zkGPT/generated_configs/cpu/cora_full.cfg",
-  "sha256": "ce82f8a383f90e432e3d98b74254fa85f78b6e40423a1d84d0337a1e671938b4",
-  "size_bytes": 737
+  "id": "3726e3efebb3ef064005f67dae2354ccdb34e7432aa069e3a9aa58ee097a6220",
+  "path": "/home/pzh/project/comparison/baselines/zkGPT/configs/generated/cpu/cora_full.cfg",
+  "sha256": "3726e3efebb3ef064005f67dae2354ccdb34e7432aa069e3a9aa58ee097a6220",
+  "size_bytes": 715
 }

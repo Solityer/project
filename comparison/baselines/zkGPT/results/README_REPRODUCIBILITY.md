@@ -1,19 +1,12 @@
-# GAT-ZKML-zkGPT Reproducibility
+# GAT-ZKML-zkGPT Results
 
-All generated experiment artifacts live under this zkGPT directory.
-The source datasets, checkpoint bundles, and config semantics are read-only inputs from /home/pzh/project.
+This directory contains only the rerun independent zkGPT-style baseline results.
+The previous adapter artifacts were moved to `archive/invalid_adapter_20260525` and are excluded from these tables.
 
-Run all official rows:
+Official tables:
 
-```bash
-./scripts/run_gat_zkgpt_all.sh
-```
+- `summary.csv` / `summary.json`
+- `cpu_results.csv`
+- `gpu_results.csv`
 
-Result tables:
-
-- results/cpu_results.csv
-- results/gpu_results.csv
-- results/summary.csv
-
-proof_size_bytes is copied from the verified engine run_manifest proof payload size.
-Audit JSON files such as metadata.json, challenges.json, and proof_object.json are excluded from proof_size_bytes.
+`proof_size_bytes` is the canonical serialized `proof_payload.json` payload size. Witness manifests and audit metadata are not counted.

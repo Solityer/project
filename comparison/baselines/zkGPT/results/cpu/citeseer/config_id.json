@@ -1,6 +1,6 @@
 {
-  "id": "206b425951980607b4f95dd20b8610856224b454adec943d5c80cca50d5eab2a",
-  "path": "/home/pzh/project/comparison/baselines/zkGPT/generated_configs/cpu/citeseer_full.cfg",
-  "sha256": "206b425951980607b4f95dd20b8610856224b454adec943d5c80cca50d5eab2a",
-  "size_bytes": 753
+  "id": "9b4c388c54123a0e79b353c4b4a44a218891e6d54413b2311fa9e1208a8aa916",
+  "path": "/home/pzh/project/comparison/baselines/zkGPT/configs/generated/cpu/citeseer_full.cfg",
+  "sha256": "9b4c388c54123a0e79b353c4b4a44a218891e6d54413b2311fa9e1208a8aa916",
+  "size_bytes": 731
 }

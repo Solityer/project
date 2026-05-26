@@ -1,0 +1,327 @@
+{
+  "Com_in": [
+    {
+      "commitment": "35fabd26c797a4f9dc2f92169d14613f24a567d9876ba01b17cd68891ca59de2",
+      "hiding_randomness_id": "877f69bf34364d8f3dfd41bb4e56a0dfb13ecb8b7498bdfb8df0bb4fa61e36c4",
+      "opening_mode": "OpenMasked",
+      "order": 0,
+      "payload_digest": "c422340aaed7f87339645c04ba5269f34627460ef2b3808ed87344270ab887f7"
+    },
+    {
+      "commitment": "9dfde34248f7ee7f74794ab6bc2d8fd9ee8189354d558dc4c71f3bbe10a9d96e",
+      "hiding_randomness_id": "d635a935f3e74c62a9262ede7f54c9748e595b6c1673d3d902aeee2e8ff78c04",
+      "opening_mode": "OpenMasked",
+      "order": 1,
+      "payload_digest": "f4e6c46635617bbe67d8a053fd496dcae57d8e1da9dc5d0ccc85e9b6775e6cd9"
+    },
+    {
+      "commitment": "49c4b0e56a3c9c6aafe0cbbc4641d692597f6351e42014dc1a6b26801b980485",
+      "hiding_randomness_id": "5306317a5c602dc21c309475969efaca1697a9ee14213bfc87fd19bcd6353afd",
+      "opening_mode": "OpenMasked",
+      "order": 2,
+      "payload_digest": "b6a4c5b4eaa8a891948a3e0889d724b1d9f124bbfe3ef8551747c4638bcc7186"
+    },
+    {
+      "commitment": "c1134ec9930dd135d3d7707bad16c6084d68e2970f434a47f73bff5568214597",
+      "hiding_randomness_id": "572fc8ca79979681347ca942300c297ba739b627783f8b903c7e16d006cfea46",
+      "opening_mode": "OpenMasked",
+      "order": 3,
+      "payload_digest": "66ede7f79a6f126cf8d006198091ccaa837eea1488c0d33101f1235787b46dbf"
+    },
+    {
+      "commitment": "48627dfd07e7b78f50f673d09e75be1dca01d05c4a66b8f1e58f6542deef891a",
+      "hiding_randomness_id": "2fed92b5aaaf0c021a9675c7e66ca44f7d3d3244b35f17b991d57a72a95eadf6",
+      "opening_mode": "OpenMasked",
+      "order": 4,
+      "payload_digest": "809e0669f4ff276245dd87bed359c0fcf04bb206cf64869eaf625d6bef6085a7"
+    },
+    {
+      "commitment": "aa295e9a9281788e0aa3b0127d8b7585983025adff724168168486202d3c3deb",
+      "hiding_randomness_id": "e1d884aa4c2a26e7b42f4542d374555f157ec75b92c9bc60569bd4e66dae4ae0",
+      "opening_mode": "OpenMasked",
+      "order": 5,
+      "payload_digest": "4c5cc9e672415d1e970bbc5549d2e9271e834d5bb600b27f1fe63573dd968401"
+    }
+  ],
+  "M_pub_digest": "d14ead4ce916d803d5c5f0f7aea030baab969f68b04a6418b6be618be51e3d19",
+  "Open_in": [
+    {
+      "commitment": "35fabd26c797a4f9dc2f92169d14613f24a567d9876ba01b17cd68891ca59de2",
+      "masked_value_digest": "1ee2579e2b4cc9de5b5df5e890aca003a05f6e9440beb5d6a1af4984e1cf5dd9",
+      "ok": true,
+      "opening_mode": "OpenMasked",
+      "point_index": 212369,
+      "segment": "com_T_H"
+    },
+    {
+      "commitment": "49c4b0e56a3c9c6aafe0cbbc4641d692597f6351e42014dc1a6b26801b980485",
+      "masked_value_digest": "4eec8d25945eff705ef03494369148cbdbac612dc2f15182647ecdc6600274e2",
+      "ok": true,
+      "opening_mode": "OpenMasked",
+      "point_index": 2678472,
+      "segment": "com_base"
+    },
+    {
+      "commitment": "c1134ec9930dd135d3d7707bad16c6084d68e2970f434a47f73bff5568214597",
+      "masked_value_digest": "44ba9b61f04b7b82235c073865075bda6972f014b5a0abba582eff6ade34680f",
+      "ok": true,
+      "opening_mode": "OpenMasked",
+      "point_index": 229880,
+      "segment": "com_comp"
+    },
+    {
+      "commitment": "48627dfd07e7b78f50f673d09e75be1dca01d05c4a66b8f1e58f6542deef891a",
+      "masked_value_digest": "714c77c760a36904eb320a1df63a00305afbafce482b38bdb6aa249b2ec839b7",
+      "ok": true,
+      "opening_mode": "OpenMasked",
+      "point_index": 616129,
+      "segment": "com_psq"
+    },
+    {
+      "commitment": "aa295e9a9281788e0aa3b0127d8b7585983025adff724168168486202d3c3deb",
+      "masked_value_digest": "828efb7e6f603543fadee248bf73b71dffe70fcf032902f702b0df90f9d08e4d",
+      "ok": true,
+      "opening_mode": "OpenMasked",
+      "point_index": 616129,
+      "segment": "com_qry"
+    },
+    {
+      "masked_value_digest": "4a1d414e8b7cb82d5aaff8a671e248b36542109f3f135c2014939005488fbb11",
+      "ok": true,
+      "opening_mode": "OpenMasked",
+      "segment": "com_W"
+    },
+    {
+      "ok": true,
+      "opening_mode": "public-local-eval",
+      "public_digest": "8c9758baf65d8b9bdac05be8d0084adec41f41e6911a0bc804d126c616c4e931",
+      "segment": "X_pub"
+    }
+  ],
+  "Pi_GKR": [
+    {
+      "claim": "hidden.l1.h0.score",
+      "max_residual": 0.0,
+      "ok": true
+    },
+    {
+      "claim": "hidden.l1.h0.max_state_machine",
+      "max_residual": 0.0,
+      "ok": true
+    },
+    {
+      "claim": "hidden.l1.h0.delta",
+      "max_residual": 0.0,
+      "ok": true
+    },
+    {
+      "claim": "hidden.l1.h0.sum_state_machine",
+      "max_residual": 0.0,
+      "ok": true
+    },
+    {
+      "claim": "hidden.l1.h0.inverse",
+      "max_residual": 1.1102230246251565e-16,
+      "ok": true
+    },
+    {
+      "claim": "hidden.l1.h0.alpha",
+      "max_residual": 0.0,
+      "ok": true
+    },
+    {
+      "claim": "hidden.l1.h0.PSQ_compressed_aggregation",
+      "max_residual": 1.1102230246251565e-16,
+      "ok": true
+    },
+    {
+      "claim": "hidden.l1.concat.h0",
+      "max_residual": 0.0,
+      "ok": true
+    },
+    {
+      "claim": "output.h0.score",
+      "max_residual": 0.0,
+      "ok": true
+    },
+    {
+      "claim": "output.h0.max_state_machine",
+      "max_residual": 0.0,
+      "ok": true
+    },
+    {
+      "claim": "output.h0.delta",
+      "max_residual": 0.0,
+      "ok": true
+    },
+    {
+      "claim": "output.h0.sum_state_machine",
+      "max_residual": 0.0,
+      "ok": true
+    },
+    {
+      "claim": "output.h0.inverse",
+      "max_residual": 1.1102230246251565e-16,
+      "ok": true
+    },
+    {
+      "claim": "output.h0.alpha",
+      "max_residual": 0.0,
+      "ok": true
+    },
+    {
+      "claim": "output.h0.PSQ_compressed_aggregation",
+      "max_residual": 9.71445146547012e-17,
+      "ok": true
+    },
+    {
+      "claim": "output.h0.bias_add",
+      "max_residual": 0.0,
+      "ok": true
+    },
+    {
+      "claim": "output.head_average_post_bias",
+      "max_residual": 0.0,
+      "ok": true
+    }
+  ],
+  "Pi_Lasso": [
+    {
+      "encoding": "structured_12_bit_limb_decomposition",
+      "family": "hidden.l1.h0.range",
+      "limb_count": 1,
+      "max_delta": 0.3362294186209841,
+      "max_limb": 0,
+      "min_delta": 0.0,
+      "ok": true,
+      "query_count": 850576
+    },
+    {
+      "family": "hidden.l1.h0.LeakyReLU",
+      "max_residual": 0.0,
+      "ok": true,
+      "query_count": 850576
+    },
+    {
+      "family": "hidden.l1.h0.ExpMap",
+      "max_residual": 0.0,
+      "ok": true,
+      "query_count": 850576
+    },
+    {
+      "family": "hidden.l1.h0.ELU",
+      "max_residual": 0.0,
+      "ok": true,
+      "query_count": 455552
+    },
+    {
+      "encoding": "structured_12_bit_limb_decomposition",
+      "family": "output.h0.range",
+      "limb_count": 1,
+      "max_delta": 3.2956876174124736,
+      "max_limb": 3,
+      "min_delta": 0.0,
+      "ok": true,
+      "query_count": 850576
+    },
+    {
+      "family": "output.h0.LeakyReLU",
+      "max_residual": 0.0,
+      "ok": true,
+      "query_count": 850576
+    },
+    {
+      "family": "output.h0.ExpMap",
+      "max_residual": 0.0,
+      "ok": true,
+      "query_count": 850576
+    },
+    {
+      "family": "rescale_rounding_range",
+      "ok": true,
+      "query_count": 0,
+      "reason": "Rescale_out is identity for fp32 bundle export"
+    }
+  ],
+  "Pi_MatMul": [
+    {
+      "check": "Freivalds random linear projection",
+      "claim": "hidden.l1.h0.projection",
+      "max_residual": 1.1102230246251565e-16,
+      "ok": true,
+      "shape": [
+        56944,
+        50,
+        8
+      ]
+    },
+    {
+      "claim": "hidden.l1.h0.attention_src",
+      "max_residual": 0.0,
+      "ok": true,
+      "shape": [
+        56944,
+        8
+      ]
+    },
+    {
+      "claim": "hidden.l1.h0.attention_dst",
+      "max_residual": 0.0,
+      "ok": true,
+      "shape": [
+        56944,
+        8
+      ]
+    },
+    {
+      "claim": "hidden.l1.h0.compression",
+      "digest": "a0cb5e733662c7a8491c191636de4e37f37ec70070ed8b7669a3a3b0f58cc106",
+      "ok": true,
+      "shape": [
+        56944,
+        8
+      ]
+    },
+    {
+      "check": "Freivalds random linear projection",
+      "claim": "output.h0.projection",
+      "max_residual": 6.439293542825908e-15,
+      "ok": true,
+      "shape": [
+        56944,
+        8,
+        121
+      ]
+    },
+    {
+      "claim": "output.h0.attention_src",
+      "max_residual": 0.0,
+      "ok": true,
+      "shape": [
+        56944,
+        121
+      ]
+    },
+    {
+      "claim": "output.h0.attention_dst",
+      "max_residual": 0.0,
+      "ok": true,
+      "shape": [
+        56944,
+        121
+      ]
+    }
+  ],
+  "Pi_combine": {
+    "claim_sources": [
+      "Pi_Lasso",
+      "Pi_MatMul",
+      "Pi_GKR"
+    ],
+    "combined_claim_digest": "589e827439d7973cf7db01efcc0dda2054052f829a6a38b959ae238f9675f859",
+    "ok": true
+  },
+  "Y_digest": "2fa0305d2302c828da361c576f012d21a600e34f98ddcd5f9b80694eae463aea",
+  "proof_type": "pi_GAT_zkGPT",
+  "transcript_digest": "b76d4120a53755de5d5c38284b8b50b49176477945c06f10ec0642d9e4efddce"
+}
