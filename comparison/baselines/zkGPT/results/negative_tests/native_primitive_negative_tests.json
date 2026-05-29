@@ -1,0 +1,30 @@
+{
+  "rows": [
+    {
+      "actual": "VERIFY_OK",
+      "case": "hyrax_valid_opening",
+      "expected": "VERIFY_OK"
+    },
+    {
+      "actual": "VERIFY_FAILED",
+      "case": "hyrax_tampered_opening",
+      "expected": "VERIFY_FAILED"
+    },
+    {
+      "actual": "VERIFY_OK",
+      "case": "matrix_sumcheck_valid",
+      "expected": "VERIFY_OK"
+    },
+    {
+      "actual": "VERIFY_FAILED",
+      "case": "matrix_sumcheck_tampered_payload",
+      "expected": "VERIFY_FAILED"
+    },
+    {
+      "actual": "REJECTED",
+      "case": "legacy_digest_runner_disabled",
+      "expected": "REJECTED"
+    }
+  ],
+  "status": "PASS"
+}

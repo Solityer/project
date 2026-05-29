@@ -11,6 +11,7 @@ mkdir -p ${BUILD_DIR}
 cd ${BUILD_DIR}
 cmake -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -G "Unix Makefiles" ..
 make gat_zkgpt_check
+make zkgpt_hyrax_mle
 make zkgpt_cuda_backend
 cd ..
 
