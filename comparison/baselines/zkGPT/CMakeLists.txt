@@ -23,6 +23,12 @@ add_custom_target(
     COMMENT "Building zkGPT CUDA backend helper"
 )
 
+add_executable(zkgpt_hyrax_mle backend/native/hyrax_mle_cli.cpp)
+target_include_directories(zkgpt_hyrax_mle PRIVATE 3rd/mcl/include)
+target_link_libraries(zkgpt_hyrax_mle PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/3rd/mcl/lib/libmcl.a)
+target_compile_options(zkgpt_hyrax_mle PRIVATE -fno-pic -fno-pie)
+target_link_options(zkgpt_hyrax_mle PRIVATE -no-pie)
+
 option(ZKGPT_BUILD_LEGACY_LLM_DEMO "Build the original zkGPT LLM demo against 3rd/mcl" OFF)
 if(ZKGPT_BUILD_LEGACY_LLM_DEMO)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/3rd/mcl/CMakeLists.txt")
