@@ -4,82 +4,136 @@
 
 ### 0.1 模型结构
 
-官方 GAT 的前向结构不应被写死为“单层 + 固定 8 个隐藏头”的唯一实例。为覆盖后续大图数据集与不同 benchmark 配置，本文把 **GAT 的前向语义** 固定为一个可参数化的多层 family。
+ GAT的前向固定为一个可参数化的多层结构：
 
-1. 设 attentional layers 的总层数为：$L$。其中前 $L-1$ 层是隐藏层，第 $L$ 层是最终输出层。
+1. 设注意力层的总层数为：$L$。其中前 $L-1$ 层是隐藏层，第 $L$ 层是最终输出层。
 
-2. 对每个隐藏层 $\ell\in\{1,2,\ldots,L-1\}$，记该层的注意力头数量为 $K_{hid}^{(\ell)}$，每个 head 的输出维度为 $d_h^{(\ell)}$。该层每个 head 完成 attention 聚合后，逐元素施加 ELU；随后把本层全部 head 的 ELU 后输出沿特征维拼接，得到：$d_{cat}^{(\ell)}=K_{hid}^{(\ell)}\cdot d_h^{(\ell)}$。
-   
+2. 对每个隐藏层 $\ell\in\{1,2,\ldots,L-1\}$，记该层的注意力头数量为 $K_{hid}^{(\ell)}$，每个头的输出维度为 $d_h^{(\ell)}$。
+
+	该层每个头完成注意力聚合后，逐元素施加 ELU；
+
+	随后把本层全部头的ELU后的输出沿特征维进行拼接，得到：$d_{cat}^{(\ell)}=K_{hid}^{(\ell)}\cdot d_h^{(\ell)}$ 
+
 3. 第 $\ell$ 个隐藏层的输入维度记为 $d_{in}^{(\ell)}$。其中 $d_{in}^{(1)}=d_{in}$，且对任意 $\ell\ge 2$，都有 $d_{in}^{(\ell)}=d_{cat}^{(\ell-1)}$。
-   
-4. 最终输出层（第 $L$ 层）的注意力头数量记为 $K_{out}$。输出层不是“仿射线性层 + 偏置”替代 attention，而是由 $K_{out}$ 个输出注意力头组成。每个输出注意力头先完成 attention 聚合，再加上该头自己的输出偏置向量；若 $K_{out}>1$，则全部输出头的后偏置输出按 head 维做算术平均，得到最终 logits。
 
-5. 输出注意力头的激活函数固定为恒等映射，不再施加 ELU；但恒等映射的输入是**已经加上该输出头偏置后的 attention 聚合结果**。
+4. 最终输出层（第 $L$ 层）的注意力头数量记为 $K_{out}$。
 
-6. 本文后续对隐藏层的明文对象、见证对象、lookup、PSQ、路由、binding 与 quotient 推导，都严格对应“**单个隐藏层模板**”。对任意多层 GAT，证明者与验证者都必须按层序 $\ell=1,\ldots,L-1$ 逐层实例化该模板；第 $\ell-1$ 层的拼接输出 $H_{cat}^{(\ell-1)}$ 必须作为第 $\ell$ 层的唯一输入表示。
+	输出层不是“仿射线性层 + 偏置”替代注意力，而是由 $K_{out}$ 个输出注意力头组成。每个输出注意力头先完成注意力聚合，再加上该头自己的输出偏置向量；
 
-7. 下列 benchmark 仅作为**非规范实例说明**，不构成协议参数默认值；实际实验使用的 $L,\{K_{hid}^{(\ell)},d_h^{(\ell)}\}_{\ell=1}^{L-1},K_{out}$ 必须完全由公共元数据 $M_{pub}$ 唯一确定：
-   - Cora / Citeseer 风格两层 GAT：$L=2$，在某些 benchmark profile 中可取 $K_{hid}^{(1)}=8,\ K_{out}=1$；
+	若 $K_{out}>1$，则全部输出头的后偏置输出按头维做算术平均，得到最终logits。
+
+5. 输出注意力头的激活函数固定为恒等映射，不再施加 ELU；但恒等映射的输入是已经加上该输出头偏置后的注意力聚合结果。
+
+6. 后续对隐藏层的明文对象、见证对象、查找、PSQ、路由、一致性绑定约束与商多项式推导，都严格对应“单个隐藏层模板”。
+
+	对任意多层 GAT，证明者与验证者都必须按层序 $\ell=1,\ldots,L-1$ 逐层实例化该模板；第 $\ell-1$ 层的拼接输出 $H_{cat}^{(\ell-1)}$ 必须作为第 $\ell$ 层的唯一输入表示。
+
+7. 下列基准仅作为非规范实例说明，不构成协议参数默认值；实际实验使用的 $L,\{K_{hid}^{(\ell)},d_h^{(\ell)}\}_{\ell=1}^{L-1},K_{out}$ 必须完全由公共元数据 $M_{pub}$ （这次证明所绑定的公开配置总包）唯一确定：
+   - Cora / Citeseer 风格两层 GAT：$L=2$，在某些基准测试的配置文件中可取 $K_{hid}^{(1)}=8,\ K_{out}=1$；
    - Pubmed 风格两层 GAT：$L=2$；若某次实验把它设为两层多输出头实例，则对应的 $K_{out}>1$ 也必须由该次实验的 $M_{pub}$ 唯一固定；
-   - PPI 风格多层 GAT：$L=3$ 或更深，仍保持“隐藏层 concat、最终层 average”的官方语义。
+   - PPI 风格多层 GAT：$L=3$ 或更深，仍保持“隐藏层拼接、最终层平均“的官方语义。
 
-为避免在后文公式中引入过多层指标，除非特别声明，**隐藏层模板**统一采用如下局部简写：
+为避免公式中引入过多层指标，除非特别声明，隐藏层模板统一采用如下局部简写：
 
 - 隐藏层模板索引：$\ell\in\{1,2,\ldots,L-1\}$
-- 第 $\ell$ 个隐藏层中第 $r$ 个注意力头的编号：$r\in\{0,1,\ldots,K_{hid}-1\}$
-- 当前隐藏层模板的输入维度：$d_{in}:=d_{in}^{(\ell)}$
-- 当前隐藏层模板的每头输出维度：$d_h:=d_h^{(\ell)}$
-- 当前隐藏层模板的头数：$K_{hid}:=K_{hid}^{(\ell)}$
+
+- 第 $\ell$ 个隐藏层中第 $r$ 个注意力头的编号：$r\in\{0,1,\ldots,K_{hid}-1\}$ 
+  
+- 当前隐藏层模板的输入维度：$d_{in}:=d_{in}^{(\ell)}$ 
+  
+- 当前隐藏层模板的每头输出维度：$d_h:=d_h^{(\ell)}$ 
+  
+- 当前隐藏层模板的头数：$K_{hid}:=K_{hid}^{(\ell)}$ 
+  
 - 当前隐藏层模板的拼接维：$d_{cat}:=d_{cat}^{(\ell)}=K_{hid}\cdot d_h$
+  
 - 输出类别数：$C$
+  
 - 最终输出层第 $s$ 个输出头编号：$s\in\{0,1,\ldots,K_{out}-1\}$
 
-换言之，后文若出现 $H_{cat}$、$d_h$、$K_{hid}$ 等未显式带层指标的记号，在隐藏层上下文中一律解释为“当前正在实例化的那一层”的数学局部记号；代码实现中的对象名、serializer 字段名、proof label、日志字段名则一律必须显式带层指标 $(\ell)$，不得把这些局部记号直接搬入实现。
+换言之，后文若出现 $H_{cat}$、$d_h$、$K_{hid}$ 等未显式带层指标的记号，在隐藏层上下文中一律解释为“当前正在实例化的那一层”的数学局部记号；代码实现中的对象名、序列化器字段名、证明标签以及日志字段名，一律必须显式带层指标 $(\ell)$，不得把这些局部记号直接搬入实现。
 
 同理，凡正文中为了公式紧凑而省略的 $(\ell)$、$(\ell,r)$、$(out,s)$ 标记，只能在数学推导中省略；在任何实现接口、配置字段、承诺名、评值名与子证明名中，都必须恢复完整指标。
 
+### 0.2 有限域、双线性群、安全 SRS、KZG 与 Fiat--Shamir
 
-### 0.2 有限域、双线性群、KZG 与 Fiat–Shamir
+记有限域为 $\mathbb F_p$，其中 $p$ 为大素数。所有协议内算术均在 $\mathbb F_p$ 上进行。
 
-记有限域为 $\mathbb F_p$，其中 $p$ 为大素数。所有域内运算都在 $\mathbb F_p$ 上进行。
+采用定点数量化语义：若域元素 $x\in\mathbb F_p$ 的标准代表满足 $x>\frac{p-1}{2}$，则在实数语义下解释为有符号整数 $x-p$；否则解释为非负整数 $x$。LeakyReLU、ELU、范围比较、指数查表、量化回缩和 Softmax 归一化均在该有符号域语义下定义。
 
-采用定点数量化语义：若域元素 $x\in\mathbb F_p$ 的标准代表满足 $x>\frac{p-1}{2}$，则在实数语义下把它解释为负数$x-p$。
+记双线性群为 $(\mathbb G_1,\mathbb G_2,\mathbb G_T,e)$，其中 $e:\mathbb G_1\times\mathbb G_2\to\mathbb G_T$ 是非退化双线性映射，生成元分别为 $G_1\in\mathbb G_1$ 与 $G_2\in\mathbb G_2$。
 
-LeakyReLU、ELU、范围比较、指数查表、量化回缩，均在上述有符号域语义下定义。
+本文正式协议使用 KZG 多项式承诺。对次数严格小于 $D$ 的多项式 $P(X)=\sum_{i=0}^{D-1}p_iX^i\in\mathbb F_p[X]$，数学上的承诺定义为：
 
-记双线性群为$(\mathbb G_1,\mathbb G_2,\mathbb G_T,e)$，其中 $e:\mathbb G_1\times\mathbb G_2\to\mathbb G_T$ 是非退化双线性映射。生成元分别记为：$G_1\in\mathbb G_1,\quad G_2\in\mathbb G_2$ 
+$$[P]=P(\tau)G_1.$$
 
-使用 KZG 多项式承诺，对次数严格小于 $D$ 的多项式$P(X)\in\mathbb F_p[X]$，其承诺记为：$[P]=P(\tau)G_1$，其中 $\tau\in\mathbb F_p$ 是 setup 阶段采样的隐藏陷门。
+其中 $\tau\in\mathbb F_p$ 是参数生成阶段采样的隐藏陷门。该公式只定义承诺语义，不允许实现层在证明阶段直接读取、保存、打印、序列化或由 seed 派生 $\tau$。正式实现必须满足：
 
-KZG 验证键记为：$VK_{KZG}=\{[1]_2,[\tau]_2\}$，其中 $[1]_2=G_2,\quad [\tau]_2=\tau G_2$ 
+1. $\tau$ 只在 trusted setup 或 MPC ceremony 的临时内存中出现；
+2. 生成证明键和验证键后，$\tau$ 必须销毁；
+3. 证明者只持有 $PK$ 或经过预处理的工作域 SRS；
+4. 验证者只持有 $VK_{KZG}$；
+5. 主实验代码中不得存在 `seed -> tau`、`tau = seed + c`、`polynomial.evaluate(tau)` 作为承诺主路径的实现。
 
-随机预言机统一写作$H_{FS}(\cdot)$ 
+KZG 验证键为：
 
-所有 Fiat–Shamir 挑战都必须按本文规定的固定顺序生成，禁止重排、回退、漏吸入或重复吸入。
+$$VK_{KZG}=\{[1]_2,[\tau]_2\}=\{G_2,\tau G_2\}.$$
 
-### 0.3 图、局部子图、multi-graph batch 与排序约定
+证明键至少包含 coefficient-basis SRS：
+
+$$PK_{coef}=\{[\tau^0]_1,[\tau^1]_1,\ldots,[\tau^{D_{max}}]_1\}.$$
+
+为了适配本文大量工作域插值多项式，正式实现可以进一步预计算每个工作域 $\mathbb H_{\mathcal D}$ 的 Lagrange-basis SRS：
+
+$$PK_{lag}^{(\mathcal D)}=\{[L_0^{(\mathcal D)}(\tau)]_1,[L_1^{(\mathcal D)}(\tau)]_1,\ldots,[L_{n_{\mathcal D}-1}^{(\mathcal D)}(\tau)]_1\}.$$
+
+若多项式以系数形式给出，则承诺实现必须使用：
+
+$$[P]=\sum_{i=0}^{D-1}p_i[\tau^i]_1.$$
+
+若多项式以工作域 $\mathbb H_{\mathcal D}$ 上的 evaluation 形式给出，且 $P(X)=\sum_{i=0}^{n_{\mathcal D}-1}P(\omega_{\mathcal D}^i)L_i^{(\mathcal D)}(X)$，则承诺实现应使用：
+
+$$[P]=\sum_{i=0}^{n_{\mathcal D}-1}P(\omega_{\mathcal D}^i)[L_i^{(\mathcal D)}(\tau)]_1.$$
+
+该 Lagrange-basis 承诺路径是本文主实验的推荐实现，因为它避免在每个 trace 列上重复执行 IFFT，同时不暴露 $\tau$。
+
+#### 0.2.1 隐私、隐藏承诺与掩蔽 opening
+
+本文的正式目标是零知识可验证推理，而不是仅证明计算正确性。所有非公开见证多项式在进入承诺和 opening 之前都必须启用 hiding/blinding 规则。本文采用 domain-vanishing blinding：对定义在工作域 $\mathbb H_{\mathcal D}$ 上的私有多项式 $P$，证明者实际承诺的对象为
+
+$$P^{zk}(X)=P(X)+Z_{\mathcal D}(X)R_P(X),$$
+
+其中 $Z_{\mathcal D}(X)=X^{n_{\mathcal D}}-1$，$R_P(X)$ 是按 `privacy_policy` 规定采样的随机低次数掩蔽多项式。由于 $Z_{\mathcal D}$ 在工作域内恒为 0，$P^{zk}$ 与 $P$ 在工作域上的 trace 值完全一致，不改变所有域内约束语义；而在随机 opening 点上，验证者看到的是 $P^{zk}(z)$，不是裸 witness 值 $P(z)$。
+
+所有 quotient 构造、opening bundle、外点绑定子证明和 transcript 都必须消费 $P^{zk}$ 的承诺与评值。若某个绑定关系需要使用裸语义值，必须通过零知识绑定子证明 $\Pi_{bind}$ 给出，不得把裸折叠向量、裸中间激活、裸注意力权重或裸模型参数评值写入 proof object。
+
+公开多项式不需要掩蔽，包括由验证者本地重建的拓扑列、选择器列、索引列、公开元数据和最终被声明公开的输出 $Y$。若最终 logits $Y$ 被定义为公开输出，则 $P_Y$ 和 $P_{Y^\star}$ 可按公开输出策略不掩蔽；若某次实验要求只公开 label 而隐藏 logits，则必须把 logits 改为私有 witness 并额外证明 label 与 logits 的 argmax 关系。
+
+随机预言机统一写作 $H_{FS}(\cdot)$。所有 Fiat--Shamir 挑战必须按本文固定顺序生成，禁止重排、回退、漏吸入或重复吸入。`srs_id`、`srs_type`、`privacy_policy`、`proof_task`、`encoding` 和所有 public metadata 必须在任何动态承诺挑战生成之前吸入 transcript。
+
+### 0.3 图、局部子图、多图批处理与排序
 
 - 全局节点总数：$N_{total}$
 
-- 当前证明实例中的**总**节点数：$N$
+- 当前证明实例中的总节点数：$N$
 
-- 当前证明实例中的**总**边数：$E$
+- 当前证明实例中的总边数：$E$
 
 - 当前证明实例中的图个数：$G_{batch}$
 
-- 局部 / batch 后的节点绝对编号序列：$I=(I_0,I_1,\ldots,I_{N-1})$
+- 局部子图 / 批处理后的节点绝对编号序列：$I=(I_0,I_1,\ldots,I_{N-1})$
 
 - 边源索引序列：$src=(src(0),src(1),\ldots,src(E-1))$
 
 - 边目标索引序列：$dst=(dst(0),dst(1),\ldots,dst(E-1))$
 
-- 批处理中各图的节点前缀指针：$node\_ptr=(\nu_0,\nu_1,\ldots,\nu_{G_{batch}})$，其中 $0=\nu_0<\nu_1<\cdots<\nu_{G_{batch}}=N$
+- 批处理中各图的节点前缀指针：$node\_ptr=(\nu_0,\nu_1,\ldots,\nu_{G_{batch}})$，其中$0=\nu_0<\nu_1<\cdots<\nu_{G_{batch}}=N$
   
 - 批处理中各图的边前缀指针：$edge\_ptr=(\epsilon_0,\epsilon_1,\ldots,\epsilon_{G_{batch}})$，其中 $0=\epsilon_0<\epsilon_1<\cdots<\epsilon_{G_{batch}}=E$
 
-对任意节点索引 $i\in\{0,1,\ldots,N-1\}$，定义其图编号：$node\_gid(i)=g\quad\Longleftrightarrow\quad \nu_g\le i<\nu_{g+1}$
+对任意节点索引 $i\in\{0,1,\ldots,N-1\}$，定义其图编号 $node\_gid(i)=g$，其中 $g\in{0,1,\ldots,G_{batch}-1}$ 满足 $\nu_g\le i<\nu_{g+1}$ 
 
-对任意边索引 $k\in\{0,1,\ldots,E-1\}$，定义其图编号：$edge\_gid(k)=g\quad\Longleftrightarrow\quad \epsilon_g\le k<\epsilon_{g+1}$
+对任意边索引 $k\in\{0,1,\ldots,E-1\}$，定义其图编号 $edge\_gid(k)=g$，其中 $g\in{0,1,\ldots,G_{batch}-1}$ 满足 $\epsilon_g\le k<\epsilon_{g+1}$ 
 
 因此，对任意边索引 $k$，都有：
 
@@ -87,22 +141,23 @@ $src(k),dst(k)\in\{0,1,\ldots,N-1\},\quad node\_gid(src(k))=edge\_gid(k),\quad n
 
 若 $G_{batch}=1$，则本文的公共输入仍然必须显式写成 $node\_ptr=(0,N),\quad edge\_ptr=(0,E)$，不得省略，也不得以其他记号替代。
 
-固定要求边序列满足以下**两级稳定排序**：
+固定要求边序列满足以下两级稳定排序：
 
-1. 先按 $edge\_gid(k)$ 非降序排列，使不同图的边在公开边序列中保持**连续块**；
+1. 先按 $edge\_gid(k)$ 非降序排列，使不同图的边在公开边序列中保持连续块；
+
 2. 在每个固定图块内部，再按目标节点索引 $dst(k)$ 做确定性稳定排序。
 
-等价地，若 $0\le k_1<k_2\le E-1$，则必须满足：
-
-$edge\_gid(k_1)<edge\_gid(k_2)$ 或 $(edge\_gid(k_1)=edge\_gid(k_2)\ \text{且}\ dst(k_1)\le dst(k_2)$ 
+等价地，若 $0\le k_1<k_2\le E-1$，则必须满足：$edge\_gid(k_1)<edge\_gid(k_2)$ 或 $(edge\_gid(k_1)=edge\_gid(k_2)$  且 $dst(k_1)\le dst(k_2)$ 
 
 若原始输入不满足这一条件，则在见证生成前先做：
 
 - 图内节点重编号 / 局部子图抽取；
+  
 - 按图分块的稳定排序；
+
 - 每个图块内部按 $dst$ 的稳定排序。
 
-验证者只接收已经按此规范生成的公开序列。除非某条公式显式写出 per-graph 或 graph-local 量，否则后文中的 $N,E$ 一律指当前证明实例中的总节点数与总边数；在 multi-graph batch 情形下，它们分别等于所有图的节点数与边数总和。
+验证者只接收已经按此规范生成的公开序列。除非某条公式显式写出“按图”量或“图局部”量，否则后文中的 $N,E$ 一律指当前证明实例中的总节点数与总边数；在多图批处理情形下，它们分别等于所有图的节点数与边数总和。
 
 ### 0.4 静态表与量化尺度
 
@@ -110,11 +165,11 @@ $edge\_gid(k_1)<edge\_gid(k_2)$ 或 $(edge\_gid(k_1)=edge\_gid(k_2)\ \text{且}\
 
 1. 全局特征表：$T_H\in\mathbb F_p^{N_{total}\times d_{in}}$
 
-2. LeakyReLU 查表：$T_{LReLU}\subseteq \mathbb F_p\times\mathbb F_p$
+2. LeakyReLU表：$T_{LReLU}\subseteq \mathbb F_p\times\mathbb F_p$
 
-3. ELU 查表：$T_{ELU}\subseteq \mathbb F_p\times\mathbb F_p$
+3. ELU表：$T_{ELU}\subseteq \mathbb F_p\times\mathbb F_p$
 
-4. 指数查表：$T_{exp}\subseteq \mathbb F_p\times\mathbb F_p$
+4. 指数表：$T_{exp}\subseteq \mathbb F_p\times\mathbb F_p$
 
 5. 范围表：$T_{range}=\{0,1,2,\ldots,2^B-1\}$，其中 $B$ 是范围检查位宽。
 
@@ -122,87 +177,91 @@ $edge\_gid(k_1)<edge\_gid(k_2)$ 或 $(edge\_gid(k_1)=edge\_gid(k_2)\ \text{且}\
 为避免多值歧义，要求：
 
 - 对任意 $x\in\mathbb F_p$，在 $T_{LReLU}$ 中至多存在一个 $y\in\mathbb F_p$ 使得 $(x,y)\in T_{LReLU}$。
+  
 - 对任意 $x\in\mathbb F_p$，在 $T_{ELU}$ 中至多存在一个 $y\in\mathbb F_p$ 使得 $(x,y)\in T_{ELU}$。
+  
 - 对任意 $u\in\mathbb F_p$，在 $T_{exp}$ 中至多存在一个 $v\in\mathbb F_p$ 使得 $(u,v)\in T_{exp}$。
 
-与 Softmax 链路有关的量化尺度全部视为公开参数：
+与Softmax链路有关的量化尺度全部视为公开参数：
 
 - 差分反量化尺度：$S_{\Delta}$
+
 - 指数输出尺度：$S_{exp}$
+  
 - 逆元见证尺度：$S_{inv}$
+
 - 归一化权重尺度：$S_{\alpha}$
+  
 - 隐藏层聚合前尺度：$S_{agg,pre}$
+  
 - 隐藏层 ELU 后尺度：$S_{agg}$
+  
 - 拼接后表示尺度：$S_{cat}$
-- 输出层每个 head 的聚合前尺度：$S_{out,pre}$
-- 输出层每个 head 的加偏置后尺度：$S_{out,head}$
+  
+- 输出层每个头的聚合前尺度：$S_{out,pre}$
+  
+- 输出层每个头的加偏置后尺度：$S_{out,head}$
+  
 - 输出层最终多头平均 logits 尺度：$S_{out}$
 
-舍入方式（向最近整数舍入或截断）、乘法后的 rescale 规则也全部是公开参数。
+舍入方式（向最近整数舍入或截断）、乘法后的重缩放规则也全部是公开参数。
 
 进一步固定输出层的量化与平均语义如下：
 
-1. 对每个输出头 $s$，聚合前输出 $Y^{pre(s)}$ 在与偏置向量 $b^{(out,s)}$ 相加之前，必须已经被公开量化规则对齐到与 $b^{(out,s)}$ 相同的输出头尺度 $S_{out,head}$。若实现中 attention 聚合自然产出的尺度是 $S_{out,pre}$，则必须先施加公开的对齐 / 回缩算子：
+1. 对每个输出头 $s$，聚合前输出 $Y^{pre(s)}$ 在与偏置向量 $b^{(out,s)}$ 相加之前，必须已经被公开量化规则对齐到与 $b^{(out,s)}$ 相同的输出头尺度 $S_{out,head}$。若实现中注意力聚合自然产出的尺度是 $S_{out,pre}$，则必须先施加公开的对齐 / 回缩算子：$\widetilde Y^{pre(s)} = Rescale_{out}\!\big(Y^{pre(s)}; S_{out,pre}\rightarrow S_{out,head}\big)$
 
-   $\widetilde Y^{pre(s)} = Rescale_{out}\!\big(Y^{pre(s)}; S_{out,pre}\rightarrow S_{out,head}\big)$
-
-   然后正式定义输出头内部的 bias-add 为：$Y^{(s)}=\widetilde Y^{pre(s)}+b^{(out,s)}$
+   然后将输出头内部的偏置相加正式定义为：$Y^{(s)}=\widetilde Y^{pre(s)}+b^{(out,s)}$ 
 
    当且仅当 $quant\_cfg\_id$ 指定 $S_{out,pre}=S_{out,head}$ 时，$Rescale_{out}$ 定义为恒等映射；否则 $Rescale_{out}$ 必须按 $quant\_cfg\_id$ 唯一指定的舍入 / 截断规则执行，不存在第二种解释。
 
-2. 最终多头平均必须在**共同尺度**上执行。本文协议固定要求最终平均发生在输出头共同尺度 $S_{out,head}$ 上，并且最终 logits 继续保持这一共同尺度，即$S_{out}=S_{out,head}$
+2. 最终多头平均必须在共同尺度上执行。本文协议固定要求最终平均发生在输出头共同尺度 $S_{out,head}$ 上，并且最终 logits 继续保持这一共同尺度，即$S_{out}=S_{out,head}$，因而先在域内计算：$Y^{sum}_{i,c}=\sum_{s=0}^{K_{out}-1}Y_{i,c}^{(s)}$，再乘以公开整数 $K_{out}$ 在 $\mathbb F_p$ 中的逆元 $K_{out}^{-1}$，得到域内平均值与最终 logits：$Y_{i,c}=Y_{i,c}^{avg}=K_{out}^{-1}\cdot Y^{sum}_{i,c}$
 
-   因而先在域内计算：$Y^{sum}_{i,c}=\sum_{s=0}^{K_{out}-1}Y_{i,c}^{(s)}$
+   换言之，本协议严格禁止在最终平均之后再额外引入第二个平均后重缩放子步骤。当前主协议中，最终平均的唯一正式语义就是上式；任何需要平均后重缩放的方案都不属于本文当前协议，必须另行定义为新的协议版本。
 
-   再乘以公开整数 $K_{out}$ 在 $\mathbb F_p$ 中的逆元 $K_{out}^{-1}$，得到域内平均值与最终 logits：
-
-   $Y_{i,c}=Y_{i,c}^{avg}=K_{out}^{-1}\cdot Y^{sum}_{i,c}$
-
-   换言之，**本协议正式版本严格禁止在最终平均之后再额外引入第二个 post-average rescale 子步骤**。当前主协议中，最终平均的唯一正式语义就是上式；任何需要 post-average rescale 的方案都不属于本文当前协议，必须另行定义为新的协议版本。
-
-3. 上述 $Rescale_{out}$、舍入方式（round-to-nearest / truncation），以及乘以 $K_{out}^{-1}$ 的平均语义，全部必须并入 $quant\_cfg\_id$ 所标识的公开量化配置；证明者与验证者不得各自选择不同的平均语义。
-
+3. 上述 $Rescale_{out}$、舍入方式，以及乘以 $K_{out}^{-1}$ 的平均语义，全部必须并入 $quant\_cfg\_id$ 所标识的公开量化配置；证明者与验证者不得各自选择不同的平均语义。
 
 ### 0.5 模型参数
 
 #### 0.5.1 隐藏层参数族
 
-对任意隐藏层 $\ell\in\{1,2,\ldots,L-1\}$，以及该层中的每个注意力头$r\in\{0,1,\ldots,K_{hid}^{(\ell)}-1\}$，定义：
+对任意隐藏层 $\ell\in\{1,2,\ldots,L-1\}$，以及该层中的每个注意力头 $r\in\{0,1,\ldots,K_{hid}^{(\ell)}-1\}$，定义：
 
 - 投影矩阵 $W^{(\ell,r)}\in\mathbb F_p^{d_{in}^{(\ell)}\times d_h^{(\ell)}}$
+  
 - 源方向注意力向量 $a_{src}^{(\ell,r)}\in\mathbb F_p^{d_h^{(\ell)}}$
+  
 - 目标方向注意力向量 $a_{dst}^{(\ell,r)}\in\mathbb F_p^{d_h^{(\ell)}}$
 
-在后文“单个隐藏层模板”的数学推导中，统一把 $W^{(\ell,r)},a_{src}^{(\ell,r)},a_{dst}^{(\ell,r)}$，记作 $W^{(r)},a_{src}^{(r)},a_{dst}^{(r)}$。这一重写只服务于公式书写；代码实现中的对象名、serializer 字段名、proof label 与日志字段名都必须保留完整层指标 $(\ell,r)$。
+在后文“单个隐藏层模板”的数学推导中，统一把 $W^{(\ell,r)},a_{src}^{(\ell,r)},a_{dst}^{(\ell,r)}$，记作 $W^{(r)},a_{src}^{(r)},a_{dst}^{(r)}$。这一重写只用于公式书写；代码实现中的对象名、序列化器字段名、证明标签以及日志字段名都必须保留完整层指标 $(\ell,r)$。
 
 #### 0.5.2 输出层参数
 
 对最终输出层中的每个输出注意力头 $s\in\{0,1,\ldots,K_{out}-1\}$，定义：
 
 - 输出投影矩阵 $W^{(out,s)}\in\mathbb F_p^{d_{in}^{(L)}\times C}$
+  
 - 输出层源方向注意力向量 $a_{src}^{(out,s)}\in\mathbb F_p^C$
+  
 - 输出层目标方向注意力向量 $a_{dst}^{(out,s)}\in\mathbb F_p^C$
+  
 - 输出层偏置向量 $b^{(out,s)}\in\mathbb F_p^C$
 
 其中 $d_{in}^{(L)}=d_{cat}^{(L-1)}$，也就是最终输出层接收最后一个隐藏层拼接后的表示。
 
-本文沿用把官方 attention 向量按源 / 目标方向分拆的等价写法：$\mathbf a^{(out,s)\top}[u\,\|\,v] = a_{src}^{(out,s)\top}u + a_{dst}^{(out,s)\top}v$
-
-其中 $[u\,\|\,v]$ 表示拼接。这只是代数重写，不改变官方 GAT 的前向语义。
+本文沿用把官方注意力向量按源/目标方向分拆的等价写法：$\mathbf a^{(out,s)\top}[u\,\|\,v] = a_{src}^{(out,s)\top}u + a_{dst}^{(out,s)\top}v$。其中 $[u\,\|\,v]$ 表示拼接。这只是代数重写，不改变官方GAT的前向语义。
 
 所有模型参数在多次证明中固定，因此统一预处理进入模型验证键 $VK_{model}$。在多层实例中，$VK_{model}$ 必须同时包含：
 
-- 全部隐藏层 family $\{W^{(\ell,r)},a_{src}^{(\ell,r)},a_{dst}^{(\ell,r)}\}_{\ell,r}$；
-- 最终输出层 family $\{W^{(out,s)},a_{src}^{(out,s)},a_{dst}^{(out,s)},b^{(out,s)}\}_{s=0}^{K_{out}-1}$。
+- 全部隐藏层参数族：$\{W^{(\ell,r)},a_{src}^{(\ell,r)},a_{dst}^{(\ell,r)}\}_{\ell,r}$；
+  
+- 最终输出层参数族：$\{W^{(out,s)},a_{src}^{(out,s)},a_{dst}^{(out,s)},b^{(out,s)}\}_{s=0}^{K_{out}-1}$。
 
 
 ### 0.6 全部中间变量
 
 #### 0.6.1 原始特征
 
-对每个局部节点 $i\in\{0,1,\ldots,N-1\}$ 与每个输入维索引 $j\in\{0,1,\ldots,d_{in}-1\}$，定义$H_{i,j}=T_H[I_i,j]$
-
-于是：$H\in\mathbb F_p^{N\times d_{in}}$
+对每个局部节点 $i\in\{0,1,\ldots,N-1\}$ 与每个输入维索引 $j\in\{0,1,\ldots,d_{in}-1\}$，定义：$H_{i,j}=T_H[I_i,j]$，于是：$H\in\mathbb F_p^{N\times d_{in}}$
 
 #### 0.6.2 单个隐藏层模板中第 $r$ 个注意力头的节点域变量
 
@@ -263,12 +322,9 @@ $edge\_gid(k_1)<edge\_gid(k_2)$ 或 $(edge\_gid(k_1)=edge\_gid(k_2)\ \text{且}\
 
 14. 聚合前压缩加权特征：$\widehat v_{pre}^{\star(r)}\in\mathbb F_p^E \qquad \widehat v_{pre,k}^{\star(r)}=\alpha_k^{(r)}H_{src,k}^{\star,edge(r)}$
 
-
 #### 0.6.4 单个隐藏层模板的拼接阶段变量
 
-定义拼接结果$H_{cat}\in\mathbb F_p^{N\times d_{cat}}$，其中对任意 $i\in\{0,1,\ldots,N-1\}$、$r\in\{0,1,\ldots,K_{hid}-1\}$、$j\in\{0,1,\ldots,d_h-1\}$，都有
-
-$H_{cat,i,r\cdot d_h+j}=H_{agg,i,j}^{(r)}$
+定义拼接结果$H_{cat}\in\mathbb F_p^{N\times d_{cat}}$，其中对任意 $i\in\{0,1,\ldots,N-1\}$、$r\in\{0,1,\ldots,K_{hid}-1\}$、$j\in\{0,1,\ldots,d_h-1\}$，都有 $H_{cat,i,r\cdot d_h+j}=H_{agg,i,j}^{(r)}$
 
 定义拼接压缩挑战：$\xi_{cat}\in\mathbb F_p$
 
@@ -307,16 +363,16 @@ $H_{cat,i,r\cdot d_h+j}=H_{agg,i,j}^{(r)}$
 23. 尺度对齐后的聚合前输出：$\widetilde Y^{pre(s)}\in\mathbb F_p^{N\times C}$，其中：$\widetilde Y_{i,c}^{pre(s)}=Rescale_{out}\!\big(Y_{i,c}^{pre(s)}; S_{out,pre}\rightarrow S_{out,head}\big)$
 
 24. 尺度对齐后的聚合前输出类别压缩：$\widetilde Y^{pre,\star(s)}\in\mathbb F_p^N, \qquad \widetilde Y_i^{pre,\star(s)}=\sum_{c=0}^{C-1}\widetilde Y_{i,c}^{pre(s)}\xi_{out}^c$
-25. 输出层加偏置后的 head 输出：$Y^{(s)}\in\mathbb F_p^{N\times C}, \qquad Y_{i,c}^{(s)}=\widetilde Y_{i,c}^{pre(s)}+b_c^{(out,s)}$
+25. 输出层加偏置后的 头 输出：$Y^{(s)}\in\mathbb F_p^{N\times C}, \qquad Y_{i,c}^{(s)}=\widetilde Y_{i,c}^{pre(s)}+b_c^{(out,s)}$
 
-26. 输出层 head 输出的类别压缩：$Y^{\star(s)}\in\mathbb F_p^N, \qquad Y_i^{\star(s)}=\sum_{c=0}^{C-1}Y_{i,c}^{(s)}\xi_{out}^c$
-27. 输出层 head 输出压缩广播：$Y^{\star,edge(s)}\in\mathbb F_p^E, \qquad Y_k^{\star,edge(s)}=Y_{dst(k)}^{\star(s)}$
+26. 输出层 头 输出的类别压缩：$Y^{\star(s)}\in\mathbb F_p^N, \qquad Y_i^{\star(s)}=\sum_{c=0}^{C-1}Y_{i,c}^{(s)}\xi_{out}^c$
+27. 输出层 头 输出压缩广播：$Y^{\star,edge(s)}\in\mathbb F_p^E, \qquad Y_k^{\star,edge(s)}=Y_{dst(k)}^{\star(s)}$
 28. 最终输出：先定义 $Y^{sum}\in\mathbb F_p^{N\times C}$ 与域内平均 $Y^{avg}\in\mathbb F_p^{N\times C}$：$Y_{i,c}^{sum}=\sum_{s=0}^{K_{out}-1}Y_{i,c}^{(s)}, \qquad Y_{i,c}^{avg}=K_{out}^{-1}\cdot Y_{i,c}^{sum}$
 
-其中 $K_{out}^{-1}$ 是整数 $K_{out}$ 在 $\mathbb F_p$ 中的逆元。本文协议要求最终 logits 与输出头使用同一共同尺度 $S_{out}=S_{out,head}$，因此正式定义
+其中 $K_{out}^{-1}$ 是整数 $K_{out}$ 在 $\mathbb F_p$ 中的逆元。本文协议要求最终 logits 与输出头使用同一共同尺度 $S_{out}=S_{out,head}$，因此正式定义 $Y\in\mathbb F_p^{N\times C}, \quad Y_{i,c}=Y_{i,c}^{avg}$ 
 
-$Y\in\mathbb F_p^{N\times C}, \qquad Y_{i,c}=Y_{i,c}^{avg}$
 29. 最终输出的类别压缩：$Y^{\star}\in\mathbb F_p^N, \qquad Y_i^{\star}=\sum_{c=0}^{C-1}Y_{i,c}\xi_{out}^c$
+
 30. 最终输出压缩广播：$Y^{\star,edge}\in\mathbb F_p^E, \qquad Y_k^{\star,edge}=Y_{dst(k)}^{\star}$
 
 ### 0.7 工作域、选择器、辅助公开列与展平规则
@@ -356,30 +412,28 @@ $Y\in\mathbb F_p^{N\times C}, \qquad Y_{i,c}=Y_{i,c}^{avg}$
 
 2. 节点域有效区选择器：$Q_N[i]= \begin{cases} 1 &0\le i\le N-1,\\ 0,&N\le i\le n_N-1 \end{cases}$
 
-3. 对每个隐藏层 $\ell\in\{1,2,\ldots,L-1\}$，输入共享维域有效区选择器 family 定义为：
+3. 对每个隐藏层 $\ell\in\{1,2,\ldots,L-1\}$，输入共享维域有效区选择器族定义为：
    
    $Q_{in}^{valid,(\ell)}[m]= \begin{cases} 1 &0\le m\le d_{in}^{(\ell)}-1 \\ 0 &d_{in}^{(\ell)}\le m\le n_{in}-1 \end{cases}$
    
-4. 对每个隐藏层 $\ell\in\{1,2,\ldots,L-1\}$，隐藏层单头共享维域有效区选择器 family 定义为：
+4. 对每个隐藏层 $\ell\in\{1,2,\ldots,L-1\}$，隐藏层单头共享维域有效区选择器族定义为：
    
    $Q_{d_h}^{valid,(\ell)}[j]= \begin{cases} 1 &0\le j\le d_h^{(\ell)}-1 \\ 0 &d_h^{(\ell)}\le j\le n_{d_h}-1 \end{cases}$ 
    
-5. 对每个隐藏层 $\ell\in\{1,2,\ldots,L-1\}$，拼接共享维域有效区选择器 family 定义为：
+5. 对每个隐藏层 $\ell\in\{1,2,\ldots,L-1\}$，拼接共享维域有效区选择器族定义为：
    
    $Q_{cat}^{valid,(\ell)}[m]= \begin{cases} 1 &0\le m\le d_{cat}^{(\ell)}-1 \\ 0 &d_{cat}^{(\ell)}\le m\le n_{cat}-1 \end{cases}$
    
-6. 输出层输入共享维有效区选择器定义为：
+6. 输出层输入共享维有效区选择器定义为：$Q_{cat}^{valid,(out)}[m]= \begin{cases} 1 &0\le m\le d_{in}^{(L)}-1,\\ 0,&d_{in}^{(L)}\le m\le n_{cat}-1 \end{cases}$
    
-   $Q_{cat}^{valid,(out)}[m]= \begin{cases} 1 &0\le m\le d_{in}^{(L)}-1,\\ 0,&d_{in}^{(L)}\le m\le n_{cat}-1 \end{cases}$
-   
-   虽然 $d_{in}^{(L)}=d_{cat}^{(L-1)}$，正式协议仍然固定把 $Q_{cat}^{valid,(out)}$ 与 $Q_{cat}^{valid,(L-1)}$ 视为两个不同的公共对象。serializer、parser、transcript、quotient builder 与 verifier 都必须按两个不同标签处理它们；不得复用，不得合并，也不得依赖字节串相等来省略其中之一。
+   虽然 $d_{in}^{(L)}=d_{cat}^{(L-1)}$，正式协议仍然固定把 $Q_{cat}^{valid,(out)}$ 与 $Q_{cat}^{valid,(L-1)}$ 视为两个不同的公共对象。序列化器、解析器、transcript、商多项式构造器与验证者都必须将它们按两个不同的标签处理不得复用，不得合并，也不得依赖字节串相等来省略其中之一。
    
 7. 输出层类别共享维域有效区选择器：$Q_C^{valid}[c]= \begin{cases} 1 &0\le c\le C-1,\\ 0,&C\le c\le n_C-1 \end{cases}$
 
-8. 在**当前隐藏层模板**的数学推导中，统一采用以下局部记号：$Q_{in}^{valid}:=Q_{in}^{valid,(\ell)} \quad Q_{d_h}^{valid}:=Q_{d_h}^{valid,(\ell)} \quad
+8. 在当前隐藏层模板的数学推导中，统一采用以下局部记号：$Q_{in}^{valid}:=Q_{in}^{valid,(\ell)} \quad Q_{d_h}^{valid}:=Q_{d_h}^{valid,(\ell)} \quad
    Q_{cat}^{valid}:=Q_{cat}^{valid,(\ell)}$ 
    
-   这一定义只用于公式书写。正式协议中的 transcript、serializer、proof object inventory、quotient builder 与 verifier/parser，必须始终使用带层指标的 selector family；任何实现都不得把不同层的 selector 视为同一个公共对象。
+   这一定义仅用于公式书写。正式协议中的 transcript、序列化器、证明对象清单、商多项式构造器以及验证者/解析器，必须始终使用带层指标的选择器族；任何实现都不得将不同层的选择器视为同一个公共对象。
 
 
 #### 0.7.4 分组选择器与 batch 边界选择器
@@ -395,17 +449,14 @@ $Y\in\mathbb F_p^{N\times C}, \qquad Y_{i,c}=Y_{i,c}^{avg}$
 4. 图块末尾选择器：$Q_{graph\_end}^{edge}[k]= \begin{cases} 1 &k=E-1 \\ 1 &0\le k\le E-2\ \text{且}\ edge\_gid(k+1)\ne edge\_gid(k) \\ 0 &0\le k\le E-2\ \text{且}\ edge\_gid(k+1)=edge\_gid(k) \\ 0 &k\ge E \end{cases}$
 
 5. batch-aware 组起点选择器：$Q_{new,batch}^{edge}[k]=1-\big(1-Q_{graph\_new}^{edge}[k]\big)\big(1-Q_{new}^{edge}[k]\big)$
+   
+6. 批量感知组末尾选择器：$Q_{end,batch}^{edge}[k]=1-\big(1-Q_{graph\_end}^{edge}[k]\big)\big(1-Q_{end}^{edge}[k]\big)$
 
+7. 正式协议统一记号：$Q_{grp\_new}^{edge}:=\begin{cases}Q_{new}^{edge} & G_{batch}=1 \\Q_{new,batch}^{edge} & G_{batch}>1 \end{cases}\quad Q_{grp\_end}^{edge}:=\begin{cases}Q_{end}^{edge} & G_{batch}=1 \\Q_{end,batch}^{edge} & G_{batch}>1 \end{cases}$ 
 
-6. batch-aware 组末尾选择器：$Q_{end,batch}^{edge}[k]=1-\big(1-Q_{graph\_end}^{edge}[k]\big)\big(1-Q_{end}^{edge}[k]\big)$
+因此，代码实现、序列化器、商多项式构造器与验证者/解析器中，凡是“组起点 / 组末尾”相关的状态机，都必须以 $Q_{grp\_new}^{edge}$、$Q_{grp\_end}^{edge}$ 为唯一正式输入；即使 $G_{batch}=1$，实现也必须使用这两个批处理感知标签，而不得回退到旧的 $Q_{new}^{edge},Q_{end}^{edge}$ 标签。
 
-7. 正式协议统一记号：
-
-  $Q_{grp\_new}^{edge}:=\begin{cases}Q_{new}^{edge} & G_{batch}=1 \\Q_{new,batch}^{edge} & G_{batch}>1 \end{cases}\quad Q_{grp\_end}^{edge}:=\begin{cases}Q_{end}^{edge} & G_{batch}=1 \\Q_{end,batch}^{edge} & G_{batch}>1 \end{cases}$ 
-
-因此，代码实现、serializer、quotient builder 与 verifier/parser 中，凡是“组起点 / 组末尾”相关的状态机，都必须以 $Q_{grp\_new}^{edge}$、$Q_{grp\_end}^{edge}$ 为唯一正式输入；即使 $G_{batch}=1$，实现也必须消费这两个 batch-aware 标签，而不得回退到旧的 $Q_{new}^{edge},Q_{end}^{edge}$ 标签。
-
-由此，后文所有隐藏层 / 输出层的 `C_{max}` 状态机、`PSQ` 状态机、对应 quotient identity，以及 verifier 对这些 identity 的检查，除非该条公式标题中显式写出“单图局部定义”，否则都必须统一使用 batch-aware selectors $Q_{grp\_new}^{edge},Q_{grp\_end}^{edge}$。
+由此，后文所有隐藏层 / 输出层的 $C_{max}$ 状态机、$PSQ$ 状态机、对应的商多项式恒等式，以及验证者对这些恒等式的检查，除非该条公式标题中显式写出“单图局部定义”，否则都必须统一使用批处理感知选择器 $Q_{grp\_new}^{edge},Q_{grp\_end}^{edge}$ 
 
 #### 0.7.5 公共枚举列与索引辅助列
 
@@ -435,19 +486,22 @@ $Y\in\mathbb F_p^{N\times C}, \qquad Y_{i,c}=Y_{i,c}^{avg}$
 特别地：
 
 - 对 $N\times d_{in}$ 矩阵，使用索引 $i\cdot d_{in}+j$；
+  
 - 对 $N\times d_h$ 矩阵，使用索引 $i\cdot d_h+j$；
+  
 - 对 $N\times d_{cat}$ 矩阵，使用索引 $i\cdot d_{cat}+m$；
+  
 - 对 $N\times C$ 矩阵，使用索引 $i\cdot C+c$。
 
 #### 0.7.7 CRPC 编码
 
-对矩阵乘法：$A\in\mathbb F_p^{m\times\ell} \quad B\in\mathbb F_p^{\ell\times n} \quad C=A\cdot B\in\mathbb F_p^{m\times n}$
+对矩阵乘法：$A\in\mathbb F_p^{m\times\ell} \quad B\in\mathbb F_p^{\ell\times n} \quad C=A\cdot B\in\mathbb F_p^{m\times n}$ 
 
 定义输出系数多项式：$P_C(X)=\sum_{i=0}^{m-1}\sum_{j=0}^{n-1}C_{i,j}X^{i\cdot n+j}$
 
 对共享维 $t\in\{0,1,\ldots,\ell-1\}$，定义：$A_t^{\langle n\rangle}(X)=\sum_{i=0}^{m-1}A_{i,t}X^{i\cdot n} \quad B_t(X)=\sum_{j=0}^{n-1}B_{t,j}X^j$
 
-于是：$P_C(X)=\sum_{t=0}^{\ell-1}A_t^{\langle n\rangle}(X)B_t(X)$
+于是：$P_C(X)=\sum_{t=0}^{\ell-1}A_t^{\langle n\rangle}(X) \cdot B_t(X)$
 
 #### 0.7.8 张量绑定子证明
 
@@ -457,14 +511,19 @@ $Y\in\mathbb F_p^{N\times C}, \qquad Y_{i,c}=Y_{i,c}^{avg}$
 
 其中：
 
-- 对每个隐藏层 $\ell$、每个 hidden head $r$，$\pi_{bind}^{hidden,(\ell,r)}$ 负责该 head 的投影、源注意力、目标注意力、压缩与聚合绑定；
+- 对每个隐藏层 $\ell$、每个隐藏头 $r$，$\pi_{bind}^{hidden,(\ell,r)}$ 负责该头的投影、源注意力、目标注意力、压缩与聚合绑定；
+  
 - 对每个隐藏层 $\ell$，$\pi_{bind}^{concat,(\ell)}$ 负责该层拼接对象与压缩对象的一致性绑定；
+  
 - 对每个输出头 $s$，$\pi_{bind}^{out,s}$ 负责输出投影、源注意力、目标注意力、聚合前压缩、加偏置后输出压缩等绑定；
+  
 - $\pi_{bind}^{out,avg}$ 负责最终多头平均输出 $Y$ 与各个 $Y^{(s)}$ 之间的一致性绑定。
 
 每个子证明都必须使用独立的域分离标签初始化内部 transcript。
 
-### 0.8 Padding、零分母、Softmax 可行性与缓存要求
+主实验中的绑定证明必须采用固定接口语义。每个绑定证明都要明确写出绑定对象名称、来源承诺、折叠后承诺、masked evaluation、挑战点和绑定模式。证明对象中只允许出现辅助承诺、masked opening 和 KZG opening 证明；不得出现裸折叠向量、裸模型参数评值、裸中间激活或裸内积结果。验证者必须检查绑定模式、对象标签、可见性、承诺顺序、opening 类型和 transcript 域分离标签是否全部一致。
+
+### 0.8 填充、零分母、Softmax 可行性与缓存要求
 
 #### 0.8.1 Padding 规则
 
@@ -473,15 +532,20 @@ $Y\in\mathbb F_p^{N\times C}, \qquad Y_{i,c}=Y_{i,c}^{avg}$
 对所有 $t\in\{L_{\mathcal D},L_{\mathcal D}+1,\ldots,n_{\mathcal D}-1\}$，统一规定：
 
 - 见证值补零；
+  
 - 表值补零；
+  
 - 查询值补零；
+  
 - 重数补零；
+  
 - 由有效区选择器屏蔽无效位置；
-- 所有状态机在 padding 区都必须保持常值；实现时不得改写成其他等价但不同形态的递推规则。
+  
+- 所有状态机在填充区都必须保持常值；实现时不得改写成其他等价但不同形态的递推规则。
 
 #### 0.8.2 零分母冲突
 
-对任意 LogUp 子系统 $\mathcal L$，零分母集合定义为：$Bad_{\mathcal L} = \{-Table[t]\mid t\text{ 在表有效区}\} \cup \{-Query[t]\mid t\text{ 在查询有效区}\}$
+对任意 LogUp 子系统 $\mathcal L$，零分母集合定义为：$Bad_{\mathcal L} = \{-Table[t]\mid t\text{ 在表有效区}\} \cup \{-Query[t]\mid t\text{ 在查询有效区}\}$ 
 
 要求：每个 lookup / 路由子系统的挑战必须在决定其基础值的承诺固定之后再生成，并且语义上必须满足：$\beta_{\mathcal L}\notin Bad_{\mathcal L}$
 
@@ -492,91 +556,180 @@ $Y\in\mathbb F_p^{N\times C}, \qquad Y_{i,c}=Y_{i,c}^{avg}$
 同时还必须满足：
 
 1. 所有合法输入下的实数域最大分母严格小于模数 $p$；
+   
 2. 量化后最小聚合值至少为 $1$。
 
 这样才能保证：$Sum_i^{(r)}\ne 0$ 以及 $Sum_i^{(out,s)}\ne 0\;\forall s\in\{0,1,\ldots,K_{out}-1\}$ 在域内成立。
 
 #### 0.8.4 热路径对象与缓存要求
 
-热路径对象包括：所有域元素、所有挑战值、所有曲线点、SRS、静态表承诺、模型承诺、全部 FFT / IFFT 计划以及 quotient 计算的扩展域计划。
+热路径对象包括：所有域元素、所有挑战值、所有曲线点、SRS、静态表承诺、模型承诺、全部 FFT / IFFT 计划以及商计算的扩展域计划。
 
 程序启动后必须一次性缓存：
 
 - $PK$；
+  
 - $VK_{KZG}$；
+
 - $VK_{static}$；
+  
 - $VK_{model}$；
+  
 - $\mathbb H_{FH},\mathbb H_{edge},\mathbb H_{in},\mathbb H_{d_h},\mathbb H_{cat},\mathbb H_C,\mathbb H_N$ 的 FFT / IFFT 计划；
-- quotient 计算所需的扩展域计划。
+  
+- 商多项式计算所需的扩展域执行计划
 
 单次证明或验证期间不得重复构造这些对象。
 
-#### 0.8.5 公开元数据与版本元数据字段表
+#### 0.8.5 公开元数据与安全设置字段
 
-为保证证明对象、静态表、模型参数与量化配置之间的一致性，证明对象中必须携带一份**公开元数据 / 版本元数据**，其字段集合固定为：
+为保证证明对象、SRS、静态表、模型参数、量化配置和隐私策略之间一致，证明对象中必须携带一份公开元数据。命名保持直接、易读，Codex 实现时必须按下列字段固定顺序序列化并吸入 transcript。
 
-1. 协议标识字段：$protocol\_id$
+1. `protocol_name`：协议名称。主实验固定为 `zkgat`。
 
-  该字段固定标识本文协议版本与 transcript 规则版本。
+2. `proof_task`：证明任务。主实验固定为 `node_classification_full_gat`，表示证明完整多层多头 GAT 前向、输出注意力头、输出偏置和最终平均。
 
-2. 模型结构版本字段：$model\_arch\_id$
-	
-	该字段固定绑定：总层数 $L$、各隐藏层的头数 / 维度 profile $\{K_{hid}^{(\ell)},d_h^{(\ell)}\}_{\ell=1}^{L-1}$、输出层头数 $K_{out}$、隐藏层使用 ELU、每个输出头在 attention 聚合后加上该 head 的偏置向量、最终输出按全部输出头做算术平均、以及各层拼接维定义 $d_{cat}^{(\ell)}=K_{hid}^{(\ell)}d_h^{(\ell)}$。
-	
-3. 模型参数版本字段：$model\_param\_id$
-	
-	该字段唯一标识 $VK_{model}$ 所对应的参数承诺集合。
-	
-4. 静态表版本字段：$static\_table\_id$
-	
-	该字段唯一标识 $T_H,T_{LReLU},T_{ELU},T_{exp},T_{range}$ 以及 $VK_{static}$ 所对应的静态承诺集合。
-	
-5. 量化配置版本字段：$quant\_cfg\_id$
-	
-	该字段唯一标识全部量化尺度、舍入规则、rescale 规则与符号解释规则。
-	
-6. 工作域配置字段：$domain\_cfg$
-	
-	该字段在本文正式协议中固定定义为：$(n_{FH},n_{edge},n_{in},n_{d_h},n_{cat},n_C,n_N,\omega_{FH},\omega_{edge},\omega_{in},\omega_{d_h},\omega_{cat},\omega_C,\omega_N)$。
-	serializer、parser、prover 与 verifier 都必须按这一固定顺序编码、解析与检查；不得追加其他子字段，也不得重排。
+3. `srs_id`：本次使用的 SRS 标识，绑定 SRS 文件、曲线参数、次数界、工作域大小和 verifier key。
 
-7. 维度配置字段：$dim\_cfg$
-	
-	该字段在本文正式协议中固定定义为：$(G_{batch},N,E,N_{total},node\_ptr,edge\_ptr,L,\{d_{in}^{(\ell)}\}_{\ell=1}^{L},\{d_h^{(\ell)}\}_{\ell=1}^{L-1},\{d_{cat}^{(\ell)}\}_{\ell=1}^{L-1},C,B,K_{out})$。serializer、parser、prover 与 verifier 都必须按这一固定顺序编码、解析与检查；不得追加其他子字段，也不得重排。
-	
-8. 编码与序列化字段：$encoding\_id$
-	
-	该字段固定标识域元素字节序、曲线点编码方式、承诺序列化顺序以及 transcript 吸入顺序编码方式。
-	
-9. Padding 与选择器规则字段：$padding\_rule\_id$
-	
-	该字段固定标识第 0.8.1 节规定的 padding 语义以及各有效区选择器的公共重建规则。
-	
-10. 次数界配置字段：$degree\_bound\_id$
-	
-	该字段固定标识 $D_{max}$ 与各工作域 quotient / opening 所采用的次数界策略。
+4. `srs_type`：SRS 类型。主实验只能使用 `trusted_srs` 或 `mpc_srs`，不得出现 `seeded_tau`、`deterministic_tau`、`test_tau` 或任何证明者可见陷门模式。
 
-上述字段是证明对象内部携带的公共字段。验证者必须从 $\pi_{GAT}$ 中按固定顺序解析这些字段，并把它们纳入 transcript 与一致性检查。这些字段不是建议性注释，而是参与一致性检查的正式公共对象。
+5. `srs_degree_bound`：SRS 次数界，必须覆盖所有工作域、多项式、商多项式和 blinding 后的次数界。
+
+6. `privacy_policy`：隐私策略。主实验固定为 `model_and_trace_hidden`，表示隐藏模型参数和全部中间推理状态；图结构和节点特征是否隐藏由 `input_privacy` 单独声明。
+
+7. `input_privacy`：输入隐私。主实验固定为 `public_graph_public_features`，即图拓扑和节点特征作为公开输入或公开承诺对象，不默认隐藏。若以后需要隐藏输入特征或图结构，必须另写新的实现笔记和证明范围。
+
+8. `output_mode`：输出公开方式。主实验固定为 `public_logits`，最终 logits 公开并被证明绑定。若以后只公开 label，需要额外实现 argmax 证明。
+
+9. `opening_mode`：KZG opening 策略。主实验固定为 `domain_grouped_batch_opening`。
+
+10. `binding_mode`：外点评值绑定策略。主实验固定为 `zk_subproof_for_crpc`，其中矩阵乘法、注意力向量点积和压缩特征绑定使用零知识子证明。
+
+11. `model_arch`：模型结构标识，绑定层数、隐藏头数、隐藏维度、输出头数、输出偏置和最终平均语义。
+
+12. `model_params`：模型参数承诺集合标识。
+
+13. `static_tables`：静态表承诺集合标识，绑定特征表、LeakyReLU 表、ELU 表、指数表和范围表。
+
+14. `quant_config`：量化配置，绑定尺度、舍入、重缩放、符号解释和输出平均语义。
+
+15. `domain_cfg`：工作域大小和生成元配置。
+
+16. `dim_cfg`：图规模、batch 指针、层数、维度、类别数、范围位宽、输出头数等配置。
+
+17. `encoding`：域元素、曲线点、数组长度、字节序、proof block tag 和 transcript 吸入顺序。
+
+18. `padding_rule`：填充规则、有效区选择器和填充区状态机保持规则。
+
+19. `degree_bound`：动态多项式、商多项式、blinding 多项式和 opening proof 的次数界策略。
+
+验证者必须拒绝任何字段缺失、重复、顺序错误、值不匹配或出现未声明字段的 proof。
+
+#### 0.8.6 大图稀疏执行与批处理假设
+
+面向大图数据集时，本文固定采用如下执行假设；这些假设不改变 GAT 前向，只约束证明系统的工程实现：
+
+1. 仅在真实边集上具体化注意力计算
+   
+   隐藏层层与输出层的注意力打分、softmax、PSQ、路由与 lookup 全部仅在公开边集 $E$ 上展开；禁止为了实现方便而将带掩码的注意力改写为全图稠密的两两计算。
+   
+2. 边域是主热路径
+   
+   对大图证明，边相关对象（如 $S,Z,M^{edge},\Delta^+,U,Sum^{edge},inv^{edge},\alpha$ 以及输出层对应族）必须以边并行的方式生成、缓存并进行开放证明；节点域和共享维域对象只作为必要的聚合与绑定接口存在。
+   
+3. 排序、自环与局部子图抽取属于公开预处理 
+   
+   为满足 $dst$ 非降序、softmax 至少一条入边、以及局部子图抽取要求，见证生成之前必须先完成稳定排序、加自环、局部节点重编号等公开预处理；这些步骤属于公开输入构造过程的一部分，不属于证明语义本身，但在实验报告中必须与核心证明成本分开统计。
+   
+4. 多图批处理中，softmax分组必须严格限制在图内
+   
+   若对多个图同时做批处理，则每个图的边序列、$dst$ 分组、PSQ 状态机与路由总和都必须在各图内部独立成立；禁止把不同图的边混入同一个softmax归一化组。
+   
+5. 缓存策略必须对大图友好
+
+   对于大图实验，必须缓存 SRS、静态承诺、模型承诺、FFT/IFFT 执行计划、MSM 预处理以及商多项式扩展域执行计划；禁止在每次证明中重复构造这些对象。本文主协议不包含证明级分块语义：单个证明的承诺对象、transcript 吸入顺序与开放证明目标都必须一次性按照全局对象定义。若实现层为了节省内存而在内部采用分块生成见证值的工程手段，也不得将分块边界写入证明对象，不得改变最终承诺对象的全局定义，也不得改变 transcript 语义。
 
 
-#### 0.8.6 大图稀疏执行与 batching 假设
+### 0.9 多项式可见性登记表与 proof payload 允许集合
 
-面向大图数据集时，本文固定采用如下执行假设；这些假设不改变 GAT 前向，只约束 proving system 的工程实现：
+为避免 proof object 泄露未授权 witness，本协议固定所有多项式的可见性类别。实现中不得依赖默认推断；每个动态多项式、静态承诺对象、外点评值、域内点评值、折叠标量与子证明字段都必须在 `ProofSchema` 中登记其 `PolynomialVisibility`。
 
-1. **只在真实边集上 materialize attention。** 
-   hidden 层与输出层的 attention 打分、softmax、PSQ、路由与 lookup 全部仅在公开边集 $E$ 上展开；禁止为了实现方便把 masked attention 改写成全图 dense all-pairs 计算。
+可见性枚举为：
 
-2. **边域是主热路径。**  
-   对大图 proving，边相关对象（如 $S,Z,M^{edge},\Delta^+,U,Sum^{edge},inv^{edge},\alpha$ 以及输出层对应 family）必须按 edge-parallel 方式生成、缓存与开放；节点域和共享维域对象只作为必要的聚合与绑定接口存在。
+1. `Public`：验证者可由公共输入本地重建，或其值本身不携带私有 witness。
+2. `PublicOutput`：协议显式声明公开的输出对象。主实验默认公开最终 logits；若改为只公开 label，则必须改写输出证明范围。
+3. `PrivateWitness`：模型参数、输入特征私有化场景下的特征值、中间激活、注意力分数、softmax 权重、查找 query、路由 query、PSQ 状态、折叠向量、累加器、中间矩阵和所有不属于 public / public-output 的对象。
 
-3. **排序、自环与局部子图抽取属于公开预处理。** 
-   为满足 $dst$ 非降序、softmax 至少一条入边、以及局部子图抽取要求，见证生成之前必须先完成稳定排序、加自环、局部节点重编号等公开预处理；这些步骤属于公开输入构造过程的一部分，不属于 proving 语义本身，但在实验报告中必须与核心 proving 成本分开统计。
+主实验默认分类如下：
 
-4. **多图 batching 中，softmax 分组必须严格限制在图内。**  
-   若对多个图同时做批处理，则每个图的边序列、$dst$ 分组、PSQ 状态机与路由总和都必须在各图内部独立成立；禁止把不同图的边混入同一个 softmax 归一化组。
+| 对象族 | 代表对象 | 可见性 | proof payload 规则 |
+|---|---|---|---|
+| 公开元数据 | `protocol_name, srs_id, srs_type, privacy_policy, proof_task, model_arch, quant_config, domain_cfg, dim_cfg` | `Public` | 明文写入并吸入 transcript |
+| 公开拓扑 | `src,dst,node_ptr,edge_ptr,node_gid,edge_gid,Q_*^{valid},Q_{grp_new},Q_{grp_end},Idx_*` | `Public` | 验证者本地重建；若写入 proof 只允许写 hash / metadata |
+| SRS / VK 摘要 | `srs_id, pk_hash, vk_hash, domain_srs_hash` | `Public` | 明文写入 metadata |
+| 静态表承诺 | `[V_{T_H}], [V_{T_LReLU}], [V_{T_ELU}], [V_{T_exp}], [V_{T_range}]` | `Public` for commitments, table values按实验策略 | proof 只写承诺 / hash，不写完整私有表 |
+| 模型承诺 | `[V_W], [V_a], [V_b]` | commitment 为 `Public`，参数值为 `PrivateWitness` | proof 只写承诺，不写裸参数 |
+| 原始特征 | `P_H` | 主实验为 `Public`，因为 `input_privacy = public_graph_public_features`；只有未来切换为隐藏输入特征时才是 `PrivateWitness` | 主实验中由验证者按公开输入重建或按公开承诺绑定；隐藏输入特征版本必须另写规则并启用 masked opening |
+| 隐藏层投影 | `P_{H'}, P_{E_src}, P_{E_dst}, P_{H^\star}` | `PrivateWitness` | 只允许承诺与 masked evaluation |
+| 边域注意力链 | `P_S,P_Z,P_M^{edge},P_{\Delta^+},P_U,P_{Sum}^{edge},P_{inv}^{edge},P_\alpha` | `PrivateWitness` | 禁止输出完整列或裸随机点评值 |
+| lookup 对象 | `P_Table,P_Query,P_m,P_R` | `PrivateWitness`，公开表端可按策略为 `Public` | query、multiplicity、accumulator 默认 masked |
+| route 对象 | `P_Table^{src/dst},P_Query^{src/dst},P_m,P_R` | `PrivateWitness` | 默认 masked |
+| PSQ / 状态机 | `P_{PSQ},P_{C_max},P_{Acc},P_w,P_T` | `PrivateWitness` | 默认 masked |
+| 折叠向量 | `P_a,P_b,P_Acc, \mu_*` | `PrivateWitness`，公开参数派生的常量向量可按策略 public | 不允许裸 `mu`；必须 tagged masked scalar 或子证明内部值 |
+| 拼接与输出头 | `P_{H_cat},P_{Y'},P_{Y^{pre}},P_{\tilde Y^{pre}},P_{Y^{(s)}}` | `PrivateWitness` | 默认 masked |
+| 最终 logits | `P_Y,P_{Y^\star}` | 主实验为 `PublicOutput` | 可明文公开并绑定；若只公开 label，则改为 `PrivateWitness` 并证明 argmax |
+| 商多项式 | `Q_{\mathcal D}` | `PrivateWitness` | 承诺与 opening 均 masked |
+| opening value | `Eval_dom, Eval_ext` | 随对象继承 | private 对象必须为 `MaskedPrivateValue` |
 
-5. **缓存策略必须对大图友好。**  
-   对大图实验，必须缓存 SRS、静态承诺、模型承诺、FFT/IFFT 计划、MSM 预处理和 quotient 扩展域计划；禁止在每次 proof 中重复构造这些对象。本文主协议不包含 proof-level chunking 语义：单个 proof 的承诺对象、transcript 吸入顺序与 opening 目标都必须按全局对象一次性定义。实现层若为节省内存而在内部采用分块生成 witness values 的工程手段，也不得把 chunk 边界写入证明对象，不得改变最终承诺对象的全局定义，不得改变 transcript 语义。
+实现验收规则：
+
+1. `ProofSchema` 必须以固定顺序列出全部对象、域名、层编号、头编号、可见性、是否进入 commitment、是否进入 opening、是否进入 quotient。
+2. Serializer 输出任何 `FieldElement` 前必须带 `EvaluationKind`，取值只能是 `PublicValue` 或 `MaskedPrivateValue`。
+3. Verifier 必须执行 `private_plain_value_count == 0` 检查。
+4. 未登记对象、重复对象、未知 tag、缺失可见性字段、private 对象明文输出，均为拒绝条件。
+
+### 0.10 SRS manifest、文件格式与 setup 绑定
+
+主实验不允许使用内存中临时生成且不可审计的 SRS。每个 SRS 必须由 `srs_manifest.json` 描述，并与证明对象中的 `srs_id` 绑定。manifest 至少包含：
+
+| 字段 | 含义 |
+|---|---|
+| `srs_id` | SRS 全局唯一标识，建议为 manifest canonical bytes 的 SHA-256 或 Blake2 摘要 |
+| `curve_id` | 曲线与 pairing 后端标识 |
+| `field_modulus_id` | 有限域模数标识 |
+| `srs_type` | 只能为 `trusted_srs` 或 `mpc_srs` |
+| `ceremony_transcript_hash` | trusted setup / MPC ceremony transcript 的摘要；若为内部生成测试材料，不能进入主实验 |
+| `degree_bound` | `D_max` |
+| `domain_sizes` | `{FH, edge, in, d_h, cat, C, N}` 的大小 |
+| `pk_coef_hash` | coefficient-basis SRS 文件摘要 |
+| `pk_lagrange_hashes` | 各工作域 Lagrange-basis SRS 文件摘要 |
+| `vk_hash` | verifier key 文件摘要 |
+| `encoding` | 曲线点、域元素、数组长度和字节序规则 |
+| `generated_at` | 生成时间，仅用于审计，不进入性能指标 |
+| `generator_version` | SRS 生成器版本 |
+| `security_level` | 目标安全强度，例如 128-bit |
+
+文件布局固定为一个以 `srs_id` 命名的 SRS 目录。该目录必须包含 SRS manifest、coefficient-basis proving key、七个工作域对应的 Lagrange-basis proving key，以及 verifier key。文件名必须稳定、可校验，并与 manifest 中的 hash 一一对应。
+
+加载规则：
+
+1. Prover 加载 `pk_coef.bin` 与所需 `pk_lagrange_*.bin`，不得加载或生成 `tau`。
+2. Verifier 只加载 `vk.bin` 与 `srs_manifest.json`。
+3. Proof metadata 中的 `srs_id`、`srs_type`、`srs_degree_bound`、`encoding` 必须与本地 manifest 一致。
+4. 任何 SRS 文件 hash 不匹配、degree bound 不足、domain size 不匹配、曲线 ID 不匹配，验证者必须拒绝。
+5. SRS manifest 不计入 proof size，但其 hash 必须进入 transcript。
+6. SRS 生成工具必须与 prover、verifier、benchmark 主程序分离。最终主实验程序只能加载 SRS 文件，不能在证明或验证时生成、恢复或派生 tau。最终提交分支不包含 `seed -> tau`、`deterministic_tau`、`test_tau` 代码。
+
+
+### 0.11 与当前项目实现对齐的主实验边界
+
+本笔记用于指导当前 zkGAT 项目代码整理，而不是重新定义一个与现有工程无关的新系统。主实验必须保持当前项目已经实现并验证过的 GAT 前向语义：隐藏层多头注意力、隐藏层 ELU、隐藏层头维拼接、输出层注意力头、输出头偏置、最终输出头平均，以及节点分类任务口径都不得改变。
+
+本次重构的主要范围集中在密码协议与实验合规层：安全 SRS、KZG 承诺与 opening、模型参数隐藏承诺、私有 trace 掩蔽、ProofSchema 可见性登记、公开元数据、验证器安全 gate、安全测试、baseline proof-scope 对齐和结果导出。除非为了接入掩蔽多项式、metadata 或 proof schema 标签，GAT 前向、route、PSQ、lookup、边排序、batch 语义和量化语义都不应被重写。
+
+主实验固定为节点分类。图结构和节点特征按公开输入处理；模型参数、中间激活、注意力分数、softmax 权重、lookup witness、route witness、PSQ 状态和折叠向量按私有见证处理；最终 logits 按公开输出处理。这一边界必须同时体现在配置、public metadata、transcript、proof schema、verifier gate、实验结果表和论文叙述中。
+
+现有 ezkl、zkDL、zkGPT 对比实验不需要迁移到 zkGAT 的 SRS 或 opening 方案；它们只需要补齐 proof scope、输入输出口径、setup 假设、proof size 统计口径和硬件环境说明。主实验与对比实验的所有结果都必须在同一模型、同一数据预处理、同一量化配置、同一节点分类任务下重新导出。
 
 ## 1. 参数生成
 
@@ -585,29 +738,46 @@ $Y\in\mathbb F_p^{N\times C}, \qquad Y_{i,c}=Y_{i,c}^{avg}$
 参数生成算法输入为：
 
 - 安全参数 $\lambda$；
+  
 - 有限域模数 $p$；
+  
 - 局部子图规模上界 $(N,E)$；
+  
 - 全局节点数 $N_{total}$；
+  
 - 当前证明实例中的图个数 $G_{batch}$；
+  
 - 当前证明实例的节点 / 边前缀指针 $node\_ptr,edge\_ptr$；
+  
 - 总层数 $L$；
-- 各隐藏层的结构 profile $\{K_{hid}^{(\ell)},d_h^{(\ell)}\}_{\ell=1}^{L-1}$；
-- 各层输入维 profile $\{d_{in}^{(\ell)}\}_{\ell=1}^{L}$，其中 $d_{in}^{(1)}=d_{in}$，且 $d_{in}^{(\ell+1)}=d_{cat}^{(\ell)}$；
+  
+- 各隐藏层的结构配置 $\{K_{hid}^{(\ell)},d_h^{(\ell)}\}_{\ell=1}^{L-1}$；
+  
+- 各层输入维配置 $\{d_{in}^{(\ell)}\}_{\ell=1}^{L}$，其中 $d_{in}^{(1)}=d_{in}$，且 $d_{in}^{(\ell+1)}=d_{cat}^{(\ell)}$；
+  
 - 输出类别数 $C$；
 - 输出层头数 $K_{out}$；
 - 范围检查位宽 $B$；
 - 静态表 $T_H,T_{LReLU},T_{ELU},T_{exp},T_{range}$；
-- 全部隐藏层参数族：对每个隐藏层 $\ell=1,\ldots,L-1$，包含该层全部 $r=0,\ldots,K_{hid}^{(\ell)}-1$ 个 head 的 $W^{(\ell,r)},a_{src}^{(\ell,r)},a_{dst}^{(\ell,r)}$；
-- 输出层参数族 $\{W^{(out,s)},a_{src}^{(out,s)},a_{dst}^{(out,s)},b^{(out,s)}\}_{s=0}^{K_{out}-1}$。
+- 全部隐藏层参数族：对每个隐藏层$\ell=1,\ldots,L-1$，包含该层全部 $r=0,\ldots,K_{hid}^{(\ell)}-1$ 个头的 $W^{(\ell,r)},a_{src}^{(\ell,r)},a_{dst}^{(\ell,r)}$ 
+- 输出层参数族 $\{W^{(out,s)},a_{src}^{(out,s)},a_{dst}^{(out,s)},b^{(out,s)}\}_{s=0}^{K_{out}-1}$ 
+- SRS 类型 $srs\_type$，主实验必须为 `trusted_srs` 或 `mpc_srs`；
+- SRS 标识 $srs\_id$ 与 SRS 次数界 $srs\_degree\_bound$；
+- 隐私策略 $privacy\_policy$，主实验固定为 `model_and_trace_hidden`，包括私有多项式分类、domain-vanishing blinding 次数和 masked opening 规则；
+- 证明任务 $proof\_task$，主实验固定为 `node_classification_full_gat`。
 
 
 ### 1.2 输出
 
 参数生成算法输出：
 
-- KZG 证明键：$PK$
+- KZG 证明键：$PK_{coef}$ 与各工作域 Lagrange-basis SRS $\{PK_{lag}^{(\mathcal D)}\}_{\mathcal D\in\{FH,edge,in,d_h,cat,C,N\}}$
 
 - KZG 验证键：$VK_{KZG}$
+
+- SRS 安全元数据：$(srs\_id,srs\_type,srs\_degree\_bound)$
+
+- 隐私策略元数据：$privacy\_policy$
 
 - 静态表验证键：$VK_{static}$
 
@@ -617,27 +787,33 @@ $Y\in\mathbb F_p^{N\times C}, \qquad Y_{i,c}=Y_{i,c}^{avg}$
 
 - 各工作域零化多项式：$Z_{FH},Z_{edge},Z_{in},Z_{d_h},Z_{cat},Z_C,Z_N$
 
-
 ### 1.3 工作域
 
-为避免在多层 GAT 的实现中为每一层重复维护一套不同长度的共享维工作域，本文正式协议统一采用**全局共享域**口径：
+为避免在多层GAT的实现中为每一层重复维护一套不同长度的共享维工作域，本文正式协议统一采用全局共享域口径：
 
 - 对全部隐藏层的输入共享维，统一用一个 $\mathbb H_{in}$；
+  
 - 对全部隐藏层单头输出共享维，统一用一个 $\mathbb H_{d_h}$；
+  
 - 对全部隐藏层拼接共享维与最终输出层输入共享维，统一用一个 $\mathbb H_{cat}$。
 
-因此，先定义三类全局最大 profile：
+因此，先定义三类全局最大配置概况：
 
 - $d_{in}^{max}=\max\{d_{in}^{(1)},d_{in}^{(2)},\ldots,d_{in}^{(L)}\}$；
+  
 - $d_h^{max}=\max\{d_h^{(1)},d_h^{(2)},\ldots,d_h^{(L-1)}\}$；
+  
 - $d_{cat}^{max}=\max\{d_{cat}^{(1)},d_{cat}^{(2)},\ldots,d_{cat}^{(L-1)}\}$。
 
 在任何具体层 $\ell$ 的实例化中：
 
 - 第 $\ell$ 层隐藏模板只占用 $\mathbb H_{in}$ 的前 $d_{in}^{(\ell)}$ 个有效位置；
-- 第 $\ell$ 层 hidden-head 模板只占用 $\mathbb H_{d_h}$ 的前 $d_h^{(\ell)}$ 个有效位置；
+  
+- 第 $\ell$ 层隐藏层头模板只占用 $\mathbb H_{d_h}$ 的前 $d_h^{(\ell)}$ 个有效位置；
+  
 - 第 $\ell$ 层拼接模板与最终输出层投影模板，只占用 $\mathbb H_{cat}$ 的前 $d_{cat}^{(\ell)}$ 或 $d_{in}^{(L)}=d_{cat}^{(L-1)}$ 个有效位置；
-- 其余位置统一由公共有效区选择器屏蔽，并按第 0.8.1 节的 padding 规则补零。
+  
+- 其余位置统一由公共有效区选择器屏蔽，并按第 0.8.1 节的填充规则补零。
 
 #### 1.3.1 特征检索域
 
@@ -681,38 +857,56 @@ $Y\in\mathbb F_p^{N\times C}, \qquad Y_{i,c}=Y_{i,c}^{avg}$
 
 定义：$\mathbb H_N=\{1,\omega_N,\omega_N^2,\ldots,\omega_N^{n_N-1}\} \quad Z_N(X)=X^{n_N}-1.$
 
-### 1.4 KZG 初始化
+### 1.4 安全 KZG 初始化与 SRS 生成
 
-采样隐藏陷门：$\tau\xleftarrow{\$}\mathbb F_p$
+参数生成阶段执行 trusted setup 或 MPC ceremony：
+
+$$\tau\xleftarrow{\$}\mathbb F_p.$$
+
+该陷门只允许在 setup 临时上下文中存在。生成 $PK$ 与 $VK_{KZG}$ 后，setup 程序必须销毁 $\tau$，并输出可验证的 `srs_id`。主实验代码、prover、verifier、benchmark runner、serializer、manifest exporter 和 debug logger 均不得保存或访问 $\tau$。
 
 取次数上界时，必须覆盖：
 
-- 七个工作域上的全部 lookup / route / state-machine / binding / quotient 多项式；
-- 全部隐藏层 family 对象；
-- 最终输出层的全部输出头 family 对象；
-- 最终多头平均输出 $Y, Y^{\star}, Y^{\star,edge}$ 及其对应约束。
+- 七个工作域上的全部 lookup / 路由 / 状态机 / 绑定 / 商多项式；
+- 全部隐藏层族对象；
+- 最终输出层的全部输出头族对象；
+- 最终多头平均输出 $Y,Y^{\star},Y^{\star,edge}$ 及其对应约束；
+- domain-vanishing blinding 后的多项式次数界。
 
-在多层 GAT 中，$L$ 与各层头数会增加**对象个数**，但不会改变“单个对象所属工作域的次数上界模板”。因此，$D_{max}$ 应按**所有已实例化层的局部维度最大值**来统一取上界。
-
-记：
+在多层 GAT 中，$L$ 与各层头数会增加对象个数，但不会改变单个对象所属工作域的次数界模板。记：
 
 - $d_{in}^{max}=\max\{d_{in}^{(1)},d_{in}^{(2)},\ldots,d_{in}^{(L)}\}$；
 - $d_h^{max}=\max\{d_h^{(1)},d_h^{(2)},\ldots,d_h^{(L-1)}\}$；
 - $d_{cat}^{max}=\max\{d_{cat}^{(1)},d_{cat}^{(2)},\ldots,d_{cat}^{(L-1)}\}$。
 
-在本文正式协议中，$D_{max}$ 固定定义为：
+基础次数界为：
 
-$D_{max}= \max\{ 3n_{FH}+8,\ 3n_{edge}+8,\ 2n_{in}+8,\ 2n_{d_h}+8,\ 2n_{cat}+8,\ 2n_C+8,\ 2n_N+8,\ Nd_{cat}^{max}+\max\{d_{in}^{max},C\},\ NC+1 \}$
+$$D_{base}= \max\{ 3n_{FH}+8,\ 3n_{edge}+8,\ 2n_{in}+8,\ 2n_{d_h}+8,\ 2n_{cat}+8,\ 2n_C+8,\ 2n_N+8,\ Nd_{cat}^{max}+\max\{d_{in}^{max},C\},\ NC+1 \}.$$
 
-其中：
+若 `privacy_policy` 指定每个私有多项式使用 blinding degree $d_{blind}$，则正式 SRS 次数界为：
 
-- $Nd_{cat}^{max}+\max\{d_{in}^{max},C\}$ 覆盖多层隐藏模板与最终输出投影中出现的系数多项式次数界；
-- $NC+1$ 覆盖最终输出层每个 head 及最终平均输出 $Y$ 的系数多项式次数界。
+$$D_{max}=D_{base}+d_{blind}+\max_{\mathcal D} n_{\mathcal D}.$$
 
-输出证明键：$PK=\{G_1,\tau G_1,\tau^2G_1,\ldots,\tau^{D_{max}}G_1\}$
+输出 coefficient-basis 证明键：
 
-输出验证键：$VK_{KZG}=\{[1]_2,[\tau]_2\}$
+$$PK_{coef}=\{[\tau^0]_1,[\tau^1]_1,\ldots,[\tau^{D_{max}}]_1\}.$$
 
+对每个工作域 $\mathbb H_{\mathcal D}$，输出或预计算 Lagrange-basis SRS：
+
+$$PK_{lag}^{(\mathcal D)}=\{[L_0^{(\mathcal D)}(\tau)]_1,\ldots,[L_{n_{\mathcal D}-1}^{(\mathcal D)}(\tau)]_1\}.$$
+
+输出验证键：
+
+$$VK_{KZG}=\{[1]_2,[\tau]_2\}=\{G_2,\tau G_2\}.$$
+
+实现要求：
+
+1. `KZGKeyPair` 不得在主实验路径中包含 `tau` 字段；
+2. `commit` 不得调用 `polynomial.evaluate(tau)`；
+3. coefficient-basis 多项式使用 $PK_{coef}$ 做多基 MSM；
+4. evaluation-basis 多项式使用对应工作域的 $PK_{lag}^{(\mathcal D)}$ 做多基 MSM；
+5. 若某个对象没有可用工作域 Lagrange SRS，则必须先转为系数形式并使用 $PK_{coef}$；
+6. 所有 SRS 与 $VK_{KZG}$ 的摘要必须写入 `srs_id` 并纳入 transcript。
 
 ### 1.5 静态表与模型承诺
 
@@ -754,18 +948,17 @@ $P_{T_{exp},y}(X)=\sum_{t=0}^{|T_{exp}|-1}T_{exp}[t,1]L_t^{(edge)}(X)$
 
 #### 1.5.7 模型承诺与模型验证键
 
-对每个隐藏层 $\ell\in\{1,2,\ldots,L-1\}$、以及该层中的每个注意力头 $r\in\{0,1,\ldots,K_{hid}^{(\ell)}-1\}$，承诺：
+对每个隐藏层 $\ell\in\{1,2,\ldots,L-1\}$、以及该层中的每个注意力头 $r\in\{0,1,\ldots,K_{hid}^{(\ell)}-1\}$，承诺：$[V_{W^{(\ell,r)}}],[V_{a_{src}^{(\ell,r)}}],[V_{a_{dst}^{(\ell,r)}}]$
 
-$[V_{W^{(\ell,r)}}],\quad [V_{a_{src}^{(\ell,r)}}],\quad [V_{a_{dst}^{(\ell,r)}}]$
+对每个输出头 $s\in\{0,1,\ldots,K_{out}-1\}$，承诺：$[V_{W^{(out,s)}}],\quad [V_{a_{src}^{(out,s)}}],\quad [V_{a_{dst}^{(out,s)}}],\quad [V_{b^{(out,s)}}]$
 
-对每个输出头 $s\in\{0,1,\ldots,K_{out}-1\}$，承诺：
+因此，$VK_{model}$ 由两部分按固定顺序拼接而成：先按层序和头序写入全部隐藏层承诺 $[V_{W^{(\ell,r)}}],[V_{a_{src}^{(\ell,r)}}],[V_{a_{dst}^{(\ell,r)}}]$；再按 $s=0,\ldots,K_{out}-1$ 写入全部输出层承诺 $[V_{W^{(out,s)}}],[V_{a_{src}^{(out,s)}}],[V_{a_{dst}^{(out,s)}}],[V_{b^{(out,s)}}]$。
 
-$[V_{W^{(out,s)}}],\quad [V_{a_{src}^{(out,s)}}],\quad [V_{a_{dst}^{(out,s)}}],\quad [V_{b^{(out,s)}}]$
 
-因此：
 
-$VK_{model}$ 由两部分按固定顺序拼接而成：先按层序和头序写入全部隐藏层承诺 $[V_{W^{(\ell,r)}}],[V_{a_{src}^{(\ell,r)}}],[V_{a_{dst}^{(\ell,r)}}]$；再按 $s=0,\ldots,K_{out}-1$ 写入全部输出层承诺 $[V_{W^{(out,s)}}],[V_{a_{src}^{(out,s)}}],[V_{a_{dst}^{(out,s)}}],[V_{b^{(out,s)}}]$。
+模型参数值属于私有见证。`VK_model` 中只能出现模型参数的隐藏承诺和承诺摘要，不能出现裸参数值，也不能出现裸参数的 opening。若模型参数承诺需要在多次证明中复用，复用对象仍然必须是隐藏承诺；验证者只使用承诺和后续零知识绑定证明检查模型一致性。
 
+实现时，模型参数应先展平成独立的参数多项式，并在参数域上使用与动态私有多项式一致的隐藏承诺规则。`VK_model` 只保存隐藏后的模型承诺和摘要。所有投影矩阵、注意力向量和输出偏置在证明中的使用，都必须通过固定的零知识绑定证明完成；proof 不能打开裸模型参数，也不能把模型参数的随机点评值作为明文字段输出。
 
 ### 1.6 公共拓扑多项式与辅助公开多项式
 
@@ -839,13 +1032,11 @@ $VK_{model}$ 由两部分按固定顺序拼接而成：先按层序和头序写�
 
 	$P_{Q_{grp\_end}^{edge}}(X)=\sum_{k=0}^{n_{edge}-1}Q_{grp\_end}^{edge}[k]L_k^{(edge)}(X)$
 
-这些对象全部由验证者根据公共输入本地重建，不属于动态承诺对象；其中与
-$Q_{in}^{valid,(\ell)},Q_{d_h}^{valid,(\ell)},Q_{cat}^{valid,(\ell)},Q_{cat}^{valid,(out)}$
-对应的 family，必须按层指标逐一重建，不得以“共享最大工作域”为由把它们压缩成一套无层标 selector。
+这些对象全部由验证者根据公共输入本地重建，不属于动态承诺对象；其中与$Q_{in}^{valid,(\ell)},Q_{d_h}^{valid,(\ell)},Q_{cat}^{valid,(\ell)},Q_{cat}^{valid,(out)}$ 对应的选择器族，必须按层指标逐一重建，不得以“共享最大工作域”为由把它们压缩成一套无层标选择器。
 
 $P_{node\_gid},P_{edge\_gid},P_{Q_{graph\_new}^{edge}},P_{Q_{graph\_end}^{edge}},P_{Q_{grp\_new}^{edge}},P_{Q_{grp\_end}^{edge}}$ 一律属于验证者必须本地重建并吸入 transcript 的公共拓扑对象。若 $G_{batch}=1$，则它们的取值按单图公式唯一确定；实现不得因为单图而省略这些对象。
 
-在上述公共拓扑对象中，$P_{Q_{new}^{edge}},P_{Q_{end}^{edge}}$ 只允许作为图内基础辅助对象存在；所有正式状态机、quotient identity 与 verifier 检查都必须只消费 $P_{Q_{grp\_new}^{edge}},P_{Q_{grp\_end}^{edge}}$，不得直接消费旧的单图 selector。
+在上述公共拓扑对象中，$P_{Q_{new}^{edge}},P_{Q_{end}^{edge}}$ 只允许作为图内基础辅助对象存在；所有正式状态机、商多项式恒等式以及验证者检查都必须只消费 $P_{Q_{grp\_new}^{edge}},P_{Q_{grp\_end}^{edge}}$，不得直接消费旧的单图选择器
 
 
 ## 2. 见证生成与承诺
@@ -860,6 +1051,17 @@ $P_{node\_gid},P_{edge\_gid},P_{Q_{graph\_new}^{edge}},P_{Q_{graph\_end}^{edge}}
 
 禁止把前向计算与承诺生成耦合在一起。
 
+#### 2.0.1 安全承诺、掩蔽与 opening 统一规则
+
+从本节开始，凡记为 $[P]$ 的动态承诺，在主实验路径中实际含义为 $[P^{zk}]$，其中：$$P^{zk}(X)=P(X)+Z_{\mathcal D}(X)R_P(X).$$
+
+若 $P$ 是公开多项式，或 `privacy_policy` 明确标记为 public-output polynomial，则 $R_P=0$。除此之外，所有模型相关、激活相关、注意力相关、路由相关、lookup query 相关、PSQ 相关、折叠向量相关和状态机相关多项式都视为 private witness polynomial，必须采样独立 blinding 多项式。
+
+证明者必须先完成前向阶段，随后生成所有基础 trace 值，再依据 `privacy_policy` 构造 $P^{zk}$ 并提交承诺。任何实现不得为了性能把裸 $P$ 的外点评值、折叠向量、完整中间矩阵或模型参数评值写入证明对象。
+
+所有 `Eval_ext`、`Eval_dom` 和 `Open_dom` 均以 $P^{zk}$ 为 opening 对象。若某条代数关系在语义上需要裸 $P$，必须通过 quotient 中的 blinding correction 或 $\Pi_{bind}$ 的零知识子证明处理，不能通过暴露裸评值处理。
+
+
 ### 2.1 数据加载与特征检索
 
 #### 2.1.1 原始特征
@@ -868,15 +1070,26 @@ $P_{node\_gid},P_{edge\_gid},P_{Q_{graph\_new}^{edge}},P_{Q_{graph\_end}^{edge}}
 
 #### 2.1.2 特征检索表端与查询端
 
-生成挑战：$\eta_{feat},\beta_{feat}$
+生成挑战：$\eta_{feat},\beta_{feat}$ 
 
-对每个全局表端索引：$u=v\cdot d_{in}+j \quad 0\le v\le N_{total}-1 \quad 0\le j\le d_{in}-1$
+> - $\eta_{feat}$：把多个字段压成一个域元素
+> - $\beta_{feat}$：给后面的 LogUp/累加器公式使用，避免分母冲突。
 
-定义表端离散列：$Table^{feat}[u]=v+\eta_{feat}j+\eta_{feat}^2T_H[v,j]$
+对每个全局表端索引定义：$u=v\cdot d_{in}+j \quad 0\le v\le N_{total}-1 \quad 0\le j\le d_{in}-1$
+
+> 这其实是在把二维表 $T_H[v,j]$ 展平成一维序列，v 指的是：全局特征表里的节点编号（行号）
+
+定义表端离散列：$Table^{feat}[u]=v+\eta_{feat}j+\eta_{feat}^2T_H[v,j]$ 
+
+> 把全局特征表里每个合法条目$(v,j,T_H[v,j])$压缩成一个域元素，表示“全局表里有哪些可被查询的合法特征项”
+>
 
 对每个查询索引：$q=i\cdot d_{in}+j \quad 0\le i\le N-1 \quad 0\le j\le d_{in}-1$
 
 定义查询端离散列：$Query^{feat}[q]=I_i+\eta_{feat}j+\eta_{feat}^2H_{i,j}$
+
+> 把当前证明里实际声称取到的条目$(I_i, j, H_{i,j})$也压成一个域元素，表示“这次实例实际访问了哪些特征项”
+>
 
 #### 2.1.3 重数列
 
@@ -894,7 +1107,7 @@ $P_{node\_gid},P_{edge\_gid},P_{Q_{graph\_new}^{edge}},P_{Q_{graph\_end}^{edge}}
 
 对所有 $t\in\{0,1,\ldots,n_{FH}-2\}$，定义：$R_{feat}[t+1] = R_{feat}[t] + Q_{tbl}^{feat}[t]\cdot\frac{m_{feat}[t]}{Table^{feat}[t]+\beta_{feat}} - Q_{qry}^{feat}[t]\cdot\frac{1}{Query^{feat}[t]+\beta_{feat}}$
 
-填充区保持常值。
+填充区保持常值。如果查询端和表端完全匹配，而且重数也对，那么一路累加下来，最终会抵消为 0。
 
 #### 2.1.6 多项式编码
 
@@ -925,39 +1138,49 @@ $P_{node\_gid},P_{edge\_gid},P_{Q_{graph\_new}^{edge}},P_{Q_{graph\_end}^{edge}}
 
 其中$[P_I]$不作为动态承诺对象由证明者提交。验证者根据公共输入本地重建$[P_I]$，并在第 3.2.1 节规定的位置将其吸入 transcript。
 
+在主实验中，`input_privacy = public_graph_public_features`，因此 $P_H$、特征检索表端列、查询端列、重数列、有效区选择器列和特征检索累加器列都按公开输入策略处理。若这些对象进入动态承诺块，其掩蔽多项式固定为 0，不作为私有输入见证处理，也不得把这一公开特征检索路径误实现成隐藏输入证明。若未来需要隐藏节点特征或图结构，必须另行定义新的输入隐私策略和证明范围，不能复用当前主实验口径。
+
 ### 2.2 单个隐藏层模板中第 $r$ 个注意力头的完整见证生成
 
-以下步骤对应某个固定隐藏层 $\ell\in\{1,2,\ldots,L-1\}$ 的**单层模板**：
+以下步骤对应某个固定隐藏层 $\ell\in\{1,2,\ldots,L-1\}$ 的单层模板，在该模板内，对每个 $r\in\{0,1,\ldots,K_{hid}-1\}$ 的隐藏层注意力头分别定义：
 
-在该模板内，对每个 $r\in\{0,1,\ldots,K_{hid}-1\}$ 的隐藏层注意力头分别定义。数学定义中的 head 顺序固定为 $r=0,1,\ldots,K_{hid}-1$；实现是否并行不属于协议语义，但任何实现都必须产出与这一固定 head 顺序一致的承诺对象、外点评值与子证明顺序。对多层 GAT，证明者与验证者都必须先对隐藏层 $\ell=1$ 实例化第 2.2 节与第 2.3 节，再把 $H_{cat}^{(1)}$ 作为下一隐藏层输入，依次实例化到 $\ell=L-1$；最后再进入第 2.4 节的最终输出层。
+数学定义中的头顺序固定为 $r=0,1,\ldots,K_{hid}-1$；实现是否并行不属于协议语义，但任何实现都必须产出与这一固定头顺序一致的承诺对象、外点评值与子证明顺序。对多层 GAT，证明者与验证者都必须先对隐藏层 $\ell=1$ 实例化第 2.2 节与第 2.3 节，再把 $H_{cat}^{(1)}$ 作为下一隐藏层输入，依次实例化到 $\ell=L-1$；最后再进入第 2.4 节的最终输出层。
 
 #### 2.2.1 投影
 
 对每个节点 $i$ 与每个隐藏维索引 $j\in\{0,1,\ldots,d_h-1\}$，定义：$H_{i,j}'^{(r)}=\sum_{m=0}^{d_{in}-1}H_{i,m}W_{m,j}^{(r)}$ 
 
-定义输出系数多项式：$P_{H'^{(r)}}(X)=\sum_{i=0}^{N-1}\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}X^{i\cdot d_h+j}$
+定义输出系数多项式：$P_{H'^{(r)}}(X)=\sum_{i=0}^{N-1}\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}X^{i\cdot d_h+j}$ 
 
-对每个共享维索引 $m\in\{0,1,\ldots,d_{in}-1\}$，定义：$A_m^{proj(r)}(X)=\sum_{i=0}^{N-1}H_{i,m}X^{i\cdot d_h} \quad B_m^{proj(r)}(X)=\sum_{j=0}^{d_h-1}W_{m,j}^{(r)}X^j$ 
+> 把矩阵$H_{i,j}'^{(r)}$按行优先摊平成一个系数多项式
+
+对每个共享维索引 $m\in\{0,1,\ldots,d_{in}-1\}$，定义：
+
+$A_m^{proj(r)}(X)=\sum_{i=0}^{N-1}H_{i,m}X^{i\cdot d_h} \quad B_m^{proj(r)}(X)=\sum_{j=0}^{d_h-1}W_{m,j}^{(r)}X^j$ 
 
 于是：$P_{H'^{(r)}}(X)=\sum_{m=0}^{d_{in}-1}A_m^{proj(r)}(X)B_m^{proj(r)}(X)$
 
+> 把原来的矩阵乘法，改写成沿共享维m的一串多项式乘加
+
 生成挑战：$y_{proj}^{(r)}=H_{FS}(\text{transcript},[P_H],[P_{H'^{(r)}}],[V_{W^{(r)}}])$
 
-定义折叠向量
+定义折叠向量：
 
-$a_m^{proj(r)}=A_m^{proj(r)}(y_{proj}^{(r)})=\sum_{i=0}^{N-1}H_{i,m}(y_{proj}^{(r)})^{i\cdot d_h}$
+$a_m^{proj(r)}=A_m^{proj(r)}(y_{proj}^{(r)})=\sum_{i=0}^{N-1}H_{i,m}(y_{proj}^{(r)})^{i\cdot d_h}$ 
 
 $b_m^{proj(r)}=B_m^{proj(r)}(y_{proj}^{(r)})=\sum_{j=0}^{d_h-1}W_{m,j}^{(r)}(y_{proj}^{(r)})^j$
 
 定义外点评值：$\mu_{proj}^{(r)}=\sum_{m=0}^{d_{in}-1}a_m^{proj(r)}b_m^{proj(r)}$
 
-要求：$P_{H'^{(r)}}(y_{proj}^{(r)})=\mu_{proj}^{(r)}$
+要求：$P_{H'^{(r)}}(y_{proj}^{(r)})=\mu_{proj}^{(r)}$ 
+
+> 左边是声称的投影结果多项式在随机点的值；右边是按输入特征和权重重新算出来的值
 
 定义共享维累加器：$Acc_{proj}^{(r)}[0]=0$
 
 $Acc_{proj}^{(r)}[m+1]=Acc_{proj}^{(r)}[m]+a_m^{proj(r)}b_m^{proj(r)} \quad 0\le m\le d_{in}-1$ 
 
-对 $m\ge d_{in}$ 的 padding 区，统一规定：$a_m^{proj(r)}=0 \quad b_m^{proj(r)}=0 \quad Acc_{proj}^{(r)}[m+1]=Acc_{proj}^{(r)}[m]$
+对 $m\ge d_{in}$ 的填充区，统一规定：$a_m^{proj(r)}=0 \quad b_m^{proj(r)}=0 \quad Acc_{proj}^{(r)}[m+1]=Acc_{proj}^{(r)}[m]$
 
 定义多项式：
 
@@ -967,29 +1190,35 @@ $P_{b^{proj(r)}}(X)=\sum_{m=0}^{n_{in}-1}b_m^{proj(r)}L_m^{(in)}(X)$
 
 $P_{Acc^{proj(r)}}(X)=\sum_{m=0}^{n_{in}-1}Acc_{proj}^{(r)}[m]L_m^{(in)}(X)$
 
-提交承诺:$[P_{H'^{(r)}}],\ [P_{a^{proj(r)}}],\ [P_{b^{proj(r)}}],\ [P_{Acc^{proj(r)}}]$
+提交承诺：$[P_{H'^{(r)}}],\ [P_{a^{proj(r)}}],\ [P_{b^{proj(r)}}],\ [P_{Acc^{proj(r)}}]$
 
 #### 2.2.2 源注意力绑定
 
 生成压缩挑战：$\xi^{(r)}=H_{FS}(\text{transcript},[P_{H'^{(r)}}])$
 
-对每个节点 $i$，定义：$E_{src,i}^{(r)}=\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}a_{src,j}^{(r)}$
+对每个节点 $i$，定义：$E_{src,i}^{(r)}=\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}a_{src,j}^{(r)}$ 
 
-把 $E_{src}^{(r)}$ 填充到长度 $n_N$，插值成：$P_{E_{src}^{(r)}}(X)=\sum_{i=0}^{n_N-1}E_{src}^{(r)}[i]L_i^{(N)}(X)$
+把 $E_{src}^{(r)}$ 填充到长度 $n_N$，插值成：$P_{E_{src}^{(r)}}(X)=\sum_{i=0}^{n_N-1}E_{src}^{(r)}[i]L_i^{(N)}(X)$ 
 
-生成挑战：$y_{src}^{(r)}=H_{FS}(\text{transcript},[P_{H'^{(r)}}],[P_{E_{src}^{(r)}}],[V_{a_{src}^{(r)}}])$
+生成挑战：$y_{src}^{(r)}=H_{FS}(\text{transcript},[P_{H'^{(r)}}],[P_{E_{src}^{(r)}}],[V_{a_{src}^{(r)}}])$ 
 
 定义折叠向量：$a_j^{src(r)}=\sum_{i=0}^{N-1}H_{i,j}'^{(r)}L_i^{(N)}(y_{src}^{(r)}) \quad b_j^{src(r)}=a_{src,j}^{(r)}$ 
+
+> 把原来“每个节点都做一次点积”，压缩成“在随机点上检查一个共享维上的内积”
 
 定义外点评值：$\mu_{src}^{(r)}=\sum_{j=0}^{d_h-1}a_j^{src(r)}b_j^{src(r)}$
 
 要求：$P_{E_{src}^{(r)}}(y_{src}^{(r)})=\mu_{src}^{(r)}$
 
+> 左边：提交的“源注意力结果列”在随机点的值
+>
+> 右边：由投影矩阵$H'^{(r)}$和参数向量$a^{src(r)}$重新	折叠计算出来的值
+
 定义共享维累加器：$Acc_{src}^{(r)}[0]=0$
 
 $Acc_{src}^{(r)}[j+1]=Acc_{src}^{(r)}[j]+a_j^{src(r)}b_j^{src(r)} \quad 0\le j\le d_h-1$
 
-对填充区统一规定：$a_j^{src(r)}=0 \quad b_j^{src(r)}=0 \quad Acc_{src}^{(r)}[j+1]=Acc_{src}^{(r)}[j]$
+对填充区统一规定：$a_j^{src(r)}=0 \quad b_j^{src(r)}=0 \quad Acc_{src}^{(r)}[j+1]=Acc_{src}^{(r)}[j]$ 
 
 定义：$P_{a^{src(r)}}(X) \quad P_{b^{src(r)}}(X) \quad P_{Acc^{src(r)}}(X)$，分别为其在 $\mathbb H_{d_h}$ 上插值多项式。
 
@@ -1019,9 +1248,11 @@ $Acc_{dst}^{(r)}[j+1]=Acc_{dst}^{(r)}[j]+a_j^{dst(r)}b_j^{dst(r)} \quad 0\le j\l
 
 #### 2.2.4 压缩特征绑定
 
-对每个节点 $i$，定义：$H_i^{\star(r)}=\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}(\xi^{(r)})^j$
+对每个节点 $i$，定义：$H_i^{\star(r)}=\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}(\xi^{(r)})^j$ 
 
-插值成：$P_{H^{\star(r)}}(X)=\sum_{i=0}^{n_N-1}H^{\star(r)}[i]L_i^{(N)}(X)$
+> 原来节点i在第r个头上有一个$d_h$维向量，现在用$\xi^{(r)}$的幂作为权重，把这$d_h$个分量线性组合成一个数
+
+插值成：$P_{H^{\star(r)}}(X)=\sum_{i=0}^{n_N-1}H^{\star(r)}[i]L_i^{(N)}(X)$ 
 
 生成挑战：$y_{\star}^{(r)}=H_{FS}(\text{transcript},[P_{H'^{(r)}}],[P_{H^{\star(r)}}])$
 
@@ -1029,7 +1260,7 @@ $Acc_{dst}^{(r)}[j+1]=Acc_{dst}^{(r)}[j]+a_j^{dst(r)}b_j^{dst(r)} \quad 0\le j\l
 
 定义外点评值：$\mu_{\star}^{(r)}=\sum_{j=0}^{d_h-1}a_j^{\star(r)}b_j^{\star(r)}$
 
-要求：$P_{H^{\star(r)}}(y_{\star}^{(r)})=\mu_{\star}^{(r)}$
+要求：$P_{H^{\star(r)}}(y_{\star}^{(r)})=\mu_{\star}^{(r)}$ 
 
 定义共享维累加器：$Acc_{\star}^{(r)}[0]=0$
 
@@ -1041,7 +1272,13 @@ $Acc_{\star}^{(r)}[j+1]=Acc_{\star}^{(r)}[j]+a_j^{\star(r)}b_j^{\star(r)}$
 
 #### 2.2.5 源路由
 
-对每个边索引 $k$，定义：$E_{src,k}^{edge(r)}=E_{src,src(k)}^{(r)} \quad H_{src,k}^{\star,edge(r)}=H_{src(k)}^{\star(r)}$
+对每个边索引 $k$，定义：$E_{src,k}^{edge(r)}=E_{src,src(k)}^{(r)} \quad H_{src,k}^{\star,edge(r)}=H_{src(k)}^{\star(r)}$ 
+
+> 这条边的源注意力广播值，等于它源节点的源注意力
+>
+> 这条边的源压缩特征广播值，等于它源节点的压缩特征
+>
+> 也就是把节点值按 `src(k)` 路由到边上
 
 生成挑战：$\eta_{src}^{(r)},\beta_{src}^{(r)}$
 
@@ -1052,6 +1289,10 @@ $Acc_{\star}^{(r)}[j+1]=Acc_{\star}^{(r)}[j]+a_j^{\star(r)}b_j^{\star(r)}$
 对每个边索引 $k$，定义查询端：$Query^{src(r)}[k] = src(k)+\eta_{src}^{(r)}E_{src,k}^{edge(r)}+(\eta_{src}^{(r)})^2H_{src,k}^{\star,edge(r)}$
 
 定义公开总和：$S_{src}^{(r)} = \sum_{i=0}^{N-1}\frac{m_{src}^{(r)}[i]}{Table^{src(r)}[i]+\beta_{src}^{(r)}} = \sum_{k=0}^{E-1}\frac{1}{Query^{src(r)}[k]+\beta_{src}^{(r)}}$
+
+> 左边：表端每条记录按“应该出现的次数”计入
+>
+> 右边：查询端每条边实际出现一次计入
 
 定义节点端累加器：$R_{src}^{node(r)}[0]=0$
 
@@ -1071,9 +1312,11 @@ $R_{src}^{edge(r)}[k+1] = R_{src}^{edge(r)}[k] + Q_{edge}^{valid}[k]\cdot\frac{1
 
 生成挑战：$\eta_L^{(r)},\beta_L^{(r)}$
 
-定义 LeakyReLU 表端：$Table^{L(r)}[t]=T_{LReLU}[t,0]+\eta_L^{(r)}T_{LReLU}[t,1]$
+定义 LeakyReLU 表端：$Table^{L(r)}[t]=T_{LReLU}[t,0]+\eta_L^{(r)}T_{LReLU}[t,1]$ 
 
-查询端：$Query^{L(r)}[k]=S_k^{(r)}+\eta_L^{(r)}Z_k^{(r)}$
+> LeakyReLU 静态表里每一行是：（$T_{LReLU}[t,0]$，$T_{LReLU}[t,1]$），表示（输入值，对应输出值）
+
+查询端：$Query^{L(r)}[k]=S_k^{(r)}+\eta_L^{(r)}Z_k^{(r)}$ 
 
 定义表端有效区选择器：$Q_{tbl}^{L(r)}[t]= \begin{cases} 1 &0\le t\le |T_{LReLU}|-1 \\ 0 &|T_{LReLU}|\le t\le n_{edge}-1 \end{cases}$
 
@@ -1089,7 +1332,9 @@ $R_L^{(r)}[k+1] = R_L^{(r)}[k] + Q_{tbl}^{L(r)}[k]\cdot\frac{m_L^{(r)}[k]}{Table
 
 定义组最大值：$M_i^{(r)}=\max\{Z_k^{(r)}\mid dst(k)=i\}$
 
-定义最大值广播与非负差分：$M_k^{edge(r)}=M_{dst(k)}^{(r)} \quad \Delta_k^{+(r)}=M_k^{edge(r)}-Z_k^{(r)}$
+定义最大值广播与非负差分：$M_k^{edge(r)}=M_{dst(k)}^{(r)} \quad \Delta_k^{+(r)}=M_k^{edge(r)}-Z_k^{(r)}$ 
+
+> 如果$M$真的是组最大值，那对同组所有边都应该有：$\Delta_k^{+(r)} ≥ 0$ 
 
 引入指示变量：$s_{max}^{(r)}[k]\in\{0,1\}$
 
@@ -1100,9 +1345,9 @@ $R_L^{(r)}[k+1] = R_L^{(r)}[k] + Q_{tbl}^{L(r)}[k]\cdot\frac{m_L^{(r)}[k]}{Table
 2. 被选中的位置必须零差分：$s_{max}^{(r)}[k]\cdot \Delta_k^{+(r)}=0$
 
 
-定义组内计数状态机：$C_{max}^{(r)}[0]=Q_{edge}^{valid}[0]\cdot s_{max}^{(r)}[0]$
+定义组内计数状态机：$C_{max}^{(r)}[0]=Q_{edge}^{valid}[0]\cdot s_{max}^{(r)}[0]$ 
 
-对 $0\le k\le n_{edge}-2$，定义：$C_{max}^{(r)}[k+1] = (1-Q_{edge}^{valid}[k+1])C_{max}^{(r)}[k] + Q_{edge}^{valid}[k+1] \Big( Q_{grp\_new}^{edge}[k+1]s_{max}^{(r)}[k+1] + (1-Q_{grp\_new}^{edge}[k+1])\big(C_{max}^{(r)}[k]+s_{max}^{(r)}[k+1]\big) \Big)$
+对 $0\le k\le n_{edge}-2$，定义：$C_{max}^{(r)}[k+1] = (1-Q_{edge}^{valid}[k+1])C_{max}^{(r)}[k] + Q_{edge}^{valid}[k+1] \Big( Q_{grp\_new}^{edge}[k+1]s_{max}^{(r)}[k+1] + (1-Q_{grp\_new}^{edge}[k+1])\big(C_{max}^{(r)}[k]+s_{max}^{(r)}[k+1]\big) \Big)$ 
 
 对每个边索引 $k$，要求组末约束：$Q_{grp\_end}^{edge}[k]\cdot\big(C_{max}^{(r)}[k]-1\big)=0$
 
@@ -1114,7 +1359,7 @@ $R_L^{(r)}[k+1] = R_L^{(r)}[k] + Q_{tbl}^{L(r)}[k]\cdot\frac{m_L^{(r)}[k]}{Table
 
 定义表端有效区选择器：$Q_{tbl}^{R(r)}[t]= \begin{cases} 1 &0\le t\le 2^B-1 \\ 0 &2^B\le t\le n_{edge}-1 \end{cases}$
 
-查询端有效区选择器：$Q_{qry}^{R(r)}[k]=Q_{edge}^{valid}[k]$
+查询端有效区选择器：$Q_{qry}^{R(r)}[k]=Q_{edge}^{valid}[k]$ 
 
 对每个表端索引 $t$，定义重数：$m_R^{(r)}[t] = \#\{k\in\{0,1,\ldots,E-1\}\mid \Delta_k^{+(r)}=t\}$
 
@@ -1132,9 +1377,11 @@ $[P_{S^{(r)}}],\ [P_{Z^{(r)}}],\ [P_{M^{(r)}}],\ [P_{M^{edge(r)}}],\ [P_{\Delta^
 
 #### 2.2.7 指数、分母、逆元与归一化权重
 
-生成挑战：$\eta_{exp}^{(r)},\beta_{exp}^{(r)}$
+对每个边索引 $k$，定义：$U_k^{(r)}=ExpMap(\Delta_k^{+(r)})$ 
 
-对每个边索引 $k$，定义：$U_k^{(r)}=ExpMap(\Delta_k^{+(r)})$
+> 把上一节得到的非负差分$ \Delta^+ $送进指数查表，得到 softmax 分子项$U$ 
+
+生成挑战：$\eta_{exp}^{(r)},\beta_{exp}^{(r)}$ 
 
 定义指数表端：$Table^{exp(r)}[t]=T_{exp}[t,0]+\eta_{exp}^{(r)}T_{exp}[t,1]$
 
@@ -1154,6 +1401,8 @@ $R_{exp}^{(r)}[k+1] = R_{exp}^{(r)}[k] + Q_{tbl}^{exp(r)}[k]\cdot\frac{m_{exp}^{
 
 对每个节点 $i$，定义：$Sum_i^{(r)}=\sum_{\{k\mid dst(k)=i\}}U_k^{(r)} \quad inv_i^{(r)}=(Sum_i^{(r)})^{-1}$
 
+> 把同一个$dst=i$的那组边的所有$U_k$加起来，得到这个节点 softmax 的分母
+
 对每个边索引 $k$，定义广播：$Sum_k^{edge(r)}=Sum_{dst(k)}^{(r)} \quad inv_k^{edge(r)}=inv_{dst(k)}^{(r)}$
 
 定义归一化权重：$\alpha_k^{(r)}=U_k^{(r)}\cdot inv_k^{edge(r)}$
@@ -1168,7 +1417,7 @@ $R_{exp}^{(r)}[k+1] = R_{exp}^{(r)}[k] + Q_{tbl}^{exp(r)}[k]\cdot\frac{m_{exp}^{
 
 定义压缩特征：$H_{agg,pre,i}^{\star(r)}=\sum_{j=0}^{d_h-1}H_{agg,pre,i,j}^{(r)}(\xi^{(r)})^j$
 
-定义边级压缩加权特征：$\widehat v_{pre,k}^{\star(r)}=\alpha_k^{(r)}H_{src,k}^{\star,edge(r)}$
+定义边级压缩加权特征：$\widehat v_{pre,k}^{\star(r)}=\alpha_k^{(r)}H_{src,k}^{\star,edge(r)}$ 
 
 定义广播：$H_{agg,pre,k}^{\star,edge(r)}=H_{agg,pre,dst(k)}^{\star(r)}$ 
 
@@ -1287,7 +1536,7 @@ $R_{dst}^{edge(r)}[k+1] = R_{dst}^{edge(r)}[k] + Q_{edge}^{valid}[k]\cdot\frac{1
 
 ### 2.4 输出层的完整见证生成
 
-输出层由 $K_{out}$ 个输出注意力头组成。对每个输出头 $s\in\{0,1,\ldots,K_{out}-1\}$，先按单头 attention 完成 projection / score / softmax / aggregation / bias-add；全部输出头完成后，再做多头平均，得到最终输出 $Y$。
+输出层由 $K_{out}$ 个输出注意力头组成。对每个输出头 $s\in\{0,1,\ldots,K_{out}-1\}$，先按单头 注意力 完成 projection / score / softmax / aggregation / bias-add；全部输出头完成后，再做多头平均，得到最终输出 $Y$。
 
 #### 2.4.1 第 $s$ 个输出头的输出投影
 
@@ -1310,16 +1559,16 @@ $b_m^{proj(out,s)}=B_m^{proj(out,s)}(y_{proj}^{(out,s)})=\sum_{c=0}^{C-1}W_{m,c}
 
 定义外点评值：$\mu_{proj}^{(out,s)}=\sum_{m=0}^{d_{cat}-1}a_m^{proj(out,s)}b_m^{proj(out,s)}$
 
-要求：$P_{Y'^{(s)}}(y_{proj}^{(out,s)})=\mu_{proj}^{(out,s)}$。
+要求：$P_{Y'^{(s)}}(y_{proj}^{(out,s)})=\mu_{proj}^{(out,s)}$ 
 
 定义共享维累加器：$Acc_{proj}^{(out,s)}[0]=0$
 
 $Acc_{proj}^{(out,s)}[m+1]=Acc_{proj}^{(out,s)}[m]+a_m^{proj(out,s)}b_m^{proj(out,s)}
-\qquad 0\le m\le d_{cat}-1$
+\quad 0\le m\le d_{cat}-1$ 
 
-对 $m\ge d_{cat}$ 的 padding 区，统一规定：
+对 $m\ge d_{cat}$ 的填充区，统一规定：
 
-$a_m^{proj(out,s)}=0 \quad b_m^{proj(out,s)}=0 \quad Acc_{proj}^{(out,s)}[m+1]=Acc_{proj}^{(out,s)}[m]$。
+$a_m^{proj(out,s)}=0 \quad b_m^{proj(out,s)}=0 \quad Acc_{proj}^{(out,s)}[m+1]=Acc_{proj}^{(out,s)}[m]$ 
 
 定义多项式：
 
@@ -1382,7 +1631,7 @@ $Acc_{dst}^{(out,s)}[c+1]=Acc_{dst}^{(out,s)}[c]+a_c^{dst(out,s)}b_c^{dst(out,s)
 
 #### 2.4.3 第 $s$ 个输出头的源路由、LeakyReLU、最大值、范围检查、指数、分母、逆元与归一化权重
 
-对每个边索引 $k$，先定义输出层第 $s$ 个 head 的源路由广播对象：$E_{src,k}^{edge(out,s)}=E_{src,src(k)}^{(out,s)} \quad Y_{k}'^{\star,edge(s)}=Y_{src(k)}'^{\star(s)}$
+对每个边索引 $k$，先定义输出层第 $s$ 个 头 的源路由广播对象：$E_{src,k}^{edge(out,s)}=E_{src,src(k)}^{(out,s)} \quad Y_{k}'^{\star,edge(s)}=Y_{src(k)}'^{\star(s)}$
 
 生成挑战：$\eta_{src}^{(out,s)},\beta_{src}^{(out,s)}$
 
@@ -1408,7 +1657,7 @@ $R_{src}^{edge(out,s)}[k+1]=R_{src}^{edge(out,s)}[k]+Q_{edge}^{valid}[k]\cdot\fr
 
 接着对每个边索引 $k$，定义：
 
-$S_k^{(out,s)}=E_{src,k}^{edge(out,s)}+E_{dst,k}^{edge(out,s)}, \qquad Z_k^{(out,s)}=LReLU(S_k^{(out,s)})$
+$S_k^{(out,s)}=E_{src,k}^{edge(out,s)}+E_{dst,k}^{edge(out,s)}, \quad Z_k^{(out,s)}=LReLU(S_k^{(out,s)})$
 
 生成挑战：$\eta_L^{(out,s)},\beta_L^{(out,s)}$
 
@@ -1434,7 +1683,7 @@ $R_L^{(out,s)}[k+1]=R_L^{(out,s)}[k]+Q_{tbl}^{L(out,s)}[k]\cdot\frac{m_L^{(out,s
 
 引入二值指示变量：$s_{max}^{(out,s)}[k]\in\{0,1\}$，并要求：
 
-$s_{max}^{(out,s)}[k](s_{max}^{(out,s)}[k]-1)=0, \qquad s_{max}^{(out,s)}[k]\cdot \Delta_k^{+(out,s)}=0$
+$s_{max}^{(out,s)}[k](s_{max}^{(out,s)}[k]-1)=0, \quad s_{max}^{(out,s)}[k]\cdot \Delta_k^{+(out,s)}=0$
 
 定义组内计数状态机：$C_{max}^{(out,s)}[0]=Q_{edge}^{valid}[0]\cdot s_{max}^{(out,s)}[0]$
 
@@ -1444,7 +1693,7 @@ $C_{max}^{(out,s)}[k+1]=(1-Q_{edge}^{valid}[k+1])C_{max}^{(out,s)}[k]+Q_{edge}^{
 
 生成范围检查挑战：$\beta_R^{(out,s)}$
 
-定义范围表端与查询端：$Table^{R(out,s)}[t]=t, \qquad Query^{R(out,s)}[k]=\Delta_k^{+(out,s)}$
+定义范围表端与查询端：$Table^{R(out,s)}[t]=t, \quad Query^{R(out,s)}[k]=\Delta_k^{+(out,s)}$
 
 定义有效区选择器：$Q_{tbl}^{R(out,s)}[t]=\begin{cases}1,&0\le t\le 2^B-1\\0,&2^B\le t\le n_{edge}-1\end{cases}$，$Q_{qry}^{R(out,s)}[k]=Q_{edge}^{valid}[k]$
 
@@ -1654,16 +1903,19 @@ $K_{out}P_{Y^{\star}}-\sum_{s=0}^{K_{out}-1}P_{Y^{\star(s)}}=0$
 
 #### 3.2.1 全局阶段
 
-1. 先从证明对象 $\pi_{GAT}$ 中按第 3.5 节规定的固定顺序解析元数据块 $M_{pub}$，并把 $M_{pub}$ 与全部公开量化参数一起吸入 transcript。随后再吸入
-$N,E,N_{total},L,\{d_{in}^{(\ell)}\}_{\ell=1}^{L},\{d_h^{(\ell)}\}_{\ell=1}^{L-1},\{d_{cat}^{(\ell)}\}_{\ell=1}^{L-1},C,B,K_{out}$，
-以及 $[P_I],[P_{src}],[P_{dst}],[P_{node\_gid}],[P_{edge\_gid}],[P_{Q_{graph\_new}^{edge}}],[P_{Q_{graph\_end}^{edge}}],[P_{Q_{grp\_new}^{edge}}],[P_{Q_{grp\_end}^{edge}}]$，再吸入基础动态承诺 $[P_H]$ 与静态特征表承诺，生成：$\eta_{feat},\beta_{feat}$。
+1. 先从证明对象 $\pi_{GAT}$ 中按第 3.5 节规定的固定顺序解析元数据块 $M_{pub}$，并把 $M_{pub}$ 与全部公开量化参数一起吸入 transcript。随后再吸入 $N,E,N_{total},L,\{d_{in}^{(\ell)}\}_{\ell=1}^{L},\{d_h^{(\ell)}\}_{\ell=1}^{L-1},\{d_{cat}^{(\ell)}\}_{\ell=1}^{L-1},C,B,K_{out}$，
 
-2. 对每个隐藏层 $\ell=1,2,\ldots,L-1$，按层顺序重放该层全部 hidden-head 挑战；在每一层内部，再按 $r=0,1,\ldots,K_{hid}^{(\ell)}-1$ 的顺序生成该层全部 hidden 挑战。
+  以及 $[P_I],[P_{src}],[P_{dst}],[P_{node\_gid}],[P_{edge\_gid}],[P_{Q_{graph\_new}^{edge}}],[P_{Q_{graph\_end}^{edge}}],[P_{Q_{grp\_new}^{edge}}],[P_{Q_{grp\_end}^{edge}}]$ 
+
+  再吸入基础动态承诺 $[P_H]$ 与静态特征表承诺，生成：$\eta_{feat},\beta_{feat}$。
+
+2. 对每个隐藏层 $\ell=1,2,\ldots,L-1$，按层顺序重放该层全部 hidden- head挑战；在每一层内部，再按 $r=0,1,\ldots,K_{hid}^{(\ell)}-1$ 的顺序生成该层全部隐藏层挑战。
 
 3. 对每个隐藏层 $\ell=1,2,\ldots,L-1$，其拼接阶段都严格分两步执行：先吸入该层的 $[P_{H_{cat}}^{(\ell)}]$，生成 $\xi_{cat}^{(\ell)}$，再吸入 $[P_{H_{cat}^{\star}}^{(\ell)}]$，生成 $y_{cat}^{(\ell)}$。
 
 4. 最终输出层阶段按输出头编号 $s=0,1,\ldots,K_{out}-1$ 依次生成：
-$y_{proj}^{(out,s)},y_{src}^{(out,s)},y_{dst}^{(out,s)},\eta_{src}^{(out,s)},\beta_{src}^{(out,s)},\eta_L^{(out,s)},\beta_L^{(out,s)},\beta_R^{(out,s)},\eta_{exp}^{(out,s)},\beta_{exp}^{(out,s)},\lambda_{out}^{(s)},y_{out,pre}^{(s)},y_{bias}^{(out,s)},y_{out}^{(s)},\eta_{dst}^{(out,s)},\beta_{dst}^{(out,s)}$。
+
+  $y_{proj}^{(out,s)},y_{src}^{(out,s)},y_{dst}^{(out,s)},\eta_{src}^{(out,s)},\beta_{src}^{(out,s)},\eta_L^{(out,s)},\beta_L^{(out,s)},\beta_R^{(out,s)},\eta_{exp}^{(out,s)},\beta_{exp}^{(out,s)},\lambda_{out}^{(s)},y_{out,pre}^{(s)},y_{bias}^{(out,s)},y_{out}^{(s)},\eta_{dst}^{(out,s)},\beta_{dst}^{(out,s)}$。
 
 5. 全部输出头相关对象固定后，吸入 $[P_Y],[P_{Y^{\star}}]$，生成最终平均输出压缩挑战：$y_{avg}$。
 
@@ -2048,39 +2300,21 @@ $C_{outdst,2}^{(s)}(X)=Last_C(X)\cdot\big(P_{Acc^{dst(out,s)}}(X)-\mu_{dst}^{(ou
 
 ##### （三）尺度对齐后聚合前输出压缩绑定
 
-先对每个类别索引 $c$ 定义节点域列多项式：
+先对每个类别索引 $c$ 定义节点域列多项式：$P_{A_{\widetilde Y,c}^{(s)}}(X)=\sum_{i=0}^{n_N-1}\widetilde Y_{i,c}^{pre(s)}L_i^{(N)}(X)$
 
-
-$P_{A_{\widetilde Y,c}^{(s)}}(X)=\sum_{i=0}^{n_N-1}\widetilde Y_{i,c}^{pre(s)}L_i^{(N)}(X)$
-
-则有
-
-
-$C_{out\widetilde Y}^{(s)}(X)=P_{\widetilde Y^{pre,\star(s)}}(X)-\sum_{c=0}^{C-1}P_{A_{\widetilde Y,c}^{(s)}}(X)\xi_{out}^c$
+则有：$C_{out\widetilde Y}^{(s)}(X)=P_{\widetilde Y^{pre,\star(s)}}(X)-\sum_{c=0}^{C-1}P_{A_{\widetilde Y,c}^{(s)}}(X)\xi_{out}^c$
 
 ##### （四）输出头压缩绑定
 
-先对每个类别索引 $c$ 定义节点域列多项式：
+先对每个类别索引 $c$ 定义节点域列多项式：$P_{A_{Y,c}^{(s)}}(X)=\sum_{i=0}^{n_N-1}Y_{i,c}^{(s)}L_i^{(N)}(X)$
 
-
-$P_{A_{Y,c}^{(s)}}(X)=\sum_{i=0}^{n_N-1}Y_{i,c}^{(s)}L_i^{(N)}(X)$
-
-则有
-
-
-$C_{outY}^{(s)}(X)=P_{Y^{\star(s)}}(X)-\sum_{c=0}^{C-1}P_{A_{Y,c}^{(s)}}(X)\xi_{out}^c$
+则有：$C_{outY}^{(s)}(X)=P_{Y^{\star(s)}}(X)-\sum_{c=0}^{C-1}P_{A_{Y,c}^{(s)}}(X)\xi_{out}^c$
 
 ##### （五）最终平均输出压缩绑定
 
-先对每个类别索引 $c$ 定义：
+先对每个类别索引 $c$ 定义：$P_{A_{Y,c}}(X)=\sum_{i=0}^{n_N-1}Y_{i,c}L_i^{(N)}(X)$
 
-
-$P_{A_{Y,c}}(X)=\sum_{i=0}^{n_N-1}Y_{i,c}L_i^{(N)}(X)$
-
-则有
-
-
-$C_{outY}^{avg}(X)=P_{Y^{\star}}(X)-\sum_{c=0}^{C-1}P_{A_{Y,c}}(X)\xi_{out}^c$
+则有：$C_{outY}^{avg}(X)=P_{Y^{\star}}(X)-\sum_{c=0}^{C-1}P_{A_{Y,c}}(X)\xi_{out}^c$
 
 #### 3.3.13 输出层在边域上的全部约束
 
@@ -2220,14 +2454,11 @@ $C_{out,dst,edge,2}^{(s)}(X)=Last_{edge}(X)\cdot\big(P_{R_{dst}^{edge(out,s)}}(X
 
 $C_{out,src,qry}^{(s)}(X)=P_{Query^{src(out,s)}}(X)-\Big(P_{src}(X)+\eta_{src}^{(out,s)}P_{E_{src}^{edge(out,s)}}(X)+(\eta_{src}^{(out,s)})^2P_{Y'^{\star,edge(s)}}(X)\Big)$
 
-
 $\begin{aligned}
-C_{out,dst,qry}^{(s)}(X)={}&P_{Query^{dst(out,s)}}(X)-\Big(
-P_{dst}(X)+\eta_{dst}^{(out,s)}P_{E_{dst}^{edge(out,s)}}(X)
-+(\eta_{dst}^{(out,s)})^2P_{M^{edge(out,s)}}(X)\\
-&\qquad+(\eta_{dst}^{(out,s)})^3P_{Sum^{edge(out,s)}}(X)
-+(\eta_{dst}^{(out,s)})^4P_{inv^{edge(out,s)}}(X)
-+(\eta_{dst}^{(out,s)})^5P_{Y^{\star,edge(s)}}(X)\Big)$
+C_{out,dst,qry}^{(s)}(X) ={} & P_{Query^{dst(out,s)}}(X) - \Big( P_{dst}(X) + \eta_{dst}^{(out,s)}P_{E_{dst}^{edge(out,s)}}(X) \\
+& + (\eta_{dst}^{(out,s)})^2 P_{M^{edge(out,s)}}(X) + (\eta_{dst}^{(out,s)})^3 P_{Sum^{edge(out,s)}}(X) \\
+& + (\eta_{dst}^{(out,s)})^4 P_{inv^{edge(out,s)}}(X) + (\eta_{dst}^{(out,s)})^5 P_{Y^{\star,edge(s)}}(X) \Big)
+\end{aligned}$ 
 
 
 #### 3.3.14 输出层在节点域上的全部约束
@@ -2288,10 +2519,9 @@ $C_{out,avg}(X)=K_{out}P_{Y^{\star}}(X)-\sum_{s=0}^{K_{out}-1}P_{Y^{\star(s)}}(X
 
 #### 3.3.15 七个工作域的商多项式
 
-七个工作域的商多项式保持原 formal 结构，但在多层 / 多头场景下，必须按**层序 + head 序 + avg 对象**的固定顺序聚合。具体写法如下。
+七个工作域的商多项式保持原 formal 结构，但在多层 / 多头场景下，必须按**层序 + 头 序 + avg 对象**的固定顺序聚合。具体写法如下。
 
 ##### （一）边域商多项式
-
 
 $\begin{aligned}
 t_{edge}(X)=\frac{1}{Z_{edge}(X)}\Bigg[
@@ -2380,7 +2610,7 @@ t_{edge}(X)=\frac{1}{Z_{edge}(X)}\Bigg[
 +\alpha_{quot}^{e_{out,dst,qry}^{(s)}}C_{out,dst,qry}^{(s)}
 \Big)
 \Bigg]
-\end{aligned}$
+\end{aligned}$ 
 
 ##### （二）拼接共享维域商多项式
 
@@ -2417,7 +2647,6 @@ t_C(X)=\frac{1}{Z_C(X)}\Bigg[
 
 ##### （四）节点域商多项式
 
-
 $t_N(X)=\frac{1}{Z_N(X)}\Bigg[
 \sum_{\ell=1}^{L-1}\sum_{r=0}^{K_{hid}^{(\ell)}-1}\Big(
 \alpha_{quot}^{e_{src,node,0}^{(\ell,r)}}C_{src,node,0}^{(\ell,r)}
@@ -2447,38 +2676,116 @@ $t_N(X)=\frac{1}{Z_N(X)}\Bigg[
 其余工作域 $t_{FH},t_{in},t_{d_h}$ 保持原 formal 结构不变；在实现中，必须仍按“先 hidden family、再输出层 family、最后 avg 对象”的固定顺序把相关点评值吸入 transcript 与 serializer。
 
 
-### 3.4 外点评值、域内点评值与开放
+### 3.4 掩蔽外点评值、域内点评值与开放
 
-外点评值集合必须至少包括：
+外点评值集合必须至少包括下列语义对象；但正式 proof object 中编码的是对应 $P^{zk}$ 的 masked evaluation，而不是裸 $P$ 的 witness evaluation：
 
 1. 特征检索相关外点评值；
 2. 对每个隐藏层 $\ell=1,\ldots,L-1$、以及该层每个注意力头 $r=0,\ldots,K_{hid}^{(\ell)}-1$：
    $P_{H'^{(\ell,r)}}(y_{proj}^{(\ell,r)}),P_{E_{src}^{(\ell,r)}}(y_{src}^{(\ell,r)}),P_{E_{dst}^{(\ell,r)}}(y_{dst}^{(\ell,r)}),P_{H^{\star(\ell,r)}}(y_{\star}^{(\ell,r)}),P_{H_{agg,pre}^{\star(\ell,r)}}(y_{agg,pre}^{(\ell,r)}),P_{H_{agg}^{\star(\ell,r)}}(y_{agg}^{(\ell,r)})$；
-3. 对每个隐藏层 $\ell=1,\ldots,L-1$ 的拼接阶段：
-   $P_{H_{cat}^{\star(\ell)}}(y_{cat}^{(\ell)})$；
+3. 对每个隐藏层 $\ell=1,\ldots,L-1$ 的拼接阶段：$P_{H_{cat}^{\star(\ell)}}(y_{cat}^{(\ell)})$；
 4. 对每个输出头 $s$：
    $P_{Y'^{(s)}}(y_{proj}^{(out,s)}),P_{E_{src}^{(out,s)}}(y_{src}^{(out,s)}),P_{E_{dst}^{(out,s)}}(y_{dst}^{(out,s)}),P_{Y^{pre,\star(s)}}(y_{out,pre}^{(s)}),P_{\widetilde Y^{pre,\star(s)}}(y_{bias}^{(out,s)}),P_{Y^{\star(s)}}(y_{bias}^{(out,s)}),P_{Y^{\star(s)}}(y_{out}^{(s)})$；
-5. 最终平均输出：
-   $P_{Y^{\star}}(y_{avg}),P_Y(y_{avg})$。
+5. 最终平均输出：$P_{Y^{\star}}(y_{avg}),P_Y(y_{avg})$。
 
-对每个工作域 $\mathcal D\in\{FH,edge,in,d_h,cat,C,N\}$，都在点评集合 $\{z_{\mathcal D},z_{\mathcal D}\omega_{\mathcal D}\}$ 上执行多点评 batch opening。
+对每个工作域 $\mathcal D\in\{FH,edge,in,d_h,cat,C,N\}$，都在点评集合 $\{z_{\mathcal D},z_{\mathcal D}\omega_{\mathcal D}\}$ 上执行多点评 batch opening。所有进入 opening 的私有多项式必须使用 $P^{zk}$；验证者只检查 $[P^{zk}]$ 与 masked evaluation 的一致性，不接收裸 witness evaluation。
 
 对全部外点评值统一用 $\rho_{ext}$ 做折叠，形成唯一的外点评值批量开放。
 
+
+
+#### 3.4.1 masked 外点评值绑定的主实验固定规则
+
+由于 $P^{zk}(X)=P(X)+Z_{\mathcal D}(X)R_P(X)$ 在工作域外通常不等于 $P(X)$，外点评值绑定不能直接沿用旧的裸评值等式。主实验不允许让实现者自由选择绑定方式，必须按下表固定执行。
+
+| 关系族 | 固定实现方式 | 说明 |
+|---|---|---|
+| CRPC 投影绑定 | `ZKSubproofMode` | 不输出裸折叠向量和裸 $\mu$ |
+| 源注意力 / 目标注意力绑定 | `ZKSubproofMode` | 只输出承诺、masked evaluation 和子证明 |
+| 压缩特征绑定 | `ZKSubproofMode` | 只输出承诺、masked evaluation 和子证明 |
+| 拼接绑定 | `DomainQuotientMode` | 在工作域内用商多项式约束 |
+| lookup / LogUp 累加器 | `DomainQuotientMode` | 使用域内商多项式约束 |
+| route 一致性 | `DomainQuotientMode` | 使用域内商多项式约束 |
+| PSQ 状态机 | `DomainQuotientMode` | 使用域内商多项式约束 |
+| 最大值唯一性 / 范围 / 逆元 / 归一化 | `DomainQuotientMode` | 使用域内商多项式约束 |
+| 输出平均绑定 | `DomainQuotientMode` | 使用域内商多项式约束 |
+| 最终 logits 绑定 | `PublicOutputMode` | 主实验公开 logits 并绑定到 proof |
+
+实现要求：
+
+1. 每个 `Pi_bind` 必须带 `binding_mode`，且其值必须与上表一致。
+2. Verifier 必须拒绝未声明 `binding_mode` 或模式与上表不一致的 proof。
+3. Private binding 不得输出裸折叠向量、裸模型参数评值、裸中间激活或裸 $\mu$。
+4. 子证明必须使用独立 domain-separation tag，例如 `bind:hidden:<layer>:<head>:proj`。
+5. 若某个绑定关系暂时无法按上表实现，则该关系不得进入主实验。
+
+#### 3.4.2 KZG opening 的正式算法接口与验证方程
+
+本协议允许单点 opening、同点 batch opening 和多点 batch opening。所有 opening 都针对已承诺的 $P^{zk}$ 或 public polynomial；private polynomial 的 claimed value 必须标记为 `MaskedPrivateValue`。
+
+单点 opening：
+
+给定承诺 $C=[P]$、点 $z$ 和 claimed value $v=P(z)$，证明者构造 witness polynomial：
+
+$$W(X)=\frac{P(X)-v}{X-z}.$$
+
+证明为 $[W]$。验证者检查：
+
+$$e(C-vG_1,G_2)=e([W], [\tau]_2-zG_2).$$
+
+同点 batch opening：
+
+对多项式 $\{P_i\}_{i=0}^{m-1}$、同一点 $z$、claimed values $\{v_i\}$，Fiat--Shamir 生成 folding challenge $\rho$，定义：
+
+$$P_\rho(X)=\sum_{i=0}^{m-1}\rho^iP_i(X),\quad v_\rho=\sum_{i=0}^{m-1}\rho^iv_i.$$
+
+证明者打开 $P_\rho$ 于 $z$，验证者用折叠承诺
+
+$$C_\rho=\sum_{i=0}^{m-1}\rho^iC_i$$
+
+执行单点 pairing 检查。
+
+多点 batch opening：
+
+对 $(P_i,z_j)$ 集合，主实现应采用分域批处理：同一工作域内先按点折叠，再按多项式折叠，最终生成一个或少量 witness commitments。若实现使用更通用的 KZG multiproof，必须在 `opening_mode` 中固定算法、排序、folding challenge 顺序和 proof size 统计口径。
+
+实现规则：
+
+1. Opening witness polynomial 可以在 coefficient basis 中构造；evaluation-basis 多项式可先通过 IFFT 转换，或使用等价的 barycentric quotient 构造。
+2. 构造 witness 时不得使用 $\tau$。
+3. Verifier 只使用 commitments、claimed values、points、folding challenges 和 $VK_{KZG}$。
+4. 所有 folding challenge 必须吸入：metadata hash、commitment list、point list、visibility tags、claimed value tags。
+5. `proof_size_bytes` 统计 opening proof curve points、claimed values、必要的 folding metadata；不统计 SRS、manifest、日志、运行时间、路径字符串。
+
+#### 3.4.3 reference forward 一致性要求
+
+为了证明 secure 主路径仍然对应原始 GAT 推理，主实验必须为每个数据集保存 reference forward 摘要：
+
+1. 明文 GAT forward 的最终 logits hash；
+2. 量化后 GAT forward 的最终 logits hash；
+3. secure proof public output 的 logits hash；
+4. `model_arch`、`model_params`、`quant_config`、`static_tables`；
+5. 是否启用 self-loop、edge sort、multi-graph batch。
+
+验收条件：
+
+- 若 `public_output=logits`，secure proof 的 public logits 必须与量化 reference logits 完全一致。
+- 若 `public_output=label`，必须额外证明 argmax，且 public label 必须与 reference label 一致。
+- reference forward 时间不计入 proving time，但必须在实验 artifact 中保留 hash。
 
 ### 3.5 最终证明对象
 
 最终证明对象：$\pi_{GAT}$，按如下**固定顺序**序列化为有序元组：
 
-$\pi_{GAT} = \Big( M_{pub},\  \mathbf{Com}_{dyn},\  \mathbf{S}_{route},\  \mathbf{Eval}_{ext},\  \mathbf{Eval}_{dom},\  \mathbf{Com}_{quot},\  \mathbf{Open}_{dom},\  W_{ext},\  \Pi_{bind} \Big)$
+$\pi_{GAT} = \Big( M_{pub},\  \mathbf{Com}_{dyn}^{zk},\  \mathbf{S}_{route},\  \mathbf{Eval}_{ext}^{zk},\  \mathbf{Eval}_{dom}^{zk},\  \mathbf{Com}_{quot}^{zk},\  \mathbf{Open}_{dom}^{zk},\  W_{ext}^{zk},\  \Pi_{bind}^{zk} \Big)$
 
 其中各大块的内部顺序必须完全固定为：
 
-### 3.5.1 元数据块
+#### 3.5.1 元数据块
 
 $M_{pub} = \big(protocol\_id,\ model\_arch\_id,\ model\_param\_id,\ static\_table\_id,\ quant\_cfg\_id,\ domain\_cfg,\ dim\_cfg,\ encoding\_id,\ padding\_rule\_id,\ degree\_bound\_id\big)$
 
-### 3.5.2 动态承诺块
+#### 3.5.2 动态承诺块
 
 $\mathbf{Com}_{dyn}$ 按以下顺序拼接：
 
@@ -2492,7 +2799,7 @@ $\mathbf{Com}_{dyn}$ 按以下顺序拼接：
    
    其中每个 $\mathbf{Com}_{hidden}^{(\ell,r)}$ 的内部顺序，**唯一且完全**由第 3.5.2.1 节的显式枚举定义；实现时不得再使用“按第 2.2 节自动平铺”的口径。
 
-3. 隐藏层拼接块 family：对每个隐藏层 $\ell=1,\ldots,L-1$，在该层全部 head 承诺块之后立即写入
+3. 隐藏层拼接块 family：对每个隐藏层 $\ell=1,\ldots,L-1$，在该层全部 头 承诺块之后立即写入
    
    $\mathbf{Com}_{cat}^{(\ell)}=([P_{H_{cat}}^{(\ell)}],[P_{H_{cat}^{\star}}^{(\ell)}])$
    
@@ -2504,19 +2811,15 @@ $\mathbf{Com}_{dyn}$ 按以下顺序拼接：
    
    其中每个 $\mathbf{Com}_{out}^{(s)}$ 的内部顺序，**唯一且完全**由第 3.5.2.2 节的显式枚举定义；不同输出头的对象不得交叉混排。
 
-5. 最终平均输出承诺块：
+5. 最终平均输出承诺块：$\mathbf{Com}_{out}^{avg}=([P_Y],[P_{Y^{\star}}],[P_{Y^{\star,edge}}])$
    
-   $\mathbf{Com}_{out}^{avg}=([P_Y],[P_{Y^{\star}}],[P_{Y^{\star,edge}}])$
 
-因此：
-
-
-$\mathbf{Com}_{dyn}=\big(\mathbf{Com}_{feat},\ \{\mathbf{Com}_{hidden}^{(\ell,r)}\}_{\ell,r\ \text{按层序与头序}},\ \{\mathbf{Com}_{cat}^{(\ell)}\}_{\ell=1}^{L-1},\ \mathbf{Com}_{out}^{(0)},\ldots,\mathbf{Com}_{out}^{(K_{out}-1)},\ \mathbf{Com}_{out}^{avg}\big)$
+因此：$\mathbf{Com}_{dyn}=\big(\mathbf{Com}_{feat},\ \{\mathbf{Com}_{hidden}^{(\ell,r)}\}_{\ell,r\ \text{按层序与头序}},\ \{\mathbf{Com}_{cat}^{(\ell)}\}_{\ell=1}^{L-1},\ \mathbf{Com}_{out}^{(0)},\ldots,\mathbf{Com}_{out}^{(K_{out}-1)},\ \mathbf{Com}_{out}^{avg}\big)$
 
 
-#### 3.5.2.1 单个隐藏头承诺块 $\mathbf{Com}_{hidden}^{(\ell,r)}$ 的完全枚举
+##### 3.5.2.1 单个隐藏头承诺块 $\mathbf{Com}_{hidden}^{(\ell,r)}$ 的完全枚举
 
-对任意隐藏层 $\ell$、任意 hidden head $r$，正式固定：
+对任意隐藏层 $\ell$、任意 hidden 头 $r$，正式固定：
 
 
 $\begin{aligned}
@@ -2539,7 +2842,7 @@ $\begin{aligned}
 
 实现时不得再使用“按第 2.2 节出现顺序自动平铺”的模糊口径；serializer / parser 必须以上述枚举为准。
 
-#### 3.5.2.2 单个输出头承诺块 $\mathbf{Com}_{out}^{(s)}$ 的完全枚举
+##### 3.5.2.2 单个输出头承诺块 $\mathbf{Com}_{out}^{(s)}$ 的完全枚举
 
 对任意输出头 $s$，正式固定：
 
@@ -2567,7 +2870,7 @@ $\begin{aligned}
 $\mathbf{Com}_{out}^{avg}=([P_Y],[P_{Y^{\star}}],[P_{Y^{\star,edge}}])$
 
 
-### 3.5.3 路由公开总和块
+#### 3.5.3 路由公开总和块
 
 $\mathbf{S}_{route}$ 按如下顺序排列：
 
@@ -2582,27 +2885,22 @@ $\mathbf{S}_{route}$ 按如下顺序排列：
 整体上，$\mathbf{S}_{route}$ 必须先按层序写完全部 hidden 层，再写输出层；不得把输出层总和块插入到任一隐藏层 family 中间。
 
 
-### 3.5.4 外点评值块
+#### 3.5.4 外点评值块
 
 $\mathbf{Eval}_{ext}$ 按如下顺序排列：
 
-1. hidden 层 family：对每个隐藏层 $\ell=1,\ldots,L-1$、以及该层每个 head $r=0,\ldots,K_{hid}^{(\ell)}-1$，依次写入与
-   $y_{proj}^{(\ell,r)},y_{src}^{(\ell,r)},y_{dst}^{(\ell,r)},y_{\star}^{(\ell,r)},y_{agg,pre}^{(\ell,r)},y_{agg}^{(\ell,r)}$
-   对应的外点评值。
-
-2. hidden 层拼接阶段：对每个隐藏层 $\ell=1,\ldots,L-1$，写入
-   $P_{H_{cat}^{\star(\ell)}}(y_{cat}^{(\ell)})$
-   及其绑定所需外点评值。
-
-3. 输出层 family：对每个 $s=0,\ldots,K_{out}-1$，依次写入与
-   $y_{proj}^{(out,s)},y_{src}^{(out,s)},y_{dst}^{(out,s)},y_{out,pre}^{(s)},y_{bias}^{(out,s)},y_{out}^{(s)}$
-   对应的外点评值。
-
+1. hidden 层 family：对每个隐藏层 $\ell=1,\ldots,L-1$、以及该层每个 头 $r=0,\ldots,K_{hid}^{(\ell)}-1$，依次写入与
+   $y_{proj}^{(\ell,r)},y_{src}^{(\ell,r)},y_{dst}^{(\ell,r)},y_{\star}^{(\ell,r)},y_{agg,pre}^{(\ell,r)},y_{agg}^{(\ell,r)}$ 对应的外点评值。
+   
+2. hidden 层拼接阶段：对每个隐藏层 $\ell=1,\ldots,L-1$，写入$P_{H_{cat}^{\star(\ell)}}(y_{cat}^{(\ell)})$ 及其绑定所需外点评值。
+   
+3. 输出层 family：对每个 $s=0,\ldots,K_{out}-1$，依次写入与$y_{proj}^{(out,s)},y_{src}^{(out,s)},y_{dst}^{(out,s)},y_{out,pre}^{(s)},y_{bias}^{(out,s)},y_{out}^{(s)}$ 对应的外点评值。
+   
 4. 最终平均输出：最后写入 $(P_{Y^{\star}}(y_{avg}),P_Y(y_{avg}))$ 以及 $\pi_{bind}^{out,avg}$ 所需的外点评值。
 
-#### 3.5.4.1 单个 hidden-head 外点评值块的完全枚举
+##### 3.5.4.1 单个 hidden-head 外点评值块的完全枚举
 
-对任意隐藏层 $\ell$、任意 hidden head $r$，其外点评值块固定为：
+对任意隐藏层 $\ell$、任意 hidden 头 $r$，其外点评值块固定为：
 
 
 $\mathbf{Eval}_{ext}^{hidden,(\ell,r)}=\big(
@@ -2613,7 +2911,7 @@ P_{H^{\star(\ell,r)}}(y_{\star}^{(\ell,r)}),\ P_{H_{agg,pre}^{\star(\ell,r)}}(y_
 P_{H_{agg}^{\star(\ell,r)}}(y_{agg}^{(\ell,r)})
 \big)$
 
-#### 3.5.4.2 单个输出头外点评值块的完全枚举
+##### 3.5.4.2 单个输出头外点评值块的完全枚举
 
 对任意输出头 $s$，其外点评值块固定为：
 
@@ -2627,13 +2925,11 @@ P_{\widetilde Y^{pre,\star(s)}}(y_{bias}^{(out,s)}),\ P_{Y^{\star(s)}}(y_{bias}^
 P_{Y^{\star(s)}}(y_{out}^{(s)})
 \big)$
 
-本文正式 proof object 不暴露任何额外的折叠向量点评值。第 3.5.4 节已经枚举的外点评值列表就是完整列表；serializer 与 parser 不得再增加未枚举的额外点评值。
+本文正式证明对象不暴露任何额外的折叠向量点评值。第 3.5.4 节已经枚举的外点评值列表就是完整列表；serializer 与 parser 不得再增加未枚举的额外点评值。
 
-### 3.5.5 域内点评值块
+#### 3.5.5 域内点评值块
 
-对任意定义在工作域 $\mathbb H_{\mathcal D}$ 上并且进入 proof object 的已承诺多项式 $P$，统一记其域内点评值对为：
-
-$\operatorname{ev}_{\mathcal D}(P):=\big(P(z_{\mathcal D}),P(z_{\mathcal D}\omega_{\mathcal D})\big)$。
+对任意定义在工作域 $\mathbb H_{\mathcal D}$ 上并且进入 proof object 的已承诺多项式 $P$，统一记其域内点评值对为：$\operatorname{ev}_{\mathcal D}(P):=\big(P(z_{\mathcal D}),P(z_{\mathcal D}\omega_{\mathcal D})\big)$。
 
 若某条 quotient identity 还依赖验证者本地重建的公共多项式（例如公共 selector、公共索引列、公共拓扑多项式），则这些公共对象的域内点值**不**在 $\mathbf{Eval}_{dom}$ 中单独编码，而由验证者按与下文相同的对象顺序本地重建并插入检查。
 
@@ -2641,7 +2937,7 @@ $\mathbf{Eval}_{dom}$ 在本文正式协议中的唯一固定顺序定义为：
 
 $\mathbf{Eval}_{dom}=(\mathbf{Eval}_{FH},\mathbf{Eval}_{edge},\mathbf{Eval}_{in},\mathbf{Eval}_{d_h},\mathbf{Eval}_{cat},\mathbf{Eval}_{C},\mathbf{Eval}_{N})$。
 
-#### 3.5.5.1 特征检索域块
+##### 3.5.5.1 特征检索域块
 
 
 $\mathbf{Eval}_{FH}=\big(
@@ -2652,17 +2948,14 @@ $\mathbf{Eval}_{FH}=\big(
 \operatorname{ev}_{FH}(P_{R_{feat}})
 \big)$
 
-#### 3.5.5.2 边域块
+##### 3.5.5.2 边域块
 
-边域块固定为：
-
-
-$\mathbf{Eval}_{edge}=\big(
+边域块固定为：$\mathbf{Eval}_{edge}=\big(
 \{\mathbf{Eval}_{edge}^{hidden,(\ell,r)}\}_{\ell=1}^{L-1}\!{}_{r=0}^{K_{hid}^{(\ell)}-1},\ \{\mathbf{Eval}_{edge}^{out,s}\}_{s=0}^{K_{out}-1},\
 \mathbf{Eval}_{edge}^{avg}
 \big)$
 
-其中，对任意隐藏层 $\ell$、任意 hidden head $r$，固定定义：
+其中，对任意隐藏层 $\ell$、任意 hidden 头 $r$，固定定义：
 
 
 $\mathbf{Eval}_{edge}^{hidden,(\ell,r)}=\big(
@@ -2726,26 +3019,13 @@ $\mathbf{Eval}_{edge}^{out,s}=\big(
 \operatorname{ev}_{edge}(P_{Y^{\star,edge(s)}})
 \big)$
 
-最终平均输出在边域上的唯一块固定为：
+最终平均输出在边域上的唯一块固定为：$\mathbf{Eval}_{edge}^{avg}=\big( \operatorname{ev}_{edge}(P_{Y^{\star,edge}}) \big)$
 
+##### 3.5.5.3 输入共享维域块
 
-$\mathbf{Eval}_{edge}^{avg}=\big(
-\operatorname{ev}_{edge}(P_{Y^{\star,edge}})
-\big)$
+输入共享维域块固定为：$\mathbf{Eval}_{in}=\big(\{\mathbf{Eval}_{in}^{hidden,(\ell,r)}\}_{\ell=1}^{L-1}\!{}_{r=0}^{K_{hid}^{(\ell)}-1} \big)$
 
-#### 3.5.5.3 输入共享维域块
-
-输入共享维域块固定为：
-
-
-$\mathbf{Eval}_{in}=\big(
-\{\mathbf{Eval}_{in}^{hidden,(\ell,r)}\}_{\ell=1}^{L-1}\!{}_{r=0}^{K_{hid}^{(\ell)}-1}
-\big)$
-
-其中
-
-
-$\mathbf{Eval}_{in}^{hidden,(\ell,r)}=\big(
+其中：$\mathbf{Eval}_{in}^{hidden,(\ell,r)}=\big(
 \operatorname{ev}_{in}(P_{a^{proj(\ell,r)}}),\
 \operatorname{ev}_{in}(P_{b^{proj(\ell,r)}}),\
 \operatorname{ev}_{in}(P_{Acc^{proj(\ell,r)}})
@@ -2753,17 +3033,13 @@ $\mathbf{Eval}_{in}^{hidden,(\ell,r)}=\big(
 
 输入共享维域不包含输出层 family，也不包含 avg 块。
 
-#### 3.5.5.4 隐藏层单头共享维域块
+##### 3.5.5.4 隐藏层单头共享维域块
 
-隐藏层单头共享维域块固定为：
-
-
-$\mathbf{Eval}_{d_h}=\big(
+隐藏层单头共享维域块固定为：$\mathbf{Eval}_{d_h}=\big(
 \{\mathbf{Eval}_{d_h}^{hidden,(\ell,r)}\}_{\ell=1}^{L-1}\!{}_{r=0}^{K_{hid}^{(\ell)}-1}
 \big)$
 
 其中
-
 
 $\mathbf{Eval}_{d_h}^{hidden,(\ell,r)}=\big(
 \operatorname{ev}_{d_h}(P_{a^{src(\ell,r)}}),\
@@ -2779,7 +3055,7 @@ $\mathbf{Eval}_{d_h}^{hidden,(\ell,r)}=\big(
 
 该域不包含输出层 family，也不包含 avg 块。
 
-#### 3.5.5.5 拼接共享维域块
+##### 3.5.5.5 拼接共享维域块
 
 拼接共享维域块固定为：
 
@@ -2807,16 +3083,11 @@ $\mathbf{Eval}_{cat}^{out,s}=\big(
 
 该域不包含 avg 块。
 
-#### 3.5.5.6 输出类别共享维域块
+##### 3.5.5.6 输出类别共享维域块
 
-输出类别共享维域块固定为：
+输出类别共享维域块固定为：$\mathbf{Eval}_{C}=\big(\{\mathbf{Eval}_{C}^{out,s}\}_{s=0}^{K_{out}-1}\big)$
 
-
-$\mathbf{Eval}_{C}=\big(
-\{\mathbf{Eval}_{C}^{out,s}\}_{s=0}^{K_{out}-1}
-\big),$
-
-其中
+其中：
 
 
 $\mathbf{Eval}_{C}^{out,s}=\big(
@@ -2830,7 +3101,7 @@ $\mathbf{Eval}_{C}^{out,s}=\big(
 
 该域不包含隐藏层 family，也不包含 avg 块。
 
-#### 3.5.5.7 节点域块
+##### 3.5.5.7 节点域块
 
 节点域块固定为：
 
@@ -2841,7 +3112,7 @@ $\mathbf{Eval}_{N}=\big(
 \mathbf{Eval}_{N}^{avg}
 \big).$
 
-其中，对任意隐藏层 $\ell$、任意 hidden head $r$：
+其中，对任意隐藏层 $\ell$、任意 hidden 头 $r$：
 
 
 $\mathbf{Eval}_{N}^{hidden,(\ell,r)}=\big(
@@ -2889,7 +3160,7 @@ $\mathbf{Eval}_{N}^{avg}=\big(
 \big).$
 
 上述 $\mathbf{Eval}_{FH},\mathbf{Eval}_{edge},\mathbf{Eval}_{in},\mathbf{Eval}_{d_h},\mathbf{Eval}_{cat},\mathbf{Eval}_{C},\mathbf{Eval}_{N}$ 的块数、块顺序与块内字段，构成本文协议对 $\mathbf{Eval}_{dom}$ 的**唯一完整枚举**。serializer、parser、prover 与 verifier 都必须严格按该枚举实现；不得增加、删除、换序或合并任何域内点评值块。
-### 3.5.6 商承诺块
+#### 3.5.6 商承诺块
 
 $\mathbf{Com}_{quot}$ 按七个工作域固定为：
 
@@ -2897,52 +3168,51 @@ $\mathbf{Com}_{quot}=([t_{FH}],[t_{edge}],[t_{in}],[t_{d_h}],[t_{cat}],[t_C],[t_
 
 其中与输出层 family 和平均输出相关的全部约束，分别已经被吸收到 $t_{edge},t_C,t_N$ 中。
 
-### 3.5.7 域内 opening 块
+#### 3.5.7 域内 opening 块
 
 $\mathbf{Open}_{dom}$ 按七个工作域固定为：
 
 $\mathbf{Open}_{dom}=(Open_{FH},Open_{edge},Open_{in},Open_{d_h},Open_{cat},Open_C,Open_N)$
 
-#### 3.5.7.1 各工作域 opening 的对象归属规则
+各工作域 opening 的对象归属规则：
 
 为避免实现时误把对象放入错误工作域，固定如下归属：
 
-1. $Open_{FH}$：只包含特征检索子系统对象，即
-   $[P_H],[P_{Table^{feat}}],[P_{Query^{feat}}],[P_{m_{feat}}],[P_{Q_{tbl}^{feat}}],[P_{Q_{qry}^{feat}}],[P_{R_{feat}}]$
-   及其对应 quotient 约束点评值。
+1. $Open_{FH}$：
 
-2. $Open_{edge}$：包含全部边域对象，尤其是 hidden family 与 output family 中所有
-   source / target route 查询列、LeakyReLU / range / exp lookup 列、$S,Z,M^{edge},\Delta^+,s_{max},C_{max},U,Sum^{edge},inv^{edge},\alpha$、
-   PSQ 状态机与其边域目标值，以及
-   $Y'^{\star,edge(s)},Y^{pre,\star,edge(s)},Y^{\star,edge(s)},Y^{\star,edge}$。
+   只包含特征检索子系统对象，即$[P_H],[P_{Table^{feat}}],[P_{Query^{feat}}],[P_{m_{feat}}],[P_{Q_{tbl}^{feat}}],[P_{Q_{qry}^{feat}}],[P_{R_{feat}}]$及其对应 quotient 约束点评值。
 
-3. $Open_{in}$：包含全部定义在 $\mathbb H_{in}$ 上的 projection 折叠向量、共享维累加器，以及
-   $P_{Q_{in}^{valid,(\ell)}}$
-   family。
+2. $Open_{edge}$：
+   
+   包含全部边域对象，尤其是 hidden family 与 output family 中所有source / target route 查询列、LeakyReLU / range / exp lookup 列、$S,Z,M^{edge},\Delta^+,s_{max},C_{max},U,Sum^{edge},inv^{edge},\alpha$、PSQ 状态机与其边域目标值，以及$Y'^{\star,edge(s)},Y^{pre,\star,edge(s)},Y^{\star,edge(s)},Y^{\star,edge}$。
+   
+3. $Open_{in}$：
+   
+   包含全部定义在 $\mathbb H_{in}$ 上的 projection 折叠向量、共享维累加器，以及$P_{Q_{in}^{valid,(\ell)}}$ family。
 
-4. $Open_{d_h}$：包含全部定义在 $\mathbb H_{d_h}$ 上的 hidden-head 绑定折叠向量、共享维累加器，以及
-   $P_{Q_{d_h}^{valid,(\ell)}}$
-   family。
+4. $Open_{d_h}$：
+   
+   包含全部定义在 $\mathbb H_{d_h}$ 上的 hidden-head 绑定折叠向量、共享维累加器，以及$P_{Q_{d_h}^{valid,(\ell)}}$ family。
 
-5. $Open_{cat}$：包含 hidden concat 相关对象、输出层输入共享维相关对象，以及
-   $P_{Q_{cat}^{valid,(\ell)}}$
-   family 与
-   $P_{Q_{cat}^{valid,(out)}}$。
+5. $Open_{cat}$：
+   
+   包含 hidden concat 相关对象、输出层输入共享维相关对象，以及$P_{Q_{cat}^{valid,(\ell)}}$ family 与$P_{Q_{cat}^{valid,(out)}}$。
+   
+6. $Open_C$：
 
-6. $Open_C$：包含全部定义在 $\mathbb H_C$ 上的输出层类别维绑定对象、类别枚举对象，以及最终 average 所需的类别维绑定接口对象。
+	包含全部定义在 $\mathbb H_C$ 上的输出层类别维绑定对象、类别枚举对象，以及最终 average 所需的类别维绑定接口对象。
 
-7. $Open_N$：包含全部节点域对象，尤其是
-   $P_I$（本地重建并吸入 transcript）、全部 $E_{src},E_{dst},M,Sum,inv,H^{\star},H_{agg,pre}^{\star},H_{agg}^{\star},H_{cat}^{\star},Y'^{\star},Y^{pre,\star},\widetilde Y^{pre,\star},Y^{\star}$，
-   各类 node-route 累加器，以及最终输出
-   $P_{Y^{\star}}$。
+7. $Open_N$：
+   
+   包含全部节点域对象，尤其是$P_I$（本地重建并吸入 transcript）、全部$E_{src},E_{dst},M,Sum,inv,H^{\star},H_{agg,pre}^{\star},H_{agg}^{\star},H_{cat}^{\star},Y'^{\star},Y^{pre,\star},\widetilde Y^{pre,\star},Y^{\star}$，各类 node-route 累加器，以及最终输出$P_{Y^{\star}}$。
 
 $\mathbf{Eval}_{dom}$ 与 $\mathbf{Open}_{dom}$ 的内部顺序必须逐域一致；任何实现都不得以“该对象可由别的域对象推出”为由省略本域 opening。
 
-### 3.5.8 外点评值折叠见证
+#### 3.5.8 外点评值折叠见证
 
 $W_{ext}$ 是按挑战 $\rho_{ext}$ 折叠后的统一外点 opening 见证。
 
-### 3.5.9 张量绑定子证明块
+#### 3.5.9 张量绑定子证明块
 
 $\Pi_{bind}$ 的固定顺序为：
 
@@ -2951,23 +3221,21 @@ $\Pi_{bind}= \big( \pi_{bind}^{feat},\ \{\pi_{bind}^{hidden,(\ell,r)}\}_{\ell,r\
 
 其中：
 
-- $\pi_{bind}^{hidden,(\ell,r)}$ 只绑定第 $\ell$ 个隐藏层中第 $r$ 个 head 的内部对象；
+- $\pi_{bind}^{hidden,(\ell,r)}$ 只绑定第 $\ell$ 个隐藏层中第 $r$ 个 头 的内部对象；
 - $\pi_{bind}^{concat,(\ell)}$ 只绑定第 $\ell$ 个隐藏层的拼接对象；
 - $\pi_{bind}^{out,s}$ 只绑定第 $s$ 个输出头内部对象；
 - $\pi_{bind}^{out,avg}$ 只绑定最终平均输出 $Y$ 与各 $Y^{(s)}$ 的关系；
 - 任何实现都不得把 $\pi_{bind}^{out,avg}$ 插入到某个单独 hidden / concat / output-head 子证明之前。
 
-
-
-### 3.5.10 Serializer / Parser 的固定字节级规则
+#### 3.5.10 Serializer / Parser 的固定字节级规则
 
 为消除实现歧义，proof object 的字节级编码固定遵循下列规则；这些规则属于正式协议的一部分，而不是实现建议。
 
 1. 所有整数统一按无符号 little-endian 编码。
 
-2. 所有域元素统一编码成固定长度 `field_bytes`，其长度由 `encoding_id` 唯一确定；同一 proof 中不得混用不同长度的域元素编码。
+2. 所有域元素统一编码成固定长度 `field_bytes`，其长度由 `encoding` 唯一确定；同一 proof 中不得混用不同长度的域元素编码。
 
-3. 所有曲线点统一采用 compressed encoding，具体编码格式由 `encoding_id` 唯一确定；serializer 与 parser 不得一端使用 compressed、另一端使用 uncompressed。
+3. 所有曲线点统一采用 compressed encoding，具体编码格式由 `encoding` 唯一确定；serializer 与 parser 不得一端使用 compressed、另一端使用 uncompressed。
 
 4. 所有 variable-length 向量、family 块、子证明列表，都必须显式写入长度前缀；parser 不得通过“读到下一个 tag”来猜测边界。
 
@@ -2976,7 +3244,7 @@ $\Pi_{bind}= \big( \pi_{bind}^{feat},\ \{\pi_{bind}^{hidden,(\ell,r)}\}_{\ell,r\
    - `head_id`（若适用）
    即使协议顺序已经固定，也不得依赖“隐式位置下标”来恢复对象身份。
 
-6. `M_pub`、`Com_dyn`、`S_route`、`Eval_ext`、`Eval_dom`、`Com_quot`、`Open_dom`、`W_ext`、`Pi_bind` 这九个顶层块，必须各自携带固定 tag；tag 的字节串取值由 `encoding_id` 唯一确定。
+6. `M_pub`、`Com_dyn`、`S_route`、`Eval_ext`、`Eval_dom`、`Com_quot`、`Open_dom`、`W_ext`、`Pi_bind` 这九个顶层块，必须各自携带固定 tag；tag 的字节串取值由 `encoding` 唯一确定。
 
 7. parser 若遇到下列任一情形，必须直接拒绝该 proof，而不是“容错继续解析”：
    - 未声明字段；
@@ -2994,7 +3262,7 @@ $\Pi_{bind}= \big( \pi_{bind}^{feat},\ \{\pi_{bind}^{hidden,(\ell,r)}\}_{\ell,r\
 
 验证算法输入为：
 
-- 参数生成输出：$(VK_{KZG},VK_{static},VK_{model})$
+- 参数生成输出：$(VK_{KZG},VK_{static},VK_{model},srs\_id,srs\_type,srs\_degree\_bound,privacy\_policy)$
 - 公共输入：$(I,src,dst,G_{batch},node\_ptr,edge\_ptr,N,E,N_{total},L,\{K_{hid}^{(\ell)}\}_{\ell=1}^{L-1},\{d_{in}^{(\ell)}\}_{\ell=1}^{L},\{d_h^{(\ell)}\}_{\ell=1}^{L-1},\{d_{cat}^{(\ell)}\}_{\ell=1}^{L-1},C,B,K_{out})$
 - 证明对象：$\pi_{GAT}$
 
@@ -3002,7 +3270,7 @@ $\Pi_{bind}= \big( \pi_{bind}^{feat},\ \{\pi_{bind}^{hidden,(\ell,r)}\}_{\ell,r\
 
 ### 4.1 元数据与对象完整性检查
 
-1. 解析 $M_{pub}$，逐项检查 $protocol\_id$、$model\_arch\_id$、$model\_param\_id$、$static\_table\_id$、$quant\_cfg\_id$、$domain\_cfg$、$dim\_cfg$、$encoding\_id$、$padding\_rule\_id$、$degree\_bound\_id$ 与本地期望完全一致；不得只检查其中子集。
+1. 解析 $M_{pub}$，逐项检查 $protocol\_id$、$proof\_task$、$srs\_id$、$srs\_type$、$srs\_degree\_bound$、$privacy\_policy$、$model\_arch\_id$、$model\_param\_id$、$static\_table\_id$、$quant\_cfg\_id$、$domain\_cfg$、$dim\_cfg$、$encoding\_id$、$padding\_rule\_id$、$degree\_bound\_id$ 与本地期望完全一致；不得只检查其中子集。
 2. 无条件检查 $node\_ptr,edge\_ptr$ 与公开图块边界的一致性，并本地重建 $edge\_gid,node\_gid,Q_{graph\_new}^{edge},Q_{graph\_end}^{edge},Q_{grp\_new}^{edge},Q_{grp\_end}^{edge}$。当 $G_{batch}=1$ 时，这些 batch-aware 公共拓扑对象按单图退化公式唯一确定；验证者仍然必须显式重建，不得省略。
 3. 检查 $\mathbf{Com}_{dyn}$、$\mathbf{S}_{route}$、$\mathbf{Eval}_{ext}$、$\mathbf{Eval}_{dom}$、$\mathbf{Com}_{quot}$、$\mathbf{Open}_{dom}$、$W_{ext}$、$\Pi_{bind}$ 的对象数量与顺序是否与第 3.5 节完全一致。
 4. 若 parser 读到任何未声明字段、重复字段、缺失字段、长度前缀不一致、family 个数与 `dim_cfg` 不一致，或顶层块 tag 与第 3.5.10 节不一致，则验证必须立即拒绝，不得继续做 opening 验证。
@@ -3043,7 +3311,7 @@ $\Pi_{bind}= \big( \pi_{bind}^{feat},\ \{\pi_{bind}^{hidden,(\ell,r)}\}_{\ell,r\
 验证者在对应工作域点评上检查：
 
 - 特征检索域约束；
-- hidden 头 family 的全部边域 / 节点域 / 共享维域约束；
+- hidden head family 的全部边域 / 节点域 / 共享维域约束；
 - 拼接域约束；
 - 输出头 family 的全部投影、源 / 目标注意力、LeakyReLU、最大值、范围检查、指数、PSQ、目标路由、逆元、压缩绑定约束；
 - 最终平均输出约束 $C_{out,avg}(z_N)=0$。
@@ -3074,3 +3342,135 @@ $K_{out}P_{Y^{\star}}(z_N)-\sum_{s=0}^{K_{out}-1}P_{Y^{\star(s)}}(z_N)=0$。
 ### 4.7 验证结论
 
 若以上检查全部通过，则接受证明；否则拒绝。
+
+验证者还必须执行 proof leakage audit gate：proof object 中不得出现未被 `privacy_policy` 声明为 public 的裸模型参数、裸中间激活、裸注意力分数、裸 softmax 权重、裸 lookup witness 或裸私有多项式随机点评值；否则直接拒绝。
+
+
+## 5. 安全模型与证明目标
+
+### 5.1 参与方与攻击者
+
+证明者 $\mathcal P$ 是 GAT 推理服务端，持有模型参数、模型验证键对应的承诺开口信息以及一次推理中的所有中间 witness。验证者 $\mathcal V$ 是客户端或审计方，持有公开输入、$VK_{KZG}$、$VK_{static}$、$VK_{model}$、公开元数据和最终输出声明。
+
+攻击者是恶意证明者，可以尝试：替换模型参数、篡改节点特征检索、跳过或修改注意力 softmax、伪造 lookup、伪造路由、伪造 PSQ、篡改输出头平均、改变 public metadata、重排承诺块、复用其他证明的 opening 或构造与最终 logits 不一致的 proof。
+
+### 5.2 公开输入与私有见证
+
+公开输入包括：图拓扑与 batch 边界、节点索引 $I$、$src,dst,node\_ptr,edge\_ptr$、任务和结构元数据、量化配置、静态表标识、模型结构标识、SRS 标识、公开输出策略以及最终声明输出。若实验选择公开 logits，则 $Y$ 为公开输出；若只公开 label，则 $Y$ 为私有 witness，必须额外证明 label 与 $Y$ 的 argmax 关系。
+
+私有见证包括：模型参数开口、隐藏层和输出层全部投影结果、注意力打分、lookup query、lookup multiplicity、路由辅助列、Softmax 中间量、PSQ 状态、聚合前后激活、输出头中间输出以及所有 private polynomial 的 blinding randomness。
+
+### 5.3 完备性
+
+若证明者按本文定义的多层多头 GAT 前向、公开预处理、量化配置、lookup 表、路由规则、PSQ 状态机和 KZG SRS 生成证明，则验证者接受。
+
+### 5.4 可靠性 / 知识可靠性
+
+在 KZG binding 假设、Fiat--Shamir 随机预言机模型以及所有 lookup / route / quotient identity 正确构造的条件下，任何多项式时间恶意证明者若能使验证者接受，则其承诺对象必须与某个满足本文 GAT 前向关系的 witness 一致。该 witness 的最终输出必须等于 proof 中声明的输出。
+
+### 5.5 零知识与泄露边界
+
+在 trusted/MPC SRS 的隐藏陷门假设、private polynomial domain-vanishing blinding 和 masked opening 规则下，证明对象除公开元数据、公开图输入、公开输出和必要承诺外，不泄露模型参数或中间推理状态。证明对象中所有 private polynomial 的随机点评值均以 masked evaluation 出现；裸 witness 值不得序列化。
+
+本文不默认隐藏图结构和节点特征。若需要隐藏图结构或节点特征，必须另行定义私有输入承诺、私有拓扑 lookup、私有特征 opening 和相应的泄露模型，不属于当前主协议。
+
+### 5.6 SRS 假设
+
+主实验只接受 `trusted_srs` 或 `mpc_srs`。任何 `seeded_tau`、`deterministic_tau`、`test_tau` 或证明者可见陷门模式都不得出现在最终主实验分支。开发阶段若曾经使用测试 SRS，只能保留在私有备份分支，不能进入最终提交代码、benchmark runner、paper experiment runner 或结果目录。
+
+
+### 5.7 定理式安全声明
+
+**定理 1（完备性）.** 若证明者按公开元数据、公开图拓扑、量化配置、模型承诺、静态表承诺和 GAT 前向语义诚实生成所有 trace、blinded polynomials、quotient polynomials 与 KZG openings，则验证者接受。
+
+证明思路：所有 witness 多项式在各自工作域上满足第 3.3 节的商多项式恒等式；domain-vanishing blinding 不改变工作域内取值；KZG opening 对承诺和 claimed values 完备；Fiat--Shamir challenge 由相同 transcript 重放得到，因此所有 gate 均通过。
+
+**定理 2（知识可靠性 / 计算可靠性）.** 在 KZG commitment binding、所用曲线离散对数困难、Fiat--Shamir 随机预言机模型和 SRS 隐藏陷门假设下，任意多项式时间恶意证明者若能以非忽略概率让验证者接受，则存在一组与公开承诺一致的 witness 多项式，使其满足完整 zkGAT 前向关系、lookup 关系、route 关系、PSQ 状态机关系、输出平均关系与公开输出绑定关系。
+
+证明思路：KZG binding 固定每个承诺对应的低次数多项式；opening soundness 保证 claimed masked evaluations 与承诺一致；quotient identities 在随机点评价成立则除非高次数差异多项式在随机点偶然为零，否则其在工作域上满足约束；schema gate 固定层、头、对象顺序和公共元数据；因此通过验证等价于存在满足完整前向关系的 witness。
+
+**定理 3（零知识 / witness 隐私）.** 对所有标记为 `PrivateWitness` 的模型参数、中间激活、注意力分数、softmax 权重、lookup query、route query、PSQ 状态机和折叠向量，若其承诺与 opening 均按 `privacy_policy` 进行 domain-vanishing blinding，并且 proof object 只输出 masked evaluations 与零知识子证明，则验证者除公开元数据、公开拓扑、公开输出、承诺和允许泄露的大小信息外，不获得关于私有 witness 的额外信息。
+
+证明思路：在工作域外，$Z_{\mathcal D}(z)R_P(z)$ 对每个 private polynomial 提供独立随机掩蔽；proof payload 不包含裸 private evaluations；所有绑定关系通过 quotient、masked correction 或 ZK subproof 验证；因此可由模拟器在给定公开输入和公开输出的情况下模拟 masked evaluations 与承诺分布。完整形式化证明依赖底层 KZG hiding variant 或 masked-opening 策略的模拟安全性。
+
+**泄露边界.** 本协议默认泄露并允许论文报告以下信息：图规模 $(N,E,G_{batch})$、公开拓扑或其承诺、模型结构 ID、量化配置 ID、静态表 ID、SRS ID、proof size、运行时间、最终公开 logits 或 label。若某次应用要求隐藏图结构、节点特征或 logits，则必须定义新的 `proof_task` 和 `privacy_policy`，不能复用主实验安全声明。
+
+
+## 6. 实现与实验合规要求
+
+### 6.1 主实验代码要求
+
+1. 主分支中不得存在 `seed -> tau` 主路径；
+2. prover/verifier 数据结构不得保存 $\tau$；
+3. KZG commitment 必须基于 SRS powers 或 Lagrange-basis SRS；
+4. private polynomial 必须使用 $P^{zk}=P+Z_{\mathcal D}R_P$；
+5. proof serializer 必须区分 public value 与 masked value；
+6. verifier 必须执行 metadata gate、schema gate、opening gate、quotient gate、binding gate 和 leakage audit gate；
+7. benchmark 结果必须来自 secure 主路径。
+
+### 6.2 必需实验
+
+主实验必须重新运行五个节点分类数据集：Cora、Citeseer、Pubmed、PPI、ogbn-arxiv。每个数据集至少报告 CPU full 与 GPU full 的 commitment time、prove time、verify time、proof size。若开启 masked opening 和 secure SRS 后结果变化，论文只能使用新结果。
+
+安全实验必须包括：tamper rejection、proof leakage audit、SRS metadata mismatch rejection、proof-scope mismatch rejection、commitment order tamper、opening value tamper、challenge tamper、lookup query tamper、route relation tamper、PSQ state tamper 和 final logits tamper。
+
+对比实验必须额外给出 proof-scope 对齐表，说明 ezkl、zkDL、zkGPT 是否证明 full GAT forward、是否绑定 final logits、是否使用 full dataset、verifier 是否读取 witness、proof size 统计口径和 setup assumption。
+
+
+
+### 6.3 正确性一致性测试
+
+secure 主路径重构后，所有数据集必须执行 reference consistency test：
+
+1. `reference_fp32_forward`：原始模型前向；
+2. `reference_quant_forward`：量化语义前向；
+3. `secure_trace_forward`：证明系统 trace 前向；
+4. `proof_public_output`：proof object 中公开输出。
+
+验收条件：
+
+- `reference_quant_forward_hash == secure_trace_forward_hash`；
+- 若公开 logits，则 `secure_trace_forward_hash == proof_public_output_hash`；
+- 若只公开 label，则必须额外验证 argmax proof；
+- 所有 hash、配置 ID 和数据集 ID 必须进入 run manifest。
+
+### 6.4 最终论文实验验收标准
+
+最终论文主表只能读取满足以下条件的 run：
+
+1. `protocol_name == zkgat`；
+2. `srs_type in {trusted_srs, mpc_srs}`；
+3. `srs_id` 与本地 SRS manifest 一致；
+4. `privacy_policy` 启用 private polynomial blinding；
+5. `private_plain_value_count == 0`；
+6. `verifier_reads_witness == false`；
+7. `tamper_tests_passed == true`；
+8. `reference_consistency_passed == true`；
+9. `node_classification_full_gat == true`；
+10. proof size 只统计 proof payload，不统计 SRS、manifest、日志、路径和时间戳。
+
+未满足上述任意条件的 run 只能作为开发诊断材料，不能进入论文正文、附录或最终结果表。
+
+
+### 6.5 论文结果来源锁定
+
+所有进入论文正文、附录和最终结果表的实验结果，必须来自同一个最终主实验分支，并统一导出到 `results/paper_secure/`。
+
+每条结果至少包含以下字段：`protocol_name`、`srs_type`、`srs_id`、`privacy_policy`、`input_privacy`、`output_mode`、`opening_mode`、`binding_mode`、`private_plain_value_count`、`reference_consistency_passed`、`tamper_tests_passed`、`verifier_reads_witness`。
+
+只有满足以下条件的 run 才能进入论文表格：
+
+1. `srs_type` 是 `trusted_srs` 或 `mpc_srs`；
+2. `srs_id` 与本地 SRS manifest 一致；
+3. `privacy_policy == model_and_trace_hidden`；
+4. `input_privacy == public_graph_public_features`；
+5. `output_mode == public_logits`；
+6. `opening_mode == domain_grouped_batch_opening`；
+7. `binding_mode == zk_subproof_for_crpc`；
+8. `private_plain_value_count == 0`；
+9. `verifier_reads_witness == false`；
+10. `reference_consistency_passed == true`；
+11. `tamper_tests_passed == true`；
+12. proof size 只统计 proof payload，不统计 SRS、manifest、日志、路径、时间戳和调试输出。
+
+不满足任意条件的运行结果只能作为开发诊断材料，不能进入论文。
