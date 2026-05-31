@@ -4,6 +4,8 @@
   "N": 56944,
   "artifact_path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/ppi",
   "backend": "cpu",
+  "baseline_identity": "zkGPT",
+  "batching_rule": "multi_graph_batch",
   "config": "/home/pzh/project/comparison/baselines/zkGPT/configs/generated/cpu/ppi_batch_formal.cfg",
   "dataset": "ppi",
   "dataset_display_name": "ppi",
@@ -305,14 +307,39 @@
     850575,
     850576
   ],
+  "edge_sort_rule": "edge_gid_then_dst_stable",
+  "failure_reason_if_not_comparable": "scope_mismatch: zkGPT baseline verifies component proof objects and final output binding, not the complete zkGAT SRS/KZG protocol object",
+  "final_logits_bound": true,
   "full_dataset": true,
+  "full_gat_forward_proved": false,
   "gpu_backend": {
     "backend": "cpu",
     "cuda_kernel_executed": false,
     "gpu_runtime_present": false,
     "note": "CPU proof path"
   },
+  "hardware_and_device": "cpu",
   "metadata_path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/ppi/metadata.json",
+  "model_arch": {
+    "C": 121,
+    "K_out": 1,
+    "hidden_profile": [
+      {
+        "head_count": 1,
+        "head_dim": 8
+      }
+    ],
+    "layers": 2,
+    "model_arch_id": "gat_family_L2_hid1x8_kout1_c121",
+    "output_average_rule": "per_head_bias_then_arithmetic_mean"
+  },
+  "model_params": {
+    "checkpoint_bundle": "/home/pzh/project/artifacts/checkpoints/ppi_gat",
+    "model_id": "d3ae0282cc35b242e3311f888ef98b39a2b7769e56a6d31750747bb2014a90ac",
+    "model_param_id": "ppi_full_seed11",
+    "quant_cfg_id": "fp32_torch_checkpoint",
+    "static_table_id": "tables:lrelu+elu+exp+range"
+  },
   "node_ptr": [
     0,
     1546,
@@ -613,11 +640,27 @@
   ],
   "proof_backend_id": "zkgpt-style-gkr-lasso-matmul-hyrax-mle",
   "proof_payload_path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/ppi/proof_payload.json",
+  "proof_scope": "component_proof_baseline_with_final_logit_binding_not_full_zkGAT_protocol",
   "proof_size_bytes_accounting": "len(canonical_json(proof_payload)); witness materialization and audit JSON are excluded",
+  "proof_size_definition": "canonical serialized proof_payload.json; excludes witness manifests, raw witness, datasets, checkpoints, logs, and audit metadata",
   "protocol_id": "gat-zkgpt-v1",
+  "public_input_layout": "public graph, public features, public metadata, public logits",
   "run_digest": "f5059e6c75e5f2a05fca37419f9f0c88332c889f1505217cc90f32e78eef0242",
+  "run_status": "VERIFY_OK_SCOPE_NOT_FULL_GAT",
+  "same_checkpoint": true,
+  "same_edge_sort_rule": true,
+  "same_graph_preprocessing": true,
+  "same_public_output_policy": true,
+  "same_quantization": true,
+  "same_self_loop_rule": true,
+  "scope_mismatch": true,
+  "self_loop_rule": "per_node",
+  "setup_assumption": "transparent_hyrax_mle_plus_zkgpt_style_component_proofs",
   "status": "VERIFY_OK",
+  "task_type": "inductive_multi_graph_node_classification",
   "transcript_path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/ppi/transcript.json",
   "verification_path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/ppi/verification.json",
+  "verifier_reads_witness": false,
+  "witness_included_in_proof": false,
   "witness_manifest_path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/ppi/witness_manifest.json"
 }

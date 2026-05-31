@@ -279,13 +279,13 @@ def write_summary(results_dir: pathlib.Path, rows: List[Dict[str, Any]]) -> None
     ensure_dir(results_dir)
     for backend in ["cpu", "gpu"]:
         with (results_dir / f"{backend}_results.csv").open("w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=columns)
+            writer = csv.DictWriter(handle, fieldnames=columns, lineterminator="\n")
             writer.writeheader()
             for row in rows:
                 if row["backend"] == backend:
                     writer.writerow({name: row.get(name, "") for name in columns})
     with (results_dir / "summary.csv").open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns)
+        writer = csv.DictWriter(handle, fieldnames=columns, lineterminator="\n")
         writer.writeheader()
         for row in rows:
             writer.writerow({name: row.get(name, "") for name in columns})
