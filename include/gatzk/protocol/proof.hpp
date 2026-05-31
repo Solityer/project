@@ -130,9 +130,15 @@ struct TraceArtifacts {
 
 // 单个工作域 opening bundle 的 proof 载体。
 // 标签顺序由 schema 固定，proof_size_bytes 只统计真正随 proof 发送的点值与 witness。
+enum class PayloadValueKind {
+    PublicValue,
+    MaskedPrivateValue,
+};
+
 struct DomainOpeningBundle {
     std::vector<algebra::FieldElement> points;
     std::vector<std::pair<std::string, std::vector<algebra::FieldElement>>> values;
+    std::vector<PayloadValueKind> value_kinds;
     crypto::G1Point witness;
 };
 
@@ -144,7 +150,9 @@ struct Proof {
     std::vector<std::pair<std::string, crypto::Commitment>> quotient_commitments;
     std::vector<std::pair<std::string, DomainOpeningBundle>> domain_openings;
     std::vector<std::pair<std::string, algebra::FieldElement>> external_evaluations;
+    std::vector<PayloadValueKind> external_evaluation_kinds;
     std::vector<std::pair<std::string, algebra::FieldElement>> witness_scalars;
+    std::vector<PayloadValueKind> witness_scalar_kinds;
     crypto::G1Point external_witness;
     std::map<std::string, algebra::FieldElement> challenges;
 };

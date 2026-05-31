@@ -31,6 +31,7 @@
 #include "gatzk/protocol/schema.hpp"
 #include "gatzk/util/logging.hpp"
 #include "gatzk/util/route2.hpp"
+#include "gatzk/protocol/verifier.hpp"
 
 namespace gatzk::protocol {
 // 一是把 config、数据、模型和静态表收束成 ProtocolContext；
@@ -67,6 +68,20 @@ std::string hash_key_values(const std::map<std::string, std::string>& entries) {
         stream << key << '=' << value << '\n';
     }
     return stable_hash(stream.str());
+}
+
+std::string payload_kind_name(PayloadValueKind kind) {
+    return kind == PayloadValueKind::PublicValue ? "PublicValue" : "MaskedPrivateValue";
+}
+
+PayloadValueKind payload_kind_for_label(const ProtocolContext& context, const std::string& label) {
+    if (context.public_commitments.contains(label)) {
+        return PayloadValueKind::PublicValue;
+    }
+    if (label == "P_H" || label == "P_Y" || label.rfind("P_Y_o", 0) == 0) {
+        return PayloadValueKind::PublicValue;
+    }
+    return PayloadValueKind::MaskedPrivateValue;
 }
 
 std::string hash_proof_transport(const Proof& proof) {
@@ -139,9 +154,20 @@ std::string hash_proof_transport(const Proof& proof) {
             }
             stream << '\n';
         }
+        for (const auto kind : bundle.value_kinds) {
+            stream << "value_kind=" << payload_kind_name(kind) << '\n';
+        }
     }
     append_field_pairs("external_evaluations", proof.external_evaluations);
+    stream << "[external_evaluation_kinds]\n";
+    for (const auto kind : proof.external_evaluation_kinds) {
+        stream << payload_kind_name(kind) << '\n';
+    }
     append_field_pairs("witness_scalars", proof.witness_scalars);
+    stream << "[witness_scalar_kinds]\n";
+    for (const auto kind : proof.witness_scalar_kinds) {
+        stream << payload_kind_name(kind) << '\n';
+    }
     stream << "[external_witness]\n" << proof.external_witness.to_string() << '\n';
     stream << "[challenges]\n";
     for (const auto& [name, challenge] : proof.challenges) {
@@ -2667,6 +2693,7 @@ DomainOpeningBundle make_bundle(
     }
     for (std::size_t i = 0; i < labels.size(); ++i) {
         bundle.values.push_back({labels[i], values[i]});
+        bundle.value_kinds.push_back(payload_kind_for_label(context, labels[i]));
     }
     const auto witness_start = Clock::now();
     crypto::BatchOpeningProfile batch_profile;
@@ -3492,6 +3519,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
         for (const auto& spec : ext_specs) {
             const auto value = trace.external_evaluations.at(spec.proof_name);
             proof.external_evaluations.push_back({spec.proof_name, value});
+            proof.external_evaluation_kinds.push_back(payload_kind_for_label(context, spec.label));
             external_commitments.push_back({trace.commitments.at(spec.label), value});
             external_points.push_back(challenges.at(spec.challenge_name));
         }
@@ -3505,6 +3533,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
         }
         for (const auto& [name, value] : trace.witness_scalars) {
             proof.witness_scalars.push_back({name, value});
+            proof.witness_scalar_kinds.push_back(PayloadValueKind::MaskedPrivateValue);
         }
         if (metrics != nullptr) {
             metrics->prove_time_ms = elapsed_ms(prove_start, Clock::now());
@@ -3930,8 +3959,18 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
         {"mu_Y_lin", trace.external_evaluations.at("mu_Y_lin")},
         {"mu_out", trace.external_evaluations.at("mu_out")},
     };
+    proof.external_evaluation_kinds = {
+        PayloadValueKind::MaskedPrivateValue,
+        PayloadValueKind::MaskedPrivateValue,
+        PayloadValueKind::MaskedPrivateValue,
+        PayloadValueKind::MaskedPrivateValue,
+        PayloadValueKind::MaskedPrivateValue,
+        PayloadValueKind::MaskedPrivateValue,
+        PayloadValueKind::PublicValue,
+    };
     for (const auto& [name, value] : trace.witness_scalars) {
         proof.witness_scalars.push_back({name, value});
+        proof.witness_scalar_kinds.push_back(PayloadValueKind::MaskedPrivateValue);
     }
     if (metrics != nullptr) {
         metrics->external_opening_ms += elapsed_ms(stage_start, Clock::now());
@@ -4014,6 +4053,7 @@ std::size_t proof_size_bytes(const Proof& proof) {
             (void)value_name;
             total += kLengthPrefixBytes + values.size() * kFieldBytes;
         }
+        total += bundle.value_kinds.size();
         total += crypto::serialized_size(bundle.witness);
     }
     total += kLengthPrefixBytes;
@@ -4023,12 +4063,14 @@ std::size_t proof_size_bytes(const Proof& proof) {
         // 外点标签由 formal schema 重建，真正发送的是域元素值。
         total += kFieldBytes;
     }
+    total += proof.external_evaluation_kinds.size();
     total += kLengthPrefixBytes;
     for (const auto& [name, value] : proof.witness_scalars) {
         (void)name;
         (void)value;
         total += kFieldBytes;
     }
+    total += proof.witness_scalar_kinds.size();
     // `rho_ext` 折叠 opening 的 witness 需要单独发送。
     total += crypto::serialized_size(proof.external_witness);
     return total;
@@ -4115,6 +4157,7 @@ void export_run_artifacts(
     auto benchmark_backend_label = [&]() {
         return metrics.compute_backend_name == "cuda_hotspots" ? std::string("gpu") : std::string("cpu");
     };
+    const auto audited_private_plain_value_count = private_plain_value_count(context, proof);
 
     std::map<std::string, std::string> metadata;
     append_public_metadata(metadata);
@@ -4193,7 +4236,8 @@ void export_run_artifacts(
         {"notes", metrics.notes},
         {"proof_size_bytes", std::to_string(metrics.proof_size_bytes)},
         {"verifier_reads_witness", "false"},
-        {"private_plain_value_count", "0"},
+        {"private_plain_value_count", std::to_string(audited_private_plain_value_count)},
+        {"proof_payload_audit_status", audited_private_plain_value_count == 0 ? "passed" : "failed"},
         {"reference_consistency_passed", verified ? "true" : "false"},
         {"tamper_tests_passed", verified ? "true" : "false"},
         {"full_dataset", metrics.is_full_dataset ? "true" : "false"},

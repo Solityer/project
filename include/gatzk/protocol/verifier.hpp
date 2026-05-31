@@ -9,4 +9,7 @@ namespace gatzk::protocol {
 // 验证 proof 是否与当前 formal 上下文一致。
 bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metrics = nullptr);
 
+// Verifier-side leakage audit over the actual typed proof payload.
+std::size_t private_plain_value_count(const ProtocolContext& context, const Proof& proof);
+
 }  // namespace gatzk::protocol

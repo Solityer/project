@@ -8,7 +8,7 @@
 - `PublicMetadata` binds `protocol_name`, `proof_task`, `srs_id`, `srs_type`, `srs_degree_bound`, `privacy_policy`, `input_privacy`, `output_mode`, `opening_mode`, `binding_mode`, model architecture, model parameters, static tables, quantization config, domains, dimensions, encoding, padding, and degree bound.
 - The verifier rejects secure-profile mismatches before accepting a proof.
 - `ProofSchema` classifies committed objects as `Public`, `PublicOutput`, or `PrivateWitness`; private witness values require masked evaluation semantics.
-- `private_plain_value_count` is fixed to zero for secure runs.
+- `private_plain_value_count` is computed by the verifier from typed proof payload tags and must be zero for secure runs.
 - The exporter refuses non-secure, failed, partial, or missing-field runs.
 - `proof_size_bytes` is the proof transport size and excludes SRS files, manifest file bodies, local caches, raw witness, checkpoint files, datasets, logs, and run manifest attachments.
 
@@ -35,7 +35,7 @@ Each paper result row must include:
 - `verify_time_ms`
 - `proof_size_bytes`
 - `verifier_reads_witness = false`
-- `private_plain_value_count = 0`
+- `private_plain_value_count = 0`, as returned by verifier payload audit
 - `reference_consistency_passed = true`
 - `tamper_tests_passed = true`
 - `full_dataset = true`

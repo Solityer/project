@@ -192,6 +192,24 @@ void test_tamper_rejection_suite() {
     domain_value_tamper.domain_openings.front().second.values.front().second.front() += FieldElement::one();
     require_rejects(fixture, domain_value_tamper, "domain opening value tamper");
 
+    auto private_payload_kind_tamper = fixture.proof;
+    bool changed_private_kind = false;
+    for (auto& [bundle_name, bundle] : private_payload_kind_tamper.domain_openings) {
+        (void)bundle_name;
+        for (auto& kind : bundle.value_kinds) {
+            if (kind == gatzk::protocol::PayloadValueKind::MaskedPrivateValue) {
+                kind = gatzk::protocol::PayloadValueKind::PublicValue;
+                changed_private_kind = true;
+                break;
+            }
+        }
+        if (changed_private_kind) {
+            break;
+        }
+    }
+    require(changed_private_kind, "fixture must contain a private typed payload value");
+    require_rejects(fixture, private_payload_kind_tamper, "private payload kind tamper");
+
     auto external_value_tamper = fixture.proof;
     external_value_tamper.external_evaluations.front().second += FieldElement::one();
     require_rejects(fixture, external_value_tamper, "external masked value tamper");
