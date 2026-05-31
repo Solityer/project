@@ -137,6 +137,42 @@ namespace gatzk::crypto
         return out;
     }
 
+    G1Point g1_multi_scalar_mul(const std::vector<G1Point>& points, const std::vector<algebra::FieldElement>& scalars)
+    {
+        if (points.size() != scalars.size())
+        {
+            throw std::runtime_error("G1 MSM size mismatch");
+        }
+        G1Point out = g1_zero();
+        if (points.empty())
+        {
+            return out;
+        }
+        algebra::ensure_mcl_field_ready();
+        std::vector<mcl::G1> native_points;
+        std::vector<mcl::Fr> native_scalars;
+        native_points.reserve(points.size());
+        native_scalars.reserve(scalars.size());
+        for (const auto& point : points)
+        {
+            native_points.push_back(point.value);
+        }
+        for (const auto& scalar : scalars)
+        {
+            native_scalars.push_back(scalar.native());
+        }
+        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+        if (cpu_count > 1 && native_points.size() >= 256)
+        {
+            mcl::G1::mulVecMT(out.value, native_points.data(), native_scalars.data(), native_points.size(), cpu_count);
+        }
+        else
+        {
+            mcl::G1::mulVec(out.value, native_points.data(), native_scalars.data(), native_points.size());
+        }
+        return out;
+    }
+
     // 同基点批量乘法是 KZG 承诺与 witness 构造的典型热点。（--fast-msm on）
     std::vector<G1Point> g1_mul_same_base_batch(const G1Point& point, const std::vector<algebra::FieldElement>& scalars)
     {
@@ -286,6 +322,30 @@ namespace gatzk::crypto
     std::vector<std::uint8_t> serialize(const G2Point& point)
     {
         return serialize_impl(point.value);
+    }
+
+    G1Point deserialize_g1(const std::vector<std::uint8_t>& bytes)
+    {
+        G1Point out;
+        algebra::ensure_mcl_field_ready();
+        const auto read = out.value.deserialize(bytes.data(), bytes.size());
+        if (read != bytes.size())
+        {
+            throw std::runtime_error("failed to deserialize G1 point");
+        }
+        return out;
+    }
+
+    G2Point deserialize_g2(const std::vector<std::uint8_t>& bytes)
+    {
+        G2Point out;
+        algebra::ensure_mcl_field_ready();
+        const auto read = out.value.deserialize(bytes.data(), bytes.size());
+        if (read != bytes.size())
+        {
+            throw std::runtime_error("failed to deserialize G2 point");
+        }
+        return out;
     }
 
     std::size_t serialized_size(const G1Point& point)

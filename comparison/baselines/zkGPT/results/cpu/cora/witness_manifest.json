@@ -30,16 +30,17 @@
     "output.h0.attention_ms",
     "output.h0.projection_ms"
   ],
-  "output_digest": "852fe954e31474110e1443f4520a2250b8407a89adf7f741d111465c8e28a9da",
-  "public_input_digest": "866943e2f714a1bba800d3a35bd631fb1aacd246c0fde0134276b39272c2af51",
-  "segment_payload_digests": {
-    "com_T_H": "1babfec3869b1ca27db1e95bd53662a2d94db1d658e697a4b67dfbaaf249f3ca",
-    "com_W": "cacb2b23edb51af607ab1eeaff037d6d45d2edb60f96135305421ea37af26f1f",
-    "com_base": "1032795f06a70f3d58c1d0db963b234e7a7b3218a0b1797d55edb9ac340d72cf",
-    "com_comp": "a52af43b9d8e4c883f2d1ca36de4d26bec3860dd181b62a35b6e462e906a26aa",
-    "com_psq": "3eb897c96c42ec2db021ce46af678ae6209c796a84606d38ceb397e9217b22cb",
-    "com_qry": "235881382d11edba9d93ae842331fd9c72c0d0f0d07e9994bf464397ca97823b"
+  "model_digest": "718b23d7f9af21e2df110df83c61d862c1439ddd687cfd179985e945c79680c4",
+  "output_digest": "c7579ec8a677ac993fa0da37bfe27d107cfa6952c8a9deb492a48cb60cb0d419",
+  "public_input_digest": "4eb01c6e94cb51c80ab308c867934a9429bda007419cf8e2ccbbc0a57f000ae0",
+  "segment_vector_lengths": {
+    "com_T_H": 36,
+    "com_W": 944,
+    "com_base": 4026,
+    "com_comp": 959,
+    "com_psq": 596,
+    "com_qry": 2031
   },
-  "storage_policy": "not serialized; committed by segment digests and verified during local replay",
+  "storage_policy": "full witness recomputed by verifier from dataset/config/model; committed segment accumulators and native Hyrax openings are serialized",
   "witness_generated": true
 }

@@ -1,0 +1,16 @@
+{
+  "checks": {
+    "combine": true,
+    "commitment_backend": true,
+    "commitment_order": true,
+    "gkr": true,
+    "gpu_hot_path": true,
+    "hyrax_openings": true,
+    "lasso": true,
+    "matrix_sumcheck": true,
+    "metadata_complete": true,
+    "transcript_replay": true
+  },
+  "status": "VERIFY_OK",
+  "verifier": "zkgpt_gat.formal_verifier.recompute_and_native_hyrax"
+}

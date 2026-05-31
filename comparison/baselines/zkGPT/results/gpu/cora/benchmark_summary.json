@@ -1,0 +1,12 @@
+{
+  "artifact_path": "/home/pzh/project/comparison/baselines/zkGPT/results/gpu/cora",
+  "backend": "gpu",
+  "commitment_time_ms": 6152.751640998758,
+  "dataset": "cora",
+  "forward_time_ms": 139.3974830280058,
+  "proof_size_bytes": 21230,
+  "prove_time_ms": 6616.315866005607,
+  "status": "VERIFY_OK",
+  "verify_time_ms": 0.8942299755290151,
+  "wall_time_ms": 7581.631529028527
+}

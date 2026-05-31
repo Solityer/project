@@ -1,0 +1,205 @@
+{
+  "compression": {
+    "xi_cat_l1": 9564293604188216113,
+    "xi_l1_h0": 16421396303924557761,
+    "xi_l1_h1": 10575432722522307885,
+    "xi_l1_h2": 4153109202552378440,
+    "xi_l1_h3": 6452832717732574538,
+    "xi_l1_h4": 11375841655596004214,
+    "xi_l1_h5": 7528440383347983437,
+    "xi_l1_h6": 11560479009271994677,
+    "xi_l1_h7": 12625998807642095965,
+    "xi_out": 9376434942715318992
+  },
+  "domain_order": [
+    "gat-zkgpt/meta",
+    "gat-zkgpt/model-commit",
+    "gat-zkgpt/static-table",
+    "gat-zkgpt/input-commit",
+    "gat-zkgpt/lasso",
+    "gat-zkgpt/matmul",
+    "gat-zkgpt/gkr",
+    "gat-zkgpt/open"
+  ],
+  "gkr": {
+    "rho_gkr": 15944132063153015427
+  },
+  "lasso": {
+    "eta_hidden_elu": 11449770971373082429,
+    "eta_hidden_exp": 4125405180757448824,
+    "eta_hidden_lrelu": 321273467344004995,
+    "eta_hidden_range": 4427849944782897029,
+    "eta_output_exp": 12697910671643424996,
+    "eta_output_lrelu": 3487096982936740357,
+    "eta_output_range": 2856554369102797956,
+    "eta_rescale_rounding_range": 9936706161705551786
+  },
+  "log": [
+    {
+      "challenge_u64": 14613180909107238822,
+      "label": "gat-zkgpt/meta"
+    },
+    {
+      "challenge_u64": 8328070620963967503,
+      "label": "gat-zkgpt/model-commit"
+    },
+    {
+      "challenge_u64": 12358503156594667717,
+      "label": "gat-zkgpt/static-table"
+    },
+    {
+      "challenge_u64": 16941045678112082703,
+      "label": "gat-zkgpt/input-commit/base"
+    },
+    {
+      "challenge_u64": 16421396303924557761,
+      "label": "xi/layer/1/head/0"
+    },
+    {
+      "challenge_u64": 10575432722522307885,
+      "label": "xi/layer/1/head/1"
+    },
+    {
+      "challenge_u64": 4153109202552378440,
+      "label": "xi/layer/1/head/2"
+    },
+    {
+      "challenge_u64": 6452832717732574538,
+      "label": "xi/layer/1/head/3"
+    },
+    {
+      "challenge_u64": 11375841655596004214,
+      "label": "xi/layer/1/head/4"
+    },
+    {
+      "challenge_u64": 7528440383347983437,
+      "label": "xi/layer/1/head/5"
+    },
+    {
+      "challenge_u64": 11560479009271994677,
+      "label": "xi/layer/1/head/6"
+    },
+    {
+      "challenge_u64": 12625998807642095965,
+      "label": "xi/layer/1/head/7"
+    },
+    {
+      "challenge_u64": 9564293604188216113,
+      "label": "xi/cat/1"
+    },
+    {
+      "challenge_u64": 9376434942715318992,
+      "label": "xi/out"
+    },
+    {
+      "challenge_u64": 5358264114795526761,
+      "label": "gat-zkgpt/input-commit/comp"
+    },
+    {
+      "challenge_u64": 15108525568984318082,
+      "label": "lambda/psq/layer/1/head/0"
+    },
+    {
+      "challenge_u64": 3948154484149662536,
+      "label": "lambda/psq/layer/1/head/1"
+    },
+    {
+      "challenge_u64": 2830110436541308427,
+      "label": "lambda/psq/layer/1/head/2"
+    },
+    {
+      "challenge_u64": 9618348289084086563,
+      "label": "lambda/psq/layer/1/head/3"
+    },
+    {
+      "challenge_u64": 12153772308770760552,
+      "label": "lambda/psq/layer/1/head/4"
+    },
+    {
+      "challenge_u64": 7040063500102894717,
+      "label": "lambda/psq/layer/1/head/5"
+    },
+    {
+      "challenge_u64": 9573750394575702988,
+      "label": "lambda/psq/layer/1/head/6"
+    },
+    {
+      "challenge_u64": 15501746832926912759,
+      "label": "lambda/psq/layer/1/head/7"
+    },
+    {
+      "challenge_u64": 14446331400788703331,
+      "label": "lambda/psq/out/0"
+    },
+    {
+      "challenge_u64": 17789296779302445091,
+      "label": "gat-zkgpt/input-commit/psq-qry"
+    },
+    {
+      "challenge_u64": 4427849944782897029,
+      "label": "lasso/hidden_range"
+    },
+    {
+      "challenge_u64": 2856554369102797956,
+      "label": "lasso/output_range"
+    },
+    {
+      "challenge_u64": 321273467344004995,
+      "label": "lasso/hidden_lrelu"
+    },
+    {
+      "challenge_u64": 3487096982936740357,
+      "label": "lasso/output_lrelu"
+    },
+    {
+      "challenge_u64": 11449770971373082429,
+      "label": "lasso/hidden_elu"
+    },
+    {
+      "challenge_u64": 4125405180757448824,
+      "label": "lasso/hidden_exp"
+    },
+    {
+      "challenge_u64": 12697910671643424996,
+      "label": "lasso/output_exp"
+    },
+    {
+      "challenge_u64": 9936706161705551786,
+      "label": "lasso/rescale_rounding_range"
+    },
+    {
+      "challenge_u64": 18042539920052738367,
+      "label": "matmul/sumcheck"
+    },
+    {
+      "challenge_u64": 15944132063153015427,
+      "label": "gkr/layered-sumcheck"
+    },
+    {
+      "challenge_u64": 16589966338855445890,
+      "label": "open/combine"
+    },
+    {
+      "challenge_u64": 5569256695841821848,
+      "label": "open/masked"
+    }
+  ],
+  "matmul": {
+    "rho_matmul": 18042539920052738367
+  },
+  "open": {
+    "rho_combine": 16589966338855445890,
+    "rho_masked_open": 5569256695841821848
+  },
+  "psq": {
+    "lambda_psq_l1_h0": 15108525568984318082,
+    "lambda_psq_l1_h1": 3948154484149662536,
+    "lambda_psq_l1_h2": 2830110436541308427,
+    "lambda_psq_l1_h3": 9618348289084086563,
+    "lambda_psq_l1_h4": 12153772308770760552,
+    "lambda_psq_l1_h5": 7040063500102894717,
+    "lambda_psq_l1_h6": 9573750394575702988,
+    "lambda_psq_l1_h7": 15501746832926912759,
+    "lambda_psq_out_h0": 14446331400788703331
+  }
+}

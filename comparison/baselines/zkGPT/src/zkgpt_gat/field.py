@@ -72,7 +72,10 @@ def write_field_vector(path, values: Iterable[int]) -> None:
         for value in values:
             if not first:
                 handle.write(" ")
-            handle.write(str(to_field_int(int(value))))
+            encoded = to_field_int(int(value))
+            if encoded > (BN254_FR_MODULUS - 1) // 2:
+                encoded -= BN254_FR_MODULUS
+            handle.write(str(encoded))
             first = False
         handle.write("\n")
 

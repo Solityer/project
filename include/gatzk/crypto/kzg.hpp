@@ -23,9 +23,14 @@ namespace gatzk::crypto
         std::string ceremony_transcript_hash;
         std::size_t degree_bound = 0;
         std::unordered_map<std::string, std::size_t> domain_sizes;
+        std::string pk_coef_path;
         std::string pk_coef_hash;
+        std::unordered_map<std::string, std::string> pk_lagrange_paths;
         std::unordered_map<std::string, std::string> pk_lagrange_hashes;
+        std::string vk_path;
         std::string vk_hash;
+        std::string prover_aux_path;
+        std::string prover_aux_hash;
         std::string encoding;
         std::string generator_version;
         std::string security_level;
@@ -38,7 +43,9 @@ namespace gatzk::crypto
         std::string srs_type;
         std::size_t degree_bound = 0;
         G1Point g1_generator;
-        algebra::FieldElement opening_point = algebra::FieldElement::zero();
+        std::vector<G1Point> powers_g1;
+        std::unordered_map<std::string, std::vector<G1Point>> lagrange_srs_by_domain;
+        algebra::FieldElement srs_evaluation_point = algebra::FieldElement::zero();
     };
 
     struct KZGVerifierKey
@@ -47,7 +54,7 @@ namespace gatzk::crypto
         std::string srs_type;
         std::size_t degree_bound = 0;
         G2Point g2_one;
-        G2Point g2_opening_point;
+        G2Point g2_srs_evaluation_point;
         std::shared_ptr<PreparedG2> g2_one_prepared;
         std::shared_ptr<PreparedG2> g2_opening_prepared;
     };
@@ -58,20 +65,20 @@ namespace gatzk::crypto
         SRSManifest manifest;
         KZGProverKey pk;
         KZGVerifierKey vk;
-        algebra::FieldElement opening_point = algebra::FieldElement::zero();
+        algebra::FieldElement srs_evaluation_point = algebra::FieldElement::zero();
         G1Point g1_generator;
         G2Point g2_one;
-        G2Point g2_opening_point;
+        G2Point g2_srs_evaluation_point;
         std::shared_ptr<PreparedG2> g2_one_prepared;
         std::shared_ptr<PreparedG2> g2_opening_prepared;
     };
 
-    // 承诺对象。`commitment_eval` 会被 prove / verify 重复消费，用来避免重复求值。
+    // 承诺对象。`srs_evaluation_scalar` 会被 prove / verify 重复消费，用来避免重复求值。
     struct Commitment
     {
         std::string name;
         G1Point point;
-        algebra::FieldElement commitment_eval = algebra::FieldElement::zero();
+        algebra::FieldElement srs_evaluation_scalar = algebra::FieldElement::zero();
     };
 
     // 批量 opening 的执行侧剖面，供正式 benchmark 细分 `domain_opening_ms`。
@@ -104,13 +111,13 @@ namespace gatzk::crypto
         // 直接基于 SRS 评值点处的已缓存值构造承诺，适用于 lazy 公共列或动态列。
         static Commitment commit_precomputed(
             const std::string& name,
-            const algebra::FieldElement& commitment_eval,
+            const algebra::FieldElement& srs_evaluation_scalar,
             const KZGKeyPair& key);
         // 对单个多项式做正式承诺。
         static Commitment commit(const std::string& name, const algebra::Polynomial& polynomial, const KZGKeyPair& key);
-        // 对已知 `commitment_eval` 的一批列做承诺，减少 proving 热路径中的重复 MSM 准备。
+        // 对已知 `srs_evaluation_scalar` 的一批列做承诺，减少 proving 热路径中的重复 MSM 准备。
         static std::vector<Commitment> commit_precomputed_batch(
-            const std::vector<std::pair<std::string, algebra::FieldElement>>& named_commitment_evals,
+            const std::vector<std::pair<std::string, algebra::FieldElement>>& named_srs_evaluation_scalars,
             const KZGKeyPair& key,
             CommitBatchProfile* profile = nullptr);
         // 对一批多项式统一承诺，是 dynamic commitment 主链的核心入口。

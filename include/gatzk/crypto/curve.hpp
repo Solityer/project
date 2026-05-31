@@ -44,6 +44,7 @@ namespace gatzk::crypto
     G1Point g1_add(const G1Point& lhs, const G1Point& rhs);
     G1Point g1_sub(const G1Point& lhs, const G1Point& rhs);
     G1Point g1_mul(const G1Point& point, const algebra::FieldElement& scalar);
+    G1Point g1_multi_scalar_mul(const std::vector<G1Point>& points, const std::vector<algebra::FieldElement>& scalars);
     std::vector<G1Point> g1_mul_same_base_batch(const G1Point& point, const std::vector<algebra::FieldElement>& scalars);
     G2Point g2_add(const G2Point& lhs, const G2Point& rhs);
     G2Point g2_sub(const G2Point& lhs, const G2Point& rhs);
@@ -52,6 +53,8 @@ namespace gatzk::crypto
     bool operator==(const G2Point& lhs, const G2Point& rhs);
     std::vector<std::uint8_t> serialize(const G1Point& point);
     std::vector<std::uint8_t> serialize(const G2Point& point);
+    G1Point deserialize_g1(const std::vector<std::uint8_t>& bytes);
+    G2Point deserialize_g2(const std::vector<std::uint8_t>& bytes);
     std::size_t serialized_size(const G1Point& point);
     std::size_t serialized_size(const G2Point& point);
     PreparedG2 prepare_g2(const G2Point& point);

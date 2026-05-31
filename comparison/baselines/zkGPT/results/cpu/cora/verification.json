@@ -1,16 +1,16 @@
 {
   "checks": {
+    "combine": true,
+    "commitment_backend": true,
     "commitment_order": true,
-    "full_dataset": true,
     "gkr": true,
-    "gpu_no_fallback": true,
+    "gpu_hot_path": true,
+    "hyrax_openings": true,
     "lasso": true,
-    "masked_open": true,
-    "matmul": true,
+    "matrix_sumcheck": true,
     "metadata_complete": true,
-    "sparse_public_edges": true,
     "transcript_replay": true
   },
   "status": "VERIFY_OK",
-  "verifier": "zkgpt_gat.verifier.local_replay"
+  "verifier": "zkgpt_gat.formal_verifier.recompute_and_native_hyrax"
 }

@@ -37,6 +37,67 @@ def selected_backends(value: str) -> List[str]:
     return out
 
 
+def _hardware_and_device(backend: str, gpu_info: Dict[str, Any]) -> str:
+    if backend == "gpu":
+        return f"gpu:{gpu_info.get('device_name', 'unknown')}"
+    return "cpu"
+
+
+def _proof_scope_fields(
+    config: Any,
+    graph: Any,
+    model: Any,
+    backend: str,
+    gpu_info: Dict[str, Any],
+    ids: Dict[str, Any],
+) -> Dict[str, Any]:
+    model_arch = {
+        "model_arch_id": model.model_arch_id,
+        "layers": len(model.hidden_layers) + 1,
+        "hidden_profile": [
+            {"head_count": layer.head_count, "head_dim": layer.head_dim}
+            for layer in model.hidden_layers
+        ],
+        "K_out": model.k_out,
+        "C": model.class_count,
+        "output_average_rule": model.output_average_rule,
+    }
+    model_params = {
+        "model_param_id": model.model_param_id,
+        "checkpoint_bundle": str(config.checkpoint_bundle),
+        "model_id": ids["model_id"]["id"],
+        "quant_cfg_id": model.quant_cfg_id,
+        "static_table_id": model.static_table_id,
+    }
+    return {
+        "baseline_identity": "zkGPT",
+        "proof_scope": "component_proof_baseline_with_final_logit_binding_not_full_zkGAT_protocol",
+        "scope_mismatch": True,
+        "full_gat_forward_proved": False,
+        "final_logits_bound": True,
+        "setup_assumption": "transparent_hyrax_mle_plus_zkgpt_style_component_proofs",
+        "proof_size_definition": "canonical serialized proof_payload.json; excludes witness manifests, raw witness, datasets, checkpoints, logs, and audit metadata",
+        "verifier_reads_witness": False,
+        "witness_included_in_proof": False,
+        "public_input_layout": "public graph, public features, public metadata, public logits",
+        "task_type": graph.task_type,
+        "model_arch": model_arch,
+        "model_params": model_params,
+        "same_checkpoint": True,
+        "same_quantization": True,
+        "same_graph_preprocessing": True,
+        "same_self_loop_rule": True,
+        "same_edge_sort_rule": True,
+        "same_public_output_policy": True,
+        "self_loop_rule": graph.self_loop_rule,
+        "edge_sort_rule": graph.edge_sort_rule,
+        "batching_rule": graph.batching_rule,
+        "hardware_and_device": _hardware_and_device(backend, gpu_info),
+        "run_status": "VERIFY_OK_SCOPE_NOT_FULL_GAT",
+        "failure_reason_if_not_comparable": "scope_mismatch: zkGPT baseline verifies component proof objects and final output binding, not the complete zkGAT SRS/KZG protocol object",
+    }
+
+
 def run_one(
     dataset_name: str,
     backend: str,
@@ -69,10 +130,11 @@ def run_one(
     trace = forward_full(graph, model)
     forward_ms = (time.perf_counter() - forward_started) * 1000.0
     ids = artifact_ids(config, dataset)
-    paths = {"artifact_dir": artifact_dir}
+    paths = {"artifact_dir": artifact_dir, "zk_root": zk_root}
     proof = build_proof(config, dataset, graph, model, trace, backend, gpu_info, paths)
     if proof.verification["status"] != "VERIFY_OK":
         raise RuntimeError(f"{dataset_name}/{backend} verifier rejected: {proof.verification}")
+    scope_fields = _proof_scope_fields(config, graph, model, backend, gpu_info, ids)
 
     write_json(artifact_dir / "metadata.json", proof.metadata)
     write_json(artifact_dir / "commitments.json", proof.commitments)
@@ -114,6 +176,7 @@ def run_one(
         "gpu_backend": gpu_info,
         "proof_size_bytes_accounting": "len(canonical_json(proof_payload)); witness materialization and audit JSON are excluded",
         "run_digest": digest_json({"metadata": proof.metadata, "commitments": proof.commitments, "proof": proof.proof_payload}),
+        **scope_fields,
     }
     write_json(artifact_dir / "run_manifest.json", manifest)
     row = {
@@ -136,6 +199,31 @@ def run_one(
         "model_id": ids["model_id"]["id"],
         "data_id": ids["data_id"]["id"],
         "artifact_path": str(artifact_dir),
+        "baseline_identity": scope_fields["baseline_identity"],
+        "proof_scope": scope_fields["proof_scope"],
+        "scope_mismatch": scope_fields["scope_mismatch"],
+        "full_gat_forward_proved": scope_fields["full_gat_forward_proved"],
+        "final_logits_bound": scope_fields["final_logits_bound"],
+        "setup_assumption": scope_fields["setup_assumption"],
+        "proof_size_definition": scope_fields["proof_size_definition"],
+        "verifier_reads_witness": scope_fields["verifier_reads_witness"],
+        "witness_included_in_proof": scope_fields["witness_included_in_proof"],
+        "public_input_layout": scope_fields["public_input_layout"],
+        "task_type": scope_fields["task_type"],
+        "model_arch": digest_json(scope_fields["model_arch"]),
+        "model_params": digest_json(scope_fields["model_params"]),
+        "same_checkpoint": scope_fields["same_checkpoint"],
+        "same_quantization": scope_fields["same_quantization"],
+        "same_graph_preprocessing": scope_fields["same_graph_preprocessing"],
+        "same_self_loop_rule": scope_fields["same_self_loop_rule"],
+        "same_edge_sort_rule": scope_fields["same_edge_sort_rule"],
+        "same_public_output_policy": scope_fields["same_public_output_policy"],
+        "self_loop_rule": scope_fields["self_loop_rule"],
+        "edge_sort_rule": scope_fields["edge_sort_rule"],
+        "batching_rule": scope_fields["batching_rule"],
+        "hardware_and_device": scope_fields["hardware_and_device"],
+        "run_status": scope_fields["run_status"],
+        "failure_reason_if_not_comparable": scope_fields["failure_reason_if_not_comparable"],
     }
     return row
 
@@ -161,6 +249,31 @@ def write_summary(results_dir: pathlib.Path, rows: List[Dict[str, Any]]) -> None
         "model_id",
         "data_id",
         "artifact_path",
+        "baseline_identity",
+        "proof_scope",
+        "scope_mismatch",
+        "full_gat_forward_proved",
+        "final_logits_bound",
+        "setup_assumption",
+        "proof_size_definition",
+        "verifier_reads_witness",
+        "witness_included_in_proof",
+        "public_input_layout",
+        "task_type",
+        "model_arch",
+        "model_params",
+        "same_checkpoint",
+        "same_quantization",
+        "same_graph_preprocessing",
+        "same_self_loop_rule",
+        "same_edge_sort_rule",
+        "same_public_output_policy",
+        "self_loop_rule",
+        "edge_sort_rule",
+        "batching_rule",
+        "hardware_and_device",
+        "run_status",
+        "failure_reason_if_not_comparable",
     ]
     rows = sorted(rows, key=lambda row: (0 if row["backend"] == "cpu" else 1, DATASET_ORDER.index(row["dataset"])))
     ensure_dir(results_dir)
@@ -183,20 +296,25 @@ def write_summary(results_dir: pathlib.Path, rows: List[Dict[str, Any]]) -> None
             "protocol_id": PROTOCOL_ID,
             "proof_backend_id": PROOF_BACKEND_ID,
             "rows": rows,
-            "invalid_archive": "archive/invalid_adapter_20260525",
+            "invalid_archives": [
+                "archive/invalid_adapter_20260525",
+                "archive/invalid_digest_replay_20260529",
+            ],
         },
     )
     readme = [
         "# GAT-ZKML-zkGPT Results",
         "",
-        "This directory contains only the rerun independent zkGPT-style baseline results.",
-        "The previous adapter artifacts were moved to `archive/invalid_adapter_20260525` and are excluded from these tables.",
+        "This directory contains the official rerun independent zkGPT-style baseline results.",
+        "The previous adapter and digest/replay artifacts live under `archive/` and are excluded from these tables.",
         "",
         "Official tables:",
         "",
         "- `summary.csv` / `summary.json`",
         "- `cpu_results.csv`",
         "- `gpu_results.csv`",
+        "",
+        "Each dataset/backend directory includes metadata, commitments, transcript, lookup proof, matrix sumcheck proof, GKR proof, Hyrax/MLE openings, masked openings, final proof payload, verifier output, witness manifest, benchmark summary, and run manifest.",
         "",
         "`proof_size_bytes` is the canonical serialized `proof_payload.json` payload size. Witness manifests and audit metadata are not counted.",
         "",
@@ -227,4 +345,3 @@ def run_many(
             )
     write_summary(results_dir, rows)
     return rows
-

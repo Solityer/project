@@ -19,6 +19,7 @@ set(GATZK_CRYPTO_BACKEND "mcl" CACHE STRING "Crypto backend preference; only mcl
 set_property(CACHE GATZK_CRYPTO_BACKEND PROPERTY STRINGS mcl)
 
 find_package(Threads REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 include(cmake/ConfigureMCL.cmake)
 
@@ -80,7 +81,7 @@ if(GATZK_USE_MCL)
     target_link_libraries(gatzkml PUBLIC ${GATZK_MCL_LIBRARIES})
 endif()
 
-target_link_libraries(gatzkml PUBLIC Threads::Threads)
+target_link_libraries(gatzkml PUBLIC Threads::Threads OpenSSL::Crypto)
 
 if(GATZK_ENABLE_CUDA_BACKEND)
     target_link_libraries(gatzkml PUBLIC CUDA::cudart)
@@ -89,6 +90,10 @@ endif()
 
 add_executable(gatzk_run src/main.cpp)
 target_link_libraries(gatzk_run PRIVATE gatzkml)
+
+add_executable(gatzk_srs_setup tools/srs/generate_srs.cpp)
+target_include_directories(gatzk_srs_setup PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(gatzk_srs_setup PRIVATE gatzkml)
 
 if(GATZK_BUILD_TESTS)
     enable_testing()

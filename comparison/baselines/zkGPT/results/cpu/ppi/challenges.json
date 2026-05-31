@@ -1,0 +1,135 @@
+{
+  "compression": {
+    "xi_cat_l1": 1463464876288823749,
+    "xi_l1_h0": 961221003542258458,
+    "xi_out": 611516776464471235
+  },
+  "domain_order": [
+    "gat-zkgpt/meta",
+    "gat-zkgpt/model-commit",
+    "gat-zkgpt/static-table",
+    "gat-zkgpt/input-commit",
+    "gat-zkgpt/lasso",
+    "gat-zkgpt/matmul",
+    "gat-zkgpt/gkr",
+    "gat-zkgpt/open"
+  ],
+  "gkr": {
+    "rho_gkr": 16927157558234550218
+  },
+  "lasso": {
+    "eta_hidden_elu": 7393332910689082106,
+    "eta_hidden_exp": 8109579108594907801,
+    "eta_hidden_lrelu": 8398762679619250273,
+    "eta_hidden_range": 9893729423415372670,
+    "eta_output_exp": 1059133427223442463,
+    "eta_output_lrelu": 3258872407774501188,
+    "eta_output_range": 1735614901776381808,
+    "eta_rescale_rounding_range": 13749887880319981107
+  },
+  "log": [
+    {
+      "challenge_u64": 10016284395308125362,
+      "label": "gat-zkgpt/meta"
+    },
+    {
+      "challenge_u64": 16005464190329790516,
+      "label": "gat-zkgpt/model-commit"
+    },
+    {
+      "challenge_u64": 1941929533848641670,
+      "label": "gat-zkgpt/static-table"
+    },
+    {
+      "challenge_u64": 14544481282378831900,
+      "label": "gat-zkgpt/input-commit/base"
+    },
+    {
+      "challenge_u64": 961221003542258458,
+      "label": "xi/layer/1/head/0"
+    },
+    {
+      "challenge_u64": 1463464876288823749,
+      "label": "xi/cat/1"
+    },
+    {
+      "challenge_u64": 611516776464471235,
+      "label": "xi/out"
+    },
+    {
+      "challenge_u64": 6568680134752192935,
+      "label": "gat-zkgpt/input-commit/comp"
+    },
+    {
+      "challenge_u64": 7287884592994664757,
+      "label": "lambda/psq/layer/1/head/0"
+    },
+    {
+      "challenge_u64": 11717693652463359444,
+      "label": "lambda/psq/out/0"
+    },
+    {
+      "challenge_u64": 14158257337174479502,
+      "label": "gat-zkgpt/input-commit/psq-qry"
+    },
+    {
+      "challenge_u64": 9893729423415372670,
+      "label": "lasso/hidden_range"
+    },
+    {
+      "challenge_u64": 1735614901776381808,
+      "label": "lasso/output_range"
+    },
+    {
+      "challenge_u64": 8398762679619250273,
+      "label": "lasso/hidden_lrelu"
+    },
+    {
+      "challenge_u64": 3258872407774501188,
+      "label": "lasso/output_lrelu"
+    },
+    {
+      "challenge_u64": 7393332910689082106,
+      "label": "lasso/hidden_elu"
+    },
+    {
+      "challenge_u64": 8109579108594907801,
+      "label": "lasso/hidden_exp"
+    },
+    {
+      "challenge_u64": 1059133427223442463,
+      "label": "lasso/output_exp"
+    },
+    {
+      "challenge_u64": 13749887880319981107,
+      "label": "lasso/rescale_rounding_range"
+    },
+    {
+      "challenge_u64": 16753002116628189580,
+      "label": "matmul/sumcheck"
+    },
+    {
+      "challenge_u64": 16927157558234550218,
+      "label": "gkr/layered-sumcheck"
+    },
+    {
+      "challenge_u64": 2117545330313538571,
+      "label": "open/combine"
+    },
+    {
+      "challenge_u64": 12423490553822938090,
+      "label": "open/masked"
+    }
+  ],
+  "matmul": {
+    "rho_matmul": 16753002116628189580
+  },
+  "open": {
+    "rho_combine": 2117545330313538571,
+    "rho_masked_open": 12423490553822938090
+  },
+  "psq": {
+    "lambda_psq_l1_h0": 7287884592994664757,
+    "lambda_psq_out_h0": 11717693652463359444
+  }
+}
