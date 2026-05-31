@@ -1,1069 +1,448 @@
 {
   "Com_in": [
     {
-      "commitment": "27d7e9d562a2bb371d0b554d91ebf994ab803915fb2d7fc9b752d50c83adc069",
-      "hiding_randomness_id": "99c68691a5998555f89a628f4de1b0e45bc7cbb5dfb9fd3b4a7101f200556f24",
+      "backend": "mcl-bn254-hyrax-mle-v1",
+      "col_bits": 3,
+      "hiding_generator": "3a9dd07d82ae2fc7a96418b5f5312662bad55eedc80bda2777a9d4eb55860204",
+      "masked_evaluation": "b25076e56cf8ef97896f872c7f80f7cf157c32bc72bad173bbe0b01f35297f23",
+      "opening_artifact": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/cora/hyrax_openings/com_T_H.hyrax.json",
+      "opening_artifact_sha256": "50b6b627171098767e5a70b55af534b429e61e5580ae3f72ed3fcadd3b283728",
       "opening_mode": "OpenMasked",
+      "opening_point": [
+        "15263624381494052224",
+        "16993016719588017675",
+        "2520744177569695303",
+        "13607549042996358539",
+        "713492161163439376",
+        "9262401102107717962"
+      ],
       "order": 0,
-      "payload_digest": "1babfec3869b1ca27db1e95bd53662a2d94db1d658e697a4b67dfbaaf249f3ca"
+      "padded_length": 64,
+      "row_bits": 3,
+      "row_commitments": [
+        "deadf0e93aa471aeb988191c241ffccb111fa2b8c257af70a04d59812f35428a",
+        "e76fed55f7db0fe8e3a65c3755d333724055ca6711ac33b287ed4fbaf040230d",
+        "7acb1257cf05ce47838b25da5438587dc130e2fdee55e55b4b7099a87f8cfc8c",
+        "f5a9283aa3378dd36d37e3ff4825574c0d112f7425f851d339d393f2b84e1e99",
+        "11319e6b9856d898047750756ab9ae99575c0b15b7d092858e88e52bdfc56511",
+        "ff606a6aefa1da310f08a0707c52da9889c2d9e11152e8a1ed8dd20f2cf4e821",
+        "8d7a45c86bb3fd21b837b2327b3119a1054972cb1005db4c535cc5ea9df5cf22",
+        "de31341be9548a01471b35aead2c61bdc8f0ff9f6e507a1f7c9d8ecf538cca12"
+      ],
+      "segment": "com_T_H",
+      "vector_length": 36,
+      "verify_status": "VERIFY_OK"
     },
     {
-      "commitment": "a66b0eeef8c1f44e575d5557ab14b49baebd11615edf4bf793d4c181753fa85d",
-      "hiding_randomness_id": "fe8cf9f21119d89068c5bb42cbd7b21837324948c72143fd175a5b23805814ca",
+      "backend": "mcl-bn254-hyrax-mle-v1",
+      "col_bits": 5,
+      "hiding_generator": "996c220f21dd83c2d9d843711d7776a732d17d82174b4400df17b2d8a9bdb4a2",
+      "masked_evaluation": "4fff5a1033d7920f897249fcbfd8a829574723f30a13971a6e060e53c491ce10",
+      "opening_artifact": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/cora/hyrax_openings/com_W.hyrax.json",
+      "opening_artifact_sha256": "7081477b404d98de2f5278342c3613c28185a7de41d034ebcab70a0c4aa4a5c1",
       "opening_mode": "OpenMasked",
+      "opening_point": [
+        "4329137147331077781",
+        "1022784237296932888",
+        "15138579184592697768",
+        "6399118696678414811",
+        "11832573926983133352",
+        "18323267024177660793",
+        "12883559135660312383",
+        "4198289306891461617",
+        "7707483685002400758",
+        "10846460371878719953"
+      ],
       "order": 1,
-      "payload_digest": "cacb2b23edb51af607ab1eeaff037d6d45d2edb60f96135305421ea37af26f1f"
+      "padded_length": 1024,
+      "row_bits": 5,
+      "row_commitments": [
+        "e50a4f1561a16701d7614b680e347e987fa66e1bc89edec5ec4fa1f6c3985e96",
+        "e3e2fa180a21e08397420292cb99cbc5346c2a3aac2d0ec35650959c11ed8c98",
+        "8f5575685e7f9e20ee1bb52b48f6907047b2e97ad0e1e97b0ce24523e0a9080b",
+        "d4dfaa3af2975ecac18f580bce5bb8c0904dc135beaa1ab1b756ec81ee04b098",
+        "f50d7be703d966a95f16c23e0c1844e90f0dbca3c2a035d4df8a1c67df26c408",
+        "4af9f70801c0a9fa6a13c3c19a05718c85ef4bf2b8c3c4603d1778f69682d10e",
+        "974329775c267d086f04d4424eb7ca62c0baaaab70b25436a0b2767f14c11423",
+        "e414b5bacceab178053cdc4d9f97571c0a27f96b67ef47ac68358d2563531219",
+        "3e69109903fda496ad54afb1b819c5352d9e31ba48cdc7503270d17139b31e07",
+        "4a2914edbbc5eab8ab9aa6bb995dc563858f3800d2575fde4a5c9c2735b9db24",
+        "2cc6ad1539b7f4b585d31e147a5ac2491e732b9257a5186863b97ef0a930880e",
+        "c513f20d84e279ec55eb24d546187a4cd506c50eb5c6506627e60233dba8591e",
+        "64de99141e4fec3affadda3b0f1ca053cdebaf3c0a7d1c0b4222e23ffb3fcd87",
+        "4dcc5a6940e5439b8e9bd16507efbf93209209222aa1561ec9ac357fc3eaee1c",
+        "320af1d1546da53259716038827ce2cf3a95aa41cbf20756e9e1823166c15681",
+        "2b53070dcdc8a1e8d2aac04b431dcf584ff4c8ed083f9bb1a01b9deea7639498",
+        "7f8c8cca30d611612df846934fc24394d05c8bfa0986f52d1629c3ecd049d10f",
+        "d184334cfd317bbf5e2f1cce7e9ed6737ddb7c8f53d576e5be1203b61d206e83",
+        "289bafcbccc1668dd74a39972ebafad1fe8b993dc60a18da98354d61de36b51c",
+        "54ce4d0b412d8b0b2ea984aa603d970d68ffec1b9f29df8505f57c4a2174ef08",
+        "7c9fe80384231dfd6241184516b353d0d8e3ba324d4f31da783cdab7db30be1b",
+        "b4f2591eef38631f607cd8fd33ddd00b57bd360c0ef9d573ecc086ddda1c0412",
+        "c0c39bf52e2c0a55601b542a50cd22cbb51f9c20206adab79dd017690aa84e13",
+        "0690b055ed9efa6ddebc6fa21d754ac9236027ac805bc5603da0e4d2e1f7ff8f",
+        "bbd1b9ce05ea6772803dd56dff57b267f0ac71952ac20af8457e292134a3e41f",
+        "958dcd680e87b497c64ebc14acf6569f3a4a0482214d82dc642cc33d7463a797",
+        "518fddbfce0af3669c80833f80572d60b9e5a9f4b3ee0b0856e3098f92191f21",
+        "cceca59f01f7492983b494cc13ef52ad86448b01e5d8020ae4d122b8af5a7a9b",
+        "4825e70965182f7c6f6256ebbcbb1bb462564063bd9034bc0fab1fbed9242994",
+        "22a5bcfa2a441db963b791eac9cb2b4709c19a3943b30855c61a19ee399cde81",
+        "f67615a926ee0a663fad41c75d38b871a285d82cf791cde64444ec707290bf9d",
+        "001ba7a14651b905584331c2752a8938ef8649a8cc18fdcbdb65e428e5914b00"
+      ],
+      "segment": "com_W",
+      "vector_length": 944,
+      "verify_status": "VERIFY_OK"
     },
     {
-      "commitment": "397f0a2ac3878cdf02f95d594882e5311fa205d4bef06d353a0d666e25eb4050",
-      "hiding_randomness_id": "ae693618cfb877bcb898a8eb946a032b52fd8bf97d671f418fc4caede4ddc390",
+      "backend": "mcl-bn254-hyrax-mle-v1",
+      "col_bits": 6,
+      "hiding_generator": "a79c660946c4ff4d28389289ba3b3b923bc5983f971f44307bd3daa38382549d",
+      "masked_evaluation": "a4d26fc5e0a20092e44680835c3558bd0c9200e029ef5842ee85ad2784c4fd0c",
+      "opening_artifact": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/cora/hyrax_openings/com_base.hyrax.json",
+      "opening_artifact_sha256": "1cc8bf151060b1874d3c914d5e5d2c710dc8e1a54f1a2f1eb0488d34921a79c5",
       "opening_mode": "OpenMasked",
+      "opening_point": [
+        "2675660069785347413",
+        "8628161866964914527",
+        "7652385119892955453",
+        "6932421209037661887",
+        "15730949272235183282",
+        "11256295755025574187",
+        "11294541441937592633",
+        "9709254581749023707",
+        "8780842175256227100",
+        "12028684528838475462",
+        "561277136129180091",
+        "1011440679755137528"
+      ],
       "order": 2,
-      "payload_digest": "1032795f06a70f3d58c1d0db963b234e7a7b3218a0b1797d55edb9ac340d72cf"
+      "padded_length": 4096,
+      "row_bits": 6,
+      "row_commitments": [
+        "506be483ca901955db4152d9db9b604866bf9e8385169ea6574dd8d77aa4b604",
+        "79901d8d80eacb713d333eb9b36ca6bad493675a3f03590517b4093da07b2e80",
+        "eb054c759e00773ba1b9e07befbb9ffed018c74d41aa64cf7d1b31688698729b",
+        "855f51be3bacaa1576b4afa1b5d94ceea830daf6d812e738754b19d261445723",
+        "61c2bfcc2c40cb45985b51ac6de393471920c328982cd3b8e0628b91e0f5d823",
+        "ab7685f95f35a413b9bbe72e2b3b3b723a51fc4630825c4c57ac76bb08cf5aa4",
+        "9a1202973d84479e537a3caa102765ccce0dcd85f6831d69f8d28e3a804a4593",
+        "6a38459dc746eca7f03648f2fc1aa9c58d38865f8b8119f721b94ca8dac3dc00",
+        "b6bddf8cf0956a98282b9bc3fa3abe51a609a06dda5f12444ea02ed67083140b",
+        "83433cd0e5cc0aac5ede00cc54372da895dbfaf148d234448d39ba4982a1da8d",
+        "dd2299f797009614bea34299d4394722ed23e21619ff30d75ab01445e39a0c21",
+        "1ee2523dd4cd51f398d522dfa157ea2d0ed85c3044466d258a2847a3a332218e",
+        "4e8876a32ebbc2ac1ecf3bff08a644cd64c4449fb0b06e41235c873220c5af18",
+        "5dd72cc09057112e6585017746449d2610da7ea3070a7528ed723fc18beee8a2",
+        "b9a73cb36abe73541be3a0fcc439fc2fae9e1794644efdd90c499ce558468291",
+        "964b86e0b60294443e872ef64f2576e054cda702d65060670ea52a9c468a8a91",
+        "4c674f0904a0e238bf89fa6bb4316a3cb860b6f84b5e8fdbe6bd6b08761acf01",
+        "c684a8e5cf0876443cc01b0277ee70c53897df2e2f8af246c71d11b93f7e3301",
+        "6576006cae07cda6a75db603b0edf046aee13fb5c3a8e0d47ece6f8ba34e069f",
+        "08e95d8c1afc2c089f413c472551fe2ce7f008f262dbc4c0e842120d4d683d80",
+        "031a55a3fcb82ae80e23e5cf3ab848bc97b6490cc582138ff8582902a31d4619",
+        "4b34d07bd7524f76c6c316adb67002d2cdf2c548c9e0bf7eb266578bfea29b23",
+        "9d7254f59efdfb1abedf24c81d8f635bb43dbac1a323770db80bf3cf7727111b",
+        "eedc7381710c92c6f59c099b2720a268aa800da5c9c2bf8f03630e96fd89969f",
+        "e5565734e06a0d8e755d13ed866a93f4bf0946103f39d21ff6b22a26b773181f",
+        "0621f12ea4da04612aedd18d1d1aba225ec998bd61cb9aa79679cf55bba2cf8b",
+        "01556d92a18f2f49e9fd590b3be52d6d2228e21c55fd9019cc4b9b95cf4d1324",
+        "d6bdcbd67af49ee7f19a18a6d9cc9565976f4f145da570bf010d4b4fdcfcc009",
+        "e13850d5d2ec9fe574ee50267f4cf182a61d0d3ee98ca965334245fefda5c11a",
+        "b3e5ca25d1f091e58a7204c59de15a039edb260b12c379d1511251160b8ed19d",
+        "b359340aaefc82b9b4e6179eeec37b379d9ceebbd353b2aeb55bd61db3eb788e",
+        "91c32aa4d400371f68e7f06c6e1e44061e7a8fa94f27b014aded4f7847086400",
+        "b9d9536ee69a938c409c2b67e7965303cb6abcdb7021f690ecb97a9002485f00",
+        "72e4c0ee24bd892ac926dccb330ffa82427bab4ccf0317a317ae3899b08b539d",
+        "57c5221dd98b3b44fceae64d9451b9bd105da4d41f4a16ed76bf48296d081284",
+        "a8c47235408a4edcbb6df6a8d54234c6cb578ab64ae421db09609628b9226e13",
+        "2f0f4eb00ce7fd74eb77580130d9637b7913d13c31965d7b1c0be19d06d959a3",
+        "3ed548d37454bd23c19f02505cbfe16eab4dd07bd6d98a0e4e70275ef80b0789",
+        "7eaaf4eb28dd7b3e98eb08ce67778fdc920fcafde46a29a4e2cafd2bbfeebe16",
+        "017f21d649f070eeab1e5713b1f1c5379f9046066e460d76cf65b8dac587240e",
+        "05ace1174342d6cf23793a47bf45e7a2bda7c5b12e4633a44be44a04053f3f19",
+        "c490e0dda1a973ee82c1deb20df90aff3b0721d17c642fd1e8923954246eed83",
+        "1e148eeca741502ba05f0115cd01b3a4fbfbf30742bfb6daaceb785044fa1421",
+        "0019b1fcc8c812d498754aafcad751394dde575785ddeb58ccfb42aca56ae805",
+        "90426890f0ae43590879e9ff67b1df12904e1b00bd823a529fcca411c9883006",
+        "7ecfadbae9d3f5337cc49af06c9187e8c8f1ee531d67eafb61b4c69823cdce0c",
+        "df674b64f9ca4ced26096dce01b3eb0f5ac420d428857dbed09b4f09bff5af8e",
+        "b0d69879e96707ea0b41676ca53684f835ffc3e4e39327b8ff6e4a5f4e83dba4",
+        "a9aa72d3a70b20493f7fb59b2450a8e071a5da9f47a0a3902e7b0ef1ff240d97",
+        "256cc7ed2611b7ca0177751248420ff0ebdb8e19bbe1b0e171415a4c29c5f624",
+        "b2cd28e2fcdced70b77a6b5401153eae1e93359b6b1f3760b48daf0ab9510488",
+        "78c75b326675e7899a36199f5806e77920daa37dad3ec808dabddb29fc04b0a3",
+        "74ab286fe3d79b01d458e798d93f9784d777fb9e816b3aa39ef6ca3cbd07ca80",
+        "59fdd87d8c689146b761992d7ce5d5526ef6108c570ffe04bdadcf9699b3f60d",
+        "7e1c35c34e94875306cc91c20bab4854029efa0b7d5d1931d66385bc7156fa0c",
+        "8f073f8f6f04aa2871c4e0eb888ef07c95d887d93cf1edbdeaf7aebdf33bb693",
+        "26401d497036c560c1a115df5b378cd6ad1f9abd603add1a9c29faf48ba12c9a",
+        "88fda07c45cd006155807c7a49ce02a6865efc6cb04000e406da8e0ce824648e",
+        "110bda4b21d89ad928ebfa2de2cf18734138229f9146cad8b56a232241fb4691",
+        "9469d2b78decdc64007cd5eba0fa71d530fb816df70fda7b8820fb3fe5020120",
+        "c01a456875983d59865ece386766f277143e8b5f24054427ee9da379ea063990",
+        "84a96d4cf1e00995e53d7908c6e8f5945e5001b418e9999902e3a8fea79c8298",
+        "766b10f11abed3dcb30abd3f8881f676876979414ef2a39f83be19d9f746788c",
+        "83cdaba52e60abefabb9f09106ac508894c438e6e3a8ec3f19c01543d9e60b84"
+      ],
+      "segment": "com_base",
+      "vector_length": 4026,
+      "verify_status": "VERIFY_OK"
     },
     {
-      "commitment": "44a733846b3b1df85b631b38212de269b3817f8739e46ecc41570cd71f46cc41",
-      "hiding_randomness_id": "623b7f9535c3aea5ddcdbf445cce15389b16996905f47d84d632925ad4db406c",
+      "backend": "mcl-bn254-hyrax-mle-v1",
+      "col_bits": 5,
+      "hiding_generator": "24a6ddcca3507ecd22038c695d402d32ec7d40687fa548a54f5ce65092cdff1a",
+      "masked_evaluation": "2119740465e80db669854128d65dc4ada8b2d5b1d8bebe6ed99306a823748f01",
+      "opening_artifact": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/cora/hyrax_openings/com_comp.hyrax.json",
+      "opening_artifact_sha256": "0f17ea0700545e1807137ea9a66975462114a60dc6d194fa1aacf655689b3ecc",
       "opening_mode": "OpenMasked",
+      "opening_point": [
+        "15835738473132255356",
+        "6623221586427864748",
+        "6338095084520225633",
+        "9716577659887302487",
+        "15557229917628607225",
+        "11353571678333050604",
+        "7776341408591892945",
+        "16347998378014214706",
+        "2444040392495571110",
+        "12563481383289456231"
+      ],
       "order": 3,
-      "payload_digest": "a52af43b9d8e4c883f2d1ca36de4d26bec3860dd181b62a35b6e462e906a26aa"
+      "padded_length": 1024,
+      "row_bits": 5,
+      "row_commitments": [
+        "ef36e29becb1754492a44e1dfc6c471e51ddd28b251bd6e36710d39c7c8826a3",
+        "30a5f745fed4770e102466a8c612e73fbfd6e731ace82af785fc387c18055c96",
+        "ffe5513c3df0bbfd01b1fb44111fc65422a3b75993c6f5da35cfcf5527890105",
+        "1fc2c6000b95b99fef63a693b45fb43312f679689a8a5dae0539de02897f0222",
+        "25208f9eb6285e968d80a3869be274afee44338bbc7f337ab7a5a3a817ac7417",
+        "3f21cfd9aea5e0ed4a903aa77a090c09e6e9a120f3c9cb5e500af0556ab98b13",
+        "727f348448a7df5fe366cf145b93cb69da063bcd3d730d85c0919d4b83f8d0a2",
+        "eec7656e6cc056a462cc3ecf52ebe237ccc422323bce33d40fbae3db55f6fc23",
+        "af82f5f9e4a8a669f139a4f5b093f96fe2aac89575611c1c2ebc4ed48b283a16",
+        "b785aa09c176a49e9452db875a65375c4d3e282c46f7589cad82c5eb65675b0e",
+        "4691c66297aaa96087966810c7764c18634c0ed1d6c840fb111b329cc9bb8c1d",
+        "14546f3d21ef91992be0d116161d7970f49a1d6e70835d2aeaafa1d8a18d5f9e",
+        "e599a7e26471e0fad856f16b457d227230f65b48f96133cc39785c6e3c27b905",
+        "5a592ae9d8ee91d9bba727caed6ca5406e0d081ac2cd22859fb4640c38ea1d02",
+        "4c68debc86c0ec4a9b03b83e2754035fb6370662235d3678789063c4b7632e96",
+        "2cbc781c7b04e82361a8a5d62597aeb0b76754b62b2b211420870876c39539a3",
+        "0dd4b43ffd659a19a0a80001da1bd890834241c5ae53b6d8c11e5af7eba5f91a",
+        "663fc3f71801e917490a38a4c529aa3ca30b3749a4868d0c259fbf4c2e35cb19",
+        "d39e145c9a6eb5bdb7bca7b5777f7da52f383edb27a0796a44490fed267e7585",
+        "876d8b9e8c470caa62f4fd73236277028d2b256581e87968655c2785fc479a16",
+        "7a13a9cf51978d8a222f7784c8a4ce98d519a9bc88453ab0e4c680e62143fa19",
+        "811fd4b82e9994f404bfb82e9fccbb2df54adb78d088db0ac18a8f57d5e4a613",
+        "231a1438a8d752b7c151e97b1e6e7f5349e8195c63e5c61e214860fdc6377699",
+        "b396c992e9dbc75122783ae3f09eb86d7face145343c0d64851085086f70db90",
+        "e0ed86edb56a9726bd9c6df03394ae991b03fbed46bc78bc61aec86ebcfe7d08",
+        "b043b3bc57c26e46c04d6c7f428be126e8e0ff22edc8149aa486bd3ddaf7629d",
+        "69380648bd0d0d28873e03fbe128e1e8fc601ea4900977b408f4d98b1faf5f23",
+        "31b955646cba3cfb5063557e41dc22a3299d404fa575e57232cbf8e114d8fc21",
+        "25648d891ba4df26f24040f22d729bcbd1b24e649cec2d85e94d545a39dcf99f",
+        "d2d059f6432006220f84333ef4c8ca4f87ffcb499578b9e7c9c900afd9db3e04",
+        "badd0a9c3dfed77db9a457e1cce4adca546d15179927e131180eaff5235cc895",
+        "d53e91ac610b74b8224bab495f21a20c69de12e2294ba47734af3b2079f86581"
+      ],
+      "segment": "com_comp",
+      "vector_length": 959,
+      "verify_status": "VERIFY_OK"
     },
     {
-      "commitment": "665a301f5549ec27a8e88fb1e3314d0c03cecbe8411d9faf44a46dc299915264",
-      "hiding_randomness_id": "e59f3c73973ece447d94ea54ab80b8f117d40dcb03ddc2e3a6df5cc3a11187c6",
+      "backend": "mcl-bn254-hyrax-mle-v1",
+      "col_bits": 5,
+      "hiding_generator": "f486b2d1d7166798e1d6affb938c99a1252ca36a497f47bc5998f1b9b26b9f88",
+      "masked_evaluation": "feac4527e5485345a6dde04b6bd8c085efa9fd5d51734d5a26b7c917ea93cb11",
+      "opening_artifact": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/cora/hyrax_openings/com_psq.hyrax.json",
+      "opening_artifact_sha256": "60340fe4bc0c429ea55794b6347420aef2ebacac32b8fd2ae307780537a9e738",
       "opening_mode": "OpenMasked",
+      "opening_point": [
+        "6666085510179816948",
+        "2615626548719203327",
+        "12029892815354123864",
+        "9376245952872983028",
+        "3720374999615124647",
+        "11458981395007727118",
+        "11964525659379783746",
+        "488681816961075570",
+        "15282264864939836768",
+        "9126216892265596266"
+      ],
       "order": 4,
-      "payload_digest": "3eb897c96c42ec2db021ce46af678ae6209c796a84606d38ceb397e9217b22cb"
+      "padded_length": 1024,
+      "row_bits": 5,
+      "row_commitments": [
+        "3652b0bb81c44ad4090d864479fe35bd360cae34828d35cf3eb12feade317186",
+        "c52853c396dbe3a48c6045606dbd7e54f7c147e8c978a941da3259f5faf2038e",
+        "41423a3d3ea06595c9f4654ceaf70acd7a2bfee957f9a4a50b53e3be25cb8a8e",
+        "99ff1215e0e2d64ecc1e08cd4ab950b84ab39d7bc37c017c80600e86011b728c",
+        "38242001cd905746a3920f3bee7f794e9f67af00952b84e31a201eaed2d3a794",
+        "1c52a301cd8b3f63632af0dc1e17fe300a7b0fbc60fa8f6dccd9df859235b802",
+        "44efce695e9e023d6bdb240d51f446ba25d345718fff2b9861c7939ee72a97a2",
+        "1609e5fa38aeefea89104844462dc6e2d5a731cea768093afd95adea438c2297",
+        "aa56fd071bf6b0cdc6a36adcceaf1b0a35f68a2a886406abf41cf0ea0a84cfa0",
+        "5e8035acee0a467feb195d8e68ca78d261f2cea274793b37c9e1fa5caf56f49c",
+        "20f01f40437236a4869a994d6b0bc1fcb2fc122d32e9a1c3eed13de4de312807",
+        "cba8986aa166ff3e2d88adc39c101f1c75836f39c3fb0d7263f19ee55d9d761c",
+        "d427ec412aa30b84370753211cd69c50d58b7e19eeb746e853d5465705551297",
+        "aaa26503c598892092786fd5cc14e8f5f6196f89d2b88e11d8bbebc8e2f8cb95",
+        "c020ba452e23668f34154ea171d35a147b4944f5011f5e8f1694b17493604e86",
+        "8d03f1c2bce74f023c819d8d5fa96ffdc438a49490c99581db81c824ebd9a81f",
+        "aa3232e6ccce57defb4c2c7e6c0f74691b4185552f228eb319b0194772354414",
+        "87c74f3069e07026083fe409f23b536b10e684b968b07ca701fac7fadeb35c02",
+        "501fa8bfae2124778d3027435f42b12d8af906aa8f7f70eaa03140532499dc1d",
+        "edb815bc55c2c964d4bf8f56c84fe23d5d83435eafaeaf665259f668ed1e4512",
+        "2294298cd1091b3ca731f445b4cc5e697c44445c3ed1b5d943c291cccce0709b",
+        "0b9f4a2a62066fbe8bd5d70fd02ce377ca7560f88ac2a54b0af15b9e5aebbe94",
+        "2bdc68d6afbccd29a9799d924a6d9912828e64df6fc2fd259a13f45b6a631985",
+        "e26b9ffc39101caa206d479724f10bd9c2b425abc71a1970d899123db992ca8b",
+        "892344afa3924c69d758b79503283049674e580c0b511c56b28f6ee218fa379e",
+        "11edafd67c8990dda5446ce2d68bcd93e7a149bd3ca9e63d9ebf89820d9de207",
+        "44cd793b2778341d02dc78f9a5c92cfe8808f38aa6fc458c7df88b9f54ec728e",
+        "4c5163cfc3ecc51605b11b176e1c2a11eda116e5169b3018e9b93a8ef77d5392",
+        "79cda55a1e8861db1f8d90ece96568a5426cdd979b7467aed59cde7cc21abc95",
+        "0d26902078c1d65a7ff46a3cf859fc61ba54ad7a4a6f1add3f9c9120e838168d",
+        "13c586f916705721702f92e76d1e7347b3b8a6d3857e42ac2a3f8c2f5b18009d",
+        "aff681bdf4aaa7b0d73f3b3719f362dfab5325c93e66631b90e00689825cf311"
+      ],
+      "segment": "com_psq",
+      "vector_length": 596,
+      "verify_status": "VERIFY_OK"
     },
     {
-      "commitment": "5d72ea2a81212acb8952d010accb870b8764d0955946b354c4d765b741952f0e",
-      "hiding_randomness_id": "208c93876eb6af8ac6e71963ba716926ac8222ba0e193d87209a6c5c4839fc08",
+      "backend": "mcl-bn254-hyrax-mle-v1",
+      "col_bits": 6,
+      "hiding_generator": "acf73743eac7c918e4ffcbdb576b968a267c4708b9addf08ee696bdcd2730695",
+      "masked_evaluation": "91134c48e45ead4b296d0e61a67fedf326f1a454e4ab33c69f3dfd4b46ef1d0f",
+      "opening_artifact": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/cora/hyrax_openings/com_qry.hyrax.json",
+      "opening_artifact_sha256": "948aec06b5ccb1c142c188e44791d354091e6de0c257fb7925bbbfaacd511502",
       "opening_mode": "OpenMasked",
+      "opening_point": [
+        "10666360357933143436",
+        "12310503021339141415",
+        "5280994532347861293",
+        "12397482223182319071",
+        "4590535026155461380",
+        "5961241743864865330",
+        "2958758860739836406",
+        "7446557439522610053",
+        "33756065815808498",
+        "2373980128277863393",
+        "17318295681461644950"
+      ],
       "order": 5,
-      "payload_digest": "235881382d11edba9d93ae842331fd9c72c0d0f0d07e9994bf464397ca97823b"
+      "padded_length": 2048,
+      "row_bits": 5,
+      "row_commitments": [
+        "01b99f0eeeec7e208a6240dfcf8ec468cf31b0306cbefe0762f4c9966430d119",
+        "f1de0fd3e91dd667763e9138c872ef494494456d0ab3353c7df63d37d42ab204",
+        "5d48010e9c4eedb234a258ca1b3d9740cd9a72a8c027304a0ed42c9ee6e9f598",
+        "b871702f9013d44a6a675501cb7f6ab90fe2d1a885c4b6d5a597cf49ac969419",
+        "6666936a1611cb123acbef39612f9535e67e49212041c0349b2412666f68bb92",
+        "b649236a75183405fbae9bdae2ed38ecfc7e700104c40389261d755f24dc8c99",
+        "d8598dd0b2d4b2f3dc2ced6d1388350db59dda45877148a6dac26ee2cbb23e0e",
+        "1dc26c9037ced7b5138b5a6da8ccf9daaf2605cfe9e1acb15262d768cd09ab03",
+        "425610c5e3d4f9907217423842b202a6f45ee62560aeb51d287ca0eb9cfe7a87",
+        "07e3999b574467d84dcc16bc79d0cf7fef6d2a1a64e6746087141fbbac82d9a4",
+        "bb0de3759f2a1e97fdd5a2daca92434832ffb9dd81fd78699d408a63894eae99",
+        "ed175c69ead900a06a949bbf64a2437b29d8a7becdd1431f7665b041919caea1",
+        "9244869f309094f625daa76afb09ab37c9eb07fd3532cb2f77cd1435682bf48e",
+        "d7b503cbd8b3d54979b9a37a5e46f0e69ca0c914d09035c1170982c409f1041c",
+        "16b203598ab2d88855164e9f1b8ca48fc56c08df0e8acd9187e1645bbd2d9507",
+        "1da99abbaa89559242c8d343a91d45a80af74e6f968ceb6eaa6482962c39bc85",
+        "9de7c212b4430e0d2826505ea43bea99fd8e08a5cc44f5311ceb767a1bf76683",
+        "9dd12004ee28c1051ec0c6f8a05249ec6b348059f78f032daf9f997adeece198",
+        "2abbe4ca002c5cf6d89cc81c454b25331acb40aafe3bb5aa1500bd1897ba7380",
+        "66b1ce48b88498b605c8b35a234a7901c33f7a8d1bddf3017d73f7c011a8889c",
+        "674f94273ebe70a00f920dda5fddc8cd48faac45f1ccfb8cbaaba1eab8aa4b1e",
+        "45f6dcab7aa80baacce4acbc27d65052f08b553d747e71241da1b712a10ad097",
+        "6107065cc84adf050c1c6a391e23f4e95e8f84af1350726c8d0ff5032e308d05",
+        "1506d973fa3c507c9775ac69d8bed05c76ed96f1937c70adefbe8dfb5c22161e",
+        "ce33311b10303ca1f320382113b32adab92c997a462fa8ced14ec5ee8e59d691",
+        "c9fd88701b8038f7757a4eccb3977982192607d6a295bbf7e0bd40a960c8111b",
+        "b8229ea22af2169fbaa3a6bc86de50f08ee7df7baa06495a206192f65312ee81",
+        "5df51534fd813b684dc81ba0ce6a1dfc1f8e47887eb2837657118093ec341423",
+        "7042fed80eb9cb50b89840cc7f59f9a30f881ff4d78b5cc9ee7f9ca99aae141c",
+        "4e34a59d2d2357480fcc4ea14bb632539fffdbde0603f1ef3672c5a725ace982",
+        "62439bd03ca1a44cbb5cec3ecd618238d6aa8c598078b8a98f5072efc8a9e91f",
+        "5b2a7944223afb0178d30c5a4d79526ef23bb780dfc73043791e4fd743fe018d"
+      ],
+      "segment": "com_qry",
+      "vector_length": 2031,
+      "verify_status": "VERIFY_OK"
     }
   ],
-  "M_pub_digest": "e4b8238ae8b34f368125598361df28d80e218da80b828de828518257c0acac15",
-  "Open_in": [
-    {
-      "commitment": "27d7e9d562a2bb371d0b554d91ebf994ab803915fb2d7fc9b752d50c83adc069",
-      "masked_value_digest": "85fe3d47340aeeff7b0a1e97c6ad81154483aeb14d439c6a81d7e1703af653cf",
-      "ok": true,
-      "opening_mode": "OpenMasked",
-      "point_index": 3591567,
-      "segment": "com_T_H"
-    },
-    {
-      "commitment": "397f0a2ac3878cdf02f95d594882e5311fa205d4bef06d353a0d666e25eb4050",
-      "masked_value_digest": "8872813ab1581a8d5cfc774b6fd3c0283bb7d295deae654733d959604270750c",
-      "ok": true,
-      "opening_mode": "OpenMasked",
-      "point_index": 2838,
-      "segment": "com_base"
-    },
-    {
-      "commitment": "44a733846b3b1df85b631b38212de269b3817f8739e46ecc41570cd71f46cc41",
-      "masked_value_digest": "2839b4315e2b0031b1997186f02e8858736088c9ac829b650eb30a39c0e10b39",
-      "ok": true,
-      "opening_mode": "OpenMasked",
-      "point_index": 35334,
-      "segment": "com_comp"
-    },
-    {
-      "commitment": "665a301f5549ec27a8e88fb1e3314d0c03cecbe8411d9faf44a46dc299915264",
-      "masked_value_digest": "1b6e40c964b0178714406f2b46cfd33f6fa486867c7b760d74dc87505a1964cc",
-      "ok": true,
-      "opening_mode": "OpenMasked",
-      "point_index": 5903,
-      "segment": "com_psq"
-    },
-    {
-      "commitment": "5d72ea2a81212acb8952d010accb870b8764d0955946b354c4d765b741952f0e",
-      "masked_value_digest": "ac30b4d2042d171287d58cc564ec5b77a8930e40fd3912ab7630de07acea2d6b",
-      "ok": true,
-      "opening_mode": "OpenMasked",
-      "point_index": 5903,
-      "segment": "com_qry"
-    },
-    {
-      "masked_value_digest": "808bb3e869cead7eb75ca825eb9311029bbfaa2adaee12bfdd89781ecafbe543",
-      "ok": true,
-      "opening_mode": "OpenMasked",
-      "segment": "com_W"
-    },
-    {
-      "ok": true,
-      "opening_mode": "public-local-eval",
-      "public_digest": "866943e2f714a1bba800d3a35bd631fb1aacd246c0fde0134276b39272c2af51",
-      "segment": "X_pub"
-    }
-  ],
-  "Pi_GKR": [
-    {
-      "claim": "hidden.l1.h0.score",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h0.max_state_machine",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h0.delta",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h0.sum_state_machine",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h0.inverse",
-      "max_residual": 1.1102230246251565e-16,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h0.alpha",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h0.PSQ_compressed_aggregation",
-      "max_residual": 1.1102230246251565e-16,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h1.score",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h1.max_state_machine",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h1.delta",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h1.sum_state_machine",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h1.inverse",
-      "max_residual": 1.1102230246251565e-16,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h1.alpha",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h1.PSQ_compressed_aggregation",
-      "max_residual": 5.551115123125783e-17,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h2.score",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h2.max_state_machine",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h2.delta",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h2.sum_state_machine",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h2.inverse",
-      "max_residual": 1.1102230246251565e-16,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h2.alpha",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h2.PSQ_compressed_aggregation",
-      "max_residual": 1.3877787807814457e-16,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h3.score",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h3.max_state_machine",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h3.delta",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h3.sum_state_machine",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h3.inverse",
-      "max_residual": 1.1102230246251565e-16,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h3.alpha",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h3.PSQ_compressed_aggregation",
-      "max_residual": 5.551115123125783e-17,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h4.score",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h4.max_state_machine",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h4.delta",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h4.sum_state_machine",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h4.inverse",
-      "max_residual": 1.1102230246251565e-16,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h4.alpha",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h4.PSQ_compressed_aggregation",
-      "max_residual": 5.551115123125783e-17,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h5.score",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h5.max_state_machine",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h5.delta",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h5.sum_state_machine",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h5.inverse",
-      "max_residual": 1.1102230246251565e-16,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h5.alpha",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h5.PSQ_compressed_aggregation",
-      "max_residual": 8.326672684688674e-17,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h6.score",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h6.max_state_machine",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h6.delta",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h6.sum_state_machine",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h6.inverse",
-      "max_residual": 1.1102230246251565e-16,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h6.alpha",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h6.PSQ_compressed_aggregation",
-      "max_residual": 5.551115123125783e-17,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h7.score",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h7.max_state_machine",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h7.delta",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h7.sum_state_machine",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h7.inverse",
-      "max_residual": 1.1102230246251565e-16,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h7.alpha",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.h7.PSQ_compressed_aggregation",
-      "max_residual": 1.1102230246251565e-16,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.concat.h0",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.concat.h1",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.concat.h2",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.concat.h3",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.concat.h4",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.concat.h5",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.concat.h6",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "hidden.l1.concat.h7",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "output.h0.score",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "output.h0.max_state_machine",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "output.h0.delta",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "output.h0.sum_state_machine",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "output.h0.inverse",
-      "max_residual": 1.1102230246251565e-16,
-      "ok": true
-    },
-    {
-      "claim": "output.h0.alpha",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "output.h0.PSQ_compressed_aggregation",
-      "max_residual": 4.440892098500626e-16,
-      "ok": true
-    },
-    {
-      "claim": "output.h0.bias_add",
-      "max_residual": 0.0,
-      "ok": true
-    },
-    {
-      "claim": "output.head_average_post_bias",
-      "max_residual": 0.0,
-      "ok": true
-    }
-  ],
-  "Pi_Lasso": [
-    {
-      "encoding": "structured_12_bit_limb_decomposition",
-      "family": "hidden.l1.h0.range",
-      "limb_count": 1,
-      "max_delta": 0.32073739490800157,
-      "max_limb": 0,
-      "min_delta": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h0.LeakyReLU",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h0.ExpMap",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h0.ELU",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 21664
-    },
-    {
-      "encoding": "structured_12_bit_limb_decomposition",
-      "family": "hidden.l1.h1.range",
-      "limb_count": 1,
-      "max_delta": 0.2559122178387008,
-      "max_limb": 0,
-      "min_delta": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h1.LeakyReLU",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h1.ExpMap",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h1.ELU",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 21664
-    },
-    {
-      "encoding": "structured_12_bit_limb_decomposition",
-      "family": "hidden.l1.h2.range",
-      "limb_count": 1,
-      "max_delta": 0.16068299753212262,
-      "max_limb": 0,
-      "min_delta": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h2.LeakyReLU",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h2.ExpMap",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h2.ELU",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 21664
-    },
-    {
-      "encoding": "structured_12_bit_limb_decomposition",
-      "family": "hidden.l1.h3.range",
-      "limb_count": 1,
-      "max_delta": 0.7284582472764812,
-      "max_limb": 1,
-      "min_delta": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h3.LeakyReLU",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h3.ExpMap",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h3.ELU",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 21664
-    },
-    {
-      "encoding": "structured_12_bit_limb_decomposition",
-      "family": "hidden.l1.h4.range",
-      "limb_count": 1,
-      "max_delta": 0.16927236823959824,
-      "max_limb": 0,
-      "min_delta": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h4.LeakyReLU",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h4.ExpMap",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h4.ELU",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 21664
-    },
-    {
-      "encoding": "structured_12_bit_limb_decomposition",
-      "family": "hidden.l1.h5.range",
-      "limb_count": 1,
-      "max_delta": 0.34126534818365967,
-      "max_limb": 0,
-      "min_delta": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h5.LeakyReLU",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h5.ExpMap",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h5.ELU",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 21664
-    },
-    {
-      "encoding": "structured_12_bit_limb_decomposition",
-      "family": "hidden.l1.h6.range",
-      "limb_count": 1,
-      "max_delta": 0.012702895856087318,
-      "max_limb": 0,
-      "min_delta": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h6.LeakyReLU",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h6.ExpMap",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h6.ELU",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 21664
-    },
-    {
-      "encoding": "structured_12_bit_limb_decomposition",
-      "family": "hidden.l1.h7.range",
-      "limb_count": 1,
-      "max_delta": 0.2385586247923612,
-      "max_limb": 0,
-      "min_delta": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h7.LeakyReLU",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h7.ExpMap",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "hidden.l1.h7.ELU",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 21664
-    },
-    {
-      "encoding": "structured_12_bit_limb_decomposition",
-      "family": "output.h0.range",
-      "limb_count": 1,
-      "max_delta": 0.11071664104444456,
-      "max_limb": 0,
-      "min_delta": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "output.h0.LeakyReLU",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "output.h0.ExpMap",
-      "max_residual": 0.0,
-      "ok": true,
-      "query_count": 13264
-    },
-    {
-      "family": "rescale_rounding_range",
-      "ok": true,
-      "query_count": 0,
-      "reason": "Rescale_out is identity for fp32 bundle export"
-    }
-  ],
-  "Pi_MatMul": [
-    {
-      "check": "Freivalds random linear projection",
-      "claim": "hidden.l1.h0.projection",
-      "max_residual": 1.1102230246251565e-16,
-      "ok": true,
-      "shape": [
-        2708,
-        1433,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h0.attention_src",
-      "max_residual": 0.0,
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h0.attention_dst",
-      "max_residual": 0.0,
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h0.compression",
-      "digest": "d4f3a817ed701406d9825ab64c1d7467b9b890db166584a6890a920da6a94604",
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "check": "Freivalds random linear projection",
-      "claim": "hidden.l1.h1.projection",
-      "max_residual": 1.6653345369377348e-16,
-      "ok": true,
-      "shape": [
-        2708,
-        1433,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h1.attention_src",
-      "max_residual": 0.0,
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h1.attention_dst",
-      "max_residual": 0.0,
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h1.compression",
-      "digest": "62e72209732e6395cbfdb58c1fc931967d04a5dfd1a8bd5e9868df54580a70fa",
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "check": "Freivalds random linear projection",
-      "claim": "hidden.l1.h2.projection",
-      "max_residual": 2.220446049250313e-16,
-      "ok": true,
-      "shape": [
-        2708,
-        1433,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h2.attention_src",
-      "max_residual": 0.0,
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h2.attention_dst",
-      "max_residual": 0.0,
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h2.compression",
-      "digest": "3e7f3db61183dcf65e2e1aa2c008bdabe55e953e8eea280df27f8a9eaa2340d2",
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "check": "Freivalds random linear projection",
-      "claim": "hidden.l1.h3.projection",
-      "max_residual": 4.440892098500626e-16,
-      "ok": true,
-      "shape": [
-        2708,
-        1433,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h3.attention_src",
-      "max_residual": 0.0,
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h3.attention_dst",
-      "max_residual": 0.0,
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h3.compression",
-      "digest": "513761f007c25e6fd45a36b141c0f62ba147366b712ef2d7ea4d2433d70c5a6f",
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "check": "Freivalds random linear projection",
-      "claim": "hidden.l1.h4.projection",
-      "max_residual": 1.1102230246251565e-16,
-      "ok": true,
-      "shape": [
-        2708,
-        1433,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h4.attention_src",
-      "max_residual": 0.0,
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h4.attention_dst",
-      "max_residual": 0.0,
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h4.compression",
-      "digest": "80266e1693abf165ffc5435431e6f2878d30c324c86a573c424acdb400f8fd02",
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "check": "Freivalds random linear projection",
-      "claim": "hidden.l1.h5.projection",
-      "max_residual": 2.220446049250313e-16,
-      "ok": true,
-      "shape": [
-        2708,
-        1433,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h5.attention_src",
-      "max_residual": 0.0,
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h5.attention_dst",
-      "max_residual": 0.0,
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h5.compression",
-      "digest": "a8c8e29d9354a7e245f49d960eadb46dfa9380790e1ad3528d433680a8b5b5db",
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "check": "Freivalds random linear projection",
-      "claim": "hidden.l1.h6.projection",
-      "max_residual": 2.220446049250313e-16,
-      "ok": true,
-      "shape": [
-        2708,
-        1433,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h6.attention_src",
-      "max_residual": 0.0,
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h6.attention_dst",
-      "max_residual": 0.0,
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h6.compression",
-      "digest": "5015f0f01e0a1d6832b63fdd2af103ca8ec6ffe93c9c1d0873ac68a9725aa468",
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "check": "Freivalds random linear projection",
-      "claim": "hidden.l1.h7.projection",
-      "max_residual": 1.6653345369377348e-16,
-      "ok": true,
-      "shape": [
-        2708,
-        1433,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h7.attention_src",
-      "max_residual": 0.0,
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h7.attention_dst",
-      "max_residual": 0.0,
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "claim": "hidden.l1.h7.compression",
-      "digest": "99b7b8490296fedc0942cdaae2a9ca414551dff94c7b3129e5e9f8e4c476f6bf",
-      "ok": true,
-      "shape": [
-        2708,
-        8
-      ]
-    },
-    {
-      "check": "Freivalds random linear projection",
-      "claim": "output.h0.projection",
-      "max_residual": 3.552713678800501e-15,
-      "ok": true,
-      "shape": [
-        2708,
-        64,
-        7
-      ]
-    },
-    {
-      "claim": "output.h0.attention_src",
-      "max_residual": 0.0,
-      "ok": true,
-      "shape": [
-        2708,
-        7
-      ]
-    },
-    {
-      "claim": "output.h0.attention_dst",
-      "max_residual": 0.0,
-      "ok": true,
-      "shape": [
-        2708,
-        7
-      ]
-    }
-  ],
+  "M_pub_digest": "0ec7a68cfcce55a5361e3bf0f595b43fd8bb56fb73ec2ebdef262ed3c418ed86",
+  "Open_in": {
+    "kind": "Hyrax/MLE masked openings",
+    "path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/cora/hyrax_mle_openings.json",
+    "sha256": "4f69f5b93d633489db1e4da1ea13dc6676322707cabf457e0818402214b872ed",
+    "size_bytes": 42816
+  },
+  "Pi_GKR": {
+    "kind": "ML-friendly GKR proof",
+    "path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/cora/gkr_proof.json",
+    "sha256": "5aa0000bfd019bcb2afd47297aa61733e423787faa6b9605c57baa4fe85b691b",
+    "size_bytes": 34899
+  },
+  "Pi_Lasso": {
+    "kind": "lookup proof",
+    "path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/cora/lookup_proof.json",
+    "sha256": "75da068af413a8ce36e625680e021eeaa56709389b531ec6eca445331f04fc1c",
+    "size_bytes": 41603
+  },
+  "Pi_MatMul": {
+    "kind": "matrix sumcheck proof",
+    "path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/cora/matrix_sumcheck_proof.json",
+    "sha256": "f3f4e24f4e8adfc21303614061e0092f64a72a4765d4085ef24fdd304d865e15",
+    "size_bytes": 117470
+  },
   "Pi_combine": {
     "claim_sources": [
       "Pi_Lasso",
       "Pi_MatMul",
-      "Pi_GKR"
+      "Pi_GKR",
+      "Open_in"
     ],
-    "combined_claim_digest": "55c625267408dbea33b64650642b515d387e109e230a3be7c46b3bda05d38bd1",
-    "ok": true
+    "combined_claim_digest": "f759bb5b4cc0a4381b65f308d2f0eb0e766524fe4dfb8eac9a076068a370c7bd",
+    "protocol": "fiat-shamir-combine-v1",
+    "status": "VERIFY_OK"
   },
-  "Y_digest": "852fe954e31474110e1443f4520a2250b8407a89adf7f741d111465c8e28a9da",
+  "Y_digest": "c7579ec8a677ac993fa0da37bfe27d107cfa6952c8a9deb492a48cb60cb0d419",
+  "component_artifacts": {
+    "OpenMasked": {
+      "kind": "masked opening payload",
+      "path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/cora/masked_openings.json",
+      "sha256": "1bd9c60ae76efa500017ebeee476a3f3da9ae8fef2905aa736088a78d4134026",
+      "size_bytes": 19766
+    },
+    "Open_in": {
+      "kind": "Hyrax/MLE masked openings",
+      "path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/cora/hyrax_mle_openings.json",
+      "sha256": "4f69f5b93d633489db1e4da1ea13dc6676322707cabf457e0818402214b872ed",
+      "size_bytes": 42816
+    },
+    "Pi_GKR": {
+      "kind": "ML-friendly GKR proof",
+      "path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/cora/gkr_proof.json",
+      "sha256": "5aa0000bfd019bcb2afd47297aa61733e423787faa6b9605c57baa4fe85b691b",
+      "size_bytes": 34899
+    },
+    "Pi_Lasso": {
+      "kind": "lookup proof",
+      "path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/cora/lookup_proof.json",
+      "sha256": "75da068af413a8ce36e625680e021eeaa56709389b531ec6eca445331f04fc1c",
+      "size_bytes": 41603
+    },
+    "Pi_MatMul": {
+      "kind": "matrix sumcheck proof",
+      "path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/cora/matrix_sumcheck_proof.json",
+      "sha256": "f3f4e24f4e8adfc21303614061e0092f64a72a4765d4085ef24fdd304d865e15",
+      "size_bytes": 117470
+    }
+  },
   "proof_type": "pi_GAT_zkGPT",
-  "transcript_digest": "966acd1d88be315ff8f18fb047b00453158328aaac28085473441df9b98e1e53"
+  "transcript_digest": "0ccd2f434da846be0b27d1aa0ef8cc56bf54fea63a54cdbddd29dfe4d6039715"
 }

@@ -27,7 +27,7 @@
   "proof_payload_path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/cora/proof_payload.json",
   "proof_size_bytes_accounting": "len(canonical_json(proof_payload)); witness materialization and audit JSON are excluded",
   "protocol_id": "gat-zkgpt-v1",
-  "run_digest": "995b6710211689f6cbe2c5b4494cc49bca786c72553cb88b540132e6556ee2dd",
+  "run_digest": "93697ca90b6a275ee3333b8b9acc4ffb120723a3777f8abc39024de497647d99",
   "status": "VERIFY_OK",
   "transcript_path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/cora/transcript.json",
   "verification_path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/cora/verification.json",

@@ -74,7 +74,7 @@ std::string commitments_cache_fingerprint(
         if (it == commitments.end()) {
             continue;
         }
-        stream << '|' << label << '=' << it->second.commitment_eval.to_string();
+        stream << '|' << label << '=' << it->second.srs_evaluation_scalar.to_string();
     }
     return stream.str();
 }

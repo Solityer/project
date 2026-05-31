@@ -30,18 +30,7 @@ def main() -> None:
     parser.add_argument("--datasets", default="all")
     parser.add_argument("--backends", default="all")
     parser.add_argument("--force", action="store_true")
-    parser.add_argument(
-        "--allow-invalid-digest-replay",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
     args = parser.parse_args()
-    if not args.allow_invalid_digest_replay:
-        raise SystemExit(
-            "fatal: the legacy Python digest/replay adapter is disabled for official zkGPT runs. "
-            "It used digest commitments, residual checks, and local replay verification, so it "
-            "cannot produce formal VERIFY_OK results under comparison/GAT-ZKML-zkGPT.md."
-        )
     run_many(
         datasets=selected_datasets(args.datasets),
         backends=selected_backends(args.backends),

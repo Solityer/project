@@ -1,0 +1,15 @@
+{
+  "backend": "gpu",
+  "cuda_kernel": "proof_field_reduce_v1",
+  "cuda_kernel_executed": true,
+  "device_count": 1,
+  "device_name": "NVIDIA GB10",
+  "gpu_runtime_present": true,
+  "helper_stdout": "cuda_proof_reduce_ok device=\"NVIDIA GB10\" items=44 mix=00108e7b20c010cc",
+  "items_processed": 44,
+  "label": "ppi:gpu:proof",
+  "mix64_hex": "00108e7b20c010cc",
+  "proof_hot_path": true,
+  "sum64_hex": "abf4c7d1cc943df7",
+  "xor64_hex": "78c8909c616e8e25"
+}

@@ -21,9 +21,64 @@
       "expected": "VERIFY_FAILED"
     },
     {
-      "actual": "REJECTED",
-      "case": "legacy_digest_runner_disabled",
-      "expected": "REJECTED"
+      "actual": "VERIFY_OK",
+      "case": "bundle_valid_cpu_cora",
+      "expected": "VERIFY_OK"
+    },
+    {
+      "actual": "VERIFY_OK",
+      "case": "bundle_valid_gpu_cora",
+      "expected": "VERIFY_OK"
+    },
+    {
+      "actual": "VERIFY_FAILED",
+      "case": "metadata_tamper",
+      "expected": "VERIFY_FAILED"
+    },
+    {
+      "actual": "VERIFY_FAILED",
+      "case": "commitment_tamper",
+      "expected": "VERIFY_FAILED"
+    },
+    {
+      "actual": "VERIFY_FAILED",
+      "case": "transcript_challenge_tamper",
+      "expected": "VERIFY_FAILED"
+    },
+    {
+      "actual": "VERIFY_FAILED",
+      "case": "lookup_proof_tamper",
+      "expected": "VERIFY_FAILED"
+    },
+    {
+      "actual": "VERIFY_FAILED",
+      "case": "matrix_sumcheck_proof_tamper",
+      "expected": "VERIFY_FAILED"
+    },
+    {
+      "actual": "VERIFY_FAILED",
+      "case": "gkr_proof_tamper",
+      "expected": "VERIFY_FAILED"
+    },
+    {
+      "actual": "VERIFY_FAILED",
+      "case": "masked_opening_tamper",
+      "expected": "VERIFY_FAILED"
+    },
+    {
+      "actual": "VERIFY_FAILED",
+      "case": "output_claim_tamper",
+      "expected": "VERIFY_FAILED"
+    },
+    {
+      "actual": "VERIFY_FAILED",
+      "case": "ppi_graph_boundary_tamper",
+      "expected": "VERIFY_FAILED"
+    },
+    {
+      "actual": "VERIFY_FAILED",
+      "case": "gpu_backend_state_tamper",
+      "expected": "VERIFY_FAILED"
     }
   ],
   "status": "PASS"

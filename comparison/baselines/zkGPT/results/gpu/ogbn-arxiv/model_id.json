@@ -1,0 +1,14 @@
+{
+  "checkpoint_bundle": "/home/pzh/project/artifacts/checkpoints/ogbn_arxiv_gat",
+  "id": "4291a8afa0ed320404afe0c3f7abd04092b1a5a6097bcd5f067abc865fee35e6",
+  "manifest": {
+    "path": "/home/pzh/project/artifacts/checkpoints/ogbn_arxiv_gat/manifest.json",
+    "sha256": "78a2c48e37aa258d38615a760f27c7b05d70699911516d5ad6b1ecbc6a6c6313",
+    "size_bytes": 3814
+  },
+  "tensors": {
+    "path": "/home/pzh/project/artifacts/checkpoints/ogbn_arxiv_gat/tensors.txt",
+    "sha256": "c250e54df0b0fd85106edac032630446d3cd499be53b62ed8bdf59027b017751",
+    "size_bytes": 31429
+  }
+}

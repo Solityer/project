@@ -1,0 +1,43 @@
+{
+  "E": 12431,
+  "G_batch": 1,
+  "N": 3327,
+  "artifact_path": "/home/pzh/project/comparison/baselines/zkGPT/results/gpu/citeseer",
+  "backend": "gpu",
+  "config": "/home/pzh/project/comparison/baselines/zkGPT/configs/generated/gpu/citeseer_full.cfg",
+  "dataset": "citeseer",
+  "dataset_display_name": "citeseer",
+  "edge_ptr": [
+    0,
+    12431
+  ],
+  "full_dataset": true,
+  "gpu_backend": {
+    "backend": "gpu",
+    "cuda_kernel": "proof_field_reduce_v1",
+    "cuda_kernel_executed": true,
+    "device_count": 1,
+    "device_name": "NVIDIA GB10",
+    "gpu_runtime_present": true,
+    "helper_stdout": "cuda_proof_reduce_ok device=\"NVIDIA GB10\" items=4 mix=656980c465bead22",
+    "items_processed": 4,
+    "label": "backend-probe",
+    "mix64_hex": "656980c465bead22",
+    "sum64_hex": "523ea21c8807f6bb",
+    "xor64_hex": "d7a3bff94d7d920d"
+  },
+  "metadata_path": "/home/pzh/project/comparison/baselines/zkGPT/results/gpu/citeseer/metadata.json",
+  "node_ptr": [
+    0,
+    3327
+  ],
+  "proof_backend_id": "zkgpt-style-gkr-lasso-matmul-hyrax-mle",
+  "proof_payload_path": "/home/pzh/project/comparison/baselines/zkGPT/results/gpu/citeseer/proof_payload.json",
+  "proof_size_bytes_accounting": "len(canonical_json(proof_payload)); witness materialization and audit JSON are excluded",
+  "protocol_id": "gat-zkgpt-v1",
+  "run_digest": "7093332b125a3a109545f25c4e439e26b3a608c5712b10cc8723ebd9bbe981fd",
+  "status": "VERIFY_OK",
+  "transcript_path": "/home/pzh/project/comparison/baselines/zkGPT/results/gpu/citeseer/transcript.json",
+  "verification_path": "/home/pzh/project/comparison/baselines/zkGPT/results/gpu/citeseer/verification.json",
+  "witness_manifest_path": "/home/pzh/project/comparison/baselines/zkGPT/results/gpu/citeseer/witness_manifest.json"
+}

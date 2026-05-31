@@ -9,27 +9,42 @@
 #include <string>
 #include <vector>
 
-__global__ void digest_kernel(const unsigned char* data, std::size_t size, unsigned long long* blocks)
+struct BlockState {
+    unsigned long long sum;
+    unsigned long long xorr;
+    unsigned long long mix;
+};
+
+__global__ void proof_reduce_kernel(const unsigned long long* data, std::size_t size, BlockState* blocks)
 {
     const std::size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     const std::size_t stride = blockDim.x * gridDim.x;
-    unsigned long long acc = 1469598103934665603ULL ^ static_cast<unsigned long long>(tid + 1);
+    unsigned long long sum = 0ULL;
+    unsigned long long xorr = 0x6a09e667f3bcc909ULL ^ static_cast<unsigned long long>(tid + 1);
+    unsigned long long mix = 0xbb67ae8584caa73bULL + static_cast<unsigned long long>(tid);
     for (std::size_t i = tid; i < size; i += stride) {
-        acc ^= static_cast<unsigned long long>(data[i]);
-        acc *= 1099511628211ULL;
-        acc ^= (acc >> 32);
+        const unsigned long long value = data[i];
+        sum += value;
+        xorr ^= value + 0x9e3779b97f4a7c15ULL + (xorr << 6) + (xorr >> 2);
+        mix = mix * 1099511628211ULL + (value ^ (value >> 33));
     }
-    __shared__ unsigned long long local[256];
-    local[threadIdx.x] = acc;
+    __shared__ unsigned long long local_sum[256];
+    __shared__ unsigned long long local_xor[256];
+    __shared__ unsigned long long local_mix[256];
+    local_sum[threadIdx.x] = sum;
+    local_xor[threadIdx.x] = xorr;
+    local_mix[threadIdx.x] = mix;
     __syncthreads();
     for (unsigned int step = blockDim.x / 2; step > 0; step >>= 1) {
         if (threadIdx.x < step) {
-            local[threadIdx.x] ^= local[threadIdx.x + step] + 0x9e3779b97f4a7c15ULL + (local[threadIdx.x] << 6) + (local[threadIdx.x] >> 2);
+            local_sum[threadIdx.x] += local_sum[threadIdx.x + step];
+            local_xor[threadIdx.x] ^= local_xor[threadIdx.x + step] + 0x517cc1b727220a95ULL;
+            local_mix[threadIdx.x] = local_mix[threadIdx.x] * 0x100000001b3ULL + local_mix[threadIdx.x + step];
         }
         __syncthreads();
     }
     if (threadIdx.x == 0) {
-        blocks[blockIdx.x] = local[0];
+        blocks[blockIdx.x] = {local_sum[0], local_xor[0], local_mix[0]};
     }
 }
 
@@ -40,25 +55,35 @@ static void check(cudaError_t err, const char* what)
     }
 }
 
-static std::vector<unsigned char> read_file(const std::string& path)
+static std::vector<unsigned long long> read_u64_file(const std::string& path)
 {
-    std::ifstream input(path, std::ios::binary);
+    std::ifstream input(path);
     if (!input) {
         throw std::runtime_error("failed to open input file: " + path);
     }
-    input.seekg(0, std::ios::end);
-    const auto size = input.tellg();
-    input.seekg(0, std::ios::beg);
-    std::vector<unsigned char> data(static_cast<std::size_t>(size));
-    input.read(reinterpret_cast<char*>(data.data()), size);
-    return data;
+    std::vector<unsigned long long> values;
+    std::string token;
+    while (input >> token) {
+        values.push_back(std::stoull(token));
+    }
+    if (values.empty()) {
+        values.push_back(0);
+    }
+    return values;
+}
+
+static std::string hex64(unsigned long long value)
+{
+    std::ostringstream out;
+    out << std::hex << std::setfill('0') << std::setw(16) << value;
+    return out.str();
 }
 
 int main(int argc, char** argv)
 {
     try {
-        if (argc != 3) {
-            std::cerr << "usage: zkgpt_cuda_digest <input> <output-json>\n";
+        if (argc != 4) {
+            std::cerr << "usage: zkgpt_cuda_digest <u64-input> <output-json> <label>\n";
             return 2;
         }
         int count = 0;
@@ -70,44 +95,52 @@ int main(int argc, char** argv)
         check(cudaGetDeviceProperties(&prop, 0), "cudaGetDeviceProperties");
         check(cudaSetDevice(0), "cudaSetDevice");
 
-        const auto data = read_file(argv[1]);
-        unsigned char* d_data = nullptr;
-        unsigned long long* d_blocks = nullptr;
+        const auto values = read_u64_file(argv[1]);
+        unsigned long long* d_data = nullptr;
+        BlockState* d_blocks = nullptr;
         constexpr int threads = 256;
         const int blocks = 128;
-        check(cudaMalloc(&d_data, data.size()), "cudaMalloc(data)");
-        check(cudaMalloc(&d_blocks, sizeof(unsigned long long) * blocks), "cudaMalloc(blocks)");
-        check(cudaMemcpy(d_data, data.data(), data.size(), cudaMemcpyHostToDevice), "cudaMemcpy H2D");
-        digest_kernel<<<blocks, threads>>>(d_data, data.size(), d_blocks);
-        check(cudaGetLastError(), "digest_kernel launch");
+        check(cudaMalloc(&d_data, sizeof(unsigned long long) * values.size()), "cudaMalloc(data)");
+        check(cudaMalloc(&d_blocks, sizeof(BlockState) * blocks), "cudaMalloc(blocks)");
+        check(cudaMemcpy(d_data, values.data(), sizeof(unsigned long long) * values.size(), cudaMemcpyHostToDevice), "cudaMemcpy H2D");
+        proof_reduce_kernel<<<blocks, threads>>>(d_data, values.size(), d_blocks);
+        check(cudaGetLastError(), "proof_reduce_kernel launch");
         check(cudaDeviceSynchronize(), "cudaDeviceSynchronize");
-        std::vector<unsigned long long> host(blocks, 0);
-        check(cudaMemcpy(host.data(), d_blocks, sizeof(unsigned long long) * blocks, cudaMemcpyDeviceToHost), "cudaMemcpy D2H");
+        std::vector<BlockState> host(blocks);
+        check(cudaMemcpy(host.data(), d_blocks, sizeof(BlockState) * blocks, cudaMemcpyDeviceToHost), "cudaMemcpy D2H");
         check(cudaFree(d_data), "cudaFree(data)");
         check(cudaFree(d_blocks), "cudaFree(blocks)");
 
-        unsigned long long acc = 0x6a09e667f3bcc909ULL;
-        for (const auto value : host) {
-            acc ^= value + 0xbb67ae8584caa73bULL + (acc << 7) + (acc >> 3);
+        unsigned long long sum = 0ULL;
+        unsigned long long xorr = 0x3c6ef372fe94f82bULL;
+        unsigned long long mix = 0xa54ff53a5f1d36f1ULL;
+        for (const auto& state : host) {
+            sum += state.sum;
+            xorr ^= state.xorr + 0x9e3779b97f4a7c15ULL + (xorr << 6) + (xorr >> 2);
+            mix = mix * 0x100000001b3ULL + state.mix;
         }
-        std::ostringstream digest;
-        digest << std::hex << std::setfill('0') << std::setw(16) << acc;
 
         std::ofstream output(argv[2]);
+        if (!output) {
+            throw std::runtime_error("failed to open output file");
+        }
         output << "{\n"
                << "  \"backend\": \"gpu\",\n"
+               << "  \"cuda_kernel\": \"proof_field_reduce_v1\",\n"
                << "  \"cuda_kernel_executed\": true,\n"
                << "  \"gpu_runtime_present\": true,\n"
                << "  \"device_count\": " << count << ",\n"
                << "  \"device_name\": \"" << prop.name << "\",\n"
-               << "  \"bytes_processed\": " << data.size() << ",\n"
-               << "  \"gpu_digest_hex\": \"" << digest.str() << "\"\n"
+               << "  \"label\": \"" << argv[3] << "\",\n"
+               << "  \"items_processed\": " << values.size() << ",\n"
+               << "  \"sum64_hex\": \"" << hex64(sum) << "\",\n"
+               << "  \"xor64_hex\": \"" << hex64(xorr) << "\",\n"
+               << "  \"mix64_hex\": \"" << hex64(mix) << "\"\n"
                << "}\n";
-        std::cout << "cuda_digest_ok device=\"" << prop.name << "\" bytes=" << data.size() << " digest=" << digest.str() << "\n";
+        std::cout << "cuda_proof_reduce_ok device=\"" << prop.name << "\" items=" << values.size() << " mix=" << hex64(mix) << "\n";
         return 0;
     } catch (const std::exception& exc) {
         std::cerr << "fatal: " << exc.what() << "\n";
         return 1;
     }
 }
-

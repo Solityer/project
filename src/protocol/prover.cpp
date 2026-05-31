@@ -90,7 +90,7 @@ std::string hash_proof_transport(const Proof& proof) {
         stream << '[' << label << "]\n";
         for (const auto& [name, commitment] : commitments) {
             stream << name << '=' << commitment.point.to_string()
-                   << '|' << commitment.commitment_eval.to_string() << '\n';
+                   << '|' << commitment.srs_evaluation_scalar.to_string() << '\n';
         }
     };
     auto append_field_pairs = [&](std::string_view label, const std::vector<std::pair<std::string, FieldElement>>& values) {
@@ -198,8 +198,8 @@ void add_public_poly(
 void add_public_precomputed_commitment(
     ProtocolContext& context,
     const std::string& name,
-    const FieldElement& commitment_eval) {
-    context.public_commitments[name] = crypto::KZG::commit_precomputed(name, commitment_eval, context.kzg);
+    const FieldElement& srs_evaluation_scalar) {
+    context.public_commitments[name] = crypto::KZG::commit_precomputed(name, srs_evaluation_scalar, context.kzg);
 }
 
 void add_static_commitment(
@@ -212,8 +212,8 @@ void add_static_commitment(
 void add_static_precomputed_commitment(
     ProtocolContext& context,
     const std::string& name,
-    const FieldElement& commitment_eval) {
-    context.static_commitments[name] = crypto::KZG::commit_precomputed(name, commitment_eval, context.kzg);
+    const FieldElement& srs_evaluation_scalar) {
+    context.static_commitments[name] = crypto::KZG::commit_precomputed(name, srs_evaluation_scalar, context.kzg);
 }
 
 std::vector<FieldElement> padded(const std::vector<FieldElement>& values, std::size_t size) {
@@ -981,7 +981,7 @@ std::string quotient_build_cache_key(const ProtocolContext& context, const Trace
         if (it == trace.commitments.end()) {
             continue;
         }
-        stream << '|' << label << '=' << it->second.commitment_eval.to_string();
+        stream << '|' << label << '=' << it->second.srs_evaluation_scalar.to_string();
     }
     return stream.str();
 }
@@ -2373,7 +2373,7 @@ std::unordered_map<std::string, Commitment> batch_quotient_commitments(
             Commitment{
                 .name = named_quotient_values[i].first,
                 .point = points[i],
-                .commitment_eval = quotient_values[i],
+                .srs_evaluation_scalar = quotient_values[i],
             });
     }
     return out;
@@ -2939,31 +2939,31 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
         add_public_precomputed_commitment(
             context,
             "P_Q_tbl_feat",
-            evaluate_lazy_large_fh_public_poly(context, "P_Q_tbl_feat", context.kzg.opening_point));
+            evaluate_lazy_large_fh_public_poly(context, "P_Q_tbl_feat", context.kzg.srs_evaluation_point));
         add_public_precomputed_commitment(
             context,
             "P_Q_qry_feat",
-            evaluate_lazy_large_fh_public_poly(context, "P_Q_qry_feat", context.kzg.opening_point));
+            evaluate_lazy_large_fh_public_poly(context, "P_Q_qry_feat", context.kzg.srs_evaluation_point));
         add_public_precomputed_commitment(
             context,
             "P_Row_feat_tbl",
-            evaluate_lazy_large_fh_public_poly(context, "P_Row_feat_tbl", context.kzg.opening_point));
+            evaluate_lazy_large_fh_public_poly(context, "P_Row_feat_tbl", context.kzg.srs_evaluation_point));
         add_public_precomputed_commitment(
             context,
             "P_Col_feat_tbl",
-            evaluate_lazy_large_fh_public_poly(context, "P_Col_feat_tbl", context.kzg.opening_point));
+            evaluate_lazy_large_fh_public_poly(context, "P_Col_feat_tbl", context.kzg.srs_evaluation_point));
         add_public_precomputed_commitment(
             context,
             "P_Row_feat_qry",
-            evaluate_lazy_large_fh_public_poly(context, "P_Row_feat_qry", context.kzg.opening_point));
+            evaluate_lazy_large_fh_public_poly(context, "P_Row_feat_qry", context.kzg.srs_evaluation_point));
         add_public_precomputed_commitment(
             context,
             "P_Col_feat_qry",
-            evaluate_lazy_large_fh_public_poly(context, "P_Col_feat_qry", context.kzg.opening_point));
+            evaluate_lazy_large_fh_public_poly(context, "P_Col_feat_qry", context.kzg.srs_evaluation_point));
         add_public_precomputed_commitment(
             context,
             "P_I_feat_qry",
-            evaluate_lazy_large_fh_public_poly(context, "P_I_feat_qry", context.kzg.opening_point));
+            evaluate_lazy_large_fh_public_poly(context, "P_I_feat_qry", context.kzg.srs_evaluation_point));
     } else {
         add_public_poly(
             context,
@@ -3053,18 +3053,18 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
     const auto& feature_matrix_for_h =
         !context.dataset.features.empty() ? context.dataset.features : context.local.features;
     if (lazy_large_fh_public_enabled(context)) {
-        const auto commitment_row_stride = context.kzg.opening_point.pow(static_cast<std::uint64_t>(context.local.num_features));
+        const auto commitment_row_stride = context.kzg.srs_evaluation_point.pow(static_cast<std::uint64_t>(context.local.num_features));
         add_static_precomputed_commitment(
             context,
             "V_T_H",
             matrix_row_major_evaluation_with_row_stride(
                 feature_matrix_for_h,
-                context.kzg.opening_point,
+                context.kzg.srs_evaluation_point,
                 commitment_row_stride));
         add_public_precomputed_commitment(
             context,
             "P_T_H",
-            evaluate_lazy_large_fh_public_poly(context, "P_T_H", context.kzg.opening_point));
+            evaluate_lazy_large_fh_public_poly(context, "P_T_H", context.kzg.srs_evaluation_point));
     } else {
         add_static_commitment(
             context,
@@ -3239,53 +3239,53 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 if (!dependency_labels.empty()) {
                     quotient_memo.precompute_named(
                         dependency_labels,
-                        fh_dependency_points(context.domains.fh, {context.kzg.opening_point}));
+                        fh_dependency_points(context.domains.fh, {context.kzg.srs_evaluation_point}));
                 }
                 FHQuotientProfile fh_profile;
-                value = evaluate_t_fh(context, pre_quotient_challenges, eval, context.kzg.opening_point, &fh_profile);
+                value = evaluate_t_fh(context, pre_quotient_challenges, eval, context.kzg.srs_evaluation_point, &fh_profile);
                 local_metrics.fh_quotient_assembly_ms += fh_profile.assembly_ms;
             } else if (label == "t_edge") {
                 if (!dependency_labels.empty()) {
                     quotient_memo.precompute_named(
                         dependency_labels,
-                        fh_dependency_points(context.domains.edge, {context.kzg.opening_point}));
+                        fh_dependency_points(context.domains.edge, {context.kzg.srs_evaluation_point}));
                 }
-                value = evaluate_t_edge(context, pre_quotient_challenges, trace.witness_scalars, eval, context.kzg.opening_point);
+                value = evaluate_t_edge(context, pre_quotient_challenges, trace.witness_scalars, eval, context.kzg.srs_evaluation_point);
             } else if (label == "t_in") {
                 if (!dependency_labels.empty()) {
                     quotient_memo.precompute_named(
                         dependency_labels,
-                        fh_dependency_points(context.domains.in, {context.kzg.opening_point}));
+                        fh_dependency_points(context.domains.in, {context.kzg.srs_evaluation_point}));
                 }
-                value = evaluate_t_in(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.opening_point);
+                value = evaluate_t_in(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.srs_evaluation_point);
             } else if (label == "t_d_h") {
                 if (!dependency_labels.empty()) {
                     quotient_memo.precompute_named(
                         dependency_labels,
-                        fh_dependency_points(context.domains.d, {context.kzg.opening_point}));
+                        fh_dependency_points(context.domains.d, {context.kzg.srs_evaluation_point}));
                 }
-                value = evaluate_t_d(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.opening_point);
+                value = evaluate_t_d(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.srs_evaluation_point);
             } else if (label == "t_cat") {
                 if (!dependency_labels.empty()) {
                     quotient_memo.precompute_named(
                         dependency_labels,
-                        fh_dependency_points(context.domains.cat, {context.kzg.opening_point}));
+                        fh_dependency_points(context.domains.cat, {context.kzg.srs_evaluation_point}));
                 }
-                value = evaluate_t_cat(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.opening_point);
+                value = evaluate_t_cat(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.srs_evaluation_point);
             } else if (label == "t_C") {
                 if (!dependency_labels.empty()) {
                     quotient_memo.precompute_named(
                         dependency_labels,
-                        fh_dependency_points(context.domains.c, {context.kzg.opening_point}));
+                        fh_dependency_points(context.domains.c, {context.kzg.srs_evaluation_point}));
                 }
-                value = evaluate_t_c(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.opening_point);
+                value = evaluate_t_c(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.srs_evaluation_point);
             } else if (label == "t_N") {
                 if (!dependency_labels.empty()) {
                     quotient_memo.precompute_named(
                         dependency_labels,
-                        fh_dependency_points(context.domains.n, {context.kzg.opening_point}));
+                        fh_dependency_points(context.domains.n, {context.kzg.srs_evaluation_point}));
                 }
-                value = evaluate_t_n(context, pre_quotient_challenges, trace.witness_scalars, eval, context.kzg.opening_point);
+                value = evaluate_t_n(context, pre_quotient_challenges, trace.witness_scalars, eval, context.kzg.srs_evaluation_point);
             } else {
                 throw std::runtime_error("unknown multi-head quotient label: " + label);
             }
@@ -3309,11 +3309,11 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             if (std::thread::hardware_concurrency() > 1) {
                 // 先串行预热最重的两个域，避免多个大 barycentric 权重同时构造时争抢带宽。
                 if (route2.fft_backend_upgrade) {
-                    const auto fh_pts = fh_dependency_points(context.domains.fh, {context.kzg.opening_point});
+                    const auto fh_pts = fh_dependency_points(context.domains.fh, {context.kzg.srs_evaluation_point});
                     for (const auto& pt : fh_pts) {
                         proof_domain_weight_cache->get(context.domains.fh, pt);
                     }
-                    const auto edge_pts = fh_dependency_points(context.domains.edge, {context.kzg.opening_point});
+                    const auto edge_pts = fh_dependency_points(context.domains.edge, {context.kzg.srs_evaluation_point});
                     for (const auto& pt : edge_pts) {
                         proof_domain_weight_cache->get(context.domains.edge, pt);
                     }
@@ -3582,7 +3582,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 if (route2.fft_backend_upgrade) {
                     memo.precompute_named(
                         quotient_dependencies_fh(),
-                        {context.kzg.opening_point, context.kzg.opening_point * context.domains.fh->omega});
+                        {context.kzg.srs_evaluation_point, context.kzg.srs_evaluation_point * context.domains.fh->omega});
                 }
                 return evaluate_t_fh(
                     context,
@@ -3590,7 +3590,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                     [&](const std::string& name, const FieldElement& point) {
                         return memo.eval_named(name, point);
                     },
-                    context.kzg.opening_point);
+                    context.kzg.srs_evaluation_point);
             }));
         auto edge_future = std::async(
             std::launch::async,
@@ -3598,7 +3598,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 if (route2.fft_backend_upgrade) {
                     memo.precompute_named(
                         quotient_dependencies_edge(),
-                        {context.kzg.opening_point, context.kzg.opening_point * context.domains.edge->omega});
+                        {context.kzg.srs_evaluation_point, context.kzg.srs_evaluation_point * context.domains.edge->omega});
                 }
                 return evaluate_t_edge(
                     context,
@@ -3607,13 +3607,13 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                     [&](const std::string& name, const FieldElement& point) {
                         return memo.eval_named(name, point);
                     },
-                    context.kzg.opening_point);
+                    context.kzg.srs_evaluation_point);
             }));
         auto n_future = std::async(
             std::launch::async,
             build_eval([&](EvaluationMemoization& memo) {
                 if (route2.fft_backend_upgrade) {
-                    memo.precompute_named(quotient_dependencies_n(), {context.kzg.opening_point});
+                    memo.precompute_named(quotient_dependencies_n(), {context.kzg.srs_evaluation_point});
                 }
                 return evaluate_t_n(
                     context,
@@ -3622,7 +3622,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                     [&](const std::string& name, const FieldElement& point) {
                         return memo.eval_named(name, point);
                     },
-                    context.kzg.opening_point);
+                    context.kzg.srs_evaluation_point);
             }));
         auto in_future = std::async(
             std::launch::async,
@@ -3630,7 +3630,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 if (route2.fft_backend_upgrade) {
                     memo.precompute_named(
                         quotient_dependencies_in(),
-                        {context.kzg.opening_point, context.kzg.opening_point * context.domains.in->omega});
+                        {context.kzg.srs_evaluation_point, context.kzg.srs_evaluation_point * context.domains.in->omega});
                 }
                 return evaluate_t_in(
                     context,
@@ -3639,7 +3639,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                     [&](const std::string& name, const FieldElement& point) {
                         return memo.eval_named(name, point);
                     },
-                    context.kzg.opening_point);
+                    context.kzg.srs_evaluation_point);
             }));
         auto d_future = std::async(
             std::launch::async,
@@ -3647,7 +3647,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 if (route2.fft_backend_upgrade) {
                     memo.precompute_named(
                         quotient_dependencies_d(),
-                        {context.kzg.opening_point, context.kzg.opening_point * context.domains.d->omega});
+                        {context.kzg.srs_evaluation_point, context.kzg.srs_evaluation_point * context.domains.d->omega});
                 }
                 return evaluate_t_d(
                     context,
@@ -3656,7 +3656,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                     [&](const std::string& name, const FieldElement& point) {
                         return memo.eval_named(name, point);
                     },
-                    context.kzg.opening_point);
+                    context.kzg.srs_evaluation_point);
             }));
 
         t_fh_eval = fh_future.get();
@@ -3675,17 +3675,17 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
         if (route2.fft_backend_upgrade) {
             quotient_eval.precompute_named(
                 quotient_dependencies_fh(),
-                {context.kzg.opening_point, context.kzg.opening_point * context.domains.fh->omega});
+                {context.kzg.srs_evaluation_point, context.kzg.srs_evaluation_point * context.domains.fh->omega});
             quotient_eval.precompute_named(
                 quotient_dependencies_edge(),
-                {context.kzg.opening_point, context.kzg.opening_point * context.domains.edge->omega});
+                {context.kzg.srs_evaluation_point, context.kzg.srs_evaluation_point * context.domains.edge->omega});
             quotient_eval.precompute_named(
                 quotient_dependencies_in(),
-                {context.kzg.opening_point, context.kzg.opening_point * context.domains.in->omega});
+                {context.kzg.srs_evaluation_point, context.kzg.srs_evaluation_point * context.domains.in->omega});
             quotient_eval.precompute_named(
                 quotient_dependencies_d(),
-                {context.kzg.opening_point, context.kzg.opening_point * context.domains.d->omega});
-            quotient_eval.precompute_named(quotient_dependencies_n(), {context.kzg.opening_point});
+                {context.kzg.srs_evaluation_point, context.kzg.srs_evaluation_point * context.domains.d->omega});
+            quotient_eval.precompute_named(quotient_dependencies_n(), {context.kzg.srs_evaluation_point});
         }
         FHQuotientProfile fh_profile;
         t_fh_eval = evaluate_t_fh(
@@ -3694,7 +3694,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             [&](const std::string& name, const FieldElement& point) {
                 return quotient_eval.eval_named(name, point);
             },
-            context.kzg.opening_point,
+            context.kzg.srs_evaluation_point,
             &fh_profile);
         if (metrics != nullptr) {
             metrics->fh_quotient_assembly_ms += fh_profile.assembly_ms;
@@ -3706,7 +3706,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             [&](const std::string& name, const FieldElement& point) {
                 return quotient_eval.eval_named(name, point);
             },
-            context.kzg.opening_point);
+            context.kzg.srs_evaluation_point);
         t_n_eval = evaluate_t_n(
             context,
             challenges,
@@ -3714,7 +3714,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             [&](const std::string& name, const FieldElement& point) {
                 return quotient_eval.eval_named(name, point);
             },
-            context.kzg.opening_point);
+            context.kzg.srs_evaluation_point);
         t_in_eval = evaluate_t_in(
             context,
             challenges,
@@ -3722,7 +3722,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             [&](const std::string& name, const FieldElement& point) {
                 return quotient_eval.eval_named(name, point);
             },
-            context.kzg.opening_point);
+            context.kzg.srs_evaluation_point);
         t_d_eval = evaluate_t_d(
             context,
             challenges,
@@ -3730,7 +3730,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             [&](const std::string& name, const FieldElement& point) {
                 return quotient_eval.eval_named(name, point);
             },
-            context.kzg.opening_point);
+            context.kzg.srs_evaluation_point);
     }
 
     quotient_commitments = batch_quotient_commitments(

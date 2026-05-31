@@ -9,6 +9,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 def blocked_patterns():
     marker = "ta" + "u"
     return [
+        "opening" + "_point",
+        "commitment" + "_eval",
         "FieldElement " + marker,
         "." + marker,
         "key." + marker,
@@ -53,6 +55,34 @@ def main():
             for pattern in patterns:
                 if pattern in line:
                     failures.append((path.relative_to(ROOT), line_no, pattern))
+    srs_root = ROOT / "artifacts" / "srs" / "zkgat_secure_main_srs_v1"
+    manifest = srs_root / "srs_manifest.json"
+    if not manifest.exists():
+        failures.append((manifest.relative_to(ROOT), 1, "missing SRS manifest"))
+    else:
+        import hashlib
+        import json
+
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        for key in ("pk_coef_path", "pk_coef_hash", "vk_path", "vk_hash", "prover_aux_path", "prover_aux_hash"):
+            if not data.get(key):
+                failures.append((manifest.relative_to(ROOT), 1, f"missing {key}"))
+        for path_key, hash_key in (
+            ("pk_coef_path", "pk_coef_hash"),
+            ("vk_path", "vk_hash"),
+            ("prover_aux_path", "prover_aux_hash"),
+        ):
+            rel = data.get(path_key)
+            expected = data.get(hash_key)
+            if not rel or not expected:
+                continue
+            material = srs_root / rel
+            if not material.exists():
+                failures.append((material.relative_to(ROOT), 1, "missing SRS material"))
+                continue
+            actual = hashlib.sha256(material.read_bytes()).hexdigest()
+            if actual != expected:
+                failures.append((material.relative_to(ROOT), 1, f"hash mismatch {hash_key}"))
     if failures:
         for path, line_no, pattern in failures:
             print(f"{path}:{line_no}: blocked pattern {pattern!r}", file=sys.stderr)

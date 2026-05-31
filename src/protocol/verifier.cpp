@@ -84,7 +84,7 @@ std::string verifier_quotient_cache_key(
         stream << '|' << name << '=' << value.to_string();
     }
     for (const auto& [name, commitment] : proof.quotient_commitments) {
-        stream << '|' << name << '=' << commitment.commitment_eval.to_string();
+        stream << '|' << name << '=' << commitment.srs_evaluation_scalar.to_string();
     }
     for (const auto& [name, value] : proof.witness_scalars) {
         stream << '|' << name << '=' << value.to_string();

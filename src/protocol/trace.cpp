@@ -420,7 +420,7 @@ struct PreparedDynamicCommitment {
     std::optional<std::vector<FieldElement>> column_export;
     std::optional<Matrix> matrix_export;
     std::optional<Polynomial> polynomial;
-    std::optional<FieldElement> direct_commitment_eval;
+    std::optional<FieldElement> direct_srs_evaluation_scalar;
     crypto::Commitment commitment;
 };
 
@@ -536,7 +536,7 @@ DynamicCommitmentSpec matrix_commitment_only_spec(const std::string& name, const
     auto spec = matrix_spec(name, matrix);
     // 这类矩阵见证仍会像以前一样被承诺并吸收到 transcript 中，
     // 只是后续不会再以多项式对象形式被打开。
-    // 因此 trace-layout 路线可以只保留承诺与 opening_point 求值，避免临时扁平化缓冲区。
+    // 因此 trace-layout 路线可以只保留承诺与 srs_evaluation_point 求值，避免临时扁平化缓冲区。
     spec.retain_polynomial = false;
     return spec;
 }
@@ -606,8 +606,8 @@ FieldElement matrix_row_major_evaluation(const Matrix& matrix, const FieldElemen
     return FieldElement::from_native(out);
 }
 
-FieldElement matrix_row_major_commitment_eval(const Matrix& matrix, const FieldElement& opening_point) {
-    return matrix_row_major_evaluation(matrix, opening_point);
+FieldElement matrix_row_major_srs_evaluation_scalar(const Matrix& matrix, const FieldElement& srs_evaluation_point) {
+    return matrix_row_major_evaluation(matrix, srs_evaluation_point);
 }
 
 void fill_feature_lookup_rows(
@@ -703,7 +703,7 @@ PreparedDynamicCommitment materialize_commitment(
         out.matrix_export = *spec.matrix;
     }
     if (!spec.retain_polynomial && util::route2_options().trace_layout_upgrade) {
-        out.direct_commitment_eval = matrix_row_major_commitment_eval(*spec.matrix, key.opening_point);
+        out.direct_srs_evaluation_scalar = matrix_row_major_srs_evaluation_scalar(*spec.matrix, key.srs_evaluation_point);
         return out;
     }
     out.polynomial.emplace(coeff_poly(spec.name, algebra::flatten_matrix_coefficients(*spec.matrix)));
@@ -866,20 +866,20 @@ void add_dynamic_commitment_batch(
     const auto pack_start = Clock::now();
     std::vector<std::pair<std::string, const algebra::Polynomial*>> named_polynomials;
     std::vector<std::size_t> polynomial_indices;
-    std::vector<std::pair<std::string, FieldElement>> direct_commitment_evals;
+    std::vector<std::pair<std::string, FieldElement>> direct_srs_evaluation_scalars;
     std::vector<std::size_t> direct_commitment_indices;
     named_polynomials.reserve(prepared.size());
-    direct_commitment_evals.reserve(prepared.size());
+    direct_srs_evaluation_scalars.reserve(prepared.size());
     for (std::size_t i = 0; i < prepared.size(); ++i) {
         auto& item = prepared[i];
         if (item.polynomial.has_value()) {
             named_polynomials.push_back({item.name, &*item.polynomial});
             polynomial_indices.push_back(i);
-        } else if (item.direct_commitment_eval.has_value()) {
-            direct_commitment_evals.push_back({item.name, *item.direct_commitment_eval});
+        } else if (item.direct_srs_evaluation_scalar.has_value()) {
+            direct_srs_evaluation_scalars.push_back({item.name, *item.direct_srs_evaluation_scalar});
             direct_commitment_indices.push_back(i);
         } else {
-            throw std::runtime_error("dynamic commitment is missing both polynomial and direct opening_point evaluation");
+            throw std::runtime_error("dynamic commitment is missing both polynomial and direct srs_evaluation_point evaluation");
         }
     }
     add_metric(metrics != nullptr ? &metrics->dynamic_commit_pack_ms : nullptr, pack_start);
@@ -892,8 +892,8 @@ void add_dynamic_commitment_batch(
             prepared[polynomial_indices[i]].commitment = commitments[i];
         }
     }
-    if (!direct_commitment_evals.empty()) {
-        const auto commitments = crypto::KZG::commit_precomputed_batch(direct_commitment_evals, key, &direct_precomputed_profile);
+    if (!direct_srs_evaluation_scalars.empty()) {
+        const auto commitments = crypto::KZG::commit_precomputed_batch(direct_srs_evaluation_scalars, key, &direct_precomputed_profile);
         for (std::size_t i = 0; i < commitments.size(); ++i) {
             prepared[direct_commitment_indices[i]].commitment = commitments[i];
         }
@@ -2252,24 +2252,24 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto eta_feature_value = eta_feat_powers[2];
         const bool full_feature_identity = static_artifacts.full_feature_identity;
         if (use_lazy_full_feature_lookup_trace(context, static_artifacts, keep_trace_payloads)) {
-            const auto table_commitment_eval =
-                context.public_commitments.at("P_Row_feat_tbl").commitment_eval
-                + eta_feature_index * context.public_commitments.at("P_Col_feat_tbl").commitment_eval
-                + eta_feature_value * context.static_commitments.at("V_T_H").commitment_eval;
-            const auto query_commitment_eval =
-                context.public_commitments.at("P_I_feat_qry").commitment_eval
-                + eta_feature_index * context.public_commitments.at("P_Col_feat_qry").commitment_eval
-                + eta_feature_value * trace.commitments.at("P_H").commitment_eval;
+            const auto table_srs_evaluation_scalar =
+                context.public_commitments.at("P_Row_feat_tbl").srs_evaluation_scalar
+                + eta_feature_index * context.public_commitments.at("P_Col_feat_tbl").srs_evaluation_scalar
+                + eta_feature_value * context.static_commitments.at("V_T_H").srs_evaluation_scalar;
+            const auto query_srs_evaluation_scalar =
+                context.public_commitments.at("P_I_feat_qry").srs_evaluation_scalar
+                + eta_feature_index * context.public_commitments.at("P_Col_feat_qry").srs_evaluation_scalar
+                + eta_feature_value * trace.commitments.at("P_H").srs_evaluation_scalar;
             trace.commitments["P_Table_feat"] =
-                crypto::KZG::commit_precomputed("P_Table_feat", table_commitment_eval, context.kzg);
+                crypto::KZG::commit_precomputed("P_Table_feat", table_srs_evaluation_scalar, context.kzg);
             trace.commitment_order.push_back("P_Table_feat");
             trace.commitments["P_Query_feat"] =
-                crypto::KZG::commit_precomputed("P_Query_feat", query_commitment_eval, context.kzg);
+                crypto::KZG::commit_precomputed("P_Query_feat", query_srs_evaluation_scalar, context.kzg);
             trace.commitment_order.push_back("P_Query_feat");
             trace.commitments["P_m_feat"] = crypto::Commitment{
                 .name = "P_m_feat",
                 .point = context.public_commitments.at("P_Q_tbl_feat").point,
-                .commitment_eval = context.public_commitments.at("P_Q_tbl_feat").commitment_eval,
+                .srs_evaluation_scalar = context.public_commitments.at("P_Q_tbl_feat").srs_evaluation_scalar,
             };
             trace.commitment_order.push_back("P_m_feat");
             trace.commitments["P_R_feat"] =

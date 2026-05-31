@@ -1,0 +1,25 @@
+{
+  "forward_metric_keys": [
+    "hidden.l1.concat_ms",
+    "hidden.l1.h0.activation_ms",
+    "hidden.l1.h0.attention_ms",
+    "hidden.l1.h0.projection_ms",
+    "output.average_ms",
+    "output.h0.activation_ms",
+    "output.h0.attention_ms",
+    "output.h0.projection_ms"
+  ],
+  "model_digest": "e96fe948c4e17eff393d77d5e0fed8fc42625c9bd354eccd3de8ddd6311e9866",
+  "output_digest": "f330c2765a67c032521cfaf5af3600974d51ed536924ac8990e4133559ea1b8e",
+  "public_input_digest": "ac379cd272bb6c5191786169212497627b87e94b03835d78cb28104b10f30bff",
+  "segment_vector_lengths": {
+    "com_T_H": 36,
+    "com_W": 260,
+    "com_base": 1002,
+    "com_comp": 266,
+    "com_psq": 134,
+    "com_qry": 400
+  },
+  "storage_policy": "full witness recomputed by verifier from dataset/config/model; committed segment accumulators and native Hyrax openings are serialized",
+  "witness_generated": true
+}

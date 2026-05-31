@@ -4,8 +4,11 @@ from __future__ import annotations
 import copy
 import json
 import pathlib
+import shutil
 import subprocess
 import sys
+import tempfile
+from typing import Any, Dict, List
 
 
 def main() -> None:
@@ -19,11 +22,12 @@ def main() -> None:
 
     from zkgpt_gat.matrix_sumcheck import prove_product_sum, verify_product_sum
     from zkgpt_gat.native_hyrax import NativeHyrax, mle_point_from_u64
-    from zkgpt_gat.util import read_json, write_json
+    from zkgpt_gat.util import digest_file, digest_json, read_json, write_json
 
     out_dir = zk_root / "results" / "negative_tests"
     out_dir.mkdir(parents=True, exist_ok=True)
-    rows = []
+    (zk_root / "runs_tmp").mkdir(parents=True, exist_ok=True)
+    rows: List[Dict[str, Any]] = []
 
     hyrax = NativeHyrax(zk_root)
     point = mle_point_from_u64(12345, 2)
@@ -49,28 +53,115 @@ def main() -> None:
     sumcheck_bad = verify_product_sum("negative.matmul", bad_sumcheck, {"case": "valid"})
     rows.append({"case": "matrix_sumcheck_tampered_payload", "expected": "VERIFY_FAILED", "actual": sumcheck_bad["status"]})
 
-    legacy = subprocess.run(
-        [str(venv_python), str(zk_root / "scripts" / "gat_zkgpt_experiment.py"), "--datasets", "cora", "--backends", "cpu"],
-        cwd=str(project_root),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    rows.append(
-        {
-            "case": "legacy_digest_runner_disabled",
-            "expected": "REJECTED",
-            "actual": "REJECTED" if legacy.returncode != 0 and "digest/replay adapter is disabled" in legacy.stderr + legacy.stdout else "UNEXPECTED_OK",
-        }
-    )
+    required = [zk_root / "results" / "cpu" / "cora", zk_root / "results" / "gpu" / "cora", zk_root / "results" / "cpu" / "ppi"]
+    missing = [str(path) for path in required if not (path / "run_manifest.json").exists()]
+    if missing:
+        raise SystemExit("missing formal result bundle(s) for negative tests: " + ", ".join(missing))
+
+    with tempfile.TemporaryDirectory(prefix="zkgpt-negative-bundles-", dir=str(zk_root / "runs_tmp")) as tmp:
+        tmp_root = pathlib.Path(tmp)
+        rows.extend(_bundle_negative_tests(zk_root, tmp_root, digest_file, digest_json, read_json, write_json))
 
     passed = all(row["actual"] == row["expected"] for row in rows)
     payload = {"status": "PASS" if passed else "FAIL", "rows": rows}
+    write_json(out_dir / "formal_negative_tests.json", payload)
     write_json(out_dir / "native_primitive_negative_tests.json", payload)
     print(json.dumps(payload, indent=2, sort_keys=True))
     if not passed:
         raise SystemExit(1)
+
+
+def _bundle_negative_tests(zk_root: pathlib.Path, tmp_root: pathlib.Path, digest_file, digest_json, read_json, write_json) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    cpu_cora = zk_root / "results" / "cpu" / "cora"
+    gpu_cora = zk_root / "results" / "gpu" / "cora"
+    cpu_ppi = zk_root / "results" / "cpu" / "ppi"
+
+    rows.append(_expect_bundle("bundle_valid_cpu_cora", cpu_cora, True, digest_file, digest_json, read_json))
+    rows.append(_expect_bundle("bundle_valid_gpu_cora", gpu_cora, True, digest_file, digest_json, read_json))
+
+    rows.append(_tamper_case("metadata_tamper", cpu_cora, tmp_root, "metadata.json", lambda data: _set_path(data, ["dim_cfg", "N"], int(data["dim_cfg"]["N"]) + 1), digest_file, digest_json, read_json, write_json))
+    rows.append(_tamper_case("commitment_tamper", cpu_cora, tmp_root, "commitments.json", lambda data: _set_path(data, ["items", "com_base", "row_commitments", 0], "00"), digest_file, digest_json, read_json, write_json))
+    rows.append(_tamper_case("transcript_challenge_tamper", cpu_cora, tmp_root, "transcript.json", lambda data: _set_path(data, ["log", 0, "challenge_u64"], int(data["log"][0]["challenge_u64"]) + 1), digest_file, digest_json, read_json, write_json))
+    rows.append(_tamper_case("lookup_proof_tamper", cpu_cora, tmp_root, "lookup_proof.json", lambda data: _set_path(data, ["families", 0, "status"], "VERIFY_FAILED"), digest_file, digest_json, read_json, write_json))
+    rows.append(_tamper_case("matrix_sumcheck_proof_tamper", cpu_cora, tmp_root, "matrix_sumcheck_proof.json", lambda data: _set_path(data, ["claims", 0, "sumcheck", "rounds", 0, "coefficients", 0], str(int(data["claims"][0]["sumcheck"]["rounds"][0]["coefficients"][0]) + 1)), digest_file, digest_json, read_json, write_json))
+    rows.append(_tamper_case("gkr_proof_tamper", cpu_cora, tmp_root, "gkr_proof.json", lambda data: _set_path(data, ["claims", 0, "status"], "VERIFY_FAILED"), digest_file, digest_json, read_json, write_json))
+    rows.append(_tamper_case("masked_opening_tamper", cpu_cora, tmp_root, "masked_openings.json", lambda data: _set_path(data, ["items", "com_base", "masked_evaluation"], "00"), digest_file, digest_json, read_json, write_json))
+    rows.append(_tamper_case("output_claim_tamper", cpu_cora, tmp_root, "proof_payload.json", lambda data: _set_path(data, ["Y_digest"], "00"), digest_file, digest_json, read_json, write_json))
+    rows.append(_tamper_case("ppi_graph_boundary_tamper", cpu_ppi, tmp_root, "run_manifest.json", lambda data: _set_path(data, ["node_ptr", 1], int(data["node_ptr"][1]) + 1), digest_file, digest_json, read_json, write_json))
+    rows.append(_tamper_case("gpu_backend_state_tamper", gpu_cora, tmp_root, "gpu_proof_hot_path.json", lambda data: _set_path(data, ["proof_hot_path"], False), digest_file, digest_json, read_json, write_json))
+    return rows
+
+
+def _copy_bundle(src: pathlib.Path, dst: pathlib.Path) -> None:
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst)
+
+
+def _tamper_case(name: str, source: pathlib.Path, tmp_root: pathlib.Path, file_name: str, mutator, digest_file, digest_json, read_json, write_json) -> Dict[str, Any]:
+    dst = tmp_root / name
+    _copy_bundle(source, dst)
+    path = dst / file_name
+    data = read_json(path)
+    mutator(data)
+    write_json(path, data)
+    return _expect_bundle(name, dst, False, digest_file, digest_json, read_json)
+
+
+def _expect_bundle(name: str, path: pathlib.Path, should_pass: bool, digest_file, digest_json, read_json) -> Dict[str, Any]:
+    actual_bool = _verify_bundle(path, digest_file, digest_json, read_json)
+    actual = "VERIFY_OK" if actual_bool else "VERIFY_FAILED"
+    expected = "VERIFY_OK" if should_pass else "VERIFY_FAILED"
+    return {"case": name, "expected": expected, "actual": actual}
+
+
+def _verify_bundle(path: pathlib.Path, digest_file, digest_json, read_json) -> bool:
+    try:
+        metadata = read_json(path / "metadata.json")
+        commitments = read_json(path / "commitments.json")
+        transcript = read_json(path / "transcript.json")
+        proof = read_json(path / "proof_payload.json")
+        verification = read_json(path / "verification.json")
+        witness = read_json(path / "witness_manifest.json")
+        manifest = read_json(path / "run_manifest.json")
+        lookup = read_json(path / "lookup_proof.json")
+        matrix = read_json(path / "matrix_sumcheck_proof.json")
+        gkr = read_json(path / "gkr_proof.json")
+        masked = read_json(path / "masked_openings.json")
+        hyrax = read_json(path / "hyrax_mle_openings.json")
+        checks = [
+            proof["M_pub_digest"] == digest_json(metadata),
+            proof["transcript_digest"] == digest_json(transcript),
+            proof["Y_digest"] == witness["output_digest"],
+            proof["Com_in"] == [commitments["items"][name] for name in commitments["order"]],
+            verification["status"] == "VERIFY_OK" and all(bool(value) for value in verification["checks"].values()),
+            lookup["status"] == "VERIFY_OK",
+            matrix["status"] == "VERIFY_OK",
+            all(claim["sumcheck_verify"]["status"] == "VERIFY_OK" for claim in matrix["claims"]),
+            gkr["status"] == "VERIFY_OK",
+            all(item["verify"]["status"] == "VERIFY_OK" for item in hyrax["items"].values()),
+            set(masked["items"]) == set(commitments["order"]),
+            manifest["node_ptr"] == metadata["dim_cfg"]["node_ptr"],
+            manifest["edge_ptr"] == metadata["dim_cfg"]["edge_ptr"],
+        ]
+        for key in ["Pi_Lasso", "Pi_MatMul", "Pi_GKR", "Open_in", "OpenMasked"]:
+            ref = proof["component_artifacts"][key] if key == "OpenMasked" else proof[key]
+            checks.append(digest_file(path / pathlib.Path(ref["path"]).name) == ref["sha256"])
+        if manifest["backend"] == "gpu":
+            gpu = read_json(path / "gpu_proof_hot_path.json")
+            checks.append(gpu.get("proof_hot_path") is True and gpu.get("cuda_kernel_executed") is True)
+            checks.append(digest_file(path / "gpu_proof_hot_path.json") == proof["component_artifacts"]["GPU_hot_path"]["sha256"])
+        return all(checks)
+    except Exception:
+        return False
+
+
+def _set_path(data: Dict[str, Any], keys: List[Any], value: Any) -> None:
+    target: Any = data
+    for key in keys[:-1]:
+        target = target[key]
+    target[keys[-1]] = value
 
 
 if __name__ == "__main__":

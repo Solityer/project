@@ -1,0 +1,26 @@
+{
+  "cache_dir": "/home/pzh/project/data/cache/pubmed",
+  "files": {
+    "edges.txt": {
+      "path": "/home/pzh/project/data/cache/pubmed/edges.txt",
+      "sha256": "1eb9632dede5e3f3b392e5849fd779554d0c556d07c9073de829145bc3d72bf1",
+      "size_bytes": 963182
+    },
+    "features.txt": {
+      "path": "/home/pzh/project/data/cache/pubmed/features.txt",
+      "sha256": "f05e1c053284b3f47726693645deef159eb4abcec06ce50344769c516e11a037",
+      "size_bytes": 19289548
+    },
+    "labels.txt": {
+      "path": "/home/pzh/project/data/cache/pubmed/labels.txt",
+      "sha256": "d48a582e64f106deb746656dc18a446f13c11b421d1f7de19301c4415a6b354d",
+      "size_bytes": 39434
+    },
+    "meta.cfg": {
+      "path": "/home/pzh/project/data/cache/pubmed/meta.cfg",
+      "sha256": "d111b765a91193a4fe9ebd98ed30996c6866a3cd2948c9ba230ba636f586d06b",
+      "size_bytes": 85
+    }
+  },
+  "id": "d25a15d5704745870d6bb2dac47b4e31c8fcec3d9ceae46e49376076804c83ac"
+}

@@ -1,0 +1,43 @@
+{
+  "E": 1335586,
+  "G_batch": 1,
+  "N": 169343,
+  "artifact_path": "/home/pzh/project/comparison/baselines/zkGPT/results/gpu/ogbn-arxiv",
+  "backend": "gpu",
+  "config": "/home/pzh/project/comparison/baselines/zkGPT/configs/generated/gpu/ogbn_arxiv_full.cfg",
+  "dataset": "ogbn-arxiv",
+  "dataset_display_name": "ogbn-arxiv",
+  "edge_ptr": [
+    0,
+    1335586
+  ],
+  "full_dataset": true,
+  "gpu_backend": {
+    "backend": "gpu",
+    "cuda_kernel": "proof_field_reduce_v1",
+    "cuda_kernel_executed": true,
+    "device_count": 1,
+    "device_name": "NVIDIA GB10",
+    "gpu_runtime_present": true,
+    "helper_stdout": "cuda_proof_reduce_ok device=\"NVIDIA GB10\" items=4 mix=82f7d68c192ff388",
+    "items_processed": 4,
+    "label": "backend-probe",
+    "mix64_hex": "82f7d68c192ff388",
+    "sum64_hex": "1d5dcd9c13607fc7",
+    "xor64_hex": "8e79792016247163"
+  },
+  "metadata_path": "/home/pzh/project/comparison/baselines/zkGPT/results/gpu/ogbn-arxiv/metadata.json",
+  "node_ptr": [
+    0,
+    169343
+  ],
+  "proof_backend_id": "zkgpt-style-gkr-lasso-matmul-hyrax-mle",
+  "proof_payload_path": "/home/pzh/project/comparison/baselines/zkGPT/results/gpu/ogbn-arxiv/proof_payload.json",
+  "proof_size_bytes_accounting": "len(canonical_json(proof_payload)); witness materialization and audit JSON are excluded",
+  "protocol_id": "gat-zkgpt-v1",
+  "run_digest": "0a222163c7a92439b214e6ca5ef65a889d5c11fae159356c6166a710f1f1f16c",
+  "status": "VERIFY_OK",
+  "transcript_path": "/home/pzh/project/comparison/baselines/zkGPT/results/gpu/ogbn-arxiv/transcript.json",
+  "verification_path": "/home/pzh/project/comparison/baselines/zkGPT/results/gpu/ogbn-arxiv/verification.json",
+  "witness_manifest_path": "/home/pzh/project/comparison/baselines/zkGPT/results/gpu/ogbn-arxiv/witness_manifest.json"
+}
