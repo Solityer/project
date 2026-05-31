@@ -42,7 +42,7 @@ KZG security depends on the setup toxic secret not being available to prover or 
 
 ## Leakage Policy
 
-`Public`, `PublicOutput`, and `PrivateWitness` visibility classes must match `ProofSchema`. Private witness objects can appear only as commitments, masked evaluations, zero-knowledge binding subproof inputs, or quotient relation inputs. `private_plain_value_count` must be zero. Proof objects must not contain raw model parameters, raw intermediate activations, raw attention weights, raw lookup witness, raw route witness, raw PSQ state, raw folding vectors, or blinding randomness.
+`Public`, `PublicOutput`, and `PrivateWitness` visibility classes must match `ProofSchema`. Private witness objects can appear only as commitments, masked evaluations, zero-knowledge binding subproof inputs, or quotient relation inputs. `private_plain_value_count` is computed from the verifier's typed payload audit and must be zero. Proof objects must not contain raw model parameters, raw intermediate activations, raw attention weights, raw lookup witness, raw route witness, raw PSQ state, raw folding vectors, or blinding randomness.
 
 ## Tamper Model
 

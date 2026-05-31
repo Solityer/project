@@ -27,7 +27,7 @@ cmake --build build_cuda -j
 
 The formal threat model is in `docs/security/threat_model.md`. The matching claims and limitations are in `docs/security/security_claims.md`.
 
-The verifier accepts only secure metadata matching the fixed profile above. It rejects mismatched `srs_id`, `srs_type`, privacy policy, input privacy, output mode, opening mode, binding mode, proof task, metadata order, commitment order, commitment point, quotient commitment, opening values, external masked values, and transcript challenges. The verifier does not read private witness objects.
+The verifier accepts only secure metadata matching the fixed profile above. It rejects mismatched `srs_id`, `srs_type`, privacy policy, input privacy, output mode, opening mode, binding mode, proof task, metadata order, commitment order, commitment point, quotient commitment, opening values, external masked values, typed payload leakage, and transcript challenges. The verifier does not read private witness objects.
 
 The trusted setup assumption is explicit: the main experiment loads and binds an SRS manifest from `artifacts/srs/zkgat_secure_main_srs_v1/srs_manifest.json`. The proof size excludes SRS files, SRS manifest files, local caches, raw witness, checkpoint files, dataset files, logs, and run manifest attachments.
 
@@ -84,7 +84,7 @@ python3 scripts/export_paper_secure.py \
   --output-dir results/paper_secure
 ```
 
-The exporter hard-fails if any run is not verified, not full-dataset, not secure-profile compliant, missing required timing fields, has `private_plain_value_count != 0`, has `verifier_reads_witness != false`, or lacks reference/tamper pass flags.
+The exporter hard-fails if any run is not verified, not full-dataset, not secure-profile compliant, missing required timing fields, has `private_plain_value_count != 0`, has `proof_payload_audit_status != passed`, has `verifier_reads_witness != false`, or lacks reference/tamper pass flags.
 
 ## Tests And Security Scan
 

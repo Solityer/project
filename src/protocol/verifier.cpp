@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
@@ -957,7 +958,105 @@ double* verify_domain_metric(RunMetrics* metrics, const std::string& bundle_name
     return nullptr;
 }
 
+PayloadValueKind expected_payload_kind_for_label(const ProtocolContext& context, const std::string& label) {
+    if (context.public_commitments.contains(label)) {
+        return PayloadValueKind::PublicValue;
+    }
+    if (label == "P_H" || label == "P_Y" || label.rfind("P_Y_o", 0) == 0) {
+        return PayloadValueKind::PublicValue;
+    }
+    return PayloadValueKind::MaskedPrivateValue;
+}
+
+bool audit_payload_values(
+    const ProtocolContext& context,
+    const Proof& proof,
+    std::size_t* private_plain_count,
+    std::string* reason) {
+    std::size_t count = 0;
+    auto fail = [&](const std::string& value) {
+        if (private_plain_count != nullptr) {
+            *private_plain_count = count;
+        }
+        if (reason != nullptr) {
+            *reason = value;
+        }
+        return false;
+    };
+    auto check = [&](const std::string& label, PayloadValueKind actual) {
+        const auto expected = expected_payload_kind_for_label(context, label);
+        if (expected == PayloadValueKind::MaskedPrivateValue && actual == PayloadValueKind::PublicValue) {
+            ++count;
+            return false;
+        }
+        return expected == actual;
+    };
+    for (const auto& [bundle_name, bundle] : proof.domain_openings) {
+        (void)bundle_name;
+        if (bundle.value_kinds.size() != bundle.values.size()) {
+            return fail("domain opening payload kind count mismatch");
+        }
+        for (std::size_t i = 0; i < bundle.values.size(); ++i) {
+            if (!check(bundle.values[i].first, bundle.value_kinds[i])) {
+                return fail("domain opening payload kind mismatch: " + bundle.values[i].first);
+            }
+        }
+    }
+    if (proof.external_evaluation_kinds.size() != proof.external_evaluations.size()) {
+        return fail("external evaluation payload kind count mismatch");
+    }
+    std::unordered_map<std::string, std::string> external_sources;
+    if (context.model.has_real_multihead) {
+        for (const auto& spec : multihead_external_specs(context)) {
+            external_sources.emplace(spec.proof_name, spec.label);
+        }
+    } else {
+        external_sources.emplace("mu_proj", "P_H_prime");
+        external_sources.emplace("mu_src", "P_E_src");
+        external_sources.emplace("mu_dst", "P_E_dst");
+        external_sources.emplace("mu_star", "P_H_star");
+        external_sources.emplace("mu_agg", "P_H_agg_star");
+        external_sources.emplace("mu_Y_lin", "P_Y_lin");
+        external_sources.emplace("mu_out", "P_Y");
+    }
+    for (std::size_t i = 0; i < proof.external_evaluations.size(); ++i) {
+        const auto& name = proof.external_evaluations[i].first;
+        const auto it = external_sources.find(name);
+        if (it == external_sources.end()) {
+            return fail("unknown external evaluation payload: " + name);
+        }
+        if (!check(it->second, proof.external_evaluation_kinds[i])) {
+            return fail("external evaluation payload kind mismatch: " + name);
+        }
+    }
+    if (proof.witness_scalar_kinds.size() != proof.witness_scalars.size()) {
+        return fail("witness scalar payload kind count mismatch");
+    }
+    for (std::size_t i = 0; i < proof.witness_scalars.size(); ++i) {
+        if (proof.witness_scalar_kinds[i] == PayloadValueKind::PublicValue) {
+            ++count;
+            return fail("private witness scalar exposed as public: " + proof.witness_scalars[i].first);
+        }
+    }
+    if (private_plain_count != nullptr) {
+        *private_plain_count = count;
+    }
+    if (reason != nullptr) {
+        reason->clear();
+    }
+    return true;
+}
+
 }  // namespace
+
+std::size_t private_plain_value_count(const ProtocolContext& context, const Proof& proof) {
+    std::size_t count = 0;
+    std::string reason;
+    if (!audit_payload_values(context, proof, &count, &reason)) {
+        return count == 0 ? std::numeric_limits<std::size_t>::max() : count;
+    }
+    return count;
+}
 
 // verifier 入口：重放 transcript、批量校验 opening，并确认 quotient / external relation 全部成立。
 bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metrics) {
@@ -986,7 +1085,12 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
     if (proof.block_order != proof_block_order()) {
         return fail("block_order_mismatch");
     }
-    if (build_proof_schema(context).private_plain_value_count != 0) {
+    std::size_t audited_private_plain_count = 0;
+    std::string payload_audit_reason;
+    if (!audit_payload_values(context, proof, &audited_private_plain_count, &payload_audit_reason)) {
+        return fail("proof_payload_audit:" + payload_audit_reason);
+    }
+    if (audited_private_plain_count != 0) {
         return fail("private_plain_value_count");
     }
     if (metrics != nullptr) {

@@ -17,6 +17,7 @@ SECURE_FIELDS = {
     "binding_mode": "zk_subproof_for_crpc",
     "verifier_reads_witness": "false",
     "private_plain_value_count": "0",
+    "proof_payload_audit_status": "passed",
     "reference_consistency_passed": "true",
     "tamper_tests_passed": "true",
     "full_dataset": "true",
@@ -62,6 +63,7 @@ OUTPUT_FIELDS = [
     "secure_trace_logits_hash",
     "proof_public_output_hash",
     "srs_degree_bound",
+    "proof_payload_audit_status",
     "security_profile_id",
 ]
 HASH_FIELDS = [
