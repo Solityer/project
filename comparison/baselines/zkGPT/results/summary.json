@@ -1,0 +1,29 @@
+{
+  "generated_at": "2026-05-31T00:53:25.473978+00:00",
+  "invalid_archive": "archive/invalid_adapter_20260525",
+  "proof_backend_id": "zkgpt-style-gkr-lasso-matmul-hyrax-mle",
+  "protocol_id": "gat-zkgpt-v1",
+  "rows": [
+    {
+      "C": 7,
+      "E": 13264,
+      "G_batch": 1,
+      "K_out": 1,
+      "L": 2,
+      "N": 2708,
+      "artifact_path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/cora",
+      "backend": "cpu",
+      "commitment_time_ms": 7.681502168998122,
+      "config_id": "3726e3efebb3ef064005f67dae2354ccdb34e7432aa069e3a9aa58ee097a6220",
+      "d_in_profile": "1433",
+      "data_id": "ff1af353dee1f44d71fec6f03697b49463487b41c8a651ac9276c7759b4d67fe",
+      "dataset": "cora",
+      "hidden_profile": "8x8",
+      "model_id": "8b40c770c8cba95385dcac18e77b22d736898b9524bfe1db01c9b5c668921394",
+      "proof_size_bytes": 16874,
+      "prove_time_ms": 34.915918949991465,
+      "status": "VERIFY_OK",
+      "verify_time_ms": 6.284865410998464
+    }
+  ]
+}
