@@ -4,6 +4,8 @@
   "N": 3327,
   "artifact_path": "/home/pzh/project/comparison/baselines/zkGPT/results/gpu/citeseer",
   "backend": "gpu",
+  "baseline_identity": "zkGPT",
+  "batching_rule": "whole_graph_single",
   "config": "/home/pzh/project/comparison/baselines/zkGPT/configs/generated/gpu/citeseer_full.cfg",
   "dataset": "citeseer",
   "dataset_display_name": "citeseer",
@@ -11,7 +13,11 @@
     0,
     12431
   ],
+  "edge_sort_rule": "edge_gid_then_dst_stable",
+  "failure_reason_if_not_comparable": "scope_mismatch: zkGPT baseline verifies component proof objects and final output binding, not the complete zkGAT SRS/KZG protocol object",
+  "final_logits_bound": true,
   "full_dataset": true,
+  "full_gat_forward_proved": false,
   "gpu_backend": {
     "backend": "gpu",
     "cuda_kernel": "proof_field_reduce_v1",
@@ -26,18 +32,55 @@
     "sum64_hex": "523ea21c8807f6bb",
     "xor64_hex": "d7a3bff94d7d920d"
   },
+  "hardware_and_device": "gpu:NVIDIA GB10",
   "metadata_path": "/home/pzh/project/comparison/baselines/zkGPT/results/gpu/citeseer/metadata.json",
+  "model_arch": {
+    "C": 6,
+    "K_out": 1,
+    "hidden_profile": [
+      {
+        "head_count": 8,
+        "head_dim": 8
+      }
+    ],
+    "layers": 2,
+    "model_arch_id": "gat_family_L2_hid8x8_kout1_c6",
+    "output_average_rule": "per_head_bias_then_arithmetic_mean"
+  },
+  "model_params": {
+    "checkpoint_bundle": "/home/pzh/project/artifacts/checkpoints/citeseer_gat",
+    "model_id": "2845be239d329977cdeeb35883718a5ad8d8f91784aa9ce21ae32181a740158d",
+    "model_param_id": "citeseer_gat",
+    "quant_cfg_id": "fp32_bundle_export",
+    "static_table_id": "tables:lrelu+elu+exp+range"
+  },
   "node_ptr": [
     0,
     3327
   ],
   "proof_backend_id": "zkgpt-style-gkr-lasso-matmul-hyrax-mle",
   "proof_payload_path": "/home/pzh/project/comparison/baselines/zkGPT/results/gpu/citeseer/proof_payload.json",
+  "proof_scope": "component_proof_baseline_with_final_logit_binding_not_full_zkGAT_protocol",
   "proof_size_bytes_accounting": "len(canonical_json(proof_payload)); witness materialization and audit JSON are excluded",
+  "proof_size_definition": "canonical serialized proof_payload.json; excludes witness manifests, raw witness, datasets, checkpoints, logs, and audit metadata",
   "protocol_id": "gat-zkgpt-v1",
+  "public_input_layout": "public graph, public features, public metadata, public logits",
   "run_digest": "7093332b125a3a109545f25c4e439e26b3a608c5712b10cc8723ebd9bbe981fd",
+  "run_status": "VERIFY_OK_SCOPE_NOT_FULL_GAT",
+  "same_checkpoint": true,
+  "same_edge_sort_rule": true,
+  "same_graph_preprocessing": true,
+  "same_public_output_policy": true,
+  "same_quantization": true,
+  "same_self_loop_rule": true,
+  "scope_mismatch": true,
+  "self_loop_rule": "per_node",
+  "setup_assumption": "transparent_hyrax_mle_plus_zkgpt_style_component_proofs",
   "status": "VERIFY_OK",
+  "task_type": "transductive_node_classification",
   "transcript_path": "/home/pzh/project/comparison/baselines/zkGPT/results/gpu/citeseer/transcript.json",
   "verification_path": "/home/pzh/project/comparison/baselines/zkGPT/results/gpu/citeseer/verification.json",
+  "verifier_reads_witness": false,
+  "witness_included_in_proof": false,
   "witness_manifest_path": "/home/pzh/project/comparison/baselines/zkGPT/results/gpu/citeseer/witness_manifest.json"
 }
