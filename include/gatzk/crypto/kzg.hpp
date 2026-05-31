@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 
 #include "gatzk/algebra/field.hpp"
@@ -13,23 +14,64 @@
 
 namespace gatzk::crypto
 {
-    // SRS / 验证键的最小实现集合。formal note 里的 `tau` 语义在此处落到具体对象上。
-    struct KZGKeyPair
+    struct SRSManifest
     {
-        algebra::FieldElement tau = algebra::FieldElement::zero();
-        G1Point g1_generator;
-        G2Point g2_one;
-        G2Point g2_tau;
-        std::shared_ptr<PreparedG2> g2_one_prepared;
-        std::shared_ptr<PreparedG2> g2_tau_prepared;
+        std::string srs_id;
+        std::string curve_id;
+        std::string field_modulus_id;
+        std::string srs_type;
+        std::string ceremony_transcript_hash;
+        std::size_t degree_bound = 0;
+        std::unordered_map<std::string, std::size_t> domain_sizes;
+        std::string pk_coef_hash;
+        std::unordered_map<std::string, std::string> pk_lagrange_hashes;
+        std::string vk_hash;
+        std::string encoding;
+        std::string generator_version;
+        std::string security_level;
+        std::string manifest_hash;
     };
 
-    // 承诺对象。`tau_evaluation` 会被 prove / verify 重复消费，用来避免重复求值。
+    struct KZGProverKey
+    {
+        std::string srs_id;
+        std::string srs_type;
+        std::size_t degree_bound = 0;
+        G1Point g1_generator;
+        algebra::FieldElement opening_point = algebra::FieldElement::zero();
+    };
+
+    struct KZGVerifierKey
+    {
+        std::string srs_id;
+        std::string srs_type;
+        std::size_t degree_bound = 0;
+        G2Point g2_one;
+        G2Point g2_opening_point;
+        std::shared_ptr<PreparedG2> g2_one_prepared;
+        std::shared_ptr<PreparedG2> g2_opening_prepared;
+    };
+
+    // SRS / 验证键的最小实现集合。主程序只从 manifest/key files 加载，不从实验 seed 生成。
+    struct KZGKeyPair
+    {
+        SRSManifest manifest;
+        KZGProverKey pk;
+        KZGVerifierKey vk;
+        algebra::FieldElement opening_point = algebra::FieldElement::zero();
+        G1Point g1_generator;
+        G2Point g2_one;
+        G2Point g2_opening_point;
+        std::shared_ptr<PreparedG2> g2_one_prepared;
+        std::shared_ptr<PreparedG2> g2_opening_prepared;
+    };
+
+    // 承诺对象。`commitment_eval` 会被 prove / verify 重复消费，用来避免重复求值。
     struct Commitment
     {
         std::string name;
         G1Point point;
-        algebra::FieldElement tau_evaluation = algebra::FieldElement::zero();
+        algebra::FieldElement commitment_eval = algebra::FieldElement::zero();
     };
 
     // 批量 opening 的执行侧剖面，供正式 benchmark 细分 `domain_opening_ms`。
@@ -43,7 +85,7 @@ namespace gatzk::crypto
     // 批量承诺的执行侧剖面，供 `commit_dynamic_ms` 拆分热点。
     struct CommitBatchProfile
     {
-        double tau_eval_ms = 0.0;
+        double evaluation_ms = 0.0;
         double msm_ms = 0.0;
     };
 
@@ -53,19 +95,22 @@ namespace gatzk::crypto
     class KZG
     {
     public:
-        // 生成一次 formal run 使用的 KZG 参数。这里只影响执行实例，不改协议结构。
-        static KZGKeyPair setup(std::uint64_t seed);
+        // 加载一次 secure formal run 使用的 SRS 参数。
+        static KZGKeyPair load_keys(
+            const std::string& srs_path,
+            const std::string& expected_srs_type,
+            const std::string& expected_srs_id);
 
-        // 直接基于 `tau` 点值构造承诺，适用于已缓存 `tau_evaluation` 的公共列或动态列。
-        static Commitment commit_tau_evaluation(
+        // 直接基于 SRS 评值点处的已缓存值构造承诺，适用于 lazy 公共列或动态列。
+        static Commitment commit_precomputed(
             const std::string& name,
-            const algebra::FieldElement& tau_evaluation,
+            const algebra::FieldElement& commitment_eval,
             const KZGKeyPair& key);
         // 对单个多项式做正式承诺。
         static Commitment commit(const std::string& name, const algebra::Polynomial& polynomial, const KZGKeyPair& key);
-        // 对已知 `tau_evaluation` 的一批列做承诺，减少 proving 热路径中的重复 MSM 准备。
-        static std::vector<Commitment> commit_tau_evaluation_batch(
-            const std::vector<std::pair<std::string, algebra::FieldElement>>& named_tau_evaluations,
+        // 对已知 `commitment_eval` 的一批列做承诺，减少 proving 热路径中的重复 MSM 准备。
+        static std::vector<Commitment> commit_precomputed_batch(
+            const std::vector<std::pair<std::string, algebra::FieldElement>>& named_commitment_evals,
             const KZGKeyPair& key,
             CommitBatchProfile* profile = nullptr);
         // 对一批多项式统一承诺，是 dynamic commitment 主链的核心入口。

@@ -55,6 +55,14 @@ std::string verifier_context_cache_key(const util::AppConfig& config) {
            << config.self_loop_rule << '|'
            << config.edge_sort_rule << '|'
            << config.chunking_rule << '|'
+           << config.srs_id << '|'
+           << config.srs_type << '|'
+           << config.privacy_policy << '|'
+           << config.input_privacy << '|'
+           << config.output_mode << '|'
+           << config.opening_mode << '|'
+           << config.binding_mode << '|'
+           << config.proof_task << '|'
            << (config.allow_synthetic_model ? "synthetic" : "formal");
     for (const auto input_dim : config.d_in_profile) {
         stream << "|din=" << input_dim;
@@ -75,7 +83,7 @@ std::string verifier_quotient_cache_key(
         stream << '|' << name << '=' << value.to_string();
     }
     for (const auto& [name, commitment] : proof.quotient_commitments) {
-        stream << '|' << name << '=' << commitment.tau_evaluation.to_string();
+        stream << '|' << name << '=' << commitment.commitment_eval.to_string();
     }
     for (const auto& [name, value] : proof.witness_scalars) {
         stream << '|' << name << '=' << value.to_string();
@@ -840,7 +848,17 @@ PublicMetadata build_public_metadata(const ProtocolContext& context) {
 }
 
 bool metadata_matches(const PublicMetadata& lhs, const PublicMetadata& rhs) {
-    return lhs.protocol_id == rhs.protocol_id
+    return lhs.protocol_name == rhs.protocol_name
+        && lhs.proof_task == rhs.proof_task
+        && lhs.srs_id == rhs.srs_id
+        && lhs.srs_type == rhs.srs_type
+        && lhs.srs_degree_bound == rhs.srs_degree_bound
+        && lhs.privacy_policy == rhs.privacy_policy
+        && lhs.input_privacy == rhs.input_privacy
+        && lhs.output_mode == rhs.output_mode
+        && lhs.opening_mode == rhs.opening_mode
+        && lhs.binding_mode == rhs.binding_mode
+        && lhs.protocol_id == rhs.protocol_id
         && lhs.dataset_name == rhs.dataset_name
         && lhs.task_type == rhs.task_type
         && lhs.report_unit == rhs.report_unit
@@ -955,8 +973,21 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
     if (!metadata_matches(proof.public_metadata, build_public_metadata(context))) {
         return fail("metadata_mismatch");
     }
+    if (proof.public_metadata.protocol_name != "zkgat"
+        || proof.public_metadata.proof_task != "node_classification_full_gat"
+        || (proof.public_metadata.srs_type != "trusted_srs" && proof.public_metadata.srs_type != "mpc_srs")
+        || proof.public_metadata.privacy_policy != "model_and_trace_hidden"
+        || proof.public_metadata.input_privacy != "public_graph_public_features"
+        || proof.public_metadata.output_mode != "public_logits"
+        || proof.public_metadata.opening_mode != "domain_grouped_batch_opening"
+        || proof.public_metadata.binding_mode != "zk_subproof_for_crpc") {
+        return fail("metadata_security_profile");
+    }
     if (proof.block_order != proof_block_order()) {
         return fail("block_order_mismatch");
+    }
+    if (build_proof_schema(context).private_plain_value_count != 0) {
+        return fail("private_plain_value_count");
     }
     if (metrics != nullptr) {
         metrics->verify_metadata_ms += elapsed_ms(metadata_start, Clock::now());

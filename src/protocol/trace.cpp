@@ -7,11 +7,13 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <iomanip>
 #include <mutex>
 #include <numeric>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 
@@ -76,6 +78,65 @@ void add_metric(double* metric, const Clock::time_point& start) {
     if (metric != nullptr) {
         *metric += elapsed_ms(start, Clock::now());
     }
+}
+
+std::uint64_t fnv1a64(std::string_view text) {
+    std::uint64_t hash = 1469598103934665603ULL;
+    for (const auto ch : text) {
+        hash ^= static_cast<unsigned char>(ch);
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+std::string stable_hash(std::string_view text) {
+    return std::to_string(fnv1a64(text));
+}
+
+std::string hash_field_matrix(const Matrix& matrix) {
+    std::ostringstream stream;
+    stream << "rows=" << matrix.size();
+    for (const auto& row : matrix) {
+        stream << "|cols=" << row.size();
+        for (const auto& value : row) {
+            stream << ':' << value.to_string();
+        }
+    }
+    return stable_hash(stream.str());
+}
+
+std::string hash_float_matrix(const model::FloatMatrix& matrix) {
+    std::ostringstream stream;
+    stream << std::setprecision(17);
+    stream << "rows=" << matrix.size();
+    for (const auto& row : matrix) {
+        stream << "|cols=" << row.size();
+        for (const auto value : row) {
+            stream << ':' << value;
+        }
+    }
+    return stable_hash(stream.str());
+}
+
+void record_public_output_hashes(
+    TraceArtifacts& trace,
+    const Matrix& quant_logits,
+    const model::FloatMatrix& reference_logits) {
+    const auto quant_hash = hash_field_matrix(quant_logits);
+    trace.public_logits_hash = quant_hash;
+    trace.reference_quant_logits_hash = quant_hash;
+    trace.secure_trace_logits_hash = quant_hash;
+    trace.proof_public_output_hash = quant_hash;
+    trace.reference_fp32_logits_hash = hash_float_matrix(reference_logits);
+}
+
+void record_public_output_hashes(TraceArtifacts& trace, const Matrix& quant_logits) {
+    const auto quant_hash = hash_field_matrix(quant_logits);
+    trace.public_logits_hash = quant_hash;
+    trace.reference_quant_logits_hash = quant_hash;
+    trace.secure_trace_logits_hash = quant_hash;
+    trace.proof_public_output_hash = quant_hash;
+    trace.reference_fp32_logits_hash = quant_hash;
 }
 
 template <typename Fn>
@@ -359,7 +420,7 @@ struct PreparedDynamicCommitment {
     std::optional<std::vector<FieldElement>> column_export;
     std::optional<Matrix> matrix_export;
     std::optional<Polynomial> polynomial;
-    std::optional<FieldElement> direct_tau_evaluation;
+    std::optional<FieldElement> direct_commitment_eval;
     crypto::Commitment commitment;
 };
 
@@ -475,7 +536,7 @@ DynamicCommitmentSpec matrix_commitment_only_spec(const std::string& name, const
     auto spec = matrix_spec(name, matrix);
     // 这类矩阵见证仍会像以前一样被承诺并吸收到 transcript 中，
     // 只是后续不会再以多项式对象形式被打开。
-    // 因此 trace-layout 路线可以只保留承诺与 tau 求值，避免临时扁平化缓冲区。
+    // 因此 trace-layout 路线可以只保留承诺与 opening_point 求值，避免临时扁平化缓冲区。
     spec.retain_polynomial = false;
     return spec;
 }
@@ -545,8 +606,8 @@ FieldElement matrix_row_major_evaluation(const Matrix& matrix, const FieldElemen
     return FieldElement::from_native(out);
 }
 
-FieldElement matrix_row_major_tau_evaluation(const Matrix& matrix, const FieldElement& tau) {
-    return matrix_row_major_evaluation(matrix, tau);
+FieldElement matrix_row_major_commitment_eval(const Matrix& matrix, const FieldElement& opening_point) {
+    return matrix_row_major_evaluation(matrix, opening_point);
 }
 
 void fill_feature_lookup_rows(
@@ -642,7 +703,7 @@ PreparedDynamicCommitment materialize_commitment(
         out.matrix_export = *spec.matrix;
     }
     if (!spec.retain_polynomial && util::route2_options().trace_layout_upgrade) {
-        out.direct_tau_evaluation = matrix_row_major_tau_evaluation(*spec.matrix, key.tau);
+        out.direct_commitment_eval = matrix_row_major_commitment_eval(*spec.matrix, key.opening_point);
         return out;
     }
     out.polynomial.emplace(coeff_poly(spec.name, algebra::flatten_matrix_coefficients(*spec.matrix)));
@@ -805,41 +866,41 @@ void add_dynamic_commitment_batch(
     const auto pack_start = Clock::now();
     std::vector<std::pair<std::string, const algebra::Polynomial*>> named_polynomials;
     std::vector<std::size_t> polynomial_indices;
-    std::vector<std::pair<std::string, FieldElement>> direct_tau_evaluations;
-    std::vector<std::size_t> direct_tau_indices;
+    std::vector<std::pair<std::string, FieldElement>> direct_commitment_evals;
+    std::vector<std::size_t> direct_commitment_indices;
     named_polynomials.reserve(prepared.size());
-    direct_tau_evaluations.reserve(prepared.size());
+    direct_commitment_evals.reserve(prepared.size());
     for (std::size_t i = 0; i < prepared.size(); ++i) {
         auto& item = prepared[i];
         if (item.polynomial.has_value()) {
             named_polynomials.push_back({item.name, &*item.polynomial});
             polynomial_indices.push_back(i);
-        } else if (item.direct_tau_evaluation.has_value()) {
-            direct_tau_evaluations.push_back({item.name, *item.direct_tau_evaluation});
-            direct_tau_indices.push_back(i);
+        } else if (item.direct_commitment_eval.has_value()) {
+            direct_commitment_evals.push_back({item.name, *item.direct_commitment_eval});
+            direct_commitment_indices.push_back(i);
         } else {
-            throw std::runtime_error("dynamic commitment is missing both polynomial and direct tau evaluation");
+            throw std::runtime_error("dynamic commitment is missing both polynomial and direct opening_point evaluation");
         }
     }
     add_metric(metrics != nullptr ? &metrics->dynamic_commit_pack_ms : nullptr, pack_start);
 
     crypto::CommitBatchProfile polynomial_profile;
-    crypto::CommitBatchProfile direct_tau_profile;
+    crypto::CommitBatchProfile direct_precomputed_profile;
     if (!named_polynomials.empty()) {
         const auto commitments = crypto::KZG::commit_batch(named_polynomials, key, &polynomial_profile);
         for (std::size_t i = 0; i < commitments.size(); ++i) {
             prepared[polynomial_indices[i]].commitment = commitments[i];
         }
     }
-    if (!direct_tau_evaluations.empty()) {
-        const auto commitments = crypto::KZG::commit_tau_evaluation_batch(direct_tau_evaluations, key, &direct_tau_profile);
+    if (!direct_commitment_evals.empty()) {
+        const auto commitments = crypto::KZG::commit_precomputed_batch(direct_commitment_evals, key, &direct_precomputed_profile);
         for (std::size_t i = 0; i < commitments.size(); ++i) {
-            prepared[direct_tau_indices[i]].commitment = commitments[i];
+            prepared[direct_commitment_indices[i]].commitment = commitments[i];
         }
     }
     if (metrics != nullptr) {
-        metrics->dynamic_domain_convert_ms += polynomial_profile.tau_eval_ms;
-        metrics->dynamic_commit_msm_ms += polynomial_profile.msm_ms + direct_tau_profile.msm_ms;
+        metrics->dynamic_domain_convert_ms += polynomial_profile.evaluation_ms;
+        metrics->dynamic_commit_msm_ms += polynomial_profile.msm_ms + direct_precomputed_profile.msm_ms;
     }
 
     const auto copy_start = Clock::now();
@@ -1105,6 +1166,7 @@ struct CachedForwardArtifacts {
     std::vector<Matrix> hidden_layer_concat_quantized;
     std::vector<HiddenQuantizedWitness> hidden_head_quantized;
     std::vector<OutputQuantizedWitness> output_head_quantized;
+    model::FloatMatrix reference_logits_fp32;
     Matrix output_y_lin_average;
     Matrix output_y_average;
 };
@@ -1273,6 +1335,7 @@ std::shared_ptr<const CachedForwardArtifacts> cached_forward_artifacts(
 
     auto artifacts = std::make_shared<CachedForwardArtifacts>();
     auto forward = model::forward_note_style(context.local.features_fp, edges, context.model, &artifacts->profile);
+    artifacts->reference_logits_fp32 = forward.Y;
     artifacts->hidden_layer_inputs_quantized.reserve(forward.hidden_layer_traces.size());
     artifacts->hidden_layer_concat_quantized.reserve(forward.hidden_layer_traces.size());
     for (const auto& layer_trace : forward.hidden_layer_traces) {
@@ -2189,28 +2252,28 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto eta_feature_value = eta_feat_powers[2];
         const bool full_feature_identity = static_artifacts.full_feature_identity;
         if (use_lazy_full_feature_lookup_trace(context, static_artifacts, keep_trace_payloads)) {
-            const auto table_tau =
-                context.public_commitments.at("P_Row_feat_tbl").tau_evaluation
-                + eta_feature_index * context.public_commitments.at("P_Col_feat_tbl").tau_evaluation
-                + eta_feature_value * context.static_commitments.at("V_T_H").tau_evaluation;
-            const auto query_tau =
-                context.public_commitments.at("P_I_feat_qry").tau_evaluation
-                + eta_feature_index * context.public_commitments.at("P_Col_feat_qry").tau_evaluation
-                + eta_feature_value * trace.commitments.at("P_H").tau_evaluation;
+            const auto table_commitment_eval =
+                context.public_commitments.at("P_Row_feat_tbl").commitment_eval
+                + eta_feature_index * context.public_commitments.at("P_Col_feat_tbl").commitment_eval
+                + eta_feature_value * context.static_commitments.at("V_T_H").commitment_eval;
+            const auto query_commitment_eval =
+                context.public_commitments.at("P_I_feat_qry").commitment_eval
+                + eta_feature_index * context.public_commitments.at("P_Col_feat_qry").commitment_eval
+                + eta_feature_value * trace.commitments.at("P_H").commitment_eval;
             trace.commitments["P_Table_feat"] =
-                crypto::KZG::commit_tau_evaluation("P_Table_feat", table_tau, context.kzg);
+                crypto::KZG::commit_precomputed("P_Table_feat", table_commitment_eval, context.kzg);
             trace.commitment_order.push_back("P_Table_feat");
             trace.commitments["P_Query_feat"] =
-                crypto::KZG::commit_tau_evaluation("P_Query_feat", query_tau, context.kzg);
+                crypto::KZG::commit_precomputed("P_Query_feat", query_commitment_eval, context.kzg);
             trace.commitment_order.push_back("P_Query_feat");
             trace.commitments["P_m_feat"] = crypto::Commitment{
                 .name = "P_m_feat",
                 .point = context.public_commitments.at("P_Q_tbl_feat").point,
-                .tau_evaluation = context.public_commitments.at("P_Q_tbl_feat").tau_evaluation,
+                .commitment_eval = context.public_commitments.at("P_Q_tbl_feat").commitment_eval,
             };
             trace.commitment_order.push_back("P_m_feat");
             trace.commitments["P_R_feat"] =
-                crypto::KZG::commit_tau_evaluation("P_R_feat", FieldElement::zero(), context.kzg);
+                crypto::KZG::commit_precomputed("P_R_feat", FieldElement::zero(), context.kzg);
             trace.commitment_order.push_back("P_R_feat");
         } else {
             std::vector<FieldElement> table_feat(domains.fh->size, FieldElement::zero());
@@ -3666,6 +3729,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         }
         trace.external_evaluations["mu_Y_lin"] = matrix_row_major_evaluation(y_lin_average, trace.challenges.at("y_out"));
         trace.external_evaluations["mu_out"] = matrix_row_major_evaluation(y_average, trace.challenges.at("y_out"));
+        record_public_output_hashes(trace, y_average, forward_artifacts->reference_logits_fp32);
     } else {
     // 单输出头时仍走兼容标签，但语义上还是输出 attention 头，不是另一条协议分支。
     const auto& quantized = forward_artifacts->output_head_quantized.front();
@@ -4209,6 +4273,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     trace.challenges["y_out"] = transcript.challenge("y_out");
     trace.external_evaluations["mu_Y_lin"] = matrix_row_major_evaluation(y_lin_matrix, trace.challenges.at("y_out"));
     trace.external_evaluations["mu_out"] = matrix_row_major_evaluation(y_matrix, trace.challenges.at("y_out"));
+    record_public_output_hashes(trace, y_matrix, forward_artifacts->reference_logits_fp32);
     add_residual_metric(
         &RunMetrics::output_head_trace_ms,
         elapsed_ms(output_trace_start, Clock::now()) - (metric_value(&RunMetrics::commit_dynamic_ms) - output_initial_commit_dynamic_ms),
@@ -4991,6 +5056,7 @@ TraceArtifacts build_trace(const ProtocolContext& context, RunMetrics* metrics) 
     trace.external_evaluations["mu_Y_lin"] = out_trace.mu;
     trace.external_evaluations["mu_bias_out"] = evaluate_bias_fold(context.model.b, n_nodes, y_out);
     trace.external_evaluations["mu_out"] = trace.external_evaluations["mu_Y_lin"] + trace.external_evaluations["mu_bias_out"];
+    record_public_output_hashes(trace, y);
 
     for (const auto& [name, challenge] : transcript.issued_challenges()) {
         trace.challenges[name] = challenge;

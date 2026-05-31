@@ -95,4 +95,10 @@ if(GATZK_BUILD_TESTS)
     add_executable(gatzk_tests tests/test_main.cpp)
     target_link_libraries(gatzk_tests PRIVATE gatzkml)
     add_test(NAME gatzk_tests COMMAND gatzk_tests)
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME static_secure_scan
+            COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/security/static_scan_no_tau.py)
+    endif()
 endif()
