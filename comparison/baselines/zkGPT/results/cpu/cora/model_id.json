@@ -1,0 +1,14 @@
+{
+  "checkpoint_bundle": "/home/pzh/project/artifacts/checkpoints/cora_gat",
+  "id": "8b40c770c8cba95385dcac18e77b22d736898b9524bfe1db01c9b5c668921394",
+  "manifest": {
+    "path": "/home/pzh/project/artifacts/checkpoints/cora_gat/manifest.json",
+    "sha256": "fc426fafc16f39e934753974e4a4c303fc76c8454339dfdab9d0132460a7a831",
+    "size_bytes": 11760
+  },
+  "tensors": {
+    "path": "/home/pzh/project/artifacts/checkpoints/cora_gat/tensors.txt",
+    "sha256": "d560eb43dacf6e7adbd8fd4dad7f6691ee6e6989c4cf49f73cfc421ee2a05e7a",
+    "size_bytes": 1984090
+  }
+}

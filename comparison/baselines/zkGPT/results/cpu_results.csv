@@ -1,0 +1,2 @@
+dataset,backend,status,N,E,G_batch,L,hidden_profile,d_in_profile,K_out,C,commitment_time_ms,prove_time_ms,verify_time_ms,proof_size_bytes,config_id,model_id,data_id,artifact_path
+cora,cpu,VERIFY_OK,2708,13264,1,2,8x8,1433,1,7,7.681502168998122,34.915918949991465,6.284865410998464,16874,3726e3efebb3ef064005f67dae2354ccdb34e7432aa069e3a9aa58ee097a6220,8b40c770c8cba95385dcac18e77b22d736898b9524bfe1db01c9b5c668921394,ff1af353dee1f44d71fec6f03697b49463487b41c8a651ac9276c7759b4d67fe,/home/pzh/project/comparison/baselines/zkGPT/results/cpu/cora
