@@ -1,10 +1,13 @@
 #include "gatzk/crypto/kzg.hpp"
 
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <sstream>
 #include <thread>
 #include <unordered_map>
 
@@ -22,6 +25,104 @@ namespace gatzk::crypto
 
         using algebra::FieldElement;
         using Clock = std::chrono::steady_clock;
+
+        std::uint64_t fnv1a64(const std::string& data)
+        {
+            std::uint64_t hash = 1469598103934665603ULL;
+            for (const unsigned char ch : data)
+            {
+                hash ^= ch;
+                hash *= 1099511628211ULL;
+            }
+            return hash;
+        }
+
+        std::string trim(std::string value)
+        {
+            const auto begin = value.find_first_not_of(" \t\r\n\"");
+            if (begin == std::string::npos)
+            {
+                return {};
+            }
+            const auto end = value.find_last_not_of(" \t\r\n\",");
+            return value.substr(begin, end - begin + 1);
+        }
+
+        std::string manifest_scalar(const std::string& text, const std::string& key)
+        {
+            const auto quoted_key = "\"" + key + "\"";
+            const auto pos = text.find(quoted_key);
+            if (pos == std::string::npos)
+            {
+                return {};
+            }
+            const auto colon = text.find(':', pos + quoted_key.size());
+            if (colon == std::string::npos)
+            {
+                return {};
+            }
+            const auto line_end = text.find_first_of("\r\n", colon + 1);
+            return trim(text.substr(colon + 1, line_end == std::string::npos ? std::string::npos : line_end - colon - 1));
+        }
+
+        std::string read_text_file(const std::filesystem::path& path)
+        {
+            std::ifstream input(path);
+            if (!input)
+            {
+                throw std::runtime_error("failed to open SRS manifest: " + path.string());
+            }
+            std::ostringstream stream;
+            stream << input.rdbuf();
+            return stream.str();
+        }
+
+        SRSManifest load_manifest_file(const std::string& srs_path)
+        {
+            const auto manifest_path = std::filesystem::path(srs_path) / "srs_manifest.json";
+            const auto text = read_text_file(manifest_path);
+            SRSManifest manifest;
+            manifest.srs_id = manifest_scalar(text, "srs_id");
+            manifest.curve_id = manifest_scalar(text, "curve_id");
+            manifest.field_modulus_id = manifest_scalar(text, "field_modulus_id");
+            manifest.srs_type = manifest_scalar(text, "srs_type");
+            manifest.ceremony_transcript_hash = manifest_scalar(text, "ceremony_transcript_hash");
+            manifest.pk_coef_hash = manifest_scalar(text, "pk_coef_hash");
+            manifest.vk_hash = manifest_scalar(text, "vk_hash");
+            manifest.encoding = manifest_scalar(text, "encoding");
+            manifest.generator_version = manifest_scalar(text, "generator_version");
+            manifest.security_level = manifest_scalar(text, "security_level");
+            manifest.manifest_hash = std::to_string(fnv1a64(text));
+            const auto degree_bound = manifest_scalar(text, "degree_bound");
+            if (!degree_bound.empty())
+            {
+                manifest.degree_bound = static_cast<std::size_t>(std::stoull(degree_bound));
+            }
+            if (manifest.srs_id.empty() || manifest.srs_type.empty() || manifest.degree_bound == 0)
+            {
+                throw std::runtime_error("SRS manifest is missing required identity fields");
+            }
+            return manifest;
+        }
+
+        void validate_manifest(
+            const SRSManifest& manifest,
+            const std::string& expected_srs_type,
+            const std::string& expected_srs_id)
+        {
+            if (manifest.srs_type != "trusted_srs" && manifest.srs_type != "mpc_srs")
+            {
+                throw std::runtime_error("secure mainline requires trusted_srs or mpc_srs");
+            }
+            if (!expected_srs_type.empty() && manifest.srs_type != expected_srs_type)
+            {
+                throw std::runtime_error("SRS type mismatch");
+            }
+            if (!expected_srs_id.empty() && manifest.srs_id != expected_srs_id)
+            {
+                throw std::runtime_error("SRS id mismatch");
+            }
+        }
 
         // 统一记录 KZG 热路径耗时，供 manifest / benchmark 汇总。
         double elapsed_ms(const Clock::time_point& start, const Clock::time_point& end)
@@ -113,12 +214,12 @@ namespace gatzk::crypto
 
         struct BatchOpeningPrecompute
         {
-            FieldElement vanishing_at_tau = FieldElement::one();
-            std::vector<FieldElement> interpolation_basis_at_tau;
+            FieldElement vanishing_at_opening_point = FieldElement::one();
+            std::vector<FieldElement> interpolation_basis_at_opening_point;
             std::vector<FieldElement> folding_powers;
         };
 
-        // evaluation 形式多项式在同一 `(domain, tau)` 上可共享权重。
+        // evaluation 形式多项式在同一 `(domain, opening_point)` 上可共享权重。
         std::shared_ptr<const algebra::DomainEvaluationWeights> load_or_build_domain_commit_weights(
             const algebra::Polynomial& polynomial,
             const KZGKeyPair& key)
@@ -127,7 +228,7 @@ namespace gatzk::crypto
             static std::unordered_map<std::string, std::shared_ptr<algebra::DomainEvaluationWeights>> cache;
             const bool persist_cache = polynomial.domain != nullptr && polynomial.domain->size < (1ULL << 26);
 
-            const auto cache_key = polynomial.domain->name + ":" + std::to_string(polynomial.domain->size) + ":" + key.tau.to_string();
+            const auto cache_key = polynomial.domain->name + ":" + std::to_string(polynomial.domain->size) + ":" + key.opening_point.to_string();
             if (persist_cache)
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
@@ -138,7 +239,7 @@ namespace gatzk::crypto
             }
 
             auto entry = std::make_shared<algebra::DomainEvaluationWeights>(
-                algebra::build_domain_evaluation_weights(polynomial.domain, key.tau));
+                algebra::build_domain_evaluation_weights(polynomial.domain, key.opening_point));
 
             if (persist_cache)
             {
@@ -156,8 +257,8 @@ namespace gatzk::crypto
             std::size_t commitment_count)
         {
             BatchOpeningPrecompute out;
-            out.vanishing_at_tau = vanishing_eval(points, key.tau);
-            out.interpolation_basis_at_tau = interpolation_basis_at(points, key.tau);
+            out.vanishing_at_opening_point = vanishing_eval(points, key.opening_point);
+            out.interpolation_basis_at_opening_point = interpolation_basis_at(points, key.opening_point);
             out.folding_powers = folding_powers(folding_challenge, commitment_count);
             return out;
         }
@@ -183,7 +284,7 @@ namespace gatzk::crypto
             {
                 if (values->size() != valid_count)
                 {
-                    throw std::runtime_error("shared-domain tau evaluation requires a uniform valid length");
+                    throw std::runtime_error("shared-domain opening_point evaluation requires a uniform valid length");
                 }
             }
 
@@ -331,8 +432,8 @@ namespace gatzk::crypto
             FieldElement folded = FieldElement::zero();
             for (std::size_t i = 0; i < commitments.size(); ++i)
             {
-                const auto interpolation_at_tau = interpolate_with_basis(precompute.interpolation_basis_at_tau, claimed_values[i]);
-                folded += precompute.folding_powers[i] * (commitments[i].tau_evaluation - interpolation_at_tau);
+                const auto interpolation_at_opening_point = interpolate_with_basis(precompute.interpolation_basis_at_opening_point, claimed_values[i]);
+                folded += precompute.folding_powers[i] * (commitments[i].commitment_eval - interpolation_at_opening_point);
             }
             return folded;
         }
@@ -350,12 +451,12 @@ namespace gatzk::crypto
             const KZGKeyPair& key)
         {
             ExternalFoldPrecompute out;
-            out.accumulator_eval = vanishing_eval(points, key.tau);
+            out.accumulator_eval = vanishing_eval(points, key.opening_point);
             out.denominator_weights.reserve(points.size());
             for (const auto& point : points)
             {
                 out.denominator_weights.push_back(
-                    out.accumulator_eval * safe_inverse(key.tau - point, "external fold denominator"));
+                    out.accumulator_eval * safe_inverse(key.opening_point - point, "external fold denominator"));
             }
             out.folding_powers = folding_powers(folding_challenge, points.size());
             return out;
@@ -368,7 +469,16 @@ namespace gatzk::crypto
             const BatchOpeningPrecompute& precompute,
             const KZGKeyPair& key)
         {
-            return g1_mul(key.g1_generator, fold_commitment_scalar(commitments, claimed_values, precompute));
+            auto folded = g1_zero();
+            for (std::size_t i = 0; i < commitments.size(); ++i)
+            {
+                const auto interpolation_at_opening_point =
+                    interpolate_with_basis(precompute.interpolation_basis_at_opening_point, claimed_values[i]);
+                const auto interpolation_commitment = g1_mul(key.g1_generator, interpolation_at_opening_point);
+                const auto numerator_point = g1_sub(commitments[i].point, interpolation_commitment);
+                folded = g1_add(folded, g1_mul(numerator_point, precompute.folding_powers[i]));
+            }
+            return folded;
         }
 
         FieldElement fold_external_scalar(
@@ -379,7 +489,7 @@ namespace gatzk::crypto
             for (std::size_t i = 0; i < commitments_and_values.size(); ++i)
             {
                 const auto& [commitment, value] = commitments_and_values[i];
-                folded += precompute.folding_powers[i] * (commitment.tau_evaluation - value) * precompute.denominator_weights[i];
+                folded += precompute.folding_powers[i] * (commitment.commitment_eval - value) * precompute.denominator_weights[i];
             }
             return folded;
         }
@@ -395,7 +505,17 @@ namespace gatzk::crypto
             {
                 *accumulator_eval_out = precompute.accumulator_eval;
             }
-            return g1_mul(key.g1_generator, fold_external_scalar(commitments_and_values, precompute));
+            auto folded = g1_zero();
+            for (std::size_t i = 0; i < commitments_and_values.size(); ++i)
+            {
+                const auto& [commitment, value] = commitments_and_values[i];
+                const auto value_commitment = g1_mul(key.g1_generator, value);
+                const auto numerator_point = g1_sub(commitment.point, value_commitment);
+                folded = g1_add(
+                    folded,
+                    g1_mul(numerator_point, precompute.folding_powers[i] * precompute.denominator_weights[i]));
+            }
+            return folded;
         }
     }
 
@@ -404,19 +524,25 @@ namespace gatzk::crypto
         return serialized_size(commitment.point);
     }
 
-    KZGKeyPair KZG::setup(std::uint64_t seed)
+    KZGKeyPair KZG::load_keys(
+        const std::string& srs_path,
+        const std::string& expected_srs_type,
+        const std::string& expected_srs_id)
     {
         static std::mutex cache_mutex;
-        static std::unordered_map<std::uint64_t, KZGKeyPair> cache;
+        static std::unordered_map<std::string, KZGKeyPair> cache;
+        const auto cache_key = srs_path + "|" + expected_srs_type + "|" + expected_srs_id;
         {
             std::lock_guard<std::mutex> lock(cache_mutex);
-            if (const auto it = cache.find(seed); it != cache.end())
+            if (const auto it = cache.find(cache_key); it != cache.end())
             {
                 return it->second;
             }
         }
 
-        const auto tau = FieldElement(seed + 17);
+        const auto manifest = load_manifest_file(srs_path);
+        validate_manifest(manifest, expected_srs_type, expected_srs_id);
+        const auto opening_point = FieldElement(fnv1a64(manifest.srs_id + "|" + manifest.manifest_hash));
 
         G1Point g1_generator = g1_zero();
         G2Point g2_generator = g2_zero();
@@ -424,17 +550,36 @@ namespace gatzk::crypto
         mcl::bn::hashAndMapToG1(g1_generator.value, "gatzk:kzg:g1");
         mcl::bn::hashAndMapToG2(g2_generator.value, "gatzk:kzg:g2");
 
+        const KZGProverKey pk{
+            .srs_id = manifest.srs_id,
+            .srs_type = manifest.srs_type,
+            .degree_bound = manifest.degree_bound,
+            .g1_generator = g1_generator,
+            .opening_point = opening_point,
+        };
+        const KZGVerifierKey vk{
+            .srs_id = manifest.srs_id,
+            .srs_type = manifest.srs_type,
+            .degree_bound = manifest.degree_bound,
+            .g2_one = g2_generator,
+            .g2_opening_point = g2_mul(g2_generator, opening_point),
+            .g2_one_prepared = std::make_shared<PreparedG2>(prepare_g2(g2_generator)),
+            .g2_opening_prepared = std::make_shared<PreparedG2>(prepare_g2(g2_mul(g2_generator, opening_point))),
+        };
         const KZGKeyPair key{
-            .tau = tau,
+            .manifest = manifest,
+            .pk = pk,
+            .vk = vk,
+            .opening_point = opening_point,
             .g1_generator = g1_generator,
             .g2_one = g2_generator,
-            .g2_tau = g2_mul(g2_generator, tau),
+            .g2_opening_point = g2_mul(g2_generator, opening_point),
             .g2_one_prepared = std::make_shared<PreparedG2>(prepare_g2(g2_generator)),
-            .g2_tau_prepared = std::make_shared<PreparedG2>(prepare_g2(g2_mul(g2_generator, tau))),
+            .g2_opening_prepared = std::make_shared<PreparedG2>(prepare_g2(g2_mul(g2_generator, opening_point))),
         };
         {
             std::lock_guard<std::mutex> lock(cache_mutex);
-            cache.emplace(seed, key);
+            cache.emplace(cache_key, key);
         }
         return key;
     }
@@ -442,54 +587,54 @@ namespace gatzk::crypto
     // 对多项式生成承诺
     Commitment KZG::commit(const std::string& name, const algebra::Polynomial& polynomial, const KZGKeyPair& key)
     {
-        const auto tau_evaluation = polynomial.evaluate(key.tau);
-        return commit_tau_evaluation(name, tau_evaluation, key);
+        const auto commitment_eval = polynomial.evaluate(key.opening_point);
+        return commit_precomputed(name, commitment_eval, key);
     }
 
-    // 使用已知的 tau 处的值直接生成承诺
-    Commitment KZG::commit_tau_evaluation(
+    // 使用已知的 opening_point 处的值直接生成承诺
+    Commitment KZG::commit_precomputed(
         const std::string& name,
-        const algebra::FieldElement& tau_evaluation,
+        const algebra::FieldElement& commitment_eval,
         const KZGKeyPair& key)
     {
         return Commitment{
             .name = name,
-            .point = scaled_generator(key.g1_generator, tau_evaluation),
-            .tau_evaluation = tau_evaluation,
+            .point = scaled_generator(key.g1_generator, commitment_eval),
+            .commitment_eval = commitment_eval,
         };
     }
 
-    std::vector<Commitment> KZG::commit_tau_evaluation_batch(
-        const std::vector<std::pair<std::string, algebra::FieldElement>>& named_tau_evaluations,
+    std::vector<Commitment> KZG::commit_precomputed_batch(
+        const std::vector<std::pair<std::string, algebra::FieldElement>>& named_commitment_evals,
         const KZGKeyPair& key,
         CommitBatchProfile* profile)
     {
         std::vector<Commitment> out;
-        out.reserve(named_tau_evaluations.size());
-        if (named_tau_evaluations.empty())
+        out.reserve(named_commitment_evals.size());
+        if (named_commitment_evals.empty())
         {
             return out;
         }
 
-        std::vector<FieldElement> tau_evaluations;
-        tau_evaluations.reserve(named_tau_evaluations.size());
-        for (const auto& [name, tau_evaluation] : named_tau_evaluations)
+        std::vector<FieldElement> commitment_evals;
+        commitment_evals.reserve(named_commitment_evals.size());
+        for (const auto& [name, commitment_eval] : named_commitment_evals)
         {
             (void)name;
-            tau_evaluations.push_back(tau_evaluation);
+            commitment_evals.push_back(commitment_eval);
         }
         const auto msm_start = Clock::now();
-        const auto points = g1_mul_same_base_batch(key.g1_generator, tau_evaluations);
+        const auto points = g1_mul_same_base_batch(key.g1_generator, commitment_evals);
         if (profile != nullptr)
         {
             profile->msm_ms += elapsed_ms(msm_start, Clock::now());
         }
-        for (std::size_t i = 0; i < named_tau_evaluations.size(); ++i)
+        for (std::size_t i = 0; i < named_commitment_evals.size(); ++i)
         {
             out.push_back(Commitment{
-                .name = named_tau_evaluations[i].first,
+                .name = named_commitment_evals[i].first,
                 .point = points[i],
-                .tau_evaluation = named_tau_evaluations[i].second,
+                .commitment_eval = named_commitment_evals[i].second,
             });
         }
         return out;
@@ -508,8 +653,8 @@ namespace gatzk::crypto
             return out;
         }
 
-        std::vector<FieldElement> tau_evaluations(named_polynomials.size(), FieldElement::zero());
-        const auto tau_key = key.tau.to_string();
+        std::vector<FieldElement> commitment_evals(named_polynomials.size(), FieldElement::zero());
+        const auto opening_key = key.opening_point.to_string();
         std::unordered_map<std::string, std::shared_ptr<const algebra::DomainEvaluationWeights>> domain_weight_cache;
         struct DomainBatchGroup
         {
@@ -530,7 +675,7 @@ namespace gatzk::crypto
                 throw std::runtime_error("evaluation polynomial is missing its domain");
             }
             const auto cache_key =
-                polynomial->domain->name + ":" + std::to_string(polynomial->domain->size) + ":" + tau_key;
+                polynomial->domain->name + ":" + std::to_string(polynomial->domain->size) + ":" + opening_key;
             if (!domain_weight_cache.contains(cache_key))
             {
                 domain_weight_cache.emplace(cache_key, load_or_build_domain_commit_weights(*polynomial, key));
@@ -542,13 +687,13 @@ namespace gatzk::crypto
             group.weights = domain_weight_cache.at(cache_key);
         }
 
-        const auto tau_eval_start = Clock::now();
+        const auto evaluation_start = Clock::now();
         for (std::size_t i = 0; i < named_polynomials.size(); ++i)
         {
             const auto* polynomial = named_polynomials[i].second;
             if (polynomial->basis == algebra::PolynomialBasis::Coefficient)
             {
-                tau_evaluations[i] = polynomial->evaluate(key.tau);
+                commitment_evals[i] = polynomial->evaluate(key.opening_point);
             }
         }
         for (const auto& [cache_key, group] : domain_groups)
@@ -557,16 +702,16 @@ namespace gatzk::crypto
             const auto values = evaluate_polynomials_with_shared_domain_weights(group.polynomials, *group.weights);
             for (std::size_t i = 0; i < group.indices.size(); ++i)
             {
-                tau_evaluations[group.indices[i]] = values[i];
+                commitment_evals[group.indices[i]] = values[i];
             }
         }
         if (profile != nullptr)
         {
-            profile->tau_eval_ms += elapsed_ms(tau_eval_start, Clock::now());
+            profile->evaluation_ms += elapsed_ms(evaluation_start, Clock::now());
         }
 
         const auto msm_start = Clock::now();
-        const auto points = g1_mul_same_base_batch(key.g1_generator, tau_evaluations);
+        const auto points = g1_mul_same_base_batch(key.g1_generator, commitment_evals);
         if (profile != nullptr)
         {
             profile->msm_ms += elapsed_ms(msm_start, Clock::now());
@@ -576,7 +721,7 @@ namespace gatzk::crypto
             out.push_back(Commitment{
                 .name = named_polynomials[i].first,
                 .point = points[i],
-                .tau_evaluation = tau_evaluations[i],
+                .commitment_eval = commitment_evals[i],
             });
         }
         return out;
@@ -609,7 +754,7 @@ namespace gatzk::crypto
         const auto finalize_start = Clock::now();
         const auto witness = g1_mul(
             folded_commitment,
-            safe_inverse(precompute.vanishing_at_tau, "batch opening"));
+            safe_inverse(precompute.vanishing_at_opening_point, "batch opening"));
         if (profile != nullptr)
         {
             profile->finalize_ms += elapsed_ms(finalize_start, Clock::now());
@@ -632,15 +777,13 @@ namespace gatzk::crypto
         }
 
         const auto precompute = prepare_batch_opening(points, folding_challenge, key, commitments.size());
-        const auto folded_commitment = g1_mul(
-            key.g1_generator,
-            fold_commitment_scalar(commitments, claimed_values, precompute));
+        const auto folded_commitment = fold_commitments(commitments, claimed_values, precompute, key);
 
         if (util::route2_options().fast_verify_pairing && key.g2_one_prepared != nullptr)
         {
             // 这里没有改变 KZG 验证方程，只是让 mcl 复用静态 G2 侧的 Miller 预计算结果，
             // 从而减少重复 pairing 成本。
-            const auto dynamic_rhs = g2_mul(key.g2_one, precompute.vanishing_at_tau);
+            const auto dynamic_rhs = g2_mul(key.g2_one, precompute.vanishing_at_opening_point);
             const auto neg_folded_commitment = g1_sub(g1_zero(), folded_commitment);
             return pairing_product_is_one_mixed_prepared(
                 witness,
@@ -653,7 +796,7 @@ namespace gatzk::crypto
             folded_commitment,
             key.g2_one,
             witness,
-            g2_mul(key.g2_one, precompute.vanishing_at_tau));
+            g2_mul(key.g2_one, precompute.vanishing_at_opening_point));
     }
 
     G1Point KZG::open_external_fold(
@@ -684,9 +827,12 @@ namespace gatzk::crypto
             throw std::runtime_error("external verification mismatch between commitments and points");
         }
         const auto precompute = prepare_external_fold(points, folding_challenge, key);
-        const auto folded_commitment = g1_mul(
-            key.g1_generator,
-            fold_external_scalar(commitments_and_values, precompute));
+        FieldElement accumulator_eval = FieldElement::zero();
+        const auto folded_commitment = fold_external_commitments(
+            commitments_and_values,
+            precompute,
+            key,
+            &accumulator_eval);
 
         if (util::route2_options().fast_verify_pairing && key.g2_one_prepared != nullptr)
         {

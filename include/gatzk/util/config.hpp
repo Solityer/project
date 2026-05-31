@@ -38,6 +38,16 @@ struct AppConfig {
     std::string model_param_id;
     std::string static_table_id;
     std::string degree_bound_id;
+    std::string srs_type = "trusted_srs";
+    std::string srs_id = "zkgat_secure_main_srs_v1";
+    std::string srs_path = "artifacts/srs/zkgat_secure_main_srs_v1";
+    std::string privacy_policy = "model_and_trace_hidden";
+    std::string input_privacy = "public_graph_public_features";
+    std::string output_mode = "public_logits";
+    std::string opening_mode = "domain_grouped_batch_opening";
+    std::string binding_mode = "zk_subproof_for_crpc";
+    std::string proof_task = "node_classification_full_gat";
+    std::string security_profile_id = "zkgat_secure_profile_v1";
     std::size_t hidden_dim = 4;
     std::size_t num_classes = 2;
     std::size_t range_bits = 10;

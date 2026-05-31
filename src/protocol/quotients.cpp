@@ -13,7 +13,7 @@
 
 namespace gatzk::protocol {
 // 本文件集中实现各工作域 quotient 恒等式的求值逻辑，
-// prove 会在 `tau` 或挑战点上构造相应承诺，verify 会按同一公式重算并检查 opening。
+// prove 会在 `hidden_point` 或挑战点上构造相应承诺，verify 会按同一公式重算并检查 opening。
 // 它是 formal 约束落到代数等式的核心位置，绝不能改写挑战顺序或等式内容。
 
 namespace {

@@ -46,6 +46,16 @@ struct WorkDomains {
 
 // 对外公开且会进入 transcript / manifest / verifier 的元数据契约。
 struct PublicMetadata {
+    std::string protocol_name;
+    std::string proof_task;
+    std::string srs_id;
+    std::string srs_type;
+    std::string srs_degree_bound;
+    std::string privacy_policy;
+    std::string input_privacy;
+    std::string output_mode;
+    std::string opening_mode;
+    std::string binding_mode;
     std::string protocol_id;
     std::string dataset_name;
     std::string task_type;
@@ -111,6 +121,11 @@ struct TraceArtifacts {
     // verifier 直接消费的外点值与 witness 标量。
     std::map<std::string, algebra::FieldElement> external_evaluations;
     std::map<std::string, algebra::FieldElement> witness_scalars;
+    std::string public_logits_hash;
+    std::string reference_fp32_logits_hash;
+    std::string reference_quant_logits_hash;
+    std::string secure_trace_logits_hash;
+    std::string proof_public_output_hash;
 };
 
 // 单个工作域 opening bundle 的 proof 载体。

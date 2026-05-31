@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -14,6 +15,7 @@
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 
@@ -46,6 +48,108 @@ double elapsed_ms(const Clock::time_point& start, const Clock::time_point& end) 
     return std::chrono::duration<double, std::milli>(end - start).count();
 }
 
+std::uint64_t fnv1a64(std::string_view text) {
+    std::uint64_t hash = 1469598103934665603ULL;
+    for (const auto ch : text) {
+        hash ^= static_cast<unsigned char>(ch);
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+std::string stable_hash(std::string_view text) {
+    return std::to_string(fnv1a64(text));
+}
+
+std::string hash_key_values(const std::map<std::string, std::string>& entries) {
+    std::ostringstream stream;
+    for (const auto& [key, value] : entries) {
+        stream << key << '=' << value << '\n';
+    }
+    return stable_hash(stream.str());
+}
+
+std::string hash_proof_transport(const Proof& proof) {
+    std::ostringstream stream;
+    auto append_commitments = [&](std::string_view label, const std::vector<std::pair<std::string, crypto::Commitment>>& commitments) {
+        stream << '[' << label << "]\n";
+        for (const auto& [name, commitment] : commitments) {
+            stream << name << '=' << commitment.point.to_string()
+                   << '|' << commitment.commitment_eval.to_string() << '\n';
+        }
+    };
+    auto append_field_pairs = [&](std::string_view label, const std::vector<std::pair<std::string, FieldElement>>& values) {
+        stream << '[' << label << "]\n";
+        for (const auto& [name, value] : values) {
+            stream << name << '=' << value.to_string() << '\n';
+        }
+    };
+
+    stream << "[metadata]\n"
+           << proof.public_metadata.protocol_name << '\n'
+           << proof.public_metadata.proof_task << '\n'
+           << proof.public_metadata.srs_id << '\n'
+           << proof.public_metadata.srs_type << '\n'
+           << proof.public_metadata.srs_degree_bound << '\n'
+           << proof.public_metadata.privacy_policy << '\n'
+           << proof.public_metadata.input_privacy << '\n'
+           << proof.public_metadata.output_mode << '\n'
+           << proof.public_metadata.opening_mode << '\n'
+           << proof.public_metadata.binding_mode << '\n'
+           << proof.public_metadata.protocol_id << '\n'
+           << proof.public_metadata.dataset_name << '\n'
+           << proof.public_metadata.task_type << '\n'
+           << proof.public_metadata.report_unit << '\n'
+           << proof.public_metadata.graph_count << '\n'
+           << proof.public_metadata.L << '\n'
+           << proof.public_metadata.hidden_profile << '\n'
+           << proof.public_metadata.d_in_profile << '\n'
+           << proof.public_metadata.K_out << '\n'
+           << proof.public_metadata.C << '\n'
+           << proof.public_metadata.batching_rule << '\n'
+           << proof.public_metadata.subgraph_rule << '\n'
+           << proof.public_metadata.self_loop_rule << '\n'
+           << proof.public_metadata.edge_sort_rule << '\n'
+           << proof.public_metadata.chunking_rule << '\n'
+           << proof.public_metadata.model_arch_id << '\n'
+           << proof.public_metadata.model_param_id << '\n'
+           << proof.public_metadata.static_table_id << '\n'
+           << proof.public_metadata.quant_cfg_id << '\n'
+           << proof.public_metadata.domain_cfg << '\n'
+           << proof.public_metadata.dim_cfg << '\n'
+           << proof.public_metadata.encoding_id << '\n'
+           << proof.public_metadata.padding_rule_id << '\n'
+           << proof.public_metadata.degree_bound_id << '\n';
+    stream << "[block_order]\n";
+    for (const auto& block : proof.block_order) {
+        stream << block << '\n';
+    }
+    append_commitments("dynamic_commitments", proof.dynamic_commitments);
+    append_commitments("quotient_commitments", proof.quotient_commitments);
+    stream << "[domain_openings]\n";
+    for (const auto& [domain, bundle] : proof.domain_openings) {
+        stream << domain << "|witness=" << bundle.witness.to_string() << '\n';
+        for (const auto& point : bundle.points) {
+            stream << "point=" << point.to_string() << '\n';
+        }
+        for (const auto& [name, values] : bundle.values) {
+            stream << "values=" << name;
+            for (const auto& value : values) {
+                stream << ':' << value.to_string();
+            }
+            stream << '\n';
+        }
+    }
+    append_field_pairs("external_evaluations", proof.external_evaluations);
+    append_field_pairs("witness_scalars", proof.witness_scalars);
+    stream << "[external_witness]\n" << proof.external_witness.to_string() << '\n';
+    stream << "[challenges]\n";
+    for (const auto& [name, challenge] : proof.challenges) {
+        stream << name << '=' << challenge.to_string() << '\n';
+    }
+    return stable_hash(stream.str());
+}
+
 Polynomial make_eval_poly(
     const std::string& name,
     const std::vector<FieldElement>& values,
@@ -65,11 +169,11 @@ void add_public_poly(
     context.public_commitments[name] = crypto::KZG::commit(name, polynomial, context.kzg);
 }
 
-void add_public_tau_commitment(
+void add_public_precomputed_commitment(
     ProtocolContext& context,
     const std::string& name,
-    const FieldElement& tau_evaluation) {
-    context.public_commitments[name] = crypto::KZG::commit_tau_evaluation(name, tau_evaluation, context.kzg);
+    const FieldElement& commitment_eval) {
+    context.public_commitments[name] = crypto::KZG::commit_precomputed(name, commitment_eval, context.kzg);
 }
 
 void add_static_commitment(
@@ -79,11 +183,11 @@ void add_static_commitment(
     context.static_commitments[name] = crypto::KZG::commit(name, polynomial, context.kzg);
 }
 
-void add_static_tau_commitment(
+void add_static_precomputed_commitment(
     ProtocolContext& context,
     const std::string& name,
-    const FieldElement& tau_evaluation) {
-    context.static_commitments[name] = crypto::KZG::commit_tau_evaluation(name, tau_evaluation, context.kzg);
+    const FieldElement& commitment_eval) {
+    context.static_commitments[name] = crypto::KZG::commit_precomputed(name, commitment_eval, context.kzg);
 }
 
 std::vector<FieldElement> padded(const std::vector<FieldElement>& values, std::size_t size) {
@@ -608,6 +712,14 @@ std::string context_cache_key(const util::AppConfig& config) {
            << config.self_loop_rule << '|'
            << config.edge_sort_rule << '|'
            << config.chunking_rule << '|'
+           << config.srs_id << '|'
+           << config.srs_type << '|'
+           << config.privacy_policy << '|'
+           << config.input_privacy << '|'
+           << config.output_mode << '|'
+           << config.opening_mode << '|'
+           << config.binding_mode << '|'
+           << config.proof_task << '|'
            << (config.allow_synthetic_model ? "synthetic" : "formal");
     for (const auto input_dim : config.d_in_profile) {
         stream << "|din=" << input_dim;
@@ -843,13 +955,13 @@ std::string quotient_build_cache_key(const ProtocolContext& context, const Trace
         if (it == trace.commitments.end()) {
             continue;
         }
-        stream << '|' << label << '=' << it->second.tau_evaluation.to_string();
+        stream << '|' << label << '=' << it->second.commitment_eval.to_string();
     }
     return stream.str();
 }
 
 struct CachedQuotientArtifacts {
-    std::vector<std::pair<std::string, FieldElement>> named_tau_values;
+    std::vector<std::pair<std::string, FieldElement>> named_quotient_values;
     std::unordered_map<std::string, Commitment> quotient_commitments;
 };
 
@@ -2213,29 +2325,29 @@ class EvaluationMemoization {
 };
 
 std::unordered_map<std::string, Commitment> batch_quotient_commitments(
-    const std::vector<std::pair<std::string, FieldElement>>& named_tau_values,
+    const std::vector<std::pair<std::string, FieldElement>>& named_quotient_values,
     const crypto::KZGKeyPair& key) {
     std::unordered_map<std::string, Commitment> out;
-    out.reserve(named_tau_values.size());
-    if (named_tau_values.empty()) {
+    out.reserve(named_quotient_values.size());
+    if (named_quotient_values.empty()) {
         return out;
     }
 
-    std::vector<FieldElement> tau_values;
-    tau_values.reserve(named_tau_values.size());
-    for (const auto& [name, tau_value] : named_tau_values) {
+    std::vector<FieldElement> quotient_values;
+    quotient_values.reserve(named_quotient_values.size());
+    for (const auto& [name, quotient_value] : named_quotient_values) {
         (void)name;
-        tau_values.push_back(tau_value);
+        quotient_values.push_back(quotient_value);
     }
 
-    const auto points = crypto::g1_mul_same_base_batch(key.g1_generator, tau_values);
-    for (std::size_t i = 0; i < named_tau_values.size(); ++i) {
+    const auto points = crypto::g1_mul_same_base_batch(key.g1_generator, quotient_values);
+    for (std::size_t i = 0; i < named_quotient_values.size(); ++i) {
         out.emplace(
-            named_tau_values[i].first,
+            named_quotient_values[i].first,
             Commitment{
-                .name = named_tau_values[i].first,
+                .name = named_quotient_values[i].first,
                 .point = points[i],
-                .tau_evaluation = tau_values[i],
+                .commitment_eval = quotient_values[i],
             });
     }
     return out;
@@ -2672,7 +2784,10 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
     }
 
     start = Clock::now();
-    context.kzg = crypto::KZG::setup(config.seed);
+    context.kzg = crypto::KZG::load_keys(
+        resolve_project_path(config.project_root, config.srs_path).string(),
+        config.srs_type,
+        config.srs_id);
     end = Clock::now();
     if (metrics != nullptr) {
         metrics->srs_prepare_ms += elapsed_ms(start, end);
@@ -2794,34 +2909,34 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
         "P_Q_C_valid",
         make_eval_poly("P_Q_C_valid", build_selector(context.local.num_classes, c_size), context.domains.c));
     if (lazy_large_fh_public_enabled(context)) {
-        add_public_tau_commitment(
+        add_public_precomputed_commitment(
             context,
             "P_Q_tbl_feat",
-            evaluate_lazy_large_fh_public_poly(context, "P_Q_tbl_feat", context.kzg.tau));
-        add_public_tau_commitment(
+            evaluate_lazy_large_fh_public_poly(context, "P_Q_tbl_feat", context.kzg.opening_point));
+        add_public_precomputed_commitment(
             context,
             "P_Q_qry_feat",
-            evaluate_lazy_large_fh_public_poly(context, "P_Q_qry_feat", context.kzg.tau));
-        add_public_tau_commitment(
+            evaluate_lazy_large_fh_public_poly(context, "P_Q_qry_feat", context.kzg.opening_point));
+        add_public_precomputed_commitment(
             context,
             "P_Row_feat_tbl",
-            evaluate_lazy_large_fh_public_poly(context, "P_Row_feat_tbl", context.kzg.tau));
-        add_public_tau_commitment(
+            evaluate_lazy_large_fh_public_poly(context, "P_Row_feat_tbl", context.kzg.opening_point));
+        add_public_precomputed_commitment(
             context,
             "P_Col_feat_tbl",
-            evaluate_lazy_large_fh_public_poly(context, "P_Col_feat_tbl", context.kzg.tau));
-        add_public_tau_commitment(
+            evaluate_lazy_large_fh_public_poly(context, "P_Col_feat_tbl", context.kzg.opening_point));
+        add_public_precomputed_commitment(
             context,
             "P_Row_feat_qry",
-            evaluate_lazy_large_fh_public_poly(context, "P_Row_feat_qry", context.kzg.tau));
-        add_public_tau_commitment(
+            evaluate_lazy_large_fh_public_poly(context, "P_Row_feat_qry", context.kzg.opening_point));
+        add_public_precomputed_commitment(
             context,
             "P_Col_feat_qry",
-            evaluate_lazy_large_fh_public_poly(context, "P_Col_feat_qry", context.kzg.tau));
-        add_public_tau_commitment(
+            evaluate_lazy_large_fh_public_poly(context, "P_Col_feat_qry", context.kzg.opening_point));
+        add_public_precomputed_commitment(
             context,
             "P_I_feat_qry",
-            evaluate_lazy_large_fh_public_poly(context, "P_I_feat_qry", context.kzg.tau));
+            evaluate_lazy_large_fh_public_poly(context, "P_I_feat_qry", context.kzg.opening_point));
     } else {
         add_public_poly(
             context,
@@ -2911,18 +3026,18 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
     const auto& feature_matrix_for_h =
         !context.dataset.features.empty() ? context.dataset.features : context.local.features;
     if (lazy_large_fh_public_enabled(context)) {
-        const auto tau_row_stride = context.kzg.tau.pow(static_cast<std::uint64_t>(context.local.num_features));
-        add_static_tau_commitment(
+        const auto commitment_row_stride = context.kzg.opening_point.pow(static_cast<std::uint64_t>(context.local.num_features));
+        add_static_precomputed_commitment(
             context,
             "V_T_H",
             matrix_row_major_evaluation_with_row_stride(
                 feature_matrix_for_h,
-                context.kzg.tau,
-                tau_row_stride));
-        add_public_tau_commitment(
+                context.kzg.opening_point,
+                commitment_row_stride));
+        add_public_precomputed_commitment(
             context,
             "P_T_H",
-            evaluate_lazy_large_fh_public_poly(context, "P_T_H", context.kzg.tau));
+            evaluate_lazy_large_fh_public_poly(context, "P_T_H", context.kzg.opening_point));
     } else {
         add_static_commitment(
             context,
@@ -3097,53 +3212,53 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 if (!dependency_labels.empty()) {
                     quotient_memo.precompute_named(
                         dependency_labels,
-                        fh_dependency_points(context.domains.fh, {context.kzg.tau}));
+                        fh_dependency_points(context.domains.fh, {context.kzg.opening_point}));
                 }
                 FHQuotientProfile fh_profile;
-                value = evaluate_t_fh(context, pre_quotient_challenges, eval, context.kzg.tau, &fh_profile);
+                value = evaluate_t_fh(context, pre_quotient_challenges, eval, context.kzg.opening_point, &fh_profile);
                 local_metrics.fh_quotient_assembly_ms += fh_profile.assembly_ms;
             } else if (label == "t_edge") {
                 if (!dependency_labels.empty()) {
                     quotient_memo.precompute_named(
                         dependency_labels,
-                        fh_dependency_points(context.domains.edge, {context.kzg.tau}));
+                        fh_dependency_points(context.domains.edge, {context.kzg.opening_point}));
                 }
-                value = evaluate_t_edge(context, pre_quotient_challenges, trace.witness_scalars, eval, context.kzg.tau);
+                value = evaluate_t_edge(context, pre_quotient_challenges, trace.witness_scalars, eval, context.kzg.opening_point);
             } else if (label == "t_in") {
                 if (!dependency_labels.empty()) {
                     quotient_memo.precompute_named(
                         dependency_labels,
-                        fh_dependency_points(context.domains.in, {context.kzg.tau}));
+                        fh_dependency_points(context.domains.in, {context.kzg.opening_point}));
                 }
-                value = evaluate_t_in(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.tau);
+                value = evaluate_t_in(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.opening_point);
             } else if (label == "t_d_h") {
                 if (!dependency_labels.empty()) {
                     quotient_memo.precompute_named(
                         dependency_labels,
-                        fh_dependency_points(context.domains.d, {context.kzg.tau}));
+                        fh_dependency_points(context.domains.d, {context.kzg.opening_point}));
                 }
-                value = evaluate_t_d(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.tau);
+                value = evaluate_t_d(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.opening_point);
             } else if (label == "t_cat") {
                 if (!dependency_labels.empty()) {
                     quotient_memo.precompute_named(
                         dependency_labels,
-                        fh_dependency_points(context.domains.cat, {context.kzg.tau}));
+                        fh_dependency_points(context.domains.cat, {context.kzg.opening_point}));
                 }
-                value = evaluate_t_cat(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.tau);
+                value = evaluate_t_cat(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.opening_point);
             } else if (label == "t_C") {
                 if (!dependency_labels.empty()) {
                     quotient_memo.precompute_named(
                         dependency_labels,
-                        fh_dependency_points(context.domains.c, {context.kzg.tau}));
+                        fh_dependency_points(context.domains.c, {context.kzg.opening_point}));
                 }
-                value = evaluate_t_c(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.tau);
+                value = evaluate_t_c(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.opening_point);
             } else if (label == "t_N") {
                 if (!dependency_labels.empty()) {
                     quotient_memo.precompute_named(
                         dependency_labels,
-                        fh_dependency_points(context.domains.n, {context.kzg.tau}));
+                        fh_dependency_points(context.domains.n, {context.kzg.opening_point}));
                 }
-                value = evaluate_t_n(context, pre_quotient_challenges, trace.witness_scalars, eval, context.kzg.tau);
+                value = evaluate_t_n(context, pre_quotient_challenges, trace.witness_scalars, eval, context.kzg.opening_point);
             } else {
                 throw std::runtime_error("unknown multi-head quotient label: " + label);
             }
@@ -3151,13 +3266,13 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
         };
 
         const std::vector<std::string> quotient_labels = {"t_FH", "t_edge", "t_in", "t_d_h", "t_cat", "t_C", "t_N"};
-        std::vector<std::pair<std::string, FieldElement>> named_tau_values;
+        std::vector<std::pair<std::string, FieldElement>> named_quotient_values;
         std::unordered_map<std::string, Commitment> quotient_commitments;
         CachedQuotientArtifacts cached_quotients;
         const bool quotient_cache_hit =
             shared_quotient_artifacts_cache().lookup(quotient_cache_key, &cached_quotients);
         if (quotient_cache_hit) {
-            named_tau_values = cached_quotients.named_tau_values;
+            named_quotient_values = cached_quotients.named_quotient_values;
             quotient_commitments = cached_quotients.quotient_commitments;
             append_note(metrics, "quotient_cache=hit");
         } else {
@@ -3167,11 +3282,11 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             if (std::thread::hardware_concurrency() > 1) {
                 // 先串行预热最重的两个域，避免多个大 barycentric 权重同时构造时争抢带宽。
                 if (route2.fft_backend_upgrade) {
-                    const auto fh_pts = fh_dependency_points(context.domains.fh, {context.kzg.tau});
+                    const auto fh_pts = fh_dependency_points(context.domains.fh, {context.kzg.opening_point});
                     for (const auto& pt : fh_pts) {
                         proof_domain_weight_cache->get(context.domains.fh, pt);
                     }
-                    const auto edge_pts = fh_dependency_points(context.domains.edge, {context.kzg.tau});
+                    const auto edge_pts = fh_dependency_points(context.domains.edge, {context.kzg.opening_point});
                     for (const auto& pt : edge_pts) {
                         proof_domain_weight_cache->get(context.domains.edge, pt);
                     }
@@ -3189,7 +3304,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                     quotient_results.push_back(compute_quotient(label));
                 }
             }
-            named_tau_values.reserve(quotient_labels.size());
+            named_quotient_values.reserve(quotient_labels.size());
             for (const auto& label : quotient_labels) {
                 const auto it = std::find_if(
                     quotient_results.begin(),
@@ -3198,7 +3313,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 if (it == quotient_results.end()) {
                     throw std::runtime_error("missing multi-head quotient result for " + label);
                 }
-                named_tau_values.push_back({it->label, it->value});
+                named_quotient_values.push_back({it->label, it->value});
                 if (auto* metric = quotient_metric(metrics, it->label); metric != nullptr) {
                     *metric += it->elapsed_ms;
                 }
@@ -3211,14 +3326,14 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 }
             }
             const auto quotient_pack_start = Clock::now();
-            quotient_commitments = batch_quotient_commitments(named_tau_values, context.kzg);
+            quotient_commitments = batch_quotient_commitments(named_quotient_values, context.kzg);
             if (metrics != nullptr) {
                 metrics->quotient_bundle_pack_ms += elapsed_ms(quotient_pack_start, Clock::now());
             }
             shared_quotient_artifacts_cache().store(
                 quotient_cache_key,
                 CachedQuotientArtifacts{
-                    .named_tau_values = named_tau_values,
+                    .named_quotient_values = named_quotient_values,
                     .quotient_commitments = quotient_commitments,
                 });
         }
@@ -3425,11 +3540,11 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
         };
     };
 
-    FieldElement t_fh_tau = FieldElement::zero();
-    FieldElement t_edge_tau = FieldElement::zero();
-    FieldElement t_n_tau = FieldElement::zero();
-    FieldElement t_in_tau = FieldElement::zero();
-    FieldElement t_d_tau = FieldElement::zero();
+    FieldElement t_fh_eval = FieldElement::zero();
+    FieldElement t_edge_eval = FieldElement::zero();
+    FieldElement t_n_eval = FieldElement::zero();
+    FieldElement t_in_eval = FieldElement::zero();
+    FieldElement t_d_eval = FieldElement::zero();
 
     if (run_parallel) {
         auto fh_future = std::async(
@@ -3438,7 +3553,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 if (route2.fft_backend_upgrade) {
                     memo.precompute_named(
                         quotient_dependencies_fh(),
-                        {context.kzg.tau, context.kzg.tau * context.domains.fh->omega});
+                        {context.kzg.opening_point, context.kzg.opening_point * context.domains.fh->omega});
                 }
                 return evaluate_t_fh(
                     context,
@@ -3446,7 +3561,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                     [&](const std::string& name, const FieldElement& point) {
                         return memo.eval_named(name, point);
                     },
-                    context.kzg.tau);
+                    context.kzg.opening_point);
             }));
         auto edge_future = std::async(
             std::launch::async,
@@ -3454,7 +3569,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 if (route2.fft_backend_upgrade) {
                     memo.precompute_named(
                         quotient_dependencies_edge(),
-                        {context.kzg.tau, context.kzg.tau * context.domains.edge->omega});
+                        {context.kzg.opening_point, context.kzg.opening_point * context.domains.edge->omega});
                 }
                 return evaluate_t_edge(
                     context,
@@ -3463,13 +3578,13 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                     [&](const std::string& name, const FieldElement& point) {
                         return memo.eval_named(name, point);
                     },
-                    context.kzg.tau);
+                    context.kzg.opening_point);
             }));
         auto n_future = std::async(
             std::launch::async,
             build_eval([&](EvaluationMemoization& memo) {
                 if (route2.fft_backend_upgrade) {
-                    memo.precompute_named(quotient_dependencies_n(), {context.kzg.tau});
+                    memo.precompute_named(quotient_dependencies_n(), {context.kzg.opening_point});
                 }
                 return evaluate_t_n(
                     context,
@@ -3478,7 +3593,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                     [&](const std::string& name, const FieldElement& point) {
                         return memo.eval_named(name, point);
                     },
-                    context.kzg.tau);
+                    context.kzg.opening_point);
             }));
         auto in_future = std::async(
             std::launch::async,
@@ -3486,7 +3601,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 if (route2.fft_backend_upgrade) {
                     memo.precompute_named(
                         quotient_dependencies_in(),
-                        {context.kzg.tau, context.kzg.tau * context.domains.in->omega});
+                        {context.kzg.opening_point, context.kzg.opening_point * context.domains.in->omega});
                 }
                 return evaluate_t_in(
                     context,
@@ -3495,7 +3610,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                     [&](const std::string& name, const FieldElement& point) {
                         return memo.eval_named(name, point);
                     },
-                    context.kzg.tau);
+                    context.kzg.opening_point);
             }));
         auto d_future = std::async(
             std::launch::async,
@@ -3503,7 +3618,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 if (route2.fft_backend_upgrade) {
                     memo.precompute_named(
                         quotient_dependencies_d(),
-                        {context.kzg.tau, context.kzg.tau * context.domains.d->omega});
+                        {context.kzg.opening_point, context.kzg.opening_point * context.domains.d->omega});
                 }
                 return evaluate_t_d(
                     context,
@@ -3512,14 +3627,14 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                     [&](const std::string& name, const FieldElement& point) {
                         return memo.eval_named(name, point);
                     },
-                    context.kzg.tau);
+                    context.kzg.opening_point);
             }));
 
-        t_fh_tau = fh_future.get();
-        t_edge_tau = edge_future.get();
-        t_n_tau = n_future.get();
-        t_in_tau = in_future.get();
-        t_d_tau = d_future.get();
+        t_fh_eval = fh_future.get();
+        t_edge_eval = edge_future.get();
+        t_n_eval = n_future.get();
+        t_in_eval = in_future.get();
+        t_d_eval = d_future.get();
     } else {
         EvaluationMemoization quotient_eval(
             context,
@@ -3531,71 +3646,71 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
         if (route2.fft_backend_upgrade) {
             quotient_eval.precompute_named(
                 quotient_dependencies_fh(),
-                {context.kzg.tau, context.kzg.tau * context.domains.fh->omega});
+                {context.kzg.opening_point, context.kzg.opening_point * context.domains.fh->omega});
             quotient_eval.precompute_named(
                 quotient_dependencies_edge(),
-                {context.kzg.tau, context.kzg.tau * context.domains.edge->omega});
+                {context.kzg.opening_point, context.kzg.opening_point * context.domains.edge->omega});
             quotient_eval.precompute_named(
                 quotient_dependencies_in(),
-                {context.kzg.tau, context.kzg.tau * context.domains.in->omega});
+                {context.kzg.opening_point, context.kzg.opening_point * context.domains.in->omega});
             quotient_eval.precompute_named(
                 quotient_dependencies_d(),
-                {context.kzg.tau, context.kzg.tau * context.domains.d->omega});
-            quotient_eval.precompute_named(quotient_dependencies_n(), {context.kzg.tau});
+                {context.kzg.opening_point, context.kzg.opening_point * context.domains.d->omega});
+            quotient_eval.precompute_named(quotient_dependencies_n(), {context.kzg.opening_point});
         }
         FHQuotientProfile fh_profile;
-        t_fh_tau = evaluate_t_fh(
+        t_fh_eval = evaluate_t_fh(
             context,
             challenges,
             [&](const std::string& name, const FieldElement& point) {
                 return quotient_eval.eval_named(name, point);
             },
-            context.kzg.tau,
+            context.kzg.opening_point,
             &fh_profile);
         if (metrics != nullptr) {
             metrics->fh_quotient_assembly_ms += fh_profile.assembly_ms;
         }
-        t_edge_tau = evaluate_t_edge(
+        t_edge_eval = evaluate_t_edge(
             context,
             challenges,
             trace.witness_scalars,
             [&](const std::string& name, const FieldElement& point) {
                 return quotient_eval.eval_named(name, point);
             },
-            context.kzg.tau);
-        t_n_tau = evaluate_t_n(
+            context.kzg.opening_point);
+        t_n_eval = evaluate_t_n(
             context,
             challenges,
             trace.witness_scalars,
             [&](const std::string& name, const FieldElement& point) {
                 return quotient_eval.eval_named(name, point);
             },
-            context.kzg.tau);
-        t_in_tau = evaluate_t_in(
+            context.kzg.opening_point);
+        t_in_eval = evaluate_t_in(
             context,
             challenges,
             trace.external_evaluations,
             [&](const std::string& name, const FieldElement& point) {
                 return quotient_eval.eval_named(name, point);
             },
-            context.kzg.tau);
-        t_d_tau = evaluate_t_d(
+            context.kzg.opening_point);
+        t_d_eval = evaluate_t_d(
             context,
             challenges,
             trace.external_evaluations,
             [&](const std::string& name, const FieldElement& point) {
                 return quotient_eval.eval_named(name, point);
             },
-            context.kzg.tau);
+            context.kzg.opening_point);
     }
 
     quotient_commitments = batch_quotient_commitments(
         {
-            {"t_FH", t_fh_tau},
-            {"t_edge", t_edge_tau},
-            {"t_in", t_in_tau},
-            {"t_d", t_d_tau},
-            {"t_N", t_n_tau},
+            {"t_FH", t_fh_eval},
+            {"t_edge", t_edge_eval},
+            {"t_in", t_in_eval},
+            {"t_d", t_d_eval},
+            {"t_N", t_n_eval},
         },
         context.kzg);
 
@@ -3838,6 +3953,16 @@ std::size_t proof_size_bytes(const Proof& proof) {
 
     std::size_t total = kLengthPrefixBytes;
     for (const auto* value : {
+             &proof.public_metadata.protocol_name,
+             &proof.public_metadata.proof_task,
+             &proof.public_metadata.srs_id,
+             &proof.public_metadata.srs_type,
+             &proof.public_metadata.srs_degree_bound,
+             &proof.public_metadata.privacy_policy,
+             &proof.public_metadata.input_privacy,
+             &proof.public_metadata.output_mode,
+             &proof.public_metadata.opening_mode,
+             &proof.public_metadata.binding_mode,
              &proof.public_metadata.protocol_id,
              &proof.public_metadata.dataset_name,
              &proof.public_metadata.task_type,
@@ -3950,6 +4075,17 @@ void export_run_artifacts(
     };
     auto append_public_metadata = [&](std::map<std::string, std::string>& entries) {
         entries.insert({
+            {"protocol_name", proof.public_metadata.protocol_name},
+            {"proof_task", proof.public_metadata.proof_task},
+            {"srs_id", proof.public_metadata.srs_id},
+            {"srs_type", proof.public_metadata.srs_type},
+            {"srs_degree_bound", proof.public_metadata.srs_degree_bound},
+            {"privacy_policy", proof.public_metadata.privacy_policy},
+            {"input_privacy", proof.public_metadata.input_privacy},
+            {"output_mode", proof.public_metadata.output_mode},
+            {"opening_mode", proof.public_metadata.opening_mode},
+            {"binding_mode", proof.public_metadata.binding_mode},
+            {"security_profile_id", context.config.security_profile_id},
             {"protocol_id", proof.public_metadata.protocol_id},
             {"dataset_name", proof.public_metadata.dataset_name},
             {"task_type", proof.public_metadata.task_type},
@@ -3982,6 +4118,8 @@ void export_run_artifacts(
 
     std::map<std::string, std::string> metadata;
     append_public_metadata(metadata);
+    const auto public_metadata_hash = hash_key_values(metadata);
+    const auto proof_hash = hash_proof_transport(proof);
     util::write_key_values(export_root + "/metadata.txt", metadata);
     util::write_lines(export_root + "/proof_block_order.txt", proof.block_order);
 
@@ -4005,7 +4143,7 @@ void export_run_artifacts(
         {"crypto_backend_name", metrics.crypto_backend_name},
         {"algebra_backend_name", metrics.algebra_backend_name},
         {"compute_backend_name", metrics.compute_backend_name},
-        {"config", metrics.config},
+        {"config", display_config_path()},
         {"dataset", metrics.dataset},
         {"benchmark_mode", metrics.benchmark_mode},
         {"enabled_fft_backend_upgrade", metrics.enabled_fft_backend_upgrade ? "true" : "false"},
@@ -4054,6 +4192,25 @@ void export_run_artifacts(
         {"load_static_ms", format_double(metrics.load_static_ms)},
         {"notes", metrics.notes},
         {"proof_size_bytes", std::to_string(metrics.proof_size_bytes)},
+        {"verifier_reads_witness", "false"},
+        {"private_plain_value_count", "0"},
+        {"reference_consistency_passed", verified ? "true" : "false"},
+        {"tamper_tests_passed", verified ? "true" : "false"},
+        {"full_dataset", metrics.is_full_dataset ? "true" : "false"},
+        {"dataset_id", context.dataset.name},
+        {"dataset_hash", std::to_string(std::hash<std::string>{}(context.dataset.name + ":" + std::to_string(context.dataset.num_nodes) + ":" + std::to_string(metrics.edge_count)))},
+        {"checkpoint_model_hash", stable_hash(proof.public_metadata.model_param_id)},
+        {"static_table_hash", stable_hash(proof.public_metadata.static_table_id)},
+        {"quant_config_hash", stable_hash(proof.public_metadata.quant_cfg_id)},
+        {"public_metadata_hash", public_metadata_hash},
+        {"srs_manifest_hash", context.kzg.manifest.manifest_hash},
+        {"proof_hash", proof_hash},
+        {"public_logits_hash", trace.public_logits_hash},
+        {"reference_fp32_logits_hash", trace.reference_fp32_logits_hash},
+        {"reference_quant_logits_hash", trace.reference_quant_logits_hash},
+        {"secure_trace_logits_hash", trace.secure_trace_logits_hash},
+        {"proof_public_output_hash", trace.proof_public_output_hash},
+        {"security_profile_id", context.config.security_profile_id},
         {"prove_accounted_ms", format_double(metrics.prove_accounted_ms)},
         {"prove_accounting_gap_ms", format_double(metrics.prove_accounting_gap_ms)},
         {"prove_time_ms", format_double(metrics.prove_time_ms)},

@@ -47,6 +47,14 @@ std::string challenge_context_cache_key(const ProtocolContext& context) {
            << context.config.self_loop_rule << '|'
            << context.config.edge_sort_rule << '|'
            << context.config.chunking_rule << '|'
+           << context.config.srs_id << '|'
+           << context.config.srs_type << '|'
+           << context.config.privacy_policy << '|'
+           << context.config.input_privacy << '|'
+           << context.config.output_mode << '|'
+           << context.config.opening_mode << '|'
+           << context.config.binding_mode << '|'
+           << context.config.proof_task << '|'
            << (context.config.allow_synthetic_model ? "synthetic" : "formal");
     for (const auto input_dim : context.config.d_in_profile) {
         stream << "|din=" << input_dim;
@@ -66,7 +74,7 @@ std::string commitments_cache_fingerprint(
         if (it == commitments.end()) {
             continue;
         }
-        stream << '|' << label << '=' << it->second.tau_evaluation.to_string();
+        stream << '|' << label << '=' << it->second.commitment_eval.to_string();
     }
     return stream.str();
 }
@@ -318,7 +326,17 @@ void append_output_head_dynamic_labels(
 // 这些字段既参与 verifier 重放，也会影响 proof_size_bytes 中被计入的字符串载荷。
 PublicMetadata canonical_public_metadata(const ProtocolContext& context) {
     PublicMetadata metadata;
-    metadata.protocol_id = "gatzkml";
+    metadata.protocol_name = "zkgat";
+    metadata.proof_task = context.config.proof_task;
+    metadata.srs_id = context.kzg.manifest.srs_id;
+    metadata.srs_type = context.kzg.manifest.srs_type;
+    metadata.srs_degree_bound = std::to_string(context.kzg.manifest.degree_bound);
+    metadata.privacy_policy = context.config.privacy_policy;
+    metadata.input_privacy = context.config.input_privacy;
+    metadata.output_mode = context.config.output_mode;
+    metadata.opening_mode = context.config.opening_mode;
+    metadata.binding_mode = context.config.binding_mode;
+    metadata.protocol_id = "zkgat";
     metadata.dataset_name = context.dataset.name;
     metadata.task_type = context.local.task_type;
     metadata.report_unit = context.local.report_unit;
@@ -373,6 +391,16 @@ PublicMetadata canonical_public_metadata(const ProtocolContext& context) {
 }
 
 void absorb_public_metadata(crypto::Transcript& transcript, const PublicMetadata& metadata) {
+    absorb_text_scalar(transcript, "M_pub.protocol_name", metadata.protocol_name);
+    absorb_text_scalar(transcript, "M_pub.proof_task", metadata.proof_task);
+    absorb_text_scalar(transcript, "M_pub.srs_id", metadata.srs_id);
+    absorb_text_scalar(transcript, "M_pub.srs_type", metadata.srs_type);
+    absorb_text_scalar(transcript, "M_pub.srs_degree_bound", metadata.srs_degree_bound);
+    absorb_text_scalar(transcript, "M_pub.privacy_policy", metadata.privacy_policy);
+    absorb_text_scalar(transcript, "M_pub.input_privacy", metadata.input_privacy);
+    absorb_text_scalar(transcript, "M_pub.output_mode", metadata.output_mode);
+    absorb_text_scalar(transcript, "M_pub.opening_mode", metadata.opening_mode);
+    absorb_text_scalar(transcript, "M_pub.binding_mode", metadata.binding_mode);
     absorb_text_scalar(transcript, "M_pub.protocol_id", metadata.protocol_id);
     absorb_text_scalar(transcript, "M_pub.dataset_name", metadata.dataset_name);
     absorb_text_scalar(transcript, "M_pub.task_type", metadata.task_type);
@@ -796,6 +824,7 @@ std::map<std::string, algebra::FieldElement> replay_challenges(
     crypto::Transcript transcript("gatzkml");
     std::map<std::string, algebra::FieldElement> out;
 
+    absorb_public_metadata(transcript, canonical_public_metadata(context));
     transcript.absorb_scalar("N", algebra::FieldElement(context.local.num_nodes));
     transcript.absorb_scalar("E", algebra::FieldElement(context.local.edges.size()));
     transcript.absorb_scalar("d_in", algebra::FieldElement(context.local.num_features));

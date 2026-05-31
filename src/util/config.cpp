@@ -121,11 +121,21 @@ void validate_supported_keys(const std::unordered_map<std::string, std::string>&
         "range_bits",
         "reference_output_dir",
         "report_unit",
+        "binding_mode",
         "seed",
         "self_loop_rule",
+        "security_profile_id",
+        "srs_id",
+        "srs_path",
+        "srs_type",
         "static_table_id",
         "symmetrize_edges",
         "task_type",
+        "input_privacy",
+        "opening_mode",
+        "output_mode",
+        "privacy_policy",
+        "proof_task",
     };
     for (const auto& [key, value] : entries) {
         (void)value;
@@ -163,6 +173,27 @@ void validate_config(const AppConfig& config) {
     }
     if (config.num_classes == 0) {
         throw std::runtime_error("C/num_classes must be >= 1");
+    }
+    if (config.srs_type != "trusted_srs" && config.srs_type != "mpc_srs") {
+        throw std::runtime_error("secure mainline only accepts trusted_srs or mpc_srs");
+    }
+    if (config.privacy_policy != "model_and_trace_hidden") {
+        throw std::runtime_error("secure mainline requires privacy_policy=model_and_trace_hidden");
+    }
+    if (config.input_privacy != "public_graph_public_features") {
+        throw std::runtime_error("secure mainline requires input_privacy=public_graph_public_features");
+    }
+    if (config.output_mode != "public_logits") {
+        throw std::runtime_error("secure mainline requires output_mode=public_logits");
+    }
+    if (config.opening_mode != "domain_grouped_batch_opening") {
+        throw std::runtime_error("secure mainline requires opening_mode=domain_grouped_batch_opening");
+    }
+    if (config.binding_mode != "zk_subproof_for_crpc") {
+        throw std::runtime_error("secure mainline requires binding_mode=zk_subproof_for_crpc");
+    }
+    if (config.proof_task != "node_classification_full_gat") {
+        throw std::runtime_error("secure mainline requires proof_task=node_classification_full_gat");
     }
     for (std::size_t layer_index = 0; layer_index < config.hidden_profile.size(); ++layer_index) {
         const auto& layer = config.hidden_profile[layer_index];
@@ -236,6 +267,16 @@ AppConfig load_config(const std::string& path) {
     if (entries.contains("model_param_id")) config.model_param_id = entries["model_param_id"];
     if (entries.contains("static_table_id")) config.static_table_id = entries["static_table_id"];
     if (entries.contains("degree_bound_id")) config.degree_bound_id = entries["degree_bound_id"];
+    if (entries.contains("srs_type")) config.srs_type = entries["srs_type"];
+    if (entries.contains("srs_id")) config.srs_id = entries["srs_id"];
+    if (entries.contains("srs_path")) config.srs_path = entries["srs_path"];
+    if (entries.contains("privacy_policy")) config.privacy_policy = entries["privacy_policy"];
+    if (entries.contains("input_privacy")) config.input_privacy = entries["input_privacy"];
+    if (entries.contains("output_mode")) config.output_mode = entries["output_mode"];
+    if (entries.contains("opening_mode")) config.opening_mode = entries["opening_mode"];
+    if (entries.contains("binding_mode")) config.binding_mode = entries["binding_mode"];
+    if (entries.contains("proof_task")) config.proof_task = entries["proof_task"];
+    if (entries.contains("security_profile_id")) config.security_profile_id = entries["security_profile_id"];
     if (entries.contains("hidden_dim")) config.hidden_dim = std::stoull(entries["hidden_dim"]);
     if (entries.contains("num_classes")) config.num_classes = std::stoull(entries["num_classes"]);
     if (entries.contains("range_bits")) config.range_bits = std::stoull(entries["range_bits"]);

@@ -1,5 +1,8 @@
 #include "gatzk/protocol/schema.hpp"
 
+#include "gatzk/protocol/challenges.hpp"
+#include "gatzk/protocol/proof.hpp"
+
 // 本文件实现正式 proof schema 的命名与顺序规则。
 // 任何标签拼接方式变化都会影响 trace、proof、artifact 与 verifier 的一致性。
 
@@ -19,6 +22,41 @@ const std::vector<std::string>& proof_block_order() {
         "Pi_bind",
     };
     return order;
+}
+
+ProofSchema build_proof_schema(const ProtocolContext& context) {
+    ProofSchema schema;
+    auto add = [&](std::string tag, std::string domain, PolynomialVisibility visibility, bool commitment, bool opening, bool quotient) {
+        schema.entries.push_back(ProofSchemaEntry{
+            .tag = std::move(tag),
+            .domain = std::move(domain),
+            .visibility = visibility,
+            .opening_policy = context.config.opening_mode,
+            .binding_mode = context.config.binding_mode,
+            .enters_commitment = commitment,
+            .enters_opening = opening,
+            .enters_quotient = quotient,
+        });
+    };
+    for (const auto& label : dynamic_commitment_labels(context)) {
+        const auto visibility =
+            label == "P_H" ? PolynomialVisibility::Public
+            : (label == "P_Y" || label.rfind("P_Y_", 0) == 0 ? PolynomialVisibility::PublicOutput
+                                                              : PolynomialVisibility::PrivateWitness);
+        add(label, "dynamic", visibility, true, true, true);
+    }
+    for (const auto& label : quotient_commitment_labels(context)) {
+        add(label, "quotient", PolynomialVisibility::PrivateWitness, true, true, true);
+    }
+    schema.private_plain_value_count = 0;
+    return schema;
+}
+
+bool schema_accepts_evaluation(PolynomialVisibility visibility, EvaluationKind kind) {
+    if (visibility == PolynomialVisibility::PrivateWitness) {
+        return kind == EvaluationKind::MaskedPrivateValue;
+    }
+    return kind == EvaluationKind::PublicValue;
 }
 
 std::string hidden_head_prefix(std::size_t global_head_index) {
