@@ -1,12 +1,12 @@
 {
   "artifact_path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/pubmed",
   "backend": "cpu",
-  "commitment_time_ms": 7120.93258893583,
+  "commitment_time_ms": 71225.69014801411,
   "dataset": "pubmed",
-  "forward_time_ms": 346.761332009919,
-  "proof_size_bytes": 21021,
-  "prove_time_ms": 7663.309060968459,
+  "forward_time_ms": 189.83820400899276,
+  "proof_size_bytes": 32313573,
+  "prove_time_ms": 106666.18147899862,
   "status": "VERIFY_OK",
-  "verify_time_ms": 1.5430629719048738,
-  "wall_time_ms": 8939.427841978613
+  "verify_time_ms": 652.4716530111618,
+  "wall_time_ms": 107562.00875598006
 }

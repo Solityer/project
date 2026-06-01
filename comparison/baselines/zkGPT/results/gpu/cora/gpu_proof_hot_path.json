@@ -5,11 +5,11 @@
   "device_count": 1,
   "device_name": "NVIDIA GB10",
   "gpu_runtime_present": true,
-  "helper_stdout": "cuda_proof_reduce_ok device=\"NVIDIA GB10\" items=58 mix=983c5c1893fb1bd1",
-  "items_processed": 58,
+  "helper_stdout": "cuda_proof_reduce_ok device=\"NVIDIA GB10\" items=5838 mix=8bb0a12cafa17272",
+  "items_processed": 5838,
   "label": "cora:gpu:proof",
-  "mix64_hex": "983c5c1893fb1bd1",
+  "mix64_hex": "8bb0a12cafa17272",
   "proof_hot_path": true,
-  "sum64_hex": "88b6a76138ee6d0f",
-  "xor64_hex": "178c3abbddcd766d"
+  "sum64_hex": "375b62d1d9e75baf",
+  "xor64_hex": "22f5f209d5c06266"
 }

@@ -9,6 +9,6 @@ Official tables:
 - `cpu_results.csv`
 - `gpu_results.csv`
 
-Each dataset/backend directory includes metadata, commitments, transcript, lookup proof, matrix sumcheck proof, GKR proof, Hyrax/MLE openings, masked openings, final proof payload, verifier output, witness manifest, benchmark summary, and run manifest.
+Each dataset/backend directory includes metadata, full chunked segment commitments, transcript, lookup proof, matrix sumcheck proof, GKR proof, Hyrax/MLE openings, masked openings, final proof payload, verifier output, witness manifest, benchmark summary, and run manifest.
 
-`proof_size_bytes` is the canonical serialized `proof_payload.json` payload size. Witness manifests and audit metadata are not counted.
+`proof_size_bytes` is the canonical serialized `proof_payload.json` payload size, including verifier-facing proof messages. Witness manifests, raw witness materialization, datasets, checkpoints, logs, and audit metadata are not counted.

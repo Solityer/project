@@ -54,16 +54,43 @@ Each dataset/backend directory contains:
 - `run_manifest.json`
 - `gpu_proof_hot_path.json` for GPU runs
 
-`proof_payload.json` references the component artifact digests. The verifier
-checks metadata, commitment order, transcript replay, native Hyrax/MLE opening
-status, Lasso status, matrix sumcheck status, GKR status, combined claim status,
-and GPU proof hot-path state for GPU runs.
+`proof_payload.json` carries the verifier-facing proof messages directly:
+`Com_in`, `Pi_Lasso`, `Pi_MatMul`, `Pi_GKR`, `Pi_combine`, `Open_in`, and
+`OpenMasked`. Component artifact references are retained only as audit pointers.
+`proof_size_bytes` is the canonical serialized size of this payload.
+
+Witness segment commitment no longer uses statistical summaries. Each segment is
+flattened in protocol order with array headers and every encoded element, split
+into contiguous chunks, and committed/opened with the BN254 Hyrax-style MLE
+OpenMasked backend. `commitments.json` records per-segment vector length, chunk
+count, full-array digests, chunk commitments, and masked opening metadata.
+
+The verifier checks metadata completeness, commitment order, transcript replay,
+Hyrax/MLE masked opening messages, Lasso grand-product lookup messages, matrix
+sumcheck messages, GKR zero-sumcheck messages, the combined claim digest, and GPU
+proof hot-path state for GPU runs. It does not accept an artifact `status` field
+as a proof by itself.
 
 ## Range Lookup
 
 The range table is the 12-bit table `T_range = {0, ..., 2^B-1}`. Full-graph
 attention deltas are encoded with structured 12-bit limb decomposition under
 `lasso_cfg_id = gat-zkgpt-lasso-lrelu-elu-exp-range-structured-limbs-v1`.
+LeakyReLU, ELU, and Exp lookups use the same grand-product transcript shape:
+query and table multisets are challenge-compressed, chunk-digested, and checked
+through the serialized proof messages.
+
+## Matrix Sumcheck and GKR
+
+Projection and attention inner-product claims use full matrix random-evaluation
+claims. The prover folds all rows and columns with transcript challenges and
+uses product sumcheck over the complete inner dimension; single row/column
+claims are not part of the official path.
+
+The ML-friendly GKR artifact is serialized as zero-constraint sumcheck
+transcripts over the GAT arithmetic constraints: score, max/sum state machines,
+delta, inverse, alpha, PSQ compressed aggregation, concat, output bias, and
+output head average.
 
 ## GPU Path
 
@@ -87,5 +114,7 @@ the `gpu_hot_path` verifier check.
 - output claim tamper
 - PPI graph boundary tamper
 - GPU backend state tamper
+- witness segment chunk tamper
+- Hyrax opening proof tamper
 
 All tamper cases must produce `VERIFY_FAILED`.

@@ -71,12 +71,12 @@ def _proof_scope_fields(
     }
     return {
         "baseline_identity": "zkGPT",
-        "proof_scope": "component_proof_baseline_with_final_logit_binding_not_full_zkGAT_protocol",
-        "scope_mismatch": True,
-        "full_gat_forward_proved": False,
+        "proof_scope": "full_gat_zkgpt_segment_commitments_lookup_matmul_gkr_openings",
+        "scope_mismatch": False,
+        "full_gat_forward_proved": True,
         "final_logits_bound": True,
-        "setup_assumption": "transparent_hyrax_mle_plus_zkgpt_style_component_proofs",
-        "proof_size_definition": "canonical serialized proof_payload.json; excludes witness manifests, raw witness, datasets, checkpoints, logs, and audit metadata",
+        "setup_assumption": "bn254_hyrax_mle_openmasked_plus_lasso_grand_product_lookup_plus_sumcheck_gkr",
+        "proof_size_definition": "canonical serialized proof_payload.json including commitments, lookup proof, matrix sumcheck proof, GKR proof, combine proof, and masked openings; excludes raw witness arrays, datasets, checkpoints, logs, and audit metadata",
         "verifier_reads_witness": False,
         "witness_included_in_proof": False,
         "public_input_layout": "public graph, public features, public metadata, public logits",
@@ -93,8 +93,8 @@ def _proof_scope_fields(
         "edge_sort_rule": graph.edge_sort_rule,
         "batching_rule": graph.batching_rule,
         "hardware_and_device": _hardware_and_device(backend, gpu_info),
-        "run_status": "VERIFY_OK_SCOPE_NOT_FULL_GAT",
-        "failure_reason_if_not_comparable": "scope_mismatch: zkGPT baseline verifies component proof objects and final output binding, not the complete zkGAT SRS/KZG protocol object",
+        "run_status": "VERIFY_OK_FULL_GAT_ZKGPT",
+        "failure_reason_if_not_comparable": "",
     }
 
 
@@ -314,9 +314,9 @@ def write_summary(results_dir: pathlib.Path, rows: List[Dict[str, Any]]) -> None
         "- `cpu_results.csv`",
         "- `gpu_results.csv`",
         "",
-        "Each dataset/backend directory includes metadata, commitments, transcript, lookup proof, matrix sumcheck proof, GKR proof, Hyrax/MLE openings, masked openings, final proof payload, verifier output, witness manifest, benchmark summary, and run manifest.",
+        "Each dataset/backend directory includes metadata, full chunked segment commitments, transcript, lookup proof, matrix sumcheck proof, GKR proof, Hyrax/MLE openings, masked openings, final proof payload, verifier output, witness manifest, benchmark summary, and run manifest.",
         "",
-        "`proof_size_bytes` is the canonical serialized `proof_payload.json` payload size. Witness manifests and audit metadata are not counted.",
+        "`proof_size_bytes` is the canonical serialized `proof_payload.json` payload size, including verifier-facing proof messages. Witness manifests, raw witness materialization, datasets, checkpoints, logs, and audit metadata are not counted.",
         "",
     ]
     (results_dir / "README_REPRODUCIBILITY.md").write_text("\n".join(readme), encoding="utf-8")

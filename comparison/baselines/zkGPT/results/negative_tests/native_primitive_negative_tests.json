@@ -79,6 +79,16 @@
       "actual": "VERIFY_FAILED",
       "case": "gpu_backend_state_tamper",
       "expected": "VERIFY_FAILED"
+    },
+    {
+      "actual": "VERIFY_FAILED",
+      "case": "witness_segment_chunk_tamper",
+      "expected": "VERIFY_FAILED"
+    },
+    {
+      "actual": "VERIFY_FAILED",
+      "case": "hyrax_opening_proof_tamper",
+      "expected": "VERIFY_FAILED"
     }
   ],
   "status": "PASS"

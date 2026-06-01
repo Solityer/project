@@ -11,8 +11,8 @@ public metadata, transcript order, proof object layout, and verifier acceptance 
   - `data.py`: cached dataset loading, full-graph normalization, self-loop insertion, edge sorting, `node_ptr`/`edge_ptr`.
   - `model.py`: checkpoint bundle reader and multi-layer/multi-head GAT parameter adapter.
   - `forward.py`: sparse full-graph GAT witness generation.
-  - `proof.py`: official GAT-ZKML-zkGPT proof assembly, native Hyrax/MLE commitments, Lasso lookup artifacts, matrix sumcheck artifacts, GKR constraint artifacts, combine payload, and independent verifier checks.
-  - `field.py` / `native_hyrax.py`: BN254 field encoding and wrapper for the native mcl Hyrax/MLE backend.
+  - `proof.py`: official GAT-ZKML-zkGPT proof assembly, full witness segment chunking, Hyrax/MLE masked openings, Lasso lookup proofs, matrix sumcheck proofs, GKR transcripts, combine payload, and independent verifier checks.
+  - `field.py` / `native_hyrax.py`: BN254 field encoding and Hyrax-style row/column MLE OpenMasked backend.
   - `backend.py`: CPU/GPU backend selection; GPU runs execute the CUDA proof-claim reduction path.
 - `backend/cuda/`: local CUDA proof reduction kernel used by GPU proof runs.
 - `backend/native/`: native mcl BN254 Hyrax/MLE commitment and opening backend.
@@ -42,6 +42,13 @@ main repository `gatzk_run` binary.
 ./scripts/run_gat_zkgpt_all.sh --force
 ```
 
+If runs were executed in batches, rebuild the unified CPU/GPU summary from the
+existing artifact directories with:
+
+```bash
+./scripts/rebuild_summary_from_artifacts.py
+```
+
 The official result table is `results/summary.csv`. It contains five full CPU
 runs and five full GPU runs: cora, citeseer, pubmed, ppi, and ogbn-arxiv.
 Each dataset/backend directory contains:
@@ -62,7 +69,8 @@ Each dataset/backend directory contains:
 - `run_manifest.json`
 
 `proof_size_bytes` is `len(canonical_json(proof_payload))`. Audit metadata and witness
-materialization records are not counted.
+materialization records are not counted. The payload includes the verifier-facing
+proof messages, not just artifact references.
 
 Run negative tests with:
 
