@@ -1,13 +1,37 @@
 {
   "families": [
     {
-      "beta": "16765275477027839401903990227459454226",
+      "beta": "5849610616945855752787749377675281796",
       "eta": "0",
       "family": "hidden.l1.h0.range_delta",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 4096,
+            "sha256": "2fbd6f09859cf24d41b61aadd7d33d331ead73c361621bb6b4be7162f1955990"
+          }
+        ],
+        "domain_policy": "all limbs in [0,4095]",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "entry_count": 4096,
+        "fixed_scale": 1000000,
+        "function": "Range",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "81349dd6ee46cdb04201a3f27e71807198a4595fdef87b6cf7f15be9e3d39d7b",
+        "table_digest": "d62d4412bb517e8d149f19a13d19ba3261c3ef4a6d8774c4bb0b842cfcb67ede",
+        "table_id": "T_range",
+        "table_kind": "materialized_fixed_range_table",
+        "table_materialization": "preprocessed fixed limb table"
+      },
+      "fixed_table_digest": "d62d4412bb517e8d149f19a13d19ba3261c3ef4a6d8774c4bb0b842cfcb67ede",
       "limb_count": 2,
       "max_limb": 4095,
       "min_input_nonnegative": true,
       "mismatch_count": 0,
+      "product_digest": "1f0793d41b297824954731b690b601589b62b31c659f8f2eb57e505dfb1a3c74",
       "query_chunks": [
         {
           "chunk_index": 0,
@@ -31,161 +55,394 @@
         }
       ],
       "query_count": 26528,
-      "query_product": "1846814108829140222265926055957360806857455331482426965873637585482882239547",
+      "query_product": "6931014113552247410897665930221061365670098194958463977944428971026188780836",
       "range_bits": 12,
-      "relation": "range_limb_membership_grand_product",
+      "raw_query_digest": "24fe68351595263c7e4620914284fb5ebe0e591832cf208d7d822d5183918d33",
+      "relation": "range_limb_membership_in_fixed_table",
       "status": "VERIFY_OK",
-      "table": "T_range[0,4095]",
+      "table": "T_range",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "06dea4662b32b9fc7c26b1cf41a31a343b34c17ba28f8b7c203511d9af325aa0"
-        },
-        {
-          "chunk_index": 1,
-          "count": 8192,
-          "sha256": "ccfee823e515e67c30e258aa63bd69f6d0afd791b2efbe0e836338719663d3bc"
-        },
-        {
-          "chunk_index": 2,
-          "count": 8192,
-          "sha256": "7b5ca5111201a8c8b89e101065d1f4303a81b4109b0ca9712ae9458c81420e03"
-        },
-        {
-          "chunk_index": 3,
-          "count": 1952,
-          "sha256": "befcb2ae80796f1b7b091dd7ec6d5c95686df5a89184f95ce604abd47bee1d0b"
+          "count": 4096,
+          "sha256": "2fbd6f09859cf24d41b61aadd7d33d331ead73c361621bb6b4be7162f1955990"
         }
       ],
-      "table_product": "1846814108829140222265926055957360806857455331482426965873637585482882239547"
+      "table_product": "3550700797824930225934288384576057829245112870333795345353067974059678600134",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "107648485743937408452582566176304769092",
-      "eta": "143347058145410248900479527982860441804",
-      "family": "hidden.l1.h0.LeakyReLU",
-      "mismatch_count": 0,
-      "query_chunks": [
+      "beta": "68920951544683298275743109649996204402",
+      "eta": "194343728451550232374324367111685110558",
+      "expected_y_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "2786232939bf285b64f64563fc2419626d93f42455920860f69d736caf72e676"
+          "sha256": "ea80c5198072a2a207e4c0f50450071f3eb14eee6e737be7ebbc093bf8e102a3"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "34f10c1c0d4f885db075d43de1a04afa0f5048cc789be30af7b0da03d910a0a5"
+          "sha256": "7c5b9a0256b662b2919e84652561e7b9437bbcae2e568506c5a8f2607abb4bda"
+        }
+      ],
+      "family": "hidden.l1.h0.LeakyReLU",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "b56c9c284e0a06f175caec0633ab3f78b4d28a54f173547408cfa86a85e7ebf7"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=x if x>=0 else round(0.2*x)",
+        "fixed_scale": 1000000,
+        "function": "LeakyReLU",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "1e0127206f6b5126459c9ceed8c7a4bd69e4258a1d27889c0124a39c3c824ae3",
+        "table_digest": "9f771dd25350823c42f3ea1b8ce6a97f6451e94bc229183af188f5ba4eb43c95",
+        "table_id": "T_LReLU",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "9f771dd25350823c42f3ea1b8ce6a97f6451e94bc229183af188f5ba4eb43c95",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 0,
+      "mismatch_count": 0,
+      "product_digest": "0815d35c8f059744008edf376585693609883cd84385dc60d13320b91ef21712",
+      "query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "21a7de27050a6d79d85140aaed9ffefd79a6da6b4f2f3f36ea85cba0c6f63a97"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "62afe6a1a01b308c0f829fe270560c56b0489337ec4cda7e1660d418b778f3e0"
         }
       ],
       "query_count": 13264,
-      "query_product": "3649102535234136778696719339680729099189034918009618972486958949263865805703",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "3756109552788564441857229220456417739395240047058632179712197770567315950218",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "de5fd1d33cadb2500875ca186df0c7202bfb6331bf5be4782be6cc0cbad5c6a9"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "4d5e8c4bcb4574060b4dcd7bda82f0798df91f6ebcb39cac054dae9078c2ecb9"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "314abbb34e8829fdb997d2f76162da2ae5eb95b417d82533e558b3748a4ae3bb"
+        },
+        {
+          "chunk_index": 3,
+          "count": 1952,
+          "sha256": "36c704545dbfe0afb99118e45042d0af8a7bc485cabc875d49639c66f4b6768e"
+        }
+      ],
+      "raw_query_digest": "c4a5e536e131d66ebe2344c57ca50fcbc83b683a54f3c265d6a9279dc595008c",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "21a7de27050a6d79d85140aaed9ffefd79a6da6b4f2f3f36ea85cba0c6f63a97"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "62afe6a1a01b308c0f829fe270560c56b0489337ec4cda7e1660d418b778f3e0"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_LReLU",
       "table_chunks": [
         {
           "chunk_index": 0,
+          "count": 0,
+          "sha256": "b56c9c284e0a06f175caec0633ab3f78b4d28a54f173547408cfa86a85e7ebf7"
+        }
+      ],
+      "table_product": "3756109552788564441857229220456417739395240047058632179712197770567315950218",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
+    },
+    {
+      "beta": "8574095175215039082960446612981941583",
+      "eta": "33286709060440260209142576945958746276",
+      "expected_y_chunks": [
+        {
+          "chunk_index": 0,
           "count": 8192,
-          "sha256": "2786232939bf285b64f64563fc2419626d93f42455920860f69d736caf72e676"
+          "sha256": "e72f661d6e45cb58e0dd3fa3995851b203d190a3f8f004e8bcace4de23c3cde8"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "34f10c1c0d4f885db075d43de1a04afa0f5048cc789be30af7b0da03d910a0a5"
+          "sha256": "65c021c0b88f54a6478980b5bcee8c7042e508b0c89e175850d2d0b8c03bd182"
         }
       ],
-      "table_product": "3649102535234136778696719339680729099189034918009618972486958949263865805703"
-    },
-    {
-      "beta": "237357383558752569004652010506439753600",
-      "eta": "184031945608899748600294548791453667160",
       "family": "hidden.l1.h0.ExpMap",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "c39609850895ee6a43b739a1016a4b9e28238815c2f3f782c5aad201cfd769ea"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=round(exp(-x)) for nonnegative x",
+        "fixed_scale": 1000000,
+        "function": "ExpMap",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "0bf5a672fc4ec4e64683eff895a246c27c084fb14152ff0f01964f76872a1870",
+        "table_digest": "6a415cc10c6d7e800888963e0ee6a3c760844dbf3f729a6c87b73a98a2c2a6bc",
+        "table_id": "T_exp",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "6a415cc10c6d7e800888963e0ee6a3c760844dbf3f729a6c87b73a98a2c2a6bc",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 1,
       "mismatch_count": 0,
+      "product_digest": "d01298b8b5842152659950d2bf4f3729fb5ea701cca0b1fcdc2011b27d97772e",
       "query_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "741a3a7174fadd608707500f46833cc97eba8e04f3c92199ef2ab837b2e5b0fa"
+          "sha256": "9b4ddb1dfd8fea44ac3cde95d678487dbf0d6df45c251a214623cd3074e01efc"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "70d54b62dd04f1089188f20a3a497ca146358e69abbd8d7b82f1a1813a14263a"
+          "sha256": "fa88047295e0ae5175193438f1533e282a8a92b8aa2b1e6154cabc8b9bd5c945"
         }
       ],
       "query_count": 13264,
-      "query_product": "21133483669703256100461183506217314366829129198799511260166641762699740861973",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "1088384455621794685877052784431673751421395780746768171399482828091335763735",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "b6fcf50226fb7190f54d04e7fbaa01d03049bcd7328b9c8271856cc25dbadac2"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "019269feaad495652ae49fd93b93b5fda3e410fe313332ed3c1303e5001befc2"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "bb76db98aa57c0c8dfea27de12c812b1dd5f6c7ce0e2936c3880c7026de6df12"
+        },
+        {
+          "chunk_index": 3,
+          "count": 1952,
+          "sha256": "daf7ddfaf70d7dcb5efb454f2cffecbaf775571a759814229a3aff7bf32c32e4"
+        }
+      ],
+      "raw_query_digest": "e3ca9a2ff8a885ae22ce6d35d6db0149da7e7de8f3a3182ba8bcb3a1bbc5d8f5",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "9b4ddb1dfd8fea44ac3cde95d678487dbf0d6df45c251a214623cd3074e01efc"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "fa88047295e0ae5175193438f1533e282a8a92b8aa2b1e6154cabc8b9bd5c945"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_exp",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "741a3a7174fadd608707500f46833cc97eba8e04f3c92199ef2ab837b2e5b0fa"
-        },
-        {
-          "chunk_index": 1,
-          "count": 5072,
-          "sha256": "70d54b62dd04f1089188f20a3a497ca146358e69abbd8d7b82f1a1813a14263a"
+          "count": 0,
+          "sha256": "c39609850895ee6a43b739a1016a4b9e28238815c2f3f782c5aad201cfd769ea"
         }
       ],
-      "table_product": "21133483669703256100461183506217314366829129198799511260166641762699740861973"
+      "table_product": "1088384455621794685877052784431673751421395780746768171399482828091335763735",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "194576540692216349364016981397633757108",
-      "eta": "68386140123703542219846027635710587911",
-      "family": "hidden.l1.h0.ELU",
-      "mismatch_count": 0,
-      "query_chunks": [
+      "beta": "173692978319048378116726289860209168559",
+      "eta": "126760587720245720897033262744509997440",
+      "expected_y_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "6bb5234f3335f48893841cc293fbd8d11905387418b037feed6f67485ae64d5e"
+          "sha256": "045a10224ba7bf495b7266af90c3a7fc3315f654019a703ccde84c36c0522088"
         },
         {
           "chunk_index": 1,
           "count": 8192,
-          "sha256": "176d0fff6e3b8a1c90d59e8dd572caf0ef5946475aeb09a5907baa261983506e"
+          "sha256": "777f683d0cb0f1bde692b39b20f8cc92afa0068681259d59b9c9851256a8e483"
         },
         {
           "chunk_index": 2,
           "count": 5280,
-          "sha256": "d97fe4010509727e47dce69b21bc7e1b76bfc87614d9a32702697304b1d418c2"
+          "sha256": "adb02e82e2f2dcef11caad4528bcfd712d71923f9b2e2b7891ed4c1cf123a3c4"
+        }
+      ],
+      "family": "hidden.l1.h0.ELU",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "309e78486a50b77cf1029ec7a0d26e8415ab88a7cd685174fb7570f7cf4db3a4"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=x if x>=0 else round(exp(x)-1)",
+        "fixed_scale": 1000000,
+        "function": "ELU",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "ee2c2aec3886066b1a7889f5fa115c969079490d534b34455a65bdc72939e970",
+        "table_digest": "e077a16f476d0fb45405fe8f653fffcbace8c0a5206142572adb944175d867c0",
+        "table_id": "T_ELU",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "e077a16f476d0fb45405fe8f653fffcbace8c0a5206142572adb944175d867c0",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 1,
+      "mismatch_count": 0,
+      "product_digest": "cec3c29cf98a9e02a6a5bc9d5fe97a5deb84b2ca950742a9dbafe986ec90267e",
+      "query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "df9ae8533c5e84b09546c6f12b5623e604a0b9e60f322b896ba5e12f373eca3e"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "75ced43b3e47d0bb24225e8d80794a3585bf7bc230020321af03c5d37e40572a"
+        },
+        {
+          "chunk_index": 2,
+          "count": 5280,
+          "sha256": "e01e788f248cfc113e96a28979d7eb0c6769432fc7e8108a8a7bd605043093bc"
         }
       ],
       "query_count": 21664,
-      "query_product": "10828592887657057273597720928911720081305519436517452975466750735629438768075",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "14362837869367832279971596930094028816145759727482429914851234933269412707230",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "18b3c838ea8a707eb249d851b3f4dc73418d3addccb748ac1fae9d8233244842"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "da5f815fe955b4ab152b420eb4ea9a85912ac7323d95e34765afb88977607b0c"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "2a75b41e920bbd4becda4a311a9178daca188697fa83a62f7be8e460859717d8"
+        },
+        {
+          "chunk_index": 3,
+          "count": 8192,
+          "sha256": "6c600050afb546d30dad4cf0a49debcae48cdd5ff85eeff55eede1ac01a5361b"
+        },
+        {
+          "chunk_index": 4,
+          "count": 8192,
+          "sha256": "19304bcd23e7c62e559b14a7b6fc5a4f9fed874b49094ba724e5b315a49e8a13"
+        },
+        {
+          "chunk_index": 5,
+          "count": 2368,
+          "sha256": "b3845defc2a26e4fa902dbb3bcfeba7162bad8c22644aee409ea5870f4573581"
+        }
+      ],
+      "raw_query_digest": "c3f4d2d05877af55b4ce01eac84c2b6ce8485d406182840cb8e15160ae24d287",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "df9ae8533c5e84b09546c6f12b5623e604a0b9e60f322b896ba5e12f373eca3e"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "75ced43b3e47d0bb24225e8d80794a3585bf7bc230020321af03c5d37e40572a"
+        },
+        {
+          "chunk_index": 2,
+          "count": 5280,
+          "sha256": "e01e788f248cfc113e96a28979d7eb0c6769432fc7e8108a8a7bd605043093bc"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_ELU",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "6bb5234f3335f48893841cc293fbd8d11905387418b037feed6f67485ae64d5e"
-        },
-        {
-          "chunk_index": 1,
-          "count": 8192,
-          "sha256": "176d0fff6e3b8a1c90d59e8dd572caf0ef5946475aeb09a5907baa261983506e"
-        },
-        {
-          "chunk_index": 2,
-          "count": 5280,
-          "sha256": "d97fe4010509727e47dce69b21bc7e1b76bfc87614d9a32702697304b1d418c2"
+          "count": 0,
+          "sha256": "309e78486a50b77cf1029ec7a0d26e8415ab88a7cd685174fb7570f7cf4db3a4"
         }
       ],
-      "table_product": "10828592887657057273597720928911720081305519436517452975466750735629438768075"
+      "table_product": "14362837869367832279971596930094028816145759727482429914851234933269412707230",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "54778686311725398354246485781103615481",
+      "beta": "105605819427629631727131804255397126943",
       "eta": "0",
       "family": "hidden.l1.h1.range_delta",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 4096,
+            "sha256": "2fbd6f09859cf24d41b61aadd7d33d331ead73c361621bb6b4be7162f1955990"
+          }
+        ],
+        "domain_policy": "all limbs in [0,4095]",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "entry_count": 4096,
+        "fixed_scale": 1000000,
+        "function": "Range",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "81349dd6ee46cdb04201a3f27e71807198a4595fdef87b6cf7f15be9e3d39d7b",
+        "table_digest": "d62d4412bb517e8d149f19a13d19ba3261c3ef4a6d8774c4bb0b842cfcb67ede",
+        "table_id": "T_range",
+        "table_kind": "materialized_fixed_range_table",
+        "table_materialization": "preprocessed fixed limb table"
+      },
+      "fixed_table_digest": "d62d4412bb517e8d149f19a13d19ba3261c3ef4a6d8774c4bb0b842cfcb67ede",
       "limb_count": 2,
       "max_limb": 4092,
       "min_input_nonnegative": true,
       "mismatch_count": 0,
+      "product_digest": "06b3bd4dd2469ac27055adf72dd63cb0b62f16269aaa95d71283d1f379754757",
       "query_chunks": [
         {
           "chunk_index": 0,
@@ -209,161 +466,394 @@
         }
       ],
       "query_count": 26528,
-      "query_product": "14866258804642709491230472722576360755789519190943060427093024551870300959572",
+      "query_product": "2563063586292573125959296307823807256032029893884557631663007586873407658508",
       "range_bits": 12,
-      "relation": "range_limb_membership_grand_product",
+      "raw_query_digest": "79b0c51c0a2f4d341d70ae63d9342005be50a5fd45c54ebe4e557977c8390491",
+      "relation": "range_limb_membership_in_fixed_table",
       "status": "VERIFY_OK",
-      "table": "T_range[0,4095]",
+      "table": "T_range",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "8cd48fdf4b90b67e2252e179b471f77645e8540513376d5c6c10346c46c78529"
-        },
-        {
-          "chunk_index": 1,
-          "count": 8192,
-          "sha256": "1c8c5167b497fb58058c1c0b32224df50beaf98b91c6289e07a7e3862ede3845"
-        },
-        {
-          "chunk_index": 2,
-          "count": 8192,
-          "sha256": "1f3fae73007c4e12e9bca9cad06d43f96b29a503693c0e7ff060c32526bca81d"
-        },
-        {
-          "chunk_index": 3,
-          "count": 1952,
-          "sha256": "c92b2039d4b862fcf67eda86acdb4574c267050081c38f02f9c841e3e599930e"
+          "count": 4096,
+          "sha256": "2fbd6f09859cf24d41b61aadd7d33d331ead73c361621bb6b4be7162f1955990"
         }
       ],
-      "table_product": "14866258804642709491230472722576360755789519190943060427093024551870300959572"
+      "table_product": "14775317995221234026992885796322481196915627554581588208169079691615577765173",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "225318537798060993454831889333345797656",
-      "eta": "266882883924774193489159459368019244993",
-      "family": "hidden.l1.h1.LeakyReLU",
-      "mismatch_count": 0,
-      "query_chunks": [
+      "beta": "67899937083656362937467373494611540216",
+      "eta": "185491262901958929290369203094209460078",
+      "expected_y_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "12e4711e2d9b643c5658590c9b50e94279896ae2317dd4b04839e786918cabf8"
+          "sha256": "1690db33894771da8ad0a59305c8fa43c873dafaf64b489ae1c02b503df9ff55"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "861d7af660e7f4aabe3ee0a616491a8256c858a1d6b7d2ea0867a562ab50574f"
+          "sha256": "91a2cdbd9883818ef037e3d0216ff27760a8ec18e9bd440605e7cbaa23fea768"
+        }
+      ],
+      "family": "hidden.l1.h1.LeakyReLU",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "b56c9c284e0a06f175caec0633ab3f78b4d28a54f173547408cfa86a85e7ebf7"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=x if x>=0 else round(0.2*x)",
+        "fixed_scale": 1000000,
+        "function": "LeakyReLU",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "1e0127206f6b5126459c9ceed8c7a4bd69e4258a1d27889c0124a39c3c824ae3",
+        "table_digest": "9f771dd25350823c42f3ea1b8ce6a97f6451e94bc229183af188f5ba4eb43c95",
+        "table_id": "T_LReLU",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "9f771dd25350823c42f3ea1b8ce6a97f6451e94bc229183af188f5ba4eb43c95",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 0,
+      "mismatch_count": 0,
+      "product_digest": "1e610d4f224c54da0789a41f20de37ff519e7fba53e782096e134ffe8cc60459",
+      "query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "7780eb2e871410ef4030875f5db979ea503000b7fdf30620e38949739e68098c"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "fe3b68d5f968acdbd45c015ec2ab98a9afb2b116de89ad813ed204db09039887"
         }
       ],
       "query_count": 13264,
-      "query_product": "10026664926904316796082169096638819633005201873330175399952979777328882989898",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "9302369050222812038996245522189110808424206471836240669775945901615802280021",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "82d7897f42d8e9a5287217394abe564cbd4f690a499a6d2e90a5776a2db9771b"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "b1961fed25b89ff73ee0de2b59d28f1b542b10872375554375cc423969fa5b64"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "3d264b130089f4e6bee0395d7180d484bbd34af18c9b9b739f7e26a58926d91f"
+        },
+        {
+          "chunk_index": 3,
+          "count": 1952,
+          "sha256": "82763a99d247151618386eb6a76b9e8fe2cf113794d9168ddcadd0c223ff9dd3"
+        }
+      ],
+      "raw_query_digest": "0a1a24d18e68ad3660cbed9dd770f1e650c3d0d553c02e997b0340ae0baae0b7",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "7780eb2e871410ef4030875f5db979ea503000b7fdf30620e38949739e68098c"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "fe3b68d5f968acdbd45c015ec2ab98a9afb2b116de89ad813ed204db09039887"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_LReLU",
       "table_chunks": [
         {
           "chunk_index": 0,
+          "count": 0,
+          "sha256": "b56c9c284e0a06f175caec0633ab3f78b4d28a54f173547408cfa86a85e7ebf7"
+        }
+      ],
+      "table_product": "9302369050222812038996245522189110808424206471836240669775945901615802280021",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
+    },
+    {
+      "beta": "23203821955862496019042629082712372757",
+      "eta": "30513050355979876831269398082277557632",
+      "expected_y_chunks": [
+        {
+          "chunk_index": 0,
           "count": 8192,
-          "sha256": "12e4711e2d9b643c5658590c9b50e94279896ae2317dd4b04839e786918cabf8"
+          "sha256": "230a586cf6adb0166b3125bd71d3ab69ea7aae01933c97d75fe59b6fd55c95da"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "861d7af660e7f4aabe3ee0a616491a8256c858a1d6b7d2ea0867a562ab50574f"
+          "sha256": "aa6f38074dc053016c6b3ccd55312fc60d5d423b3f2354036c2e46c72d42a3a3"
         }
       ],
-      "table_product": "10026664926904316796082169096638819633005201873330175399952979777328882989898"
-    },
-    {
-      "beta": "138419817202211020648189262405408092546",
-      "eta": "13369056112828284686456135129626539913",
       "family": "hidden.l1.h1.ExpMap",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "c39609850895ee6a43b739a1016a4b9e28238815c2f3f782c5aad201cfd769ea"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=round(exp(-x)) for nonnegative x",
+        "fixed_scale": 1000000,
+        "function": "ExpMap",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "0bf5a672fc4ec4e64683eff895a246c27c084fb14152ff0f01964f76872a1870",
+        "table_digest": "6a415cc10c6d7e800888963e0ee6a3c760844dbf3f729a6c87b73a98a2c2a6bc",
+        "table_id": "T_exp",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "6a415cc10c6d7e800888963e0ee6a3c760844dbf3f729a6c87b73a98a2c2a6bc",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 1,
       "mismatch_count": 0,
+      "product_digest": "cafc5e4a623c78e79bd25c370d82027fe5ab8a5a6a5c754017d64478697b603b",
       "query_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "b756b01588a9e9bee44be84103431f5852712aad2341bb91795a4470f93ba7cc"
+          "sha256": "d590ec1a6ddfa03ffd5efec4fbb4db3d3d46518cccfd122ab8f2423838d2ed5c"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "f27a3dc8920ccd1160e2a371a37dd848f19b13e9fe859a017f5bb0cb88c682c2"
+          "sha256": "061b4a32b0ebb6ac07be25a51d6ad04304a57a0cc9277b525511105ff62300a2"
         }
       ],
       "query_count": 13264,
-      "query_product": "3165899608657184411580059735440015026335514045108514393991564797116040262018",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "9207419469269295006401690116107506778096875477816249951852470048070406724555",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "ca913db5e52f09c430eddffa6966a8bc26439f0033334ddecacbcc224254a524"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "daa11a942261c6a309e6477f136703201c64ce514f7b940b48c786641e4118b6"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "24639125c56c7832d4f6796933b6e9602fb2e61a18e13a22dd50d99492ac0bef"
+        },
+        {
+          "chunk_index": 3,
+          "count": 1952,
+          "sha256": "cf9a2c234fef7d724055e836685510bdff51dd3591f31f39bbe7c6486736c1c6"
+        }
+      ],
+      "raw_query_digest": "69f76d05dc684d2cdf764cc78853ded1719dc49646a5d30da307b1d0e0785bbb",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "d590ec1a6ddfa03ffd5efec4fbb4db3d3d46518cccfd122ab8f2423838d2ed5c"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "061b4a32b0ebb6ac07be25a51d6ad04304a57a0cc9277b525511105ff62300a2"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_exp",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "b756b01588a9e9bee44be84103431f5852712aad2341bb91795a4470f93ba7cc"
-        },
-        {
-          "chunk_index": 1,
-          "count": 5072,
-          "sha256": "f27a3dc8920ccd1160e2a371a37dd848f19b13e9fe859a017f5bb0cb88c682c2"
+          "count": 0,
+          "sha256": "c39609850895ee6a43b739a1016a4b9e28238815c2f3f782c5aad201cfd769ea"
         }
       ],
-      "table_product": "3165899608657184411580059735440015026335514045108514393991564797116040262018"
+      "table_product": "9207419469269295006401690116107506778096875477816249951852470048070406724555",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "21516461832171705580429360949750972693",
-      "eta": "231975726772725024043923652337065596642",
-      "family": "hidden.l1.h1.ELU",
-      "mismatch_count": 0,
-      "query_chunks": [
+      "beta": "135528046640586164966636443130564339441",
+      "eta": "269558039067760161833759469019703828513",
+      "expected_y_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "78fd6a206406309f0f26255c3f8e46570774f7c4628c17bc211bec57d85a32a7"
+          "sha256": "75c0820a728a981aa3e96cc22345c12da7ba445dce3084a4bdc15eeb15734ff1"
         },
         {
           "chunk_index": 1,
           "count": 8192,
-          "sha256": "60fdb43e8af4121d898aa0d8eaf3b4808dfde8fb1d070352845298fbbddb9fca"
+          "sha256": "4c025653129d157ec054119c19cdec845e3d0f25d80c0038770777682d897493"
         },
         {
           "chunk_index": 2,
           "count": 5280,
-          "sha256": "8579064dba8cbfa23563fc8c15a678c5314e507a2925757e68ac6fc31e75e386"
+          "sha256": "ae6fcd6cf6604d7a7a31742a87fac09e65936709c2380e52cb62780b8856d93b"
+        }
+      ],
+      "family": "hidden.l1.h1.ELU",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "309e78486a50b77cf1029ec7a0d26e8415ab88a7cd685174fb7570f7cf4db3a4"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=x if x>=0 else round(exp(x)-1)",
+        "fixed_scale": 1000000,
+        "function": "ELU",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "ee2c2aec3886066b1a7889f5fa115c969079490d534b34455a65bdc72939e970",
+        "table_digest": "e077a16f476d0fb45405fe8f653fffcbace8c0a5206142572adb944175d867c0",
+        "table_id": "T_ELU",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "e077a16f476d0fb45405fe8f653fffcbace8c0a5206142572adb944175d867c0",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 1,
+      "mismatch_count": 0,
+      "product_digest": "dff6a346a5fe021ce2f06ddd186d15ee9dfdef04dd716d170d01fdbc65d7ea68",
+      "query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "6a5b5bbe5792c225f994293c83e1e12360cca7093e89f75a4244a099e648a21c"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "791bb0d39049eae3f33b29d55fe97f8a6a83c3c76328c95c3102e29e8c5939e4"
+        },
+        {
+          "chunk_index": 2,
+          "count": 5280,
+          "sha256": "dbb7dd52ebb959900463bd3109d5ed49bcb1fad3e18eea3267b81b18199f02f8"
         }
       ],
       "query_count": 21664,
-      "query_product": "18506816143978758618467527807176673733204400246572114357412641588175242681297",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "5652432979890174120106080291155595375884590418246277707899000638248401749533",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "87d8fb1ea99528f267eb1b84c7c975dca4a0ae2cd8c4c9a255c6e57f8e9f82d7"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "142252094f1879a2b6735a0af5c20ab63bf26fdf3c25e886b675dd182aa65dd1"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "899412318ce8f48b055fbd159b0d5d4b40031960fa9bbebda6c43ac4f2297a67"
+        },
+        {
+          "chunk_index": 3,
+          "count": 8192,
+          "sha256": "87898d3d929e9169f130bdc1ea0e7b4ec50da24add4b616c205f211ba22b3e96"
+        },
+        {
+          "chunk_index": 4,
+          "count": 8192,
+          "sha256": "b62a7d1593954497650bddf9bbabc75ed43f739d5769c22aa3bf6a5891d656bc"
+        },
+        {
+          "chunk_index": 5,
+          "count": 2368,
+          "sha256": "581653f5ab0ef4312ae29b27804bb6cf3bf2ffa67819307a7f947d65759b22b8"
+        }
+      ],
+      "raw_query_digest": "1e2a8cb7b01cad7f0ebcb79f90a56f85005fa6146d954084cb55305ea49e2e83",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "6a5b5bbe5792c225f994293c83e1e12360cca7093e89f75a4244a099e648a21c"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "791bb0d39049eae3f33b29d55fe97f8a6a83c3c76328c95c3102e29e8c5939e4"
+        },
+        {
+          "chunk_index": 2,
+          "count": 5280,
+          "sha256": "dbb7dd52ebb959900463bd3109d5ed49bcb1fad3e18eea3267b81b18199f02f8"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_ELU",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "78fd6a206406309f0f26255c3f8e46570774f7c4628c17bc211bec57d85a32a7"
-        },
-        {
-          "chunk_index": 1,
-          "count": 8192,
-          "sha256": "60fdb43e8af4121d898aa0d8eaf3b4808dfde8fb1d070352845298fbbddb9fca"
-        },
-        {
-          "chunk_index": 2,
-          "count": 5280,
-          "sha256": "8579064dba8cbfa23563fc8c15a678c5314e507a2925757e68ac6fc31e75e386"
+          "count": 0,
+          "sha256": "309e78486a50b77cf1029ec7a0d26e8415ab88a7cd685174fb7570f7cf4db3a4"
         }
       ],
-      "table_product": "18506816143978758618467527807176673733204400246572114357412641588175242681297"
+      "table_product": "5652432979890174120106080291155595375884590418246277707899000638248401749533",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "160435880262689971355018098192283000789",
+      "beta": "294967148804610179604014422857710084049",
       "eta": "0",
       "family": "hidden.l1.h2.range_delta",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 4096,
+            "sha256": "2fbd6f09859cf24d41b61aadd7d33d331ead73c361621bb6b4be7162f1955990"
+          }
+        ],
+        "domain_policy": "all limbs in [0,4095]",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "entry_count": 4096,
+        "fixed_scale": 1000000,
+        "function": "Range",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "81349dd6ee46cdb04201a3f27e71807198a4595fdef87b6cf7f15be9e3d39d7b",
+        "table_digest": "d62d4412bb517e8d149f19a13d19ba3261c3ef4a6d8774c4bb0b842cfcb67ede",
+        "table_id": "T_range",
+        "table_kind": "materialized_fixed_range_table",
+        "table_materialization": "preprocessed fixed limb table"
+      },
+      "fixed_table_digest": "d62d4412bb517e8d149f19a13d19ba3261c3ef4a6d8774c4bb0b842cfcb67ede",
       "limb_count": 2,
       "max_limb": 4095,
       "min_input_nonnegative": true,
       "mismatch_count": 0,
+      "product_digest": "a8ccab3161df9635e73236a4aad71585bdc7d14614a33fdf61e4373d8676fff3",
       "query_chunks": [
         {
           "chunk_index": 0,
@@ -387,161 +877,394 @@
         }
       ],
       "query_count": 26528,
-      "query_product": "10489017290283756938679978802909903863781512704454811000252481495804471354647",
+      "query_product": "15994935283079437220139152769389818513906565013575951036215047211125254397248",
       "range_bits": 12,
-      "relation": "range_limb_membership_grand_product",
+      "raw_query_digest": "e0a7b52077266c77bc2ed657138a8f4861f4dce6f27cad5c422f053bf7648481",
+      "relation": "range_limb_membership_in_fixed_table",
       "status": "VERIFY_OK",
-      "table": "T_range[0,4095]",
+      "table": "T_range",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "c9b88d792a2a914f09533ad8099f0b58e1949362423c8a127265271044fb8ae5"
-        },
-        {
-          "chunk_index": 1,
-          "count": 8192,
-          "sha256": "16c63a7ac9ee3fd66f0a658aa09684f5f26884d1da919f9286bb242b8af64ec3"
-        },
-        {
-          "chunk_index": 2,
-          "count": 8192,
-          "sha256": "fa7ed3ed2b531a87d2b930a8c3b506eeccb7cd9ff8bbed1a01b7ed9642072d24"
-        },
-        {
-          "chunk_index": 3,
-          "count": 1952,
-          "sha256": "24973055ff803340af5f58ffabe9a64b17938596803fbb651a54cd04c86d92cf"
+          "count": 4096,
+          "sha256": "2fbd6f09859cf24d41b61aadd7d33d331ead73c361621bb6b4be7162f1955990"
         }
       ],
-      "table_product": "10489017290283756938679978802909903863781512704454811000252481495804471354647"
+      "table_product": "8874705308379567481723653459231685163587058849633635634132532809022250690517",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "115115459511020898711783651683252497679",
-      "eta": "135549161373381147638562639003461716078",
-      "family": "hidden.l1.h2.LeakyReLU",
-      "mismatch_count": 0,
-      "query_chunks": [
+      "beta": "119173301561936756983125064299096595796",
+      "eta": "298996903408714207640294847901970333511",
+      "expected_y_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "eca0fc0aeda13baf8c38e28fdb5d7f9c85af9829de721768f9bde086a1a3f027"
+          "sha256": "1d05805494090adf9264a7e371a6d0e8ac593bcd40d29da7f19cbff4707945c0"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "251619e3890a97ea6c9b0f728f6f15711747b6b9c91255e0e7baceade3d3eeee"
+          "sha256": "e277bacd748bf026ccd89ae63bb690be7f4974054e0525d31b607c19f4ba504c"
+        }
+      ],
+      "family": "hidden.l1.h2.LeakyReLU",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "b56c9c284e0a06f175caec0633ab3f78b4d28a54f173547408cfa86a85e7ebf7"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=x if x>=0 else round(0.2*x)",
+        "fixed_scale": 1000000,
+        "function": "LeakyReLU",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "1e0127206f6b5126459c9ceed8c7a4bd69e4258a1d27889c0124a39c3c824ae3",
+        "table_digest": "9f771dd25350823c42f3ea1b8ce6a97f6451e94bc229183af188f5ba4eb43c95",
+        "table_id": "T_LReLU",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "9f771dd25350823c42f3ea1b8ce6a97f6451e94bc229183af188f5ba4eb43c95",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 0,
+      "mismatch_count": 0,
+      "product_digest": "7a7d37a06e02ce15750794d26b3eb67fbf8470db313b56e08229d4bfff21bac6",
+      "query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "549e77e0ad26f59990418aed9302b040e4bf1d10c1417567c023524ba883a47b"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "7b28267430f84311b0529dc9e820089f7b65604e09eba0aa4ccc495c5b964168"
         }
       ],
       "query_count": 13264,
-      "query_product": "9968579500295659450714459519111192993527143513253378871548521489732851264842",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "11181456524205729108980984011684375257617768933217933409710524436203688706552",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "f3cc6e953c298b86334da31a9791b5836ab2199a09f0666fbc1d7e6c9e77a2a0"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "b791bdc4c082f3168d64eeaac8466b640d4c58dcf91fbf8a0a344eec629be37e"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "d526a8e1367a626204e34c3fec9a625d626a87dd2c73c29326f82375a13c0368"
+        },
+        {
+          "chunk_index": 3,
+          "count": 1952,
+          "sha256": "1ba9e75e6de2688a4e209a07b68876f9184d6c9f678aaa8993c530d9548aca68"
+        }
+      ],
+      "raw_query_digest": "cbf424a6e210117159e7dff695c5de95d14943370a728431ab4871b35be138f2",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "549e77e0ad26f59990418aed9302b040e4bf1d10c1417567c023524ba883a47b"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "7b28267430f84311b0529dc9e820089f7b65604e09eba0aa4ccc495c5b964168"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_LReLU",
       "table_chunks": [
         {
           "chunk_index": 0,
+          "count": 0,
+          "sha256": "b56c9c284e0a06f175caec0633ab3f78b4d28a54f173547408cfa86a85e7ebf7"
+        }
+      ],
+      "table_product": "11181456524205729108980984011684375257617768933217933409710524436203688706552",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
+    },
+    {
+      "beta": "102030594373985392668876156798639407540",
+      "eta": "105921067915509121785328249907064385806",
+      "expected_y_chunks": [
+        {
+          "chunk_index": 0,
           "count": 8192,
-          "sha256": "eca0fc0aeda13baf8c38e28fdb5d7f9c85af9829de721768f9bde086a1a3f027"
+          "sha256": "83e7ce0625a7addece19529b548eabb79b627ec3f6e98db1ac142f09995f7e0f"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "251619e3890a97ea6c9b0f728f6f15711747b6b9c91255e0e7baceade3d3eeee"
+          "sha256": "6bfc242c3270d60c015f3b7f148cecb20e3873fe6b415f215f8ed9b29d680d37"
         }
       ],
-      "table_product": "9968579500295659450714459519111192993527143513253378871548521489732851264842"
-    },
-    {
-      "beta": "57718423665042497055657364722603493822",
-      "eta": "180821207867954223555064513622166919751",
       "family": "hidden.l1.h2.ExpMap",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "c39609850895ee6a43b739a1016a4b9e28238815c2f3f782c5aad201cfd769ea"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=round(exp(-x)) for nonnegative x",
+        "fixed_scale": 1000000,
+        "function": "ExpMap",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "0bf5a672fc4ec4e64683eff895a246c27c084fb14152ff0f01964f76872a1870",
+        "table_digest": "6a415cc10c6d7e800888963e0ee6a3c760844dbf3f729a6c87b73a98a2c2a6bc",
+        "table_id": "T_exp",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "6a415cc10c6d7e800888963e0ee6a3c760844dbf3f729a6c87b73a98a2c2a6bc",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 1,
       "mismatch_count": 0,
+      "product_digest": "b8fffd13795c1ffcd8978199eb01bbf5bb968b3399a862938122f73ee77ce133",
       "query_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "ee1ceb21119fccbdee7a6ecd48a600150a2233d4c05a70812a0aff462831fab8"
+          "sha256": "2674e7c939dca4cbac94663f1875ad3bc5e0043cec1014c4bf66675d142e5233"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "948b85e759e76ef30b7e4f6dfc2294bc76c939e87342a2b34705d3964c42aecd"
+          "sha256": "9870e5058e90c409077324084b564529f2f7aea9c11da425c2c4a07a3aa31b5a"
         }
       ],
       "query_count": 13264,
-      "query_product": "21082116494855370972297074850187624048160869669918472526023812161421034864432",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "15569782957923038687184747323521622353921161226160117701095800666740961790429",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "aec8d758b2261affa8fe7ba5893e4d5181ac16eb876aaa504beebc7f1d968308"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "68b7db304c28217f9a4599f4e89087a97b1c78840521c6ca370fb18070b50064"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "58ffed2245d643d08e12b89c07efd03e300d74edc82a400f0626def963187333"
+        },
+        {
+          "chunk_index": 3,
+          "count": 1952,
+          "sha256": "34cc09b8dcc4feaadf5eeceb9c6cb10cbb7be96d9e20cbba7c26e6b42080374e"
+        }
+      ],
+      "raw_query_digest": "f0202e2be122e2a17a03936d35a40efa9364adaaaea846c2d340bdb03a641432",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "2674e7c939dca4cbac94663f1875ad3bc5e0043cec1014c4bf66675d142e5233"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "9870e5058e90c409077324084b564529f2f7aea9c11da425c2c4a07a3aa31b5a"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_exp",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "ee1ceb21119fccbdee7a6ecd48a600150a2233d4c05a70812a0aff462831fab8"
-        },
-        {
-          "chunk_index": 1,
-          "count": 5072,
-          "sha256": "948b85e759e76ef30b7e4f6dfc2294bc76c939e87342a2b34705d3964c42aecd"
+          "count": 0,
+          "sha256": "c39609850895ee6a43b739a1016a4b9e28238815c2f3f782c5aad201cfd769ea"
         }
       ],
-      "table_product": "21082116494855370972297074850187624048160869669918472526023812161421034864432"
+      "table_product": "15569782957923038687184747323521622353921161226160117701095800666740961790429",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "113814089560380322302596774165109772660",
-      "eta": "191465671062001051103403958148713886592",
-      "family": "hidden.l1.h2.ELU",
-      "mismatch_count": 0,
-      "query_chunks": [
+      "beta": "312326377782269460844915519754619860154",
+      "eta": "38441080380379141303781916202895991618",
+      "expected_y_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "90f73e815f2d8249c7be944dc59725ba1b316028258bb82a0027d31132908932"
+          "sha256": "7b4f9cef42cb3c8526564f9867adfc760ff4233681511ba7cbb97cc73bd0b43b"
         },
         {
           "chunk_index": 1,
           "count": 8192,
-          "sha256": "015951d9002500064010c2a21070f584139295f78005396e65fa60f883842b28"
+          "sha256": "f30045db7adb63406f18b7ccd05ef095a03b70ad9dd88da2766ee64465debecb"
         },
         {
           "chunk_index": 2,
           "count": 5280,
-          "sha256": "8adbbd895d9f69ae1be658274d71dddd75e86f87588f23521292eb0986fd1cc7"
+          "sha256": "77050e04e199609a8e43235d0707e98498ca742df742cf87956bce64adfc1dcf"
+        }
+      ],
+      "family": "hidden.l1.h2.ELU",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "309e78486a50b77cf1029ec7a0d26e8415ab88a7cd685174fb7570f7cf4db3a4"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=x if x>=0 else round(exp(x)-1)",
+        "fixed_scale": 1000000,
+        "function": "ELU",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "ee2c2aec3886066b1a7889f5fa115c969079490d534b34455a65bdc72939e970",
+        "table_digest": "e077a16f476d0fb45405fe8f653fffcbace8c0a5206142572adb944175d867c0",
+        "table_id": "T_ELU",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "e077a16f476d0fb45405fe8f653fffcbace8c0a5206142572adb944175d867c0",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 1,
+      "mismatch_count": 0,
+      "product_digest": "d263f657d8814db92c042310ee8741d86f01c2870fe4807f777675a760557c68",
+      "query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "fe3333962975e14533473176b4b761b81ddc0109ea7e1b44111278a2b9e5d3d4"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "81a41f1df93a02cd46f659c540575c28e9efcbe203040a5e24a333b20ff1fc8b"
+        },
+        {
+          "chunk_index": 2,
+          "count": 5280,
+          "sha256": "1fa10a2d780f4306aa878787e7f22541c59096bc8e6a7c0066c564150fd4f141"
         }
       ],
       "query_count": 21664,
-      "query_product": "7749331044784731501698677216607724257766686526324878319113822092745628614989",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "14004624480103930708066104571709860234317310862157696334514229743719336255372",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "55a1c6cc80acf4f87794ac664126e200a75b67a10ab88ed2c7d4bf5c37b6f079"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "49b44904c0889034c60f4500aecc9012caf1c691ae81ee77b885ebf15b87cde1"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "377966ce815ebcb4f9d3ab21aa177fd9c69b84c9a0b704e8707524eb0fcfeaaf"
+        },
+        {
+          "chunk_index": 3,
+          "count": 8192,
+          "sha256": "71393a77b7190e022b2498330ae4b492babcf834087ec48766fe26bc93f8b252"
+        },
+        {
+          "chunk_index": 4,
+          "count": 8192,
+          "sha256": "14694b20693fa97899ecf89e00282da2b85ac9703ee3972cc79c3248db42dcc8"
+        },
+        {
+          "chunk_index": 5,
+          "count": 2368,
+          "sha256": "c00e00ef7b12f968cbab793a00c6a33e6a1b8ab7d23672bbeb6820f2d26b4bae"
+        }
+      ],
+      "raw_query_digest": "4ccf08a46b6887f576947562296e75f797b1d99d86aeeddf40d1355ed7bdbc23",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "fe3333962975e14533473176b4b761b81ddc0109ea7e1b44111278a2b9e5d3d4"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "81a41f1df93a02cd46f659c540575c28e9efcbe203040a5e24a333b20ff1fc8b"
+        },
+        {
+          "chunk_index": 2,
+          "count": 5280,
+          "sha256": "1fa10a2d780f4306aa878787e7f22541c59096bc8e6a7c0066c564150fd4f141"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_ELU",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "90f73e815f2d8249c7be944dc59725ba1b316028258bb82a0027d31132908932"
-        },
-        {
-          "chunk_index": 1,
-          "count": 8192,
-          "sha256": "015951d9002500064010c2a21070f584139295f78005396e65fa60f883842b28"
-        },
-        {
-          "chunk_index": 2,
-          "count": 5280,
-          "sha256": "8adbbd895d9f69ae1be658274d71dddd75e86f87588f23521292eb0986fd1cc7"
+          "count": 0,
+          "sha256": "309e78486a50b77cf1029ec7a0d26e8415ab88a7cd685174fb7570f7cf4db3a4"
         }
       ],
-      "table_product": "7749331044784731501698677216607724257766686526324878319113822092745628614989"
+      "table_product": "14004624480103930708066104571709860234317310862157696334514229743719336255372",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "154689979124432982857241145190680874368",
+      "beta": "184213132071154488944860937245192906808",
       "eta": "0",
       "family": "hidden.l1.h3.range_delta",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 4096,
+            "sha256": "2fbd6f09859cf24d41b61aadd7d33d331ead73c361621bb6b4be7162f1955990"
+          }
+        ],
+        "domain_policy": "all limbs in [0,4095]",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "entry_count": 4096,
+        "fixed_scale": 1000000,
+        "function": "Range",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "81349dd6ee46cdb04201a3f27e71807198a4595fdef87b6cf7f15be9e3d39d7b",
+        "table_digest": "d62d4412bb517e8d149f19a13d19ba3261c3ef4a6d8774c4bb0b842cfcb67ede",
+        "table_id": "T_range",
+        "table_kind": "materialized_fixed_range_table",
+        "table_materialization": "preprocessed fixed limb table"
+      },
+      "fixed_table_digest": "d62d4412bb517e8d149f19a13d19ba3261c3ef4a6d8774c4bb0b842cfcb67ede",
       "limb_count": 2,
       "max_limb": 4095,
       "min_input_nonnegative": true,
       "mismatch_count": 0,
+      "product_digest": "e86aa615cc8b9ed783654ddd4ff36cc8fd35f51cb4da3de420c063e147f9a9e4",
       "query_chunks": [
         {
           "chunk_index": 0,
@@ -565,161 +1288,394 @@
         }
       ],
       "query_count": 26528,
-      "query_product": "11259984943845737089858701361963102254780772589431510800960077343157666324786",
+      "query_product": "4227339906086945231954997757122443681242778671414273720143310709190647061409",
       "range_bits": 12,
-      "relation": "range_limb_membership_grand_product",
+      "raw_query_digest": "2f6dbef323f146db6c7db73449d0bc3767402208a70308c70a32a77f7140549d",
+      "relation": "range_limb_membership_in_fixed_table",
       "status": "VERIFY_OK",
-      "table": "T_range[0,4095]",
+      "table": "T_range",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "e58070c6c50c28b114c1ccd1851a5218befb69f1b1a57cb4ca37098895bc9091"
-        },
-        {
-          "chunk_index": 1,
-          "count": 8192,
-          "sha256": "9d8290a1dd9cd2eecdbe3c69cc97dd5b6405526dc85dc19d422a54f446884576"
-        },
-        {
-          "chunk_index": 2,
-          "count": 8192,
-          "sha256": "884a02d2e33dfd77d46e785d8baf55b4e8b63e0762e08e262db972673283b67b"
-        },
-        {
-          "chunk_index": 3,
-          "count": 1952,
-          "sha256": "8e9b8dcff86c937fc6b32130e2bd5775824f90346b519c5b59199e811262b9cd"
+          "count": 4096,
+          "sha256": "2fbd6f09859cf24d41b61aadd7d33d331ead73c361621bb6b4be7162f1955990"
         }
       ],
-      "table_product": "11259984943845737089858701361963102254780772589431510800960077343157666324786"
+      "table_product": "9335554907079889219916614898321374642964160976092463340951966362880163360143",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "267576746811570330517278065781396502628",
-      "eta": "195323317650278509002405730750243483856",
-      "family": "hidden.l1.h3.LeakyReLU",
-      "mismatch_count": 0,
-      "query_chunks": [
+      "beta": "140394306113880358784362780768793280200",
+      "eta": "124165672902256896346578441108807057151",
+      "expected_y_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "3222865cb6e48385c54315775ae8b85a47757fa0a90a14394adb9bd476442a41"
+          "sha256": "d266dbdde6ae6ffa0b7fa4e60356fcf36a77b2e09a40831c9505257dd2232dc1"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "272aa4ff97144c9650bc193eadfb24105faf9f0ffd02d07d4f8e57b0925e0cff"
+          "sha256": "5eabad59e3460c8dc8d7a160447e41cd5b18271e34ecb5a1733a8515dc9ec45c"
+        }
+      ],
+      "family": "hidden.l1.h3.LeakyReLU",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "b56c9c284e0a06f175caec0633ab3f78b4d28a54f173547408cfa86a85e7ebf7"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=x if x>=0 else round(0.2*x)",
+        "fixed_scale": 1000000,
+        "function": "LeakyReLU",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "1e0127206f6b5126459c9ceed8c7a4bd69e4258a1d27889c0124a39c3c824ae3",
+        "table_digest": "9f771dd25350823c42f3ea1b8ce6a97f6451e94bc229183af188f5ba4eb43c95",
+        "table_id": "T_LReLU",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "9f771dd25350823c42f3ea1b8ce6a97f6451e94bc229183af188f5ba4eb43c95",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 0,
+      "mismatch_count": 0,
+      "product_digest": "baa4b80bf48e8e0a1824fec1bcb13738079446a0b3db11cb5bdcccb694d48887",
+      "query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "fecccb51fcad92733c0552e268f2ae6c69365e2787e9ad35c33715ff82bd500c"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "79c6a4e9dbe74a1c95ed15c6c6c203f6ffd9ce77e6c396d7f8f08c03416faaca"
         }
       ],
       "query_count": 13264,
-      "query_product": "12534025867876736222633265052846987498820076874054919151073681263355008706740",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "19606994849545234063799589144140346151202030000428726356324575418923870353738",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "160e42420686abb337a2d69ee992f8203fb00068a883244218d17aefdd96593b"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "5d81ee686231ebf3b5953b23d9b7afedd3d4e50c529e7c04b62712b3238825ea"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "057d62e10f45f303b505deeb54b09b26631bb2196dc82e3399a16c6f19d3ebd7"
+        },
+        {
+          "chunk_index": 3,
+          "count": 1952,
+          "sha256": "7c4449615989bbe976612ca6ce350951d4acb4c54a636f099a9081f7d42891b5"
+        }
+      ],
+      "raw_query_digest": "f429244ced7d39582f7a543dca3c54d96366da6036b1d9bd1349e0f66e78d2e2",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "fecccb51fcad92733c0552e268f2ae6c69365e2787e9ad35c33715ff82bd500c"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "79c6a4e9dbe74a1c95ed15c6c6c203f6ffd9ce77e6c396d7f8f08c03416faaca"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_LReLU",
       "table_chunks": [
         {
           "chunk_index": 0,
+          "count": 0,
+          "sha256": "b56c9c284e0a06f175caec0633ab3f78b4d28a54f173547408cfa86a85e7ebf7"
+        }
+      ],
+      "table_product": "19606994849545234063799589144140346151202030000428726356324575418923870353738",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
+    },
+    {
+      "beta": "38555204900730153382873386313163854200",
+      "eta": "239775070356585290907914659405083011429",
+      "expected_y_chunks": [
+        {
+          "chunk_index": 0,
           "count": 8192,
-          "sha256": "3222865cb6e48385c54315775ae8b85a47757fa0a90a14394adb9bd476442a41"
+          "sha256": "9f65e278e9f469510d74465f89715cd6f67f4a87594c1ceb3e7dba52e4827dc6"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "272aa4ff97144c9650bc193eadfb24105faf9f0ffd02d07d4f8e57b0925e0cff"
+          "sha256": "e4fb00b37489af7a32290453c5dc9fb343c2f1fce9bcbd59891a3ececae29c7c"
         }
       ],
-      "table_product": "12534025867876736222633265052846987498820076874054919151073681263355008706740"
-    },
-    {
-      "beta": "123245430941980500881712668625280058716",
-      "eta": "155212398314445137448016658085312776466",
       "family": "hidden.l1.h3.ExpMap",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "c39609850895ee6a43b739a1016a4b9e28238815c2f3f782c5aad201cfd769ea"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=round(exp(-x)) for nonnegative x",
+        "fixed_scale": 1000000,
+        "function": "ExpMap",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "0bf5a672fc4ec4e64683eff895a246c27c084fb14152ff0f01964f76872a1870",
+        "table_digest": "6a415cc10c6d7e800888963e0ee6a3c760844dbf3f729a6c87b73a98a2c2a6bc",
+        "table_id": "T_exp",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "6a415cc10c6d7e800888963e0ee6a3c760844dbf3f729a6c87b73a98a2c2a6bc",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 1,
       "mismatch_count": 0,
+      "product_digest": "1fa58a887f858049d181b00112abebd6e251dbe41c42408bbd54f57fc5e7c175",
       "query_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "886dba730713b472049c676150b1937ce45b51089b15e67548a8ca6cdfdad136"
+          "sha256": "c3a0e6d0db8ca4bc7a04148bb3e07bc58648fc0e43ee6b84cc873bb1ee709e5a"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "2ad7fe9ef672aaac75728dd5afb5fcb6a0cc01125f3f2e299dd33a8c40e556d8"
+          "sha256": "8b04536c743eaf12bc8f3e21488640e0c87be6c1cfa988f1ee1b113097fb2685"
         }
       ],
       "query_count": 13264,
-      "query_product": "2405183850367836816596893460079953742762655097487151193419621225518341276623",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "1232733284958607616167493788676388771620497791983607660544893938413537891026",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "d2bb951fcfa775aab0a134b5aa543451f67db87de02dc203f786446a6bba7870"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "342a06f92ee5650772adcc15cf4f9165eac3f282a907ceb08ced9935811dbc05"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "cc7e8a6eed5ec252d11759d72b60f60c16aa822f2db6bbb55ceb0b71a5a6f46a"
+        },
+        {
+          "chunk_index": 3,
+          "count": 1952,
+          "sha256": "7fd77e806b928a4285bd42e579977c0f7fc1173138033e2b39ac0f83091beb68"
+        }
+      ],
+      "raw_query_digest": "589c100e5a19d0640ef2c928e568ab64c4f7c584ef0376991fb1d5f5955d3d15",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "c3a0e6d0db8ca4bc7a04148bb3e07bc58648fc0e43ee6b84cc873bb1ee709e5a"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "8b04536c743eaf12bc8f3e21488640e0c87be6c1cfa988f1ee1b113097fb2685"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_exp",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "886dba730713b472049c676150b1937ce45b51089b15e67548a8ca6cdfdad136"
-        },
-        {
-          "chunk_index": 1,
-          "count": 5072,
-          "sha256": "2ad7fe9ef672aaac75728dd5afb5fcb6a0cc01125f3f2e299dd33a8c40e556d8"
+          "count": 0,
+          "sha256": "c39609850895ee6a43b739a1016a4b9e28238815c2f3f782c5aad201cfd769ea"
         }
       ],
-      "table_product": "2405183850367836816596893460079953742762655097487151193419621225518341276623"
+      "table_product": "1232733284958607616167493788676388771620497791983607660544893938413537891026",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "218790663238267334329611952689840489364",
-      "eta": "189141198734696091076594478823283832093",
-      "family": "hidden.l1.h3.ELU",
-      "mismatch_count": 0,
-      "query_chunks": [
+      "beta": "217699314708766938680947764591054030108",
+      "eta": "53916461121065654789861667157087344843",
+      "expected_y_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "44eb61c0cc0b4f3c6e63abb8cf73dd780e0270fe8d691b61d39bdd42d140f130"
+          "sha256": "712d3715282ed596f47291ea5979fa2ac23c4c2acd7da1f384574713230f5913"
         },
         {
           "chunk_index": 1,
           "count": 8192,
-          "sha256": "84c299d4558597abd2dd414c9d1e63e15e965fa93d706200fa0554da3a131fa0"
+          "sha256": "952d50f0391455b0eb819dcd867e068697a796a9626d2e6174d9bdbaac2bc643"
         },
         {
           "chunk_index": 2,
           "count": 5280,
-          "sha256": "24b7e5035c6a714333f6954094962e5d698f1f68ae06c102d67e71a3fb4fcba2"
+          "sha256": "ad17b75178ad0e787cdd987b0fe8269a00fdfddbdffbe6d373d2472354b57c80"
+        }
+      ],
+      "family": "hidden.l1.h3.ELU",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "309e78486a50b77cf1029ec7a0d26e8415ab88a7cd685174fb7570f7cf4db3a4"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=x if x>=0 else round(exp(x)-1)",
+        "fixed_scale": 1000000,
+        "function": "ELU",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "ee2c2aec3886066b1a7889f5fa115c969079490d534b34455a65bdc72939e970",
+        "table_digest": "e077a16f476d0fb45405fe8f653fffcbace8c0a5206142572adb944175d867c0",
+        "table_id": "T_ELU",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "e077a16f476d0fb45405fe8f653fffcbace8c0a5206142572adb944175d867c0",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 1,
+      "mismatch_count": 0,
+      "product_digest": "cda01682b0cde0adbf271942899e691e8a3dae91578cd23e8e306fc3147fb38f",
+      "query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "96eee45c540c232eca40abe495ca043b91a54fec88a6c000a786f5f22df89644"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "907c75cd3ded6a30c2b762fea9de964059d762a3b98c6c91070ba519bd4e42d7"
+        },
+        {
+          "chunk_index": 2,
+          "count": 5280,
+          "sha256": "ec037fdd1d6616a66c0445ed938857a21277a2d13269566e5833ae1be1cd59bc"
         }
       ],
       "query_count": 21664,
-      "query_product": "8989462753564234766284929447333234970019759873171720909334796679596906929805",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "21058394890353533732752391723868814894094991446728094635094304936047273701050",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "b088b99109bfc623ea9e916b86e5c4b8eb64ff0f3bf51654e5972c29dc932a35"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "33c12671838f5ce7b22831b97b34ea52746d508ca1064adc13cbfabd02f1174f"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "7332c938d2c5532926cf59e169f1201a6e6cc22dc2396b0924a591436d4226ad"
+        },
+        {
+          "chunk_index": 3,
+          "count": 8192,
+          "sha256": "67710a6dd73294f9c8a900956a56b42827b392cc1f07c97baca716093a416418"
+        },
+        {
+          "chunk_index": 4,
+          "count": 8192,
+          "sha256": "d0f92b9cac89744565ad93df18db55f824676f934a030196d0669d44cadbd863"
+        },
+        {
+          "chunk_index": 5,
+          "count": 2368,
+          "sha256": "ca1b28b032dd4eeb12e95983aa4d13f7d043774a2a80f1ac0ee3d5c991a17a80"
+        }
+      ],
+      "raw_query_digest": "8c8c9ac9fc5a056143dc7da472b47ea710ad690d1d6f50ff0122b256c68e8415",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "96eee45c540c232eca40abe495ca043b91a54fec88a6c000a786f5f22df89644"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "907c75cd3ded6a30c2b762fea9de964059d762a3b98c6c91070ba519bd4e42d7"
+        },
+        {
+          "chunk_index": 2,
+          "count": 5280,
+          "sha256": "ec037fdd1d6616a66c0445ed938857a21277a2d13269566e5833ae1be1cd59bc"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_ELU",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "44eb61c0cc0b4f3c6e63abb8cf73dd780e0270fe8d691b61d39bdd42d140f130"
-        },
-        {
-          "chunk_index": 1,
-          "count": 8192,
-          "sha256": "84c299d4558597abd2dd414c9d1e63e15e965fa93d706200fa0554da3a131fa0"
-        },
-        {
-          "chunk_index": 2,
-          "count": 5280,
-          "sha256": "24b7e5035c6a714333f6954094962e5d698f1f68ae06c102d67e71a3fb4fcba2"
+          "count": 0,
+          "sha256": "309e78486a50b77cf1029ec7a0d26e8415ab88a7cd685174fb7570f7cf4db3a4"
         }
       ],
-      "table_product": "8989462753564234766284929447333234970019759873171720909334796679596906929805"
+      "table_product": "21058394890353533732752391723868814894094991446728094635094304936047273701050",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "251093637702967267226346427766734166742",
+      "beta": "275002945757058207070803632483978887179",
       "eta": "0",
       "family": "hidden.l1.h4.range_delta",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 4096,
+            "sha256": "2fbd6f09859cf24d41b61aadd7d33d331ead73c361621bb6b4be7162f1955990"
+          }
+        ],
+        "domain_policy": "all limbs in [0,4095]",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "entry_count": 4096,
+        "fixed_scale": 1000000,
+        "function": "Range",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "81349dd6ee46cdb04201a3f27e71807198a4595fdef87b6cf7f15be9e3d39d7b",
+        "table_digest": "d62d4412bb517e8d149f19a13d19ba3261c3ef4a6d8774c4bb0b842cfcb67ede",
+        "table_id": "T_range",
+        "table_kind": "materialized_fixed_range_table",
+        "table_materialization": "preprocessed fixed limb table"
+      },
+      "fixed_table_digest": "d62d4412bb517e8d149f19a13d19ba3261c3ef4a6d8774c4bb0b842cfcb67ede",
       "limb_count": 2,
       "max_limb": 4093,
       "min_input_nonnegative": true,
       "mismatch_count": 0,
+      "product_digest": "335003bd7e2f2848e95a6aab6fae5b08eacfaa704ede7dbce92486bcf0f96f30",
       "query_chunks": [
         {
           "chunk_index": 0,
@@ -743,161 +1699,394 @@
         }
       ],
       "query_count": 26528,
-      "query_product": "11707782768828710529256807438058064084425111357202803735848006410319560526747",
+      "query_product": "18648344760980519596917346691577451357832007377674448746175608069561345502370",
       "range_bits": 12,
-      "relation": "range_limb_membership_grand_product",
+      "raw_query_digest": "b5a960505477824de7db261633efcd412941124b90b984aada115956d0ceb801",
+      "relation": "range_limb_membership_in_fixed_table",
       "status": "VERIFY_OK",
-      "table": "T_range[0,4095]",
+      "table": "T_range",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "83fc12b24a14a306ba3a7b2764c84e787f8949062b3c3ae4aafb0da1613e8edb"
-        },
-        {
-          "chunk_index": 1,
-          "count": 8192,
-          "sha256": "e11216c1268afcbf4d478672b915645fcecf3b2a13548fffaf888b449bc11a4e"
-        },
-        {
-          "chunk_index": 2,
-          "count": 8192,
-          "sha256": "4750c9a59d1c130dd0132e564cc1b8fad9225104a7eeab3e3b3d2198aa98ce2b"
-        },
-        {
-          "chunk_index": 3,
-          "count": 1952,
-          "sha256": "1933f3127ed795492876498e1e2c5ffdf673f60fd376a46a2af46207ceab08cf"
+          "count": 4096,
+          "sha256": "2fbd6f09859cf24d41b61aadd7d33d331ead73c361621bb6b4be7162f1955990"
         }
       ],
-      "table_product": "11707782768828710529256807438058064084425111357202803735848006410319560526747"
+      "table_product": "17169351377987887145300441760831957518726733263491947098472118438819105491177",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "287870619603554998074616789872357309763",
-      "eta": "285000010483513473144604718834818068269",
-      "family": "hidden.l1.h4.LeakyReLU",
-      "mismatch_count": 0,
-      "query_chunks": [
+      "beta": "77151974610735461723955162602242741508",
+      "eta": "220354136898974916751664073544495489072",
+      "expected_y_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "b98dea76d25a8a1ebdca24b9ef7dc35b77eead55943781d455bc7356d6f7ad1b"
+          "sha256": "7c8e14e8b53b6997eb9a87b3c1e7cf252e86edc79d62d7044f21b2b6e1145acc"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "051ba85c1e0af45cca7bfdf69908de736a425b9e664075343f5a2f7a3db528ca"
+          "sha256": "e8db63b09aee5b7af2c37c341e179f5cbff770db6f66656dbbe7955eb894d8df"
+        }
+      ],
+      "family": "hidden.l1.h4.LeakyReLU",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "b56c9c284e0a06f175caec0633ab3f78b4d28a54f173547408cfa86a85e7ebf7"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=x if x>=0 else round(0.2*x)",
+        "fixed_scale": 1000000,
+        "function": "LeakyReLU",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "1e0127206f6b5126459c9ceed8c7a4bd69e4258a1d27889c0124a39c3c824ae3",
+        "table_digest": "9f771dd25350823c42f3ea1b8ce6a97f6451e94bc229183af188f5ba4eb43c95",
+        "table_id": "T_LReLU",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "9f771dd25350823c42f3ea1b8ce6a97f6451e94bc229183af188f5ba4eb43c95",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 0,
+      "mismatch_count": 0,
+      "product_digest": "4448c3e10c7060f78e9b70a955335b17d2b885b9cf9795de0f0a61ffcc64368f",
+      "query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "6b890b1e7f2346c777e06c3ed9644d34a08243f4bb04bc96ce6f841a87cacf46"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "706442d3ec0d8bcdc5e3628cc3c90217d0e684cbd8c9987a1d808242409f3fc0"
         }
       ],
       "query_count": 13264,
-      "query_product": "13006942636860735034286180167162536388246921166536982726853319430119919492020",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "18821549890372667970687035173159047073895516009269069157846030593029626589694",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "bdb73df27bc8e034ab01382024ab957c05b47be5ca3204cbd3f912783daf2d15"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "b1e2a6d5f505140758c45ddd037fdf610b00e505c60b009d55875be7b04ed113"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "16c07c59f19c40d877d2ee48d4bc876808b190ff56001ee8a3aa489ff5c76e8a"
+        },
+        {
+          "chunk_index": 3,
+          "count": 1952,
+          "sha256": "2533b0e82ca86a874d627fb93de92e44e01324f06dd1099ff3ec2b9fea0b211e"
+        }
+      ],
+      "raw_query_digest": "b748df99cf31e346c6b1c476b065cb3cacf931bc9b5534dc7b85fc15d5857902",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "6b890b1e7f2346c777e06c3ed9644d34a08243f4bb04bc96ce6f841a87cacf46"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "706442d3ec0d8bcdc5e3628cc3c90217d0e684cbd8c9987a1d808242409f3fc0"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_LReLU",
       "table_chunks": [
         {
           "chunk_index": 0,
+          "count": 0,
+          "sha256": "b56c9c284e0a06f175caec0633ab3f78b4d28a54f173547408cfa86a85e7ebf7"
+        }
+      ],
+      "table_product": "18821549890372667970687035173159047073895516009269069157846030593029626589694",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
+    },
+    {
+      "beta": "221349661548854865698860942544541348241",
+      "eta": "115279977672377927784692657755189146677",
+      "expected_y_chunks": [
+        {
+          "chunk_index": 0,
           "count": 8192,
-          "sha256": "b98dea76d25a8a1ebdca24b9ef7dc35b77eead55943781d455bc7356d6f7ad1b"
+          "sha256": "48f99a44f660ce20cef8d60d63b8ed3dd809d7e185e9e519cc621614eab15e5c"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "051ba85c1e0af45cca7bfdf69908de736a425b9e664075343f5a2f7a3db528ca"
+          "sha256": "139634e89ef7122a548ac60d7dbcc6e4405ac7f24ab98a63198ebcaf29ce2149"
         }
       ],
-      "table_product": "13006942636860735034286180167162536388246921166536982726853319430119919492020"
-    },
-    {
-      "beta": "22710090793782928909726899123506785932",
-      "eta": "283268526186022784293372863871215590150",
       "family": "hidden.l1.h4.ExpMap",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "c39609850895ee6a43b739a1016a4b9e28238815c2f3f782c5aad201cfd769ea"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=round(exp(-x)) for nonnegative x",
+        "fixed_scale": 1000000,
+        "function": "ExpMap",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "0bf5a672fc4ec4e64683eff895a246c27c084fb14152ff0f01964f76872a1870",
+        "table_digest": "6a415cc10c6d7e800888963e0ee6a3c760844dbf3f729a6c87b73a98a2c2a6bc",
+        "table_id": "T_exp",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "6a415cc10c6d7e800888963e0ee6a3c760844dbf3f729a6c87b73a98a2c2a6bc",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 1,
       "mismatch_count": 0,
+      "product_digest": "fa5adbb17394f3695d5dcd2443dd94a19fbfee6ebd9bb6b1a1674fac24c37a7b",
       "query_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "e8ed37321eec15492b0843bd008caf13502697886d9a069100addbcbdd187088"
+          "sha256": "97a9fa9d63c2d66ba3c61f3eba34a8b551d4cf1d504048278cce4c45eb2a7577"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "ac9af6cfa2b601fc6bd59aa4ec963262572642f517ba53a556423e1ab5be2755"
+          "sha256": "7889392615df14e5a175e37a74d5a81d0d8ed063d10e8646b4c3b55a9d356338"
         }
       ],
       "query_count": 13264,
-      "query_product": "10636793787643660908494757228608472256082848482523514700871915170046730095718",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "7300538180816713784651274441185632103291955004623637634803899232130223490319",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "0b30f4a01814a91b3108008fd297c3bba4bad5f723f8e31b226b6cbe01b052cd"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "6fd5b23c2999e0f0982b72fd99db0451b9540a03ea577ac1d0d932a008f69f7b"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "c8b9f93bcf366d4f2270ed70724caca2ed1c5ade6acdc2afd20fefe062073e87"
+        },
+        {
+          "chunk_index": 3,
+          "count": 1952,
+          "sha256": "861f183a62968e2f7e9534da1a656e41f027134c1c4d60b519fbde7dcea931bf"
+        }
+      ],
+      "raw_query_digest": "8bd09969c480633fd67930c36da4a6f0c3e71b9c376ea88f9cd4d9dd4aeb7910",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "97a9fa9d63c2d66ba3c61f3eba34a8b551d4cf1d504048278cce4c45eb2a7577"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "7889392615df14e5a175e37a74d5a81d0d8ed063d10e8646b4c3b55a9d356338"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_exp",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "e8ed37321eec15492b0843bd008caf13502697886d9a069100addbcbdd187088"
-        },
-        {
-          "chunk_index": 1,
-          "count": 5072,
-          "sha256": "ac9af6cfa2b601fc6bd59aa4ec963262572642f517ba53a556423e1ab5be2755"
+          "count": 0,
+          "sha256": "c39609850895ee6a43b739a1016a4b9e28238815c2f3f782c5aad201cfd769ea"
         }
       ],
-      "table_product": "10636793787643660908494757228608472256082848482523514700871915170046730095718"
+      "table_product": "7300538180816713784651274441185632103291955004623637634803899232130223490319",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "180885993808712784888954753452662414351",
-      "eta": "174820519264261691474876822039055354025",
-      "family": "hidden.l1.h4.ELU",
-      "mismatch_count": 0,
-      "query_chunks": [
+      "beta": "6457762975241227264608186029089557251",
+      "eta": "144657618298893555987312106541614096705",
+      "expected_y_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "d098cd9ef8f2704326ab576363d5339b9f4a5bc3d698f99a7fb62e13d5e342cd"
+          "sha256": "4f4609ada2171932bdebb4106130c3300693b8d4d9e95c22357095c581ecbb4a"
         },
         {
           "chunk_index": 1,
           "count": 8192,
-          "sha256": "514ff363550b929d45dd8793ad68e015f9469e006714aaabe7c565ddd4cf4503"
+          "sha256": "5de337cef3d17c958c2df37c4c6898186b427fd0439e3fa273c354390797d490"
         },
         {
           "chunk_index": 2,
           "count": 5280,
-          "sha256": "c734595f743533f4845d95786f1682e6e04ed2b87329a89779f7eeeae6aa53dc"
+          "sha256": "2cccdbc40151f8fed00f953982bc0f7041f2974b12269a48b35ee72b826f6daa"
+        }
+      ],
+      "family": "hidden.l1.h4.ELU",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "309e78486a50b77cf1029ec7a0d26e8415ab88a7cd685174fb7570f7cf4db3a4"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=x if x>=0 else round(exp(x)-1)",
+        "fixed_scale": 1000000,
+        "function": "ELU",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "ee2c2aec3886066b1a7889f5fa115c969079490d534b34455a65bdc72939e970",
+        "table_digest": "e077a16f476d0fb45405fe8f653fffcbace8c0a5206142572adb944175d867c0",
+        "table_id": "T_ELU",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "e077a16f476d0fb45405fe8f653fffcbace8c0a5206142572adb944175d867c0",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 1,
+      "mismatch_count": 0,
+      "product_digest": "9482d8f97292a7ca23fdc824032a53cbcaf5bc91619dc64a7e724475c24d9e68",
+      "query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "3b9a77f37b365bf67728eb6c783d2634531b976e87656fa09c96d8668c201007"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "d835fc5d4fc9402da705eefad475a2601bc5b58d0e37449af0865178e6b22814"
+        },
+        {
+          "chunk_index": 2,
+          "count": 5280,
+          "sha256": "d9c20ab11069742faf17d5a50f645a57f206dd6fcd654f9f468dcb1ce0f57884"
         }
       ],
       "query_count": 21664,
-      "query_product": "6461709877350814898119650282837411511343625216352253879035600241991243872624",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "5348936408781498207342812726687258905782782914709337959285479665149447537184",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "aa8e1315b3c163cf20d2fee5f1d8453dc42846016b51d769a7c3e6fda1d10434"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "f24d1d30ebce7d86d7b147578c7fd24b6b69d1770b574f6d321f0a0dd99ce9b6"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "22e1e5c70039cac6614d77e3eafaf2f74014919dd40796cf83252b09c4f0596e"
+        },
+        {
+          "chunk_index": 3,
+          "count": 8192,
+          "sha256": "c24b511720bce34f29c60be301453a705da5914720706ffd0e985e5c4290a5d3"
+        },
+        {
+          "chunk_index": 4,
+          "count": 8192,
+          "sha256": "ea805d6a41f3094ad6d6fdd1b1bfd7d3306f325df2bd5b921ba51f44d248dd38"
+        },
+        {
+          "chunk_index": 5,
+          "count": 2368,
+          "sha256": "de763f93e24262f9e7eac02529e8dfb1d9bd8894dc68999a8eadf522d3252941"
+        }
+      ],
+      "raw_query_digest": "29541fba618f141416fd371ef8db48e60c5e9cbc1ff0779fccc634337f4aba21",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "3b9a77f37b365bf67728eb6c783d2634531b976e87656fa09c96d8668c201007"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "d835fc5d4fc9402da705eefad475a2601bc5b58d0e37449af0865178e6b22814"
+        },
+        {
+          "chunk_index": 2,
+          "count": 5280,
+          "sha256": "d9c20ab11069742faf17d5a50f645a57f206dd6fcd654f9f468dcb1ce0f57884"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_ELU",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "d098cd9ef8f2704326ab576363d5339b9f4a5bc3d698f99a7fb62e13d5e342cd"
-        },
-        {
-          "chunk_index": 1,
-          "count": 8192,
-          "sha256": "514ff363550b929d45dd8793ad68e015f9469e006714aaabe7c565ddd4cf4503"
-        },
-        {
-          "chunk_index": 2,
-          "count": 5280,
-          "sha256": "c734595f743533f4845d95786f1682e6e04ed2b87329a89779f7eeeae6aa53dc"
+          "count": 0,
+          "sha256": "309e78486a50b77cf1029ec7a0d26e8415ab88a7cd685174fb7570f7cf4db3a4"
         }
       ],
-      "table_product": "6461709877350814898119650282837411511343625216352253879035600241991243872624"
+      "table_product": "5348936408781498207342812726687258905782782914709337959285479665149447537184",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "124714023663311158165444610710958640504",
+      "beta": "161173620387184474434295290571182998151",
       "eta": "0",
       "family": "hidden.l1.h5.range_delta",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 4096,
+            "sha256": "2fbd6f09859cf24d41b61aadd7d33d331ead73c361621bb6b4be7162f1955990"
+          }
+        ],
+        "domain_policy": "all limbs in [0,4095]",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "entry_count": 4096,
+        "fixed_scale": 1000000,
+        "function": "Range",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "81349dd6ee46cdb04201a3f27e71807198a4595fdef87b6cf7f15be9e3d39d7b",
+        "table_digest": "d62d4412bb517e8d149f19a13d19ba3261c3ef4a6d8774c4bb0b842cfcb67ede",
+        "table_id": "T_range",
+        "table_kind": "materialized_fixed_range_table",
+        "table_materialization": "preprocessed fixed limb table"
+      },
+      "fixed_table_digest": "d62d4412bb517e8d149f19a13d19ba3261c3ef4a6d8774c4bb0b842cfcb67ede",
       "limb_count": 2,
       "max_limb": 4095,
       "min_input_nonnegative": true,
       "mismatch_count": 0,
+      "product_digest": "0f71e152e02b35968b61ea1cbb12bb74258392f7343ddda7931cfc60f836bc1a",
       "query_chunks": [
         {
           "chunk_index": 0,
@@ -921,161 +2110,394 @@
         }
       ],
       "query_count": 26528,
-      "query_product": "19120628977025083697509867550540746794539449396927998306938155485449026235074",
+      "query_product": "15231122873189777175889545700101044746987795020710959845584864669877905458828",
       "range_bits": 12,
-      "relation": "range_limb_membership_grand_product",
+      "raw_query_digest": "3191b0c114e7629fde63e5c73a65d52f40ae86034d0cc5c72b7d78cd177b9af3",
+      "relation": "range_limb_membership_in_fixed_table",
       "status": "VERIFY_OK",
-      "table": "T_range[0,4095]",
+      "table": "T_range",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "e700aaf57e38f8d108e6ab3919804f7948e0353cd9b78647e402fcc337a99ef2"
-        },
-        {
-          "chunk_index": 1,
-          "count": 8192,
-          "sha256": "558138b89a9012a8161cb7390fc0e48833797cd91c05fa6b6d4eec11252d6e05"
-        },
-        {
-          "chunk_index": 2,
-          "count": 8192,
-          "sha256": "de2b356f803575bab1a0828424803562959fa8d305c4b01ac7c714277ef80466"
-        },
-        {
-          "chunk_index": 3,
-          "count": 1952,
-          "sha256": "551f58aa392a0779e3187e083ebbdeeeba3cd1ef6d004b7de3feef9669767df7"
+          "count": 4096,
+          "sha256": "2fbd6f09859cf24d41b61aadd7d33d331ead73c361621bb6b4be7162f1955990"
         }
       ],
-      "table_product": "19120628977025083697509867550540746794539449396927998306938155485449026235074"
+      "table_product": "5289231461700296580019962452215758640612705128964453464615182642229689295109",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "97711727970517847838446530579676849646",
-      "eta": "111485667773983520808511264907631040016",
-      "family": "hidden.l1.h5.LeakyReLU",
-      "mismatch_count": 0,
-      "query_chunks": [
+      "beta": "190311780486705865449973587133360276770",
+      "eta": "104992946936235475230324492748912122989",
+      "expected_y_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "6e3f339782d60ff550ae66e138b0ee4d1c46e80121666e052b892380c8c7c5c6"
+          "sha256": "88f033046c4d828f0970ec64ded7c6dfac0abb15f839c782f525eb79f1594b34"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "9a4d1f31ce1be24d62a1610742d503db37e94e996b5b7565bb76a7a268a5c698"
+          "sha256": "d0089d97ecbb74f54f3689d75dddba39cae686ee115f081d3db4ea81ecd7ec45"
+        }
+      ],
+      "family": "hidden.l1.h5.LeakyReLU",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "b56c9c284e0a06f175caec0633ab3f78b4d28a54f173547408cfa86a85e7ebf7"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=x if x>=0 else round(0.2*x)",
+        "fixed_scale": 1000000,
+        "function": "LeakyReLU",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "1e0127206f6b5126459c9ceed8c7a4bd69e4258a1d27889c0124a39c3c824ae3",
+        "table_digest": "9f771dd25350823c42f3ea1b8ce6a97f6451e94bc229183af188f5ba4eb43c95",
+        "table_id": "T_LReLU",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "9f771dd25350823c42f3ea1b8ce6a97f6451e94bc229183af188f5ba4eb43c95",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 0,
+      "mismatch_count": 0,
+      "product_digest": "7d3952a3cb933a2bff632d6ec34a93ba0a300dfae183d7c7997dc1220f902716",
+      "query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "4cf12afd6ae214fb9c79f7181941c35614cdeff2623ba1736c95c02f7c172cd2"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "904ae219948cf162f49bfd33a9aa40ef8d01c1c447f524578e40e24ae040c029"
         }
       ],
       "query_count": 13264,
-      "query_product": "10214534786517374566072335493944254822799561036464975940536442931567559451579",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "10407075236189988927788909236182070572362465383854288089379068839431838482300",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "b8ca12de149e74d73c5a64dbdf85da41554244f20227204b738217d587d4c171"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "b5af511ce8d8708b9de6497c2463af1d1e59d7b9c4ab4c9c439f84fe113a4a37"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "5fe626d182e4e6006e2d70258804fc317de918b986a66ac187666bf6582b2f85"
+        },
+        {
+          "chunk_index": 3,
+          "count": 1952,
+          "sha256": "2657a93e3cbd63fa14f59e3f4c2b88f2f726cb9ad698d75917ee1be87e7f6cda"
+        }
+      ],
+      "raw_query_digest": "fd589e43b798a69868079b31cf05edb4f5d4f4026412fa0ab4e4e2674b85cf5c",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "4cf12afd6ae214fb9c79f7181941c35614cdeff2623ba1736c95c02f7c172cd2"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "904ae219948cf162f49bfd33a9aa40ef8d01c1c447f524578e40e24ae040c029"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_LReLU",
       "table_chunks": [
         {
           "chunk_index": 0,
+          "count": 0,
+          "sha256": "b56c9c284e0a06f175caec0633ab3f78b4d28a54f173547408cfa86a85e7ebf7"
+        }
+      ],
+      "table_product": "10407075236189988927788909236182070572362465383854288089379068839431838482300",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
+    },
+    {
+      "beta": "165841960421697766884092230004762488277",
+      "eta": "27732850469713455899248251555697381019",
+      "expected_y_chunks": [
+        {
+          "chunk_index": 0,
           "count": 8192,
-          "sha256": "6e3f339782d60ff550ae66e138b0ee4d1c46e80121666e052b892380c8c7c5c6"
+          "sha256": "e3a82eba85b38f6bc055448ea1aeae123b34dd9255ed90560feb7bb3e68d8838"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "9a4d1f31ce1be24d62a1610742d503db37e94e996b5b7565bb76a7a268a5c698"
+          "sha256": "7729c64b3aa0581bcb462422e1a9cace5498227d130eead501d47b75cc038ab8"
         }
       ],
-      "table_product": "10214534786517374566072335493944254822799561036464975940536442931567559451579"
-    },
-    {
-      "beta": "188833227637893979180956182851345765884",
-      "eta": "119717364098729333258086440180718790583",
       "family": "hidden.l1.h5.ExpMap",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "c39609850895ee6a43b739a1016a4b9e28238815c2f3f782c5aad201cfd769ea"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=round(exp(-x)) for nonnegative x",
+        "fixed_scale": 1000000,
+        "function": "ExpMap",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "0bf5a672fc4ec4e64683eff895a246c27c084fb14152ff0f01964f76872a1870",
+        "table_digest": "6a415cc10c6d7e800888963e0ee6a3c760844dbf3f729a6c87b73a98a2c2a6bc",
+        "table_id": "T_exp",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "6a415cc10c6d7e800888963e0ee6a3c760844dbf3f729a6c87b73a98a2c2a6bc",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 1,
       "mismatch_count": 0,
+      "product_digest": "5707dc178e88008945922af1acfe838537084e956056ce89e4abcaf84d4f3f58",
       "query_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "eba66481eecfb0d4836207aea21a8bda429b1d27bb39ac9a2944a7ac37332bbd"
+          "sha256": "4dc1397776eec510af6680be888b842edf8d597098fd671009e579f0ecaaa588"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "3039f7819d57877283c94578661681a8b69188de43bd6be2662e13bedb63c1fd"
+          "sha256": "46ae800df92fb35b7e316d15136cf12f9e6917d876aab6a855b9cb9fd3d47db6"
         }
       ],
       "query_count": 13264,
-      "query_product": "3717518966494630182889820011764258819103704425084388003066149528279409801206",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "13885050856635608586921845697674485911244070686913460451604252545926339860430",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "a97adb4ae8eaf5e8b63b2bc00ccb606b5d1a080d2b960fdd206f6984faf0ceff"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "e17597193300ea699c9878322419159093a40ec29bbd6e734d456a83e5088f98"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "afce6b5f851cede0eb5bfca66a865ca51aa1c7c2bb30245b14b52fc338fbeca9"
+        },
+        {
+          "chunk_index": 3,
+          "count": 1952,
+          "sha256": "be599899a5dd9241f84c1c6d060be521865c14ae48157221f2cf30b9da17ecdf"
+        }
+      ],
+      "raw_query_digest": "35b7173a5b4a8f3bd076638f2f65019fd721c176f22db634103d89c51a936de1",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "4dc1397776eec510af6680be888b842edf8d597098fd671009e579f0ecaaa588"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "46ae800df92fb35b7e316d15136cf12f9e6917d876aab6a855b9cb9fd3d47db6"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_exp",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "eba66481eecfb0d4836207aea21a8bda429b1d27bb39ac9a2944a7ac37332bbd"
-        },
-        {
-          "chunk_index": 1,
-          "count": 5072,
-          "sha256": "3039f7819d57877283c94578661681a8b69188de43bd6be2662e13bedb63c1fd"
+          "count": 0,
+          "sha256": "c39609850895ee6a43b739a1016a4b9e28238815c2f3f782c5aad201cfd769ea"
         }
       ],
-      "table_product": "3717518966494630182889820011764258819103704425084388003066149528279409801206"
+      "table_product": "13885050856635608586921845697674485911244070686913460451604252545926339860430",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "131091520030874255167843626160338284488",
-      "eta": "331841169477142570982340900338239509774",
-      "family": "hidden.l1.h5.ELU",
-      "mismatch_count": 0,
-      "query_chunks": [
+      "beta": "86854542556970346557281263911923476958",
+      "eta": "105337279571312712081749663505522381121",
+      "expected_y_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "03c7486edcc9c700e54dd28f6fe95a78050ab110da0058de44a9efb9b03fd637"
+          "sha256": "a44271d3c9367198fa24a52c03d7a69d5927478cc9aeb1eea9d85538eae9aca3"
         },
         {
           "chunk_index": 1,
           "count": 8192,
-          "sha256": "91c867d4b756c91189ad29b9133475ecb318116178b5079ff620a695ce25b08f"
+          "sha256": "07ca4875cc1d75dd7f2c8bdf1b9de3a7af035170b996f0c040ddb19a1db842b5"
         },
         {
           "chunk_index": 2,
           "count": 5280,
-          "sha256": "9c207e741f99f1523f359b4ff4f14b59edda9df00a4d4476b4ebf72a6e693685"
+          "sha256": "11d471abb53b57db7f4d00972dbbcff9a48af4a1f8425e6fb60042540630dbf3"
+        }
+      ],
+      "family": "hidden.l1.h5.ELU",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "309e78486a50b77cf1029ec7a0d26e8415ab88a7cd685174fb7570f7cf4db3a4"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=x if x>=0 else round(exp(x)-1)",
+        "fixed_scale": 1000000,
+        "function": "ELU",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "ee2c2aec3886066b1a7889f5fa115c969079490d534b34455a65bdc72939e970",
+        "table_digest": "e077a16f476d0fb45405fe8f653fffcbace8c0a5206142572adb944175d867c0",
+        "table_id": "T_ELU",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "e077a16f476d0fb45405fe8f653fffcbace8c0a5206142572adb944175d867c0",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 1,
+      "mismatch_count": 0,
+      "product_digest": "efc6c0be3d6a82ed0db2995e5ce78535b848003f5e3103b5753022c5e5b90ae1",
+      "query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "179c64f0b4f523ea4a0e7491f19cf4eb9191c139c7564f224573a18d58cbfe84"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "ad84cef237c209570bc42f154c66c50884209761c0fa5bf370a3da5f0238f3a3"
+        },
+        {
+          "chunk_index": 2,
+          "count": 5280,
+          "sha256": "f21670c200965c8adc65305431d559aa675cf60a8d88b420756769ec2cb577a7"
         }
       ],
       "query_count": 21664,
-      "query_product": "13471549326445108139277433266293239510965100406224679411021246882232720090820",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "17087779329875301656479408960737270364303924977040490146578010557565459448861",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "e7c19961e28efc2d746947e4b7a6434c6ba48bee89069a2750134a9227cd8002"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "0f69878d16a3b66b5cc1890cb4a30842148fb6ec5cd526ccae37b0ff5045626a"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "9bd88838bacf457ada8a08f4ad7e04d903f55641bced36a51b872a3cb0d87a97"
+        },
+        {
+          "chunk_index": 3,
+          "count": 8192,
+          "sha256": "235736cf84e645d7e93c0d8d3fd561a4a7291dba39b20da3c275af9e761828cf"
+        },
+        {
+          "chunk_index": 4,
+          "count": 8192,
+          "sha256": "a93538b7b61f229d8ebf6b680851d167d8f0ff27a7081707b43ac3d73af6c119"
+        },
+        {
+          "chunk_index": 5,
+          "count": 2368,
+          "sha256": "554b35dce73f3a81c9e1338a165ca61ece5217f85593f215220bce01949b03a4"
+        }
+      ],
+      "raw_query_digest": "1a3f8510556e5c2b31c93f22d557b6af4e3d972c1bbff771ef405aabfc105b65",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "179c64f0b4f523ea4a0e7491f19cf4eb9191c139c7564f224573a18d58cbfe84"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "ad84cef237c209570bc42f154c66c50884209761c0fa5bf370a3da5f0238f3a3"
+        },
+        {
+          "chunk_index": 2,
+          "count": 5280,
+          "sha256": "f21670c200965c8adc65305431d559aa675cf60a8d88b420756769ec2cb577a7"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_ELU",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "03c7486edcc9c700e54dd28f6fe95a78050ab110da0058de44a9efb9b03fd637"
-        },
-        {
-          "chunk_index": 1,
-          "count": 8192,
-          "sha256": "91c867d4b756c91189ad29b9133475ecb318116178b5079ff620a695ce25b08f"
-        },
-        {
-          "chunk_index": 2,
-          "count": 5280,
-          "sha256": "9c207e741f99f1523f359b4ff4f14b59edda9df00a4d4476b4ebf72a6e693685"
+          "count": 0,
+          "sha256": "309e78486a50b77cf1029ec7a0d26e8415ab88a7cd685174fb7570f7cf4db3a4"
         }
       ],
-      "table_product": "13471549326445108139277433266293239510965100406224679411021246882232720090820"
+      "table_product": "17087779329875301656479408960737270364303924977040490146578010557565459448861",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "183475880160343857797127154436346576906",
+      "beta": "319388950876263504198275410376586330752",
       "eta": "0",
       "family": "hidden.l1.h6.range_delta",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 4096,
+            "sha256": "2fbd6f09859cf24d41b61aadd7d33d331ead73c361621bb6b4be7162f1955990"
+          }
+        ],
+        "domain_policy": "all limbs in [0,4095]",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "entry_count": 4096,
+        "fixed_scale": 1000000,
+        "function": "Range",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "81349dd6ee46cdb04201a3f27e71807198a4595fdef87b6cf7f15be9e3d39d7b",
+        "table_digest": "d62d4412bb517e8d149f19a13d19ba3261c3ef4a6d8774c4bb0b842cfcb67ede",
+        "table_id": "T_range",
+        "table_kind": "materialized_fixed_range_table",
+        "table_materialization": "preprocessed fixed limb table"
+      },
+      "fixed_table_digest": "d62d4412bb517e8d149f19a13d19ba3261c3ef4a6d8774c4bb0b842cfcb67ede",
       "limb_count": 2,
       "max_limb": 4095,
       "min_input_nonnegative": true,
       "mismatch_count": 0,
+      "product_digest": "ab51531ee409c054ec002e7ba4460b3ee9dcf90b20f89186fe2e19d04e6052d4",
       "query_chunks": [
         {
           "chunk_index": 0,
@@ -1099,161 +2521,394 @@
         }
       ],
       "query_count": 26528,
-      "query_product": "18057324662420136199240541433648962306233245300904224021653896932960529241485",
+      "query_product": "21743708155535355377781406097520666322817613996648537070468953001258132464500",
       "range_bits": 12,
-      "relation": "range_limb_membership_grand_product",
+      "raw_query_digest": "2ef007fd16989d3edce10ef1d7e21b5ce53589ac0dddefd85c1c2f96fe20521e",
+      "relation": "range_limb_membership_in_fixed_table",
       "status": "VERIFY_OK",
-      "table": "T_range[0,4095]",
+      "table": "T_range",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "c626604ea44161743929c63a6d60f72c3884ea2c3c834bf5b056891f64506814"
-        },
-        {
-          "chunk_index": 1,
-          "count": 8192,
-          "sha256": "1454157c424246e147e141a1caac7be3d599c397f55993cd92d92307427c3ee3"
-        },
-        {
-          "chunk_index": 2,
-          "count": 8192,
-          "sha256": "dbdcdf3f774b59cea49fd4d0e4aff485c3053066bebb8af0f61210aa70b7824f"
-        },
-        {
-          "chunk_index": 3,
-          "count": 1952,
-          "sha256": "441b9a3cf23494cdd394e7ca7624a60029784782d574db999fd9e836d9fb9e93"
+          "count": 4096,
+          "sha256": "2fbd6f09859cf24d41b61aadd7d33d331ead73c361621bb6b4be7162f1955990"
         }
       ],
-      "table_product": "18057324662420136199240541433648962306233245300904224021653896932960529241485"
+      "table_product": "9089010668390125773066288987208819797511254336293435479201791208526424307662",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "180324537268267411946030443527332857067",
-      "eta": "16758026587237904896399102366969969467",
-      "family": "hidden.l1.h6.LeakyReLU",
-      "mismatch_count": 0,
-      "query_chunks": [
+      "beta": "100756809056123252899035924476115756521",
+      "eta": "300371631762128090383545202601228092105",
+      "expected_y_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "1d9a63d1519bae724da4231dadabb2fc37304a5d723ddf241589565bcf42a63c"
+          "sha256": "ed18192ff8eee8614596bd17a18805a8ec8382c0dece19a9d3cc8c3e0372d0e6"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "037ecbe134c1d33b938cd1956928e1b230c7c0afaa6d607a01288febdef840c7"
+          "sha256": "683d91727f4c0c014448b7429251c5f356aeb01bc1370b6d051749b34937f5b1"
+        }
+      ],
+      "family": "hidden.l1.h6.LeakyReLU",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "b56c9c284e0a06f175caec0633ab3f78b4d28a54f173547408cfa86a85e7ebf7"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=x if x>=0 else round(0.2*x)",
+        "fixed_scale": 1000000,
+        "function": "LeakyReLU",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "1e0127206f6b5126459c9ceed8c7a4bd69e4258a1d27889c0124a39c3c824ae3",
+        "table_digest": "9f771dd25350823c42f3ea1b8ce6a97f6451e94bc229183af188f5ba4eb43c95",
+        "table_id": "T_LReLU",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "9f771dd25350823c42f3ea1b8ce6a97f6451e94bc229183af188f5ba4eb43c95",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 0,
+      "mismatch_count": 0,
+      "product_digest": "f0b59b61ba2d5daab7282ca1c76bab1407366a283e251ce04be384ef406a9fd3",
+      "query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "a7853f68392d7969493b441a79dcf2ce5997875eb2e58dd3ec6c6311cc0fa160"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "bcb83b070f9ca9688b491118c7fc9e750bb0589b7950ff05a8ae80e394490e1d"
         }
       ],
       "query_count": 13264,
-      "query_product": "8961211089404931916282009434445997760092064780459828009591001333540512830315",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "1334332088959802723111240601237864917807342073843257332264464594095115516072",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "418e4ba947dc6685d27522eebfef9484065a66a073446e9ce21a90c4cfe0dd1d"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "342d768567dc5c2b222d550afe93b1ef9f11fe3523e64f58163e5064848ecbf6"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "8756844e961faf6c19688aaf0183752d60a01bff52aae2e9c3fa1842227bb996"
+        },
+        {
+          "chunk_index": 3,
+          "count": 1952,
+          "sha256": "e957fa63ab10e7d556af34fdb4a6562eb24650e5d2b58074297f6d0db3a8b326"
+        }
+      ],
+      "raw_query_digest": "6ab14424816673371ca06841d8ba52bc2c476eb8342d56e42deab1ad7c435393",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "a7853f68392d7969493b441a79dcf2ce5997875eb2e58dd3ec6c6311cc0fa160"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "bcb83b070f9ca9688b491118c7fc9e750bb0589b7950ff05a8ae80e394490e1d"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_LReLU",
       "table_chunks": [
         {
           "chunk_index": 0,
+          "count": 0,
+          "sha256": "b56c9c284e0a06f175caec0633ab3f78b4d28a54f173547408cfa86a85e7ebf7"
+        }
+      ],
+      "table_product": "1334332088959802723111240601237864917807342073843257332264464594095115516072",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
+    },
+    {
+      "beta": "114093733169018392625212294573219297893",
+      "eta": "90287234193305320761613886105071182393",
+      "expected_y_chunks": [
+        {
+          "chunk_index": 0,
           "count": 8192,
-          "sha256": "1d9a63d1519bae724da4231dadabb2fc37304a5d723ddf241589565bcf42a63c"
+          "sha256": "1502133b693c5bcd0a6503d41b21c95f778c0b121bcfaa1f95e54a4d75a57ad9"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "037ecbe134c1d33b938cd1956928e1b230c7c0afaa6d607a01288febdef840c7"
+          "sha256": "3c4849b0a42f21643b478db9ca21c14d36e1a54a1ec512a2661ab35a9fba209f"
         }
       ],
-      "table_product": "8961211089404931916282009434445997760092064780459828009591001333540512830315"
-    },
-    {
-      "beta": "72258555327815596038181274970429123553",
-      "eta": "119331413777195084621011227230960212279",
       "family": "hidden.l1.h6.ExpMap",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "c39609850895ee6a43b739a1016a4b9e28238815c2f3f782c5aad201cfd769ea"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=round(exp(-x)) for nonnegative x",
+        "fixed_scale": 1000000,
+        "function": "ExpMap",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "0bf5a672fc4ec4e64683eff895a246c27c084fb14152ff0f01964f76872a1870",
+        "table_digest": "6a415cc10c6d7e800888963e0ee6a3c760844dbf3f729a6c87b73a98a2c2a6bc",
+        "table_id": "T_exp",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "6a415cc10c6d7e800888963e0ee6a3c760844dbf3f729a6c87b73a98a2c2a6bc",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 1,
       "mismatch_count": 0,
+      "product_digest": "e8ec37370a3b2f8146c95d113798f725b8cc9ef91a177f8a786dc39b82a1a1a1",
       "query_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "c03c3a980144529aea92233d67a1e8fc976f1a00e1c59a57642f856a833ca1d5"
+          "sha256": "636aca55f78f7da41d9b5fbcb751d067b591fc28b8c7a1a7feec58078a82237a"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "8290ef240b9de8b14e5034a79518b58d14fbfbc1985203c429e81b9bb6e0f0a2"
+          "sha256": "4a33d8e49ea45edffa37692f527dbcdb8c7625dfd426fab2bf0e92ae308705c1"
         }
       ],
       "query_count": 13264,
-      "query_product": "2709525269183106139180136967908272514790073825337197094904824075970913586644",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "8726597980480191887010337166305197025569447582590532392648967055368145690946",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "65da9611f2cecdadf0d7134842eade1ab369a434f449c226139b348aefad7524"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "d8ff1fc71b0e3dc30e75bfcea6c4e069988c90c20018361c029d78edc5e62b21"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "97de4f4cd486167434e157aa0c0c640b8471a36f2430a56aa1631f0e1111aed7"
+        },
+        {
+          "chunk_index": 3,
+          "count": 1952,
+          "sha256": "cf728c28194c5fc6952c3d80c6a9bf4a7b69dddf2f8f5ada479b888a79baebcf"
+        }
+      ],
+      "raw_query_digest": "bad71589995a51bc32ee7cf8f38a27c4605761cf0ad9df0d89e73b893b96751f",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "636aca55f78f7da41d9b5fbcb751d067b591fc28b8c7a1a7feec58078a82237a"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "4a33d8e49ea45edffa37692f527dbcdb8c7625dfd426fab2bf0e92ae308705c1"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_exp",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "c03c3a980144529aea92233d67a1e8fc976f1a00e1c59a57642f856a833ca1d5"
-        },
-        {
-          "chunk_index": 1,
-          "count": 5072,
-          "sha256": "8290ef240b9de8b14e5034a79518b58d14fbfbc1985203c429e81b9bb6e0f0a2"
+          "count": 0,
+          "sha256": "c39609850895ee6a43b739a1016a4b9e28238815c2f3f782c5aad201cfd769ea"
         }
       ],
-      "table_product": "2709525269183106139180136967908272514790073825337197094904824075970913586644"
+      "table_product": "8726597980480191887010337166305197025569447582590532392648967055368145690946",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "175858129722765177170500694837216315162",
-      "eta": "35034582087471661240510075841254405448",
-      "family": "hidden.l1.h6.ELU",
-      "mismatch_count": 0,
-      "query_chunks": [
+      "beta": "268335499015357386219615639543503285136",
+      "eta": "84886154318912530643784387106312438571",
+      "expected_y_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "9f144daab8f84c074c221eecc3730d8224e57290d9aeedc5fe9ee37e30b59ab8"
+          "sha256": "ca69203df7513cbf16f2d64206e4627c8610ee94ff7055cee4504660a81ec3fd"
         },
         {
           "chunk_index": 1,
           "count": 8192,
-          "sha256": "c522d164b32c0212a87167cff39e960cdb8c99dbbbf9f4817ab90fb2a870a998"
+          "sha256": "74a66c71c63b61d91ecc1c01c46a675dca727975e28d6dac97b8ee25c7d574eb"
         },
         {
           "chunk_index": 2,
           "count": 5280,
-          "sha256": "7c31521dbd80a7258ae497a589432319982b7a8be76e4489733eb7a1d4101b8c"
+          "sha256": "d8e23c3ed500c2c28f48fe3133547921b433da33fc7979d3515bd74a747c9395"
+        }
+      ],
+      "family": "hidden.l1.h6.ELU",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "309e78486a50b77cf1029ec7a0d26e8415ab88a7cd685174fb7570f7cf4db3a4"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=x if x>=0 else round(exp(x)-1)",
+        "fixed_scale": 1000000,
+        "function": "ELU",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "ee2c2aec3886066b1a7889f5fa115c969079490d534b34455a65bdc72939e970",
+        "table_digest": "e077a16f476d0fb45405fe8f653fffcbace8c0a5206142572adb944175d867c0",
+        "table_id": "T_ELU",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "e077a16f476d0fb45405fe8f653fffcbace8c0a5206142572adb944175d867c0",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 1,
+      "mismatch_count": 0,
+      "product_digest": "fe7026b8f314eab6930ce127d218ef7187d4ce75066aaacabb7233038bdc2d60",
+      "query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "e81ba41d46f6b334b157a22ca52ab2c5f33f7eb2d91f8ad1a0ceb8e2ea96b01c"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "2b7f27a34845b63f0bb71298e51d58d87d6db67248ca7b7085e108108c9efe8d"
+        },
+        {
+          "chunk_index": 2,
+          "count": 5280,
+          "sha256": "46b7115dea7220bd8fa76752f3828653f63e271348d734ecb6c7e0b71990ae6b"
         }
       ],
       "query_count": 21664,
-      "query_product": "10492185942293312193668316033045338941654191694166354726475275351226172036892",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "19480882558404935128854137084487688759985014668563699815610733366683209907758",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "7dc4ec1005e2a3bbd58197d39e9c0a87f53e9c00e7a4d7cacd4b9c71061d2603"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "f0a0bae181aa83420a2021c975850e24b027bdc9607ae8691f311825348e3b5a"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "100d33211b9d7b92233652e86897a6a6304e6173505db4c28785ebcdf5ac0a53"
+        },
+        {
+          "chunk_index": 3,
+          "count": 8192,
+          "sha256": "6ba8ecba9dd9032fb426d041e3b4d369a8db766358f6348ae6cd74d4812e36bb"
+        },
+        {
+          "chunk_index": 4,
+          "count": 8192,
+          "sha256": "ff6eb1bc35fd2317a440ce39a66f147f0c9ae3ec21399199347fa36910887ead"
+        },
+        {
+          "chunk_index": 5,
+          "count": 2368,
+          "sha256": "8cb81f4d41bc1028dd2b91fee177d4e02203bca667bc550d829e6e6e5309e21e"
+        }
+      ],
+      "raw_query_digest": "51be7c132b451ba58a79d9904d0fb0af2b0e22fd07028ba8ebc61c82d078fcfb",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "e81ba41d46f6b334b157a22ca52ab2c5f33f7eb2d91f8ad1a0ceb8e2ea96b01c"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "2b7f27a34845b63f0bb71298e51d58d87d6db67248ca7b7085e108108c9efe8d"
+        },
+        {
+          "chunk_index": 2,
+          "count": 5280,
+          "sha256": "46b7115dea7220bd8fa76752f3828653f63e271348d734ecb6c7e0b71990ae6b"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_ELU",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "9f144daab8f84c074c221eecc3730d8224e57290d9aeedc5fe9ee37e30b59ab8"
-        },
-        {
-          "chunk_index": 1,
-          "count": 8192,
-          "sha256": "c522d164b32c0212a87167cff39e960cdb8c99dbbbf9f4817ab90fb2a870a998"
-        },
-        {
-          "chunk_index": 2,
-          "count": 5280,
-          "sha256": "7c31521dbd80a7258ae497a589432319982b7a8be76e4489733eb7a1d4101b8c"
+          "count": 0,
+          "sha256": "309e78486a50b77cf1029ec7a0d26e8415ab88a7cd685174fb7570f7cf4db3a4"
         }
       ],
-      "table_product": "10492185942293312193668316033045338941654191694166354726475275351226172036892"
+      "table_product": "19480882558404935128854137084487688759985014668563699815610733366683209907758",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "272654595931157975866904035496231085153",
+      "beta": "55989508892182197682610677208260176259",
       "eta": "0",
       "family": "hidden.l1.h7.range_delta",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 4096,
+            "sha256": "2fbd6f09859cf24d41b61aadd7d33d331ead73c361621bb6b4be7162f1955990"
+          }
+        ],
+        "domain_policy": "all limbs in [0,4095]",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "entry_count": 4096,
+        "fixed_scale": 1000000,
+        "function": "Range",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "81349dd6ee46cdb04201a3f27e71807198a4595fdef87b6cf7f15be9e3d39d7b",
+        "table_digest": "d62d4412bb517e8d149f19a13d19ba3261c3ef4a6d8774c4bb0b842cfcb67ede",
+        "table_id": "T_range",
+        "table_kind": "materialized_fixed_range_table",
+        "table_materialization": "preprocessed fixed limb table"
+      },
+      "fixed_table_digest": "d62d4412bb517e8d149f19a13d19ba3261c3ef4a6d8774c4bb0b842cfcb67ede",
       "limb_count": 2,
       "max_limb": 4095,
       "min_input_nonnegative": true,
       "mismatch_count": 0,
+      "product_digest": "9a8a7046ab771f688d2516e434413eab87b2bd2b698d812cd581cf925f66200d",
       "query_chunks": [
         {
           "chunk_index": 0,
@@ -1277,161 +2932,394 @@
         }
       ],
       "query_count": 26528,
-      "query_product": "12187369081531121463370537269868072212987961793521813175192061963516602111899",
+      "query_product": "3264516947137627256294866526839368826356764616119299342468545691363020482519",
       "range_bits": 12,
-      "relation": "range_limb_membership_grand_product",
+      "raw_query_digest": "626b3bb6ab6135b87cf980535a5240f8905529c97b6c28c59872f73cd1f48366",
+      "relation": "range_limb_membership_in_fixed_table",
       "status": "VERIFY_OK",
-      "table": "T_range[0,4095]",
+      "table": "T_range",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "f96fa9a842e16590307b10841a42a3c12e5de1a5115bf188416a26e4c3b2eb0c"
-        },
-        {
-          "chunk_index": 1,
-          "count": 8192,
-          "sha256": "a5796a16b9825e7dada97fa400455016c5304e1b9cbbe22c7687744561de660d"
-        },
-        {
-          "chunk_index": 2,
-          "count": 8192,
-          "sha256": "72cc6d9e82d1f33e6b4ec9e160110405007cc1597ec44538cebf66756636d00b"
-        },
-        {
-          "chunk_index": 3,
-          "count": 1952,
-          "sha256": "515739b0f925441159821f2fdfc9d2abcee34e2ca58a8fea5147b13b39532359"
+          "count": 4096,
+          "sha256": "2fbd6f09859cf24d41b61aadd7d33d331ead73c361621bb6b4be7162f1955990"
         }
       ],
-      "table_product": "12187369081531121463370537269868072212987961793521813175192061963516602111899"
+      "table_product": "12179183034036563065002035443650685954218177885934792265717675344548076691517",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "114487709808811485040575002280349961485",
-      "eta": "170443141695659131910943719914351492527",
-      "family": "hidden.l1.h7.LeakyReLU",
-      "mismatch_count": 0,
-      "query_chunks": [
+      "beta": "178443812546286079487721746843281284601",
+      "eta": "161235473588124836237008699157639566819",
+      "expected_y_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "77fc31b830d8633d0e58c8fd28da95b93c8666954527a346d6983f266480f884"
+          "sha256": "7ccc7a1a7e5829ee94792424a34cae013aac8670505840f134a3bdf79f99eb99"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "1c0f3dce8d91a46aaa42408cf3f62479750feab090c96f32ffea9c7fcc88b6ac"
+          "sha256": "8c8b3f7365395599f048a794d5ce5599aff3b8f34063fae6b4b958184fbf770c"
+        }
+      ],
+      "family": "hidden.l1.h7.LeakyReLU",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "b56c9c284e0a06f175caec0633ab3f78b4d28a54f173547408cfa86a85e7ebf7"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=x if x>=0 else round(0.2*x)",
+        "fixed_scale": 1000000,
+        "function": "LeakyReLU",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "1e0127206f6b5126459c9ceed8c7a4bd69e4258a1d27889c0124a39c3c824ae3",
+        "table_digest": "9f771dd25350823c42f3ea1b8ce6a97f6451e94bc229183af188f5ba4eb43c95",
+        "table_id": "T_LReLU",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "9f771dd25350823c42f3ea1b8ce6a97f6451e94bc229183af188f5ba4eb43c95",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 0,
+      "mismatch_count": 0,
+      "product_digest": "0bcc497649f57006911ad9f1148f206a4fadc00d44b6ba80d2a5e7addf0b253e",
+      "query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "e59d2037bb28eb5beb452bb7e6ef5b139ff58e18ba850cd1fdfcffb14292f49c"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "807b3e07875b16e848d58ba25303de4307daf2a499e274a036c2809d7cc27e4a"
         }
       ],
       "query_count": 13264,
-      "query_product": "5124779285244784508472240934301186243507883677088384661854048726339103292044",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "10569988847445471647473915219151680496419989596119230761078541360951882281888",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "a49fc4c5c9740457c7948fba64fcd0c6f8e7b08c760627f121716965c1306633"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "d14f3ab91967a8f5eed512e018f0a59e9154d88c818705f7f67e71242b02c30e"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "df34772e03b306039ffb228da9cefc9affdc7bc485729c00f56d031207a00f7f"
+        },
+        {
+          "chunk_index": 3,
+          "count": 1952,
+          "sha256": "5c8c7deb69835b66744d392f9d193e112cc330791ee9b85f4d1c1105cab4e445"
+        }
+      ],
+      "raw_query_digest": "cd364faceaf400c923c65e11684f792fbbf2cfda0e1b46f7efa460b7e9d99c59",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "e59d2037bb28eb5beb452bb7e6ef5b139ff58e18ba850cd1fdfcffb14292f49c"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "807b3e07875b16e848d58ba25303de4307daf2a499e274a036c2809d7cc27e4a"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_LReLU",
       "table_chunks": [
         {
           "chunk_index": 0,
+          "count": 0,
+          "sha256": "b56c9c284e0a06f175caec0633ab3f78b4d28a54f173547408cfa86a85e7ebf7"
+        }
+      ],
+      "table_product": "10569988847445471647473915219151680496419989596119230761078541360951882281888",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
+    },
+    {
+      "beta": "309262890442300240546952028739807086757",
+      "eta": "275030827512170410694875909241693307840",
+      "expected_y_chunks": [
+        {
+          "chunk_index": 0,
           "count": 8192,
-          "sha256": "77fc31b830d8633d0e58c8fd28da95b93c8666954527a346d6983f266480f884"
+          "sha256": "c5f032513caa15282d7fbbcb4af9e046c33d699b943509c7d7a2a3e802bcb859"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "1c0f3dce8d91a46aaa42408cf3f62479750feab090c96f32ffea9c7fcc88b6ac"
+          "sha256": "e21ca23cb675a26a234741aefbe86e20efaf95dd6e7b4b2d67e48b3324a1fcc2"
         }
       ],
-      "table_product": "5124779285244784508472240934301186243507883677088384661854048726339103292044"
-    },
-    {
-      "beta": "215031127491719873399707635906164192600",
-      "eta": "115615328439835666625265230171128243530",
       "family": "hidden.l1.h7.ExpMap",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "c39609850895ee6a43b739a1016a4b9e28238815c2f3f782c5aad201cfd769ea"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=round(exp(-x)) for nonnegative x",
+        "fixed_scale": 1000000,
+        "function": "ExpMap",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "0bf5a672fc4ec4e64683eff895a246c27c084fb14152ff0f01964f76872a1870",
+        "table_digest": "6a415cc10c6d7e800888963e0ee6a3c760844dbf3f729a6c87b73a98a2c2a6bc",
+        "table_id": "T_exp",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "6a415cc10c6d7e800888963e0ee6a3c760844dbf3f729a6c87b73a98a2c2a6bc",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 1,
       "mismatch_count": 0,
+      "product_digest": "4e155e17a38749a101b51ebae445eb5448faa52c77ed4383e5f1dfbb6157de7d",
       "query_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "c1c4576d7e63882d079a01982d22736fff34a4ecc2a48dda5656f00a523502cf"
+          "sha256": "929b64e1c7350d538201b3dc56d4ea893db41825a3f9d8d708fd903b0258e669"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "1090746c6a200d5c43f369ed94c7f4693bc72a0e77996da3019a0ce4d092bb39"
+          "sha256": "a4e22f2260bace495959cc44c49d0200c52d7f98a7cd9ee7ef9c234a6284a14e"
         }
       ],
       "query_count": 13264,
-      "query_product": "13655756958286187136831837668362659364138576822018373067427344578425072524642",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "2396354786975925678906956290363043748907867115586003218288239080472131929642",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "fca7bf3ce70fd80f9a0c4e65d461d7d35c3862c02614d5ad750b41ae5cfe365a"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "ab566df25c449beef4aef0e49e237d46c086e94707f9d93fe305752c13d61d44"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "0e3d0ad96af901e5cda0f394da932e491d948e934ef6ea113feae6270ca74b28"
+        },
+        {
+          "chunk_index": 3,
+          "count": 1952,
+          "sha256": "c4992b3062239a2589d1b764b85d50136770d7ed66ea4b2ebb80500ab2f19f4d"
+        }
+      ],
+      "raw_query_digest": "1debfad0ca232886adb6ff7bf834650e808b9704ef0fc02195b9d90ae9c65329",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "929b64e1c7350d538201b3dc56d4ea893db41825a3f9d8d708fd903b0258e669"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "a4e22f2260bace495959cc44c49d0200c52d7f98a7cd9ee7ef9c234a6284a14e"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_exp",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "c1c4576d7e63882d079a01982d22736fff34a4ecc2a48dda5656f00a523502cf"
-        },
-        {
-          "chunk_index": 1,
-          "count": 5072,
-          "sha256": "1090746c6a200d5c43f369ed94c7f4693bc72a0e77996da3019a0ce4d092bb39"
+          "count": 0,
+          "sha256": "c39609850895ee6a43b739a1016a4b9e28238815c2f3f782c5aad201cfd769ea"
         }
       ],
-      "table_product": "13655756958286187136831837668362659364138576822018373067427344578425072524642"
+      "table_product": "2396354786975925678906956290363043748907867115586003218288239080472131929642",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "64806413812393447748742451356441043665",
-      "eta": "327992820992984864351105411047587185527",
-      "family": "hidden.l1.h7.ELU",
-      "mismatch_count": 0,
-      "query_chunks": [
+      "beta": "154641984655619912254080727947126003048",
+      "eta": "127585153994731578890103029080745214761",
+      "expected_y_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "e8fa2ca559c36c56b491ae1fb7ab35eeef332b1798b76f3703e44da2900b3fac"
+          "sha256": "aec945ee00576d13290aafb1765f9d87c77c04864b2c403ef89e91615338f3f3"
         },
         {
           "chunk_index": 1,
           "count": 8192,
-          "sha256": "e6f5a23d47d427d0fc88b5e46617914b24ad53fade81964b6e49fb2da49715ed"
+          "sha256": "e6f98e8e382c09b9edb0da83b7a9dc505e2b26d5521d1e2a90fda195e8c409a2"
         },
         {
           "chunk_index": 2,
           "count": 5280,
-          "sha256": "51da176561854e90f661434b8bbda6d3c73e923851c1a53407fa25cfb2f2cdde"
+          "sha256": "c2f7bcdcda8ca7002db0bf42b67fc760287daf245935565c5a102a39552e6651"
+        }
+      ],
+      "family": "hidden.l1.h7.ELU",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "309e78486a50b77cf1029ec7a0d26e8415ab88a7cd685174fb7570f7cf4db3a4"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=x if x>=0 else round(exp(x)-1)",
+        "fixed_scale": 1000000,
+        "function": "ELU",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "ee2c2aec3886066b1a7889f5fa115c969079490d534b34455a65bdc72939e970",
+        "table_digest": "e077a16f476d0fb45405fe8f653fffcbace8c0a5206142572adb944175d867c0",
+        "table_id": "T_ELU",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "e077a16f476d0fb45405fe8f653fffcbace8c0a5206142572adb944175d867c0",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 1,
+      "mismatch_count": 0,
+      "product_digest": "0f280f2735fc48d98254280509d67f5862277a3147f205f2690bdf9a966a5487",
+      "query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "553f80b44e2e6bda91dec0b914320897e69e507ce5ea1be51e38adda8f9a3984"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "9788ed76e98bade9b9c143b63f60c9e28067ba16c8d407a149bc17ed8dbfcc9b"
+        },
+        {
+          "chunk_index": 2,
+          "count": 5280,
+          "sha256": "ee0c9c74f4045e4c2817825be0e836f2a5aff1b3c957b941f1d0a2e8930c6004"
         }
       ],
       "query_count": 21664,
-      "query_product": "2629298625956860812483531445626910602547354405688617645847646095140101199324",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "7071998052193123730146994614451029734139337037127784628476296598334981268513",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "e6bd50010ed54180dcc4a5ff9e674b6b7fa4921deb28b1a6eea4fcc4e3782c05"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "c4b5f60b8c928d8687b8b30a60e98937ccd276e0cbb41233b2f55960a7c51ac3"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "428ab1cfaaad592cc35c688c1b37ac200e30d3943fccd1e66b7c63f3dda8c864"
+        },
+        {
+          "chunk_index": 3,
+          "count": 8192,
+          "sha256": "90b24f243e04f5eb4f69b612f27332e46835978fc5393b8fc679dc8629853fd6"
+        },
+        {
+          "chunk_index": 4,
+          "count": 8192,
+          "sha256": "e9827d2b86dada7018fcee5ae6aa7966534f2470472769eaa0a9ac15f85e26d5"
+        },
+        {
+          "chunk_index": 5,
+          "count": 2368,
+          "sha256": "65f78dffb2a82d9468110b59b5a871e98513c35e2359cc4317aaea11f9b4f227"
+        }
+      ],
+      "raw_query_digest": "70edb3c3b49793d9324a05c3099d43e726457c996f0d30d575d757e7d3a08d75",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "553f80b44e2e6bda91dec0b914320897e69e507ce5ea1be51e38adda8f9a3984"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "9788ed76e98bade9b9c143b63f60c9e28067ba16c8d407a149bc17ed8dbfcc9b"
+        },
+        {
+          "chunk_index": 2,
+          "count": 5280,
+          "sha256": "ee0c9c74f4045e4c2817825be0e836f2a5aff1b3c957b941f1d0a2e8930c6004"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_ELU",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "e8fa2ca559c36c56b491ae1fb7ab35eeef332b1798b76f3703e44da2900b3fac"
-        },
-        {
-          "chunk_index": 1,
-          "count": 8192,
-          "sha256": "e6f5a23d47d427d0fc88b5e46617914b24ad53fade81964b6e49fb2da49715ed"
-        },
-        {
-          "chunk_index": 2,
-          "count": 5280,
-          "sha256": "51da176561854e90f661434b8bbda6d3c73e923851c1a53407fa25cfb2f2cdde"
+          "count": 0,
+          "sha256": "309e78486a50b77cf1029ec7a0d26e8415ab88a7cd685174fb7570f7cf4db3a4"
         }
       ],
-      "table_product": "2629298625956860812483531445626910602547354405688617645847646095140101199324"
+      "table_product": "7071998052193123730146994614451029734139337037127784628476296598334981268513",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "90152509444796663775783963369751078998",
+      "beta": "322923779131003315120339977454811015489",
       "eta": "0",
       "family": "output.h0.range_delta",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 4096,
+            "sha256": "2fbd6f09859cf24d41b61aadd7d33d331ead73c361621bb6b4be7162f1955990"
+          }
+        ],
+        "domain_policy": "all limbs in [0,4095]",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "entry_count": 4096,
+        "fixed_scale": 1000000,
+        "function": "Range",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "81349dd6ee46cdb04201a3f27e71807198a4595fdef87b6cf7f15be9e3d39d7b",
+        "table_digest": "d62d4412bb517e8d149f19a13d19ba3261c3ef4a6d8774c4bb0b842cfcb67ede",
+        "table_id": "T_range",
+        "table_kind": "materialized_fixed_range_table",
+        "table_materialization": "preprocessed fixed limb table"
+      },
+      "fixed_table_digest": "d62d4412bb517e8d149f19a13d19ba3261c3ef4a6d8774c4bb0b842cfcb67ede",
       "limb_count": 2,
       "max_limb": 4095,
       "min_input_nonnegative": true,
       "mismatch_count": 0,
+      "product_digest": "a3e46643a91274aa87efd84cdd815c9248d40e5656d79148b4cc7cd3b933e67b",
       "query_chunks": [
         {
           "chunk_index": 0,
@@ -1455,121 +3343,369 @@
         }
       ],
       "query_count": 26528,
-      "query_product": "15827414860540211241823596310548742471867629623605743258627426866855230226058",
+      "query_product": "10358546293480640352257952667654704889985202894224220430361703992675322684924",
       "range_bits": 12,
-      "relation": "range_limb_membership_grand_product",
+      "raw_query_digest": "94e0945b63df018bf8a356472daacc2bf00b53ebba8f1b768364e4493dc2a48b",
+      "relation": "range_limb_membership_in_fixed_table",
       "status": "VERIFY_OK",
-      "table": "T_range[0,4095]",
+      "table": "T_range",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "6f45c0492c1d20dec7fc16c2c46396002b4c7f5a5899e7dee0e1d0d6a0c34e7c"
-        },
-        {
-          "chunk_index": 1,
-          "count": 8192,
-          "sha256": "4bf0859e370bb6711d6baabc77a27b771e4a3180b13c9b94811c644e38f36172"
-        },
-        {
-          "chunk_index": 2,
-          "count": 8192,
-          "sha256": "7a1e1e1d577c785a2a67d00ed8156fa27c16ed0fe7a71dfbb96e1d8b3901b003"
-        },
-        {
-          "chunk_index": 3,
-          "count": 1952,
-          "sha256": "bdc0838421d5d3752dadeb4d4c262ed905257abbe8b4bc713a81a5fe2028f8dc"
+          "count": 4096,
+          "sha256": "2fbd6f09859cf24d41b61aadd7d33d331ead73c361621bb6b4be7162f1955990"
         }
       ],
-      "table_product": "15827414860540211241823596310548742471867629623605743258627426866855230226058"
+      "table_product": "7748579880167783766329172023022820487580569480220151122745200199983561355710",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "235068118079645561928080099087747918328",
-      "eta": "69258555649100144279101967532607705665",
-      "family": "output.h0.LeakyReLU",
-      "mismatch_count": 0,
-      "query_chunks": [
+      "beta": "99912695554350847353140900711267376269",
+      "eta": "96942695500739163873364394677913658634",
+      "expected_y_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "9b06d642419a3169011746b751518e9f51f2025a3ef2ecfe3575f3c84db8cbc0"
+          "sha256": "28bfcc23832bd66c9fff8dcb5d6c595dc7dc7c8445709a50698b372c261f810b"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "6bd6c15ecc8ce8102f23432d9236007780452504d4479d6c6877cd626e64f7ae"
+          "sha256": "c486259c7015e39e9c3a952c066df7bb633a31d6f087eec6d558c7fcb26a8c02"
+        }
+      ],
+      "family": "output.h0.LeakyReLU",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "b56c9c284e0a06f175caec0633ab3f78b4d28a54f173547408cfa86a85e7ebf7"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=x if x>=0 else round(0.2*x)",
+        "fixed_scale": 1000000,
+        "function": "LeakyReLU",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "1e0127206f6b5126459c9ceed8c7a4bd69e4258a1d27889c0124a39c3c824ae3",
+        "table_digest": "9f771dd25350823c42f3ea1b8ce6a97f6451e94bc229183af188f5ba4eb43c95",
+        "table_id": "T_LReLU",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "9f771dd25350823c42f3ea1b8ce6a97f6451e94bc229183af188f5ba4eb43c95",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 0,
+      "mismatch_count": 0,
+      "product_digest": "b61a75c70c8127d8dfc0577eabd9e9664c9ef1bc4cbb974225d8a64160b4cdc6",
+      "query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "46f55d66dbd2698443a703342355eacd0f6b6c7e6f4310abbc823c78d15432a2"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "28d86d76952f098d10d70c3aa171b24ee2249e4051f2f02af29af2dc3ba5045b"
         }
       ],
       "query_count": 13264,
-      "query_product": "19391517153995307399915759996665215795085511545800757771076980811129359795336",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "8976833280100905612324944249775817806733684805173095480161310860930698784920",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "c51abe4f679393c07a3d1e54a9caed04b2ba8340de913d5140ff768b9933aa4a"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "b04bfa6164ed66fd429f041c9cc858d10eae915a89fe22abf0d7ab04c746e940"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "715277f4c4e59779967909893330c74dfd9d40deff2440a94310ddcbff6dba7a"
+        },
+        {
+          "chunk_index": 3,
+          "count": 1952,
+          "sha256": "5400b26ac0cbe32feba2883a0256fe747a0e2fa885d4908d9b55ae4016bb155d"
+        }
+      ],
+      "raw_query_digest": "83e153856312693f54a645a3da8a587a5294aec0eeab81ed97e17d2835c5758c",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "46f55d66dbd2698443a703342355eacd0f6b6c7e6f4310abbc823c78d15432a2"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "28d86d76952f098d10d70c3aa171b24ee2249e4051f2f02af29af2dc3ba5045b"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_LReLU",
       "table_chunks": [
         {
           "chunk_index": 0,
+          "count": 0,
+          "sha256": "b56c9c284e0a06f175caec0633ab3f78b4d28a54f173547408cfa86a85e7ebf7"
+        }
+      ],
+      "table_product": "8976833280100905612324944249775817806733684805173095480161310860930698784920",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
+    },
+    {
+      "beta": "16549427246914508569676430749945102639",
+      "eta": "207191610590362587753678492348200030995",
+      "expected_y_chunks": [
+        {
+          "chunk_index": 0,
           "count": 8192,
-          "sha256": "9b06d642419a3169011746b751518e9f51f2025a3ef2ecfe3575f3c84db8cbc0"
+          "sha256": "27cbfb35f7c3fbbac59c5b78dc2c00442cb50d1f464b4bddd428ed05905b1207"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "6bd6c15ecc8ce8102f23432d9236007780452504d4479d6c6877cd626e64f7ae"
+          "sha256": "dadbb1fd0ce59ed4f7ac09445dddc9e3634ee28531c4b7b1cd94178efda2b159"
         }
       ],
-      "table_product": "19391517153995307399915759996665215795085511545800757771076980811129359795336"
-    },
-    {
-      "beta": "5130102538253981467477822870043436991",
-      "eta": "222831616038926650261102790156027277482",
       "family": "output.h0.ExpMap",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 0,
+            "sha256": "c39609850895ee6a43b739a1016a4b9e28238815c2f3f782c5aad201cfd769ea"
+          }
+        ],
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "evaluation_rule": "y=round(exp(-x)) for nonnegative x",
+        "fixed_scale": 1000000,
+        "function": "ExpMap",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "0bf5a672fc4ec4e64683eff895a246c27c084fb14152ff0f01964f76872a1870",
+        "table_digest": "6a415cc10c6d7e800888963e0ee6a3c760844dbf3f729a6c87b73a98a2c2a6bc",
+        "table_id": "T_exp",
+        "table_kind": "structured_fixed_function_table",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+      },
+      "fixed_table_digest": "6a415cc10c6d7e800888963e0ee6a3c760844dbf3f729a6c87b73a98a2c2a6bc",
+      "lookup_quantization_tolerance_q": 1,
+      "max_lookup_delta_q": 1,
       "mismatch_count": 0,
+      "product_digest": "934664f790af801a57676dbf333ccd1c01608f39406ac6e332f409138fc81f43",
       "query_chunks": [
         {
           "chunk_index": 0,
           "count": 8192,
-          "sha256": "fd612c4d73acefacd2b3607ee690eb9eb4a461112cf736581fcbc3a48b834d90"
+          "sha256": "2890510e18492bbb10871812ac6bb0ba9209e369f09c49b9d1c62b3bacc68cfc"
         },
         {
           "chunk_index": 1,
           "count": 5072,
-          "sha256": "bc3731e454bc224ba238998739690cfec99a4e76c5befef483709ec63d52ce8b"
+          "sha256": "aca5c9431b8609b8857395bacf640afdcdc598a42610f81153f0de0b441ff528"
         }
       ],
       "query_count": 13264,
-      "query_product": "15841402208803224222343801131931977571280197685295294308335999522407629622238",
-      "relation": "query_multiset_equals_function_table_multiset",
+      "query_product": "15586270864650489228730112687067688582364721090497180340940518521771426200852",
+      "raw_query_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "311cf34c25faa291c0a17c9613ee65034bd33e7bc55ac6115c2fde7dfc110fc2"
+        },
+        {
+          "chunk_index": 1,
+          "count": 8192,
+          "sha256": "f06fce02e2d3be44c7b9cd11e925735663a0597f0d7c5e15467f81e9c8432eb9"
+        },
+        {
+          "chunk_index": 2,
+          "count": 8192,
+          "sha256": "b5418c8e592d141052e4ddc6a220cb1e7124bfbe40f72f1ce82232c33622d0cb"
+        },
+        {
+          "chunk_index": 3,
+          "count": 1952,
+          "sha256": "091003fccf570347472b0073f1ae56da0661d03ee5e7f5cbb619c5b576fd112a"
+        }
+      ],
+      "raw_query_digest": "18b93579607a723fa521b54fbf1ae2e70240e08accd386238d546ffc100738d1",
+      "relation": "query_multiset_membership_in_fixed_function_table",
+      "selected_fixed_table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 8192,
+          "sha256": "2890510e18492bbb10871812ac6bb0ba9209e369f09c49b9d1c62b3bacc68cfc"
+        },
+        {
+          "chunk_index": 1,
+          "count": 5072,
+          "sha256": "aca5c9431b8609b8857395bacf640afdcdc598a42610f81153f0de0b441ff528"
+        }
+      ],
       "status": "VERIFY_OK",
       "table": "T_exp",
       "table_chunks": [
         {
           "chunk_index": 0,
-          "count": 8192,
-          "sha256": "fd612c4d73acefacd2b3607ee690eb9eb4a461112cf736581fcbc3a48b834d90"
-        },
-        {
-          "chunk_index": 1,
-          "count": 5072,
-          "sha256": "bc3731e454bc224ba238998739690cfec99a4e76c5befef483709ec63d52ce8b"
+          "count": 0,
+          "sha256": "c39609850895ee6a43b739a1016a4b9e28238815c2f3f782c5aad201cfd769ea"
         }
       ],
-      "table_product": "15841402208803224222343801131931977571280197685295294308335999522407629622238"
+      "table_product": "15586270864650489228730112687067688582364721090497180340940518521771426200852",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     },
     {
-      "beta": "180768445152467050437078999495346002843",
+      "beta": "6378375684625556802560916405172454163",
       "eta": "0",
       "family": "rescale_rounding_range",
+      "fixed_table": {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "count": 4096,
+            "sha256": "2fbd6f09859cf24d41b61aadd7d33d331ead73c361621bb6b4be7162f1955990"
+          }
+        ],
+        "domain_policy": "all limbs in [0,4095]",
+        "encoding_id": "gat-zkgpt-fixed-order-v1",
+        "entry_count": 4096,
+        "fixed_scale": 1000000,
+        "function": "Range",
+        "quant_cfg_id": "fp32_bundle_export",
+        "range_bits": 12,
+        "static_table_id": "tables:lrelu+elu+exp+range",
+        "table_commitment": "81349dd6ee46cdb04201a3f27e71807198a4595fdef87b6cf7f15be9e3d39d7b",
+        "table_digest": "d62d4412bb517e8d149f19a13d19ba3261c3ef4a6d8774c4bb0b842cfcb67ede",
+        "table_id": "T_range",
+        "table_kind": "materialized_fixed_range_table",
+        "table_materialization": "preprocessed fixed limb table"
+      },
+      "fixed_table_digest": "d62d4412bb517e8d149f19a13d19ba3261c3ef4a6d8774c4bb0b842cfcb67ede",
+      "product_digest": "9216afbd5bc69f86ccc9dd0498204c2c9ead47c18565db201cdbe2ff1c29521f",
       "query_chunks": [],
       "query_count": 0,
       "query_product": "1",
+      "raw_query_digest": "7f8f2bc41cad64dcd50b1772b2448d64309fa7bf434a6f7d0718158aba6d7db5",
       "relation": "empty",
       "status": "VERIFY_OK",
       "table": "T_range",
-      "table_chunks": [],
-      "table_product": "1"
+      "table_chunks": [
+        {
+          "chunk_index": 0,
+          "count": 4096,
+          "sha256": "2fbd6f09859cf24d41b61aadd7d33d331ead73c361621bb6b4be7162f1955990"
+        }
+      ],
+      "table_product": "1",
+      "transcript_digest": "9447d01c42a62cbadc0ff7ecaa5081138d389768913a27065aad2cc2602c439b"
     }
   ],
-  "protocol": "lasso-grand-product-lookup-v2",
+  "fixed_table_registry": {
+    "T_ELU": {
+      "chunks": [
+        {
+          "chunk_index": 0,
+          "count": 0,
+          "sha256": "309e78486a50b77cf1029ec7a0d26e8415ab88a7cd685174fb7570f7cf4db3a4"
+        }
+      ],
+      "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+      "encoding_id": "gat-zkgpt-fixed-order-v1",
+      "evaluation_rule": "y=x if x>=0 else round(exp(x)-1)",
+      "fixed_scale": 1000000,
+      "function": "ELU",
+      "quant_cfg_id": "fp32_bundle_export",
+      "range_bits": 12,
+      "static_table_id": "tables:lrelu+elu+exp+range",
+      "table_commitment": "ee2c2aec3886066b1a7889f5fa115c969079490d534b34455a65bdc72939e970",
+      "table_digest": "e077a16f476d0fb45405fe8f653fffcbace8c0a5206142572adb944175d867c0",
+      "table_id": "T_ELU",
+      "table_kind": "structured_fixed_function_table",
+      "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+    },
+    "T_LReLU": {
+      "chunks": [
+        {
+          "chunk_index": 0,
+          "count": 0,
+          "sha256": "b56c9c284e0a06f175caec0633ab3f78b4d28a54f173547408cfa86a85e7ebf7"
+        }
+      ],
+      "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+      "encoding_id": "gat-zkgpt-fixed-order-v1",
+      "evaluation_rule": "y=x if x>=0 else round(0.2*x)",
+      "fixed_scale": 1000000,
+      "function": "LeakyReLU",
+      "quant_cfg_id": "fp32_bundle_export",
+      "range_bits": 12,
+      "static_table_id": "tables:lrelu+elu+exp+range",
+      "table_commitment": "1e0127206f6b5126459c9ceed8c7a4bd69e4258a1d27889c0124a39c3c824ae3",
+      "table_digest": "9f771dd25350823c42f3ea1b8ce6a97f6451e94bc229183af188f5ba4eb43c95",
+      "table_id": "T_LReLU",
+      "table_kind": "structured_fixed_function_table",
+      "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+    },
+    "T_exp": {
+      "chunks": [
+        {
+          "chunk_index": 0,
+          "count": 0,
+          "sha256": "c39609850895ee6a43b739a1016a4b9e28238815c2f3f782c5aad201cfd769ea"
+        }
+      ],
+      "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+      "encoding_id": "gat-zkgpt-fixed-order-v1",
+      "evaluation_rule": "y=round(exp(-x)) for nonnegative x",
+      "fixed_scale": 1000000,
+      "function": "ExpMap",
+      "quant_cfg_id": "fp32_bundle_export",
+      "range_bits": 12,
+      "static_table_id": "tables:lrelu+elu+exp+range",
+      "table_commitment": "0bf5a672fc4ec4e64683eff895a246c27c084fb14152ff0f01964f76872a1870",
+      "table_digest": "6a415cc10c6d7e800888963e0ee6a3c760844dbf3f729a6c87b73a98a2c2a6bc",
+      "table_id": "T_exp",
+      "table_kind": "structured_fixed_function_table",
+      "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+    },
+    "T_range": {
+      "chunks": [
+        {
+          "chunk_index": 0,
+          "count": 4096,
+          "sha256": "2fbd6f09859cf24d41b61aadd7d33d331ead73c361621bb6b4be7162f1955990"
+        }
+      ],
+      "domain_policy": "all limbs in [0,4095]",
+      "encoding_id": "gat-zkgpt-fixed-order-v1",
+      "entry_count": 4096,
+      "fixed_scale": 1000000,
+      "function": "Range",
+      "quant_cfg_id": "fp32_bundle_export",
+      "range_bits": 12,
+      "static_table_id": "tables:lrelu+elu+exp+range",
+      "table_commitment": "81349dd6ee46cdb04201a3f27e71807198a4595fdef87b6cf7f15be9e3d39d7b",
+      "table_digest": "d62d4412bb517e8d149f19a13d19ba3261c3ef4a6d8774c4bb0b842cfcb67ede",
+      "table_id": "T_range",
+      "table_kind": "materialized_fixed_range_table",
+      "table_materialization": "preprocessed fixed limb table"
+    }
+  },
+  "fixed_table_registry_digest": "e62bead91a3b2d9f40532634a311e3be792cedd91a3a8386a2dc29f0e2e2f59b",
+  "protocol": "lasso-fixed-table-grand-product-v3",
   "status": "VERIFY_OK"
 }

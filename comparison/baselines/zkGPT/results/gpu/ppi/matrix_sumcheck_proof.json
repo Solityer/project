@@ -1,6 +1,7 @@
 {
   "claims": [
     {
+      "constraint_equation": "claimed_sum - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_multiplication",
       "label": "hidden.l1.h0.projection",
       "output_eval_q2": "803839443430351891902176484478937351703005225491000000",
@@ -10,6 +11,7 @@
         "row_challenge_seed": 1658490468264913042,
         "row_weight_digest": "aa89bf78deeffab79adcf7d13d13a403401a7a13e628834efcff7975a60ca0b7"
       },
+      "rescale_advice_digest": "e8aa4e95a21e53d84d64b306ee16a1695c680d886d6f4b0f4199a2e9456148c5",
       "rescale_rounding_advice": "178366697981356974283802402012177658457588272527",
       "shape": [
         56944,
@@ -124,6 +126,7 @@
     },
     {
       "bias_eval_q2": "83652234467521365175429187961000000",
+      "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_vector_inner_products",
       "label": "hidden.l1.h0.attention_src",
       "output_eval_q2": "73510888326983653648761108944000000",
@@ -131,6 +134,7 @@
         "row_challenge_seed": 1658490468264913059,
         "row_weight_digest": "feeef9356374f3d89b661eed05c2d99b4701a3bb3751018c2e169bff0a64a404"
       },
+      "rescale_advice_digest": "7d038cdc30dd35f10142f129cecffb4f01738840018f17ff079b4035b76144fb",
       "rescale_rounding_advice": "21888242871839275222246405745257275088548364400323610010374080916689522900099",
       "shape": [
         56944,
@@ -202,6 +206,7 @@
     },
     {
       "bias_eval_q2": "55248050438810055014182429926000000",
+      "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_vector_inner_products",
       "label": "hidden.l1.h0.attention_dst",
       "output_eval_q2": "57096226934944808810835760950000000",
@@ -209,6 +214,7 @@
         "row_challenge_seed": 1658490468264913073,
         "row_weight_digest": "35d6f208a11076c2373dcb62847ff1e3d6a5fd589d119160b4884260752e1fee"
       },
+      "rescale_advice_digest": "b9d0d0057bd040fc5c8b014697b180d92d2cdc6d92d0ad19518958e032b58014",
       "rescale_rounding_advice": "21888242871839275222246405745257275088548364400328678421520262093777565531250",
       "shape": [
         56944,
@@ -279,6 +285,7 @@
       }
     },
     {
+      "constraint_equation": "claimed_sum - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_multiplication",
       "label": "output.h0.projection",
       "output_eval_q2": "21888242871839275222157282604827438838822949641780980720381270721666040495617",
@@ -288,6 +295,7 @@
         "row_challenge_seed": 1658490468265811042,
         "row_weight_digest": "179b4d91b4d13cf2ff2971d83745b8ca1244ccf458f343277e5211da98d53aad"
       },
+      "rescale_advice_digest": "170f4ce269d305dfa74974cb1b7c9f0026da45192710d6a057f0e3a2b1f5b9a1",
       "rescale_rounding_advice": "21888242871839275222246405739297856132541473743229461399360196817544385139486",
       "shape": [
         56944,
@@ -360,6 +368,7 @@
     },
     {
       "bias_eval_q2": "24932628139125451563700427358000000",
+      "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_vector_inner_products",
       "label": "output.h0.attention_src",
       "output_eval_q2": "21888242871839275222246405745257275088547931924979954813702324650143696495617",
@@ -367,6 +376,7 @@
         "row_challenge_seed": 1658490468265811059,
         "row_weight_digest": "39d1644739f1d64776c0dc27d70e78876bd5239dddcc9cedeaffd6b5b4190247"
       },
+      "rescale_advice_digest": "4be26d863b7ec8c4d2e1ec52d8f2e651b99a79bed9b0a5a52b69ea981c0b3446",
       "rescale_rounding_advice": "21888242871839275222246405745257275088548364400162042987328321860427648009125",
       "shape": [
         56944,
@@ -494,6 +504,7 @@
     },
     {
       "bias_eval_q2": "21888242871839275222246405745257275088548340183984513945096093123190153495617",
+      "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_vector_inner_products",
       "label": "output.h0.attention_dst",
       "output_eval_q2": "21888242871839275222246405745257275088548349266282187290095675679578394495617",
@@ -501,6 +512,7 @@
         "row_challenge_seed": 1658490468265811073,
         "row_weight_digest": "a08cf9494fcb5326ea35f6232ba210b925b15f1a905d5022952ce4be7e3d3a3e"
       },
+      "rescale_advice_digest": "4fc57406c7c557878e6949ddb9418a6291bde18a442b4cdd80fa7cc9b9352c37",
       "rescale_rounding_advice": "401002872897690880088375886800",
       "shape": [
         56944,

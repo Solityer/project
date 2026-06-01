@@ -1,6 +1,7 @@
 {
   "claims": [
     {
+      "constraint_equation": "claimed_sum - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_multiplication",
       "label": "hidden.l1.h0.projection",
       "output_eval_q2": "21888242871839275222246399648229991498476193582379375474425419186219474495617",
@@ -10,6 +11,7 @@
         "row_challenge_seed": 5670079055912369479,
         "row_weight_digest": "500749ccfd7709785564d37002b126f83f764610111c787902f87ae10d8fdb9c"
       },
+      "rescale_advice_digest": "6a3d27111da94fad191a00a9de6594fac2cc155deaa075eb034c346cc3128105",
       "rescale_rounding_advice": "21888242871839275222246405745255680371921380723911738310912976122292725317814",
       "shape": [
         2708,
@@ -194,6 +196,7 @@
     },
     {
       "bias_eval_q2": "21888242871839275222246405745257275088548364005530436551061386204559772495617",
+      "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_vector_inner_products",
       "label": "hidden.l1.h0.attention_src",
       "output_eval_q2": "21888242871839275222246405745257275088548364065602628137525557605870367495617",
@@ -201,6 +204,7 @@
         "row_challenge_seed": 5670079055912369496,
         "row_weight_digest": "8be9be3f5ef8c58095e7a174e9b736cafc1c765f3d10f959c77a2809cdc016bb"
       },
+      "rescale_advice_digest": "fff3b5e79a654603a3cee4591876e322c001356a1cca4071740a9ecef54827dd",
       "rescale_rounding_advice": "21888242871839275222246405745257275088548364400405253730577454743383821613865",
       "shape": [
         2708,
@@ -272,6 +276,7 @@
     },
     {
       "bias_eval_q2": "21888242871839275222246405745257275088548363996493401511582772958876003495617",
+      "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_vector_inner_products",
       "label": "hidden.l1.h0.attention_dst",
       "output_eval_q2": "21888242871839275222246405745257275088548364013036661370787821366440338495617",
@@ -279,6 +284,7 @@
         "row_challenge_seed": 5670079055912369510,
         "row_weight_digest": "a3b24462832b3ee67e0bed0ef2afdbfd69d89437293ce7d9d79b1a2394ef2761"
       },
+      "rescale_advice_digest": "90f25c97debeff41804a90deb6fc2c5e8dcd964a8bf2113675366c55c7ba1179",
       "rescale_rounding_advice": "12456523915558525904255163371",
       "shape": [
         2708,
@@ -349,6 +355,7 @@
       }
     },
     {
+      "constraint_equation": "claimed_sum - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_multiplication",
       "label": "hidden.l1.h1.projection",
       "output_eval_q2": "21888242871839275222246404318797715165972361338183625133167455095273345495617",
@@ -358,6 +365,7 @@
         "row_challenge_seed": 5670079055912369480,
         "row_weight_digest": "2b11465382a2a7aea7e080f5050ae79b88fd8a909ebad4d5777f573dd5bebf9f"
       },
+      "rescale_advice_digest": "d711e3d054f1cca74d1b2c9950b9dddc5a1eeeb7ecd23acd1d085772f73975e4",
       "rescale_rounding_advice": "21888242871839275222246405745247891681042560309347344869216270133912824980239",
       "shape": [
         2708,
@@ -542,6 +550,7 @@
     },
     {
       "bias_eval_q2": "21888242871839275222246405745257275088548363845668399361567309699388360495617",
+      "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_vector_inner_products",
       "label": "hidden.l1.h1.attention_src",
       "output_eval_q2": "21888242871839275222246405745257275088548363853881281518066870489174256495617",
@@ -549,6 +558,7 @@
         "row_challenge_seed": 5670079055912369497,
         "row_weight_digest": "5974509b6a960117ced8ce0379fdcbd0015c2afd39b6e6ec7d25c26f749fe737"
       },
+      "rescale_advice_digest": "7a2e6f2c5ff8e1f556abe4f5d7ec8dcbffaa78050240f002de24e0f9d790d88d",
       "rescale_rounding_advice": "21888242871839275222246405745257275088548364400407971215448199342797666935826",
       "shape": [
         2708,
@@ -620,6 +630,7 @@
     },
     {
       "bias_eval_q2": "21888242871839275222246405745257275088548363846054318923756211662545120495617",
+      "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_vector_inner_products",
       "label": "hidden.l1.h1.attention_dst",
       "output_eval_q2": "21888242871839275222246405745257275088548363816196023127480752327895866495617",
@@ -627,6 +638,7 @@
         "row_challenge_seed": 5670079055912369511,
         "row_weight_digest": "c00f9ec531850a2dc070da90c9bb65bcb2e2f5c68c618fa4453a5f77304e634d"
       },
+      "rescale_advice_digest": "40f42716406a72eb32b5afb4c363739096136d936e9dc688b51640be3f4c6b45",
       "rescale_rounding_advice": "21888242871839275222246405745257275088548364400407505686240304668065864558178",
       "shape": [
         2708,
@@ -697,6 +709,7 @@
       }
     },
     {
+      "constraint_equation": "claimed_sum - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_multiplication",
       "label": "hidden.l1.h2.projection",
       "output_eval_q2": "2107923547717645098022098476761161625650931583000000",
@@ -706,6 +719,7 @@
         "row_challenge_seed": 5670079055912369481,
         "row_weight_digest": "65ca7ca43974b8e7754422e02026cfd70ad6c7869c3428a89464f884a575d5fe"
       },
+      "rescale_advice_digest": "bad0f121277137da6a397ba397b9c4b21c3c581c7c307acdc1a1d9075a2c6f3a",
       "rescale_rounding_advice": "1250152435255060026331914519216666614237492222",
       "shape": [
         2708,
@@ -890,6 +904,7 @@
     },
     {
       "bias_eval_q2": "715801807334719054106813520000000",
+      "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_vector_inner_products",
       "label": "hidden.l1.h2.attention_src",
       "output_eval_q2": "690943444911586454837375233000000",
@@ -897,6 +912,7 @@
         "row_challenge_seed": 5670079055912369498,
         "row_weight_digest": "c0d808153521983d466f3be1cf3e28a5c3986a12d4247e1455b9421ed9df96cb"
       },
+      "rescale_advice_digest": "f9b317e5cb72c6cbbb56ec7845bdfc930b115b525c4edf43d2f7765c8224439f",
       "rescale_rounding_advice": "21888242871839275222246405745257275088548364400405626526625359230246953139095",
       "shape": [
         2708,
@@ -968,6 +984,7 @@
     },
     {
       "bias_eval_q2": "708092806208206400690236128000000",
+      "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_vector_inner_products",
       "label": "hidden.l1.h2.attention_dst",
       "output_eval_q2": "692069421359235258555337448000000",
@@ -975,6 +992,7 @@
         "row_challenge_seed": 5670079055912369512,
         "row_weight_digest": "d69b2a84dbe530c6411fd868866cf32772e923b43d87835cee66595e74485f5f"
       },
+      "rescale_advice_digest": "0f291e672161741cc29189d22b86140a3bd53cd92ba5d9f488813b2e935700d4",
       "rescale_rounding_advice": "21888242871839275222246405745257275088548364400415130811826718876662166644753",
       "shape": [
         2708,
@@ -1045,6 +1063,7 @@
       }
     },
     {
+      "constraint_equation": "claimed_sum - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_multiplication",
       "label": "hidden.l1.h3.projection",
       "output_eval_q2": "13312007458725759152806760388011300377628596873000000",
@@ -1054,6 +1073,7 @@
         "row_challenge_seed": 5670079055912369482,
         "row_weight_digest": "ed439a7cd08dd09c5bf9ac32f837673cac77f730dc6343d27579370d0eb31f1e"
       },
+      "rescale_advice_digest": "c60957c25680c6c8ffb3f35ad297a362f4f141eefb4cd853ff65ffe26544970f",
       "rescale_rounding_advice": "26407381188643724958236517490971154254666530789",
       "shape": [
         2708,
@@ -1238,6 +1258,7 @@
     },
     {
       "bias_eval_q2": "21888242871839275222246405745257275088548363304085596319710153865404308495617",
+      "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_vector_inner_products",
       "label": "hidden.l1.h3.attention_src",
       "output_eval_q2": "21888242871839275222246405745257275088548363161316742234384824259927340495617",
@@ -1245,6 +1266,7 @@
         "row_challenge_seed": 5670079055912369499,
         "row_weight_digest": "55c3226028eca1e599834a1c5e1707fb90e4d3ffb94c16ee3c2353cf02dab146"
       },
+      "rescale_advice_digest": "e847ac43f011bc021bdf8225b2d5e6cd9a9ff3a68aac19582d0d2bed301df955",
       "rescale_rounding_advice": "21888242871839275222246405745257275088548364400412918034756316367868387304077",
       "shape": [
         2708,
@@ -1316,6 +1338,7 @@
     },
     {
       "bias_eval_q2": "21888242871839275222246405745257275088548363280784885927139144742943808495617",
+      "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_vector_inner_products",
       "label": "hidden.l1.h3.attention_dst",
       "output_eval_q2": "21888242871839275222246405745257275088548363352153593256705179872156873495617",
@@ -1323,6 +1346,7 @@
         "row_challenge_seed": 5670079055912369513,
         "row_weight_digest": "e10c84c88d7ec8e638d98812b73e3ce09e010e333a5dd0ec2d5436029408246e"
       },
+      "rescale_advice_digest": "384d6a1e954face1a625854d3fc4d2d1e1ffe4105bd861890f12322f90f7a811",
       "rescale_rounding_advice": "639452353478246292995161488",
       "shape": [
         2708,
@@ -1393,6 +1417,7 @@
       }
     },
     {
+      "constraint_equation": "claimed_sum - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_multiplication",
       "label": "hidden.l1.h4.projection",
       "output_eval_q2": "21888242871839275222246403672130416767146807100535239926923337527560479495617",
@@ -1402,6 +1427,7 @@
         "row_challenge_seed": 5670079055912369483,
         "row_weight_digest": "09f4c9610d57e58b0705c280f4a1f58740650c62ba8d2c2779537ca675961444"
       },
+      "rescale_advice_digest": "38365592b5856e3bd3b21314ded6834d5c951aa5ff25d7011060ac0fe09c43bf",
       "rescale_rounding_advice": "21888242871839275222246405745256716036500399520122132098807577230078431769512",
       "shape": [
         2708,
@@ -1586,6 +1612,7 @@
     },
     {
       "bias_eval_q2": "1365767547809819643700427500000000",
+      "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_vector_inner_products",
       "label": "hidden.l1.h4.attention_src",
       "output_eval_q2": "1396805515881562426419950658000000",
@@ -1593,6 +1620,7 @@
         "row_challenge_seed": 5670079055912369500,
         "row_weight_digest": "739a02a486f86d4252b4f20dcc68d4478ad7c7ba733e925ddc4fcc3de839c768"
       },
+      "rescale_advice_digest": "b4f928ee9e668d759596e2ae44f92950cd1f2dc90efa1b032712946f8357cea6",
       "rescale_rounding_advice": "21888242871839275222246405745257275088548364400410946173297853783545251832361",
       "shape": [
         2708,
@@ -1664,6 +1692,7 @@
     },
     {
       "bias_eval_q2": "1350135136117660780377178500000000",
+      "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_vector_inner_products",
       "label": "hidden.l1.h4.attention_dst",
       "output_eval_q2": "1367000060554711878651946910000000",
@@ -1671,6 +1700,7 @@
         "row_challenge_seed": 5670079055912369514,
         "row_weight_digest": "f1ae47977854b602d8bb16804043c2a0dc7dbc02451cc5d58435c00446605691"
       },
+      "rescale_advice_digest": "13ff34a72013aa0d9f5d0cfacc413ebf57cc2274bd1d172d99b65197869df8b0",
       "rescale_rounding_advice": "21888242871839275222246405745257275088548364400408820202972246125114987408230",
       "shape": [
         2708,
@@ -1741,6 +1771,7 @@
       }
     },
     {
+      "constraint_equation": "claimed_sum - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_multiplication",
       "label": "hidden.l1.h5.projection",
       "output_eval_q2": "6556790249432574063741200340733376352323181822000000",
@@ -1750,6 +1781,7 @@
         "row_challenge_seed": 5670079055912369484,
         "row_weight_digest": "54849cd3141826549dabe8df26d020aa0387f17a4e65110b2526cf9c0cef3353"
       },
+      "rescale_advice_digest": "d349dd1e2881f76b2c8db8f729ddae86693b07519b9a22c9eed7dec537e68d3e",
       "rescale_rounding_advice": "21007364223767470087799865962016773947346698385",
       "shape": [
         2708,
@@ -1934,6 +1966,7 @@
     },
     {
       "bias_eval_q2": "21888242871839275222246405745257275088548363877709067020139162210101860495617",
+      "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_vector_inner_products",
       "label": "hidden.l1.h5.attention_src",
       "output_eval_q2": "21888242871839275222246405745257275088548363916521529408583276036167220495617",
@@ -1941,6 +1974,7 @@
         "row_challenge_seed": 5670079055912369501,
         "row_weight_digest": "91a1371e371e1db7076b5055555ad6622ec5c4a2c975fdfd304cd35f918df3c4"
       },
+      "rescale_advice_digest": "b337705cf6551acfb8c3f3b4948b512a077af26bfeb8d5c0518b74753f4b79bb",
       "rescale_rounding_advice": "21888242871839275222246405745257275088548364400409717129100484441920306429717",
       "shape": [
         2708,
@@ -2012,6 +2046,7 @@
     },
     {
       "bias_eval_q2": "21888242871839275222246405745257275088548363879708547256138682766199319495617",
+      "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_vector_inner_products",
       "label": "hidden.l1.h5.attention_dst",
       "output_eval_q2": "21888242871839275222246405745257275088548363930143587677810718287414227495617",
@@ -2019,6 +2054,7 @@
         "row_challenge_seed": 5670079055912369515,
         "row_weight_digest": "72514ce5904e901259750b7644ac9f6012f63b0505f0e9a54cf3ccad6d0f6d61"
       },
+      "rescale_advice_digest": "e948d950701b6d15185b1e85a4cb4cb433a51309a8b55c282d74792de42cb6e9",
       "rescale_rounding_advice": "21888242871839275222246405745257275088548364400414469777583755941780915915166",
       "shape": [
         2708,
@@ -2089,6 +2125,7 @@
       }
     },
     {
+      "constraint_equation": "claimed_sum - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_multiplication",
       "label": "hidden.l1.h6.projection",
       "output_eval_q2": "1716438443250146189855534012707563561713228021000000",
@@ -2098,6 +2135,7 @@
         "row_challenge_seed": 5670079055912369485,
         "row_weight_digest": "d8a0211af046933dfeea288016c60fbf4bb3fa53d9922dc1337afa3a4d71b831"
       },
+      "rescale_advice_digest": "edad3d5b7826a429ced94d90e487dea99b9df7b54b008329c8540827adbd09ae",
       "rescale_rounding_advice": "2277647751781312445310525287208278850718775789",
       "shape": [
         2708,
@@ -2282,6 +2320,7 @@
     },
     {
       "bias_eval_q2": "21888242871839275222246405745257275088548363135580302910632792747985285495617",
+      "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_vector_inner_products",
       "label": "hidden.l1.h6.attention_src",
       "output_eval_q2": "21888242871839275222246405745257275088548363108627383150985182972452466495617",
@@ -2289,6 +2328,7 @@
         "row_challenge_seed": 5670079055912369502,
         "row_weight_digest": "d79d316e6f772ef53ac63e65864c76193eb1af032575821f7fac73fb8e88c269"
       },
+      "rescale_advice_digest": "c9c5d3a33888f2b839dbc59227f8e08268df82b79020d55b00b1c2dc017a1f1c",
       "rescale_rounding_advice": "2536499975844898893730896451",
       "shape": [
         2708,
@@ -2360,6 +2400,7 @@
     },
     {
       "bias_eval_q2": "21888242871839275222246405745257275088548363135137035569401636341139771495617",
+      "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_vector_inner_products",
       "label": "hidden.l1.h6.attention_dst",
       "output_eval_q2": "21888242871839275222246405745257275088548363142902964595433391918779873495617",
@@ -2367,6 +2408,7 @@
         "row_challenge_seed": 5670079055912369516,
         "row_weight_digest": "d5665abbccf95816158c28565f68c8702a21cfc2a0b7fc8294102c40806db589"
       },
+      "rescale_advice_digest": "6df92eea22125fc33e4db979fa0ef0d5e76e301e435ed3fc14feb946cd8a92c0",
       "rescale_rounding_advice": "7971587100740719714061276226",
       "shape": [
         2708,
@@ -2437,6 +2479,7 @@
       }
     },
     {
+      "constraint_equation": "claimed_sum - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_multiplication",
       "label": "hidden.l1.h7.projection",
       "output_eval_q2": "21888242871839275222246404655409862629137992395013376367031031048173666495617",
@@ -2446,6 +2489,7 @@
         "row_challenge_seed": 5670079055912369486,
         "row_weight_digest": "545719976beb18c288e8eebd339538558412517a0fc94a4b1919d7b4c21a1a95"
       },
+      "rescale_advice_digest": "4d75d9662605d165f4667599f3046541448670bb407f7cc0a715b6bae6e4c566",
       "rescale_rounding_advice": "398889691677683293159703445389742857715779562",
       "shape": [
         2708,
@@ -2630,6 +2674,7 @@
     },
     {
       "bias_eval_q2": "21888242871839275222246405745257275088548364282574463038205744230356118495617",
+      "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_vector_inner_products",
       "label": "hidden.l1.h7.attention_src",
       "output_eval_q2": "21888242871839275222246405745257275088548364157565584751153902699339494495617",
@@ -2637,6 +2682,7 @@
         "row_challenge_seed": 5670079055912369503,
         "row_weight_digest": "ea81afc6c528f28ae43dfb370ed539ad2d0194da7a1d7f5082d9524050629839"
       },
+      "rescale_advice_digest": "f58ed14575333a685a0bee32335a61f8229c7aa75cb21a61baeeabad52b99307",
       "rescale_rounding_advice": "4056978723401022997002180931",
       "shape": [
         2708,
@@ -2708,6 +2754,7 @@
     },
     {
       "bias_eval_q2": "21888242871839275222246405745257275088548364282002150064781422255345268495617",
+      "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_vector_inner_products",
       "label": "hidden.l1.h7.attention_dst",
       "output_eval_q2": "21888242871839275222246405745257275088548364248903864155307646687582053495617",
@@ -2715,6 +2762,7 @@
         "row_challenge_seed": 5670079055912369517,
         "row_weight_digest": "fdebd0d1e1041f0cc25e5c7ef0687709f64ff55882c1b40be483b17844854662"
       },
+      "rescale_advice_digest": "65132614d706f6c9de697a75febe97b09f150e88ed34520ef34384d914ca8d34",
       "rescale_rounding_advice": "3194560329180854904798422835",
       "shape": [
         2708,
@@ -2785,6 +2833,7 @@
       }
     },
     {
+      "constraint_equation": "claimed_sum - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_multiplication",
       "label": "output.h0.projection",
       "output_eval_q2": "21888242871839275222246374331038011240627894185911421801947163515420664495617",
@@ -2794,6 +2843,7 @@
         "row_challenge_seed": 5670079055913267479,
         "row_weight_digest": "234cbc9e8cce2e2078cc1219791aeee166260635d267332fca60d891af67a3af"
       },
+      "rescale_advice_digest": "b0b6ba7f0efde3075eb1415f0fea91e84034d11f0c46f4ae3e03fcbd809002a2",
       "rescale_rounding_advice": "21888242871839275222246405745248763268841146480077640671611364815143911186987",
       "shape": [
         2708,
@@ -2908,6 +2958,7 @@
     },
     {
       "bias_eval_q2": "21888242871839275222246405745257275088548357022578687166488831761383331495617",
+      "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_vector_inner_products",
       "label": "output.h0.attention_src",
       "output_eval_q2": "21888242871839275222246405745257275088548357335057755662990143793165972495617",
@@ -2915,6 +2966,7 @@
         "row_challenge_seed": 5670079055913267496,
         "row_weight_digest": "e98674711ffafd065dfafd3231bb115357bbf0bc0b4593815dab649f808e963f"
       },
+      "rescale_advice_digest": "10c1d99f0ab0d00f14e4df6c11b1f38a65b05de4644f4e32ea8523edb5d32cf6",
       "rescale_rounding_advice": "8686572114762449747354668982",
       "shape": [
         2708,
@@ -2986,6 +3038,7 @@
     },
     {
       "bias_eval_q2": "21888242871839275222246405745257275088548357079126854525176496791968511495617",
+      "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
       "kind": "matrix_vector_inner_products",
       "label": "output.h0.attention_dst",
       "output_eval_q2": "21888242871839275222246405745257275088548355029150371133593589689251135495617",
@@ -2993,6 +3046,7 @@
         "row_challenge_seed": 5670079055913267510,
         "row_weight_digest": "cad5e078eb454c3ea2ad6ff5a01ab32c845e8cce655577e114200bf708cb8ff3"
       },
+      "rescale_advice_digest": "cf84e204c8b8247342c0bb09be697e6ced0050e889e59ed313d59e2e07d619cb",
       "rescale_rounding_advice": "3415262946042529858600729109",
       "shape": [
         2708,

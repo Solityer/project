@@ -1,0 +1,90 @@
+{
+  "T_ELU": {
+    "chunks": [
+      {
+        "chunk_index": 0,
+        "count": 0,
+        "sha256": "309e78486a50b77cf1029ec7a0d26e8415ab88a7cd685174fb7570f7cf4db3a4"
+      }
+    ],
+    "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+    "encoding_id": "gat-zkgpt-fixed-order-v1",
+    "evaluation_rule": "y=x if x>=0 else round(exp(x)-1)",
+    "fixed_scale": 1000000,
+    "function": "ELU",
+    "quant_cfg_id": "fp32_torch_checkpoint",
+    "range_bits": 12,
+    "static_table_id": "tables:lrelu+elu+exp+range",
+    "table_commitment": "b9a3006f770f0fd42f4950df8ca3a1545cb5d20dbea004f0cba1708d6c204894",
+    "table_digest": "d5d9111c8fc312920bb37fc3ef338d46a6a867e4c6e8454b9eebe8f25a5e6c43",
+    "table_id": "T_ELU",
+    "table_kind": "structured_fixed_function_table",
+    "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+  },
+  "T_LReLU": {
+    "chunks": [
+      {
+        "chunk_index": 0,
+        "count": 0,
+        "sha256": "b56c9c284e0a06f175caec0633ab3f78b4d28a54f173547408cfa86a85e7ebf7"
+      }
+    ],
+    "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+    "encoding_id": "gat-zkgpt-fixed-order-v1",
+    "evaluation_rule": "y=x if x>=0 else round(0.2*x)",
+    "fixed_scale": 1000000,
+    "function": "LeakyReLU",
+    "quant_cfg_id": "fp32_torch_checkpoint",
+    "range_bits": 12,
+    "static_table_id": "tables:lrelu+elu+exp+range",
+    "table_commitment": "c1c453dcfb6014d452ae047204293234798f0aeb55a50a11b3a3d6ed6d566c2d",
+    "table_digest": "a2fc466c84014b87d9613b3b1392428b3deee1052e6847e5294019c53169cd1d",
+    "table_id": "T_LReLU",
+    "table_kind": "structured_fixed_function_table",
+    "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+  },
+  "T_exp": {
+    "chunks": [
+      {
+        "chunk_index": 0,
+        "count": 0,
+        "sha256": "c39609850895ee6a43b739a1016a4b9e28238815c2f3f782c5aad201cfd769ea"
+      }
+    ],
+    "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+    "encoding_id": "gat-zkgpt-fixed-order-v1",
+    "evaluation_rule": "y=round(exp(-x)) for nonnegative x",
+    "fixed_scale": 1000000,
+    "function": "ExpMap",
+    "quant_cfg_id": "fp32_torch_checkpoint",
+    "range_bits": 12,
+    "static_table_id": "tables:lrelu+elu+exp+range",
+    "table_commitment": "b518d7d0f4d735351b74a8d011409ae552a01d210c5b1f7312e5c82bffdf4184",
+    "table_digest": "601964162fe57781d30fd8fee803131b4ffb5467f09b65f37f6042b7af7b8862",
+    "table_id": "T_exp",
+    "table_kind": "structured_fixed_function_table",
+    "table_materialization": "preprocessed structured evaluator; not generated from query multiset"
+  },
+  "T_range": {
+    "chunks": [
+      {
+        "chunk_index": 0,
+        "count": 4096,
+        "sha256": "2fbd6f09859cf24d41b61aadd7d33d331ead73c361621bb6b4be7162f1955990"
+      }
+    ],
+    "domain_policy": "all limbs in [0,4095]",
+    "encoding_id": "gat-zkgpt-fixed-order-v1",
+    "entry_count": 4096,
+    "fixed_scale": 1000000,
+    "function": "Range",
+    "quant_cfg_id": "fp32_torch_checkpoint",
+    "range_bits": 12,
+    "static_table_id": "tables:lrelu+elu+exp+range",
+    "table_commitment": "8cb910ebdcb301967826f49e41d8e97f91d7d456da4d84c7c9fac71ae952c7a7",
+    "table_digest": "430255b067b0c186246a98f859f545e102935fab2d95b427f72bcb4845d8a6db",
+    "table_id": "T_range",
+    "table_kind": "materialized_fixed_range_table",
+    "table_materialization": "preprocessed fixed limb table"
+  }
+}

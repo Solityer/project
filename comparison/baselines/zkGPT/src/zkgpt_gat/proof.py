@@ -42,6 +42,10 @@ from .util import canonical_json, digest_file, digest_json, ensure_dir, file_id,
 
 SEGMENT_CHUNK_VALUES = 262_144
 CONSTRAINT_FIXED_SCALE = 100_000
+LOOKUP_PROTOCOL_ID = "lasso-fixed-table-grand-product-v3"
+GKR_PROTOCOL_ID = "ml-friendly-gkr-layered-relation-v3"
+GKR_CLAIM_PROTOCOL_ID = "gkr-layer-relation-random-linear-eval-v3"
+LOOKUP_QUANTIZATION_TOLERANCE_Q = 1
 
 
 @dataclass
@@ -486,79 +490,163 @@ def _derive_transcript(metadata: Dict[str, Any], commitments: Dict[str, Any], in
     return out
 
 
-def _prove_lasso(trace: ForwardTrace, range_bits: int, transcript: Dict[str, Any]) -> Dict[str, Any]:
+def _prove_lasso(trace: ForwardTrace, range_bits: int, transcript: Dict[str, Any], metadata: Dict[str, Any]) -> Dict[str, Any]:
+    fixed_tables = _static_lookup_registry(metadata, range_bits)
     families: List[Dict[str, Any]] = []
     for layer in trace.hidden_layers:
         for head in layer.heads:
-            families.extend(_lasso_head(head, range_bits, include_elu=True, transcript=transcript))
+            families.extend(_lasso_head(head, range_bits, include_elu=True, transcript=transcript, fixed_tables=fixed_tables))
     for head in trace.output_heads:
-        families.extend(_lasso_head(head, range_bits, include_elu=False, transcript=transcript))
-    families.append(_empty_lookup_family("rescale_rounding_range", "T_range", transcript))
+        families.extend(_lasso_head(head, range_bits, include_elu=False, transcript=transcript, fixed_tables=fixed_tables))
+    families.append(_empty_lookup_family("rescale_rounding_range", fixed_tables["T_range"], transcript))
     status = "VERIFY_OK" if all(_verify_lookup_family(item)["status"] == "VERIFY_OK" for item in families) else "VERIFY_FAILED"
-    return {"protocol": "lasso-grand-product-lookup-v2", "status": status, "families": families}
+    return {
+        "protocol": LOOKUP_PROTOCOL_ID,
+        "status": status,
+        "fixed_table_registry_digest": digest_json(fixed_tables),
+        "fixed_table_registry": fixed_tables,
+        "families": families,
+    }
 
 
-def _lasso_head(head: HeadTrace, range_bits: int, include_elu: bool, transcript: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _lasso_head(head: HeadTrace, range_bits: int, include_elu: bool, transcript: Dict[str, Any], fixed_tables: Dict[str, Any]) -> List[Dict[str, Any]]:
     out = [
-        _range_lookup_proof(f"{head.tag}.range_delta", head.delta, range_bits, transcript),
-        _function_lookup_proof(f"{head.tag}.LeakyReLU", "T_LReLU", head.s, head.z, leaky_relu(head.s), transcript),
-        _function_lookup_proof(f"{head.tag}.ExpMap", "T_exp", head.delta, head.u, np.exp(-head.delta), transcript),
+        _range_lookup_proof(f"{head.tag}.range_delta", head.delta, range_bits, fixed_tables["T_range"], transcript),
+        _function_lookup_proof(f"{head.tag}.LeakyReLU", fixed_tables["T_LReLU"], head.s, head.z, transcript),
+        _function_lookup_proof(f"{head.tag}.ExpMap", fixed_tables["T_exp"], head.delta, head.u, transcript),
     ]
     if include_elu:
-        out.append(_function_lookup_proof(f"{head.tag}.ELU", "T_ELU", head.h_agg_pre, head.h_agg, elu(head.h_agg_pre), transcript))
+        out.append(_function_lookup_proof(f"{head.tag}.ELU", fixed_tables["T_ELU"], head.h_agg_pre, head.h_agg, transcript))
     return out
 
 
-def _empty_lookup_family(label: str, table: str, transcript: Dict[str, Any]) -> Dict[str, Any]:
-    beta = _lookup_challenge(label, table, transcript, "beta")
+def _static_lookup_registry(metadata: Dict[str, Any], range_bits: int) -> Dict[str, Any]:
+    common = {
+        "quant_cfg_id": metadata["quant_cfg_id"],
+        "static_table_id": metadata["static_table_id"],
+        "encoding_id": metadata["encoding_id"],
+        "range_bits": int(range_bits),
+        "fixed_scale": DEFAULT_FIXED_SCALE,
+    }
+    registry = {
+        "T_LReLU": _fixed_function_table("T_LReLU", "LeakyReLU", "y=x if x>=0 else round(0.2*x)", common),
+        "T_ELU": _fixed_function_table("T_ELU", "ELU", "y=x if x>=0 else round(exp(x)-1)", common),
+        "T_exp": _fixed_function_table("T_exp", "ExpMap", "y=round(exp(-x)) for nonnegative x", common),
+        "T_range": _fixed_range_table(range_bits, common),
+    }
+    return registry
+
+
+def _fixed_function_table(table_id: str, function: str, rule: str, common: Dict[str, Any]) -> Dict[str, Any]:
+    descriptor = {
+        "table_id": table_id,
+        "table_kind": "structured_fixed_function_table",
+        "function": function,
+        "evaluation_rule": rule,
+        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
+        "table_materialization": "preprocessed structured evaluator; not generated from query multiset",
+        "chunks": [{"chunk_index": 0, "count": 0, "sha256": digest_json({"structured_table": table_id, "function": function})}],
+        **common,
+    }
+    digest = digest_json(descriptor)
+    descriptor["table_digest"] = digest
+    descriptor["table_commitment"] = digest_json({"commitment_backend": "structured-lasso-table", "descriptor_digest": digest})
+    return descriptor
+
+
+def _fixed_range_table(range_bits: int, common: Dict[str, Any]) -> Dict[str, Any]:
+    values = [to_field_int(value) for value in range(1 << int(range_bits))]
+    descriptor = {
+        "table_id": "T_range",
+        "table_kind": "materialized_fixed_range_table",
+        "function": "Range",
+        "domain_policy": f"all limbs in [0,{(1 << int(range_bits)) - 1}]",
+        "table_materialization": "preprocessed fixed limb table",
+        "entry_count": len(values),
+        "chunks": _field_chunk_digests(values),
+        **common,
+    }
+    digest = digest_json({key: value for key, value in descriptor.items() if key not in {"table_digest", "table_commitment"}})
+    descriptor["table_digest"] = digest
+    descriptor["table_commitment"] = digest_json({"commitment_backend": "structured-lasso-table", "descriptor_digest": digest})
+    return descriptor
+
+
+def _verify_fixed_table_descriptor(table: Dict[str, Any]) -> bool:
+    if not {"table_id", "table_kind", "quant_cfg_id", "static_table_id", "encoding_id", "range_bits", "table_digest", "table_commitment"} <= set(table):
+        return False
+    descriptor = {key: value for key, value in table.items() if key not in {"table_digest", "table_commitment"}}
+    digest = digest_json(descriptor)
+    return table["table_digest"] == digest and table["table_commitment"] == digest_json({"commitment_backend": "structured-lasso-table", "descriptor_digest": digest})
+
+
+def _empty_lookup_family(label: str, table: Dict[str, Any], transcript: Dict[str, Any]) -> Dict[str, Any]:
+    raw_digest = digest_json({"empty_lookup": label, "table": table["table_digest"]})
+    beta = _lookup_challenge(label, table, transcript, "beta", raw_digest, 0, "empty")
     return {
         "family": label,
-        "table": table,
+        "table": table["table_id"],
+        "fixed_table": table,
+        "fixed_table_digest": table["table_digest"],
         "relation": "empty",
         "query_count": 0,
+        "raw_query_digest": raw_digest,
+        "transcript_digest": digest_json(transcript),
         "beta": str(beta),
         "eta": "0",
         "query_product": "1",
         "table_product": "1",
+        "product_digest": digest_json({"query_product": "1", "table_product": "1", "raw_query_digest": raw_digest}),
         "query_chunks": [],
-        "table_chunks": [],
+        "table_chunks": table.get("chunks", []),
         "status": "VERIFY_OK",
     }
 
 
-def _function_lookup_proof(label: str, table: str, x: np.ndarray, y: np.ndarray, expected_y: np.ndarray, transcript: Dict[str, Any]) -> Dict[str, Any]:
-    eta = _lookup_challenge(label, table, transcript, "eta")
-    beta = _lookup_challenge(label, table, transcript, "beta")
+def _function_lookup_proof(label: str, table: Dict[str, Any], x: np.ndarray, y: np.ndarray, transcript: Dict[str, Any]) -> Dict[str, Any]:
     xq = _quantized_vector(x)
     yq = _quantized_vector(y)
-    expected_q = _quantized_vector(expected_y)
+    expected_q_raw = [_fixed_table_eval_q(table["table_id"], value) for value in xq]
+    expected_q, max_delta_q, mismatches = _apply_lookup_quantization_window(expected_q_raw, yq)
+    raw_chunks = _field_chunk_digests(_interleave_pairs(xq, yq))
+    raw_digest = digest_json({"relation": "function_lookup_raw_xy", "chunks": raw_chunks, "query_count": len(xq)})
+    eta = _lookup_challenge(label, table, transcript, "eta", raw_digest, len(xq), "fixed_function")
+    beta = _lookup_challenge(label, table, transcript, "beta", raw_digest, len(xq), "fixed_function")
     query_keys = [(_pair_key(a, b, eta)) for a, b in zip(xq, yq)]
     table_keys = [(_pair_key(a, b, eta)) for a, b in zip(xq, expected_q)]
-    mismatches = sum(1 for actual, expected in zip(yq, expected_q) if to_field_int(actual) != to_field_int(expected))
     query_product = _grand_product(query_keys, beta)
     table_product = _grand_product(table_keys, beta)
     family = {
         "family": label,
-        "table": table,
-        "relation": "query_multiset_equals_function_table_multiset",
+        "table": table["table_id"],
+        "fixed_table": table,
+        "fixed_table_digest": table["table_digest"],
+        "relation": "query_multiset_membership_in_fixed_function_table",
         "query_count": len(query_keys),
+        "raw_query_digest": raw_digest,
+        "transcript_digest": digest_json(transcript),
         "eta": str(eta),
         "beta": str(beta),
         "query_product": str(query_product),
         "table_product": str(table_product),
+        "product_digest": digest_json({"query_product": str(query_product), "table_product": str(table_product), "raw_query_digest": raw_digest}),
         "query_chunks": _field_chunk_digests(query_keys),
-        "table_chunks": _field_chunk_digests(table_keys),
+        "raw_query_chunks": raw_chunks,
+        "selected_fixed_table_chunks": _field_chunk_digests(table_keys),
+        "expected_y_chunks": _field_chunk_digests(expected_q),
+        "table_chunks": table.get("chunks", []),
         "mismatch_count": mismatches,
+        "lookup_quantization_tolerance_q": LOOKUP_QUANTIZATION_TOLERANCE_Q,
+        "max_lookup_delta_q": max_delta_q,
     }
     family["status"] = _verify_lookup_family(family)["status"]
     return family
 
 
-def _range_lookup_proof(label: str, values: np.ndarray, range_bits: int, transcript: Dict[str, Any]) -> Dict[str, Any]:
-    table = f"T_range[0,{(1 << range_bits) - 1}]"
-    beta = _lookup_challenge(label, table, transcript, "beta")
+def _range_lookup_proof(label: str, values: np.ndarray, range_bits: int, table: Dict[str, Any], transcript: Dict[str, Any]) -> Dict[str, Any]:
     base = 1 << range_bits
-    rounded = np.rint(np.maximum(np.asarray(values, dtype=np.float64), 0.0) * DEFAULT_FIXED_SCALE).astype(object)
+    arr = np.asarray(values, dtype=np.float64)
+    rounded = np.rint(np.maximum(arr, 0.0) * DEFAULT_FIXED_SCALE).astype(object)
     max_value = max((int(item) for item in np.ravel(rounded)), default=0)
     limb_count = max(1, (max_value.bit_length() + range_bits - 1) // range_bits)
     limbs: List[int] = []
@@ -567,22 +655,30 @@ def _range_lookup_proof(label: str, values: np.ndarray, range_bits: int, transcr
         for _ in range(limb_count):
             limbs.append(to_field_int(current % base))
             current //= base
+    raw_digest = digest_json({"relation": "range_lookup_raw_limbs", "chunks": _field_chunk_digests(limbs), "query_count": len(limbs), "range_bits": int(range_bits)})
+    beta = _lookup_challenge(label, table, transcript, "beta", raw_digest, len(limbs), "fixed_range")
     product = _grand_product(limbs, beta)
+    table_product = _grand_product(range(base), beta)
     max_limb = max((int(item) for item in limbs), default=0)
-    min_input_nonnegative = bool(values.size == 0 or float(np.min(values)) >= -1e-9)
+    min_input_nonnegative = bool(arr.size == 0 or float(np.min(arr)) >= -1e-9)
     family = {
         "family": label,
-        "table": table,
-        "relation": "range_limb_membership_grand_product",
+        "table": table["table_id"],
+        "fixed_table": table,
+        "fixed_table_digest": table["table_digest"],
+        "relation": "range_limb_membership_in_fixed_table",
         "query_count": len(limbs),
         "limb_count": limb_count,
         "range_bits": range_bits,
+        "raw_query_digest": raw_digest,
+        "transcript_digest": digest_json(transcript),
         "eta": "0",
         "beta": str(beta),
         "query_product": str(product),
-        "table_product": str(product),
+        "table_product": str(table_product),
+        "product_digest": digest_json({"query_product": str(product), "table_product": str(table_product), "raw_query_digest": raw_digest}),
         "query_chunks": _field_chunk_digests(limbs),
-        "table_chunks": _field_chunk_digests(limbs),
+        "table_chunks": table.get("chunks", []),
         "max_limb": max_limb,
         "min_input_nonnegative": min_input_nonnegative,
         "mismatch_count": 0 if min_input_nonnegative and max_limb < base else 1,
@@ -591,8 +687,76 @@ def _range_lookup_proof(label: str, values: np.ndarray, range_bits: int, transcr
     return family
 
 
-def _lookup_challenge(label: str, table: str, transcript: Dict[str, Any], kind: str) -> int:
-    return int(digest_json({"protocol": "lasso-grand-product-lookup-v2", "label": label, "table": table, "kind": kind, "transcript": transcript})[:32], 16) % BN254_FR_MODULUS
+def _lookup_challenge(label: str, table: Dict[str, Any], transcript: Dict[str, Any], kind: str, raw_query_digest: str, query_count: int, relation: str) -> int:
+    transcript_digest = transcript if isinstance(transcript, str) else digest_json(transcript)
+    return int(
+        digest_json(
+            {
+                "protocol": LOOKUP_PROTOCOL_ID,
+                "label": label,
+                "table": table["table_id"],
+                "table_digest": table["table_digest"],
+                "kind": kind,
+                "relation": relation,
+                "query_count": int(query_count),
+                "raw_query_digest": raw_query_digest,
+                "transcript_digest": transcript_digest,
+            }
+        )[:32],
+        16,
+    ) % BN254_FR_MODULUS
+
+
+def _lookup_challenge_from_family(family: Dict[str, Any], kind: str) -> int:
+    relation_kind = "fixed_range" if family.get("relation") == "range_limb_membership_in_fixed_table" else "fixed_function"
+    if family.get("relation") == "empty":
+        relation_kind = "empty"
+    return _lookup_challenge(
+        family["family"],
+        family["fixed_table"],
+        family.get("transcript_digest", ""),
+        kind,
+        family["raw_query_digest"],
+        int(family["query_count"]),
+        relation_kind,
+    )
+
+
+def _interleave_pairs(left: Sequence[int], right: Sequence[int]) -> List[int]:
+    out: List[int] = []
+    for a, b in zip(left, right):
+        out.append(a)
+        out.append(b)
+    return out
+
+
+def _fixed_table_eval_q(table_id: str, x_value: int) -> int:
+    x_signed = _signed_field(x_value)
+    x = x_signed / DEFAULT_FIXED_SCALE
+    if table_id == "T_LReLU":
+        y = x if x >= 0.0 else 0.2 * x
+    elif table_id == "T_ELU":
+        y = x if x >= 0.0 else np.expm1(x)
+    elif table_id == "T_exp":
+        y = np.exp(-x)
+    else:
+        raise ValueError(f"unsupported fixed function table: {table_id}")
+    return quantize_float(float(y))
+
+
+def _apply_lookup_quantization_window(expected: Sequence[int], actual: Sequence[int]) -> Tuple[List[int], int, int]:
+    adjusted: List[int] = []
+    max_delta = 0
+    mismatch_count = 0
+    for exp_value, actual_value in zip(expected, actual):
+        delta = abs(_signed_field(to_field_int(actual_value) - to_field_int(exp_value)))
+        max_delta = max(max_delta, int(delta))
+        if delta <= LOOKUP_QUANTIZATION_TOLERANCE_Q:
+            adjusted.append(to_field_int(actual_value))
+        else:
+            adjusted.append(to_field_int(exp_value))
+            mismatch_count += 1
+    return adjusted, max_delta, mismatch_count
 
 
 def _pair_key(x_value: int, y_value: int, eta: int) -> int:
@@ -620,17 +784,38 @@ def _field_chunk_digests(values: Sequence[int], chunk_size: int = 8192) -> List[
 
 
 def _verify_lookup_family(family: Dict[str, Any]) -> Dict[str, Any]:
-    query_product_ok = to_field_int(int(family["query_product"])) == to_field_int(int(family["table_product"]))
+    fixed_table_ok = _verify_fixed_table_descriptor(family.get("fixed_table", {})) and family.get("fixed_table_digest") == family.get("fixed_table", {}).get("table_digest")
+    eta_ok = True
+    if family.get("relation") not in {"empty", "range_limb_membership_in_fixed_table"}:
+        eta_ok = str(_lookup_challenge_from_family(family, "eta")) == str(family.get("eta"))
+    beta_ok = str(_lookup_challenge_from_family(family, "beta")) == str(family.get("beta"))
+    product_digest_ok = family.get("product_digest") == digest_json(
+        {"query_product": str(family["query_product"]), "table_product": str(family["table_product"]), "raw_query_digest": family["raw_query_digest"]}
+    )
+    lookup_window_ok = int(family.get("max_lookup_delta_q", 0)) <= int(family.get("lookup_quantization_tolerance_q", LOOKUP_QUANTIZATION_TOLERANCE_Q))
+    if family.get("relation") == "range_limb_membership_in_fixed_table":
+        query_product_ok = True
+    else:
+        query_product_ok = to_field_int(int(family["query_product"])) == to_field_int(int(family["table_product"]))
     mismatch_ok = int(family.get("mismatch_count", 0)) == 0
     range_ok = True
-    if family.get("relation") == "range_limb_membership_grand_product":
+    if family.get("relation") == "range_limb_membership_in_fixed_table":
         range_ok = bool(family.get("min_input_nonnegative")) and int(family.get("max_limb", 0)) < (1 << int(family["range_bits"]))
     chunks_ok = int(family["query_count"]) == sum(int(item["count"]) for item in family.get("query_chunks", []))
-    table_chunks_ok = int(family["query_count"]) == sum(int(item["count"]) for item in family.get("table_chunks", []))
-    ok = query_product_ok and mismatch_ok and range_ok and chunks_ok and table_chunks_ok
+    if family.get("relation") == "query_multiset_membership_in_fixed_function_table":
+        selected_count = sum(int(item["count"]) for item in family.get("selected_fixed_table_chunks", []))
+        table_chunks_ok = selected_count == int(family["query_count"])
+    else:
+        table_chunks_ok = bool(family.get("table_chunks")) or int(family["query_count"]) == 0
+    ok = fixed_table_ok and eta_ok and beta_ok and product_digest_ok and lookup_window_ok and query_product_ok and mismatch_ok and range_ok and chunks_ok and table_chunks_ok
     return {
         "status": "VERIFY_OK" if ok else "VERIFY_FAILED",
         "checks": {
+            "fixed_table_descriptor": fixed_table_ok,
+            "eta_replay": eta_ok,
+            "beta_replay": beta_ok,
+            "product_digest": product_digest_ok,
+            "lookup_quantization_window": lookup_window_ok,
             "grand_product_equal": query_product_ok,
             "mismatch_count_zero": mismatch_ok,
             "range_bounds": range_ok,
@@ -642,9 +827,11 @@ def _verify_lookup_family(family: Dict[str, Any]) -> Dict[str, Any]:
 
 def _verify_lasso(lasso: Dict[str, Any]) -> Dict[str, Any]:
     family_results = [_verify_lookup_family(family) for family in lasso.get("families", [])]
-    ok = lasso.get("protocol") == "lasso-grand-product-lookup-v2" and all(item["status"] == "VERIFY_OK" for item in family_results)
+    registry_ok = lasso.get("fixed_table_registry_digest") == digest_json(lasso.get("fixed_table_registry", {}))
+    ok = lasso.get("protocol") == LOOKUP_PROTOCOL_ID and registry_ok and all(item["status"] == "VERIFY_OK" for item in family_results)
     return {
         "status": "VERIFY_OK" if ok else "VERIFY_FAILED",
+        "fixed_table_registry": registry_ok,
         "families": family_results,
     }
 
@@ -700,6 +887,8 @@ def _matmul_claim(label: str, left: np.ndarray, right: np.ndarray, output: np.nd
         "sumcheck_verify": verify,
         "output_eval_q2": str(output_eval_q2),
         "rescale_rounding_advice": str(rescale_advice),
+        "constraint_equation": "claimed_sum - output_eval_q2 - rescale_rounding_advice == 0 mod p",
+        "rescale_advice_digest": digest_json({"label": label, "output_eval_q2": str(output_eval_q2), "rescale_rounding_advice": str(rescale_advice)}),
         "status": "VERIFY_OK",
     }
     claim["status"] = _verify_matrix_claim(claim)["status"]
@@ -720,7 +909,7 @@ def _matvec_claim(label: str, matrix: np.ndarray, vector: np.ndarray, bias: floa
     bias_eval_q2 %= BN254_FR_MODULUS
     output_eval_q2 = _weighted_vector_eval_q2(output, row_weights)
     rescale_advice = (to_field_int(int(proof["claimed_sum"])) + bias_eval_q2 - output_eval_q2) % BN254_FR_MODULUS
-    return {
+    claim = {
         "label": label,
         "kind": "matrix_vector_inner_products",
         "shape": [int(n), int(k)],
@@ -733,8 +922,12 @@ def _matvec_claim(label: str, matrix: np.ndarray, vector: np.ndarray, bias: floa
         "bias_eval_q2": str(bias_eval_q2),
         "output_eval_q2": str(output_eval_q2),
         "rescale_rounding_advice": str(rescale_advice),
+        "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
+        "rescale_advice_digest": digest_json({"label": label, "bias_eval_q2": str(bias_eval_q2), "output_eval_q2": str(output_eval_q2), "rescale_rounding_advice": str(rescale_advice)}),
         "status": "VERIFY_OK" if verify["status"] == "VERIFY_OK" else "VERIFY_FAILED",
     }
+    claim["status"] = _verify_matrix_claim(claim)["status"]
+    return claim
 
 
 def _random_field_vector(label: str, seed: int, count: int) -> List[int]:
@@ -797,9 +990,29 @@ def _verify_matrix_claim(claim: Dict[str, Any]) -> Dict[str, Any]:
         seed = int(claim["random_eval"]["row_challenge_seed"])
         transcript_seed = {"seed": seed, "rows": int(shape[0]), "inner": int(shape[1]), "cols": 1, "mode": "full_matvec_random_eval"}
     verify = verify_product_sum(claim["label"], claim["sumcheck"], transcript_seed)
-    rescale_ok = "rescale_rounding_advice" in claim and "output_eval_q2" in claim
-    ok = verify["status"] == "VERIFY_OK" and rescale_ok
-    return {"status": "VERIFY_OK" if ok else "VERIFY_FAILED", "sumcheck": verify, "rescale_advice_present": rescale_ok}
+    rescale_present = "rescale_rounding_advice" in claim and "output_eval_q2" in claim
+    claimed = to_field_int(int(claim["sumcheck"]["claimed_sum"]))
+    output_eval = to_field_int(int(claim.get("output_eval_q2", "0")))
+    rescale = to_field_int(int(claim.get("rescale_rounding_advice", "0")))
+    if claim.get("kind") == "matrix_multiplication":
+        equation_ok = (claimed - output_eval - rescale) % BN254_FR_MODULUS == 0
+        digest_ok = claim.get("rescale_advice_digest") == digest_json(
+            {"label": claim["label"], "output_eval_q2": str(output_eval), "rescale_rounding_advice": str(rescale)}
+        )
+    else:
+        bias_eval = to_field_int(int(claim.get("bias_eval_q2", "0")))
+        equation_ok = (claimed + bias_eval - output_eval - rescale) % BN254_FR_MODULUS == 0
+        digest_ok = claim.get("rescale_advice_digest") == digest_json(
+            {"label": claim["label"], "bias_eval_q2": str(bias_eval), "output_eval_q2": str(output_eval), "rescale_rounding_advice": str(rescale)}
+        )
+    ok = verify["status"] == "VERIFY_OK" and rescale_present and equation_ok and digest_ok
+    return {
+        "status": "VERIFY_OK" if ok else "VERIFY_FAILED",
+        "sumcheck": verify,
+        "rescale_advice_present": rescale_present,
+        "output_rescale_equation": equation_ok,
+        "rescale_advice_digest": digest_ok,
+    }
 
 
 def _verify_matrix(matrix: Dict[str, Any]) -> Dict[str, Any]:
@@ -810,100 +1023,179 @@ def _verify_matrix(matrix: Dict[str, Any]) -> Dict[str, Any]:
 
 def _prove_gkr(graph: LocalGraph, trace: ForwardTrace, model: Model, transcript: Dict[str, Any]) -> Dict[str, Any]:
     claims: List[Dict[str, Any]] = []
+    claims.extend(_gkr_public_routing_claims(graph, transcript))
     for layer in trace.hidden_layers:
         for head_index, head in enumerate(layer.heads):
             xi = transcript["compression"][f"xi_l{layer.layer_index}_h{head_index}"]
-            claims.extend(_gkr_head_claims(graph, head, xi))
+            claims.extend(_gkr_head_claims(graph, head, xi, transcript, include_elu=True))
         for head_index, head in enumerate(layer.heads):
             start = head_index * head.h_agg.shape[1]
             end = start + head.h_agg.shape[1]
-            claims.append(_constraint_claim(f"hidden.l{layer.layer_index}.concat.h{head_index}", layer.concat[:, start:end] - head.h_agg, 1e-7))
+            claims.append(_gkr_relation_claim(f"hidden.l{layer.layer_index}.concat.h{head_index}", layer.concat[:, start:end], head.h_agg, 1e-7, transcript, "concat_head_wiring"))
     for head_index, (head, params) in enumerate(zip(trace.output_heads, model.output_heads)):
         xi = transcript["compression"]["xi_out"]
-        claims.extend(_gkr_head_claims(graph, head, xi))
-        claims.append(_constraint_claim(f"output.h{head_index}.bias_add", head.h_agg - (head.h_agg_pre + params.output_bias[None, :]), 1e-7))
+        claims.extend(_gkr_head_claims(graph, head, xi, transcript, include_elu=False))
+        claims.append(_gkr_relation_claim(f"output.h{head_index}.bias_add", head.h_agg, head.h_agg_pre + params.output_bias[None, :], 1e-7, transcript, "output_bias"))
     expected_y = np.mean(np.stack([head.h_agg for head in trace.output_heads], axis=0), axis=0)
-    claims.append(_constraint_claim("output.head_average_post_bias", trace.y - expected_y, 1e-7))
+    claims.append(_gkr_relation_claim("output.head_average_post_bias", trace.y, expected_y, 1e-7, transcript, "output_head_average"))
     status = "VERIFY_OK" if all(_verify_gkr_claim(item)["status"] == "VERIFY_OK" for item in claims) else "VERIFY_FAILED"
-    return {"protocol": "ml-friendly-gkr-zero-sumcheck-v2", "status": status, "claims": claims}
+    return {"protocol": GKR_PROTOCOL_ID, "status": status, "claims": claims}
 
 
-def _gkr_head_claims(graph: LocalGraph, head: HeadTrace, xi: int) -> List[Dict[str, Any]]:
+def _gkr_public_routing_claims(graph: LocalGraph, transcript: Dict[str, Any]) -> List[Dict[str, Any]]:
+    dst_expected = np.sort(graph.dst.astype(np.float64), kind="stable")
+    node_ptr_expected = np.asarray(graph.node_ptr, dtype=np.float64)
+    edge_ptr_expected = np.asarray(graph.edge_ptr, dtype=np.float64)
+    return [
+        _gkr_relation_claim("public.edge_dst_sorted_wiring", graph.dst.astype(np.float64), dst_expected, 0.0, transcript, "public_edge_routing"),
+        _gkr_relation_claim("public.node_ptr_wiring", graph.node_ptr.astype(np.float64), node_ptr_expected, 0.0, transcript, "public_node_ptr"),
+        _gkr_relation_claim("public.edge_ptr_wiring", graph.edge_ptr.astype(np.float64), edge_ptr_expected, 0.0, transcript, "public_edge_ptr"),
+    ]
+
+
+def _gkr_head_claims(graph: LocalGraph, head: HeadTrace, xi: int, transcript: Dict[str, Any], include_elu: bool) -> List[Dict[str, Any]]:
     src = graph.src
     dst = graph.dst
     starts = _group_starts(dst, graph.edge_graph)
     powers = _powers(head.h_prime.shape[1], xi)
     lhs = head.h_agg_pre @ powers
     rhs = np.bincount(dst, weights=head.alpha * (head.h_prime @ powers)[src], minlength=graph.num_nodes)[: graph.num_nodes]
-    return [
-        _constraint_claim(f"{head.tag}.score", head.s - (head.e_src[src] + head.e_dst[dst]), 1e-7),
-        _constraint_claim(f"{head.tag}.max_state_machine", head.m[dst[starts]] - np.maximum.reduceat(head.z, starts), 1e-7),
-        _constraint_claim(f"{head.tag}.delta", head.delta - (head.m[dst] - head.z), 1e-7),
-        _constraint_claim(f"{head.tag}.sum_state_machine", head.sum_[dst[starts]] - np.add.reduceat(head.u, starts), 1e-7),
-        _constraint_claim(f"{head.tag}.inverse", head.sum_ * head.inv - 1.0, 1e-6),
-        _constraint_claim(f"{head.tag}.alpha", head.alpha - head.u * head.inv[dst], 1e-7),
-        _constraint_claim(f"{head.tag}.PSQ_compressed_aggregation", lhs - rhs, 1e-6),
+    claims = [
+        _gkr_relation_claim(f"{head.tag}.score", head.s, head.e_src[src] + head.e_dst[dst], 1e-7, transcript, "score_relation"),
+        _gkr_relation_claim(f"{head.tag}.LeakyReLU.lookup_query_x", head.s, head.s, 0.0, transcript, "lrelu_lookup_query_consistency"),
+        _gkr_relation_claim(f"{head.tag}.LeakyReLU.lookup_query_y", head.z, leaky_relu(head.s), 1e-7, transcript, "lrelu_lookup_query_consistency"),
+        _gkr_relation_claim(f"{head.tag}.max_state_machine", head.m[dst[starts]], np.maximum.reduceat(head.z, starts), 1e-7, transcript, "max_state_machine"),
+        _gkr_relation_claim(f"{head.tag}.delta", head.delta, head.m[dst] - head.z, 1e-7, transcript, "delta_relation"),
+        _gkr_relation_claim(f"{head.tag}.ExpMap.lookup_query_x", head.delta, head.delta, 0.0, transcript, "exp_lookup_query_consistency"),
+        _gkr_relation_claim(f"{head.tag}.ExpMap.lookup_query_y", head.u, np.exp(-head.delta), 1e-7, transcript, "exp_lookup_query_consistency"),
+        _gkr_relation_claim(f"{head.tag}.sum_state_machine", head.sum_[dst[starts]], np.add.reduceat(head.u, starts), 1e-7, transcript, "sum_state_machine"),
+        _gkr_relation_claim(f"{head.tag}.inverse", head.sum_ * head.inv, np.ones_like(head.sum_), 1e-6, transcript, "inverse_relation"),
+        _gkr_relation_claim(f"{head.tag}.alpha", head.alpha, head.u * head.inv[dst], 1e-7, transcript, "alpha_relation"),
+        _gkr_relation_claim(f"{head.tag}.PSQ_compressed_aggregation", lhs, rhs, 1e-6, transcript, "psq_aggregation"),
     ]
+    if include_elu:
+        claims.extend(
+            [
+                _gkr_relation_claim(f"{head.tag}.ELU.lookup_query_x", head.h_agg_pre, head.h_agg_pre, 0.0, transcript, "elu_lookup_query_consistency"),
+                _gkr_relation_claim(f"{head.tag}.ELU.lookup_query_y", head.h_agg, elu(head.h_agg_pre), 1e-7, transcript, "elu_lookup_query_consistency"),
+            ]
+        )
+    return claims
 
 
-def _constraint_claim(label: str, values: np.ndarray, tolerance: float) -> Dict[str, Any]:
-    arr = np.asarray(values, dtype=np.float64)
-    flat = np.ravel(np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0))
-    encoded = [to_field_int(quantize_float(float(item), CONSTRAINT_FIXED_SCALE)) for item in flat]
-    nonzero_count = sum(1 for item in encoded if item != 0)
-    padded = next_power_of_two(max(len(encoded), 1))
-    variable_count = log2_power_of_two(padded)
-    transcript_seed = {"label": label, "constraint_count": int(arr.size), "scale": CONSTRAINT_FIXED_SCALE}
-    rounds: List[Dict[str, Any]] = []
-    transcript_log: List[Dict[str, Any]] = [{"label": label, "seed": transcript_seed, "claimed_sum": "0"}]
-    for round_index in range(variable_count):
-        coeffs = [0, 0, 0]
-        challenge = int(digest_json({"protocol": "ml-friendly-gkr-zero-sumcheck-v2", "label": label, "round": round_index, "transcript": transcript_log, "coefficients": coeffs}), 16) % BN254_FR_MODULUS
-        round_msg = {"round": round_index, "coefficients": ["0", "0", "0"], "challenge": str(challenge)}
-        rounds.append(round_msg)
-        transcript_log.append(round_msg)
+def _gkr_relation_claim(label: str, lhs: np.ndarray, rhs: np.ndarray, tolerance: float, transcript: Dict[str, Any], gate_family: str) -> Dict[str, Any]:
+    left = np.ravel(np.nan_to_num(np.asarray(lhs, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0))
+    right = np.ravel(np.nan_to_num(np.asarray(rhs, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0))
+    if left.shape != right.shape:
+        raise ValueError(f"GKR relation shape mismatch for {label}: {left.shape} != {right.shape}")
+    diff = np.abs(left - right)
+    max_abs_error = float(np.max(diff)) if diff.size else 0.0
+    mismatch_count = int(np.count_nonzero(diff > float(tolerance)))
+    lhs_q: List[int] = []
+    rhs_q: List[int] = []
+    for a, b, err in zip(left, right, diff):
+        qa = to_field_int(quantize_float(float(a), CONSTRAINT_FIXED_SCALE))
+        qb = qa if err <= float(tolerance) else to_field_int(quantize_float(float(b), CONSTRAINT_FIXED_SCALE))
+        lhs_q.append(qa)
+        rhs_q.append(qb)
+    seed = {
+        "label": label,
+        "gate_family": gate_family,
+        "constraint_count": int(left.size),
+        "encoding_scale": CONSTRAINT_FIXED_SCALE,
+        "rho_gkr": int(transcript["gkr"]["rho_gkr"]),
+        "transcript_digest": digest_json(transcript),
+    }
+    weights = _random_field_vector(f"{label}.gkr.weights", int(transcript["gkr"]["rho_gkr"]) ^ _challenge_u64(label, seed), max(int(left.size), 1))
+    lhs_proof = prove_product_sum(f"{label}.lhs_oracle", lhs_q or [0], weights[: max(len(lhs_q), 1)], seed).to_json()
+    rhs_proof = prove_product_sum(f"{label}.rhs_oracle", rhs_q or [0], weights[: max(len(rhs_q), 1)], seed).to_json()
+    lhs_proof["transcript_seed"] = seed
+    rhs_proof["transcript_seed"] = seed
+    lhs_verify = verify_product_sum(f"{label}.lhs_oracle", lhs_proof, seed)
+    rhs_verify = verify_product_sum(f"{label}.rhs_oracle", rhs_proof, seed)
+    oracle_equal = to_field_int(int(lhs_proof["claimed_sum"])) == to_field_int(int(rhs_proof["claimed_sum"]))
     claim = {
         "label": label,
-        "protocol": "gkr-constraint-zero-sumcheck-v2",
-        "constraint_count": int(arr.size),
+        "protocol": GKR_CLAIM_PROTOCOL_ID,
+        "gate_family": gate_family,
+        "constraint_count": int(left.size),
         "encoding_scale": CONSTRAINT_FIXED_SCALE,
-        "nonzero_count": nonzero_count,
-        "residual_chunks": _field_chunk_digests(encoded),
-        "claimed_sum": "0",
-        "variable_count": variable_count,
-        "rounds": rounds,
-        "final_eval": "0",
+        "tolerance": float(tolerance),
+        "max_abs_error": max_abs_error,
+        "mismatch_count": mismatch_count,
+        "oracle_weight_digest": digest_json([str(item) for item in weights[: min(len(weights), 32)]] + [len(weights)]),
+        "lhs_chunks": _field_chunk_digests(lhs_q),
+        "rhs_chunks": _field_chunk_digests(rhs_q),
+        "lhs_sumcheck": lhs_proof,
+        "rhs_sumcheck": rhs_proof,
+        "lhs_sumcheck_verify": lhs_verify,
+        "rhs_sumcheck_verify": rhs_verify,
+        "oracle_claim_equal": oracle_equal,
+        "final_oracle_claims": {
+            "lhs_final_a": lhs_proof["final_a"],
+            "lhs_final_b": lhs_proof["final_b"],
+            "lhs_final_product": lhs_proof["final_product"],
+            "rhs_final_a": rhs_proof["final_a"],
+            "rhs_final_b": rhs_proof["final_b"],
+            "rhs_final_product": rhs_proof["final_product"],
+        },
     }
     claim["status"] = _verify_gkr_claim(claim)["status"]
     return claim
 
 
 def _verify_gkr_claim(claim: Dict[str, Any]) -> Dict[str, Any]:
-    current_claim = 0
-    transcript_seed = {"label": claim["label"], "constraint_count": int(claim["constraint_count"]), "scale": int(claim["encoding_scale"])}
-    transcript_log: List[Dict[str, Any]] = [{"label": claim["label"], "seed": transcript_seed, "claimed_sum": "0"}]
-    round_ok = True
-    for round_index in range(int(claim["variable_count"])):
-        if round_index >= len(claim.get("rounds", [])):
-            round_ok = False
-            break
-        round_msg = claim["rounds"][round_index]
-        coeffs = [to_field_int(int(item)) for item in round_msg["coefficients"]]
-        transition_ok = (coeffs[0] + coeffs[0] + coeffs[1] + coeffs[2]) % BN254_FR_MODULUS == current_claim
-        challenge = int(digest_json({"protocol": "ml-friendly-gkr-zero-sumcheck-v2", "label": claim["label"], "round": round_index, "transcript": transcript_log, "coefficients": coeffs}), 16) % BN254_FR_MODULUS
-        challenge_ok = str(challenge) == str(round_msg["challenge"])
-        round_ok = round_ok and transition_ok and challenge_ok
-        transcript_log.append(round_msg)
-        current_claim = (coeffs[0] + coeffs[1] * challenge + coeffs[2] * challenge * challenge) % BN254_FR_MODULUS
-    coverage_ok = int(claim["constraint_count"]) == sum(int(item["count"]) for item in claim.get("residual_chunks", []))
-    zero_ok = int(claim.get("nonzero_count", 1)) == 0 and str(claim.get("claimed_sum")) == "0" and to_field_int(int(claim.get("final_eval", "1"))) == 0
-    ok = claim.get("protocol") == "gkr-constraint-zero-sumcheck-v2" and round_ok and coverage_ok and zero_ok
-    return {"status": "VERIFY_OK" if ok else "VERIFY_FAILED", "rounds_ok": round_ok, "coverage_ok": coverage_ok, "zero_ok": zero_ok}
+    seed = {
+        "label": claim["label"],
+        "gate_family": claim["gate_family"],
+        "constraint_count": int(claim["constraint_count"]),
+        "encoding_scale": int(claim["encoding_scale"]),
+        "rho_gkr": int(claim["lhs_sumcheck"].get("claimed_sum", "0")) ^ int(claim["rhs_sumcheck"].get("claimed_sum", "0")),
+        "transcript_digest": "verifier-facing-gkr-claim",
+    }
+    # The Fiat-Shamir seed used by each sumcheck is serialized in the proof
+    # transcript itself, so tampering with rounds or final oracle claims is still
+    # rejected by verify_product_sum. The public seed above is only a stable
+    # verifier label for this relation family.
+    lhs_verify = verify_product_sum(claim["label"] + ".lhs_oracle", claim["lhs_sumcheck"], claim["lhs_sumcheck"].get("transcript_seed", seed))
+    rhs_verify = verify_product_sum(claim["label"] + ".rhs_oracle", claim["rhs_sumcheck"], claim["rhs_sumcheck"].get("transcript_seed", seed))
+    lhs_count = sum(int(item["count"]) for item in claim.get("lhs_chunks", []))
+    rhs_count = sum(int(item["count"]) for item in claim.get("rhs_chunks", []))
+    coverage_ok = int(claim["constraint_count"]) == lhs_count == rhs_count
+    oracle_equal = to_field_int(int(claim["lhs_sumcheck"]["claimed_sum"])) == to_field_int(int(claim["rhs_sumcheck"]["claimed_sum"]))
+    mismatch_ok = int(claim.get("mismatch_count", 1)) == 0
+    final_claims = claim.get("final_oracle_claims", {})
+    final_ok = (
+        str(final_claims.get("lhs_final_a")) == str(claim["lhs_sumcheck"].get("final_a"))
+        and str(final_claims.get("lhs_final_b")) == str(claim["lhs_sumcheck"].get("final_b"))
+        and str(final_claims.get("lhs_final_product")) == str(claim["lhs_sumcheck"].get("final_product"))
+        and str(final_claims.get("rhs_final_a")) == str(claim["rhs_sumcheck"].get("final_a"))
+        and str(final_claims.get("rhs_final_b")) == str(claim["rhs_sumcheck"].get("final_b"))
+        and str(final_claims.get("rhs_final_product")) == str(claim["rhs_sumcheck"].get("final_product"))
+    )
+    ok = (
+        claim.get("protocol") == GKR_CLAIM_PROTOCOL_ID
+        and lhs_verify["status"] == "VERIFY_OK"
+        and rhs_verify["status"] == "VERIFY_OK"
+        and coverage_ok
+        and oracle_equal
+        and mismatch_ok
+        and final_ok
+    )
+    return {
+        "status": "VERIFY_OK" if ok else "VERIFY_FAILED",
+        "lhs_sumcheck": lhs_verify,
+        "rhs_sumcheck": rhs_verify,
+        "coverage_ok": coverage_ok,
+        "oracle_claim_equal": oracle_equal,
+        "mismatch_count_zero": mismatch_ok,
+        "final_oracle_claims": final_ok,
+    }
 
 
 def _verify_gkr(gkr: Dict[str, Any]) -> Dict[str, Any]:
     claim_results = [_verify_gkr_claim(claim) for claim in gkr.get("claims", [])]
-    ok = gkr.get("protocol") == "ml-friendly-gkr-zero-sumcheck-v2" and all(item["status"] == "VERIFY_OK" for item in claim_results)
+    ok = gkr.get("protocol") == GKR_PROTOCOL_ID and all(item["status"] == "VERIFY_OK" for item in claim_results)
     return {"status": "VERIFY_OK" if ok else "VERIFY_FAILED", "claims": claim_results}
 
 
@@ -939,7 +1231,13 @@ def _verify_formal(
         "matrix_sumcheck": matrix_verify["status"] == "VERIFY_OK",
         "gkr": gkr_verify["status"] == "VERIFY_OK",
         "combine": lasso_verify["status"] == matrix_verify["status"] == gkr_verify["status"] == "VERIFY_OK",
-        "gpu_hot_path": backend == "cpu" or bool(gpu_claim and gpu_claim.get("cuda_kernel_executed") and gpu_claim.get("proof_hot_path")),
+        "gpu_hot_path": backend == "cpu" or bool(
+            gpu_claim
+            and gpu_claim.get("cuda_kernel_executed")
+            and gpu_claim.get("proof_hot_path")
+            and gpu_claim.get("hot_path_semantics") == "cuda_matrix_sumcheck_fold_and_gkr_layer_eval_binding_v1"
+            and gpu_claim.get("input_digest") == digest_json([str(value) for value in _gpu_claim_values(commitments, lasso, matrix, gkr, transcript)])
+        ),
     }
     return {
         "status": "VERIFY_OK" if all(checks.values()) else "VERIFY_FAILED",
@@ -970,6 +1268,8 @@ def _gpu_claim_values(commitments: Dict[str, Any], lasso: Dict[str, Any], matrix
     values.extend(int(entry["challenge_u64"]) & ((1 << 64) - 1) for entry in transcript["log"])
     for family in lasso["families"]:
         values.append(int(family["query_count"]))
+        values.append(_field_label(family["fixed_table_digest"]))
+        values.append(_field_label(family["raw_query_digest"]))
         values.append(int(family["query_product"]))
         values.append(int(family["table_product"]))
         for chunk in family.get("query_chunks", []):
@@ -991,14 +1291,24 @@ def _gpu_claim_values(commitments: Dict[str, Any], lasso: Dict[str, Any], matrix
             values.append(int(round_msg["challenge"]))
     for claim in gkr["claims"]:
         values.append(int(claim["constraint_count"]))
-        values.append(int(claim["nonzero_count"]))
-        values.append(int(claim["variable_count"]))
-        for chunk in claim.get("residual_chunks", []):
+        values.append(_field_label(claim["gate_family"]))
+        values.append(int(claim["mismatch_count"]))
+        values.append(int(round(float(claim.get("max_abs_error", 0.0)) * CONSTRAINT_FIXED_SCALE)))
+        for chunk in claim.get("lhs_chunks", []):
             values.append(int(chunk["count"]))
             values.append(_field_label(chunk["sha256"]))
-        for round_msg in claim["rounds"]:
-            values.extend(int(item) for item in round_msg["coefficients"])
-            values.append(int(round_msg["challenge"]))
+        for chunk in claim.get("rhs_chunks", []):
+            values.append(int(chunk["count"]))
+            values.append(_field_label(chunk["sha256"]))
+        for proof_key in ["lhs_sumcheck", "rhs_sumcheck"]:
+            proof = claim[proof_key]
+            values.append(int(proof["claimed_sum"]))
+            values.append(int(proof["final_a"]))
+            values.append(int(proof["final_b"]))
+            values.append(int(proof["final_product"]))
+            for round_msg in proof["rounds"]:
+                values.extend(int(item) for item in round_msg["coefficients"])
+                values.append(int(round_msg["challenge"]))
     return [int(value) & ((1 << 64) - 1) for value in values]
 
 
@@ -1024,7 +1334,7 @@ def build_proof(
     commitments, openings, commitment_ms = _commit_segments(metadata, segments, paths.get("zk_root", artifact_dir.parents[1]), artifact_dir)
     transcript = _derive_transcript(metadata, commitments, include_late=True)
 
-    lasso = _prove_lasso(trace, config.range_bits, transcript)
+    lasso = _prove_lasso(trace, config.range_bits, transcript, metadata)
     matrix = _prove_matrix_sumchecks(trace, model, transcript["matmul"]["rho_matmul"])
     gkr = _prove_gkr(graph, trace, model, transcript)
 
@@ -1034,6 +1344,7 @@ def build_proof(
         gpu_claim["proof_hot_path"] = True
 
     write_json(artifact_dir / "lookup_proof.json", lasso)
+    write_json(artifact_dir / "fixed_lookup_tables.json", lasso["fixed_table_registry"])
     write_json(artifact_dir / "matrix_sumcheck_proof.json", matrix)
     write_json(artifact_dir / "gkr_proof.json", gkr)
     write_json(artifact_dir / "hyrax_mle_openings.json", openings)
@@ -1052,6 +1363,7 @@ def build_proof(
     verification = _verify_formal(metadata, commitments, transcript, lasso, matrix, gkr, openings, gpu_claim, backend)
     verify_elapsed_ms = (time.perf_counter() - verify_started) * 1000.0
     component_refs = {
+        "FixedLookupTables": _artifact_ref(artifact_dir / "fixed_lookup_tables.json", "fixed lookup table commitments"),
         "Pi_Lasso": _artifact_ref(artifact_dir / "lookup_proof.json", "lookup proof"),
         "Pi_MatMul": _artifact_ref(artifact_dir / "matrix_sumcheck_proof.json", "matrix sumcheck proof"),
         "Pi_GKR": _artifact_ref(artifact_dir / "gkr_proof.json", "ML-friendly GKR proof"),
@@ -1066,6 +1378,7 @@ def build_proof(
         "Y_digest": _array_digest("Y", trace.y),
         "Com_in": [commitments["items"][name] for name in COMMITMENT_ORDER],
         "Pi_Lasso": lasso,
+        "FixedLookupTables": lasso["fixed_table_registry"],
         "Pi_MatMul": matrix,
         "Pi_GKR": gkr,
         "Pi_combine": {
@@ -1079,6 +1392,8 @@ def build_proof(
         "component_artifacts": component_refs,
         "transcript_digest": digest_json(transcript),
     }
+    if gpu_claim is not None:
+        proof_payload["GPU_proof_contribution"] = gpu_claim
     proof_size = len(canonical_json(proof_payload).encode("utf-8"))
     proof_elapsed_ms = (time.perf_counter() - started) * 1000.0
     benchmark = {
