@@ -25,7 +25,7 @@ PADDING_RULE_ID = "zero-pad+selector-mask"
 CIRCUIT_LAYOUT_ID = "gat-zkgpt-seven-segment-layout-v1"
 LASSO_CFG_ID = "gat-zkgpt-lasso-lrelu-elu-exp-range-structured-limbs-v1"
 MATRIX_PROOF_CFG_ID = "gat-zkgpt-batched-matmul-sumcheck-v1"
-COMMITMENT_BACKEND_ID = "mcl-bn254-hyrax-mle-openmasked-v1"
+COMMITMENT_BACKEND_ID = "bn254-field-hyrax-mle-openmasked-v2"
 
 TRANSCRIPT_DOMAIN_ORDER = [
     "gat-zkgpt/meta",

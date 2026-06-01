@@ -1,12 +1,12 @@
 {
   "artifact_path": "/home/pzh/project/comparison/baselines/zkGPT/results/gpu/cora",
   "backend": "gpu",
-  "commitment_time_ms": 7510.5378839652985,
+  "commitment_time_ms": 18473.093644017354,
   "dataset": "cora",
-  "forward_time_ms": 131.17569498717785,
-  "proof_size_bytes": 21230,
-  "prove_time_ms": 7911.199342983309,
+  "forward_time_ms": 37.00461197877303,
+  "proof_size_bytes": 9811077,
+  "prove_time_ms": 29184.96393202804,
   "status": "VERIFY_OK",
-  "verify_time_ms": 1.6987129929475486,
-  "wall_time_ms": 8482.699716987554
+  "verify_time_ms": 170.85786204552278,
+  "wall_time_ms": 29795.92618299648
 }

@@ -1,12 +1,12 @@
 {
   "artifact_path": "/home/pzh/project/comparison/baselines/zkGPT/results/gpu/pubmed",
   "backend": "gpu",
-  "commitment_time_ms": 7103.103864996228,
+  "commitment_time_ms": 71273.3992630383,
   "dataset": "pubmed",
-  "forward_time_ms": 617.2627909691073,
-  "proof_size_bytes": 21261,
-  "prove_time_ms": 8053.079670004081,
+  "forward_time_ms": 165.53710703738034,
+  "proof_size_bytes": 32313322,
+  "prove_time_ms": 106852.98542800592,
   "status": "VERIFY_OK",
-  "verify_time_ms": 1.595687004737556,
-  "wall_time_ms": 9898.72421399923
+  "verify_time_ms": 561.4118910161778,
+  "wall_time_ms": 108110.23735505296
 }

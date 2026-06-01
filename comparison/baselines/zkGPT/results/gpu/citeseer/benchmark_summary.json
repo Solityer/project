@@ -1,12 +1,12 @@
 {
   "artifact_path": "/home/pzh/project/comparison/baselines/zkGPT/results/gpu/citeseer",
   "backend": "gpu",
-  "commitment_time_ms": 7147.483006003313,
+  "commitment_time_ms": 47317.53628101433,
   "dataset": "citeseer",
-  "forward_time_ms": 278.07789703365415,
-  "proof_size_bytes": 21293,
-  "prove_time_ms": 7598.227598995436,
+  "forward_time_ms": 72.90826697135344,
+  "proof_size_bytes": 25772001,
+  "prove_time_ms": 76516.03057602188,
   "status": "VERIFY_OK",
-  "verify_time_ms": 1.5849359915591776,
-  "wall_time_ms": 8562.463762005791
+  "verify_time_ms": 446.4996440219693,
+  "wall_time_ms": 77281.98154800339
 }

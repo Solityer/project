@@ -30,17 +30,25 @@
     "output.h0.attention_ms",
     "output.h0.projection_ms"
   ],
-  "model_digest": "45b0dc19b4fc7bd70824753365748e6405951de48f94b0ec5dee844b8a17add4",
-  "output_digest": "d711891d84220e9f29c6765eee3e2cd2fd866fe1df33d437afa49f57edab3ef8",
-  "public_input_digest": "7321f96465d55cd5d34bbd95d859946160dfa36ec9c37ec1ddd11c3a55aad026",
-  "segment_vector_lengths": {
-    "com_T_H": 36,
-    "com_W": 941,
-    "com_base": 4026,
-    "com_comp": 959,
-    "com_psq": 596,
-    "com_qry": 2031
+  "model_digest": "bc22dba3fa2f127ad6525299bddd06c2607149337ce53423901a6f9090956eb2",
+  "output_digest": "c128ba63be37901fa0aaa0bbc2c4c699643a07283c83ccc578e318eec64a00b2",
+  "public_input_digest": "613eaeb3893d975669918ba60a73bff3ce2730d37e62bffc0dd7607f31e5860d",
+  "segment_chunk_counts": {
+    "com_T_H": 47,
+    "com_W": 1,
+    "com_base": 101,
+    "com_comp": 1,
+    "com_psq": 1,
+    "com_qry": 4
   },
-  "storage_policy": "full witness recomputed by verifier from dataset/config/model; committed segment accumulators and native Hyrax openings are serialized",
+  "segment_vector_lengths": {
+    "com_T_H": 12319893,
+    "com_W": 238101,
+    "com_base": 26281554,
+    "com_comp": 96746,
+    "com_psq": 141986,
+    "com_qry": 985818
+  },
+  "storage_policy": "complete witness segments are flattened, chunked, committed, and opened through serialized proof payload messages; raw witness arrays are not stored as verifier input",
   "witness_generated": true
 }

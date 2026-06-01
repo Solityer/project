@@ -1,15 +1,15 @@
 {
   "compression": {
-    "xi_cat_l1": 3534514619848713826,
-    "xi_l1_h0": 17652189844511086874,
-    "xi_l1_h1": 5546997901680803544,
-    "xi_l1_h2": 952939423158465167,
-    "xi_l1_h3": 6789361803497171014,
-    "xi_l1_h4": 3349895028050300717,
-    "xi_l1_h5": 13542338757584142866,
-    "xi_l1_h6": 6724888976769773081,
-    "xi_l1_h7": 15433179451911636609,
-    "xi_out": 8903552160557006147
+    "xi_cat_l1": 13805281915201819885,
+    "xi_l1_h0": 3441731641377029157,
+    "xi_l1_h1": 8409986048350110767,
+    "xi_l1_h2": 14402926103447770554,
+    "xi_l1_h3": 16886200055417929511,
+    "xi_l1_h4": 10522299005018418539,
+    "xi_l1_h5": 5674089524415941651,
+    "xi_l1_h6": 8837093682556042175,
+    "xi_l1_h7": 3326001055247146167,
+    "xi_out": 5633910011742062056
   },
   "domain_order": [
     "gat-zkgpt/meta",
@@ -22,184 +22,184 @@
     "gat-zkgpt/open"
   ],
   "gkr": {
-    "rho_gkr": 7644698932619525743
+    "rho_gkr": 6523251847486747839
   },
   "lasso": {
-    "eta_hidden_elu": 14510276012146756145,
-    "eta_hidden_exp": 17561231805024896770,
-    "eta_hidden_lrelu": 14620792929048111045,
-    "eta_hidden_range": 7447522553784185500,
-    "eta_output_exp": 14673258130803043715,
-    "eta_output_lrelu": 7066849625298098236,
-    "eta_output_range": 1844028070637075354,
-    "eta_rescale_rounding_range": 1545476944451744573
+    "eta_hidden_elu": 3253120357670818810,
+    "eta_hidden_exp": 8148705804147988483,
+    "eta_hidden_lrelu": 1415255372863587474,
+    "eta_hidden_range": 17951848387900811553,
+    "eta_output_exp": 6008518585350532551,
+    "eta_output_lrelu": 17796482942090085305,
+    "eta_output_range": 8019265134952284971,
+    "eta_rescale_rounding_range": 10187292524985945358
   },
   "log": [
     {
-      "challenge_u64": 16731416254680200777,
+      "challenge_u64": 3833242290657003493,
       "label": "gat-zkgpt/meta"
     },
     {
-      "challenge_u64": 16584737277943496043,
+      "challenge_u64": 16203946358463136202,
       "label": "gat-zkgpt/model-commit"
     },
     {
-      "challenge_u64": 16431490878509433546,
+      "challenge_u64": 3245324118341807852,
       "label": "gat-zkgpt/static-table"
     },
     {
-      "challenge_u64": 15792212103874249789,
+      "challenge_u64": 9385829316632079374,
       "label": "gat-zkgpt/input-commit/base"
     },
     {
-      "challenge_u64": 17652189844511086874,
+      "challenge_u64": 3441731641377029157,
       "label": "xi/layer/1/head/0"
     },
     {
-      "challenge_u64": 5546997901680803544,
+      "challenge_u64": 8409986048350110767,
       "label": "xi/layer/1/head/1"
     },
     {
-      "challenge_u64": 952939423158465167,
+      "challenge_u64": 14402926103447770554,
       "label": "xi/layer/1/head/2"
     },
     {
-      "challenge_u64": 6789361803497171014,
+      "challenge_u64": 16886200055417929511,
       "label": "xi/layer/1/head/3"
     },
     {
-      "challenge_u64": 3349895028050300717,
+      "challenge_u64": 10522299005018418539,
       "label": "xi/layer/1/head/4"
     },
     {
-      "challenge_u64": 13542338757584142866,
+      "challenge_u64": 5674089524415941651,
       "label": "xi/layer/1/head/5"
     },
     {
-      "challenge_u64": 6724888976769773081,
+      "challenge_u64": 8837093682556042175,
       "label": "xi/layer/1/head/6"
     },
     {
-      "challenge_u64": 15433179451911636609,
+      "challenge_u64": 3326001055247146167,
       "label": "xi/layer/1/head/7"
     },
     {
-      "challenge_u64": 3534514619848713826,
+      "challenge_u64": 13805281915201819885,
       "label": "xi/cat/1"
     },
     {
-      "challenge_u64": 8903552160557006147,
+      "challenge_u64": 5633910011742062056,
       "label": "xi/out"
     },
     {
-      "challenge_u64": 3825862043071255647,
+      "challenge_u64": 7928862112079212245,
       "label": "gat-zkgpt/input-commit/comp"
     },
     {
-      "challenge_u64": 8535996638938908589,
+      "challenge_u64": 7287817708468813051,
       "label": "lambda/psq/layer/1/head/0"
     },
     {
-      "challenge_u64": 18434359240142626413,
+      "challenge_u64": 9497615516525633235,
       "label": "lambda/psq/layer/1/head/1"
     },
     {
-      "challenge_u64": 2759247046359342873,
+      "challenge_u64": 655880296977690728,
       "label": "lambda/psq/layer/1/head/2"
     },
     {
-      "challenge_u64": 9942600865097795974,
+      "challenge_u64": 9119589571401160765,
       "label": "lambda/psq/layer/1/head/3"
     },
     {
-      "challenge_u64": 8517096496410075960,
+      "challenge_u64": 11030354890286788303,
       "label": "lambda/psq/layer/1/head/4"
     },
     {
-      "challenge_u64": 13860230144724344249,
+      "challenge_u64": 15695661117091049214,
       "label": "lambda/psq/layer/1/head/5"
     },
     {
-      "challenge_u64": 13046521009250255422,
+      "challenge_u64": 4016833445987094485,
       "label": "lambda/psq/layer/1/head/6"
     },
     {
-      "challenge_u64": 6442199503024394671,
+      "challenge_u64": 5313807993272001057,
       "label": "lambda/psq/layer/1/head/7"
     },
     {
-      "challenge_u64": 6552158185187528072,
+      "challenge_u64": 10333200051885473231,
       "label": "lambda/psq/out/0"
     },
     {
-      "challenge_u64": 9858882599473108790,
+      "challenge_u64": 13011231836014508232,
       "label": "gat-zkgpt/input-commit/psq-qry"
     },
     {
-      "challenge_u64": 7447522553784185500,
+      "challenge_u64": 17951848387900811553,
       "label": "lasso/hidden_range"
     },
     {
-      "challenge_u64": 1844028070637075354,
+      "challenge_u64": 8019265134952284971,
       "label": "lasso/output_range"
     },
     {
-      "challenge_u64": 14620792929048111045,
+      "challenge_u64": 1415255372863587474,
       "label": "lasso/hidden_lrelu"
     },
     {
-      "challenge_u64": 7066849625298098236,
+      "challenge_u64": 17796482942090085305,
       "label": "lasso/output_lrelu"
     },
     {
-      "challenge_u64": 14510276012146756145,
+      "challenge_u64": 3253120357670818810,
       "label": "lasso/hidden_elu"
     },
     {
-      "challenge_u64": 17561231805024896770,
+      "challenge_u64": 8148705804147988483,
       "label": "lasso/hidden_exp"
     },
     {
-      "challenge_u64": 14673258130803043715,
+      "challenge_u64": 6008518585350532551,
       "label": "lasso/output_exp"
     },
     {
-      "challenge_u64": 1545476944451744573,
+      "challenge_u64": 10187292524985945358,
       "label": "lasso/rescale_rounding_range"
     },
     {
-      "challenge_u64": 1988113979180737551,
+      "challenge_u64": 12271324945184244644,
       "label": "matmul/sumcheck"
     },
     {
-      "challenge_u64": 7644698932619525743,
+      "challenge_u64": 6523251847486747839,
       "label": "gkr/layered-sumcheck"
     },
     {
-      "challenge_u64": 4754522647485746238,
+      "challenge_u64": 3355144015461148606,
       "label": "open/combine"
     },
     {
-      "challenge_u64": 12389265859184759541,
+      "challenge_u64": 11297460385572722778,
       "label": "open/masked"
     }
   ],
   "matmul": {
-    "rho_matmul": 1988113979180737551
+    "rho_matmul": 12271324945184244644
   },
   "open": {
-    "rho_combine": 4754522647485746238,
-    "rho_masked_open": 12389265859184759541
+    "rho_combine": 3355144015461148606,
+    "rho_masked_open": 11297460385572722778
   },
   "psq": {
-    "lambda_psq_l1_h0": 8535996638938908589,
-    "lambda_psq_l1_h1": 18434359240142626413,
-    "lambda_psq_l1_h2": 2759247046359342873,
-    "lambda_psq_l1_h3": 9942600865097795974,
-    "lambda_psq_l1_h4": 8517096496410075960,
-    "lambda_psq_l1_h5": 13860230144724344249,
-    "lambda_psq_l1_h6": 13046521009250255422,
-    "lambda_psq_l1_h7": 6442199503024394671,
-    "lambda_psq_out_h0": 6552158185187528072
+    "lambda_psq_l1_h0": 7287817708468813051,
+    "lambda_psq_l1_h1": 9497615516525633235,
+    "lambda_psq_l1_h2": 655880296977690728,
+    "lambda_psq_l1_h3": 9119589571401160765,
+    "lambda_psq_l1_h4": 11030354890286788303,
+    "lambda_psq_l1_h5": 15695661117091049214,
+    "lambda_psq_l1_h6": 4016833445987094485,
+    "lambda_psq_l1_h7": 5313807993272001057,
+    "lambda_psq_out_h0": 10333200051885473231
   }
 }

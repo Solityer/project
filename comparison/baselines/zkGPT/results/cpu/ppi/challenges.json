@@ -1,8 +1,8 @@
 {
   "compression": {
-    "xi_cat_l1": 1463464876288823749,
-    "xi_l1_h0": 961221003542258458,
-    "xi_out": 611516776464471235
+    "xi_cat_l1": 7309131698975518589,
+    "xi_l1_h0": 11964913248992822881,
+    "xi_out": 3319273575622288755
   },
   "domain_order": [
     "gat-zkgpt/meta",
@@ -15,121 +15,121 @@
     "gat-zkgpt/open"
   ],
   "gkr": {
-    "rho_gkr": 16927157558234550218
+    "rho_gkr": 15272387774495476231
   },
   "lasso": {
-    "eta_hidden_elu": 7393332910689082106,
-    "eta_hidden_exp": 8109579108594907801,
-    "eta_hidden_lrelu": 8398762679619250273,
-    "eta_hidden_range": 9893729423415372670,
-    "eta_output_exp": 1059133427223442463,
-    "eta_output_lrelu": 3258872407774501188,
-    "eta_output_range": 1735614901776381808,
-    "eta_rescale_rounding_range": 13749887880319981107
+    "eta_hidden_elu": 1322029008242573815,
+    "eta_hidden_exp": 14114118965481732986,
+    "eta_hidden_lrelu": 2879512478712134124,
+    "eta_hidden_range": 2115962036070886874,
+    "eta_output_exp": 12891422162932397936,
+    "eta_output_lrelu": 4907159200754145847,
+    "eta_output_range": 7988632778777898027,
+    "eta_rescale_rounding_range": 1215609155916953487
   },
   "log": [
     {
-      "challenge_u64": 10016284395308125362,
+      "challenge_u64": 5099181845502506204,
       "label": "gat-zkgpt/meta"
     },
     {
-      "challenge_u64": 16005464190329790516,
+      "challenge_u64": 9806456697165342772,
       "label": "gat-zkgpt/model-commit"
     },
     {
-      "challenge_u64": 1941929533848641670,
+      "challenge_u64": 14244107589325292445,
       "label": "gat-zkgpt/static-table"
     },
     {
-      "challenge_u64": 14544481282378831900,
+      "challenge_u64": 12586495557625387270,
       "label": "gat-zkgpt/input-commit/base"
     },
     {
-      "challenge_u64": 961221003542258458,
+      "challenge_u64": 11964913248992822881,
       "label": "xi/layer/1/head/0"
     },
     {
-      "challenge_u64": 1463464876288823749,
+      "challenge_u64": 7309131698975518589,
       "label": "xi/cat/1"
     },
     {
-      "challenge_u64": 611516776464471235,
+      "challenge_u64": 3319273575622288755,
       "label": "xi/out"
     },
     {
-      "challenge_u64": 6568680134752192935,
+      "challenge_u64": 1022769332699526907,
       "label": "gat-zkgpt/input-commit/comp"
     },
     {
-      "challenge_u64": 7287884592994664757,
+      "challenge_u64": 12984464610395819715,
       "label": "lambda/psq/layer/1/head/0"
     },
     {
-      "challenge_u64": 11717693652463359444,
+      "challenge_u64": 3665151207473234798,
       "label": "lambda/psq/out/0"
     },
     {
-      "challenge_u64": 14158257337174479502,
+      "challenge_u64": 2865621948074027156,
       "label": "gat-zkgpt/input-commit/psq-qry"
     },
     {
-      "challenge_u64": 9893729423415372670,
+      "challenge_u64": 2115962036070886874,
       "label": "lasso/hidden_range"
     },
     {
-      "challenge_u64": 1735614901776381808,
+      "challenge_u64": 7988632778777898027,
       "label": "lasso/output_range"
     },
     {
-      "challenge_u64": 8398762679619250273,
+      "challenge_u64": 2879512478712134124,
       "label": "lasso/hidden_lrelu"
     },
     {
-      "challenge_u64": 3258872407774501188,
+      "challenge_u64": 4907159200754145847,
       "label": "lasso/output_lrelu"
     },
     {
-      "challenge_u64": 7393332910689082106,
+      "challenge_u64": 1322029008242573815,
       "label": "lasso/hidden_elu"
     },
     {
-      "challenge_u64": 8109579108594907801,
+      "challenge_u64": 14114118965481732986,
       "label": "lasso/hidden_exp"
     },
     {
-      "challenge_u64": 1059133427223442463,
+      "challenge_u64": 12891422162932397936,
       "label": "lasso/output_exp"
     },
     {
-      "challenge_u64": 13749887880319981107,
+      "challenge_u64": 1215609155916953487,
       "label": "lasso/rescale_rounding_range"
     },
     {
-      "challenge_u64": 16753002116628189580,
+      "challenge_u64": 2891460570659114265,
       "label": "matmul/sumcheck"
     },
     {
-      "challenge_u64": 16927157558234550218,
+      "challenge_u64": 15272387774495476231,
       "label": "gkr/layered-sumcheck"
     },
     {
-      "challenge_u64": 2117545330313538571,
+      "challenge_u64": 4569945964920388777,
       "label": "open/combine"
     },
     {
-      "challenge_u64": 12423490553822938090,
+      "challenge_u64": 6032234187554903115,
       "label": "open/masked"
     }
   ],
   "matmul": {
-    "rho_matmul": 16753002116628189580
+    "rho_matmul": 2891460570659114265
   },
   "open": {
-    "rho_combine": 2117545330313538571,
-    "rho_masked_open": 12423490553822938090
+    "rho_combine": 4569945964920388777,
+    "rho_masked_open": 6032234187554903115
   },
   "psq": {
-    "lambda_psq_l1_h0": 7287884592994664757,
-    "lambda_psq_out_h0": 11717693652463359444
+    "lambda_psq_l1_h0": 12984464610395819715,
+    "lambda_psq_out_h0": 3665151207473234798
   }
 }

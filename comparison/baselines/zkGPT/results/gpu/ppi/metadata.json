@@ -3,7 +3,7 @@
   "batching_rule": "multi_graph_batch",
   "chunking_rule": "none",
   "circuit_layout_id": "gat-zkgpt-seven-segment-layout-v1",
-  "commitment_backend_id": "mcl-bn254-hyrax-mle-openmasked-v1",
+  "commitment_backend_id": "bn254-field-hyrax-mle-openmasked-v2",
   "dataset": "ppi",
   "dataset_display_name": "ppi",
   "dim_cfg": {

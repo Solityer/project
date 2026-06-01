@@ -81,15 +81,17 @@ def _bundle_negative_tests(zk_root: pathlib.Path, tmp_root: pathlib.Path, digest
     rows.append(_expect_bundle("bundle_valid_gpu_cora", gpu_cora, True, digest_file, digest_json, read_json))
 
     rows.append(_tamper_case("metadata_tamper", cpu_cora, tmp_root, "metadata.json", lambda data: _set_path(data, ["dim_cfg", "N"], int(data["dim_cfg"]["N"]) + 1), digest_file, digest_json, read_json, write_json))
-    rows.append(_tamper_case("commitment_tamper", cpu_cora, tmp_root, "commitments.json", lambda data: _set_path(data, ["items", "com_base", "row_commitments", 0], "00"), digest_file, digest_json, read_json, write_json))
+    rows.append(_tamper_case("commitment_tamper", cpu_cora, tmp_root, "commitments.json", lambda data: _set_path(data, ["items", "com_base", "chunks", 0, "row_commitments", 0], "0"), digest_file, digest_json, read_json, write_json))
     rows.append(_tamper_case("transcript_challenge_tamper", cpu_cora, tmp_root, "transcript.json", lambda data: _set_path(data, ["log", 0, "challenge_u64"], int(data["log"][0]["challenge_u64"]) + 1), digest_file, digest_json, read_json, write_json))
-    rows.append(_tamper_case("lookup_proof_tamper", cpu_cora, tmp_root, "lookup_proof.json", lambda data: _set_path(data, ["families", 0, "status"], "VERIFY_FAILED"), digest_file, digest_json, read_json, write_json))
+    rows.append(_tamper_case("lookup_proof_tamper", cpu_cora, tmp_root, "lookup_proof.json", lambda data: _set_path(data, ["families", 0, "query_product"], str(int(data["families"][0]["query_product"]) + 1)), digest_file, digest_json, read_json, write_json))
     rows.append(_tamper_case("matrix_sumcheck_proof_tamper", cpu_cora, tmp_root, "matrix_sumcheck_proof.json", lambda data: _set_path(data, ["claims", 0, "sumcheck", "rounds", 0, "coefficients", 0], str(int(data["claims"][0]["sumcheck"]["rounds"][0]["coefficients"][0]) + 1)), digest_file, digest_json, read_json, write_json))
-    rows.append(_tamper_case("gkr_proof_tamper", cpu_cora, tmp_root, "gkr_proof.json", lambda data: _set_path(data, ["claims", 0, "status"], "VERIFY_FAILED"), digest_file, digest_json, read_json, write_json))
-    rows.append(_tamper_case("masked_opening_tamper", cpu_cora, tmp_root, "masked_openings.json", lambda data: _set_path(data, ["items", "com_base", "masked_evaluation"], "00"), digest_file, digest_json, read_json, write_json))
+    rows.append(_tamper_case("gkr_proof_tamper", cpu_cora, tmp_root, "gkr_proof.json", lambda data: _set_path(data, ["claims", 0, "rounds", 0, "coefficients", 0], "1"), digest_file, digest_json, read_json, write_json))
+    rows.append(_tamper_case("masked_opening_tamper", cpu_cora, tmp_root, "masked_openings.json", lambda data: _set_path(data, ["items", "com_base", 0, "masked_evaluation"], "0"), digest_file, digest_json, read_json, write_json))
     rows.append(_tamper_case("output_claim_tamper", cpu_cora, tmp_root, "proof_payload.json", lambda data: _set_path(data, ["Y_digest"], "00"), digest_file, digest_json, read_json, write_json))
     rows.append(_tamper_case("ppi_graph_boundary_tamper", cpu_ppi, tmp_root, "run_manifest.json", lambda data: _set_path(data, ["node_ptr", 1], int(data["node_ptr"][1]) + 1), digest_file, digest_json, read_json, write_json))
     rows.append(_tamper_case("gpu_backend_state_tamper", gpu_cora, tmp_root, "gpu_proof_hot_path.json", lambda data: _set_path(data, ["proof_hot_path"], False), digest_file, digest_json, read_json, write_json))
+    rows.append(_tamper_case("witness_segment_chunk_tamper", cpu_cora, tmp_root, "commitments.json", lambda data: _set_path(data, ["items", "com_qry", "chunks", 0, "vector_length"], int(data["items"]["com_qry"]["chunks"][0]["vector_length"]) - 1), digest_file, digest_json, read_json, write_json))
+    rows.append(_tamper_case("hyrax_opening_proof_tamper", cpu_cora, tmp_root, "hyrax_mle_openings.json", lambda data: _set_path(data, ["items", "com_base", "chunks", 0, "proof", "opening", "t_prime"], "0"), digest_file, digest_json, read_json, write_json))
     return rows
 
 
@@ -135,18 +137,23 @@ def _verify_bundle(path: pathlib.Path, digest_file, digest_json, read_json) -> b
             proof["transcript_digest"] == digest_json(transcript),
             proof["Y_digest"] == witness["output_digest"],
             proof["Com_in"] == [commitments["items"][name] for name in commitments["order"]],
+            proof["Pi_Lasso"] == lookup,
+            proof["Pi_MatMul"] == matrix,
+            proof["Pi_GKR"] == gkr,
+            proof["Open_in"] == hyrax,
+            proof["OpenMasked"] == masked,
             verification["status"] == "VERIFY_OK" and all(bool(value) for value in verification["checks"].values()),
             lookup["status"] == "VERIFY_OK",
             matrix["status"] == "VERIFY_OK",
             all(claim["sumcheck_verify"]["status"] == "VERIFY_OK" for claim in matrix["claims"]),
             gkr["status"] == "VERIFY_OK",
-            all(item["verify"]["status"] == "VERIFY_OK" for item in hyrax["items"].values()),
+            all(chunk["verify"]["status"] == "VERIFY_OK" for item in hyrax["items"].values() for chunk in item["chunks"]),
             set(masked["items"]) == set(commitments["order"]),
             manifest["node_ptr"] == metadata["dim_cfg"]["node_ptr"],
             manifest["edge_ptr"] == metadata["dim_cfg"]["edge_ptr"],
         ]
         for key in ["Pi_Lasso", "Pi_MatMul", "Pi_GKR", "Open_in", "OpenMasked"]:
-            ref = proof["component_artifacts"][key] if key == "OpenMasked" else proof[key]
+            ref = proof["component_artifacts"][key]
             checks.append(digest_file(path / pathlib.Path(ref["path"]).name) == ref["sha256"])
         if manifest["backend"] == "gpu":
             gpu = read_json(path / "gpu_proof_hot_path.json")

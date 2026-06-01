@@ -12,5 +12,3193 @@
     "transcript_replay": true
   },
   "status": "VERIFY_OK",
-  "verifier": "zkgpt_gat.formal_verifier.recompute_and_native_hyrax"
+  "subproof_verification": {
+    "gkr": {
+      "claims": [
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        },
+        {
+          "coverage_ok": true,
+          "rounds_ok": true,
+          "status": "VERIFY_OK",
+          "zero_ok": true
+        }
+      ],
+      "status": "VERIFY_OK"
+    },
+    "hyrax": [
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk0",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk1",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk2",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk3",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk4",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk5",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk6",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk7",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk8",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk9",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk10",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk11",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk12",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk13",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk14",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk15",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk16",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk17",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk18",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk19",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk20",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk21",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk22",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk23",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk24",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk25",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk26",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk27",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk28",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk29",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk30",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk31",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk32",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk33",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk34",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk35",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk36",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk37",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk38",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk39",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk40",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk41",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk42",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk43",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk44",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk45",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_T_H.chunk46",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_W.chunk0",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk0",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk1",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk2",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk3",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk4",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk5",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk6",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk7",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk8",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk9",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk10",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk11",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk12",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk13",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk14",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk15",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk16",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk17",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk18",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk19",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk20",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk21",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk22",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk23",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk24",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk25",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk26",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk27",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk28",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk29",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk30",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk31",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk32",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk33",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk34",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk35",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk36",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk37",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk38",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk39",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk40",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk41",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk42",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk43",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk44",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk45",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk46",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk47",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk48",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk49",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk50",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk51",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk52",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk53",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk54",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk55",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk56",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk57",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk58",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk59",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk60",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk61",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk62",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk63",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk64",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk65",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk66",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk67",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk68",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk69",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk70",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk71",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk72",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk73",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk74",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk75",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk76",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk77",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk78",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk79",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk80",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk81",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk82",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk83",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk84",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk85",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk86",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk87",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk88",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk89",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk90",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk91",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk92",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk93",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk94",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk95",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk96",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk97",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk98",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk99",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_base.chunk100",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_comp.chunk0",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_psq.chunk0",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_qry.chunk0",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_qry.chunk1",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_qry.chunk2",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      },
+      {
+        "backend": "bn254-field-hyrax-mle-openmasked-v2",
+        "evaluation_ok": true,
+        "label": "com_qry.chunk3",
+        "opening_commitment_ok": true,
+        "row_commitment_fold_ok": true,
+        "status": "VERIFY_OK"
+      }
+    ],
+    "lasso": {
+      "families": [
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "checks": {
+            "grand_product_equal": true,
+            "mismatch_count_zero": true,
+            "query_chunks_cover_queries": true,
+            "range_bounds": true,
+            "table_chunks_cover_queries": true
+          },
+          "status": "VERIFY_OK"
+        }
+      ],
+      "status": "VERIFY_OK"
+    },
+    "matrix": {
+      "claims": [
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        },
+        {
+          "rescale_advice_present": true,
+          "status": "VERIFY_OK",
+          "sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          }
+        }
+      ],
+      "status": "VERIFY_OK"
+    }
+  },
+  "verifier": "zkgpt_gat.formal_verifier.payload_messages_only"
 }
