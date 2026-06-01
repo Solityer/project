@@ -653,7 +653,7 @@
   "proof_size_definition": "canonical serialized proof_payload.json including commitments, lookup proof, matrix sumcheck proof, GKR proof, combine proof, and masked openings; excludes raw witness arrays, datasets, checkpoints, logs, and audit metadata",
   "protocol_id": "gat-zkgpt-v1",
   "public_input_layout": "public graph, public features, public metadata, public logits",
-  "run_digest": "62fd62352b5b6f2c4c1d8793a78115e63e61ff342b69f3a6b86730e7d0d06382",
+  "run_digest": "87d44db59838797d23d94e73424737c2a472e5270fd3c8cc2fc5aef227d6c6f2",
   "run_status": "VERIFY_OK_FULL_GAT_ZKGPT",
   "same_checkpoint": true,
   "same_edge_sort_rule": true,

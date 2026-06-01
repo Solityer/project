@@ -11,9 +11,9 @@ public metadata, transcript order, proof object layout, and verifier acceptance 
   - `data.py`: cached dataset loading, full-graph normalization, self-loop insertion, edge sorting, `node_ptr`/`edge_ptr`.
   - `model.py`: checkpoint bundle reader and multi-layer/multi-head GAT parameter adapter.
   - `forward.py`: sparse full-graph GAT witness generation.
-  - `proof.py`: official GAT-ZKML-zkGPT proof assembly, full witness segment chunking, Hyrax/MLE masked openings, Lasso lookup proofs, matrix sumcheck proofs, GKR transcripts, combine payload, and independent verifier checks.
+  - `proof.py`: official GAT-ZKML-zkGPT proof assembly, full witness segment chunking, Hyrax/MLE masked openings, fixed-table Lasso lookup proofs, strict matrix sumcheck proofs, ML-friendly GKR layered relation transcripts, combine payload, and independent verifier checks.
   - `field.py` / `native_hyrax.py`: BN254 field encoding and Hyrax-style row/column MLE OpenMasked backend.
-  - `backend.py`: CPU/GPU backend selection; GPU runs execute the CUDA proof-claim reduction path.
+  - `backend.py`: CPU/GPU backend selection; GPU runs execute the CUDA proof hot-path binding over proof-claim field words.
 - `backend/cuda/`: local CUDA proof reduction kernel used by GPU proof runs.
 - `backend/native/`: native mcl BN254 Hyrax/MLE commitment and opening backend.
 - `scripts/`: build and experiment entrypoints.
@@ -56,6 +56,7 @@ Each dataset/backend directory contains:
 - `metadata.json`
 - `commitments.json`
 - `transcript.json` / `challenges.json`
+- `fixed_lookup_tables.json`
 - `lookup_proof.json`
 - `matrix_sumcheck_proof.json`
 - `gkr_proof.json`
@@ -70,7 +71,8 @@ Each dataset/backend directory contains:
 
 `proof_size_bytes` is `len(canonical_json(proof_payload))`. Audit metadata and witness
 materialization records are not counted. The payload includes the verifier-facing
-proof messages, not just artifact references.
+proof messages, fixed lookup table commitments, and GPU proof contribution for
+GPU runs, not just artifact references.
 
 Run negative tests with:
 

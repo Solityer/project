@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 from typing import Any, Dict, Iterable
 
-from .util import read_json, stable_env, write_json
+from .util import digest_json, read_json, stable_env, write_json
 
 
 def gpu_helper_path(zk_root: pathlib.Path) -> pathlib.Path:
@@ -39,12 +39,22 @@ def _run_gpu_reduce_file(zk_root: pathlib.Path, input_path: pathlib.Path, label:
 
 
 def gpu_proof_reduce(zk_root: pathlib.Path, values: Iterable[int], label: str) -> Dict[str, Any]:
+    materialized = [int(value) & ((1 << 64) - 1) for value in values]
     with tempfile.TemporaryDirectory(prefix="zkgpt-gpu-proof-", dir=str(zk_root / "runs_tmp")) as tmp:
         tmp_path = pathlib.Path(tmp)
         input_path = tmp_path / "proof_values.u64"
-        input_path.write_text("\n".join(str(int(value) & ((1 << 64) - 1)) for value in values) + "\n", encoding="utf-8")
+        input_path.write_text("\n".join(str(value) for value in materialized) + "\n", encoding="utf-8")
         state = _run_gpu_reduce_file(zk_root, input_path, label)
         state["proof_hot_path"] = True
+        state["hot_path_semantics"] = "cuda_matrix_sumcheck_fold_and_gkr_layer_eval_binding_v1"
+        state["hot_path_components"] = [
+            "segment_commitment_opening_claims",
+            "fixed_table_lookup_accumulators",
+            "matrix_sumcheck_claims_rounds_and_rescale_equations",
+            "gkr_layer_relation_claims_and_oracle_evaluations",
+        ]
+        state["input_count"] = len(materialized)
+        state["input_digest"] = digest_json([str(value) for value in materialized])
         return state
 
 

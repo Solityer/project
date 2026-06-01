@@ -1,12 +1,12 @@
 {
   "artifact_path": "/home/pzh/project/comparison/baselines/zkGPT/results/cpu/ogbn-arxiv",
   "backend": "cpu",
-  "commitment_time_ms": 274550.6039650063,
+  "commitment_time_ms": 276705.2780469967,
   "dataset": "ogbn-arxiv",
-  "forward_time_ms": 923.6211339593865,
-  "proof_size_bytes": 85050636,
-  "prove_time_ms": 325745.56071398547,
+  "forward_time_ms": 930.4530680019525,
+  "proof_size_bytes": 86441399,
+  "prove_time_ms": 530717.3878469984,
   "status": "VERIFY_OK",
-  "verify_time_ms": 1314.0605649678037,
-  "wall_time_ms": 329769.6447229828
+  "verify_time_ms": 1313.2261600039783,
+  "wall_time_ms": 534649.4843330001
 }

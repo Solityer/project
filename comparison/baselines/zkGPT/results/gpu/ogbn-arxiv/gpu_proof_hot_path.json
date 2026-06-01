@@ -5,11 +5,20 @@
   "device_count": 1,
   "device_name": "NVIDIA GB10",
   "gpu_runtime_present": true,
-  "helper_stdout": "cuda_proof_reduce_ok device=\"NVIDIA GB10\" items=16814 mix=859992098142c33f",
-  "items_processed": 16814,
+  "helper_stdout": "cuda_proof_reduce_ok device=\"NVIDIA GB10\" items=29947 mix=8dbd58f391ca7e0d",
+  "hot_path_components": [
+    "segment_commitment_opening_claims",
+    "fixed_table_lookup_accumulators",
+    "matrix_sumcheck_claims_rounds_and_rescale_equations",
+    "gkr_layer_relation_claims_and_oracle_evaluations"
+  ],
+  "hot_path_semantics": "cuda_matrix_sumcheck_fold_and_gkr_layer_eval_binding_v1",
+  "input_count": 29947,
+  "input_digest": "2f0ade8e26a698a9d82624bc7210eee5fe1ecbfc2d79e6b3c58939f663576e9f",
+  "items_processed": 29947,
   "label": "ogbn-arxiv:gpu:proof",
-  "mix64_hex": "859992098142c33f",
+  "mix64_hex": "8dbd58f391ca7e0d",
   "proof_hot_path": true,
-  "sum64_hex": "cb8ce34c08292fe6",
-  "xor64_hex": "e80d1ca811e6f274"
+  "sum64_hex": "5525cdcc03100206",
+  "xor64_hex": "d49fb9d7c9ddf021"
 }

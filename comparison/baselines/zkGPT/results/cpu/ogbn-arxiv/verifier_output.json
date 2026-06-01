@@ -17,105 +17,6453 @@
       "claims": [
         {
           "coverage_ok": true,
-          "rounds_ok": true,
-          "status": "VERIFY_OK",
-          "zero_ok": true
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
         },
         {
           "coverage_ok": true,
-          "rounds_ok": true,
-          "status": "VERIFY_OK",
-          "zero_ok": true
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
         },
         {
           "coverage_ok": true,
-          "rounds_ok": true,
-          "status": "VERIFY_OK",
-          "zero_ok": true
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
         },
         {
           "coverage_ok": true,
-          "rounds_ok": true,
-          "status": "VERIFY_OK",
-          "zero_ok": true
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
         },
         {
           "coverage_ok": true,
-          "rounds_ok": true,
-          "status": "VERIFY_OK",
-          "zero_ok": true
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
         },
         {
           "coverage_ok": true,
-          "rounds_ok": true,
-          "status": "VERIFY_OK",
-          "zero_ok": true
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
         },
         {
           "coverage_ok": true,
-          "rounds_ok": true,
-          "status": "VERIFY_OK",
-          "zero_ok": true
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
         },
         {
           "coverage_ok": true,
-          "rounds_ok": true,
-          "status": "VERIFY_OK",
-          "zero_ok": true
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
         },
         {
           "coverage_ok": true,
-          "rounds_ok": true,
-          "status": "VERIFY_OK",
-          "zero_ok": true
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
         },
         {
           "coverage_ok": true,
-          "rounds_ok": true,
-          "status": "VERIFY_OK",
-          "zero_ok": true
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
         },
         {
           "coverage_ok": true,
-          "rounds_ok": true,
-          "status": "VERIFY_OK",
-          "zero_ok": true
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
         },
         {
           "coverage_ok": true,
-          "rounds_ok": true,
-          "status": "VERIFY_OK",
-          "zero_ok": true
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
         },
         {
           "coverage_ok": true,
-          "rounds_ok": true,
-          "status": "VERIFY_OK",
-          "zero_ok": true
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
         },
         {
           "coverage_ok": true,
-          "rounds_ok": true,
-          "status": "VERIFY_OK",
-          "zero_ok": true
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
         },
         {
           "coverage_ok": true,
-          "rounds_ok": true,
-          "status": "VERIFY_OK",
-          "zero_ok": true
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
         },
         {
           "coverage_ok": true,
-          "rounds_ok": true,
-          "status": "VERIFY_OK",
-          "zero_ok": true
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
         },
         {
           "coverage_ok": true,
-          "rounds_ok": true,
-          "status": "VERIFY_OK",
-          "zero_ok": true
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "coverage_ok": true,
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "coverage_ok": true,
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "coverage_ok": true,
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "coverage_ok": true,
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "coverage_ok": true,
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "coverage_ok": true,
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "coverage_ok": true,
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "coverage_ok": true,
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "coverage_ok": true,
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "coverage_ok": true,
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "coverage_ok": true,
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "coverage_ok": true,
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 21,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 22,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 21,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 22,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
+        },
+        {
+          "coverage_ok": true,
+          "final_oracle_claims": true,
+          "lhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 21,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 22,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "mismatch_count_zero": true,
+          "oracle_claim_equal": true,
+          "rhs_sumcheck": {
+            "checks": [
+              {
+                "challenge_ok": true,
+                "round": 0,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 1,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 2,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 3,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 4,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 5,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 6,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 7,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 8,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 9,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 10,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 11,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 12,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 13,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 14,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 15,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 16,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 17,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 18,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 19,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 20,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 21,
+                "transition_ok": true
+              },
+              {
+                "challenge_ok": true,
+                "round": 22,
+                "transition_ok": true
+              },
+              {
+                "final_ok": true
+              }
+            ],
+            "reason": "ok",
+            "status": "VERIFY_OK"
+          },
+          "status": "VERIFY_OK"
         }
       ],
       "status": "VERIFY_OK"
@@ -4214,8 +10562,13 @@
       "families": [
         {
           "checks": {
+            "beta_replay": true,
+            "eta_replay": true,
+            "fixed_table_descriptor": true,
             "grand_product_equal": true,
+            "lookup_quantization_window": true,
             "mismatch_count_zero": true,
+            "product_digest": true,
             "query_chunks_cover_queries": true,
             "range_bounds": true,
             "table_chunks_cover_queries": true
@@ -4224,8 +10577,13 @@
         },
         {
           "checks": {
+            "beta_replay": true,
+            "eta_replay": true,
+            "fixed_table_descriptor": true,
             "grand_product_equal": true,
+            "lookup_quantization_window": true,
             "mismatch_count_zero": true,
+            "product_digest": true,
             "query_chunks_cover_queries": true,
             "range_bounds": true,
             "table_chunks_cover_queries": true
@@ -4234,8 +10592,13 @@
         },
         {
           "checks": {
+            "beta_replay": true,
+            "eta_replay": true,
+            "fixed_table_descriptor": true,
             "grand_product_equal": true,
+            "lookup_quantization_window": true,
             "mismatch_count_zero": true,
+            "product_digest": true,
             "query_chunks_cover_queries": true,
             "range_bounds": true,
             "table_chunks_cover_queries": true
@@ -4244,8 +10607,13 @@
         },
         {
           "checks": {
+            "beta_replay": true,
+            "eta_replay": true,
+            "fixed_table_descriptor": true,
             "grand_product_equal": true,
+            "lookup_quantization_window": true,
             "mismatch_count_zero": true,
+            "product_digest": true,
             "query_chunks_cover_queries": true,
             "range_bounds": true,
             "table_chunks_cover_queries": true
@@ -4254,8 +10622,13 @@
         },
         {
           "checks": {
+            "beta_replay": true,
+            "eta_replay": true,
+            "fixed_table_descriptor": true,
             "grand_product_equal": true,
+            "lookup_quantization_window": true,
             "mismatch_count_zero": true,
+            "product_digest": true,
             "query_chunks_cover_queries": true,
             "range_bounds": true,
             "table_chunks_cover_queries": true
@@ -4264,8 +10637,13 @@
         },
         {
           "checks": {
+            "beta_replay": true,
+            "eta_replay": true,
+            "fixed_table_descriptor": true,
             "grand_product_equal": true,
+            "lookup_quantization_window": true,
             "mismatch_count_zero": true,
+            "product_digest": true,
             "query_chunks_cover_queries": true,
             "range_bounds": true,
             "table_chunks_cover_queries": true
@@ -4274,8 +10652,13 @@
         },
         {
           "checks": {
+            "beta_replay": true,
+            "eta_replay": true,
+            "fixed_table_descriptor": true,
             "grand_product_equal": true,
+            "lookup_quantization_window": true,
             "mismatch_count_zero": true,
+            "product_digest": true,
             "query_chunks_cover_queries": true,
             "range_bounds": true,
             "table_chunks_cover_queries": true
@@ -4284,8 +10667,13 @@
         },
         {
           "checks": {
+            "beta_replay": true,
+            "eta_replay": true,
+            "fixed_table_descriptor": true,
             "grand_product_equal": true,
+            "lookup_quantization_window": true,
             "mismatch_count_zero": true,
+            "product_digest": true,
             "query_chunks_cover_queries": true,
             "range_bounds": true,
             "table_chunks_cover_queries": true
@@ -4293,11 +10681,14 @@
           "status": "VERIFY_OK"
         }
       ],
+      "fixed_table_registry": true,
       "status": "VERIFY_OK"
     },
     "matrix": {
       "claims": [
         {
+          "output_rescale_equation": true,
+          "rescale_advice_digest": true,
           "rescale_advice_present": true,
           "status": "VERIFY_OK",
           "sumcheck": {
@@ -4346,6 +10737,8 @@
           }
         },
         {
+          "output_rescale_equation": true,
+          "rescale_advice_digest": true,
           "rescale_advice_present": true,
           "status": "VERIFY_OK",
           "sumcheck": {
@@ -4374,6 +10767,8 @@
           }
         },
         {
+          "output_rescale_equation": true,
+          "rescale_advice_digest": true,
           "rescale_advice_present": true,
           "status": "VERIFY_OK",
           "sumcheck": {
@@ -4402,6 +10797,8 @@
           }
         },
         {
+          "output_rescale_equation": true,
+          "rescale_advice_digest": true,
           "rescale_advice_present": true,
           "status": "VERIFY_OK",
           "sumcheck": {
@@ -4430,6 +10827,8 @@
           }
         },
         {
+          "output_rescale_equation": true,
+          "rescale_advice_digest": true,
           "rescale_advice_present": true,
           "status": "VERIFY_OK",
           "sumcheck": {
@@ -4473,6 +10872,8 @@
           }
         },
         {
+          "output_rescale_equation": true,
+          "rescale_advice_digest": true,
           "rescale_advice_present": true,
           "status": "VERIFY_OK",
           "sumcheck": {
