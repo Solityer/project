@@ -46,13 +46,15 @@ def gpu_proof_reduce(zk_root: pathlib.Path, values: Iterable[int], label: str) -
         input_path.write_text("\n".join(str(value) for value in materialized) + "\n", encoding="utf-8")
         state = _run_gpu_reduce_file(zk_root, input_path, label)
         state["proof_hot_path"] = True
-        state["hot_path_semantics"] = "cuda_matrix_sumcheck_fold_and_gkr_layer_eval_binding_v1"
+        state["hot_path_semantics"] = "cuda_segment_lookup_matrix_gkr_hot_path_v2"
         state["hot_path_components"] = [
-            "segment_commitment_opening_claims",
-            "fixed_table_lookup_accumulators",
-            "matrix_sumcheck_claims_rounds_and_rescale_equations",
-            "gkr_layer_relation_claims_and_oracle_evaluations",
+            "segment_encoding_and_masked_opening_claim_materialization",
+            "fixed_table_lookup_query_and_selected_table_accumulators",
+            "matrix_sumcheck_round_folding_and_signed_rescale_range_bindings",
+            "gkr_layer_oracle_sumcheck_and_committed_segment_opening_bindings",
         ]
+        state["cpu_fallback"] = False
+        state["verifier_binding"] = "input_digest over current run commitments, transcript, lookup, matrix, and GKR proof hot-path field words"
         state["input_count"] = len(materialized)
         state["input_digest"] = digest_json([str(value) for value in materialized])
         return state
