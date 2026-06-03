@@ -9,3 +9,6 @@ CMakeFiles/
 CMakeCache.txt
 src/CMakeFiles/
 .vscode
+results/
+logs/
+*.log

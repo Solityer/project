@@ -19,6 +19,8 @@
 #include <thread>
 #include <unordered_map>
 
+#include <mcl/ntt.hpp>
+
 #include "gatzk/algebra/domain_evaluation.hpp"
 #include "gatzk/algebra/eval_backend.hpp"
 #include "gatzk/algebra/polynomial.hpp"
@@ -89,8 +91,7 @@ std::string hash_proof_transport(const Proof& proof) {
     auto append_commitments = [&](std::string_view label, const std::vector<std::pair<std::string, crypto::Commitment>>& commitments) {
         stream << '[' << label << "]\n";
         for (const auto& [name, commitment] : commitments) {
-            stream << name << '=' << commitment.point.to_string()
-                   << '|' << commitment.srs_evaluation_scalar.to_string() << '\n';
+            stream << name << '=' << commitment.point.to_string() << '\n';
         }
     };
     auto append_field_pairs = [&](std::string_view label, const std::vector<std::pair<std::string, FieldElement>>& values) {
@@ -143,7 +144,10 @@ std::string hash_proof_transport(const Proof& proof) {
     append_commitments("quotient_commitments", proof.quotient_commitments);
     stream << "[domain_openings]\n";
     for (const auto& [domain, bundle] : proof.domain_openings) {
-        stream << domain << "|witness=" << bundle.witness.to_string() << '\n';
+        stream << domain << "|proof_witnesses=" << bundle.proof.witnesses.size() << '\n';
+        for (const auto& witness : bundle.proof.witnesses) {
+            stream << "witness=" << witness.to_string() << '\n';
+        }
         for (const auto& point : bundle.points) {
             stream << "point=" << point.to_string() << '\n';
         }
@@ -168,7 +172,10 @@ std::string hash_proof_transport(const Proof& proof) {
     for (const auto kind : proof.witness_scalar_kinds) {
         stream << payload_kind_name(kind) << '\n';
     }
-    stream << "[external_witness]\n" << proof.external_witness.to_string() << '\n';
+    stream << "[external_proof]\n";
+    for (const auto& witness : proof.external_proof.witnesses) {
+        stream << "witness=" << witness.to_string() << '\n';
+    }
     stream << "[challenges]\n";
     for (const auto& [name, challenge] : proof.challenges) {
         stream << name << '=' << challenge.to_string() << '\n';
@@ -195,25 +202,11 @@ void add_public_poly(
     context.public_commitments[name] = crypto::KZG::commit(name, polynomial, context.kzg);
 }
 
-void add_public_precomputed_commitment(
-    ProtocolContext& context,
-    const std::string& name,
-    const FieldElement& srs_evaluation_scalar) {
-    context.public_commitments[name] = crypto::KZG::commit_precomputed(name, srs_evaluation_scalar, context.kzg);
-}
-
 void add_static_commitment(
     ProtocolContext& context,
     const std::string& name,
     const Polynomial& polynomial) {
     context.static_commitments[name] = crypto::KZG::commit(name, polynomial, context.kzg);
-}
-
-void add_static_precomputed_commitment(
-    ProtocolContext& context,
-    const std::string& name,
-    const FieldElement& srs_evaluation_scalar) {
-    context.static_commitments[name] = crypto::KZG::commit_precomputed(name, srs_evaluation_scalar, context.kzg);
 }
 
 std::vector<FieldElement> padded(const std::vector<FieldElement>& values, std::size_t size) {
@@ -981,13 +974,12 @@ std::string quotient_build_cache_key(const ProtocolContext& context, const Trace
         if (it == trace.commitments.end()) {
             continue;
         }
-        stream << '|' << label << '=' << it->second.srs_evaluation_scalar.to_string();
+        stream << '|' << label << '=' << it->second.point.to_string();
     }
     return stream.str();
 }
 
 struct CachedQuotientArtifacts {
-    std::vector<std::pair<std::string, FieldElement>> named_quotient_values;
     std::unordered_map<std::string, Commitment> quotient_commitments;
 };
 
@@ -2350,31 +2342,426 @@ class EvaluationMemoization {
     std::unordered_map<std::string, FieldElement> value_cache_;
 };
 
-std::unordered_map<std::string, Commitment> batch_quotient_commitments(
-    const std::vector<std::pair<std::string, FieldElement>>& named_quotient_values,
-    const crypto::KZGKeyPair& key) {
-    std::unordered_map<std::string, Commitment> out;
-    out.reserve(named_quotient_values.size());
-    if (named_quotient_values.empty()) {
+std::shared_ptr<const mcl::Ntt<mcl::Fr>> ntt_plan(std::size_t size) {
+    static std::mutex mutex;
+    static std::unordered_map<std::size_t, std::shared_ptr<const mcl::Ntt<mcl::Fr>>> cache;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (const auto it = cache.find(size); it != cache.end()) {
+            return it->second;
+        }
+    }
+
+    auto plan = std::make_shared<mcl::Ntt<mcl::Fr>>();
+    const mcl::Fr generator = 5;
+    const mcl::Vint root_exponent = (mcl::Fr::getOp().mp - 1) >> 32;
+    mcl::Fr::pow(plan->root_, generator, root_exponent);
+    if (!plan->init(size)) {
+        throw std::runtime_error("failed to initialize NTT plan for size " + std::to_string(size));
+    }
+    if (!(FieldElement::from_native(plan->getW()) == FieldElement::root_of_unity(size))) {
+        throw std::runtime_error("NTT root does not match protocol domain root for size " + std::to_string(size));
+    }
+    std::lock_guard<std::mutex> lock(mutex);
+    const auto [it, inserted] = cache.emplace(size, plan);
+    (void)inserted;
+    return it->second;
+}
+
+std::vector<FieldElement> native_to_field_vector(const std::vector<mcl::Fr>& values) {
+    std::vector<FieldElement> out(values.size(), FieldElement::zero());
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        out[i] = FieldElement::from_native(values[i]);
+    }
+    return out;
+}
+
+void trim_native_coefficients(std::vector<mcl::Fr>* coefficients) {
+    while (coefficients->size() > 1 && coefficients->back().isZero()) {
+        coefficients->pop_back();
+    }
+}
+
+void trim_field_coefficients(std::vector<FieldElement>* coefficients) {
+    while (coefficients->size() > 1 && coefficients->back() == FieldElement::zero()) {
+        coefficients->pop_back();
+    }
+}
+
+std::vector<FieldElement> load_spilled_values(const TraceArtifacts::SpilledEvaluationPolynomial& spilled) {
+    constexpr std::size_t kFieldBytes = 32;
+    std::ifstream stream(spilled.path, std::ios::binary);
+    if (!stream) {
+        throw std::runtime_error("failed to open spilled quotient dependency: " + spilled.path);
+    }
+    std::array<std::uint8_t, kFieldBytes> bytes{};
+    std::vector<FieldElement> values(spilled.size, FieldElement::zero());
+    for (std::size_t i = 0; i < spilled.size; ++i) {
+        stream.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        if (!stream) {
+            throw std::runtime_error("failed to read spilled quotient dependency: " + spilled.path);
+        }
+        values[i] = FieldElement::from_little_endian_mod(bytes.data(), bytes.size());
+    }
+    return values;
+}
+
+std::shared_ptr<algebra::RootOfUnityDomain> context_domain_by_name(
+    const ProtocolContext& context,
+    const std::string& name) {
+    if (name == "FH") return context.domains.fh;
+    if (name == "edge") return context.domains.edge;
+    if (name == "in") return context.domains.in;
+    if (name == "d" || name == "d_h") return context.domains.d;
+    if (name == "cat") return context.domains.cat;
+    if (name == "C") return context.domains.c;
+    if (name == "N") return context.domains.n;
+    throw std::runtime_error("unknown quotient materialization domain: " + name);
+}
+
+std::shared_ptr<algebra::RootOfUnityDomain> quotient_domain(
+    const ProtocolContext& context,
+    const std::string& label) {
+    if (label == "t_FH") return context.domains.fh;
+    if (label == "t_edge") return context.domains.edge;
+    if (label == "t_in") return context.domains.in;
+    if (label == "t_d" || label == "t_d_h") return context.domains.d;
+    if (label == "t_cat") return context.domains.cat;
+    if (label == "t_C") return context.domains.c;
+    if (label == "t_N") return context.domains.n;
+    throw std::runtime_error("unknown quotient label: " + label);
+}
+
+FieldElement quotient_coset_shift(const algebra::RootOfUnityDomain& domain) {
+    auto shift = FieldElement(7);
+    const auto one = FieldElement::one();
+    const auto minus_one = -one;
+    for (std::size_t attempt = 0; attempt < 64; ++attempt) {
+        const auto shifted_domain_power = shift.pow(domain.size);
+        if (shifted_domain_power != one && shifted_domain_power != minus_one) {
+            return shift;
+        }
+        shift += one;
+    }
+    throw std::runtime_error("failed to find non-overlapping quotient coset");
+}
+
+std::vector<mcl::Fr> coefficients_native_from_polynomial(const algebra::Polynomial& polynomial) {
+    if (polynomial.basis == algebra::PolynomialBasis::Coefficient) {
+        std::vector<mcl::Fr> out(polynomial.size());
+        const auto& values = polynomial.values();
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            out[i] = values[i].native();
+        }
+        if (out.empty()) {
+            out.push_back(mcl::Fr(0));
+        }
+        trim_native_coefficients(&out);
         return out;
     }
 
-    std::vector<FieldElement> quotient_values;
-    quotient_values.reserve(named_quotient_values.size());
-    for (const auto& [name, quotient_value] : named_quotient_values) {
-        (void)name;
-        quotient_values.push_back(quotient_value);
+    if (polynomial.domain == nullptr) {
+        throw std::runtime_error("evaluation polynomial is missing its domain: " + polynomial.name);
+    }
+    std::vector<mcl::Fr> work(polynomial.domain->size);
+    for (auto& value : work) {
+        value.clear();
+    }
+    const auto& values = polynomial.values();
+    if (values.size() > work.size()) {
+        throw std::runtime_error("evaluation polynomial exceeds domain while materializing quotient: " + polynomial.name);
+    }
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        work[i] = values[i].native();
+    }
+    ntt_plan(work.size())->intt(work.data());
+    trim_native_coefficients(&work);
+    return work;
+}
+
+std::vector<FieldElement> coset_evaluate_coefficients(
+    const std::vector<mcl::Fr>& coefficients,
+    std::size_t target_size,
+    const FieldElement& shift,
+    const std::string& label) {
+    if (coefficients.size() > target_size) {
+        throw std::runtime_error("polynomial degree exceeds quotient coset size: " + label);
+    }
+    std::vector<mcl::Fr> work(target_size);
+    for (auto& value : work) {
+        value.clear();
+    }
+    mcl::Fr shift_power;
+    shift_power = 1;
+    const auto shift_native = shift.native();
+    for (std::size_t i = 0; i < coefficients.size(); ++i) {
+        mcl::Fr::mul(work[i], coefficients[i], shift_power);
+        mcl::Fr::mul(shift_power, shift_power, shift_native);
+    }
+    ntt_plan(target_size)->ntt(work.data());
+    return native_to_field_vector(work);
+}
+
+std::vector<FieldElement> coefficients_from_coset_evaluations(
+    const std::vector<FieldElement>& values,
+    const FieldElement& shift) {
+    std::vector<mcl::Fr> work(values.size());
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        work[i] = values[i].native();
+    }
+    ntt_plan(work.size())->intt(work.data());
+
+    const auto inv_shift = shift.inv();
+    const auto inv_shift_native = inv_shift.native();
+    mcl::Fr inv_shift_power;
+    inv_shift_power = 1;
+    std::vector<FieldElement> coefficients(work.size(), FieldElement::zero());
+    for (std::size_t i = 0; i < work.size(); ++i) {
+        mcl::Fr coeff;
+        mcl::Fr::mul(coeff, work[i], inv_shift_power);
+        coefficients[i] = FieldElement::from_native(coeff);
+        mcl::Fr::mul(inv_shift_power, inv_shift_power, inv_shift_native);
+    }
+    trim_field_coefficients(&coefficients);
+    return coefficients;
+}
+
+class QuotientPolynomialMaterializer {
+  public:
+    QuotientPolynomialMaterializer(
+        const ProtocolContext& context,
+        const TraceArtifacts& trace,
+        const std::map<std::string, FieldElement>& challenges,
+        std::string label)
+        : context_(context),
+          trace_(trace),
+          challenges_(challenges),
+          label_(std::move(label)),
+          domain_(quotient_domain(context_, label_)),
+          target_size_(domain_->size * 2),
+          rotation_step_(target_size_ / domain_->size),
+          shift_(quotient_coset_shift(*domain_)) {
+        if (domain_ == nullptr) {
+            throw std::runtime_error("quotient materialization is missing domain: " + label_);
+        }
+        if (rotation_step_ == 0 || target_size_ % domain_->size != 0) {
+            throw std::runtime_error("invalid quotient coset/domain size for " + label_);
+        }
     }
 
-    const auto points = crypto::g1_mul_same_base_batch(key.g1_generator, quotient_values);
-    for (std::size_t i = 0; i < named_quotient_values.size(); ++i) {
-        out.emplace(
-            named_quotient_values[i].first,
-            Commitment{
-                .name = named_quotient_values[i].first,
-                .point = points[i],
-                .srs_evaluation_scalar = quotient_values[i],
-            });
+    algebra::Polynomial materialize(const crypto::KZGKeyPair& key) {
+        if (target_size_ > key.pk.degree_bound + 1) {
+            throw std::runtime_error(
+                "SRS degree bound is too small for quotient polynomial " + label_
+                + ": need coefficients=" + std::to_string(target_size_)
+                + " but degree_bound+1=" + std::to_string(key.pk.degree_bound + 1));
+        }
+
+        const auto root = FieldElement::root_of_unity(target_size_);
+        auto evaluate_at_index = [&](std::size_t i, const FieldElement& z) {
+            const auto omega_z = z * domain_->omega;
+            const auto rotated_index = (i + rotation_step_) & (target_size_ - 1U);
+            const auto eval = [&](const std::string& name, const FieldElement& point) -> FieldElement {
+                if (point == z) {
+                    return coset_values(name)[i];
+                }
+                if (point == omega_z) {
+                    return coset_values(name)[rotated_index];
+                }
+                throw std::runtime_error("quotient materializer received unsupported evaluation point for " + name);
+            };
+
+            if (label_ == "t_FH") {
+                return evaluate_t_fh(context_, challenges_, eval, z);
+            } else if (label_ == "t_edge") {
+                return evaluate_t_edge(context_, challenges_, trace_.witness_scalars, eval, z);
+            } else if (label_ == "t_N") {
+                return evaluate_t_n(context_, challenges_, trace_.witness_scalars, eval, z);
+            } else if (label_ == "t_in") {
+                return evaluate_t_in(context_, challenges_, trace_.external_evaluations, eval, z);
+            } else if (label_ == "t_d" || label_ == "t_d_h") {
+                return evaluate_t_d(context_, challenges_, trace_.external_evaluations, eval, z);
+            } else if (label_ == "t_cat") {
+                return evaluate_t_cat(context_, challenges_, trace_.external_evaluations, eval, z);
+            } else if (label_ == "t_C") {
+                return evaluate_t_c(context_, challenges_, trace_.external_evaluations, eval, z);
+            } else {
+                throw std::runtime_error("unknown quotient label: " + label_);
+            }
+        };
+
+        std::vector<FieldElement> quotient_values(target_size_, FieldElement::zero());
+        // Warm the dependency cache before parallel point evaluation; after this the worker
+        // threads only read the cached coset vectors.
+        quotient_values[0] = evaluate_at_index(0, shift_);
+        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+        const bool run_parallel = cpu_count > 1 && target_size_ >= 4096;
+        if (run_parallel) {
+            const auto task_count = std::min<std::size_t>(
+                std::min<std::size_t>(cpu_count, 32),
+                std::max<std::size_t>(1, target_size_ / 32768));
+            const auto chunk_size = (target_size_ + task_count - 1) / task_count;
+            std::vector<std::future<void>> futures;
+            futures.reserve(task_count);
+            for (std::size_t task = 0; task < task_count; ++task) {
+                const auto begin = task * chunk_size;
+                const auto end = std::min(target_size_, begin + chunk_size);
+                if (begin >= end) {
+                    break;
+                }
+                futures.push_back(std::async(
+                    std::launch::async,
+                    [&, begin, end]() {
+                        auto z = shift_ * root.pow(static_cast<std::uint64_t>(begin));
+                        for (std::size_t i = begin; i < end; ++i) {
+                            quotient_values[i] = evaluate_at_index(i, z);
+                            z *= root;
+                        }
+                    }));
+            }
+            for (auto& future : futures) {
+                future.get();
+            }
+        } else {
+            auto z = shift_;
+            for (std::size_t i = 0; i < target_size_; ++i) {
+                quotient_values[i] = evaluate_at_index(i, z);
+                z *= root;
+            }
+        }
+
+        auto coefficients = coefficients_from_coset_evaluations(quotient_values, shift_);
+        if (coefficients.size() > key.pk.degree_bound + 1) {
+            throw std::runtime_error("materialized quotient exceeds SRS degree bound: " + label_);
+        }
+        return algebra::Polynomial::from_coefficients(label_, std::move(coefficients));
+    }
+
+  private:
+    const std::vector<FieldElement>& coset_values(const std::string& requested_name) {
+        return *coset_values_ptr(requested_name);
+    }
+
+    std::shared_ptr<const std::vector<FieldElement>> coset_values_ptr(const std::string& requested_name) {
+        if (const auto it = coset_cache_.find(requested_name); it != coset_cache_.end()) {
+            return it->second;
+        }
+
+        std::shared_ptr<const std::vector<FieldElement>> values;
+        if (full_graph_feature_identity_enabled(context_) && requested_name == "P_Q_qry_feat") {
+            values = coset_values_ptr("P_Q_tbl_feat");
+        } else if (full_graph_feature_identity_enabled(context_)
+                   && (requested_name == "P_Row_feat_qry" || requested_name == "P_I_feat_qry")) {
+            values = coset_values_ptr("P_Row_feat_tbl");
+        } else if (full_graph_feature_identity_enabled(context_) && requested_name == "P_Col_feat_qry") {
+            values = coset_values_ptr("P_Col_feat_tbl");
+        } else if (requested_name == "P_H" && lazy_full_feature_lookup_trace_enabled(context_)) {
+            values = coset_values_ptr("P_T_H");
+        } else if (lazy_full_feature_lookup_trace_enabled(context_)
+                   && is_lazy_full_feature_lookup_trace_label(requested_name)) {
+            values = materialize_lazy_feature_lookup_trace(requested_name);
+        } else if (const auto* polynomial = lookup_polynomial(requested_name); polynomial != nullptr) {
+            const auto coefficients = coefficients_native_from_polynomial(*polynomial);
+            values = std::make_shared<const std::vector<FieldElement>>(
+                coset_evaluate_coefficients(coefficients, target_size_, shift_, requested_name));
+        } else if (const auto it = trace_.spilled_polynomials.find(requested_name); it != trace_.spilled_polynomials.end()) {
+            auto polynomial = algebra::Polynomial::from_evaluations(
+                requested_name,
+                load_spilled_values(it->second),
+                context_domain_by_name(context_, it->second.domain_name));
+            const auto coefficients = coefficients_native_from_polynomial(polynomial);
+            values = std::make_shared<const std::vector<FieldElement>>(
+                coset_evaluate_coefficients(coefficients, target_size_, shift_, requested_name));
+        } else {
+            throw std::runtime_error("missing quotient dependency polynomial: " + requested_name);
+        }
+
+        coset_cache_.emplace(requested_name, values);
+        return values;
+    }
+
+    std::shared_ptr<const std::vector<FieldElement>> materialize_lazy_feature_lookup_trace(const std::string& name) {
+        if (name == "P_R_feat") {
+            return std::make_shared<const std::vector<FieldElement>>(target_size_, FieldElement::zero());
+        }
+        if (name == "P_m_feat") {
+            return full_graph_feature_identity_enabled(context_)
+                ? coset_values_ptr("P_Q_tbl_feat")
+                : coset_values_ptr("P_Q_qry_feat");
+        }
+        if (name == "P_Query_feat" && full_graph_feature_identity_enabled(context_)) {
+            return coset_values_ptr("P_Table_feat");
+        }
+
+        const auto eta_feat = challenges_.at("eta_feat");
+        const auto eta_feat_sq = eta_feat * eta_feat;
+        const auto& rows = coset_values(name == "P_Table_feat" ? "P_Row_feat_tbl" : "P_Row_feat_qry");
+        const auto& cols = coset_values(name == "P_Table_feat" ? "P_Col_feat_tbl" : "P_Col_feat_qry");
+        const auto& features = coset_values("P_T_H");
+        auto out = std::make_shared<std::vector<FieldElement>>(target_size_, FieldElement::zero());
+        for (std::size_t i = 0; i < target_size_; ++i) {
+            (*out)[i] = rows[i] + eta_feat * cols[i] + eta_feat_sq * features[i];
+        }
+        return out;
+    }
+
+    const algebra::Polynomial* lookup_polynomial(const std::string& name) const {
+        if (const auto it = trace_.polynomials.find(name); it != trace_.polynomials.end()) {
+            return &it->second;
+        }
+        if (const auto it = context_.public_polynomials.find(name); it != context_.public_polynomials.end()) {
+            return &it->second;
+        }
+        return nullptr;
+    }
+
+    const ProtocolContext& context_;
+    const TraceArtifacts& trace_;
+    const std::map<std::string, FieldElement>& challenges_;
+    std::string label_;
+    std::shared_ptr<algebra::RootOfUnityDomain> domain_;
+    std::size_t target_size_ = 0;
+    std::size_t rotation_step_ = 0;
+    FieldElement shift_;
+    std::unordered_map<std::string, std::shared_ptr<const std::vector<FieldElement>>> coset_cache_;
+};
+
+std::vector<std::pair<std::string, algebra::Polynomial>> materialize_quotient_polynomials(
+    const ProtocolContext& context,
+    const TraceArtifacts& trace,
+    const std::map<std::string, FieldElement>& challenges,
+    const std::vector<std::string>& labels,
+    RunMetrics* metrics) {
+    std::vector<std::pair<std::string, algebra::Polynomial>> out;
+    out.reserve(labels.size());
+    for (const auto& label : labels) {
+        const auto start = Clock::now();
+        QuotientPolynomialMaterializer materializer(context, trace, challenges, label);
+        out.push_back({label, materializer.materialize(context.kzg)});
+        if (auto* metric = quotient_metric(metrics, label); metric != nullptr) {
+            *metric += elapsed_ms(start, Clock::now());
+        }
+    }
+    return out;
+}
+
+std::unordered_map<std::string, Commitment> batch_quotient_commitments(
+    const std::vector<std::pair<std::string, algebra::Polynomial>>& named_quotient_polynomials,
+    const crypto::KZGKeyPair& key) {
+    std::unordered_map<std::string, Commitment> out;
+    out.reserve(named_quotient_polynomials.size());
+    if (named_quotient_polynomials.empty()) {
+        return out;
+    }
+
+    std::vector<std::pair<std::string, const algebra::Polynomial*>> inputs;
+    inputs.reserve(named_quotient_polynomials.size());
+    for (const auto& [name, polynomial] : named_quotient_polynomials) {
+        inputs.push_back({name, &polynomial});
+    }
+    const auto commitments = crypto::KZG::commit_batch(inputs, key);
+    for (const auto& commitment : commitments) {
+        out.emplace(commitment.name, commitment);
     }
     return out;
 }
@@ -2697,7 +3084,7 @@ DomainOpeningBundle make_bundle(
     }
     const auto witness_start = Clock::now();
     crypto::BatchOpeningProfile batch_profile;
-    bundle.witness =
+    bundle.proof =
         crypto::KZG::open_batch(commitments, points, values, challenges.at(folding_name), context.kzg, &batch_profile);
     if (witness_open_ms != nullptr) {
         *witness_open_ms += elapsed_ms(witness_start, Clock::now());
@@ -2833,10 +3220,13 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
     const bool large_whole_graph_gat =
         (config.dataset == "ogbn_arxiv" || config.dataset == "ogbn-arxiv")
         && config.batching_rule == "whole_graph_single";
+    constexpr std::size_t kDefaultActivationTableBound = 16384;
     const std::size_t range_size = std::max<std::size_t>(
         configured_range_size,
-        large_whole_graph_gat ? (1ULL << 19) : configured_range_size);
-    const std::size_t lrelu_bound = std::max<std::size_t>(large_whole_graph_gat ? (1ULL << 20) : 4096, range_size);
+        large_whole_graph_gat ? (1ULL << 19) : kDefaultActivationTableBound);
+    const std::size_t lrelu_bound = std::max<std::size_t>(
+        large_whole_graph_gat ? (1ULL << 20) : kDefaultActivationTableBound,
+        range_size);
     const std::size_t elu_bound = lrelu_bound;
     const std::size_t lrelu_table_size = lrelu_bound * 2 + 1;
     const std::size_t elu_table_size = (elu_bound * 2 + 1) * (2 * elu_table_band() + 1);
@@ -2936,34 +3326,49 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
         "P_Q_C_valid",
         make_eval_poly("P_Q_C_valid", build_selector(context.local.num_classes, c_size), context.domains.c));
     if (lazy_large_fh_public_enabled(context)) {
-        add_public_precomputed_commitment(
+        add_public_poly(
             context,
             "P_Q_tbl_feat",
-            evaluate_lazy_large_fh_public_poly(context, "P_Q_tbl_feat", context.kzg.srs_evaluation_point));
-        add_public_precomputed_commitment(
+            make_eval_poly("P_Q_tbl_feat", build_selector(context.dataset.num_nodes * context.dataset.num_features, fh_size), context.domains.fh));
+        add_public_poly(
             context,
             "P_Q_qry_feat",
-            evaluate_lazy_large_fh_public_poly(context, "P_Q_qry_feat", context.kzg.srs_evaluation_point));
-        add_public_precomputed_commitment(
+            make_eval_poly("P_Q_qry_feat", build_selector(context.local.num_nodes * context.local.num_features, fh_size), context.domains.fh));
+        add_public_poly(
             context,
             "P_Row_feat_tbl",
-            evaluate_lazy_large_fh_public_poly(context, "P_Row_feat_tbl", context.kzg.srs_evaluation_point));
-        add_public_precomputed_commitment(
+            make_eval_poly(
+                "P_Row_feat_tbl",
+                feature_table_row_indices(context.dataset.num_nodes, context.dataset.num_features, fh_size),
+                context.domains.fh));
+        add_public_poly(
             context,
             "P_Col_feat_tbl",
-            evaluate_lazy_large_fh_public_poly(context, "P_Col_feat_tbl", context.kzg.srs_evaluation_point));
-        add_public_precomputed_commitment(
+            make_eval_poly(
+                "P_Col_feat_tbl",
+                feature_table_col_indices(context.dataset.num_nodes, context.dataset.num_features, fh_size),
+                context.domains.fh));
+        add_public_poly(
             context,
             "P_Row_feat_qry",
-            evaluate_lazy_large_fh_public_poly(context, "P_Row_feat_qry", context.kzg.srs_evaluation_point));
-        add_public_precomputed_commitment(
+            make_eval_poly(
+                "P_Row_feat_qry",
+                feature_query_row_indices(context.local.num_nodes, context.local.num_features, fh_size),
+                context.domains.fh));
+        add_public_poly(
             context,
             "P_Col_feat_qry",
-            evaluate_lazy_large_fh_public_poly(context, "P_Col_feat_qry", context.kzg.srs_evaluation_point));
-        add_public_precomputed_commitment(
+            make_eval_poly(
+                "P_Col_feat_qry",
+                feature_query_col_indices(context.local.num_nodes, context.local.num_features, fh_size),
+                context.domains.fh));
+        add_public_poly(
             context,
             "P_I_feat_qry",
-            evaluate_lazy_large_fh_public_poly(context, "P_I_feat_qry", context.kzg.srs_evaluation_point));
+            make_eval_poly(
+                "P_I_feat_qry",
+                feature_query_absolute_ids(context.local.absolute_ids, context.local.num_features, fh_size),
+                context.domains.fh));
     } else {
         add_public_poly(
             context,
@@ -3053,18 +3458,17 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
     const auto& feature_matrix_for_h =
         !context.dataset.features.empty() ? context.dataset.features : context.local.features;
     if (lazy_large_fh_public_enabled(context)) {
-        const auto commitment_row_stride = context.kzg.srs_evaluation_point.pow(static_cast<std::uint64_t>(context.local.num_features));
-        add_static_precomputed_commitment(
+        add_static_commitment(
             context,
             "V_T_H",
-            matrix_row_major_evaluation_with_row_stride(
-                feature_matrix_for_h,
-                context.kzg.srs_evaluation_point,
-                commitment_row_stride));
-        add_public_precomputed_commitment(
+            make_coeff_poly("V_T_H", algebra::flatten_matrix_coefficients(feature_matrix_for_h)));
+        add_public_poly(
             context,
             "P_T_H",
-            evaluate_lazy_large_fh_public_poly(context, "P_T_H", context.kzg.srs_evaluation_point));
+            make_eval_poly(
+                "P_T_H",
+                padded(algebra::flatten_matrix_coefficients(feature_matrix_for_h), fh_size),
+                context.domains.fh));
     } else {
         add_static_commitment(
             context,
@@ -3214,153 +3618,30 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 });
         }
         auto proof_domain_weight_cache = shared_proof_domain_weight_cache();
-        struct QuotientEvalResult {
-            std::string label;
-            FieldElement value;
-            double elapsed_ms = 0.0;
-            RunMetrics local_metrics;
-        };
-        auto compute_quotient = [&](const std::string& label) -> QuotientEvalResult {
-            const auto local_start = Clock::now();
-            RunMetrics local_metrics;
-            EvaluationMemoization quotient_memo(
-                context,
-                trace,
-                pre_quotient_challenges,
-                backend_registry,
-                proof_domain_weight_cache,
-                &local_metrics);
-            const auto dependency_labels = quotient_dependency_labels(context, label);
-            const auto eval = [&](const std::string& name, const FieldElement& point) {
-                return quotient_memo.eval_named(name, point);
-            };
-            FieldElement value = FieldElement::zero();
-            if (label == "t_FH") {
-                if (!dependency_labels.empty()) {
-                    quotient_memo.precompute_named(
-                        dependency_labels,
-                        fh_dependency_points(context.domains.fh, {context.kzg.srs_evaluation_point}));
-                }
-                FHQuotientProfile fh_profile;
-                value = evaluate_t_fh(context, pre_quotient_challenges, eval, context.kzg.srs_evaluation_point, &fh_profile);
-                local_metrics.fh_quotient_assembly_ms += fh_profile.assembly_ms;
-            } else if (label == "t_edge") {
-                if (!dependency_labels.empty()) {
-                    quotient_memo.precompute_named(
-                        dependency_labels,
-                        fh_dependency_points(context.domains.edge, {context.kzg.srs_evaluation_point}));
-                }
-                value = evaluate_t_edge(context, pre_quotient_challenges, trace.witness_scalars, eval, context.kzg.srs_evaluation_point);
-            } else if (label == "t_in") {
-                if (!dependency_labels.empty()) {
-                    quotient_memo.precompute_named(
-                        dependency_labels,
-                        fh_dependency_points(context.domains.in, {context.kzg.srs_evaluation_point}));
-                }
-                value = evaluate_t_in(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.srs_evaluation_point);
-            } else if (label == "t_d_h") {
-                if (!dependency_labels.empty()) {
-                    quotient_memo.precompute_named(
-                        dependency_labels,
-                        fh_dependency_points(context.domains.d, {context.kzg.srs_evaluation_point}));
-                }
-                value = evaluate_t_d(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.srs_evaluation_point);
-            } else if (label == "t_cat") {
-                if (!dependency_labels.empty()) {
-                    quotient_memo.precompute_named(
-                        dependency_labels,
-                        fh_dependency_points(context.domains.cat, {context.kzg.srs_evaluation_point}));
-                }
-                value = evaluate_t_cat(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.srs_evaluation_point);
-            } else if (label == "t_C") {
-                if (!dependency_labels.empty()) {
-                    quotient_memo.precompute_named(
-                        dependency_labels,
-                        fh_dependency_points(context.domains.c, {context.kzg.srs_evaluation_point}));
-                }
-                value = evaluate_t_c(context, pre_quotient_challenges, trace.external_evaluations, eval, context.kzg.srs_evaluation_point);
-            } else if (label == "t_N") {
-                if (!dependency_labels.empty()) {
-                    quotient_memo.precompute_named(
-                        dependency_labels,
-                        fh_dependency_points(context.domains.n, {context.kzg.srs_evaluation_point}));
-                }
-                value = evaluate_t_n(context, pre_quotient_challenges, trace.witness_scalars, eval, context.kzg.srs_evaluation_point);
-            } else {
-                throw std::runtime_error("unknown multi-head quotient label: " + label);
-            }
-            return {label, value, elapsed_ms(local_start, Clock::now()), std::move(local_metrics)};
-        };
-
         const std::vector<std::string> quotient_labels = {"t_FH", "t_edge", "t_in", "t_d_h", "t_cat", "t_C", "t_N"};
-        std::vector<std::pair<std::string, FieldElement>> named_quotient_values;
         std::unordered_map<std::string, Commitment> quotient_commitments;
         CachedQuotientArtifacts cached_quotients;
         const bool quotient_cache_hit =
             shared_quotient_artifacts_cache().lookup(quotient_cache_key, &cached_quotients);
         if (quotient_cache_hit) {
-            named_quotient_values = cached_quotients.named_quotient_values;
             quotient_commitments = cached_quotients.quotient_commitments;
             append_note(metrics, "quotient_cache=hit");
         } else {
             append_note(metrics, "quotient_cache=miss");
-            std::vector<QuotientEvalResult> quotient_results;
-            quotient_results.reserve(quotient_labels.size());
-            if (std::thread::hardware_concurrency() > 1) {
-                // 先串行预热最重的两个域，避免多个大 barycentric 权重同时构造时争抢带宽。
-                if (route2.fft_backend_upgrade) {
-                    const auto fh_pts = fh_dependency_points(context.domains.fh, {context.kzg.srs_evaluation_point});
-                    for (const auto& pt : fh_pts) {
-                        proof_domain_weight_cache->get(context.domains.fh, pt);
-                    }
-                    const auto edge_pts = fh_dependency_points(context.domains.edge, {context.kzg.srs_evaluation_point});
-                    for (const auto& pt : edge_pts) {
-                        proof_domain_weight_cache->get(context.domains.edge, pt);
-                    }
-                }
-                std::vector<std::future<QuotientEvalResult>> futures;
-                futures.reserve(quotient_labels.size());
-                for (const auto& label : quotient_labels) {
-                    futures.push_back(std::async(std::launch::async, compute_quotient, label));
-                }
-                for (auto& future : futures) {
-                    quotient_results.push_back(future.get());
-                }
-            } else {
-                for (const auto& label : quotient_labels) {
-                    quotient_results.push_back(compute_quotient(label));
-                }
-            }
-            named_quotient_values.reserve(quotient_labels.size());
-            for (const auto& label : quotient_labels) {
-                const auto it = std::find_if(
-                    quotient_results.begin(),
-                    quotient_results.end(),
-                    [&](const QuotientEvalResult& result) { return result.label == label; });
-                if (it == quotient_results.end()) {
-                    throw std::runtime_error("missing multi-head quotient result for " + label);
-                }
-                named_quotient_values.push_back({it->label, it->value});
-                if (auto* metric = quotient_metric(metrics, it->label); metric != nullptr) {
-                    *metric += it->elapsed_ms;
-                }
-                if (metrics != nullptr && it->label == "t_FH") {
-                    metrics->fh_eval_prep_ms += it->local_metrics.fh_eval_prep_ms;
-                    metrics->fh_interpolation_ms += it->local_metrics.fh_interpolation_ms;
-                    metrics->fh_public_eval_reuse_ms += it->local_metrics.fh_public_eval_reuse_ms;
-                    metrics->fh_quotient_assembly_ms += it->local_metrics.fh_quotient_assembly_ms;
-                    metrics->quotient_public_eval_ms += it->local_metrics.fh_public_eval_reuse_ms;
-                }
-            }
+            const auto named_quotient_polynomials = materialize_quotient_polynomials(
+                context,
+                trace,
+                pre_quotient_challenges,
+                quotient_labels,
+                metrics);
             const auto quotient_pack_start = Clock::now();
-            quotient_commitments = batch_quotient_commitments(named_quotient_values, context.kzg);
+            quotient_commitments = batch_quotient_commitments(named_quotient_polynomials, context.kzg);
             if (metrics != nullptr) {
                 metrics->quotient_bundle_pack_ms += elapsed_ms(quotient_pack_start, Clock::now());
             }
             shared_quotient_artifacts_cache().store(
                 quotient_cache_key,
                 CachedQuotientArtifacts{
-                    .named_quotient_values = named_quotient_values,
                     .quotient_commitments = quotient_commitments,
                 });
         }
@@ -3523,7 +3804,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             external_commitments.push_back({trace.commitments.at(spec.label), value});
             external_points.push_back(challenges.at(spec.challenge_name));
         }
-        proof.external_witness = crypto::KZG::open_external_fold(
+        proof.external_proof = crypto::KZG::open_external_fold(
             external_commitments,
             external_points,
             challenges.at("rho_ext"),
@@ -3554,194 +3835,15 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             });
     }
     auto proof_domain_weight_cache = shared_proof_domain_weight_cache();
-    // quotient 恒等式本身没有变化；这里只把已经固定挑战后的独立域求值并行化。
     const bool run_parallel = std::thread::hardware_concurrency() > 1;
-    auto build_eval = [&](auto evaluator) {
-        return [&, evaluator]() {
-            EvaluationMemoization memo(
-                context,
-                trace,
-                challenges,
-                backend_registry,
-                proof_domain_weight_cache,
-                nullptr);
-            return evaluator(memo);
-        };
-    };
-
-    FieldElement t_fh_eval = FieldElement::zero();
-    FieldElement t_edge_eval = FieldElement::zero();
-    FieldElement t_n_eval = FieldElement::zero();
-    FieldElement t_in_eval = FieldElement::zero();
-    FieldElement t_d_eval = FieldElement::zero();
-
-    if (run_parallel) {
-        auto fh_future = std::async(
-            std::launch::async,
-            build_eval([&](EvaluationMemoization& memo) {
-                if (route2.fft_backend_upgrade) {
-                    memo.precompute_named(
-                        quotient_dependencies_fh(),
-                        {context.kzg.srs_evaluation_point, context.kzg.srs_evaluation_point * context.domains.fh->omega});
-                }
-                return evaluate_t_fh(
-                    context,
-                    challenges,
-                    [&](const std::string& name, const FieldElement& point) {
-                        return memo.eval_named(name, point);
-                    },
-                    context.kzg.srs_evaluation_point);
-            }));
-        auto edge_future = std::async(
-            std::launch::async,
-            build_eval([&](EvaluationMemoization& memo) {
-                if (route2.fft_backend_upgrade) {
-                    memo.precompute_named(
-                        quotient_dependencies_edge(),
-                        {context.kzg.srs_evaluation_point, context.kzg.srs_evaluation_point * context.domains.edge->omega});
-                }
-                return evaluate_t_edge(
-                    context,
-                    challenges,
-                    trace.witness_scalars,
-                    [&](const std::string& name, const FieldElement& point) {
-                        return memo.eval_named(name, point);
-                    },
-                    context.kzg.srs_evaluation_point);
-            }));
-        auto n_future = std::async(
-            std::launch::async,
-            build_eval([&](EvaluationMemoization& memo) {
-                if (route2.fft_backend_upgrade) {
-                    memo.precompute_named(quotient_dependencies_n(), {context.kzg.srs_evaluation_point});
-                }
-                return evaluate_t_n(
-                    context,
-                    challenges,
-                    trace.witness_scalars,
-                    [&](const std::string& name, const FieldElement& point) {
-                        return memo.eval_named(name, point);
-                    },
-                    context.kzg.srs_evaluation_point);
-            }));
-        auto in_future = std::async(
-            std::launch::async,
-            build_eval([&](EvaluationMemoization& memo) {
-                if (route2.fft_backend_upgrade) {
-                    memo.precompute_named(
-                        quotient_dependencies_in(),
-                        {context.kzg.srs_evaluation_point, context.kzg.srs_evaluation_point * context.domains.in->omega});
-                }
-                return evaluate_t_in(
-                    context,
-                    challenges,
-                    trace.external_evaluations,
-                    [&](const std::string& name, const FieldElement& point) {
-                        return memo.eval_named(name, point);
-                    },
-                    context.kzg.srs_evaluation_point);
-            }));
-        auto d_future = std::async(
-            std::launch::async,
-            build_eval([&](EvaluationMemoization& memo) {
-                if (route2.fft_backend_upgrade) {
-                    memo.precompute_named(
-                        quotient_dependencies_d(),
-                        {context.kzg.srs_evaluation_point, context.kzg.srs_evaluation_point * context.domains.d->omega});
-                }
-                return evaluate_t_d(
-                    context,
-                    challenges,
-                    trace.external_evaluations,
-                    [&](const std::string& name, const FieldElement& point) {
-                        return memo.eval_named(name, point);
-                    },
-                    context.kzg.srs_evaluation_point);
-            }));
-
-        t_fh_eval = fh_future.get();
-        t_edge_eval = edge_future.get();
-        t_n_eval = n_future.get();
-        t_in_eval = in_future.get();
-        t_d_eval = d_future.get();
-    } else {
-        EvaluationMemoization quotient_eval(
-            context,
-            trace,
-            challenges,
-            backend_registry,
-            proof_domain_weight_cache,
-            nullptr);
-        if (route2.fft_backend_upgrade) {
-            quotient_eval.precompute_named(
-                quotient_dependencies_fh(),
-                {context.kzg.srs_evaluation_point, context.kzg.srs_evaluation_point * context.domains.fh->omega});
-            quotient_eval.precompute_named(
-                quotient_dependencies_edge(),
-                {context.kzg.srs_evaluation_point, context.kzg.srs_evaluation_point * context.domains.edge->omega});
-            quotient_eval.precompute_named(
-                quotient_dependencies_in(),
-                {context.kzg.srs_evaluation_point, context.kzg.srs_evaluation_point * context.domains.in->omega});
-            quotient_eval.precompute_named(
-                quotient_dependencies_d(),
-                {context.kzg.srs_evaluation_point, context.kzg.srs_evaluation_point * context.domains.d->omega});
-            quotient_eval.precompute_named(quotient_dependencies_n(), {context.kzg.srs_evaluation_point});
-        }
-        FHQuotientProfile fh_profile;
-        t_fh_eval = evaluate_t_fh(
-            context,
-            challenges,
-            [&](const std::string& name, const FieldElement& point) {
-                return quotient_eval.eval_named(name, point);
-            },
-            context.kzg.srs_evaluation_point,
-            &fh_profile);
-        if (metrics != nullptr) {
-            metrics->fh_quotient_assembly_ms += fh_profile.assembly_ms;
-        }
-        t_edge_eval = evaluate_t_edge(
-            context,
-            challenges,
-            trace.witness_scalars,
-            [&](const std::string& name, const FieldElement& point) {
-                return quotient_eval.eval_named(name, point);
-            },
-            context.kzg.srs_evaluation_point);
-        t_n_eval = evaluate_t_n(
-            context,
-            challenges,
-            trace.witness_scalars,
-            [&](const std::string& name, const FieldElement& point) {
-                return quotient_eval.eval_named(name, point);
-            },
-            context.kzg.srs_evaluation_point);
-        t_in_eval = evaluate_t_in(
-            context,
-            challenges,
-            trace.external_evaluations,
-            [&](const std::string& name, const FieldElement& point) {
-                return quotient_eval.eval_named(name, point);
-            },
-            context.kzg.srs_evaluation_point);
-        t_d_eval = evaluate_t_d(
-            context,
-            challenges,
-            trace.external_evaluations,
-            [&](const std::string& name, const FieldElement& point) {
-                return quotient_eval.eval_named(name, point);
-            },
-            context.kzg.srs_evaluation_point);
-    }
-
-    quotient_commitments = batch_quotient_commitments(
-        {
-            {"t_FH", t_fh_eval},
-            {"t_edge", t_edge_eval},
-            {"t_in", t_in_eval},
-            {"t_d", t_d_eval},
-            {"t_N", t_n_eval},
-        },
-        context.kzg);
+    const std::vector<std::string> quotient_labels = {"t_FH", "t_edge", "t_in", "t_d", "t_N"};
+    const auto named_quotient_polynomials = materialize_quotient_polynomials(
+        context,
+        trace,
+        challenges,
+        quotient_labels,
+        metrics);
+    quotient_commitments = batch_quotient_commitments(named_quotient_polynomials, context.kzg);
 
     challenges = replay_challenges(context, trace.commitments, quotient_commitments);
     if (metrics != nullptr) {
@@ -3945,7 +4047,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
         challenges.at("y_out"),
     };
     stage_start = Clock::now();
-    proof.external_witness = crypto::KZG::open_external_fold(
+    proof.external_proof = crypto::KZG::open_external_fold(
         external_commitments,
         external_points,
         challenges.at("rho_ext"),
@@ -4054,7 +4156,7 @@ std::size_t proof_size_bytes(const Proof& proof) {
             total += kLengthPrefixBytes + values.size() * kFieldBytes;
         }
         total += bundle.value_kinds.size();
-        total += crypto::serialized_size(bundle.witness);
+        total += crypto::serialized_size(bundle.proof);
     }
     total += kLengthPrefixBytes;
     for (const auto& [name, value] : proof.external_evaluations) {
@@ -4072,7 +4174,7 @@ std::size_t proof_size_bytes(const Proof& proof) {
     }
     total += proof.witness_scalar_kinds.size();
     // `rho_ext` 折叠 opening 的 witness 需要单独发送。
-    total += crypto::serialized_size(proof.external_witness);
+    total += crypto::serialized_size(proof.external_proof);
     return total;
 }
 

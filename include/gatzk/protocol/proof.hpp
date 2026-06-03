@@ -139,7 +139,7 @@ struct DomainOpeningBundle {
     std::vector<algebra::FieldElement> points;
     std::vector<std::pair<std::string, std::vector<algebra::FieldElement>>> values;
     std::vector<PayloadValueKind> value_kinds;
-    crypto::G1Point witness;
+    crypto::OpeningProof proof;
 };
 
 // 最终 proof 对象，顺序与字段语义必须与 verifier 和 artifact 导出保持一致。
@@ -153,7 +153,7 @@ struct Proof {
     std::vector<PayloadValueKind> external_evaluation_kinds;
     std::vector<std::pair<std::string, algebra::FieldElement>> witness_scalars;
     std::vector<PayloadValueKind> witness_scalar_kinds;
-    crypto::G1Point external_witness;
+    crypto::OpeningProof external_proof;
     std::map<std::string, algebra::FieldElement> challenges;
 };
 

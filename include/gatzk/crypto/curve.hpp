@@ -44,6 +44,7 @@ namespace gatzk::crypto
     G1Point g1_add(const G1Point& lhs, const G1Point& rhs);
     G1Point g1_sub(const G1Point& lhs, const G1Point& rhs);
     G1Point g1_mul(const G1Point& point, const algebra::FieldElement& scalar);
+    G1Point g1_multi_scalar_mul(const G1Point* points, const algebra::FieldElement* scalars, std::size_t count);
     G1Point g1_multi_scalar_mul(const std::vector<G1Point>& points, const std::vector<algebra::FieldElement>& scalars);
     std::vector<G1Point> g1_mul_same_base_batch(const G1Point& point, const std::vector<algebra::FieldElement>& scalars);
     G2Point g2_add(const G2Point& lhs, const G2Point& rhs);
