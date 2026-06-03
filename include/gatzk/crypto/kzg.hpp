@@ -3,6 +3,7 @@
 // 负责承诺、批量 opening 与 verifier 侧 batch checking 的统一契约。
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <unordered_map>
@@ -29,8 +30,6 @@ namespace gatzk::crypto
         std::unordered_map<std::string, std::string> pk_lagrange_hashes;
         std::string vk_path;
         std::string vk_hash;
-        std::string prover_aux_path;
-        std::string prover_aux_hash;
         std::string encoding;
         std::string generator_version;
         std::string security_level;
@@ -45,7 +44,7 @@ namespace gatzk::crypto
         G1Point g1_generator;
         std::vector<G1Point> powers_g1;
         std::unordered_map<std::string, std::vector<G1Point>> lagrange_srs_by_domain;
-        algebra::FieldElement srs_evaluation_point = algebra::FieldElement::zero();
+        std::string manifest_hash;
     };
 
     struct KZGVerifierKey
@@ -54,9 +53,10 @@ namespace gatzk::crypto
         std::string srs_type;
         std::size_t degree_bound = 0;
         G2Point g2_one;
-        G2Point g2_srs_evaluation_point;
+        G2Point g2_tau;
         std::shared_ptr<PreparedG2> g2_one_prepared;
-        std::shared_ptr<PreparedG2> g2_opening_prepared;
+        std::shared_ptr<PreparedG2> g2_tau_prepared;
+        std::string manifest_hash;
     };
 
     // SRS / 验证键的最小实现集合。主程序只从 manifest/key files 加载，不从实验 seed 生成。
@@ -65,20 +65,19 @@ namespace gatzk::crypto
         SRSManifest manifest;
         KZGProverKey pk;
         KZGVerifierKey vk;
-        algebra::FieldElement srs_evaluation_point = algebra::FieldElement::zero();
         G1Point g1_generator;
         G2Point g2_one;
-        G2Point g2_srs_evaluation_point;
+        G2Point g2_tau;
         std::shared_ptr<PreparedG2> g2_one_prepared;
-        std::shared_ptr<PreparedG2> g2_opening_prepared;
+        std::shared_ptr<PreparedG2> g2_tau_prepared;
     };
 
-    // 承诺对象。`srs_evaluation_scalar` 会被 prove / verify 重复消费，用来避免重复求值。
+    // 承诺对象只携带 proof 可见的群元素；prover 侧可保留多项式材料用于生成 opening witness。
     struct Commitment
     {
         std::string name;
         G1Point point;
-        algebra::FieldElement srs_evaluation_scalar = algebra::FieldElement::zero();
+        std::shared_ptr<const algebra::Polynomial> opening_polynomial;
     };
 
     // 批量 opening 的执行侧剖面，供正式 benchmark 细分 `domain_opening_ms`。
@@ -99,6 +98,13 @@ namespace gatzk::crypto
     // 序列化大小直接参与 proof_size_bytes 统计。
     std::size_t serialized_size(const Commitment& commitment);
 
+    struct OpeningProof
+    {
+        std::vector<G1Point> witnesses;
+    };
+
+    std::size_t serialized_size(const OpeningProof& proof);
+
     class KZG
     {
     public:
@@ -108,16 +114,16 @@ namespace gatzk::crypto
             const std::string& expected_srs_type,
             const std::string& expected_srs_id);
 
-        // 直接基于 SRS 评值点处的已缓存值构造承诺，适用于 lazy 公共列或动态列。
-        static Commitment commit_precomputed(
+        // 对常数多项式做正式 SRS 承诺；用于公开常数或已折叠的标量关系。
+        static Commitment commit_constant(
             const std::string& name,
-            const algebra::FieldElement& srs_evaluation_scalar,
+            const algebra::FieldElement& value,
             const KZGKeyPair& key);
         // 对单个多项式做正式承诺。
         static Commitment commit(const std::string& name, const algebra::Polynomial& polynomial, const KZGKeyPair& key);
-        // 对已知 `srs_evaluation_scalar` 的一批列做承诺，减少 proving 热路径中的重复 MSM 准备。
-        static std::vector<Commitment> commit_precomputed_batch(
-            const std::vector<std::pair<std::string, algebra::FieldElement>>& named_srs_evaluation_scalars,
+        // 对一批常数多项式做正式 SRS 承诺。
+        static std::vector<Commitment> commit_constant_batch(
+            const std::vector<std::pair<std::string, algebra::FieldElement>>& named_values,
             const KZGKeyPair& key,
             CommitBatchProfile* profile = nullptr);
         // 对一批多项式统一承诺，是 dynamic commitment 主链的核心入口。
@@ -127,7 +133,7 @@ namespace gatzk::crypto
             CommitBatchProfile* profile = nullptr);
 
         // 对同一域 opening bundle 中的多列做折叠 opening。
-        static G1Point open_batch(
+        static OpeningProof open_batch(
             const std::vector<Commitment>& commitments,
             const std::vector<algebra::FieldElement>& points,
             const std::vector<std::vector<algebra::FieldElement>>& claimed_values,
@@ -141,11 +147,11 @@ namespace gatzk::crypto
             const std::vector<algebra::FieldElement>& points,
             const std::vector<std::vector<algebra::FieldElement>>& claimed_values,
             const algebra::FieldElement& folding_challenge,
-            const G1Point& witness,
+            const OpeningProof& proof,
             const KZGKeyPair& key);
 
         // 对 external evaluation 列做折叠 opening，服务 `rho_ext` 外点检查。
-        static G1Point open_external_fold(
+        static OpeningProof open_external_fold(
             const std::vector<std::pair<Commitment, algebra::FieldElement>>& commitments_and_values,
             const std::vector<algebra::FieldElement>& points,
             
@@ -157,7 +163,7 @@ namespace gatzk::crypto
             const std::vector<std::pair<Commitment, algebra::FieldElement>>& commitments_and_values,
             const std::vector<algebra::FieldElement>& points,
             const algebra::FieldElement& folding_challenge,
-            const G1Point& witness,
+            const OpeningProof& proof,
             const KZGKeyPair& key);
     };
 }

@@ -3,11 +3,13 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <future>
 #include <iomanip>
+#include <limits>
 #include <mutex>
 #include <numeric>
 #include <optional>
@@ -65,6 +67,9 @@ bool should_persist_state_vector_cache_key(const std::string& cache_key) {
 }
 
 std::vector<FieldElement> padded_column(const std::vector<FieldElement>& values, std::size_t size) {
+    if (values.size() > size) {
+        throw std::runtime_error("column values exceed target domain size");
+    }
     std::vector<FieldElement> out(size, FieldElement::zero());
     std::copy(values.begin(), values.end(), out.begin());
     return out;
@@ -420,7 +425,6 @@ struct PreparedDynamicCommitment {
     std::optional<std::vector<FieldElement>> column_export;
     std::optional<Matrix> matrix_export;
     std::optional<Polynomial> polynomial;
-    std::optional<FieldElement> direct_srs_evaluation_scalar;
     crypto::Commitment commitment;
 };
 
@@ -534,10 +538,6 @@ DynamicCommitmentSpec matrix_spec(const std::string& name, const Matrix& matrix)
 
 DynamicCommitmentSpec matrix_commitment_only_spec(const std::string& name, const Matrix& matrix) {
     auto spec = matrix_spec(name, matrix);
-    // 这类矩阵见证仍会像以前一样被承诺并吸收到 transcript 中，
-    // 只是后续不会再以多项式对象形式被打开。
-    // 因此 trace-layout 路线可以只保留承诺与 srs_evaluation_point 求值，避免临时扁平化缓冲区。
-    spec.retain_polynomial = false;
     return spec;
 }
 
@@ -604,10 +604,6 @@ FieldElement matrix_row_major_evaluation(const Matrix& matrix, const FieldElemen
         mcl::Fr::add(out, out, row_evaluations[row].native());
     }
     return FieldElement::from_native(out);
-}
-
-FieldElement matrix_row_major_srs_evaluation_scalar(const Matrix& matrix, const FieldElement& srs_evaluation_point) {
-    return matrix_row_major_evaluation(matrix, srs_evaluation_point);
 }
 
 void fill_feature_lookup_rows(
@@ -682,6 +678,11 @@ PreparedDynamicCommitment materialize_commitment(
                 spec.name,
                 std::move(spec.shared_column_values),
                 spec.domain));
+        } else if (spec.shared_column_values != nullptr) {
+            out.polynomial.emplace(Polynomial::from_evaluations(
+                spec.name,
+                std::vector<FieldElement>(source_values->begin(), source_values->end()),
+                spec.domain));
         } else if (spec.borrowed_column_values != nullptr) {
             out.polynomial.emplace(Polynomial::from_evaluations(
                 spec.name,
@@ -701,10 +702,6 @@ PreparedDynamicCommitment materialize_commitment(
     }
     if (keep_trace_payloads) {
         out.matrix_export = *spec.matrix;
-    }
-    if (!spec.retain_polynomial && util::route2_options().trace_layout_upgrade) {
-        out.direct_srs_evaluation_scalar = matrix_row_major_srs_evaluation_scalar(*spec.matrix, key.srs_evaluation_point);
-        return out;
     }
     out.polynomial.emplace(coeff_poly(spec.name, algebra::flatten_matrix_coefficients(*spec.matrix)));
     return out;
@@ -866,41 +863,28 @@ void add_dynamic_commitment_batch(
     const auto pack_start = Clock::now();
     std::vector<std::pair<std::string, const algebra::Polynomial*>> named_polynomials;
     std::vector<std::size_t> polynomial_indices;
-    std::vector<std::pair<std::string, FieldElement>> direct_srs_evaluation_scalars;
-    std::vector<std::size_t> direct_commitment_indices;
     named_polynomials.reserve(prepared.size());
-    direct_srs_evaluation_scalars.reserve(prepared.size());
     for (std::size_t i = 0; i < prepared.size(); ++i) {
         auto& item = prepared[i];
         if (item.polynomial.has_value()) {
             named_polynomials.push_back({item.name, &*item.polynomial});
             polynomial_indices.push_back(i);
-        } else if (item.direct_srs_evaluation_scalar.has_value()) {
-            direct_srs_evaluation_scalars.push_back({item.name, *item.direct_srs_evaluation_scalar});
-            direct_commitment_indices.push_back(i);
         } else {
-            throw std::runtime_error("dynamic commitment is missing both polynomial and direct srs_evaluation_point evaluation");
+            throw std::runtime_error("dynamic commitment is missing polynomial material");
         }
     }
     add_metric(metrics != nullptr ? &metrics->dynamic_commit_pack_ms : nullptr, pack_start);
 
     crypto::CommitBatchProfile polynomial_profile;
-    crypto::CommitBatchProfile direct_precomputed_profile;
     if (!named_polynomials.empty()) {
         const auto commitments = crypto::KZG::commit_batch(named_polynomials, key, &polynomial_profile);
         for (std::size_t i = 0; i < commitments.size(); ++i) {
             prepared[polynomial_indices[i]].commitment = commitments[i];
         }
     }
-    if (!direct_srs_evaluation_scalars.empty()) {
-        const auto commitments = crypto::KZG::commit_precomputed_batch(direct_srs_evaluation_scalars, key, &direct_precomputed_profile);
-        for (std::size_t i = 0; i < commitments.size(); ++i) {
-            prepared[direct_commitment_indices[i]].commitment = commitments[i];
-        }
-    }
     if (metrics != nullptr) {
         metrics->dynamic_domain_convert_ms += polynomial_profile.evaluation_ms;
-        metrics->dynamic_commit_msm_ms += polynomial_profile.msm_ms + direct_precomputed_profile.msm_ms;
+        metrics->dynamic_commit_msm_ms += polynomial_profile.msm_ms;
     }
 
     const auto copy_start = Clock::now();
@@ -1002,9 +986,22 @@ FieldElement evaluate_bias_fold(
     return column_fold * row_sum;
 }
 
+std::int64_t quantize_float_raw(double value) {
+    return static_cast<std::int64_t>(value >= 0.0 ? value * 16.0 + 0.5 : value * 16.0 - 0.5);
+}
+
 FieldElement quantize_float(double value) {
-    return FieldElement::from_signed(static_cast<std::int64_t>(
-        value >= 0.0 ? value * 16.0 + 0.5 : value * 16.0 - 0.5));
+    return FieldElement::from_signed(quantize_float_raw(value));
+}
+
+std::int64_t quantize_lrelu_raw(std::int64_t raw) {
+    const auto input = static_cast<double>(raw) / 16.0;
+    return quantize_float_raw(input >= 0.0 ? input : 0.2 * input);
+}
+
+std::int64_t quantize_exp_neg_raw(std::int64_t raw) {
+    const auto input = static_cast<double>(raw) / 16.0;
+    return std::max<std::int64_t>(0, quantize_float_raw(std::exp(-input)));
 }
 
 std::vector<FieldElement> quantize_vector(const std::vector<double>& values) {
@@ -1019,6 +1016,117 @@ Matrix quantize_matrix(const model::FloatMatrix& matrix) {
     Matrix out(matrix.size());
     for (std::size_t row = 0; row < matrix.size(); ++row) {
         out[row] = quantize_vector(matrix[row]);
+    }
+    return out;
+}
+
+using RawMatrix = std::vector<std::vector<std::int64_t>>;
+
+std::int64_t checked_raw_value(__int128 value, std::string_view label) {
+    if (value > static_cast<__int128>(std::numeric_limits<std::int64_t>::max())
+        || value < static_cast<__int128>(std::numeric_limits<std::int64_t>::min())) {
+        throw std::runtime_error("fixed-point raw value overflow while computing " + std::string(label));
+    }
+    return static_cast<std::int64_t>(value);
+}
+
+std::vector<std::int64_t> quantize_vector_raw(const std::vector<double>& values) {
+    std::vector<std::int64_t> out(values.size(), 0);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        out[i] = quantize_float_raw(values[i]);
+    }
+    return out;
+}
+
+RawMatrix quantize_matrix_raw(const model::FloatMatrix& matrix) {
+    RawMatrix out(matrix.size());
+    for (std::size_t row = 0; row < matrix.size(); ++row) {
+        out[row] = quantize_vector_raw(matrix[row]);
+    }
+    return out;
+}
+
+Matrix field_matrix_from_raw(const RawMatrix& matrix) {
+    Matrix out(matrix.size());
+    for (std::size_t row = 0; row < matrix.size(); ++row) {
+        out[row].assign(matrix[row].size(), FieldElement::zero());
+        for (std::size_t column = 0; column < matrix[row].size(); ++column) {
+            out[row][column] = FieldElement::from_signed(matrix[row][column]);
+        }
+    }
+    return out;
+}
+
+RawMatrix project_raw_matrix(const RawMatrix& left, const RawMatrix& right, std::string_view label) {
+    if (left.empty() || right.empty()) {
+        return {};
+    }
+    const auto shared = left.front().size();
+    if (right.size() != shared) {
+        throw std::runtime_error("fixed-point matrix multiply dimension mismatch: " + std::string(label));
+    }
+    const auto rows = left.size();
+    const auto cols = right.front().size();
+    RawMatrix out(rows, std::vector<std::int64_t>(cols, 0));
+    parallel_for_ranges(
+        rows,
+        32,
+        [&](std::size_t begin, std::size_t end) {
+            for (std::size_t row = begin; row < end; ++row) {
+                for (std::size_t col = 0; col < cols; ++col) {
+                    __int128 sum = 0;
+                    for (std::size_t k = 0; k < shared; ++k) {
+                        sum += static_cast<__int128>(left[row][k]) * static_cast<__int128>(right[k][col]);
+                    }
+                    out[row][col] = checked_raw_value(sum, label);
+                }
+            }
+        });
+    return out;
+}
+
+std::vector<std::int64_t> raw_matvec_no_bias(
+    const RawMatrix& matrix,
+    const std::vector<std::int64_t>& vector,
+    std::string_view label) {
+    std::vector<std::int64_t> out(matrix.size(), 0);
+    parallel_for_ranges(
+        matrix.size(),
+        64,
+        [&](std::size_t begin, std::size_t end) {
+            for (std::size_t row = begin; row < end; ++row) {
+                if (matrix[row].size() != vector.size()) {
+                    throw std::runtime_error("fixed-point matvec dimension mismatch: " + std::string(label));
+                }
+                __int128 sum = 0;
+                for (std::size_t col = 0; col < vector.size(); ++col) {
+                    sum += static_cast<__int128>(matrix[row][col]) * static_cast<__int128>(vector[col]);
+                }
+                out[row] = checked_raw_value(sum, label);
+            }
+        });
+    return out;
+}
+
+RawMatrix concat_raw_columns(const std::vector<RawMatrix>& matrices, std::string_view label) {
+    if (matrices.empty()) {
+        return {};
+    }
+    const auto rows = matrices.front().size();
+    std::size_t cols = 0;
+    for (const auto& matrix : matrices) {
+        if (matrix.size() != rows) {
+            throw std::runtime_error("fixed-point concat row mismatch: " + std::string(label));
+        }
+        cols += rows == 0 ? 0 : matrix.front().size();
+    }
+    RawMatrix out(rows, std::vector<std::int64_t>(cols, 0));
+    for (std::size_t row = 0; row < rows; ++row) {
+        std::size_t offset = 0;
+        for (const auto& matrix : matrices) {
+            std::copy(matrix[row].begin(), matrix[row].end(), out[row].begin() + static_cast<std::ptrdiff_t>(offset));
+            offset += matrix[row].size();
+        }
     }
     return out;
 }
@@ -1121,6 +1229,7 @@ const OutputHeadStaticQuantizedParameters& cached_quantized_output_head_paramete
 struct HiddenQuantizedWitness {
     Matrix h_prime;
     Matrix h_agg_pre;
+    Matrix h_agg_pre_lookup;
     Matrix h_agg;
     std::vector<FieldElement> e_src;
     std::vector<FieldElement> e_dst;
@@ -1177,12 +1286,16 @@ HiddenQuantizedWitness quantize_hidden_witness_cpu(
     const model::HeadForwardTrace& fp,
     const std::vector<std::size_t>& edge_src_indices,
     const std::vector<std::size_t>& edge_dst_indices,
-    std::size_t edge_domain_size) {
+    std::size_t edge_domain_size,
+    const RawMatrix* h_prime_raw_override = nullptr,
+    const std::vector<std::int64_t>* e_src_raw_override = nullptr,
+    const std::vector<std::int64_t>* e_dst_raw_override = nullptr) {
     HiddenQuantizedWitness out;
     const auto node_count = fp.H_prime.size();
     const auto d_h = node_count == 0 ? 0 : fp.H_prime.front().size();
     out.h_prime.assign(node_count, std::vector<FieldElement>(d_h, FieldElement::zero()));
     out.h_agg_pre.assign(node_count, std::vector<FieldElement>(d_h, FieldElement::zero()));
+    out.h_agg_pre_lookup.assign(node_count, std::vector<FieldElement>(d_h, FieldElement::zero()));
     out.h_agg.assign(node_count, std::vector<FieldElement>(d_h, FieldElement::zero()));
     out.e_src.assign(fp.E_src.size(), FieldElement::zero());
     out.e_dst.assign(fp.E_dst.size(), FieldElement::zero());
@@ -1200,43 +1313,84 @@ HiddenQuantizedWitness quantize_hidden_witness_cpu(
     out.sum_edge.assign(edge_domain_size, FieldElement::zero());
     out.inv_edge.assign(edge_domain_size, FieldElement::zero());
 
+    std::vector<std::int64_t> e_src_raw(out.e_src.size(), 0);
+    std::vector<std::int64_t> e_dst_raw(out.e_dst.size(), 0);
+    std::vector<std::int64_t> m_raw(out.m.size(), std::numeric_limits<std::int64_t>::min());
+    std::vector<std::uint8_t> m_seen(out.m.size(), 0);
+    std::vector<std::int64_t> s_raw(edge_domain_size, 0);
+    std::vector<std::int64_t> z_raw(edge_domain_size, 0);
+
     parallel_for_ranges(
         node_count,
         32,
         [&](std::size_t begin, std::size_t end) {
             for (std::size_t row = begin; row < end; ++row) {
-                out.e_src[row] = quantize_float(fp.E_src[row]);
-                out.e_dst[row] = quantize_float(fp.E_dst[row]);
-                out.m[row] = quantize_float(fp.M[row]);
-                out.sum[row] = quantize_float(fp.Sum[row]);
-                out.inv[row] = quantize_float(fp.inv[row]);
+                e_src_raw[row] = e_src_raw_override != nullptr ? e_src_raw_override->at(row) : quantize_float_raw(fp.E_src[row]);
+                e_dst_raw[row] = e_dst_raw_override != nullptr ? e_dst_raw_override->at(row) : quantize_float_raw(fp.E_dst[row]);
+                out.e_src[row] = FieldElement::from_signed(e_src_raw[row]);
+                out.e_dst[row] = FieldElement::from_signed(e_dst_raw[row]);
                 for (std::size_t column = 0; column < d_h; ++column) {
-                    out.h_prime[row][column] = quantize_float(fp.H_prime[row][column]);
+                    out.h_prime[row][column] = h_prime_raw_override != nullptr
+                        ? FieldElement::from_signed(h_prime_raw_override->at(row).at(column))
+                        : quantize_float(fp.H_prime[row][column]);
                     out.h_agg_pre[row][column] = quantize_float(fp.H_agg_pre_bias[row][column]);
+                    out.h_agg_pre_lookup[row][column] = out.h_agg_pre[row][column];
                     out.h_agg[row][column] = quantize_float(fp.H_agg[row][column]);
                 }
             }
         });
 
-    parallel_for_ranges(
-        edge_src_indices.size(),
-        128,
-        [&](std::size_t begin, std::size_t end) {
-            for (std::size_t edge_index = begin; edge_index < end; ++edge_index) {
-                out.s[edge_index] = quantize_float(fp.S[edge_index]);
-                out.z[edge_index] = quantize_float(fp.Z[edge_index]);
-                out.delta[edge_index] = quantize_float(fp.Delta[edge_index]);
-                out.u[edge_index] = quantize_float(fp.U[edge_index]);
-                out.alpha[edge_index] = quantize_float(fp.alpha[edge_index]);
-                const auto src = edge_src_indices[edge_index];
-                const auto dst = edge_dst_indices[edge_index];
-                out.e_src_edge[edge_index] = out.e_src[src];
-                out.e_dst_edge[edge_index] = out.e_dst[dst];
-                out.m_edge[edge_index] = out.m[dst];
-                out.sum_edge[edge_index] = out.sum[dst];
-                out.inv_edge[edge_index] = out.inv[dst];
-            }
-        });
+    for (std::size_t edge_index = 0; edge_index < edge_src_indices.size(); ++edge_index) {
+        const auto src = edge_src_indices[edge_index];
+        const auto dst = edge_dst_indices[edge_index];
+        s_raw[edge_index] = e_src_raw.at(src) + e_dst_raw.at(dst);
+        z_raw[edge_index] = quantize_lrelu_raw(s_raw[edge_index]);
+        if (dst >= m_raw.size()) {
+            throw std::runtime_error("hidden edge destination index out of range");
+        }
+        if (m_seen[dst] == 0 || z_raw[edge_index] > m_raw[dst]) {
+            m_raw[dst] = z_raw[edge_index];
+            m_seen[dst] = 1;
+        }
+    }
+    for (std::size_t row = 0; row < out.m.size(); ++row) {
+        if (m_seen[row] == 0) {
+            m_raw[row] = 0;
+        }
+        out.m[row] = FieldElement::from_signed(m_raw[row]);
+    }
+    for (std::size_t edge_index = 0; edge_index < edge_src_indices.size(); ++edge_index) {
+        const auto src = edge_src_indices[edge_index];
+        const auto dst = edge_dst_indices[edge_index];
+        const auto delta_raw = m_raw[dst] - z_raw[edge_index];
+        out.s[edge_index] = FieldElement::from_signed(s_raw[edge_index]);
+        out.z[edge_index] = FieldElement::from_signed(z_raw[edge_index]);
+        out.delta[edge_index] = FieldElement::from_signed(delta_raw);
+        out.u[edge_index] = FieldElement::from_signed(quantize_exp_neg_raw(delta_raw));
+        out.e_src_edge[edge_index] = out.e_src[src];
+        out.e_dst_edge[edge_index] = out.e_dst[dst];
+        out.m_edge[edge_index] = out.m[dst];
+    }
+    std::fill(out.sum.begin(), out.sum.end(), FieldElement::zero());
+    for (std::size_t edge_index = 0; edge_index < edge_src_indices.size(); ++edge_index) {
+        out.sum[edge_dst_indices[edge_index]] += out.u[edge_index];
+    }
+    for (std::size_t row = 0; row < node_count; ++row) {
+        out.inv[row] = out.sum[row].inv();
+    }
+    for (auto& row : out.h_agg_pre) {
+        std::fill(row.begin(), row.end(), FieldElement::zero());
+    }
+    for (std::size_t edge_index = 0; edge_index < edge_src_indices.size(); ++edge_index) {
+        const auto src = edge_src_indices[edge_index];
+        const auto dst = edge_dst_indices[edge_index];
+        out.sum_edge[edge_index] = out.sum[dst];
+        out.inv_edge[edge_index] = out.inv[dst];
+        out.alpha[edge_index] = out.u[edge_index] * out.inv_edge[edge_index];
+        for (std::size_t column = 0; column < d_h; ++column) {
+            out.h_agg_pre[dst][column] += out.alpha[edge_index] * out.h_prime[src][column];
+        }
+    }
     return out;
 }
 
@@ -1245,7 +1399,10 @@ OutputQuantizedWitness quantize_output_witness_cpu(
     const std::vector<double>& output_bias_fp,
     const std::vector<std::size_t>& edge_src_indices,
     const std::vector<std::size_t>& edge_dst_indices,
-    std::size_t edge_domain_size) {
+    std::size_t edge_domain_size,
+    const RawMatrix* y_prime_raw_override = nullptr,
+    const std::vector<std::int64_t>* e_src_raw_override = nullptr,
+    const std::vector<std::int64_t>* e_dst_raw_override = nullptr) {
     OutputQuantizedWitness out;
     const auto node_count = fp.H_prime.size();
     const auto output_dim = node_count == 0 ? 0 : fp.H_prime.front().size();
@@ -1268,19 +1425,27 @@ OutputQuantizedWitness quantize_output_witness_cpu(
     out.sum_edge.assign(edge_domain_size, FieldElement::zero());
     out.inv_edge.assign(edge_domain_size, FieldElement::zero());
 
+    std::vector<std::int64_t> e_src_raw(out.e_src.size(), 0);
+    std::vector<std::int64_t> e_dst_raw(out.e_dst.size(), 0);
+    std::vector<std::int64_t> m_raw(out.m.size(), std::numeric_limits<std::int64_t>::min());
+    std::vector<std::uint8_t> m_seen(out.m.size(), 0);
+    std::vector<std::int64_t> s_raw(edge_domain_size, 0);
+    std::vector<std::int64_t> z_raw(edge_domain_size, 0);
+
     const auto quantized_bias = quantize_vector(output_bias_fp);
     parallel_for_ranges(
         node_count,
         32,
         [&](std::size_t begin, std::size_t end) {
             for (std::size_t row = begin; row < end; ++row) {
-                out.e_src[row] = quantize_float(fp.E_src[row]);
-                out.e_dst[row] = quantize_float(fp.E_dst[row]);
-                out.m[row] = quantize_float(fp.M[row]);
-                out.sum[row] = quantize_float(fp.Sum[row]);
-                out.inv[row] = quantize_float(fp.inv[row]);
+                e_src_raw[row] = e_src_raw_override != nullptr ? e_src_raw_override->at(row) : quantize_float_raw(fp.E_src[row]);
+                e_dst_raw[row] = e_dst_raw_override != nullptr ? e_dst_raw_override->at(row) : quantize_float_raw(fp.E_dst[row]);
+                out.e_src[row] = FieldElement::from_signed(e_src_raw[row]);
+                out.e_dst[row] = FieldElement::from_signed(e_dst_raw[row]);
                 for (std::size_t column = 0; column < output_dim; ++column) {
-                    const auto y_prime_value = quantize_float(fp.H_prime[row][column]);
+                    const auto y_prime_value = y_prime_raw_override != nullptr
+                        ? FieldElement::from_signed(y_prime_raw_override->at(row).at(column))
+                        : quantize_float(fp.H_prime[row][column]);
                     const auto y_lin_value = quantize_float(fp.H_agg_pre_bias[row][column]);
                     out.y_prime[row][column] = y_prime_value;
                     out.y_lin[row][column] = y_lin_value;
@@ -1290,23 +1455,64 @@ OutputQuantizedWitness quantize_output_witness_cpu(
             }
         });
 
-    parallel_for_ranges(
-        edge_src_indices.size(),
-        128,
-        [&](std::size_t begin, std::size_t end) {
-            for (std::size_t edge_index = begin; edge_index < end; ++edge_index) {
-                out.s[edge_index] = quantize_float(fp.S[edge_index]);
-                out.z[edge_index] = quantize_float(fp.Z[edge_index]);
-                out.delta[edge_index] = quantize_float(fp.Delta[edge_index]);
-                out.u[edge_index] = quantize_float(fp.U[edge_index]);
-                out.alpha[edge_index] = quantize_float(fp.alpha[edge_index]);
-                out.e_src_edge[edge_index] = out.e_src[edge_src_indices[edge_index]];
-                out.e_dst_edge[edge_index] = out.e_dst[edge_dst_indices[edge_index]];
-                out.m_edge[edge_index] = out.m[edge_dst_indices[edge_index]];
-                out.sum_edge[edge_index] = out.sum[edge_dst_indices[edge_index]];
-                out.inv_edge[edge_index] = out.inv[edge_dst_indices[edge_index]];
-            }
-        });
+    for (std::size_t edge_index = 0; edge_index < edge_src_indices.size(); ++edge_index) {
+        const auto src = edge_src_indices[edge_index];
+        const auto dst = edge_dst_indices[edge_index];
+        s_raw[edge_index] = e_src_raw.at(src) + e_dst_raw.at(dst);
+        z_raw[edge_index] = quantize_lrelu_raw(s_raw[edge_index]);
+        if (dst >= m_raw.size()) {
+            throw std::runtime_error("output edge destination index out of range");
+        }
+        if (m_seen[dst] == 0 || z_raw[edge_index] > m_raw[dst]) {
+            m_raw[dst] = z_raw[edge_index];
+            m_seen[dst] = 1;
+        }
+    }
+    for (std::size_t row = 0; row < out.m.size(); ++row) {
+        if (m_seen[row] == 0) {
+            m_raw[row] = 0;
+        }
+        out.m[row] = FieldElement::from_signed(m_raw[row]);
+    }
+    for (std::size_t edge_index = 0; edge_index < edge_src_indices.size(); ++edge_index) {
+        const auto src = edge_src_indices[edge_index];
+        const auto dst = edge_dst_indices[edge_index];
+        const auto delta_raw = m_raw[dst] - z_raw[edge_index];
+        out.s[edge_index] = FieldElement::from_signed(s_raw[edge_index]);
+        out.z[edge_index] = FieldElement::from_signed(z_raw[edge_index]);
+        out.delta[edge_index] = FieldElement::from_signed(delta_raw);
+        out.u[edge_index] = FieldElement::from_signed(quantize_exp_neg_raw(delta_raw));
+        out.e_src_edge[edge_index] = out.e_src[src];
+        out.e_dst_edge[edge_index] = out.e_dst[dst];
+        out.m_edge[edge_index] = out.m[dst];
+    }
+    std::fill(out.sum.begin(), out.sum.end(), FieldElement::zero());
+    for (std::size_t edge_index = 0; edge_index < edge_src_indices.size(); ++edge_index) {
+        out.sum[edge_dst_indices[edge_index]] += out.u[edge_index];
+    }
+    for (std::size_t row = 0; row < node_count; ++row) {
+        out.inv[row] = out.sum[row].inv();
+    }
+    for (auto& row : out.y_lin) {
+        std::fill(row.begin(), row.end(), FieldElement::zero());
+    }
+    for (std::size_t edge_index = 0; edge_index < edge_src_indices.size(); ++edge_index) {
+        const auto src = edge_src_indices[edge_index];
+        const auto dst = edge_dst_indices[edge_index];
+        out.sum_edge[edge_index] = out.sum[dst];
+        out.inv_edge[edge_index] = out.inv[dst];
+        out.alpha[edge_index] = out.u[edge_index] * out.inv_edge[edge_index];
+        for (std::size_t column = 0; column < output_dim; ++column) {
+            out.y_lin[dst][column] += out.alpha[edge_index] * out.y_prime[src][column];
+        }
+    }
+    for (std::size_t row = 0; row < node_count; ++row) {
+        for (std::size_t column = 0; column < output_dim; ++column) {
+            out.y[row][column] =
+                out.y_lin[row][column]
+                + (column < quantized_bias.size() ? quantized_bias[column] : FieldElement::zero());
+        }
+    }
 
     return out;
 }
@@ -1338,33 +1544,88 @@ std::shared_ptr<const CachedForwardArtifacts> cached_forward_artifacts(
     artifacts->reference_logits_fp32 = forward.Y;
     artifacts->hidden_layer_inputs_quantized.reserve(forward.hidden_layer_traces.size());
     artifacts->hidden_layer_concat_quantized.reserve(forward.hidden_layer_traces.size());
-    for (const auto& layer_trace : forward.hidden_layer_traces) {
-        artifacts->hidden_layer_inputs_quantized.push_back(quantize_matrix(layer_trace.input));
-        artifacts->hidden_layer_concat_quantized.push_back(quantize_matrix(layer_trace.concat));
-    }
     std::size_t hidden_head_count = 0;
     for (const auto& layer_trace : forward.hidden_layer_traces) {
         hidden_head_count += layer_trace.head_traces.size();
     }
     artifacts->hidden_head_quantized.reserve(hidden_head_count);
-    for (const auto& layer_trace : forward.hidden_layer_traces) {
+    std::vector<RawMatrix> hidden_layer_concat_raw;
+    hidden_layer_concat_raw.reserve(forward.hidden_layer_traces.size());
+    std::size_t global_hidden_head_index = 0;
+    for (std::size_t layer_index = 0; layer_index < forward.hidden_layer_traces.size(); ++layer_index) {
+        const auto& layer_trace = forward.hidden_layer_traces[layer_index];
+        const RawMatrix input_raw =
+            layer_index == 0 ? quantize_matrix_raw(layer_trace.input) : hidden_layer_concat_raw.back();
+        artifacts->hidden_layer_inputs_quantized.push_back(field_matrix_from_raw(input_raw));
+
+        std::vector<RawMatrix> layer_head_outputs_raw;
+        layer_head_outputs_raw.reserve(layer_trace.head_traces.size());
         for (const auto& head_trace : layer_trace.head_traces) {
-            artifacts->hidden_head_quantized.push_back(
-                quantize_hidden_witness_cpu(head_trace, edge_src_indices, edge_dst_indices, edge_domain_size));
+            const auto& head = context.model.hidden_heads.at(global_hidden_head_index);
+            const auto seq_kernel_raw = quantize_matrix_raw(head.seq_kernel_fp);
+            const auto attn_src_raw = quantize_vector_raw(head.attn_src_kernel_fp);
+            const auto attn_dst_raw = quantize_vector_raw(head.attn_dst_kernel_fp);
+            auto h_prime_raw = project_raw_matrix(
+                input_raw,
+                seq_kernel_raw,
+                "hidden head projection " + std::to_string(global_hidden_head_index));
+            auto e_src_raw = raw_matvec_no_bias(
+                h_prime_raw,
+                attn_src_raw,
+                "hidden source attention " + std::to_string(global_hidden_head_index));
+            auto e_dst_raw = raw_matvec_no_bias(
+                h_prime_raw,
+                attn_dst_raw,
+                "hidden destination attention " + std::to_string(global_hidden_head_index));
+            artifacts->hidden_head_quantized.push_back(quantize_hidden_witness_cpu(
+                head_trace,
+                edge_src_indices,
+                edge_dst_indices,
+                edge_domain_size,
+                &h_prime_raw,
+                &e_src_raw,
+                &e_dst_raw));
+            layer_head_outputs_raw.push_back(quantize_matrix_raw(head_trace.H_agg));
+            ++global_hidden_head_index;
         }
+        hidden_layer_concat_raw.push_back(concat_raw_columns(
+            layer_head_outputs_raw,
+            "hidden layer concat " + std::to_string(layer_index)));
+        artifacts->hidden_layer_concat_quantized.push_back(field_matrix_from_raw(hidden_layer_concat_raw.back()));
     }
     artifacts->output_head_quantized.reserve(forward.output_head_traces.size());
     std::vector<Matrix> per_head_y_lin_matrices;
     std::vector<Matrix> per_head_y_matrices;
     per_head_y_lin_matrices.reserve(forward.output_head_traces.size());
     per_head_y_matrices.reserve(forward.output_head_traces.size());
+    const RawMatrix output_input_raw =
+        hidden_layer_concat_raw.empty() ? RawMatrix{} : hidden_layer_concat_raw.back();
     for (std::size_t head_index = 0; head_index < forward.output_head_traces.size(); ++head_index) {
+        const auto& head = context.model.output_layer.heads.at(head_index);
+        const auto seq_kernel_raw = quantize_matrix_raw(head.seq_kernel_fp);
+        const auto attn_src_raw = quantize_vector_raw(head.attn_src_kernel_fp);
+        const auto attn_dst_raw = quantize_vector_raw(head.attn_dst_kernel_fp);
+        auto y_prime_raw = project_raw_matrix(
+            output_input_raw,
+            seq_kernel_raw,
+            "output head projection " + std::to_string(head_index));
+        auto e_src_raw = raw_matvec_no_bias(
+            y_prime_raw,
+            attn_src_raw,
+            "output source attention " + std::to_string(head_index));
+        auto e_dst_raw = raw_matvec_no_bias(
+            y_prime_raw,
+            attn_dst_raw,
+            "output destination attention " + std::to_string(head_index));
         auto quantized = quantize_output_witness_cpu(
             forward.output_head_traces[head_index],
             context.model.output_layer.heads[head_index].output_bias_fp,
             edge_src_indices,
             edge_dst_indices,
-            edge_domain_size);
+            edge_domain_size,
+            &y_prime_raw,
+            &e_src_raw,
+            &e_dst_raw);
         per_head_y_lin_matrices.push_back(quantized.y_lin);
         per_head_y_matrices.push_back(quantized.y);
         artifacts->output_head_quantized.push_back(std::move(quantized));
@@ -1387,6 +1648,13 @@ std::size_t lookup_active_transition_limit(std::size_t valid_count, std::size_t 
         return 0;
     }
     return std::min(valid_count, domain_size - 1U);
+}
+
+std::size_t lookup_active_transition_limit(
+    std::size_t table_valid_count,
+    std::size_t query_valid_count,
+    std::size_t domain_size) {
+    return lookup_active_transition_limit(std::max(table_valid_count, query_valid_count), domain_size);
 }
 
 std::vector<FieldElement> compress_rows_with_challenge(const Matrix& matrix, const FieldElement& challenge) {
@@ -1468,6 +1736,37 @@ struct BindingTrace {
     std::vector<FieldElement> acc;
     FieldElement mu = FieldElement::zero();
 };
+
+BindingTrace build_binding_trace_from_folded_columns(
+    const std::vector<FieldElement>& folded_columns,
+    const std::vector<FieldElement>& parameter_values,
+    const std::shared_ptr<algebra::RootOfUnityDomain>& dim_domain,
+    std::size_t real_dim_count) {
+    if (dim_domain == nullptr) {
+        throw std::runtime_error("binding trace is missing dimension domain");
+    }
+    if (real_dim_count > dim_domain->size
+        || real_dim_count > folded_columns.size()
+        || real_dim_count > parameter_values.size()) {
+        throw std::runtime_error("binding trace dimension mismatch");
+    }
+    BindingTrace out;
+    out.a.assign(dim_domain->size, FieldElement::zero());
+    out.b.assign(dim_domain->size, FieldElement::zero());
+    out.acc.assign(dim_domain->size, FieldElement::zero());
+    for (std::size_t i = 0; i < real_dim_count; ++i) {
+        out.a[i] = folded_columns[i];
+        out.b[i] = parameter_values[i];
+        out.mu += out.a[i] * out.b[i];
+        if (i + 1 < dim_domain->size) {
+            out.acc[i + 1] = out.mu;
+        }
+    }
+    for (std::size_t i = real_dim_count + 1; i < dim_domain->size; ++i) {
+        out.acc[i] = out.mu;
+    }
+    return out;
+}
 
 std::string trace_cache_prefix(const ProtocolContext& context) {
     constexpr std::size_t kMinVolatileLargeTraceFhDomainSize = 1ULL << 24;
@@ -1635,24 +1934,43 @@ BindingTrace build_binding_trace(
     const std::vector<FieldElement>& parameter_values,
     const std::shared_ptr<algebra::RootOfUnityDomain>& dim_domain,
     std::size_t real_dim_count) {
-    BindingTrace out;
     const auto& row_weights = cached_barycentric_weights_native(row_domain, point);
     const auto folded = weighted_column_sum_native(matrix, row_weights, real_row_count);
-    out.a.assign(dim_domain->size, FieldElement::zero());
-    out.b.assign(dim_domain->size, FieldElement::zero());
-    out.acc.assign(dim_domain->size, FieldElement::zero());
-    for (std::size_t i = 0; i < real_dim_count; ++i) {
-        out.a[i] = folded[i];
-        out.b[i] = parameter_values[i];
-        out.mu += out.a[i] * out.b[i];
-        if (i + 1 < dim_domain->size) {
-            out.acc[i + 1] = out.mu;
+    return build_binding_trace_from_folded_columns(folded, parameter_values, dim_domain, real_dim_count);
+}
+
+BindingTrace build_row_major_projection_binding_trace(
+    const Matrix& input_matrix,
+    std::size_t real_row_count,
+    const FieldElement& point,
+    std::size_t output_column_count,
+    const std::vector<FieldElement>& parameter_values,
+    const std::shared_ptr<algebra::RootOfUnityDomain>& dim_domain,
+    std::size_t real_dim_count) {
+    if (input_matrix.empty()) {
+        return build_binding_trace_from_folded_columns({}, parameter_values, dim_domain, real_dim_count);
+    }
+    if (real_row_count > input_matrix.size()) {
+        throw std::runtime_error("row-major projection binding row count mismatch");
+    }
+    const auto row_weights = strided_powers(point, real_row_count, output_column_count);
+    std::vector<mcl::Fr> native_out(input_matrix.front().size());
+    for (auto& value : native_out) {
+        value.clear();
+    }
+    for (std::size_t row = 0; row < real_row_count; ++row) {
+        const auto& weight = row_weights[row].native();
+        for (std::size_t column = 0; column < input_matrix[row].size(); ++column) {
+            mcl::Fr term;
+            mcl::Fr::mul(term, input_matrix[row][column].native(), weight);
+            mcl::Fr::add(native_out[column], native_out[column], term);
         }
     }
-    for (std::size_t i = real_dim_count + 1; i < dim_domain->size; ++i) {
-        out.acc[i] = out.mu;
+    std::vector<FieldElement> folded(input_matrix.front().size(), FieldElement::zero());
+    for (std::size_t column = 0; column < folded.size(); ++column) {
+        folded[column] = FieldElement::from_native(native_out[column]);
     }
-    return out;
+    return build_binding_trace_from_folded_columns(folded, parameter_values, dim_domain, real_dim_count);
 }
 
 template <typename Builder>
@@ -2212,9 +2530,10 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     const auto q_qry_elu = eval_data(context, "P_Q_qry_ELU");
     add_metric(metrics != nullptr ? &metrics->public_poly_residual_ms : nullptr, stage_start);
 
+    auto p_h_fh_values = padded_column(algebra::flatten_matrix_coefficients(local.features), domains.fh->size);
     add_dynamic_commitment_batch(
         trace,
-        {matrix_commitment_only_spec("P_H", local.features)},
+        {column_spec("P_H", std::move(p_h_fh_values), domains.fh)},
         context.kzg,
         keep_trace_payloads,
         metrics);
@@ -2251,31 +2570,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto eta_feature_index = eta_feat_powers[1];
         const auto eta_feature_value = eta_feat_powers[2];
         const bool full_feature_identity = static_artifacts.full_feature_identity;
-        if (use_lazy_full_feature_lookup_trace(context, static_artifacts, keep_trace_payloads)) {
-            const auto table_srs_evaluation_scalar =
-                context.public_commitments.at("P_Row_feat_tbl").srs_evaluation_scalar
-                + eta_feature_index * context.public_commitments.at("P_Col_feat_tbl").srs_evaluation_scalar
-                + eta_feature_value * context.static_commitments.at("V_T_H").srs_evaluation_scalar;
-            const auto query_srs_evaluation_scalar =
-                context.public_commitments.at("P_I_feat_qry").srs_evaluation_scalar
-                + eta_feature_index * context.public_commitments.at("P_Col_feat_qry").srs_evaluation_scalar
-                + eta_feature_value * trace.commitments.at("P_H").srs_evaluation_scalar;
-            trace.commitments["P_Table_feat"] =
-                crypto::KZG::commit_precomputed("P_Table_feat", table_srs_evaluation_scalar, context.kzg);
-            trace.commitment_order.push_back("P_Table_feat");
-            trace.commitments["P_Query_feat"] =
-                crypto::KZG::commit_precomputed("P_Query_feat", query_srs_evaluation_scalar, context.kzg);
-            trace.commitment_order.push_back("P_Query_feat");
-            trace.commitments["P_m_feat"] = crypto::Commitment{
-                .name = "P_m_feat",
-                .point = context.public_commitments.at("P_Q_tbl_feat").point,
-                .srs_evaluation_scalar = context.public_commitments.at("P_Q_tbl_feat").srs_evaluation_scalar,
-            };
-            trace.commitment_order.push_back("P_m_feat");
-            trace.commitments["P_R_feat"] =
-                crypto::KZG::commit_precomputed("P_R_feat", FieldElement::zero(), context.kzg);
-            trace.commitment_order.push_back("P_R_feat");
-        } else {
+        {
             std::vector<FieldElement> table_feat(domains.fh->size, FieldElement::zero());
             std::vector<FieldElement> query_feat(domains.fh->size, FieldElement::zero());
             std::vector<FieldElement> multiplicity_feat(domains.fh->size, FieldElement::zero());
@@ -2341,7 +2636,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                     q_tbl_feat,
                     q_qry_feat,
                     trace.challenges.at("beta_feat"),
-                    lookup_active_transition_limit(n_nodes * d_in, domains.fh->size));
+                    lookup_active_transition_limit(context.dataset.num_nodes * d_in, n_nodes * d_in, domains.fh->size));
             }
             add_metric(metrics != nullptr ? &metrics->fh_accumulator_build_ms : nullptr, fh_accumulator_start);
             add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, lookup_stage_start);
@@ -2428,6 +2723,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto& inv = quantized.inv;
         const auto& alpha = quantized.alpha;
         const auto& h_agg_pre = quantized.h_agg_pre;
+        const auto& h_agg_pre_lookup = quantized.h_agg_pre_lookup;
         const auto& h_agg = quantized.h_agg;
         const auto& e_src_edge = quantized.e_src_edge;
         const auto& e_dst_edge = quantized.e_dst_edge;
@@ -2515,11 +2811,11 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto proj_binding = cached_binding_trace(
             head_cache_prefix + ":proj:" + y_proj_h.to_string(),
             [&]() {
-                return build_binding_trace(
+                return build_row_major_projection_binding_trace(
                     input_matrix,
-                    domains.n,
                     n_nodes,
                     y_proj_h,
+                    head_dim,
                     proj_b,
                     domains.in,
                     input_dim);
@@ -2583,7 +2879,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto beta_src = transcript.challenge("beta_src_h" + std::to_string(head_index));
         trace.challenges["eta_src_h" + std::to_string(head_index)] = eta_src;
         trace.challenges["beta_src_h" + std::to_string(head_index)] = beta_src;
-        const auto eta_src_powers = powers(eta_src, 2);
+        const auto eta_src_powers = powers(eta_src, 3);
 
         transcript.absorb_commitment(prefix + "S", trace.commitments.at(prefix + "S").point);
         transcript.absorb_commitment(prefix + "Z", trace.commitments.at(prefix + "Z").point);
@@ -2642,7 +2938,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             q_tbl_l,
             q_qry_l,
             beta_l,
-            lookup_active_transition_limit(n_edges, domains.edge->size));
+            lookup_active_transition_limit(context.tables.lrelu.size(), n_edges, domains.edge->size));
         add_metric(metrics != nullptr ? &metrics->lookup_accumulator_ms : nullptr, lrelu_acc_start);
         add_residual_metric(
             &RunMetrics::lookup_copy_convert_ms,
@@ -2702,7 +2998,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             q_tbl_r,
             q_qry_r,
             beta_r,
-            lookup_active_transition_limit(n_edges, domains.edge->size));
+            lookup_active_transition_limit(context.tables.range.size(), n_edges, domains.edge->size));
         add_metric(metrics != nullptr ? &metrics->lookup_accumulator_ms : nullptr, range_acc_start);
         add_residual_metric(
             &RunMetrics::lookup_copy_convert_ms,
@@ -2746,7 +3042,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             q_tbl_exp,
             q_qry_exp,
             beta_exp,
-            lookup_active_transition_limit(n_edges, domains.edge->size));
+            lookup_active_transition_limit(context.tables.exp.size(), n_edges, domains.edge->size));
         add_metric(metrics != nullptr ? &metrics->lookup_accumulator_ms : nullptr, exp_acc_start);
         add_residual_metric(
             &RunMetrics::lookup_copy_convert_ms,
@@ -2794,7 +3090,9 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                     64,
                     [&](std::size_t begin, std::size_t end) {
                         for (std::size_t i = begin; i < end; ++i) {
-                            src_table[i] = absolute_id_fields[i] + eta_src_powers[1] * e_src[i];
+                            src_table[i] = absolute_id_fields[i]
+                                + eta_src_powers[1] * e_src[i]
+                                + eta_src_powers[2] * h_star[i];
                         }
                     });
                 parallel_for_ranges(
@@ -2802,7 +3100,9 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                     128,
                     [&](std::size_t begin, std::size_t end) {
                         for (std::size_t k = begin; k < end; ++k) {
-                            src_query[k] = edge_src_fields[k] + eta_src_powers[1] * h_star_edge[k];
+                            src_query[k] = edge_src_fields[k]
+                                + eta_src_powers[1] * e_src_edge[k]
+                                + eta_src_powers[2] * h_star_edge[k];
                         }
                     });
                 add_metric(metrics != nullptr ? &metrics->hidden_route_trace_ms : nullptr, pack_start);
@@ -2979,7 +3279,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             for (std::size_t node = 0; node < n_nodes; ++node) {
                 for (std::size_t col = 0; col < head_dim; ++col) {
                     const auto flat_index = node * head_dim + col;
-                    agg_pre_flat[flat_index] = h_agg_pre[node][col];
+                    agg_pre_flat[flat_index] = h_agg_pre_lookup[node][col];
                     agg_flat[flat_index] = h_agg[node][col];
                 }
             }
@@ -3007,7 +3307,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             q_tbl_elu,
             q_qry_elu,
             beta_elu,
-            lookup_active_transition_limit(n_nodes * head_dim, domains.edge->size));
+            lookup_active_transition_limit(context.tables.elu.size(), n_nodes * head_dim, domains.edge->size));
         add_metric(metrics != nullptr ? &metrics->lookup_accumulator_ms : nullptr, elu_acc_start);
         add_residual_metric(
             &RunMetrics::lookup_copy_convert_ms,
@@ -3252,6 +3552,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             const auto& y_matrix = quantized.y;
             per_head_y_lin_matrices.push_back(y_lin_matrix);
             per_head_y_matrices.push_back(y_matrix);
+            const auto& out_e_src_edge = quantized.e_src_edge;
             const auto& out_m_edge = quantized.m_edge;
             const auto& out_sum_edge = quantized.sum_edge;
             const auto& out_inv_edge = quantized.inv_edge;
@@ -3357,7 +3658,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 128,
                 [&](std::size_t begin, std::size_t end) {
                     for (std::size_t k = begin; k < end; ++k) {
-                        out_src_query[k] = edge_src_fields[k] + eta_src_out_powers[1] * y_prime_star_edge[k];
+                        out_src_query[k] = edge_src_fields[k] + eta_src_out_powers[1] * out_e_src_edge[k];
                     }
                 });
             const auto out_src_route = cached_route_trace(
@@ -3397,7 +3698,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 q_tbl_l,
                 q_qry_l,
                 trace.challenges.at(output_challenge_name("beta_L_out", head_index, false)),
-                lookup_active_transition_limit(n_edges, domains.edge->size));
+                lookup_active_transition_limit(context.tables.lrelu.size(), n_edges, domains.edge->size));
 
             std::vector<FieldElement> out_s_max(domains.edge->size, FieldElement::zero());
             for (const auto& [group_begin, group_end] : edge_groups_by_dst) {
@@ -3435,7 +3736,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 q_tbl_r,
                 q_qry_r,
                 trace.challenges.at(output_challenge_name("beta_R_out", head_index, false)),
-                lookup_active_transition_limit(n_edges, domains.edge->size));
+                lookup_active_transition_limit(context.tables.range.size(), n_edges, domains.edge->size));
 
             std::vector<FieldElement> out_table_exp =
                 cached_pair_lookup_table(prefix_base + "_exp", context.tables.exp, trace.challenges.at(output_challenge_name("eta_exp_out", head_index, false)), domains.edge->size);
@@ -3460,7 +3761,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 q_tbl_exp,
                 q_qry_exp,
                 trace.challenges.at(output_challenge_name("beta_exp_out", head_index, false)),
-                lookup_active_transition_limit(n_edges, domains.edge->size));
+                lookup_active_transition_limit(context.tables.exp.size(), n_edges, domains.edge->size));
 
             const auto lambda_out = transcript.challenge(output_challenge_name("lambda_out", head_index, false));
             trace.challenges[output_challenge_name("lambda_out", head_index, false)] = lambda_out;
@@ -3571,11 +3872,11 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             const auto out_proj_binding = cached_binding_trace(
                 head_cache_prefix + ":proj:" + y_proj_out.to_string(),
                 [&]() {
-                    return build_binding_trace(
+                    return build_row_major_projection_binding_trace(
                         h_cat,
-                        domains.n,
                         n_nodes,
                         y_proj_out,
+                        context.local.num_classes,
                         output_proj_b,
                         domains.cat,
                         context.model.output_layer.input_dim);
@@ -3746,6 +4047,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     const auto& out_alpha = quantized.alpha;
     const auto& y_lin_matrix = quantized.y_lin;
     const auto& y_matrix = quantized.y;
+    const auto& out_e_src_edge = quantized.e_src_edge;
     const auto& out_m_edge = quantized.m_edge;
     const auto& out_sum_edge = quantized.sum_edge;
     const auto& out_inv_edge = quantized.inv_edge;
@@ -3849,7 +4151,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 128,
                 [&](std::size_t begin, std::size_t end) {
                     for (std::size_t k = begin; k < end; ++k) {
-                        out_src_query[k] = edge_src_fields[k] + eta_src_out_powers[1] * y_prime_star_edge[k];
+                        out_src_query[k] = edge_src_fields[k] + eta_src_out_powers[1] * out_e_src_edge[k];
                     }
                 });
             add_metric(metrics != nullptr ? &metrics->route_pack_residual_ms : nullptr, pack_start);
@@ -3899,7 +4201,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         q_tbl_l,
         q_qry_l,
         trace.challenges.at("beta_L_out"),
-        lookup_active_transition_limit(n_edges, domains.edge->size));
+        lookup_active_transition_limit(context.tables.lrelu.size(), n_edges, domains.edge->size));
     add_metric(metrics != nullptr ? &metrics->lookup_accumulator_ms : nullptr, out_l_acc_start);
     add_residual_metric(
         &RunMetrics::lookup_copy_convert_ms,
@@ -3957,7 +4259,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         q_tbl_r,
         q_qry_r,
         trace.challenges.at("beta_R_out"),
-        lookup_active_transition_limit(n_edges, domains.edge->size));
+        lookup_active_transition_limit(context.tables.range.size(), n_edges, domains.edge->size));
     add_metric(metrics != nullptr ? &metrics->lookup_accumulator_ms : nullptr, out_r_acc_start);
     add_residual_metric(
         &RunMetrics::lookup_copy_convert_ms,
@@ -4001,7 +4303,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         q_tbl_exp,
         q_qry_exp,
         trace.challenges.at("beta_exp_out"),
-        lookup_active_transition_limit(n_edges, domains.edge->size));
+        lookup_active_transition_limit(context.tables.exp.size(), n_edges, domains.edge->size));
     add_metric(metrics != nullptr ? &metrics->lookup_accumulator_ms : nullptr, out_exp_acc_start);
     add_residual_metric(
         &RunMetrics::lookup_copy_convert_ms,
@@ -4130,11 +4432,11 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     const auto out_proj_binding = cached_binding_trace(
         output_cache_prefix + ":proj:" + y_proj_out.to_string(),
         [&]() {
-            return build_binding_trace(
+            return build_row_major_projection_binding_trace(
                 h_cat,
-                domains.n,
                 n_nodes,
                 y_proj_out,
+                n_classes,
                 output_proj_b,
                 domains.cat,
                 context.model.output_layer.input_dim);
@@ -4371,9 +4673,10 @@ TraceArtifacts build_trace(const ProtocolContext& context, RunMetrics* metrics) 
     const auto q_tbl_exp = eval_data(context, "P_Q_tbl_exp");
     const auto q_qry_exp = eval_data(context, "P_Q_qry_exp");
 
+    auto p_h_fh_values = padded_column(algebra::flatten_matrix_coefficients(local.features), domains.fh->size);
     add_dynamic_commitment_batch(
         trace,
-        {matrix_commitment_only_spec("P_H", local.features)},
+        {column_spec("P_H", std::move(p_h_fh_values), domains.fh)},
         context.kzg,
         keep_trace_payloads,
         metrics);

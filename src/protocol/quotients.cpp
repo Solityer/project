@@ -371,6 +371,7 @@ FieldElement evaluate_t_edge(
         const auto omega_z = z * context.domains.edge->omega;
         const auto first = lagrange_first(*context.domains.edge, z);
         const auto last = lagrange_last(*context.domains.edge, z);
+        const auto not_last = FieldElement::one() - last;
         const auto zero_eval = context.domains.edge->zero_polynomial_eval(z);
         const auto one = FieldElement::one();
         std::unordered_map<std::string, FieldElement> z_cache;
@@ -499,7 +500,7 @@ FieldElement evaluate_t_edge(
             const auto h_agg_star_edge_z = z_head("H_agg_star_edge");
 
             acc.add(first * r_src_z);
-            acc.add(route_edge_step(r_src_omega, r_src_z, query_src_z, beta_src, q_edge));
+            acc.add(not_last * route_edge_step(r_src_omega, r_src_z, query_src_z, beta_src, q_edge));
             acc.add(last * (r_src_z - witness_scalars.at("S_src_h" + std::to_string(head_index))));
             acc.add(query_src_z - (src_z + eta_src * e_src_edge_z + eta_src_sq * h_src_star_edge_z));
             acc.add(zero_on_unselected(q_edge, query_src_z));
@@ -574,7 +575,7 @@ FieldElement evaluate_t_edge(
             acc.add(psq_step(psq_omega, psq_z, w_psq_omega, q_edge_next, q_new_next));
             acc.add(q_end * (psq_z - t_psq_edge_z));
             acc.add(first * r_t_z);
-            acc.add(route_edge_step(r_t_omega, r_t_z, query_t_z, beta_t, q_edge));
+            acc.add(not_last * route_edge_step(r_t_omega, r_t_z, query_t_z, beta_t, q_edge));
             acc.add(last * (r_t_z - witness_scalars.at("S_t_h" + std::to_string(head_index))));
             acc.add(query_t_z - (dst_z + eta_t * t_psq_edge_z));
             acc.add(zero_on_unselected(q_edge, query_t_z));
@@ -597,7 +598,7 @@ FieldElement evaluate_t_edge(
             acc.add(zero_on_unselected(q_qry_elu_z, query_elu_z));
 
             acc.add(first * r_dst_z);
-            acc.add(route_edge_step(r_dst_omega, r_dst_z, query_dst_z, beta_dst, q_edge));
+            acc.add(not_last * route_edge_step(r_dst_omega, r_dst_z, query_dst_z, beta_dst, q_edge));
             acc.add(last * (r_dst_z - witness_scalars.at("S_dst_h" + std::to_string(head_index))));
             acc.add(query_dst_z
                 - (dst_z
@@ -681,7 +682,7 @@ FieldElement evaluate_t_edge(
             const auto y_star_edge_z = z_out("Y_star_edge");
 
             acc.add(first * r_src_z);
-            acc.add(route_edge_step(r_src_omega, r_src_z, query_src_z, beta_src_out, q_edge));
+            acc.add(not_last * route_edge_step(r_src_omega, r_src_z, query_src_z, beta_src_out, q_edge));
             acc.add(last * (r_src_z - witness_scalars.at(output_witness_scalar_name("src", head_index, legacy_single_output))));
             acc.add(query_src_z - (src_z + eta_src_out * e_src_edge_z));
             acc.add(zero_on_unselected(q_edge, query_src_z));
@@ -756,13 +757,13 @@ FieldElement evaluate_t_edge(
             acc.add(psq_step(psq_omega, psq_z, w_omega, q_edge_next, q_new_next));
             acc.add(q_end * (psq_z - t_edge_z));
             acc.add(first * r_t_z);
-            acc.add(route_edge_step(r_t_omega, r_t_z, query_t_z, beta_t_out, q_edge));
+            acc.add(not_last * route_edge_step(r_t_omega, r_t_z, query_t_z, beta_t_out, q_edge));
             acc.add(last * (r_t_z - witness_scalars.at(output_witness_scalar_name("t", head_index, legacy_single_output))));
             acc.add(query_t_z - (dst_z + eta_t_out * t_edge_z));
             acc.add(zero_on_unselected(q_edge, query_t_z));
 
             acc.add(first * r_dst_z);
-            acc.add(route_edge_step(r_dst_omega, r_dst_z, query_dst_z, beta_dst_out, q_edge));
+            acc.add(not_last * route_edge_step(r_dst_omega, r_dst_z, query_dst_z, beta_dst_out, q_edge));
             acc.add(last * (r_dst_z - witness_scalars.at(output_witness_scalar_name("dst", head_index, legacy_single_output))));
             acc.add(query_dst_z
                 - (dst_z
@@ -904,6 +905,7 @@ FieldElement evaluate_t_n(
         const auto omega_z = z * context.domains.n->omega;
         const auto first = lagrange_first(*context.domains.n, z);
         const auto last = lagrange_last(*context.domains.n, z);
+        const auto not_last = FieldElement::one() - last;
         const auto zero_eval = context.domains.n->zero_polynomial_eval(z);
         const auto q_n = eval("P_Q_N", z);
         QuotientAccumulator acc(challenges.at("alpha_quot"));
@@ -919,13 +921,13 @@ FieldElement evaluate_t_n(
             const auto lambda_psq = challenges.at("lambda_psq_h" + std::to_string(head_index));
 
             acc.add(first * eval(prefix + "R_src_node", z));
-            acc.add(route_node_step(eval(prefix + "R_src_node", omega_z), eval(prefix + "R_src_node", z), eval(prefix + "Table_src", z), beta_src, q_n, eval(prefix + "m_src", z)));
+            acc.add(not_last * route_node_step(eval(prefix + "R_src_node", omega_z), eval(prefix + "R_src_node", z), eval(prefix + "Table_src", z), beta_src, q_n, eval(prefix + "m_src", z)));
             acc.add(last * (eval(prefix + "R_src_node", z) - witness_scalars.at("S_src_h" + std::to_string(head_index))));
             acc.add(first * eval(prefix + "R_dst_node", z));
-            acc.add(route_node_step(eval(prefix + "R_dst_node", omega_z), eval(prefix + "R_dst_node", z), eval(prefix + "Table_dst", z), beta_dst, q_n, eval(prefix + "m_dst", z)));
+            acc.add(not_last * route_node_step(eval(prefix + "R_dst_node", omega_z), eval(prefix + "R_dst_node", z), eval(prefix + "Table_dst", z), beta_dst, q_n, eval(prefix + "m_dst", z)));
             acc.add(last * (eval(prefix + "R_dst_node", z) - witness_scalars.at("S_dst_h" + std::to_string(head_index))));
             acc.add(first * eval(prefix + "R_t_node", z));
-            acc.add(route_node_step(eval(prefix + "R_t_node", omega_z), eval(prefix + "R_t_node", z), eval(prefix + "Table_t", z), beta_t, q_n, eval(prefix + "m_t", z)));
+            acc.add(not_last * route_node_step(eval(prefix + "R_t_node", omega_z), eval(prefix + "R_t_node", z), eval(prefix + "Table_t", z), beta_t, q_n, eval(prefix + "m_t", z)));
             acc.add(last * (eval(prefix + "R_t_node", z) - witness_scalars.at("S_t_h" + std::to_string(head_index))));
             acc.add(q_n * (eval(prefix + "Sum", z) * eval(prefix + "inv", z) - FieldElement::one()));
             acc.add(q_n * (eval(prefix + "T_psq", z) - eval(prefix + "Sum", z) - lambda_psq * eval(prefix + "H_agg_pre_star", z)));
@@ -968,13 +970,13 @@ FieldElement evaluate_t_n(
             const auto lambda_out = challenges.at(output_challenge_name("lambda_out", head_index, legacy_single_output));
 
             acc.add(first * eval(prefix + "R_src_node", z));
-            acc.add(route_node_step(eval(prefix + "R_src_node", omega_z), eval(prefix + "R_src_node", z), eval(prefix + "Table_src", z), beta_src_out, q_n, eval(prefix + "m_src", z)));
+            acc.add(not_last * route_node_step(eval(prefix + "R_src_node", omega_z), eval(prefix + "R_src_node", z), eval(prefix + "Table_src", z), beta_src_out, q_n, eval(prefix + "m_src", z)));
             acc.add(last * (eval(prefix + "R_src_node", z) - witness_scalars.at(output_witness_scalar_name("src", head_index, legacy_single_output))));
             acc.add(first * eval(prefix + "R_dst_node", z));
-            acc.add(route_node_step(eval(prefix + "R_dst_node", omega_z), eval(prefix + "R_dst_node", z), eval(prefix + "Table_dst", z), beta_dst_out, q_n, eval(prefix + "m_dst", z)));
+            acc.add(not_last * route_node_step(eval(prefix + "R_dst_node", omega_z), eval(prefix + "R_dst_node", z), eval(prefix + "Table_dst", z), beta_dst_out, q_n, eval(prefix + "m_dst", z)));
             acc.add(last * (eval(prefix + "R_dst_node", z) - witness_scalars.at(output_witness_scalar_name("dst", head_index, legacy_single_output))));
             acc.add(first * eval(prefix + "R_t_node", z));
-            acc.add(route_node_step(eval(prefix + "R_t_node", omega_z), eval(prefix + "R_t_node", z), eval(prefix + "Table_t", z), beta_t_out, q_n, eval(prefix + "m_t", z)));
+            acc.add(not_last * route_node_step(eval(prefix + "R_t_node", omega_z), eval(prefix + "R_t_node", z), eval(prefix + "Table_t", z), beta_t_out, q_n, eval(prefix + "m_t", z)));
             acc.add(last * (eval(prefix + "R_t_node", z) - witness_scalars.at(output_witness_scalar_name("t", head_index, legacy_single_output))));
             acc.add(q_n * (eval(prefix + "Sum", z) * eval(prefix + "inv", z) - FieldElement::one()));
             acc.add(q_n * (eval(prefix + "T", z) - eval(prefix + "Sum", z) - lambda_out * eval(prefix + "Y_star", z)));
@@ -1063,6 +1065,7 @@ FieldElement evaluate_t_in(
         const auto omega_z = z * context.domains.in->omega;
         const auto first = lagrange_first(*context.domains.in, z);
         const auto last = lagrange_last(*context.domains.in, z);
+        const auto not_last = FieldElement::one() - last;
         const auto zero_eval = context.domains.in->zero_polynomial_eval(z);
         const auto q_valid = eval("P_Q_proj_valid", z);
         const auto q_invalid = FieldElement::one() - q_valid;
@@ -1071,7 +1074,7 @@ FieldElement evaluate_t_in(
             const auto prefix = "P_h" + std::to_string(head_index) + "_";
             acc.add(first * eval(prefix + "Acc_proj", z));
             acc.add(q_valid * acc_step(eval(prefix + "Acc_proj", omega_z), eval(prefix + "Acc_proj", z), eval(prefix + "a_proj", z), eval(prefix + "b_proj", z)));
-            acc.add(q_invalid * (eval(prefix + "Acc_proj", omega_z) - eval(prefix + "Acc_proj", z)));
+            acc.add(not_last * q_invalid * (eval(prefix + "Acc_proj", omega_z) - eval(prefix + "Acc_proj", z)));
             acc.add(zero_on_unselected(q_valid, eval(prefix + "a_proj", z)));
             acc.add(zero_on_unselected(q_valid, eval(prefix + "b_proj", z)));
             acc.add(last * (eval(prefix + "Acc_proj", z) - external_evaluations.at("mu_h" + std::to_string(head_index) + "_proj")));
@@ -1081,12 +1084,14 @@ FieldElement evaluate_t_in(
 
     const auto omega_z = z * context.domains.in->omega;
     const auto l0 = lagrange_first(*context.domains.in, z);
+    const auto not_last = FieldElement::one() - lagrange_last(*context.domains.in, z);
     const auto ld = lagrange_at(*context.domains.in, context.local.num_features, z);
     const auto zero_eval = context.domains.in->zero_polynomial_eval(z);
     const auto c_proj_0 = l0 * eval("P_Acc_proj", z);
     const auto c_proj_1 = eval("P_Q_proj_valid", z)
         * (eval("P_Acc_proj", omega_z) - eval("P_Acc_proj", z) - eval("P_a_proj", z) * eval("P_b_proj", z));
     const auto c_proj_2 = (FieldElement::one() - eval("P_Q_proj_valid", z))
+        * not_last
         * (eval("P_Acc_proj", omega_z) - eval("P_Acc_proj", z));
     const auto c_proj_3 = ld * (eval("P_Acc_proj", z) - external_evaluations.at("mu_proj"));
     const auto alpha = challenges.at("alpha_quot");
@@ -1109,6 +1114,7 @@ FieldElement evaluate_t_d(
         const auto omega_z = z * context.domains.d->omega;
         const auto first = lagrange_first(*context.domains.d, z);
         const auto last = lagrange_last(*context.domains.d, z);
+        const auto not_last = FieldElement::one() - last;
         const auto zero_eval = context.domains.d->zero_polynomial_eval(z);
         const auto q_valid = eval("P_Q_d_valid", z);
         const auto q_invalid = FieldElement::one() - q_valid;
@@ -1118,35 +1124,35 @@ FieldElement evaluate_t_d(
             const auto prefix = "P_h" + std::to_string(head_index) + "_";
             acc.add(first * eval(prefix + "Acc_src", z));
             acc.add(q_valid * acc_step(eval(prefix + "Acc_src", omega_z), eval(prefix + "Acc_src", z), eval(prefix + "a_src", z), eval(prefix + "b_src", z)));
-            acc.add(q_invalid * (eval(prefix + "Acc_src", omega_z) - eval(prefix + "Acc_src", z)));
+            acc.add(not_last * q_invalid * (eval(prefix + "Acc_src", omega_z) - eval(prefix + "Acc_src", z)));
             acc.add(zero_on_unselected(q_valid, eval(prefix + "a_src", z)));
             acc.add(zero_on_unselected(q_valid, eval(prefix + "b_src", z)));
             acc.add(last * (eval(prefix + "Acc_src", z) - external_evaluations.at("mu_h" + std::to_string(head_index) + "_src")));
 
             acc.add(first * eval(prefix + "Acc_dst", z));
             acc.add(q_valid * acc_step(eval(prefix + "Acc_dst", omega_z), eval(prefix + "Acc_dst", z), eval(prefix + "a_dst", z), eval(prefix + "b_dst", z)));
-            acc.add(q_invalid * (eval(prefix + "Acc_dst", omega_z) - eval(prefix + "Acc_dst", z)));
+            acc.add(not_last * q_invalid * (eval(prefix + "Acc_dst", omega_z) - eval(prefix + "Acc_dst", z)));
             acc.add(zero_on_unselected(q_valid, eval(prefix + "a_dst", z)));
             acc.add(zero_on_unselected(q_valid, eval(prefix + "b_dst", z)));
             acc.add(last * (eval(prefix + "Acc_dst", z) - external_evaluations.at("mu_h" + std::to_string(head_index) + "_dst")));
 
             acc.add(first * eval(prefix + "Acc_star", z));
             acc.add(q_valid * acc_step(eval(prefix + "Acc_star", omega_z), eval(prefix + "Acc_star", z), eval(prefix + "a_star", z), eval(prefix + "b_star", z)));
-            acc.add(q_invalid * (eval(prefix + "Acc_star", omega_z) - eval(prefix + "Acc_star", z)));
+            acc.add(not_last * q_invalid * (eval(prefix + "Acc_star", omega_z) - eval(prefix + "Acc_star", z)));
             acc.add(zero_on_unselected(q_valid, eval(prefix + "a_star", z)));
             acc.add(zero_on_unselected(q_valid, eval(prefix + "b_star", z)));
             acc.add(last * (eval(prefix + "Acc_star", z) - external_evaluations.at("mu_h" + std::to_string(head_index) + "_star")));
 
             acc.add(first * eval(prefix + "Acc_agg_pre", z));
             acc.add(q_valid * acc_step(eval(prefix + "Acc_agg_pre", omega_z), eval(prefix + "Acc_agg_pre", z), eval(prefix + "a_agg_pre", z), eval(prefix + "b_agg_pre", z)));
-            acc.add(q_invalid * (eval(prefix + "Acc_agg_pre", omega_z) - eval(prefix + "Acc_agg_pre", z)));
+            acc.add(not_last * q_invalid * (eval(prefix + "Acc_agg_pre", omega_z) - eval(prefix + "Acc_agg_pre", z)));
             acc.add(zero_on_unselected(q_valid, eval(prefix + "a_agg_pre", z)));
             acc.add(zero_on_unselected(q_valid, eval(prefix + "b_agg_pre", z)));
             acc.add(last * (eval(prefix + "Acc_agg_pre", z) - external_evaluations.at("mu_h" + std::to_string(head_index) + "_agg_pre")));
 
             acc.add(first * eval(prefix + "Acc_agg", z));
             acc.add(q_valid * acc_step(eval(prefix + "Acc_agg", omega_z), eval(prefix + "Acc_agg", z), eval(prefix + "a_agg", z), eval(prefix + "b_agg", z)));
-            acc.add(q_invalid * (eval(prefix + "Acc_agg", omega_z) - eval(prefix + "Acc_agg", z)));
+            acc.add(not_last * q_invalid * (eval(prefix + "Acc_agg", omega_z) - eval(prefix + "Acc_agg", z)));
             acc.add(zero_on_unselected(q_valid, eval(prefix + "a_agg", z)));
             acc.add(zero_on_unselected(q_valid, eval(prefix + "b_agg", z)));
             acc.add(last * (eval(prefix + "Acc_agg", z) - external_evaluations.at("mu_h" + std::to_string(head_index) + "_agg")));
@@ -1159,6 +1165,7 @@ FieldElement evaluate_t_d(
     const auto q_valid = eval("P_Q_d_valid", z);
     const auto q_invalid = FieldElement::one() - q_valid;
     const auto l0 = lagrange_first(*context.domains.d, z);
+    const auto not_last = FieldElement::one() - lagrange_last(*context.domains.d, z);
     const auto ld = lagrange_at(*context.domains.d, context.model.a_src.size(), z);
     const auto zero_eval = context.domains.d->zero_polynomial_eval(z);
 
@@ -1166,7 +1173,7 @@ FieldElement evaluate_t_d(
     auto c1 = [&](const std::string& a, const std::string& b, const std::string& acc) {
         return q_valid * (eval(acc, omega_z) - eval(acc, z) - eval(a, z) * eval(b, z));
     };
-    auto c2 = [&](const std::string& acc) { return q_invalid * (eval(acc, omega_z) - eval(acc, z)); };
+    auto c2 = [&](const std::string& acc) { return not_last * q_invalid * (eval(acc, omega_z) - eval(acc, z)); };
     auto c3 = [&](const std::string& acc, const std::string& mu_name) {
         return ld * (eval(acc, z) - external_evaluations.at(mu_name));
     };
@@ -1206,6 +1213,7 @@ FieldElement evaluate_t_cat(
     const auto omega_z = z * context.domains.cat->omega;
     const auto first = lagrange_first(*context.domains.cat, z);
     const auto last = lagrange_last(*context.domains.cat, z);
+    const auto not_last = FieldElement::one() - last;
     const auto zero_eval = context.domains.cat->zero_polynomial_eval(z);
     const auto q_valid = eval("P_Q_cat_valid", z);
     const auto q_invalid = FieldElement::one() - q_valid;
@@ -1218,7 +1226,7 @@ FieldElement evaluate_t_cat(
         const auto mu_name = is_final_layer ? std::string("mu_cat") : "mu_cat_l" + std::to_string(layer_index);
         acc.add(first * eval(prefix + "_Acc", z));
         acc.add(q_valid * acc_step(eval(prefix + "_Acc", omega_z), eval(prefix + "_Acc", z), eval(prefix + "_a", z), eval(prefix + "_b", z)));
-        acc.add(q_invalid * (eval(prefix + "_Acc", omega_z) - eval(prefix + "_Acc", z)));
+        acc.add(not_last * q_invalid * (eval(prefix + "_Acc", omega_z) - eval(prefix + "_Acc", z)));
         acc.add(zero_on_unselected(q_valid, eval(prefix + "_a", z)));
         acc.add(zero_on_unselected(q_valid, eval(prefix + "_b", z)));
         acc.add(last * (eval(prefix + "_Acc", z) - external_evaluations.at(mu_name)));
@@ -1231,7 +1239,7 @@ FieldElement evaluate_t_cat(
             legacy_single_output ? std::string("mu_out_proj") : output_external_eval_name("proj", head_index, false);
         acc.add(first * eval(prefix + "Acc_proj", z));
         acc.add(q_valid * acc_step(eval(prefix + "Acc_proj", omega_z), eval(prefix + "Acc_proj", z), eval(prefix + "a_proj", z), eval(prefix + "b_proj", z)));
-        acc.add(q_invalid * (eval(prefix + "Acc_proj", omega_z) - eval(prefix + "Acc_proj", z)));
+        acc.add(not_last * q_invalid * (eval(prefix + "Acc_proj", omega_z) - eval(prefix + "Acc_proj", z)));
         acc.add(zero_on_unselected(q_valid, eval(prefix + "a_proj", z)));
         acc.add(zero_on_unselected(q_valid, eval(prefix + "b_proj", z)));
         acc.add(last * (eval(prefix + "Acc_proj", z) - external_evaluations.at(mu_name)));
@@ -1249,6 +1257,7 @@ FieldElement evaluate_t_c(
     const auto omega_z = z * context.domains.c->omega;
     const auto first = lagrange_first(*context.domains.c, z);
     const auto last = lagrange_last(*context.domains.c, z);
+    const auto not_last = FieldElement::one() - last;
     const auto zero_eval = context.domains.c->zero_polynomial_eval(z);
     const auto q_valid = eval("P_Q_C_valid", z);
     const auto q_invalid = FieldElement::one() - q_valid;
@@ -1271,21 +1280,21 @@ FieldElement evaluate_t_c(
 
         acc.add(first * eval(prefix + "Acc_src", z));
         acc.add(q_valid * acc_step(eval(prefix + "Acc_src", omega_z), eval(prefix + "Acc_src", z), eval(prefix + "a_src", z), eval(prefix + "b_src", z)));
-        acc.add(q_invalid * (eval(prefix + "Acc_src", omega_z) - eval(prefix + "Acc_src", z)));
+        acc.add(not_last * q_invalid * (eval(prefix + "Acc_src", omega_z) - eval(prefix + "Acc_src", z)));
         acc.add(zero_on_unselected(q_valid, eval(prefix + "a_src", z)));
         acc.add(zero_on_unselected(q_valid, eval(prefix + "b_src", z)));
         acc.add(last * (eval(prefix + "Acc_src", z) - external_evaluations.at(mu_src)));
 
         acc.add(first * eval(prefix + "Acc_dst", z));
         acc.add(q_valid * acc_step(eval(prefix + "Acc_dst", omega_z), eval(prefix + "Acc_dst", z), eval(prefix + "a_dst", z), eval(prefix + "b_dst", z)));
-        acc.add(q_invalid * (eval(prefix + "Acc_dst", omega_z) - eval(prefix + "Acc_dst", z)));
+        acc.add(not_last * q_invalid * (eval(prefix + "Acc_dst", omega_z) - eval(prefix + "Acc_dst", z)));
         acc.add(zero_on_unselected(q_valid, eval(prefix + "a_dst", z)));
         acc.add(zero_on_unselected(q_valid, eval(prefix + "b_dst", z)));
         acc.add(last * (eval(prefix + "Acc_dst", z) - external_evaluations.at(mu_dst)));
 
         acc.add(first * eval(prefix + "Acc_y", z));
         acc.add(q_valid * acc_step(eval(prefix + "Acc_y", omega_z), eval(prefix + "Acc_y", z), eval(prefix + "a_y", z), eval(prefix + "b_y", z)));
-        acc.add(q_invalid * (eval(prefix + "Acc_y", omega_z) - eval(prefix + "Acc_y", z)));
+        acc.add(not_last * q_invalid * (eval(prefix + "Acc_y", omega_z) - eval(prefix + "Acc_y", z)));
         acc.add(zero_on_unselected(q_valid, eval(prefix + "a_y", z)));
         acc.add(zero_on_unselected(q_valid, eval(prefix + "b_y", z)));
         acc.add(last * (eval(prefix + "Acc_y", z) - external_evaluations.at(mu_star)));

@@ -84,7 +84,7 @@ std::string verifier_quotient_cache_key(
         stream << '|' << name << '=' << value.to_string();
     }
     for (const auto& [name, commitment] : proof.quotient_commitments) {
-        stream << '|' << name << '=' << commitment.srs_evaluation_scalar.to_string();
+        stream << '|' << name << '=' << commitment.point.to_string();
     }
     for (const auto& [name, value] : proof.witness_scalars) {
         stream << '|' << name << '=' << value.to_string();
@@ -1212,33 +1212,41 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
         const auto eval = [&](const std::string& name, const FieldElement& point) -> FieldElement {
             return eval_memo.eval_named(name, point);
         };
+        std::string bundle_failure_reason;
         auto verify_bundle_spec = [&](const BundleSpec& spec) {
             // 每个 bundle 都要同时满足：标签集合正确、打开点正确、KZG witness 正确、quotient 重算正确。
+            auto bundle_fail = [&](const std::string& reason) {
+                bundle_failure_reason = spec.bundle_name + ":" + reason;
+                if (debug_verify) {
+                    util::info("bundle_fail=" + bundle_failure_reason);
+                }
+                return false;
+            };
             const auto& indexed_bundle = bundle_by_name(indexed_bundles, spec.bundle_name);
             const auto& bundle = *indexed_bundle.bundle;
             auto labels = domain_opening_labels(context, spec.trace_domain_name);
             labels.push_back(spec.quotient_name);
             if (bundle.values.size() != labels.size()) {
-                return false;
+                return bundle_fail("value_count");
             }
             if (bundle.points.size() != 2
                 || bundle.points[0] != challenges.at(spec.z_name)
                 || bundle.points[1] != challenges.at(spec.z_name) * spec.domain->omega) {
-                return false;
+                return bundle_fail("points");
             }
             std::vector<Commitment> commitments;
             std::vector<std::vector<FieldElement>> values;
             const auto bundle_lookup_start = Clock::now();
             for (std::size_t i = 0; i < labels.size(); ++i) {
                 if (bundle.values[i].first != labels[i]) {
-                    return false;
+                    return bundle_fail("label:" + bundle.values[i].first + "!=" + labels[i]);
                 }
                 if (dynamic_commitments.contains(labels[i])) {
                     commitments.push_back(dynamic_commitments.at(labels[i]));
                 } else if (quotient_commitments.contains(labels[i])) {
                     commitments.push_back(quotient_commitments.at(labels[i]));
                 } else {
-                    return false;
+                    return bundle_fail("missing_commitment:" + labels[i]);
                 }
                 values.push_back(bundle.values[i].second);
             }
@@ -1251,9 +1259,9 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
                     bundle.points,
                     values,
                     challenges.at(spec.v_name),
-                    bundle.witness,
+                    bundle.proof,
                     context.kzg)) {
-                return false;
+                return bundle_fail("kzg_batch");
             }
             if (metrics != nullptr) {
                 metrics->verify_domain_opening_ms += elapsed_ms(opening_start, Clock::now());
@@ -1285,12 +1293,12 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
                 } else if (spec.quotient_name == "t_N") {
                     expected_t = evaluate_t_n(context, challenges, witness_scalars, eval, challenges.at(spec.z_name));
                 } else {
-                    return false;
+                    return bundle_fail("unknown_quotient:" + spec.quotient_name);
                 }
                 shared_verifier_quotient_cache().store(cache_key, expected_t);
             }
             if (bundle_value(indexed_bundle, spec.quotient_name, challenges.at(spec.z_name)) != expected_t) {
-                return false;
+                return bundle_fail("quotient_mismatch:" + spec.quotient_name);
             }
             if (metrics != nullptr) {
                 metrics->verify_quotient_ms += elapsed_ms(quotient_start, Clock::now());
@@ -1311,7 +1319,7 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
                 external_commitments,
                 external_points,
                 challenges.at("rho_ext"),
-                proof.external_witness,
+                proof.external_proof,
                 context.kzg)) {
             return fail("external_fold");
         }
@@ -1321,7 +1329,7 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
         for (const auto& spec : bundle_specs) {
             const auto bundle_start = Clock::now();
             if (!verify_bundle_spec(spec)) {
-                return fail("bundle_verify:" + spec.bundle_name);
+                return fail("bundle_verify:" + (bundle_failure_reason.empty() ? spec.bundle_name : bundle_failure_reason));
             }
             if (metrics != nullptr) {
                 const auto elapsed = elapsed_ms(bundle_start, Clock::now());
@@ -1511,7 +1519,7 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
             input.bundle->points,
             input.values,
             input.folding_challenge,
-            input.bundle->witness,
+            input.bundle->proof,
             context.kzg);
     };
 
@@ -1530,7 +1538,7 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
                     external_commitments,
                     external_points,
                     challenges.at("rho_ext"),
-                    proof.external_witness,
+                    proof.external_proof,
                     context.kzg);
             });
         auto fh_future = std::async(std::launch::async, [&]() { return verify_bundle(prepared_fh); });
@@ -1546,7 +1554,7 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
                 external_commitments,
                 external_points,
                 challenges.at("rho_ext"),
-                proof.external_witness,
+                proof.external_proof,
                 context.kzg)) {
             return false;
         }

@@ -8,9 +8,15 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 def blocked_patterns():
     marker = "ta" + "u"
+    srs_eval = "srs" + "_evaluation"
+    aux = "prover" + "_aux"
     return [
         "opening" + "_point",
         "commitment" + "_eval",
+        srs_eval + "_point",
+        srs_eval + "_scalar",
+        aux,
+        "commit" + "_precomputed",
         "FieldElement " + marker,
         "." + marker,
         "key." + marker,
@@ -23,6 +29,8 @@ def blocked_patterns():
         "deterministic_" + marker,
         "test_" + marker,
         "seeded_" + marker,
+        "g1_mul_same_base" + "_batch(key.g1_generator",
+        "polynomial" + ".evaluate(key.",
     ]
 
 
@@ -64,13 +72,17 @@ def main():
         import json
 
         data = json.loads(manifest.read_text(encoding="utf-8"))
-        for key in ("pk_coef_path", "pk_coef_hash", "vk_path", "vk_hash", "prover_aux_path", "prover_aux_hash"):
+        required_keys = ("pk_coef_path", "pk_coef_hash", "vk_path", "vk_hash")
+        for key in required_keys:
             if not data.get(key):
                 failures.append((manifest.relative_to(ROOT), 1, f"missing {key}"))
+        aux = "prover" + "_aux"
+        for key in (aux + "_path", aux + "_hash"):
+            if data.get(key):
+                failures.append((manifest.relative_to(ROOT), 1, f"forbidden {key}"))
         for path_key, hash_key in (
             ("pk_coef_path", "pk_coef_hash"),
             ("vk_path", "vk_hash"),
-            ("prover_aux_path", "prover_aux_hash"),
         ):
             rel = data.get(path_key)
             expected = data.get(hash_key)
@@ -83,6 +95,25 @@ def main():
             actual = hashlib.sha256(material.read_bytes()).hexdigest()
             if actual != expected:
                 failures.append((material.relative_to(ROOT), 1, f"hash mismatch {hash_key}"))
+        lagrange_paths = data.get("pk_lagrange_paths") or {}
+        lagrange_hashes = data.get("pk_lagrange_hashes") or {}
+        if not lagrange_paths:
+            failures.append((manifest.relative_to(ROOT), 1, "missing pk_lagrange_paths"))
+        for domain, rel in lagrange_paths.items():
+            expected = lagrange_hashes.get(domain)
+            if not expected:
+                failures.append((manifest.relative_to(ROOT), 1, f"missing pk_lagrange_hash {domain}"))
+                continue
+            material = srs_root / rel
+            if not material.exists():
+                failures.append((material.relative_to(ROOT), 1, "missing SRS material"))
+                continue
+            actual = hashlib.sha256(material.read_bytes()).hexdigest()
+            if actual != expected:
+                failures.append((material.relative_to(ROOT), 1, f"hash mismatch pk_lagrange_hashes.{domain}"))
+        legacy_aux = srs_root / (aux + ".bin")
+        if legacy_aux.exists():
+            failures.append((legacy_aux.relative_to(ROOT), 1, "forbidden runtime auxiliary scalar material"))
     if failures:
         for path, line_no, pattern in failures:
             print(f"{path}:{line_no}: blocked pattern {pattern!r}", file=sys.stderr)

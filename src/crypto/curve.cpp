@@ -137,40 +137,83 @@ namespace gatzk::crypto
         return out;
     }
 
+    G1Point g1_multi_scalar_mul(const G1Point* points, const algebra::FieldElement* scalars, std::size_t count)
+    {
+        if ((points == nullptr || scalars == nullptr) && count != 0)
+        {
+            throw std::runtime_error("G1 MSM received null input");
+        }
+        G1Point out = g1_zero();
+        if (count == 0)
+        {
+            return out;
+        }
+        algebra::ensure_mcl_field_ready();
+        std::vector<mcl::Fr> native_scalars;
+        native_scalars.reserve(count);
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            native_scalars.push_back(scalars[i].native());
+        }
+        static_assert(sizeof(G1Point) == sizeof(mcl::G1), "G1Point must wrap a single mcl::G1");
+        auto* native_points = const_cast<mcl::G1*>(reinterpret_cast<const mcl::G1*>(points));
+        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+        if (cpu_count > 1 && count >= (1ULL << 15))
+        {
+            const auto task_count = std::min<std::size_t>(
+                std::min<std::size_t>(cpu_count, 32),
+                std::max<std::size_t>(1, count / (1ULL << 15)));
+            if (task_count > 1)
+            {
+                const auto chunk_size = (count + task_count - 1) / task_count;
+                std::vector<std::future<mcl::G1>> futures;
+                futures.reserve(task_count);
+                for (std::size_t task = 0; task < task_count; ++task)
+                {
+                    const auto begin = task * chunk_size;
+                    const auto end = std::min(count, begin + chunk_size);
+                    if (begin >= end)
+                    {
+                        break;
+                    }
+                    futures.push_back(std::async(
+                        std::launch::async,
+                        [&, begin, end]() {
+                            mcl::G1 partial;
+                            mcl::G1::mulVec(
+                                partial,
+                                native_points + begin,
+                                native_scalars.data() + begin,
+                                end - begin);
+                            return partial;
+                        }));
+                }
+                for (auto& future : futures)
+                {
+                    mcl::G1 partial = future.get();
+                    mcl::G1::add(out.value, out.value, partial);
+                }
+                return out;
+            }
+        }
+        if (cpu_count > 1 && count >= 256)
+        {
+            mcl::G1::mulVecMT(out.value, native_points, native_scalars.data(), count, cpu_count);
+        }
+        else
+        {
+            mcl::G1::mulVec(out.value, native_points, native_scalars.data(), count);
+        }
+        return out;
+    }
+
     G1Point g1_multi_scalar_mul(const std::vector<G1Point>& points, const std::vector<algebra::FieldElement>& scalars)
     {
         if (points.size() != scalars.size())
         {
             throw std::runtime_error("G1 MSM size mismatch");
         }
-        G1Point out = g1_zero();
-        if (points.empty())
-        {
-            return out;
-        }
-        algebra::ensure_mcl_field_ready();
-        std::vector<mcl::G1> native_points;
-        std::vector<mcl::Fr> native_scalars;
-        native_points.reserve(points.size());
-        native_scalars.reserve(scalars.size());
-        for (const auto& point : points)
-        {
-            native_points.push_back(point.value);
-        }
-        for (const auto& scalar : scalars)
-        {
-            native_scalars.push_back(scalar.native());
-        }
-        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-        if (cpu_count > 1 && native_points.size() >= 256)
-        {
-            mcl::G1::mulVecMT(out.value, native_points.data(), native_scalars.data(), native_points.size(), cpu_count);
-        }
-        else
-        {
-            mcl::G1::mulVec(out.value, native_points.data(), native_scalars.data(), native_points.size());
-        }
-        return out;
+        return g1_multi_scalar_mul(points.data(), scalars.data(), points.size());
     }
 
     // 同基点批量乘法是 KZG 承诺与 witness 构造的典型热点。（--fast-msm on）
