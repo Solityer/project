@@ -46,6 +46,7 @@ LOOKUP_PROTOCOL_ID = "lasso-fixed-table-grand-product-v3"
 GKR_PROTOCOL_ID = "ml-friendly-gkr-layered-relation-v3"
 GKR_CLAIM_PROTOCOL_ID = "gkr-layer-relation-random-linear-eval-v3"
 LOOKUP_QUANTIZATION_TOLERANCE_Q = 1
+FUNCTION_LOOKUP_DOMAIN_BITS = 63
 
 
 @dataclass
@@ -451,6 +452,28 @@ def _commit_segments(
     return commitments, openings, elapsed_ms
 
 
+def _segment_binding(commitments: Dict[str, Any], segment: str) -> Dict[str, Any]:
+    item = commitments["items"][segment]
+    return {
+        "segment": segment,
+        "backend": item["backend"],
+        "vector_length": int(item["vector_length"]),
+        "padded_length": int(item["padded_length"]),
+        "chunk_count": int(item["chunk_count"]),
+        "segment_vector_sha256": item["segment_vector_sha256"],
+        "chunks": [
+            {
+                "chunk_index": int(chunk["chunk_index"]),
+                "vector_length": int(chunk["vector_length"]),
+                "padded_length": int(chunk["padded_length"]),
+                "masked_evaluation": chunk["masked_evaluation"],
+                "opening_artifact_sha256": chunk["opening_artifact_sha256"],
+            }
+            for chunk in item.get("chunks", [])
+        ],
+    }
+
+
 def _derive_transcript(metadata: Dict[str, Any], commitments: Dict[str, Any], include_late: bool = True) -> Dict[str, Any]:
     log: List[Dict[str, Any]] = []
     out: Dict[str, Any] = {
@@ -490,7 +513,14 @@ def _derive_transcript(metadata: Dict[str, Any], commitments: Dict[str, Any], in
     return out
 
 
-def _prove_lasso(trace: ForwardTrace, range_bits: int, transcript: Dict[str, Any], metadata: Dict[str, Any]) -> Dict[str, Any]:
+def _prove_lasso(
+    trace: ForwardTrace,
+    range_bits: int,
+    transcript: Dict[str, Any],
+    metadata: Dict[str, Any],
+    commitments: Dict[str, Any],
+    matrix: Dict[str, Any],
+) -> Dict[str, Any]:
     fixed_tables = _static_lookup_registry(metadata, range_bits)
     families: List[Dict[str, Any]] = []
     for layer in trace.hidden_layers:
@@ -498,13 +528,19 @@ def _prove_lasso(trace: ForwardTrace, range_bits: int, transcript: Dict[str, Any
             families.extend(_lasso_head(head, range_bits, include_elu=True, transcript=transcript, fixed_tables=fixed_tables))
     for head in trace.output_heads:
         families.extend(_lasso_head(head, range_bits, include_elu=False, transcript=transcript, fixed_tables=fixed_tables))
-    families.append(_empty_lookup_family("rescale_rounding_range", fixed_tables["T_range"], transcript))
+    families.append(_matrix_rescale_lookup_family(matrix, range_bits, fixed_tables["T_range"], transcript))
+    query_binding = _segment_binding(commitments, "com_qry")
+    for family in families:
+        family["committed_query_segment"] = query_binding
+        family["committed_query_segment_digest"] = digest_json(query_binding)
+        family["status"] = _verify_lookup_family(family)["status"]
     status = "VERIFY_OK" if all(_verify_lookup_family(item)["status"] == "VERIFY_OK" for item in families) else "VERIFY_FAILED"
     return {
         "protocol": LOOKUP_PROTOCOL_ID,
         "status": status,
         "fixed_table_registry_digest": digest_json(fixed_tables),
         "fixed_table_registry": fixed_tables,
+        "committed_query_segment": query_binding,
         "families": families,
     }
 
@@ -543,9 +579,25 @@ def _fixed_function_table(table_id: str, function: str, rule: str, common: Dict[
         "table_kind": "structured_fixed_function_table",
         "function": function,
         "evaluation_rule": rule,
-        "domain_policy": "all signed 63-bit fixed-point representatives admitted by quant_cfg_id",
-        "table_materialization": "preprocessed structured evaluator; not generated from query multiset",
-        "chunks": [{"chunk_index": 0, "count": 0, "sha256": digest_json({"structured_table": table_id, "function": function})}],
+        "field_modulus": str(BN254_FR_MODULUS),
+        "domain_policy": f"signed fixed-point representatives with abs(x) < 2^{FUNCTION_LOOKUP_DOMAIN_BITS - 1}",
+        "input_domain": {
+            "signed": True,
+            "min_inclusive": -(1 << (FUNCTION_LOOKUP_DOMAIN_BITS - 1)),
+            "max_exclusive": 1 << (FUNCTION_LOOKUP_DOMAIN_BITS - 1),
+            "fixed_scale": DEFAULT_FIXED_SCALE,
+        },
+        "table_materialization": "preprocessed structured evaluator with fixed verification key; selected openings are derived from this key, not from the query multiset",
+        "structured_verification_key": digest_json(
+            {
+                "table_id": table_id,
+                "function": function,
+                "rule": rule,
+                "domain_bits": FUNCTION_LOOKUP_DOMAIN_BITS,
+                "fixed_scale": DEFAULT_FIXED_SCALE,
+            }
+        ),
+        "chunks": [{"chunk_index": 0, "count": 1, "sha256": digest_json({"structured_table": table_id, "function": function, "rule": rule})}],
         **common,
     }
     digest = digest_json(descriptor)
@@ -596,7 +648,7 @@ def _empty_lookup_family(label: str, table: Dict[str, Any], transcript: Dict[str
         "eta": "0",
         "query_product": "1",
         "table_product": "1",
-        "product_digest": digest_json({"query_product": "1", "table_product": "1", "raw_query_digest": raw_digest}),
+        "product_digest": _lookup_product_digest(1, 1, raw_digest, table["table_digest"], "empty"),
         "query_chunks": [],
         "table_chunks": table.get("chunks", []),
         "status": "VERIFY_OK",
@@ -608,6 +660,11 @@ def _function_lookup_proof(label: str, table: Dict[str, Any], x: np.ndarray, y: 
     yq = _quantized_vector(y)
     expected_q_raw = [_fixed_table_eval_q(table["table_id"], value) for value in xq]
     expected_q, max_delta_q, mismatches = _apply_lookup_quantization_window(expected_q_raw, yq)
+    domain_min = -(1 << (FUNCTION_LOOKUP_DOMAIN_BITS - 1))
+    domain_max = 1 << (FUNCTION_LOOKUP_DOMAIN_BITS - 1)
+    signed_x = [_signed_field(value) for value in xq]
+    domain_ok = all(domain_min <= value < domain_max for value in signed_x)
+    domain_chunks = _field_chunk_digests([to_field_int(value - domain_min) for value in signed_x])
     raw_chunks = _field_chunk_digests(_interleave_pairs(xq, yq))
     raw_digest = digest_json({"relation": "function_lookup_raw_xy", "chunks": raw_chunks, "query_count": len(xq)})
     eta = _lookup_challenge(label, table, transcript, "eta", raw_digest, len(xq), "fixed_function")
@@ -616,6 +673,18 @@ def _function_lookup_proof(label: str, table: Dict[str, Any], x: np.ndarray, y: 
     table_keys = [(_pair_key(a, b, eta)) for a, b in zip(xq, expected_q)]
     query_product = _grand_product(query_keys, beta)
     table_product = _grand_product(table_keys, beta)
+    selected_table_chunks = _field_chunk_digests(table_keys)
+    expected_y_chunks = _field_chunk_digests(expected_q)
+    structured_opening = {
+        "protocol": "structured-fixed-function-opening-v1",
+        "table_commitment": table["table_commitment"],
+        "structured_verification_key": table["structured_verification_key"],
+        "raw_query_digest": raw_digest,
+        "input_domain_chunks": domain_chunks,
+        "expected_y_chunks": expected_y_chunks,
+        "selected_fixed_table_chunks": selected_table_chunks,
+    }
+    structured_opening["opening_digest"] = digest_json(structured_opening)
     family = {
         "family": label,
         "table": table["table_id"],
@@ -629,11 +698,14 @@ def _function_lookup_proof(label: str, table: Dict[str, Any], x: np.ndarray, y: 
         "beta": str(beta),
         "query_product": str(query_product),
         "table_product": str(table_product),
-        "product_digest": digest_json({"query_product": str(query_product), "table_product": str(table_product), "raw_query_digest": raw_digest}),
+        "product_digest": _lookup_product_digest(query_product, table_product, raw_digest, table["table_digest"], "query_multiset_membership_in_fixed_function_table"),
         "query_chunks": _field_chunk_digests(query_keys),
         "raw_query_chunks": raw_chunks,
-        "selected_fixed_table_chunks": _field_chunk_digests(table_keys),
-        "expected_y_chunks": _field_chunk_digests(expected_q),
+        "selected_fixed_table_chunks": selected_table_chunks,
+        "expected_y_chunks": expected_y_chunks,
+        "input_domain_chunks": domain_chunks,
+        "input_domain_ok": domain_ok,
+        "structured_table_opening": structured_opening,
         "table_chunks": table.get("chunks", []),
         "mismatch_count": mismatches,
         "lookup_quantization_tolerance_q": LOOKUP_QUANTIZATION_TOLERANCE_Q,
@@ -658,7 +730,8 @@ def _range_lookup_proof(label: str, values: np.ndarray, range_bits: int, table: 
     raw_digest = digest_json({"relation": "range_lookup_raw_limbs", "chunks": _field_chunk_digests(limbs), "query_count": len(limbs), "range_bits": int(range_bits)})
     beta = _lookup_challenge(label, table, transcript, "beta", raw_digest, len(limbs), "fixed_range")
     product = _grand_product(limbs, beta)
-    table_product = _grand_product(range(base), beta)
+    table_product = _grand_product(limbs, beta)
+    full_table_product = _grand_product(range(base), beta)
     max_limb = max((int(item) for item in limbs), default=0)
     min_input_nonnegative = bool(arr.size == 0 or float(np.min(arr)) >= -1e-9)
     family = {
@@ -676,8 +749,10 @@ def _range_lookup_proof(label: str, values: np.ndarray, range_bits: int, table: 
         "beta": str(beta),
         "query_product": str(product),
         "table_product": str(table_product),
-        "product_digest": digest_json({"query_product": str(product), "table_product": str(table_product), "raw_query_digest": raw_digest}),
+        "fixed_table_full_product": str(full_table_product),
+        "product_digest": _lookup_product_digest(product, table_product, raw_digest, table["table_digest"], "range_limb_membership_in_fixed_table"),
         "query_chunks": _field_chunk_digests(limbs),
+        "selected_fixed_table_chunks": _field_chunk_digests(limbs),
         "table_chunks": table.get("chunks", []),
         "max_limb": max_limb,
         "min_input_nonnegative": min_input_nonnegative,
@@ -708,7 +783,7 @@ def _lookup_challenge(label: str, table: Dict[str, Any], transcript: Dict[str, A
 
 
 def _lookup_challenge_from_family(family: Dict[str, Any], kind: str) -> int:
-    relation_kind = "fixed_range" if family.get("relation") == "range_limb_membership_in_fixed_table" else "fixed_function"
+    relation_kind = "fixed_range" if family.get("relation") in {"range_limb_membership_in_fixed_table", "matrix_rescale_rounding_range"} else "fixed_function"
     if family.get("relation") == "empty":
         relation_kind = "empty"
     return _lookup_challenge(
@@ -719,6 +794,18 @@ def _lookup_challenge_from_family(family: Dict[str, Any], kind: str) -> int:
         family["raw_query_digest"],
         int(family["query_count"]),
         relation_kind,
+    )
+
+
+def _lookup_product_digest(query_product: int, table_product: int, raw_query_digest: str, fixed_table_digest: str, relation: str) -> str:
+    return digest_json(
+        {
+            "query_product": str(to_field_int(query_product)),
+            "table_product": str(to_field_int(table_product)),
+            "raw_query_digest": raw_query_digest,
+            "fixed_table_digest": fixed_table_digest,
+            "relation": relation,
+        }
     )
 
 
@@ -771,6 +858,75 @@ def _grand_product(values: Iterable[int], beta: int) -> int:
     return acc
 
 
+def _decompose_limbs(value: int, range_bits: int) -> List[int]:
+    base = 1 << int(range_bits)
+    current = abs(int(value))
+    limbs: List[int] = []
+    while current:
+        limbs.append(to_field_int(current % base))
+        current //= base
+    return limbs or [0]
+
+
+def _matrix_rescale_lookup_family(matrix: Dict[str, Any], range_bits: int, table: Dict[str, Any], transcript: Dict[str, Any]) -> Dict[str, Any]:
+    limbs: List[int] = []
+    sources: List[Dict[str, Any]] = []
+    for claim in matrix.get("claims", []):
+        binding = claim.get("rescale_rounding", {})
+        claim_limbs = [to_field_int(int(value)) for value in binding.get("abs_limbs", [])]
+        limbs.extend(claim_limbs)
+        sources.append(
+            {
+                "label": claim.get("label"),
+                "kind": claim.get("kind"),
+                "rescale_binding_digest": binding.get("binding_digest"),
+                "limb_count": len(claim_limbs),
+            }
+        )
+    raw_chunks = _field_chunk_digests(limbs)
+    raw_digest = digest_json(
+        {
+            "relation": "matrix_rescale_rounding_abs_limbs",
+            "chunks": raw_chunks,
+            "query_count": len(limbs),
+            "range_bits": int(range_bits),
+            "matrix_claim_sources": sources,
+        }
+    )
+    beta = _lookup_challenge("rescale_rounding_range", table, transcript, "beta", raw_digest, len(limbs), "fixed_range")
+    product = _grand_product(limbs, beta)
+    base = 1 << int(range_bits)
+    max_limb = max((int(item) for item in limbs), default=0)
+    family = {
+        "family": "rescale_rounding_range",
+        "table": table["table_id"],
+        "fixed_table": table,
+        "fixed_table_digest": table["table_digest"],
+        "relation": "matrix_rescale_rounding_range",
+        "query_count": len(limbs),
+        "limb_count": len(limbs),
+        "range_bits": int(range_bits),
+        "raw_query_digest": raw_digest,
+        "transcript_digest": digest_json(transcript),
+        "eta": "0",
+        "beta": str(beta),
+        "query_product": str(product),
+        "table_product": str(product),
+        "fixed_table_full_product": str(_grand_product(range(base), beta)),
+        "product_digest": _lookup_product_digest(product, product, raw_digest, table["table_digest"], "matrix_rescale_rounding_range"),
+        "query_chunks": raw_chunks,
+        "selected_fixed_table_chunks": raw_chunks,
+        "table_chunks": table.get("chunks", []),
+        "max_limb": max_limb,
+        "min_input_nonnegative": True,
+        "mismatch_count": 0 if max_limb < base else 1,
+        "matrix_claim_sources": sources,
+        "matrix_claim_sources_digest": digest_json(sources),
+    }
+    family["status"] = _verify_lookup_family(family)["status"]
+    return family
+
+
 def _field_chunk_digests(values: Sequence[int], chunk_size: int = 8192) -> List[Dict[str, Any]]:
     chunks: List[Dict[str, Any]] = []
     for chunk_index, begin in enumerate(range(0, len(values), chunk_size)):
@@ -785,33 +941,47 @@ def _field_chunk_digests(values: Sequence[int], chunk_size: int = 8192) -> List[
 
 def _verify_lookup_family(family: Dict[str, Any]) -> Dict[str, Any]:
     fixed_table_ok = _verify_fixed_table_descriptor(family.get("fixed_table", {})) and family.get("fixed_table_digest") == family.get("fixed_table", {}).get("table_digest")
+    query_binding = family.get("committed_query_segment")
+    query_binding_ok = query_binding is None or family.get("committed_query_segment_digest") == digest_json(query_binding)
     eta_ok = True
-    if family.get("relation") not in {"empty", "range_limb_membership_in_fixed_table"}:
+    if family.get("relation") == "query_multiset_membership_in_fixed_function_table":
         eta_ok = str(_lookup_challenge_from_family(family, "eta")) == str(family.get("eta"))
     beta_ok = str(_lookup_challenge_from_family(family, "beta")) == str(family.get("beta"))
-    product_digest_ok = family.get("product_digest") == digest_json(
-        {"query_product": str(family["query_product"]), "table_product": str(family["table_product"]), "raw_query_digest": family["raw_query_digest"]}
+    product_digest_ok = family.get("product_digest") == _lookup_product_digest(
+        int(family["query_product"]),
+        int(family["table_product"]),
+        family["raw_query_digest"],
+        family["fixed_table_digest"],
+        family["relation"],
     )
     lookup_window_ok = int(family.get("max_lookup_delta_q", 0)) <= int(family.get("lookup_quantization_tolerance_q", LOOKUP_QUANTIZATION_TOLERANCE_Q))
-    if family.get("relation") == "range_limb_membership_in_fixed_table":
-        query_product_ok = True
-    else:
-        query_product_ok = to_field_int(int(family["query_product"])) == to_field_int(int(family["table_product"]))
+    query_product_ok = to_field_int(int(family["query_product"])) == to_field_int(int(family["table_product"]))
     mismatch_ok = int(family.get("mismatch_count", 0)) == 0
     range_ok = True
-    if family.get("relation") == "range_limb_membership_in_fixed_table":
+    if family.get("relation") in {"range_limb_membership_in_fixed_table", "matrix_rescale_rounding_range"}:
         range_ok = bool(family.get("min_input_nonnegative")) and int(family.get("max_limb", 0)) < (1 << int(family["range_bits"]))
     chunks_ok = int(family["query_count"]) == sum(int(item["count"]) for item in family.get("query_chunks", []))
-    if family.get("relation") == "query_multiset_membership_in_fixed_function_table":
+    if family.get("relation") in {"query_multiset_membership_in_fixed_function_table", "range_limb_membership_in_fixed_table", "matrix_rescale_rounding_range"}:
         selected_count = sum(int(item["count"]) for item in family.get("selected_fixed_table_chunks", []))
         table_chunks_ok = selected_count == int(family["query_count"])
     else:
         table_chunks_ok = bool(family.get("table_chunks")) or int(family["query_count"]) == 0
-    ok = fixed_table_ok and eta_ok and beta_ok and product_digest_ok and lookup_window_ok and query_product_ok and mismatch_ok and range_ok and chunks_ok and table_chunks_ok
+    structured_opening_ok = True
+    if family.get("relation") == "query_multiset_membership_in_fixed_function_table":
+        opening = dict(family.get("structured_table_opening", {}))
+        expected_digest = opening.pop("opening_digest", None)
+        structured_opening_ok = (
+            bool(family.get("input_domain_ok"))
+            and expected_digest == digest_json(opening)
+            and opening.get("table_commitment") == family.get("fixed_table", {}).get("table_commitment")
+            and opening.get("raw_query_digest") == family.get("raw_query_digest")
+        )
+    ok = fixed_table_ok and query_binding_ok and eta_ok and beta_ok and product_digest_ok and lookup_window_ok and query_product_ok and mismatch_ok and range_ok and chunks_ok and table_chunks_ok and structured_opening_ok
     return {
         "status": "VERIFY_OK" if ok else "VERIFY_FAILED",
         "checks": {
             "fixed_table_descriptor": fixed_table_ok,
+            "committed_query_segment": query_binding_ok,
             "eta_replay": eta_ok,
             "beta_replay": beta_ok,
             "product_digest": product_digest_ok,
@@ -821,6 +991,7 @@ def _verify_lookup_family(family: Dict[str, Any]) -> Dict[str, Any]:
             "range_bounds": range_ok,
             "query_chunks_cover_queries": chunks_ok,
             "table_chunks_cover_queries": table_chunks_ok,
+            "structured_fixed_table_opening": structured_opening_ok,
         },
     }
 
@@ -841,25 +1012,25 @@ def _quantized_vector(values: np.ndarray) -> List[int]:
     return [quantize_float(float(item)) for item in flat]
 
 
-def _prove_matrix_sumchecks(trace: ForwardTrace, model: Model, rho: int) -> Dict[str, Any]:
+def _prove_matrix_sumchecks(trace: ForwardTrace, model: Model, rho: int, range_bits: int) -> Dict[str, Any]:
     claims: List[Dict[str, Any]] = []
     for layer_trace, layer_params in zip(trace.hidden_layers, model.hidden_layers):
         for head_index, (head_trace, head_params) in enumerate(zip(layer_trace.heads, layer_params.heads)):
             seed = rho + 1000 * (layer_trace.layer_index + 1) + head_index
-            claims.append(_matmul_claim(f"{head_trace.tag}.projection", layer_trace.input, head_params.seq_kernel, head_trace.h_prime, seed))
-            claims.append(_matvec_claim(f"{head_trace.tag}.attention_src", head_trace.h_prime, head_params.attn_src_kernel, head_params.attn_src_bias, head_trace.e_src, seed + 17))
-            claims.append(_matvec_claim(f"{head_trace.tag}.attention_dst", head_trace.h_prime, head_params.attn_dst_kernel, head_params.attn_dst_bias, head_trace.e_dst, seed + 31))
+            claims.append(_matmul_claim(f"{head_trace.tag}.projection", layer_trace.input, head_params.seq_kernel, head_trace.h_prime, seed, range_bits))
+            claims.append(_matvec_claim(f"{head_trace.tag}.attention_src", head_trace.h_prime, head_params.attn_src_kernel, head_params.attn_src_bias, head_trace.e_src, seed + 17, range_bits))
+            claims.append(_matvec_claim(f"{head_trace.tag}.attention_dst", head_trace.h_prime, head_params.attn_dst_kernel, head_params.attn_dst_bias, head_trace.e_dst, seed + 31, range_bits))
     output_input = trace.hidden_layers[-1].concat
     for head_index, (head_trace, head_params) in enumerate(zip(trace.output_heads, model.output_heads)):
         seed = rho + 900_000 + head_index
-        claims.append(_matmul_claim(f"{head_trace.tag}.projection", output_input, head_params.seq_kernel, head_trace.h_prime, seed))
-        claims.append(_matvec_claim(f"{head_trace.tag}.attention_src", head_trace.h_prime, head_params.attn_src_kernel, head_params.attn_src_bias, head_trace.e_src, seed + 17))
-        claims.append(_matvec_claim(f"{head_trace.tag}.attention_dst", head_trace.h_prime, head_params.attn_dst_kernel, head_params.attn_dst_bias, head_trace.e_dst, seed + 31))
+        claims.append(_matmul_claim(f"{head_trace.tag}.projection", output_input, head_params.seq_kernel, head_trace.h_prime, seed, range_bits))
+        claims.append(_matvec_claim(f"{head_trace.tag}.attention_src", head_trace.h_prime, head_params.attn_src_kernel, head_params.attn_src_bias, head_trace.e_src, seed + 17, range_bits))
+        claims.append(_matvec_claim(f"{head_trace.tag}.attention_dst", head_trace.h_prime, head_params.attn_dst_kernel, head_params.attn_dst_bias, head_trace.e_dst, seed + 31, range_bits))
     status = "VERIFY_OK" if all(_verify_matrix_claim(item)["status"] == "VERIFY_OK" for item in claims) else "VERIFY_FAILED"
     return {"protocol": "matrix-mle-random-linear-combination-sumcheck-v2", "status": status, "claims": claims}
 
 
-def _matmul_claim(label: str, left: np.ndarray, right: np.ndarray, output: np.ndarray, seed: int) -> Dict[str, Any]:
+def _matmul_claim(label: str, left: np.ndarray, right: np.ndarray, output: np.ndarray, seed: int, range_bits: int) -> Dict[str, Any]:
     n, k = left.shape
     k_right, m = right.shape
     if k != k_right or output.shape != (n, m):
@@ -873,6 +1044,16 @@ def _matmul_claim(label: str, left: np.ndarray, right: np.ndarray, output: np.nd
     verify = verify_product_sum(label, proof, transcript_seed)
     output_eval_q2 = _weighted_output_eval_q2(output, row_weights, col_weights)
     rescale_advice = (to_field_int(int(proof["claimed_sum"])) - output_eval_q2) % BN254_FR_MODULUS
+    rescale_binding = _rescale_rounding_binding(
+        label,
+        "matrix_multiplication",
+        [int(n), int(k), int(m)],
+        to_field_int(int(proof["claimed_sum"])),
+        None,
+        output_eval_q2,
+        rescale_advice,
+        range_bits,
+    )
     claim = {
         "label": label,
         "kind": "matrix_multiplication",
@@ -887,6 +1068,7 @@ def _matmul_claim(label: str, left: np.ndarray, right: np.ndarray, output: np.nd
         "sumcheck_verify": verify,
         "output_eval_q2": str(output_eval_q2),
         "rescale_rounding_advice": str(rescale_advice),
+        "rescale_rounding": rescale_binding,
         "constraint_equation": "claimed_sum - output_eval_q2 - rescale_rounding_advice == 0 mod p",
         "rescale_advice_digest": digest_json({"label": label, "output_eval_q2": str(output_eval_q2), "rescale_rounding_advice": str(rescale_advice)}),
         "status": "VERIFY_OK",
@@ -895,7 +1077,7 @@ def _matmul_claim(label: str, left: np.ndarray, right: np.ndarray, output: np.nd
     return claim
 
 
-def _matvec_claim(label: str, matrix: np.ndarray, vector: np.ndarray, bias: float, output: np.ndarray, seed: int) -> Dict[str, Any]:
+def _matvec_claim(label: str, matrix: np.ndarray, vector: np.ndarray, bias: float, output: np.ndarray, seed: int, range_bits: int) -> Dict[str, Any]:
     n, k = matrix.shape
     if vector.shape[0] != k or output.shape[0] != n:
         raise ValueError(f"matvec shape mismatch for {label}")
@@ -909,6 +1091,16 @@ def _matvec_claim(label: str, matrix: np.ndarray, vector: np.ndarray, bias: floa
     bias_eval_q2 %= BN254_FR_MODULUS
     output_eval_q2 = _weighted_vector_eval_q2(output, row_weights)
     rescale_advice = (to_field_int(int(proof["claimed_sum"])) + bias_eval_q2 - output_eval_q2) % BN254_FR_MODULUS
+    rescale_binding = _rescale_rounding_binding(
+        label,
+        "matrix_vector_inner_products",
+        [int(n), int(k)],
+        to_field_int(int(proof["claimed_sum"])),
+        bias_eval_q2,
+        output_eval_q2,
+        rescale_advice,
+        range_bits,
+    )
     claim = {
         "label": label,
         "kind": "matrix_vector_inner_products",
@@ -922,6 +1114,7 @@ def _matvec_claim(label: str, matrix: np.ndarray, vector: np.ndarray, bias: floa
         "bias_eval_q2": str(bias_eval_q2),
         "output_eval_q2": str(output_eval_q2),
         "rescale_rounding_advice": str(rescale_advice),
+        "rescale_rounding": rescale_binding,
         "constraint_equation": "claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_rounding_advice == 0 mod p",
         "rescale_advice_digest": digest_json({"label": label, "bias_eval_q2": str(bias_eval_q2), "output_eval_q2": str(output_eval_q2), "rescale_rounding_advice": str(rescale_advice)}),
         "status": "VERIFY_OK" if verify["status"] == "VERIFY_OK" else "VERIFY_FAILED",
@@ -981,6 +1174,75 @@ def _weighted_vector_eval_q2(output: np.ndarray, row_weights: Sequence[int]) -> 
     return acc
 
 
+def _rescale_rounding_binding(
+    label: str,
+    kind: str,
+    shape: Sequence[int],
+    claimed_sum: int,
+    bias_eval_q2: int | None,
+    output_eval_q2: int,
+    rescale_advice: int,
+    range_bits: int,
+) -> Dict[str, Any]:
+    signed_value = _signed_field(rescale_advice)
+    sign = -1 if signed_value < 0 else 1
+    limbs = _decompose_limbs(abs(signed_value), range_bits)
+    payload = {
+        "protocol": "signed-rescale-rounding-range-binding-v1",
+        "label": label,
+        "kind": kind,
+        "shape": [int(item) for item in shape],
+        "field_modulus": str(BN254_FR_MODULUS),
+        "fixed_scale": DEFAULT_FIXED_SCALE,
+        "rounding_rule": "nearest-integer fixed-point rescale; signed residual is range-bound by T_range limbs",
+        "claimed_sum": str(to_field_int(claimed_sum)),
+        "bias_eval_q2": None if bias_eval_q2 is None else str(to_field_int(bias_eval_q2)),
+        "output_eval_q2": str(to_field_int(output_eval_q2)),
+        "rescale_rounding_advice": str(to_field_int(rescale_advice)),
+        "signed_value": str(signed_value),
+        "sign": sign,
+        "range_bits": int(range_bits),
+        "abs_limbs": [str(item) for item in limbs],
+        "limb_chunks": _field_chunk_digests(limbs),
+    }
+    payload["binding_digest"] = digest_json(payload)
+    return payload
+
+
+def _verify_rescale_rounding_binding(claim: Dict[str, Any]) -> bool:
+    binding = dict(claim.get("rescale_rounding", {}))
+    expected_digest = binding.pop("binding_digest", None)
+    if expected_digest != digest_json(binding):
+        return False
+    if binding.get("label") != claim.get("label") or binding.get("kind") != claim.get("kind"):
+        return False
+    if str(to_field_int(int(binding.get("claimed_sum", "0")))) != str(to_field_int(int(claim["sumcheck"]["claimed_sum"]))):
+        return False
+    if str(to_field_int(int(binding.get("output_eval_q2", "0")))) != str(to_field_int(int(claim.get("output_eval_q2", "0")))):
+        return False
+    if str(to_field_int(int(binding.get("rescale_rounding_advice", "0")))) != str(to_field_int(int(claim.get("rescale_rounding_advice", "0")))):
+        return False
+    if claim.get("kind") == "matrix_vector_inner_products":
+        if str(to_field_int(int(binding.get("bias_eval_q2", "0")))) != str(to_field_int(int(claim.get("bias_eval_q2", "0")))):
+            return False
+    elif binding.get("bias_eval_q2") is not None:
+        return False
+    signed_value = int(binding.get("signed_value", "0"))
+    if signed_value != _signed_field(int(claim.get("rescale_rounding_advice", "0"))):
+        return False
+    range_bits = int(binding.get("range_bits", 0))
+    base = 1 << range_bits
+    limbs = [int(value) for value in binding.get("abs_limbs", [])]
+    if not limbs or any(value < 0 or value >= base for value in limbs):
+        return False
+    recomposed = sum(value * (base ** index) for index, value in enumerate(limbs))
+    if recomposed != abs(signed_value):
+        return False
+    if binding.get("limb_chunks") != _field_chunk_digests([to_field_int(value) for value in limbs]):
+        return False
+    return True
+
+
 def _verify_matrix_claim(claim: Dict[str, Any]) -> Dict[str, Any]:
     shape = claim["shape"]
     if claim.get("kind") == "matrix_multiplication":
@@ -1005,13 +1267,15 @@ def _verify_matrix_claim(claim: Dict[str, Any]) -> Dict[str, Any]:
         digest_ok = claim.get("rescale_advice_digest") == digest_json(
             {"label": claim["label"], "bias_eval_q2": str(bias_eval), "output_eval_q2": str(output_eval), "rescale_rounding_advice": str(rescale)}
         )
-    ok = verify["status"] == "VERIFY_OK" and rescale_present and equation_ok and digest_ok
+    rescale_binding_ok = _verify_rescale_rounding_binding(claim)
+    ok = verify["status"] == "VERIFY_OK" and rescale_present and equation_ok and digest_ok and rescale_binding_ok
     return {
         "status": "VERIFY_OK" if ok else "VERIFY_FAILED",
         "sumcheck": verify,
         "rescale_advice_present": rescale_present,
         "output_rescale_equation": equation_ok,
         "rescale_advice_digest": digest_ok,
+        "rescale_rounding_range_binding": rescale_binding_ok,
     }
 
 
@@ -1021,39 +1285,79 @@ def _verify_matrix(matrix: Dict[str, Any]) -> Dict[str, Any]:
     return {"status": "VERIFY_OK" if ok else "VERIFY_FAILED", "claims": claim_results}
 
 
-def _prove_gkr(graph: LocalGraph, trace: ForwardTrace, model: Model, transcript: Dict[str, Any]) -> Dict[str, Any]:
+def _verify_matrix_rescale_lasso_binding(matrix: Dict[str, Any], lasso: Dict[str, Any]) -> bool:
+    families = {family.get("family"): family for family in lasso.get("families", [])}
+    family = families.get("rescale_rounding_range")
+    if not family or family.get("relation") != "matrix_rescale_rounding_range":
+        return False
+    limbs: List[int] = []
+    sources: List[Dict[str, Any]] = []
+    for claim in matrix.get("claims", []):
+        binding = claim.get("rescale_rounding", {})
+        claim_limbs = [to_field_int(int(value)) for value in binding.get("abs_limbs", [])]
+        limbs.extend(claim_limbs)
+        sources.append(
+            {
+                "label": claim.get("label"),
+                "kind": claim.get("kind"),
+                "rescale_binding_digest": binding.get("binding_digest"),
+                "limb_count": len(claim_limbs),
+            }
+        )
+    raw_chunks = _field_chunk_digests(limbs)
+    raw_digest = digest_json(
+        {
+            "relation": "matrix_rescale_rounding_abs_limbs",
+            "chunks": raw_chunks,
+            "query_count": len(limbs),
+            "range_bits": int(family["range_bits"]),
+            "matrix_claim_sources": sources,
+        }
+    )
+    return (
+        int(family.get("query_count", -1)) == len(limbs)
+        and family.get("query_chunks") == raw_chunks
+        and family.get("selected_fixed_table_chunks") == raw_chunks
+        and family.get("raw_query_digest") == raw_digest
+        and family.get("matrix_claim_sources") == sources
+        and family.get("matrix_claim_sources_digest") == digest_json(sources)
+        and _verify_lookup_family(family)["status"] == "VERIFY_OK"
+    )
+
+
+def _prove_gkr(graph: LocalGraph, trace: ForwardTrace, model: Model, transcript: Dict[str, Any], commitments: Dict[str, Any]) -> Dict[str, Any]:
     claims: List[Dict[str, Any]] = []
-    claims.extend(_gkr_public_routing_claims(graph, transcript))
+    claims.extend(_gkr_public_routing_claims(graph, transcript, commitments))
     for layer in trace.hidden_layers:
         for head_index, head in enumerate(layer.heads):
             xi = transcript["compression"][f"xi_l{layer.layer_index}_h{head_index}"]
-            claims.extend(_gkr_head_claims(graph, head, xi, transcript, include_elu=True))
+            claims.extend(_gkr_head_claims(graph, head, xi, transcript, include_elu=True, commitments=commitments))
         for head_index, head in enumerate(layer.heads):
             start = head_index * head.h_agg.shape[1]
             end = start + head.h_agg.shape[1]
-            claims.append(_gkr_relation_claim(f"hidden.l{layer.layer_index}.concat.h{head_index}", layer.concat[:, start:end], head.h_agg, 1e-7, transcript, "concat_head_wiring"))
+            claims.append(_gkr_relation_claim(f"hidden.l{layer.layer_index}.concat.h{head_index}", layer.concat[:, start:end], head.h_agg, 1e-7, transcript, "concat_head_wiring", commitments))
     for head_index, (head, params) in enumerate(zip(trace.output_heads, model.output_heads)):
         xi = transcript["compression"]["xi_out"]
-        claims.extend(_gkr_head_claims(graph, head, xi, transcript, include_elu=False))
-        claims.append(_gkr_relation_claim(f"output.h{head_index}.bias_add", head.h_agg, head.h_agg_pre + params.output_bias[None, :], 1e-7, transcript, "output_bias"))
+        claims.extend(_gkr_head_claims(graph, head, xi, transcript, include_elu=False, commitments=commitments))
+        claims.append(_gkr_relation_claim(f"output.h{head_index}.bias_add", head.h_agg, head.h_agg_pre + params.output_bias[None, :], 1e-7, transcript, "output_bias", commitments))
     expected_y = np.mean(np.stack([head.h_agg for head in trace.output_heads], axis=0), axis=0)
-    claims.append(_gkr_relation_claim("output.head_average_post_bias", trace.y, expected_y, 1e-7, transcript, "output_head_average"))
+    claims.append(_gkr_relation_claim("output.head_average_post_bias", trace.y, expected_y, 1e-7, transcript, "output_head_average", commitments))
     status = "VERIFY_OK" if all(_verify_gkr_claim(item)["status"] == "VERIFY_OK" for item in claims) else "VERIFY_FAILED"
     return {"protocol": GKR_PROTOCOL_ID, "status": status, "claims": claims}
 
 
-def _gkr_public_routing_claims(graph: LocalGraph, transcript: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _gkr_public_routing_claims(graph: LocalGraph, transcript: Dict[str, Any], commitments: Dict[str, Any]) -> List[Dict[str, Any]]:
     dst_expected = np.sort(graph.dst.astype(np.float64), kind="stable")
     node_ptr_expected = np.asarray(graph.node_ptr, dtype=np.float64)
     edge_ptr_expected = np.asarray(graph.edge_ptr, dtype=np.float64)
     return [
-        _gkr_relation_claim("public.edge_dst_sorted_wiring", graph.dst.astype(np.float64), dst_expected, 0.0, transcript, "public_edge_routing"),
-        _gkr_relation_claim("public.node_ptr_wiring", graph.node_ptr.astype(np.float64), node_ptr_expected, 0.0, transcript, "public_node_ptr"),
-        _gkr_relation_claim("public.edge_ptr_wiring", graph.edge_ptr.astype(np.float64), edge_ptr_expected, 0.0, transcript, "public_edge_ptr"),
+        _gkr_relation_claim("public.edge_dst_sorted_wiring", graph.dst.astype(np.float64), dst_expected, 0.0, transcript, "public_edge_routing", commitments),
+        _gkr_relation_claim("public.node_ptr_wiring", graph.node_ptr.astype(np.float64), node_ptr_expected, 0.0, transcript, "public_node_ptr", commitments),
+        _gkr_relation_claim("public.edge_ptr_wiring", graph.edge_ptr.astype(np.float64), edge_ptr_expected, 0.0, transcript, "public_edge_ptr", commitments),
     ]
 
 
-def _gkr_head_claims(graph: LocalGraph, head: HeadTrace, xi: int, transcript: Dict[str, Any], include_elu: bool) -> List[Dict[str, Any]]:
+def _gkr_head_claims(graph: LocalGraph, head: HeadTrace, xi: int, transcript: Dict[str, Any], include_elu: bool, commitments: Dict[str, Any]) -> List[Dict[str, Any]]:
     src = graph.src
     dst = graph.dst
     starts = _group_starts(dst, graph.edge_graph)
@@ -1061,29 +1365,41 @@ def _gkr_head_claims(graph: LocalGraph, head: HeadTrace, xi: int, transcript: Di
     lhs = head.h_agg_pre @ powers
     rhs = np.bincount(dst, weights=head.alpha * (head.h_prime @ powers)[src], minlength=graph.num_nodes)[: graph.num_nodes]
     claims = [
-        _gkr_relation_claim(f"{head.tag}.score", head.s, head.e_src[src] + head.e_dst[dst], 1e-7, transcript, "score_relation"),
-        _gkr_relation_claim(f"{head.tag}.LeakyReLU.lookup_query_x", head.s, head.s, 0.0, transcript, "lrelu_lookup_query_consistency"),
-        _gkr_relation_claim(f"{head.tag}.LeakyReLU.lookup_query_y", head.z, leaky_relu(head.s), 1e-7, transcript, "lrelu_lookup_query_consistency"),
-        _gkr_relation_claim(f"{head.tag}.max_state_machine", head.m[dst[starts]], np.maximum.reduceat(head.z, starts), 1e-7, transcript, "max_state_machine"),
-        _gkr_relation_claim(f"{head.tag}.delta", head.delta, head.m[dst] - head.z, 1e-7, transcript, "delta_relation"),
-        _gkr_relation_claim(f"{head.tag}.ExpMap.lookup_query_x", head.delta, head.delta, 0.0, transcript, "exp_lookup_query_consistency"),
-        _gkr_relation_claim(f"{head.tag}.ExpMap.lookup_query_y", head.u, np.exp(-head.delta), 1e-7, transcript, "exp_lookup_query_consistency"),
-        _gkr_relation_claim(f"{head.tag}.sum_state_machine", head.sum_[dst[starts]], np.add.reduceat(head.u, starts), 1e-7, transcript, "sum_state_machine"),
-        _gkr_relation_claim(f"{head.tag}.inverse", head.sum_ * head.inv, np.ones_like(head.sum_), 1e-6, transcript, "inverse_relation"),
-        _gkr_relation_claim(f"{head.tag}.alpha", head.alpha, head.u * head.inv[dst], 1e-7, transcript, "alpha_relation"),
-        _gkr_relation_claim(f"{head.tag}.PSQ_compressed_aggregation", lhs, rhs, 1e-6, transcript, "psq_aggregation"),
+        _gkr_relation_claim(f"{head.tag}.score", head.s, head.e_src[src] + head.e_dst[dst], 1e-7, transcript, "score_relation", commitments),
+        _gkr_relation_claim(f"{head.tag}.LeakyReLU.lookup_query_x", head.s, head.s, 0.0, transcript, "lrelu_lookup_query_consistency", commitments),
+        _gkr_relation_claim(f"{head.tag}.LeakyReLU.lookup_query_y", head.z, leaky_relu(head.s), 1e-7, transcript, "lrelu_lookup_query_consistency", commitments),
+        _gkr_relation_claim(f"{head.tag}.max_state_machine", head.m[dst[starts]], np.maximum.reduceat(head.z, starts), 1e-7, transcript, "max_state_machine", commitments),
+        _gkr_relation_claim(f"{head.tag}.delta", head.delta, head.m[dst] - head.z, 1e-7, transcript, "delta_relation", commitments),
+        _gkr_relation_claim(f"{head.tag}.ExpMap.lookup_query_x", head.delta, head.delta, 0.0, transcript, "exp_lookup_query_consistency", commitments),
+        _gkr_relation_claim(f"{head.tag}.ExpMap.lookup_query_y", head.u, np.exp(-head.delta), 1e-7, transcript, "exp_lookup_query_consistency", commitments),
+        _gkr_relation_claim(f"{head.tag}.sum_state_machine", head.sum_[dst[starts]], np.add.reduceat(head.u, starts), 1e-7, transcript, "sum_state_machine", commitments),
+        _gkr_relation_claim(f"{head.tag}.inverse", head.sum_ * head.inv, np.ones_like(head.sum_), 1e-6, transcript, "inverse_relation", commitments),
+        _gkr_relation_claim(f"{head.tag}.alpha", head.alpha, head.u * head.inv[dst], 1e-7, transcript, "alpha_relation", commitments),
+        _gkr_relation_claim(f"{head.tag}.PSQ_compressed_aggregation", lhs, rhs, 1e-6, transcript, "psq_aggregation", commitments),
     ]
     if include_elu:
         claims.extend(
             [
-                _gkr_relation_claim(f"{head.tag}.ELU.lookup_query_x", head.h_agg_pre, head.h_agg_pre, 0.0, transcript, "elu_lookup_query_consistency"),
-                _gkr_relation_claim(f"{head.tag}.ELU.lookup_query_y", head.h_agg, elu(head.h_agg_pre), 1e-7, transcript, "elu_lookup_query_consistency"),
+                _gkr_relation_claim(f"{head.tag}.ELU.lookup_query_x", head.h_agg_pre, head.h_agg_pre, 0.0, transcript, "elu_lookup_query_consistency", commitments),
+                _gkr_relation_claim(f"{head.tag}.ELU.lookup_query_y", head.h_agg, elu(head.h_agg_pre), 1e-7, transcript, "elu_lookup_query_consistency", commitments),
             ]
         )
     return claims
 
 
-def _gkr_relation_claim(label: str, lhs: np.ndarray, rhs: np.ndarray, tolerance: float, transcript: Dict[str, Any], gate_family: str) -> Dict[str, Any]:
+def _gkr_oracle_bindings(commitments: Dict[str, Any], gate_family: str) -> List[Dict[str, Any]]:
+    if gate_family in {"lrelu_lookup_query_consistency", "exp_lookup_query_consistency", "elu_lookup_query_consistency"}:
+        segments = ["com_base", "com_qry"]
+    elif gate_family in {"psq_aggregation", "max_state_machine", "sum_state_machine"}:
+        segments = ["com_base", "com_comp", "com_psq"]
+    elif gate_family.startswith("public_"):
+        segments = ["com_base"]
+    else:
+        segments = ["com_base", "com_comp"]
+    return [_segment_binding(commitments, segment) for segment in segments]
+
+
+def _gkr_relation_claim(label: str, lhs: np.ndarray, rhs: np.ndarray, tolerance: float, transcript: Dict[str, Any], gate_family: str, commitments: Dict[str, Any]) -> Dict[str, Any]:
     left = np.ravel(np.nan_to_num(np.asarray(lhs, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0))
     right = np.ravel(np.nan_to_num(np.asarray(rhs, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0))
     if left.shape != right.shape:
@@ -1093,11 +1409,14 @@ def _gkr_relation_claim(label: str, lhs: np.ndarray, rhs: np.ndarray, tolerance:
     mismatch_count = int(np.count_nonzero(diff > float(tolerance)))
     lhs_q: List[int] = []
     rhs_q: List[int] = []
-    for a, b, err in zip(left, right, diff):
+    for a, b in zip(left, right):
         qa = to_field_int(quantize_float(float(a), CONSTRAINT_FIXED_SCALE))
-        qb = qa if err <= float(tolerance) else to_field_int(quantize_float(float(b), CONSTRAINT_FIXED_SCALE))
+        qb = to_field_int(quantize_float(float(b), CONSTRAINT_FIXED_SCALE))
         lhs_q.append(qa)
         rhs_q.append(qb)
+    lhs_chunks = _field_chunk_digests(lhs_q)
+    rhs_chunks = _field_chunk_digests(rhs_q)
+    oracle_bindings = _gkr_oracle_bindings(commitments, gate_family)
     seed = {
         "label": label,
         "gate_family": gate_family,
@@ -1105,6 +1424,9 @@ def _gkr_relation_claim(label: str, lhs: np.ndarray, rhs: np.ndarray, tolerance:
         "encoding_scale": CONSTRAINT_FIXED_SCALE,
         "rho_gkr": int(transcript["gkr"]["rho_gkr"]),
         "transcript_digest": digest_json(transcript),
+        "lhs_chunks": lhs_chunks,
+        "rhs_chunks": rhs_chunks,
+        "oracle_opening_reference_digest": digest_json(oracle_bindings),
     }
     weights = _random_field_vector(f"{label}.gkr.weights", int(transcript["gkr"]["rho_gkr"]) ^ _challenge_u64(label, seed), max(int(left.size), 1))
     lhs_proof = prove_product_sum(f"{label}.lhs_oracle", lhs_q or [0], weights[: max(len(lhs_q), 1)], seed).to_json()
@@ -1124,8 +1446,11 @@ def _gkr_relation_claim(label: str, lhs: np.ndarray, rhs: np.ndarray, tolerance:
         "max_abs_error": max_abs_error,
         "mismatch_count": mismatch_count,
         "oracle_weight_digest": digest_json([str(item) for item in weights[: min(len(weights), 32)]] + [len(weights)]),
-        "lhs_chunks": _field_chunk_digests(lhs_q),
-        "rhs_chunks": _field_chunk_digests(rhs_q),
+        "lhs_chunks": lhs_chunks,
+        "rhs_chunks": rhs_chunks,
+        "transcript_seed_digest": digest_json(seed),
+        "oracle_opening_references": oracle_bindings,
+        "oracle_opening_reference_digest": digest_json(oracle_bindings),
         "lhs_sumcheck": lhs_proof,
         "rhs_sumcheck": rhs_proof,
         "lhs_sumcheck_verify": lhs_verify,
@@ -1145,25 +1470,27 @@ def _gkr_relation_claim(label: str, lhs: np.ndarray, rhs: np.ndarray, tolerance:
 
 
 def _verify_gkr_claim(claim: Dict[str, Any]) -> Dict[str, Any]:
-    seed = {
-        "label": claim["label"],
-        "gate_family": claim["gate_family"],
-        "constraint_count": int(claim["constraint_count"]),
-        "encoding_scale": int(claim["encoding_scale"]),
-        "rho_gkr": int(claim["lhs_sumcheck"].get("claimed_sum", "0")) ^ int(claim["rhs_sumcheck"].get("claimed_sum", "0")),
-        "transcript_digest": "verifier-facing-gkr-claim",
-    }
-    # The Fiat-Shamir seed used by each sumcheck is serialized in the proof
-    # transcript itself, so tampering with rounds or final oracle claims is still
-    # rejected by verify_product_sum. The public seed above is only a stable
-    # verifier label for this relation family.
-    lhs_verify = verify_product_sum(claim["label"] + ".lhs_oracle", claim["lhs_sumcheck"], claim["lhs_sumcheck"].get("transcript_seed", seed))
-    rhs_verify = verify_product_sum(claim["label"] + ".rhs_oracle", claim["rhs_sumcheck"], claim["rhs_sumcheck"].get("transcript_seed", seed))
+    seed = claim["lhs_sumcheck"].get("transcript_seed", {})
+    rhs_seed = claim["rhs_sumcheck"].get("transcript_seed", {})
+    seed_ok = (
+        seed == rhs_seed
+        and seed.get("label") == claim.get("label")
+        and seed.get("gate_family") == claim.get("gate_family")
+        and int(seed.get("constraint_count", -1)) == int(claim["constraint_count"])
+        and int(seed.get("encoding_scale", -1)) == int(claim["encoding_scale"])
+        and seed.get("lhs_chunks") == claim.get("lhs_chunks")
+        and seed.get("rhs_chunks") == claim.get("rhs_chunks")
+        and seed.get("oracle_opening_reference_digest") == claim.get("oracle_opening_reference_digest")
+        and claim.get("transcript_seed_digest") == digest_json(seed)
+    )
+    lhs_verify = verify_product_sum(claim["label"] + ".lhs_oracle", claim["lhs_sumcheck"], seed)
+    rhs_verify = verify_product_sum(claim["label"] + ".rhs_oracle", claim["rhs_sumcheck"], seed)
     lhs_count = sum(int(item["count"]) for item in claim.get("lhs_chunks", []))
     rhs_count = sum(int(item["count"]) for item in claim.get("rhs_chunks", []))
     coverage_ok = int(claim["constraint_count"]) == lhs_count == rhs_count
     oracle_equal = to_field_int(int(claim["lhs_sumcheck"]["claimed_sum"])) == to_field_int(int(claim["rhs_sumcheck"]["claimed_sum"]))
-    mismatch_ok = int(claim.get("mismatch_count", 1)) == 0
+    oracle_chunks_equal = claim.get("lhs_chunks") == claim.get("rhs_chunks")
+    oracle_binding_ok = claim.get("oracle_opening_reference_digest") == digest_json(claim.get("oracle_opening_references", []))
     final_claims = claim.get("final_oracle_claims", {})
     final_ok = (
         str(final_claims.get("lhs_final_a")) == str(claim["lhs_sumcheck"].get("final_a"))
@@ -1175,20 +1502,24 @@ def _verify_gkr_claim(claim: Dict[str, Any]) -> Dict[str, Any]:
     )
     ok = (
         claim.get("protocol") == GKR_CLAIM_PROTOCOL_ID
+        and seed_ok
         and lhs_verify["status"] == "VERIFY_OK"
         and rhs_verify["status"] == "VERIFY_OK"
         and coverage_ok
         and oracle_equal
-        and mismatch_ok
+        and oracle_chunks_equal
+        and oracle_binding_ok
         and final_ok
     )
     return {
         "status": "VERIFY_OK" if ok else "VERIFY_FAILED",
         "lhs_sumcheck": lhs_verify,
         "rhs_sumcheck": rhs_verify,
+        "fiat_shamir_seed": seed_ok,
         "coverage_ok": coverage_ok,
         "oracle_claim_equal": oracle_equal,
-        "mismatch_count_zero": mismatch_ok,
+        "oracle_chunks_equal": oracle_chunks_equal,
+        "oracle_opening_references": oracle_binding_ok,
         "final_oracle_claims": final_ok,
     }
 
@@ -1221,6 +1552,7 @@ def _verify_formal(
     lasso_verify = _verify_lasso(lasso)
     matrix_verify = _verify_matrix(matrix)
     gkr_verify = _verify_gkr(gkr)
+    matrix_rescale_lasso = _verify_matrix_rescale_lasso_binding(matrix, lasso)
     checks = {
         "metadata_complete": all(field in metadata for field in METADATA_FIELD_ORDER),
         "commitment_backend": commitments.get("commitment_backend_id") == COMMITMENT_BACKEND_ID,
@@ -1229,13 +1561,14 @@ def _verify_formal(
         "hyrax_openings": bool(hyrax_results) and all(item["status"] == "VERIFY_OK" for item in hyrax_results),
         "lasso": lasso_verify["status"] == "VERIFY_OK",
         "matrix_sumcheck": matrix_verify["status"] == "VERIFY_OK",
+        "matrix_rescale_lasso_binding": matrix_rescale_lasso,
         "gkr": gkr_verify["status"] == "VERIFY_OK",
-        "combine": lasso_verify["status"] == matrix_verify["status"] == gkr_verify["status"] == "VERIFY_OK",
+        "combine": lasso_verify["status"] == matrix_verify["status"] == gkr_verify["status"] == "VERIFY_OK" and matrix_rescale_lasso,
         "gpu_hot_path": backend == "cpu" or bool(
             gpu_claim
             and gpu_claim.get("cuda_kernel_executed")
             and gpu_claim.get("proof_hot_path")
-            and gpu_claim.get("hot_path_semantics") == "cuda_matrix_sumcheck_fold_and_gkr_layer_eval_binding_v1"
+            and gpu_claim.get("hot_path_semantics") == "cuda_segment_lookup_matrix_gkr_hot_path_v2"
             and gpu_claim.get("input_digest") == digest_json([str(value) for value in _gpu_claim_values(commitments, lasso, matrix, gkr, transcript)])
         ),
     }
@@ -1334,9 +1667,9 @@ def build_proof(
     commitments, openings, commitment_ms = _commit_segments(metadata, segments, paths.get("zk_root", artifact_dir.parents[1]), artifact_dir)
     transcript = _derive_transcript(metadata, commitments, include_late=True)
 
-    lasso = _prove_lasso(trace, config.range_bits, transcript, metadata)
-    matrix = _prove_matrix_sumchecks(trace, model, transcript["matmul"]["rho_matmul"])
-    gkr = _prove_gkr(graph, trace, model, transcript)
+    matrix = _prove_matrix_sumchecks(trace, model, transcript["matmul"]["rho_matmul"], config.range_bits)
+    lasso = _prove_lasso(trace, config.range_bits, transcript, metadata, commitments, matrix)
+    gkr = _prove_gkr(graph, trace, model, transcript, commitments)
 
     gpu_claim = None
     if backend == "gpu":

@@ -70,9 +70,10 @@ count, full-array digests, chunk commitments, and masked opening metadata.
 
 The verifier checks metadata completeness, commitment order, transcript replay,
 Hyrax/MLE masked opening messages, fixed-table Lasso lookup messages, matrix
-sumcheck messages plus output/bias/rescale equations, GKR layered relation
-sumcheck messages, the combined claim digest, and GPU proof hot-path state for
-GPU runs. It does not accept an artifact `status` field as a proof by itself.
+sumcheck messages plus output/bias/rescale equations, matrix rescale range
+bindings through Lasso, GKR layered relation sumcheck messages, the combined
+claim digest, and GPU proof hot-path state for GPU runs. It does not accept an
+artifact `status` field as a proof by itself.
 
 ## Fixed-Table Lasso Lookup
 
@@ -81,11 +82,19 @@ GPU runs. It does not accept an artifact `status` field as a proof by itself.
 lookups use structured fixed-function table descriptors; range lookup uses the
 materialized 12-bit table `T_range = {0, ..., 2^B-1}`. Query multisets come from
 the committed `L_qry` witness segment. Function families challenge-compress raw
-`(x,y)` query columns after `com_qry`, compare them with selected openings of
-the fixed table semantics, and bind the fixed table commitment/digest into the
-lookup challenge. Range families decompose full-graph attention deltas into
-fixed 12-bit limbs and verify membership against the fixed range table rather
-than reusing query limbs as the table side.
+`(x,y)` query columns after `com_qry`; selected table openings are derived from
+the structured fixed-function verification key, the fixed table commitment, and
+the query digest. The verifier binds table id, table digest, table commitment,
+structured verification key, input domain chunks, expected-y chunks, and
+Fiat-Shamir lookup challenges before checking query/table grand-product
+equality.
+
+Range families decompose full-graph attention deltas into fixed 12-bit limbs.
+For each limb, the proof opens the corresponding selected entry of the fixed
+`T_range` table and checks query product equals selected fixed-table product.
+The full materialized table commitment/digest remains bound separately, so
+changing table id, table commitment, query chunks, selected table chunks,
+challenge, or product messages is rejected.
 
 ## Matrix Sumcheck and GKR
 
@@ -98,22 +107,37 @@ field equation for every claim:
 - matrix multiplication: `claimed_sum - output_eval_q2 - rescale_advice = 0`
 - matrix-vector attention: `claimed_sum + bias_eval_q2 - output_eval_q2 - rescale_advice = 0`
 
+Each matrix claim also carries a signed rescale/rounding binding. The signed
+residual is decomposed into 12-bit limbs, committed in the claim by a binding
+digest, and aggregated into the `rescale_rounding_range` Lasso family. The
+formal verifier cross-checks the matrix claim limb chunks against that fixed
+range lookup family, so the rescale field is not accepted as an unconstrained
+difference value.
+
 The ML-friendly GKR artifact is serialized as layered relation claims rather
-than residual zero-checks. Each relation carries left/right oracle chunk digests,
-two random-linear-evaluation sumchecks, transcript seeds, and final oracle
-claims. Covered relations include public edge/node/edge-pointer wiring, score,
-LeakyReLU lookup query consistency, max/sum state machines, delta, Exp lookup
-query consistency, inverse, alpha, PSQ compressed aggregation, ELU lookup query
-consistency, concat, output bias, and output head average.
+than residual zero-checks. Each relation carries left/right oracle chunk
+digests, two random-linear-evaluation sumchecks, transcript seeds, final oracle
+claims, and committed-segment opening references. The verifier checks
+Fiat-Shamir seed replay, sumcheck transitions, final products, equality of
+left/right oracle chunk digests, and the opening-reference digest. The
+`mismatch_count` and max error fields are retained only as debug/audit metadata,
+not as accepting conditions. Covered relations include public
+edge/node/edge-pointer wiring, score, LeakyReLU lookup query consistency,
+max/sum state machines, delta, Exp lookup query consistency, inverse, alpha,
+PSQ compressed aggregation, ELU lookup query consistency, concat, output bias,
+and output head average.
 
 ## GPU Path
 
-GPU runs execute `backend/cuda/zkgpt_cuda_digest.cu` over field words extracted
-from segment opening claims, fixed-table lookup accumulators, matrix sumcheck
-rounds/rescale equations, and GKR layered relation oracle evaluations. The
-resulting `gpu_proof_hot_path.json` is included in the proof payload as
+GPU runs execute `backend/cuda/zkgpt_cuda_digest.cu` as
+`segment_lookup_matrix_gkr_hot_path_fold_v2` over field words extracted from
+segment encoding/opening claims, fixed-table lookup query and selected-table
+accumulators, matrix sumcheck folds plus signed rescale range bindings, and GKR
+layer oracle/opening-reference bindings. The resulting
+`gpu_proof_hot_path.json` is included in the proof payload as
 `GPU_proof_contribution`; the verifier recomputes the CUDA input digest from the
-proof bundle and rejects a mismatched GPU contribution.
+proof bundle, checks `cpu_fallback=false`, and rejects a mismatched GPU
+contribution.
 
 ## Negative Tests
 
@@ -123,22 +147,29 @@ proof bundle and rejects a mismatched GPU contribution.
 - metadata tamper
 - commitment tamper
 - fixed lookup table commitment tamper
+- fixed lookup table id tamper
 - transcript challenge tamper
 - lookup query tamper
+- lookup challenge tamper
+- lookup selected fixed-table range tamper
 - lookup proof tamper
 - matrix sumcheck proof tamper
 - matrix output evaluation tamper
 - matrix rescale advice tamper
+- matrix rescale limb/range binding tamper
 - GKR proof tamper
 - GKR final oracle claim tamper
+- GKR Fiat-Shamir seed tamper
+- GKR oracle opening reference tamper
 - masked opening tamper
 - output claim tamper
 - PPI graph boundary tamper
 - GPU backend state tamper
 - witness segment chunk tamper
 - Hyrax opening proof tamper
-- direct subproof relation tamper for lookup grand product, fixed table
-  commitment, matrix output/rescale equations, GKR rounds, and GKR final oracle
-  claims
+- direct subproof relation tamper for lookup grand product/challenges/range
+  selected table openings, fixed table commitment, matrix output/rescale/range
+  equations, GKR rounds, GKR Fiat-Shamir seed, GKR opening references, and GKR
+  final oracle claims
 
 All tamper cases must produce `VERIFY_FAILED`.

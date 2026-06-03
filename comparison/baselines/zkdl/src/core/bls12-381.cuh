@@ -2,7 +2,6 @@
 #define BLS12_381_CUH
 
 // BLS12-381 底层 device arithmetic；Fr/G1 tensor、commitment 和 verifier 通过本文件完成域运算与 MSM。
-// 本文件不定义 zkDL-GAT proof 语义，也不写 artifact；proof_size 由上层 proof record 统计。
 
 // Defines to make the code work with both, CUDA and OpenCL
 #ifdef __NVCC__

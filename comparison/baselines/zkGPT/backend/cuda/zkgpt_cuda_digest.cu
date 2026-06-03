@@ -126,7 +126,7 @@ int main(int argc, char** argv)
         }
         output << "{\n"
                << "  \"backend\": \"gpu\",\n"
-               << "  \"cuda_kernel\": \"proof_field_reduce_v1\",\n"
+               << "  \"cuda_kernel\": \"segment_lookup_matrix_gkr_hot_path_fold_v2\",\n"
                << "  \"cuda_kernel_executed\": true,\n"
                << "  \"gpu_runtime_present\": true,\n"
                << "  \"device_count\": " << count << ",\n"

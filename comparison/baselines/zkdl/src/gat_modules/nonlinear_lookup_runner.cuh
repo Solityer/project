@@ -17,8 +17,7 @@ struct EluLookupWitness {
     std::uint64_t max_abs_input = 0;
 };
 
-// 构造 hidden ELU 查询见证：h_pre、h_out、公开 ELU 表 expected 值与 mismatch counter。
-// 构造 hidden ELU 查表 witness；输出 proof_digests 不改变 proof 语义。
+// 构造 hidden ELU 查表 witness；
 EluLookupWitness build_elu_lookup_witness(
     const HeadTraceHost& trace,
     const ZkdlGatQuantContract& quant,

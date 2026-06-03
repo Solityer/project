@@ -2,11 +2,24 @@
 from __future__ import annotations
 
 import pathlib
+import os
 import sys
 from typing import Any, Dict, List
 
 
+def _ensure_numpy_python() -> None:
+    try:
+        import numpy  # noqa: F401
+        return
+    except ModuleNotFoundError:
+        venv_python = pathlib.Path("/home/pzh/project/.venv/bin/python")
+        if venv_python.exists() and pathlib.Path(sys.executable) != venv_python:
+            os.execv(str(venv_python), [str(venv_python), *sys.argv])
+        raise
+
+
 def main() -> None:
+    _ensure_numpy_python()
     zk_root = pathlib.Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(zk_root / "src"))
 
