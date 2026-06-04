@@ -19,6 +19,7 @@
 #include <openssl/sha.h>
 
 #include "gatzk/algebra/vector_ops.hpp"
+#include "gatzk/util/route2.hpp"
 
 namespace gatzk::crypto
 {
@@ -462,11 +463,15 @@ namespace gatzk::crypto
         {
             if (polynomial.basis == algebra::PolynomialBasis::Coefficient)
             {
-                if (polynomial.size() > pk.powers_g1.size() || polynomial.size() > pk.degree_bound + 1)
+                if (pk.powers_g1 == nullptr)
+                {
+                    throw std::runtime_error("missing coefficient proving SRS");
+                }
+                if (polynomial.size() > pk.powers_g1->size() || polynomial.size() > pk.degree_bound + 1)
                 {
                     throw std::runtime_error("coefficient polynomial exceeds SRS degree bound: " + polynomial.name);
                 }
-                return g1_multi_scalar_mul(pk.powers_g1.data(), polynomial.values().data(), polynomial.size());
+                return g1_multi_scalar_mul(pk.powers_g1->data(), polynomial.values().data(), polynomial.size());
             }
 
             if (polynomial.domain == nullptr)
@@ -479,11 +484,15 @@ namespace gatzk::crypto
             {
                 throw std::runtime_error("missing Lagrange SRS for domain: " + key);
             }
-            if (polynomial.size() > it->second.size())
+            if (it->second == nullptr)
+            {
+                throw std::runtime_error("missing Lagrange proving SRS material for domain: " + key);
+            }
+            if (polynomial.size() > it->second->size())
             {
                 throw std::runtime_error("evaluation polynomial exceeds Lagrange SRS domain size: " + polynomial.name);
             }
-            return g1_multi_scalar_mul(it->second.data(), polynomial.values().data(), polynomial.size());
+            return g1_multi_scalar_mul(it->second->data(), polynomial.values().data(), polynomial.size());
         }
 
         Commitment make_commitment(const std::string& name, algebra::Polynomial polynomial, const KZGProverKey& pk)
@@ -611,6 +620,20 @@ namespace gatzk::crypto
             }
             return out;
         }
+
+        bool verify_pairing_equation(
+            const G1Point& numerator,
+            const G1Point& witness,
+            const FieldElement& point,
+            const KZGVerifierKey& vk)
+        {
+            const auto rhs = g2_sub(vk.g2_tau, g2_mul(vk.g2_one, point));
+            if (util::route2_options().fast_verify_pairing && vk.g2_one_prepared != nullptr)
+            {
+                return pairing_equal_with_prepared_rhs_a(numerator, *vk.g2_one_prepared, witness, rhs);
+            }
+            return pairing_equal(numerator, vk.g2_one, witness, rhs);
+        }
     }
 
     std::size_t serialized_size(const Commitment& commitment)
@@ -660,7 +683,7 @@ namespace gatzk::crypto
         }
 
         auto powers_g1 = load_g1_vector_file(srs_root / manifest.pk_coef_path);
-        std::unordered_map<std::string, std::vector<G1Point>> lagrange_srs;
+        std::unordered_map<std::string, std::shared_ptr<const std::vector<G1Point>>> lagrange_srs;
         for (const auto& [domain, path] : manifest.pk_lagrange_paths)
         {
             auto material = load_g1_vector_file(srs_root / path);
@@ -669,7 +692,7 @@ namespace gatzk::crypto
             {
                 throw std::runtime_error("Lagrange SRS domain size mismatch: " + domain);
             }
-            lagrange_srs.emplace(domain, std::move(material));
+            lagrange_srs.emplace(domain, std::make_shared<const std::vector<G1Point>>(std::move(material)));
         }
         const auto [g2_one, g2_tau] = load_vk_file(srs_root / manifest.vk_path);
 
@@ -685,7 +708,7 @@ namespace gatzk::crypto
             .srs_type = manifest.srs_type,
             .degree_bound = manifest.degree_bound,
             .g1_generator = g1_generator,
-            .powers_g1 = std::move(powers_g1),
+            .powers_g1 = std::make_shared<const std::vector<G1Point>>(std::move(powers_g1)),
             .lagrange_srs_by_domain = std::move(lagrange_srs),
             .manifest_hash = manifest.manifest_hash,
         };
@@ -693,6 +716,7 @@ namespace gatzk::crypto
             .srs_id = manifest.srs_id,
             .srs_type = manifest.srs_type,
             .degree_bound = manifest.degree_bound,
+            .g1_generator = g1_generator,
             .g2_one = g2_one,
             .g2_tau = g2_tau,
             .g2_one_prepared = std::make_shared<PreparedG2>(prepare_g2(g2_one)),
@@ -825,10 +849,10 @@ namespace gatzk::crypto
     bool KZG::verify_batch(
         const std::vector<Commitment>& commitments,
         const std::vector<FieldElement>& points,
-        const std::vector<std::vector<FieldElement>>& claimed_values,
-        const FieldElement& folding_challenge,
-        const OpeningProof& proof,
-        const KZGKeyPair& key)
+            const std::vector<std::vector<FieldElement>>& claimed_values,
+            const FieldElement& folding_challenge,
+            const OpeningProof& proof,
+            const KZGVerifierKey& vk)
     {
         if (commitments.size() != claimed_values.size() || proof.witnesses.size() != points.size())
         {
@@ -854,9 +878,8 @@ namespace gatzk::crypto
                 commitments,
                 values_for_point,
                 folding_challenge,
-                key.g1_generator);
-            const auto rhs = g2_sub(key.g2_tau, g2_mul(key.g2_one, points[point_index]));
-            if (!pairing_equal(folded_commitment, key.g2_one, proof.witnesses[point_index], rhs))
+                vk.g1_generator);
+            if (!verify_pairing_equation(folded_commitment, proof.witnesses[point_index], points[point_index], vk))
             {
                 return false;
             }
@@ -892,10 +915,10 @@ namespace gatzk::crypto
 
     bool KZG::verify_external_fold(
         const std::vector<std::pair<Commitment, FieldElement>>& commitments_and_values,
-        const std::vector<FieldElement>& points,
-        const FieldElement& folding_challenge,
-        const OpeningProof& proof,
-        const KZGKeyPair& key)
+            const std::vector<FieldElement>& points,
+            const FieldElement& folding_challenge,
+            const OpeningProof& proof,
+            const KZGVerifierKey& vk)
     {
         (void)folding_challenge;
         if (commitments_and_values.size() != points.size() || proof.witnesses.size() != points.size())
@@ -905,9 +928,8 @@ namespace gatzk::crypto
         for (std::size_t i = 0; i < commitments_and_values.size(); ++i)
         {
             const auto& [commitment, value] = commitments_and_values[i];
-            const auto numerator = g1_sub(commitment.point, g1_mul(key.g1_generator, value));
-            const auto rhs = g2_sub(key.g2_tau, g2_mul(key.g2_one, points[i]));
-            if (!pairing_equal(numerator, key.g2_one, proof.witnesses[i], rhs))
+            const auto numerator = g1_sub(commitment.point, g1_mul(vk.g1_generator, value));
+            if (!verify_pairing_equation(numerator, proof.witnesses[i], points[i], vk))
             {
                 return false;
             }

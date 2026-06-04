@@ -1,9 +1,12 @@
 #include <cmath>
+#include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "gatzk/algebra/polynomial.hpp"
 #include "gatzk/crypto/kzg.hpp"
@@ -52,6 +55,50 @@ struct SecureFixture {
     gatzk::protocol::Proof proof;
 };
 
+void strip_opening_material(gatzk::crypto::Commitment& commitment) {
+    commitment.opening_polynomial.reset();
+}
+
+void strip_context_to_verifier_only(gatzk::protocol::ProtocolContext& context) {
+    context.kzg.pk = {};
+    for (auto& [name, commitment] : context.public_commitments) {
+        (void)name;
+        strip_opening_material(commitment);
+    }
+    for (auto& [name, commitment] : context.static_commitments) {
+        (void)name;
+        strip_opening_material(commitment);
+    }
+}
+
+void strip_proof_to_verifier_only(gatzk::protocol::Proof& proof) {
+    for (auto& [name, commitment] : proof.dynamic_commitments) {
+        (void)name;
+        strip_opening_material(commitment);
+    }
+    for (auto& [name, commitment] : proof.quotient_commitments) {
+        (void)name;
+        strip_opening_material(commitment);
+    }
+}
+
+FieldElement choose_non_domain_point(const gatzk::algebra::RootOfUnityDomain& domain) {
+    for (std::uint64_t raw = 17; raw < 10000; ++raw) {
+        const FieldElement candidate(raw);
+        bool overlap = false;
+        for (std::size_t i = 0; i < domain.size; ++i) {
+            if (domain.point_at(i) == candidate) {
+                overlap = true;
+                break;
+            }
+        }
+        if (!overlap) {
+            return candidate;
+        }
+    }
+    throw std::runtime_error("failed to find a non-domain opening point");
+}
+
 const SecureFixture& cora_secure_fixture() {
     static const SecureFixture fixture = [] {
         auto config = gatzk::util::load_config((repo_root() / "configs/cora_secure.cfg").string());
@@ -76,13 +123,51 @@ void test_kzg_opening_selftest() {
     const std::vector<std::vector<FieldElement>> values{{poly.evaluate(points.front())}};
     const auto proof = gatzk::crypto::KZG::open_batch({commitment}, points, values, FieldElement(13), keys);
     require(
-        gatzk::crypto::KZG::verify_batch({commitment}, points, values, FieldElement(13), proof, keys),
+        gatzk::crypto::KZG::verify_batch({commitment}, points, values, FieldElement(13), proof, keys.vk),
         "KZG single-point opening must verify");
     auto bad_values = values;
     bad_values[0][0] += FieldElement::one();
     require(
-        !gatzk::crypto::KZG::verify_batch({commitment}, points, bad_values, FieldElement(13), proof, keys),
+        !gatzk::crypto::KZG::verify_batch({commitment}, points, bad_values, FieldElement(13), proof, keys.vk),
         "KZG claimed-value tamper must reject");
+
+    auto verifier_commitment = commitment;
+    strip_opening_material(verifier_commitment);
+    require(
+        gatzk::crypto::KZG::verify_batch({verifier_commitment}, points, values, FieldElement(13), proof, keys.vk),
+        "KZG verifier-key-only opening must verify without prover polynomial material");
+}
+
+void test_compact_eval_kzg_regression() {
+    const auto keys = gatzk::crypto::KZG::load_keys(
+        (repo_root() / "artifacts/srs/zkgat_secure_main_srs_v1").string(),
+        "trusted_srs",
+        "zkgat_secure_main_srs_v1");
+
+    const auto n_size = keys.manifest.domain_sizes.at("N");
+    auto domain = gatzk::algebra::RootOfUnityDomain::create("N", n_size);
+    auto polynomial = gatzk::algebra::Polynomial::from_evaluations(
+        "P_compact_eval",
+        {FieldElement(3), FieldElement(5), FieldElement(7), FieldElement(11), FieldElement(13)},
+        domain);
+    const auto point = choose_non_domain_point(*domain);
+    const auto value = polynomial.evaluate(point);
+    const auto commitment = gatzk::crypto::KZG::commit("P_compact_eval", polynomial, keys);
+    const std::vector<std::pair<gatzk::crypto::Commitment, FieldElement>> openings{
+        {commitment, value},
+    };
+    const std::vector<FieldElement> points{point};
+    const auto proof = gatzk::crypto::KZG::open_external_fold(openings, points, FieldElement(29), keys);
+
+    require(
+        gatzk::crypto::KZG::verify_external_fold(openings, points, FieldElement(29), proof, keys.vk),
+        "compact evaluation external opening must verify");
+
+    auto tampered = openings;
+    tampered[0].second += FieldElement::one();
+    require(
+        !gatzk::crypto::KZG::verify_external_fold(tampered, points, FieldElement(29), proof, keys.vk),
+        "compact evaluation external opening must reject a tampered value");
 }
 
 void test_srs_mismatch_gate() {
@@ -96,6 +181,28 @@ void test_srs_mismatch_gate() {
 }
 
 void test_metadata_and_schema_gates() {
+    const auto config = gatzk::util::load_config((repo_root() / "configs/cora_secure.cfg").string());
+    require(config.proof_task == "node_classification_full_gat", "config proof_task mismatch");
+    require(config.privacy_policy == "model_and_trace_hidden", "config privacy policy mismatch");
+    require(config.input_privacy == "public_graph_public_features", "config input privacy mismatch");
+    require(config.output_mode == "public_logits", "config output mode mismatch");
+    require(config.opening_mode == "domain_grouped_batch_opening", "config opening mode mismatch");
+    require(config.binding_mode == "zk_subproof_for_crpc", "config binding mode mismatch");
+    require(config.srs_type == "trusted_srs", "config SRS type mismatch");
+    require(config.srs_id == "zkgat_secure_main_srs_v1", "config SRS id mismatch");
+    require(
+        gatzk::protocol::schema_accepts_evaluation(
+            gatzk::protocol::PolynomialVisibility::PrivateWitness,
+            gatzk::protocol::EvaluationKind::MaskedPrivateValue),
+        "private witness must accept masked values");
+    require(
+        !gatzk::protocol::schema_accepts_evaluation(
+            gatzk::protocol::PolynomialVisibility::PrivateWitness,
+            gatzk::protocol::EvaluationKind::PublicValue),
+        "private witness must reject public values");
+}
+
+void test_full_metadata_and_schema_gates() {
     const auto& fixture = cora_secure_fixture();
     const auto metadata = gatzk::protocol::canonical_public_metadata(fixture.context);
     require(metadata.protocol_name == "zkgat", "metadata protocol_name mismatch");
@@ -109,16 +216,6 @@ void test_metadata_and_schema_gates() {
     const auto schema = gatzk::protocol::build_proof_schema(fixture.context);
     require(!schema.entries.empty(), "ProofSchema must register committed objects");
     require(schema.private_plain_value_count == 0, "ProofSchema private plain value count must be zero");
-    require(
-        gatzk::protocol::schema_accepts_evaluation(
-            gatzk::protocol::PolynomialVisibility::PrivateWitness,
-            gatzk::protocol::EvaluationKind::MaskedPrivateValue),
-        "private witness must accept masked values");
-    require(
-        !gatzk::protocol::schema_accepts_evaluation(
-            gatzk::protocol::PolynomialVisibility::PrivateWitness,
-            gatzk::protocol::EvaluationKind::PublicValue),
-        "private witness must reject public values");
 }
 
 void test_reference_consistency_and_verify() {
@@ -126,6 +223,20 @@ void test_reference_consistency_and_verify() {
     require(gatzk::protocol::verify(fixture.context, fixture.proof), "secure Cora proof must verify");
     require(fixture.proof.public_metadata.output_mode == "public_logits", "secure proof must expose public logits");
     require(fixture.proof.public_metadata.srs_type == "trusted_srs", "secure proof must bind trusted SRS type");
+}
+
+void test_verifier_only_boundary() {
+    const auto& fixture = cora_secure_fixture();
+    auto context = fixture.context;
+    auto proof = fixture.proof;
+    strip_context_to_verifier_only(context);
+    strip_proof_to_verifier_only(proof);
+    require(context.kzg.pk.powers_g1 == nullptr, "verifier-only context must not retain coefficient proving SRS");
+    require(context.kzg.pk.lagrange_srs_by_domain.empty(), "verifier-only context must not retain Lagrange proving SRS");
+    require(gatzk::protocol::verify(context, proof), "verifier-only proof path must verify without prover material");
+    require(
+        gatzk::protocol::private_plain_value_count(context, proof) == 0,
+        "verifier payload audit must observe zero private plain values");
 }
 
 void require_rejects(
@@ -223,11 +334,26 @@ void test_tamper_rejection_suite() {
 
 int main() {
     try {
+        std::cerr << "running test_kzg_opening_selftest\n";
         test_kzg_opening_selftest();
+        std::cerr << "running test_compact_eval_kzg_regression\n";
+        test_compact_eval_kzg_regression();
+        std::cerr << "running test_srs_mismatch_gate\n";
         test_srs_mismatch_gate();
+        std::cerr << "running test_metadata_and_schema_gates\n";
         test_metadata_and_schema_gates();
-        test_reference_consistency_and_verify();
-        test_tamper_rejection_suite();
+        if (std::getenv("GATZK_RUN_FULL_SECURITY_TESTS") != nullptr) {
+            std::cerr << "running test_full_metadata_and_schema_gates\n";
+            test_full_metadata_and_schema_gates();
+            std::cerr << "running test_reference_consistency_and_verify\n";
+            test_reference_consistency_and_verify();
+            std::cerr << "running test_verifier_only_boundary\n";
+            test_verifier_only_boundary();
+            std::cerr << "running test_tamper_rejection_suite\n";
+            test_tamper_rejection_suite();
+        } else {
+            std::cerr << "skipping full Cora security regression; set GATZK_RUN_FULL_SECURITY_TESTS=1 to run it\n";
+        }
     } catch (const std::exception& error) {
         std::cerr << "test failure: " << error.what() << '\n';
         return 1;

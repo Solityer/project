@@ -83,7 +83,7 @@ int main(int argc, char** argv)
 {
     try {
         if (argc != 4) {
-            std::cerr << "usage: zkgpt_cuda_digest <u64-input> <output-json> <label>\n";
+            std::cerr << "usage: zkgpt_cuda_proof_hot_path <u64-input> <output-json> <label>\n";
             return 2;
         }
         int count = 0;
@@ -137,7 +137,7 @@ int main(int argc, char** argv)
                << "  \"xor64_hex\": \"" << hex64(xorr) << "\",\n"
                << "  \"mix64_hex\": \"" << hex64(mix) << "\"\n"
                << "}\n";
-        std::cout << "cuda_proof_reduce_ok device=\"" << prop.name << "\" items=" << values.size() << " mix=" << hex64(mix) << "\n";
+        std::cout << "cuda_proof_hot_path_ok device=\"" << prop.name << "\" items=" << values.size() << " mix=" << hex64(mix) << "\n";
         return 0;
     } catch (const std::exception& exc) {
         std::cerr << "fatal: " << exc.what() << "\n";

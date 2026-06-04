@@ -63,6 +63,25 @@ def main():
             for pattern in patterns:
                 if pattern in line:
                     failures.append((path.relative_to(ROOT), line_no, pattern))
+        if path.name != "static_scan_no_tau.py":
+            for marker in ("KZG::verify_batch(", "KZG::verify_external_fold("):
+                pos = 0
+                while True:
+                    pos = text.find(marker, pos)
+                    if pos == -1:
+                        break
+                    window = text[pos:pos + 320]
+                    line_no = text.count("\n", 0, pos) + 1
+                    if "context.kzg))" in window or "context.kzg);" in window:
+                        failures.append((path.relative_to(ROOT), line_no, "verifier must use context.kzg.vk"))
+                    if "keys)" in window and "keys.vk" not in window:
+                        failures.append((path.relative_to(ROOT), line_no, "KZG verify tests must use keys.vk"))
+                    pos += len(marker)
+    diagnostics = ROOT / "tools" / "diagnostics"
+    if diagnostics.exists():
+        leftovers = [path for path in diagnostics.rglob("*") if path.is_file()]
+        for path in leftovers:
+            failures.append((path.relative_to(ROOT), 1, "unformalized diagnostics file"))
     srs_root = ROOT / "artifacts" / "srs" / "zkgat_secure_main_srs_v1"
     manifest = srs_root / "srs_manifest.json"
     if not manifest.exists():

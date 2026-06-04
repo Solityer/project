@@ -22,7 +22,7 @@ def main() -> None:
 
     from zkgpt_gat.matrix_sumcheck import prove_product_sum, verify_product_sum
     from zkgpt_gat.native_hyrax import NativeHyrax, mle_point_from_u64
-    from zkgpt_gat.proof import _verify_formal, _verify_gkr, _verify_lasso, _verify_matrix
+    from zkgpt_gat.proof import _verify_combine, _verify_formal, _verify_gkr, _verify_lasso, _verify_matrix
     from zkgpt_gat.util import digest_file, digest_json, read_json, write_json
 
     out_dir = zk_root / "results" / "negative_tests"
@@ -62,7 +62,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="zkgpt-negative-bundles-", dir=str(zk_root / "runs_tmp")) as tmp:
         tmp_root = pathlib.Path(tmp)
         rows.extend(_bundle_negative_tests(zk_root, tmp_root, digest_file, digest_json, read_json, write_json, _verify_formal))
-        rows.extend(_subproof_relation_negative_tests(zk_root / "results" / "cpu" / "cora", read_json, _verify_lasso, _verify_matrix, _verify_gkr))
+        rows.extend(_subproof_relation_negative_tests(zk_root / "results" / "cpu" / "cora", read_json, _verify_lasso, _verify_matrix, _verify_gkr, _verify_combine))
 
     passed = all(row["actual"] == row["expected"] for row in rows)
     payload = {"status": "PASS" if passed else "FAIL", "rows": rows}
@@ -92,6 +92,7 @@ def _bundle_negative_tests(zk_root: pathlib.Path, tmp_root: pathlib.Path, digest
     rows.append(_tamper_case("lookup_query_tamper", cpu_cora, tmp_root, "lookup_proof.json", lambda data: _set_path(data, ["families", 1, "raw_query_chunks", 0, "sha256"], "0"), digest_file, digest_json, read_json, write_json, verify_formal))
     rows.append(_tamper_case("selected_table_opening_tamper", cpu_cora, tmp_root, "lookup_proof.json", lambda data: _set_path(data, ["families", 1, "structured_table_opening", "evaluation_samples", 0, "expected_y"], str(int(data["families"][1]["structured_table_opening"]["evaluation_samples"][0]["expected_y"]) + 1)), digest_file, digest_json, read_json, write_json, verify_formal))
     rows.append(_tamper_case("lookup_challenge_tamper", cpu_cora, tmp_root, "lookup_proof.json", lambda data: _set_path(data, ["families", 1, "eta"], str(int(data["families"][1]["eta"]) + 1)), digest_file, digest_json, read_json, write_json, verify_formal))
+    rows.append(_tamper_case("formal_proof_semantics_audit_bypass_attempt", cpu_cora, tmp_root, "lookup_proof.json", lambda data: _set_path(data, ["families", 1, "structured_table_opening", "query_membership_argument", "protocol"], "query-generated-table-side-bypass"), digest_file, digest_json, read_json, write_json, verify_formal))
     rows.append(_tamper_case("range_limb_tamper", cpu_cora, tmp_root, "lookup_proof.json", lambda data: _set_path(data, ["families", 0, "range_argument", "query_limb_chunks", 0, "sha256"], "0"), digest_file, digest_json, read_json, write_json, verify_formal))
     rows.append(_tamper_case("range_table_product_tamper", cpu_cora, tmp_root, "lookup_proof.json", lambda data: _set_path(data, ["families", 0, "table_product"], str(int(data["families"][0]["table_product"]) + 1)), digest_file, digest_json, read_json, write_json, verify_formal))
     rows.append(_tamper_case("lookup_proof_tamper", cpu_cora, tmp_root, "lookup_proof.json", lambda data: _set_path(data, ["families", 0, "query_product"], str(int(data["families"][0]["query_product"]) + 1)), digest_file, digest_json, read_json, write_json, verify_formal))
@@ -106,6 +107,7 @@ def _bundle_negative_tests(zk_root: pathlib.Path, tmp_root: pathlib.Path, digest
     rows.append(_tamper_case("gkr_seed_tamper", cpu_cora, tmp_root, "gkr_proof.json", lambda data: _set_path(data, ["claims", 0, "lhs_sumcheck", "transcript_seed", "constraint_count"], int(data["claims"][0]["lhs_sumcheck"]["transcript_seed"]["constraint_count"]) + 1), digest_file, digest_json, read_json, write_json, verify_formal))
     rows.append(_tamper_case("gkr_oracle_opening_reference_tamper", cpu_cora, tmp_root, "gkr_proof.json", lambda data: _set_path(data, ["claims", 0, "oracle_opening_references", 0, "segment_vector_sha256"], "0"), digest_file, digest_json, read_json, write_json, verify_formal))
     rows.append(_tamper_case("committed_witness_opening_proof_tamper", cpu_cora, tmp_root, "gkr_proof.json", lambda data: _set_path(data, ["claims", 0, "committed_witness_opening_proofs", "segments", 0, "opening_chunks", 0, "masked_evaluation"], "0"), digest_file, digest_json, read_json, write_json, verify_formal))
+    rows.append(_tamper_case("combine_proof_tamper", cpu_cora, tmp_root, "combine_proof.json", lambda data: _set_path(data, ["sumcheck", "final_product"], str(int(data["sumcheck"]["final_product"]) + 1)), digest_file, digest_json, read_json, write_json, verify_formal))
     rows.append(_tamper_case("masked_opening_tamper", cpu_cora, tmp_root, "masked_openings.json", lambda data: _set_path(data, ["items", "com_base", 0, "masked_evaluation"], "0"), digest_file, digest_json, read_json, write_json, verify_formal))
     rows.append(_tamper_case("output_claim_tamper", cpu_cora, tmp_root, "proof_payload.json", lambda data: _set_path(data, ["Y_digest"], "00"), digest_file, digest_json, read_json, write_json, verify_formal))
     rows.append(_tamper_case("ppi_graph_boundary_tamper", cpu_ppi, tmp_root, "run_manifest.json", lambda data: _set_path(data, ["node_ptr", 1], int(data["node_ptr"][1]) + 1), digest_file, digest_json, read_json, write_json, verify_formal))
@@ -115,7 +117,7 @@ def _bundle_negative_tests(zk_root: pathlib.Path, tmp_root: pathlib.Path, digest
     return rows
 
 
-def _subproof_relation_negative_tests(path: pathlib.Path, read_json, verify_lasso, verify_matrix, verify_gkr) -> List[Dict[str, Any]]:
+def _subproof_relation_negative_tests(path: pathlib.Path, read_json, verify_lasso, verify_matrix, verify_gkr, verify_combine) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
 
     lookup = read_json(path / "lookup_proof.json")
@@ -164,6 +166,16 @@ def _subproof_relation_negative_tests(path: pathlib.Path, read_json, verify_lass
     bad_gkr_opening = copy.deepcopy(gkr)
     bad_gkr_opening["claims"][0]["oracle_opening_references"][0]["segment_vector_sha256"] = "0"
     rows.append({"case": "subproof_gkr_oracle_opening_reference_tamper", "expected": "VERIFY_FAILED", "actual": verify_gkr(bad_gkr_opening)["status"]})
+
+    combine = read_json(path / "combine_proof.json")
+    lasso = read_json(path / "lookup_proof.json")
+    matrix = read_json(path / "matrix_sumcheck_proof.json")
+    gkr = read_json(path / "gkr_proof.json")
+    openings = read_json(path / "hyrax_mle_openings.json")
+    transcript = read_json(path / "transcript.json")
+    bad_combine = copy.deepcopy(combine)
+    bad_combine["sumcheck"]["rounds"][0]["challenge"] = str(int(bad_combine["sumcheck"]["rounds"][0]["challenge"]) + 1)
+    rows.append({"case": "subproof_combine_sumcheck_tamper", "expected": "VERIFY_FAILED", "actual": verify_combine(bad_combine, lasso, matrix, gkr, openings, transcript)["status"]})
     return rows
 
 
@@ -203,10 +215,11 @@ def _verify_bundle(path: pathlib.Path, digest_file, digest_json, read_json, veri
         fixed_tables = read_json(path / "fixed_lookup_tables.json")
         matrix = read_json(path / "matrix_sumcheck_proof.json")
         gkr = read_json(path / "gkr_proof.json")
+        combine = read_json(path / "combine_proof.json")
         masked = read_json(path / "masked_openings.json")
         hyrax = read_json(path / "hyrax_mle_openings.json")
         gpu = read_json(path / "gpu_proof_hot_path.json") if manifest["backend"] == "gpu" else None
-        formal = verify_formal(metadata, commitments, transcript, lookup, matrix, gkr, hyrax, gpu, manifest["backend"])
+        formal = verify_formal(metadata, commitments, transcript, lookup, matrix, gkr, combine, hyrax, gpu, manifest["backend"])
         checks = [
             proof["M_pub_digest"] == digest_json(metadata),
             proof["transcript_digest"] == digest_json(transcript),
@@ -217,6 +230,7 @@ def _verify_bundle(path: pathlib.Path, digest_file, digest_json, read_json, veri
             lookup["fixed_table_registry"] == fixed_tables,
             proof["Pi_MatMul"] == matrix,
             proof["Pi_GKR"] == gkr,
+            proof["Pi_combine"] == combine,
             proof["Open_in"] == hyrax,
             proof["OpenMasked"] == masked,
             formal["status"] == "VERIFY_OK" and all(bool(value) for value in formal["checks"].values()),
@@ -226,7 +240,7 @@ def _verify_bundle(path: pathlib.Path, digest_file, digest_json, read_json, veri
             manifest["node_ptr"] == metadata["dim_cfg"]["node_ptr"],
             manifest["edge_ptr"] == metadata["dim_cfg"]["edge_ptr"],
         ]
-        for key in ["FixedLookupTables", "Pi_Lasso", "Pi_MatMul", "Pi_GKR", "Open_in", "OpenMasked"]:
+        for key in ["FixedLookupTables", "Pi_Lasso", "Pi_MatMul", "Pi_GKR", "Pi_combine", "Open_in", "OpenMasked"]:
             ref = proof["component_artifacts"][key]
             checks.append(digest_file(path / pathlib.Path(ref["path"]).name) == ref["sha256"])
         if manifest["backend"] == "gpu":

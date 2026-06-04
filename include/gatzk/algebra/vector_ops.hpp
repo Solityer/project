@@ -23,6 +23,7 @@ namespace gatzk::algebra
     bool cuda_backend_build_enabled();
     bool cuda_backend_available();
     bool cuda_backend_unified_addressing_available();
+    std::string cuda_device_summary();
 
     // full_gpu 的 Fr 域热点能力探针。
     bool cuda_field_hotspots_build_enabled();

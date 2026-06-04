@@ -314,6 +314,10 @@ struct RunMetrics {
     std::string benchmark_mode = "single";
     std::string fft_backend_route = "plain";
     std::string route2_label = "baseline";
+    std::string optimization_profile_id;
+    std::string optimization_flags;
+    std::string hardware_and_device;
+    std::string gpu_acceleration_status;
     std::string notes;
 };
 

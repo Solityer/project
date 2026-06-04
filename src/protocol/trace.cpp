@@ -9,6 +9,7 @@
 #include <fstream>
 #include <future>
 #include <iomanip>
+#include <iostream>
 #include <limits>
 #include <mutex>
 #include <numeric>
@@ -52,6 +53,16 @@ using Clock = std::chrono::steady_clock;
 
 double elapsed_ms(const Clock::time_point& start, const Clock::time_point& end) {
     return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+bool progress_enabled() {
+    return std::getenv("GATZK_RUN_PROGRESS") != nullptr;
+}
+
+void progress_note(const std::string& label) {
+    if (progress_enabled()) {
+        std::cerr << "[progress] " << label << '\n';
+    }
 }
 
 bool should_persist_large_trace_cache_key(const std::string& cache_key) {
@@ -797,6 +808,22 @@ void add_dynamic_commitment_batch(
     if (specs.empty()) {
         return;
     }
+    const auto batch_progress_label = [&]() {
+        std::ostringstream out;
+        out << "trace:commit_batch:size=" << specs.size() << ":labels=";
+        const auto limit = std::min<std::size_t>(specs.size(), 6);
+        for (std::size_t i = 0; i < limit; ++i) {
+            if (i != 0) {
+                out << ',';
+            }
+            out << specs[i].name;
+        }
+        if (specs.size() > limit) {
+            out << ",...";
+        }
+        return out.str();
+    }();
+    progress_note(batch_progress_label + ":start");
 
     constexpr std::size_t kMaxPreparedPayloadBytes = 96ULL * 1024ULL * 1024ULL;
     if (specs.size() > 1) {
@@ -858,6 +885,7 @@ void add_dynamic_commitment_batch(
             prepared.push_back(materialize_commitment(std::move(spec), key, keep_trace_payloads));
         }
     }
+    progress_note(batch_progress_label + ":materialized");
     add_metric(metrics != nullptr ? &metrics->dynamic_polynomial_materialization_ms : nullptr, materialize_start);
 
     const auto pack_start = Clock::now();
@@ -877,7 +905,9 @@ void add_dynamic_commitment_batch(
 
     crypto::CommitBatchProfile polynomial_profile;
     if (!named_polynomials.empty()) {
+        progress_note(batch_progress_label + ":msm:start");
         const auto commitments = crypto::KZG::commit_batch(named_polynomials, key, &polynomial_profile);
+        progress_note(batch_progress_label + ":msm:done");
         for (std::size_t i = 0; i < commitments.size(); ++i) {
             prepared[polynomial_indices[i]].commitment = commitments[i];
         }
@@ -915,6 +945,7 @@ void add_dynamic_commitment_batch(
     }
     add_metric(metrics != nullptr ? &metrics->dynamic_bundle_finalize_ms : nullptr, finalize_start);
     record_dynamic_commit_totals(metrics);
+    progress_note(batch_progress_label + ":done");
 }
 
 const std::vector<FieldElement>& eval_data(const ProtocolContext& context, const std::string& name) {

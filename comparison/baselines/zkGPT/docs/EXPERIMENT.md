@@ -46,6 +46,7 @@ Each dataset/backend directory contains:
 - `lookup_proof.json`
 - `matrix_sumcheck_proof.json`
 - `gkr_proof.json`
+- `combine_proof.json`
 - `hyrax_mle_openings.json`
 - `masked_openings.json`
 - `proof_payload.json` and `proof_object.json`
@@ -138,7 +139,7 @@ and output head average.
 
 ## GPU Path
 
-GPU runs execute `backend/cuda/zkgpt_cuda_digest.cu` as
+GPU runs execute `backend/cuda/zkgpt_cuda_proof_hot_path.cu` as
 `segment_lookup_matrix_gkr_hot_path_fold_v2` over field words extracted from
 segment encoding/opening claims, fixed-table lookup query/direct-range
 accumulators, matrix sumcheck folds plus committed residual range bindings, and
@@ -189,3 +190,10 @@ contribution.
   final oracle claims
 
 All tamper cases must produce `VERIFY_FAILED`.
+
+`scripts/audit_formal_proof_semantics.py` writes
+`results/formal_proof_semantics_audit.json`. It audits the formal source path
+and every CPU/GPU artifact bundle for structured fixed-function lookup
+membership arguments, direct fixed-range arguments, committed rescale bindings,
+GKR final-oracle opening bindings, combine proof binding, and GPU hot-path
+contribution binding.

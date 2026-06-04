@@ -42,8 +42,8 @@ namespace gatzk::crypto
         std::string srs_type;
         std::size_t degree_bound = 0;
         G1Point g1_generator;
-        std::vector<G1Point> powers_g1;
-        std::unordered_map<std::string, std::vector<G1Point>> lagrange_srs_by_domain;
+        std::shared_ptr<const std::vector<G1Point>> powers_g1;
+        std::unordered_map<std::string, std::shared_ptr<const std::vector<G1Point>>> lagrange_srs_by_domain;
         std::string manifest_hash;
     };
 
@@ -52,6 +52,7 @@ namespace gatzk::crypto
         std::string srs_id;
         std::string srs_type;
         std::size_t degree_bound = 0;
+        G1Point g1_generator;
         G2Point g2_one;
         G2Point g2_tau;
         std::shared_ptr<PreparedG2> g2_one_prepared;
@@ -148,7 +149,7 @@ namespace gatzk::crypto
             const std::vector<std::vector<algebra::FieldElement>>& claimed_values,
             const algebra::FieldElement& folding_challenge,
             const OpeningProof& proof,
-            const KZGKeyPair& key);
+            const KZGVerifierKey& vk);
 
         // 对 external evaluation 列做折叠 opening，服务 `rho_ext` 外点检查。
         static OpeningProof open_external_fold(
@@ -164,6 +165,6 @@ namespace gatzk::crypto
             const std::vector<algebra::FieldElement>& points,
             const algebra::FieldElement& folding_challenge,
             const OpeningProof& proof,
-            const KZGKeyPair& key);
+            const KZGVerifierKey& vk);
     };
 }
