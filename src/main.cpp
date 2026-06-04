@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <iostream>
@@ -6,6 +7,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 #include "gatzk/algebra/vector_ops.hpp"
 #include "gatzk/crypto/curve.hpp"
@@ -99,6 +101,12 @@ int main(int argc, char** argv) {
         auto console_backend_label = [](const gatzk::protocol::RunMetrics& metrics) {
             return metrics.compute_backend_name == "cuda_hotspots" ? std::string("gpu") : std::string("cpu");
         };
+        const bool progress_enabled = std::getenv("GATZK_RUN_PROGRESS") != nullptr;
+        auto progress = [&](const std::string& label) {
+            if (progress_enabled) {
+                std::cerr << "[progress] " << label << '\n';
+            }
+        };
 
         std::string config_path;
         std::string benchmark_mode = "warm";
@@ -179,7 +187,15 @@ int main(int argc, char** argv) {
             metrics.enabled_cuda_field_hotspots = route2.cuda_field_hotspots;
             metrics.benchmark_mode = mode_label;
             metrics.route2_label = gatzk::util::route2_feature_label(route2);
+            metrics.optimization_flags = gatzk::util::route2_feature_notes(route2);
+            metrics.hardware_and_device =
+                "cpu_threads=" + std::to_string(std::max(1U, std::thread::hardware_concurrency()))
+                + "; " + gatzk::algebra::cuda_device_summary();
             metrics.gpu_runtime_present = gatzk::algebra::cuda_backend_available();
+            metrics.gpu_acceleration_status = metrics.compute_backend_name == "cuda_hotspots"
+                ? std::string("enabled_cuda_hotspots; accelerated_stages=barycentric_weights,packed_weighted_evaluation,lookup_histogram_size_aware; cpu_fallback=KZG_MSM,pairing,small_domains; runtime_present=")
+                    + std::string(metrics.gpu_runtime_present ? "true" : "false")
+                : std::string("not_requested_cpu_run");
             if (route2.fft_backend_upgrade && route2.fft_kernel_upgrade) {
                 metrics.fft_backend_route = "packed_rotated_kernel";
             } else if (route2.fft_backend_upgrade) {
@@ -197,23 +213,32 @@ int main(int argc, char** argv) {
             append_note(metrics, gatzk::util::route2_feature_notes(route2));
 
             // 正式主线从这里开始：先构静态上下文，再物化 trace、生成 proof，最后复验并导出产物。
+            progress(mode_label + ":context:start");
             const auto context_start = std::chrono::steady_clock::now();
             const auto context = gatzk::protocol::build_context(run_config, &metrics);
             const auto context_end = std::chrono::steady_clock::now();
+            progress(mode_label + ":context:done");
             metrics.context_build_ms = std::chrono::duration<double, std::milli>(context_end - context_start).count();
             metrics.dataset = context.dataset.name;
             metrics.node_count = context.local.num_nodes;
             metrics.edge_count = context.local.edges.size();
+            metrics.optimization_profile_id =
+                context.dataset.name + ":" + console_backend_label(metrics) + ":" + metrics.route2_label
+                + ":" + context.kzg.manifest.manifest_hash.substr(0, 12);
             metrics.is_full_dataset = context.local.num_nodes == context.dataset.num_nodes;
             if (!metrics.is_full_dataset) {
                 throw std::runtime_error("formal mainline only supports full-dataset runs");
             }
 
+            progress(mode_label + ":trace:start");
             const auto trace_start = std::chrono::steady_clock::now();
             const auto trace = gatzk::protocol::build_trace(context, &metrics);
+            progress(mode_label + ":trace:done");
+            progress(mode_label + ":prove:start");
             const auto pcs_start = std::chrono::steady_clock::now();
             const auto proof = gatzk::protocol::prove(context, trace, &metrics);
             const auto pcs_end = std::chrono::steady_clock::now();
+            progress(mode_label + ":prove:done");
             metrics.lookup_trace_ms =
                 metrics.lookup_table_pack_ms
                 + metrics.lookup_query_pack_ms
@@ -259,9 +284,11 @@ int main(int argc, char** argv) {
                 - metrics.external_opening_ms);
             metrics.prove_accounted_ms = prove_accounted_ms(metrics);
             metrics.prove_accounting_gap_ms = metrics.prove_time_ms - metrics.prove_accounted_ms;
+            progress(mode_label + ":verify:start");
             const auto verify_start = std::chrono::steady_clock::now();
             const auto accepted = gatzk::protocol::verify(context, proof, &metrics);
             const auto verify_end = std::chrono::steady_clock::now();
+            progress(mode_label + ":verify:done");
             metrics.verify_time_ms = std::chrono::duration<double, std::milli>(verify_end - verify_start).count();
             metrics.verify_misc_ms = clamp_non_negative(
                 metrics.verify_time_ms
@@ -287,23 +314,41 @@ int main(int argc, char** argv) {
                     << '\n';
             }
             if (export_artifacts) {
+                progress(mode_label + ":export:start");
                 gatzk::protocol::export_run_artifacts(context, trace, proof, metrics, accepted);
+                progress(mode_label + ":export:done");
             }
             return accepted;
         };
 
         auto warm_up = [&](const gatzk::util::AppConfig& run_config) {
+            progress("warmup:context:start");
             const auto context = gatzk::protocol::build_context(run_config, nullptr);
+            progress("warmup:context:done");
+            progress("warmup:trace:start");
             const auto trace = gatzk::protocol::build_trace(context, nullptr);
+            progress("warmup:trace:done");
+            progress("warmup:prove:start");
             const auto proof = gatzk::protocol::prove(context, trace, nullptr);
+            progress("warmup:prove:done");
+            progress("warmup:verify:start");
             (void)gatzk::protocol::verify(context, proof);
+            progress("warmup:verify:done");
         };
 
         auto lightweight_warm_up = [&](const gatzk::util::AppConfig& run_config) {
+            progress("light-warmup:context:start");
             const auto context = gatzk::protocol::build_context(run_config, nullptr);
+            progress("light-warmup:context:done");
+            progress("light-warmup:trace:start");
             const auto trace = gatzk::protocol::build_trace(context, nullptr);
+            progress("light-warmup:trace:done");
+            progress("light-warmup:prove:start");
             const auto proof = gatzk::protocol::prove(context, trace, nullptr);
+            progress("light-warmup:prove:done");
+            progress("light-warmup:verify:start");
             (void)gatzk::protocol::verify(context, proof);
+            progress("light-warmup:verify:done");
         };
 
         bool accepted = false;

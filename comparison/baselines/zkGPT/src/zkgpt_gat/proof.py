@@ -687,8 +687,55 @@ def _function_lookup_proof(label: str, table: Dict[str, Any], x: np.ndarray, y: 
     table_keys = [(_pair_key(a, b, eta)) for a, b in zip(xq, expected_q)]
     query_product = _grand_product(query_keys, beta)
     table_product = _grand_product(table_keys, beta)
+    query_key_chunks = _field_chunk_digests(query_keys)
     selected_table_chunks = _field_chunk_digests(table_keys)
     expected_y_chunks = _field_chunk_digests(expected_q)
+    raw_expected_y_chunks = _field_chunk_digests(expected_q_raw)
+    membership_seed = _structured_lookup_seed(
+        label=label,
+        table=table,
+        raw_query_digest=raw_digest,
+        query_count=len(xq),
+        transcript_digest=digest_json(transcript),
+        eta=eta,
+        beta=beta,
+        query_chunks=query_key_chunks,
+        selected_fixed_table_chunks=selected_table_chunks,
+        expected_y_chunks=expected_y_chunks,
+        raw_expected_y_chunks=raw_expected_y_chunks,
+        input_domain_chunks=domain_chunks,
+    )
+    evaluation_diffs = [
+        to_field_int(to_field_int(actual_value) - to_field_int(expected_value))
+        for actual_value, expected_value in zip(yq, expected_q)
+    ]
+    evaluation_sumcheck = prove_product_sum(
+        f"{label}.structured_table_eval",
+        evaluation_diffs or [0],
+        [1] * max(len(evaluation_diffs), 1),
+        membership_seed,
+    ).to_json()
+    evaluation_sumcheck["transcript_seed"] = membership_seed
+    membership_argument = {
+        "protocol": "structured-fixed-function-lasso-membership-v2",
+        "table_id": table["table_id"],
+        "table_commitment": table["table_commitment"],
+        "structured_verification_key": table["structured_verification_key"],
+        "raw_query_digest": raw_digest,
+        "query_count": len(xq),
+        "eta": str(eta),
+        "beta": str(beta),
+        "query_key_chunks": query_key_chunks,
+        "fixed_table_key_chunks": selected_table_chunks,
+        "expected_y_chunks": expected_y_chunks,
+        "raw_expected_y_chunks": raw_expected_y_chunks,
+        "input_domain_chunks": domain_chunks,
+        "query_accumulator": str(query_product),
+        "fixed_table_accumulator": str(table_product),
+        "evaluation_sumcheck": evaluation_sumcheck,
+        "transcript_seed": membership_seed,
+    }
+    membership_argument["argument_digest"] = digest_json(membership_argument)
     sample_indices = _lookup_sample_indices(label, raw_digest, len(xq))
     evaluation_samples = [
         {
@@ -709,7 +756,9 @@ def _function_lookup_proof(label: str, table: Dict[str, Any], x: np.ndarray, y: 
         "raw_query_digest": raw_digest,
         "input_domain_chunks": domain_chunks,
         "expected_y_chunks": expected_y_chunks,
+        "raw_expected_y_chunks": raw_expected_y_chunks,
         "selected_fixed_table_chunks": selected_table_chunks,
+        "query_membership_argument": membership_argument,
         "sample_rule": "fiat-shamir-sampled-query-positions-bound-to-raw-query-digest",
         "evaluation_samples": evaluation_samples,
         "evaluation_sample_digest": digest_json(evaluation_samples),
@@ -729,10 +778,11 @@ def _function_lookup_proof(label: str, table: Dict[str, Any], x: np.ndarray, y: 
         "query_product": str(query_product),
         "table_product": str(table_product),
         "product_digest": _lookup_product_digest(query_product, table_product, raw_digest, table["table_digest"], "query_multiset_membership_in_fixed_function_table"),
-        "query_chunks": _field_chunk_digests(query_keys),
+        "query_chunks": query_key_chunks,
         "raw_query_chunks": raw_chunks,
         "selected_fixed_table_chunks": selected_table_chunks,
         "expected_y_chunks": expected_y_chunks,
+        "raw_expected_y_chunks": raw_expected_y_chunks,
         "input_domain_chunks": domain_chunks,
         "input_domain_ok": domain_ok,
         "structured_table_opening": structured_opening,
@@ -872,6 +922,111 @@ def _lookup_product_digest(query_product: int, table_product: int, raw_query_dig
             "relation": relation,
         }
     )
+
+
+def _structured_lookup_seed(
+    *,
+    label: str,
+    table: Dict[str, Any],
+    raw_query_digest: str,
+    query_count: int,
+    transcript_digest: str,
+    eta: int,
+    beta: int,
+    query_chunks: Sequence[Dict[str, Any]],
+    selected_fixed_table_chunks: Sequence[Dict[str, Any]],
+    expected_y_chunks: Sequence[Dict[str, Any]],
+    raw_expected_y_chunks: Sequence[Dict[str, Any]],
+    input_domain_chunks: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    return {
+        "protocol": "structured-fixed-function-lasso-membership-v2",
+        "family": label,
+        "table_id": table["table_id"],
+        "table_commitment": table["table_commitment"],
+        "structured_verification_key": table["structured_verification_key"],
+        "table_digest": table["table_digest"],
+        "raw_query_digest": raw_query_digest,
+        "query_count": int(query_count),
+        "eta": str(to_field_int(eta)),
+        "beta": str(to_field_int(beta)),
+        "query_key_chunks": list(query_chunks),
+        "fixed_table_key_chunks": list(selected_fixed_table_chunks),
+        "expected_y_chunks": list(expected_y_chunks),
+        "raw_expected_y_chunks": list(raw_expected_y_chunks),
+        "input_domain_chunks": list(input_domain_chunks),
+        "transcript_digest": transcript_digest,
+    }
+
+
+def _structured_lookup_seed_from_family(family: Dict[str, Any], opening: Dict[str, Any]) -> Dict[str, Any]:
+    return _structured_lookup_seed(
+        label=family["family"],
+        table=family["fixed_table"],
+        raw_query_digest=family["raw_query_digest"],
+        query_count=int(family["query_count"]),
+        transcript_digest=family.get("transcript_digest", ""),
+        eta=int(family["eta"]),
+        beta=int(family["beta"]),
+        query_chunks=family.get("query_chunks", []),
+        selected_fixed_table_chunks=family.get("selected_fixed_table_chunks", []),
+        expected_y_chunks=family.get("expected_y_chunks", []),
+        raw_expected_y_chunks=family.get("raw_expected_y_chunks", opening.get("raw_expected_y_chunks", [])),
+        input_domain_chunks=family.get("input_domain_chunks", []),
+    )
+
+
+def _verify_structured_function_membership(family: Dict[str, Any], opening: Dict[str, Any]) -> bool:
+    try:
+        argument = dict(opening.get("query_membership_argument", {}))
+        expected_argument_digest = argument.pop("argument_digest", None)
+        if expected_argument_digest != digest_json(argument):
+            return False
+        seed = argument.get("transcript_seed", {})
+        expected_seed = _structured_lookup_seed_from_family(family, opening)
+        if seed != expected_seed:
+            return False
+        if argument.get("protocol") != "structured-fixed-function-lasso-membership-v2":
+            return False
+        if argument.get("table_id") != family.get("table"):
+            return False
+        if argument.get("table_commitment") != family.get("fixed_table", {}).get("table_commitment"):
+            return False
+        if argument.get("structured_verification_key") != family.get("fixed_table", {}).get("structured_verification_key"):
+            return False
+        if argument.get("raw_query_digest") != family.get("raw_query_digest"):
+            return False
+        if int(argument.get("query_count", -1)) != int(family.get("query_count", -2)):
+            return False
+        if str(argument.get("eta")) != str(family.get("eta")) or str(argument.get("beta")) != str(family.get("beta")):
+            return False
+        if argument.get("query_key_chunks") != family.get("query_chunks", []):
+            return False
+        if argument.get("fixed_table_key_chunks") != family.get("selected_fixed_table_chunks", []):
+            return False
+        if argument.get("expected_y_chunks") != family.get("expected_y_chunks", []):
+            return False
+        if argument.get("raw_expected_y_chunks") != family.get("raw_expected_y_chunks", []):
+            return False
+        if argument.get("input_domain_chunks") != family.get("input_domain_chunks", []):
+            return False
+        if str(argument.get("query_accumulator")) != str(family.get("query_product")):
+            return False
+        if str(argument.get("fixed_table_accumulator")) != str(family.get("table_product")):
+            return False
+        if family.get("selected_fixed_table_chunks") == family.get("raw_query_chunks", []):
+            return False
+        sumcheck = argument.get("evaluation_sumcheck", {})
+        if sumcheck.get("transcript_seed") != seed:
+            return False
+        verify = verify_product_sum(f"{family['family']}.structured_table_eval", sumcheck, seed)
+        if verify["status"] != "VERIFY_OK":
+            return False
+        if to_field_int(int(sumcheck.get("claimed_sum", "0"))) != 0:
+            return False
+        return True
+    except Exception:
+        return False
 
 
 def _interleave_pairs(left: Sequence[int], right: Sequence[int]) -> List[int]:
@@ -1042,6 +1197,7 @@ def _verify_lookup_family(family: Dict[str, Any]) -> Dict[str, Any]:
     fixed_table_ok = _verify_fixed_table_descriptor(family.get("fixed_table", {})) and family.get("fixed_table_digest") == family.get("fixed_table", {}).get("table_digest")
     query_binding = family.get("committed_query_segment")
     query_binding_ok = query_binding is None or family.get("committed_query_segment_digest") == digest_json(query_binding)
+    raw_query_digest_ok = _verify_lookup_raw_query_digest(family)
     eta_ok = True
     if family.get("relation") == "query_multiset_membership_in_fixed_function_table":
         eta_ok = str(_lookup_challenge_from_family(family, "eta")) == str(family.get("eta"))
@@ -1063,8 +1219,7 @@ def _verify_lookup_family(family: Dict[str, Any]) -> Dict[str, Any]:
             int(family["range_bits"]),
         )
     else:
-        query_product_ok = to_field_int(int(family["query_product"])) == to_field_int(int(family["table_product"]))
-    mismatch_ok = int(family.get("mismatch_count", 0)) == 0
+        query_product_ok = _verify_structured_function_membership(family, family.get("structured_table_opening", {}))
     range_ok = True
     range_argument_ok = True
     if direct_range_relation:
@@ -1126,22 +1281,24 @@ def _verify_lookup_family(family: Dict[str, Any]) -> Dict[str, Any]:
             and opening.get("raw_query_digest") == family.get("raw_query_digest")
             and opening.get("input_domain_chunks") == family.get("input_domain_chunks")
             and opening.get("expected_y_chunks") == family.get("expected_y_chunks")
+            and opening.get("raw_expected_y_chunks") == family.get("raw_expected_y_chunks")
             and opening.get("selected_fixed_table_chunks") == family.get("selected_fixed_table_chunks")
+            and _verify_structured_function_membership(family, family.get("structured_table_opening", {}))
             and sample_indices_ok
             and sample_ok
         )
-    ok = fixed_table_ok and query_binding_ok and eta_ok and beta_ok and product_digest_ok and lookup_window_ok and query_product_ok and mismatch_ok and range_ok and chunks_ok and table_chunks_ok and structured_opening_ok and range_argument_ok
+    ok = fixed_table_ok and query_binding_ok and raw_query_digest_ok and eta_ok and beta_ok and product_digest_ok and lookup_window_ok and query_product_ok and range_ok and chunks_ok and table_chunks_ok and structured_opening_ok and range_argument_ok
     return {
         "status": "VERIFY_OK" if ok else "VERIFY_FAILED",
         "checks": {
             "fixed_table_descriptor": fixed_table_ok,
             "committed_query_segment": query_binding_ok,
+            "raw_query_digest_replay": raw_query_digest_ok,
             "eta_replay": eta_ok,
             "beta_replay": beta_ok,
             "product_digest": product_digest_ok,
             "lookup_quantization_window": lookup_window_ok,
-            "grand_product_equal": query_product_ok,
-            "mismatch_count_zero": mismatch_ok,
+            "membership_argument": query_product_ok,
             "range_bounds": range_ok,
             "direct_range_argument": range_argument_ok,
             "query_chunks_cover_queries": chunks_ok,
@@ -1160,6 +1317,42 @@ def _verify_lasso(lasso: Dict[str, Any]) -> Dict[str, Any]:
         "fixed_table_registry": registry_ok,
         "families": family_results,
     }
+
+
+def _verify_lookup_raw_query_digest(family: Dict[str, Any]) -> bool:
+    relation = family.get("relation")
+    if relation == "query_multiset_membership_in_fixed_function_table":
+        expected = digest_json(
+            {
+                "relation": "function_lookup_raw_xy",
+                "chunks": family.get("raw_query_chunks", []),
+                "query_count": int(family.get("query_count", -1)),
+            }
+        )
+    elif relation == "direct_limb_bounded_range_argument":
+        expected = digest_json(
+            {
+                "relation": "range_lookup_raw_limbs",
+                "chunks": family.get("query_chunks", []),
+                "query_count": int(family.get("query_count", -1)),
+                "range_bits": int(family.get("range_bits", -1)),
+            }
+        )
+    elif relation == "matrix_rescale_rounding_direct_range_argument":
+        expected = digest_json(
+            {
+                "relation": "matrix_rescale_rounding_committed_residual_limbs",
+                "chunks": family.get("query_chunks", []),
+                "query_count": int(family.get("query_count", -1)),
+                "range_bits": int(family.get("range_bits", -1)),
+                "matrix_claim_sources": family.get("matrix_claim_sources", []),
+            }
+        )
+    elif relation == "empty":
+        expected = digest_json({"empty_lookup": family.get("family"), "table": family.get("fixed_table_digest")})
+    else:
+        return False
+    return expected == family.get("raw_query_digest")
 
 
 def _quantized_vector(values: np.ndarray) -> List[int]:
@@ -1980,12 +2173,15 @@ def _verify_gkr_claim(claim: Dict[str, Any]) -> Dict[str, Any]:
     oracle_equal = to_field_int(int(claim["lhs_sumcheck"]["claimed_sum"])) == to_field_int(int(claim["rhs_sumcheck"]["claimed_sum"]))
     oracle_chunks_equal = claim.get("lhs_chunks") == claim.get("rhs_chunks")
     oracle_binding_ok = claim.get("oracle_opening_reference_digest") == digest_json(claim.get("oracle_opening_references", []))
-    committed_opening = dict(claim.get("committed_witness_opening_proofs", {}))
+    committed_opening_full = claim.get("committed_witness_opening_proofs", {})
+    expected_committed_opening = _gkr_committed_witness_opening_proofs(claim.get("oracle_opening_references", []))
+    committed_opening = dict(committed_opening_full)
     committed_opening_digest = committed_opening.pop("binding_digest", None)
     committed_opening_ok = (
         committed_opening_digest == digest_json(committed_opening)
         and committed_opening.get("protocol") == "gkr-final-oracle-claims-bound-to-openmasked-segments-v2"
         and committed_opening_digest == seed.get("committed_witness_opening_digest")
+        and committed_opening_full == expected_committed_opening
     )
     final_claims = claim.get("final_oracle_claims", {})
     final_ok = (
@@ -2027,6 +2223,73 @@ def _verify_gkr(gkr: Dict[str, Any]) -> Dict[str, Any]:
     return {"status": "VERIFY_OK" if ok else "VERIFY_FAILED", "claims": claim_results}
 
 
+def _combine_seed(lasso: Dict[str, Any], matrix: Dict[str, Any], gkr: Dict[str, Any], openings: Dict[str, Any], transcript: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "protocol": "fiat-shamir-combine-openmasked-v2",
+        "claim_sources": ["Pi_Lasso", "Pi_MatMul", "Pi_GKR", "Open_in"],
+        "lasso_digest": digest_json(lasso),
+        "matrix_digest": digest_json(matrix),
+        "gkr_digest": digest_json(gkr),
+        "open_in_digest": digest_json(openings),
+        "transcript_digest": digest_json(transcript),
+    }
+
+
+def _prove_combine(lasso: Dict[str, Any], matrix: Dict[str, Any], gkr: Dict[str, Any], openings: Dict[str, Any], transcript: Dict[str, Any]) -> Dict[str, Any]:
+    seed = _combine_seed(lasso, matrix, gkr, openings, transcript)
+    values = [_field_label(seed[key]) for key in ["lasso_digest", "matrix_digest", "gkr_digest", "open_in_digest", "transcript_digest"]]
+    weights = _random_field_vector("combine.openmasked.weights", _challenge_u64("combine", seed), len(values))
+    proof = prove_product_sum("combine.openmasked_claims", values, weights, seed).to_json()
+    proof["transcript_seed"] = seed
+    payload = {
+        "protocol": "fiat-shamir-combine-openmasked-v2",
+        "claim_sources": seed["claim_sources"],
+        "lasso_digest": seed["lasso_digest"],
+        "matrix_digest": seed["matrix_digest"],
+        "gkr_digest": seed["gkr_digest"],
+        "open_in_digest": seed["open_in_digest"],
+        "transcript_digest": seed["transcript_digest"],
+        "weight_digest": digest_json([str(item) for item in weights]),
+        "sumcheck": proof,
+    }
+    payload["combine_digest"] = digest_json(payload)
+    return payload
+
+
+def _verify_combine(combine: Dict[str, Any], lasso: Dict[str, Any], matrix: Dict[str, Any], gkr: Dict[str, Any], openings: Dict[str, Any], transcript: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        payload = dict(combine)
+        expected_digest = payload.pop("combine_digest", None)
+        digest_ok = expected_digest == digest_json(payload)
+        seed = _combine_seed(lasso, matrix, gkr, openings, transcript)
+        seed_ok = (
+            payload.get("protocol") == seed["protocol"]
+            and payload.get("claim_sources") == seed["claim_sources"]
+            and payload.get("lasso_digest") == seed["lasso_digest"]
+            and payload.get("matrix_digest") == seed["matrix_digest"]
+            and payload.get("gkr_digest") == seed["gkr_digest"]
+            and payload.get("open_in_digest") == seed["open_in_digest"]
+            and payload.get("transcript_digest") == seed["transcript_digest"]
+        )
+        weights = _random_field_vector("combine.openmasked.weights", _challenge_u64("combine", seed), 5)
+        weight_ok = payload.get("weight_digest") == digest_json([str(item) for item in weights])
+        sumcheck = payload.get("sumcheck", {})
+        sumcheck_seed_ok = sumcheck.get("transcript_seed") == seed
+        verify = verify_product_sum("combine.openmasked_claims", sumcheck, seed) if sumcheck_seed_ok else {"status": "VERIFY_FAILED"}
+        ok = digest_ok and seed_ok and weight_ok and verify["status"] == "VERIFY_OK"
+        return {
+            "status": "VERIFY_OK" if ok else "VERIFY_FAILED",
+            "checks": {
+                "combine_digest": digest_ok,
+                "claim_source_digests": seed_ok,
+                "weight_digest": weight_ok,
+                "sumcheck": verify["status"] == "VERIFY_OK",
+            },
+        }
+    except Exception as exc:
+        return {"status": "VERIFY_FAILED", "reason": str(exc), "checks": {}}
+
+
 def _artifact_ref(path: pathlib.Path, kind: str) -> Dict[str, Any]:
     return {"kind": kind, "path": str(path), "sha256": digest_file(path), "size_bytes": path.stat().st_size}
 
@@ -2038,6 +2301,7 @@ def _verify_formal(
     lasso: Dict[str, Any],
     matrix: Dict[str, Any],
     gkr: Dict[str, Any],
+    combine: Dict[str, Any],
     openings: Dict[str, Any],
     gpu_claim: Dict[str, Any] | None,
     backend: str,
@@ -2049,6 +2313,7 @@ def _verify_formal(
     lasso_verify = _verify_lasso(lasso)
     matrix_verify = _verify_matrix(matrix, commitments)
     gkr_verify = _verify_gkr(gkr)
+    combine_verify = _verify_combine(combine, lasso, matrix, gkr, openings, transcript)
     matrix_rescale_lasso = _verify_matrix_rescale_lasso_binding(matrix, lasso)
     checks = {
         "metadata_complete": all(field in metadata for field in METADATA_FIELD_ORDER),
@@ -2060,13 +2325,13 @@ def _verify_formal(
         "matrix_sumcheck": matrix_verify["status"] == "VERIFY_OK",
         "matrix_rescale_lasso_binding": matrix_rescale_lasso,
         "gkr": gkr_verify["status"] == "VERIFY_OK",
-        "combine": lasso_verify["status"] == matrix_verify["status"] == gkr_verify["status"] == "VERIFY_OK" and matrix_rescale_lasso,
+        "combine": combine_verify["status"] == "VERIFY_OK" and lasso_verify["status"] == matrix_verify["status"] == gkr_verify["status"] == "VERIFY_OK" and matrix_rescale_lasso,
         "gpu_hot_path": backend == "cpu" or bool(
             gpu_claim
             and gpu_claim.get("cuda_kernel_executed")
             and gpu_claim.get("proof_hot_path")
             and gpu_claim.get("hot_path_semantics") == "cuda_segment_lookup_matrix_gkr_hot_path_v2"
-            and gpu_claim.get("input_digest") == digest_json([str(value) for value in _gpu_claim_values(commitments, lasso, matrix, gkr, transcript)])
+            and gpu_claim.get("input_digest") == digest_json([str(value) for value in _gpu_claim_values(commitments, lasso, matrix, gkr, combine, transcript)])
         ),
     }
     return {
@@ -2077,12 +2342,13 @@ def _verify_formal(
             "lasso": lasso_verify,
             "matrix": matrix_verify,
             "gkr": gkr_verify,
+            "combine": combine_verify,
         },
         "verifier": "zkgpt_gat.formal_verifier.payload_messages_only",
     }
 
 
-def _gpu_claim_values(commitments: Dict[str, Any], lasso: Dict[str, Any], matrix: Dict[str, Any], gkr: Dict[str, Any], transcript: Dict[str, Any]) -> List[int]:
+def _gpu_claim_values(commitments: Dict[str, Any], lasso: Dict[str, Any], matrix: Dict[str, Any], gkr: Dict[str, Any], combine: Dict[str, Any], transcript: Dict[str, Any]) -> List[int]:
     values: List[int] = []
     for name in COMMITMENT_ORDER:
         item = commitments["items"][name]
@@ -2122,8 +2388,8 @@ def _gpu_claim_values(commitments: Dict[str, Any], lasso: Dict[str, Any], matrix
     for claim in gkr["claims"]:
         values.append(int(claim["constraint_count"]))
         values.append(_field_label(claim["gate_family"]))
-        values.append(int(claim["mismatch_count"]))
-        values.append(int(round(float(claim.get("max_abs_error", 0.0)) * CONSTRAINT_FIXED_SCALE)))
+        values.append(_field_label(claim["oracle_opening_reference_digest"]))
+        values.append(_field_label(claim["committed_witness_opening_proofs"]["binding_digest"]))
         for chunk in claim.get("lhs_chunks", []):
             values.append(int(chunk["count"]))
             values.append(_field_label(chunk["sha256"]))
@@ -2139,6 +2405,11 @@ def _gpu_claim_values(commitments: Dict[str, Any], lasso: Dict[str, Any], matrix
             for round_msg in proof["rounds"]:
                 values.extend(int(item) for item in round_msg["coefficients"])
                 values.append(int(round_msg["challenge"]))
+        for value in claim.get("final_oracle_claims", {}).values():
+            values.append(int(value))
+    values.append(_field_label(combine["combine_digest"]))
+    values.append(int(combine["sumcheck"]["claimed_sum"]))
+    values.append(int(combine["sumcheck"]["final_product"]))
     return [int(value) & ((1 << 64) - 1) for value in values]
 
 
@@ -2167,16 +2438,18 @@ def build_proof(
     matrix = _prove_matrix_sumchecks(trace, model, transcript["matmul"]["rho_matmul"], config.range_bits, commitments)
     lasso = _prove_lasso(trace, config.range_bits, transcript, metadata, commitments, matrix)
     gkr = _prove_gkr(graph, trace, model, transcript, commitments)
+    combine = _prove_combine(lasso, matrix, gkr, openings, transcript)
 
     gpu_claim = None
     if backend == "gpu":
-        gpu_claim = gpu_proof_reduce(paths.get("zk_root", artifact_dir.parents[1]), _gpu_claim_values(commitments, lasso, matrix, gkr, transcript), f"{dataset.name}:{backend}:proof")
+        gpu_claim = gpu_proof_reduce(paths.get("zk_root", artifact_dir.parents[1]), _gpu_claim_values(commitments, lasso, matrix, gkr, combine, transcript), f"{dataset.name}:{backend}:proof")
         gpu_claim["proof_hot_path"] = True
 
     write_json(artifact_dir / "lookup_proof.json", lasso)
     write_json(artifact_dir / "fixed_lookup_tables.json", lasso["fixed_table_registry"])
     write_json(artifact_dir / "matrix_sumcheck_proof.json", matrix)
     write_json(artifact_dir / "gkr_proof.json", gkr)
+    write_json(artifact_dir / "combine_proof.json", combine)
     write_json(artifact_dir / "hyrax_mle_openings.json", openings)
     masked_opening_payload = {
         "backend": COMMITMENT_BACKEND_ID,
@@ -2190,18 +2463,19 @@ def build_proof(
         write_json(artifact_dir / "gpu_proof_hot_path.json", gpu_claim)
 
     verify_started = time.perf_counter()
-    verification = _verify_formal(metadata, commitments, transcript, lasso, matrix, gkr, openings, gpu_claim, backend)
+    verification = _verify_formal(metadata, commitments, transcript, lasso, matrix, gkr, combine, openings, gpu_claim, backend)
     verify_elapsed_ms = (time.perf_counter() - verify_started) * 1000.0
     component_refs = {
         "FixedLookupTables": _artifact_ref(artifact_dir / "fixed_lookup_tables.json", "fixed lookup table commitments"),
         "Pi_Lasso": _artifact_ref(artifact_dir / "lookup_proof.json", "lookup proof"),
         "Pi_MatMul": _artifact_ref(artifact_dir / "matrix_sumcheck_proof.json", "matrix sumcheck proof"),
         "Pi_GKR": _artifact_ref(artifact_dir / "gkr_proof.json", "ML-friendly GKR proof"),
+        "Pi_combine": _artifact_ref(artifact_dir / "combine_proof.json", "combine masked-opening proof"),
         "Open_in": _artifact_ref(artifact_dir / "hyrax_mle_openings.json", "Hyrax/MLE masked openings"),
         "OpenMasked": _artifact_ref(artifact_dir / "masked_openings.json", "masked opening payload"),
     }
     if gpu_claim is not None:
-        component_refs["GPU_hot_path"] = _artifact_ref(artifact_dir / "gpu_proof_hot_path.json", "CUDA proof reduction")
+        component_refs["GPU_hot_path"] = _artifact_ref(artifact_dir / "gpu_proof_hot_path.json", "CUDA proof hot-path contribution")
     proof_payload = {
         "proof_type": "pi_GAT_zkGPT",
         "M_pub_digest": digest_json(metadata),
@@ -2212,10 +2486,7 @@ def build_proof(
         "Pi_MatMul": matrix,
         "Pi_GKR": gkr,
         "Pi_combine": {
-            "protocol": "fiat-shamir-combine-v1",
-            "claim_sources": ["Pi_Lasso", "Pi_MatMul", "Pi_GKR", "Open_in"],
-            "combined_claim_digest": digest_json({"lasso": lasso, "matrix": matrix, "gkr": gkr, "open": openings}),
-            "status": verification["status"],
+            **combine,
         },
         "Open_in": openings,
         "OpenMasked": masked_opening_payload,

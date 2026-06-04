@@ -44,6 +44,10 @@ OUTPUT_FIELDS = [
     "prove_time_ms",
     "verify_time_ms",
     "proof_size_bytes",
+    "optimization_profile_id",
+    "optimization_flags",
+    "hardware_and_device",
+    "gpu_acceleration_status",
     "verifier_reads_witness",
     "private_plain_value_count",
     "reference_consistency_passed",
@@ -131,6 +135,12 @@ def validate_row(dataset, backend, row):
         raise ValueError(f"{dataset}/{backend} proof public output hash mismatch")
     for key in ("srs_id", "srs_degree_bound", "security_profile_id", *HASH_FIELDS):
         require_field(row, key)
+    for key in ("optimization_profile_id", "optimization_flags", "hardware_and_device", "gpu_acceleration_status"):
+        require_field(row, key)
+    if backend == "gpu" and "enabled_cuda_hotspots" not in row["gpu_acceleration_status"]:
+        raise ValueError(f"{dataset}/{backend} does not record CUDA hotspot acceleration")
+    if backend == "cpu" and row["gpu_acceleration_status"] != "not_requested_cpu_run":
+        raise ValueError(f"{dataset}/{backend} has unexpected gpu_acceleration_status")
 
 
 def project_row(dataset, backend, row):
@@ -226,6 +236,83 @@ def write_outputs(rows, manifests, output_dir):
                 for row in rows
             ],
         ]) + "\n",
+        encoding="utf-8",
+    )
+    profile_stage_fields = [
+        ("context/config build", "context_build_ms"),
+        ("SRS manifest/material load", "srs_prepare_ms"),
+        ("GAT reference forward", "forward_ms"),
+        ("trace construction", "trace_generation_ms"),
+        ("masked polynomial materialization", "witness_materialization_ms"),
+        ("public/static commitment", "load_static_ms"),
+        ("dynamic commitment", "commit_dynamic_ms"),
+        ("coefficient/domain MSM", "dynamic_commit_msm_ms"),
+        ("quotient materialization", "quotient_build_ms"),
+        ("quotient commitment", "quotient_bundle_pack_ms"),
+        ("opening witness generation", "domain_open_witness_ms"),
+        ("batch opening", "domain_opening_ms"),
+        ("external opening", "external_opening_ms"),
+        ("proof serialization/finalize", "prove_finalize_ms"),
+        ("verifier transcript replay", "verify_transcript_ms"),
+        ("verifier pairing/opening", "verify_domain_opening_ms"),
+        ("payload audit", "verify_metadata_ms"),
+        ("total prove", "prove_time_ms"),
+        ("total verify", "verify_time_ms"),
+    ]
+    cora_profiles = [(dataset, backend, manifest) for dataset, backend, manifest in manifests if dataset == "cora"]
+    profile_lines = [
+        "# Optimization Profile",
+        "",
+        "## Optimization Audit",
+        "",
+        "| item | class | decision | reason |",
+        "| --- | --- | --- | --- |",
+        "| fast MSM | A | retained | SRS powers/Lagrange MSM stays in the KZG commitment and witness path. |",
+        "| parallel FFT / NTT | A | retained | Only changes domain evaluation and quotient materialization execution. |",
+        "| FFT backend/kernel upgrade | A | retained | Packed evaluation kernels preserve opened values and transcript order. |",
+        "| trace layout upgrade | A | retained | Reduces materialization/copy cost without changing columns or padding semantics. |",
+        "| fast verify pairing | B | adapted | Verifier now uses VK-only prepared G2 material, not prover SRS. |",
+        "| CUDA hotspots / GPU backend | B | adapted | GPU runs record CUDA hotspot routing and CPU fallback scope. |",
+        "| batch commitment/opening | A | retained | All claimed values, commitments, witnesses and pairing checks remain present. |",
+        "| SRS loading/cache | B | adapted | Manifest-hash-bound process cache is used; no setup scalar is cached. |",
+        "| public/static table reuse | A | retained | Public columns are hash/metadata bound and re-evaluated by verifier. |",
+        "| route/PSQ/lookup construction | A | retained | Reuses layout and histogram helpers without changing constraints. |",
+        "| tamper tests reuse | A | retained | Negative tests mutate one valid proof and rerun verifier. |",
+        "| old trapdoor/single-point shortcuts | C | deleted/blocked | Static scan rejects old runtime scalar and fake commitment markers. |",
+        "",
+        "## Cora Stage Profile",
+        "",
+        "| backend | stage | ms |",
+        "| --- | --- | ---: |",
+    ]
+    for _, backend, manifest in cora_profiles:
+        for label, key in profile_stage_fields:
+            profile_lines.append(f"| {backend} | {label} | {manifest.get(key, '0.000')} |")
+        numeric = []
+        for label, key in profile_stage_fields:
+            try:
+                numeric.append((float(manifest.get(key, 0.0)), label))
+            except (TypeError, ValueError):
+                pass
+        top = ", ".join(label for _, label in sorted(numeric, reverse=True)[:5])
+        profile_lines.append(f"| {backend} | top bottlenecks | {top or 'n/a'} |")
+    profile_lines.extend([
+        "",
+        "## Optimization Flags And Hardware",
+        "",
+        "| dataset | backend | optimization_profile_id | optimization_flags | hardware_and_device | gpu_acceleration_status |",
+        "| --- | --- | --- | --- | --- | --- |",
+        *[
+            f"| {dataset} | {backend} | {manifest['optimization_profile_id']} | "
+            f"{manifest['optimization_flags']} | {manifest['hardware_and_device']} | "
+            f"{manifest['gpu_acceleration_status']} |"
+            for dataset, backend, manifest in manifests
+        ],
+        "",
+        "All optimizations are execution-route choices only; proof schema, transcript order, opening equations, masked private payload contract, and public output hashes are unchanged.",
+    ])
+    (output_dir / "optimization_profile_report.md").write_text(
+        "\n".join(profile_lines) + "\n",
         encoding="utf-8",
     )
 

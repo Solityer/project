@@ -3,38 +3,51 @@ from __future__ import annotations
 import pathlib
 import subprocess
 import tempfile
+import time
 from typing import Any, Dict, Iterable
 
 from .util import digest_json, read_json, stable_env, write_json
 
 
-def gpu_helper_path(zk_root: pathlib.Path) -> pathlib.Path:
-    return zk_root / "build" / "zkgpt_cuda_digest"
+def gpu_proof_hot_path_binary(zk_root: pathlib.Path) -> pathlib.Path:
+    return zk_root / "build" / "zkgpt_cuda_proof_hot_path"
 
 
 def _run_gpu_reduce_file(zk_root: pathlib.Path, input_path: pathlib.Path, label: str) -> Dict[str, Any]:
-    helper = gpu_helper_path(zk_root)
-    if not helper.exists():
-        raise FileNotFoundError(f"missing CUDA helper: {helper}; run scripts/build_cuda_backend.sh")
+    binary = gpu_proof_hot_path_binary(zk_root)
+    if not binary.exists():
+        raise FileNotFoundError(f"missing CUDA proof hot-path binary: {binary}; run scripts/build_cuda_backend.sh")
     out_path = input_path.with_suffix(".gpu_backend.json")
-    completed = subprocess.run(
-        [str(helper), str(input_path), str(out_path), label],
-        cwd=str(zk_root),
-        env=stable_env(),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if completed.returncode != 0:
+    env = stable_env()
+    env.setdefault("CUDA_MODULE_LOADING", "LAZY")
+    env.setdefault("CUDA_CACHE_DISABLE", "1")
+    completed: subprocess.CompletedProcess[str] | None = None
+    for attempt in range(1, 7):
+        completed = subprocess.run(
+            [str(binary), str(input_path), str(out_path), label],
+            cwd=str(zk_root),
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if completed.returncode == 0:
+            break
+        if "out of memory" not in completed.stderr.lower() or attempt == 6:
+            break
+        time.sleep(10.0 * attempt)
+    if completed is None or completed.returncode != 0:
+        stdout = "" if completed is None else completed.stdout
+        stderr = "" if completed is None else completed.stderr
         raise RuntimeError(
-            "CUDA proof reduction failed\n"
-            f"stdout:\n{completed.stdout}\n"
-            f"stderr:\n{completed.stderr}"
+            "CUDA proof hot-path execution failed\n"
+            f"stdout:\n{stdout}\n"
+            f"stderr:\n{stderr}"
         )
     state = read_json(out_path)
     state["cuda_kernel_executed"] = bool(state.get("cuda_kernel_executed"))
-    state["helper_stdout"] = completed.stdout.strip()
+    state["cuda_stdout"] = completed.stdout.strip()
     return state
 
 

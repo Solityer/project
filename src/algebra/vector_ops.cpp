@@ -163,6 +163,33 @@ namespace gatzk::algebra
 #endif
     }
 
+    std::string cuda_device_summary()
+    {
+#if GATZK_ENABLE_CUDA_BACKEND
+        int device_count = 0;
+        if (cudaGetDeviceCount(&device_count) != cudaSuccess || device_count <= 0)
+        {
+            return "cuda_build=true; cuda_runtime=false; cuda_device=unavailable";
+        }
+        int device = 0;
+        if (cudaGetDevice(&device) != cudaSuccess)
+        {
+            device = 0;
+        }
+        cudaDeviceProp props{};
+        if (cudaGetDeviceProperties(&props, device) != cudaSuccess)
+        {
+            return "cuda_build=true; cuda_runtime=true; cuda_device=unknown; cuda_device_count="
+                + std::to_string(device_count);
+        }
+        return "cuda_build=true; cuda_runtime=true; cuda_device=" + std::string(props.name)
+            + "; cuda_device_count=" + std::to_string(device_count)
+            + "; cuda_unified_addressing=" + std::string(props.unifiedAddressing ? "true" : "false");
+#else
+        return "cuda_build=false; cuda_runtime=false; cuda_device=unavailable";
+#endif
+    }
+
     bool cuda_field_hotspots_build_enabled()
     {
 #if GATZK_ENABLE_CUDA_BACKEND

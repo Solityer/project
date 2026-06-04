@@ -129,6 +129,14 @@ namespace gatzk::crypto
         return out;
     }
 
+    G1Point g1_neg(const G1Point& point)
+    {
+        G1Point out;
+        algebra::ensure_mcl_field_ready();
+        mcl::G1::neg(out.value, point.value);
+        return out;
+    }
+
     G1Point g1_mul(const G1Point& point, const algebra::FieldElement& scalar)
     {
         G1Point out;
@@ -149,6 +157,49 @@ namespace gatzk::crypto
             return out;
         }
         algebra::ensure_mcl_field_ready();
+        const auto zero_scalar = algebra::FieldElement::zero();
+        std::size_t nonzero_count = 0;
+        if (count >= 1024)
+        {
+            for (std::size_t i = 0; i < count; ++i)
+            {
+                if (!(scalars[i] == zero_scalar))
+                {
+                    ++nonzero_count;
+                }
+            }
+            if (nonzero_count == 0)
+            {
+                return out;
+            }
+            if (nonzero_count * 4 < count * 3)
+            {
+                std::vector<mcl::G1> compact_points;
+                std::vector<mcl::Fr> compact_scalars;
+                compact_points.reserve(nonzero_count);
+                compact_scalars.reserve(nonzero_count);
+                static_assert(sizeof(G1Point) == sizeof(mcl::G1), "G1Point must wrap a single mcl::G1");
+                auto* native_points = reinterpret_cast<const mcl::G1*>(points);
+                for (std::size_t i = 0; i < count; ++i)
+                {
+                    if (!(scalars[i] == zero_scalar))
+                    {
+                        compact_points.push_back(native_points[i]);
+                        compact_scalars.push_back(scalars[i].native());
+                    }
+                }
+                const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+                if (cpu_count > 1 && compact_scalars.size() >= 256)
+                {
+                    mcl::G1::mulVecMT(out.value, compact_points.data(), compact_scalars.data(), compact_scalars.size(), cpu_count);
+                }
+                else
+                {
+                    mcl::G1::mulVec(out.value, compact_points.data(), compact_scalars.data(), compact_scalars.size());
+                }
+                return out;
+            }
+        }
         std::vector<mcl::Fr> native_scalars;
         native_scalars.reserve(count);
         for (std::size_t i = 0; i < count; ++i)
@@ -422,6 +473,22 @@ namespace gatzk::crypto
         mcl::GT eval_b;
         mcl::pairing(eval_a, lhs_a.value, rhs_a.value);
         mcl::pairing(eval_b, lhs_b.value, rhs_b.value);
+        return eval_a == eval_b;
+    }
+
+    bool pairing_equal_with_prepared_rhs_a(
+        const G1Point& lhs_a,
+        const PreparedG2& rhs_a_prepared,
+        const G1Point& lhs_b,
+        const G2Point& rhs_b)
+    {
+        algebra::ensure_mcl_field_ready();
+        mcl::Fp12 eval_a;
+        mcl::Fp12 eval_b;
+        mcl::precomputedMillerLoop(eval_a, lhs_a.value, rhs_a_prepared.coeffs);
+        mcl::millerLoop(eval_b, lhs_b.value, rhs_b.value);
+        mcl::finalExp(eval_a, eval_a);
+        mcl::finalExp(eval_b, eval_b);
         return eval_a == eval_b;
     }
 

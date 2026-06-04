@@ -43,6 +43,7 @@ namespace gatzk::crypto
     G2Point g2_zero();
     G1Point g1_add(const G1Point& lhs, const G1Point& rhs);
     G1Point g1_sub(const G1Point& lhs, const G1Point& rhs);
+    G1Point g1_neg(const G1Point& point);
     G1Point g1_mul(const G1Point& point, const algebra::FieldElement& scalar);
     G1Point g1_multi_scalar_mul(const G1Point* points, const algebra::FieldElement* scalars, std::size_t count);
     G1Point g1_multi_scalar_mul(const std::vector<G1Point>& points, const std::vector<algebra::FieldElement>& scalars);
@@ -64,6 +65,13 @@ namespace gatzk::crypto
     bool pairing_equal(
         const G1Point& lhs_a,
         const G2Point& rhs_a,
+        const G1Point& lhs_b,
+        const G2Point& rhs_b);
+
+    // 用预处理后的第二个 G2 点检查 pairing 等式，服务 VK-only 快速验证路径。
+    bool pairing_equal_with_prepared_rhs_a(
+        const G1Point& lhs_a,
+        const PreparedG2& rhs_a_prepared,
         const G1Point& lhs_b,
         const G2Point& rhs_b);
         

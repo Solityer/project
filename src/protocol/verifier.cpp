@@ -1260,7 +1260,7 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
                     values,
                     challenges.at(spec.v_name),
                     bundle.proof,
-                    context.kzg)) {
+                    context.kzg.vk)) {
                 return bundle_fail("kzg_batch");
             }
             if (metrics != nullptr) {
@@ -1320,7 +1320,7 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
                 external_points,
                 challenges.at("rho_ext"),
                 proof.external_proof,
-                context.kzg)) {
+                context.kzg.vk)) {
             return fail("external_fold");
         }
         if (metrics != nullptr) {
@@ -1520,7 +1520,7 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
             input.values,
             input.folding_challenge,
             input.bundle->proof,
-            context.kzg);
+            context.kzg.vk);
     };
 
     const auto prepared_fh = prepare_bundle(*bundle_fh->bundle, "v_FH");
@@ -1539,7 +1539,7 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
                     external_points,
                     challenges.at("rho_ext"),
                     proof.external_proof,
-                    context.kzg);
+                    context.kzg.vk);
             });
         auto fh_future = std::async(std::launch::async, [&]() { return verify_bundle(prepared_fh); });
         auto edge_future = std::async(std::launch::async, [&]() { return verify_bundle(prepared_edge); });
@@ -1555,7 +1555,7 @@ bool verify(const ProtocolContext& context, const Proof& proof, RunMetrics* metr
                 external_points,
                 challenges.at("rho_ext"),
                 proof.external_proof,
-                context.kzg)) {
+                context.kzg.vk)) {
             return false;
         }
         if (!verify_bundle(prepared_fh)

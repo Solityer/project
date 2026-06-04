@@ -12,6 +12,7 @@ find_package(Python3 COMPONENTS Interpreter REQUIRED)
 add_custom_target(
     gat_zkgpt_check
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/gat_zkgpt_experiment.py --help
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/audit_formal_proof_semantics.py --source-only
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Checking GAT-ZKML-zkGPT experiment entrypoint"
 )
@@ -20,7 +21,7 @@ add_custom_target(
     zkgpt_cuda_backend
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/build_cuda_backend.sh
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    COMMENT "Building zkGPT CUDA backend helper"
+    COMMENT "Building zkGPT CUDA proof hot-path backend"
 )
 
 add_executable(zkgpt_hyrax_mle backend/native/hyrax_mle_cli.cpp)

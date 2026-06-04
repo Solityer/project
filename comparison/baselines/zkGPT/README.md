@@ -14,7 +14,7 @@ public metadata, transcript order, proof object layout, and verifier acceptance 
   - `proof.py`: official GAT-ZKML-zkGPT proof assembly, full witness segment chunking, Hyrax/MLE masked openings, fixed-table Lasso lookup proofs, strict matrix sumcheck proofs, ML-friendly GKR layered relation transcripts, combine payload, and independent verifier checks.
   - `field.py` / `native_hyrax.py`: BN254 field encoding and Hyrax-style row/column MLE OpenMasked backend.
   - `backend.py`: CPU/GPU backend selection; GPU runs execute the CUDA proof hot-path binding over proof-claim field words.
-- `backend/cuda/`: local CUDA proof reduction kernel used by GPU proof runs.
+- `backend/cuda/`: local CUDA proof hot-path kernel used by GPU proof runs.
 - `backend/native/`: native mcl BN254 Hyrax/MLE commitment and opening backend.
 - `scripts/`: build and experiment entrypoints.
 - `configs/generated/`: generated per-backend configs used by official runs.
@@ -60,6 +60,7 @@ Each dataset/backend directory contains:
 - `lookup_proof.json`
 - `matrix_sumcheck_proof.json`
 - `gkr_proof.json`
+- `combine_proof.json`
 - `hyrax_mle_openings.json`
 - `masked_openings.json`
 - `gpu_proof_hot_path.json` for GPU runs
@@ -78,6 +79,8 @@ Run negative tests with:
 
 ```bash
 ./scripts/run_negative_tests.py
+./scripts/audit_formal_proof_semantics.py
 ```
 
 The negative suite writes `results/negative_tests/formal_negative_tests.json`.
+The semantics audit writes `results/formal_proof_semantics_audit.json`.
