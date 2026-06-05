@@ -587,7 +587,40 @@ def _static_lookup_registry(metadata: Dict[str, Any], range_bits: int) -> Dict[s
     return registry
 
 
+def _structured_function_vk(table_id: str, function: str, rule: str) -> Dict[str, Any]:
+    vk = {
+        "protocol": "structured-fixed-function-verification-key-v2",
+        "table_id": table_id,
+        "function": function,
+        "evaluation_rule": rule,
+        "domain_bits": FUNCTION_LOOKUP_DOMAIN_BITS,
+        "input_domain": {
+            "signed": True,
+            "min_inclusive": -(1 << (FUNCTION_LOOKUP_DOMAIN_BITS - 1)),
+            "max_exclusive": 1 << (FUNCTION_LOOKUP_DOMAIN_BITS - 1),
+            "fixed_scale": DEFAULT_FIXED_SCALE,
+        },
+        "field_modulus": str(BN254_FR_MODULUS),
+        "evaluator_id": {
+            "T_LReLU": "signed_fixed_point_leaky_relu_alpha_0p2_nearest_q",
+            "T_ELU": "signed_fixed_point_elu_expm1_nearest_q",
+            "T_exp": "signed_fixed_point_exp_neg_nearest_q",
+        }.get(table_id, "unsupported"),
+        "selected_opening_rule": "deterministic VK evaluation at opened query x; prover-supplied expected_y chunks are accepted only when this VK replay and the membership sumcheck agree",
+    }
+    vk["vk_digest"] = digest_json({key: value for key, value in vk.items() if key != "vk_digest"})
+    return vk
+
+
+def _verify_structured_function_vk(table_id: str, function: str, rule: str, vk: Any) -> bool:
+    if not isinstance(vk, dict):
+        return False
+    expected = _structured_function_vk(table_id, function, rule)
+    return vk == expected
+
+
 def _fixed_function_table(table_id: str, function: str, rule: str, common: Dict[str, Any]) -> Dict[str, Any]:
+    vk = _structured_function_vk(table_id, function, rule)
     descriptor = {
         "table_id": table_id,
         "table_kind": "structured_fixed_function_table",
@@ -601,22 +634,21 @@ def _fixed_function_table(table_id: str, function: str, rule: str, common: Dict[
             "max_exclusive": 1 << (FUNCTION_LOOKUP_DOMAIN_BITS - 1),
             "fixed_scale": DEFAULT_FIXED_SCALE,
         },
-        "table_materialization": "preprocessed structured evaluator with fixed verification key; selected openings are derived from this key, not from the query multiset",
-        "structured_verification_key": digest_json(
-            {
-                "table_id": table_id,
-                "function": function,
-                "rule": rule,
-                "domain_bits": FUNCTION_LOOKUP_DOMAIN_BITS,
-                "fixed_scale": DEFAULT_FIXED_SCALE,
-            }
-        ),
-        "chunks": [{"chunk_index": 0, "count": 1, "sha256": digest_json({"structured_table": table_id, "function": function, "rule": rule})}],
+        "table_materialization": "preprocessed structured evaluator with fixed verification key; selected openings are verified by the fixed VK and are not accepted as query-generated table side",
+        "structured_verification_key": vk,
+        "chunks": [{"chunk_index": 0, "count": 1, "sha256": digest_json({"structured_table_vk": vk})}],
         **common,
     }
     digest = digest_json(descriptor)
     descriptor["table_digest"] = digest
-    descriptor["table_commitment"] = digest_json({"commitment_backend": "structured-lasso-table", "descriptor_digest": digest})
+    descriptor["table_commitment"] = digest_json(
+        {
+            "commitment_backend": "structured-fixed-function-vk-commitment-v2",
+            "table_id": table_id,
+            "structured_verification_key_digest": digest_json(vk),
+            "chunk_roots": descriptor["chunks"],
+        }
+    )
     return descriptor
 
 
@@ -634,7 +666,15 @@ def _fixed_range_table(range_bits: int, common: Dict[str, Any]) -> Dict[str, Any
     }
     digest = digest_json({key: value for key, value in descriptor.items() if key not in {"table_digest", "table_commitment"}})
     descriptor["table_digest"] = digest
-    descriptor["table_commitment"] = digest_json({"commitment_backend": "structured-lasso-table", "descriptor_digest": digest})
+    descriptor["table_commitment"] = digest_json(
+        {
+            "commitment_backend": "materialized-fixed-range-table-commitment-v2",
+            "table_id": "T_range",
+            "range_bits": int(range_bits),
+            "entry_count": len(values),
+            "chunk_roots": descriptor["chunks"],
+        }
+    )
     return descriptor
 
 
@@ -643,7 +683,31 @@ def _verify_fixed_table_descriptor(table: Dict[str, Any]) -> bool:
         return False
     descriptor = {key: value for key, value in table.items() if key not in {"table_digest", "table_commitment"}}
     digest = digest_json(descriptor)
-    return table["table_digest"] == digest and table["table_commitment"] == digest_json({"commitment_backend": "structured-lasso-table", "descriptor_digest": digest})
+    if table.get("table_kind") == "structured_fixed_function_table":
+        vk = table.get("structured_verification_key", {})
+        commitment = digest_json(
+            {
+                "commitment_backend": "structured-fixed-function-vk-commitment-v2",
+                "table_id": table.get("table_id"),
+                "structured_verification_key_digest": digest_json(vk),
+                "chunk_roots": table.get("chunks", []),
+            }
+        )
+        vk_ok = _verify_structured_function_vk(table.get("table_id", ""), table.get("function", ""), table.get("evaluation_rule", ""), vk)
+    elif table.get("table_kind") == "materialized_fixed_range_table":
+        commitment = digest_json(
+            {
+                "commitment_backend": "materialized-fixed-range-table-commitment-v2",
+                "table_id": table.get("table_id"),
+                "range_bits": int(table.get("range_bits", -1)),
+                "entry_count": int(table.get("entry_count", -1)),
+                "chunk_roots": table.get("chunks", []),
+            }
+        )
+        vk_ok = True
+    else:
+        return False
+    return table["table_digest"] == digest and table["table_commitment"] == commitment and vk_ok
 
 
 def _empty_lookup_family(label: str, table: Dict[str, Any], transcript: Dict[str, Any]) -> Dict[str, Any]:
@@ -672,7 +736,7 @@ def _empty_lookup_family(label: str, table: Dict[str, Any], transcript: Dict[str
 def _function_lookup_proof(label: str, table: Dict[str, Any], x: np.ndarray, y: np.ndarray, transcript: Dict[str, Any]) -> Dict[str, Any]:
     xq = _quantized_vector(x)
     yq = _quantized_vector(y)
-    expected_q_raw = [_fixed_table_eval_q(table["table_id"], value) for value in xq]
+    expected_q_raw = [_structured_vk_eval_q(table["structured_verification_key"], value) for value in xq]
     expected_q, max_delta_q, mismatches = _apply_lookup_quantization_window(expected_q_raw, yq)
     domain_min = -(1 << (FUNCTION_LOOKUP_DOMAIN_BITS - 1))
     domain_max = 1 << (FUNCTION_LOOKUP_DOMAIN_BITS - 1)
@@ -1051,6 +1115,29 @@ def _fixed_table_eval_q(table_id: str, x_value: int) -> int:
     return quantize_float(float(y))
 
 
+def _structured_vk_eval_q(vk: Dict[str, Any], x_value: int) -> int:
+    if not isinstance(vk, dict) or vk.get("protocol") != "structured-fixed-function-verification-key-v2":
+        raise ValueError("invalid structured fixed-function verification key")
+    table_id = str(vk.get("table_id", ""))
+    domain = vk.get("input_domain", {})
+    signed_x = _signed_field(x_value)
+    if not (int(domain.get("min_inclusive", 0)) <= signed_x < int(domain.get("max_exclusive", -1))):
+        raise ValueError("structured fixed-function query outside VK domain")
+    expected = _structured_function_vk(table_id, str(vk.get("function", "")), str(vk.get("evaluation_rule", "")))
+    if vk != expected:
+        raise ValueError("structured fixed-function VK digest mismatch")
+    x = signed_x / DEFAULT_FIXED_SCALE
+    if vk.get("evaluator_id") == "signed_fixed_point_leaky_relu_alpha_0p2_nearest_q":
+        y = x if x >= 0.0 else 0.2 * x
+    elif vk.get("evaluator_id") == "signed_fixed_point_elu_expm1_nearest_q":
+        y = x if x >= 0.0 else np.expm1(x)
+    elif vk.get("evaluator_id") == "signed_fixed_point_exp_neg_nearest_q":
+        y = np.exp(-x)
+    else:
+        raise ValueError(f"unsupported structured fixed-function evaluator: {vk.get('evaluator_id')}")
+    return quantize_float(float(y))
+
+
 def _apply_lookup_quantization_window(expected: Sequence[int], actual: Sequence[int]) -> Tuple[List[int], int, int]:
     adjusted: List[int] = []
     max_delta = 0
@@ -1261,18 +1348,21 @@ def _verify_lookup_family(family: Dict[str, Any]) -> Dict[str, Any]:
         sample_indices_ok = [int(item.get("index", -1)) for item in opening.get("evaluation_samples", [])] == expected_sample_indices
         domain_min = int(family.get("fixed_table", {}).get("input_domain", {}).get("min_inclusive", 0))
         for sample in opening.get("evaluation_samples", []):
-            x_value = to_field_int(int(sample.get("x", "0")))
-            y_value = to_field_int(int(sample.get("y", "0")))
-            expected_y = _fixed_table_eval_q(family.get("table"), x_value)
-            adjusted_expected = to_field_int(int(sample.get("adjusted_expected_y", "0")))
-            delta = abs(_signed_field(y_value - expected_y))
-            sample_ok = sample_ok and (
-                str(to_field_int(expected_y)) == str(to_field_int(int(sample.get("expected_y", "0"))))
-                and delta <= int(family.get("lookup_quantization_tolerance_q", LOOKUP_QUANTIZATION_TOLERANCE_Q))
-                and adjusted_expected == y_value
-                and str(_pair_key(x_value, adjusted_expected, int(family["eta"]))) == str(sample.get("pair_key"))
-                and str(to_field_int(_signed_field(x_value) - domain_min)) == str(sample.get("domain_residue"))
-            )
+            try:
+                x_value = to_field_int(int(sample.get("x", "0")))
+                y_value = to_field_int(int(sample.get("y", "0")))
+                expected_y = _structured_vk_eval_q(family.get("fixed_table", {}).get("structured_verification_key", {}), x_value)
+                adjusted_expected = to_field_int(int(sample.get("adjusted_expected_y", "0")))
+                delta = abs(_signed_field(y_value - expected_y))
+                sample_ok = sample_ok and (
+                    str(to_field_int(expected_y)) == str(to_field_int(int(sample.get("expected_y", "0"))))
+                    and delta <= int(family.get("lookup_quantization_tolerance_q", LOOKUP_QUANTIZATION_TOLERANCE_Q))
+                    and adjusted_expected == y_value
+                    and str(_pair_key(x_value, adjusted_expected, int(family["eta"]))) == str(sample.get("pair_key"))
+                    and str(to_field_int(_signed_field(x_value) - domain_min)) == str(sample.get("domain_residue"))
+                )
+            except Exception:
+                sample_ok = False
         structured_opening_ok = (
             bool(family.get("input_domain_ok"))
             and expected_digest == digest_json(opening)

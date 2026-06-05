@@ -10,6 +10,49 @@
 Every row has `status=VERIFY_OK`, a per-run `run_manifest.json`, and component
 artifacts under `results/<backend>/<dataset>/`.
 
+### CPU Results
+
+| dataset | N | E | G_batch | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| cora | 2708 | 13264 | 1 | 29509.606 | 54813.525 | 319.019 | 15609659 |
+| citeseer | 3327 | 12431 | 1 | 76514.704 | 126736.153 | 638.501 | 35472298 |
+| pubmed | 19717 | 108365 | 1 | 113002.776 | 246218.493 | 959.604 | 47135934 |
+| ppi | 56944 | 850576 | 295 | 195254.900 | 428208.107 | 969.768 | 49972717 |
+| ogbn-arxiv | 169343 | 1335586 | 1 | 421804.450 | 768474.265 | 1873.004 | 102633360 |
+
+### GPU Results
+
+| dataset | N | E | G_batch | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes | gpu_hot_path_status | cpu_fallback |
+|---|---:|---:|---:|---:|---:|---:|---:|---|---|
+| cora | 2708 | 13264 | 1 | 32849.979 | 58761.845 | 329.303 | 15613573 | GPU_HOT_PATH_BOUND | False |
+| citeseer | 3327 | 12431 | 1 | 76578.675 | 127211.900 | 650.318 | 35473595 | GPU_HOT_PATH_BOUND | False |
+| pubmed | 19717 | 108365 | 1 | 113035.552 | 246136.698 | 912.759 | 47133230 | GPU_HOT_PATH_BOUND | False |
+| ppi | 56944 | 850576 | 295 | 198057.480 | 431930.426 | 999.579 | 49975307 | GPU_HOT_PATH_BOUND | False |
+| ogbn-arxiv | 169343 | 1335586 | 1 | 434951.765 | 780356.884 | 1914.233 | 102634671 | GPU_HOT_PATH_BOUND | False |
+
+### CPU/GPU Comparison
+
+| dataset | prove_time_ratio_gpu_vs_cpu | verify_time_ratio_gpu_vs_cpu | proof_size_delta_bytes |
+|---|---:|---:|---:|
+| cora | 1.072032 | 1.032238 | 3914 |
+| citeseer | 1.003754 | 1.018507 | 1297 |
+| pubmed | 0.999668 | 0.951183 | -2704 |
+| ppi | 1.008693 | 1.030741 | 2590 |
+| ogbn-arxiv | 1.015463 | 1.022012 | 1311 |
+
+Summary files:
+
+- `results/cpu_results.csv`
+- `results/gpu_results.csv`
+- `results/summary.csv`
+- `results/summary.json`
+
+Validation files:
+
+- `results/negative_tests/formal_negative_tests.json`: `PASS`, 50 rows.
+- `results/negative_tests/native_primitive_negative_tests.json`: `PASS`, 50 rows.
+- `results/formal_proof_semantics_audit.json`: `PASS`, 203 rows.
+
 The previous adapter-only and digest/replay outputs remain in `archive/` and are
 excluded from `results/summary.csv`, `results/cpu_results.csv`,
 `results/gpu_results.csv`, and `results/summary.json`.
@@ -93,6 +136,12 @@ fixed-table chunks, raw query digest, and Fiat-Shamir challenges. The verifier
 replays deterministic structured-key samples against the fixed evaluation rule
 and rejects tampered query values, expected values, selected opening messages,
 table ids, commitments, domains, or challenges.
+
+The structured fixed-function table commitment is not a plain descriptor digest.
+It commits to the fixed verification key digest and chunk roots with
+`structured-fixed-function-vk-commitment-v2`. The range table uses
+`materialized-fixed-range-table-commitment-v2` over the materialized limb-table
+chunk roots.
 
 Range families are intentionally named `direct_limb_bounded_range_argument`
 rather than Lasso selected-table products. They decompose full-graph attention
@@ -196,4 +245,20 @@ All tamper cases must produce `VERIFY_FAILED`.
 and every CPU/GPU artifact bundle for structured fixed-function lookup
 membership arguments, direct fixed-range arguments, committed rescale bindings,
 GKR final-oracle opening bindings, combine proof binding, and GPU hot-path
-contribution binding.
+contribution binding. The audit has three layers: source checks, artifact
+checks over all 10 bundles, and semantic mutation checks that tamper loaded
+proof bundles and invoke the formal verifier/bundle verifier.
+
+## Reproduction Commands
+
+```bash
+cmake -S . -B cmake-build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build cmake-build-release -j
+./scripts/build_cuda_backend.sh
+/home/pzh/project/.venv/bin/python scripts/gat_zkgpt_experiment.py --datasets all --backends all --force
+/home/pzh/project/.venv/bin/python scripts/rebuild_summary_from_artifacts.py
+/home/pzh/project/.venv/bin/python scripts/run_negative_tests.py
+/home/pzh/project/.venv/bin/python scripts/audit_formal_proof_semantics.py
+```
+
+Known blockers: none.

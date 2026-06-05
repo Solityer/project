@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import inspect
 import json
 import os
@@ -24,14 +25,14 @@ def main() -> None:
     sys.path.insert(0, str(zk_root / "src"))
 
     from zkgpt_gat import proof as proof_mod
-    from zkgpt_gat.util import digest_json, read_json, write_json
+    from zkgpt_gat.util import digest_file, digest_json, read_json, write_json
 
     rows: List[Dict[str, Any]] = []
     rows.extend(_audit_sources(proof_mod, zk_root))
 
     results_dir = pathlib.Path(args.results_dir).resolve() if args.results_dir else zk_root / "results"
     if not args.source_only:
-        rows.extend(_audit_results(results_dir, digest_json, read_json))
+        rows.extend(_audit_results(results_dir, proof_mod, digest_file, digest_json, read_json))
 
     status = "PASS" if all(row["passed"] for row in rows) else "FAIL"
     payload = {"status": status, "rows": rows}
@@ -67,6 +68,7 @@ def _audit_sources(proof_mod: Any, zk_root: pathlib.Path) -> List[Dict[str, Any]
     backend_py = (zk_root / "src" / "zkgpt_gat" / "backend.py").read_text(encoding="utf-8")
 
     rows.append(_row("source.lookup_has_structured_membership_verifier", "_verify_structured_function_membership" in proof_py))
+    rows.append(_row("source.lookup_verifier_uses_structured_vk_eval", "_structured_vk_eval_q" in verify_lookup and "_fixed_table_eval_q" not in verify_lookup))
     rows.append(_row("source.lookup_no_product_equality_acceptance", "query_product\")) == to_field_int(int(family[\"table_product" not in verify_lookup))
     rows.append(_row("source.range_direct_argument_protocol_present", "direct_limb_bounded_range_argument" in proof_py and "direct_query_accumulator" in proof_py))
     rows.append(_row("source.gkr_verifier_not_status_or_residual_driven", all(token not in verify_gkr for token in ["mismatch_count", "max_abs_error", "claim.get(\"status\"", "oracle_chunks_equal and"])))
@@ -77,12 +79,13 @@ def _audit_sources(proof_mod: Any, zk_root: pathlib.Path) -> List[Dict[str, Any]
     return rows
 
 
-def _audit_results(results_dir: pathlib.Path, digest_json, read_json) -> List[Dict[str, Any]]:
+def _audit_results(results_dir: pathlib.Path, proof_mod: Any, digest_file, digest_json, read_json) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for backend in ["cpu", "gpu"]:
         for dataset in EXPECTED_DATASETS:
             bundle = results_dir / backend / dataset
             rows.extend(_audit_bundle(bundle, backend, dataset, digest_json, read_json))
+    rows.extend(_audit_semantic_mutations(results_dir, proof_mod, digest_file, digest_json, read_json))
     summary = results_dir / "summary.csv"
     rows.append(_row("results.summary_exists", summary.exists(), str(summary)))
     if summary.exists():
@@ -90,6 +93,136 @@ def _audit_results(results_dir: pathlib.Path, digest_json, read_json) -> List[Di
         rows.append(_row("results.summary_has_10_verify_ok_rows", text.count("VERIFY_OK") >= 10))
         forbidden = ["fake-proof", "artifact-replay", "verify-skipped", "forward-only", "residual-only"]
         rows.append(_row("results.summary_no_forbidden_modes", not any(item in text for item in forbidden)))
+    return rows
+
+
+def _load_bundle(bundle: pathlib.Path, read_json) -> Dict[str, Any]:
+    data = {
+        "metadata": read_json(bundle / "metadata.json"),
+        "commitments": read_json(bundle / "commitments.json"),
+        "transcript": read_json(bundle / "transcript.json"),
+        "fixed_tables": read_json(bundle / "fixed_lookup_tables.json"),
+        "lookup": read_json(bundle / "lookup_proof.json"),
+        "matrix": read_json(bundle / "matrix_sumcheck_proof.json"),
+        "gkr": read_json(bundle / "gkr_proof.json"),
+        "combine": read_json(bundle / "combine_proof.json"),
+        "hyrax": read_json(bundle / "hyrax_mle_openings.json"),
+        "masked": read_json(bundle / "masked_openings.json"),
+        "payload": read_json(bundle / "proof_payload.json"),
+        "verification": read_json(bundle / "verification.json"),
+        "witness": read_json(bundle / "witness_manifest.json"),
+        "manifest": read_json(bundle / "run_manifest.json"),
+        "gpu": None,
+    }
+    if data["manifest"]["backend"] == "gpu":
+        data["gpu"] = read_json(bundle / "gpu_proof_hot_path.json")
+    return data
+
+
+def _verify_loaded_bundle(data: Dict[str, Any], bundle: pathlib.Path, proof_mod: Any, digest_file, digest_json) -> bool:
+    try:
+        formal = proof_mod._verify_formal(
+            data["metadata"],
+            data["commitments"],
+            data["transcript"],
+            data["lookup"],
+            data["matrix"],
+            data["gkr"],
+            data["combine"],
+            data["hyrax"],
+            data["gpu"],
+            data["manifest"]["backend"],
+        )
+        payload = data["payload"]
+        checks = [
+            formal["status"] == "VERIFY_OK" and all(bool(value) for value in formal["checks"].values()),
+            data["verification"]["status"] == "VERIFY_OK",
+            payload.get("M_pub_digest") == digest_json(data["metadata"]),
+            payload.get("transcript_digest") == digest_json(data["transcript"]),
+            payload.get("Y_digest") == data["witness"].get("output_digest"),
+            payload.get("Com_in") == [data["commitments"]["items"][name] for name in data["commitments"]["order"]],
+            payload.get("FixedLookupTables") == data["fixed_tables"],
+            payload.get("Pi_Lasso") == data["lookup"],
+            payload.get("Pi_MatMul") == data["matrix"],
+            payload.get("Pi_GKR") == data["gkr"],
+            payload.get("Pi_combine") == data["combine"],
+            payload.get("Open_in") == data["hyrax"],
+            payload.get("OpenMasked") == data["masked"],
+            data["lookup"].get("fixed_table_registry") == data["fixed_tables"],
+            data["manifest"].get("status") == "VERIFY_OK",
+            data["manifest"].get("full_dataset") is True,
+            data["manifest"].get("node_ptr") == data["metadata"]["dim_cfg"]["node_ptr"],
+            data["manifest"].get("edge_ptr") == data["metadata"]["dim_cfg"]["edge_ptr"],
+        ]
+        for key in ["FixedLookupTables", "Pi_Lasso", "Pi_MatMul", "Pi_GKR", "Pi_combine", "Open_in", "OpenMasked"]:
+            ref = payload.get("component_artifacts", {}).get(key, {})
+            if ref:
+                checks.append(digest_file(bundle / pathlib.Path(ref["path"]).name) == ref.get("sha256"))
+        if data["manifest"]["backend"] == "gpu":
+            checks.append(payload.get("GPU_proof_contribution") == data["gpu"])
+            checks.append(data["gpu"].get("proof_hot_path") is True and data["gpu"].get("cuda_kernel_executed") is True and data["gpu"].get("cpu_fallback") is False)
+        return all(checks)
+    except Exception:
+        return False
+
+
+def _mutation_row(name: str, source: Dict[str, Any], bundle: pathlib.Path, mutator, proof_mod: Any, digest_file, digest_json) -> Dict[str, Any]:
+    data = copy.deepcopy(source)
+    try:
+        mutator(data)
+        actual = "VERIFY_OK" if _verify_loaded_bundle(data, bundle, proof_mod, digest_file, digest_json) else "VERIFY_FAILED"
+    except Exception:
+        actual = "VERIFY_FAILED"
+    return _row(f"semantic_mutation.{name}", actual == "VERIFY_FAILED", f"actual={actual}")
+
+
+def _audit_semantic_mutations(results_dir: pathlib.Path, proof_mod: Any, digest_file, digest_json, read_json) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    cpu_cora_path = results_dir / "cpu" / "cora"
+    gpu_cora_path = results_dir / "gpu" / "cora"
+    required = [cpu_cora_path / "run_manifest.json", gpu_cora_path / "run_manifest.json"]
+    missing = [str(path) for path in required if not path.exists()]
+    rows.append(_row("semantic_mutation.required_reference_bundles", not missing, ",".join(missing)))
+    if missing:
+        return rows
+
+    cpu = _load_bundle(cpu_cora_path, read_json)
+    gpu = _load_bundle(gpu_cora_path, read_json)
+    rows.append(_row("semantic_mutation.valid_cpu_reference", _verify_loaded_bundle(cpu, cpu_cora_path, proof_mod, digest_file, digest_json)))
+    rows.append(_row("semantic_mutation.valid_gpu_reference", _verify_loaded_bundle(gpu, gpu_cora_path, proof_mod, digest_file, digest_json)))
+
+    mutations = [
+        ("query_generated_table_side_attempt", lambda d: _set_path(d, ["lookup", "families", 1, "structured_table_opening", "query_membership_argument", "protocol"], "query-generated-table-side")),
+        ("fixed_table_commitment", lambda d: _set_path(d, ["lookup", "families", 1, "fixed_table", "table_commitment"], "0")),
+        ("structured_vk", lambda d: _set_path(d, ["lookup", "families", 1, "structured_table_opening", "structured_verification_key", "vk_digest"], "0")),
+        ("lookup_selected_opening_expected_y", lambda d: _set_path(d, ["lookup", "families", 1, "structured_table_opening", "evaluation_samples", 0, "expected_y"], str(int(d["lookup"]["families"][1]["structured_table_opening"]["evaluation_samples"][0]["expected_y"]) + 1))),
+        ("range_limb_chunks", lambda d: _set_path(d, ["lookup", "families", 0, "range_argument", "query_limb_chunks", 0, "sha256"], "0")),
+        ("range_bound", lambda d: _set_path(d, ["lookup", "families", 0, "range_bits"], int(d["lookup"]["families"][0]["range_bits"]) + 1)),
+        ("matrix_output_eval", lambda d: _set_path(d, ["matrix", "claims", 0, "output_eval_q2"], str(int(d["matrix"]["claims"][0]["output_eval_q2"]) + 1))),
+        ("matrix_residual_eval", lambda d: _set_path(d, ["matrix", "claims", 0, "rescale_rounding_advice"], str(int(d["matrix"]["claims"][0]["rescale_rounding_advice"]) + 1))),
+        ("matrix_residual_binding", lambda d: _set_path(d, ["matrix", "claims", 0, "rescale_rounding", "residual_oracle_binding", "segment_vector_sha256"], "0")),
+        ("matrix_rounding_bound", lambda d: _set_path(d, ["matrix", "claims", 0, "rescale_rounding", "per_entry_rounding_bound_q2"], "1")),
+        ("gkr_sumcheck_round", lambda d: _set_path(d, ["gkr", "claims", 0, "lhs_sumcheck", "rounds", 0, "coefficients", 0], str(int(d["gkr"]["claims"][0]["lhs_sumcheck"]["rounds"][0]["coefficients"][0]) + 1))),
+        ("gkr_final_oracle_claim", lambda d: _set_path(d, ["gkr", "claims", 0, "final_oracle_claims", "lhs_final_product"], "0")),
+        ("gkr_committed_opening", lambda d: _set_path(d, ["gkr", "claims", 0, "committed_witness_opening_proofs", "segments", 0, "opening_chunks", 0, "masked_evaluation"], "0")),
+        ("transcript_challenge", lambda d: _set_path(d, ["transcript", "log", 0, "challenge_u64"], int(d["transcript"]["log"][0]["challenge_u64"]) + 1)),
+        ("proof_payload_refs_only_attempt", lambda d: d["payload"].pop("Pi_Lasso", None)),
+        ("status_field", lambda d: _set_path(d, ["verification", "status"], "VERIFY_FAILED")),
+        ("masked_opening", lambda d: _set_path(d, ["hyrax", "items", "com_base", "chunks", 0, "proof", "opening", "masked_evaluation"], "0")),
+    ]
+    for name, mutator in mutations:
+        rows.append(_mutation_row(name, cpu, cpu_cora_path, mutator, proof_mod, digest_file, digest_json))
+    rows.append(
+        _mutation_row(
+            "gpu_contribution",
+            gpu,
+            gpu_cora_path,
+            lambda d: _set_path(d, ["gpu", "input_digest"], "0"),
+            proof_mod,
+            digest_file,
+            digest_json,
+        )
+    )
     return rows
 
 
@@ -209,6 +342,13 @@ def _audit_gkr(prefix: str, gkr: Dict[str, Any], digest_json) -> List[Dict[str, 
         binding_ok = binding_ok and claim.get("protocol") == "gkr-layer-relation-random-linear-eval-v3"
     rows.append(_row(f"{prefix}.gkr_final_oracles_bound_to_openings", binding_ok))
     return rows
+
+
+def _set_path(data: Dict[str, Any], keys: List[Any], value: Any) -> None:
+    target: Any = data
+    for key in keys[:-1]:
+        target = target[key]
+    target[keys[-1]] = value
 
 
 if __name__ == "__main__":
