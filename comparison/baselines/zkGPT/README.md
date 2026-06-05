@@ -51,6 +51,9 @@ existing artifact directories with:
 
 The official result table is `results/summary.csv`. It contains five full CPU
 runs and five full GPU runs: cora, citeseer, pubmed, ppi, and ogbn-arxiv.
+The current rerun has 10 `VERIFY_OK` full-dataset proof bundles, with no
+CPU fallback in GPU rows. The detailed CPU table, GPU table, CPU/GPU comparison,
+proof-size accounting, and protocol alignment notes are in `docs/EXPERIMENT.md`.
 Each dataset/backend directory contains:
 
 - `metadata.json`
@@ -84,3 +87,14 @@ Run negative tests with:
 
 The negative suite writes `results/negative_tests/formal_negative_tests.json`.
 The semantics audit writes `results/formal_proof_semantics_audit.json`.
+
+Current validation status:
+
+- `results/cpu_results.csv`, `results/gpu_results.csv`, `results/summary.csv`,
+  and `results/summary.json` were regenerated from local artifacts.
+- `results/negative_tests/formal_negative_tests.json`: `PASS`.
+- `results/formal_proof_semantics_audit.json`: `PASS`.
+- Lookup uses structured fixed-function VK commitments and materialized fixed
+  range table commitments; matrix residuals are committed and range-bound; GKR
+  final oracle claims are bound to committed masked openings; GPU proof runs
+  include `GPU_proof_contribution` in the proof payload.
