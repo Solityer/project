@@ -43,6 +43,18 @@ def _hardware_and_device(backend: str, gpu_info: Dict[str, Any]) -> str:
     return "cpu"
 
 
+def _gpu_hot_path_status(backend: str, gpu_info: Dict[str, Any]) -> str:
+    if backend != "gpu":
+        return ""
+    if (
+        gpu_info.get("proof_hot_path") is True
+        and gpu_info.get("cuda_kernel_executed") is True
+        and gpu_info.get("cpu_fallback") is False
+    ):
+        return "GPU_HOT_PATH_BOUND"
+    return "GPU_HOT_PATH_INVALID"
+
+
 def _proof_scope_fields(
     config: Any,
     graph: Any,
@@ -93,6 +105,8 @@ def _proof_scope_fields(
         "edge_sort_rule": graph.edge_sort_rule,
         "batching_rule": graph.batching_rule,
         "hardware_and_device": _hardware_and_device(backend, gpu_info),
+        "gpu_hot_path_status": _gpu_hot_path_status(backend, gpu_info),
+        "cpu_fallback": "" if backend != "gpu" else bool(gpu_info.get("cpu_fallback", True)),
         "run_status": "VERIFY_OK_FULL_GAT_ZKGPT",
         "failure_reason_if_not_comparable": "",
     }
@@ -222,6 +236,8 @@ def run_one(
         "edge_sort_rule": scope_fields["edge_sort_rule"],
         "batching_rule": scope_fields["batching_rule"],
         "hardware_and_device": scope_fields["hardware_and_device"],
+        "gpu_hot_path_status": scope_fields["gpu_hot_path_status"],
+        "cpu_fallback": scope_fields["cpu_fallback"],
         "run_status": scope_fields["run_status"],
         "failure_reason_if_not_comparable": scope_fields["failure_reason_if_not_comparable"],
     }
@@ -272,6 +288,8 @@ def write_summary(results_dir: pathlib.Path, rows: List[Dict[str, Any]]) -> None
         "edge_sort_rule",
         "batching_rule",
         "hardware_and_device",
+        "gpu_hot_path_status",
+        "cpu_fallback",
         "run_status",
         "failure_reason_if_not_comparable",
     ]
