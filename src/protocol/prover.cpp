@@ -1,6 +1,7 @@
 #include "gatzk/protocol/prover.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cmath>
 #include <cstdlib>
@@ -11,10 +12,12 @@
 #include <future>
 #include <functional>
 #include <iomanip>
+#include <iostream>
 #include <mutex>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <system_error>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
@@ -49,6 +52,16 @@ using Clock = std::chrono::steady_clock;
 
 double elapsed_ms(const Clock::time_point& start, const Clock::time_point& end) {
     return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+bool progress_enabled() {
+    return std::getenv("GATZK_RUN_PROGRESS") != nullptr;
+}
+
+void progress_note(const std::string& label) {
+    if (progress_enabled()) {
+        std::cerr << "[progress] " << label << '\n';
+    }
 }
 
 std::uint64_t fnv1a64(std::string_view text) {
@@ -2432,6 +2445,10 @@ std::shared_ptr<algebra::RootOfUnityDomain> quotient_domain(
     throw std::runtime_error("unknown quotient label: " + label);
 }
 
+std::size_t quotient_coset_multiplier(const std::string& label) {
+    return label == "t_FH" ? 2 : 4;
+}
+
 FieldElement quotient_coset_shift(const algebra::RootOfUnityDomain& domain) {
     auto shift = FieldElement(7);
     const auto one = FieldElement::one();
@@ -2526,6 +2543,10 @@ std::vector<FieldElement> coefficients_from_coset_evaluations(
     return coefficients;
 }
 
+std::vector<std::string> quotient_dependency_labels(
+    const ProtocolContext& context,
+    const std::string& quotient_name);
+
 class QuotientPolynomialMaterializer {
   public:
     QuotientPolynomialMaterializer(
@@ -2538,7 +2559,7 @@ class QuotientPolynomialMaterializer {
           challenges_(challenges),
           label_(std::move(label)),
           domain_(quotient_domain(context_, label_)),
-          target_size_(domain_->size * 2),
+          target_size_(domain_->size * quotient_coset_multiplier(label_)),
           rotation_step_(target_size_ / domain_->size),
           shift_(quotient_coset_shift(*domain_)) {
         if (domain_ == nullptr) {
@@ -2555,6 +2576,9 @@ class QuotientPolynomialMaterializer {
                 "SRS degree bound is too small for quotient polynomial " + label_
                 + ": need coefficients=" + std::to_string(target_size_)
                 + " but degree_bound+1=" + std::to_string(key.pk.degree_bound + 1));
+        }
+        if (label_ == "t_FH" && full_graph_feature_identity_enabled(context_)) {
+            return materialize_full_identity_fh();
         }
 
         const auto root = FieldElement::root_of_unity(target_size_);
@@ -2593,6 +2617,11 @@ class QuotientPolynomialMaterializer {
         std::vector<FieldElement> quotient_values(target_size_, FieldElement::zero());
         // Warm the dependency cache before parallel point evaluation; after this the worker
         // threads only read the cached coset vectors.
+        if (label_ == "t_edge") {
+            progress_note("prove:quotient:t_edge:coset_prewarm:start");
+            prewarm_coset_values(quotient_dependency_labels(context_, label_));
+            progress_note("prove:quotient:t_edge:coset_prewarm:done");
+        }
         quotient_values[0] = evaluate_at_index(0, shift_);
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
         const bool run_parallel = cpu_count > 1 && target_size_ >= 4096;
@@ -2638,13 +2667,239 @@ class QuotientPolynomialMaterializer {
     }
 
   private:
+    algebra::Polynomial materialize_full_identity_fh() {
+        const auto& q = coset_values("P_Q_tbl_feat");
+        const auto& rows = coset_values("P_Row_feat_tbl");
+        const auto& cols = coset_values("P_Col_feat_tbl");
+        const auto& features = coset_values("P_T_H");
+        if (q.size() != target_size_ || rows.size() != target_size_
+            || cols.size() != target_size_ || features.size() != target_size_) {
+            throw std::runtime_error("full-identity FH quotient coset value size mismatch");
+        }
+
+        const auto eta = challenges_.at("eta_feat");
+        const auto eta_sq = eta * eta;
+        const auto beta = challenges_.at("beta_feat");
+        const auto alpha = challenges_.at("alpha_quot");
+        const auto one = FieldElement::one();
+        const auto root = FieldElement::root_of_unity(target_size_);
+        const auto zero_cycle = target_size_ / domain_->size;
+        if (zero_cycle == 0 || target_size_ % domain_->size != 0) {
+            throw std::runtime_error("invalid full-identity FH quotient coset cycle");
+        }
+        std::vector<FieldElement> inverse_zero(zero_cycle, FieldElement::zero());
+        auto zero_value = shift_.pow(domain_->size);
+        const auto zero_step = root.pow(domain_->size);
+        for (std::size_t i = 0; i < zero_cycle; ++i) {
+            inverse_zero[i] = (zero_value - one).inv();
+            zero_value *= zero_step;
+        }
+
+        std::vector<FieldElement> quotient_values(target_size_, FieldElement::zero());
+        for (std::size_t i = 0; i < target_size_; ++i) {
+            const auto table_value = rows[i] + eta * cols[i] + eta_sq * features[i];
+            quotient_values[i] = alpha * q[i] * (one - q[i]) * (table_value + beta) * inverse_zero[i % zero_cycle];
+        }
+        auto coefficients = coefficients_from_coset_evaluations(quotient_values, shift_);
+        return algebra::Polynomial::from_coefficients(label_, std::move(coefficients));
+    }
+
     const std::vector<FieldElement>& coset_values(const std::string& requested_name) {
         return *coset_values_ptr(requested_name);
     }
 
+    void prewarm_coset_values(const std::vector<std::string>& labels) {
+        std::vector<std::string> unique_labels;
+        unique_labels.reserve(labels.size());
+        for (const auto& label : labels) {
+            if (std::find(unique_labels.begin(), unique_labels.end(), label) != unique_labels.end()) {
+                continue;
+            }
+            {
+                std::lock_guard<std::mutex> lock(coset_cache_mutex_);
+                if (coset_cache_.find(label) != coset_cache_.end()) {
+                    continue;
+                }
+            }
+            unique_labels.push_back(label);
+        }
+        if (unique_labels.empty()) {
+            return;
+        }
+
+        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+        const auto worker_count = std::min<std::size_t>(
+            std::min<std::size_t>(cpu_count, 6),
+            unique_labels.size());
+        std::atomic<std::size_t> next{0};
+        std::vector<std::future<void>> futures;
+        futures.reserve(worker_count);
+        for (std::size_t worker = 0; worker < worker_count; ++worker) {
+            futures.push_back(std::async(std::launch::async, [&]() {
+                while (true) {
+                    const auto index = next.fetch_add(1);
+                    if (index >= unique_labels.size()) {
+                        break;
+                    }
+                    coset_values_ptr(unique_labels[index]);
+                }
+            }));
+        }
+        for (auto& future : futures) {
+            future.get();
+        }
+    }
+
+    std::shared_ptr<const std::vector<FieldElement>> scaled_coset_sum(
+        const std::vector<std::pair<std::string, FieldElement>>& terms) {
+        auto out = std::make_shared<std::vector<FieldElement>>(target_size_, FieldElement::zero());
+        for (const auto& [label, scale] : terms) {
+            const auto values = coset_values_ptr(label);
+            if (values->size() != target_size_) {
+                throw std::runtime_error("linear coset dependency size mismatch: " + label);
+            }
+            for (std::size_t i = 0; i < target_size_; ++i) {
+                (*out)[i] += (*values)[i] * scale;
+            }
+        }
+        return out;
+    }
+
+    std::shared_ptr<const std::vector<FieldElement>> derived_hidden_edge_coset(const std::string& name) {
+        if (!context_.model.has_real_multihead || label_ != "t_edge") {
+            return nullptr;
+        }
+        for (std::size_t head_index = 0; head_index < context_.model.hidden_heads.size(); ++head_index) {
+            const auto prefix = "P_h" + std::to_string(head_index) + "_";
+            if (name.rfind(prefix, 0) != 0) {
+                continue;
+            }
+            const auto suffix = name.substr(prefix.size());
+            const auto eta_l = challenges_.at("eta_L_h" + std::to_string(head_index));
+            const auto eta_exp = challenges_.at("eta_exp_h" + std::to_string(head_index));
+            const auto eta_elu = challenges_.at("eta_ELU_h" + std::to_string(head_index));
+            const auto eta_src = challenges_.at("eta_src_h" + std::to_string(head_index));
+            const auto eta_dst = challenges_.at("eta_dst_h" + std::to_string(head_index));
+            const auto eta_t = challenges_.at("eta_t_h" + std::to_string(head_index));
+            if (suffix == "Table_L") {
+                return scaled_coset_sum({{"P_T_L_x", FieldElement::one()}, {"P_T_L_y", eta_l}});
+            }
+            if (suffix == "Query_L") {
+                return scaled_coset_sum({{prefix + "S", FieldElement::one()}, {prefix + "Z", eta_l}});
+            }
+            if (suffix == "Table_R") {
+                return coset_values_ptr("P_T_range");
+            }
+            if (suffix == "Query_R") {
+                return coset_values_ptr(prefix + "Delta");
+            }
+            if (suffix == "Table_exp") {
+                return scaled_coset_sum({{"P_T_exp_x", FieldElement::one()}, {"P_T_exp_y", eta_exp}});
+            }
+            if (suffix == "Query_exp") {
+                return scaled_coset_sum({{prefix + "Delta", FieldElement::one()}, {prefix + "U", eta_exp}});
+            }
+            if (suffix == "Table_ELU") {
+                return scaled_coset_sum({{"P_T_ELU_x", FieldElement::one()}, {"P_T_ELU_y", eta_elu}});
+            }
+            if (suffix == "Query_ELU") {
+                return scaled_coset_sum({{prefix + "H_agg_pre_flat", FieldElement::one()}, {prefix + "H_agg_flat", eta_elu}});
+            }
+            if (suffix == "Query_src") {
+                const auto eta_src_sq = eta_src * eta_src;
+                return scaled_coset_sum({
+                    {"P_src", FieldElement::one()},
+                    {prefix + "E_src_edge", eta_src},
+                    {prefix + "H_src_star_edge", eta_src_sq},
+                });
+            }
+            if (suffix == "Query_t") {
+                return scaled_coset_sum({{"P_dst", FieldElement::one()}, {prefix + "T_psq_edge", eta_t}});
+            }
+            if (suffix == "Query_dst") {
+                const auto eta_dst_sq = eta_dst * eta_dst;
+                const auto eta_dst_cu = eta_dst_sq * eta_dst;
+                const auto eta_dst_4 = eta_dst_cu * eta_dst;
+                const auto eta_dst_5 = eta_dst_4 * eta_dst;
+                return scaled_coset_sum({
+                    {"P_dst", FieldElement::one()},
+                    {prefix + "E_dst_edge", eta_dst},
+                    {prefix + "M_edge", eta_dst_sq},
+                    {prefix + "Sum_edge", eta_dst_cu},
+                    {prefix + "inv_edge", eta_dst_4},
+                    {prefix + "H_agg_star_edge", eta_dst_5},
+                });
+            }
+            return nullptr;
+        }
+        return nullptr;
+    }
+
+    std::shared_ptr<const std::vector<FieldElement>> derived_output_edge_coset(const std::string& name) {
+        if (!context_.model.has_real_multihead || label_ != "t_edge") {
+            return nullptr;
+        }
+        const bool legacy_single_output = context_.model.output_layer.heads.size() == 1;
+        for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index) {
+            const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
+            if (name.rfind(prefix, 0) != 0) {
+                continue;
+            }
+            const auto suffix = name.substr(prefix.size());
+            const auto eta_l = challenges_.at(output_challenge_name("eta_L_out", head_index, legacy_single_output));
+            const auto eta_exp = challenges_.at(output_challenge_name("eta_exp_out", head_index, legacy_single_output));
+            const auto eta_src = challenges_.at(output_challenge_name("eta_src_out", head_index, legacy_single_output));
+            const auto eta_dst = challenges_.at(output_challenge_name("eta_dst_out", head_index, legacy_single_output));
+            const auto eta_t = challenges_.at(output_challenge_name("eta_t_out", head_index, legacy_single_output));
+            if (suffix == "Table_L") {
+                return scaled_coset_sum({{"P_T_L_x", FieldElement::one()}, {"P_T_L_y", eta_l}});
+            }
+            if (suffix == "Query_L") {
+                return scaled_coset_sum({{prefix + "S", FieldElement::one()}, {prefix + "Z", eta_l}});
+            }
+            if (suffix == "Table_R") {
+                return coset_values_ptr("P_T_range");
+            }
+            if (suffix == "Query_R") {
+                return coset_values_ptr(prefix + "Delta");
+            }
+            if (suffix == "Table_exp") {
+                return scaled_coset_sum({{"P_T_exp_x", FieldElement::one()}, {"P_T_exp_y", eta_exp}});
+            }
+            if (suffix == "Query_exp") {
+                return scaled_coset_sum({{prefix + "Delta", FieldElement::one()}, {prefix + "U", eta_exp}});
+            }
+            if (suffix == "Query_src") {
+                return scaled_coset_sum({{"P_src", FieldElement::one()}, {prefix + "E_src_edge", eta_src}});
+            }
+            if (suffix == "Query_t") {
+                return scaled_coset_sum({{"P_dst", FieldElement::one()}, {prefix + "T_edge", eta_t}});
+            }
+            if (suffix == "Query_dst") {
+                const auto eta_dst_sq = eta_dst * eta_dst;
+                const auto eta_dst_cu = eta_dst_sq * eta_dst;
+                const auto eta_dst_4 = eta_dst_cu * eta_dst;
+                const auto eta_dst_5 = eta_dst_4 * eta_dst;
+                return scaled_coset_sum({
+                    {"P_dst", FieldElement::one()},
+                    {prefix + "E_dst_edge", eta_dst},
+                    {prefix + "M_edge", eta_dst_sq},
+                    {prefix + "Sum_edge", eta_dst_cu},
+                    {prefix + "inv_edge", eta_dst_4},
+                    {prefix + "Y_star_edge", eta_dst_5},
+                });
+            }
+            return nullptr;
+        }
+        return nullptr;
+    }
+
     std::shared_ptr<const std::vector<FieldElement>> coset_values_ptr(const std::string& requested_name) {
-        if (const auto it = coset_cache_.find(requested_name); it != coset_cache_.end()) {
-            return it->second;
+        {
+            std::lock_guard<std::mutex> lock(coset_cache_mutex_);
+            if (const auto it = coset_cache_.find(requested_name); it != coset_cache_.end()) {
+                return it->second;
+            }
         }
 
         std::shared_ptr<const std::vector<FieldElement>> values;
@@ -2660,6 +2915,10 @@ class QuotientPolynomialMaterializer {
         } else if (lazy_full_feature_lookup_trace_enabled(context_)
                    && is_lazy_full_feature_lookup_trace_label(requested_name)) {
             values = materialize_lazy_feature_lookup_trace(requested_name);
+        } else if (auto derived = derived_hidden_edge_coset(requested_name); derived != nullptr) {
+            values = std::move(derived);
+        } else if (auto derived = derived_output_edge_coset(requested_name); derived != nullptr) {
+            values = std::move(derived);
         } else if (const auto* polynomial = lookup_polynomial(requested_name); polynomial != nullptr) {
             const auto coefficients = coefficients_native_from_polynomial(*polynomial);
             values = std::make_shared<const std::vector<FieldElement>>(
@@ -2676,8 +2935,11 @@ class QuotientPolynomialMaterializer {
             throw std::runtime_error("missing quotient dependency polynomial: " + requested_name);
         }
 
-        coset_cache_.emplace(requested_name, values);
-        return values;
+        {
+            std::lock_guard<std::mutex> lock(coset_cache_mutex_);
+            const auto [it, inserted] = coset_cache_.emplace(requested_name, values);
+            return inserted ? values : it->second;
+        }
     }
 
     std::shared_ptr<const std::vector<FieldElement>> materialize_lazy_feature_lookup_trace(const std::string& name) {
@@ -2723,6 +2985,7 @@ class QuotientPolynomialMaterializer {
     std::size_t target_size_ = 0;
     std::size_t rotation_step_ = 0;
     FieldElement shift_;
+    std::mutex coset_cache_mutex_;
     std::unordered_map<std::string, std::shared_ptr<const std::vector<FieldElement>>> coset_cache_;
 };
 
@@ -2736,8 +2999,10 @@ std::vector<std::pair<std::string, algebra::Polynomial>> materialize_quotient_po
     out.reserve(labels.size());
     for (const auto& label : labels) {
         const auto start = Clock::now();
+        progress_note("prove:quotient:" + label + ":start");
         QuotientPolynomialMaterializer materializer(context, trace, challenges, label);
         out.push_back({label, materializer.materialize(context.kzg)});
+        progress_note("prove:quotient:" + label + ":done");
         if (auto* metric = quotient_metric(metrics, label); metric != nullptr) {
             *metric += elapsed_ms(start, Clock::now());
         }
@@ -3606,6 +3871,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
     }
     if (context.model.has_real_multihead) {
         auto stage_start = Clock::now();
+        progress_note("prove:quotient:start");
         // 先重放动态承诺之前的 transcript，再在这套固定挑战上构造各工作域 quotient。
         const auto pre_quotient_challenges = replay_challenges(context, trace.commitments, {});
         const auto quotient_cache_key = quotient_build_cache_key(context, trace);
@@ -3649,6 +3915,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
         if (metrics != nullptr) {
             metrics->quotient_build_ms += elapsed_ms(stage_start, Clock::now());
         }
+        progress_note("prove:quotient:done");
 
         // 组装 proof 时必须严格按 schema 的 label 顺序回填，
         // 否则 serializer / parser 与 verifier 会同时失配。
@@ -3681,6 +3948,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             {"N", "N", context.domains.n, "z_N", "v_N", "t_N"},
         };
         stage_start = Clock::now();
+        progress_note("prove:domain_opening:start");
         struct BundleBuildResult {
             std::string bundle_name;
             DomainOpeningBundle bundle;
@@ -3792,11 +4060,13 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
         if (metrics != nullptr) {
             metrics->domain_opening_ms += elapsed_ms(stage_start, Clock::now());
         }
+        progress_note("prove:domain_opening:done");
 
         const auto ext_specs = multihead_external_specs(context);
         std::vector<std::pair<Commitment, FieldElement>> external_commitments;
         std::vector<FieldElement> external_points;
         stage_start = Clock::now();
+        progress_note("prove:external_opening:start");
         for (const auto& spec : ext_specs) {
             const auto value = trace.external_evaluations.at(spec.proof_name);
             proof.external_evaluations.push_back({spec.proof_name, value});
@@ -3812,6 +4082,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
         if (metrics != nullptr) {
             metrics->external_opening_ms += elapsed_ms(stage_start, Clock::now());
         }
+        progress_note("prove:external_opening:done");
         for (const auto& [name, value] : trace.witness_scalars) {
             proof.witness_scalars.push_back({name, value});
             proof.witness_scalar_kinds.push_back(PayloadValueKind::MaskedPrivateValue);
@@ -4469,6 +4740,12 @@ void export_run_artifacts(
     };
     append_public_metadata(run_manifest);
     util::write_json_object(export_root + "/run_manifest.json", run_manifest);
+
+    for (const auto& [name, spilled] : trace.spilled_polynomials) {
+        (void)name;
+        std::error_code ignored;
+        std::filesystem::remove(spilled.path, ignored);
+    }
 
     if (!context.config.dump_trace) {
         return;

@@ -8,6 +8,7 @@
 #include <fstream>
 #include <future>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -579,28 +580,121 @@ namespace gatzk::crypto
             const std::vector<FieldElement>& powers,
             const KZGProverKey& pk)
         {
+            auto accumulate_scaled = [](
+                std::vector<FieldElement>* target,
+                const std::vector<FieldElement>& source,
+                const FieldElement& scale)
+            {
+                if (target->size() < source.size())
+                {
+                    target->resize(source.size(), FieldElement::zero());
+                }
+                for (std::size_t i = 0; i < source.size(); ++i)
+                {
+                    (*target)[i] += source[i] * scale;
+                }
+            };
+            struct EvaluationFoldGroup
+            {
+                std::shared_ptr<algebra::RootOfUnityDomain> domain;
+                std::vector<FieldElement> numerators;
+            };
+
+            std::vector<FieldElement> coefficient_fold;
+            std::vector<EvaluationFoldGroup> evaluation_folds;
+
+            auto folded_evaluation_group = [&](const std::shared_ptr<algebra::RootOfUnityDomain>& domain)
+                -> EvaluationFoldGroup&
+            {
+                auto it = std::find_if(
+                    evaluation_folds.begin(),
+                    evaluation_folds.end(),
+                    [&](const EvaluationFoldGroup& group)
+                    {
+                        return group.domain.get() == domain.get();
+                    });
+                if (it == evaluation_folds.end())
+                {
+                    evaluation_folds.push_back(EvaluationFoldGroup{
+                        .domain = domain,
+                        .numerators = std::vector<FieldElement>(domain->size, FieldElement::zero()),
+                    });
+                    it = std::prev(evaluation_folds.end());
+                }
+                return *it;
+            };
+
             auto out = g1_zero();
             for (std::size_t i = 0; i < commitments.size(); ++i)
             {
-            if (commitments[i].opening_polynomial == nullptr)
-            {
-                throw std::runtime_error("commitment is missing prover-side opening polynomial: " + commitments[i].name);
+                if (commitments[i].opening_polynomial == nullptr)
+                {
+                    throw std::runtime_error("commitment is missing prover-side opening polynomial: " + commitments[i].name);
+                }
+                const auto& polynomial = *commitments[i].opening_polynomial;
+                if (polynomial.basis == algebra::PolynomialBasis::Coefficient)
+                {
+                    algebra::Polynomial quotient;
+                    try
+                    {
+                        quotient = single_point_quotient_polynomial(polynomial, point, values[i]);
+                    }
+                    catch (const std::exception& ex)
+                    {
+                        throw std::runtime_error(
+                            "opening mismatch for " + commitments[i].name + ": " + ex.what());
+                    }
+                    accumulate_scaled(&coefficient_fold, quotient.values(), powers[i]);
+                    continue;
+                }
+                if (polynomial.domain == nullptr)
+                {
+                    throw std::runtime_error("evaluation polynomial is missing its domain: " + commitments[i].name);
+                }
+                auto& group = folded_evaluation_group(polynomial.domain);
+                const auto& source_values = polynomial.values();
+                const auto scaled_claim = values[i] * powers[i];
+                for (std::size_t row = 0; row < polynomial.domain->size; ++row)
+                {
+                    const auto row_value = row < source_values.size() ? source_values[row] : FieldElement::zero();
+                    group.numerators[row] += row_value * powers[i] - scaled_claim;
+                }
             }
-            algebra::Polynomial quotient;
-            try
+            if (!coefficient_fold.empty())
             {
-                quotient = single_point_quotient_polynomial(
-                    *commitments[i].opening_polynomial,
-                    point,
-                    values[i]);
+                out = g1_add(
+                    out,
+                    commit_polynomial_point(
+                        algebra::Polynomial::from_coefficients("folded_coefficient_witness", std::move(coefficient_fold)),
+                        pk));
             }
-            catch (const std::exception& ex)
+            for (auto& group : evaluation_folds)
             {
-                throw std::runtime_error(
-                    "opening mismatch for " + commitments[i].name + ": " + ex.what());
+                std::vector<FieldElement> denominators(group.domain->size, FieldElement::zero());
+                for (std::size_t row = 0; row < group.domain->size; ++row)
+                {
+                    const auto domain_point = group.domain->point_at(row);
+                    if (domain_point == point)
+                    {
+                        throw std::runtime_error("opening point overlaps evaluation domain; derivative witness path is not implemented");
+                    }
+                    denominators[row] = domain_point - point;
+                }
+                const auto inverse_denominators = algebra::batch_invert(denominators);
+                std::vector<FieldElement> quotient_values(group.domain->size, FieldElement::zero());
+                for (std::size_t row = 0; row < group.domain->size; ++row)
+                {
+                    quotient_values[row] = group.numerators[row] * inverse_denominators[row];
+                }
+                out = g1_add(
+                    out,
+                    commit_polynomial_point(
+                        algebra::Polynomial::from_evaluations(
+                            "folded_" + group.domain->name + "_witness",
+                            std::move(quotient_values),
+                            group.domain),
+                        pk));
             }
-            out = g1_add(out, g1_mul(commit_polynomial_point(quotient, pk), powers[i]));
-        }
             return out;
         }
 
