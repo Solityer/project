@@ -38,7 +38,13 @@ def main() -> None:
             data_id = read_json(artifact_dir / "data_id.json")
             model_id = read_json(artifact_dir / "model_id.json")
             config_id = read_json(artifact_dir / "config_id.json")
+            gpu = read_json(artifact_dir / "gpu_proof_hot_path.json") if backend == "gpu" else {}
             hidden_profile = metadata["dim_cfg"]["hidden_profile"]
+            gpu_hot_path_ok = (
+                gpu.get("proof_hot_path") is True
+                and gpu.get("cuda_kernel_executed") is True
+                and gpu.get("cpu_fallback") is False
+            )
             row = {
                 "dataset": dataset,
                 "backend": backend,
@@ -82,6 +88,8 @@ def main() -> None:
                 "edge_sort_rule": manifest["edge_sort_rule"],
                 "batching_rule": manifest["batching_rule"],
                 "hardware_and_device": manifest["hardware_and_device"],
+                "gpu_hot_path_status": "GPU_HOT_PATH_BOUND" if backend == "gpu" and gpu_hot_path_ok else "",
+                "cpu_fallback": "" if backend != "gpu" else bool(gpu.get("cpu_fallback", True)),
                 "run_status": manifest["run_status"],
                 "failure_reason_if_not_comparable": manifest["failure_reason_if_not_comparable"],
             }
