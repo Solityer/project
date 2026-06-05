@@ -9,6 +9,7 @@
 #include <fstream>
 #include <future>
 #include <iomanip>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <mutex>
@@ -439,6 +440,55 @@ struct PreparedDynamicCommitment {
     crypto::Commitment commitment;
 };
 
+crypto::Commitment renamed_commitment(const std::string& name, const crypto::Commitment& source) {
+    return crypto::Commitment{
+        .name = name,
+        .point = source.point,
+        .opening_polynomial = source.opening_polynomial,
+    };
+}
+
+void append_dynamic_commitment(
+    TraceArtifacts& trace,
+    const std::string& name,
+    crypto::Commitment commitment) {
+    commitment.name = name;
+    trace.commitments[name] = std::move(commitment);
+    trace.commitment_order.push_back(name);
+}
+
+crypto::Commitment zero_dynamic_commitment(const std::string& name) {
+    auto polynomial = std::make_shared<Polynomial>(
+        Polynomial::from_coefficients(name, {FieldElement::zero()}));
+    return crypto::Commitment{
+        .name = name,
+        .point = crypto::g1_zero(),
+        .opening_polynomial = std::move(polynomial),
+    };
+}
+
+crypto::Commitment linear_fh_commitment(
+    const ProtocolContext& context,
+    const std::string& name,
+    std::vector<FieldElement>&& values,
+    std::initializer_list<std::pair<std::string, FieldElement>> terms) {
+    auto point = crypto::g1_zero();
+    for (const auto& [label, scale] : terms) {
+        const auto it = context.public_commitments.find(label);
+        if (it == context.public_commitments.end()) {
+            throw std::runtime_error("missing public commitment for linear dynamic commitment: " + label);
+        }
+        point = crypto::g1_add(point, crypto::g1_mul(it->second.point, scale));
+    }
+    auto polynomial = std::make_shared<Polynomial>(
+        Polynomial::from_evaluations(name, std::move(values), context.domains.fh));
+    return crypto::Commitment{
+        .name = name,
+        .point = point,
+        .opening_polynomial = std::move(polynomial),
+    };
+}
+
 std::size_t estimated_dynamic_commitment_payload_bytes(const DynamicCommitmentSpec& spec) {
     if (spec.kind == DynamicCommitmentKind::Column) {
         const auto* values = spec.shared_column_values != nullptr
@@ -759,7 +809,7 @@ bool should_spill_dynamic_polynomial(
 }
 
 std::filesystem::path spill_root_directory() {
-    const auto root = std::filesystem::temp_directory_path() / "gatzk_trace_spill";
+    const auto root = std::filesystem::current_path() / "runs" / ".trace_spill";
     std::filesystem::create_directories(root);
     return root;
 }
@@ -1830,17 +1880,6 @@ struct TraceStaticArtifacts {
     bool full_feature_identity = false;
 };
 
-bool use_lazy_full_feature_lookup_trace(
-    const ProtocolContext& context,
-    const TraceStaticArtifacts& static_artifacts,
-    bool keep_trace_payloads) {
-    return !keep_trace_payloads
-        && context.config.batching_rule == "whole_graph_single"
-        && context.local.num_nodes == context.dataset.num_nodes
-        && context.local.num_features == context.dataset.num_features
-        && static_artifacts.full_feature_identity;
-}
-
 const TraceStaticArtifacts& cached_trace_static_artifacts(const ProtocolContext& context) {
     static std::mutex cache_mutex;
     static std::unordered_map<std::string, std::shared_ptr<TraceStaticArtifacts>> cache;
@@ -1900,61 +1939,6 @@ const TraceStaticArtifacts& cached_trace_static_artifacts(const ProtocolContext&
         const auto [it, _] = cache.emplace(cache_key, artifacts);
         return *it->second;
     }
-}
-
-struct FullFeatureLookupArtifacts {
-    std::vector<FieldElement> table;
-    std::vector<FieldElement> query;
-    std::vector<FieldElement> multiplicity;
-};
-
-std::shared_ptr<const FullFeatureLookupArtifacts> cached_full_feature_lookup_artifacts(
-    const ProtocolContext& context,
-    const TraceStaticArtifacts& static_artifacts,
-    const FieldElement& eta_feature_index,
-    const FieldElement& eta_feature_value) {
-    static std::mutex cache_mutex;
-    static std::unordered_map<std::string, std::shared_ptr<FullFeatureLookupArtifacts>> cache;
-    const auto cache_key =
-        trace_cache_prefix(context)
-        + ":full_fh_lookup:"
-        + eta_feature_index.to_string()
-        + ":" + eta_feature_value.to_string()
-        + ":" + std::to_string(context.domains.fh->size);
-    const bool persist_cache = should_persist_large_trace_cache_key(cache_key);
-    if (persist_cache) {
-        std::lock_guard<std::mutex> lock(cache_mutex);
-        if (const auto it = cache.find(cache_key); it != cache.end()) {
-            return it->second;
-        }
-    }
-
-    auto artifacts = std::make_shared<FullFeatureLookupArtifacts>();
-    artifacts->table.assign(context.domains.fh->size, FieldElement::zero());
-    artifacts->query.assign(context.domains.fh->size, FieldElement::zero());
-    artifacts->multiplicity.assign(context.domains.fh->size, FieldElement::zero());
-    const Matrix& feature_matrix =
-        !context.dataset.features.empty() ? context.dataset.features : context.local.features;
-    fill_feature_lookup_rows(
-        static_artifacts.dataset_index_fields,
-        static_artifacts.feature_index_fields,
-        feature_matrix,
-        eta_feature_index,
-        eta_feature_value,
-        artifacts->table);
-    artifacts->query = artifacts->table;
-    std::fill(
-        artifacts->multiplicity.begin(),
-        artifacts->multiplicity.begin()
-            + static_cast<std::ptrdiff_t>(context.dataset.num_nodes * context.local.num_features),
-        FieldElement::one());
-
-    if (persist_cache) {
-        std::lock_guard<std::mutex> lock(cache_mutex);
-        const auto [it, _] = cache.emplace(cache_key, artifacts);
-        return it->second;
-    }
-    return artifacts;
 }
 
 BindingTrace build_binding_trace(
@@ -2561,13 +2545,20 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     const auto q_qry_elu = eval_data(context, "P_Q_qry_ELU");
     add_metric(metrics != nullptr ? &metrics->public_poly_residual_ms : nullptr, stage_start);
 
-    auto p_h_fh_values = padded_column(algebra::flatten_matrix_coefficients(local.features), domains.fh->size);
-    add_dynamic_commitment_batch(
-        trace,
-        {column_spec("P_H", std::move(p_h_fh_values), domains.fh)},
-        context.kzg,
-        keep_trace_payloads,
-        metrics);
+    if (static_artifacts.full_feature_identity) {
+        append_dynamic_commitment(
+            trace,
+            "P_H",
+            renamed_commitment("P_H", context.public_commitments.at("P_T_H")));
+    } else {
+        auto p_h_fh_values = padded_column(algebra::flatten_matrix_coefficients(local.features), domains.fh->size);
+        add_dynamic_commitment_batch(
+            trace,
+            {column_spec("P_H", std::move(p_h_fh_values), domains.fh)},
+            context.kzg,
+            keep_trace_payloads,
+            metrics);
+    }
 
     // 第一轮 transcript 先吸收公开元数据、图规模和输入特征承诺，
     // 由此固定后续特征 lookup 的挑战标签。
@@ -2602,25 +2593,42 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto eta_feature_value = eta_feat_powers[2];
         const bool full_feature_identity = static_artifacts.full_feature_identity;
         {
-            std::vector<FieldElement> table_feat(domains.fh->size, FieldElement::zero());
-            std::vector<FieldElement> query_feat(domains.fh->size, FieldElement::zero());
-            std::vector<FieldElement> multiplicity_feat(domains.fh->size, FieldElement::zero());
             if (full_feature_identity) {
                 const auto fh_stage_start = Clock::now();
-                const auto cached_full_lookup = cached_full_feature_lookup_artifacts(
-                    context,
-                    static_artifacts,
+                std::vector<FieldElement> table_feat(domains.fh->size, FieldElement::zero());
+                const Matrix& feature_matrix =
+                    !context.dataset.features.empty() ? context.dataset.features : context.local.features;
+                fill_feature_lookup_rows(
+                    dataset_index_fields,
+                    feature_index_fields,
+                    feature_matrix,
                     eta_feature_index,
-                    eta_feature_value);
-                table_feat = cached_full_lookup->table;
+                    eta_feature_value,
+                    table_feat);
                 add_metric(metrics != nullptr ? &metrics->fh_table_materialization_ms : nullptr, fh_stage_start);
-                const auto query_stage_start = Clock::now();
-                query_feat = cached_full_lookup->query;
-                add_metric(metrics != nullptr ? &metrics->fh_query_materialization_ms : nullptr, query_stage_start);
-                const auto mult_stage_start = Clock::now();
-                multiplicity_feat = cached_full_lookup->multiplicity;
-                add_metric(metrics != nullptr ? &metrics->fh_multiplicity_build_ms : nullptr, mult_stage_start);
+
+                const auto lookup_stage_start = Clock::now();
+                const auto table_commitment = linear_fh_commitment(
+                    context,
+                    "P_Table_feat",
+                    std::move(table_feat),
+                    {
+                        {"P_Row_feat_tbl", FieldElement::one()},
+                        {"P_Col_feat_tbl", eta_feature_index},
+                        {"P_T_H", eta_feature_value},
+                    });
+                append_dynamic_commitment(trace, "P_Table_feat", table_commitment);
+                append_dynamic_commitment(trace, "P_Query_feat", renamed_commitment("P_Query_feat", table_commitment));
+                append_dynamic_commitment(
+                    trace,
+                    "P_m_feat",
+                    renamed_commitment("P_m_feat", context.public_commitments.at("P_Q_tbl_feat")));
+                append_dynamic_commitment(trace, "P_R_feat", zero_dynamic_commitment("P_R_feat"));
+                add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, lookup_stage_start);
             } else {
+                std::vector<FieldElement> table_feat(domains.fh->size, FieldElement::zero());
+                std::vector<FieldElement> query_feat(domains.fh->size, FieldElement::zero());
+                std::vector<FieldElement> multiplicity_feat(domains.fh->size, FieldElement::zero());
                 std::vector<std::size_t> feat_hits(context.dataset.num_nodes, 0);
                 auto fh_stage_start = Clock::now();
                 for (const auto absolute_id : local.absolute_ids) {
@@ -2654,12 +2662,10 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 fh_stage_start = Clock::now();
                 fill_repeated_row_values(feat_hit_fields, d_in, multiplicity_feat);
                 add_metric(metrics != nullptr ? &metrics->fh_multiplicity_build_ms : nullptr, fh_stage_start);
-            }
-            auto lookup_stage_start = Clock::now();
-            auto fh_accumulator_start = Clock::now();
-            std::vector<FieldElement> r_feat(domains.fh->size, FieldElement::zero());
-            if (!full_feature_identity) {
-                r_feat = build_logup_accumulator_cached_with_active_count(
+
+                const auto lookup_stage_start = Clock::now();
+                const auto fh_accumulator_start = Clock::now();
+                auto r_feat = build_logup_accumulator_cached_with_active_count(
                     cache_prefix + ":fh_feat",
                     table_feat,
                     query_feat,
@@ -2668,20 +2674,20 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                     q_qry_feat,
                     trace.challenges.at("beta_feat"),
                     lookup_active_transition_limit(context.dataset.num_nodes * d_in, n_nodes * d_in, domains.fh->size));
+                add_metric(metrics != nullptr ? &metrics->fh_accumulator_build_ms : nullptr, fh_accumulator_start);
+                add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, lookup_stage_start);
+                add_dynamic_commitment_batch(
+                    trace,
+                    {
+                        column_spec("P_Table_feat", std::move(table_feat), domains.fh),
+                        column_spec("P_Query_feat", std::move(query_feat), domains.fh),
+                        column_spec("P_m_feat", std::move(multiplicity_feat), domains.fh),
+                        column_spec("P_R_feat", std::move(r_feat), domains.fh),
+                    },
+                    context.kzg,
+                    keep_trace_payloads,
+                    metrics);
             }
-            add_metric(metrics != nullptr ? &metrics->fh_accumulator_build_ms : nullptr, fh_accumulator_start);
-            add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, lookup_stage_start);
-            add_dynamic_commitment_batch(
-                trace,
-                {
-                    column_spec("P_Table_feat", std::move(table_feat), domains.fh),
-                    column_spec("P_Query_feat", std::move(query_feat), domains.fh),
-                    column_spec("P_m_feat", std::move(multiplicity_feat), domains.fh),
-                    column_spec("P_R_feat", std::move(r_feat), domains.fh),
-                },
-                context.kzg,
-                keep_trace_payloads,
-                metrics);
         }
     }
 

@@ -321,34 +321,11 @@ int main(int argc, char** argv) {
             return accepted;
         };
 
-        auto warm_up = [&](const gatzk::util::AppConfig& run_config) {
-            progress("warmup:context:start");
+        auto warm_up_context = [&](const gatzk::util::AppConfig& run_config, const std::string& label) {
+            progress(label + ":context:start");
             const auto context = gatzk::protocol::build_context(run_config, nullptr);
-            progress("warmup:context:done");
-            progress("warmup:trace:start");
-            const auto trace = gatzk::protocol::build_trace(context, nullptr);
-            progress("warmup:trace:done");
-            progress("warmup:prove:start");
-            const auto proof = gatzk::protocol::prove(context, trace, nullptr);
-            progress("warmup:prove:done");
-            progress("warmup:verify:start");
-            (void)gatzk::protocol::verify(context, proof);
-            progress("warmup:verify:done");
-        };
-
-        auto lightweight_warm_up = [&](const gatzk::util::AppConfig& run_config) {
-            progress("light-warmup:context:start");
-            const auto context = gatzk::protocol::build_context(run_config, nullptr);
-            progress("light-warmup:context:done");
-            progress("light-warmup:trace:start");
-            const auto trace = gatzk::protocol::build_trace(context, nullptr);
-            progress("light-warmup:trace:done");
-            progress("light-warmup:prove:start");
-            const auto proof = gatzk::protocol::prove(context, trace, nullptr);
-            progress("light-warmup:prove:done");
-            progress("light-warmup:verify:start");
-            (void)gatzk::protocol::verify(context, proof);
-            progress("light-warmup:verify:done");
+            (void)context;
+            progress(label + ":context:done");
         };
 
         bool accepted = false;
@@ -358,9 +335,9 @@ int main(int argc, char** argv) {
         }
         // warm-up 只预热执行层缓存和大对象初始化，不写正式 benchmark 结论。
         if (memory_safe_warm_required(loaded_config)) {
-            lightweight_warm_up(with_export_suffix(loaded_config, export_segments));
+            warm_up_context(with_export_suffix(loaded_config, export_segments), "light-warmup");
         } else {
-            warm_up(with_export_suffix(loaded_config, export_segments));
+            warm_up_context(with_export_suffix(loaded_config, export_segments), "warmup");
         }
         auto segments = export_segments;
         segments.push_back("warm");
