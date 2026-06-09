@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -20,6 +21,7 @@
 #include <openssl/sha.h>
 
 #include "gatzk/algebra/vector_ops.hpp"
+#include "gatzk/util/logging.hpp"
 #include "gatzk/util/route2.hpp"
 
 namespace gatzk::crypto
@@ -460,8 +462,33 @@ namespace gatzk::crypto
             return domain_name == "d" ? "d_h" : domain_name;
         }
 
-        G1Point commit_polynomial_point(const algebra::Polynomial& polynomial, const KZGProverKey& pk)
+        std::string srs_exact_domain_name(const std::string& domain_name, std::size_t domain_size)
         {
+            return srs_domain_name(domain_name) + "_" + std::to_string(domain_size);
+        }
+
+        std::string polynomial_basis_name(const algebra::Polynomial& polynomial)
+        {
+            return polynomial.basis == algebra::PolynomialBasis::Coefficient ? "coefficient" : "evaluation";
+        }
+
+        std::string polynomial_domain_name(const algebra::Polynomial& polynomial)
+        {
+            if (polynomial.domain == nullptr)
+            {
+                return "coef";
+            }
+            return polynomial.domain->name;
+        }
+
+        G1Point commit_polynomial_point(
+            const algebra::Polynomial& polynomial,
+            const KZGProverKey& pk,
+            CommitObjectProfile* profile = nullptr)
+        {
+            G1MSMProfile msm_profile;
+            const auto msm_start = Clock::now();
+            G1Point point;
             if (polynomial.basis == algebra::PolynomialBasis::Coefficient)
             {
                 if (pk.powers_g1 == nullptr)
@@ -472,37 +499,80 @@ namespace gatzk::crypto
                 {
                     throw std::runtime_error("coefficient polynomial exceeds SRS degree bound: " + polynomial.name);
                 }
-                return g1_multi_scalar_mul(pk.powers_g1->data(), polynomial.values().data(), polynomial.size());
+                point = g1_multi_scalar_mul_profiled(
+                    pk.powers_g1->data(),
+                    polynomial.values().data(),
+                    polynomial.size(),
+                    profile != nullptr ? &msm_profile : nullptr);
             }
-
-            if (polynomial.domain == nullptr)
+            else
             {
-                throw std::runtime_error("evaluation polynomial is missing its domain: " + polynomial.name);
+                if (polynomial.domain == nullptr)
+                {
+                    throw std::runtime_error("evaluation polynomial is missing its domain: " + polynomial.name);
+                }
+                const auto base_key = srs_domain_name(polynomial.domain->name);
+                const auto exact_key = srs_exact_domain_name(polynomial.domain->name, polynomial.domain->size);
+                auto it = pk.lagrange_srs_by_domain.find(exact_key);
+                if (it == pk.lagrange_srs_by_domain.end())
+                {
+                    it = pk.lagrange_srs_by_domain.find(base_key);
+                    if (it != pk.lagrange_srs_by_domain.end()
+                        && it->second != nullptr
+                        && it->second->size() != polynomial.domain->size)
+                    {
+                        it = pk.lagrange_srs_by_domain.end();
+                    }
+                }
+                if (it == pk.lagrange_srs_by_domain.end())
+                {
+                    throw std::runtime_error(
+                        "missing exact Lagrange SRS for domain: "
+                        + base_key
+                        + ":"
+                        + std::to_string(polynomial.domain->size));
+                }
+                if (it->second == nullptr)
+                {
+                    throw std::runtime_error("missing Lagrange proving SRS material for domain: " + exact_key);
+                }
+                if (polynomial.size() > it->second->size())
+                {
+                    throw std::runtime_error("evaluation polynomial exceeds Lagrange SRS domain size: " + polynomial.name);
+                }
+                point = g1_multi_scalar_mul_profiled(
+                    it->second->data(),
+                    polynomial.values().data(),
+                    polynomial.size(),
+                    profile != nullptr ? &msm_profile : nullptr);
             }
-            const auto key = srs_domain_name(polynomial.domain->name);
-            const auto it = pk.lagrange_srs_by_domain.find(key);
-            if (it == pk.lagrange_srs_by_domain.end())
+            if (profile != nullptr)
             {
-                throw std::runtime_error("missing Lagrange SRS for domain: " + key);
+                profile->name = polynomial.name;
+                profile->basis = polynomial_basis_name(polynomial);
+                profile->domain = polynomial_domain_name(polynomial);
+                profile->vector_length = polynomial.size();
+                profile->nonzero_scalar_count = msm_profile.nonzero_scalar_count;
+                profile->effective_scalar_count = msm_profile.effective_scalar_count;
+                profile->zero_scalar_skipping = msm_profile.zero_scalar_skipping;
+                profile->sparse_compaction = msm_profile.sparse_compaction;
+                profile->multithreaded_msm = msm_profile.multithreaded;
+                profile->msm_ms = elapsed_ms(msm_start, Clock::now());
             }
-            if (it->second == nullptr)
-            {
-                throw std::runtime_error("missing Lagrange proving SRS material for domain: " + key);
-            }
-            if (polynomial.size() > it->second->size())
-            {
-                throw std::runtime_error("evaluation polynomial exceeds Lagrange SRS domain size: " + polynomial.name);
-            }
-            return g1_multi_scalar_mul(it->second->data(), polynomial.values().data(), polynomial.size());
+            return point;
         }
 
-        Commitment make_commitment(const std::string& name, algebra::Polynomial polynomial, const KZGProverKey& pk)
+        Commitment make_commitment(
+            const std::string& name,
+            algebra::Polynomial polynomial,
+            const KZGProverKey& pk,
+            CommitObjectProfile* profile = nullptr)
         {
             polynomial.name = name;
             auto material = std::make_shared<algebra::Polynomial>(std::move(polynomial));
             return Commitment{
                 .name = name,
-                .point = commit_polynomial_point(*material, pk),
+                .point = commit_polynomial_point(*material, pk, profile),
                 .opening_polynomial = material,
             };
         }
@@ -871,20 +941,37 @@ namespace gatzk::crypto
         const KZGKeyPair& key,
         CommitBatchProfile* profile)
     {
-        std::vector<Commitment> out;
-        out.reserve(named_polynomials.size());
+        std::vector<Commitment> out(named_polynomials.size());
+        std::vector<CommitObjectProfile> object_profiles(named_polynomials.size());
         const auto msm_start = Clock::now();
-        for (const auto& [name, polynomial] : named_polynomials)
-        {
+        auto commit_one = [&](std::size_t index) {
+            const auto& [name, polynomial] = named_polynomials[index];
             if (polynomial == nullptr)
             {
                 throw std::runtime_error("null polynomial in KZG::commit_batch: " + name);
             }
-            out.push_back(commit(name, *polynomial, key));
+            CommitObjectProfile object_profile;
+            out[index] = make_commitment(name, *polynomial, key.pk, profile != nullptr ? &object_profile : nullptr);
+            if (profile != nullptr)
+            {
+                object_profiles[index] = std::move(object_profile);
+            }
+        };
+
+        for (std::size_t index = 0; index < named_polynomials.size(); ++index)
+        {
+            commit_one(index);
         }
         if (profile != nullptr)
         {
             profile->msm_ms += elapsed_ms(msm_start, Clock::now());
+            for (auto& object_profile : object_profiles)
+            {
+                if (!object_profile.name.empty())
+                {
+                    profile->objects.push_back(std::move(object_profile));
+                }
+            }
         }
         return out;
     }
@@ -1025,6 +1112,10 @@ namespace gatzk::crypto
             const auto numerator = g1_sub(commitment.point, g1_mul(vk.g1_generator, value));
             if (!verify_pairing_equation(numerator, proof.witnesses[i], points[i], vk))
             {
+                if (std::getenv("GATZK_DEBUG_VERIFY") != nullptr)
+                {
+                    util::info("external_fold_pairing_fail_index=" + std::to_string(i));
+                }
                 return false;
             }
         }

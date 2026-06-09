@@ -3371,12 +3371,11 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
     static std::mutex cache_mutex;
     static std::unordered_map<std::string, ProtocolContext> cache;
     // 这里只复用静态上下文对象，见证和挑战相关状态必须按每次正式证明重新生成。
-    const bool persist_context_cache =
-        config.dataset != "ogbn_arxiv" && config.dataset != "ogbn-arxiv";
+    const bool allow_static_context_cache = true;
 
     const auto cache_lookup_start = Clock::now();
     const auto cache_key = context_cache_key(config);
-    if (persist_context_cache) {
+    if (allow_static_context_cache) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
             // 这里只缓存静态上下文：工作域、SRS、公开列、静态承诺和模型数据。
@@ -3483,8 +3482,11 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
         ? std::max<std::size_t>(context.local.num_features, model::max_hidden_input_dim(context.model))
         : context.local.num_features;
     const bool large_whole_graph_gat =
-        (config.dataset == "ogbn_arxiv" || config.dataset == "ogbn-arxiv")
-        && config.batching_rule == "whole_graph_single";
+        config.batching_rule == "whole_graph_single"
+        && context.local.num_nodes == context.dataset.num_nodes
+        && (
+            context.local.edges.size() >= (1ULL << 18)
+            || context.dataset.num_nodes * context.dataset.num_features >= (1ULL << 24));
     constexpr std::size_t kDefaultActivationTableBound = 16384;
     const std::size_t range_size = std::max<std::size_t>(
         configured_range_size,
@@ -3854,7 +3856,12 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
         context.dataset.features_fp.shrink_to_fit();
     }
 
-    if (persist_context_cache) {
+    const bool cacheable_static_context =
+        context.domains.fh != nullptr
+        && context.domains.edge != nullptr
+        && context.domains.fh->size < (1ULL << 24)
+        && context.domains.edge->size < (1ULL << 22);
+    if (allow_static_context_cache && cacheable_static_context) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         cache[cache_key] = context;
     }
@@ -3909,7 +3916,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 quotient_cache_key,
                 CachedQuotientArtifacts{
                     .quotient_commitments = quotient_commitments,
-                });
+            });
         }
         const auto challenges = replay_challenges(context, trace.commitments, quotient_commitments);
         if (metrics != nullptr) {
@@ -4479,6 +4486,31 @@ void export_run_artifacts(
         }
         return out.str();
     };
+    auto csv_escape = [](const std::string& value) {
+        bool needs_quotes = false;
+        for (const auto ch : value) {
+            if (ch == ',' || ch == '"' || ch == '\n') {
+                needs_quotes = true;
+                break;
+            }
+        }
+        if (!needs_quotes) {
+            return value;
+        }
+        std::string out = "\"";
+        for (const auto ch : value) {
+            if (ch == '"') {
+                out += "\"\"";
+            } else {
+                out.push_back(ch);
+            }
+        }
+        out.push_back('"');
+        return out;
+    };
+    auto bool_string = [](bool value) {
+        return value ? std::string("true") : std::string("false");
+    };
     auto display_config_path = [&]() {
         const auto project_root = std::filesystem::path(context.config.project_root);
         const auto configured = std::filesystem::path(metrics.config);
@@ -4553,6 +4585,74 @@ void export_run_artifacts(
     };
     util::write_key_values(export_root + "/benchmark.txt", benchmark_summary);
 
+    std::map<std::string, std::size_t> dynamic_profile_count_by_domain;
+    std::map<std::string, double> dynamic_profile_time_by_domain;
+    std::map<std::string, double> dynamic_profile_time_by_category;
+    if (!metrics.dynamic_commitment_profiles.empty()) {
+        std::vector<std::string> profile_lines = {
+            "label,dataset,domain,basis,vector_length,domain_size,nonzero_scalar_count,effective_scalar_count,zero_scalar_ratio,padding_ratio,classification,materialization_ms,msm_ms,total_commitment_ms,duplicates_another,duplicate_of,reused_shared,shared_or_borrowed,compact,commitment_cache_hit,ownership,category,optimization_opportunity,zero_scalar_skipping,sparse_compaction,multithreaded_msm,commitment_fingerprint",
+        };
+        profile_lines.reserve(metrics.dynamic_commitment_profiles.size() + 1);
+        for (const auto& item : metrics.dynamic_commitment_profiles) {
+            dynamic_profile_count_by_domain[item.domain] += 1;
+            dynamic_profile_time_by_domain[item.domain] += item.total_commitment_ms;
+            dynamic_profile_time_by_category[item.ownership + "/" + item.category] += item.total_commitment_ms;
+            profile_lines.push_back(
+                csv_escape(item.label) + ","
+                + csv_escape(item.dataset) + ","
+                + csv_escape(item.domain) + ","
+                + csv_escape(item.basis) + ","
+                + std::to_string(item.vector_length) + ","
+                + std::to_string(item.domain_size) + ","
+                + std::to_string(item.nonzero_scalar_count) + ","
+                + std::to_string(item.effective_scalar_count) + ","
+                + format_double(item.zero_scalar_ratio) + ","
+                + format_double(item.padding_ratio) + ","
+                + csv_escape(item.classification) + ","
+                + format_double(item.materialization_ms) + ","
+                + format_double(item.msm_ms) + ","
+                + format_double(item.total_commitment_ms) + ","
+                + bool_string(item.duplicates_another) + ","
+                + csv_escape(item.duplicate_of) + ","
+                + bool_string(item.reused_shared) + ","
+                + bool_string(item.shared_or_borrowed) + ","
+                + bool_string(item.compact) + ","
+                + bool_string(item.commitment_cache_hit) + ","
+                + csv_escape(item.ownership) + ","
+                + csv_escape(item.category) + ","
+                + csv_escape(item.optimization_opportunity) + ","
+                + bool_string(item.zero_scalar_skipping) + ","
+                + bool_string(item.sparse_compaction) + ","
+                + bool_string(item.multithreaded_msm) + ","
+                + csv_escape(item.commitment_fingerprint));
+        }
+        util::write_lines(export_root + "/dynamic_commitment_object_profile.csv", profile_lines);
+    }
+    auto format_size_map = [](const std::map<std::string, std::size_t>& values) {
+        std::ostringstream out;
+        bool first = true;
+        for (const auto& [key, value] : values) {
+            if (!first) {
+                out << ';';
+            }
+            first = false;
+            out << key << ':' << value;
+        }
+        return out.str();
+    };
+    auto format_double_map = [&](const std::map<std::string, double>& values) {
+        std::ostringstream out;
+        bool first = true;
+        for (const auto& [key, value] : values) {
+            if (!first) {
+                out << ';';
+            }
+            first = false;
+            out << key << ':' << format_double(value);
+        }
+        return out.str();
+    };
+
     // `run_manifest.json` 保留完整内部字段，供 formal suite、artifact 校验和内部分析复核。
     std::map<std::string, std::string> run_manifest = {
         {"backend_name", metrics.backend_name},
@@ -4603,6 +4703,11 @@ void export_run_artifacts(
         {"dynamic_commit_msm_ms", format_double(metrics.dynamic_commit_msm_ms)},
         {"dynamic_bundle_finalize_ms", format_double(metrics.dynamic_bundle_finalize_ms)},
         {"dynamic_polynomial_materialization_ms", format_double(metrics.dynamic_polynomial_materialization_ms)},
+        {"dynamic_commitment_object_profile_csv", "dynamic_commitment_object_profile.csv"},
+        {"dynamic_commitment_object_count", std::to_string(metrics.dynamic_commitment_profiles.size())},
+        {"dynamic_commitment_count_by_domain", format_size_map(dynamic_profile_count_by_domain)},
+        {"dynamic_commitment_time_by_domain_ms", format_double_map(dynamic_profile_time_by_domain)},
+        {"dynamic_commitment_time_by_ownership_category_ms", format_double_map(dynamic_profile_time_by_category)},
         {"is_cold_run", metrics.is_cold_run ? "true" : "false"},
         {"is_full_dataset", metrics.is_full_dataset ? "true" : "false"},
         {"N_total", std::to_string(context.local.public_input.N_total)},

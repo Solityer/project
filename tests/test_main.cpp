@@ -8,7 +8,10 @@
 #include <string>
 #include <vector>
 
+#include "gatzk/algebra/domain_evaluation.hpp"
+#include "gatzk/algebra/eval_backend.hpp"
 #include "gatzk/algebra/polynomial.hpp"
+#include "gatzk/crypto/curve.hpp"
 #include "gatzk/crypto/kzg.hpp"
 #include "gatzk/protocol/challenges.hpp"
 #include "gatzk/protocol/prover.hpp"
@@ -144,7 +147,13 @@ void test_compact_eval_kzg_regression() {
         "trusted_srs",
         "zkgat_secure_main_srs_v1");
 
-    const auto n_size = keys.manifest.domain_sizes.at("N");
+    const auto exact_n_it = keys.manifest.domain_sizes.find("N_4096");
+    if (keys.manifest.domain_sizes.at("N") > 4096) {
+        require(exact_n_it != keys.manifest.domain_sizes.end(), "expanded SRS must include exact N_4096 material");
+    }
+    const auto n_size = exact_n_it != keys.manifest.domain_sizes.end()
+        ? exact_n_it->second
+        : keys.manifest.domain_sizes.at("N");
     auto domain = gatzk::algebra::RootOfUnityDomain::create("N", n_size);
     auto polynomial = gatzk::algebra::Polynomial::from_evaluations(
         "P_compact_eval",
@@ -168,6 +177,80 @@ void test_compact_eval_kzg_regression() {
     require(
         !gatzk::crypto::KZG::verify_external_fold(tampered, points, FieldElement(29), proof, keys.vk),
         "compact evaluation external opening must reject a tampered value");
+}
+
+void test_packed_backend_padded_tail_regression() {
+    auto domain = gatzk::algebra::RootOfUnityDomain::create("packed_pad_regression", 4096);
+
+    {
+        std::vector<FieldElement> full_values(domain->size, FieldElement(1234567));
+        auto poison = gatzk::algebra::Polynomial::from_evaluations("P_poison", std::move(full_values), domain);
+        gatzk::algebra::PackedEvaluationBackend poison_backend(
+            domain,
+            {{"P_poison", &poison}});
+        (void)poison_backend;
+    }
+
+    auto polynomial = gatzk::algebra::Polynomial::from_evaluations(
+        "P_pad",
+        {FieldElement(3), FieldElement(5), FieldElement(7), FieldElement(11), FieldElement(13)},
+        domain);
+    gatzk::algebra::PackedEvaluationBackend backend(
+        domain,
+        {{"P_pad", &polynomial}});
+
+    const auto direct_padding = backend.values_at_direct_index({"P_pad"}, 128);
+    require(direct_padding.size() == 1 && direct_padding[0] == FieldElement::zero(), "packed backend direct padding must be zero");
+
+    const auto point = choose_non_domain_point(*domain);
+    const auto weights = gatzk::algebra::build_domain_evaluation_weights(domain, point);
+    require(!weights.direct_index.has_value(), "packed backend regression point must not be in domain");
+    const auto packed_values = backend.evaluate_with_native_weights({"P_pad"}, weights.native_weights);
+    require(packed_values.size() == 1, "packed backend must return one value");
+    require(packed_values[0] == polynomial.evaluate(point), "packed backend weighted eval must ignore padded tail");
+}
+
+void require_msm_matches_single_thread(
+    const std::string& label,
+    const std::vector<gatzk::crypto::G1Point>& points,
+    std::size_t count,
+    bool sparse) {
+    require(points.size() >= count, label + " SRS input is too small");
+    std::vector<FieldElement> scalars(count, FieldElement::zero());
+    for (std::size_t i = 0; i < count; ++i) {
+        if (sparse && i % 5 != 0) {
+            continue;
+        }
+        scalars[i] = FieldElement(17 + (i * 131) % 65521);
+    }
+
+    const auto actual = gatzk::crypto::g1_multi_scalar_mul(points.data(), scalars.data(), count);
+
+    std::vector<mcl::Fr> native_scalars;
+    native_scalars.reserve(scalars.size());
+    for (const auto& scalar : scalars) {
+        native_scalars.push_back(scalar.native());
+    }
+    auto* native_points = const_cast<mcl::G1*>(
+        reinterpret_cast<const mcl::G1*>(points.data()));
+    gatzk::crypto::G1Point expected;
+    expected.value.clear();
+    mcl::G1::mulVec(expected.value, native_points, native_scalars.data(), native_scalars.size());
+    require(actual == expected, label + " MSM must match single-thread mulVec");
+}
+
+void test_msm_chunked_equivalence_regression() {
+    const auto keys = gatzk::crypto::KZG::load_keys(
+        (repo_root() / "artifacts/srs/zkgat_secure_main_srs_v1").string(),
+        "trusted_srs",
+        "zkgat_secure_main_srs_v1");
+    require(keys.pk.powers_g1 != nullptr, "MSM regression requires coefficient SRS");
+    require_msm_matches_single_thread("coef_21664_dense", *keys.pk.powers_g1, 21664, false);
+
+    const auto edge_it = keys.pk.lagrange_srs_by_domain.find("edge");
+    require(edge_it != keys.pk.lagrange_srs_by_domain.end() && edge_it->second != nullptr, "MSM regression requires edge SRS");
+    require_msm_matches_single_thread("edge_13264_sparse", *edge_it->second, 13264, true);
+    require_msm_matches_single_thread("edge_131072_dense", *edge_it->second, 131072, false);
 }
 
 void test_srs_mismatch_gate() {
@@ -338,6 +421,10 @@ int main() {
         test_kzg_opening_selftest();
         std::cerr << "running test_compact_eval_kzg_regression\n";
         test_compact_eval_kzg_regression();
+        std::cerr << "running test_packed_backend_padded_tail_regression\n";
+        test_packed_backend_padded_tail_regression();
+        std::cerr << "running test_msm_chunked_equivalence_regression\n";
+        test_msm_chunked_equivalence_regression();
         std::cerr << "running test_srs_mismatch_gate\n";
         test_srs_mismatch_gate();
         std::cerr << "running test_metadata_and_schema_gates\n";

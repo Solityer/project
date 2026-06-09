@@ -100,6 +100,20 @@ def load_manifest(path):
     return json.loads(manifest.read_text(encoding="utf-8"))
 
 
+def load_object_profile(path, row):
+    profile_name = row.get("dynamic_commitment_object_profile_csv")
+    if not profile_name:
+        raise ValueError(f"missing dynamic commitment object profile path for {row.get('dataset', '<unknown>')}")
+    profile_path = path / profile_name
+    if not profile_path.exists():
+        raise FileNotFoundError(f"missing dynamic commitment object profile: {profile_path}")
+    with profile_path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    if not rows:
+        raise ValueError(f"dynamic commitment object profile is empty: {profile_path}")
+    return rows
+
+
 def require_field(row, key):
     if key not in row or row[key] in ("", None):
         raise ValueError(f"missing required field {key} for {row.get('dataset', '<unknown>')}")
@@ -137,6 +151,16 @@ def validate_row(dataset, backend, row):
         require_field(row, key)
     for key in ("optimization_profile_id", "optimization_flags", "hardware_and_device", "gpu_acceleration_status"):
         require_field(row, key)
+    for key in (
+        "dynamic_commitment_object_profile_csv",
+        "dynamic_commitment_object_count",
+        "dynamic_commitment_count_by_domain",
+        "dynamic_commitment_time_by_domain_ms",
+        "dynamic_commitment_time_by_ownership_category_ms",
+    ):
+        require_field(row, key)
+    if int(row["dynamic_commitment_object_count"]) <= 0:
+        raise ValueError(f"{dataset}/{backend} has no dynamic commitment object profile rows")
     if backend == "gpu" and "enabled_cuda_hotspots" not in row["gpu_acceleration_status"]:
         raise ValueError(f"{dataset}/{backend} does not record CUDA hotspot acceleration")
     if backend == "cpu" and row["gpu_acceleration_status"] != "not_requested_cpu_run":
@@ -158,9 +182,12 @@ def collect(runs, backend):
         dataset, path = parse_run(item)
         row = load_manifest(path)
         validate_row(dataset, backend, row)
+        object_profile = load_object_profile(path, row)
+        if int(row["dynamic_commitment_object_count"]) != len(object_profile):
+            raise ValueError(f"{dataset}/{backend} dynamic object profile count mismatch")
         seen.add(dataset)
         rows.append(project_row(dataset, backend, row))
-        manifests.append((dataset, backend, row))
+        manifests.append((dataset, backend, row, object_profile))
     if seen != REQUIRED_DATASETS:
         missing = ", ".join(sorted(REQUIRED_DATASETS - seen))
         extra = ", ".join(sorted(seen - REQUIRED_DATASETS))
@@ -187,7 +214,7 @@ def write_outputs(rows, manifests, output_dir):
     (output_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     manifest_dir = output_dir / "run_manifests"
     manifest_dir.mkdir(exist_ok=True)
-    for dataset, backend, manifest in manifests:
+    for dataset, backend, manifest, _ in manifests:
         (manifest_dir / f"{backend}_{dataset}.json").write_text(
             json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
             encoding="utf-8",
@@ -259,7 +286,58 @@ def write_outputs(rows, manifests, output_dir):
         ("total prove", "prove_time_ms"),
         ("total verify", "verify_time_ms"),
     ]
-    cora_profiles = [(dataset, backend, manifest) for dataset, backend, manifest in manifests if dataset == "cora"]
+    def as_float(row, key):
+        try:
+            return float(row.get(key, 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def top_rows(profile_rows, key, limit=20):
+        return sorted(profile_rows, key=lambda item: as_float(item, key), reverse=True)[:limit]
+
+    def object_profile_table(title, profile_rows, key, value_label):
+        lines = [
+            f"### {title}",
+            "",
+            f"| label | domain | basis | vector_length | nonzero_scalar_count | zero_scalar_ratio | padding_ratio | {value_label} | ownership | category | opportunity |",
+            "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
+        ]
+        for item in profile_rows:
+            lines.append(
+                f"| {item.get('label', '')} | {item.get('domain', '')} | {item.get('basis', '')} | "
+                f"{item.get('vector_length', '')} | {item.get('nonzero_scalar_count', '')} | "
+                f"{item.get('zero_scalar_ratio', '')} | {item.get('padding_ratio', '')} | "
+                f"{item.get(key, '')} | {item.get('ownership', '')} | {item.get('category', '')} | "
+                f"{item.get('optimization_opportunity', '')} |"
+            )
+        return lines
+
+    def group_totals(profile_rows, group_key):
+        grouped = {}
+        for item in profile_rows:
+            key = item.get(group_key, "")
+            entry = grouped.setdefault(key, {"count": 0, "time": 0.0})
+            entry["count"] += 1
+            entry["time"] += as_float(item, "total_commitment_ms")
+        return sorted(grouped.items(), key=lambda pair: pair[1]["time"], reverse=True)
+
+    def repeated_rows(profile_rows):
+        grouped = {}
+        for item in profile_rows:
+            fp = item.get("commitment_fingerprint", "")
+            if not fp:
+                continue
+            grouped.setdefault(fp, []).append(item)
+        repeated = []
+        for _, items in grouped.items():
+            if len(items) > 1:
+                first = items[0].copy()
+                first["repeat_count"] = str(len(items))
+                first["repeated_labels"] = ", ".join(item.get("label", "") for item in items[:20])
+                repeated.append(first)
+        return sorted(repeated, key=lambda item: int(item.get("repeat_count", "0")), reverse=True)[:20]
+
+    cora_profiles = [(dataset, backend, manifest) for dataset, backend, manifest, _ in manifests if dataset == "cora"]
     profile_lines = [
         "# Optimization Profile",
         "",
@@ -305,9 +383,92 @@ def write_outputs(rows, manifests, output_dir):
         *[
             f"| {dataset} | {backend} | {manifest['optimization_profile_id']} | "
             f"{manifest['optimization_flags']} | {manifest['hardware_and_device']} | "
-            f"{manifest['gpu_acceleration_status']} |"
-            for dataset, backend, manifest in manifests
+        f"{manifest['gpu_acceleration_status']} |"
+            for dataset, backend, manifest, _ in manifests
         ],
+        "",
+        "## Multi-Dataset Stage Profile",
+        "",
+        "| dataset | backend | stage | ms |",
+        "| --- | --- | --- | ---: |",
+    ])
+    for dataset, backend, manifest, _ in manifests:
+        for label, key in profile_stage_fields:
+            profile_lines.append(f"| {dataset} | {backend} | {label} | {manifest.get(key, '0.000')} |")
+    profile_lines.extend([
+        "",
+        "## Dynamic Commitment Object Profiles",
+        "",
+        "Object-level profiles are generated by the secure runner for dynamic KZG commitments. The classification is label/domain/shape derived and does not branch on dataset names.",
+    ])
+    profile_datasets = {"cora", "pubmed", "ogbn-arxiv"}
+    for dataset, backend, manifest, object_profile in manifests:
+        if dataset not in profile_datasets:
+            continue
+        profile_lines.extend([
+            "",
+            f"### {dataset} / {backend}",
+            "",
+            f"- object_count: {manifest['dynamic_commitment_object_count']}",
+            f"- count_by_domain: {manifest['dynamic_commitment_count_by_domain']}",
+            f"- time_by_domain_ms: {manifest['dynamic_commitment_time_by_domain_ms']}",
+            f"- time_by_ownership_category_ms: {manifest['dynamic_commitment_time_by_ownership_category_ms']}",
+            "",
+        ])
+        profile_lines.extend(object_profile_table("Top 20 Slowest Dynamic Commitments", top_rows(object_profile, "total_commitment_ms"), "total_commitment_ms", "total_commitment_ms"))
+        profile_lines.extend([""])
+        profile_lines.extend(object_profile_table("Top 20 Largest MSMs", top_rows(object_profile, "vector_length"), "msm_ms", "msm_ms"))
+        repeats = repeated_rows(object_profile)
+        profile_lines.extend([
+            "",
+            "### Top 20 Repeated Materializations",
+            "",
+            "| label | repeat_count | repeated_labels | domain | basis | vector_length | total_commitment_ms | opportunity |",
+            "| --- | ---: | --- | --- | --- | ---: | ---: | --- |",
+        ])
+        for item in repeats:
+            profile_lines.append(
+                f"| {item.get('label', '')} | {item.get('repeat_count', '0')} | {item.get('repeated_labels', '')} | "
+                f"{item.get('domain', '')} | {item.get('basis', '')} | {item.get('vector_length', '')} | "
+                f"{item.get('total_commitment_ms', '')} | {item.get('optimization_opportunity', '')} |"
+            )
+        profile_lines.extend([
+            "",
+            "### Time By Domain",
+            "",
+            "| domain | object_count | total_commitment_ms |",
+            "| --- | ---: | ---: |",
+        ])
+        for key, value in group_totals(object_profile, "domain"):
+            profile_lines.append(f"| {key} | {value['count']} | {value['time']:.3f} |")
+        profile_lines.extend([
+            "",
+            "### Time By Ownership And Category",
+            "",
+            "| ownership/category | object_count | total_commitment_ms |",
+            "| --- | ---: | ---: |",
+        ])
+        for key, value in group_totals(
+            [{**item, "owner_category": item.get("ownership", "") + "/" + item.get("category", "")} for item in object_profile],
+            "owner_category",
+        ):
+            profile_lines.append(f"| {key} | {value['count']} | {value['time']:.3f} |")
+        profile_lines.extend([
+            "",
+            "### Optimization Opportunity Classification",
+            "",
+            "| opportunity | object_count | total_commitment_ms |",
+            "| --- | ---: | ---: |",
+        ])
+        for key, value in group_totals(object_profile, "optimization_opportunity"):
+            profile_lines.append(f"| {key} | {value['count']} | {value['time']:.3f} |")
+    profile_lines.extend([
+        "",
+        "## Generality Statement",
+        "",
+        "The recorded optimizations are dataset-agnostic execution choices: SRS MSM zero-scalar skipping, sparse compaction, compact evaluation columns, shared column backing, shape-aware large-domain handling, packed/parallel evaluation, prepared VK pairing, and CUDA hotspot routing where requested.",
+        "",
+        "Large-graph behavior is selected by node/edge/feature/domain shape and backend capability. No Cora-specific shortcut is used; PPI multi-graph boundaries and ogbn-arxiv large-graph shape are not downgraded.",
         "",
         "All optimizations are execution-route choices only; proof schema, transcript order, opening equations, masked private payload contract, and public output hashes are unchanged.",
     ])

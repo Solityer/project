@@ -145,21 +145,104 @@ namespace gatzk::crypto
         return out;
     }
 
-    G1Point g1_multi_scalar_mul(const G1Point* points, const algebra::FieldElement* scalars, std::size_t count)
+    std::size_t msm_worker_count(std::size_t scalar_count, std::size_t cpu_count)
+    {
+        if (scalar_count < 4096 || cpu_count <= 1)
+        {
+            return 1;
+        }
+        std::size_t by_size = 1;
+        if (scalar_count >= (1ULL << 18))
+        {
+            by_size = 16;
+        }
+        else if (scalar_count >= (1ULL << 16))
+        {
+            by_size = 8;
+        }
+        else if (scalar_count >= (1ULL << 14))
+        {
+            by_size = 4;
+        }
+        else
+        {
+            by_size = 2;
+        }
+        return std::max<std::size_t>(1, std::min(cpu_count, by_size));
+    }
+
+    void mul_vec_chunked(
+        mcl::G1& out,
+        mcl::G1* points,
+        const mcl::Fr* scalars,
+        std::size_t count,
+        std::size_t worker_count)
+    {
+        if (worker_count <= 1 || count < 4096)
+        {
+            mcl::G1::mulVec(out, points, scalars, count);
+            return;
+        }
+        const auto task_count = std::min<std::size_t>(worker_count, count);
+        const auto chunk_size = (count + task_count - 1) / task_count;
+        std::vector<std::future<mcl::G1>> futures;
+        futures.reserve(task_count);
+        for (std::size_t task = 0; task < task_count; ++task)
+        {
+            const auto begin = task * chunk_size;
+            const auto end = std::min(count, begin + chunk_size);
+            if (begin >= end)
+            {
+                break;
+            }
+            futures.push_back(std::async(
+                std::launch::async,
+                [points, scalars, begin, end]() {
+                    mcl::G1 partial;
+                    mcl::G1::mulVec(partial, points + begin, scalars + begin, end - begin);
+                    return partial;
+                }));
+        }
+        for (auto& future : futures)
+        {
+            mcl::G1 partial = future.get();
+            mcl::G1::add(out, out, partial);
+        }
+    }
+
+    G1Point g1_multi_scalar_mul_profiled(
+        const G1Point* points,
+        const algebra::FieldElement* scalars,
+        std::size_t count,
+        G1MSMProfile* profile)
     {
         if ((points == nullptr || scalars == nullptr) && count != 0)
         {
             throw std::runtime_error("G1 MSM received null input");
         }
+        if (profile != nullptr)
+        {
+            profile->input_count = count;
+            profile->effective_scalar_count = count;
+            profile->nonzero_scalar_count = count;
+            profile->zero_scalar_skipping = false;
+            profile->sparse_compaction = false;
+            profile->multithreaded = false;
+        }
         G1Point out = g1_zero();
         if (count == 0)
         {
+            if (profile != nullptr)
+            {
+                profile->nonzero_scalar_count = 0;
+                profile->effective_scalar_count = 0;
+            }
             return out;
         }
         algebra::ensure_mcl_field_ready();
         const auto zero_scalar = algebra::FieldElement::zero();
         std::size_t nonzero_count = 0;
-        if (count >= 1024)
+        if (count >= 1024 || profile != nullptr)
         {
             for (std::size_t i = 0; i < count; ++i)
             {
@@ -168,12 +251,28 @@ namespace gatzk::crypto
                     ++nonzero_count;
                 }
             }
+            if (profile != nullptr)
+            {
+                profile->nonzero_scalar_count = nonzero_count;
+            }
             if (nonzero_count == 0)
             {
+                if (profile != nullptr)
+                {
+                    profile->zero_scalar_skipping = true;
+                    profile->sparse_compaction = true;
+                    profile->effective_scalar_count = 0;
+                }
                 return out;
             }
             if (nonzero_count * 4 < count * 3)
             {
+                if (profile != nullptr)
+                {
+                    profile->zero_scalar_skipping = true;
+                    profile->sparse_compaction = true;
+                    profile->effective_scalar_count = nonzero_count;
+                }
                 std::vector<mcl::G1> compact_points;
                 std::vector<mcl::Fr> compact_scalars;
                 compact_points.reserve(nonzero_count);
@@ -189,9 +288,19 @@ namespace gatzk::crypto
                     }
                 }
                 const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-                if (cpu_count > 1 && compact_scalars.size() >= 256)
+                const auto worker_count = msm_worker_count(compact_scalars.size(), cpu_count);
+                if (worker_count > 1)
                 {
-                    mcl::G1::mulVecMT(out.value, compact_points.data(), compact_scalars.data(), compact_scalars.size(), cpu_count);
+                    if (profile != nullptr)
+                    {
+                        profile->multithreaded = true;
+                    }
+                    mul_vec_chunked(
+                        out.value,
+                        compact_points.data(),
+                        compact_scalars.data(),
+                        compact_scalars.size(),
+                        worker_count);
                 }
                 else
                 {
@@ -209,53 +318,25 @@ namespace gatzk::crypto
         static_assert(sizeof(G1Point) == sizeof(mcl::G1), "G1Point must wrap a single mcl::G1");
         auto* native_points = const_cast<mcl::G1*>(reinterpret_cast<const mcl::G1*>(points));
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-        if (cpu_count > 1 && count >= (1ULL << 15))
+        const auto worker_count = msm_worker_count(count, cpu_count);
+        if (worker_count > 1)
         {
-            const auto task_count = std::min<std::size_t>(
-                std::min<std::size_t>(cpu_count, 32),
-                std::max<std::size_t>(1, count / (1ULL << 15)));
-            if (task_count > 1)
+            if (profile != nullptr)
             {
-                const auto chunk_size = (count + task_count - 1) / task_count;
-                std::vector<std::future<mcl::G1>> futures;
-                futures.reserve(task_count);
-                for (std::size_t task = 0; task < task_count; ++task)
-                {
-                    const auto begin = task * chunk_size;
-                    const auto end = std::min(count, begin + chunk_size);
-                    if (begin >= end)
-                    {
-                        break;
-                    }
-                    futures.push_back(std::async(
-                        std::launch::async,
-                        [&, begin, end]() {
-                            mcl::G1 partial;
-                            mcl::G1::mulVec(
-                                partial,
-                                native_points + begin,
-                                native_scalars.data() + begin,
-                                end - begin);
-                            return partial;
-                        }));
-                }
-                for (auto& future : futures)
-                {
-                    mcl::G1 partial = future.get();
-                    mcl::G1::add(out.value, out.value, partial);
-                }
-                return out;
+                profile->multithreaded = true;
             }
-        }
-        if (cpu_count > 1 && count >= 256)
-        {
-            mcl::G1::mulVecMT(out.value, native_points, native_scalars.data(), count, cpu_count);
+            mul_vec_chunked(out.value, native_points, native_scalars.data(), count, worker_count);
         }
         else
         {
             mcl::G1::mulVec(out.value, native_points, native_scalars.data(), count);
         }
         return out;
+    }
+
+    G1Point g1_multi_scalar_mul(const G1Point* points, const algebra::FieldElement* scalars, std::size_t count)
+    {
+        return g1_multi_scalar_mul_profiled(points, scalars, count, nullptr);
     }
 
     G1Point g1_multi_scalar_mul(const std::vector<G1Point>& points, const std::vector<algebra::FieldElement>& scalars)
