@@ -35,6 +35,16 @@ namespace gatzk::crypto
         std::vector<mcl::Fp6> coeffs;
     };
 
+    struct G1MSMProfile
+    {
+        std::size_t input_count = 0;
+        std::size_t nonzero_scalar_count = 0;
+        std::size_t effective_scalar_count = 0;
+        bool zero_scalar_skipping = false;
+        bool sparse_compaction = false;
+        bool multithreaded = false;
+    };
+
     // 返回当前正式主线使用的曲线后端名称。
     std::string backend_name();
 
@@ -46,6 +56,11 @@ namespace gatzk::crypto
     G1Point g1_neg(const G1Point& point);
     G1Point g1_mul(const G1Point& point, const algebra::FieldElement& scalar);
     G1Point g1_multi_scalar_mul(const G1Point* points, const algebra::FieldElement* scalars, std::size_t count);
+    G1Point g1_multi_scalar_mul_profiled(
+        const G1Point* points,
+        const algebra::FieldElement* scalars,
+        std::size_t count,
+        G1MSMProfile* profile);
     G1Point g1_multi_scalar_mul(const std::vector<G1Point>& points, const std::vector<algebra::FieldElement>& scalars);
     std::vector<G1Point> g1_mul_same_base_batch(const G1Point& point, const std::vector<algebra::FieldElement>& scalars);
     G2Point g2_add(const G2Point& lhs, const G2Point& rhs);

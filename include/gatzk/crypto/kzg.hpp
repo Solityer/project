@@ -90,10 +90,25 @@ namespace gatzk::crypto
     };
 
     // 批量承诺的执行侧剖面，供 `commit_dynamic_ms` 拆分热点。
+    struct CommitObjectProfile
+    {
+        std::string name;
+        std::string basis;
+        std::string domain;
+        std::size_t vector_length = 0;
+        std::size_t nonzero_scalar_count = 0;
+        std::size_t effective_scalar_count = 0;
+        bool zero_scalar_skipping = false;
+        bool sparse_compaction = false;
+        bool multithreaded_msm = false;
+        double msm_ms = 0.0;
+    };
+
     struct CommitBatchProfile
     {
         double evaluation_ms = 0.0;
         double msm_ms = 0.0;
+        std::vector<CommitObjectProfile> objects;
     };
 
     // 序列化大小直接参与 proof_size_bytes 统计。

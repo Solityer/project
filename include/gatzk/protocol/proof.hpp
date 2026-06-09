@@ -128,6 +128,36 @@ struct TraceArtifacts {
     std::string proof_public_output_hash;
 };
 
+struct DynamicCommitmentObjectProfile {
+    std::string label;
+    std::string dataset;
+    std::string domain;
+    std::string basis;
+    std::string classification;
+    std::string ownership;
+    std::string category;
+    std::string optimization_opportunity;
+    std::string duplicate_of;
+    std::string commitment_fingerprint;
+    std::size_t vector_length = 0;
+    std::size_t domain_size = 0;
+    std::size_t nonzero_scalar_count = 0;
+    std::size_t effective_scalar_count = 0;
+    double zero_scalar_ratio = 0.0;
+    double padding_ratio = 0.0;
+    double materialization_ms = 0.0;
+    double msm_ms = 0.0;
+    double total_commitment_ms = 0.0;
+    bool compact = false;
+    bool shared_or_borrowed = false;
+    bool reused_shared = false;
+    bool duplicates_another = false;
+    bool commitment_cache_hit = false;
+    bool zero_scalar_skipping = false;
+    bool sparse_compaction = false;
+    bool multithreaded_msm = false;
+};
+
 // 单个工作域 opening bundle 的 proof 载体。
 // 标签顺序由 schema 固定，proof_size_bytes 只统计真正随 proof 发送的点值与 witness。
 enum class PayloadValueKind {
@@ -311,6 +341,7 @@ struct RunMetrics {
     bool is_cold_run = true;
     bool is_full_dataset = false;
     bool gpu_runtime_present = false;
+    std::vector<DynamicCommitmentObjectProfile> dynamic_commitment_profiles;
     std::string benchmark_mode = "single";
     std::string fft_backend_route = "plain";
     std::string route2_label = "baseline";

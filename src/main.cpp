@@ -69,10 +69,9 @@ int main(int argc, char** argv) {
             updated.export_dir = export_dir.string();
             return updated;
         };
-        // ogbn-arxiv 全图实例需要先把大对象初始化和正式测量拆开，避免冷启动污染 warm 主表。
+        // 全图实例先把大对象初始化和正式测量拆开，避免冷启动污染 warm 主表。
         auto memory_safe_warm_required = [](const gatzk::util::AppConfig& config) {
-            return config.dataset == "ogbn_arxiv"
-                && config.batching_rule == "whole_graph_single"
+            return config.batching_rule == "whole_graph_single"
                 && config.subgraph_rule == "whole_graph";
         };
         auto parse_switch = [](const std::string& value, const std::string& name) {

@@ -72,6 +72,10 @@ namespace gatzk::algebra
         }
         const auto row_count = polynomials_.size();
         interleaved_values_.resize(domain_->size * row_count);
+        for (auto& value : interleaved_values_)
+        {
+            value.clear();
+        }
         for (std::size_t row = 0; row < row_count; ++row)
         {
             label_to_index_.emplace(polynomials_[row].first, row);
