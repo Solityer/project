@@ -1,0 +1,40 @@
+{
+  "baseline": "ezkl",
+  "completed_rows": [
+    {
+      "backend": "cpu",
+      "dataset": "cora_full"
+    },
+    {
+      "backend": "cpu",
+      "dataset": "citeseer_full"
+    },
+    {
+      "backend": "cpu",
+      "dataset": "pubmed_full"
+    },
+    {
+      "backend": "cpu",
+      "dataset": "ogbn_arxiv_full"
+    }
+  ],
+  "current_backend": "cpu",
+  "current_dataset": "ppi_full_formal",
+  "current_phase": "run",
+  "failed_rows": [
+    {
+      "backend": "cpu",
+      "block_reason": "",
+      "dataset": "ppi_full_formal",
+      "status": "ready"
+    }
+  ],
+  "last_attempt_time": "2026-06-16T02:45:59Z",
+  "last_failure_type": "not_run",
+  "last_success_time": "",
+  "local_completion_status": "not_run",
+  "next_action": "running",
+  "next_command": "python3 scripts/run_gat_ezkl_baseline.py --dataset ppi_full_formal --resume --resume-from prove --no-clean-existing-keys --run",
+  "pending_rows": [],
+  "validator_status": "not_run"
+}
