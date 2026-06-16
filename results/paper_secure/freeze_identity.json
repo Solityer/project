@@ -1,0 +1,11 @@
+{
+  "build_identity": "7690e397394f55cf19b24fdcfe14954e9a1d7c7a9ca617971837416b35cb10a5",
+  "comparison_status": "comparison/** ignored by request; no completion claim is based on comparison results.",
+  "cpu_binary_hash": "f34250377c8c975744c586550344b377006859354d72d0cb526a6e5b262cffcd",
+  "exporter_hash": "31e47fdab7fd8bd180a778612b709bda864516ffba95cb5185750a6c1ab21928",
+  "generated_at": "2026-06-16T04:35:37.160852+00:00",
+  "gpu_binary_hash": "981ea3a89bb3d83ae8c791e4b000dccdac4e4fbf2b0df98a619ddfa0842943d7",
+  "main_git_status": "M include/gatzk/crypto/curve.hpp\n M include/gatzk/crypto/kzg.hpp\n M include/gatzk/protocol/proof.hpp\n M scripts/export_paper_secure.py\n M src/crypto/curve.cpp\n M src/crypto/kzg.cpp\n M src/protocol/prover.cpp\n M src/protocol/trace.cpp\n M src/protocol/verifier.cpp\n M src/util/route2.cpp\n?? results/paper_secure/freeze_identity.json\n?? scripts/run_secure_main_experiments.py",
+  "runner_hash": "d70435d9e4630d362699f85915e34720b2d3041367b12d6bd6057a6a75f34207",
+  "source_tree_hash": "8445dcd796efaf22098bbda89c5570550570131b654efb8347d59c5fd15ba90d"
+}

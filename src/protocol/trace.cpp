@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -487,6 +488,9 @@ struct PreparedDynamicCommitment {
     bool shared_or_borrowed = false;
     bool reused_shared = false;
     bool commitment_cache_hit = false;
+    bool full_value_fingerprint = false;
+    std::uintptr_t source_identity = 0;
+    double fingerprint_cache_ms = 0.0;
     double materialization_ms = 0.0;
 };
 
@@ -792,6 +796,9 @@ PreparedDynamicCommitment materialize_commitment(
         const bool use_shared_backing =
             spec.shared_column_values != nullptr && source_values->size() >= kMinSharedColumnLength;
         out.reused_shared = use_shared_backing;
+        if (use_shared_backing) {
+            out.source_identity = reinterpret_cast<std::uintptr_t>(source_values);
+        }
         if (keep_trace_payloads) {
             out.column_export = *source_values;
         }
@@ -967,7 +974,12 @@ PolynomialFingerprint fingerprint_polynomial(
 
 class DynamicCommitmentReuseCache {
   public:
-    bool lookup(const std::string& key, crypto::Commitment* out) {
+    struct Entry {
+        crypto::Commitment commitment;
+        crypto::CommitObjectProfile profile;
+    };
+
+    bool lookup(const std::string& key, Entry* out) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (const auto it = entries_.find(key); it != entries_.end()) {
             if (out != nullptr) {
@@ -978,19 +990,44 @@ class DynamicCommitmentReuseCache {
         return false;
     }
 
-    void store(const std::string& key, const crypto::Commitment& commitment) {
+    void store(
+        const std::string& key,
+        const crypto::Commitment& commitment,
+        const crypto::CommitObjectProfile& profile) {
         std::lock_guard<std::mutex> lock(mutex_);
-        entries_.emplace(key, commitment);
+        entries_.emplace(key, Entry{commitment, profile});
     }
 
   private:
     std::mutex mutex_;
-    std::unordered_map<std::string, crypto::Commitment> entries_;
+    std::unordered_map<std::string, Entry> entries_;
 };
 
 DynamicCommitmentReuseCache& dynamic_commitment_reuse_cache() {
     static DynamicCommitmentReuseCache cache;
     return cache;
+}
+
+std::string source_identity_commitment_key(
+    const std::string& srs_manifest_hash,
+    const PreparedDynamicCommitment& item,
+    const Polynomial& polynomial) {
+    if (item.source_identity == 0) {
+        return {};
+    }
+    std::ostringstream out;
+    out << srs_manifest_hash
+        << "|dynamic_source|"
+        << (polynomial.basis == algebra::PolynomialBasis::Coefficient ? "coef" : "eval")
+        << '|'
+        << (polynomial.domain != nullptr ? polynomial.domain->name : "coef")
+        << '|'
+        << (polynomial.domain != nullptr ? polynomial.domain->size : 0)
+        << '|'
+        << polynomial.size()
+        << '|'
+        << item.source_identity;
+    return out.str();
 }
 
 void record_dynamic_commit_totals(RunMetrics* metrics) {
@@ -1169,31 +1206,50 @@ void add_dynamic_commitment_batch(
     std::vector<std::string> reuse_cache_keys(prepared.size());
     std::unordered_map<std::string, crypto::CommitObjectProfile> cached_object_profiles;
     named_polynomials.reserve(prepared.size());
+    constexpr std::size_t kMaxFullValueFingerprintSize = 1ULL << 16;
     for (std::size_t i = 0; i < prepared.size(); ++i) {
         auto& item = prepared[i];
         if (item.polynomial.has_value()) {
             const auto& polynomial = *item.polynomial;
-            if (polynomial.size() >= 1024) {
-                const auto fingerprint = fingerprint_polynomial(key.pk.manifest_hash, polynomial);
-                const auto reuse_key =
-                    key.pk.manifest_hash + "|dynamic|" + fingerprint.key;
-                crypto::Commitment cached_commitment;
-                if (dynamic_commitment_reuse_cache().lookup(reuse_key, &cached_commitment)) {
-                    item.commitment = renamed_commitment(item.name, cached_commitment);
+            const auto fingerprint_start = Clock::now();
+            std::string reuse_key = source_identity_commitment_key(key.pk.manifest_hash, item, polynomial);
+            bool full_value_fingerprint = false;
+            if (reuse_key.empty() && polynomial.size() >= 1024) {
+                if (polynomial.size() <= kMaxFullValueFingerprintSize) {
+                    const auto fingerprint = fingerprint_polynomial(key.pk.manifest_hash, polynomial);
+                    reuse_key = key.pk.manifest_hash + "|dynamic|" + fingerprint.key;
+                    full_value_fingerprint = true;
+                    if (metrics != nullptr) {
+                        metrics->dynamic_commit_full_fingerprint_scans += 1;
+                    }
+                } else if (metrics != nullptr) {
+                    metrics->dynamic_commit_fingerprint_skipped += 1;
+                }
+            }
+            item.full_value_fingerprint = full_value_fingerprint;
+            item.fingerprint_cache_ms = elapsed_ms(fingerprint_start, Clock::now());
+            if (metrics != nullptr) {
+                metrics->dynamic_commit_fingerprint_ms += item.fingerprint_cache_ms;
+            }
+            if (!reuse_key.empty()) {
+                if (metrics != nullptr) {
+                    metrics->dynamic_commit_cache_lookups += 1;
+                }
+                DynamicCommitmentReuseCache::Entry cached_entry;
+                if (dynamic_commitment_reuse_cache().lookup(reuse_key, &cached_entry)) {
+                    item.commitment = renamed_commitment(item.name, cached_entry.commitment);
                     item.commitment_cache_hit = true;
-                    crypto::CommitObjectProfile object_profile;
+                    auto object_profile = cached_entry.profile;
                     object_profile.name = item.name;
-                    object_profile.basis = polynomial.basis == algebra::PolynomialBasis::Coefficient ? "coefficient" : "evaluation";
-                    object_profile.domain = polynomial.domain != nullptr ? polynomial.domain->name : "coef";
-                    object_profile.vector_length = polynomial.size();
-                    object_profile.nonzero_scalar_count = fingerprint.nonzero_scalar_count;
-                    object_profile.effective_scalar_count = fingerprint.nonzero_scalar_count;
-                    object_profile.zero_scalar_skipping = fingerprint.nonzero_scalar_count < polynomial.size();
-                    object_profile.sparse_compaction = false;
-                    object_profile.multithreaded_msm = false;
                     object_profile.msm_ms = 0.0;
                     cached_object_profiles.emplace(item.name, std::move(object_profile));
+                    if (metrics != nullptr) {
+                        metrics->dynamic_commit_cache_hits += 1;
+                    }
                     continue;
+                }
+                if (metrics != nullptr) {
+                    metrics->dynamic_commit_cache_misses += 1;
                 }
                 reuse_cache_keys[i] = reuse_key;
             }
@@ -1221,7 +1277,10 @@ void add_dynamic_commitment_batch(
             const auto prepared_index = polynomial_indices[i];
             prepared[prepared_index].commitment = commitments[i];
             if (!reuse_cache_keys[prepared_index].empty()) {
-                dynamic_commitment_reuse_cache().store(reuse_cache_keys[prepared_index], commitments[i]);
+                dynamic_commitment_reuse_cache().store(
+                    reuse_cache_keys[prepared_index],
+                    commitments[i],
+                    polynomial_profile.objects[i]);
             }
         }
     }
@@ -1280,8 +1339,10 @@ void add_dynamic_commitment_batch(
             dynamic_profile.zero_scalar_ratio = zero_scalar_ratio;
             dynamic_profile.padding_ratio = padding_ratio;
             dynamic_profile.materialization_ms = item.materialization_ms;
+            dynamic_profile.fingerprint_cache_ms = item.fingerprint_cache_ms;
             dynamic_profile.msm_ms = object.msm_ms;
-            dynamic_profile.total_commitment_ms = item.materialization_ms + object.msm_ms;
+            dynamic_profile.total_commitment_ms =
+                item.materialization_ms + item.fingerprint_cache_ms + object.msm_ms;
             dynamic_profile.compact = item.compact;
             dynamic_profile.shared_or_borrowed = item.shared_or_borrowed;
             dynamic_profile.reused_shared = item.reused_shared;
@@ -1290,6 +1351,7 @@ void add_dynamic_commitment_batch(
             dynamic_profile.zero_scalar_skipping = object.zero_scalar_skipping;
             dynamic_profile.sparse_compaction = object.sparse_compaction;
             dynamic_profile.multithreaded_msm = object.multithreaded_msm;
+            dynamic_profile.full_value_fingerprint = item.full_value_fingerprint;
             metrics->dynamic_commitment_profiles.push_back(std::move(dynamic_profile));
         }
     }
@@ -2231,7 +2293,9 @@ const TraceStaticArtifacts& cached_trace_static_artifacts(const ProtocolContext&
     }
 
     artifacts->absolute_id_fields.assign(context.local.num_nodes, FieldElement::zero());
-    artifacts->full_feature_identity = context.local.num_nodes == context.dataset.num_nodes;
+    artifacts->full_feature_identity =
+        context.local.num_nodes == context.dataset.num_nodes
+        && context.local.num_features == context.dataset.num_features;
     for (std::size_t i = 0; i < context.local.num_nodes; ++i) {
         artifacts->absolute_id_fields[i] = FieldElement(context.local.absolute_ids[i]);
         artifacts->full_feature_identity =
@@ -2592,7 +2656,12 @@ std::shared_ptr<const std::unordered_map<FieldPairKey, std::size_t, FieldPairKey
     static std::unordered_map<
         std::string,
         std::shared_ptr<std::unordered_map<FieldPairKey, std::size_t, FieldPairKeyHash>>> cache;
-    const auto cache_key = label + ":" + std::to_string(values.size());
+    const auto cache_key =
+        label + ":" + std::to_string(values.size())
+        + ":first="
+        + (values.empty() ? std::string("empty") : values.front().first.to_string() + "," + values.front().second.to_string())
+        + ":last="
+        + (values.empty() ? std::string("empty") : values.back().first.to_string() + "," + values.back().second.to_string());
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
@@ -2637,7 +2706,12 @@ const std::vector<FieldElement>& cached_single_lookup_table(
     static std::mutex cache_mutex;
     static std::unordered_map<std::string, std::shared_ptr<std::vector<FieldElement>>> cache;
     const auto cache_key =
-        label + ":" + std::to_string(domain_size) + ":" + std::to_string(values.size());
+        label + ":" + std::to_string(domain_size)
+        + ":" + std::to_string(values.size())
+        + ":first="
+        + (values.empty() ? std::string("empty") : values.front().to_string())
+        + ":last="
+        + (values.empty() ? std::string("empty") : values.back().to_string());
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {
@@ -2661,7 +2735,13 @@ const std::vector<FieldElement>& cached_pair_lookup_table(
     static std::mutex cache_mutex;
     static std::unordered_map<std::string, std::shared_ptr<std::vector<FieldElement>>> cache;
     const auto cache_key =
-        label + ":" + std::to_string(domain_size) + ":" + eta.to_string();
+        label + ":" + std::to_string(domain_size)
+        + ":" + std::to_string(values.size())
+        + ":" + eta.to_string()
+        + ":first="
+        + (values.empty() ? std::string("empty") : values.front().first.to_string() + "," + values.front().second.to_string())
+        + ":last="
+        + (values.empty() ? std::string("empty") : values.back().first.to_string() + "," + values.back().second.to_string());
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (const auto it = cache.find(cache_key); it != cache.end()) {

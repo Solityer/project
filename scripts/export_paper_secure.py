@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import argparse
 import csv
+import hashlib
 import json
 import pathlib
+import shutil
 import sys
 
 
@@ -34,6 +36,7 @@ OUTPUT_FIELDS = [
     "backend",
     "srs_type",
     "srs_id",
+    "srs_manifest_hash",
     "privacy_policy",
     "input_privacy",
     "output_mode",
@@ -48,8 +51,14 @@ OUTPUT_FIELDS = [
     "optimization_flags",
     "hardware_and_device",
     "gpu_acceleration_status",
+    "source_tree_hash",
+    "binary_hash",
+    "run_manifest_hash",
+    "timeout",
+    "stale_result",
     "verifier_reads_witness",
     "private_plain_value_count",
+    "proof_payload_audit_status",
     "reference_consistency_passed",
     "tamper_tests_passed",
     "full_dataset",
@@ -59,7 +68,6 @@ OUTPUT_FIELDS = [
     "static_table_hash",
     "quant_config_hash",
     "public_metadata_hash",
-    "srs_manifest_hash",
     "proof_hash",
     "public_logits_hash",
     "reference_fp32_logits_hash",
@@ -67,7 +75,6 @@ OUTPUT_FIELDS = [
     "secure_trace_logits_hash",
     "proof_public_output_hash",
     "srs_degree_bound",
-    "proof_payload_audit_status",
     "security_profile_id",
 ]
 HASH_FIELDS = [
@@ -100,6 +107,13 @@ def load_manifest(path):
     return json.loads(manifest.read_text(encoding="utf-8"))
 
 
+def manifest_hash(row):
+    payload = dict(row)
+    payload.pop("run_manifest_hash", None)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def load_object_profile(path, row):
     profile_name = row.get("dynamic_commitment_object_profile_csv")
     if not profile_name:
@@ -123,7 +137,7 @@ def normalize_bool(value):
     return str(value).lower()
 
 
-def validate_row(dataset, backend, row):
+def validate_row(dataset, backend, row, expected_source_hash="", expected_cpu_binary_hash="", expected_gpu_binary_hash=""):
     require_field(row, "dataset")
     if dataset == "ogbn-arxiv":
         expected_names = {"ogbn-arxiv", "ogbn_arxiv"}
@@ -133,7 +147,18 @@ def validate_row(dataset, backend, row):
         raise ValueError(f"dataset key {dataset} does not match manifest dataset {row['dataset']}")
     if row.get("srs_type") not in {"trusted_srs", "mpc_srs"}:
         raise ValueError(f"{dataset}/{backend} has invalid SRS type")
+    require_field(row, "backend")
+    if row["backend"] != backend:
+        raise ValueError(f"{dataset}/{backend} has backend={row['backend']}, expected {backend}")
     for key, expected in SECURE_FIELDS.items():
+        require_field(row, key)
+        if normalize_bool(row[key]) != expected:
+            raise ValueError(f"{dataset}/{backend} has {key}={row[key]}, expected {expected}")
+    for key, expected in {
+        "timeout": "false",
+        "stale_result": "false",
+        "exit_code": "0",
+    }.items():
         require_field(row, key)
         if normalize_bool(row[key]) != expected:
             raise ValueError(f"{dataset}/{backend} has {key}={row[key]}, expected {expected}")
@@ -151,6 +176,28 @@ def validate_row(dataset, backend, row):
         require_field(row, key)
     for key in ("optimization_profile_id", "optimization_flags", "hardware_and_device", "gpu_acceleration_status"):
         require_field(row, key)
+    for key in (
+        "source_tree_hash",
+        "binary_hash",
+        "run_manifest_hash",
+        "build_identity",
+        "runner_hash",
+        "activation_table_policy",
+        "static_table_endpoint_hash",
+        "feature_lookup_identity_predicate",
+        "range_table_size",
+        "lrelu_table_size",
+        "exp_table_size",
+        "elu_table_size",
+    ):
+        require_field(row, key)
+    if expected_source_hash and row["source_tree_hash"] != expected_source_hash:
+        raise ValueError(f"{dataset}/{backend} source hash mismatch")
+    expected_binary_hash = expected_gpu_binary_hash if backend == "gpu" else expected_cpu_binary_hash
+    if expected_binary_hash and row["binary_hash"] != expected_binary_hash:
+        raise ValueError(f"{dataset}/{backend} binary hash mismatch")
+    if row["run_manifest_hash"] != manifest_hash(row):
+        raise ValueError(f"{dataset}/{backend} run manifest hash mismatch")
     for key in (
         "dynamic_commitment_object_profile_csv",
         "dynamic_commitment_object_count",
@@ -174,14 +221,14 @@ def project_row(dataset, backend, row):
     return out
 
 
-def collect(runs, backend):
+def collect(runs, backend, expected_source_hash="", expected_cpu_binary_hash="", expected_gpu_binary_hash=""):
     rows = []
     manifests = []
     seen = set()
     for item in runs:
         dataset, path = parse_run(item)
         row = load_manifest(path)
-        validate_row(dataset, backend, row)
+        validate_row(dataset, backend, row, expected_source_hash, expected_cpu_binary_hash, expected_gpu_binary_hash)
         object_profile = load_object_profile(path, row)
         if int(row["dynamic_commitment_object_count"]) != len(object_profile):
             raise ValueError(f"{dataset}/{backend} dynamic object profile count mismatch")
@@ -197,6 +244,21 @@ def collect(runs, backend):
 
 def write_outputs(rows, manifests, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
+    for name in (
+        "latest.json",
+        "latest.csv",
+        "summary.md",
+        "security_tests_report.md",
+        "reference_consistency_report.md",
+        "proof_size_report.md",
+        "optimization_profile_report.md",
+    ):
+        path = output_dir / name
+        if path.exists():
+            path.unlink()
+    manifest_dir = output_dir / "run_manifests"
+    if manifest_dir.exists():
+        shutil.rmtree(manifest_dir)
     (output_dir / "latest.json").write_text(json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
     with (output_dir / "latest.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=OUTPUT_FIELDS)
@@ -212,7 +274,6 @@ def write_outputs(rows, manifests, output_dir):
             f"{row['prove_time_ms']} | {row['verify_time_ms']} | {row['proof_size_bytes']} |"
         )
     (output_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    manifest_dir = output_dir / "run_manifests"
     manifest_dir.mkdir(exist_ok=True)
     for dataset, backend, manifest, _ in manifests:
         (manifest_dir / f"{backend}_{dataset}.json").write_text(
@@ -483,11 +544,24 @@ def main():
     parser.add_argument("--cpu", action="append", default=[])
     parser.add_argument("--gpu", action="append", default=[])
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--source-tree-hash", default="")
+    parser.add_argument("--cpu-binary-hash", default="")
+    parser.add_argument("--gpu-binary-hash", default="")
     args = parser.parse_args()
     if len(args.cpu) != 5 or len(args.gpu) != 5:
         raise ValueError("expected exactly five CPU runs and five GPU runs")
-    cpu_rows, cpu_manifests = collect(args.cpu, "cpu")
-    gpu_rows, gpu_manifests = collect(args.gpu, "gpu")
+    cpu_rows, cpu_manifests = collect(
+        args.cpu,
+        "cpu",
+        args.source_tree_hash,
+        args.cpu_binary_hash,
+        args.gpu_binary_hash)
+    gpu_rows, gpu_manifests = collect(
+        args.gpu,
+        "gpu",
+        args.source_tree_hash,
+        args.cpu_binary_hash,
+        args.gpu_binary_hash)
     rows = cpu_rows + gpu_rows
     write_outputs(rows, cpu_manifests + gpu_manifests, pathlib.Path(args.output_dir))
     print(f"exported {len(rows)} secure paper rows")

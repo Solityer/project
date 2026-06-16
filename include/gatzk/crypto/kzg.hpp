@@ -87,6 +87,13 @@ namespace gatzk::crypto
         double precompute_ms = 0.0;
         double fold_commitment_ms = 0.0;
         double finalize_ms = 0.0;
+        double denominator_inverse_ms = 0.0;
+        double denominator_inverse_reuse_ms = 0.0;
+        std::size_t denominator_inverse_reuse_hits = 0;
+        std::size_t denominator_inverse_cache_misses = 0;
+        std::size_t point_parallel_batches = 0;
+        std::size_t point_parallel_workers = 0;
+        std::size_t point_msm_worker_cap = 0;
     };
 
     // 批量承诺的执行侧剖面，供 `commit_dynamic_ms` 拆分热点。
@@ -147,6 +154,12 @@ namespace gatzk::crypto
             const std::vector<std::pair<std::string, const algebra::Polynomial*>>& named_polynomials,
             const KZGKeyPair& key,
             CommitBatchProfile* profile = nullptr);
+        // 对刚物化出的多项式批量承诺并接管 opening 材料，避免为 quotient 等一次性对象再复制整列标量。
+        static std::vector<Commitment> commit_owned_batch(
+            std::vector<std::pair<std::string, algebra::Polynomial>>&& named_polynomials,
+            const KZGKeyPair& key,
+            CommitBatchProfile* profile = nullptr,
+            const std::string& progress_prefix = "");
 
         // 对同一域 opening bundle 中的多列做折叠 opening。
         static OpeningProof open_batch(
