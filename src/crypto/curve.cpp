@@ -214,7 +214,8 @@ namespace gatzk::crypto
         const G1Point* points,
         const algebra::FieldElement* scalars,
         std::size_t count,
-        G1MSMProfile* profile)
+        G1MSMProfile* profile,
+        const G1MSMExecutionOptions* options)
     {
         if ((points == nullptr || scalars == nullptr) && count != 0)
         {
@@ -288,7 +289,11 @@ namespace gatzk::crypto
                     }
                 }
                 const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-                const auto worker_count = msm_worker_count(compact_scalars.size(), cpu_count);
+                auto worker_count = msm_worker_count(compact_scalars.size(), cpu_count);
+                if (options != nullptr && options->max_worker_count != 0)
+                {
+                    worker_count = std::min(worker_count, options->max_worker_count);
+                }
                 if (worker_count > 1)
                 {
                     if (profile != nullptr)
@@ -318,7 +323,11 @@ namespace gatzk::crypto
         static_assert(sizeof(G1Point) == sizeof(mcl::G1), "G1Point must wrap a single mcl::G1");
         auto* native_points = const_cast<mcl::G1*>(reinterpret_cast<const mcl::G1*>(points));
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-        const auto worker_count = msm_worker_count(count, cpu_count);
+        auto worker_count = msm_worker_count(count, cpu_count);
+        if (options != nullptr && options->max_worker_count != 0)
+        {
+            worker_count = std::min(worker_count, options->max_worker_count);
+        }
         if (worker_count > 1)
         {
             if (profile != nullptr)

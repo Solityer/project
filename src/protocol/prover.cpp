@@ -13,6 +13,7 @@
 #include <functional>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -304,9 +305,6 @@ std::vector<FieldElement> feature_query_absolute_ids(
 }
 
 bool full_graph_feature_identity_enabled(const ProtocolContext& context) {
-    if (context.config.batching_rule != "whole_graph_single") {
-        return false;
-    }
     if (context.local.num_nodes != context.dataset.num_nodes
         || context.local.num_features != context.dataset.num_features) {
         return false;
@@ -618,13 +616,28 @@ double dequantize_trace_scalar(std::int64_t value) {
     return static_cast<double>(value) / 16.0;
 }
 
-std::vector<std::pair<FieldElement, FieldElement>> make_lrelu_table(std::size_t bound) {
+std::size_t signed_table_size(std::int64_t min_raw, std::int64_t max_raw, std::string_view label) {
+    if (min_raw > max_raw) {
+        throw std::runtime_error("invalid signed table range: " + std::string(label));
+    }
+    const auto span =
+        static_cast<std::uint64_t>(max_raw) - static_cast<std::uint64_t>(min_raw) + 1ULL;
+    if (span == 0 || span > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+        throw std::runtime_error("signed table range is too large: " + std::string(label));
+    }
+    return static_cast<std::size_t>(span);
+}
+
+std::vector<std::pair<FieldElement, FieldElement>> make_lrelu_table(std::int64_t min_raw, std::int64_t max_raw) {
     std::vector<std::pair<FieldElement, FieldElement>> out;
-    out.reserve(bound * 2 + 1);
-    for (std::int64_t raw = -static_cast<std::int64_t>(bound); raw <= static_cast<std::int64_t>(bound); ++raw) {
+    out.reserve(signed_table_size(min_raw, max_raw, "lrelu"));
+    for (std::int64_t raw = min_raw; raw <= max_raw; ++raw) {
         const auto input = dequantize_trace_scalar(raw);
         const auto output = input >= 0.0 ? input : 0.2 * input;
         out.push_back({FieldElement::from_signed(raw), quantize_float_model_value(output)});
+        if (raw == max_raw) {
+            break;
+        }
     }
     return out;
 }
@@ -2668,10 +2681,15 @@ class QuotientPolynomialMaterializer {
 
   private:
     algebra::Polynomial materialize_full_identity_fh() {
+        progress_note("prove:quotient:t_FH:identity:coset:P_Q_tbl_feat:start");
         const auto& q = coset_values("P_Q_tbl_feat");
+        progress_note("prove:quotient:t_FH:identity:coset:P_Row_feat_tbl:start");
         const auto& rows = coset_values("P_Row_feat_tbl");
+        progress_note("prove:quotient:t_FH:identity:coset:P_Col_feat_tbl:start");
         const auto& cols = coset_values("P_Col_feat_tbl");
+        progress_note("prove:quotient:t_FH:identity:coset:P_T_H:start");
         const auto& features = coset_values("P_T_H");
+        progress_note("prove:quotient:t_FH:identity:cosets:done");
         if (q.size() != target_size_ || rows.size() != target_size_
             || cols.size() != target_size_ || features.size() != target_size_) {
             throw std::runtime_error("full-identity FH quotient coset value size mismatch");
@@ -2696,11 +2714,41 @@ class QuotientPolynomialMaterializer {
         }
 
         std::vector<FieldElement> quotient_values(target_size_, FieldElement::zero());
-        for (std::size_t i = 0; i < target_size_; ++i) {
-            const auto table_value = rows[i] + eta * cols[i] + eta_sq * features[i];
-            quotient_values[i] = alpha * q[i] * (one - q[i]) * (table_value + beta) * inverse_zero[i % zero_cycle];
+        progress_note("prove:quotient:t_FH:identity:assemble:start");
+        const auto fill_range = [&](std::size_t begin, std::size_t end) {
+            for (std::size_t i = begin; i < end; ++i) {
+                const auto table_value = rows[i] + eta * cols[i] + eta_sq * features[i];
+                quotient_values[i] =
+                    alpha * q[i] * (one - q[i]) * (table_value + beta) * inverse_zero[i % zero_cycle];
+            }
+        };
+        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+        const bool run_parallel = cpu_count > 1 && target_size_ >= 4096;
+        if (run_parallel) {
+            const auto task_count = std::min<std::size_t>(
+                std::min<std::size_t>(cpu_count, 16),
+                std::max<std::size_t>(1, target_size_ / 32768));
+            const auto chunk_size = (target_size_ + task_count - 1) / task_count;
+            std::vector<std::future<void>> futures;
+            futures.reserve(task_count);
+            for (std::size_t task = 0; task < task_count; ++task) {
+                const auto begin = task * chunk_size;
+                const auto end = std::min(target_size_, begin + chunk_size);
+                if (begin >= end) {
+                    break;
+                }
+                futures.push_back(std::async(std::launch::async, fill_range, begin, end));
+            }
+            for (auto& future : futures) {
+                future.get();
+            }
+        } else {
+            fill_range(0, target_size_);
         }
+        progress_note("prove:quotient:t_FH:identity:assemble:done");
+        progress_note("prove:quotient:t_FH:identity:coefficients:start");
         auto coefficients = coefficients_from_coset_evaluations(quotient_values, shift_);
+        progress_note("prove:quotient:t_FH:identity:coefficients:done");
         return algebra::Polynomial::from_coefficients(label_, std::move(coefficients));
     }
 
@@ -2727,27 +2775,96 @@ class QuotientPolynomialMaterializer {
             return;
         }
 
-        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-        const auto worker_count = std::min<std::size_t>(
-            std::min<std::size_t>(cpu_count, 6),
-            unique_labels.size());
-        std::atomic<std::size_t> next{0};
-        std::vector<std::future<void>> futures;
-        futures.reserve(worker_count);
-        for (std::size_t worker = 0; worker < worker_count; ++worker) {
-            futures.push_back(std::async(std::launch::async, [&]() {
-                while (true) {
-                    const auto index = next.fetch_add(1);
-                    if (index >= unique_labels.size()) {
-                        break;
+        auto derived_begin = std::stable_partition(
+            unique_labels.begin(),
+            unique_labels.end(),
+            [&](const std::string& label) {
+                return !is_edge_derived_coset_request(label);
+            });
+        progress_note(
+            "prove:quotient:" + label_ + ":coset_prewarm:base_count="
+            + std::to_string(static_cast<std::size_t>(std::distance(unique_labels.begin(), derived_begin)))
+            + ":derived_count="
+            + std::to_string(static_cast<std::size_t>(std::distance(derived_begin, unique_labels.end()))));
+
+        auto prewarm_range = [&](std::string_view wave_name, auto begin_it, auto end_it) {
+            const auto wave_size = static_cast<std::size_t>(std::distance(begin_it, end_it));
+            if (wave_size == 0) {
+                return;
+            }
+            std::vector<std::string> wave(begin_it, end_it);
+            progress_note(
+                "prove:quotient:" + label_ + ":coset_prewarm:"
+                + std::string(wave_name) + ":start:size=" + std::to_string(wave.size()));
+            const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+            const auto worker_count = std::min<std::size_t>(
+                std::min<std::size_t>(cpu_count, 4),
+                wave.size());
+            std::atomic<std::size_t> next{0};
+            std::vector<std::future<void>> futures;
+            futures.reserve(worker_count);
+            for (std::size_t worker = 0; worker < worker_count; ++worker) {
+                futures.push_back(std::async(std::launch::async, [&, wave_name]() {
+                    while (true) {
+                        const auto index = next.fetch_add(1);
+                        if (index >= wave.size()) {
+                            break;
+                        }
+                        progress_note(
+                            "prove:quotient:" + label_ + ":coset_prewarm:"
+                            + std::string(wave_name) + ":" + wave[index] + ":start");
+                        coset_values_ptr(wave[index]);
+                        progress_note(
+                            "prove:quotient:" + label_ + ":coset_prewarm:"
+                            + std::string(wave_name) + ":" + wave[index] + ":done");
                     }
-                    coset_values_ptr(unique_labels[index]);
-                }
-            }));
+                }));
+            }
+            for (auto& future : futures) {
+                future.get();
+            }
+            progress_note(
+                "prove:quotient:" + label_ + ":coset_prewarm:"
+                + std::string(wave_name) + ":done");
+        };
+
+        prewarm_range("base", unique_labels.begin(), derived_begin);
+        prewarm_range("derived", derived_begin, unique_labels.end());
+    }
+
+    bool is_edge_derived_coset_request(const std::string& name) const {
+        if (!context_.model.has_real_multihead || label_ != "t_edge") {
+            return false;
         }
-        for (auto& future : futures) {
-            future.get();
+        auto is_hidden_derived_suffix = [](std::string_view suffix) {
+            return suffix == "Table_L" || suffix == "Query_L"
+                || suffix == "Table_R" || suffix == "Query_R"
+                || suffix == "Table_exp" || suffix == "Query_exp"
+                || suffix == "Table_ELU" || suffix == "Query_ELU"
+                || suffix == "Query_src" || suffix == "Query_t"
+                || suffix == "Query_dst";
+        };
+        for (std::size_t head_index = 0; head_index < context_.model.hidden_heads.size(); ++head_index) {
+            const auto prefix = "P_h" + std::to_string(head_index) + "_";
+            if (name.rfind(prefix, 0) == 0) {
+                return is_hidden_derived_suffix(name.substr(prefix.size()));
+            }
         }
+        const bool legacy_single_output = context_.model.output_layer.heads.size() == 1;
+        auto is_output_derived_suffix = [](std::string_view suffix) {
+            return suffix == "Table_L" || suffix == "Query_L"
+                || suffix == "Table_R" || suffix == "Query_R"
+                || suffix == "Table_exp" || suffix == "Query_exp"
+                || suffix == "Query_src" || suffix == "Query_t"
+                || suffix == "Query_dst";
+        };
+        for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index) {
+            const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
+            if (name.rfind(prefix, 0) == 0) {
+                return is_output_derived_suffix(name.substr(prefix.size()));
+            }
+        }
+        return false;
     }
 
     std::shared_ptr<const std::vector<FieldElement>> scaled_coset_sum(
@@ -3011,7 +3128,7 @@ std::vector<std::pair<std::string, algebra::Polynomial>> materialize_quotient_po
 }
 
 std::unordered_map<std::string, Commitment> batch_quotient_commitments(
-    const std::vector<std::pair<std::string, algebra::Polynomial>>& named_quotient_polynomials,
+    std::vector<std::pair<std::string, algebra::Polynomial>>&& named_quotient_polynomials,
     const crypto::KZGKeyPair& key) {
     std::unordered_map<std::string, Commitment> out;
     out.reserve(named_quotient_polynomials.size());
@@ -3019,12 +3136,11 @@ std::unordered_map<std::string, Commitment> batch_quotient_commitments(
         return out;
     }
 
-    std::vector<std::pair<std::string, const algebra::Polynomial*>> inputs;
-    inputs.reserve(named_quotient_polynomials.size());
-    for (const auto& [name, polynomial] : named_quotient_polynomials) {
-        inputs.push_back({name, &polynomial});
-    }
-    const auto commitments = crypto::KZG::commit_batch(inputs, key);
+    auto commitments = crypto::KZG::commit_owned_batch(
+        std::move(named_quotient_polynomials),
+        key,
+        nullptr,
+        "prove:quotient:commit_batch");
     for (const auto& commitment : commitments) {
         out.emplace(commitment.name, commitment);
     }
@@ -3295,7 +3411,8 @@ DomainOpeningBundle make_bundle(
     const std::map<std::string, FieldElement>& challenges,
     RunMetrics* metrics = nullptr,
     double* eval_gather_ms = nullptr,
-    double* witness_open_ms = nullptr) {
+    double* witness_open_ms = nullptr,
+    const std::string& progress_prefix = "") {
     // 一个 bundle 对应 formal schema 中某个工作域的一次 opening。
     // 这里必须严格复用 `domain_opening_labels()` 给出的标签顺序，
     // 因为 prover 组包、verifier 取值和 proof_size_bytes 统计都依赖同一份 shape。
@@ -3312,6 +3429,9 @@ DomainOpeningBundle make_bundle(
     }
     const bool is_fh_bundle = quotient_name == "t_FH";
     std::vector<std::vector<FieldElement>> values;
+    if (!progress_prefix.empty()) {
+        progress_note(progress_prefix + ":gather:start");
+    }
     if (!quotient_name.empty()) {
         const auto dependency_labels = quotient_dependency_labels(context, quotient_name);
         std::shared_ptr<algebra::RootOfUnityDomain> domain;
@@ -3340,6 +3460,9 @@ DomainOpeningBundle make_bundle(
     if (eval_gather_ms != nullptr) {
         *eval_gather_ms += elapsed_ms(gather_start, Clock::now());
     }
+    if (!progress_prefix.empty()) {
+        progress_note(progress_prefix + ":gather:done");
+    }
     if (metrics != nullptr && is_fh_bundle) {
         metrics->fh_open_gather_ms += elapsed_ms(gather_start, Clock::now());
     }
@@ -3348,9 +3471,21 @@ DomainOpeningBundle make_bundle(
         bundle.value_kinds.push_back(payload_kind_for_label(context, labels[i]));
     }
     const auto witness_start = Clock::now();
+    if (!progress_prefix.empty()) {
+        progress_note(progress_prefix + ":witness:start");
+    }
     crypto::BatchOpeningProfile batch_profile;
     bundle.proof =
         crypto::KZG::open_batch(commitments, points, values, challenges.at(folding_name), context.kzg, &batch_profile);
+    if (metrics != nullptr) {
+        metrics->domain_open_denominator_inverse_ms += batch_profile.denominator_inverse_ms;
+        metrics->domain_open_denominator_inverse_reuse_ms += batch_profile.denominator_inverse_reuse_ms;
+        metrics->domain_open_denominator_inverse_reuse_hits += batch_profile.denominator_inverse_reuse_hits;
+        metrics->domain_open_denominator_inverse_cache_misses += batch_profile.denominator_inverse_cache_misses;
+        metrics->domain_open_point_parallel_batches += batch_profile.point_parallel_batches;
+        metrics->domain_open_point_parallel_workers += batch_profile.point_parallel_workers;
+        metrics->domain_open_point_msm_worker_cap += batch_profile.point_msm_worker_cap;
+    }
     if (witness_open_ms != nullptr) {
         *witness_open_ms += elapsed_ms(witness_start, Clock::now());
     }
@@ -3359,6 +3494,9 @@ DomainOpeningBundle make_bundle(
         metrics->fh_open_witness_ms += std::max(0.0, witness_total_ms - batch_profile.precompute_ms);
         metrics->fh_open_fold_prepare_ms += batch_profile.precompute_ms;
         metrics->fh_fold_prep_ms += batch_profile.precompute_ms;
+    }
+    if (!progress_prefix.empty()) {
+        progress_note(progress_prefix + ":witness:done");
     }
     return bundle;
 }
@@ -3488,14 +3626,28 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
             context.local.edges.size() >= (1ULL << 18)
             || context.dataset.num_nodes * context.dataset.num_features >= (1ULL << 24));
     constexpr std::size_t kDefaultActivationTableBound = 16384;
-    const std::size_t range_size = std::max<std::size_t>(
+    std::size_t range_size = std::max<std::size_t>(
         configured_range_size,
         large_whole_graph_gat ? (1ULL << 19) : kDefaultActivationTableBound);
-    const std::size_t lrelu_bound = std::max<std::size_t>(
+    std::int64_t lrelu_min_raw = -static_cast<std::int64_t>(std::max<std::size_t>(
         large_whole_graph_gat ? (1ULL << 20) : kDefaultActivationTableBound,
-        range_size);
-    const std::size_t elu_bound = lrelu_bound;
-    const std::size_t lrelu_table_size = lrelu_bound * 2 + 1;
+        range_size));
+    std::int64_t lrelu_max_raw = -lrelu_min_raw;
+    if (large_whole_graph_gat) {
+        constexpr std::size_t kLargeEdgeDomainSize = 1ULL << 23;
+        constexpr std::size_t kLargeLReluNegativeRows = 3ULL << 18;
+        const std::size_t max_rows_in_edge_domain = kLargeEdgeDomainSize - 2;
+        range_size = std::max<std::size_t>(
+            range_size,
+            max_rows_in_edge_domain / (2 * exp_table_band() + 1));
+        lrelu_min_raw = -static_cast<std::int64_t>(kLargeLReluNegativeRows);
+        lrelu_max_raw = static_cast<std::int64_t>(
+            max_rows_in_edge_domain - kLargeLReluNegativeRows - 1);
+    }
+    const std::size_t elu_bound = std::max<std::size_t>(
+        large_whole_graph_gat ? (1ULL << 20) : kDefaultActivationTableBound,
+        configured_range_size);
+    const std::size_t lrelu_table_size = signed_table_size(lrelu_min_raw, lrelu_max_raw, "lrelu");
     const std::size_t elu_table_size = (elu_bound * 2 + 1) * (2 * elu_table_band() + 1);
     const std::size_t exp_table_size = range_size * (2 * exp_table_band() + 1);
     const std::size_t edge_size = algebra::next_power_of_two(
@@ -3543,7 +3695,7 @@ ProtocolContext build_context(const util::AppConfig& config, RunMetrics* metrics
     // 这里开始布置公开列、静态表和静态承诺；它们会直接进入 transcript 与 verifier 的公共视图。
     context.tables.range = make_range_table(range_size);
     context.tables.exp = make_exp_table(range_size);
-    context.tables.lrelu = make_lrelu_table(lrelu_bound);
+    context.tables.lrelu = make_lrelu_table(lrelu_min_raw, lrelu_max_raw);
     context.tables.elu = make_elu_table(elu_bound);
 
     const auto edge_valid = build_selector(context.local.edges.size(), edge_size);
@@ -3901,14 +4053,16 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             append_note(metrics, "quotient_cache=hit");
         } else {
             append_note(metrics, "quotient_cache=miss");
-            const auto named_quotient_polynomials = materialize_quotient_polynomials(
+            auto named_quotient_polynomials = materialize_quotient_polynomials(
                 context,
                 trace,
                 pre_quotient_challenges,
                 quotient_labels,
                 metrics);
             const auto quotient_pack_start = Clock::now();
-            quotient_commitments = batch_quotient_commitments(named_quotient_polynomials, context.kzg);
+            progress_note("prove:quotient:commit_batch:start");
+            quotient_commitments = batch_quotient_commitments(std::move(named_quotient_polynomials), context.kzg);
+            progress_note("prove:quotient:commit_batch:done");
             if (metrics != nullptr) {
                 metrics->quotient_bundle_pack_ms += elapsed_ms(quotient_pack_start, Clock::now());
             }
@@ -3965,6 +4119,8 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             RunMetrics local_metrics;
         };
         auto build_bundle = [&](const BundleSpec& spec) -> BundleBuildResult {
+            const auto progress_prefix = "prove:domain_opening:" + spec.bundle_name;
+            progress_note(progress_prefix + ":start");
             RunMetrics local_metrics;
             EvaluationMemoization opening_memo(
                 context,
@@ -3993,7 +4149,8 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 challenges,
                 &local_metrics,
                 &gather_ms,
-                &witness_ms);
+                &witness_ms,
+                progress_prefix);
             if (spec.bundle_name == "FH") {
                 const auto nested_ms =
                     local_metrics.fh_eval_prep_ms
@@ -4003,6 +4160,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 local_metrics.fh_open_gather_ms =
                     std::max(0.0, local_metrics.fh_open_gather_ms - nested_ms);
             }
+            progress_note(progress_prefix + ":done");
             return {
                 spec.bundle_name,
                 std::move(bundle),
@@ -4050,6 +4208,19 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             if (metrics != nullptr) {
                 metrics->domain_eval_gather_ms += it->gather_ms;
                 metrics->domain_open_witness_ms += it->witness_ms;
+                metrics->domain_open_denominator_inverse_ms += it->local_metrics.domain_open_denominator_inverse_ms;
+                metrics->domain_open_denominator_inverse_reuse_ms +=
+                    it->local_metrics.domain_open_denominator_inverse_reuse_ms;
+                metrics->domain_open_denominator_inverse_reuse_hits +=
+                    it->local_metrics.domain_open_denominator_inverse_reuse_hits;
+                metrics->domain_open_denominator_inverse_cache_misses +=
+                    it->local_metrics.domain_open_denominator_inverse_cache_misses;
+                metrics->domain_open_point_parallel_batches +=
+                    it->local_metrics.domain_open_point_parallel_batches;
+                metrics->domain_open_point_parallel_workers +=
+                    it->local_metrics.domain_open_point_parallel_workers;
+                metrics->domain_open_point_msm_worker_cap +=
+                    it->local_metrics.domain_open_point_msm_worker_cap;
                 if (auto* metric = domain_open_metric(metrics, it->bundle_name); metric != nullptr) {
                     *metric += it->total_ms;
                 }
@@ -4115,13 +4286,15 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
     auto proof_domain_weight_cache = shared_proof_domain_weight_cache();
     const bool run_parallel = std::thread::hardware_concurrency() > 1;
     const std::vector<std::string> quotient_labels = {"t_FH", "t_edge", "t_in", "t_d", "t_N"};
-    const auto named_quotient_polynomials = materialize_quotient_polynomials(
+    auto named_quotient_polynomials = materialize_quotient_polynomials(
         context,
         trace,
         challenges,
         quotient_labels,
         metrics);
-    quotient_commitments = batch_quotient_commitments(named_quotient_polynomials, context.kzg);
+    progress_note("prove:quotient:commit_batch:start");
+    quotient_commitments = batch_quotient_commitments(std::move(named_quotient_polynomials), context.kzg);
+    progress_note("prove:quotient:commit_batch:done");
 
     challenges = replay_challenges(context, trace.commitments, quotient_commitments);
     if (metrics != nullptr) {
@@ -4272,7 +4445,10 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                         spec.points,
                         spec.folding_name,
                         challenges,
-                        nullptr);
+                        nullptr,
+                        nullptr,
+                        nullptr,
+                        "prove:domain_opening:" + spec.domain_name);
                 }));
         }
         for (std::size_t i = 0; i < futures.size(); ++i) {
@@ -4296,7 +4472,10 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
                 bundle_specs[i].points,
                 bundle_specs[i].folding_name,
                 challenges,
-                nullptr);
+                nullptr,
+                nullptr,
+                nullptr,
+                "prove:domain_opening:" + bundle_specs[i].domain_name);
         }
     }
     for (std::size_t i = 0; i < bundle_specs.size(); ++i) {
@@ -4562,6 +4741,50 @@ void export_run_artifacts(
     auto benchmark_backend_label = [&]() {
         return metrics.compute_backend_name == "cuda_hotspots" ? std::string("gpu") : std::string("cpu");
     };
+    auto env_or_empty = [](const char* name) {
+        const char* value = std::getenv(name);
+        return value == nullptr ? std::string() : std::string(value);
+    };
+    auto table_endpoint_string = [](const std::vector<FieldElement>& values) {
+        std::ostringstream out;
+        out << "size=" << values.size();
+        if (!values.empty()) {
+            out << ";first=" << values.front().to_string()
+                << ";last=" << values.back().to_string();
+        }
+        return out.str();
+    };
+    auto pair_table_endpoint_string = [](const std::vector<std::pair<FieldElement, FieldElement>>& values) {
+        std::ostringstream out;
+        out << "size=" << values.size();
+        if (!values.empty()) {
+            out << ";first_left=" << values.front().first.to_string()
+                << ";first_right=" << values.front().second.to_string()
+                << ";last_left=" << values.back().first.to_string()
+                << ";last_right=" << values.back().second.to_string();
+        }
+        return out.str();
+    };
+    const bool full_feature_identity =
+        context.local.num_nodes == context.dataset.num_nodes
+        && context.local.num_features == context.dataset.num_features
+        && std::all_of(
+            context.local.absolute_ids.begin(),
+            context.local.absolute_ids.end(),
+            [index = std::size_t{0}](std::size_t value) mutable {
+                return value == index++;
+            });
+    const bool large_whole_graph_gat =
+        context.config.batching_rule == "whole_graph_single"
+        && context.local.num_nodes == context.dataset.num_nodes
+        && (
+            context.local.edges.size() >= (1ULL << 18)
+            || context.dataset.num_nodes * context.dataset.num_features >= (1ULL << 24));
+    const auto table_endpoint_hash = stable_hash(
+        table_endpoint_string(context.tables.range)
+        + "|" + pair_table_endpoint_string(context.tables.lrelu)
+        + "|" + pair_table_endpoint_string(context.tables.exp)
+        + "|" + pair_table_endpoint_string(context.tables.elu));
     const auto audited_private_plain_value_count = private_plain_value_count(context, proof);
 
     std::map<std::string, std::string> metadata;
@@ -4590,7 +4813,7 @@ void export_run_artifacts(
     std::map<std::string, double> dynamic_profile_time_by_category;
     if (!metrics.dynamic_commitment_profiles.empty()) {
         std::vector<std::string> profile_lines = {
-            "label,dataset,domain,basis,vector_length,domain_size,nonzero_scalar_count,effective_scalar_count,zero_scalar_ratio,padding_ratio,classification,materialization_ms,msm_ms,total_commitment_ms,duplicates_another,duplicate_of,reused_shared,shared_or_borrowed,compact,commitment_cache_hit,ownership,category,optimization_opportunity,zero_scalar_skipping,sparse_compaction,multithreaded_msm,commitment_fingerprint",
+            "label,dataset,domain,basis,vector_length,domain_size,nonzero_scalar_count,effective_scalar_count,zero_scalar_ratio,padding_ratio,classification,materialization_ms,fingerprint_cache_ms,msm_ms,total_commitment_ms,duplicates_another,duplicate_of,reused_shared,shared_or_borrowed,compact,commitment_cache_hit,ownership,category,optimization_opportunity,zero_scalar_skipping,sparse_compaction,multithreaded_msm,full_value_fingerprint,commitment_fingerprint",
         };
         profile_lines.reserve(metrics.dynamic_commitment_profiles.size() + 1);
         for (const auto& item : metrics.dynamic_commitment_profiles) {
@@ -4610,6 +4833,7 @@ void export_run_artifacts(
                 + format_double(item.padding_ratio) + ","
                 + csv_escape(item.classification) + ","
                 + format_double(item.materialization_ms) + ","
+                + format_double(item.fingerprint_cache_ms) + ","
                 + format_double(item.msm_ms) + ","
                 + format_double(item.total_commitment_ms) + ","
                 + bool_string(item.duplicates_another) + ","
@@ -4624,6 +4848,7 @@ void export_run_artifacts(
                 + bool_string(item.zero_scalar_skipping) + ","
                 + bool_string(item.sparse_compaction) + ","
                 + bool_string(item.multithreaded_msm) + ","
+                + bool_string(item.full_value_fingerprint) + ","
                 + csv_escape(item.commitment_fingerprint));
         }
         util::write_lines(export_root + "/dynamic_commitment_object_profile.csv", profile_lines);
@@ -4655,6 +4880,7 @@ void export_run_artifacts(
 
     // `run_manifest.json` 保留完整内部字段，供 formal suite、artifact 校验和内部分析复核。
     std::map<std::string, std::string> run_manifest = {
+        {"backend", benchmark_backend_label()},
         {"backend_name", metrics.backend_name},
         {"crypto_backend_name", metrics.crypto_backend_name},
         {"algebra_backend_name", metrics.algebra_backend_name},
@@ -4678,6 +4904,28 @@ void export_run_artifacts(
         {"node_count", std::to_string(metrics.node_count)},
         {"edge_count", std::to_string(metrics.edge_count)},
         {"gpu_runtime_present", metrics.gpu_runtime_present ? "true" : "false"},
+        {"source_tree_hash", env_or_empty("GATZK_SOURCE_TREE_HASH")},
+        {"binary_hash", env_or_empty("GATZK_BINARY_HASH")},
+        {"build_identity", env_or_empty("GATZK_BUILD_IDENTITY")},
+        {"runner_hash", env_or_empty("GATZK_RUNNER_HASH")},
+        {"run_started_at", env_or_empty("GATZK_RUN_STARTED_AT")},
+        {"run_ended_at", env_or_empty("GATZK_RUN_ENDED_AT")},
+        {"exit_code", env_or_empty("GATZK_RUN_EXIT_CODE")},
+        {"timeout", env_or_empty("GATZK_RUN_TIMEOUT").empty() ? "false" : env_or_empty("GATZK_RUN_TIMEOUT")},
+        {"stale_result", "false"},
+        {"run_manifest_hash", env_or_empty("GATZK_RUN_MANIFEST_HASH")},
+        {"activation_table_policy", large_whole_graph_gat ? "public_large_whole_graph_shape_bound_v1" : "public_default_shape_bound_v1"},
+        {"large_graph_table_policy_triggered", large_whole_graph_gat ? "true" : "false"},
+        {"feature_lookup_identity_predicate", full_feature_identity ? "full_public_shape_and_absolute_id_identity" : "general_public_shape_and_absolute_ids"},
+        {"static_table_endpoint_hash", table_endpoint_hash},
+        {"range_table_endpoint", table_endpoint_string(context.tables.range)},
+        {"lrelu_table_endpoint", pair_table_endpoint_string(context.tables.lrelu)},
+        {"exp_table_endpoint", pair_table_endpoint_string(context.tables.exp)},
+        {"elu_table_endpoint", pair_table_endpoint_string(context.tables.elu)},
+        {"range_table_size", std::to_string(context.tables.range.size())},
+        {"lrelu_table_size", std::to_string(context.tables.lrelu.size())},
+        {"exp_table_size", std::to_string(context.tables.exp.size())},
+        {"elu_table_size", std::to_string(context.tables.elu.size())},
         {"context_build_ms", format_double(metrics.context_build_ms)},
         {"domain_opening_ms", format_double(metrics.domain_opening_ms)},
         {"external_opening_ms", format_double(metrics.external_opening_ms)},
@@ -4695,6 +4943,17 @@ void export_run_artifacts(
         {"commit_dynamic_ms", format_double(metrics.commit_dynamic_ms)},
         {"commitment_time_ms", format_double(metrics.commitment_time_ms)},
         {"dynamic_commit_finalize_ms", format_double(metrics.dynamic_commit_finalize_ms)},
+        {"dynamic_commit_fingerprint_ms", format_double(metrics.dynamic_commit_fingerprint_ms)},
+        {"dynamic_commit_cache_lookups", std::to_string(metrics.dynamic_commit_cache_lookups)},
+        {"dynamic_commit_cache_hits", std::to_string(metrics.dynamic_commit_cache_hits)},
+        {"dynamic_commit_cache_misses", std::to_string(metrics.dynamic_commit_cache_misses)},
+        {"dynamic_commit_cache_hit_rate", format_double(
+            metrics.dynamic_commit_cache_lookups == 0
+                ? 0.0
+                : static_cast<double>(metrics.dynamic_commit_cache_hits)
+                    / static_cast<double>(metrics.dynamic_commit_cache_lookups))},
+        {"dynamic_commit_full_fingerprint_scans", std::to_string(metrics.dynamic_commit_full_fingerprint_scans)},
+        {"dynamic_commit_fingerprint_skipped", std::to_string(metrics.dynamic_commit_fingerprint_skipped)},
         {"dynamic_commit_input_ms", format_double(metrics.dynamic_commit_input_ms)},
         {"dynamic_commit_pack_ms", format_double(metrics.dynamic_commit_pack_ms)},
         {"dynamic_fft_ms", format_double(metrics.dynamic_fft_ms)},
@@ -4814,6 +5073,13 @@ void export_run_artifacts(
         {"fh_open_fold_prepare_ms", format_double(metrics.fh_open_fold_prepare_ms)},
         {"domain_eval_gather_ms", format_double(metrics.domain_eval_gather_ms)},
         {"domain_open_witness_ms", format_double(metrics.domain_open_witness_ms)},
+        {"domain_open_denominator_inverse_ms", format_double(metrics.domain_open_denominator_inverse_ms)},
+        {"domain_open_denominator_inverse_reuse_ms", format_double(metrics.domain_open_denominator_inverse_reuse_ms)},
+        {"domain_open_denominator_inverse_reuse_hits", std::to_string(metrics.domain_open_denominator_inverse_reuse_hits)},
+        {"domain_open_denominator_inverse_cache_misses", std::to_string(metrics.domain_open_denominator_inverse_cache_misses)},
+        {"domain_open_point_parallel_batches", std::to_string(metrics.domain_open_point_parallel_batches)},
+        {"domain_open_point_parallel_workers", std::to_string(metrics.domain_open_point_parallel_workers)},
+        {"domain_open_point_msm_worker_cap", std::to_string(metrics.domain_open_point_msm_worker_cap)},
         {"domain_open_FH_ms", format_double(metrics.domain_open_fh_ms)},
         {"domain_open_edge_ms", format_double(metrics.domain_open_edge_ms)},
         {"domain_open_in_ms", format_double(metrics.domain_open_in_ms)},

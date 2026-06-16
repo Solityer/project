@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -9,14 +10,18 @@
 #include <fstream>
 #include <future>
 #include <iomanip>
+#include <iostream>
 #include <iterator>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <numeric>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 
 #include <openssl/sha.h>
 
@@ -457,6 +462,51 @@ namespace gatzk::crypto
             return out;
         }
 
+        template <class Fn>
+        void parallel_for_chunks_capped(
+            std::size_t count,
+            std::size_t min_parallel_count,
+            std::size_t max_worker_count,
+            Fn&& fn)
+        {
+            const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+            const auto available_workers =
+                max_worker_count == 0 ? cpu_count : std::min<std::size_t>(cpu_count, max_worker_count);
+            if (count < min_parallel_count || available_workers <= 1)
+            {
+                fn(0, count);
+                return;
+            }
+            const auto task_count = std::min<std::size_t>(
+                available_workers,
+                std::max<std::size_t>(2, count / min_parallel_count));
+            const auto chunk_size = (count + task_count - 1) / task_count;
+            std::vector<std::future<void>> futures;
+            futures.reserve(task_count);
+            for (std::size_t task = 0; task < task_count; ++task)
+            {
+                const auto begin = task * chunk_size;
+                const auto end = std::min(count, begin + chunk_size);
+                if (begin >= end)
+                {
+                    break;
+                }
+                futures.push_back(std::async(std::launch::async, [&, begin, end]() {
+                    fn(begin, end);
+                }));
+            }
+            for (auto& future : futures)
+            {
+                future.get();
+            }
+        }
+
+        template <class Fn>
+        void parallel_for_chunks(std::size_t count, std::size_t min_parallel_count, Fn&& fn)
+        {
+            parallel_for_chunks_capped(count, min_parallel_count, 0, std::forward<Fn>(fn));
+        }
+
         std::string srs_domain_name(const std::string& domain_name)
         {
             return domain_name == "d" ? "d_h" : domain_name;
@@ -481,10 +531,80 @@ namespace gatzk::crypto
             return polynomial.domain->name;
         }
 
+        bool progress_enabled()
+        {
+            return std::getenv("GATZK_RUN_PROGRESS") != nullptr;
+        }
+
+        void progress_note(const std::string& label)
+        {
+            if (progress_enabled())
+            {
+                std::cerr << "[progress] " << label << '\n';
+            }
+        }
+
+        std::size_t commit_batch_outer_worker_count(
+            std::size_t object_count,
+            std::size_t total_scalar_count,
+            std::size_t cpu_count)
+        {
+            if (!util::route2_options().fast_msm
+                || object_count <= 1
+                || cpu_count < 4
+                || total_scalar_count < (1ULL << 15))
+            {
+                return 1;
+            }
+
+            const auto average_scalar_count = total_scalar_count / object_count;
+            if (object_count <= 8 && average_scalar_count >= (1ULL << 17))
+            {
+                return std::min<std::size_t>(
+                    object_count,
+                    std::max<std::size_t>(1, std::min<std::size_t>(3, cpu_count / 8)));
+            }
+
+            const auto by_cpu = std::max<std::size_t>(1, cpu_count / 4);
+            const auto by_work = std::max<std::size_t>(1, total_scalar_count / (1ULL << 17));
+            return std::min<std::size_t>(
+                object_count,
+                std::min<std::size_t>(6, std::min(by_cpu, by_work)));
+        }
+
+        std::vector<std::size_t> commitment_work_order(
+            const std::vector<std::pair<std::string, const algebra::Polynomial*>>& named_polynomials)
+        {
+            std::vector<std::size_t> work_order(named_polynomials.size());
+            std::iota(work_order.begin(), work_order.end(), std::size_t{0});
+            auto group_key = [&](std::size_t index) {
+                const auto* polynomial = named_polynomials[index].second;
+                return std::string(polynomial_basis_name(*polynomial))
+                    + "|"
+                    + polynomial_domain_name(*polynomial)
+                    + "|"
+                    + std::to_string(polynomial->domain != nullptr ? polynomial->domain->size : 0);
+            };
+            std::stable_sort(
+                work_order.begin(),
+                work_order.end(),
+                [&](std::size_t lhs, std::size_t rhs) {
+                    const auto lhs_key = group_key(lhs);
+                    const auto rhs_key = group_key(rhs);
+                    if (lhs_key != rhs_key)
+                    {
+                        return lhs_key < rhs_key;
+                    }
+                    return named_polynomials[lhs].second->size() > named_polynomials[rhs].second->size();
+                });
+            return work_order;
+        }
+
         G1Point commit_polynomial_point(
             const algebra::Polynomial& polynomial,
             const KZGProverKey& pk,
-            CommitObjectProfile* profile = nullptr)
+            CommitObjectProfile* profile = nullptr,
+            const G1MSMExecutionOptions* msm_options = nullptr)
         {
             G1MSMProfile msm_profile;
             const auto msm_start = Clock::now();
@@ -503,7 +623,8 @@ namespace gatzk::crypto
                     pk.powers_g1->data(),
                     polynomial.values().data(),
                     polynomial.size(),
-                    profile != nullptr ? &msm_profile : nullptr);
+                    profile != nullptr ? &msm_profile : nullptr,
+                    msm_options);
             }
             else
             {
@@ -544,7 +665,8 @@ namespace gatzk::crypto
                     it->second->data(),
                     polynomial.values().data(),
                     polynomial.size(),
-                    profile != nullptr ? &msm_profile : nullptr);
+                    profile != nullptr ? &msm_profile : nullptr,
+                    msm_options);
             }
             if (profile != nullptr)
             {
@@ -566,13 +688,14 @@ namespace gatzk::crypto
             const std::string& name,
             algebra::Polynomial polynomial,
             const KZGProverKey& pk,
-            CommitObjectProfile* profile = nullptr)
+            CommitObjectProfile* profile = nullptr,
+            const G1MSMExecutionOptions* msm_options = nullptr)
         {
             polynomial.name = name;
             auto material = std::make_shared<algebra::Polynomial>(std::move(polynomial));
             return Commitment{
                 .name = name,
-                .point = commit_polynomial_point(*material, pk, profile),
+                .point = commit_polynomial_point(*material, pk, profile, msm_options),
                 .opening_polynomial = material,
             };
         }
@@ -589,31 +712,35 @@ namespace gatzk::crypto
         {
             if (polynomial.basis == algebra::PolynomialBasis::Coefficient)
             {
-                auto coefficients = polynomial.values();
+                const auto& coefficients = polynomial.values();
                 if (coefficients.empty())
                 {
-                    coefficients.push_back(FieldElement::zero());
-                }
-                coefficients.front() -= value;
-                while (coefficients.size() > 1 && coefficients.back() == FieldElement::zero())
-                {
-                    coefficients.pop_back();
-                }
-                if (coefficients.size() == 1)
-                {
-                    if (!(coefficients.front() == FieldElement::zero()))
+                    if (!(value == FieldElement::zero()))
                     {
                         throw std::runtime_error("claimed value does not match committed polynomial");
                     }
                     return algebra::Polynomial::from_coefficients(polynomial.name + "_witness", {FieldElement::zero()});
                 }
-                std::vector<FieldElement> quotient(coefficients.size() - 1, FieldElement::zero());
-                quotient.back() = coefficients.back();
-                for (std::size_t i = coefficients.size() - 1; i-- > 1;)
+                std::size_t coefficient_count = coefficients.size();
+                while (coefficient_count > 1 && coefficients[coefficient_count - 1] == FieldElement::zero())
+                {
+                    --coefficient_count;
+                }
+                if (coefficient_count == 1)
+                {
+                    if (!(coefficients.front() == value))
+                    {
+                        throw std::runtime_error("claimed value does not match committed polynomial");
+                    }
+                    return algebra::Polynomial::from_coefficients(polynomial.name + "_witness", {FieldElement::zero()});
+                }
+                std::vector<FieldElement> quotient(coefficient_count - 1, FieldElement::zero());
+                quotient.back() = coefficients[coefficient_count - 1];
+                for (std::size_t i = coefficient_count - 1; i-- > 1;)
                 {
                     quotient[i - 1] = coefficients[i] + point * quotient[i];
                 }
-                const auto remainder = coefficients.front() + point * quotient.front();
+                const auto remainder = coefficients.front() - value + point * quotient.front();
                 if (!(remainder == FieldElement::zero()))
                 {
                     throw std::runtime_error("claimed value does not match committed polynomial");
@@ -643,14 +770,51 @@ namespace gatzk::crypto
                 polynomial.domain);
         }
 
+        struct EvaluationInverseDenominatorCacheEntry
+        {
+            std::shared_ptr<algebra::RootOfUnityDomain> domain;
+            FieldElement base_point;
+            std::vector<FieldElement> base_inverse_denominators;
+        };
+
+        std::optional<std::size_t> small_rotation_shift(
+            const algebra::RootOfUnityDomain& domain,
+            const FieldElement& from,
+            const FieldElement& to)
+        {
+            if (from == to)
+            {
+                return 0;
+            }
+            FieldElement value = from;
+            const auto limit = std::min<std::size_t>(domain.size, 8);
+            for (std::size_t shift = 1; shift < limit; ++shift)
+            {
+                value *= domain.omega;
+                if (value == to)
+                {
+                    return shift;
+                }
+            }
+            return std::nullopt;
+        }
+
         G1Point open_single_point_fold(
             const std::vector<Commitment>& commitments,
             const std::vector<FieldElement>& values,
             const FieldElement& point,
             const std::vector<FieldElement>& powers,
-            const KZGProverKey& pk)
+            const KZGProverKey& pk,
+            std::vector<EvaluationInverseDenominatorCacheEntry>* inverse_denominator_cache = nullptr,
+            BatchOpeningProfile* profile = nullptr,
+            std::size_t worker_cap = 0,
+            const G1MSMExecutionOptions* msm_options = nullptr)
         {
-            auto accumulate_scaled = [](
+            std::vector<EvaluationInverseDenominatorCacheEntry> local_inverse_denominator_cache;
+            auto* inverse_cache = inverse_denominator_cache != nullptr
+                ? inverse_denominator_cache
+                : &local_inverse_denominator_cache;
+            auto accumulate_scaled = [worker_cap](
                 std::vector<FieldElement>* target,
                 const std::vector<FieldElement>& source,
                 const FieldElement& scale)
@@ -659,10 +823,25 @@ namespace gatzk::crypto
                 {
                     target->resize(source.size(), FieldElement::zero());
                 }
-                for (std::size_t i = 0; i < source.size(); ++i)
+                parallel_for_chunks_capped(source.size(), 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end) {
+                    for (std::size_t i = begin; i < end; ++i)
+                    {
+                        (*target)[i] += source[i] * scale;
+                    }
+                });
+            };
+            auto scale_in_place = [worker_cap](std::vector<FieldElement>* target, const FieldElement& scale)
+            {
+                if (scale == FieldElement::one())
                 {
-                    (*target)[i] += source[i] * scale;
+                    return;
                 }
+                parallel_for_chunks_capped(target->size(), 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end) {
+                    for (std::size_t i = begin; i < end; ++i)
+                    {
+                        (*target)[i] *= scale;
+                    }
+                });
             };
             struct EvaluationFoldGroup
             {
@@ -714,7 +893,15 @@ namespace gatzk::crypto
                         throw std::runtime_error(
                             "opening mismatch for " + commitments[i].name + ": " + ex.what());
                     }
-                    accumulate_scaled(&coefficient_fold, quotient.values(), powers[i]);
+                    if (coefficient_fold.empty())
+                    {
+                        coefficient_fold = std::move(quotient.data);
+                        scale_in_place(&coefficient_fold, powers[i]);
+                    }
+                    else
+                    {
+                        accumulate_scaled(&coefficient_fold, quotient.values(), powers[i]);
+                    }
                     continue;
                 }
                 if (polynomial.domain == nullptr)
@@ -724,11 +911,13 @@ namespace gatzk::crypto
                 auto& group = folded_evaluation_group(polynomial.domain);
                 const auto& source_values = polynomial.values();
                 const auto scaled_claim = values[i] * powers[i];
-                for (std::size_t row = 0; row < polynomial.domain->size; ++row)
-                {
-                    const auto row_value = row < source_values.size() ? source_values[row] : FieldElement::zero();
-                    group.numerators[row] += row_value * powers[i] - scaled_claim;
-                }
+                parallel_for_chunks_capped(polynomial.domain->size, 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end) {
+                    for (std::size_t row = begin; row < end; ++row)
+                    {
+                        const auto row_value = row < source_values.size() ? source_values[row] : FieldElement::zero();
+                        group.numerators[row] += row_value * powers[i] - scaled_claim;
+                    }
+                });
             }
             if (!coefficient_fold.empty())
             {
@@ -736,26 +925,86 @@ namespace gatzk::crypto
                     out,
                     commit_polynomial_point(
                         algebra::Polynomial::from_coefficients("folded_coefficient_witness", std::move(coefficient_fold)),
-                        pk));
+                        pk,
+                        nullptr,
+                        msm_options));
             }
             for (auto& group : evaluation_folds)
             {
-                std::vector<FieldElement> denominators(group.domain->size, FieldElement::zero());
-                for (std::size_t row = 0; row < group.domain->size; ++row)
+                const std::vector<FieldElement>* inverse_denominators = nullptr;
+                std::size_t inverse_rotation_shift = 0;
+                FieldElement inverse_rotation_scale = FieldElement::one();
+                bool reused_inverse_denominators = false;
+
+                const auto inverse_lookup_start = Clock::now();
+                for (auto& entry : *inverse_cache)
                 {
-                    const auto domain_point = group.domain->point_at(row);
-                    if (domain_point == point)
+                    if (entry.domain.get() != group.domain.get())
                     {
-                        throw std::runtime_error("opening point overlaps evaluation domain; derivative witness path is not implemented");
+                        continue;
                     }
-                    denominators[row] = domain_point - point;
+                    const auto shift = small_rotation_shift(*group.domain, entry.base_point, point);
+                    if (!shift.has_value())
+                    {
+                        continue;
+                    }
+                    inverse_denominators = &entry.base_inverse_denominators;
+                    inverse_rotation_shift = *shift;
+                    if (inverse_rotation_shift != 0)
+                    {
+                        inverse_rotation_scale = group.domain->omega.pow(
+                            static_cast<std::uint64_t>(group.domain->size - inverse_rotation_shift));
+                        reused_inverse_denominators = true;
+                    }
+                    break;
                 }
-                const auto inverse_denominators = algebra::batch_invert(denominators);
-                std::vector<FieldElement> quotient_values(group.domain->size, FieldElement::zero());
-                for (std::size_t row = 0; row < group.domain->size; ++row)
+                if (reused_inverse_denominators && profile != nullptr)
                 {
-                    quotient_values[row] = group.numerators[row] * inverse_denominators[row];
+                    profile->denominator_inverse_reuse_hits += 1;
+                    profile->denominator_inverse_reuse_ms += elapsed_ms(inverse_lookup_start, Clock::now());
                 }
+
+                if (inverse_denominators == nullptr)
+                {
+                    const auto inverse_start = Clock::now();
+                    std::vector<FieldElement> denominators(group.domain->size, FieldElement::zero());
+                    parallel_for_chunks_capped(group.domain->size, 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end) {
+                        for (std::size_t row = begin; row < end; ++row)
+                        {
+                            const auto domain_point = group.domain->point_at(row);
+                            if (domain_point == point)
+                            {
+                                throw std::runtime_error("opening point overlaps evaluation domain; derivative witness path is not implemented");
+                            }
+                            denominators[row] = domain_point - point;
+                        }
+                    });
+                    auto computed_inverse_denominators = algebra::batch_invert(denominators);
+                    if (profile != nullptr)
+                    {
+                        profile->denominator_inverse_ms += elapsed_ms(inverse_start, Clock::now());
+                        profile->denominator_inverse_cache_misses += 1;
+                    }
+                    inverse_cache->push_back(EvaluationInverseDenominatorCacheEntry{
+                        .domain = group.domain,
+                        .base_point = point,
+                        .base_inverse_denominators = std::move(computed_inverse_denominators),
+                    });
+                    inverse_denominators = &inverse_cache->back().base_inverse_denominators;
+                }
+
+                std::vector<FieldElement> quotient_values(group.domain->size, FieldElement::zero());
+                parallel_for_chunks_capped(group.domain->size, 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end) {
+                    for (std::size_t row = begin; row < end; ++row)
+                    {
+                        const auto inverse_index =
+                            inverse_rotation_shift == 0
+                            ? row
+                            : (row + group.domain->size - inverse_rotation_shift) & (group.domain->size - 1U);
+                        quotient_values[row] =
+                            group.numerators[row] * (*inverse_denominators)[inverse_index] * inverse_rotation_scale;
+                    }
+                });
                 out = g1_add(
                     out,
                     commit_polynomial_point(
@@ -763,7 +1012,9 @@ namespace gatzk::crypto
                             "folded_" + group.domain->name + "_witness",
                             std::move(quotient_values),
                             group.domain),
-                        pk));
+                        pk,
+                        nullptr,
+                        msm_options));
             }
             return out;
         }
@@ -944,24 +1195,175 @@ namespace gatzk::crypto
         std::vector<Commitment> out(named_polynomials.size());
         std::vector<CommitObjectProfile> object_profiles(named_polynomials.size());
         const auto msm_start = Clock::now();
-        auto commit_one = [&](std::size_t index) {
-            const auto& [name, polynomial] = named_polynomials[index];
+        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+        std::size_t total_scalar_count = 0;
+        for (const auto& [name, polynomial] : named_polynomials)
+        {
             if (polynomial == nullptr)
             {
                 throw std::runtime_error("null polynomial in KZG::commit_batch: " + name);
             }
+            total_scalar_count += polynomial->size();
+        }
+        const auto outer_worker_count = commit_batch_outer_worker_count(
+            named_polynomials.size(),
+            total_scalar_count,
+            cpu_count);
+        const G1MSMExecutionOptions msm_options{
+            .max_worker_count = outer_worker_count > 1
+                ? std::max<std::size_t>(1, cpu_count / outer_worker_count)
+                : 0,
+        };
+        auto commit_one = [&](std::size_t index) {
+            const auto& [name, polynomial] = named_polynomials[index];
             CommitObjectProfile object_profile;
-            out[index] = make_commitment(name, *polynomial, key.pk, profile != nullptr ? &object_profile : nullptr);
+            out[index] = make_commitment(
+                name,
+                *polynomial,
+                key.pk,
+                profile != nullptr ? &object_profile : nullptr,
+                outer_worker_count > 1 ? &msm_options : nullptr);
             if (profile != nullptr)
             {
                 object_profiles[index] = std::move(object_profile);
             }
         };
 
-        for (std::size_t index = 0; index < named_polynomials.size(); ++index)
+        if (outer_worker_count > 1)
         {
-            commit_one(index);
+            const auto work_order = commitment_work_order(named_polynomials);
+            std::atomic<std::size_t> next{0};
+            std::vector<std::future<void>> futures;
+            futures.reserve(outer_worker_count);
+            for (std::size_t worker = 0; worker < outer_worker_count; ++worker)
+            {
+                futures.push_back(std::async(std::launch::async, [&]() {
+                    while (true)
+                    {
+                        const auto index = next.fetch_add(1);
+                        if (index >= named_polynomials.size())
+                        {
+                            break;
+                        }
+                        commit_one(work_order[index]);
+                    }
+                }));
+            }
+            for (auto& future : futures)
+            {
+                future.get();
+            }
         }
+        else
+        {
+            for (std::size_t index = 0; index < named_polynomials.size(); ++index)
+            {
+                commit_one(index);
+            }
+        }
+        if (profile != nullptr)
+        {
+            profile->msm_ms += elapsed_ms(msm_start, Clock::now());
+            for (auto& object_profile : object_profiles)
+            {
+                if (!object_profile.name.empty())
+                {
+                    profile->objects.push_back(std::move(object_profile));
+                }
+            }
+        }
+        return out;
+    }
+
+    std::vector<Commitment> KZG::commit_owned_batch(
+        std::vector<std::pair<std::string, algebra::Polynomial>>&& named_polynomials,
+        const KZGKeyPair& key,
+        CommitBatchProfile* profile,
+        const std::string& progress_prefix)
+    {
+        std::vector<Commitment> out(named_polynomials.size());
+        std::vector<CommitObjectProfile> object_profiles(named_polynomials.size());
+        const auto msm_start = Clock::now();
+        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+        std::size_t total_scalar_count = 0;
+        std::vector<std::pair<std::string, const algebra::Polynomial*>> view;
+        view.reserve(named_polynomials.size());
+        for (const auto& [name, polynomial] : named_polynomials)
+        {
+            total_scalar_count += polynomial.size();
+            view.push_back({name, &polynomial});
+        }
+
+        const auto outer_worker_count = commit_batch_outer_worker_count(
+            named_polynomials.size(),
+            total_scalar_count,
+            cpu_count);
+        const G1MSMExecutionOptions msm_options{
+            .max_worker_count = outer_worker_count > 1
+                ? std::max<std::size_t>(1, cpu_count / outer_worker_count)
+                : 0,
+        };
+        const auto work_order = outer_worker_count > 1 ? commitment_work_order(view) : std::vector<std::size_t>{};
+        auto commit_one = [&](std::size_t index) {
+            auto& [name, polynomial] = named_polynomials[index];
+            if (!progress_prefix.empty())
+            {
+                progress_note(progress_prefix + ":" + name + ":start");
+            }
+            CommitObjectProfile object_profile;
+            polynomial.name = name;
+            auto material = std::make_shared<algebra::Polynomial>(std::move(polynomial));
+            out[index] = Commitment{
+                .name = name,
+                .point = commit_polynomial_point(
+                    *material,
+                    key.pk,
+                    profile != nullptr ? &object_profile : nullptr,
+                    outer_worker_count > 1 ? &msm_options : nullptr),
+                .opening_polynomial = material,
+            };
+            if (profile != nullptr)
+            {
+                object_profiles[index] = std::move(object_profile);
+            }
+            if (!progress_prefix.empty())
+            {
+                progress_note(progress_prefix + ":" + name + ":done");
+            }
+        };
+
+        if (outer_worker_count > 1)
+        {
+            std::atomic<std::size_t> next{0};
+            std::vector<std::future<void>> futures;
+            futures.reserve(outer_worker_count);
+            for (std::size_t worker = 0; worker < outer_worker_count; ++worker)
+            {
+                futures.push_back(std::async(std::launch::async, [&]() {
+                    while (true)
+                    {
+                        const auto order_index = next.fetch_add(1);
+                        if (order_index >= named_polynomials.size())
+                        {
+                            break;
+                        }
+                        commit_one(work_order[order_index]);
+                    }
+                }));
+            }
+            for (auto& future : futures)
+            {
+                future.get();
+            }
+        }
+        else
+        {
+            for (std::size_t index = 0; index < named_polynomials.size(); ++index)
+            {
+                commit_one(index);
+            }
+        }
+
         if (profile != nullptr)
         {
             profile->msm_ms += elapsed_ms(msm_start, Clock::now());
@@ -1004,21 +1406,113 @@ namespace gatzk::crypto
 
         OpeningProof proof;
         proof.witnesses.reserve(points.size());
+        std::vector<EvaluationInverseDenominatorCacheEntry> inverse_denominator_cache;
+        inverse_denominator_cache.reserve(points.size());
         const auto witness_start = Clock::now();
-        for (std::size_t point_index = 0; point_index < points.size(); ++point_index)
-        {
+        auto values_for_point = [&](std::size_t point_index) {
             std::vector<FieldElement> values_for_point;
             values_for_point.reserve(commitments.size());
             for (const auto& values : claimed_values)
             {
                 values_for_point.push_back(values[point_index]);
             }
-            proof.witnesses.push_back(open_single_point_fold(
+            return values_for_point;
+        };
+        std::size_t max_evaluation_domain_size = 0;
+        std::size_t max_coefficient_size = 0;
+        for (const auto& commitment : commitments)
+        {
+            if (commitment.opening_polynomial == nullptr)
+            {
+                continue;
+            }
+            const auto& polynomial = *commitment.opening_polynomial;
+            if (polynomial.basis == algebra::PolynomialBasis::Evaluation && polynomial.domain != nullptr)
+            {
+                max_evaluation_domain_size = std::max(max_evaluation_domain_size, polynomial.domain->size);
+            }
+            else
+            {
+                max_coefficient_size = std::max(max_coefficient_size, polynomial.size());
+            }
+        }
+        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+        const auto point_worker_count = std::min<std::size_t>(points.size(), std::max<std::size_t>(1, cpu_count / 4));
+        const bool run_point_parallel =
+            util::route2_options().fast_msm
+            && points.size() > 1
+            && point_worker_count > 1
+            && (max_evaluation_domain_size >= (1ULL << 16) || max_coefficient_size >= (1ULL << 16));
+        if (run_point_parallel && profile != nullptr)
+        {
+            profile->point_parallel_batches += 1;
+            profile->point_parallel_workers += point_worker_count;
+            profile->point_msm_worker_cap += std::max<std::size_t>(1, cpu_count / point_worker_count);
+        }
+        if (run_point_parallel)
+        {
+            const auto worker_cap = std::max<std::size_t>(1, cpu_count / point_worker_count);
+            const G1MSMExecutionOptions msm_options{.max_worker_count = worker_cap};
+            proof.witnesses.resize(points.size());
+            std::vector<BatchOpeningProfile> local_profiles(points.size());
+            std::atomic<std::size_t> next{0};
+            std::vector<std::future<void>> futures;
+            futures.reserve(point_worker_count);
+            for (std::size_t worker = 0; worker < point_worker_count; ++worker)
+            {
+                futures.push_back(std::async(std::launch::async, [&]() {
+                    while (true)
+                    {
+                        const auto point_index = next.fetch_add(1);
+                        if (point_index >= points.size())
+                        {
+                            break;
+                        }
+                        std::vector<EvaluationInverseDenominatorCacheEntry> local_inverse_cache;
+                        local_inverse_cache.reserve(1);
+                        const auto point_values = values_for_point(point_index);
+                        proof.witnesses[point_index] = open_single_point_fold(
+                            commitments,
+                            point_values,
+                            points[point_index],
+                            powers,
+                            key.pk,
+                            &local_inverse_cache,
+                            profile != nullptr ? &local_profiles[point_index] : nullptr,
+                            worker_cap,
+                            &msm_options);
+                    }
+                }));
+            }
+            for (auto& future : futures)
+            {
+                future.get();
+            }
+            if (profile != nullptr)
+            {
+                for (const auto& local : local_profiles)
+                {
+                    profile->denominator_inverse_ms += local.denominator_inverse_ms;
+                    profile->denominator_inverse_reuse_ms += local.denominator_inverse_reuse_ms;
+                    profile->denominator_inverse_reuse_hits += local.denominator_inverse_reuse_hits;
+                    profile->denominator_inverse_cache_misses += local.denominator_inverse_cache_misses;
+                }
+            }
+        }
+        else
+        {
+            for (std::size_t point_index = 0; point_index < points.size(); ++point_index)
+            {
+                const auto point_values = values_for_point(point_index);
+                proof.witnesses.push_back(open_single_point_fold(
                 commitments,
-                values_for_point,
+                point_values,
                 points[point_index],
                 powers,
-                key.pk));
+                key.pk,
+                &inverse_denominator_cache,
+                profile));
+            }
         }
         if (profile != nullptr)
         {

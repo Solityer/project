@@ -45,6 +45,13 @@ namespace gatzk::crypto
         bool multithreaded = false;
     };
 
+    struct G1MSMExecutionOptions
+    {
+        // 0 keeps the backend default. Non-zero caps per-MSM worker fanout when
+        // an outer batch scheduler is already using parallelism.
+        std::size_t max_worker_count = 0;
+    };
+
     // 返回当前正式主线使用的曲线后端名称。
     std::string backend_name();
 
@@ -60,7 +67,8 @@ namespace gatzk::crypto
         const G1Point* points,
         const algebra::FieldElement* scalars,
         std::size_t count,
-        G1MSMProfile* profile);
+        G1MSMProfile* profile,
+        const G1MSMExecutionOptions* options = nullptr);
     G1Point g1_multi_scalar_mul(const std::vector<G1Point>& points, const std::vector<algebra::FieldElement>& scalars);
     std::vector<G1Point> g1_mul_same_base_batch(const G1Point& point, const std::vector<algebra::FieldElement>& scalars);
     G2Point g2_add(const G2Point& lhs, const G2Point& rhs);

@@ -96,9 +96,6 @@ std::string verifier_quotient_cache_key(
 }
 
 bool full_graph_feature_identity_enabled(const ProtocolContext& context) {
-    if (context.config.batching_rule != "whole_graph_single") {
-        return false;
-    }
     if (context.local.num_nodes != context.dataset.num_nodes
         || context.local.num_features != context.dataset.num_features) {
         return false;

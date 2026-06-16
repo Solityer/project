@@ -146,6 +146,7 @@ struct DynamicCommitmentObjectProfile {
     double zero_scalar_ratio = 0.0;
     double padding_ratio = 0.0;
     double materialization_ms = 0.0;
+    double fingerprint_cache_ms = 0.0;
     double msm_ms = 0.0;
     double total_commitment_ms = 0.0;
     bool compact = false;
@@ -156,6 +157,7 @@ struct DynamicCommitmentObjectProfile {
     bool zero_scalar_skipping = false;
     bool sparse_compaction = false;
     bool multithreaded_msm = false;
+    bool full_value_fingerprint = false;
 };
 
 // 单个工作域 opening bundle 的 proof 载体。
@@ -274,6 +276,7 @@ struct RunMetrics {
     double dynamic_commit_input_ms = 0.0;
     double dynamic_polynomial_materialization_ms = 0.0;
     double dynamic_commit_pack_ms = 0.0;
+    double dynamic_commit_fingerprint_ms = 0.0;
     double dynamic_fft_ms = 0.0;
     double dynamic_domain_convert_ms = 0.0;
     double dynamic_copy_convert_ms = 0.0;
@@ -296,6 +299,13 @@ struct RunMetrics {
     double domain_opening_ms = 0.0;
     double domain_eval_gather_ms = 0.0;
     double domain_open_witness_ms = 0.0;
+    double domain_open_denominator_inverse_ms = 0.0;
+    double domain_open_denominator_inverse_reuse_ms = 0.0;
+    std::size_t domain_open_denominator_inverse_reuse_hits = 0;
+    std::size_t domain_open_denominator_inverse_cache_misses = 0;
+    std::size_t domain_open_point_parallel_batches = 0;
+    std::size_t domain_open_point_parallel_workers = 0;
+    std::size_t domain_open_point_msm_worker_cap = 0;
     double domain_open_fh_ms = 0.0;
     double domain_open_edge_ms = 0.0;
     double domain_open_in_ms = 0.0;
@@ -342,6 +352,11 @@ struct RunMetrics {
     bool is_full_dataset = false;
     bool gpu_runtime_present = false;
     std::vector<DynamicCommitmentObjectProfile> dynamic_commitment_profiles;
+    std::size_t dynamic_commit_cache_lookups = 0;
+    std::size_t dynamic_commit_cache_hits = 0;
+    std::size_t dynamic_commit_cache_misses = 0;
+    std::size_t dynamic_commit_full_fingerprint_scans = 0;
+    std::size_t dynamic_commit_fingerprint_skipped = 0;
     std::string benchmark_mode = "single";
     std::string fft_backend_route = "plain";
     std::string route2_label = "baseline";
