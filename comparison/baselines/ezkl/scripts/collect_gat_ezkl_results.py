@@ -94,8 +94,9 @@ def contains_manual_continuation(value: object) -> bool:
 
 
 def main_rows() -> dict[str, dict]:
-    latest = read_json(PROJECT_ROOT / "runs/benchmarks/latest.json")
-    return {row["dataset"]: row for row in latest["rows"]}
+    # Comparison baselines must not depend on main-experiment result tables.
+    # Keep the legacy output shape, but leave main columns empty.
+    return {}
 
 
 def load_optional_json(path: Path) -> dict:
@@ -375,7 +376,7 @@ def write_summary(ezkl_rows: list[dict], comparison_rows: list[dict]) -> None:
             f"{metric_cell(row, 'proof_size_bytes')} |"
         )
     lines.append("")
-    lines.append("## 与主仓库基准对比")
+    lines.append("## 独立结果占位表")
     lines.append("")
     lines.append(
         "| 数据集 | main commitment_time_ms | ezkl commitment_time_ms | main prove_time_ms | ezkl prove_time_ms | main verify_time_ms | ezkl verify_time_ms | main proof_size_bytes | ezkl proof_size_bytes |"
@@ -409,6 +410,8 @@ def write_summary(ezkl_rows: list[dict], comparison_rows: list[dict]) -> None:
 def write_native_full_experiment_report(ezkl_rows: list[dict]) -> None:
     lines: list[str] = []
     lines.append("# Native Full Experiment Report")
+    lines.append("")
+    lines.append("Main-experiment result columns are intentionally blank; this baseline exports only ezkl-local rerun artifacts.")
     lines.append("")
     lines.append("| Dataset | status | strict_public_input_equivalent | full_gat_forward_in_ezkl_proof | final_logits_derivation_complete | manifest_strict_check |")
     lines.append("| --- | --- | --- | --- | --- | --- |")

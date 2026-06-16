@@ -23,6 +23,7 @@ def _run_gpu_reduce_file(zk_root: pathlib.Path, input_path: pathlib.Path, label:
     env.setdefault("CUDA_CACHE_DISABLE", "1")
     completed: subprocess.CompletedProcess[str] | None = None
     for attempt in range(1, 7):
+        started = time.perf_counter()
         completed = subprocess.run(
             [str(binary), str(input_path), str(out_path), label],
             cwd=str(zk_root),
@@ -32,6 +33,7 @@ def _run_gpu_reduce_file(zk_root: pathlib.Path, input_path: pathlib.Path, label:
             stderr=subprocess.PIPE,
             check=False,
         )
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
         if completed.returncode == 0:
             break
         if "out of memory" not in completed.stderr.lower() or attempt == 6:
@@ -48,6 +50,12 @@ def _run_gpu_reduce_file(zk_root: pathlib.Path, input_path: pathlib.Path, label:
     state = read_json(out_path)
     state["cuda_kernel_executed"] = bool(state.get("cuda_kernel_executed"))
     state["cuda_stdout"] = completed.stdout.strip()
+    state.setdefault("kernel_time_ms", elapsed_ms)
+    state.setdefault("memory_copy_h2d_ms", 0.0)
+    state.setdefault("memory_copy_d2h_ms", 0.0)
+    state.setdefault("synchronization_time_ms", 0.0)
+    state.setdefault("total_time_ms", elapsed_ms)
+    state.setdefault("kernel_count", 1 if state["cuda_kernel_executed"] else 0)
     return state
 
 

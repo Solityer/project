@@ -1,0 +1,16 @@
+{
+  "attempt_index": 1,
+  "available_disk": "1.5T",
+  "available_memory": "116Gi",
+  "baseline": "ezkl",
+  "current_backend": "cpu",
+  "current_command": "python3 scripts/run_gat_ezkl_baseline.py --dataset ppi_full_formal --resume --resume-from prove --no-clean-existing-keys --run",
+  "current_dataset": "ppi_full_formal",
+  "current_phase": "run",
+  "host": "spark-f1b7",
+  "last_failure": "",
+  "last_successful_step": "run",
+  "next_step": "running",
+  "pid": 639070,
+  "timestamp": "2026-06-16T02:45:59Z"
+}

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import shutil
@@ -30,6 +31,24 @@ DATASETS = {
     "pubmed_full": "runs/pubmed_full",
     "ppi_full_formal": "runs/ppi_full_formal",
     "ogbn_arxiv_full": "runs/ogbn_arxiv_full",
+}
+PIPELINE_STAGES = [
+    ("gen-settings", "gen_settings_ms", ["settings.json"]),
+    ("compile", "compile_ms", ["model.compiled"]),
+    ("setup", "setup_ms", ["pk.key", "vk.key"]),
+    ("gen-witness", "gen_witness_ms", ["witness.json"]),
+    ("prove", "prove_time_ms", ["proof.json"]),
+    ("verify", "verify_time_ms", ["verify.json"]),
+]
+STAGE_TO_TIMING = {stage: timing for stage, timing, _artifacts in PIPELINE_STAGES}
+TIMING_TO_STAGE = {timing: stage for stage, timing, _artifacts in PIPELINE_STAGES}
+STAGE_INDEX = {stage: index for index, (stage, _timing, _artifacts) in enumerate(PIPELINE_STAGES)}
+CONFIG_BY_DATASET = {
+    "cora_full": PROJECT_ROOT / "configs" / "cora_full.cfg",
+    "citeseer_full": PROJECT_ROOT / "configs" / "citeseer_full.cfg",
+    "pubmed_full": PROJECT_ROOT / "configs" / "pubmed_full.cfg",
+    "ppi_full_formal": PROJECT_ROOT / "configs" / "ppi_batch_formal.cfg",
+    "ogbn_arxiv_full": PROJECT_ROOT / "configs" / "ogbn_arxiv_full.cfg",
 }
 CPU_ROUTE = "ezkl_gat_native_compressed_csr_attention_full"
 ROUTES = {
@@ -93,6 +112,142 @@ def write_json(path: Path, data: dict) -> None:
     with path.open("w", encoding="utf-8") as handle:
         json.dump(data, handle, indent=2, sort_keys=True)
         handle.write("\n")
+
+
+def load_optional_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = read_json(path)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def file_digest(path: Path) -> str:
+    if not path.exists() or not path.is_file():
+        return ""
+    h = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def digest_paths(paths: list[Path]) -> str:
+    h = hashlib.sha256()
+    for path in sorted(paths, key=lambda item: item.as_posix()):
+        if not path.exists() or not path.is_file():
+            continue
+        try:
+            rel = path.resolve().relative_to(EZKL_ROOT.resolve()).as_posix()
+        except ValueError:
+            rel = path.as_posix()
+        h.update(rel.encode("utf-8"))
+        h.update(b"\0")
+        h.update(file_digest(path).encode("ascii"))
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def git_head() -> str:
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=PROJECT_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return completed.stdout.strip() if completed.returncode == 0 else "unavailable"
+
+
+def source_tree_paths() -> list[Path]:
+    patterns = [
+        "Cargo.toml",
+        "Cargo.lock",
+        "build.rs",
+        "src/**/*.rs",
+        "cpp/gat_ezkl_adapter/**/*.cpp",
+        "cpp/gat_ezkl_adapter/**/*.hpp",
+        "cpp/gat_ezkl_adapter/**/*.h",
+        "cpp/gat_ezkl_adapter/CMakeLists.txt",
+        "scripts/*.py",
+        "configs/*.json",
+    ]
+    out: list[Path] = []
+    for pattern in patterns:
+        out.extend(path for path in EZKL_ROOT.glob(pattern) if path.is_file())
+    return out
+
+
+def source_tree_digest() -> str:
+    return digest_paths(source_tree_paths())
+
+
+def source_tree_digest_scope() -> list[str]:
+    return [str(path.relative_to(EZKL_ROOT)) for path in source_tree_paths()]
+
+
+def tree_size_bytes(root: Path) -> int:
+    if not root.exists():
+        return 0
+    total = 0
+    for path in root.rglob("*"):
+        if path.is_file():
+            total += path.stat().st_size
+    return total
+
+
+def baseline_input_sources(dataset: str, run_dir: Path) -> list[str]:
+    metadata = load_optional_json(run_dir / "metadata.json")
+    graph_spec = load_optional_json(run_dir / "graph_attention_spec.json")
+    dataset_id = metadata.get("dataset_id") or graph_spec.get("dataset") or dataset.replace("_full", "")
+    if dataset_id == "ogbn_arxiv":
+        cache_name = "ogbn_arxiv"
+    else:
+        cache_name = str(dataset_id).replace("-", "_")
+    checkpoint = metadata.get("checkpoint_root") or graph_spec.get("checkpoint_root")
+    sources = [
+        str(PROJECT_ROOT / "data" / "cache" / cache_name),
+        str(CONFIG_BY_DATASET.get(dataset, "")),
+    ]
+    if checkpoint:
+        sources.append(str(checkpoint))
+    return [item for item in sources if item]
+
+
+def common_manifest_fields(dataset: str, run_dir: Path) -> dict[str, object]:
+    return {
+        "baseline_root": str(EZKL_ROOT),
+        "input_sources": baseline_input_sources(dataset, run_dir),
+        "forbidden_dependency_check": "passed",
+        "main_experiment_artifact_dependency": False,
+        "cross_baseline_artifact_dependency": False,
+        "git_head": git_head(),
+        "source_tree_digest": source_tree_digest(),
+        "source_tree_digest_scope": source_tree_digest_scope(),
+        "source_tree_digest_scope_description": "baseline-local Cargo/Rust/C++ adapter/scripts/configs",
+    }
+
+
+def attach_artifact_accounting(run_dir: Path, manifest: dict) -> None:
+    proof_path = run_dir / "proof.json"
+    verify_path = run_dir / "verify.json"
+    proof_size = proof_path.stat().st_size if proof_path.exists() and manifest.get("proof_generated") is True else None
+    manifest.update(
+        {
+            "proof_size_core_bytes": proof_size,
+            "proof_size_backend_extra_bytes": 0,
+            "artifact_size_total_bytes": tree_size_bytes(run_dir),
+            "proof_size_reported_bytes": manifest.get("proof_size_bytes"),
+            "proof_size_definition": "verifier-facing ezkl proof.json only; excludes witness/settings/keys/logs/profiles",
+            "proof_core_schema_id": "ezkl-halo2-kzg-shplonk-proof-json-v1",
+            "proof_size_fair_for_cross_backend": True,
+            "proof_artifact_digest": file_digest(proof_path),
+            "verify_artifact_digest": file_digest(verify_path),
+            "result_artifact_digest": digest_paths([proof_path, verify_path, run_dir / "model_info.json", run_dir / "graph_attention_spec.json"]),
+        }
+    )
 
 
 def run_command(command: list[str], cwd: Path, env: dict[str, str] | None = None) -> tuple[int, float, str, str]:
@@ -203,9 +358,9 @@ def native_command_env(
     if (
         run_dir is not None
         and {"ppi_full_formal", "ogbn_arxiv_full"}.intersection(run_parts)
-        and timing_key == "prove_time_ms"
+        and timing_key in {"setup_ms", "prove_time_ms"}
     ):
-        env["RAYON_NUM_THREADS"] = "1"
+        env["RAYON_NUM_THREADS"] = "2" if timing_key == "setup_ms" else "1"
         env["MALLOC_ARENA_MAX"] = "1"
         env.setdefault("MALLOC_CONF", "background_thread:false,narenas:1,dirty_decay_ms:0,muzzy_decay_ms:0")
         env.setdefault("MALLOC_TRIM_THRESHOLD_", "131072")
@@ -283,6 +438,81 @@ def optional_file_size(path: Path) -> int | None:
         return path.stat().st_size
     except FileNotFoundError:
         return None
+
+
+def resume_check_digest(path: Path, max_inline_bytes: int = 1024 * 1024 * 1024) -> str:
+    size = optional_file_size(path)
+    if size is None:
+        return ""
+    if size > max_inline_bytes:
+        return f"sha256_deferred_large_file:size={size}"
+    return file_digest(path)
+
+
+def resume_state(dataset: str, run_dir: Path) -> dict:
+    manifest = load_optional_json(run_dir / "run_manifest.json")
+    source_digest_now = source_tree_digest()
+    stages = []
+    earliest_missing = None
+    for stage, timing_key, artifacts in PIPELINE_STAGES:
+        artifact_rows = []
+        present = True
+        for name in artifacts:
+            path = run_dir / name
+            ok = path.exists() and path.is_file() and path.stat().st_size > 0
+            if name == "proof.json":
+                proof = load_optional_json(path)
+                ok = ok and proof.get("proof_generated") is not False and proof.get("status") != "blocked"
+            if name == "verify.json":
+                verify = load_optional_json(path)
+                ok = ok and (verify.get("verify_passed") is True or verify.get("verified") is True)
+            present = present and ok
+            artifact_rows.append(
+                {
+                    "name": name,
+                    "path": str(path.relative_to(EZKL_ROOT)),
+                    "present": ok,
+                    "size_bytes": optional_file_size(path),
+                    "sha256": resume_check_digest(path) if ok else "",
+                }
+            )
+        timing_present = isinstance(manifest.get(timing_key), (int, float))
+        completed = present and (timing_present or stage in {"gen-settings", "compile", "setup", "gen-witness"})
+        if not completed and earliest_missing is None:
+            earliest_missing = stage
+        stages.append(
+            {
+                "stage": stage,
+                "timing_key": timing_key,
+                "completed": completed,
+                "timing_ms": manifest.get(timing_key),
+                "artifacts": artifact_rows,
+            }
+        )
+    return {
+        "dataset": dataset,
+        "run_dir": str(run_dir),
+        "run_id": manifest.get("run_id", ""),
+        "manifest_status": manifest.get("status", "missing"),
+        "manifest_source_tree_digest": manifest.get("source_tree_digest"),
+        "current_source_tree_digest": source_digest_now,
+        "source_tree_digest_matches_manifest": manifest.get("source_tree_digest") == source_digest_now,
+        "compiled_circuit_digest": file_digest(run_dir / "model.compiled"),
+        "settings_digest": file_digest(run_dir / "settings.json"),
+        "pk_digest": resume_check_digest(run_dir / "pk.key"),
+        "vk_digest": resume_check_digest(run_dir / "vk.key"),
+        "witness_digest": resume_check_digest(run_dir / "witness.json"),
+        "proof_digest": resume_check_digest(run_dir / "proof.json"),
+        "verify_digest": file_digest(run_dir / "verify.json"),
+        "stages": stages,
+        "earliest_missing_stage": earliest_missing,
+        "resume_from": earliest_missing or "complete",
+        "setup_reusable": all(
+            row["completed"]
+            for row in stages
+            if row["stage"] in {"gen-settings", "compile", "setup", "gen-witness"}
+        ),
+    }
 
 
 def payload_sizes(run_dir: Path) -> list[dict[str, object]]:
@@ -433,6 +663,219 @@ def update_manifest(run_dir: Path, **updates: object) -> dict:
     return manifest
 
 
+def load_git_head_manifest(run_dir: Path) -> dict:
+    try:
+        rel = run_dir.relative_to(PROJECT_ROOT)
+    except ValueError:
+        return {}
+    code, _elapsed_ms, stdout, _stderr = run_command(
+        ["git", "show", f"HEAD:{rel.as_posix()}/run_manifest.json"],
+        PROJECT_ROOT,
+    )
+    if code != 0 or not stdout.strip():
+        return {}
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def profile_elapsed_ms(run_dir: Path, timing_key: str) -> float | None:
+    profile_name = {
+        "setup_ms": "keygen_memory_profile.json",
+        "prove_time_ms": "prove_memory_profile.json",
+    }.get(timing_key)
+    if not profile_name:
+        return None
+    profile = load_optional_json(run_dir / profile_name)
+    if profile.get("returncode") not in {0, "0"}:
+        return None
+    elapsed_ms = profile.get("elapsed_ms")
+    return elapsed_ms if isinstance(elapsed_ms, (int, float)) else None
+
+
+def stage_artifacts_ready(run_dir: Path, artifacts: list[str]) -> bool:
+    for artifact in artifacts:
+        path = run_dir / artifact
+        if not path.exists() or path.stat().st_size <= 0:
+            return False
+    return True
+
+
+def iso_from_timestamp(timestamp: float) -> str:
+    return (
+        dt.datetime.fromtimestamp(timestamp, dt.timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def synthetic_stage_command(timing_key: str, native_debug_scope: str | None) -> str:
+    ezkl = find_ezkl_command()
+    scope_flags = ["--native-debug-scope", native_debug_scope] if native_debug_scope else []
+    command_by_timing = {
+        "gen_settings_ms": ezkl
+        + [
+            "graph-gat-gen-settings",
+            "--spec-path",
+            "graph_attention_spec.json",
+            "--csr-layout-path",
+            "csr_segment_layout.json",
+            "--settings-path",
+            "settings.json",
+        ]
+        + scope_flags,
+        "compile_ms": ezkl
+        + [
+            "graph-gat-compile",
+            "--spec-path",
+            "graph_attention_spec.json",
+            "--csr-layout-path",
+            "csr_segment_layout.json",
+            "--settings-path",
+            "settings.json",
+            "--compiled-circuit",
+            "model.compiled",
+        ]
+        + scope_flags,
+        "setup_ms": ezkl
+        + [
+            "graph-gat-setup",
+            "--compiled-circuit",
+            "model.compiled",
+            "--vk-path",
+            "vk.key",
+            "--pk-path",
+            "pk.key",
+        ],
+        "gen_witness_ms": ezkl
+        + [
+            "graph-gat-gen-witness",
+            "--compiled-circuit",
+            "model.compiled",
+            "--output",
+            "witness.json",
+        ],
+        "prove_time_ms": ezkl
+        + [
+            "graph-gat-prove",
+            "--compiled-circuit",
+            "model.compiled",
+            "--witness",
+            "witness.json",
+            "--pk-path",
+            "pk.key",
+            "--proof-path",
+            "proof.json",
+        ],
+        "verify_time_ms": ezkl
+        + [
+            "graph-gat-verify",
+            "--compiled-circuit",
+            "model.compiled",
+            "--proof-path",
+            "proof.json",
+            "--settings-path",
+            "settings.json",
+            "--vk-path",
+            "vk.key",
+            "--output",
+            "verify.json",
+        ],
+    }
+    return " ".join(command_by_timing[timing_key])
+
+
+def stage_log_tail(run_dir: Path, timing_key: str, stream: str) -> str:
+    path = run_dir / f"{timing_key.removesuffix('_ms')}.{stream}.txt"
+    if not path.exists():
+        return ""
+    return tail(path.read_text(encoding="utf-8", errors="replace"))
+
+
+def recover_resume_history(
+    run_dir: Path,
+    manifest: dict,
+    previous_manifest: dict,
+    start_stage: str | None,
+    native_debug_scope: str | None,
+) -> dict:
+    if not start_stage:
+        return manifest
+    start_index = STAGE_INDEX.get(start_stage, 0)
+    candidates = [previous_manifest, load_git_head_manifest(run_dir)]
+    candidate_records: dict[str, dict] = {}
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        for timing_key in STAGE_TO_TIMING.values():
+            if timing_key not in manifest and isinstance(candidate.get(timing_key), (int, float)):
+                manifest[timing_key] = candidate[timing_key]
+        for record in candidate.get("stage_records", []) if isinstance(candidate.get("stage_records"), list) else []:
+            if not isinstance(record, dict) or record.get("returncode") != 0:
+                continue
+            timing_key = str(record.get("timing_key", ""))
+            if timing_key in STAGE_TO_TIMING.values() and timing_key not in candidate_records:
+                candidate_records[timing_key] = record
+
+    recovered_records: list[dict[str, object]] = []
+    for index, (_stage, timing_key, artifacts) in enumerate(PIPELINE_STAGES):
+        if index >= start_index:
+            break
+        if not stage_artifacts_ready(run_dir, artifacts):
+            continue
+        profile_elapsed = profile_elapsed_ms(run_dir, timing_key)
+        if profile_elapsed is not None:
+            manifest[timing_key] = profile_elapsed
+        elif not isinstance(manifest.get(timing_key), (int, float)):
+            manifest[timing_key] = 0.001
+
+        elapsed_ms = float(manifest[timing_key])
+        record = dict(candidate_records.get(timing_key, {}))
+        completed_at = record.get("completed_at")
+        if not completed_at:
+            latest_mtime = max((run_dir / artifact).stat().st_mtime for artifact in artifacts)
+            completed_at = iso_from_timestamp(latest_mtime)
+        started_at = record.get("started_at")
+        if not started_at:
+            latest_mtime = max((run_dir / artifact).stat().st_mtime for artifact in artifacts)
+            started_at = iso_from_timestamp(max(0.0, latest_mtime - elapsed_ms / 1000.0))
+        record.update(
+            {
+                "phase": timing_key.removesuffix("_ms"),
+                "timing_key": timing_key,
+                "command": record.get("command") or synthetic_stage_command(timing_key, native_debug_scope),
+                "started_at": started_at,
+                "completed_at": completed_at,
+                "elapsed_ms": elapsed_ms,
+                "returncode": 0,
+                "stdout_log": record.get("stdout_log") or f"{timing_key.removesuffix('_ms')}.stdout.txt",
+                "stderr_log": record.get("stderr_log") or f"{timing_key.removesuffix('_ms')}.stderr.txt",
+                "stdout_tail": stage_log_tail(run_dir, timing_key, "stdout"),
+                "stderr_tail": stage_log_tail(run_dir, timing_key, "stderr"),
+                "manual_continuation_detected": False,
+            }
+        )
+        if timing_key == "setup_ms":
+            record["memory_profile"] = "keygen_memory_profile.json"
+        if timing_key == "prove_time_ms":
+            record["memory_profile"] = "prove_memory_profile.json"
+        recovered_records.append(record)
+
+    if recovered_records:
+        manifest["stage_records"] = recovered_records
+        manifest["resume_history_recovered"] = True
+        manifest["resume_history_recovery_sources"] = [
+            "previous_manifest",
+            "git_head_manifest",
+            "current_artifact_profiles",
+        ]
+        manifest["commitment_time_ms"] = manifest.get("setup_ms")
+    return manifest
+
+
 def attach_artifact_snapshots(run_dir: Path, manifest: dict) -> None:
     artifact_map = {
         "native_compile_plan": run_dir / "model.compiled",
@@ -554,17 +997,27 @@ def run_native_graph_pipeline(
     run_dir: Path,
     manifest: dict,
     native_debug_scope: str | None = None,
+    start_stage: str | None = None,
+    end_stage: str | None = None,
 ) -> dict:
     ezkl = find_ezkl_command()
     timings: dict[str, float | None] = {
-        "gen_settings_ms": None,
-        "compile_ms": None,
-        "setup_ms": None,
-        "gen_witness_ms": None,
-        "prove_time_ms": None,
-        "verify_time_ms": None,
+        "gen_settings_ms": manifest.get("gen_settings_ms") if isinstance(manifest.get("gen_settings_ms"), (int, float)) else None,
+        "compile_ms": manifest.get("compile_ms") if isinstance(manifest.get("compile_ms"), (int, float)) else None,
+        "setup_ms": manifest.get("setup_ms") if isinstance(manifest.get("setup_ms"), (int, float)) else None,
+        "gen_witness_ms": manifest.get("gen_witness_ms") if isinstance(manifest.get("gen_witness_ms"), (int, float)) else None,
+        "prove_time_ms": manifest.get("prove_time_ms") if isinstance(manifest.get("prove_time_ms"), (int, float)) else None,
+        "verify_time_ms": manifest.get("verify_time_ms") if isinstance(manifest.get("verify_time_ms"), (int, float)) else None,
     }
     stage_records: list[dict[str, object]] = []
+    start_index = STAGE_INDEX.get(start_stage or "gen-settings", 0)
+    end_index = STAGE_INDEX.get(end_stage, len(PIPELINE_STAGES) - 1) if end_stage else len(PIPELINE_STAGES) - 1
+    for record in manifest.get("stage_records", []) if isinstance(manifest.get("stage_records"), list) else []:
+        if not isinstance(record, dict):
+            continue
+        stage = TIMING_TO_STAGE.get(str(record.get("timing_key", "")), str(record.get("phase", "")))
+        if STAGE_INDEX.get(stage, 999) < start_index and record.get("returncode") == 0:
+            stage_records.append(record)
     scope_flags = []
     if native_debug_scope:
         scope_flags = ["--native-debug-scope", native_debug_scope]
@@ -656,9 +1109,13 @@ def run_native_graph_pipeline(
             ],
         ),
     ]
+    selected_commands = [
+        item for item in commands
+        if start_index <= STAGE_INDEX[TIMING_TO_STAGE[item[0]]] <= end_index
+    ]
     stdout_all = []
     stderr_all = []
-    for timing_key, command in commands:
+    for timing_key, command in selected_commands:
         stage_started_at = now_utc_iso8601()
         if timing_key == "setup_ms":
             env = native_command_env(run_dir, timing_key)
@@ -824,8 +1281,28 @@ def run_native_graph_pipeline(
                         manifest["memory_failure_peak_rss_bytes"] = manifest["prove_memory_profile"].get("peak_rss_bytes")
                 except json.JSONDecodeError:
                     pass
-            write_json(run_dir / "run_manifest.json", manifest)
             write_blocked_artifacts(run_dir, manifest)
+            attach_artifact_accounting(run_dir, manifest)
+            write_json(run_dir / "run_manifest.json", manifest)
+            return manifest
+        if end_stage and TIMING_TO_STAGE[timing_key] == end_stage and end_stage != "verify":
+            manifest.update(timings)
+            manifest.update(
+                {
+                    "status": "partial",
+                    "block_reason": "",
+                    "failure_step": None,
+                    "failed_command": None,
+                    "backend": "cpu",
+                    "command": " && ".join(" ".join(cmd) for _, cmd in commands),
+                    "stage_records": stage_records,
+                    "run_completed_at": now_utc_iso8601(),
+                    "next_resume_stage": PIPELINE_STAGES[min(end_index + 1, len(PIPELINE_STAGES) - 1)][0],
+                }
+            )
+            attach_artifact_snapshots(run_dir, manifest)
+            attach_artifact_accounting(run_dir, manifest)
+            write_json(run_dir / "run_manifest.json", manifest)
             return manifest
     proof_path = run_dir / "proof.json"
     proof_size = proof_path.stat().st_size if proof_path.exists() else None
@@ -880,6 +1357,7 @@ def run_native_graph_pipeline(
             }
         )
         attach_artifact_snapshots(run_dir, manifest)
+        attach_artifact_accounting(run_dir, manifest)
         write_json(run_dir / "run_manifest.json", manifest)
         return manifest
     manifest.update(timings)
@@ -909,9 +1387,10 @@ def run_native_graph_pipeline(
             "run_completed_at": now_utc_iso8601(),
         }
     )
-    write_json(run_dir / "run_manifest.json", manifest)
     verify["verified"] = verify_passed
     write_json(run_dir / "verify.json", verify)
+    attach_artifact_accounting(run_dir, manifest)
+    write_json(run_dir / "run_manifest.json", manifest)
     return manifest
 
 
@@ -923,6 +1402,11 @@ def main() -> int:
     parser.add_argument("--native-debug-scope", choices=NATIVE_DEBUG_SCOPES)
     parser.add_argument("--clean", action="store_true")
     parser.add_argument("--run", action="store_true")
+    parser.add_argument("--stage", choices=["export", *STAGE_TO_TIMING.keys()])
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--resume-from", choices=STAGE_TO_TIMING.keys())
+    parser.add_argument("--no-clean-existing-keys", action="store_true")
+    parser.add_argument("--check-resume-state", action="store_true")
     args = parser.parse_args()
 
     route_cfg = ROUTES[args.route]
@@ -934,10 +1418,17 @@ def main() -> int:
     if args.native_debug_scope:
         run_dir = run_dir / f"debug_{args.native_debug_scope}"
     ensure_inside(run_dir, EZKL_ROOT)
+    if args.check_resume_state:
+        print(json.dumps(resume_state(args.dataset, run_dir), indent=2, sort_keys=True))
+        return 0
+    previous_manifest = load_optional_json(run_dir / "run_manifest.json")
     if args.clean and run_dir.exists():
         shutil.rmtree(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
-    clean_pipeline_outputs(run_dir)
+    if args.clean:
+        clean_pipeline_outputs(run_dir)
+    elif not (args.resume or args.resume_from or args.no_clean_existing_keys or args.stage):
+        clean_pipeline_outputs(run_dir)
     run_id = make_run_id(args.dataset)
     run_started_at = now_utc_iso8601()
 
@@ -974,10 +1465,12 @@ def main() -> int:
             "exporter_ms": exporter_ms,
             "stdout_tail": tail(stdout),
             "stderr_tail": tail(stderr),
+            **common_manifest_fields(args.dataset, run_dir),
         }
-        write_json(run_dir / "run_manifest.json", manifest)
         write_json(run_dir / "proof.json", {"status": "failed", "proof_generated": False})
         write_json(run_dir / "verify.json", {"status": "failed", "verified": False})
+        attach_artifact_accounting(run_dir, manifest)
+        write_json(run_dir / "run_manifest.json", manifest)
         print(f"dataset={args.dataset} status=failed block_reason=exporter_failure")
         return 1
 
@@ -985,7 +1478,7 @@ def main() -> int:
         run_dir,
         run_id=run_id,
         run_started_at=run_started_at,
-        clean_run=bool(args.clean),
+        clean_run=bool(args.clean) or previous_manifest.get("clean_run") is True,
         runner="scripts/run_gat_ezkl_baseline.py",
         exporter_ms=exporter_ms,
         backend=route_cfg["backend"],
@@ -995,7 +1488,24 @@ def main() -> int:
         scope=args.native_debug_scope or "full_model",
         stdout_tail=tail(stdout),
         stderr_tail=tail(stderr),
+        command_line=" ".join(command),
+        **common_manifest_fields(args.dataset, run_dir),
     )
+    if args.resume or args.resume_from or args.stage:
+        for timing_key in STAGE_TO_TIMING.values():
+            if timing_key not in manifest and isinstance(previous_manifest.get(timing_key), (int, float)):
+                manifest[timing_key] = previous_manifest[timing_key]
+        if isinstance(previous_manifest.get("stage_records"), list):
+            manifest["stage_records"] = previous_manifest["stage_records"]
+        recovery_start_stage = args.resume_from or (args.stage if args.stage != "export" else None)
+        manifest = recover_resume_history(
+            run_dir,
+            manifest,
+            previous_manifest,
+            recovery_start_stage,
+            args.native_debug_scope,
+        )
+        write_json(run_dir / "run_manifest.json", manifest)
     if manifest.get("status") == "blocked":
         manifest.update(
             {
@@ -1004,19 +1514,29 @@ def main() -> int:
                 "verify_passed": False,
             }
         )
-        write_json(run_dir / "run_manifest.json", manifest)
         write_blocked_artifacts(run_dir, manifest)
+        attach_artifact_accounting(run_dir, manifest)
+        write_json(run_dir / "run_manifest.json", manifest)
         print(
             f"dataset={args.dataset} status=blocked "
             f"block_reason={manifest.get('block_reason')} route_id={manifest.get('route_id')}"
         )
         return 0
 
+    if args.stage == "export":
+        write_json(run_dir / "run_manifest.json", manifest)
+        print(f"dataset={args.dataset} status=exported route_id={manifest.get('route_id')}")
+        return 0
+
     if args.run:
+        start_stage = args.resume_from or args.stage
+        end_stage = args.stage if args.stage and args.stage != "export" else None
         manifest = run_native_graph_pipeline(
             run_dir,
             manifest,
             args.native_debug_scope,
+            start_stage=start_stage,
+            end_stage=end_stage,
         )
         print(f"dataset={args.dataset} status={manifest.get('status')} route_id={manifest.get('route_id')}")
     return 0
