@@ -107,6 +107,7 @@ namespace gatzk::crypto
         std::size_t effective_scalar_count = 0;
         bool zero_scalar_skipping = false;
         bool sparse_compaction = false;
+        bool constant_tail_folding = false;
         bool multithreaded_msm = false;
         double msm_ms = 0.0;
     };

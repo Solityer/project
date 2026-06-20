@@ -9,7 +9,23 @@ import sys
 
 
 REQUIRED_DATASETS = {"cora", "citeseer", "pubmed", "ppi", "ogbn-arxiv"}
+DATASET_ORDER = ["cora", "citeseer", "pubmed", "ppi", "ogbn-arxiv"]
+REFERENCE_TIME_RATIO_BAND = 1.50
+REFERENCE_PROOF_RATIO_BAND = 1.10
+BASELINES = {
+    ("cpu", "cora"): {"commitment": 281.901, "prove": 1803.39, "verify": 152.984, "proof": 90755},
+    ("cpu", "citeseer"): {"commitment": 453.87, "prove": 1376.677, "verify": 153.654, "proof": 90763},
+    ("cpu", "pubmed"): {"commitment": 2997.519, "prove": 5667.097, "verify": 175.205, "proof": 90760},
+    ("cpu", "ppi"): {"commitment": 3654.286, "prove": 7194.4, "verify": 426.44, "proof": 21360},
+    ("cpu", "ogbn-arxiv"): {"commitment": 17909.236, "prove": 66082.79, "verify": 418.491, "proof": 21361},
+    ("gpu", "cora"): {"commitment": 276.551, "prove": 1206.302, "verify": 155.439, "proof": 90755},
+    ("gpu", "citeseer"): {"commitment": 464.881, "prove": 1377.415, "verify": 156.3, "proof": 90763},
+    ("gpu", "pubmed"): {"commitment": 911.279, "prove": 3243.292, "verify": 177.314, "proof": 90760},
+    ("gpu", "ppi"): {"commitment": 1301.4, "prove": 4714.869, "verify": 439.464, "proof": 21360},
+    ("gpu", "ogbn-arxiv"): {"commitment": 3339.087, "prove": 51261.666, "verify": 413.912, "proof": 21361},
+}
 SECURE_FIELDS = {
+    "status": "verify_ok",
     "protocol_name": "zkgat",
     "proof_task": "node_classification_full_gat",
     "privacy_policy": "model_and_trace_hidden",
@@ -26,14 +42,34 @@ SECURE_FIELDS = {
     "verified": "true",
 }
 TIMING_FIELDS = [
+    "total_wall_clock_ms",
+    "cold_end_to_end_wall_clock_ms",
+    "warm_end_to_end_wall_clock_ms",
+    "amortized_preprocessing_ms",
+    "total_cost_for_fresh_reproduction_ms",
+    "context_build_ms",
+    "reference_forward_ms",
+    "trace_generation_ms",
     "commitment_time_ms",
     "prove_time_ms",
+    "quotient_build_ms",
+    "quotient_commitment_ms",
+    "quotient_bundle_pack_ms",
+    "domain_opening_ms",
+    "external_opening_ms",
     "verify_time_ms",
+    "payload_audit_ms",
+    "reference_consistency_ms",
+    "tamper_tests_ms",
+    "export_manifest_validation_ms",
+    "runner_overhead_ms",
+    "profile_logging_overhead_ms",
     "proof_size_bytes",
 ]
 OUTPUT_FIELDS = [
     "dataset",
     "backend",
+    "status",
     "srs_type",
     "srs_id",
     "srs_manifest_hash",
@@ -43,16 +79,53 @@ OUTPUT_FIELDS = [
     "opening_mode",
     "binding_mode",
     "proof_task",
+    "total_wall_clock_ms",
+    "cold_end_to_end_wall_clock_ms",
+    "warm_end_to_end_wall_clock_ms",
+    "amortized_preprocessing_ms",
+    "total_cost_for_fresh_reproduction_ms",
+    "context_build_ms",
+    "reference_forward_ms",
+    "trace_generation_ms",
     "commitment_time_ms",
     "prove_time_ms",
+    "quotient_build_ms",
+    "quotient_commitment_ms",
+    "quotient_bundle_pack_ms",
+    "domain_opening_ms",
+    "external_opening_ms",
     "verify_time_ms",
+    "payload_audit_ms",
+    "reference_consistency_ms",
+    "tamper_tests_ms",
+    "export_manifest_validation_ms",
+    "runner_overhead_ms",
+    "profile_logging_overhead_ms",
     "proof_size_bytes",
+    "baseline_commitment_time_ms",
+    "baseline_prove_time_ms",
+    "baseline_verify_time_ms",
+    "baseline_proof_size_bytes",
+    "commitment_vs_baseline",
+    "prove_vs_baseline",
+    "verify_vs_baseline",
+    "proof_size_vs_baseline",
+    "performance_regression_status",
     "optimization_profile_id",
     "optimization_flags",
     "hardware_and_device",
     "gpu_acceleration_status",
+    "gpu_backend_requested",
+    "gpu_device",
+    "gpu_used_for",
+    "gpu_fallback_stages",
+    "gpu_fallback_reason",
+    "gpu_runtime_loaded",
+    "gpu_kernel_invocation_count",
+    "cpu_gpu_reference_consistency_passed",
     "source_tree_hash",
     "binary_hash",
+    "runner_hash",
     "run_manifest_hash",
     "timeout",
     "stale_result",
@@ -137,6 +210,77 @@ def normalize_bool(value):
     return str(value).lower()
 
 
+def parse_float(row, key):
+    try:
+        return float(row[key])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"{row.get('dataset', '<unknown>')} has invalid numeric field {key}") from error
+
+
+def parse_int(row, key):
+    try:
+        return int(row[key])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"{row.get('dataset', '<unknown>')} has invalid integer field {key}") from error
+
+
+def ratio_value(actual, baseline):
+    if baseline <= 0:
+        raise ValueError("baseline must be positive")
+    return actual / baseline
+
+
+def format_ms(value):
+    return f"{value:.3f}"
+
+
+def format_ratio(value):
+    return f"{value:.6f}"
+
+
+def classify_performance(commitment_ratio, prove_ratio, verify_ratio, proof_ratio):
+    max_ratio = max(commitment_ratio, prove_ratio, verify_ratio, proof_ratio)
+    if (
+        commitment_ratio <= 1.0
+        and prove_ratio <= 1.0
+        and verify_ratio <= 1.0
+        and proof_ratio <= 1.0
+    ):
+        return "reference_improved"
+    if max_ratio <= 1.25:
+        return "reference_near"
+    if (
+        commitment_ratio > REFERENCE_TIME_RATIO_BAND
+        or prove_ratio > REFERENCE_TIME_RATIO_BAND
+        or verify_ratio > REFERENCE_TIME_RATIO_BAND
+        or proof_ratio > REFERENCE_PROOF_RATIO_BAND
+    ):
+        return "reference_slower_large"
+    return "reference_slower"
+
+
+def annotate_baseline_fields(dataset, backend, row):
+    baseline = BASELINES.get((backend, dataset))
+    if baseline is None:
+        raise ValueError(f"missing fixed baseline for {dataset}/{backend}")
+    commitment_ratio = ratio_value(parse_float(row, "commitment_time_ms"), baseline["commitment"])
+    prove_ratio = ratio_value(parse_float(row, "prove_time_ms"), baseline["prove"])
+    verify_ratio = ratio_value(parse_float(row, "verify_time_ms"), baseline["verify"])
+    proof_ratio = ratio_value(parse_float(row, "proof_size_bytes"), baseline["proof"])
+    status = classify_performance(commitment_ratio, prove_ratio, verify_ratio, proof_ratio)
+    row.update({
+        "baseline_commitment_time_ms": format_ms(baseline["commitment"]),
+        "baseline_prove_time_ms": format_ms(baseline["prove"]),
+        "baseline_verify_time_ms": format_ms(baseline["verify"]),
+        "baseline_proof_size_bytes": str(baseline["proof"]),
+        "commitment_vs_baseline": format_ratio(commitment_ratio),
+        "prove_vs_baseline": format_ratio(prove_ratio),
+        "verify_vs_baseline": format_ratio(verify_ratio),
+        "proof_size_vs_baseline": format_ratio(proof_ratio),
+        "performance_regression_status": status,
+    })
+
+
 def validate_row(dataset, backend, row, expected_source_hash="", expected_cpu_binary_hash="", expected_gpu_binary_hash=""):
     require_field(row, "dataset")
     if dataset == "ogbn-arxiv":
@@ -166,6 +310,12 @@ def validate_row(dataset, backend, row, expected_source_hash="", expected_cpu_bi
         require_field(row, key)
         if float(row[key]) < 0:
             raise ValueError(f"{dataset}/{backend} has negative {key}")
+    if float(row["total_wall_clock_ms"]) <= 0:
+        raise ValueError(f"{dataset}/{backend} has non-positive total_wall_clock_ms")
+    warm_ms = float(row["warm_end_to_end_wall_clock_ms"])
+    cold_ms = float(row["cold_end_to_end_wall_clock_ms"])
+    if warm_ms <= 0 and cold_ms <= 0:
+        raise ValueError(f"{dataset}/{backend} must record cold or warm end-to-end wall clock")
     if pathlib.Path(str(row.get("config", ""))).is_absolute():
         raise ValueError(f"{dataset}/{backend} manifest contains absolute config path")
     if row.get("reference_quant_logits_hash") != row.get("secure_trace_logits_hash"):
@@ -175,6 +325,17 @@ def validate_row(dataset, backend, row, expected_source_hash="", expected_cpu_bi
     for key in ("srs_id", "srs_degree_bound", "security_profile_id", *HASH_FIELDS):
         require_field(row, key)
     for key in ("optimization_profile_id", "optimization_flags", "hardware_and_device", "gpu_acceleration_status"):
+        require_field(row, key)
+    for key in (
+        "gpu_backend_requested",
+        "gpu_device",
+        "gpu_used_for",
+        "gpu_fallback_stages",
+        "gpu_fallback_reason",
+        "gpu_runtime_loaded",
+        "gpu_kernel_invocation_count",
+        "cpu_gpu_reference_consistency_passed",
+    ):
         require_field(row, key)
     for key in (
         "source_tree_hash",
@@ -212,6 +373,23 @@ def validate_row(dataset, backend, row, expected_source_hash="", expected_cpu_bi
         raise ValueError(f"{dataset}/{backend} does not record CUDA hotspot acceleration")
     if backend == "cpu" and row["gpu_acceleration_status"] != "not_requested_cpu_run":
         raise ValueError(f"{dataset}/{backend} has unexpected gpu_acceleration_status")
+    if backend == "gpu":
+        if normalize_bool(row["gpu_backend_requested"]) != "true":
+            raise ValueError(f"{dataset}/{backend} did not record gpu_backend_requested=true")
+        if normalize_bool(row["gpu_runtime_loaded"]) != "true":
+            raise ValueError(f"{dataset}/{backend} did not load the CUDA runtime")
+        if normalize_bool(row["cpu_gpu_reference_consistency_passed"]) != "true":
+            raise ValueError(f"{dataset}/{backend} failed CPU/GPU reference consistency")
+        if parse_int(row, "gpu_kernel_invocation_count") <= 0:
+            raise ValueError(f"{dataset}/{backend} has no recorded CUDA kernel invocations")
+        if row["gpu_used_for"] in {"", "none"}:
+            raise ValueError(f"{dataset}/{backend} does not state any GPU-accelerated stage")
+    else:
+        if normalize_bool(row["gpu_backend_requested"]) != "false":
+            raise ValueError(f"{dataset}/{backend} unexpectedly requested GPU backend")
+        if row["gpu_used_for"] != "none":
+            raise ValueError(f"{dataset}/{backend} has unexpected gpu_used_for={row['gpu_used_for']}")
+    annotate_baseline_fields(dataset, backend, row)
 
 
 def project_row(dataset, backend, row):
@@ -242,6 +420,162 @@ def collect(runs, backend, expected_source_hash="", expected_cpu_binary_hash="",
     return rows, manifests
 
 
+def ordered_rows(rows):
+    dataset_rank = {name: index for index, name in enumerate(DATASET_ORDER)}
+    backend_rank = {"cpu": 0, "gpu": 1}
+    return sorted(
+        rows,
+        key=lambda row: (
+            dataset_rank.get(row.get("dataset", ""), len(DATASET_ORDER)),
+            backend_rank.get(row.get("backend", ""), 99),
+        ),
+    )
+
+
+def row_label(row):
+    return f"{row.get('dataset', '')}/{row.get('backend', '')}"
+
+
+def markdown_row_list(rows):
+    if not rows:
+        return ["- none"]
+    return [
+        f"- {row_label(row)}: commitment={row['commitment_vs_baseline']}, "
+        f"prove={row['prove_vs_baseline']}, verify={row['verify_vs_baseline']}, "
+        f"proof={row['proof_size_vs_baseline']} ({row['performance_regression_status']})"
+        for row in ordered_rows(rows)
+    ]
+
+
+def write_baseline_report(rows, output_dir):
+    rows = ordered_rows(rows)
+    buckets = {
+        "reference_improved": [
+            row for row in rows if row["performance_regression_status"] == "reference_improved"
+        ],
+        "reference_near": [
+            row for row in rows if row["performance_regression_status"] == "reference_near"
+        ],
+        "reference_slower": [
+            row for row in rows if row["performance_regression_status"] == "reference_slower"
+        ],
+        "reference_slower_large": [
+            row for row in rows if row["performance_regression_status"] == "reference_slower_large"
+        ],
+    }
+    cpu_hashes = sorted({row["binary_hash"] for row in rows if row["backend"] == "cpu"})
+    gpu_hashes = sorted({row["binary_hash"] for row in rows if row["backend"] == "gpu"})
+    gpu_rows = [row for row in rows if row["backend"] == "gpu"]
+    gpu_true_use = all(
+        parse_int(row, "gpu_kernel_invocation_count") > 0 and row["gpu_used_for"] not in {"", "none"}
+        for row in gpu_rows
+    )
+    gpu_fallback = any(row["gpu_fallback_stages"] not in {"", "none", "not_requested"} for row in gpu_rows)
+    lines = [
+        "# Baseline Comparison",
+        "",
+        "Baselines are fixed reference measurements only. Export eligibility is determined by VERIFY_OK, freshness, full-dataset evidence, proof payload audit, reference consistency, tamper rejection, verifier-only boundary, and GPU runtime evidence.",
+        "",
+        "## Fixed Baseline",
+        "",
+        "| dataset | backend | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes |",
+        "| --- | --- | ---: | ---: | ---: | ---: |",
+    ]
+    for backend in ("cpu", "gpu"):
+        for dataset in DATASET_ORDER:
+            baseline = BASELINES[(backend, dataset)]
+            lines.append(
+                f"| {dataset} | {backend} | {baseline['commitment']:.3f} | "
+                f"{baseline['prove']:.3f} | {baseline['verify']:.3f} | {baseline['proof']} |"
+            )
+    lines.extend([
+        "",
+        "## Current Export",
+        "",
+        "| dataset | backend | commitment_time_ms | commitment_ratio | prove_time_ms | prove_ratio | verify_time_ms | verify_ratio | proof_size_bytes | proof_ratio | performance_regression_status |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+    ])
+    for row in rows:
+        lines.append(
+            f"| {row['dataset']} | {row['backend']} | {row['commitment_time_ms']} | "
+            f"{row['commitment_vs_baseline']} | {row['prove_time_ms']} | {row['prove_vs_baseline']} | "
+            f"{row['verify_time_ms']} | {row['verify_vs_baseline']} | {row['proof_size_bytes']} | "
+            f"{row['proof_size_vs_baseline']} | {row['performance_regression_status']} |"
+        )
+    lines.extend([
+        "",
+        "## Classification",
+        "",
+        "### Reference Improved",
+        "",
+        *markdown_row_list(buckets["reference_improved"]),
+        "",
+        "### Reference Near",
+        "",
+        *markdown_row_list(buckets["reference_near"]),
+        "",
+        "### Reference Slower",
+        "",
+        *markdown_row_list(buckets["reference_slower"]),
+        "",
+        "Rows in this bucket are slower than the reference band but remain export-eligible when all security, freshness, full-dataset, and backend evidence gates pass.",
+        "",
+        "### Reference Slower Large",
+        "",
+        *markdown_row_list(buckets["reference_slower_large"]),
+        "",
+        "Rows in this bucket exceed the historical 1.50x timing or 1.10x proof-size reference band. This is reported but is not a hard gate.",
+        "",
+        "## Independence And Freshness",
+        "",
+        f"- CPU/GPU paths independent: {'true' if cpu_hashes and gpu_hashes and set(cpu_hashes).isdisjoint(set(gpu_hashes)) else 'false'}",
+        f"- CPU binary hashes: {', '.join(cpu_hashes) if cpu_hashes else 'none'}",
+        f"- GPU binary hashes: {', '.join(gpu_hashes) if gpu_hashes else 'none'}",
+        f"- GPU true use: {'true' if gpu_true_use else 'false'}",
+        f"- CPU fallback exists in GPU path: {'true' if gpu_fallback else 'false'}",
+        f"- stale result present: {'true' if any(row['stale_result'] != 'false' for row in rows) else 'false'}",
+        f"- partial result present: {'true' if any(row['full_dataset'] != 'true' for row in rows) else 'false'}",
+    ])
+    (output_dir / "baseline_comparison_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_gpu_report(rows, output_dir):
+    gpu_rows = ordered_rows([row for row in rows if row["backend"] == "gpu"])
+    lines = [
+        "# GPU Backend",
+        "",
+        "| dataset | gpu_device | gpu_acceleration_status | gpu_used_for | gpu_fallback_stages | gpu_fallback_reason | gpu_kernel_invocation_count | cpu_gpu_reference_consistency_passed | only_cpu_fallback | baseline_reference_status | paper_gpu_eligible |",
+        "| --- | --- | --- | --- | --- | --- | ---: | --- | --- | --- | --- |",
+    ]
+    for row in gpu_rows:
+        kernel_count = parse_int(row, "gpu_kernel_invocation_count")
+        only_cpu_fallback = kernel_count <= 0 or row["gpu_used_for"] in {"", "none"}
+        reference_ok = normalize_bool(row["cpu_gpu_reference_consistency_passed"]) == "true"
+        paper_ok = reference_ok and not only_cpu_fallback
+        lines.append(
+            f"| {row['dataset']} | {row['gpu_device']} | {row['gpu_acceleration_status']} | "
+            f"{row['gpu_used_for']} | {row['gpu_fallback_stages']} | {row['gpu_fallback_reason']} | "
+            f"{row['gpu_kernel_invocation_count']} | {row['cpu_gpu_reference_consistency_passed']} | "
+            f"{'true' if only_cpu_fallback else 'false'} | {row['performance_regression_status']} | "
+            f"{'true' if paper_ok else 'false'} |"
+        )
+    (output_dir / "gpu_backend_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_negative_optimization_report(output_dir):
+    lines = [
+        "# Negative Optimization",
+        "",
+        "| negative_patch | affected_files | affected_stage | expected_benefit | actual_benefit | why_negative | reverted | residual_code | result_pollution | artifact_cleanup |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| mcl_openmp_mulvecmt_route | CMakeLists.txt; cmake/ConfigureMCL.cmake; src/crypto/curve.cpp | dynamic commitment MSM | improve large MSM throughput with MCL OpenMP/mulVecMT | Cora CPU end-to-end speedup 0.982x; prove speedup 0.982x | increased total/prove/verify time on the affected official row | yes | none from this route; pre-existing scalar packing changes were left untouched | no; measured row archived/excluded and final rows are rerun after rollback | stale run archived by official runner policy |",
+        "| shared_inverse_denominator_cache | src/crypto/kzg.cpp | batch opening witness denominator inversions | reuse base evaluation-domain inverse denominators across rotated opening points | Cora CPU end-to-end speedup 0.971x; denominator inversion speedup 1.798x | local denominator improvement was outweighed by total proof/runtime overhead | yes | none | no; measured row archived/excluded and final rows are rerun after rollback | stale run archived by official runner policy |",
+        "",
+        "Rows exported to latest.csv/latest.json are generated after these rollbacks; baseline ratios in the export are reference-only and are not used as rejection gates.",
+    ]
+    (output_dir / "negative_optimization_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def write_outputs(rows, manifests, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
     for name in (
@@ -252,6 +586,9 @@ def write_outputs(rows, manifests, output_dir):
         "reference_consistency_report.md",
         "proof_size_report.md",
         "optimization_profile_report.md",
+        "baseline_comparison_report.md",
+        "gpu_backend_report.md",
+        "negative_optimization_report.md",
     ):
         path = output_dir / name
         if path.exists():
@@ -336,7 +673,7 @@ def write_outputs(rows, manifests, output_dir):
         ("dynamic commitment", "commit_dynamic_ms"),
         ("coefficient/domain MSM", "dynamic_commit_msm_ms"),
         ("quotient materialization", "quotient_build_ms"),
-        ("quotient commitment", "quotient_bundle_pack_ms"),
+        ("quotient commitment", "quotient_commitment_ms"),
         ("opening witness generation", "domain_open_witness_ms"),
         ("batch opening", "domain_opening_ms"),
         ("external opening", "external_opening_ms"),
@@ -537,6 +874,9 @@ def write_outputs(rows, manifests, output_dir):
         "\n".join(profile_lines) + "\n",
         encoding="utf-8",
     )
+    write_baseline_report(rows, output_dir)
+    write_gpu_report(rows, output_dir)
+    write_negative_optimization_report(output_dir)
 
 
 def main():

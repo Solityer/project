@@ -221,6 +221,7 @@ bool barycentric_weights_gpu(
     // 把结果下载回主机。
     cudaMemcpy(output_weight_limbs, d_weights, elem_bytes, cudaMemcpyDeviceToHost);
     cleanup();
+    record_cuda_kernel_invocations(3);
     return true;
 }
 
@@ -383,6 +384,7 @@ bool weighted_poly_eval_gpu(
         weight_ptr = d_weights;
     }
     cudaMemset(d_final, 0, result_bytes);
+    std::size_t kernel_launches = 0;
     
     // 分块处理域元素，统一管理设备内存占用。
     for (std::size_t chunk_start = 0; chunk_start < domain_size; chunk_start += cols_per_chunk) {
@@ -424,6 +426,7 @@ bool weighted_poly_eval_gpu(
         weighted_eval_kernel<<<grid, kBlockDim, smem_bytes>>>(
             weight_ptr, chunk_values, d_partials,
             domain_size, row_count, chunk_start, chunk_end);
+        ++kernel_launches;
         
         // 把当前 chunk 的局部结果并入全局输出。
         {
@@ -438,6 +441,7 @@ bool weighted_poly_eval_gpu(
             }
             reduce_partials_kernel<<<rGrid, rBlock>>>(d_partials, d_chunk_result, num_domain_blocks, row_count);
             accumulate_results_kernel<<<rGrid, rBlock>>>(d_chunk_result, d_final, row_count);
+            kernel_launches += 2;
             if (cudaDeviceSynchronize() != cudaSuccess) {
                 cudaFree(d_chunk_result);
                 cudaFree(d_partials);
@@ -457,6 +461,7 @@ bool weighted_poly_eval_gpu(
     cudaMemcpy(output_limbs, d_final, result_bytes, cudaMemcpyDeviceToHost);
 
     cleanup();
+    record_cuda_kernel_invocations(kernel_launches);
     return true;
 }
 
@@ -532,6 +537,7 @@ bool weighted_poly_eval_gpu_columnar(
     cudaFree(d_final);
     cudaFree(d_partials);
     cudaFree(d_columns);
+    record_cuda_kernel_invocations(2);
     return true;
 }
 
@@ -611,6 +617,7 @@ bool weighted_poly_eval_gpu_multi(
     cudaFree(d_partials);
     cudaFree(d_values);
     cudaFree(d_weights);
+    record_cuda_kernel_invocations(poly_count * 2);
     return true;
 }
 
@@ -699,6 +706,7 @@ std::vector<std::size_t> lookup_histogram_indices_cuda(
     for (std::size_t i = 0; i < domain_size; ++i) {
         out[i] = static_cast<std::size_t>(host_counts[i]);
     }
+    gatzk::algebra::record_cuda_kernel_invocations(1);
     return out;
 }
 

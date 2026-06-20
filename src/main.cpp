@@ -170,6 +170,7 @@ int main(int argc, char** argv) {
                             const std::string& mode_label,
                             bool export_artifacts = true,
                             bool log_benchmark = true) {
+            const auto row_start = std::chrono::steady_clock::now();
             gatzk::protocol::RunMetrics metrics;
             metrics.crypto_backend_name = gatzk::crypto::backend_name();
             metrics.algebra_backend_name = gatzk::algebra::configured_algebra_backend_name();
@@ -184,6 +185,7 @@ int main(int argc, char** argv) {
             metrics.enabled_fast_verify_pairing = route2.fast_verify_pairing;
             metrics.enabled_cuda_trace_hotspots = route2.cuda_trace_hotspots;
             metrics.enabled_cuda_field_hotspots = route2.cuda_field_hotspots;
+            metrics.gpu_backend_requested = metrics.compute_backend_name == "cuda_hotspots";
             metrics.benchmark_mode = mode_label;
             metrics.route2_label = gatzk::util::route2_feature_label(route2);
             metrics.optimization_flags = gatzk::util::route2_feature_notes(route2);
@@ -191,6 +193,16 @@ int main(int argc, char** argv) {
                 "cpu_threads=" + std::to_string(std::max(1U, std::thread::hardware_concurrency()))
                 + "; " + gatzk::algebra::cuda_device_summary();
             metrics.gpu_runtime_present = gatzk::algebra::cuda_backend_available();
+            metrics.gpu_device = gatzk::algebra::cuda_device_summary();
+            metrics.gpu_used_for = metrics.compute_backend_name == "cuda_hotspots"
+                ? "barycentric_weights,packed_weighted_evaluation,lookup_histogram_size_aware"
+                : "none";
+            metrics.gpu_fallback_stages = metrics.compute_backend_name == "cuda_hotspots"
+                ? "KZG_MSM,pairing,NTT_IFFT,quotient_materialization,opening_witness,small_domains"
+                : "not_requested";
+            metrics.gpu_fallback_reason = metrics.compute_backend_name == "cuda_hotspots"
+                ? "current CUDA backend covers Fr algebra hotspots only; KZG curve and quotient kernels remain CPU"
+                : "cpu backend run";
             metrics.gpu_acceleration_status = metrics.compute_backend_name == "cuda_hotspots"
                 ? std::string("enabled_cuda_hotspots; accelerated_stages=barycentric_weights,packed_weighted_evaluation,lookup_histogram_size_aware; cpu_fallback=KZG_MSM,pairing,small_domains; runtime_present=")
                     + std::string(metrics.gpu_runtime_present ? "true" : "false")
@@ -233,6 +245,7 @@ int main(int argc, char** argv) {
             const auto trace_start = std::chrono::steady_clock::now();
             const auto trace = gatzk::protocol::build_trace(context, &metrics);
             progress(mode_label + ":trace:done");
+            metrics.reference_forward_ms = metrics.forward_ms;
             progress(mode_label + ":prove:start");
             const auto pcs_start = std::chrono::steady_clock::now();
             const auto proof = gatzk::protocol::prove(context, trace, &metrics);
@@ -299,6 +312,34 @@ int main(int argc, char** argv) {
             metrics.verify_accounted_ms = verify_accounted_ms(metrics);
             metrics.verify_accounting_gap_ms = metrics.verify_time_ms - metrics.verify_accounted_ms;
             metrics.proof_size_bytes = gatzk::protocol::proof_size_bytes(proof);
+            const auto audit_start = std::chrono::steady_clock::now();
+            const auto private_plain_count = gatzk::protocol::private_plain_value_count(context, proof);
+            const auto audit_end = std::chrono::steady_clock::now();
+            metrics.payload_audit_ms = std::chrono::duration<double, std::milli>(audit_end - audit_start).count();
+            const auto reference_start = std::chrono::steady_clock::now();
+            const bool reference_consistent =
+                trace.reference_quant_logits_hash == trace.secure_trace_logits_hash
+                && trace.public_logits_hash == trace.proof_public_output_hash
+                && private_plain_count == 0;
+            metrics.cpu_gpu_reference_consistency_passed = reference_consistent;
+            const auto reference_end = std::chrono::steady_clock::now();
+            metrics.reference_consistency_ms =
+                std::chrono::duration<double, std::milli>(reference_end - reference_start).count();
+            const auto tamper_start = std::chrono::steady_clock::now();
+            auto tampered = proof;
+            tampered.public_metadata.privacy_policy = "tampered_privacy_policy";
+            const bool tamper_rejected = !gatzk::protocol::verify(context, tampered, nullptr);
+            const auto tamper_end = std::chrono::steady_clock::now();
+            metrics.tamper_tests_ms = std::chrono::duration<double, std::milli>(tamper_end - tamper_start).count();
+            if (!reference_consistent) {
+                throw std::runtime_error("reference consistency check failed");
+            }
+            if (!tamper_rejected) {
+                throw std::runtime_error("tamper test was not rejected");
+            }
+            metrics.total_wall_clock_ms =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - row_start).count();
+            metrics.gpu_kernel_invocation_count = gatzk::algebra::cuda_kernel_invocation_count();
 
             if (log_benchmark) {
                 std::cout

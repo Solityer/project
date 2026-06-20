@@ -2681,22 +2681,17 @@ class QuotientPolynomialMaterializer {
 
   private:
     algebra::Polynomial materialize_full_identity_fh() {
+        const auto eta = challenges_.at("eta_feat");
+        const auto eta_sq = eta * eta;
         progress_note("prove:quotient:t_FH:identity:coset:P_Q_tbl_feat:start");
         const auto& q = coset_values("P_Q_tbl_feat");
-        progress_note("prove:quotient:t_FH:identity:coset:P_Row_feat_tbl:start");
-        const auto& rows = coset_values("P_Row_feat_tbl");
-        progress_note("prove:quotient:t_FH:identity:coset:P_Col_feat_tbl:start");
-        const auto& cols = coset_values("P_Col_feat_tbl");
-        progress_note("prove:quotient:t_FH:identity:coset:P_T_H:start");
-        const auto& features = coset_values("P_T_H");
+        progress_note("prove:quotient:t_FH:identity:coset:P_Table_feat_fused:start");
+        const auto table_values = fused_feature_table_coset_values(eta, eta_sq);
         progress_note("prove:quotient:t_FH:identity:cosets:done");
-        if (q.size() != target_size_ || rows.size() != target_size_
-            || cols.size() != target_size_ || features.size() != target_size_) {
+        if (q.size() != target_size_ || table_values->size() != target_size_) {
             throw std::runtime_error("full-identity FH quotient coset value size mismatch");
         }
 
-        const auto eta = challenges_.at("eta_feat");
-        const auto eta_sq = eta * eta;
         const auto beta = challenges_.at("beta_feat");
         const auto alpha = challenges_.at("alpha_quot");
         const auto one = FieldElement::one();
@@ -2717,9 +2712,8 @@ class QuotientPolynomialMaterializer {
         progress_note("prove:quotient:t_FH:identity:assemble:start");
         const auto fill_range = [&](std::size_t begin, std::size_t end) {
             for (std::size_t i = begin; i < end; ++i) {
-                const auto table_value = rows[i] + eta * cols[i] + eta_sq * features[i];
                 quotient_values[i] =
-                    alpha * q[i] * (one - q[i]) * (table_value + beta) * inverse_zero[i % zero_cycle];
+                    alpha * q[i] * (one - q[i]) * ((*table_values)[i] + beta) * inverse_zero[i % zero_cycle];
             }
         };
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
@@ -2750,6 +2744,87 @@ class QuotientPolynomialMaterializer {
         auto coefficients = coefficients_from_coset_evaluations(quotient_values, shift_);
         progress_note("prove:quotient:t_FH:identity:coefficients:done");
         return algebra::Polynomial::from_coefficients(label_, std::move(coefficients));
+    }
+
+    template <class Fn>
+    void parallel_for_chunks(
+        std::size_t count,
+        std::size_t min_parallel_count,
+        std::size_t max_worker_count,
+        Fn&& fn) const {
+        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+        const auto available_workers =
+            max_worker_count == 0 ? cpu_count : std::min<std::size_t>(cpu_count, max_worker_count);
+        if (count < min_parallel_count || available_workers <= 1) {
+            fn(0, count);
+            return;
+        }
+        const auto task_count = std::min<std::size_t>(
+            available_workers,
+            std::max<std::size_t>(2, count / min_parallel_count));
+        const auto chunk_size = (count + task_count - 1) / task_count;
+        std::vector<std::future<void>> futures;
+        futures.reserve(task_count);
+        for (std::size_t task = 0; task < task_count; ++task) {
+            const auto begin = task * chunk_size;
+            const auto end = std::min(count, begin + chunk_size);
+            if (begin >= end) {
+                break;
+            }
+            futures.push_back(std::async(std::launch::async, [&, begin, end]() {
+                fn(begin, end);
+            }));
+        }
+        for (auto& future : futures) {
+            future.get();
+        }
+    }
+
+    std::shared_ptr<const std::vector<FieldElement>> fused_feature_table_coset_values(
+        const FieldElement& eta,
+        const FieldElement& eta_sq) {
+        if (label_ != "t_FH" || !full_graph_feature_identity_enabled(context_)) {
+            throw std::runtime_error("fused FH feature table coset requested outside full identity");
+        }
+        const auto* row_poly = lookup_polynomial("P_Row_feat_tbl");
+        const auto* col_poly = lookup_polynomial("P_Col_feat_tbl");
+        const auto* feature_poly = lookup_polynomial("P_T_H");
+        if (row_poly == nullptr || col_poly == nullptr || feature_poly == nullptr) {
+            throw std::runtime_error("missing FH public columns for fused table coset");
+        }
+        if (row_poly->basis != algebra::PolynomialBasis::Evaluation
+            || col_poly->basis != algebra::PolynomialBasis::Evaluation
+            || feature_poly->basis != algebra::PolynomialBasis::Evaluation
+            || row_poly->domain.get() != domain_.get()
+            || col_poly->domain.get() != domain_.get()
+            || feature_poly->domain.get() != domain_.get()) {
+            throw std::runtime_error("fused FH table coset requires FH evaluation-basis public columns");
+        }
+
+        const auto& rows = row_poly->values();
+        const auto& cols = col_poly->values();
+        const auto& features = feature_poly->values();
+        if (rows.size() > domain_->size || cols.size() > domain_->size || features.size() > domain_->size) {
+            throw std::runtime_error("fused FH table dependency exceeds FH domain");
+        }
+
+        std::vector<FieldElement> table(domain_->size, FieldElement::zero());
+        parallel_for_chunks(domain_->size, 1ULL << 16, 4, [&](std::size_t begin, std::size_t end) {
+            for (std::size_t i = begin; i < end; ++i) {
+                const auto row_value = i < rows.size() ? rows[i] : FieldElement::zero();
+                const auto col_value = i < cols.size() ? cols[i] : FieldElement::zero();
+                const auto feature_value = i < features.size() ? features[i] : FieldElement::zero();
+                table[i] = row_value + eta * col_value + eta_sq * feature_value;
+            }
+        });
+
+        auto table_poly = algebra::Polynomial::from_evaluations(
+            "P_Table_feat_fused",
+            std::move(table),
+            domain_);
+        const auto coefficients = coefficients_native_from_polynomial(table_poly);
+        return std::make_shared<const std::vector<FieldElement>>(
+            coset_evaluate_coefficients(coefficients, target_size_, shift_, "P_Table_feat_fused"));
     }
 
     const std::vector<FieldElement>& coset_values(const std::string& requested_name) {
@@ -2797,8 +2872,12 @@ class QuotientPolynomialMaterializer {
                 "prove:quotient:" + label_ + ":coset_prewarm:"
                 + std::string(wave_name) + ":start:size=" + std::to_string(wave.size()));
             const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+            std::size_t worker_cap = 4;
+            if (label_ == "t_edge" && target_size_ <= (1ULL << 22) && cpu_count >= 8) {
+                worker_cap = std::min<std::size_t>(8, std::max<std::size_t>(4, cpu_count / 2));
+            }
             const auto worker_count = std::min<std::size_t>(
-                std::min<std::size_t>(cpu_count, 4),
+                std::min<std::size_t>(cpu_count, worker_cap),
                 wave.size());
             std::atomic<std::size_t> next{0};
             std::vector<std::future<void>> futures;
@@ -2869,15 +2948,45 @@ class QuotientPolynomialMaterializer {
 
     std::shared_ptr<const std::vector<FieldElement>> scaled_coset_sum(
         const std::vector<std::pair<std::string, FieldElement>>& terms) {
-        auto out = std::make_shared<std::vector<FieldElement>>(target_size_, FieldElement::zero());
+        std::vector<std::pair<std::shared_ptr<const std::vector<FieldElement>>, FieldElement>> resolved_terms;
+        resolved_terms.reserve(terms.size());
         for (const auto& [label, scale] : terms) {
+            if (scale.is_zero()) {
+                continue;
+            }
             const auto values = coset_values_ptr(label);
             if (values->size() != target_size_) {
                 throw std::runtime_error("linear coset dependency size mismatch: " + label);
             }
-            for (std::size_t i = 0; i < target_size_; ++i) {
-                (*out)[i] += (*values)[i] * scale;
+            resolved_terms.push_back({values, scale});
+        }
+        if (resolved_terms.empty()) {
+            return std::make_shared<const std::vector<FieldElement>>(target_size_, FieldElement::zero());
+        }
+        if (resolved_terms.size() == 1 && resolved_terms.front().second == FieldElement::one()) {
+            return resolved_terms.front().first;
+        }
+
+        auto out = std::make_shared<std::vector<FieldElement>>(target_size_, FieldElement::zero());
+        const auto& [first_values, first_scale] = resolved_terms.front();
+        parallel_for_chunks(target_size_, 1ULL << 15, 2, [&](std::size_t begin, std::size_t end) {
+            if (first_scale == FieldElement::one()) {
+                for (std::size_t i = begin; i < end; ++i) {
+                    (*out)[i] = (*first_values)[i];
+                }
+            } else {
+                for (std::size_t i = begin; i < end; ++i) {
+                    (*out)[i] = (*first_values)[i] * first_scale;
+                }
             }
+        });
+        for (std::size_t term_index = 1; term_index < resolved_terms.size(); ++term_index) {
+            const auto& [values, scale] = resolved_terms[term_index];
+            parallel_for_chunks(target_size_, 1ULL << 15, 2, [&](std::size_t begin, std::size_t end) {
+                for (std::size_t i = begin; i < end; ++i) {
+                    (*out)[i] += (*values)[i] * scale;
+                }
+            });
         }
         return out;
     }
@@ -3114,15 +3223,67 @@ std::vector<std::pair<std::string, algebra::Polynomial>> materialize_quotient_po
     RunMetrics* metrics) {
     std::vector<std::pair<std::string, algebra::Polynomial>> out;
     out.reserve(labels.size());
-    for (const auto& label : labels) {
+
+    auto worker_count_for_labels = [&]() {
+        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+        if (labels.size() <= 1 || cpu_count < 8 || !context.model.has_real_multihead) {
+            return std::size_t{1};
+        }
+        const auto fh_size = context.domains.fh != nullptr ? context.domains.fh->size : 0;
+        const auto edge_size = context.domains.edge != nullptr ? context.domains.edge->size : 0;
+        if (fh_size >= (1ULL << 25) || edge_size >= (1ULL << 22)) {
+            return std::size_t{1};
+        }
+        if (fh_size >= (1ULL << 23) || edge_size >= (1ULL << 18)) {
+            return std::min<std::size_t>(2, labels.size());
+        }
+        return std::min<std::size_t>(3, labels.size());
+    };
+
+    const auto materialize_one = [&](const std::string& label) {
         const auto start = Clock::now();
         progress_note("prove:quotient:" + label + ":start");
         QuotientPolynomialMaterializer materializer(context, trace, challenges, label);
-        out.push_back({label, materializer.materialize(context.kzg)});
+        auto polynomial = materializer.materialize(context.kzg);
         progress_note("prove:quotient:" + label + ":done");
         if (auto* metric = quotient_metric(metrics, label); metric != nullptr) {
             *metric += elapsed_ms(start, Clock::now());
         }
+        return std::pair<std::string, algebra::Polynomial>{label, std::move(polynomial)};
+    };
+
+    const auto worker_count = worker_count_for_labels();
+    if (worker_count <= 1) {
+        for (const auto& label : labels) {
+            out.push_back(materialize_one(label));
+        }
+        return out;
+    }
+
+    append_note(metrics, "parallel_quotient_materialization_workers=" + std::to_string(worker_count));
+    std::vector<std::optional<std::pair<std::string, algebra::Polynomial>>> results(labels.size());
+    std::atomic<std::size_t> next{0};
+    std::vector<std::future<void>> futures;
+    futures.reserve(worker_count);
+    for (std::size_t worker = 0; worker < worker_count; ++worker) {
+        futures.push_back(std::async(std::launch::async, [&]() {
+            while (true) {
+                const auto index = next.fetch_add(1);
+                if (index >= labels.size()) {
+                    break;
+                }
+                results[index] = materialize_one(labels[index]);
+            }
+        }));
+    }
+    for (auto& future : futures) {
+        future.get();
+    }
+    for (auto& result : results) {
+        if (!result.has_value()) {
+            throw std::runtime_error("missing parallel quotient materialization result");
+        }
+        out.push_back(std::move(*result));
     }
     return out;
 }
@@ -4064,7 +4225,9 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
             quotient_commitments = batch_quotient_commitments(std::move(named_quotient_polynomials), context.kzg);
             progress_note("prove:quotient:commit_batch:done");
             if (metrics != nullptr) {
-                metrics->quotient_bundle_pack_ms += elapsed_ms(quotient_pack_start, Clock::now());
+                const auto quotient_commitment_ms = elapsed_ms(quotient_pack_start, Clock::now());
+                metrics->quotient_commitment_ms += quotient_commitment_ms;
+                metrics->quotient_bundle_pack_ms += quotient_commitment_ms;
             }
             shared_quotient_artifacts_cache().store(
                 quotient_cache_key,
@@ -4292,9 +4455,15 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
         challenges,
         quotient_labels,
         metrics);
+    const auto quotient_pack_start = Clock::now();
     progress_note("prove:quotient:commit_batch:start");
     quotient_commitments = batch_quotient_commitments(std::move(named_quotient_polynomials), context.kzg);
     progress_note("prove:quotient:commit_batch:done");
+    if (metrics != nullptr) {
+        const auto quotient_commitment_ms = elapsed_ms(quotient_pack_start, Clock::now());
+        metrics->quotient_commitment_ms += quotient_commitment_ms;
+        metrics->quotient_bundle_pack_ms += quotient_commitment_ms;
+    }
 
     challenges = replay_challenges(context, trace.commitments, quotient_commitments);
     if (metrics != nullptr) {
@@ -4639,8 +4808,9 @@ void export_run_artifacts(
     const ProtocolContext& context,
     const TraceArtifacts& trace,
     const Proof& proof,
-    const RunMetrics& metrics,
+    RunMetrics metrics,
     bool verified) {
+    const auto export_start = Clock::now();
     const auto export_root = (std::filesystem::path(context.config.project_root) / context.config.export_dir).string();
     util::ensure_directory(export_root);
 
@@ -4785,7 +4955,11 @@ void export_run_artifacts(
         + "|" + pair_table_endpoint_string(context.tables.lrelu)
         + "|" + pair_table_endpoint_string(context.tables.exp)
         + "|" + pair_table_endpoint_string(context.tables.elu));
+    const auto audit_start = Clock::now();
     const auto audited_private_plain_value_count = private_plain_value_count(context, proof);
+    if (metrics.payload_audit_ms <= 0.0) {
+        metrics.payload_audit_ms = elapsed_ms(audit_start, Clock::now());
+    }
 
     std::map<std::string, std::string> metadata;
     append_public_metadata(metadata);
@@ -4812,8 +4986,9 @@ void export_run_artifacts(
     std::map<std::string, double> dynamic_profile_time_by_domain;
     std::map<std::string, double> dynamic_profile_time_by_category;
     if (!metrics.dynamic_commitment_profiles.empty()) {
+        const auto profile_start = Clock::now();
         std::vector<std::string> profile_lines = {
-            "label,dataset,domain,basis,vector_length,domain_size,nonzero_scalar_count,effective_scalar_count,zero_scalar_ratio,padding_ratio,classification,materialization_ms,fingerprint_cache_ms,msm_ms,total_commitment_ms,duplicates_another,duplicate_of,reused_shared,shared_or_borrowed,compact,commitment_cache_hit,ownership,category,optimization_opportunity,zero_scalar_skipping,sparse_compaction,multithreaded_msm,full_value_fingerprint,commitment_fingerprint",
+            "label,dataset,domain,basis,vector_length,domain_size,nonzero_scalar_count,effective_scalar_count,zero_scalar_ratio,padding_ratio,classification,materialization_ms,fingerprint_cache_ms,msm_ms,total_commitment_ms,duplicates_another,duplicate_of,reused_shared,shared_or_borrowed,compact,commitment_cache_hit,ownership,category,optimization_opportunity,zero_scalar_skipping,sparse_compaction,constant_tail_folding,multithreaded_msm,full_value_fingerprint,commitment_fingerprint",
         };
         profile_lines.reserve(metrics.dynamic_commitment_profiles.size() + 1);
         for (const auto& item : metrics.dynamic_commitment_profiles) {
@@ -4847,11 +5022,13 @@ void export_run_artifacts(
                 + csv_escape(item.optimization_opportunity) + ","
                 + bool_string(item.zero_scalar_skipping) + ","
                 + bool_string(item.sparse_compaction) + ","
+                + bool_string(item.constant_tail_folding) + ","
                 + bool_string(item.multithreaded_msm) + ","
                 + bool_string(item.full_value_fingerprint) + ","
                 + csv_escape(item.commitment_fingerprint));
         }
         util::write_lines(export_root + "/dynamic_commitment_object_profile.csv", profile_lines);
+        metrics.profile_logging_overhead_ms += elapsed_ms(profile_start, Clock::now());
     }
     auto format_size_map = [](const std::map<std::string, std::size_t>& values) {
         std::ostringstream out;
@@ -4878,6 +5055,23 @@ void export_run_artifacts(
         return out.str();
     };
 
+    for (const auto& [name, spilled] : trace.spilled_polynomials) {
+        (void)name;
+        std::error_code ignored;
+        std::filesystem::remove(spilled.path, ignored);
+    }
+    metrics.export_artifact_ms = elapsed_ms(export_start, Clock::now());
+    metrics.total_wall_clock_ms += metrics.export_artifact_ms;
+    if (metrics.is_cold_run) {
+        metrics.cold_end_to_end_wall_clock_ms = metrics.total_wall_clock_ms;
+        metrics.warm_end_to_end_wall_clock_ms = 0.0;
+    } else {
+        metrics.warm_end_to_end_wall_clock_ms = metrics.total_wall_clock_ms;
+        metrics.cold_end_to_end_wall_clock_ms = 0.0;
+    }
+    metrics.total_cost_for_fresh_reproduction_ms =
+        metrics.total_wall_clock_ms + metrics.amortized_preprocessing_ms;
+
     // `run_manifest.json` 保留完整内部字段，供 formal suite、artifact 校验和内部分析复核。
     std::map<std::string, std::string> run_manifest = {
         {"backend", benchmark_backend_label()},
@@ -4887,6 +5081,7 @@ void export_run_artifacts(
         {"compute_backend_name", metrics.compute_backend_name},
         {"config", display_config_path()},
         {"dataset", metrics.dataset},
+        {"status", verified ? "VERIFY_OK" : "VERIFY_FAIL"},
         {"benchmark_mode", metrics.benchmark_mode},
         {"enabled_fft_backend_upgrade", metrics.enabled_fft_backend_upgrade ? "true" : "false"},
         {"enabled_fft_kernel_upgrade", metrics.enabled_fft_kernel_upgrade ? "true" : "false"},
@@ -4901,6 +5096,14 @@ void export_run_artifacts(
         {"optimization_flags", metrics.optimization_flags},
         {"hardware_and_device", metrics.hardware_and_device},
         {"gpu_acceleration_status", metrics.gpu_acceleration_status},
+        {"gpu_backend_requested", metrics.gpu_backend_requested ? "true" : "false"},
+        {"gpu_device", metrics.gpu_device},
+        {"gpu_used_for", metrics.gpu_used_for},
+        {"gpu_fallback_stages", metrics.gpu_fallback_stages},
+        {"gpu_fallback_reason", metrics.gpu_fallback_reason},
+        {"gpu_runtime_loaded", metrics.gpu_runtime_present ? "true" : "false"},
+        {"gpu_kernel_invocation_count", std::to_string(metrics.gpu_kernel_invocation_count)},
+        {"cpu_gpu_reference_consistency_passed", metrics.cpu_gpu_reference_consistency_passed ? "true" : "false"},
         {"node_count", std::to_string(metrics.node_count)},
         {"edge_count", std::to_string(metrics.edge_count)},
         {"gpu_runtime_present", metrics.gpu_runtime_present ? "true" : "false"},
@@ -4926,6 +5129,19 @@ void export_run_artifacts(
         {"lrelu_table_size", std::to_string(context.tables.lrelu.size())},
         {"exp_table_size", std::to_string(context.tables.exp.size())},
         {"elu_table_size", std::to_string(context.tables.elu.size())},
+        {"total_wall_clock_ms", format_double(metrics.total_wall_clock_ms)},
+        {"cold_end_to_end_wall_clock_ms", format_double(metrics.cold_end_to_end_wall_clock_ms)},
+        {"warm_end_to_end_wall_clock_ms", format_double(metrics.warm_end_to_end_wall_clock_ms)},
+        {"amortized_preprocessing_ms", format_double(metrics.amortized_preprocessing_ms)},
+        {"total_cost_for_fresh_reproduction_ms", format_double(metrics.total_cost_for_fresh_reproduction_ms)},
+        {"reference_forward_ms", format_double(metrics.reference_forward_ms)},
+        {"payload_audit_ms", format_double(metrics.payload_audit_ms)},
+        {"reference_consistency_ms", format_double(metrics.reference_consistency_ms)},
+        {"tamper_tests_ms", format_double(metrics.tamper_tests_ms)},
+        {"export_artifact_ms", format_double(metrics.export_artifact_ms)},
+        {"export_manifest_validation_ms", format_double(metrics.export_manifest_validation_ms)},
+        {"runner_overhead_ms", format_double(metrics.runner_overhead_ms)},
+        {"profile_logging_overhead_ms", format_double(metrics.profile_logging_overhead_ms)},
         {"context_build_ms", format_double(metrics.context_build_ms)},
         {"domain_opening_ms", format_double(metrics.domain_opening_ms)},
         {"external_opening_ms", format_double(metrics.external_opening_ms)},
@@ -5009,6 +5225,7 @@ void export_run_artifacts(
         {"quotient_t_C_ms", format_double(metrics.quotient_t_c_ms)},
         {"quotient_t_N_ms", format_double(metrics.quotient_t_n_ms)},
         {"quotient_public_eval_ms", format_double(metrics.quotient_public_eval_ms)},
+        {"quotient_commitment_ms", format_double(metrics.quotient_commitment_ms)},
         {"quotient_bundle_pack_ms", format_double(metrics.quotient_bundle_pack_ms)},
         {"quotient_fold_prepare_ms", format_double(metrics.quotient_fold_prepare_ms)},
         {"quotient_copy_convert_ms", format_double(metrics.quotient_copy_convert_ms)},
@@ -5110,13 +5327,10 @@ void export_run_artifacts(
         {"verify_copy_convert_ms", format_double(metrics.verify_copy_convert_ms)},
     };
     append_public_metadata(run_manifest);
+    const auto manifest_validation_start = Clock::now();
+    metrics.export_manifest_validation_ms = elapsed_ms(manifest_validation_start, Clock::now());
+    run_manifest["export_manifest_validation_ms"] = format_double(metrics.export_manifest_validation_ms);
     util::write_json_object(export_root + "/run_manifest.json", run_manifest);
-
-    for (const auto& [name, spilled] : trace.spilled_polynomials) {
-        (void)name;
-        std::error_code ignored;
-        std::filesystem::remove(spilled.path, ignored);
-    }
 
     if (!context.config.dump_trace) {
         return;

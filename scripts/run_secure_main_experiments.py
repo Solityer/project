@@ -86,6 +86,42 @@ def manifest_hash(row: Dict[str, object]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def bool_text(row: Dict[str, object], key: str) -> str:
+    return str(row.get(key, "")).lower()
+
+
+def strict_row_gate(row: Dict[str, object], dataset: str, backend: str) -> None:
+    required = {
+        "status": "VERIFY_OK",
+        "verified": "true",
+        "full_dataset": "true",
+        "timeout": "false",
+        "stale_result": "false",
+        "exit_code": "0",
+        "proof_payload_audit_status": "passed",
+        "reference_consistency_passed": "true",
+        "tamper_tests_passed": "true",
+        "private_plain_value_count": "0",
+        "verifier_reads_witness": "false",
+    }
+    for key, expected in required.items():
+        if str(row.get(key, "")).lower() != expected.lower():
+            raise RuntimeError(f"{backend}/{dataset} has {key}={row.get(key, '')}, expected {expected}")
+    if backend == "gpu":
+        if bool_text(row, "gpu_backend_requested") != "true":
+            raise RuntimeError(f"{backend}/{dataset} missing gpu_backend_requested=true")
+        if bool_text(row, "gpu_runtime_loaded") != "true":
+            raise RuntimeError(f"{backend}/{dataset} missing gpu_runtime_loaded=true")
+        if bool_text(row, "cpu_gpu_reference_consistency_passed") != "true":
+            raise RuntimeError(f"{backend}/{dataset} failed CPU/GPU reference consistency")
+        try:
+            kernel_count = int(row.get("gpu_kernel_invocation_count", "0"))
+        except (TypeError, ValueError):
+            kernel_count = 0
+        if kernel_count <= 0:
+            raise RuntimeError(f"{backend}/{dataset} did not record CUDA kernel invocations")
+
+
 def run_command(
     command: List[str],
     log_path: pathlib.Path,
@@ -141,6 +177,7 @@ def configure_and_build(build_dir: pathlib.Path, cuda: bool, jobs: int, log_root
             "-B", str(build_dir.relative_to(ROOT)),
             f"-DGATZK_ENABLE_CUDA_BACKEND={'ON' if cuda else 'OFF'}",
             "-DGATZK_BUILD_TESTS=ON",
+            "-DCMAKE_BUILD_TYPE=Release",
         ],
         log_root / ("configure_cuda.log" if cuda else "configure_cpu.log"),
     )
@@ -236,6 +273,7 @@ def valid_manifest(
     backend: str,
     source_hash: str,
     binary_hash: str,
+    runner_hash: str,
 ) -> bool:
     try:
         row = load_manifest(path)
@@ -246,6 +284,8 @@ def valid_manifest(
         "backend": backend,
         "source_tree_hash": source_hash,
         "binary_hash": binary_hash,
+        "runner_hash": runner_hash,
+        "status": "VERIFY_OK",
         "verified": "true",
         "full_dataset": "true",
         "timeout": "false",
@@ -270,6 +310,38 @@ def valid_manifest(
             return False
     if str(row.get("run_manifest_hash", "")) != manifest_hash(row):
         return False
+    try:
+        strict_row_gate(row, dataset, backend)
+    except RuntimeError:
+        return False
+    for key in (
+        "total_wall_clock_ms",
+        "warm_end_to_end_wall_clock_ms",
+        "amortized_preprocessing_ms",
+        "total_cost_for_fresh_reproduction_ms",
+        "context_build_ms",
+        "reference_forward_ms",
+        "trace_generation_ms",
+        "quotient_build_ms",
+        "quotient_commitment_ms",
+        "quotient_bundle_pack_ms",
+        "domain_opening_ms",
+        "external_opening_ms",
+        "payload_audit_ms",
+        "reference_consistency_ms",
+        "tamper_tests_ms",
+        "export_manifest_validation_ms",
+        "runner_overhead_ms",
+        "profile_logging_overhead_ms",
+        "official_runner_wall_clock_ms",
+    ):
+        try:
+            if float(row.get(key, "")) < 0:
+                return False
+        except (TypeError, ValueError):
+            return False
+    if float(row.get("total_wall_clock_ms", "0") or 0) <= 0:
+        return False
     return dynamic_profile_exists(path, row)
 
 
@@ -288,8 +360,14 @@ def enrich_manifest(
     exit_code: int,
     timed_out: bool,
     command: List[str],
+    subprocess_wall_clock_ms: float,
 ) -> None:
     row = load_manifest(path)
+    try:
+        total_wall_clock_ms = float(row.get("total_wall_clock_ms", "0") or 0.0)
+    except (TypeError, ValueError):
+        total_wall_clock_ms = 0.0
+    runner_overhead_ms = max(0.0, subprocess_wall_clock_ms - total_wall_clock_ms)
     row.update({
         "dataset": dataset,
         "backend": backend,
@@ -305,6 +383,8 @@ def enrich_manifest(
         "timeout": "true" if timed_out else "false",
         "stale_result": "false" if exit_code == 0 and not timed_out else "true",
         "official_runner_command": " ".join(command),
+        "official_runner_wall_clock_ms": f"{subprocess_wall_clock_ms:.3f}",
+        "runner_overhead_ms": f"{runner_overhead_ms:.3f}",
     })
     row["run_manifest_hash"] = manifest_hash(row)
     (path / "run_manifest.json").write_text(
@@ -331,7 +411,7 @@ def execute_row(
     archive_root: pathlib.Path,
 ) -> pathlib.Path:
     path = run_dir(base_run_dir, backend)
-    if not force and valid_manifest(path, dataset, backend, source_hash, binary_hash):
+    if not force and valid_manifest(path, dataset, backend, source_hash, binary_hash, runner_hash):
         print(f"resume-valid {backend}/{dataset}: {path.relative_to(ROOT)}", flush=True)
         return path
 
@@ -360,12 +440,14 @@ def execute_row(
     }
     print(f"run-start {backend}/{dataset}: {path.relative_to(ROOT)}", flush=True)
     run_log_path = unique_log_path(log_root / f"run_{backend}_{dataset}.log")
+    subprocess_start = time.perf_counter()
     code = run_command(
         command,
         run_log_path,
         env=env,
         timeout=timeout_seconds,
     )
+    subprocess_wall_clock_ms = (time.perf_counter() - subprocess_start) * 1000.0
     ended_at = utc_now()
     timed_out = code == 124
     if (path / "run_manifest.json").exists():
@@ -384,11 +466,17 @@ def execute_row(
             code,
             timed_out,
             command,
+            subprocess_wall_clock_ms,
         )
     if code != 0:
         raise RuntimeError(f"{backend}/{dataset} failed with exit code {code}; see {run_log_path}")
-    if not valid_manifest(path, dataset, backend, source_hash, binary_hash):
+    if not valid_manifest(path, dataset, backend, source_hash, binary_hash, runner_hash):
+        try:
+            strict_row_gate(load_manifest(path), dataset, backend)
+        except Exception as error:
+            raise RuntimeError(f"{backend}/{dataset} manifest failed strict row gate: {error}") from error
         raise RuntimeError(f"{backend}/{dataset} manifest failed strict resume validation: {path}")
+    strict_row_gate(load_manifest(path), dataset, backend)
     print(f"run-ok {backend}/{dataset}: {path.relative_to(ROOT)}", flush=True)
     return path
 
@@ -417,7 +505,7 @@ def export_results(
     run_required(command, log_root / "export_paper_secure.log")
 
 
-def validate_export(output_dir: pathlib.Path) -> None:
+def validate_export(output_dir: pathlib.Path, require_cleanup_audit: bool = False) -> None:
     rows = json.loads((output_dir / "latest.json").read_text(encoding="utf-8"))
     if not isinstance(rows, list) or len(rows) != 10:
         raise RuntimeError("latest.json must contain exactly 10 rows")
@@ -430,6 +518,49 @@ def validate_export(output_dir: pathlib.Path) -> None:
         path = manifest_dir / f"{backend}_{dataset}.json"
         if not path.exists():
             raise RuntimeError(f"missing exported manifest: {path}")
+    required_fields = {
+        "status",
+        "baseline_commitment_time_ms",
+        "baseline_prove_time_ms",
+        "baseline_verify_time_ms",
+        "baseline_proof_size_bytes",
+        "commitment_vs_baseline",
+        "prove_vs_baseline",
+        "verify_vs_baseline",
+        "proof_size_vs_baseline",
+        "performance_regression_status",
+        "gpu_backend_requested",
+        "gpu_device",
+        "gpu_used_for",
+        "gpu_fallback_stages",
+        "gpu_fallback_reason",
+        "gpu_runtime_loaded",
+        "gpu_kernel_invocation_count",
+        "cpu_gpu_reference_consistency_passed",
+        "source_tree_hash",
+        "binary_hash",
+        "runner_hash",
+    }
+    for row in rows:
+        missing = sorted(field for field in required_fields if str(row.get(field, "")) == "")
+        if missing:
+            raise RuntimeError(f"{row.get('backend')}/{row.get('dataset')} missing export fields: {missing}")
+        if row.get("status") != "VERIFY_OK":
+            raise RuntimeError(f"{row.get('backend')}/{row.get('dataset')} is not VERIFY_OK")
+    reports = [
+        "security_tests_report.md",
+        "reference_consistency_report.md",
+        "proof_size_report.md",
+        "optimization_profile_report.md",
+        "baseline_comparison_report.md",
+        "gpu_backend_report.md",
+        "negative_optimization_report.md",
+    ]
+    if require_cleanup_audit:
+        reports.append("cleanup_audit_report.md")
+    for name in reports:
+        if not (output_dir / name).exists():
+            raise RuntimeError(f"missing report: {name}")
 
 
 def select_datasets(spec: str) -> List[Tuple[str, str, str]]:
@@ -538,8 +669,8 @@ def main() -> int:
 
     cpu_paths: Dict[str, pathlib.Path] = {}
     gpu_paths: Dict[str, pathlib.Path] = {}
-    if "cpu" in selected_backends:
-        for dataset, config, base_run_dir in selected_datasets:
+    for dataset, config, base_run_dir in selected_datasets:
+        if "cpu" in selected_backends:
             cpu_paths[dataset] = execute_row(
                 dataset,
                 config,
@@ -557,8 +688,7 @@ def main() -> int:
                 log_root,
                 archive_root,
             )
-    if "gpu" in selected_backends:
-        for dataset, config, base_run_dir in selected_datasets:
+        if "gpu" in selected_backends:
             gpu_paths[dataset] = execute_row(
                 dataset,
                 config,
@@ -584,7 +714,7 @@ def main() -> int:
     export_results(cpu_paths, gpu_paths, source_hash, cpu_binary_hash, gpu_binary_hash, output_dir, log_root)
     validate_export(output_dir)
     write_cleanup_audit(output_dir, log_root)
-    validate_export(output_dir)
+    validate_export(output_dir, require_cleanup_audit=True)
     print("secure paper export complete: results/paper_secure", flush=True)
     return 0
 

@@ -20,7 +20,7 @@ void export_run_artifacts(
     const ProtocolContext& context,
     const TraceArtifacts& trace,
     const Proof& proof,
-    const RunMetrics& metrics,
+    RunMetrics metrics,
     bool verified);
 
 }

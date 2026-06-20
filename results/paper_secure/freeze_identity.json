@@ -1,11 +1,11 @@
 {
-  "build_identity": "7690e397394f55cf19b24fdcfe14954e9a1d7c7a9ca617971837416b35cb10a5",
+  "build_identity": "0687f512aed5818fbaa82682d29e1f2276b10bc4acb50812ec84a5ddb14c55d4",
   "comparison_status": "comparison/** ignored by request; no completion claim is based on comparison results.",
-  "cpu_binary_hash": "f34250377c8c975744c586550344b377006859354d72d0cb526a6e5b262cffcd",
-  "exporter_hash": "31e47fdab7fd8bd180a778612b709bda864516ffba95cb5185750a6c1ab21928",
-  "generated_at": "2026-06-16T04:35:37.160852+00:00",
-  "gpu_binary_hash": "981ea3a89bb3d83ae8c791e4b000dccdac4e4fbf2b0df98a619ddfa0842943d7",
-  "main_git_status": "M include/gatzk/crypto/curve.hpp\n M include/gatzk/crypto/kzg.hpp\n M include/gatzk/protocol/proof.hpp\n M scripts/export_paper_secure.py\n M src/crypto/curve.cpp\n M src/crypto/kzg.cpp\n M src/protocol/prover.cpp\n M src/protocol/trace.cpp\n M src/protocol/verifier.cpp\n M src/util/route2.cpp\n?? results/paper_secure/freeze_identity.json\n?? scripts/run_secure_main_experiments.py",
-  "runner_hash": "d70435d9e4630d362699f85915e34720b2d3041367b12d6bd6057a6a75f34207",
-  "source_tree_hash": "8445dcd796efaf22098bbda89c5570550570131b654efb8347d59c5fd15ba90d"
+  "cpu_binary_hash": "b8f6885af49074c020f456419b2d50ce48abe16e82f0cf5158f4189c1fa6d8dd",
+  "exporter_hash": "6eb51f9d4a0e79fba006cde87fe9237216bc584fef8c40e3cbc138e75d2bec50",
+  "generated_at": "2026-06-20T07:31:59.703238+00:00",
+  "gpu_binary_hash": "a456e495eb62e2ea5f2e9aedc0654763411bc242f8a5ac9b925d7d2e2ae3ad35",
+  "main_git_status": "M include/gatzk/algebra/field.hpp\n M include/gatzk/algebra/vector_ops.hpp\n M include/gatzk/crypto/kzg.hpp\n M include/gatzk/protocol/proof.hpp\n M include/gatzk/protocol/prover.hpp\n M results/paper_secure/freeze_identity.json\n M scripts/export_paper_secure.py\n M scripts/run_secure_main_experiments.py\n M src/algebra/cuda_backend.cu\n M src/algebra/eval_backend.cpp\n M src/algebra/vector_ops.cpp\n M src/crypto/curve.cpp\n M src/crypto/kzg.cpp\n M src/main.cpp\n M src/protocol/prover.cpp\n M src/protocol/trace.cpp\n M src/util/route2.cpp\n?? results/performance_engineering/",
+  "runner_hash": "dfeb9829c0f6a5cff32e575a3ed399d7affadbbedadf5903be3d793a511dbfea",
+  "source_tree_hash": "553273db49120d80e584b1f58bc4ef3e641d6199e92fee716adf6d1a5c64f3f2"
 }

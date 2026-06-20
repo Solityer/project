@@ -13,7 +13,6 @@
 
 namespace gatzk::algebra
 {
-    // 本文件把同一工作域上的多列 evaluation 多项式压成共享布局，
     // 供 quotient、domain opening 与 verifier 复算阶段批量求值复用。
     // 它属于 algebra 执行层加速，不改变 formal 多项式、challenge 或 opening 契约。
 
