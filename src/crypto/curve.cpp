@@ -274,20 +274,21 @@ namespace gatzk::crypto
                     profile->sparse_compaction = true;
                     profile->effective_scalar_count = nonzero_count;
                 }
-                std::vector<mcl::G1> compact_points;
-                std::vector<mcl::Fr> compact_scalars;
+                std::vector<G1Point> compact_points;
+                std::vector<algebra::FieldElement> compact_scalars;
                 compact_points.reserve(nonzero_count);
                 compact_scalars.reserve(nonzero_count);
                 static_assert(sizeof(G1Point) == sizeof(mcl::G1), "G1Point must wrap a single mcl::G1");
-                auto* native_points = reinterpret_cast<const mcl::G1*>(points);
                 for (std::size_t i = 0; i < count; ++i)
                 {
                     if (!(scalars[i] == zero_scalar))
                     {
-                        compact_points.push_back(native_points[i]);
-                        compact_scalars.push_back(scalars[i].native());
+                        compact_points.push_back(points[i]);
+                        compact_scalars.push_back(scalars[i]);
                     }
                 }
+                auto* native_compact_points = reinterpret_cast<mcl::G1*>(compact_points.data());
+                const auto* native_compact_scalars = algebra::FieldElement::native_array_data(compact_scalars.data());
                 const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
                 auto worker_count = msm_worker_count(compact_scalars.size(), cpu_count);
                 if (options != nullptr && options->max_worker_count != 0)
@@ -302,24 +303,19 @@ namespace gatzk::crypto
                     }
                     mul_vec_chunked(
                         out.value,
-                        compact_points.data(),
-                        compact_scalars.data(),
+                        native_compact_points,
+                        native_compact_scalars,
                         compact_scalars.size(),
                         worker_count);
                 }
                 else
                 {
-                    mcl::G1::mulVec(out.value, compact_points.data(), compact_scalars.data(), compact_scalars.size());
+                    mcl::G1::mulVec(out.value, native_compact_points, native_compact_scalars, compact_scalars.size());
                 }
                 return out;
             }
         }
-        std::vector<mcl::Fr> native_scalars;
-        native_scalars.reserve(count);
-        for (std::size_t i = 0; i < count; ++i)
-        {
-            native_scalars.push_back(scalars[i].native());
-        }
+        const auto* native_scalars = algebra::FieldElement::native_array_data(scalars);
         static_assert(sizeof(G1Point) == sizeof(mcl::G1), "G1Point must wrap a single mcl::G1");
         auto* native_points = const_cast<mcl::G1*>(reinterpret_cast<const mcl::G1*>(points));
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
@@ -334,11 +330,11 @@ namespace gatzk::crypto
             {
                 profile->multithreaded = true;
             }
-            mul_vec_chunked(out.value, native_points, native_scalars.data(), count, worker_count);
+            mul_vec_chunked(out.value, native_points, native_scalars, count, worker_count);
         }
         else
         {
-            mcl::G1::mulVec(out.value, native_points, native_scalars.data(), count);
+            mcl::G1::mulVec(out.value, native_points, native_scalars, count);
         }
         return out;
     }

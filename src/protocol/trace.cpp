@@ -102,6 +102,9 @@ void progress_commit_batch_profile(
         if (object.sparse_compaction) {
             out << "/sparse";
         }
+        if (object.constant_tail_folding) {
+            out << "/tail";
+        }
         if (object.multithreaded_msm) {
             out << "/mt";
         }
@@ -471,6 +474,8 @@ struct DynamicCommitmentSpec {
     const std::vector<FieldElement>* borrowed_column_values = nullptr;
     std::shared_ptr<algebra::RootOfUnityDomain> domain;
     const Matrix* matrix = nullptr;
+    std::optional<crypto::G1Point> precomputed_commitment_point;
+    bool linear_commitment_derived = false;
     bool retain_polynomial = true;
     bool compact = false;
 };
@@ -488,6 +493,8 @@ struct PreparedDynamicCommitment {
     bool shared_or_borrowed = false;
     bool reused_shared = false;
     bool commitment_cache_hit = false;
+    bool precomputed_commitment = false;
+    bool linear_commitment_derived = false;
     bool full_value_fingerprint = false;
     std::uintptr_t source_identity = 0;
     double fingerprint_cache_ms = 0.0;
@@ -519,6 +526,18 @@ crypto::Commitment zero_dynamic_commitment(const std::string& name) {
         .point = crypto::g1_zero(),
         .opening_polynomial = std::move(polynomial),
     };
+}
+
+crypto::G1Point linear_commitment_point(
+    std::initializer_list<std::pair<crypto::G1Point, FieldElement>> terms) {
+    auto point = crypto::g1_zero();
+    for (const auto& [base, scale] : terms) {
+        if (scale == FieldElement::zero()) {
+            continue;
+        }
+        point = crypto::g1_add(point, crypto::g1_mul(base, scale));
+    }
+    return point;
 }
 
 crypto::Commitment linear_fh_commitment(
@@ -594,6 +613,28 @@ DynamicCommitmentSpec column_spec(
     return spec;
 }
 
+DynamicCommitmentSpec linear_column_spec(
+    const std::string& name,
+    std::vector<FieldElement>&& values,
+    const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
+    const crypto::G1Point& commitment_point) {
+    auto spec = column_spec(name, std::move(values), domain);
+    spec.precomputed_commitment_point = commitment_point;
+    spec.linear_commitment_derived = true;
+    return spec;
+}
+
+DynamicCommitmentSpec linear_column_spec(
+    const std::string& name,
+    std::shared_ptr<const std::vector<FieldElement>> values,
+    const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
+    const crypto::G1Point& commitment_point) {
+    auto spec = column_spec(name, std::move(values), domain);
+    spec.precomputed_commitment_point = commitment_point;
+    spec.linear_commitment_derived = true;
+    return spec;
+}
+
 DynamicCommitmentSpec compact_column_spec(
     const std::string& name,
     std::vector<FieldElement>&& values,
@@ -638,6 +679,16 @@ DynamicCommitmentSpec shared_column_spec(
     const std::vector<FieldElement>& values,
     const std::shared_ptr<algebra::RootOfUnityDomain>& domain) {
     return column_spec(name, alias_column_values(owner, &values), domain);
+}
+
+template <typename Owner>
+DynamicCommitmentSpec linear_shared_column_spec(
+    const std::string& name,
+    const std::shared_ptr<const Owner>& owner,
+    const std::vector<FieldElement>& values,
+    const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
+    const crypto::G1Point& commitment_point) {
+    return linear_column_spec(name, alias_column_values(owner, &values), domain, commitment_point);
 }
 
 template <typename Owner>
@@ -725,6 +776,26 @@ FieldElement matrix_row_major_evaluation(const Matrix& matrix, const FieldElemen
         mcl::Fr::add(out, out, row_evaluations[row].native());
     }
     return FieldElement::from_native(out);
+}
+
+void attach_precomputed_commitment(
+    PreparedDynamicCommitment* out,
+    const DynamicCommitmentSpec& spec) {
+    if (!spec.precomputed_commitment_point.has_value()) {
+        return;
+    }
+    if (out == nullptr || !out->polynomial.has_value()) {
+        throw std::runtime_error("precomputed dynamic commitment is missing polynomial material: " + spec.name);
+    }
+    auto material = std::make_shared<Polynomial>(*out->polynomial);
+    material->name = spec.name;
+    out->commitment = crypto::Commitment{
+        .name = spec.name,
+        .point = *spec.precomputed_commitment_point,
+        .opening_polynomial = std::move(material),
+    };
+    out->precomputed_commitment = true;
+    out->linear_commitment_derived = spec.linear_commitment_derived;
 }
 
 void fill_feature_lookup_rows(
@@ -823,6 +894,7 @@ PreparedDynamicCommitment materialize_commitment(
                 std::move(spec.owned_column_values),
                 spec.domain));
         }
+        attach_precomputed_commitment(&out, spec);
         out.materialization_ms = elapsed_ms(materialize_start, Clock::now());
         return out;
     }
@@ -834,6 +906,7 @@ PreparedDynamicCommitment materialize_commitment(
         out.matrix_export = *spec.matrix;
     }
     out.polynomial.emplace(coeff_poly(spec.name, algebra::flatten_matrix_coefficients(*spec.matrix)));
+    attach_precomputed_commitment(&out, spec);
     out.materialization_ms = elapsed_ms(materialize_start, Clock::now());
     return out;
 }
@@ -904,8 +977,14 @@ std::string dynamic_commitment_opportunity(
     const crypto::CommitObjectProfile& object,
     double zero_scalar_ratio,
     double padding_ratio) {
+    if (item.linear_commitment_derived) {
+        return "linear_commitment_derivation";
+    }
     if (item.commitment_cache_hit) {
         return "duplicate_commitment_reuse";
+    }
+    if (object.constant_tail_folding) {
+        return "constant_tail_commitment_folding";
     }
     if (object.sparse_compaction) {
         return "safe_sparse_srs_msm";
@@ -1205,17 +1284,45 @@ void add_dynamic_commitment_batch(
     std::vector<std::size_t> polynomial_indices;
     std::vector<std::string> reuse_cache_keys(prepared.size());
     std::unordered_map<std::string, crypto::CommitObjectProfile> cached_object_profiles;
+    std::unordered_map<std::string, crypto::CommitObjectProfile> precomputed_object_profiles;
     named_polynomials.reserve(prepared.size());
     constexpr std::size_t kMaxFullValueFingerprintSize = 1ULL << 16;
+    constexpr std::size_t kMaxRepeatedTableFingerprintSize = 1ULL << 20;
+    auto should_full_value_fingerprint = [&](const PreparedDynamicCommitment& item, const Polynomial& polynomial) {
+        if (polynomial.size() < 1024) {
+            return false;
+        }
+        if (polynomial.size() <= kMaxFullValueFingerprintSize) {
+            return true;
+        }
+        return item.name.find("Table") != std::string::npos
+            && polynomial.size() <= kMaxRepeatedTableFingerprintSize;
+    };
     for (std::size_t i = 0; i < prepared.size(); ++i) {
         auto& item = prepared[i];
         if (item.polynomial.has_value()) {
             const auto& polynomial = *item.polynomial;
+            if (item.precomputed_commitment) {
+                crypto::CommitObjectProfile object_profile;
+                object_profile.name = item.name;
+                object_profile.basis =
+                    polynomial.basis == algebra::PolynomialBasis::Coefficient ? "coefficient" : "evaluation";
+                object_profile.domain = polynomial.domain != nullptr ? polynomial.domain->name : "coef";
+                object_profile.vector_length = polynomial.size();
+                object_profile.nonzero_scalar_count = polynomial.size();
+                object_profile.effective_scalar_count = 0;
+                object_profile.zero_scalar_skipping = true;
+                object_profile.sparse_compaction = false;
+                object_profile.multithreaded_msm = false;
+                object_profile.msm_ms = 0.0;
+                precomputed_object_profiles.emplace(item.name, std::move(object_profile));
+                continue;
+            }
             const auto fingerprint_start = Clock::now();
             std::string reuse_key = source_identity_commitment_key(key.pk.manifest_hash, item, polynomial);
             bool full_value_fingerprint = false;
             if (reuse_key.empty() && polynomial.size() >= 1024) {
-                if (polynomial.size() <= kMaxFullValueFingerprintSize) {
+                if (should_full_value_fingerprint(item, polynomial)) {
                     const auto fingerprint = fingerprint_polynomial(key.pk.manifest_hash, polynomial);
                     reuse_key = key.pk.manifest_hash + "|dynamic|" + fingerprint.key;
                     full_value_fingerprint = true;
@@ -1295,6 +1402,9 @@ void add_dynamic_commitment_batch(
         for (auto& [name, object] : cached_object_profiles) {
             object_profiles.emplace(name, std::move(object));
         }
+        for (auto& [name, object] : precomputed_object_profiles) {
+            object_profiles.emplace(name, std::move(object));
+        }
         for (const auto& item : prepared) {
             const auto profile_it = object_profiles.find(item.name);
             if (profile_it == object_profiles.end()) {
@@ -1350,6 +1460,7 @@ void add_dynamic_commitment_batch(
             dynamic_profile.commitment_cache_hit = item.commitment_cache_hit;
             dynamic_profile.zero_scalar_skipping = object.zero_scalar_skipping;
             dynamic_profile.sparse_compaction = object.sparse_compaction;
+            dynamic_profile.constant_tail_folding = object.constant_tail_folding;
             dynamic_profile.multithreaded_msm = object.multithreaded_msm;
             dynamic_profile.full_value_fingerprint = item.full_value_fingerprint;
             metrics->dynamic_commitment_profiles.push_back(std::move(dynamic_profile));
@@ -2921,6 +3032,15 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         }
         metrics->*member += std::max(0.0, total_ms - accounted_ms);
     };
+    auto public_point = [&](const std::string& label) -> const crypto::G1Point& {
+        return context.public_commitments.at(label).point;
+    };
+    auto static_point = [&](const std::string& label) -> const crypto::G1Point& {
+        return context.static_commitments.at(label).point;
+    };
+    auto trace_point = [&](const std::string& label) -> const crypto::G1Point& {
+        return trace.commitments.at(label).point;
+    };
 
     auto stage_start = Clock::now();
     const auto cache_prefix = trace_cache_prefix(context);
@@ -3582,23 +3702,71 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 shared_column_spec(prefix + "E_src_edge", forward_artifacts, e_src_edge, domains.edge),
                 shared_column_spec(prefix + "E_dst_edge", forward_artifacts, e_dst_edge, domains.edge),
                 shared_column_spec(prefix + "H_src_star_edge", compressed, h_star_edge, domains.edge),
-                shared_column_spec(prefix + "Table_src", src_route, src_route->table, domains.n),
+                linear_shared_column_spec(
+                    prefix + "Table_src",
+                    src_route,
+                    src_route->table,
+                    domains.n,
+                    linear_commitment_point({
+                        {public_point("P_I"), FieldElement::one()},
+                        {trace_point(prefix + "E_src"), eta_src_powers[1]},
+                        {trace_point(prefix + "H_star"), eta_src_powers[2]},
+                    })),
                 shared_column_spec(prefix + "Query_src", src_route, src_route->query, domains.edge),
                 shared_column_spec(prefix + "m_src", src_route, src_route->multiplicity, domains.n),
                 shared_column_spec(prefix + "R_src_node", src_route, src_route->node_acc, domains.n),
                 shared_column_spec(prefix + "R_src", src_route, src_route->edge_acc, domains.edge),
-                column_spec(prefix + "Table_L", std::move(table_l), domains.edge),
-                shared_column_spec(prefix + "Query_L", lrelu_artifacts, query_l, domains.edge),
+                linear_column_spec(
+                    prefix + "Table_L",
+                    std::move(table_l),
+                    domains.edge,
+                    linear_commitment_point({
+                        {static_point("V_T_L_x"), FieldElement::one()},
+                        {static_point("V_T_L_y"), eta_l},
+                    })),
+                linear_shared_column_spec(
+                    prefix + "Query_L",
+                    lrelu_artifacts,
+                    query_l,
+                    domains.edge,
+                    linear_commitment_point({
+                        {trace_point(prefix + "S"), FieldElement::one()},
+                        {trace_point(prefix + "Z"), eta_l},
+                    })),
                 shared_column_spec(prefix + "m_L", lrelu_artifacts, m_l, domains.edge),
                 column_spec(prefix + "R_L", std::move(r_l), domains.edge),
                 column_spec(prefix + "s_max", std::move(s_max), domains.edge),
                 column_spec(prefix + "C_max", c_max, domains.edge),
-                column_spec(prefix + "Table_R", std::move(table_r), domains.edge),
-                shared_column_spec(prefix + "Query_R", range_artifacts, query_r, domains.edge),
+                linear_column_spec(
+                    prefix + "Table_R",
+                    std::move(table_r),
+                    domains.edge,
+                    static_point("V_T_range")),
+                linear_shared_column_spec(
+                    prefix + "Query_R",
+                    range_artifacts,
+                    query_r,
+                    domains.edge,
+                    trace_point(prefix + "Delta")),
                 shared_column_spec(prefix + "m_R", range_artifacts, m_r, domains.edge),
                 column_spec(prefix + "R_R", std::move(r_r), domains.edge),
-                column_spec(prefix + "Table_exp", std::move(table_exp), domains.edge),
-                shared_column_spec(prefix + "Query_exp", exp_artifacts, query_exp, domains.edge),
+                linear_column_spec(
+                    prefix + "Table_exp",
+                    std::move(table_exp),
+                    domains.edge,
+                    linear_commitment_point({
+                        {static_point("V_T_exp_x"), FieldElement::one()},
+                        {static_point("V_T_exp_y"), eta_exp},
+                    })),
+                linear_shared_column_spec(
+                    prefix + "Query_exp",
+                    exp_artifacts,
+                    query_exp,
+                    domains.edge,
+                    linear_commitment_point({
+                        {trace_point(prefix + "Delta"), FieldElement::one()},
+                        {trace_point(prefix + "U"), eta_exp},
+                    })),
                 shared_column_spec(prefix + "m_exp", exp_artifacts, m_exp, domains.edge),
                 column_spec(prefix + "R_exp", std::move(r_exp), domains.edge),
                 shared_compact_column_spec(prefix + "H_agg_pre_star", compressed, h_agg_pre_star, domains.n),
@@ -3824,12 +3992,35 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 shared_column_spec(prefix + "Acc_agg", agg_binding, agg_binding->acc, domains.d),
                 column_spec(prefix + "H_agg_pre_flat", std::move(agg_pre_flat), domains.edge),
                 column_spec(prefix + "H_agg_flat", std::move(agg_flat), domains.edge),
-                column_spec(prefix + "Table_ELU", std::move(table_elu), domains.edge),
+                linear_column_spec(
+                    prefix + "Table_ELU",
+                    std::move(table_elu),
+                    domains.edge,
+                    linear_commitment_point({
+                        {static_point("V_T_ELU_x"), FieldElement::one()},
+                        {static_point("V_T_ELU_y"), eta_elu},
+                    })),
                 shared_column_spec(prefix + "Query_ELU", elu_artifacts, query_elu, domains.edge),
                 shared_column_spec(prefix + "m_ELU", elu_artifacts, m_elu, domains.edge),
                 column_spec(prefix + "R_ELU", std::move(r_elu), domains.edge),
-                shared_column_spec(prefix + "Table_t", t_route, t_route->table, domains.n),
-                shared_column_spec(prefix + "Query_t", t_route, t_route->query, domains.edge),
+                linear_shared_column_spec(
+                    prefix + "Table_t",
+                    t_route,
+                    t_route->table,
+                    domains.n,
+                    linear_commitment_point({
+                        {public_point("P_I"), FieldElement::one()},
+                        {trace_point(prefix + "T_psq"), eta_t},
+                    })),
+                linear_shared_column_spec(
+                    prefix + "Query_t",
+                    t_route,
+                    t_route->query,
+                    domains.edge,
+                    linear_commitment_point({
+                        {public_point("P_dst"), FieldElement::one()},
+                        {trace_point(prefix + "T_psq_edge"), eta_t},
+                    })),
                 shared_column_spec(prefix + "m_t", t_route, t_route->multiplicity, domains.n),
                 shared_column_spec(prefix + "R_t_node", t_route, t_route->node_acc, domains.n),
                 shared_column_spec(prefix + "R_t", t_route, t_route->edge_acc, domains.edge),
@@ -3840,8 +4031,32 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         add_dynamic_commitment_batch(
             trace,
             {
-                shared_column_spec(prefix + "Table_dst", dst_route, dst_route->table, domains.n),
-                shared_column_spec(prefix + "Query_dst", dst_route, dst_route->query, domains.edge),
+                linear_shared_column_spec(
+                    prefix + "Table_dst",
+                    dst_route,
+                    dst_route->table,
+                    domains.n,
+                    linear_commitment_point({
+                        {public_point("P_I"), FieldElement::one()},
+                        {trace_point(prefix + "E_dst"), eta_dst_powers[1]},
+                        {trace_point(prefix + "M"), eta_dst_powers[2]},
+                        {trace_point(prefix + "Sum"), eta_dst_powers[3]},
+                        {trace_point(prefix + "inv"), eta_dst_powers[4]},
+                        {trace_point(prefix + "H_agg_star"), eta_dst_powers[5]},
+                    })),
+                linear_shared_column_spec(
+                    prefix + "Query_dst",
+                    dst_route,
+                    dst_route->query,
+                    domains.edge,
+                    linear_commitment_point({
+                        {public_point("P_dst"), FieldElement::one()},
+                        {trace_point(prefix + "E_dst_edge"), eta_dst_powers[1]},
+                        {trace_point(prefix + "M_edge"), eta_dst_powers[2]},
+                        {trace_point(prefix + "Sum_edge"), eta_dst_powers[3]},
+                        {trace_point(prefix + "inv_edge"), eta_dst_powers[4]},
+                        {trace_point(prefix + "H_agg_star_edge"), eta_dst_powers[5]},
+                    })),
                 shared_column_spec(prefix + "m_dst", dst_route, dst_route->multiplicity, domains.n),
                 shared_column_spec(prefix + "R_dst_node", dst_route, dst_route->node_acc, domains.n),
                 shared_column_spec(prefix + "R_dst", dst_route, dst_route->edge_acc, domains.edge),
@@ -4232,23 +4447,70 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                     shared_column_spec(prefix + "E_dst_edge", forward_artifacts, quantized.e_dst_edge, domains.edge),
                     shared_compact_column_spec(prefix + "Y_prime_star", compressed, y_prime_star, domains.n),
                     shared_column_spec(prefix + "Y_prime_star_edge", compressed, y_prime_star_edge, domains.edge),
-                    shared_column_spec(prefix + "Table_src", out_src_route, out_src_route->table, domains.n),
+                    linear_shared_column_spec(
+                        prefix + "Table_src",
+                        out_src_route,
+                        out_src_route->table,
+                        domains.n,
+                        linear_commitment_point({
+                            {public_point("P_I"), FieldElement::one()},
+                            {trace_point(prefix + "E_src"), eta_src_out_powers[1]},
+                        })),
                     shared_column_spec(prefix + "Query_src", out_src_route, out_src_route->query, domains.edge),
                     shared_column_spec(prefix + "m_src", out_src_route, out_src_route->multiplicity, domains.n),
                     shared_column_spec(prefix + "R_src_node", out_src_route, out_src_route->node_acc, domains.n),
                     shared_column_spec(prefix + "R_src", out_src_route, out_src_route->edge_acc, domains.edge),
-                    column_spec(prefix + "Table_L", std::move(out_table_l), domains.edge),
-                    shared_column_spec(prefix + "Query_L", out_l_artifacts, out_l_artifacts->query, domains.edge),
+                    linear_column_spec(
+                        prefix + "Table_L",
+                        std::move(out_table_l),
+                        domains.edge,
+                        linear_commitment_point({
+                            {static_point("V_T_L_x"), FieldElement::one()},
+                            {static_point("V_T_L_y"), trace.challenges.at(output_challenge_name("eta_L_out", head_index, false))},
+                        })),
+                    linear_shared_column_spec(
+                        prefix + "Query_L",
+                        out_l_artifacts,
+                        out_l_artifacts->query,
+                        domains.edge,
+                        linear_commitment_point({
+                            {trace_point(prefix + "S"), FieldElement::one()},
+                            {trace_point(prefix + "Z"), trace.challenges.at(output_challenge_name("eta_L_out", head_index, false))},
+                        })),
                     shared_column_spec(prefix + "m_L", out_l_artifacts, out_l_artifacts->multiplicity, domains.edge),
                     column_spec(prefix + "R_L", std::move(out_r_l), domains.edge),
                     column_spec(prefix + "s_max", std::move(out_s_max), domains.edge),
                     column_spec(prefix + "C_max", out_c_max, domains.edge),
-                    column_spec(prefix + "Table_R", std::move(out_table_r), domains.edge),
-                    shared_column_spec(prefix + "Query_R", out_r_artifacts, out_r_artifacts->query, domains.edge),
+                    linear_column_spec(
+                        prefix + "Table_R",
+                        std::move(out_table_r),
+                        domains.edge,
+                        static_point("V_T_range")),
+                    linear_shared_column_spec(
+                        prefix + "Query_R",
+                        out_r_artifacts,
+                        out_r_artifacts->query,
+                        domains.edge,
+                        trace_point(prefix + "Delta")),
                     shared_column_spec(prefix + "m_R", out_r_artifacts, out_r_artifacts->multiplicity, domains.edge),
                     column_spec(prefix + "R_R", std::move(out_r_r), domains.edge),
-                    column_spec(prefix + "Table_exp", std::move(out_table_exp), domains.edge),
-                    shared_column_spec(prefix + "Query_exp", out_exp_artifacts, out_exp_artifacts->query, domains.edge),
+                    linear_column_spec(
+                        prefix + "Table_exp",
+                        std::move(out_table_exp),
+                        domains.edge,
+                        linear_commitment_point({
+                            {static_point("V_T_exp_x"), FieldElement::one()},
+                            {static_point("V_T_exp_y"), trace.challenges.at(output_challenge_name("eta_exp_out", head_index, false))},
+                        })),
+                    linear_shared_column_spec(
+                        prefix + "Query_exp",
+                        out_exp_artifacts,
+                        out_exp_artifacts->query,
+                        domains.edge,
+                        linear_commitment_point({
+                            {trace_point(prefix + "Delta"), FieldElement::one()},
+                            {trace_point(prefix + "U"), trace.challenges.at(output_challenge_name("eta_exp_out", head_index, false))},
+                        })),
                     shared_column_spec(prefix + "m_exp", out_exp_artifacts, out_exp_artifacts->multiplicity, domains.edge),
                     column_spec(prefix + "R_exp", std::move(out_r_exp), domains.edge),
                     column_spec(prefix + "widehat_y_star", std::move(widehat_y_star), domains.edge),
@@ -4401,8 +4663,24 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             add_dynamic_commitment_batch(
                 trace,
                 {
-                    shared_column_spec(prefix + "Table_t", out_t_route, out_t_route->table, domains.n),
-                    shared_column_spec(prefix + "Query_t", out_t_route, out_t_route->query, domains.edge),
+                    linear_shared_column_spec(
+                        prefix + "Table_t",
+                        out_t_route,
+                        out_t_route->table,
+                        domains.n,
+                        linear_commitment_point({
+                            {public_point("P_I"), FieldElement::one()},
+                            {trace_point(prefix + "T"), eta_t_out_powers[1]},
+                        })),
+                    linear_shared_column_spec(
+                        prefix + "Query_t",
+                        out_t_route,
+                        out_t_route->query,
+                        domains.edge,
+                        linear_commitment_point({
+                            {public_point("P_dst"), FieldElement::one()},
+                            {trace_point(prefix + "T_edge"), eta_t_out_powers[1]},
+                        })),
                     shared_column_spec(prefix + "m_t", out_t_route, out_t_route->multiplicity, domains.n),
                     shared_column_spec(prefix + "R_t_node", out_t_route, out_t_route->node_acc, domains.n),
                     shared_column_spec(prefix + "R_t", out_t_route, out_t_route->edge_acc, domains.edge),
@@ -4418,8 +4696,32 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                     shared_column_spec(prefix + "a_y", out_y_binding, out_y_binding->a, domains.c),
                     shared_column_spec(prefix + "b_y", out_y_binding, out_y_binding->b, domains.c),
                     shared_column_spec(prefix + "Acc_y", out_y_binding, out_y_binding->acc, domains.c),
-                    shared_column_spec(prefix + "Table_dst", out_dst_route, out_dst_route->table, domains.n),
-                    shared_column_spec(prefix + "Query_dst", out_dst_route, out_dst_route->query, domains.edge),
+                    linear_shared_column_spec(
+                        prefix + "Table_dst",
+                        out_dst_route,
+                        out_dst_route->table,
+                        domains.n,
+                        linear_commitment_point({
+                            {public_point("P_I"), FieldElement::one()},
+                            {trace_point(prefix + "E_dst"), eta_dst_out_powers[1]},
+                            {trace_point(prefix + "M"), eta_dst_out_powers[2]},
+                            {trace_point(prefix + "Sum"), eta_dst_out_powers[3]},
+                            {trace_point(prefix + "inv"), eta_dst_out_powers[4]},
+                            {trace_point(prefix + "Y_star"), eta_dst_out_powers[5]},
+                        })),
+                    linear_shared_column_spec(
+                        prefix + "Query_dst",
+                        out_dst_route,
+                        out_dst_route->query,
+                        domains.edge,
+                        linear_commitment_point({
+                            {public_point("P_dst"), FieldElement::one()},
+                            {trace_point(prefix + "E_dst_edge"), eta_dst_out_powers[1]},
+                            {trace_point(prefix + "M_edge"), eta_dst_out_powers[2]},
+                            {trace_point(prefix + "Sum_edge"), eta_dst_out_powers[3]},
+                            {trace_point(prefix + "inv_edge"), eta_dst_out_powers[4]},
+                            {trace_point(prefix + "Y_star_edge"), eta_dst_out_powers[5]},
+                        })),
                     shared_column_spec(prefix + "m_dst", out_dst_route, out_dst_route->multiplicity, domains.n),
                     shared_column_spec(prefix + "R_dst_node", out_dst_route, out_dst_route->node_acc, domains.n),
                     shared_column_spec(prefix + "R_dst", out_dst_route, out_dst_route->edge_acc, domains.edge),
@@ -4787,23 +5089,70 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             shared_column_spec("P_out_E_dst_edge", forward_artifacts, quantized.e_dst_edge, domains.edge),
             shared_compact_column_spec("P_out_Y_prime_star", output_compressed, y_prime_star, domains.n),
             shared_column_spec("P_out_Y_prime_star_edge", output_compressed, y_prime_star_edge, domains.edge),
-            shared_column_spec("P_out_Table_src", out_src_route, out_src_route->table, domains.n),
+            linear_shared_column_spec(
+                "P_out_Table_src",
+                out_src_route,
+                out_src_route->table,
+                domains.n,
+                linear_commitment_point({
+                    {public_point("P_I"), FieldElement::one()},
+                    {trace_point("P_out_E_src"), eta_src_out_powers[1]},
+                })),
             shared_column_spec("P_out_Query_src", out_src_route, out_src_route->query, domains.edge),
             shared_column_spec("P_out_m_src", out_src_route, out_src_route->multiplicity, domains.n),
             shared_column_spec("P_out_R_src_node", out_src_route, out_src_route->node_acc, domains.n),
             shared_column_spec("P_out_R_src", out_src_route, out_src_route->edge_acc, domains.edge),
-            column_spec("P_out_Table_L", std::move(out_table_l), domains.edge),
-            shared_column_spec("P_out_Query_L", out_l_artifacts, out_query_l, domains.edge),
+            linear_column_spec(
+                "P_out_Table_L",
+                std::move(out_table_l),
+                domains.edge,
+                linear_commitment_point({
+                    {static_point("V_T_L_x"), FieldElement::one()},
+                    {static_point("V_T_L_y"), trace.challenges.at("eta_L_out")},
+                })),
+            linear_shared_column_spec(
+                "P_out_Query_L",
+                out_l_artifacts,
+                out_query_l,
+                domains.edge,
+                linear_commitment_point({
+                    {trace_point("P_out_S"), FieldElement::one()},
+                    {trace_point("P_out_Z"), trace.challenges.at("eta_L_out")},
+                })),
             shared_column_spec("P_out_m_L", out_l_artifacts, out_m_l, domains.edge),
             column_spec("P_out_R_L", std::move(out_r_l), domains.edge),
             column_spec("P_out_s_max", std::move(out_s_max), domains.edge),
             column_spec("P_out_C_max", out_c_max, domains.edge),
-            column_spec("P_out_Table_R", std::move(out_table_r), domains.edge),
-            shared_column_spec("P_out_Query_R", out_r_artifacts, out_query_r, domains.edge),
+            linear_column_spec(
+                "P_out_Table_R",
+                std::move(out_table_r),
+                domains.edge,
+                static_point("V_T_range")),
+            linear_shared_column_spec(
+                "P_out_Query_R",
+                out_r_artifacts,
+                out_query_r,
+                domains.edge,
+                trace_point("P_out_Delta")),
             shared_column_spec("P_out_m_R", out_r_artifacts, out_m_r, domains.edge),
             column_spec("P_out_R_R", std::move(out_r_r), domains.edge),
-            column_spec("P_out_Table_exp", std::move(out_table_exp), domains.edge),
-            shared_column_spec("P_out_Query_exp", out_exp_artifacts, out_query_exp, domains.edge),
+            linear_column_spec(
+                "P_out_Table_exp",
+                std::move(out_table_exp),
+                domains.edge,
+                linear_commitment_point({
+                    {static_point("V_T_exp_x"), FieldElement::one()},
+                    {static_point("V_T_exp_y"), trace.challenges.at("eta_exp_out")},
+                })),
+            linear_shared_column_spec(
+                "P_out_Query_exp",
+                out_exp_artifacts,
+                out_query_exp,
+                domains.edge,
+                linear_commitment_point({
+                    {trace_point("P_out_Delta"), FieldElement::one()},
+                    {trace_point("P_out_U"), trace.challenges.at("eta_exp_out")},
+                })),
             shared_column_spec("P_out_m_exp", out_exp_artifacts, out_m_exp, domains.edge),
             column_spec("P_out_R_exp", std::move(out_r_exp), domains.edge),
             column_spec("P_out_widehat_y_star", std::move(widehat_y_star), domains.edge),
@@ -4978,8 +5327,24 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     add_dynamic_commitment_batch(
         trace,
         {
-            shared_column_spec("P_out_Table_t", out_t_route, out_t_route->table, domains.n),
-            shared_column_spec("P_out_Query_t", out_t_route, out_t_route->query, domains.edge),
+            linear_shared_column_spec(
+                "P_out_Table_t",
+                out_t_route,
+                out_t_route->table,
+                domains.n,
+                linear_commitment_point({
+                    {public_point("P_I"), FieldElement::one()},
+                    {trace_point("P_out_T"), eta_t_out_powers[1]},
+                })),
+            linear_shared_column_spec(
+                "P_out_Query_t",
+                out_t_route,
+                out_t_route->query,
+                domains.edge,
+                linear_commitment_point({
+                    {public_point("P_dst"), FieldElement::one()},
+                    {trace_point("P_out_T_edge"), eta_t_out_powers[1]},
+                })),
             shared_column_spec("P_out_m_t", out_t_route, out_t_route->multiplicity, domains.n),
             shared_column_spec("P_out_R_t_node", out_t_route, out_t_route->node_acc, domains.n),
             shared_column_spec("P_out_R_t", out_t_route, out_t_route->edge_acc, domains.edge),
@@ -4995,8 +5360,32 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             shared_column_spec("P_out_a_y", out_y_binding, out_y_binding->a, domains.c),
             shared_column_spec("P_out_b_y", out_y_binding, out_y_binding->b, domains.c),
             shared_column_spec("P_out_Acc_y", out_y_binding, out_y_binding->acc, domains.c),
-            shared_column_spec("P_out_Table_dst", out_dst_route, out_dst_route->table, domains.n),
-            shared_column_spec("P_out_Query_dst", out_dst_route, out_dst_route->query, domains.edge),
+            linear_shared_column_spec(
+                "P_out_Table_dst",
+                out_dst_route,
+                out_dst_route->table,
+                domains.n,
+                linear_commitment_point({
+                    {public_point("P_I"), FieldElement::one()},
+                    {trace_point("P_out_E_dst"), eta_dst_out_powers[1]},
+                    {trace_point("P_out_M"), eta_dst_out_powers[2]},
+                    {trace_point("P_out_Sum"), eta_dst_out_powers[3]},
+                    {trace_point("P_out_inv"), eta_dst_out_powers[4]},
+                    {trace_point("P_out_Y_star"), eta_dst_out_powers[5]},
+                })),
+            linear_shared_column_spec(
+                "P_out_Query_dst",
+                out_dst_route,
+                out_dst_route->query,
+                domains.edge,
+                linear_commitment_point({
+                    {public_point("P_dst"), FieldElement::one()},
+                    {trace_point("P_out_E_dst_edge"), eta_dst_out_powers[1]},
+                    {trace_point("P_out_M_edge"), eta_dst_out_powers[2]},
+                    {trace_point("P_out_Sum_edge"), eta_dst_out_powers[3]},
+                    {trace_point("P_out_inv_edge"), eta_dst_out_powers[4]},
+                    {trace_point("P_out_Y_star_edge"), eta_dst_out_powers[5]},
+                })),
             shared_column_spec("P_out_m_dst", out_dst_route, out_dst_route->multiplicity, domains.n),
             shared_column_spec("P_out_R_dst_node", out_dst_route, out_dst_route->node_acc, domains.n),
             shared_column_spec("P_out_R_dst", out_dst_route, out_dst_route->edge_acc, domains.edge),
@@ -5090,6 +5479,12 @@ TraceArtifacts build_trace(const ProtocolContext& context, RunMetrics* metrics) 
     const std::size_t d_hidden = context.model.a_src.size();
     const std::size_t n_classes = local.num_classes;
     const bool enable_single_graph_selector_shortcut = local.graph_count == 1;
+    auto static_point = [&](const std::string& label) -> const crypto::G1Point& {
+        return context.static_commitments.at(label).point;
+    };
+    auto trace_point = [&](const std::string& label) -> const crypto::G1Point& {
+        return trace.commitments.at(label).point;
+    };
     std::vector<FieldElement> feature_index_fields(d_in, FieldElement::zero());
     for (std::size_t j = 0; j < d_in; ++j) {
         feature_index_fields[j] = FieldElement(j);
@@ -5431,8 +5826,22 @@ TraceArtifacts build_trace(const ProtocolContext& context, RunMetrics* metrics) 
     add_dynamic_commitment_batch(
         trace,
         {
-            column_spec("P_Table_L", std::move(table_l), domains.edge),
-            column_spec("P_Query_L", std::move(query_l), domains.edge),
+            linear_column_spec(
+                "P_Table_L",
+                std::move(table_l),
+                domains.edge,
+                linear_commitment_point({
+                    {static_point("V_T_L_x"), FieldElement::one()},
+                    {static_point("V_T_L_y"), eta_l},
+                })),
+            linear_column_spec(
+                "P_Query_L",
+                std::move(query_l),
+                domains.edge,
+                linear_commitment_point({
+                    {trace_point("P_S"), FieldElement::one()},
+                    {trace_point("P_Z"), eta_l},
+                })),
             column_spec("P_m_L", std::move(m_l), domains.edge),
             column_spec("P_R_L", std::move(r_l), domains.edge),
         },
@@ -5507,8 +5916,16 @@ TraceArtifacts build_trace(const ProtocolContext& context, RunMetrics* metrics) 
         {
             column_spec("P_s_max", std::move(s_max), domains.edge),
             column_spec("P_C_max", c_max, domains.edge),
-            column_spec("P_Table_R", std::move(table_r), domains.edge),
-            column_spec("P_Query_R", std::move(query_r), domains.edge),
+            linear_column_spec(
+                "P_Table_R",
+                std::move(table_r),
+                domains.edge,
+                static_point("V_T_range")),
+            linear_column_spec(
+                "P_Query_R",
+                std::move(query_r),
+                domains.edge,
+                trace_point("P_Delta")),
             column_spec("P_m_R", std::move(m_r), domains.edge),
             column_spec("P_R_R", std::move(r_r), domains.edge),
         },
@@ -5573,8 +5990,22 @@ TraceArtifacts build_trace(const ProtocolContext& context, RunMetrics* metrics) 
             compact_column_spec("P_Sum", sum, domains.n),
             compact_column_spec("P_inv", inv, domains.n),
             column_spec("P_alpha", alpha, domains.edge),
-            column_spec("P_Table_exp", std::move(table_exp), domains.edge),
-            column_spec("P_Query_exp", std::move(query_exp), domains.edge),
+            linear_column_spec(
+                "P_Table_exp",
+                std::move(table_exp),
+                domains.edge,
+                linear_commitment_point({
+                    {static_point("V_T_exp_x"), FieldElement::one()},
+                    {static_point("V_T_exp_y"), eta_exp_powers[1]},
+                })),
+            linear_column_spec(
+                "P_Query_exp",
+                std::move(query_exp),
+                domains.edge,
+                linear_commitment_point({
+                    {trace_point("P_Delta"), FieldElement::one()},
+                    {trace_point("P_U"), eta_exp_powers[1]},
+                })),
             column_spec("P_m_exp", std::move(m_exp), domains.edge),
             column_spec("P_R_exp", std::move(r_exp), domains.edge),
         },

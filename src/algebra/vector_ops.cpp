@@ -1,6 +1,7 @@
 #include "gatzk/algebra/vector_ops.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <future>
 #include <limits>
@@ -26,6 +27,11 @@ namespace gatzk::algebra
 
     namespace
     {
+        std::atomic<std::size_t>& cuda_kernel_counter()
+        {
+            static std::atomic<std::size_t> counter{0};
+            return counter;
+        }
 
         bool cuda_field_route_enabled()
         {
@@ -117,6 +123,16 @@ namespace gatzk::algebra
     {
         (void)configured_algebra_backend();
         return "cpu";
+    }
+
+    std::size_t cuda_kernel_invocation_count()
+    {
+        return cuda_kernel_counter().load(std::memory_order_relaxed);
+    }
+
+    void record_cuda_kernel_invocations(std::size_t count)
+    {
+        cuda_kernel_counter().fetch_add(count, std::memory_order_relaxed);
     }
 
     bool cuda_backend_build_enabled()
