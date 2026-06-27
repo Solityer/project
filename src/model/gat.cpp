@@ -13,10 +13,6 @@
 #include <thread>
 #include <unordered_map>
 
-// 本文件实现两类模型层逻辑：
-// 一类是 checkpoint bundle 的读取与形状校验；
-// 另一类是和 formal note 对齐的 GAT 参考前向，用来产出后续 trace 要量化的中间量。
-
 namespace gatzk::model
 {
     namespace
@@ -146,7 +142,7 @@ namespace gatzk::model
             return entries;
         }
 
-        // 解析一层隐藏层的形状信息
+        // 解析每层隐藏层的形状信息
         CheckpointLayerInfo parse_checkpoint_layer_info(const std::string& entry)
         {
             CheckpointLayerInfo out;
@@ -173,7 +169,7 @@ namespace gatzk::model
             return out;
         }
 
-        // 解析输出头张量名
+        // 解析隐藏层每个注意力头的张量名映射
         CheckpointOutputHeadSpec parse_checkpoint_output_head_spec(const std::string& entry)
         {
             CheckpointOutputHeadSpec out;
@@ -253,7 +249,7 @@ namespace gatzk::model
             return it->second;
         }
 
-        // 这一项导出时是 [1, 输入维, 输出维]，这里还原成二维矩阵
+        // 将 [1, in, out] 的 seq kernel 张量 reshape 成二维矩阵
         FloatMatrix reshape_seq_kernel(const DenseTensor& tensor)
         {
             if (tensor.shape.size() != 3 || tensor.shape[0] != 1)
@@ -273,7 +269,7 @@ namespace gatzk::model
             return out;
         }
 
-        // 这一项导出时是 [1, 宽度, 1]，这里直接摊平成向量
+        // 将 [1, width, 1] 的注意力 kernel 张量展平成向量
         std::vector<double> reshape_attention_kernel(const DenseTensor& tensor)
         {
             if (tensor.shape.size() != 3 || tensor.shape[0] != 1 || tensor.shape[2] != 1)

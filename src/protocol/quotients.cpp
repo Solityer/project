@@ -4,7 +4,6 @@
 #include <cctype>
 #include <cstdint>
 #include <optional>
-#include <unordered_map>
 #include <string_view>
 #include <vector>
 
@@ -374,25 +373,11 @@ FieldElement evaluate_t_edge(
         const auto not_last = FieldElement::one() - last;
         const auto zero_eval = context.domains.edge->zero_polynomial_eval(z);
         const auto one = FieldElement::one();
-        std::unordered_map<std::string, FieldElement> z_cache;
-        std::unordered_map<std::string, FieldElement> omega_cache;
-        z_cache.reserve(256);
-        omega_cache.reserve(128);
-        auto cached_eval = [&](std::unordered_map<std::string, FieldElement>& cache,
-                               const FieldElement& point,
-                               const std::string& label) {
-            if (const auto it = cache.find(label); it != cache.end()) {
-                return it->second;
-            }
-            const auto value = eval(label, point);
-            cache.emplace(label, value);
-            return value;
-        };
         auto eval_z = [&](const std::string& label) {
-            return cached_eval(z_cache, z, label);
+            return eval(label, z);
         };
         auto eval_omega = [&](const std::string& label) {
-            return cached_eval(omega_cache, omega_z, label);
+            return eval(label, omega_z);
         };
 
         const auto q_edge = eval_z("P_Q_edge_valid");

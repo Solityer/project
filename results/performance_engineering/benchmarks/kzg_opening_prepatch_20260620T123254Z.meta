@@ -1,0 +1,8 @@
+timestamp_utc=20260620T123254Z
+aa263e8284d4b0b680ac8fb8725252c59b44a915
+ M CMakeLists.txt
+ M src/protocol/quotients.cpp
+?? results/performance_engineering/benchmarks/
+?? results/performance_engineering/failed_runs/
+?? tools/benchmarks/
+26c33deeed3737abbc0199dad7e18c09699ad9493867e2b5c56e745d514225ce  build/gatzk_kzg_opening_stage_bench

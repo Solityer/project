@@ -58,6 +58,11 @@ TIMING_FIELDS = [
     "domain_opening_ms",
     "external_opening_ms",
     "verify_time_ms",
+    "proof_core_total_ms",
+    "target_2x_proof_core_total_ms",
+    "near_2_2x_proof_core_total_ms",
+    "budget_status",
+    "row_hard_timeout_ms",
     "payload_audit_ms",
     "reference_consistency_ms",
     "tamper_tests_ms",
@@ -95,6 +100,11 @@ OUTPUT_FIELDS = [
     "domain_opening_ms",
     "external_opening_ms",
     "verify_time_ms",
+    "proof_core_total_ms",
+    "target_2x_proof_core_total_ms",
+    "near_2_2x_proof_core_total_ms",
+    "budget_status",
+    "row_hard_timeout_ms",
     "payload_audit_ms",
     "reference_consistency_ms",
     "tamper_tests_ms",
@@ -263,12 +273,31 @@ def annotate_baseline_fields(dataset, backend, row):
     baseline = BASELINES.get((backend, dataset))
     if baseline is None:
         raise ValueError(f"missing fixed baseline for {dataset}/{backend}")
-    commitment_ratio = ratio_value(parse_float(row, "commitment_time_ms"), baseline["commitment"])
-    prove_ratio = ratio_value(parse_float(row, "prove_time_ms"), baseline["prove"])
-    verify_ratio = ratio_value(parse_float(row, "verify_time_ms"), baseline["verify"])
+    commitment_ms = parse_float(row, "commitment_time_ms")
+    prove_ms = parse_float(row, "prove_time_ms")
+    verify_ms = parse_float(row, "verify_time_ms")
+    commitment_ratio = ratio_value(commitment_ms, baseline["commitment"])
+    prove_ratio = ratio_value(prove_ms, baseline["prove"])
+    verify_ratio = ratio_value(verify_ms, baseline["verify"])
     proof_ratio = ratio_value(parse_float(row, "proof_size_bytes"), baseline["proof"])
     status = classify_performance(commitment_ratio, prove_ratio, verify_ratio, proof_ratio)
+    proof_core_total_ms = commitment_ms + prove_ms + verify_ms
+    baseline_core_ms = baseline["commitment"] + baseline["prove"] + baseline["verify"]
+    target_2x = baseline_core_ms * 2.0
+    near_2_2x = baseline_core_ms * 2.2
+    if proof_core_total_ms <= target_2x:
+        budget_status = "target_pass"
+    elif proof_core_total_ms <= near_2_2x:
+        budget_status = "near_accepted"
+    else:
+        budget_status = "over_near_2_2x"
+    row_hard_timeout_ms = min(max(120000.0, near_2_2x * 30.0), 1800000.0)
     row.update({
+        "proof_core_total_ms": format_ms(proof_core_total_ms),
+        "target_2x_proof_core_total_ms": format_ms(target_2x),
+        "near_2_2x_proof_core_total_ms": format_ms(near_2_2x),
+        "budget_status": budget_status,
+        "row_hard_timeout_ms": format_ms(row_hard_timeout_ms),
         "baseline_commitment_time_ms": format_ms(baseline["commitment"]),
         "baseline_prove_time_ms": format_ms(baseline["prove"]),
         "baseline_verify_time_ms": format_ms(baseline["verify"]),
@@ -390,6 +419,10 @@ def validate_row(dataset, backend, row, expected_source_hash="", expected_cpu_bi
         if row["gpu_used_for"] != "none":
             raise ValueError(f"{dataset}/{backend} has unexpected gpu_used_for={row['gpu_used_for']}")
     annotate_baseline_fields(dataset, backend, row)
+    if row.get("budget_status") not in {"target_pass", "near_accepted"}:
+        raise ValueError(
+            f"{dataset}/{backend} proof_core_total_ms={row.get('proof_core_total_ms')} exceeds near_2_2x budget"
+        )
 
 
 def project_row(dataset, backend, row):

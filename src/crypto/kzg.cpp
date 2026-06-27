@@ -664,6 +664,19 @@ namespace gatzk::crypto
                 }
                 if (it == pk.lagrange_srs_by_domain.end())
                 {
+                    for (auto candidate = pk.lagrange_srs_by_domain.begin();
+                         candidate != pk.lagrange_srs_by_domain.end();
+                         ++candidate)
+                    {
+                        if (candidate->second != nullptr && candidate->second->size() == polynomial.domain->size)
+                        {
+                            it = candidate;
+                            break;
+                        }
+                    }
+                }
+                if (it == pk.lagrange_srs_by_domain.end())
+                {
                     throw std::runtime_error(
                         "missing exact Lagrange SRS for domain: "
                         + base_key
@@ -950,7 +963,14 @@ namespace gatzk::crypto
             struct EvaluationFoldGroup
             {
                 std::shared_ptr<algebra::RootOfUnityDomain> domain;
-                std::vector<FieldElement> numerators;
+                struct Term
+                {
+                    const std::vector<FieldElement>* values = nullptr;
+                    std::size_t value_count = 0;
+                    FieldElement scale = FieldElement::zero();
+                };
+                std::vector<Term> terms;
+                FieldElement scaled_claim_sum = FieldElement::zero();
             };
             struct FoldedOpeningTerm
             {
@@ -1004,10 +1024,9 @@ namespace gatzk::crypto
                     });
                 if (it == evaluation_folds.end())
                 {
-                    evaluation_folds.push_back(EvaluationFoldGroup{
-                        .domain = domain,
-                        .numerators = std::vector<FieldElement>(domain->size, FieldElement::zero()),
-                    });
+                    EvaluationFoldGroup group;
+                    group.domain = domain;
+                    evaluation_folds.push_back(std::move(group));
                     it = std::prev(evaluation_folds.end());
                 }
                 return *it;
@@ -1057,13 +1076,15 @@ namespace gatzk::crypto
                 }
                 auto& group = folded_evaluation_group(polynomial.domain);
                 const auto& source_values = polynomial.values();
-                parallel_for_chunks_capped(polynomial.domain->size, 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end) {
-                    for (std::size_t row = begin; row < end; ++row)
-                    {
-                        const auto row_value = row < source_values.size() ? source_values[row] : FieldElement::zero();
-                        group.numerators[row] += row_value * term.scale - term.scaled_claim;
-                    }
-                });
+                if (!term.scale.is_zero())
+                {
+                    group.terms.push_back(EvaluationFoldGroup::Term{
+                        .values = &source_values,
+                        .value_count = source_values.size(),
+                        .scale = term.scale,
+                    });
+                }
+                group.scaled_claim_sum += term.scaled_claim;
             }
             if (!coefficient_fold.empty())
             {
@@ -1140,15 +1161,55 @@ namespace gatzk::crypto
                 }
 
                 std::vector<FieldElement> quotient_values(group.domain->size, FieldElement::zero());
+                struct NativeTerm
+                {
+                    const std::vector<FieldElement>* values = nullptr;
+                    std::size_t value_count = 0;
+                    mcl::Fr scale;
+                };
+                std::vector<NativeTerm> native_terms;
+                native_terms.reserve(group.terms.size());
+                for (const auto& term : group.terms)
+                {
+                    native_terms.push_back(NativeTerm{
+                        .values = term.values,
+                        .value_count = term.value_count,
+                        .scale = term.scale.native(),
+                    });
+                }
+                mcl::Fr zero;
+                zero.clear();
+                mcl::Fr base_numerator;
+                mcl::Fr::sub(base_numerator, zero, group.scaled_claim_sum.native());
+                const bool has_rotation = inverse_rotation_shift != 0;
+                const mcl::Fr rotation_scale_native = inverse_rotation_scale.native();
                 parallel_for_chunks_capped(group.domain->size, 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end) {
                     for (std::size_t row = begin; row < end; ++row)
                     {
+                        mcl::Fr native_numerator = base_numerator;
+                        for (const auto& term : native_terms)
+                        {
+                            if (row < term.value_count)
+                            {
+                                mcl::Fr product;
+                                mcl::Fr::mul(product, (*term.values)[row].native(), term.scale);
+                                mcl::Fr::add(native_numerator, native_numerator, product);
+                            }
+                        }
                         const auto inverse_index =
-                            inverse_rotation_shift == 0
+                            !has_rotation
                             ? row
                             : (row + group.domain->size - inverse_rotation_shift) & (group.domain->size - 1U);
-                        quotient_values[row] =
-                            group.numerators[row] * (*inverse_denominators)[inverse_index] * inverse_rotation_scale;
+                        mcl::Fr quotient_native;
+                        mcl::Fr::mul(
+                            quotient_native,
+                            native_numerator,
+                            (*inverse_denominators)[inverse_index].native());
+                        if (has_rotation)
+                        {
+                            mcl::Fr::mul(quotient_native, quotient_native, rotation_scale_native);
+                        }
+                        quotient_values[row] = FieldElement::from_native(quotient_native);
                     }
                 });
                 out = g1_add(

@@ -1,16 +1,16 @@
 {
-  "attempt_index": 1,
+  "attempt_index": 0,
   "available_disk": "1.5T",
-  "available_memory": "116Gi",
+  "available_memory": "115Gi",
   "baseline": "ezkl",
   "current_backend": "cpu",
-  "current_command": "python3 scripts/run_gat_ezkl_baseline.py --dataset ppi_full_formal --resume --resume-from prove --no-clean-existing-keys --run",
-  "current_dataset": "ppi_full_formal",
-  "current_phase": "run",
+  "current_command": "",
+  "current_dataset": "ogbn_arxiv_full",
+  "current_phase": "resource_quiescence",
   "host": "spark-f1b7",
   "last_failure": "",
-  "last_successful_step": "run",
-  "next_step": "running",
-  "pid": 639070,
-  "timestamp": "2026-06-16T02:45:59Z"
+  "last_successful_step": "resource_quiescence",
+  "next_step": "sleep_until_149s_clear",
+  "pid": 2513976,
+  "timestamp": "2026-06-27T05:08:36Z"
 }

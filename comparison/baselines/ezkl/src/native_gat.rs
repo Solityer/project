@@ -3837,17 +3837,20 @@ impl Circuit<Fr> for FullNativeCircuit {
         }
 
         let q_mul = meta.selector();
-        let q_inverse = meta.complex_selector();
-        let q_segment_sum = meta.selector();
+        let q_lookup = meta.complex_selector();
+        let q_add = meta.selector();
         let q_max = meta.selector();
-        let q_projection = meta.selector();
-        let q_aggregation = meta.selector();
-        let q_bias_add = meta.selector();
+        let q_equal = meta.selector();
         let q_output_average = meta.selector();
-        let q_public_binding = meta.selector();
-        let q_lrelu_lookup = meta.complex_selector();
-        let q_exp_lookup = meta.complex_selector();
-        let q_elu_lookup = meta.complex_selector();
+        let q_inverse = q_lookup.clone();
+        let q_lrelu_lookup = q_lookup.clone();
+        let q_exp_lookup = q_lookup.clone();
+        let q_elu_lookup = q_lookup;
+        let q_segment_sum = q_add.clone();
+        let q_bias_add = q_add;
+        let q_projection = q_equal.clone();
+        let q_aggregation = q_equal.clone();
+        let q_public_binding = q_equal;
         let table_lookup_kind = meta.lookup_table_column();
         let table_lookup_x = meta.lookup_table_column();
         let table_lookup_y = meta.lookup_table_column();
@@ -5781,7 +5784,7 @@ fn native_column_profile(plan: &NativeCompiledPlan) -> serde_json::Value {
     let layout = public_instance_layout_for_plan(plan);
     serde_json::json!({
         "advice_columns": 4,
-        "fixed_columns": 12,
+        "fixed_columns": 6,
         "instance_columns": layout.column_count.max(MAX_PUBLIC_INSTANCE_COLUMNS),
         "lookup_table_columns": 3
     })

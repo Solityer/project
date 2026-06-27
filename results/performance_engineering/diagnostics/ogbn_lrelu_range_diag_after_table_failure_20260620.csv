@@ -1,0 +1,3 @@
+label,index,edge_count,unique_s,min_s_raw,max_s_raw,span_s_raw,min_z_raw,max_z_raw
+hidden,0,1335586,610,-14046,489526,503573,-2809,489526
+output,0,1335586,976,-155516,91419,246936,-31103,91419

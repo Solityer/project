@@ -1,11 +1,11 @@
 {
-  "build_identity": "0687f512aed5818fbaa82682d29e1f2276b10bc4acb50812ec84a5ddb14c55d4",
+  "build_identity": "9f8618e67738d82d6412c8475fac439378c43d385b872e37653108c174627bb0",
   "comparison_status": "comparison/** ignored by request; no completion claim is based on comparison results.",
-  "cpu_binary_hash": "b8f6885af49074c020f456419b2d50ce48abe16e82f0cf5158f4189c1fa6d8dd",
+  "cpu_binary_hash": "8cfaa8652efd3d7d8b120780da5a6de7e87edb3b86d9f3d9ed0a75c6af0f9dd7",
   "exporter_hash": "6eb51f9d4a0e79fba006cde87fe9237216bc584fef8c40e3cbc138e75d2bec50",
-  "generated_at": "2026-06-20T07:31:59.703238+00:00",
-  "gpu_binary_hash": "a456e495eb62e2ea5f2e9aedc0654763411bc242f8a5ac9b925d7d2e2ae3ad35",
-  "main_git_status": "M include/gatzk/algebra/field.hpp\n M include/gatzk/algebra/vector_ops.hpp\n M include/gatzk/crypto/kzg.hpp\n M include/gatzk/protocol/proof.hpp\n M include/gatzk/protocol/prover.hpp\n M results/paper_secure/freeze_identity.json\n M scripts/export_paper_secure.py\n M scripts/run_secure_main_experiments.py\n M src/algebra/cuda_backend.cu\n M src/algebra/eval_backend.cpp\n M src/algebra/vector_ops.cpp\n M src/crypto/curve.cpp\n M src/crypto/kzg.cpp\n M src/main.cpp\n M src/protocol/prover.cpp\n M src/protocol/trace.cpp\n M src/util/route2.cpp\n?? results/performance_engineering/",
-  "runner_hash": "dfeb9829c0f6a5cff32e575a3ed399d7affadbbedadf5903be3d793a511dbfea",
-  "source_tree_hash": "553273db49120d80e584b1f58bc4ef3e641d6199e92fee716adf6d1a5c64f3f2"
+  "generated_at": "2026-06-20T17:59:45.558886+00:00",
+  "gpu_binary_hash": "41046a21a056c60af3d4edbac6a8a2f6aade21c74852bd6b6fbdd884047f297a",
+  "main_git_status": "M CMakeLists.txt\n M results/paper_secure/freeze_identity.json\n M scripts/run_secure_main_experiments.py\n M src/crypto/kzg.cpp\n M src/protocol/prover.cpp\n M src/protocol/quotients.cpp\n?? results/paper_secure/baseline_comparison_report.md\n?? results/paper_secure/cleanup_audit_report.md\n?? results/paper_secure/gpu_backend_report.md\n?? results/paper_secure/negative_optimization_report.md\n?? results/paper_secure/optimization_profile_report.md\n?? results/performance_engineering/benchmarks/\n?? results/performance_engineering/failed_runs/\n?? results/performance_engineering/five_dataset_bottleneck_matrix.md\n?? results/performance_engineering/performance_path_equivalence_audit.md\n?? tools/benchmarks/",
+  "runner_hash": "56671945d5e71f2c123cae16a5ea9f89f2c96e0e8816a42c355ebe3e615c7905",
+  "source_tree_hash": "a65bc01202766849df80df77369252f21fcaedbcc31c8cc5e732dc3962da1f89"
 }
