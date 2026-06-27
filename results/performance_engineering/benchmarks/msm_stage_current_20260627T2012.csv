@@ -1,0 +1,5 @@
+case,input_count,nonzero_count,repeat,profiled_ms,raw_mulvec_ms,compact_raw_mulvec_ms,profiled_multithreaded,profiled_sparse_compaction
+edge_131072_sparse5,131072,26215,0,144.831,1144.270,518.476,true,true
+edge_131072_dense,131072,131072,0,353.271,2470.969,2476.811,true,false
+coef_1048576_sparse3,1048576,349526,0,642.615,9331.475,6480.534,true,true
+coef_1048576_dense,1048576,1048576,0,1807.808,14075.319,14192.532,true,false

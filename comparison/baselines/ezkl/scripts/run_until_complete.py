@@ -58,6 +58,21 @@ def current_verified(dataset: str) -> bool:
     verify = read_json(run_dir / "verify.json")
     if manifest.get("status") != "verified" or verify.get("verify_passed") is not True:
         return False
+    completed = subprocess.run(
+        ["python3", "scripts/run_gat_ezkl_baseline.py", "--dataset", dataset, "--check-resume-state"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return False
+    try:
+        resume = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return False
+    if resume.get("source_tree_digest_matches_manifest") is not True:
+        return False
     marker = current_marker_time()
     paths = [run_dir / "run_manifest.json", run_dir / "proof.json", run_dir / "verify.json"]
     if not marker:
@@ -79,6 +94,14 @@ def resource_snapshot() -> dict[str, str]:
 
 def available_memory_bytes() -> int:
     raw = subprocess.run(["bash", "-lc", "free -b | awk '/Mem:/ {print $7}'"], text=True, capture_output=True).stdout.strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return 0
+
+
+def available_swap_bytes() -> int:
+    raw = subprocess.run(["bash", "-lc", "free -b | awk '/Swap:/ {print $4}'"], text=True, capture_output=True).stdout.strip()
     try:
         return int(raw)
     except ValueError:
@@ -181,13 +204,15 @@ def wait_for_heavy_dataset_slot(dataset: str) -> None:
     if dataset not in {"ppi_full_formal", "ogbn_arxiv_full"}:
         return
     min_available = 90 * 1024 * 1024 * 1024
+    min_swap_free = 12 * 1024 * 1024 * 1024
     quiet_seconds = int(os.environ.get("EZKL_HEAVY_SLOT_QUIET_SECONDS", "180"))
     clear_since: float | None = None
     recorded = False
     while True:
         competitors = competing_heavy_processes()
         mem_ok = available_memory_bytes() >= min_available
-        if not competitors and mem_ok:
+        swap_ok = available_swap_bytes() >= min_swap_free
+        if not competitors and mem_ok and swap_ok:
             if clear_since is None:
                 clear_since = time.monotonic()
             clear_elapsed = time.monotonic() - clear_since
@@ -206,7 +231,12 @@ def wait_for_heavy_dataset_slot(dataset: str) -> None:
             time.sleep(min(30, remaining))
             continue
         clear_since = None
-        detail = "competing_heavy_process" if competitors else "available_memory_below_threshold"
+        if competitors:
+            detail = "competing_heavy_process"
+        elif not mem_ok:
+            detail = "available_memory_below_threshold"
+        else:
+            detail = "available_swap_below_threshold"
         heartbeat("wait_for_resources", dataset, failure=detail, next_step="sleep_60s_then_recheck")
         state(
             "wait_for_resources",
@@ -308,6 +338,31 @@ def main() -> int:
         rc = run(command, "run", dataset)
         if rc != 0:
             return rc
+        manifest = read_json(ROOT / "runs" / dataset / "run_manifest.json")
+        if manifest.get("status") != "verified":
+            append_retry(
+                dataset,
+                "post_run_manifest_gate",
+                2,
+                f"manifest_status_{manifest.get('status', 'missing')}",
+                command,
+                "stop_before_next_dataset_and_repair_current_row",
+            )
+            state(
+                "run",
+                dataset,
+                validator_status=f"manifest_status_{manifest.get('status', 'missing')}",
+                next_action="repair_current_dataset_before_continuing",
+                next_command="./scripts/run_until_complete.sh",
+            )
+            heartbeat(
+                "run",
+                dataset,
+                " ".join(command),
+                failure=f"manifest_status_{manifest.get('status', 'missing')}",
+                next_step="repair_current_dataset_before_continuing",
+            )
+            return 2
     collect_rc = run(["python3", "scripts/collect_results.py"], "collect")
     validate_rc = run(["python3", "scripts/validate_final_results.py"], "validate")
     if collect_rc == 0 and validate_rc == 0:

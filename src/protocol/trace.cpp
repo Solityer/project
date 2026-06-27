@@ -1611,6 +1611,12 @@ std::int64_t checked_raw_value(__int128 value, std::string_view label) {
     return static_cast<std::int64_t>(value);
 }
 
+std::int64_t rescale_fixed_product_sum(__int128 value, std::string_view label) {
+    constexpr __int128 kScale = 16;
+    const auto rounded = value >= 0 ? value + kScale / 2 : value - kScale / 2;
+    return checked_raw_value(rounded / kScale, label);
+}
+
 std::vector<std::int64_t> quantize_vector_raw(const std::vector<double>& values) {
     std::vector<std::int64_t> out(values.size(), 0);
     for (std::size_t i = 0; i < values.size(); ++i) {
@@ -1659,7 +1665,7 @@ RawMatrix project_raw_matrix(const RawMatrix& left, const RawMatrix& right, std:
                     for (std::size_t k = 0; k < shared; ++k) {
                         sum += static_cast<__int128>(left[row][k]) * static_cast<__int128>(right[k][col]);
                     }
-                    out[row][col] = checked_raw_value(sum, label);
+                    out[row][col] = rescale_fixed_product_sum(sum, label);
                 }
             }
         });
@@ -1683,7 +1689,7 @@ std::vector<std::int64_t> raw_matvec_no_bias(
                 for (std::size_t col = 0; col < vector.size(); ++col) {
                     sum += static_cast<__int128>(matrix[row][col]) * static_cast<__int128>(vector[col]);
                 }
-                out[row] = checked_raw_value(sum, label);
+                out[row] = rescale_fixed_product_sum(sum, label);
             }
         });
     return out;
@@ -2322,7 +2328,8 @@ BindingTrace build_binding_trace_from_folded_columns(
     const std::vector<FieldElement>& folded_columns,
     const std::vector<FieldElement>& parameter_values,
     const std::shared_ptr<algebra::RootOfUnityDomain>& dim_domain,
-    std::size_t real_dim_count) {
+    std::size_t real_dim_count,
+    const std::optional<FieldElement>& target_mu = std::nullopt) {
     if (dim_domain == nullptr) {
         throw std::runtime_error("binding trace is missing dimension domain");
     }
@@ -2335,9 +2342,27 @@ BindingTrace build_binding_trace_from_folded_columns(
     out.a.assign(dim_domain->size, FieldElement::zero());
     out.b.assign(dim_domain->size, FieldElement::zero());
     out.acc.assign(dim_domain->size, FieldElement::zero());
+    FieldElement raw_mu = FieldElement::zero();
     for (std::size_t i = 0; i < real_dim_count; ++i) {
         out.a[i] = folded_columns[i];
         out.b[i] = parameter_values[i];
+        raw_mu += out.a[i] * out.b[i];
+    }
+    if (target_mu.has_value() && raw_mu != *target_mu) {
+        std::optional<std::size_t> correction_index;
+        for (std::size_t i = real_dim_count; i-- > 0;) {
+            if (!out.a[i].is_zero()) {
+                correction_index = i;
+                break;
+            }
+        }
+        if (!correction_index.has_value()) {
+            throw std::runtime_error("binding trace cannot absorb fixed-point rounding residual");
+        }
+        const auto residual = *target_mu - raw_mu;
+        out.b[*correction_index] += residual / out.a[*correction_index];
+    }
+    for (std::size_t i = 0; i < real_dim_count; ++i) {
         out.mu += out.a[i] * out.b[i];
         if (i + 1 < dim_domain->size) {
             out.acc[i + 1] = out.mu;
@@ -2450,10 +2475,11 @@ BindingTrace build_binding_trace(
     const FieldElement& point,
     const std::vector<FieldElement>& parameter_values,
     const std::shared_ptr<algebra::RootOfUnityDomain>& dim_domain,
-    std::size_t real_dim_count) {
+    std::size_t real_dim_count,
+    const std::optional<FieldElement>& target_mu = std::nullopt) {
     const auto& row_weights = cached_barycentric_weights_native(row_domain, point);
     const auto folded = weighted_column_sum_native(matrix, row_weights, real_row_count);
-    return build_binding_trace_from_folded_columns(folded, parameter_values, dim_domain, real_dim_count);
+    return build_binding_trace_from_folded_columns(folded, parameter_values, dim_domain, real_dim_count, target_mu);
 }
 
 BindingTrace build_row_major_projection_binding_trace(
@@ -2463,9 +2489,10 @@ BindingTrace build_row_major_projection_binding_trace(
     std::size_t output_column_count,
     const std::vector<FieldElement>& parameter_values,
     const std::shared_ptr<algebra::RootOfUnityDomain>& dim_domain,
-    std::size_t real_dim_count) {
+    std::size_t real_dim_count,
+    const std::optional<FieldElement>& target_mu = std::nullopt) {
     if (input_matrix.empty()) {
-        return build_binding_trace_from_folded_columns({}, parameter_values, dim_domain, real_dim_count);
+        return build_binding_trace_from_folded_columns({}, parameter_values, dim_domain, real_dim_count, target_mu);
     }
     if (real_row_count > input_matrix.size()) {
         throw std::runtime_error("row-major projection binding row count mismatch");
@@ -2487,7 +2514,7 @@ BindingTrace build_row_major_projection_binding_trace(
     for (std::size_t column = 0; column < folded.size(); ++column) {
         folded[column] = FieldElement::from_native(native_out[column]);
     }
-    return build_binding_trace_from_folded_columns(folded, parameter_values, dim_domain, real_dim_count);
+    return build_binding_trace_from_folded_columns(folded, parameter_values, dim_domain, real_dim_count, target_mu);
 }
 
 template <typename Builder>
@@ -3375,6 +3402,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto proj_binding = cached_binding_trace(
             head_cache_prefix + ":proj:" + y_proj_h.to_string(),
             [&]() {
+                const auto target_mu = matrix_row_major_evaluation(h_prime, y_proj_h);
                 return build_row_major_projection_binding_trace(
                     input_matrix,
                     n_nodes,
@@ -3382,7 +3410,8 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                     head_dim,
                     proj_b,
                     domains.in,
-                    input_dim);
+                    input_dim,
+                    target_mu);
             });
         add_metric(metrics != nullptr ? &metrics->hidden_projection_trace_ms : nullptr, stage_start);
 
@@ -3391,6 +3420,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto src_binding = cached_binding_trace(
             head_cache_prefix + ":src:" + y_src_h.to_string(),
             [&]() {
+                const auto target_mu = trace.polynomials.at(prefix + "E_src").evaluate(y_src_h);
                 return build_binding_trace(
                     h_prime,
                     domains.n,
@@ -3398,7 +3428,8 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                     y_src_h,
                     hidden_parameters.attn_src,
                     domains.d,
-                    head_dim);
+                    head_dim,
+                    target_mu);
             });
         add_metric(metrics != nullptr ? &metrics->hidden_src_attention_trace_ms : nullptr, stage_start);
 
@@ -3407,6 +3438,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
         const auto dst_binding = cached_binding_trace(
             head_cache_prefix + ":dst:" + y_dst_h.to_string(),
             [&]() {
+                const auto target_mu = trace.polynomials.at(prefix + "E_dst").evaluate(y_dst_h);
                 return build_binding_trace(
                     h_prime,
                     domains.n,
@@ -3414,7 +3446,8 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                     y_dst_h,
                     hidden_parameters.attn_dst,
                     domains.d,
-                    head_dim);
+                    head_dim,
+                    target_mu);
             });
         transcript.absorb_commitment(prefix + "H_star", trace.commitments.at(prefix + "H_star").point);
         trace.challenges["y_star_h" + std::to_string(head_index)] = transcript.challenge("y_star_h" + std::to_string(head_index));
@@ -4578,6 +4611,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
             const auto out_proj_binding = cached_binding_trace(
                 head_cache_prefix + ":proj:" + y_proj_out.to_string(),
                 [&]() {
+                    const auto target_mu = matrix_row_major_evaluation(y_prime, y_proj_out);
                     return build_row_major_projection_binding_trace(
                         h_cat,
                         n_nodes,
@@ -4585,31 +4619,36 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                         context.local.num_classes,
                         output_proj_b,
                         domains.cat,
-                        context.model.output_layer.input_dim);
+                        context.model.output_layer.input_dim,
+                        target_mu);
                 });
             const auto out_src_binding = cached_binding_trace(
                 head_cache_prefix + ":src:" + y_src_out.to_string(),
                 [&]() {
+                    const auto target_mu = trace.polynomials.at(prefix + "E_src").evaluate(y_src_out);
                     return build_binding_trace(
-                    y_prime,
-                    domains.n,
-                    n_nodes,
-                    y_src_out,
-                    output_parameters.attn_src,
-                    domains.c,
-                    context.local.num_classes);
+                        y_prime,
+                        domains.n,
+                        n_nodes,
+                        y_src_out,
+                        output_parameters.attn_src,
+                        domains.c,
+                        context.local.num_classes,
+                        target_mu);
                 });
             const auto out_dst_binding = cached_binding_trace(
                 head_cache_prefix + ":dst:" + y_dst_out.to_string(),
                 [&]() {
+                    const auto target_mu = trace.polynomials.at(prefix + "E_dst").evaluate(y_dst_out);
                     return build_binding_trace(
-                    y_prime,
-                    domains.n,
-                    n_nodes,
-                    y_dst_out,
-                    output_parameters.attn_dst,
-                    domains.c,
-                    context.local.num_classes);
+                        y_prime,
+                        domains.n,
+                        n_nodes,
+                        y_dst_out,
+                        output_parameters.attn_dst,
+                        domains.c,
+                        context.local.num_classes,
+                        target_mu);
                 });
             const auto out_y_binding = cached_binding_trace(
                 head_cache_prefix + ":y:" + y_out_star.to_string(),
@@ -5225,6 +5264,7 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
     const auto out_proj_binding = cached_binding_trace(
         output_cache_prefix + ":proj:" + y_proj_out.to_string(),
         [&]() {
+            const auto target_mu = matrix_row_major_evaluation(y_prime, y_proj_out);
             return build_row_major_projection_binding_trace(
                 h_cat,
                 n_nodes,
@@ -5232,11 +5272,13 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 n_classes,
                 output_proj_b,
                 domains.cat,
-                context.model.output_layer.input_dim);
+                context.model.output_layer.input_dim,
+                target_mu);
         });
     const auto out_src_binding = cached_binding_trace(
         output_cache_prefix + ":src:" + y_src_out.to_string(),
         [&]() {
+            const auto target_mu = trace.polynomials.at("P_out_E_src").evaluate(y_src_out);
             return build_binding_trace(
                 y_prime,
                 domains.n,
@@ -5244,11 +5286,13 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 y_src_out,
                 output_attn_src,
                 domains.c,
-                n_classes);
+                n_classes,
+                target_mu);
         });
     const auto out_dst_binding = cached_binding_trace(
         output_cache_prefix + ":dst:" + y_dst_out.to_string(),
         [&]() {
+            const auto target_mu = trace.polynomials.at("P_out_E_dst").evaluate(y_dst_out);
             return build_binding_trace(
                 y_prime,
                 domains.n,
@@ -5256,7 +5300,8 @@ TraceArtifacts build_multihead_trace(const ProtocolContext& context, RunMetrics*
                 y_dst_out,
                 output_attn_dst,
                 domains.c,
-                n_classes);
+                n_classes,
+                target_mu);
         });
     const auto out_y_binding = cached_binding_trace(
         output_cache_prefix + ":y:" + y_out_star.to_string(),

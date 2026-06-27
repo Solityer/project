@@ -257,6 +257,22 @@ def digest_paths(paths: list[Path]) -> str:
     return h.hexdigest()
 
 
+def digest_paths_relative(paths: list[Path], root: Path) -> str:
+    h = hashlib.sha256()
+    for path in sorted(paths, key=lambda item: item.as_posix()):
+        if not path.exists() or not path.is_file():
+            continue
+        try:
+            rel_path = path.resolve().relative_to(root.resolve()).as_posix()
+        except ValueError:
+            rel_path = path.as_posix()
+        h.update(rel_path.encode("utf-8"))
+        h.update(b"\0")
+        h.update(file_digest(path).encode("ascii"))
+        h.update(b"\0")
+    return h.hexdigest()
+
+
 def safe_stat_size(path: Path) -> int:
     try:
         return path.stat().st_size
@@ -375,7 +391,7 @@ def source_tree_paths(baseline: str) -> list[Path]:
 
 @lru_cache(maxsize=8)
 def source_tree_digest(baseline: str) -> str:
-    return digest_paths(source_tree_paths(baseline))
+    return digest_paths_relative(source_tree_paths(baseline), BASELINE_ROOTS[baseline])
 
 
 def source_tree_scope(baseline: str) -> list[str]:
@@ -587,7 +603,8 @@ def base_row(baseline: str, dataset: str, backend: str) -> dict[str, Any]:
 def finalize_freshness(row: dict[str, Any], artifacts: list[Path]) -> None:
     marker = current_marker_time()
     old = oldest_mtime([path for path in artifacts if path.exists()])
-    fresh = bool(marker and old and old >= marker)
+    digest_matches = bool(row.get("source_tree_digest")) and row.get("source_tree_digest") == source_tree_digest(str(row["baseline"]))
+    fresh = bool(marker and old and old >= marker and digest_matches)
     row["stale_result"] = not fresh
     row["rerun_current_code"] = fresh and row.get("git_head") == git_head()
 
@@ -622,6 +639,9 @@ def collect_ezkl() -> list[dict[str, Any]]:
             "hidden_profile": hidden_profile_text(model_info.get("hidden_profile")) or row["hidden_profile"],
             "K_out": as_int(model_info.get("K_out"), row["K_out"]),
             "C": as_int(model_info.get("num_classes"), row["C"]),
+            "git_head": str(manifest.get("git_head") or ""),
+            "source_tree_digest": str(manifest.get("source_tree_digest") or ""),
+            "source_tree_digest_scope": manifest.get("source_tree_digest_scope") or [],
             "run_id": str(manifest.get("run_id", "")),
             "rerun_timestamp": str(manifest.get("run_completed_at") or manifest.get("run_started_at") or ""),
             "command_line": str(manifest.get("command") or manifest.get("failed_command") or ""),

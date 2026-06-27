@@ -95,6 +95,22 @@ add_executable(gatzk_srs_setup tools/srs/generate_srs.cpp)
 target_include_directories(gatzk_srs_setup PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(gatzk_srs_setup PRIVATE gatzkml)
 
+add_executable(gatzk_msm_stage_bench tools/benchmarks/msm_stage_bench.cpp)
+target_include_directories(gatzk_msm_stage_bench PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(gatzk_msm_stage_bench PRIVATE gatzkml)
+
+add_executable(gatzk_t_edge_eval_stage_bench tools/benchmarks/t_edge_eval_stage_bench.cpp)
+target_include_directories(gatzk_t_edge_eval_stage_bench PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(gatzk_t_edge_eval_stage_bench PRIVATE gatzkml)
+
+add_executable(gatzk_kzg_opening_stage_bench tools/benchmarks/kzg_opening_stage_bench.cpp)
+target_include_directories(gatzk_kzg_opening_stage_bench PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(gatzk_kzg_opening_stage_bench PRIVATE gatzkml)
+
+add_executable(gatzk_lrelu_range_diag tools/benchmarks/lrelu_range_diag.cpp)
+target_include_directories(gatzk_lrelu_range_diag PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(gatzk_lrelu_range_diag PRIVATE gatzkml)
+
 if(GATZK_BUILD_TESTS)
     enable_testing()
     add_executable(gatzk_tests tests/test_main.cpp)

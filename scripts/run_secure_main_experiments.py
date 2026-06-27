@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import pathlib
+import signal
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,7 @@ DATASETS: List[Tuple[str, str, str]] = [
     ("ogbn-arxiv", "configs/ogbn_arxiv_secure.cfg", "runs/ogbn_arxiv_secure"),
 ]
 RUN_TAG = "paper_secure_final"
+BUDGET_PATH = ROOT / "results" / "performance_engineering" / "baseline_budget_2x.json"
 ROUTE_FLAGS = [
     "--fast-msm", "on",
     "--parallel-fft", "on",
@@ -90,6 +92,112 @@ def bool_text(row: Dict[str, object], key: str) -> str:
     return str(row.get(key, "")).lower()
 
 
+def dataset_key(dataset: str) -> str:
+    return "ogbn-arxiv" if dataset in {"ogbn_arxiv", "ogbn-arxiv"} else dataset
+
+
+def load_budget_table(path: pathlib.Path) -> Dict[Tuple[str, str], Dict[str, object]]:
+    if not path.exists():
+        raise FileNotFoundError(f"missing baseline budget file: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or payload.get("timing_scope") != "proof_core_components":
+        raise ValueError(f"invalid baseline budget payload: {path}")
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        raise ValueError(f"baseline budget rows must be a list: {path}")
+    table: Dict[Tuple[str, str], Dict[str, object]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("baseline budget row must be an object")
+        backend = str(row.get("backend", "")).lower()
+        dataset = dataset_key(str(row.get("dataset", "")))
+        if backend not in {"cpu", "gpu"} or not dataset:
+            raise ValueError(f"invalid baseline budget row identity: {row}")
+        for key in ("target_2x_proof_core_total_ms", "near_2_2x_proof_core_total_ms", "row_hard_timeout_ms"):
+            if float(row.get(key, -1.0)) <= 0.0:
+                raise ValueError(f"invalid budget field {key} for {backend}/{dataset}")
+        table[(backend, dataset)] = row
+    expected = {(backend, dataset) for dataset, _, _ in DATASETS for backend in ("cpu", "gpu")}
+    if set(table) != expected:
+        raise ValueError(f"baseline budget row set mismatch: {sorted(expected - set(table))}")
+    return table
+
+
+def numeric_field(row: Dict[str, object], *keys: str) -> float:
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return float(value)
+    raise ValueError(f"missing numeric field: {'/'.join(keys)}")
+
+
+def compute_budget_fields(
+    row: Dict[str, object],
+    budget_row: Dict[str, object],
+) -> Dict[str, str]:
+    commitment_ms = numeric_field(row, "commitment_ms", "commitment_time_ms")
+    prove_ms = numeric_field(row, "prove_ms", "prove_time_ms")
+    verify_ms = numeric_field(row, "verify_ms", "verify_time_ms")
+    proof_core_total_ms = commitment_ms + prove_ms + verify_ms
+    target_ms = float(budget_row["target_2x_proof_core_total_ms"])
+    near_ms = float(budget_row["near_2_2x_proof_core_total_ms"])
+    if proof_core_total_ms <= target_ms:
+        status = "target_pass"
+    elif proof_core_total_ms <= near_ms:
+        status = "near_accepted"
+    else:
+        status = "over_near_2_2x"
+    return {
+        "proof_core_total_ms": f"{proof_core_total_ms:.3f}",
+        "target_2x_proof_core_total_ms": f"{target_ms:.3f}",
+        "near_2_2x_proof_core_total_ms": f"{near_ms:.3f}",
+        "budget_status": status,
+        "row_hard_timeout_ms": f"{float(budget_row['row_hard_timeout_ms']):.3f}",
+    }
+
+
+def row_budget_passed(row: Dict[str, object], budget_row: Dict[str, object]) -> bool:
+    try:
+        fields = compute_budget_fields(row, budget_row)
+    except (TypeError, ValueError):
+        return False
+    return fields["budget_status"] in {"target_pass", "near_accepted"}
+
+
+def write_failure_record(
+    dataset: str,
+    backend: str,
+    reason: str,
+    log_path: pathlib.Path | None,
+    row_path: pathlib.Path | None,
+) -> pathlib.Path:
+    failed_root = ROOT / "results" / "performance_engineering" / "failed_runs"
+    failed_root.mkdir(parents=True, exist_ok=True)
+    path = failed_root / f"{timestamp_token()}_{backend}_{dataset}_matrix_abort.md"
+    lines = [
+        "# Matrix Abort",
+        "",
+        f"- dataset: {dataset}",
+        f"- backend: {backend}",
+        f"- reason: {reason}",
+    ]
+    if log_path is not None:
+        lines.append(f"- log_path: {log_path.relative_to(ROOT)}")
+    if row_path is not None:
+        lines.append(f"- row_path: {row_path.relative_to(ROOT)}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    for report_name in ("optimization_profile_report.md",):
+        report = ROOT / "results" / "paper_secure" / report_name
+        if report.exists():
+            with report.open("a", encoding="utf-8") as handle:
+                handle.write(f"\n## Matrix Abort {timestamp_token()}\n\n- {backend}/{dataset}: {reason}\n")
+    bottleneck = ROOT / "results" / "performance_engineering" / "five_dataset_bottleneck_matrix.md"
+    if bottleneck.exists():
+        with bottleneck.open("a", encoding="utf-8") as handle:
+            handle.write(f"\n## Matrix Abort {timestamp_token()}\n\n- {backend}/{dataset}: {reason}\n")
+    return path
+
+
 def strict_row_gate(row: Dict[str, object], dataset: str, backend: str) -> None:
     required = {
         "status": "VERIFY_OK",
@@ -107,6 +215,9 @@ def strict_row_gate(row: Dict[str, object], dataset: str, backend: str) -> None:
     for key, expected in required.items():
         if str(row.get(key, "")).lower() != expected.lower():
             raise RuntimeError(f"{backend}/{dataset} has {key}={row.get(key, '')}, expected {expected}")
+    numeric_field(row, "commitment_ms", "commitment_time_ms")
+    numeric_field(row, "prove_ms", "prove_time_ms")
+    numeric_field(row, "verify_ms", "verify_time_ms")
     if backend == "gpu":
         if bool_text(row, "gpu_backend_requested") != "true":
             raise RuntimeError(f"{backend}/{dataset} missing gpu_backend_requested=true")
@@ -135,19 +246,25 @@ def run_command(
     with log_path.open("w", encoding="utf-8") as log:
         log.write("$ " + " ".join(command) + "\n")
         log.flush()
+        process = subprocess.Popen(
+            command,
+            cwd=ROOT,
+            env=merged_env,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
         try:
-            completed = subprocess.run(
-                command,
-                cwd=ROOT,
-                env=merged_env,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                timeout=timeout,
-                check=False,
-            )
-            return int(completed.returncode)
+            return int(process.wait(timeout=timeout))
         except subprocess.TimeoutExpired:
             log.write(f"\nTIMEOUT after {timeout} seconds\n")
+            log.flush()
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            finally:
+                process.wait()
             return 124
 
 
@@ -274,6 +391,7 @@ def valid_manifest(
     source_hash: str,
     binary_hash: str,
     runner_hash: str,
+    budget_row: Dict[str, object] | None = None,
 ) -> bool:
     try:
         row = load_manifest(path)
@@ -313,6 +431,8 @@ def valid_manifest(
     try:
         strict_row_gate(row, dataset, backend)
     except RuntimeError:
+        return False
+    if budget_row is not None and not row_budget_passed(row, budget_row):
         return False
     for key in (
         "total_wall_clock_ms",
@@ -361,6 +481,7 @@ def enrich_manifest(
     timed_out: bool,
     command: List[str],
     subprocess_wall_clock_ms: float,
+    budget_row: Dict[str, object] | None = None,
 ) -> None:
     row = load_manifest(path)
     try:
@@ -386,6 +507,8 @@ def enrich_manifest(
         "official_runner_wall_clock_ms": f"{subprocess_wall_clock_ms:.3f}",
         "runner_overhead_ms": f"{runner_overhead_ms:.3f}",
     })
+    if budget_row is not None:
+        row.update(compute_budget_fields(row, budget_row))
     row["run_manifest_hash"] = manifest_hash(row)
     (path / "run_manifest.json").write_text(
         json.dumps(row, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
@@ -406,12 +529,13 @@ def execute_row(
     runner_hash: str,
     build_identity: str,
     timeout_seconds: int,
+    budget_row: Dict[str, object],
     force: bool,
     log_root: pathlib.Path,
     archive_root: pathlib.Path,
 ) -> pathlib.Path:
     path = run_dir(base_run_dir, backend)
-    if not force and valid_manifest(path, dataset, backend, source_hash, binary_hash, runner_hash):
+    if not force and valid_manifest(path, dataset, backend, source_hash, binary_hash, runner_hash, budget_row):
         print(f"resume-valid {backend}/{dataset}: {path.relative_to(ROOT)}", flush=True)
         return path
 
@@ -430,7 +554,6 @@ def execute_row(
     ]
     started_at = utc_now()
     env = {
-        "GATZK_RUN_PROGRESS": "1",
         "GATZK_SOURCE_TREE_HASH": source_hash,
         "GATZK_BINARY_HASH": binary_hash,
         "GATZK_RUNNER_HASH": runner_hash,
@@ -438,14 +561,17 @@ def execute_row(
         "GATZK_RUN_STARTED_AT": started_at,
         "GATZK_RUN_TIMEOUT": "false",
     }
+    if os.environ.get("GATZK_RUN_PROGRESS") == "1":
+        env["GATZK_RUN_PROGRESS"] = "1"
     print(f"run-start {backend}/{dataset}: {path.relative_to(ROOT)}", flush=True)
     run_log_path = unique_log_path(log_root / f"run_{backend}_{dataset}.log")
+    row_timeout_seconds = max(1, min(timeout_seconds, int((float(budget_row["row_hard_timeout_ms"]) + 999.0) // 1000.0)))
     subprocess_start = time.perf_counter()
     code = run_command(
         command,
         run_log_path,
         env=env,
-        timeout=timeout_seconds,
+        timeout=row_timeout_seconds,
     )
     subprocess_wall_clock_ms = (time.perf_counter() - subprocess_start) * 1000.0
     ended_at = utc_now()
@@ -467,14 +593,37 @@ def execute_row(
             timed_out,
             command,
             subprocess_wall_clock_ms,
+            budget_row,
         )
     if code != 0:
+        write_failure_record(dataset, backend, f"row exited with code {code}", run_log_path, path)
+        if path.parent.exists():
+            archive_existing_tree(path.parent, archive_root, dataset, backend)
         raise RuntimeError(f"{backend}/{dataset} failed with exit code {code}; see {run_log_path}")
-    if not valid_manifest(path, dataset, backend, source_hash, binary_hash, runner_hash):
+    if not valid_manifest(path, dataset, backend, source_hash, binary_hash, runner_hash, budget_row):
         try:
             strict_row_gate(load_manifest(path), dataset, backend)
         except Exception as error:
+            write_failure_record(dataset, backend, f"manifest failed strict row gate: {error}", run_log_path, path)
+            if path.parent.exists():
+                archive_existing_tree(path.parent, archive_root, dataset, backend)
             raise RuntimeError(f"{backend}/{dataset} manifest failed strict row gate: {error}") from error
+        if not row_budget_passed(load_manifest(path), budget_row):
+            row = load_manifest(path)
+            fields = compute_budget_fields(row, budget_row)
+            reason = (
+                "proof_core_total_ms="
+                + fields["proof_core_total_ms"]
+                + " exceeds near_2_2x="
+                + fields["near_2_2x_proof_core_total_ms"]
+            )
+            write_failure_record(dataset, backend, reason, run_log_path, path)
+            if path.parent.exists():
+                archive_existing_tree(path.parent, archive_root, dataset, backend)
+            raise RuntimeError(f"{backend}/{dataset} over budget: {reason}")
+        write_failure_record(dataset, backend, "manifest failed strict resume validation", run_log_path, path)
+        if path.parent.exists():
+            archive_existing_tree(path.parent, archive_root, dataset, backend)
         raise RuntimeError(f"{backend}/{dataset} manifest failed strict resume validation: {path}")
     strict_row_gate(load_manifest(path), dataset, backend)
     print(f"run-ok {backend}/{dataset}: {path.relative_to(ROOT)}", flush=True)
@@ -631,6 +780,7 @@ def main() -> int:
     parser.add_argument("--skip-tests", action="store_true")
     parser.add_argument("--skip-full-security-tests", action="store_true")
     parser.add_argument("--timeout-seconds", type=int, default=21600)
+    parser.add_argument("--budget-path", default=str(BUDGET_PATH.relative_to(ROOT)))
     parser.add_argument("--jobs", type=int, default=max(1, min(16, (os.cpu_count() or 2) // 2)))
     parser.add_argument("--datasets", default="all", help="comma list or all")
     parser.add_argument("--backends", default="all", help="comma list of cpu,gpu or all")
@@ -644,6 +794,7 @@ def main() -> int:
     selected_datasets = select_datasets(args.datasets)
     selected_backends = select_backends(args.backends)
     full_matrix = len(selected_datasets) == len(DATASETS) and selected_backends == ["cpu", "gpu"]
+    budget_table = load_budget_table(ROOT / args.budget_path)
 
     if not args.skip_build:
         configure_and_build(ROOT / "build", cuda=False, jobs=args.jobs, log_root=log_root)
@@ -669,43 +820,58 @@ def main() -> int:
 
     cpu_paths: Dict[str, pathlib.Path] = {}
     gpu_paths: Dict[str, pathlib.Path] = {}
-    for dataset, config, base_run_dir in selected_datasets:
-        if "cpu" in selected_backends:
-            cpu_paths[dataset] = execute_row(
-                dataset,
-                config,
-                base_run_dir,
-                "cpu",
-                cpu_binary,
-                source_hash,
-                cpu_binary_hash,
-                cpu_binary_hash,
-                gpu_binary_hash,
-                runner_hash,
-                build_identity,
-                args.timeout_seconds,
-                args.force,
-                log_root,
-                archive_root,
-            )
-        if "gpu" in selected_backends:
-            gpu_paths[dataset] = execute_row(
-                dataset,
-                config,
-                base_run_dir,
-                "gpu",
-                gpu_binary,
-                source_hash,
-                gpu_binary_hash,
-                cpu_binary_hash,
-                gpu_binary_hash,
-                runner_hash,
-                build_identity,
-                args.timeout_seconds,
-                args.force,
-                log_root,
-                archive_root,
-            )
+    completed_paths: List[Tuple[str, str, pathlib.Path]] = []
+    try:
+        for dataset, config, base_run_dir in selected_datasets:
+            if "cpu" in selected_backends:
+                cpu_paths[dataset] = execute_row(
+                    dataset,
+                    config,
+                    base_run_dir,
+                    "cpu",
+                    cpu_binary,
+                    source_hash,
+                    cpu_binary_hash,
+                    cpu_binary_hash,
+                    gpu_binary_hash,
+                    runner_hash,
+                    build_identity,
+                    args.timeout_seconds,
+                    budget_table[("cpu", dataset_key(dataset))],
+                    args.force,
+                    log_root,
+                    archive_root,
+                )
+                completed_paths.append((dataset, "cpu", cpu_paths[dataset]))
+            if "gpu" in selected_backends:
+                gpu_paths[dataset] = execute_row(
+                    dataset,
+                    config,
+                    base_run_dir,
+                    "gpu",
+                    gpu_binary,
+                    source_hash,
+                    gpu_binary_hash,
+                    cpu_binary_hash,
+                    gpu_binary_hash,
+                    runner_hash,
+                    build_identity,
+                    args.timeout_seconds,
+                    budget_table[("gpu", dataset_key(dataset))],
+                    args.force,
+                    log_root,
+                    archive_root,
+                )
+                completed_paths.append((dataset, "gpu", gpu_paths[dataset]))
+    except Exception:
+        archived = set()
+        for dataset, backend, path in completed_paths:
+            parent = path.parent
+            key = str(parent)
+            if parent.exists() and key not in archived:
+                archive_existing_tree(parent, archive_root, dataset, backend)
+                archived.add(key)
+        raise
 
     if args.skip_export or not full_matrix:
         print("secure subset rows complete; results/paper_secure export skipped", flush=True)

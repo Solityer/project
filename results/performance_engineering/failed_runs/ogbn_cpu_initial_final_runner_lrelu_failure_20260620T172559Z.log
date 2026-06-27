@@ -1,0 +1,2 @@
+$ build/gatzk_run --config configs/ogbn_arxiv_secure.cfg --benchmark-mode warm --compute-backend cpu --fast-msm on --parallel-fft on --fft-backend-upgrade on --fft-kernel-upgrade on --trace-layout-upgrade on --fast-verify-pairing on --export-tag paper_secure_final/cpu
+fatal: pair lookup query escaped static table for P_h0_L left=52435875175126190479447740508185965837690552500527637822603658699938576606163 right=52435875175126190479447740508185965837690552500527637822603658699938580268843
