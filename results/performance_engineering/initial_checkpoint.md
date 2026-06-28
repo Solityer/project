@@ -219,6 +219,95 @@ Existing `results/performance_engineering/**` state was inventoried by path, siz
 
 Process isolation:
 
+## Current Session Checkpoint - 2026-06-28T09:55:52Z
+
+- invariants read: yes
+- invariants sha256: `184aee9817dbd1523a1c76de7310f292fadc8faf636a5d1035b4d1825872eeb2`
+- git HEAD: `47d3fe21929457641a9c124c0f026e65d85cf6b8`
+- runner hash: `b901308870f8a860fbb99b36e52761d6e749a8f481829bdb6aa89c25ee5c09e3`
+- source tree hash: `2894ec7127dd8b5ee107c60b4da69aa433a39c27ebccf57c1171ca3847a2d775` (`git ls-files`, excluding `comparison/**`)
+- comparison file status: content not read, not hashed, not modified, and excluded from file operations by policy.
+
+Git status, excluding `comparison/**`:
+
+```text
+ M include/gatzk/crypto/kzg.hpp
+ M results/paper_secure/freeze_identity.json
+ M results/paper_secure/optimization_profile_report.md
+ M results/performance_engineering/five_dataset_bottleneck_matrix.md
+ M src/crypto/kzg.cpp
+ M src/protocol/prover.cpp
+ M src/protocol/trace.cpp
+?? results/performance_engineering/failed_runs/20260627T131913Z_cpu_cora_matrix_abort.md
+?? results/performance_engineering/failed_runs/20260627T132322Z_cpu_cora_matrix_abort.md
+?? results/performance_engineering/failed_runs/20260628T050032Z_cpu_cora_matrix_abort.md
+?? results/performance_engineering/failed_runs/20260628T053720Z_cpu_cora_matrix_abort.md
+?? results/performance_engineering/failed_runs/20260628T054051Z_cpu_cora_matrix_abort.md
+?? results/performance_engineering/failed_runs/20260628T055148Z_cpu_cora_matrix_abort.md
+?? results/performance_engineering/failed_runs/20260628T055504Z_cpu_cora_matrix_abort.md
+?? results/performance_engineering/failed_runs/20260628T060210Z_cpu_cora_matrix_abort.md
+?? results/performance_engineering/failed_runs/20260628T060729Z_cpu_cora_matrix_abort.md
+?? results/performance_engineering/failed_runs/20260628T061702Z_cpu_cora_matrix_abort.md
+?? results/performance_engineering/failed_runs/20260628T062025Z_cpu_cora_matrix_abort.md
+?? results/performance_engineering/failed_runs/20260628T062341Z_cpu_cora_matrix_abort.md
+?? results/performance_engineering/failed_runs/20260628T062836Z_cpu_cora_matrix_abort.md
+?? results/performance_engineering/failed_runs/20260628T063519Z_cpu_cora_matrix_abort.md
+?? results/performance_engineering/failed_runs/20260628T063835Z_cpu_cora_matrix_abort.md
+?? results/performance_engineering/failed_runs/20260628T064143Z_cpu_cora_matrix_abort.md
+?? results/performance_engineering/failed_runs/20260628T064458Z_cpu_cora_matrix_abort.md
+?? results/performance_engineering/resource_control_audit.md
+```
+
+Latest export status before this correction pass:
+
+```text
+results/paper_secure/latest.csv exists size=6482 mtime=2026-05-31 15:12:27.423204341 +0800
+results/paper_secure/latest.json exists size=15507 mtime=2026-05-31 15:12:27.423055823 +0800
+results/paper_secure/summary.md exists size=711 mtime=2026-05-31 15:12:27.423236006 +0800
+results/paper_secure/run_manifests file count=10
+```
+
+These existing exports are not treated as current final evidence for this run.
+
+Failed-runs status:
+
+```text
+results/performance_engineering/failed_runs file count=31
+```
+
+Recent secure-run logs visible by path only:
+
+```text
+runs/secure_main_runner/logs/run_cpu_ogbn-arxiv_20260620T175945Z.log
+runs/secure_main_runner/logs/run_cpu_ppi.log
+runs/secure_main_runner/logs/run_cpu_ppi_20260620T162213Z.log
+runs/secure_main_runner/logs/run_cpu_pubmed.log
+runs/secure_main_runner/logs/run_cpu_pubmed_20260616T073934Z.log
+runs/secure_main_runner/logs/run_cpu_pubmed_20260616T093124Z.log
+runs/secure_main_runner/logs/run_cpu_pubmed_20260620T145148Z.log
+runs/secure_main_runner/logs/run_gpu_citeseer.log
+runs/secure_main_runner/logs/run_gpu_cora.log
+runs/secure_main_runner/logs/run_gpu_cora_20260620T131628Z.log
+runs/secure_main_runner/logs/run_gpu_ppi.log
+runs/secure_main_runner/logs/run_gpu_pubmed.log
+```
+
+Resource snapshot:
+
+```text
+load average: 0.29, 0.22, 0.09
+memory: 121Gi total, 6.4Gi used, 115Gi available, 1.3Gi/15Gi swap used
+GPU: NVIDIA GB10, utilization 0%, memory utilization 0%, memory counters N/A
+relevant main-experiment process sample: none
+```
+
+Cache policy status at startup:
+
+```text
+runs/performance_cache present dynamic=455 poly=7 point=12 coset=2 coeff=1 qvals=0
+policy decision: diagnostic-only; final runner path must not read or write these proof-specific cross-run caches.
+```
+
 ```text
 comparison/** ignored and untouched status: yes
 comparison process detected: no

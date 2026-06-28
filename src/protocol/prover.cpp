@@ -3376,6 +3376,18 @@ namespace gatzk::protocol
                 {
                     throw std::runtime_error("fused FH feature table coset requested outside full identity");
                 }
+                if (const auto it = trace_.commitments.find("P_Table_feat");
+                    it != trace_.commitments.end() && it->second.opening_polynomial != nullptr)
+                {
+                    progress_note("prove:quotient:t_FH:identity:coset:P_Table_feat:coefficients:start");
+                    const auto coefficients = dependency_coefficients("P_Table_feat", *it->second.opening_polynomial);
+                    progress_note("prove:quotient:t_FH:identity:coset:P_Table_feat:coefficients:done");
+                    progress_note("prove:quotient:t_FH:identity:coset:P_Table_feat:coset_eval:start");
+                    auto values = std::make_shared<const std::vector<FieldElement>>(
+                        coset_evaluate_coefficients(coefficients, target_size_, shift_, "P_Table_feat"));
+                    progress_note("prove:quotient:t_FH:identity:coset:P_Table_feat:coset_eval:done");
+                    return values;
+                }
                 const auto *row_poly = lookup_polynomial("P_Row_feat_tbl");
                 const auto *col_poly = lookup_polynomial("P_Col_feat_tbl");
                 const auto *feature_poly = lookup_polynomial("P_T_H");
@@ -3411,8 +3423,9 @@ namespace gatzk::protocol
                     std::move(table),
                     domain_);
                 const auto coefficients = coefficients_native_from_polynomial(table_poly);
-                return std::make_shared<const std::vector<FieldElement>>(
+                auto values = std::make_shared<const std::vector<FieldElement>>(
                     coset_evaluate_coefficients(coefficients, target_size_, shift_, "P_Table_feat_fused"));
+                return values;
             }
 
             const std::vector<FieldElement> &coset_values(const std::string &requested_name)
@@ -3758,7 +3771,6 @@ namespace gatzk::protocol
                         return it->second;
                     }
                 }
-
                 std::shared_ptr<const std::vector<FieldElement>> values;
                 if (full_graph_feature_identity_enabled(context_) && requested_name == "P_Q_qry_feat")
                 {
@@ -3808,7 +3820,6 @@ namespace gatzk::protocol
                 {
                     throw std::runtime_error("missing quotient dependency polynomial: " + requested_name);
                 }
-
                 {
                     std::lock_guard<std::mutex> lock(coset_cache_mutex_);
                     const auto [it, inserted] = coset_cache_.emplace(requested_name, values);
@@ -3844,6 +3855,14 @@ namespace gatzk::protocol
                     (*out)[i] = rows[i] + eta_feat * cols[i] + eta_feat_sq * features[i];
                 }
                 return out;
+            }
+
+            std::vector<mcl::Fr> dependency_coefficients(
+                const std::string &name,
+                const algebra::Polynomial &polynomial) const
+            {
+                (void)name;
+                return coefficients_native_from_polynomial(polynomial);
             }
 
             const algebra::Polynomial *lookup_polynomial(const std::string &name) const
@@ -4514,17 +4533,6 @@ namespace gatzk::protocol
         }
 
         start = Clock::now();
-        context.kzg = crypto::KZG::load_keys(
-            resolve_project_path(config.project_root, config.srs_path).string(),
-            config.srs_type,
-            config.srs_id);
-        end = Clock::now();
-        if (metrics != nullptr)
-        {
-            metrics->srs_prepare_ms += elapsed_ms(start, end);
-        }
-
-        start = Clock::now();
         // 工作域大小一次性按特征表、边域、隐藏维和查表规模展开，后面 trace / quotient / opening 共用这套布局。
         const std::size_t fh_size = algebra::next_power_of_two(
             std::max(context.dataset.num_nodes * context.dataset.num_features, context.local.num_nodes * context.local.num_features) + 2);
@@ -4604,6 +4612,36 @@ namespace gatzk::protocol
         if (metrics != nullptr)
         {
             metrics->fft_plan_ms += elapsed_ms(start, end);
+        }
+
+        start = Clock::now();
+        const std::size_t required_coefficient_count = std::max<std::size_t>({
+            fh_size * 2,
+            edge_size * 4,
+            in_size * 4,
+            d_size * 4,
+            cat_size * 4,
+            c_size * 4,
+            n_size * 4,
+        });
+        context.kzg = crypto::KZG::load_keys_for_domains(
+            resolve_project_path(config.project_root, config.srs_path).string(),
+            config.srs_type,
+            config.srs_id,
+            {
+                {"FH", fh_size},
+                {"edge", edge_size},
+                {"in", in_size},
+                {"d", d_size},
+                {"cat", cat_size},
+                {"C", c_size},
+                {"N", n_size},
+            },
+            required_coefficient_count);
+        end = Clock::now();
+        if (metrics != nullptr)
+        {
+            metrics->srs_prepare_ms += elapsed_ms(start, end);
         }
 
         start = Clock::now();
@@ -4998,7 +5036,9 @@ namespace gatzk::protocol
                     metrics);
                 const auto quotient_pack_start = Clock::now();
                 progress_note("prove:quotient:commit_batch:start");
-                quotient_commitments = batch_quotient_commitments(std::move(named_quotient_polynomials), context.kzg);
+                quotient_commitments = batch_quotient_commitments(
+                    std::move(named_quotient_polynomials),
+                    context.kzg);
                 progress_note("prove:quotient:commit_batch:done");
                 if (metrics != nullptr)
                 {
@@ -5259,7 +5299,9 @@ namespace gatzk::protocol
             metrics);
         const auto quotient_pack_start = Clock::now();
         progress_note("prove:quotient:commit_batch:start");
-        quotient_commitments = batch_quotient_commitments(std::move(named_quotient_polynomials), context.kzg);
+        quotient_commitments = batch_quotient_commitments(
+            std::move(named_quotient_polynomials),
+            context.kzg);
         progress_note("prove:quotient:commit_batch:done");
         if (metrics != nullptr)
         {
