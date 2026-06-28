@@ -34,3 +34,107 @@ This matrix is diagnostic and is not a final matrix. `comparison/**` is ignored.
 
 - PPI multi-graph metadata is audited in `dataset_integrity_audit.json`; current bottlenecks are dynamic MSM, t_edge quotient, FH opening, and external opening.
 - OGBN cannot enter final matrix: fixed contiguous LReLU table semantics require a 2^28 edge/table domain, but the fixed SRS has edge Lagrange material for 2^23.
+
+## Matrix Abort 20260627T131913Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260627T132322Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T050032Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T053720Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T054051Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T055148Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T055504Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T060210Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T060729Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T061702Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T062025Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T062341Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T062836Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T063519Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T063835Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T064143Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T064458Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T100932Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T102127Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T102948Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T104004Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T104759Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T105644Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T110616Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T112210Z
+
+- cpu/cora: row exited with code 1
+
+## Matrix Abort 20260628T112823Z
+
+- cpu/cora: row exited with code 124

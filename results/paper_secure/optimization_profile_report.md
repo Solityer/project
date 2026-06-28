@@ -98,3 +98,107 @@ Official timing was not run for these patches while process `2586636` was consum
 | validation_status | CPU build passed; CUDA build passed; CPU ctest passed; CUDA ctest passed; static scan passed; full security regression passed |
 
 This repair keeps fixed-point dot products at the trace scale used by the activation tables. The projection/attention binding accumulators keep the existing quotient equation and absorb deterministic rounding residuals through private `b_*` binding witness values.
+
+## Matrix Abort 20260627T131913Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260627T132322Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T050032Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T053720Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T054051Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T055148Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T055504Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T060210Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T060729Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T061702Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T062025Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T062341Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T062836Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T063519Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T063835Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T064143Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T064458Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T100932Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T102127Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T102948Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T104004Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T104759Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T105644Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T110616Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260628T112210Z
+
+- cpu/cora: row exited with code 1
+
+## Matrix Abort 20260628T112823Z
+
+- cpu/cora: row exited with code 124

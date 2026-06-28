@@ -12,9 +12,8 @@
 
 namespace gatzk::crypto
 {
-    // 本文件实现 KZG 依赖的群运算、批量 MSM 与序列化，
-    // 是 protocol 层访问曲线后端的唯一实现落点。
-    // 它属于 crypto 执行层，不允许改写承诺含义或 pairing 方程。
+    // 实现 KZG 依赖的群运算、批量 MSM 与序列化，是 protocol 层访问曲线后端的唯一实现落点。
+    // 属于 crypto 执行层，不允许改写承诺含义或 配对方程。
 
     namespace
     {

@@ -54,27 +54,10 @@ namespace gatzk::crypto
             return bytes_to_hex(digest, sizeof(digest));
         }
 
-        std::string sha256_file_hex(const std::filesystem::path& path)
+        std::string sha256_bytes_hex(const std::vector<std::uint8_t>& data)
         {
-            std::ifstream input(path, std::ios::binary);
-            if (!input)
-            {
-                throw std::runtime_error("missing SRS material file: " + path.string());
-            }
-            SHA256_CTX ctx;
-            SHA256_Init(&ctx);
-            std::array<char, 1 << 16> buffer{};
-            while (input)
-            {
-                input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-                const auto read = input.gcount();
-                if (read > 0)
-                {
-                    SHA256_Update(&ctx, buffer.data(), static_cast<std::size_t>(read));
-                }
-            }
             unsigned char digest[SHA256_DIGEST_LENGTH];
-            SHA256_Final(digest, &ctx);
+            SHA256(data.data(), data.size(), digest);
             return bytes_to_hex(digest, sizeof(digest));
         }
 
@@ -239,22 +222,16 @@ namespace gatzk::crypto
             return manifest;
         }
 
-        void validate_material_hash(
-            const std::filesystem::path& srs_root,
-            const std::string& relative_path,
+        void validate_material_hash_value(
+            const std::string& actual_hash,
             const std::string& expected_hash,
             const std::string& label)
         {
-            if (relative_path.empty())
-            {
-                throw std::runtime_error("SRS manifest is missing material path: " + label);
-            }
             if (expected_hash.empty())
             {
                 throw std::runtime_error("SRS manifest is missing material hash: " + label);
             }
-            const auto actual = sha256_file_hex(srs_root / relative_path);
-            if (actual != expected_hash)
+            if (actual_hash != expected_hash)
             {
                 throw std::runtime_error("SRS material hash mismatch for " + label);
             }
@@ -294,7 +271,100 @@ namespace gatzk::crypto
             return out;
         }
 
-        std::vector<G1Point> load_g1_vector_file(const std::filesystem::path& path)
+        std::uint64_t parse_u64_le_bytes(const std::array<std::uint8_t, 8>& bytes)
+        {
+            std::uint64_t out = 0;
+            for (std::size_t i = 0; i < bytes.size(); ++i)
+            {
+                out |= static_cast<std::uint64_t>(bytes[i]) << (8U * i);
+            }
+            return out;
+        }
+
+        std::vector<G1Point> load_g1_vector_file(
+            const std::filesystem::path& path,
+            std::string* actual_hash,
+            std::size_t max_points);
+
+        std::vector<G1Point> load_raw_g1_vector_file_prefix(
+            const std::filesystem::path& path,
+            std::streamoff file_size,
+            std::size_t max_points,
+            std::string* actual_hash)
+        {
+            std::ifstream input(path, std::ios::binary);
+            if (!input)
+            {
+                throw std::runtime_error("failed to open SRS G1 material: " + path.string());
+            }
+            SHA256_CTX ctx;
+            SHA256_Init(&ctx);
+            auto read_hashed = [&](char* out, std::size_t size, const std::string& label) {
+                input.read(out, static_cast<std::streamsize>(size));
+                if (input.gcount() != static_cast<std::streamsize>(size))
+                {
+                    throw std::runtime_error("truncated SRS G1 material while reading " + label + ": " + path.string());
+                }
+                SHA256_Update(&ctx, out, size);
+            };
+
+            std::array<char, 8> magic{};
+            read_hashed(magic.data(), magic.size(), "G1 magic");
+            const std::array<char, 8> expected_raw_magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', 'R'}};
+            if (magic != expected_raw_magic)
+            {
+                return load_g1_vector_file(path, actual_hash, 0);
+            }
+            std::array<std::uint8_t, 8> count_bytes{};
+            read_hashed(reinterpret_cast<char*>(count_bytes.data()), count_bytes.size(), "G1 point count");
+            const auto count = parse_u64_le_bytes(count_bytes);
+            if (count > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))
+            {
+                throw std::runtime_error("SRS G1 material is too large for this platform");
+            }
+            std::array<std::uint8_t, 8> raw_size_bytes{};
+            read_hashed(reinterpret_cast<char*>(raw_size_bytes.data()), raw_size_bytes.size(), "raw G1 point size");
+            const auto raw_size = parse_u64_le_bytes(raw_size_bytes);
+            if (raw_size != sizeof(mcl::G1))
+            {
+                throw std::runtime_error("raw SRS G1 material was generated for an incompatible mcl layout");
+            }
+
+            const auto point_count = static_cast<std::size_t>(count);
+            const auto header_size = static_cast<std::size_t>(24);
+            const auto expected_size = header_size + point_count * sizeof(mcl::G1);
+            if (expected_size != static_cast<std::size_t>(file_size))
+            {
+                throw std::runtime_error("raw SRS G1 material size mismatch: " + path.string());
+            }
+            const auto load_count = max_points == 0 ? point_count : std::min(point_count, max_points);
+            std::vector<G1Point> out(load_count);
+            if (load_count != 0)
+            {
+                const auto load_bytes = load_count * sizeof(mcl::G1);
+                read_hashed(reinterpret_cast<char*>(&out.front().value), load_bytes, "raw G1 prefix");
+            }
+            std::array<char, 1 << 20> buffer{};
+            std::size_t remaining_bytes = (point_count - load_count) * sizeof(mcl::G1);
+            while (remaining_bytes != 0)
+            {
+                const auto chunk = std::min<std::size_t>(remaining_bytes, buffer.size());
+                read_hashed(buffer.data(), chunk, "raw G1 suffix");
+                remaining_bytes -= chunk;
+            }
+            unsigned char digest[SHA256_DIGEST_LENGTH];
+            SHA256_Final(digest, &ctx);
+            if (actual_hash != nullptr)
+            {
+                *actual_hash = bytes_to_hex(digest, sizeof(digest));
+            }
+            return out;
+        }
+
+        std::vector<G1Point> load_g1_vector_file(
+            const std::filesystem::path& path,
+            std::string* actual_hash = nullptr,
+            std::size_t max_points = 0)
         {
             std::ifstream input(path, std::ios::binary | std::ios::ate);
             if (!input)
@@ -306,12 +376,20 @@ namespace gatzk::crypto
             {
                 throw std::runtime_error("truncated SRS G1 material: " + path.string());
             }
+            if (max_points != 0)
+            {
+                return load_raw_g1_vector_file_prefix(path, file_size, max_points, actual_hash);
+            }
             input.seekg(0);
             std::vector<std::uint8_t> file_bytes(static_cast<std::size_t>(file_size));
             input.read(reinterpret_cast<char*>(file_bytes.data()), file_size);
             if (input.gcount() != file_size)
             {
                 throw std::runtime_error("failed to read SRS G1 material: " + path.string());
+            }
+            if (actual_hash != nullptr)
+            {
+                *actual_hash = sha256_bytes_hex(file_bytes);
             }
             const std::array<char, 8> expected_magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', '\0'}};
             const std::array<char, 8> expected_raw_magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', 'R'}};
@@ -396,9 +474,26 @@ namespace gatzk::crypto
             return out;
         }
 
-        std::pair<G2Point, G2Point> load_vk_file(const std::filesystem::path& path)
+        std::pair<G2Point, G2Point> load_vk_file(const std::filesystem::path& path, std::string* actual_hash = nullptr)
         {
-            std::ifstream input(path, std::ios::binary);
+            std::ifstream file(path, std::ios::binary | std::ios::ate);
+            if (!file)
+            {
+                throw std::runtime_error("failed to open SRS verifier key: " + path.string());
+            }
+            const auto file_size = file.tellg();
+            file.seekg(0);
+            std::string file_bytes(static_cast<std::size_t>(file_size), '\0');
+            file.read(file_bytes.data(), file_size);
+            if (file.gcount() != file_size)
+            {
+                throw std::runtime_error("failed to read SRS verifier key: " + path.string());
+            }
+            if (actual_hash != nullptr)
+            {
+                *actual_hash = sha256_hex(file_bytes);
+            }
+            std::istringstream input(file_bytes, std::ios::binary);
             if (!input)
             {
                 throw std::runtime_error("failed to open SRS verifier key: " + path.string());
@@ -569,12 +664,20 @@ namespace gatzk::crypto
                     object_count,
                     std::max<std::size_t>(1, std::min<std::size_t>(3, cpu_count / 8)));
             }
+            if (object_count <= 20 && max_scalar_count <= (1ULL << 15))
+            {
+                const auto by_cpu = std::max<std::size_t>(1, cpu_count / 3);
+                const auto by_work = std::max<std::size_t>(2, total_scalar_count / (1ULL << 16));
+                return std::min<std::size_t>(
+                    object_count,
+                    std::max<std::size_t>(1, std::min<std::size_t>(6, std::min(by_cpu, by_work))));
+            }
 
-            const auto by_cpu = std::max<std::size_t>(1, cpu_count / 4);
-            const auto by_work = std::max<std::size_t>(1, total_scalar_count / (1ULL << 17));
+            const auto by_cpu = std::max<std::size_t>(1, cpu_count / 2);
+            const auto by_work = std::max<std::size_t>(1, total_scalar_count / (1ULL << 16));
             return std::min<std::size_t>(
                 object_count,
-                std::min<std::size_t>(6, std::min(by_cpu, by_work)));
+                std::min<std::size_t>(10, std::min(by_cpu, by_work)));
         }
 
         std::vector<std::size_t> commitment_work_order(
@@ -1273,14 +1376,126 @@ namespace gatzk::crypto
         return out;
     }
 
+        std::string required_lagrange_cache_fragment(
+            const std::vector<std::pair<std::string, std::size_t>>& required_lagrange_domains)
+        {
+            if (required_lagrange_domains.empty())
+            {
+                return "all";
+            }
+            std::vector<std::string> parts;
+            parts.reserve(required_lagrange_domains.size());
+            for (const auto& [domain, size] : required_lagrange_domains)
+            {
+                parts.push_back(srs_domain_name(domain) + ":" + std::to_string(size));
+            }
+            std::sort(parts.begin(), parts.end());
+            std::ostringstream out;
+            for (const auto& part : parts)
+            {
+                out << '|' << part;
+            }
+            return out.str();
+        }
+
+        void add_unique_domain(std::vector<std::string>* domains, const std::string& domain)
+        {
+            if (domains == nullptr || domain.empty())
+            {
+                return;
+            }
+            if (std::find(domains->begin(), domains->end(), domain) == domains->end())
+            {
+                domains->push_back(domain);
+            }
+        }
+
+        std::vector<std::string> select_lagrange_srs_domains(
+            const SRSManifest& manifest,
+            const std::vector<std::pair<std::string, std::size_t>>& required_lagrange_domains)
+        {
+            if (required_lagrange_domains.empty())
+            {
+                std::vector<std::string> all_domains;
+                all_domains.reserve(manifest.pk_lagrange_paths.size());
+                for (const auto& [domain, _] : manifest.pk_lagrange_paths)
+                {
+                    all_domains.push_back(domain);
+                }
+                std::sort(all_domains.begin(), all_domains.end());
+                return all_domains;
+            }
+
+            std::vector<std::string> selected;
+            for (const auto& [domain_name, domain_size] : required_lagrange_domains)
+            {
+                const auto base_key = srs_domain_name(domain_name);
+                const auto exact_key = srs_exact_domain_name(domain_name, domain_size);
+                if (manifest.pk_lagrange_paths.contains(exact_key))
+                {
+                    add_unique_domain(&selected, exact_key);
+                    continue;
+                }
+                if (manifest.pk_lagrange_paths.contains(base_key))
+                {
+                    const auto size_it = manifest.domain_sizes.find(base_key);
+                    if (size_it != manifest.domain_sizes.end() && size_it->second == domain_size)
+                    {
+                        add_unique_domain(&selected, base_key);
+                        continue;
+                    }
+                }
+                std::vector<std::string> same_size_candidates;
+                for (const auto& [candidate, size] : manifest.domain_sizes)
+                {
+                    if (size == domain_size && manifest.pk_lagrange_paths.contains(candidate))
+                    {
+                        same_size_candidates.push_back(candidate);
+                    }
+                }
+                std::sort(same_size_candidates.begin(), same_size_candidates.end());
+                if (!same_size_candidates.empty())
+                {
+                    add_unique_domain(&selected, same_size_candidates.front());
+                    continue;
+                }
+                throw std::runtime_error(
+                    "SRS manifest lacks Lagrange material for domain "
+                    + domain_name
+                    + ":"
+                    + std::to_string(domain_size));
+            }
+            std::sort(selected.begin(), selected.end());
+            return selected;
+        }
+
     KZGKeyPair KZG::load_keys(
         const std::string& srs_path,
         const std::string& expected_srs_type,
         const std::string& expected_srs_id)
     {
+        return load_keys_for_domains(srs_path, expected_srs_type, expected_srs_id, {});
+    }
+
+    KZGKeyPair KZG::load_keys_for_domains(
+        const std::string& srs_path,
+        const std::string& expected_srs_type,
+        const std::string& expected_srs_id,
+        const std::vector<std::pair<std::string, std::size_t>>& required_lagrange_domains,
+        std::size_t required_coefficient_count)
+    {
         static std::mutex cache_mutex;
         static std::unordered_map<std::string, KZGKeyPair> cache;
-        const auto cache_key = srs_path + "|" + expected_srs_type + "|" + expected_srs_id;
+        const auto cache_key =
+            srs_path
+            + "|"
+            + expected_srs_type
+            + "|"
+            + expected_srs_id
+            + "|coef="
+            + std::to_string(required_coefficient_count)
+            + "|lagrange="
+            + required_lagrange_cache_fragment(required_lagrange_domains);
         {
             std::lock_guard<std::mutex> lock(cache_mutex);
             if (const auto it = cache.find(cache_key); it != cache.end())
@@ -1292,23 +1507,31 @@ namespace gatzk::crypto
         const auto manifest = load_manifest_file(srs_path);
         validate_manifest(manifest, expected_srs_type, expected_srs_id);
         const auto srs_root = std::filesystem::path(srs_path);
-        validate_material_hash(srs_root, manifest.pk_coef_path, manifest.pk_coef_hash, "pk_coef");
-        validate_material_hash(srs_root, manifest.vk_path, manifest.vk_hash, "vk");
-        for (const auto& [domain, path] : manifest.pk_lagrange_paths)
+        const auto selected_lagrange_domains =
+            select_lagrange_srs_domains(manifest, required_lagrange_domains);
+
+        std::string pk_coef_hash;
+        auto powers_g1 = load_g1_vector_file(
+            srs_root / manifest.pk_coef_path,
+            &pk_coef_hash,
+            required_coefficient_count);
+        validate_material_hash_value(pk_coef_hash, manifest.pk_coef_hash, "pk_coef");
+        std::unordered_map<std::string, std::shared_ptr<const std::vector<G1Point>>> lagrange_srs;
+        for (const auto& domain : selected_lagrange_domains)
         {
+            const auto path_it = manifest.pk_lagrange_paths.find(domain);
+            if (path_it == manifest.pk_lagrange_paths.end())
+            {
+                throw std::runtime_error("missing Lagrange SRS path for domain: " + domain);
+            }
             const auto hash_it = manifest.pk_lagrange_hashes.find(domain);
             if (hash_it == manifest.pk_lagrange_hashes.end())
             {
                 throw std::runtime_error("missing Lagrange SRS hash for domain: " + domain);
             }
-            validate_material_hash(srs_root, path, hash_it->second, "pk_lagrange_" + domain);
-        }
-
-        auto powers_g1 = load_g1_vector_file(srs_root / manifest.pk_coef_path);
-        std::unordered_map<std::string, std::shared_ptr<const std::vector<G1Point>>> lagrange_srs;
-        for (const auto& [domain, path] : manifest.pk_lagrange_paths)
-        {
-            auto material = load_g1_vector_file(srs_root / path);
+            std::string material_hash;
+            auto material = load_g1_vector_file(srs_root / path_it->second, &material_hash);
+            validate_material_hash_value(material_hash, hash_it->second, "pk_lagrange_" + domain);
             const auto size_it = manifest.domain_sizes.find(domain);
             if (size_it == manifest.domain_sizes.end() || material.size() < size_it->second)
             {
@@ -1316,7 +1539,9 @@ namespace gatzk::crypto
             }
             lagrange_srs.emplace(domain, std::make_shared<const std::vector<G1Point>>(std::move(material)));
         }
-        const auto [g2_one, g2_tau] = load_vk_file(srs_root / manifest.vk_path);
+        std::string vk_hash;
+        const auto [g2_one, g2_tau] = load_vk_file(srs_root / manifest.vk_path, &vk_hash);
+        validate_material_hash_value(vk_hash, manifest.vk_hash, "vk");
 
         G1Point g1_generator = g1_zero();
         mcl::bn::hashAndMapToG1(g1_generator.value, "gatzk:kzg:g1");

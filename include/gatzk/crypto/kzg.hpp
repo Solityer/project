@@ -137,6 +137,12 @@ namespace gatzk::crypto
             const std::string& srs_path,
             const std::string& expected_srs_type,
             const std::string& expected_srs_id);
+        static KZGKeyPair load_keys_for_domains(
+            const std::string& srs_path,
+            const std::string& expected_srs_type,
+            const std::string& expected_srs_id,
+            const std::vector<std::pair<std::string, std::size_t>>& required_lagrange_domains,
+            std::size_t required_coefficient_count = 0);
 
         // 对常数多项式做正式 SRS 承诺；用于公开常数或已折叠的标量关系。
         static Commitment commit_constant(
