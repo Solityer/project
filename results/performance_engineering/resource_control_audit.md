@@ -129,6 +129,32 @@
 - action: no interfering process killed.
 - comparison isolation: no comparison files read for evidence; no comparison process killed.
 
+## 2026-06-29T05:58:35Z HOTPATH-009 Revert Clean Cora CPU Canary Preflight
+
+- task: before progress-enabled official-runner `cora/cpu` canary after reverting ineffective per-run edge-lift commitment point precomputation.
+- build/test gate: CPU build passed; CPU ctest passed 2/2 including `static_secure_scan`; CUDA build passed; CUDA ctest passed 2/2 including `static_secure_scan`.
+- persistent-cache scan: no forbidden cache symbols matched in `src`, `include`, `scripts`, or `tools`.
+- cold-cache state: `runs/performance_cache` absent; no `performance_cache` directory found under `runs` at max depth 2.
+- CPU/load: load average `2.27, 2.21, 1.83`.
+- memory: `121Gi` total, `7.8Gi` used, `113Gi` available, `634Mi/15Gi` swap used.
+- GPU: NVIDIA GB10, utilization `0%`, memory utilization `0%`; `nvidia-smi` did not report memory counters for this device.
+- relevant process sample: only the resource-audit `ps | rg` command matched `gatzk`, `run_secure_main`, `comparison`, `cmake`, `ctest`, or `python`.
+- action: no interfering process killed.
+- comparison isolation: no comparison files read for evidence; no comparison process killed.
+
+## 2026-06-29T06:04:59Z HOTPATH-010 Clean Cora CPU Canary Preflight
+
+- task: before progress-enabled official-runner `cora/cpu` canary after raising the 8k-16k MSM inner worker threshold.
+- build/test gate: CPU build passed; CPU ctest passed 2/2 including `static_secure_scan`; CUDA build passed; CUDA ctest passed 2/2 including `static_secure_scan`.
+- persistent-cache scan: no forbidden cache symbols matched in `src`, `include`, `scripts`, or `tools`.
+- cold-cache state: `runs/performance_cache` absent; no `performance_cache` directory found under `runs` at max depth 2.
+- CPU/load: load average `2.07, 3.32, 2.66`.
+- memory: `121Gi` total, `8.1Gi` used, `113Gi` available, `634Mi/15Gi` swap used.
+- GPU: NVIDIA GB10, utilization `0%`, memory utilization `0%`; `nvidia-smi` did not report memory counters for this device.
+- relevant process sample: only the resource-audit `ps | rg` command matched `gatzk`, `run_secure_main`, `comparison`, `cmake`, `ctest`, or `python`.
+- action: no interfering process killed.
+- comparison isolation: no comparison files read for evidence; no comparison process killed.
+
 ## 2026-06-28T06:14:08Z Persistent FH Dependency Cache Canary Preflight
 
 - task: before progress-enabled official-runner `cora/cpu` canary after adding persistent `t_FH` dependency coset/coefficient cache.
@@ -318,4 +344,56 @@
 - GPU: NVIDIA GB10, utilization `0%`, memory utilization `0%`; `nvidia-smi` did not report memory counters for this device.
 - relevant process sample: only the resource-audit `ps | rg` command matched `gatzk` or `run_secure_main`.
 - action: no interfering process killed.
+- comparison isolation: no comparison files read for evidence; no comparison process killed.
+
+## 2026-06-29T06:14:37Z HOTPATH-011 Clean Cora CPU Canary Preflight
+
+- task: before progress-enabled official-runner `cora/cpu` canary after raising `t_edge` coset prewarm worker cap.
+- build/test gate: CPU build passed; CPU ctest passed 2/2 including `static_secure_scan`; CUDA build passed; CUDA ctest passed 2/2 including `static_secure_scan`.
+- persistent-cache scan: no forbidden cache symbols matched in `src`, `include`, `scripts`, or `tools`.
+- cold-cache state: `runs/performance_cache` absent; no `performance_cache` directory found under `runs` at max depth 2.
+- CPU/load: load average `1.66, 2.54, 2.86`.
+- memory: `121Gi` total, `7.6Gi` used, `114Gi` available, `634Mi/15Gi` swap used.
+- GPU: NVIDIA GB10, utilization `0%`, memory utilization `0%`, temperature `42C`; `nvidia-smi` did not report memory counters for this device.
+- relevant process sample: no `gatzk` or `run_secure_main` process was present before the canary; top non-system background activity was VS Code/Codex extension host work at roughly one CPU core total, not a material 20-core canary interference.
+- action: no interfering process killed.
+- comparison isolation: no comparison files read for evidence; no comparison process killed.
+
+## 2026-06-29T06:25:55Z HOTPATH-012/013 Clean Cora CPU Canary Preflight
+
+- task: before progress-enabled official-runner `cora/cpu` canary after capping outer quotient materialization and narrowing `t_edge` dependencies.
+- build/test gate: CPU build passed; CPU ctest passed 2/2 including `static_secure_scan`; CUDA build passed; CUDA ctest passed 2/2 including `static_secure_scan`.
+- persistent-cache scan: no forbidden cache symbols matched in `src`, `include`, `scripts`, or `tools`.
+- cold-cache state: `runs/performance_cache` absent; no `performance_cache` directory found under `runs` at max depth 2.
+- CPU/load: load average `2.39, 2.95, 3.26`.
+- memory: `121Gi` total, `9.7Gi` used, `111Gi` available, `634Mi/15Gi` swap used.
+- GPU: NVIDIA GB10, utilization `31%`, memory utilization `0%`, temperature `50C`; `nvidia-smi pmon` reported PID `3112506` (`mizhou`, `python`, command `./.venv/bin/python -u -B run_token_ablation_matrix.py ...`) at about `30%` SM utilization.
+- relevant process sample: no `gatzk` or `run_secure_main` process was present before the canary. PID `3112506` used about one CPU core and GPU compute; because this row is CPU-only and the 20-core CPU load was not materially saturated, it was recorded but not terminated. GPU official rows must re-check this condition before timing.
+- action: no process killed.
+- comparison isolation: no comparison files read for evidence; no comparison process killed.
+
+## 2026-06-29T06:36:05Z HOTPATH-014 Clean Cora CPU Canary Preflight
+
+- task: before progress-enabled official-runner `cora/cpu` canary after adding closed-form prefix selector coefficients.
+- build/test gate: CPU build passed; CPU ctest passed 2/2 including `static_secure_scan`; CUDA build passed; CUDA ctest passed 2/2 including `static_secure_scan`.
+- persistent-cache scan: no forbidden cache symbols matched in `src`, `include`, `scripts`, or `tools`.
+- cold-cache state: `runs/performance_cache` absent; no `performance_cache` directory found under `runs` at max depth 2.
+- CPU/load: load average `2.11, 3.22, 3.61`.
+- memory: `121Gi` total, `10Gi` used, `111Gi` available, `634Mi/15Gi` swap used.
+- GPU: NVIDIA GB10, utilization `26%`, memory utilization `0%`, temperature `51C`; `nvidia-smi pmon` reported PID `3112506` (`mizhou`, `python`) at about `28%` SM utilization.
+- relevant process sample: no `gatzk` or `run_secure_main` process was present before the canary. PID `3112506` used about one CPU core and GPU compute; it was recorded but not terminated because this row is CPU-only and CPU load was not materially saturated.
+- action: no process killed.
+- comparison isolation: no comparison files read for evidence; no comparison process killed.
+
+## 2026-06-29T06:52:48Z HOTPATH-015 Clean Cora CPU Canary Preflight
+
+- task: before progress-enabled official-runner `cora/cpu` canary after adding same-run physical polynomial coset alias caching in the quotient materializer.
+- build/test gate: CPU build passed; CPU ctest passed 2/2 including `static_secure_scan`; CUDA build passed; CUDA ctest passed 2/2 including `static_secure_scan`.
+- persistent-cache scan: no forbidden cache symbols matched in `src`, `include`, `scripts`, or `tools`.
+- cold-cache state: `runs/performance_cache` absent; no `performance_cache` directory found under `runs` at max depth 2.
+- CPU/load: load average `0.59, 1.23, 2.41`.
+- memory: `121Gi` total, `8.6Gi` used, `113Gi` available, `634Mi/15Gi` swap used.
+- GPU: NVIDIA GB10, utilization `0%`, memory utilization `0%`, temperature `41C`; no compute app reported by `nvidia-smi --query-compute-apps`.
+- relevant process sample: no `gatzk` or `run_secure_main` process was present before the canary. Top non-system background activity was another user's VS Code/Codex extension host work at roughly `0.8` CPU cores total on this 20-core host.
+- action: no process killed.
 - comparison isolation: no comparison files read for evidence; no comparison process killed.

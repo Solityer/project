@@ -3669,102 +3669,6 @@ namespace gatzk::protocol
             return out;
         }
 
-        struct EdgeLiftSrsPoints
-        {
-            std::vector<crypto::G1Point> src;
-            std::vector<crypto::G1Point> dst;
-        };
-
-        const std::vector<crypto::G1Point> &lagrange_srs_for_domain(
-            const crypto::KZGKeyPair &key,
-            const std::shared_ptr<algebra::RootOfUnityDomain> &domain)
-        {
-            if (domain == nullptr)
-            {
-                throw std::runtime_error("edge-lift commitment requires a domain");
-            }
-            const auto exact_key = domain->name + "_" + std::to_string(domain->size);
-            auto it = key.pk.lagrange_srs_by_domain.find(exact_key);
-            if (it == key.pk.lagrange_srs_by_domain.end())
-            {
-                it = key.pk.lagrange_srs_by_domain.find(domain->name);
-                if (it != key.pk.lagrange_srs_by_domain.end() && it->second != nullptr && it->second->size() != domain->size)
-                {
-                    it = key.pk.lagrange_srs_by_domain.end();
-                }
-            }
-            if (it == key.pk.lagrange_srs_by_domain.end())
-            {
-                for (auto candidate = key.pk.lagrange_srs_by_domain.begin();
-                     candidate != key.pk.lagrange_srs_by_domain.end();
-                     ++candidate)
-                {
-                    if (candidate->second != nullptr && candidate->second->size() == domain->size)
-                    {
-                        it = candidate;
-                        break;
-                    }
-                }
-            }
-            if (it == key.pk.lagrange_srs_by_domain.end() || it->second == nullptr)
-            {
-                throw std::runtime_error(
-                    "missing Lagrange SRS for edge-lift domain: " + domain->name + ":" + std::to_string(domain->size));
-            }
-            if (it->second->size() < domain->size)
-            {
-                throw std::runtime_error("edge-lift Lagrange SRS is shorter than its domain");
-            }
-            return *it->second;
-        }
-
-        EdgeLiftSrsPoints build_edge_lift_srs_points(
-            const crypto::KZGKeyPair &key,
-            const std::shared_ptr<algebra::RootOfUnityDomain> &edge_domain,
-            const std::vector<Edge> &edges,
-            std::size_t node_count)
-        {
-            const auto &edge_srs = lagrange_srs_for_domain(key, edge_domain);
-            if (edges.size() > edge_domain->size)
-            {
-                throw std::runtime_error("edge-lift edge count exceeds edge domain size");
-            }
-            EdgeLiftSrsPoints out{
-                .src = std::vector<crypto::G1Point>(node_count, crypto::g1_zero()),
-                .dst = std::vector<crypto::G1Point>(node_count, crypto::g1_zero()),
-            };
-            for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index)
-            {
-                const auto &edge = edges[edge_index];
-                if (edge.src >= node_count || edge.dst >= node_count)
-                {
-                    throw std::runtime_error("edge-lift edge endpoint exceeds node count");
-                }
-                out.src[edge.src] = crypto::g1_add(out.src[edge.src], edge_srs[edge_index]);
-                out.dst[edge.dst] = crypto::g1_add(out.dst[edge.dst], edge_srs[edge_index]);
-            }
-            return out;
-        }
-
-        crypto::G1Point edge_lift_commitment_point(
-            const std::vector<crypto::G1Point> &lift_srs,
-            const std::vector<FieldElement> &node_values)
-        {
-            if (node_values.size() < lift_srs.size())
-            {
-                throw std::runtime_error("edge-lift node values are shorter than node SRS buckets");
-            }
-            if (lift_srs.empty())
-            {
-                return crypto::g1_zero();
-            }
-            return crypto::g1_multi_scalar_mul_profiled(
-                lift_srs.data(),
-                node_values.data(),
-                lift_srs.size(),
-                nullptr);
-        }
-
         // 多层多头正式路径：按层序物化隐藏头、输出头与跨层拼接相关的全部 witness 列。
         TraceArtifacts build_multihead_trace(const ProtocolContext &context, RunMetrics *metrics)
         {
@@ -3833,23 +3737,6 @@ namespace gatzk::protocol
             const auto &src_multiplicity_template = static_artifacts.src_multiplicity_template;
             const auto &dst_multiplicity_template = static_artifacts.dst_multiplicity_template;
             const auto &edge_groups_by_dst = static_artifacts.edge_groups_by_dst;
-            const auto edge_lift_srs = build_edge_lift_srs_points(context.kzg, domains.edge, edges, n_nodes);
-            auto edge_lift_commitment_async =
-                [&](const std::vector<FieldElement> &node_values, bool use_src)
-            {
-                const auto *lift_srs = use_src ? &edge_lift_srs.src : &edge_lift_srs.dst;
-                return std::async(
-                    std::launch::async,
-                    [lift_srs, &node_values]()
-                    {
-                        return edge_lift_commitment_point(*lift_srs, node_values);
-                    });
-            };
-            auto record_edge_lift_msm = [&](const Clock::time_point &start)
-            {
-                add_metric(metrics != nullptr ? &metrics->dynamic_commit_msm_ms : nullptr, start);
-                record_dynamic_commit_totals(metrics);
-            };
             add_metric(metrics != nullptr ? &metrics->shared_helper_build_ms : nullptr, stage_start);
 
             stage_start = Clock::now();
@@ -4104,15 +3991,6 @@ namespace gatzk::protocol
                 add_metric(metrics != nullptr ? &metrics->witness_materialization_ms : nullptr, stage_start);
                 add_metric(metrics != nullptr ? &metrics->hidden_edge_score_trace_ms : nullptr, stage_start);
 
-                const auto initial_edge_lift_start = Clock::now();
-                auto m_edge_point_future = edge_lift_commitment_async(m, false);
-                auto sum_edge_point_future = edge_lift_commitment_async(sum, false);
-                auto inv_edge_point_future = edge_lift_commitment_async(inv, false);
-                const auto m_edge_point = m_edge_point_future.get();
-                const auto sum_edge_point = sum_edge_point_future.get();
-                const auto inv_edge_point = inv_edge_point_future.get();
-                record_edge_lift_msm(initial_edge_lift_start);
-
                 add_dynamic_commitment_batch(
                     trace,
                     {
@@ -4122,7 +4000,7 @@ namespace gatzk::protocol
                         shared_compact_column_spec(prefix + "S", forward_artifacts, s, domains.edge),
                         shared_compact_column_spec(prefix + "Z", forward_artifacts, z, domains.edge),
                         shared_compact_column_spec(prefix + "M", forward_artifacts, m, domains.n),
-                        linear_shared_column_spec(prefix + "M_edge", forward_artifacts, m_edge, domains.edge, m_edge_point),
+                        shared_compact_column_spec(prefix + "M_edge", forward_artifacts, m_edge, domains.edge),
                         deferred_linear_compact_shared_column_spec(
                             prefix + "Delta",
                             forward_artifacts,
@@ -4134,9 +4012,9 @@ namespace gatzk::protocol
                             }),
                         shared_compact_column_spec(prefix + "U", forward_artifacts, u, domains.edge),
                         shared_compact_column_spec(prefix + "Sum", forward_artifacts, sum, domains.n),
-                        linear_shared_column_spec(prefix + "Sum_edge", forward_artifacts, sum_edge, domains.edge, sum_edge_point),
+                        shared_compact_column_spec(prefix + "Sum_edge", forward_artifacts, sum_edge, domains.edge),
                         shared_compact_column_spec(prefix + "inv", forward_artifacts, inv, domains.n),
-                        linear_shared_column_spec(prefix + "inv_edge", forward_artifacts, inv_edge, domains.edge, inv_edge_point),
+                        shared_compact_column_spec(prefix + "inv_edge", forward_artifacts, inv_edge, domains.edge),
                         shared_compact_column_spec(prefix + "alpha", forward_artifacts, alpha, domains.edge),
                         matrix_commitment_only_spec(prefix + "H_agg_pre", h_agg_pre),
                         matrix_commitment_only_spec(prefix + "H_agg", h_agg),
@@ -4529,21 +4407,6 @@ namespace gatzk::protocol
                         return route;
                     });
 
-                const auto hidden_edge_lift_start = Clock::now();
-                auto e_src_edge_point_future = edge_lift_commitment_async(e_src, true);
-                auto e_dst_edge_point_future = edge_lift_commitment_async(e_dst, false);
-                auto h_src_star_edge_point_future = edge_lift_commitment_async(h_star, true);
-                auto h_agg_pre_star_edge_point_future = edge_lift_commitment_async(h_agg_pre_star, false);
-                auto t_psq_edge_point_future = edge_lift_commitment_async(*t_psq, false);
-                auto h_agg_star_edge_point_future = edge_lift_commitment_async(h_agg_star, false);
-                const auto e_src_edge_point = e_src_edge_point_future.get();
-                const auto e_dst_edge_point = e_dst_edge_point_future.get();
-                const auto h_src_star_edge_point = h_src_star_edge_point_future.get();
-                const auto h_agg_pre_star_edge_point = h_agg_pre_star_edge_point_future.get();
-                const auto t_psq_edge_point = t_psq_edge_point_future.get();
-                const auto h_agg_star_edge_point = h_agg_star_edge_point_future.get();
-                record_edge_lift_msm(hidden_edge_lift_start);
-
                 add_dynamic_commitment_batch(
                     trace,
                     {
@@ -4559,9 +4422,9 @@ namespace gatzk::protocol
                         shared_column_spec(prefix + "a_star", star_binding, star_binding->a, domains.d),
                         shared_column_spec(prefix + "b_star", star_binding, star_binding->b, domains.d),
                         shared_column_spec(prefix + "Acc_star", star_binding, star_binding->acc, domains.d),
-                        linear_shared_column_spec(prefix + "E_src_edge", forward_artifacts, e_src_edge, domains.edge, e_src_edge_point),
-                        linear_shared_column_spec(prefix + "E_dst_edge", forward_artifacts, e_dst_edge, domains.edge, e_dst_edge_point),
-                        linear_shared_column_spec(prefix + "H_src_star_edge", compressed, h_star_edge, domains.edge, h_src_star_edge_point),
+                        shared_compact_column_spec(prefix + "E_src_edge", forward_artifacts, e_src_edge, domains.edge),
+                        shared_compact_column_spec(prefix + "E_dst_edge", forward_artifacts, e_dst_edge, domains.edge),
+                        shared_compact_column_spec(prefix + "H_src_star_edge", compressed, h_star_edge, domains.edge),
                         linear_shared_column_spec(
                             prefix + "Table_src",
                             src_route,
@@ -4639,12 +4502,7 @@ namespace gatzk::protocol
                         shared_column_spec(prefix + "m_exp", exp_artifacts, m_exp, domains.edge),
                         column_spec(prefix + "R_exp", std::move(r_exp), domains.edge),
                         shared_compact_column_spec(prefix + "H_agg_pre_star", compressed, h_agg_pre_star, domains.n),
-                        linear_shared_column_spec(
-                            prefix + "H_agg_pre_star_edge",
-                            compressed,
-                            h_agg_pre_star_edge,
-                            domains.edge,
-                            h_agg_pre_star_edge_point),
+                        shared_compact_column_spec(prefix + "H_agg_pre_star_edge", compressed, h_agg_pre_star_edge, domains.edge),
                         column_spec(prefix + "widehat_v_pre_star", std::move(widehat_v_pre_star), domains.edge),
                         deferred_linear_column_spec(
                             prefix + "w_psq",
@@ -4655,15 +4513,10 @@ namespace gatzk::protocol
                                 linear_label_term(prefix + "widehat_v_pre_star", lambda_psq),
                             }),
                         compact_column_spec(prefix + "T_psq", t_psq, domains.n),
-                        linear_column_spec(prefix + "T_psq_edge", t_psq_edge, domains.edge, t_psq_edge_point),
+                        compact_column_spec(prefix + "T_psq_edge", t_psq_edge, domains.edge),
                         column_spec(prefix + "PSQ", psq, domains.edge),
                         shared_compact_column_spec(prefix + "H_agg_star", compressed, h_agg_star, domains.n),
-                        linear_shared_column_spec(
-                            prefix + "H_agg_star_edge",
-                            compressed,
-                            h_agg_star_edge,
-                            domains.edge,
-                            h_agg_star_edge_point),
+                        shared_compact_column_spec(prefix + "H_agg_star_edge", compressed, h_agg_star_edge, domains.edge),
                     },
                     context.kzg,
                     keep_trace_payloads,
@@ -5120,14 +4973,6 @@ namespace gatzk::protocol
                     const auto &out_m_edge = quantized.m_edge;
                     const auto &out_sum_edge = quantized.sum_edge;
                     const auto &out_inv_edge = quantized.inv_edge;
-                    const auto output_initial_edge_lift_start = Clock::now();
-                    auto out_m_edge_point_future = edge_lift_commitment_async(out_m, false);
-                    auto out_sum_edge_point_future = edge_lift_commitment_async(out_sum, false);
-                    auto out_inv_edge_point_future = edge_lift_commitment_async(out_inv, false);
-                    const auto out_m_edge_point = out_m_edge_point_future.get();
-                    const auto out_sum_edge_point = out_sum_edge_point_future.get();
-                    const auto out_inv_edge_point = out_inv_edge_point_future.get();
-                    record_edge_lift_msm(output_initial_edge_lift_start);
                     add_dynamic_commitment_batch(
                         trace,
                         {
@@ -5137,7 +4982,7 @@ namespace gatzk::protocol
                             shared_compact_column_spec(prefix + "S", forward_artifacts, out_s, domains.edge),
                             shared_compact_column_spec(prefix + "Z", forward_artifacts, out_z, domains.edge),
                             shared_compact_column_spec(prefix + "M", forward_artifacts, out_m, domains.n),
-                            linear_shared_column_spec(prefix + "M_edge", forward_artifacts, out_m_edge, domains.edge, out_m_edge_point),
+                            shared_compact_column_spec(prefix + "M_edge", forward_artifacts, out_m_edge, domains.edge),
                             deferred_linear_compact_shared_column_spec(
                                 prefix + "Delta",
                                 forward_artifacts,
@@ -5149,9 +4994,9 @@ namespace gatzk::protocol
                                 }),
                             shared_compact_column_spec(prefix + "U", forward_artifacts, out_u, domains.edge),
                             shared_compact_column_spec(prefix + "Sum", forward_artifacts, out_sum, domains.n),
-                            linear_shared_column_spec(prefix + "Sum_edge", forward_artifacts, out_sum_edge, domains.edge, out_sum_edge_point),
+                            shared_compact_column_spec(prefix + "Sum_edge", forward_artifacts, out_sum_edge, domains.edge),
                             shared_compact_column_spec(prefix + "inv", forward_artifacts, out_inv, domains.n),
-                            linear_shared_column_spec(prefix + "inv_edge", forward_artifacts, out_inv_edge, domains.edge, out_inv_edge_point),
+                            shared_compact_column_spec(prefix + "inv_edge", forward_artifacts, out_inv_edge, domains.edge),
                             shared_compact_column_spec(prefix + "alpha", forward_artifacts, out_alpha, domains.edge),
                             matrix_commitment_only_spec(y_lin_label, y_lin_matrix),
                             matrix_commitment_only_spec(y_label, y_matrix),
@@ -5376,40 +5221,13 @@ namespace gatzk::protocol
                         {
                             return build_group_prefix_state(w_out, q_new, enable_single_graph_selector_shortcut);
                         });
-                    const auto output_edge_lift_start = Clock::now();
-                    auto out_e_src_edge_point_future = edge_lift_commitment_async(out_e_src, true);
-                    auto out_e_dst_edge_point_future = edge_lift_commitment_async(out_e_dst, false);
-                    auto y_prime_star_edge_point_future = edge_lift_commitment_async(y_prime_star, true);
-                    auto t_out_edge_point_future = edge_lift_commitment_async(*t_out, false);
-                    auto y_star_edge_point_future = edge_lift_commitment_async(y_star, false);
-                    const auto out_e_src_edge_point = out_e_src_edge_point_future.get();
-                    const auto out_e_dst_edge_point = out_e_dst_edge_point_future.get();
-                    const auto y_prime_star_edge_point = y_prime_star_edge_point_future.get();
-                    const auto t_out_edge_point = t_out_edge_point_future.get();
-                    const auto y_star_edge_point = y_star_edge_point_future.get();
-                    record_edge_lift_msm(output_edge_lift_start);
                     add_dynamic_commitment_batch(
                         trace,
                         {
-                            linear_shared_column_spec(
-                                prefix + "E_src_edge",
-                                forward_artifacts,
-                                quantized.e_src_edge,
-                                domains.edge,
-                                out_e_src_edge_point),
-                            linear_shared_column_spec(
-                                prefix + "E_dst_edge",
-                                forward_artifacts,
-                                quantized.e_dst_edge,
-                                domains.edge,
-                                out_e_dst_edge_point),
+                            shared_compact_column_spec(prefix + "E_src_edge", forward_artifacts, quantized.e_src_edge, domains.edge),
+                            shared_compact_column_spec(prefix + "E_dst_edge", forward_artifacts, quantized.e_dst_edge, domains.edge),
                             shared_compact_column_spec(prefix + "Y_prime_star", compressed, y_prime_star, domains.n),
-                            linear_shared_column_spec(
-                                prefix + "Y_prime_star_edge",
-                                compressed,
-                                y_prime_star_edge,
-                                domains.edge,
-                                y_prime_star_edge_point),
+                            shared_compact_column_spec(prefix + "Y_prime_star_edge", compressed, y_prime_star_edge, domains.edge),
                             linear_shared_column_spec(
                                 prefix + "Table_src",
                                 out_src_route,
@@ -5494,10 +5312,10 @@ namespace gatzk::protocol
                                     linear_label_term(prefix + "widehat_y_star", lambda_out),
                                 }),
                             compact_column_spec(prefix + "T", t_out, domains.n),
-                            linear_column_spec(prefix + "T_edge", t_out_edge, domains.edge, t_out_edge_point),
+                            compact_column_spec(prefix + "T_edge", t_out_edge, domains.edge),
                             column_spec(prefix + "PSQ", psq_out, domains.edge),
                             shared_compact_column_spec(prefix + "Y_star", compressed, y_star, domains.n),
-                            linear_shared_column_spec(prefix + "Y_star_edge", compressed, y_star_edge, domains.edge, y_star_edge_point),
+                            shared_compact_column_spec(prefix + "Y_star_edge", compressed, y_star_edge, domains.edge),
                         },
                         context.kzg,
                         keep_trace_payloads,
@@ -5790,14 +5608,6 @@ namespace gatzk::protocol
                 const auto &out_inv_edge = quantized.inv_edge;
                 add_metric(metrics != nullptr ? &metrics->witness_materialization_ms : nullptr, stage_start);
                 add_metric(metrics != nullptr ? &metrics->field_conversion_residual_ms : nullptr, stage_start);
-                const auto single_output_initial_edge_lift_start = Clock::now();
-                auto out_m_edge_point_future = edge_lift_commitment_async(out_m, false);
-                auto out_sum_edge_point_future = edge_lift_commitment_async(out_sum, false);
-                auto out_inv_edge_point_future = edge_lift_commitment_async(out_inv, false);
-                const auto out_m_edge_point = out_m_edge_point_future.get();
-                const auto out_sum_edge_point = out_sum_edge_point_future.get();
-                const auto out_inv_edge_point = out_inv_edge_point_future.get();
-                record_edge_lift_msm(single_output_initial_edge_lift_start);
                 add_dynamic_commitment_batch(
                     trace,
                     {
@@ -5807,7 +5617,7 @@ namespace gatzk::protocol
                         shared_compact_column_spec("P_out_S", forward_artifacts, out_s, domains.edge),
                         shared_compact_column_spec("P_out_Z", forward_artifacts, out_z, domains.edge),
                         shared_compact_column_spec("P_out_M", forward_artifacts, out_m, domains.n),
-                        linear_shared_column_spec("P_out_M_edge", forward_artifacts, out_m_edge, domains.edge, out_m_edge_point),
+                        shared_compact_column_spec("P_out_M_edge", forward_artifacts, out_m_edge, domains.edge),
                         deferred_linear_compact_shared_column_spec(
                             "P_out_Delta",
                             forward_artifacts,
@@ -5819,9 +5629,9 @@ namespace gatzk::protocol
                             }),
                         shared_compact_column_spec("P_out_U", forward_artifacts, out_u, domains.edge),
                         shared_compact_column_spec("P_out_Sum", forward_artifacts, out_sum, domains.n),
-                        linear_shared_column_spec("P_out_Sum_edge", forward_artifacts, out_sum_edge, domains.edge, out_sum_edge_point),
+                        shared_compact_column_spec("P_out_Sum_edge", forward_artifacts, out_sum_edge, domains.edge),
                         shared_compact_column_spec("P_out_inv", forward_artifacts, out_inv, domains.n),
-                        linear_shared_column_spec("P_out_inv_edge", forward_artifacts, out_inv_edge, domains.edge, out_inv_edge_point),
+                        shared_compact_column_spec("P_out_inv_edge", forward_artifacts, out_inv_edge, domains.edge),
                         shared_compact_column_spec("P_out_alpha", forward_artifacts, out_alpha, domains.edge),
                         matrix_commitment_only_spec("P_Y_lin", y_lin_matrix),
                         matrix_commitment_only_spec("P_Y", y_matrix),
@@ -6104,40 +5914,13 @@ namespace gatzk::protocol
                     });
                 add_metric(metrics != nullptr ? &metrics->psq_trace_ms : nullptr, stage_start);
                 add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
-                const auto single_output_edge_lift_start = Clock::now();
-                auto out_e_src_edge_point_future = edge_lift_commitment_async(out_e_src, true);
-                auto out_e_dst_edge_point_future = edge_lift_commitment_async(out_e_dst, false);
-                auto y_prime_star_edge_point_future = edge_lift_commitment_async(y_prime_star, true);
-                auto t_out_edge_point_future = edge_lift_commitment_async(*t_out, false);
-                auto y_star_edge_point_future = edge_lift_commitment_async(y_star, false);
-                const auto out_e_src_edge_point = out_e_src_edge_point_future.get();
-                const auto out_e_dst_edge_point = out_e_dst_edge_point_future.get();
-                const auto y_prime_star_edge_point = y_prime_star_edge_point_future.get();
-                const auto t_out_edge_point = t_out_edge_point_future.get();
-                const auto y_star_edge_point = y_star_edge_point_future.get();
-                record_edge_lift_msm(single_output_edge_lift_start);
                 add_dynamic_commitment_batch(
                     trace,
                     {
-                        linear_shared_column_spec(
-                            "P_out_E_src_edge",
-                            forward_artifacts,
-                            quantized.e_src_edge,
-                            domains.edge,
-                            out_e_src_edge_point),
-                        linear_shared_column_spec(
-                            "P_out_E_dst_edge",
-                            forward_artifacts,
-                            quantized.e_dst_edge,
-                            domains.edge,
-                            out_e_dst_edge_point),
+                        shared_compact_column_spec("P_out_E_src_edge", forward_artifacts, quantized.e_src_edge, domains.edge),
+                        shared_compact_column_spec("P_out_E_dst_edge", forward_artifacts, quantized.e_dst_edge, domains.edge),
                         shared_compact_column_spec("P_out_Y_prime_star", output_compressed, y_prime_star, domains.n),
-                        linear_shared_column_spec(
-                            "P_out_Y_prime_star_edge",
-                            output_compressed,
-                            y_prime_star_edge,
-                            domains.edge,
-                            y_prime_star_edge_point),
+                        shared_compact_column_spec("P_out_Y_prime_star_edge", output_compressed, y_prime_star_edge, domains.edge),
                         linear_shared_column_spec(
                             "P_out_Table_src",
                             out_src_route,
@@ -6222,10 +6005,10 @@ namespace gatzk::protocol
                                 linear_label_term("P_out_widehat_y_star", lambda_out),
                             }),
                         compact_column_spec("P_out_T", t_out, domains.n),
-                        linear_column_spec("P_out_T_edge", t_out_edge, domains.edge, t_out_edge_point),
+                        compact_column_spec("P_out_T_edge", t_out_edge, domains.edge),
                         column_spec("P_out_PSQ", psq_out, domains.edge),
                         shared_compact_column_spec("P_out_Y_star", output_compressed, y_star, domains.n),
-                        linear_shared_column_spec("P_out_Y_star_edge", output_compressed, y_star_edge, domains.edge, y_star_edge_point),
+                        shared_compact_column_spec("P_out_Y_star_edge", output_compressed, y_star_edge, domains.edge),
                     },
                     context.kzg,
                     keep_trace_payloads,

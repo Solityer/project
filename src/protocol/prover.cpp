@@ -3481,11 +3481,15 @@ namespace gatzk::protocol
                     std::size_t worker_cap = 4;
                     if (label_ == "t_edge" && target_size_ <= (1ULL << 22) && cpu_count >= 8)
                     {
-                        worker_cap = std::min<std::size_t>(8, std::max<std::size_t>(4, cpu_count / 2));
+                        worker_cap = std::min<std::size_t>(
+                            16,
+                            std::max<std::size_t>(8, (cpu_count * 3) / 4));
                     }
                     const auto worker_count = std::min<std::size_t>(
                         std::min<std::size_t>(cpu_count, worker_cap),
                         wave.size());
+                    progress_note(
+                        "prove:quotient:" + label_ + ":coset_prewarm:" + std::string(wave_name) + ":workers=" + std::to_string(worker_count));
                     std::atomic<std::size_t> next{0};
                     std::vector<std::future<void>> futures;
                     futures.reserve(worker_count);
@@ -3527,7 +3531,7 @@ namespace gatzk::protocol
                 }
                 auto is_hidden_derived_suffix = [](std::string_view suffix)
                 {
-                    return suffix == "Table_L" || suffix == "Query_L" || suffix == "Table_R" || suffix == "Query_R" || suffix == "Table_exp" || suffix == "Query_exp" || suffix == "Table_ELU" || suffix == "Query_ELU" || suffix == "Query_src" || suffix == "Query_t" || suffix == "Query_dst";
+                    return suffix == "Delta" || suffix == "Table_L" || suffix == "Query_L" || suffix == "Table_R" || suffix == "Query_R" || suffix == "Table_exp" || suffix == "Query_exp" || suffix == "Table_ELU" || suffix == "Query_ELU" || suffix == "Query_src" || suffix == "Query_t" || suffix == "Query_dst";
                 };
                 for (std::size_t head_index = 0; head_index < context_.model.hidden_heads.size(); ++head_index)
                 {
@@ -3540,7 +3544,7 @@ namespace gatzk::protocol
                 const bool legacy_single_output = context_.model.output_layer.heads.size() == 1;
                 auto is_output_derived_suffix = [](std::string_view suffix)
                 {
-                    return suffix == "Table_L" || suffix == "Query_L" || suffix == "Table_R" || suffix == "Query_R" || suffix == "Table_exp" || suffix == "Query_exp" || suffix == "Query_src" || suffix == "Query_t" || suffix == "Query_dst";
+                    return suffix == "Delta" || suffix == "Table_L" || suffix == "Query_L" || suffix == "Table_R" || suffix == "Query_R" || suffix == "Table_exp" || suffix == "Query_exp" || suffix == "Query_src" || suffix == "Query_t" || suffix == "Query_dst";
                 };
                 for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index)
                 {
@@ -3633,6 +3637,10 @@ namespace gatzk::protocol
                     {
                         return scaled_coset_sum({{prefix + "S", FieldElement::one()}, {prefix + "Z", eta_l}});
                     }
+                    if (suffix == "Delta")
+                    {
+                        return scaled_coset_sum({{prefix + "M_edge", FieldElement::one()}, {prefix + "Z", -FieldElement::one()}});
+                    }
                     if (suffix == "Table_R")
                     {
                         return coset_values_ptr("P_T_range");
@@ -3717,6 +3725,10 @@ namespace gatzk::protocol
                     if (suffix == "Query_L")
                     {
                         return scaled_coset_sum({{prefix + "S", FieldElement::one()}, {prefix + "Z", eta_l}});
+                    }
+                    if (suffix == "Delta")
+                    {
+                        return scaled_coset_sum({{prefix + "M_edge", FieldElement::one()}, {prefix + "Z", -FieldElement::one()}});
                     }
                     if (suffix == "Table_R")
                     {
@@ -3914,6 +3926,10 @@ namespace gatzk::protocol
                     return std::size_t{1};
                 }
                 if (fh_size >= (1ULL << 23) || edge_size >= (1ULL << 18))
+                {
+                    return std::min<std::size_t>(2, labels.size());
+                }
+                if (std::find(labels.begin(), labels.end(), "t_edge") != labels.end() && edge_size >= (1ULL << 15))
                 {
                     return std::min<std::size_t>(2, labels.size());
                 }
@@ -4133,31 +4149,132 @@ namespace gatzk::protocol
 
         std::vector<std::string> multihead_edge_dependencies(const ProtocolContext &context)
         {
-            std::vector<std::string> labels = domain_opening_labels(context, "edge");
-            append_unique_labels(
-                &labels,
+            std::vector<std::string> labels = {
+                "P_Q_edge_valid",
+                "P_Q_new_edge",
+                "P_Q_end_edge",
+                "P_Q_tbl_L",
+                "P_Q_qry_L",
+                "P_Q_tbl_R",
+                "P_Q_qry_R",
+                "P_Q_tbl_exp",
+                "P_Q_qry_exp",
+                "P_Q_tbl_ELU",
+                "P_Q_qry_ELU",
+                "P_T_L_x",
+                "P_T_L_y",
+                "P_T_range",
+                "P_T_exp_x",
+                "P_T_exp_y",
+                "P_T_ELU_x",
+                "P_T_ELU_y",
+                "P_src",
+                "P_dst",
+            };
+            auto append_label = [&](std::string label)
+            {
+                if (std::find(labels.begin(), labels.end(), label) == labels.end())
                 {
-                    "P_Q_edge_valid",
-                    "P_Q_new_edge",
-                    "P_Q_end_edge",
-                    "P_Q_tbl_L",
-                    "P_Q_qry_L",
-                    "P_Q_tbl_R",
-                    "P_Q_qry_R",
-                    "P_Q_tbl_exp",
-                    "P_Q_qry_exp",
-                    "P_Q_tbl_ELU",
-                    "P_Q_qry_ELU",
-                    "P_T_L_x",
-                    "P_T_L_y",
-                    "P_T_range",
-                    "P_T_exp_x",
-                    "P_T_exp_y",
-                    "P_T_ELU_x",
-                    "P_T_ELU_y",
-                    "P_src",
-                    "P_dst",
-                });
+                    labels.push_back(std::move(label));
+                }
+            };
+            auto append_prefixed = [&](const std::string &prefix, const std::vector<std::string> &suffixes)
+            {
+                for (const auto &suffix : suffixes)
+                {
+                    append_label(prefix + suffix);
+                }
+            };
+
+            const std::vector<std::string> hidden_suffixes = {
+                "R_src",
+                "Query_src",
+                "E_src_edge",
+                "E_dst_edge",
+                "H_src_star_edge",
+                "S",
+                "R_L",
+                "Table_L",
+                "Query_L",
+                "m_L",
+                "Z",
+                "Delta",
+                "M_edge",
+                "s_max",
+                "C_max",
+                "R_R",
+                "Table_R",
+                "Query_R",
+                "m_R",
+                "alpha",
+                "U",
+                "inv_edge",
+                "R_exp",
+                "Table_exp",
+                "Query_exp",
+                "m_exp",
+                "PSQ",
+                "w_psq",
+                "T_psq_edge",
+                "R_t",
+                "Query_t",
+                "R_ELU",
+                "Table_ELU",
+                "Query_ELU",
+                "m_ELU",
+                "H_agg_pre_flat",
+                "H_agg_flat",
+                "R_dst",
+                "Query_dst",
+                "Sum_edge",
+                "H_agg_star_edge",
+            };
+            for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index)
+            {
+                append_prefixed("P_h" + std::to_string(head_index) + "_", hidden_suffixes);
+            }
+
+            const std::vector<std::string> output_suffixes = {
+                "R_src",
+                "Query_src",
+                "E_src_edge",
+                "E_dst_edge",
+                "S",
+                "R_L",
+                "Table_L",
+                "Query_L",
+                "m_L",
+                "Z",
+                "Delta",
+                "M_edge",
+                "s_max",
+                "C_max",
+                "R_R",
+                "Table_R",
+                "Query_R",
+                "m_R",
+                "alpha",
+                "U",
+                "inv_edge",
+                "R_exp",
+                "Table_exp",
+                "Query_exp",
+                "m_exp",
+                "PSQ",
+                "w",
+                "T_edge",
+                "R_t",
+                "Query_t",
+                "R_dst",
+                "Query_dst",
+                "Sum_edge",
+                "Y_star_edge",
+            };
+            const bool legacy_single_output = context.model.output_layer.heads.size() == 1;
+            for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
+            {
+                append_prefixed(output_head_prefix(head_index, legacy_single_output) + "_", output_suffixes);
+            }
             return labels;
         }
 
