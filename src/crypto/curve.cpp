@@ -159,7 +159,7 @@ namespace gatzk::crypto
         {
             by_size = 8;
         }
-        else if (scalar_count >= (1ULL << 14))
+        else if (scalar_count >= (1ULL << 13))
         {
             by_size = 4;
         }

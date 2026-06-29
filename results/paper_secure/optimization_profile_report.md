@@ -202,3 +202,27 @@ This repair keeps fixed-point dot products at the trace scale used by the activa
 ## Matrix Abort 20260628T112823Z
 
 - cpu/cora: row exited with code 124
+
+## Matrix Abort 20260629T060142Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260629T060754Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260629T061735Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260629T062905Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260629T063907Z
+
+- cpu/cora: row exited with code 124
+
+## Matrix Abort 20260629T065542Z
+
+- cpu/cora: row exited with code 124
