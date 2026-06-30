@@ -162,3 +162,7 @@ This matrix is diagnostic and is not a final matrix. `comparison/**` is ignored.
 ## Matrix Abort 20260629T065542Z
 
 - cpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T030655Z
+
+- cpu/cora: row exited with code 124
