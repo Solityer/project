@@ -1,11 +1,11 @@
 {
-  "build_identity": "07da82d329d48fa566f0d49337fd23b5f2a0071773bc93039a3a0f8b8f3a2089",
+  "build_identity": "e100e19991c7ae84abf92d8d6f73e4384c8b486632cae8fc6bb335719d877648",
   "comparison_status": "comparison/** ignored by request; no completion claim is based on comparison results.",
-  "cpu_binary_hash": "abb37bf9f24eef24109b08acacf2a0632d13f657fbccef251730f043ed85185a",
+  "cpu_binary_hash": "8f2a4ae14d8e455025b5fc2b7e285642d8faf9b35f76169614e11f31dcf792b0",
   "exporter_hash": "c24e4fb066c61214825ca204da6ed84447eba1f3fccc7016ec57e0824465b579",
-  "generated_at": "2026-06-29T06:53:13.756770+00:00",
-  "gpu_binary_hash": "6febe6e900036e30eb76bca9daf35619f0758a355a7fe3fab9bbb7bd257421c1",
-  "main_git_status": "M results/paper_secure/freeze_identity.json\n M results/paper_secure/optimization_profile_report.md\n M results/performance_engineering/direction_guard.md\n M results/performance_engineering/five_dataset_bottleneck_matrix.md\n M results/performance_engineering/resource_control_audit.md\n M src/crypto/curve.cpp\n M src/main.cpp\n M src/protocol/prover.cpp\n M src/protocol/trace.cpp\n?? results/performance_engineering/failed_runs/20260629T060142Z_cpu_cora_matrix_abort.md\n?? results/performance_engineering/failed_runs/20260629T060754Z_cpu_cora_matrix_abort.md\n?? results/performance_engineering/failed_runs/20260629T061735Z_cpu_cora_matrix_abort.md\n?? results/performance_engineering/failed_runs/20260629T062905Z_cpu_cora_matrix_abort.md\n?? results/performance_engineering/failed_runs/20260629T063907Z_cpu_cora_matrix_abort.md",
+  "generated_at": "2026-06-30T03:04:26.896605+00:00",
+  "gpu_binary_hash": "095879dae5279b09ed83fa6bab64793cabb28d651fade85af262c1de2f23c179",
+  "main_git_status": "M src/protocol/prover.cpp",
   "runner_hash": "b901308870f8a860fbb99b36e52761d6e749a8f481829bdb6aa89c25ee5c09e3",
-  "source_tree_hash": "36e164fc0e4f74f4f4e9bbf16cd4181108ebea75540d3169a8f02029ffae2188"
+  "source_tree_hash": "8811c11c311f0db2e1e2161ec65182eeeeb6146835f50d513242bb9444c055ee"
 }
