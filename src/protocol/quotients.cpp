@@ -228,23 +228,30 @@ namespace gatzk::protocol
         class QuotientAccumulator
         {
         public:
-            explicit QuotientAccumulator(const FieldElement &alpha) : alpha_(alpha) {}
+            explicit QuotientAccumulator(const FieldElement &alpha)
+                : alpha_(alpha.native())
+            {
+                power_ = 1;
+                sum_.clear();
+            }
 
             void add(const FieldElement &term)
             {
-                sum_ += power_ * term;
-                power_ *= alpha_;
+                mcl::Fr product;
+                mcl::Fr::mul(product, power_, term.native());
+                mcl::Fr::add(sum_, sum_, product);
+                mcl::Fr::mul(power_, power_, alpha_);
             }
 
             FieldElement value() const
             {
-                return sum_;
+                return FieldElement::from_native(sum_);
             }
 
         private:
-            FieldElement alpha_;
-            FieldElement power_ = FieldElement::one();
-            FieldElement sum_ = FieldElement::zero();
+            mcl::Fr alpha_;
+            mcl::Fr power_;
+            mcl::Fr sum_;
         };
 
         FieldElement route_node_step(

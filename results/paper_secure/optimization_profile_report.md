@@ -230,3 +230,139 @@ This repair keeps fixed-point dot products at the trace scale used by the activa
 ## Matrix Abort 20260630T030655Z
 
 - cpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T045906Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T051547Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T052206Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T054004Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T054645Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T060532Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T062155Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T063314Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T111654Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T112217Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T113129Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T113539Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T114505Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T115233Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T115730Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T120311Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T121015Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T121722Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T122333Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T123004Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T123749Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260630T124827Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260701T031512Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260701T032033Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260701T032601Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260701T033658Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260701T034602Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260701T035055Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260701T035608Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260701T040045Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260701T040737Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260701T041302Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260701T041747Z
+
+- gpu/cora: row exited with code 124
+
+## Matrix Abort 20260701T042005Z
+
+- gpu/cora: row exited with code 124
