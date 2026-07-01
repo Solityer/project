@@ -845,6 +845,17 @@ namespace gatzk::protocol
 
         DynamicCommitmentSpec deferred_linear_compact_column_spec(
             const std::string &name,
+            std::vector<FieldElement> &&values,
+            const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
+            std::vector<DynamicCommitmentLinearTerm> terms)
+        {
+            auto spec = deferred_linear_column_spec(name, std::move(values), domain, std::move(terms));
+            spec.compact = true;
+            return spec;
+        }
+
+        DynamicCommitmentSpec deferred_linear_compact_column_spec(
+            const std::string &name,
             std::shared_ptr<const std::vector<FieldElement>> values,
             const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
             std::vector<DynamicCommitmentLinearTerm> terms)
@@ -3997,7 +4008,17 @@ namespace gatzk::protocol
                         matrix_commitment_only_spec(prefix + "H_prime", h_prime),
                         shared_compact_column_spec(prefix + "E_src", forward_artifacts, e_src, domains.n),
                         shared_compact_column_spec(prefix + "E_dst", forward_artifacts, e_dst, domains.n),
-                        shared_compact_column_spec(prefix + "S", forward_artifacts, s, domains.edge),
+                        shared_compact_column_spec(prefix + "E_src_edge", forward_artifacts, e_src_edge, domains.edge),
+                        shared_compact_column_spec(prefix + "E_dst_edge", forward_artifacts, e_dst_edge, domains.edge),
+                        deferred_linear_compact_shared_column_spec(
+                            prefix + "S",
+                            forward_artifacts,
+                            s,
+                            domains.edge,
+                            {
+                                linear_label_term(prefix + "E_src_edge", FieldElement::one()),
+                                linear_label_term(prefix + "E_dst_edge", FieldElement::one()),
+                            }),
                         shared_compact_column_spec(prefix + "Z", forward_artifacts, z, domains.edge),
                         shared_compact_column_spec(prefix + "M", forward_artifacts, m, domains.n),
                         shared_compact_column_spec(prefix + "M_edge", forward_artifacts, m_edge, domains.edge),
@@ -4422,8 +4443,6 @@ namespace gatzk::protocol
                         shared_column_spec(prefix + "a_star", star_binding, star_binding->a, domains.d),
                         shared_column_spec(prefix + "b_star", star_binding, star_binding->b, domains.d),
                         shared_column_spec(prefix + "Acc_star", star_binding, star_binding->acc, domains.d),
-                        shared_compact_column_spec(prefix + "E_src_edge", forward_artifacts, e_src_edge, domains.edge),
-                        shared_compact_column_spec(prefix + "E_dst_edge", forward_artifacts, e_dst_edge, domains.edge),
                         shared_compact_column_spec(prefix + "H_src_star_edge", compressed, h_star_edge, domains.edge),
                         linear_shared_column_spec(
                             prefix + "Table_src",
@@ -4512,8 +4531,22 @@ namespace gatzk::protocol
                                 linear_label_term(prefix + "U", FieldElement::one()),
                                 linear_label_term(prefix + "widehat_v_pre_star", lambda_psq),
                             }),
-                        compact_column_spec(prefix + "T_psq", t_psq, domains.n),
-                        compact_column_spec(prefix + "T_psq_edge", t_psq_edge, domains.edge),
+                        deferred_linear_compact_column_spec(
+                            prefix + "T_psq",
+                            t_psq,
+                            domains.n,
+                            {
+                                linear_label_term(prefix + "Sum", FieldElement::one()),
+                                linear_label_term(prefix + "H_agg_pre_star", lambda_psq),
+                            }),
+                        deferred_linear_compact_column_spec(
+                            prefix + "T_psq_edge",
+                            t_psq_edge,
+                            domains.edge,
+                            {
+                                linear_label_term(prefix + "Sum_edge", FieldElement::one()),
+                                linear_label_term(prefix + "H_agg_pre_star_edge", lambda_psq),
+                            }),
                         column_spec(prefix + "PSQ", psq, domains.edge),
                         shared_compact_column_spec(prefix + "H_agg_star", compressed, h_agg_star, domains.n),
                         shared_compact_column_spec(prefix + "H_agg_star_edge", compressed, h_agg_star_edge, domains.edge),
@@ -4979,7 +5012,17 @@ namespace gatzk::protocol
                             matrix_commitment_only_spec(prefix + "Y_prime", y_prime),
                             shared_compact_column_spec(prefix + "E_src", forward_artifacts, out_e_src, domains.n),
                             shared_compact_column_spec(prefix + "E_dst", forward_artifacts, out_e_dst, domains.n),
-                            shared_compact_column_spec(prefix + "S", forward_artifacts, out_s, domains.edge),
+                            shared_compact_column_spec(prefix + "E_src_edge", forward_artifacts, quantized.e_src_edge, domains.edge),
+                            shared_compact_column_spec(prefix + "E_dst_edge", forward_artifacts, quantized.e_dst_edge, domains.edge),
+                            deferred_linear_compact_shared_column_spec(
+                                prefix + "S",
+                                forward_artifacts,
+                                out_s,
+                                domains.edge,
+                                {
+                                    linear_label_term(prefix + "E_src_edge", FieldElement::one()),
+                                    linear_label_term(prefix + "E_dst_edge", FieldElement::one()),
+                                }),
                             shared_compact_column_spec(prefix + "Z", forward_artifacts, out_z, domains.edge),
                             shared_compact_column_spec(prefix + "M", forward_artifacts, out_m, domains.n),
                             shared_compact_column_spec(prefix + "M_edge", forward_artifacts, out_m_edge, domains.edge),
@@ -5224,8 +5267,6 @@ namespace gatzk::protocol
                     add_dynamic_commitment_batch(
                         trace,
                         {
-                            shared_compact_column_spec(prefix + "E_src_edge", forward_artifacts, quantized.e_src_edge, domains.edge),
-                            shared_compact_column_spec(prefix + "E_dst_edge", forward_artifacts, quantized.e_dst_edge, domains.edge),
                             shared_compact_column_spec(prefix + "Y_prime_star", compressed, y_prime_star, domains.n),
                             shared_compact_column_spec(prefix + "Y_prime_star_edge", compressed, y_prime_star_edge, domains.edge),
                             linear_shared_column_spec(
@@ -5311,8 +5352,22 @@ namespace gatzk::protocol
                                     linear_label_term(prefix + "U", FieldElement::one()),
                                     linear_label_term(prefix + "widehat_y_star", lambda_out),
                                 }),
-                            compact_column_spec(prefix + "T", t_out, domains.n),
-                            compact_column_spec(prefix + "T_edge", t_out_edge, domains.edge),
+                            deferred_linear_compact_column_spec(
+                                prefix + "T",
+                                t_out,
+                                domains.n,
+                                {
+                                    linear_label_term(prefix + "Sum", FieldElement::one()),
+                                    linear_label_term(prefix + "Y_star", lambda_out),
+                                }),
+                            deferred_linear_compact_column_spec(
+                                prefix + "T_edge",
+                                t_out_edge,
+                                domains.edge,
+                                {
+                                    linear_label_term(prefix + "Sum_edge", FieldElement::one()),
+                                    linear_label_term(prefix + "Y_star_edge", lambda_out),
+                                }),
                             column_spec(prefix + "PSQ", psq_out, domains.edge),
                             shared_compact_column_spec(prefix + "Y_star", compressed, y_star, domains.n),
                             shared_compact_column_spec(prefix + "Y_star_edge", compressed, y_star_edge, domains.edge),
@@ -5614,7 +5669,17 @@ namespace gatzk::protocol
                         matrix_commitment_only_spec("P_out_Y_prime", y_prime),
                         shared_compact_column_spec("P_out_E_src", forward_artifacts, out_e_src, domains.n),
                         shared_compact_column_spec("P_out_E_dst", forward_artifacts, out_e_dst, domains.n),
-                        shared_compact_column_spec("P_out_S", forward_artifacts, out_s, domains.edge),
+                        shared_compact_column_spec("P_out_E_src_edge", forward_artifacts, quantized.e_src_edge, domains.edge),
+                        shared_compact_column_spec("P_out_E_dst_edge", forward_artifacts, quantized.e_dst_edge, domains.edge),
+                        deferred_linear_compact_shared_column_spec(
+                            "P_out_S",
+                            forward_artifacts,
+                            out_s,
+                            domains.edge,
+                            {
+                                linear_label_term("P_out_E_src_edge", FieldElement::one()),
+                                linear_label_term("P_out_E_dst_edge", FieldElement::one()),
+                            }),
                         shared_compact_column_spec("P_out_Z", forward_artifacts, out_z, domains.edge),
                         shared_compact_column_spec("P_out_M", forward_artifacts, out_m, domains.n),
                         shared_compact_column_spec("P_out_M_edge", forward_artifacts, out_m_edge, domains.edge),
@@ -5917,8 +5982,6 @@ namespace gatzk::protocol
                 add_dynamic_commitment_batch(
                     trace,
                     {
-                        shared_compact_column_spec("P_out_E_src_edge", forward_artifacts, quantized.e_src_edge, domains.edge),
-                        shared_compact_column_spec("P_out_E_dst_edge", forward_artifacts, quantized.e_dst_edge, domains.edge),
                         shared_compact_column_spec("P_out_Y_prime_star", output_compressed, y_prime_star, domains.n),
                         shared_compact_column_spec("P_out_Y_prime_star_edge", output_compressed, y_prime_star_edge, domains.edge),
                         linear_shared_column_spec(
@@ -6004,8 +6067,22 @@ namespace gatzk::protocol
                                 linear_label_term("P_out_U", FieldElement::one()),
                                 linear_label_term("P_out_widehat_y_star", lambda_out),
                             }),
-                        compact_column_spec("P_out_T", t_out, domains.n),
-                        compact_column_spec("P_out_T_edge", t_out_edge, domains.edge),
+                        deferred_linear_compact_column_spec(
+                            "P_out_T",
+                            t_out,
+                            domains.n,
+                            {
+                                linear_label_term("P_out_Sum", FieldElement::one()),
+                                linear_label_term("P_out_Y_star", lambda_out),
+                            }),
+                        deferred_linear_compact_column_spec(
+                            "P_out_T_edge",
+                            t_out_edge,
+                            domains.edge,
+                            {
+                                linear_label_term("P_out_Sum_edge", FieldElement::one()),
+                                linear_label_term("P_out_Y_star_edge", lambda_out),
+                            }),
                         column_spec("P_out_PSQ", psq_out, domains.edge),
                         shared_compact_column_spec("P_out_Y_star", output_compressed, y_star, domains.n),
                         shared_compact_column_spec("P_out_Y_star_edge", output_compressed, y_star_edge, domains.edge),
@@ -6667,7 +6744,14 @@ namespace gatzk::protocol
         add_dynamic_commitment_batch(
             trace,
             {
-                column_spec("P_S", s, domains.edge),
+                deferred_linear_column_spec(
+                    "P_S",
+                    std::move(s),
+                    domains.edge,
+                    {
+                        linear_label_term("P_E_src_edge", FieldElement::one()),
+                        linear_label_term("P_E_dst_edge", FieldElement::one()),
+                    }),
                 column_spec("P_Z", z, domains.edge),
             },
             context.kzg,
@@ -7066,7 +7150,14 @@ namespace gatzk::protocol
             trace,
             {
                 column_spec("P_w_psq", std::move(w_psq), domains.edge),
-                column_spec("P_T_psq_edge", std::move(t_psq_edge), domains.edge),
+                deferred_linear_compact_column_spec(
+                    "P_T_psq_edge",
+                    std::move(t_psq_edge),
+                    domains.edge,
+                    {
+                        linear_label_term("P_Sum_edge", FieldElement::one()),
+                        linear_label_term("P_H_agg_star_edge", lambda_psq),
+                    }),
                 column_spec("P_PSQ", psq_state, domains.edge),
             },
             context.kzg,

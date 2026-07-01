@@ -198,6 +198,13 @@ namespace gatzk::algebra
             return reinterpret_cast<const mcl::Fr*>(values);
         }
 
+        static mcl::Fr* mutable_native_array_data(FieldElement* values)
+        {
+            static_assert(sizeof(FieldElement) == sizeof(mcl::Fr), "FieldElement must wrap exactly one mcl::Fr");
+            static_assert(alignof(FieldElement) == alignof(mcl::Fr), "FieldElement and mcl::Fr alignment must match");
+            return reinterpret_cast<mcl::Fr*>(values);
+        }
+
         // 将域元素以小端字节序写入字节缓冲区，返回实际写入的字节数
         std::size_t write_little_endian(std::uint8_t* bytes, std::size_t size) const
         {

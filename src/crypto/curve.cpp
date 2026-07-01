@@ -2,11 +2,14 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include <future>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 #include "gatzk/util/route2.hpp"
 
@@ -17,6 +20,37 @@ namespace gatzk::crypto
 
     namespace
     {
+        struct ScalarKey
+        {
+            std::array<std::uint8_t, 32> bytes{};
+
+            bool operator==(const ScalarKey& other) const
+            {
+                return bytes == other.bytes;
+            }
+        };
+
+        struct ScalarKeyHash
+        {
+            std::size_t operator()(const ScalarKey& key) const
+            {
+                std::uint64_t hash = 1469598103934665603ULL;
+                for (const auto byte : key.bytes)
+                {
+                    hash ^= byte;
+                    hash *= 1099511628211ULL;
+                }
+                return static_cast<std::size_t>(hash);
+            }
+        };
+
+        ScalarKey scalar_key(const algebra::FieldElement& scalar)
+        {
+            ScalarKey key;
+            scalar.write_little_endian(key.bytes.data(), key.bytes.size());
+            return key;
+        }
+
         // 同基点批量乘法会反复命中相同 `(base, scalar)`，这里用字符串键复用结果。
         std::string same_base_cache_key(const G1Point& point, const algebra::FieldElement& scalar)
         {
@@ -146,7 +180,7 @@ namespace gatzk::crypto
 
     std::size_t msm_worker_count(std::size_t scalar_count, std::size_t cpu_count)
     {
-        if (scalar_count < 4096 || cpu_count <= 1)
+        if (scalar_count < 1024 || cpu_count <= 1)
         {
             return 1;
         }
@@ -163,23 +197,165 @@ namespace gatzk::crypto
         {
             by_size = 4;
         }
-        else
+        else if (scalar_count >= 1024)
         {
             by_size = 2;
+        }
+        else
+        {
+            by_size = 1;
         }
         return std::max<std::size_t>(1, std::min(cpu_count, by_size));
     }
 
-    void mul_vec_chunked(
+    std::size_t pippenger_window_bits(std::size_t count)
+    {
+        if (count >= (1ULL << 20))
+        {
+            return 13;
+        }
+        if (count >= (1ULL << 18))
+        {
+            return 12;
+        }
+        if (count >= (1ULL << 16))
+        {
+            return 11;
+        }
+        if (count >= (1ULL << 14))
+        {
+            return 10;
+        }
+        if (count >= (1ULL << 12))
+        {
+            return 9;
+        }
+        if (count >= (1ULL << 10))
+        {
+            return 8;
+        }
+        return 7;
+    }
+
+    std::uint32_t scalar_window_digit(
+        const ScalarKey& key,
+        std::size_t bit_offset,
+        std::size_t window_bits)
+    {
+        std::uint64_t word = 0;
+        const auto byte_offset = bit_offset / 8;
+        const auto bit_shift = bit_offset % 8;
+        for (std::size_t i = 0; i < 8 && byte_offset + i < key.bytes.size(); ++i)
+        {
+            word |= static_cast<std::uint64_t>(key.bytes[byte_offset + i]) << (8U * i);
+        }
+        const auto mask = (std::uint64_t{1} << window_bits) - 1U;
+        return static_cast<std::uint32_t>((word >> bit_shift) & mask);
+    }
+
+    bool should_use_pippenger_msm(std::size_t count)
+    {
+        return util::route2_options().fast_msm && count >= (1ULL << 18);
+    }
+
+    void pippenger_msm_single(
         mcl::G1& out,
-        mcl::G1* points,
-        const mcl::Fr* scalars,
+        const G1Point* points,
+        const algebra::FieldElement* scalars,
+        std::size_t count)
+    {
+        out.clear();
+        if (count == 0)
+        {
+            return;
+        }
+        const auto window_bits = pippenger_window_bits(count);
+        const auto bucket_count = std::size_t{1} << window_bits;
+        constexpr std::size_t kScalarBits = 256;
+        const auto window_count = (kScalarBits + window_bits - 1U) / window_bits;
+
+        std::vector<ScalarKey> scalar_keys;
+        scalar_keys.reserve(count);
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            scalar_keys.push_back(scalar_key(scalars[i]));
+        }
+
+        std::vector<mcl::G1> buckets(bucket_count);
+        bool first_window = true;
+        for (std::size_t window = window_count; window-- > 0;)
+        {
+            if (!first_window)
+            {
+                for (std::size_t bit = 0; bit < window_bits; ++bit)
+                {
+                    mcl::G1::dbl(out, out);
+                }
+            }
+            first_window = false;
+
+            for (auto& bucket : buckets)
+            {
+                bucket.clear();
+            }
+            const auto bit_offset = window * window_bits;
+            for (std::size_t i = 0; i < count; ++i)
+            {
+                const auto digit = scalar_window_digit(scalar_keys[i], bit_offset, window_bits);
+                if (digit != 0)
+                {
+                    mcl::G1::add(buckets[digit], buckets[digit], points[i].value);
+                }
+            }
+
+            mcl::G1 running;
+            running.clear();
+            for (std::size_t digit = bucket_count; digit-- > 1;)
+            {
+                mcl::G1::add(running, running, buckets[digit]);
+                mcl::G1::add(out, out, running);
+            }
+        }
+    }
+
+    void mcl_mul_vec(
+        mcl::G1& out,
+        const G1Point* points,
+        const algebra::FieldElement* scalars,
+        std::size_t count)
+    {
+        static_assert(sizeof(G1Point) == sizeof(mcl::G1), "G1Point must wrap a single mcl::G1");
+        auto* native_points = const_cast<mcl::G1*>(reinterpret_cast<const mcl::G1*>(points));
+        const auto* native_scalars = algebra::FieldElement::native_array_data(scalars);
+        mcl::G1::mulVec(out, native_points, native_scalars, count);
+    }
+
+    void msm_execute_single(
+        mcl::G1& out,
+        const G1Point* points,
+        const algebra::FieldElement* scalars,
+        std::size_t count)
+    {
+        if (should_use_pippenger_msm(count))
+        {
+            pippenger_msm_single(out, points, scalars, count);
+        }
+        else
+        {
+            mcl_mul_vec(out, points, scalars, count);
+        }
+    }
+
+    void msm_execute_chunked(
+        mcl::G1& out,
+        const G1Point* points,
+        const algebra::FieldElement* scalars,
         std::size_t count,
         std::size_t worker_count)
     {
-        if (worker_count <= 1 || count < 4096)
+        if (worker_count <= 1 || count < 1024)
         {
-            mcl::G1::mulVec(out, points, scalars, count);
+            msm_execute_single(out, points, scalars, count);
             return;
         }
         const auto task_count = std::min<std::size_t>(worker_count, count);
@@ -198,7 +374,7 @@ namespace gatzk::crypto
                 std::launch::async,
                 [points, scalars, begin, end]() {
                     mcl::G1 partial;
-                    mcl::G1::mulVec(partial, points + begin, scalars + begin, end - begin);
+                    msm_execute_single(partial, points + begin, scalars + begin, end - begin);
                     return partial;
                 }));
         }
@@ -207,6 +383,282 @@ namespace gatzk::crypto
             mcl::G1 partial = future.get();
             mcl::G1::add(out, out, partial);
         }
+    }
+
+    bool should_try_grouped_scalar_msm(
+        const algebra::FieldElement* scalars,
+        std::size_t count,
+        const algebra::FieldElement& zero_scalar,
+        std::size_t nonzero_count)
+    {
+        if (!util::route2_options().fast_msm || count < 4096 || nonzero_count < 512)
+        {
+            return false;
+        }
+        constexpr std::size_t kTargetSamples = 2048;
+        const auto stride = std::max<std::size_t>(1, count / kTargetSamples);
+        std::unordered_map<ScalarKey, std::size_t, ScalarKeyHash> sampled;
+        sampled.reserve(std::min<std::size_t>(kTargetSamples, nonzero_count));
+        std::size_t sampled_nonzero = 0;
+        for (std::size_t i = 0; i < count && sampled_nonzero < kTargetSamples; i += stride)
+        {
+            if (scalars[i] == zero_scalar)
+            {
+                continue;
+            }
+            sampled.emplace(scalar_key(scalars[i]), sampled_nonzero);
+            ++sampled_nonzero;
+        }
+        if (sampled_nonzero < 128)
+        {
+            return false;
+        }
+        return sampled.size() * 2 <= sampled_nonzero;
+    }
+
+    bool sample_single_nonzero_scalar(
+        const algebra::FieldElement* scalars,
+        std::size_t count,
+        const algebra::FieldElement& zero_scalar,
+        std::size_t nonzero_count,
+        algebra::FieldElement* representative)
+    {
+        if (!util::route2_options().fast_msm || count < 4096 || nonzero_count < 512 || representative == nullptr)
+        {
+            return false;
+        }
+        constexpr std::size_t kTargetSamples = 2048;
+        const auto stride = std::max<std::size_t>(1, count / kTargetSamples);
+        bool found = false;
+        std::size_t sampled_nonzero = 0;
+        algebra::FieldElement candidate = zero_scalar;
+        for (std::size_t i = 0; i < count && sampled_nonzero < kTargetSamples; i += stride)
+        {
+            if (scalars[i] == zero_scalar)
+            {
+                continue;
+            }
+            if (!found)
+            {
+                candidate = scalars[i];
+                found = true;
+            }
+            else if (!(scalars[i] == candidate))
+            {
+                return false;
+            }
+            ++sampled_nonzero;
+        }
+        const auto min_samples = std::min<std::size_t>(128, nonzero_count);
+        if (!found || sampled_nonzero < min_samples)
+        {
+            return false;
+        }
+        *representative = candidate;
+        return true;
+    }
+
+    bool try_single_nonzero_scalar_msm(
+        G1Point& out,
+        const G1Point* points,
+        const algebra::FieldElement* scalars,
+        std::size_t count,
+        const algebra::FieldElement& zero_scalar,
+        std::size_t nonzero_count,
+        G1MSMProfile* profile,
+        const G1MSMExecutionOptions* options)
+    {
+        algebra::FieldElement representative = zero_scalar;
+        if (!sample_single_nonzero_scalar(
+                scalars,
+                count,
+                zero_scalar,
+                nonzero_count,
+                &representative))
+        {
+            return false;
+        }
+
+        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+        auto worker_count = msm_worker_count(nonzero_count, cpu_count);
+        if (options != nullptr && options->max_worker_count != 0)
+        {
+            worker_count = std::min(worker_count, options->max_worker_count);
+        }
+        worker_count = std::max<std::size_t>(1, worker_count);
+
+        struct PartialSum
+        {
+            bool ok = true;
+            mcl::G1 sum;
+        };
+
+        auto accumulate_range = [&](std::size_t begin, std::size_t end) {
+            PartialSum partial;
+            partial.sum.clear();
+            for (std::size_t i = begin; i < end; ++i)
+            {
+                if (scalars[i] == zero_scalar)
+                {
+                    continue;
+                }
+                if (!(scalars[i] == representative))
+                {
+                    partial.ok = false;
+                    return partial;
+                }
+                mcl::G1::add(partial.sum, partial.sum, points[i].value);
+            }
+            return partial;
+        };
+
+        mcl::G1 point_sum;
+        point_sum.clear();
+        bool ok = true;
+        if (worker_count <= 1 || count < 4096)
+        {
+            auto partial = accumulate_range(0, count);
+            ok = partial.ok;
+            point_sum = partial.sum;
+        }
+        else
+        {
+            const auto task_count = std::min<std::size_t>(worker_count, count);
+            const auto chunk_size = (count + task_count - 1) / task_count;
+            std::vector<std::future<PartialSum>> futures;
+            futures.reserve(task_count);
+            for (std::size_t task = 0; task < task_count; ++task)
+            {
+                const auto begin = task * chunk_size;
+                const auto end = std::min(count, begin + chunk_size);
+                if (begin >= end)
+                {
+                    break;
+                }
+                futures.push_back(std::async(std::launch::async, accumulate_range, begin, end));
+            }
+            for (auto& future : futures)
+            {
+                auto partial = future.get();
+                if (!partial.ok)
+                {
+                    ok = false;
+                }
+                mcl::G1::add(point_sum, point_sum, partial.sum);
+            }
+        }
+        if (!ok)
+        {
+            return false;
+        }
+        mcl::G1::mul(out.value, point_sum, representative.native());
+        if (profile != nullptr)
+        {
+            profile->zero_scalar_skipping = nonzero_count != count;
+            profile->sparse_compaction = true;
+            profile->effective_scalar_count = 1;
+            profile->multithreaded = worker_count > 1;
+        }
+        return true;
+    }
+
+    bool try_grouped_scalar_msm(
+        G1Point& out,
+        const G1Point* points,
+        const algebra::FieldElement* scalars,
+        std::size_t count,
+        const algebra::FieldElement& zero_scalar,
+        std::size_t nonzero_count,
+        G1MSMProfile* profile,
+        const G1MSMExecutionOptions* options)
+    {
+        struct Group
+        {
+            algebra::FieldElement scalar;
+            G1Point point_sum;
+        };
+
+        const auto max_group_count = std::max<std::size_t>(64, nonzero_count / 2);
+        std::unordered_map<ScalarKey, std::size_t, ScalarKeyHash> group_index;
+        group_index.reserve(std::min<std::size_t>(max_group_count + 1, nonzero_count));
+        std::vector<Group> groups;
+        groups.reserve(std::min<std::size_t>(max_group_count, nonzero_count));
+
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            if (scalars[i] == zero_scalar)
+            {
+                continue;
+            }
+            const auto key = scalar_key(scalars[i]);
+            const auto [it, inserted] = group_index.emplace(key, groups.size());
+            if (inserted)
+            {
+                if (groups.size() >= max_group_count)
+                {
+                    return false;
+                }
+                groups.push_back(Group{
+                    .scalar = scalars[i],
+                    .point_sum = points[i],
+                });
+            }
+            else
+            {
+                auto& point_sum = groups[it->second].point_sum.value;
+                mcl::G1::add(point_sum, point_sum, points[i].value);
+            }
+        }
+
+        if (groups.empty())
+        {
+            return true;
+        }
+        if (groups.size() * 2 > nonzero_count)
+        {
+            return false;
+        }
+
+        std::vector<G1Point> grouped_points;
+        std::vector<algebra::FieldElement> grouped_scalars;
+        grouped_points.reserve(groups.size());
+        grouped_scalars.reserve(groups.size());
+        for (auto& group : groups)
+        {
+            grouped_points.push_back(group.point_sum);
+            grouped_scalars.push_back(group.scalar);
+        }
+
+        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+        auto worker_count = msm_worker_count(grouped_scalars.size(), cpu_count);
+        if (options != nullptr && options->max_worker_count != 0)
+        {
+            worker_count = std::min(worker_count, options->max_worker_count);
+        }
+        if (worker_count > 1)
+        {
+            if (profile != nullptr)
+            {
+                profile->multithreaded = true;
+            }
+            msm_execute_chunked(
+                out.value,
+                grouped_points.data(),
+                grouped_scalars.data(),
+                grouped_scalars.size(),
+                worker_count);
+        }
+        else
+        {
+            msm_execute_single(out.value, grouped_points.data(), grouped_scalars.data(), grouped_scalars.size());
+        }
+        if (profile != nullptr)
+        {
+            profile->zero_scalar_skipping = nonzero_count != count;
+            profile->sparse_compaction = true;
+            profile->effective_scalar_count = grouped_scalars.size();
+        }
+        return true;
     }
 
     G1Point g1_multi_scalar_mul_profiled(
@@ -265,6 +717,31 @@ namespace gatzk::crypto
                 }
                 return out;
             }
+            if (try_single_nonzero_scalar_msm(
+                    out,
+                    points,
+                    scalars,
+                    count,
+                    zero_scalar,
+                    nonzero_count,
+                    profile,
+                    options))
+            {
+                return out;
+            }
+            if (should_try_grouped_scalar_msm(scalars, count, zero_scalar, nonzero_count)
+                && try_grouped_scalar_msm(
+                    out,
+                    points,
+                    scalars,
+                    count,
+                    zero_scalar,
+                    nonzero_count,
+                    profile,
+                    options))
+            {
+                return out;
+            }
             if (nonzero_count * 4 < count * 3)
             {
                 if (profile != nullptr)
@@ -286,8 +763,6 @@ namespace gatzk::crypto
                         compact_scalars.push_back(scalars[i]);
                     }
                 }
-                auto* native_compact_points = reinterpret_cast<mcl::G1*>(compact_points.data());
-                const auto* native_compact_scalars = algebra::FieldElement::native_array_data(compact_scalars.data());
                 const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
                 auto worker_count = msm_worker_count(compact_scalars.size(), cpu_count);
                 if (options != nullptr && options->max_worker_count != 0)
@@ -300,23 +775,20 @@ namespace gatzk::crypto
                     {
                         profile->multithreaded = true;
                     }
-                    mul_vec_chunked(
+                    msm_execute_chunked(
                         out.value,
-                        native_compact_points,
-                        native_compact_scalars,
+                        compact_points.data(),
+                        compact_scalars.data(),
                         compact_scalars.size(),
                         worker_count);
                 }
                 else
                 {
-                    mcl::G1::mulVec(out.value, native_compact_points, native_compact_scalars, compact_scalars.size());
+                    msm_execute_single(out.value, compact_points.data(), compact_scalars.data(), compact_scalars.size());
                 }
                 return out;
             }
         }
-        const auto* native_scalars = algebra::FieldElement::native_array_data(scalars);
-        static_assert(sizeof(G1Point) == sizeof(mcl::G1), "G1Point must wrap a single mcl::G1");
-        auto* native_points = const_cast<mcl::G1*>(reinterpret_cast<const mcl::G1*>(points));
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
         auto worker_count = msm_worker_count(count, cpu_count);
         if (options != nullptr && options->max_worker_count != 0)
@@ -329,11 +801,11 @@ namespace gatzk::crypto
             {
                 profile->multithreaded = true;
             }
-            mul_vec_chunked(out.value, native_points, native_scalars, count, worker_count);
+            msm_execute_chunked(out.value, points, scalars, count, worker_count);
         }
         else
         {
-            mcl::G1::mulVec(out.value, native_points, native_scalars, count);
+            msm_execute_single(out.value, points, scalars, count);
         }
         return out;
     }

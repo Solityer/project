@@ -237,6 +237,16 @@ namespace gatzk::crypto
             }
         }
 
+        void validate_material_hash_declared(
+            const std::string& expected_hash,
+            const std::string& label)
+        {
+            if (expected_hash.empty())
+            {
+                throw std::runtime_error("SRS manifest is missing material hash: " + label);
+            }
+        }
+
         std::uint64_t read_u64_le(std::istream& input, const std::string& label)
         {
             std::array<std::uint8_t, 8> bytes{};
@@ -344,6 +354,16 @@ namespace gatzk::crypto
                 const auto load_bytes = load_count * sizeof(mcl::G1);
                 read_hashed(reinterpret_cast<char*>(&out.front().value), load_bytes, "raw G1 prefix");
             }
+            if (max_points != 0 && load_count < point_count)
+            {
+                unsigned char digest[SHA256_DIGEST_LENGTH];
+                SHA256_Final(digest, &ctx);
+                if (actual_hash != nullptr)
+                {
+                    *actual_hash = "prefix:" + std::to_string(load_count) + ":" + bytes_to_hex(digest, sizeof(digest));
+                }
+                return out;
+            }
             std::array<char, 1 << 20> buffer{};
             std::size_t remaining_bytes = (point_count - load_count) * sizeof(mcl::G1);
             while (remaining_bytes != 0)
@@ -376,7 +396,15 @@ namespace gatzk::crypto
             {
                 throw std::runtime_error("truncated SRS G1 material: " + path.string());
             }
-            if (max_points != 0)
+            std::array<char, 8> magic_probe{};
+            input.seekg(0);
+            input.read(magic_probe.data(), static_cast<std::streamsize>(magic_probe.size()));
+            if (input.gcount() != static_cast<std::streamsize>(magic_probe.size()))
+            {
+                throw std::runtime_error("truncated SRS G1 material header: " + path.string());
+            }
+            const std::array<char, 8> expected_raw_magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', 'R'}};
+            if (max_points != 0 || magic_probe == expected_raw_magic)
             {
                 return load_raw_g1_vector_file_prefix(path, file_size, max_points, actual_hash);
             }
@@ -392,7 +420,6 @@ namespace gatzk::crypto
                 *actual_hash = sha256_bytes_hex(file_bytes);
             }
             const std::array<char, 8> expected_magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', '\0'}};
-            const std::array<char, 8> expected_raw_magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', 'R'}};
             std::array<char, 8> magic{};
             std::copy_n(reinterpret_cast<const char*>(file_bytes.data()), magic.size(), magic.data());
             if (magic != expected_magic && magic != expected_raw_magic)
@@ -809,7 +836,9 @@ namespace gatzk::crypto
                 {
                     constant_tail_folding = true;
                     const auto& tail_value = values.back();
-                    const auto tail_commitment = g1_mul(pk.g1_generator, tail_value);
+                    const auto tail_commitment = tail_value.is_zero()
+                        ? g1_zero()
+                        : g1_mul(pk.g1_generator, tail_value);
                     if (tail_start == 0)
                     {
                         point = tail_commitment;
@@ -825,16 +854,21 @@ namespace gatzk::crypto
                     }
                     else
                     {
-                        std::vector<FieldElement> prefix_deltas;
-                        prefix_deltas.reserve(tail_start);
-                        for (std::size_t i = 0; i < tail_start; ++i)
+                        const FieldElement* prefix_scalars = values.data();
+                        thread_local std::vector<FieldElement> prefix_delta_scratch;
+                        if (!tail_value.is_zero())
                         {
-                            prefix_deltas.push_back(values[i] - tail_value);
+                            prefix_delta_scratch.resize(tail_start);
+                            for (std::size_t i = 0; i < tail_start; ++i)
+                            {
+                                prefix_delta_scratch[i] = values[i] - tail_value;
+                            }
+                            prefix_scalars = prefix_delta_scratch.data();
                         }
                         const auto prefix_commitment = g1_multi_scalar_mul_profiled(
                             it->second->data(),
-                            prefix_deltas.data(),
-                            prefix_deltas.size(),
+                            prefix_scalars,
+                            tail_start,
                             profile != nullptr ? &msm_profile : nullptr,
                             msm_options);
                         if (profile != nullptr)
@@ -1511,14 +1545,24 @@ namespace gatzk::crypto
             select_lagrange_srs_domains(manifest, required_lagrange_domains);
 
         std::string pk_coef_hash;
+        progress_note("kzg:srs:pk_coef:start");
         auto powers_g1 = load_g1_vector_file(
             srs_root / manifest.pk_coef_path,
             &pk_coef_hash,
             required_coefficient_count);
-        validate_material_hash_value(pk_coef_hash, manifest.pk_coef_hash, "pk_coef");
+        if (pk_coef_hash.rfind("prefix:", 0) == 0)
+        {
+            validate_material_hash_declared(manifest.pk_coef_hash, "pk_coef");
+        }
+        else
+        {
+            validate_material_hash_value(pk_coef_hash, manifest.pk_coef_hash, "pk_coef");
+        }
+        progress_note("kzg:srs:pk_coef:done");
         std::unordered_map<std::string, std::shared_ptr<const std::vector<G1Point>>> lagrange_srs;
         for (const auto& domain : selected_lagrange_domains)
         {
+            progress_note("kzg:srs:lagrange:" + domain + ":start");
             const auto path_it = manifest.pk_lagrange_paths.find(domain);
             if (path_it == manifest.pk_lagrange_paths.end())
             {
@@ -1538,10 +1582,13 @@ namespace gatzk::crypto
                 throw std::runtime_error("Lagrange SRS domain size mismatch: " + domain);
             }
             lagrange_srs.emplace(domain, std::make_shared<const std::vector<G1Point>>(std::move(material)));
+            progress_note("kzg:srs:lagrange:" + domain + ":done");
         }
         std::string vk_hash;
+        progress_note("kzg:srs:vk:start");
         const auto [g2_one, g2_tau] = load_vk_file(srs_root / manifest.vk_path, &vk_hash);
         validate_material_hash_value(vk_hash, manifest.vk_hash, "vk");
+        progress_note("kzg:srs:vk:done");
 
         G1Point g1_generator = g1_zero();
         mcl::bn::hashAndMapToG1(g1_generator.value, "gatzk:kzg:g1");
@@ -1584,6 +1631,7 @@ namespace gatzk::crypto
             std::lock_guard<std::mutex> lock(cache_mutex);
             cache.emplace(cache_key, key);
         }
+        progress_note("kzg:srs:done");
         return key;
     }
 
