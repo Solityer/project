@@ -15,11 +15,16 @@ option(GATZK_ENABLE_FFT_BACKEND_UPGRADE_DEFAULT "Enable packed domain evaluation
 option(GATZK_ENABLE_FFT_KERNEL_UPGRADE_DEFAULT "Enable fused rotated-point FFT/NTT kernel backend by default" ON)
 option(GATZK_ENABLE_TRACE_LAYOUT_UPGRADE_DEFAULT "Enable trace/materialization layout upgrade by default" ON)
 option(GATZK_ENABLE_FAST_VERIFY_PAIRING_DEFAULT "Enable fast verifier pairing route by default" ON)
+option(GATZK_ENABLE_NATIVE_ARCH "Enable -march=native for local performance runs; keep OFF for reproducible portable builds" OFF)
 set(GATZK_CRYPTO_BACKEND "mcl" CACHE STRING "Crypto backend preference; only mcl is supported")
 set_property(CACHE GATZK_CRYPTO_BACKEND PROPERTY STRINGS mcl)
 
 find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)
+if(GATZK_ENABLE_NATIVE_ARCH)
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag("-march=native" GATZK_CXX_SUPPORTS_MARCH_NATIVE)
+endif()
 
 include(cmake/ConfigureMCL.cmake)
 
@@ -62,6 +67,12 @@ endif()
 add_library(gatzkml STATIC ${GATZK_SOURCES})
 target_include_directories(gatzkml PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_compile_options(gatzkml PRIVATE -Wall -Wextra -Wpedantic)
+if(GATZK_ENABLE_NATIVE_ARCH AND GATZK_CXX_SUPPORTS_MARCH_NATIVE)
+    target_compile_options(
+        gatzkml
+        PRIVATE
+            $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:-march=native>)
+endif()
 target_compile_definitions(
     gatzkml
     PUBLIC

@@ -694,6 +694,7 @@ namespace gatzk::crypto
         algebra::ensure_mcl_field_ready();
         const auto zero_scalar = algebra::FieldElement::zero();
         std::size_t nonzero_count = 0;
+        std::size_t last_nonzero_exclusive = 0;
         if (count >= 1024 || profile != nullptr)
         {
             for (std::size_t i = 0; i < count; ++i)
@@ -701,6 +702,7 @@ namespace gatzk::crypto
                 if (!(scalars[i] == zero_scalar))
                 {
                     ++nonzero_count;
+                    last_nonzero_exclusive = i + 1;
                 }
             }
             if (profile != nullptr)
@@ -742,6 +744,36 @@ namespace gatzk::crypto
             {
                 return out;
             }
+            if (last_nonzero_exclusive < count
+                && last_nonzero_exclusive == nonzero_count
+                && nonzero_count * 4 < count * 3)
+            {
+                if (profile != nullptr)
+                {
+                    profile->zero_scalar_skipping = true;
+                    profile->sparse_compaction = false;
+                    profile->effective_scalar_count = nonzero_count;
+                }
+                const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+                auto worker_count = msm_worker_count(nonzero_count, cpu_count);
+                if (options != nullptr && options->max_worker_count != 0)
+                {
+                    worker_count = std::min(worker_count, options->max_worker_count);
+                }
+                if (worker_count > 1)
+                {
+                    if (profile != nullptr)
+                    {
+                        profile->multithreaded = true;
+                    }
+                    msm_execute_chunked(out.value, points, scalars, nonzero_count, worker_count);
+                }
+                else
+                {
+                    msm_execute_single(out.value, points, scalars, nonzero_count);
+                }
+                return out;
+            }
             if (nonzero_count * 4 < count * 3)
             {
                 if (profile != nullptr)
@@ -750,8 +782,10 @@ namespace gatzk::crypto
                     profile->sparse_compaction = true;
                     profile->effective_scalar_count = nonzero_count;
                 }
-                std::vector<G1Point> compact_points;
-                std::vector<algebra::FieldElement> compact_scalars;
+                thread_local std::vector<G1Point> compact_points;
+                thread_local std::vector<algebra::FieldElement> compact_scalars;
+                compact_points.clear();
+                compact_scalars.clear();
                 compact_points.reserve(nonzero_count);
                 compact_scalars.reserve(nonzero_count);
                 static_assert(sizeof(G1Point) == sizeof(mcl::G1), "G1Point must wrap a single mcl::G1");
