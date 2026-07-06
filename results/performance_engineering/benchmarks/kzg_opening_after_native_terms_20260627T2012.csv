@@ -1,4 +1,0 @@
-case,domain_name,domain_size,commitment_count,nonzero_stride,commit_setup_ms,claim_eval_ms,open_batch_ms,verify_ms,precompute_ms,denominator_inverse_ms,denominator_inverse_reuse_ms,denominator_inverse_cache_misses,denominator_inverse_reuse_hits,point_parallel_batches,point_parallel_workers,point_msm_worker_cap,proof_witness_count,verify_ok
-cora_edge_opening_terms96,edge,131072,96,7,3494.662,18929.988,5203.098,423.648,0.047,224.256,0.000,2,0,1,2,10,2,true
-pubmed_edge_opening_terms96,edge,262144,96,7,5566.371,36240.652,8489.074,423.320,0.048,453.978,0.000,2,0,1,2,10,2,true
-ppi_edge_opening_terms32,edge,1048576,32,11,4634.246,46749.659,25553.790,164.523,0.016,1788.712,0.000,2,0,1,2,10,2,true

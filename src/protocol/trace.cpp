@@ -713,24 +713,192 @@ namespace gatzk::protocol
             return out;
         }
 
-        crypto::Commitment linear_fh_commitment(
+        void trim_coefficients(std::vector<FieldElement> *coefficients)
+        {
+            while (coefficients->size() > 1 && coefficients->back() == FieldElement::zero())
+            {
+                coefficients->pop_back();
+            }
+        }
+
+        Polynomial fh_evaluations_to_coefficients(
+            const std::string &name,
+            std::vector<FieldElement> values,
+            const std::shared_ptr<algebra::RootOfUnityDomain> &domain)
+        {
+            if (domain == nullptr || values.size() != domain->size)
+            {
+                throw std::runtime_error("FH coefficient materialization domain mismatch: " + name);
+            }
+            auto *native_values = FieldElement::mutable_native_array_data(values.data());
+            algebra::ntt_plan(values.size())->intt(native_values);
+            trim_coefficients(&values);
+            return Polynomial::from_coefficients(name, std::move(values));
+        }
+
+        std::shared_ptr<const Polynomial> cached_fh_coefficient_material(
+            const crypto::Commitment &source,
+            const std::shared_ptr<algebra::RootOfUnityDomain> &domain)
+        {
+            if (source.opening_polynomial == nullptr)
+            {
+                throw std::runtime_error("missing FH source material for coefficient alias: " + source.name);
+            }
+            if (source.opening_polynomial->basis == algebra::PolynomialBasis::Coefficient)
+            {
+                return source.opening_polynomial;
+            }
+            if (source.opening_polynomial->domain == nullptr
+                || domain == nullptr
+                || source.opening_polynomial->domain->size != domain->size
+                || !(source.opening_polynomial->domain->omega == domain->omega))
+            {
+                throw std::runtime_error("FH coefficient alias domain mismatch: " + source.name);
+            }
+
+            static std::mutex mutex;
+            static std::unordered_map<const Polynomial *, std::weak_ptr<const Polynomial>> cache;
+            const auto *key = source.opening_polynomial.get();
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                if (const auto it = cache.find(key); it != cache.end())
+                {
+                    if (auto cached = it->second.lock())
+                    {
+                        return cached;
+                    }
+                }
+            }
+
+            auto values = source.opening_polynomial->values();
+            auto material = std::make_shared<Polynomial>(
+                fh_evaluations_to_coefficients(source.opening_polynomial->name, std::move(values), domain));
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                cache[key] = material;
+            }
+            return material;
+        }
+
+        crypto::Commitment fh_coefficient_renamed_commitment(
+            const std::string &name,
+            const ProtocolContext &context,
+            const std::string &source_name,
+            const crypto::Commitment &source,
+            const std::shared_ptr<algebra::RootOfUnityDomain> &domain)
+        {
+            std::shared_ptr<const Polynomial> material;
+            if (const auto it = context.public_fh_coefficient_materials.find(source_name);
+                it != context.public_fh_coefficient_materials.end())
+            {
+                material = it->second;
+            }
+            else
+            {
+                material = cached_fh_coefficient_material(source, domain);
+            }
+            return crypto::Commitment{
+                .name = name,
+                .point = source.point,
+                .opening_polynomial = std::move(material),
+            };
+        }
+
+        crypto::Commitment linear_fh_coefficient_material_commitment(
             const ProtocolContext &context,
             const std::string &name,
-            std::vector<FieldElement> &&values,
             std::initializer_list<std::pair<std::string, FieldElement>> terms)
         {
             auto point = crypto::g1_zero();
+            std::vector<const mcl::Fr *> coefficient_data;
+            std::vector<std::size_t> coefficient_sizes;
+            std::vector<mcl::Fr> scales;
+            std::size_t coefficient_count = 1;
             for (const auto &[label, scale] : terms)
             {
-                const auto it = context.public_commitments.find(label);
-                if (it == context.public_commitments.end())
+                if (scale == FieldElement::zero())
                 {
-                    throw std::runtime_error("missing public commitment for linear dynamic commitment: " + label);
+                    continue;
                 }
-                point = crypto::g1_add(point, crypto::g1_mul(it->second.point, scale));
+                const auto commitment_it = context.public_commitments.find(label);
+                if (commitment_it == context.public_commitments.end())
+                {
+                    throw std::runtime_error("missing public commitment for linear FH coefficient commitment: " + label);
+                }
+                point = crypto::g1_add(point, crypto::g1_mul(commitment_it->second.point, scale));
+
+                const auto material_it = context.public_fh_coefficient_materials.find(label);
+                if (material_it == context.public_fh_coefficient_materials.end()
+                    || material_it->second == nullptr
+                    || material_it->second->basis != algebra::PolynomialBasis::Coefficient)
+                {
+                    throw std::runtime_error("missing public FH coefficient material for linear commitment: " + label);
+                }
+                const auto &coefficients = material_it->second->values();
+                coefficient_data.push_back(FieldElement::native_array_data(coefficients.data()));
+                coefficient_sizes.push_back(coefficients.size());
+                scales.push_back(scale.native());
+                coefficient_count = std::max(coefficient_count, coefficients.size());
             }
+
+            std::vector<FieldElement> coefficients(coefficient_count, FieldElement::zero());
+            auto *out_native = FieldElement::mutable_native_array_data(coefficients.data());
+            if (coefficient_data.size() <= 3)
+            {
+                parallel_for_ranges(
+                    coefficient_count,
+                    1ULL << 15,
+                    [&](std::size_t begin, std::size_t end)
+                    {
+                        mcl::Fr term;
+                        for (std::size_t i = begin; i < end; ++i)
+                        {
+                            out_native[i].clear();
+                            if (!coefficient_data.empty() && i < coefficient_sizes[0])
+                            {
+                                mcl::Fr::mul(out_native[i], coefficient_data[0][i], scales[0]);
+                            }
+                            if (coefficient_data.size() > 1 && i < coefficient_sizes[1])
+                            {
+                                mcl::Fr::mul(term, coefficient_data[1][i], scales[1]);
+                                mcl::Fr::add(out_native[i], out_native[i], term);
+                            }
+                            if (coefficient_data.size() > 2 && i < coefficient_sizes[2])
+                            {
+                                mcl::Fr::mul(term, coefficient_data[2][i], scales[2]);
+                                mcl::Fr::add(out_native[i], out_native[i], term);
+                            }
+                        }
+                    });
+            }
+            else
+            {
+                parallel_for_ranges(
+                    coefficient_count,
+                    1ULL << 15,
+                    [&](std::size_t begin, std::size_t end)
+                    {
+                        mcl::Fr accumulator;
+                        mcl::Fr term;
+                        for (std::size_t i = begin; i < end; ++i)
+                        {
+                            accumulator.clear();
+                            for (std::size_t term_index = 0; term_index < coefficient_data.size(); ++term_index)
+                            {
+                                if (i >= coefficient_sizes[term_index])
+                                {
+                                    continue;
+                                }
+                                mcl::Fr::mul(term, coefficient_data[term_index][i], scales[term_index]);
+                                mcl::Fr::add(accumulator, accumulator, term);
+                            }
+                            out_native[i] = accumulator;
+                        }
+                    });
+            }
+            trim_coefficients(&coefficients);
             auto polynomial = std::make_shared<Polynomial>(
-                Polynomial::from_evaluations(name, std::move(values), context.domains.fh));
+                Polynomial::from_coefficients(name, std::move(coefficients)));
             return crypto::Commitment{
                 .name = name,
                 .point = point,
@@ -2022,7 +2190,7 @@ namespace gatzk::protocol
                     }
                 }
             }
-            return context.public_polynomials.at(name).data;
+            return context.public_polynomials.at(name).values();
         }
 
         FieldElement exp_map(const FieldElement &delta, std::size_t range_size)
@@ -2907,6 +3075,41 @@ namespace gatzk::protocol
             return broadcast_node_values(node_values, edges, false, domain_size);
         }
 
+        std::vector<FieldElement> build_first_zero_group_selector(
+            const std::vector<FieldElement> &values,
+            const std::vector<std::pair<std::size_t, std::size_t>> &groups,
+            std::size_t domain_size)
+        {
+            std::vector<FieldElement> out(domain_size, FieldElement::zero());
+            if (groups.empty())
+            {
+                return out;
+            }
+            parallel_for_ranges(
+                groups.size(),
+                256,
+                [&](std::size_t begin, std::size_t end)
+                {
+                    for (std::size_t group_index = begin; group_index < end; ++group_index)
+                    {
+                        const auto [group_begin, group_end] = groups[group_index];
+                        if (group_end > values.size() || group_end > out.size())
+                        {
+                            throw std::runtime_error("group selector boundary exceeds edge values");
+                        }
+                        for (std::size_t k = group_begin; k < group_end; ++k)
+                        {
+                            if (values[k].is_zero())
+                            {
+                                out[k] = FieldElement::one();
+                                break;
+                            }
+                        }
+                    }
+                });
+            return out;
+        }
+
         struct BindingTrace
         {
             std::vector<FieldElement> a;
@@ -3770,7 +3973,7 @@ namespace gatzk::protocol
                 append_dynamic_commitment(
                     trace,
                     "P_H",
-                    renamed_commitment("P_H", context.public_commitments.at("P_T_H")));
+                    fh_coefficient_renamed_commitment("P_H", context, "P_T_H", context.public_commitments.at("P_T_H"), domains.fh));
             }
             else
             {
@@ -3818,24 +4021,10 @@ namespace gatzk::protocol
                 {
                     if (full_feature_identity)
                     {
-                        const auto fh_stage_start = Clock::now();
-                        std::vector<FieldElement> table_feat(domains.fh->size, FieldElement::zero());
-                        const Matrix &feature_matrix =
-                            !context.dataset.features.empty() ? context.dataset.features : context.local.features;
-                        fill_feature_lookup_rows(
-                            dataset_index_fields,
-                            feature_index_fields,
-                            feature_matrix,
-                            eta_feature_index,
-                            eta_feature_value,
-                            table_feat);
-                        add_metric(metrics != nullptr ? &metrics->fh_table_materialization_ms : nullptr, fh_stage_start);
-
                         const auto lookup_stage_start = Clock::now();
-                        const auto table_commitment = linear_fh_commitment(
+                        const auto table_commitment = linear_fh_coefficient_material_commitment(
                             context,
                             "P_Table_feat",
-                            std::move(table_feat),
                             {
                                 {"P_Row_feat_tbl", FieldElement::one()},
                                 {"P_Col_feat_tbl", eta_feature_index},
@@ -3846,7 +4035,7 @@ namespace gatzk::protocol
                         append_dynamic_commitment(
                             trace,
                             "P_m_feat",
-                            renamed_commitment("P_m_feat", context.public_commitments.at("P_Q_tbl_feat")));
+                            fh_coefficient_renamed_commitment("P_m_feat", context, "P_Q_tbl_feat", context.public_commitments.at("P_Q_tbl_feat"), domains.fh));
                         append_dynamic_commitment(trace, "P_R_feat", zero_dynamic_commitment("P_R_feat"));
                         add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, lookup_stage_start);
                     }
@@ -4249,18 +4438,7 @@ namespace gatzk::protocol
                     });
 
                 stage_start = Clock::now();
-                std::vector<FieldElement> s_max(domains.edge->size, FieldElement::zero());
-                for (const auto &[group_begin, group_end] : edge_groups_by_dst)
-                {
-                    for (std::size_t k = group_begin; k < group_end; ++k)
-                    {
-                        if (delta[k].is_zero())
-                        {
-                            s_max[k] = FieldElement::one();
-                            break;
-                        }
-                    }
-                }
+                auto s_max = build_first_zero_group_selector(delta, edge_groups_by_dst, domains.edge->size);
                 add_metric(metrics != nullptr ? &metrics->hidden_edge_score_trace_ms : nullptr, stage_start);
                 stage_start = Clock::now();
                 const auto c_max = cached_state_vector(
@@ -5174,18 +5352,7 @@ namespace gatzk::protocol
                         trace.challenges.at(output_challenge_name("beta_L_out", head_index, false)),
                         lookup_active_transition_limit(context.tables.lrelu.size(), n_edges, domains.edge->size));
 
-                    std::vector<FieldElement> out_s_max(domains.edge->size, FieldElement::zero());
-                    for (const auto &[group_begin, group_end] : edge_groups_by_dst)
-                    {
-                        for (std::size_t k = group_begin; k < group_end; ++k)
-                        {
-                            if (out_delta[k].is_zero())
-                            {
-                                out_s_max[k] = FieldElement::one();
-                                break;
-                            }
-                        }
-                    }
+                    auto out_s_max = build_first_zero_group_selector(out_delta, edge_groups_by_dst, domains.edge->size);
                     const auto out_c_max = cached_state_vector(
                         head_cache_prefix + ":cmax",
                         [&]()
@@ -5246,16 +5413,28 @@ namespace gatzk::protocol
                     const auto lambda_out = transcript.challenge(output_challenge_name("lambda_out", head_index, false));
                     trace.challenges[output_challenge_name("lambda_out", head_index, false)] = lambda_out;
                     std::vector<FieldElement> widehat_y_star(domains.edge->size, FieldElement::zero());
-                    for (std::size_t k = 0; k < n_edges; ++k)
-                    {
-                        widehat_y_star[k] = out_alpha[k] * y_prime_star_edge[k];
-                    }
+                    parallel_for_ranges(
+                        n_edges,
+                        128,
+                        [&](std::size_t begin, std::size_t end)
+                        {
+                            for (std::size_t k = begin; k < end; ++k)
+                            {
+                                widehat_y_star[k] = out_alpha[k] * y_prime_star_edge[k];
+                            }
+                        });
                     auto w_out = build_weighted_sum(out_u, lambda_out, widehat_y_star, domains.edge->size);
                     auto t_out = std::make_shared<std::vector<FieldElement>>(n_nodes, FieldElement::zero());
-                    for (std::size_t i = 0; i < n_nodes; ++i)
-                    {
-                        (*t_out)[i] = out_sum[i] + lambda_out * y_star[i];
-                    }
+                    parallel_for_ranges(
+                        n_nodes,
+                        64,
+                        [&](std::size_t begin, std::size_t end)
+                        {
+                            for (std::size_t i = begin; i < end; ++i)
+                            {
+                                (*t_out)[i] = out_sum[i] + lambda_out * y_star[i];
+                            }
+                        });
                     const auto t_out_edge = std::make_shared<std::vector<FieldElement>>(
                         build_group_target(*t_out, edges, domains.edge->size));
                     const auto psq_out = cached_state_vector(
@@ -5497,14 +5676,26 @@ namespace gatzk::protocol
                     std::vector<FieldElement> out_dst_table(n_nodes, FieldElement::zero());
                     std::vector<FieldElement> out_dst_query(n_edges, FieldElement::zero());
                     const auto &out_e_dst_edge = quantized.e_dst_edge;
-                    for (std::size_t i = 0; i < n_nodes; ++i)
-                    {
-                        out_dst_table[i] = absolute_id_fields[i] + eta_dst_out_powers[1] * out_e_dst[i] + eta_dst_out_powers[2] * out_m[i] + eta_dst_out_powers[3] * out_sum[i] + eta_dst_out_powers[4] * out_inv[i] + eta_dst_out_powers[5] * y_star[i];
-                    }
-                    for (std::size_t k = 0; k < n_edges; ++k)
-                    {
-                        out_dst_query[k] = edge_dst_fields[k] + eta_dst_out_powers[1] * out_e_dst_edge[k] + eta_dst_out_powers[2] * out_m_edge[k] + eta_dst_out_powers[3] * out_sum_edge[k] + eta_dst_out_powers[4] * out_inv_edge[k] + eta_dst_out_powers[5] * y_star_edge[k];
-                    }
+                    parallel_for_ranges(
+                        n_nodes,
+                        64,
+                        [&](std::size_t begin, std::size_t end)
+                        {
+                            for (std::size_t i = begin; i < end; ++i)
+                            {
+                                out_dst_table[i] = absolute_id_fields[i] + eta_dst_out_powers[1] * out_e_dst[i] + eta_dst_out_powers[2] * out_m[i] + eta_dst_out_powers[3] * out_sum[i] + eta_dst_out_powers[4] * out_inv[i] + eta_dst_out_powers[5] * y_star[i];
+                            }
+                        });
+                    parallel_for_ranges(
+                        n_edges,
+                        128,
+                        [&](std::size_t begin, std::size_t end)
+                        {
+                            for (std::size_t k = begin; k < end; ++k)
+                            {
+                                out_dst_query[k] = edge_dst_fields[k] + eta_dst_out_powers[1] * out_e_dst_edge[k] + eta_dst_out_powers[2] * out_m_edge[k] + eta_dst_out_powers[3] * out_sum_edge[k] + eta_dst_out_powers[4] * out_inv_edge[k] + eta_dst_out_powers[5] * y_star_edge[k];
+                            }
+                        });
                     const auto out_dst_route = cached_route_trace(
                         head_cache_prefix + ":dst_route:" + eta_dst_out.to_string() + ":" + beta_dst_out.to_string(),
                         [&]()
@@ -5848,18 +6039,7 @@ namespace gatzk::protocol
                     });
 
                 stage_start = Clock::now();
-                std::vector<FieldElement> out_s_max(domains.edge->size, FieldElement::zero());
-                for (const auto &[group_begin, group_end] : edge_groups_by_dst)
-                {
-                    for (std::size_t k = group_begin; k < group_end; ++k)
-                    {
-                        if (out_delta[k].is_zero())
-                        {
-                            out_s_max[k] = FieldElement::one();
-                            break;
-                        }
-                    }
-                }
+                auto out_s_max = build_first_zero_group_selector(out_delta, edge_groups_by_dst, domains.edge->size);
                 const auto out_c_max = cached_state_vector(
                     output_cache_prefix + ":cmax",
                     [&]()
@@ -5959,16 +6139,28 @@ namespace gatzk::protocol
                 trace.challenges["lambda_out"] = lambda_out;
                 stage_start = Clock::now();
                 std::vector<FieldElement> widehat_y_star(domains.edge->size, FieldElement::zero());
-                for (std::size_t k = 0; k < n_edges; ++k)
-                {
-                    widehat_y_star[k] = out_alpha[k] * y_prime_star_edge[k];
-                }
+                parallel_for_ranges(
+                    n_edges,
+                    128,
+                    [&](std::size_t begin, std::size_t end)
+                    {
+                        for (std::size_t k = begin; k < end; ++k)
+                        {
+                            widehat_y_star[k] = out_alpha[k] * y_prime_star_edge[k];
+                        }
+                    });
                 auto w_out = build_weighted_sum(out_u, lambda_out, widehat_y_star, domains.edge->size);
                 auto t_out = std::make_shared<std::vector<FieldElement>>(n_nodes, FieldElement::zero());
-                for (std::size_t i = 0; i < n_nodes; ++i)
-                {
-                    (*t_out)[i] = out_sum[i] + lambda_out * y_star[i];
-                }
+                parallel_for_ranges(
+                    n_nodes,
+                    64,
+                    [&](std::size_t begin, std::size_t end)
+                    {
+                        for (std::size_t i = begin; i < end; ++i)
+                        {
+                            (*t_out)[i] = out_sum[i] + lambda_out * y_star[i];
+                        }
+                    });
                 const auto t_out_edge = std::make_shared<std::vector<FieldElement>>(
                     build_group_target(*t_out, edges, domains.edge->size));
                 const auto psq_out = cached_state_vector(
@@ -6845,25 +7037,7 @@ namespace gatzk::protocol
         trace.challenges["beta_R"] = beta_r;
 
         stage_start = Clock::now();
-        std::vector<FieldElement> s_max(domains.edge->size, FieldElement::zero());
-        std::size_t group_start = 0;
-        while (group_start < n_edges)
-        {
-            std::size_t group_end = group_start;
-            while (group_end + 1 < n_edges && local.edges[group_end + 1].dst == local.edges[group_start].dst)
-            {
-                ++group_end;
-            }
-            for (std::size_t k = group_start; k <= group_end; ++k)
-            {
-                if (delta[k].is_zero())
-                {
-                    s_max[k] = FieldElement::one();
-                    break;
-                }
-            }
-            group_start = group_end + 1;
-        }
+        auto s_max = build_first_zero_group_selector(delta, dst_edge_groups(local.edges), domains.edge->size);
         const auto c_max = build_max_counter_state(s_max, q_new, enable_single_graph_selector_shortcut);
         std::vector<FieldElement> table_r(domains.edge->size, FieldElement::zero());
         std::vector<FieldElement> query_r(domains.edge->size, FieldElement::zero());

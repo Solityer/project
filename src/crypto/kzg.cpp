@@ -746,6 +746,127 @@ namespace gatzk::crypto
             return tail_length >= min_tail_length;
         }
 
+        bool should_compact_lagrange_prefix_delta(
+            const std::vector<FieldElement>& values,
+            std::size_t prefix_size,
+            const FieldElement& tail_value)
+        {
+            if (prefix_size < 4096)
+            {
+                return true;
+            }
+            constexpr std::size_t kTargetSamples = 4096;
+            const auto stride = std::max<std::size_t>(1, prefix_size / kTargetSamples);
+            std::size_t sampled = 0;
+            std::size_t sampled_nonzero = 0;
+            const auto& tail_native = tail_value.native();
+            for (std::size_t i = 0; i < prefix_size && sampled < kTargetSamples; i += stride)
+            {
+                mcl::Fr delta;
+                mcl::Fr::sub(delta, values[i].native(), tail_native);
+                sampled_nonzero += delta.isZero() ? 0 : 1;
+                ++sampled;
+            }
+            return sampled_nonzero * 4 < sampled * 3;
+        }
+
+        G1Point commit_lagrange_prefix_delta_dense(
+            const std::vector<G1Point>& lagrange_srs,
+            const std::vector<FieldElement>& values,
+            std::size_t prefix_size,
+            const FieldElement& tail_value,
+            G1MSMProfile* profile,
+            const G1MSMExecutionOptions* msm_options = nullptr)
+        {
+            thread_local std::vector<FieldElement> prefix_delta_scratch;
+            prefix_delta_scratch.resize(prefix_size);
+            const auto& tail_native = tail_value.native();
+            auto* scratch_native = FieldElement::mutable_native_array_data(prefix_delta_scratch.data());
+            for (std::size_t i = 0; i < prefix_size; ++i)
+            {
+                mcl::Fr::sub(scratch_native[i], values[i].native(), tail_native);
+            }
+            return g1_multi_scalar_mul_profiled(
+                lagrange_srs.data(),
+                prefix_delta_scratch.data(),
+                prefix_size,
+                profile,
+                msm_options);
+        }
+
+        G1Point commit_lagrange_prefix_delta(
+            const std::vector<G1Point>& lagrange_srs,
+            const std::vector<FieldElement>& values,
+            std::size_t prefix_size,
+            const FieldElement& tail_value,
+            G1MSMProfile* profile,
+            const G1MSMExecutionOptions* msm_options = nullptr)
+        {
+            if (!should_compact_lagrange_prefix_delta(values, prefix_size, tail_value))
+            {
+                return commit_lagrange_prefix_delta_dense(
+                    lagrange_srs,
+                    values,
+                    prefix_size,
+                    tail_value,
+                    profile,
+                    msm_options);
+            }
+
+            thread_local std::vector<G1Point> compact_points;
+            thread_local std::vector<FieldElement> compact_scalars;
+            compact_points.clear();
+            compact_scalars.clear();
+            const auto reserve_hint = std::min<std::size_t>(prefix_size, 1ULL << 14);
+            compact_points.reserve(reserve_hint);
+            compact_scalars.reserve(reserve_hint);
+
+            const auto& tail_native = tail_value.native();
+            for (std::size_t i = 0; i < prefix_size; ++i)
+            {
+                mcl::Fr delta;
+                mcl::Fr::sub(delta, values[i].native(), tail_native);
+                if (delta.isZero())
+                {
+                    continue;
+                }
+                compact_points.push_back(lagrange_srs[i]);
+                compact_scalars.push_back(FieldElement::from_native(delta));
+            }
+
+            if (compact_scalars.empty())
+            {
+                if (profile != nullptr)
+                {
+                    profile->input_count = prefix_size;
+                    profile->nonzero_scalar_count = 0;
+                    profile->effective_scalar_count = 0;
+                    profile->zero_scalar_skipping = true;
+                    profile->sparse_compaction = true;
+                    profile->multithreaded = false;
+                }
+                return g1_zero();
+            }
+
+            G1MSMProfile compact_profile;
+            auto out = g1_multi_scalar_mul_profiled(
+                compact_points.data(),
+                compact_scalars.data(),
+                compact_scalars.size(),
+                profile != nullptr ? &compact_profile : nullptr,
+                msm_options);
+            if (profile != nullptr)
+            {
+                profile->input_count = prefix_size;
+                profile->nonzero_scalar_count = compact_scalars.size();
+                profile->effective_scalar_count = compact_profile.effective_scalar_count;
+                profile->zero_scalar_skipping = compact_scalars.size() != prefix_size || compact_profile.zero_scalar_skipping;
+                profile->sparse_compaction = true;
+                profile->multithreaded = compact_profile.multithreaded;
+            }
+            return out;
+        }
+
         G1Point commit_polynomial_point(
             const algebra::Polynomial& polynomial,
             const KZGProverKey& pk,
@@ -854,28 +975,25 @@ namespace gatzk::crypto
                     }
                     else
                     {
-                        const FieldElement* prefix_scalars = values.data();
-                        thread_local std::vector<FieldElement> prefix_delta_scratch;
-                        if (!tail_value.is_zero())
-                        {
-                            prefix_delta_scratch.resize(tail_start);
-                            for (std::size_t i = 0; i < tail_start; ++i)
-                            {
-                                prefix_delta_scratch[i] = values[i] - tail_value;
-                            }
-                            prefix_scalars = prefix_delta_scratch.data();
-                        }
-                        const auto prefix_commitment = g1_multi_scalar_mul_profiled(
-                            it->second->data(),
-                            prefix_scalars,
-                            tail_start,
-                            profile != nullptr ? &msm_profile : nullptr,
-                            msm_options);
+                        const auto folded_prefix_commitment = tail_value.is_zero()
+                            ? g1_multi_scalar_mul_profiled(
+                                it->second->data(),
+                                values.data(),
+                                tail_start,
+                                profile != nullptr ? &msm_profile : nullptr,
+                                msm_options)
+                            : commit_lagrange_prefix_delta(
+                                *it->second,
+                                values,
+                                tail_start,
+                                tail_value,
+                                profile != nullptr ? &msm_profile : nullptr,
+                                msm_options);
                         if (profile != nullptr)
                         {
                             msm_profile.input_count = polynomial.size();
                         }
-                        point = g1_add(tail_commitment, prefix_commitment);
+                        point = g1_add(tail_commitment, folded_prefix_commitment);
                     }
                 }
                 else
@@ -926,6 +1044,18 @@ namespace gatzk::crypto
             return algebra::Polynomial::from_coefficients(name, {value});
         }
 
+        algebra::Polynomial coefficient_single_point_quotient_polynomial(
+            const std::string& witness_name,
+            const std::vector<FieldElement>& coefficients,
+            const FieldElement& point,
+            const FieldElement& value);
+
+        bool coefficient_single_point_quotient_coefficients(
+            std::vector<FieldElement>* quotient,
+            const std::vector<FieldElement>& coefficients,
+            const FieldElement& point,
+            const FieldElement& value);
+
         algebra::Polynomial single_point_quotient_polynomial(
             const algebra::Polynomial& polynomial,
             const FieldElement& point,
@@ -933,40 +1063,11 @@ namespace gatzk::crypto
         {
             if (polynomial.basis == algebra::PolynomialBasis::Coefficient)
             {
-                const auto& coefficients = polynomial.values();
-                if (coefficients.empty())
-                {
-                    if (!(value == FieldElement::zero()))
-                    {
-                        throw std::runtime_error("claimed value does not match committed polynomial");
-                    }
-                    return algebra::Polynomial::from_coefficients(polynomial.name + "_witness", {FieldElement::zero()});
-                }
-                std::size_t coefficient_count = coefficients.size();
-                while (coefficient_count > 1 && coefficients[coefficient_count - 1] == FieldElement::zero())
-                {
-                    --coefficient_count;
-                }
-                if (coefficient_count == 1)
-                {
-                    if (!(coefficients.front() == value))
-                    {
-                        throw std::runtime_error("claimed value does not match committed polynomial");
-                    }
-                    return algebra::Polynomial::from_coefficients(polynomial.name + "_witness", {FieldElement::zero()});
-                }
-                std::vector<FieldElement> quotient(coefficient_count - 1, FieldElement::zero());
-                quotient.back() = coefficients[coefficient_count - 1];
-                for (std::size_t i = coefficient_count - 1; i-- > 1;)
-                {
-                    quotient[i - 1] = coefficients[i] + point * quotient[i];
-                }
-                const auto remainder = coefficients.front() - value + point * quotient.front();
-                if (!(remainder == FieldElement::zero()))
-                {
-                    throw std::runtime_error("claimed value does not match committed polynomial");
-                }
-                return algebra::Polynomial::from_coefficients(polynomial.name + "_witness", std::move(quotient));
+                return coefficient_single_point_quotient_polynomial(
+                    polynomial.name + "_witness",
+                    polynomial.values(),
+                    point,
+                    value);
             }
 
             if (polynomial.domain == nullptr)
@@ -974,41 +1075,68 @@ namespace gatzk::crypto
                 throw std::runtime_error("evaluation polynomial is missing its domain");
             }
             const auto& values = polynomial.values();
-            std::vector<FieldElement> quotient_values(polynomial.domain->size, FieldElement::zero());
-            for (std::size_t i = 0; i < polynomial.domain->size; ++i)
-            {
-                const auto domain_point = polynomial.domain->point_at(i);
-                if (domain_point == point)
+            std::vector<FieldElement> denominators(polynomial.domain->size, FieldElement::zero());
+            parallel_for_chunks(polynomial.domain->size, 1ULL << 15, [&](std::size_t begin, std::size_t end) {
+                for (std::size_t i = begin; i < end; ++i)
                 {
-                    throw std::runtime_error("opening point overlaps evaluation domain; derivative witness path is not implemented");
+                    const auto domain_point = polynomial.domain->point_at(i);
+                    if (domain_point == point)
+                    {
+                        throw std::runtime_error("opening point overlaps evaluation domain; derivative witness path is not implemented");
+                    }
+                    denominators[i] = domain_point - point;
                 }
-                const auto row_value = i < values.size() ? values[i] : FieldElement::zero();
-                quotient_values[i] = (row_value - value) / (domain_point - point);
-            }
+            });
+            const auto inverse_denominators = algebra::batch_invert(denominators);
+            std::vector<FieldElement> quotient_values(polynomial.domain->size, FieldElement::zero());
+            const auto* values_native = values.empty() ? nullptr : FieldElement::native_array_data(values.data());
+            const auto* inverse_native = FieldElement::native_array_data(inverse_denominators.data());
+            auto* quotient_native = FieldElement::mutable_native_array_data(quotient_values.data());
+            const auto& value_native = value.native();
+            mcl::Fr zero;
+            zero.clear();
+            parallel_for_chunks(polynomial.domain->size, 1ULL << 15, [&](std::size_t begin, std::size_t end) {
+                for (std::size_t i = begin; i < end; ++i)
+                {
+                    mcl::Fr numerator;
+                    mcl::Fr::sub(numerator, i < values.size() ? values_native[i] : zero, value_native);
+                    mcl::Fr::mul(quotient_native[i], numerator, inverse_native[i]);
+                }
+            });
             return algebra::Polynomial::from_evaluations(
                 polynomial.name + "_witness",
                 std::move(quotient_values),
                 polynomial.domain);
         }
 
-        algebra::Polynomial scaled_coefficient_single_point_quotient_polynomial(
-            const algebra::Polynomial& polynomial,
+        algebra::Polynomial coefficient_single_point_quotient_polynomial(
+            const std::string& witness_name,
+            const std::vector<FieldElement>& coefficients,
             const FieldElement& point,
-            const FieldElement& scale,
-            const FieldElement& scaled_value)
+            const FieldElement& value)
         {
-            if (polynomial.basis != algebra::PolynomialBasis::Coefficient)
+            std::vector<FieldElement> quotient;
+            if (!coefficient_single_point_quotient_coefficients(&quotient, coefficients, point, value))
             {
-                throw std::runtime_error("scaled single-point quotient requires coefficient basis");
+                return algebra::Polynomial::from_coefficients(witness_name, {FieldElement::zero()});
             }
-            const auto& coefficients = polynomial.values();
-            if (coefficients.empty() || scale.is_zero())
+            return algebra::Polynomial::from_coefficients(witness_name, std::move(quotient));
+        }
+
+        bool coefficient_single_point_quotient_coefficients(
+            std::vector<FieldElement>* quotient,
+            const std::vector<FieldElement>& coefficients,
+            const FieldElement& point,
+            const FieldElement& value)
+        {
+            quotient->clear();
+            if (coefficients.empty())
             {
-                if (!(scaled_value == FieldElement::zero()))
+                if (!(value == FieldElement::zero()))
                 {
-                    throw std::runtime_error("scaled claimed value does not match committed polynomial");
+                    throw std::runtime_error("claimed value does not match committed polynomial");
                 }
-                return algebra::Polynomial::from_coefficients(polynomial.name + "_witness", {FieldElement::zero()});
+                return false;
             }
             std::size_t coefficient_count = coefficients.size();
             while (coefficient_count > 1 && coefficients[coefficient_count - 1] == FieldElement::zero())
@@ -1017,24 +1145,281 @@ namespace gatzk::crypto
             }
             if (coefficient_count == 1)
             {
-                if (!(coefficients.front() * scale == scaled_value))
+                if (!(coefficients.front() == value))
                 {
-                    throw std::runtime_error("scaled claimed value does not match committed polynomial");
+                    throw std::runtime_error("claimed value does not match committed polynomial");
                 }
-                return algebra::Polynomial::from_coefficients(polynomial.name + "_witness", {FieldElement::zero()});
+                return false;
             }
-            std::vector<FieldElement> quotient(coefficient_count - 1, FieldElement::zero());
-            quotient.back() = coefficients[coefficient_count - 1] * scale;
+            quotient->resize(coefficient_count - 1);
+            const auto* coefficients_native = FieldElement::native_array_data(coefficients.data());
+            auto* quotient_native = FieldElement::mutable_native_array_data(quotient->data());
+            const auto& point_native = point.native();
+            quotient_native[coefficient_count - 2] = coefficients_native[coefficient_count - 1];
             for (std::size_t i = coefficient_count - 1; i-- > 1;)
             {
-                quotient[i - 1] = coefficients[i] * scale + point * quotient[i];
+                mcl::Fr product;
+                mcl::Fr::mul(product, point_native, quotient_native[i]);
+                mcl::Fr::add(quotient_native[i - 1], coefficients_native[i], product);
             }
-            const auto remainder = coefficients.front() * scale - scaled_value + point * quotient.front();
-            if (!(remainder == FieldElement::zero()))
+            mcl::Fr remainder;
+            mcl::Fr product;
+            mcl::Fr::sub(remainder, coefficients_native[0], value.native());
+            mcl::Fr::mul(product, point_native, quotient_native[0]);
+            mcl::Fr::add(remainder, remainder, product);
+            if (!remainder.isZero())
             {
-                throw std::runtime_error("scaled claimed value does not match committed polynomial");
+                throw std::runtime_error("claimed value does not match committed polynomial");
             }
-            return algebra::Polynomial::from_coefficients(polynomial.name + "_witness", std::move(quotient));
+            return true;
+        }
+
+        G1Point commit_coefficient_single_point_quotient(
+            const std::vector<FieldElement>& coefficients,
+            const FieldElement& point,
+            const FieldElement& value,
+            const KZGProverKey& pk,
+            const G1MSMExecutionOptions* msm_options = nullptr)
+        {
+            if (pk.powers_g1 == nullptr)
+            {
+                throw std::runtime_error("missing coefficient proving SRS");
+            }
+            thread_local std::vector<FieldElement> quotient;
+            if (!coefficient_single_point_quotient_coefficients(&quotient, coefficients, point, value))
+            {
+                return g1_zero();
+            }
+            if (quotient.size() > pk.powers_g1->size() || quotient.size() > pk.degree_bound + 1)
+            {
+                throw std::runtime_error("coefficient witness quotient exceeds SRS degree bound");
+            }
+            return g1_multi_scalar_mul_profiled(
+                pk.powers_g1->data(),
+                quotient.data(),
+                quotient.size(),
+                nullptr,
+                msm_options);
+        }
+
+        G1Point open_external_witness_point(
+            const Commitment& commitment,
+            const FieldElement& point,
+            const FieldElement& value,
+            const KZGProverKey& pk,
+            const G1MSMExecutionOptions* msm_options = nullptr)
+        {
+            if (commitment.opening_polynomial == nullptr)
+            {
+                throw std::runtime_error("external commitment is missing prover-side opening polynomial: " + commitment.name);
+            }
+            const auto& polynomial = *commitment.opening_polynomial;
+            if (polynomial.basis == algebra::PolynomialBasis::Coefficient)
+            {
+                return commit_coefficient_single_point_quotient(
+                    polynomial.values(),
+                    point,
+                    value,
+                    pk,
+                    msm_options);
+            }
+            const auto quotient = single_point_quotient_polynomial(polynomial, point, value);
+            return commit_polynomial_point(quotient, pk, nullptr, msm_options);
+        }
+
+        void accumulate_scaled_coefficients(
+            std::vector<FieldElement>* target,
+            const std::vector<FieldElement>& source,
+            const FieldElement& scale,
+            std::size_t worker_cap)
+        {
+            if (scale.is_zero())
+            {
+                return;
+            }
+            if (target->empty() && scale == FieldElement::one())
+            {
+                *target = source;
+                return;
+            }
+            if (target->size() < source.size())
+            {
+                target->resize(source.size(), FieldElement::zero());
+            }
+            auto* target_native = FieldElement::mutable_native_array_data(target->data());
+            const auto* source_native = FieldElement::native_array_data(source.data());
+            const auto& scale_native = scale.native();
+            parallel_for_chunks_capped(source.size(), 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end) {
+                for (std::size_t i = begin; i < end; ++i)
+                {
+                    mcl::Fr product;
+                    mcl::Fr::mul(product, source_native[i], scale_native);
+                    mcl::Fr::add(target_native[i], target_native[i], product);
+                }
+            });
+        }
+
+        bool all_zero(const std::vector<FieldElement>& values)
+        {
+            return std::all_of(values.begin(), values.end(), [](const FieldElement& value) {
+                return value == FieldElement::zero();
+            });
+        }
+
+        void trim_zero_coefficients(std::vector<FieldElement>* coefficients)
+        {
+            while (coefficients->size() > 1 && coefficients->back() == FieldElement::zero())
+            {
+                coefficients->pop_back();
+            }
+            if (coefficients->size() == 1 && coefficients->front() == FieldElement::zero())
+            {
+                coefficients->clear();
+            }
+        }
+
+        struct FoldedEvaluationTerm
+        {
+            const std::vector<FieldElement>* values = nullptr;
+            std::size_t value_count = 0;
+            FieldElement scale = FieldElement::zero();
+        };
+
+        struct FoldedEvaluationGroup
+        {
+            std::shared_ptr<algebra::RootOfUnityDomain> domain;
+            std::vector<FoldedEvaluationTerm> terms;
+            std::vector<FieldElement> scaled_claim_sums;
+        };
+
+        struct FoldedOpeningPlan
+        {
+            std::vector<FieldElement> coefficient_fold;
+            std::vector<FieldElement> coefficient_scaled_claim_sums;
+            std::vector<FoldedEvaluationGroup> evaluation_groups;
+        };
+
+        FoldedEvaluationGroup& folded_evaluation_group(
+            FoldedOpeningPlan* plan,
+            const std::shared_ptr<algebra::RootOfUnityDomain>& domain,
+            std::size_t point_count)
+        {
+            auto it = std::find_if(
+                plan->evaluation_groups.begin(),
+                plan->evaluation_groups.end(),
+                [&](const FoldedEvaluationGroup& group)
+                {
+                    return group.domain.get() == domain.get();
+                });
+            if (it == plan->evaluation_groups.end())
+            {
+                FoldedEvaluationGroup group;
+                group.domain = domain;
+                group.scaled_claim_sums.assign(point_count, FieldElement::zero());
+                plan->evaluation_groups.push_back(std::move(group));
+                it = std::prev(plan->evaluation_groups.end());
+            }
+            return *it;
+        }
+
+        FoldedOpeningPlan build_folded_opening_plan(
+            const std::vector<Commitment>& commitments,
+            const std::vector<std::vector<FieldElement>>& claimed_values,
+            const std::vector<FieldElement>& powers,
+            std::size_t point_count,
+            std::size_t worker_cap)
+        {
+            struct FoldedOpeningTerm
+            {
+                const Commitment* commitment = nullptr;
+                FieldElement scale = FieldElement::zero();
+                std::vector<FieldElement> scaled_claims;
+            };
+
+            std::vector<FoldedOpeningTerm> folded_terms;
+            folded_terms.reserve(commitments.size());
+            for (std::size_t i = 0; i < commitments.size(); ++i)
+            {
+                if (commitments[i].opening_polynomial == nullptr)
+                {
+                    throw std::runtime_error("commitment is missing prover-side opening polynomial: " + commitments[i].name);
+                }
+                auto existing = std::find_if(
+                    folded_terms.begin(),
+                    folded_terms.end(),
+                    [&](const FoldedOpeningTerm& term)
+                    {
+                        return term.commitment != nullptr
+                            && term.commitment->opening_polynomial.get() == commitments[i].opening_polynomial.get();
+                    });
+                if (existing == folded_terms.end())
+                {
+                    FoldedOpeningTerm term;
+                    term.commitment = &commitments[i];
+                    term.scale = powers[i];
+                    term.scaled_claims.assign(point_count, FieldElement::zero());
+                    for (std::size_t point_index = 0; point_index < point_count; ++point_index)
+                    {
+                        term.scaled_claims[point_index] = claimed_values[i][point_index] * powers[i];
+                    }
+                    folded_terms.push_back(std::move(term));
+                }
+                else
+                {
+                    existing->scale += powers[i];
+                    for (std::size_t point_index = 0; point_index < point_count; ++point_index)
+                    {
+                        existing->scaled_claims[point_index] += claimed_values[i][point_index] * powers[i];
+                    }
+                }
+            }
+
+            FoldedOpeningPlan plan;
+            plan.coefficient_scaled_claim_sums.assign(point_count, FieldElement::zero());
+            for (const auto& term : folded_terms)
+            {
+                if (term.commitment == nullptr || term.commitment->opening_polynomial == nullptr)
+                {
+                    throw std::runtime_error("commitment is missing prover-side opening polynomial");
+                }
+                if (term.scale.is_zero() && all_zero(term.scaled_claims))
+                {
+                    continue;
+                }
+                const auto& polynomial = *term.commitment->opening_polynomial;
+                if (polynomial.basis == algebra::PolynomialBasis::Coefficient)
+                {
+                    if (!term.scale.is_zero())
+                    {
+                        accumulate_scaled_coefficients(&plan.coefficient_fold, polynomial.values(), term.scale, worker_cap);
+                    }
+                    for (std::size_t point_index = 0; point_index < point_count; ++point_index)
+                    {
+                        plan.coefficient_scaled_claim_sums[point_index] += term.scaled_claims[point_index];
+                    }
+                    continue;
+                }
+                if (polynomial.domain == nullptr)
+                {
+                    throw std::runtime_error("evaluation polynomial is missing its domain: " + term.commitment->name);
+                }
+                auto& group = folded_evaluation_group(&plan, polynomial.domain, point_count);
+                const auto& source_values = polynomial.values();
+                if (!term.scale.is_zero())
+                {
+                    group.terms.push_back(FoldedEvaluationTerm{
+                        .values = &source_values,
+                        .value_count = source_values.size(),
+                        .scale = term.scale,
+                    });
+                }
+                for (std::size_t point_index = 0; point_index < point_count; ++point_index)
+                {
+                    group.scaled_claim_sums[point_index] += term.scaled_claims[point_index];
+                }
+            }
+            trim_zero_coefficients(&plan.coefficient_fold);
+            return plan;
         }
 
         struct EvaluationInverseDenominatorCacheEntry
@@ -1067,10 +1452,9 @@ namespace gatzk::crypto
         }
 
         G1Point open_single_point_fold(
-            const std::vector<Commitment>& commitments,
-            const std::vector<FieldElement>& values,
+            const FoldedOpeningPlan& plan,
+            std::size_t point_index,
             const FieldElement& point,
-            const std::vector<FieldElement>& powers,
             const KZGProverKey& pk,
             std::vector<EvaluationInverseDenominatorCacheEntry>* inverse_denominator_cache = nullptr,
             BatchOpeningProfile* profile = nullptr,
@@ -1081,159 +1465,28 @@ namespace gatzk::crypto
             auto* inverse_cache = inverse_denominator_cache != nullptr
                 ? inverse_denominator_cache
                 : &local_inverse_denominator_cache;
-            auto accumulate_scaled = [worker_cap](
-                std::vector<FieldElement>* target,
-                const std::vector<FieldElement>& source,
-                const FieldElement& scale)
-            {
-                if (target->size() < source.size())
-                {
-                    target->resize(source.size(), FieldElement::zero());
-                }
-                parallel_for_chunks_capped(source.size(), 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end) {
-                    for (std::size_t i = begin; i < end; ++i)
-                    {
-                        (*target)[i] += source[i] * scale;
-                    }
-                });
-            };
-            struct EvaluationFoldGroup
-            {
-                std::shared_ptr<algebra::RootOfUnityDomain> domain;
-                struct Term
-                {
-                    const std::vector<FieldElement>* values = nullptr;
-                    std::size_t value_count = 0;
-                    FieldElement scale = FieldElement::zero();
-                };
-                std::vector<Term> terms;
-                FieldElement scaled_claim_sum = FieldElement::zero();
-            };
-            struct FoldedOpeningTerm
-            {
-                const Commitment* commitment = nullptr;
-                FieldElement scale = FieldElement::zero();
-                FieldElement scaled_claim = FieldElement::zero();
-            };
-
-            std::vector<FieldElement> coefficient_fold;
-            std::vector<EvaluationFoldGroup> evaluation_folds;
-            std::vector<FoldedOpeningTerm> folded_terms;
-            folded_terms.reserve(commitments.size());
-            for (std::size_t i = 0; i < commitments.size(); ++i)
-            {
-                if (commitments[i].opening_polynomial == nullptr)
-                {
-                    throw std::runtime_error("commitment is missing prover-side opening polynomial: " + commitments[i].name);
-                }
-                auto existing = std::find_if(
-                    folded_terms.begin(),
-                    folded_terms.end(),
-                    [&](const FoldedOpeningTerm& term)
-                    {
-                        return term.commitment != nullptr
-                            && term.commitment->opening_polynomial.get() == commitments[i].opening_polynomial.get();
-                    });
-                if (existing == folded_terms.end())
-                {
-                    folded_terms.push_back(FoldedOpeningTerm{
-                        .commitment = &commitments[i],
-                        .scale = powers[i],
-                        .scaled_claim = values[i] * powers[i],
-                    });
-                }
-                else
-                {
-                    existing->scale += powers[i];
-                    existing->scaled_claim += values[i] * powers[i];
-                }
-            }
-
-            auto folded_evaluation_group = [&](const std::shared_ptr<algebra::RootOfUnityDomain>& domain)
-                -> EvaluationFoldGroup&
-            {
-                auto it = std::find_if(
-                    evaluation_folds.begin(),
-                    evaluation_folds.end(),
-                    [&](const EvaluationFoldGroup& group)
-                    {
-                        return group.domain.get() == domain.get();
-                    });
-                if (it == evaluation_folds.end())
-                {
-                    EvaluationFoldGroup group;
-                    group.domain = domain;
-                    evaluation_folds.push_back(std::move(group));
-                    it = std::prev(evaluation_folds.end());
-                }
-                return *it;
-            };
 
             auto out = g1_zero();
-            for (const auto& term : folded_terms)
+            const auto& coefficient_scaled_claim_sum = plan.coefficient_scaled_claim_sums[point_index];
+            if (!plan.coefficient_fold.empty() || !(coefficient_scaled_claim_sum == FieldElement::zero()))
             {
-                if (term.commitment == nullptr || term.commitment->opening_polynomial == nullptr)
+                try
                 {
-                    throw std::runtime_error("commitment is missing prover-side opening polynomial");
-                }
-                if (term.scale.is_zero() && term.scaled_claim == FieldElement::zero())
-                {
-                    continue;
-                }
-                const auto& polynomial = *term.commitment->opening_polynomial;
-                if (polynomial.basis == algebra::PolynomialBasis::Coefficient)
-                {
-                    algebra::Polynomial quotient;
-                    try
-                    {
-                        quotient = scaled_coefficient_single_point_quotient_polynomial(
-                            polynomial,
+                    out = g1_add(
+                        out,
+                        commit_coefficient_single_point_quotient(
+                            plan.coefficient_fold,
                             point,
-                            term.scale,
-                            term.scaled_claim);
-                    }
-                    catch (const std::exception& ex)
-                    {
-                        throw std::runtime_error(
-                            "opening mismatch for " + term.commitment->name + ": " + ex.what());
-                    }
-                    if (coefficient_fold.empty())
-                    {
-                        coefficient_fold = std::move(quotient.data);
-                    }
-                    else
-                    {
-                        accumulate_scaled(&coefficient_fold, quotient.values(), FieldElement::one());
-                    }
-                    continue;
+                            coefficient_scaled_claim_sum,
+                            pk,
+                            msm_options));
                 }
-                if (polynomial.domain == nullptr)
+                catch (const std::exception& ex)
                 {
-                    throw std::runtime_error("evaluation polynomial is missing its domain: " + term.commitment->name);
+                    throw std::runtime_error("opening mismatch for folded coefficient group: " + std::string(ex.what()));
                 }
-                auto& group = folded_evaluation_group(polynomial.domain);
-                const auto& source_values = polynomial.values();
-                if (!term.scale.is_zero())
-                {
-                    group.terms.push_back(EvaluationFoldGroup::Term{
-                        .values = &source_values,
-                        .value_count = source_values.size(),
-                        .scale = term.scale,
-                    });
-                }
-                group.scaled_claim_sum += term.scaled_claim;
             }
-            if (!coefficient_fold.empty())
-            {
-                out = g1_add(
-                    out,
-                    commit_polynomial_point(
-                        algebra::Polynomial::from_coefficients("folded_coefficient_witness", std::move(coefficient_fold)),
-                        pk,
-                        nullptr,
-                        msm_options));
-            }
-            for (auto& group : evaluation_folds)
+            for (const auto& group : plan.evaluation_groups)
             {
                 const std::vector<FieldElement>* inverse_denominators = nullptr;
                 std::size_t inverse_rotation_shift = 0;
@@ -1298,6 +1551,7 @@ namespace gatzk::crypto
                 }
 
                 std::vector<FieldElement> quotient_values(group.domain->size, FieldElement::zero());
+                auto* quotient_values_native = FieldElement::mutable_native_array_data(quotient_values.data());
                 struct NativeTerm
                 {
                     const std::vector<FieldElement>* values = nullptr;
@@ -1317,7 +1571,7 @@ namespace gatzk::crypto
                 mcl::Fr zero;
                 zero.clear();
                 mcl::Fr base_numerator;
-                mcl::Fr::sub(base_numerator, zero, group.scaled_claim_sum.native());
+                mcl::Fr::sub(base_numerator, zero, group.scaled_claim_sums[point_index].native());
                 const bool has_rotation = inverse_rotation_shift != 0;
                 const mcl::Fr rotation_scale_native = inverse_rotation_scale.native();
                 parallel_for_chunks_capped(group.domain->size, 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end) {
@@ -1337,16 +1591,14 @@ namespace gatzk::crypto
                             !has_rotation
                             ? row
                             : (row + group.domain->size - inverse_rotation_shift) & (group.domain->size - 1U);
-                        mcl::Fr quotient_native;
                         mcl::Fr::mul(
-                            quotient_native,
+                            quotient_values_native[row],
                             native_numerator,
                             (*inverse_denominators)[inverse_index].native());
                         if (has_rotation)
                         {
-                            mcl::Fr::mul(quotient_native, quotient_native, rotation_scale_native);
+                            mcl::Fr::mul(quotient_values_native[row], quotient_values_native[row], rotation_scale_native);
                         }
-                        quotient_values[row] = FieldElement::from_native(quotient_native);
                     }
                 });
                 out = g1_add(
@@ -1885,25 +2137,6 @@ namespace gatzk::crypto
         }
         const auto precompute_start = Clock::now();
         const auto powers = folding_powers(folding_challenge, commitments.size());
-        if (profile != nullptr)
-        {
-            profile->precompute_ms += elapsed_ms(precompute_start, Clock::now());
-        }
-
-        OpeningProof proof;
-        proof.witnesses.reserve(points.size());
-        std::vector<EvaluationInverseDenominatorCacheEntry> inverse_denominator_cache;
-        inverse_denominator_cache.reserve(points.size());
-        const auto witness_start = Clock::now();
-        auto values_for_point = [&](std::size_t point_index) {
-            std::vector<FieldElement> values_for_point;
-            values_for_point.reserve(commitments.size());
-            for (const auto& values : claimed_values)
-            {
-                values_for_point.push_back(values[point_index]);
-            }
-            return values_for_point;
-        };
         std::size_t max_evaluation_domain_size = 0;
         std::size_t max_coefficient_size = 0;
         for (const auto& commitment : commitments)
@@ -1924,20 +2157,37 @@ namespace gatzk::crypto
         }
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
         const auto point_worker_count = std::min<std::size_t>(points.size(), std::max<std::size_t>(1, cpu_count / 4));
+        const auto point_msm_worker_cap = std::max<std::size_t>(1, cpu_count / point_worker_count);
         const bool run_point_parallel =
             util::route2_options().fast_msm
             && points.size() > 1
             && point_worker_count > 1
             && (max_evaluation_domain_size >= (1ULL << 16) || max_coefficient_size >= (1ULL << 16));
+        const auto folded_plan = build_folded_opening_plan(
+            commitments,
+            claimed_values,
+            powers,
+            points.size(),
+            run_point_parallel ? point_msm_worker_cap : 0);
+        if (profile != nullptr)
+        {
+            profile->precompute_ms += elapsed_ms(precompute_start, Clock::now());
+        }
+
+        OpeningProof proof;
+        proof.witnesses.reserve(points.size());
+        std::vector<EvaluationInverseDenominatorCacheEntry> inverse_denominator_cache;
+        inverse_denominator_cache.reserve(points.size());
+        const auto witness_start = Clock::now();
         if (run_point_parallel && profile != nullptr)
         {
             profile->point_parallel_batches += 1;
             profile->point_parallel_workers += point_worker_count;
-            profile->point_msm_worker_cap += std::max<std::size_t>(1, cpu_count / point_worker_count);
+            profile->point_msm_worker_cap += point_msm_worker_cap;
         }
         if (run_point_parallel)
         {
-            const auto worker_cap = std::max<std::size_t>(1, cpu_count / point_worker_count);
+            const auto worker_cap = point_msm_worker_cap;
             const G1MSMExecutionOptions msm_options{.max_worker_count = worker_cap};
             proof.witnesses.resize(points.size());
             std::vector<BatchOpeningProfile> local_profiles(points.size());
@@ -1956,12 +2206,10 @@ namespace gatzk::crypto
                         }
                         std::vector<EvaluationInverseDenominatorCacheEntry> local_inverse_cache;
                         local_inverse_cache.reserve(1);
-                        const auto point_values = values_for_point(point_index);
                         proof.witnesses[point_index] = open_single_point_fold(
-                            commitments,
-                            point_values,
+                            folded_plan,
+                            point_index,
                             points[point_index],
-                            powers,
                             key.pk,
                             &local_inverse_cache,
                             profile != nullptr ? &local_profiles[point_index] : nullptr,
@@ -1989,15 +2237,13 @@ namespace gatzk::crypto
         {
             for (std::size_t point_index = 0; point_index < points.size(); ++point_index)
             {
-                const auto point_values = values_for_point(point_index);
                 proof.witnesses.push_back(open_single_point_fold(
-                commitments,
-                point_values,
-                points[point_index],
-                powers,
-                key.pk,
-                &inverse_denominator_cache,
-                profile));
+                    folded_plan,
+                    point_index,
+                    points[point_index],
+                    key.pk,
+                    &inverse_denominator_cache,
+                    profile));
             }
         }
         if (profile != nullptr)
@@ -2061,15 +2307,58 @@ namespace gatzk::crypto
         }
         OpeningProof proof;
         proof.witnesses.reserve(commitments_and_values.size());
-        for (std::size_t i = 0; i < commitments_and_values.size(); ++i)
+        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+        const auto worker_count = std::min<std::size_t>(
+            commitments_and_values.size(),
+            std::max<std::size_t>(1, cpu_count / 4));
+        const bool run_parallel =
+            util::route2_options().fast_msm
+            && commitments_and_values.size() > 1
+            && worker_count > 1;
+        if (run_parallel)
         {
-            const auto& [commitment, value] = commitments_and_values[i];
-            if (commitment.opening_polynomial == nullptr)
+            const auto worker_cap = std::max<std::size_t>(1, cpu_count / worker_count);
+            const G1MSMExecutionOptions msm_options{.max_worker_count = worker_cap};
+            proof.witnesses.resize(commitments_and_values.size());
+            std::atomic<std::size_t> next{0};
+            std::vector<std::future<void>> futures;
+            futures.reserve(worker_count);
+            for (std::size_t worker = 0; worker < worker_count; ++worker)
             {
-                throw std::runtime_error("external commitment is missing prover-side opening polynomial: " + commitment.name);
+                futures.push_back(std::async(std::launch::async, [&]() {
+                    while (true)
+                    {
+                        const auto i = next.fetch_add(1);
+                        if (i >= commitments_and_values.size())
+                        {
+                            break;
+                        }
+                        const auto& [commitment, value] = commitments_and_values[i];
+                        proof.witnesses[i] = open_external_witness_point(
+                            commitment,
+                            points[i],
+                            value,
+                            key.pk,
+                            &msm_options);
+                    }
+                }));
             }
-            const auto quotient = single_point_quotient_polynomial(*commitment.opening_polynomial, points[i], value);
-            proof.witnesses.push_back(commit_polynomial_point(quotient, key.pk));
+            for (auto& future : futures)
+            {
+                future.get();
+            }
+        }
+        else
+        {
+            for (std::size_t i = 0; i < commitments_and_values.size(); ++i)
+            {
+                const auto& [commitment, value] = commitments_and_values[i];
+                proof.witnesses.push_back(open_external_witness_point(
+                    commitment,
+                    points[i],
+                    value,
+                    key.pk));
+            }
         }
         return proof;
     }

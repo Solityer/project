@@ -5,9 +5,12 @@
 #include <cstdlib>
 #include <future>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 #include "gatzk/util/route2.hpp"
 
@@ -123,6 +126,36 @@ namespace gatzk::algebra
     {
         (void)configured_algebra_backend();
         return "cpu";
+    }
+
+    std::shared_ptr<const mcl::Ntt<mcl::Fr>> ntt_plan(std::size_t size)
+    {
+        static std::mutex mutex;
+        static std::unordered_map<std::size_t, std::shared_ptr<const mcl::Ntt<mcl::Fr>>> cache;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (const auto it = cache.find(size); it != cache.end())
+            {
+                return it->second;
+            }
+        }
+
+        auto plan = std::make_shared<mcl::Ntt<mcl::Fr>>();
+        const mcl::Fr generator = 5;
+        const mcl::Vint root_exponent = (mcl::Fr::getOp().mp - 1) >> 32;
+        mcl::Fr::pow(plan->root_, generator, root_exponent);
+        if (!plan->init(size))
+        {
+            throw std::runtime_error("failed to initialize NTT plan for size " + std::to_string(size));
+        }
+        if (!(FieldElement::from_native(plan->getW()) == FieldElement::root_of_unity(size)))
+        {
+            throw std::runtime_error("NTT root does not match protocol domain root for size " + std::to_string(size));
+        }
+        std::lock_guard<std::mutex> lock(mutex);
+        const auto [it, inserted] = cache.emplace(size, plan);
+        (void)inserted;
+        return it->second;
     }
 
     std::size_t cuda_kernel_invocation_count()

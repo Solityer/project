@@ -1,9 +1,0 @@
-timestamp_utc=20260620T123640Z
-aa263e8284d4b0b680ac8fb8725252c59b44a915
- M CMakeLists.txt
- M src/crypto/kzg.cpp
- M src/protocol/quotients.cpp
-?? results/performance_engineering/benchmarks/
-?? results/performance_engineering/failed_runs/
-?? tools/benchmarks/
-32c88fde6609e4280bc5d3e25bd6faecca0b0c024f15a315599e5c8ed7b3d2a1  build/gatzk_kzg_opening_stage_bench

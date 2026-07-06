@@ -3,10 +3,12 @@
 // 热点判定和域元素向量运算，不改变 proof schema 与 transcript。
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "gatzk/algebra/field.hpp"
+#include <mcl/ntt.hpp>
 
 namespace gatzk::algebra
 {
@@ -80,6 +82,9 @@ namespace gatzk::algebra
     FieldElement dot_product(
         const std::vector<FieldElement>& lhs,
         const std::vector<FieldElement>& rhs);
+
+    // 共享 NTT plan 缓存，供 quotient materialization 与可复用 prover-side material 转换使用。
+    std::shared_ptr<const mcl::Ntt<mcl::Fr>> ntt_plan(std::size_t size);
 
     // 直接消费原生权重，避免 barycentric 热路径中反复包装 `FieldElement`。
     FieldElement dot_product_native_weights(

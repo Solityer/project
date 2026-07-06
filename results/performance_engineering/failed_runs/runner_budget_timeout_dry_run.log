@@ -1,3 +1,0 @@
-$ python3 -c import subprocess,time,pathlib,os; p=subprocess.Popen(['sleep','60']); pathlib.Path('/home/pzh/project/results/performance_engineering/failed_runs/runner_budget_timeout_child.pid').write_text(str(p.pid)); time.sleep(60)
-
-TIMEOUT after 1 seconds
