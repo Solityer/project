@@ -225,32 +225,172 @@ namespace gatzk::protocol
 
         Polynomial make_eval_poly(
             const std::string &name,
-            const std::vector<FieldElement> &values,
+            std::vector<FieldElement> values,
             const std::shared_ptr<algebra::RootOfUnityDomain> &domain)
         {
-            return Polynomial::from_evaluations(name, values, domain);
+            return Polynomial::from_evaluations(name, std::move(values), domain);
         }
 
-        Polynomial make_coeff_poly(const std::string &name, const std::vector<FieldElement> &values)
+        Polynomial make_shared_eval_poly(
+            const std::string &name,
+            std::vector<FieldElement> values,
+            const std::shared_ptr<algebra::RootOfUnityDomain> &domain)
         {
-            return Polynomial::from_coefficients(name, values);
+            return Polynomial::from_shared_evaluations(
+                name,
+                std::make_shared<const std::vector<FieldElement>>(std::move(values)),
+                domain);
+        }
+
+        Polynomial make_coeff_poly(const std::string &name, std::vector<FieldElement> values)
+        {
+            return Polynomial::from_coefficients(name, std::move(values));
         }
 
         void add_public_poly(
             ProtocolContext &context,
             const std::string &name,
-            const Polynomial &polynomial)
+            Polynomial polynomial)
         {
             progress_note("context:public:" + name + ":start");
-            context.public_polynomials[name] = polynomial;
             context.public_commitments[name] = crypto::KZG::commit(name, polynomial, context.kzg);
+            polynomial.name = name;
+            context.public_polynomials[name] = std::move(polynomial);
             progress_note("context:public:" + name + ":done");
+        }
+
+        bool full_graph_feature_identity_enabled(const ProtocolContext &context);
+
+        bool same_polynomial_domain(
+            const std::shared_ptr<algebra::RootOfUnityDomain> &lhs,
+            const std::shared_ptr<algebra::RootOfUnityDomain> &rhs)
+        {
+            if (lhs == nullptr || rhs == nullptr)
+            {
+                return lhs == nullptr && rhs == nullptr;
+            }
+            return lhs->name == rhs->name && lhs->size == rhs->size && lhs->omega == rhs->omega;
+        }
+
+        bool same_polynomial_material(const Polynomial &lhs, const Polynomial &rhs)
+        {
+            return lhs.basis == rhs.basis
+                && same_polynomial_domain(lhs.domain, rhs.domain)
+                && lhs.values() == rhs.values();
+        }
+
+        void add_public_poly_alias_from_source_checked(
+            ProtocolContext &context,
+            const std::string &name,
+            const std::string &source_name)
+        {
+            if (!full_graph_feature_identity_enabled(context))
+            {
+                throw std::runtime_error("public polynomial source alias requires full feature identity: " + name);
+            }
+            const auto polynomial_it = context.public_polynomials.find(source_name);
+            if (polynomial_it == context.public_polynomials.end())
+            {
+                throw std::runtime_error("missing public polynomial alias source: " + source_name);
+            }
+            const auto commitment_it = context.public_commitments.find(source_name);
+            if (commitment_it == context.public_commitments.end())
+            {
+                throw std::runtime_error("missing public commitment alias source: " + source_name);
+            }
+            if (commitment_it->second.opening_polynomial == nullptr)
+            {
+                throw std::runtime_error("public commitment alias source is missing opening material: " + source_name);
+            }
+            const auto &source_polynomial = polynomial_it->second;
+            const auto &source_material = *commitment_it->second.opening_polynomial;
+            const bool same_shared_material =
+                source_polynomial.shared_data != nullptr
+                && source_material.shared_data != nullptr
+                && source_polynomial.shared_data.get() == source_material.shared_data.get()
+                && source_polynomial.basis == source_material.basis
+                && same_polynomial_domain(source_polynomial.domain, source_material.domain);
+            if (!same_shared_material && !same_polynomial_material(source_material, source_polynomial))
+            {
+                throw std::runtime_error("public commitment alias opening material mismatch: " + name + " -> " + source_name);
+            }
+            progress_note("context:public_alias:" + name + "->" + source_name + ":start");
+            auto alias_polynomial = source_polynomial;
+            alias_polynomial.name = name;
+            context.public_polynomials[name] = std::move(alias_polynomial);
+            auto commitment = commitment_it->second;
+            commitment.name = name;
+            context.public_commitments[name] = std::move(commitment);
+            progress_note("context:public_alias:" + name + "->" + source_name + ":done");
+        }
+
+        void trim_coefficients(std::vector<FieldElement> *coefficients)
+        {
+            while (coefficients->size() > 1 && coefficients->back() == FieldElement::zero())
+            {
+                coefficients->pop_back();
+            }
+        }
+
+        std::shared_ptr<const Polynomial> public_fh_coefficient_material(
+            const ProtocolContext &context,
+            const std::string &name)
+        {
+            const auto it = context.public_polynomials.find(name);
+            if (it == context.public_polynomials.end())
+            {
+                throw std::runtime_error("missing public FH polynomial for coefficient material: " + name);
+            }
+            const auto &polynomial = it->second;
+            if (polynomial.basis == algebra::PolynomialBasis::Coefficient)
+            {
+                return std::make_shared<Polynomial>(polynomial);
+            }
+            if (polynomial.domain == nullptr
+                || context.domains.fh == nullptr
+                || polynomial.domain->size != context.domains.fh->size
+                || !(polynomial.domain->omega == context.domains.fh->omega)
+                || polynomial.values().size() != context.domains.fh->size)
+            {
+                throw std::runtime_error("public FH coefficient material domain mismatch: " + name);
+            }
+
+            auto coefficients = polynomial.values();
+            auto *native_coefficients = FieldElement::mutable_native_array_data(coefficients.data());
+            algebra::ntt_plan(coefficients.size())->intt(native_coefficients);
+            trim_coefficients(&coefficients);
+            return std::make_shared<Polynomial>(Polynomial::from_coefficients(name, std::move(coefficients)));
+        }
+
+        void cache_public_fh_coefficient_material(ProtocolContext &context, const std::string &name)
+        {
+            progress_note("context:public_fh_coeff:" + name + ":start");
+            context.public_fh_coefficient_materials[name] = public_fh_coefficient_material(context, name);
+            progress_note("context:public_fh_coeff:" + name + ":done");
+        }
+
+        void rebind_public_fh_opening_material(
+            ProtocolContext &context,
+            const std::string &commitment_name,
+            const std::string &material_name)
+        {
+            const auto material_it = context.public_fh_coefficient_materials.find(material_name);
+            if (material_it == context.public_fh_coefficient_materials.end() || material_it->second == nullptr)
+            {
+                throw std::runtime_error("missing public FH coefficient material for opening rebind: " + material_name);
+            }
+            const auto commitment_it = context.public_commitments.find(commitment_name);
+            if (commitment_it == context.public_commitments.end())
+            {
+                throw std::runtime_error("missing public FH commitment for opening rebind: " + commitment_name);
+            }
+            commitment_it->second.opening_polynomial = material_it->second;
         }
 
         void add_static_commitment(
             ProtocolContext &context,
             const std::string &name,
-            const Polynomial &polynomial)
+            Polynomial polynomial)
         {
             progress_note("context:static:" + name + ":start");
             context.static_commitments[name] = crypto::KZG::commit(name, polynomial, context.kzg);
@@ -2862,32 +3002,7 @@ namespace gatzk::protocol
 
         std::shared_ptr<const mcl::Ntt<mcl::Fr>> ntt_plan(std::size_t size)
         {
-            static std::mutex mutex;
-            static std::unordered_map<std::size_t, std::shared_ptr<const mcl::Ntt<mcl::Fr>>> cache;
-            {
-                std::lock_guard<std::mutex> lock(mutex);
-                if (const auto it = cache.find(size); it != cache.end())
-                {
-                    return it->second;
-                }
-            }
-
-            auto plan = std::make_shared<mcl::Ntt<mcl::Fr>>();
-            const mcl::Fr generator = 5;
-            const mcl::Vint root_exponent = (mcl::Fr::getOp().mp - 1) >> 32;
-            mcl::Fr::pow(plan->root_, generator, root_exponent);
-            if (!plan->init(size))
-            {
-                throw std::runtime_error("failed to initialize NTT plan for size " + std::to_string(size));
-            }
-            if (!(FieldElement::from_native(plan->getW()) == FieldElement::root_of_unity(size)))
-            {
-                throw std::runtime_error("NTT root does not match protocol domain root for size " + std::to_string(size));
-            }
-            std::lock_guard<std::mutex> lock(mutex);
-            const auto [it, inserted] = cache.emplace(size, plan);
-            (void)inserted;
-            return it->second;
+            return algebra::ntt_plan(size);
         }
 
         template <class Fn>
@@ -3533,6 +3648,63 @@ namespace gatzk::protocol
             }
             trim_field_coefficients(&values);
             return values;
+        }
+
+        std::string fh_selector_boolean_quotient_coset_key(std::string_view selector_name)
+        {
+            return std::string(selector_name) + ":boolean_quotient_coset";
+        }
+
+        std::shared_ptr<const std::vector<FieldElement>> build_fh_selector_boolean_quotient_coset_material(
+            const ProtocolContext &context,
+            const std::string &selector_name)
+        {
+            if (context.domains.fh == nullptr)
+            {
+                throw std::runtime_error("missing FH domain for selector quotient coset material: " + selector_name);
+            }
+            const auto material_it = context.public_fh_coefficient_materials.find(selector_name);
+            if (material_it == context.public_fh_coefficient_materials.end() || material_it->second == nullptr)
+            {
+                throw std::runtime_error("missing public FH selector coefficient material: " + selector_name);
+            }
+            const auto &domain = context.domains.fh;
+            const auto target_size = domain->size * quotient_coset_multiplier("t_FH");
+            const auto shift = quotient_coset_shift(*domain);
+            auto q_coset = coset_evaluate_polynomial(*material_it->second, target_size, shift, selector_name);
+            if (q_coset.size() != target_size)
+            {
+                throw std::runtime_error("FH selector quotient coset material size mismatch: " + selector_name);
+            }
+
+            const auto root = FieldElement::root_of_unity(target_size);
+            const auto zero_cycle = target_size / domain->size;
+            if (zero_cycle == 0 || target_size % domain->size != 0)
+            {
+                throw std::runtime_error("invalid FH selector quotient coset cycle: " + selector_name);
+            }
+            std::vector<mcl::Fr> inverse_zero(zero_cycle);
+            auto zero_value = shift.pow(domain->size);
+            const auto zero_step = root.pow(domain->size);
+            const auto one = FieldElement::one();
+            for (std::size_t i = 0; i < zero_cycle; ++i)
+            {
+                inverse_zero[i] = (zero_value - one).inv().native();
+                zero_value *= zero_step;
+            }
+
+            auto *q_native = FieldElement::mutable_native_array_data(q_coset.data());
+            const auto &one_native = one.native();
+            parallel_for_chunks_static(q_coset.size(), 1ULL << 15, 0, [&](std::size_t begin, std::size_t end)
+                                       {
+                mcl::Fr one_minus_q;
+                mcl::Fr q_boolean;
+                for (std::size_t i = begin; i < end; ++i) {
+                    mcl::Fr::sub(one_minus_q, one_native, q_native[i]);
+                    mcl::Fr::mul(q_boolean, q_native[i], one_minus_q);
+                    mcl::Fr::mul(q_native[i], q_boolean, inverse_zero[i % zero_cycle]);
+                } });
+            return std::make_shared<const std::vector<FieldElement>>(std::move(q_coset));
         }
 
         std::vector<std::string> quotient_dependency_labels(
@@ -5164,13 +5336,27 @@ namespace gatzk::protocol
             {
                 const auto eta = challenges_.at("eta_feat");
                 const auto eta_sq = eta * eta;
-                progress_note("prove:quotient:t_FH:identity:coset:P_Q_tbl_feat:start");
-                const auto &q = coset_values("P_Q_tbl_feat");
-                progress_note("prove:quotient:t_FH:identity:coset:P_Q_tbl_feat:done");
+                const std::vector<FieldElement> *selector_quotient = nullptr;
+                const std::vector<FieldElement> *q = nullptr;
+                if (const auto selector_it = context_.public_fh_coset_materials.find(
+                        fh_selector_boolean_quotient_coset_key("P_Q_tbl_feat"));
+                    selector_it != context_.public_fh_coset_materials.end() && selector_it->second != nullptr)
+                {
+                    selector_quotient = selector_it->second.get();
+                    progress_note("prove:quotient:t_FH:identity:selector_quotient_coset:cache_hit");
+                }
+                else
+                {
+                    progress_note("prove:quotient:t_FH:identity:coset:P_Q_tbl_feat:start");
+                    q = &coset_values("P_Q_tbl_feat");
+                    progress_note("prove:quotient:t_FH:identity:coset:P_Q_tbl_feat:done");
+                }
                 progress_note("prove:quotient:t_FH:identity:coset:P_Table_feat_fused:start");
                 const auto table_values = fused_feature_table_coset_values(eta, eta_sq);
                 progress_note("prove:quotient:t_FH:identity:cosets:done");
-                if (q.size() != target_size_ || table_values->size() != target_size_)
+                if ((selector_quotient != nullptr && selector_quotient->size() != target_size_)
+                    || (q != nullptr && q->size() != target_size_)
+                    || table_values->size() != target_size_)
                 {
                     throw std::runtime_error("full-identity FH quotient coset value size mismatch");
                 }
@@ -5181,24 +5367,31 @@ namespace gatzk::protocol
                 const auto &beta_native = beta.native();
                 const auto &alpha_native = alpha.native();
                 const auto &one_native = one.native();
-                const auto root = FieldElement::root_of_unity(target_size_);
-                const auto zero_cycle = target_size_ / domain_->size;
-                if (zero_cycle == 0 || target_size_ % domain_->size != 0)
+                std::vector<mcl::Fr> inverse_zero;
+                std::size_t zero_cycle = 0;
+                if (selector_quotient == nullptr)
                 {
-                    throw std::runtime_error("invalid full-identity FH quotient coset cycle");
-                }
-                std::vector<mcl::Fr> inverse_zero(zero_cycle);
-                auto zero_value = shift_.pow(domain_->size);
-                const auto zero_step = root.pow(domain_->size);
-                for (std::size_t i = 0; i < zero_cycle; ++i)
-                {
-                    inverse_zero[i] = (zero_value - one).inv().native();
-                    zero_value *= zero_step;
+                    const auto root = FieldElement::root_of_unity(target_size_);
+                    zero_cycle = target_size_ / domain_->size;
+                    if (zero_cycle == 0 || target_size_ % domain_->size != 0)
+                    {
+                        throw std::runtime_error("invalid full-identity FH quotient coset cycle");
+                    }
+                    inverse_zero.resize(zero_cycle);
+                    auto zero_value = shift_.pow(domain_->size);
+                    const auto zero_step = root.pow(domain_->size);
+                    for (std::size_t i = 0; i < zero_cycle; ++i)
+                    {
+                        inverse_zero[i] = (zero_value - one).inv().native();
+                        zero_value *= zero_step;
+                    }
                 }
 
                 std::vector<FieldElement> quotient_values(target_size_, FieldElement::zero());
                 auto *quotient_native = FieldElement::mutable_native_array_data(quotient_values.data());
-                const auto *q_native = FieldElement::native_array_data(q.data());
+                const auto *q_native = q != nullptr ? FieldElement::native_array_data(q->data()) : nullptr;
+                const auto *selector_quotient_native =
+                    selector_quotient != nullptr ? FieldElement::native_array_data(selector_quotient->data()) : nullptr;
                 const auto *table_native = FieldElement::native_array_data(table_values->data());
                 progress_note("prove:quotient:t_FH:identity:assemble:start");
                 const auto fill_range = [&](std::size_t begin, std::size_t end)
@@ -5209,11 +5402,18 @@ namespace gatzk::protocol
                     mcl::Fr value;
                     for (std::size_t i = begin; i < end; ++i)
                     {
-                        mcl::Fr::sub(one_minus_q, one_native, q_native[i]);
-                        mcl::Fr::mul(q_boolean, q_native[i], one_minus_q);
                         mcl::Fr::add(table_plus_beta, table_native[i], beta_native);
-                        mcl::Fr::mul(value, q_boolean, table_plus_beta);
-                        mcl::Fr::mul(value, value, inverse_zero[i % zero_cycle]);
+                        if (selector_quotient_native != nullptr)
+                        {
+                            mcl::Fr::mul(value, selector_quotient_native[i], table_plus_beta);
+                        }
+                        else
+                        {
+                            mcl::Fr::sub(one_minus_q, one_native, q_native[i]);
+                            mcl::Fr::mul(q_boolean, q_native[i], one_minus_q);
+                            mcl::Fr::mul(value, q_boolean, table_plus_beta);
+                            mcl::Fr::mul(value, value, inverse_zero[i % zero_cycle]);
+                        }
                         mcl::Fr::mul(quotient_native[i], alpha_native, value);
                     }
                 };
@@ -5274,13 +5474,15 @@ namespace gatzk::protocol
                 if (const auto it = trace_.commitments.find("P_Table_feat");
                     it != trace_.commitments.end() && it->second.opening_polynomial != nullptr)
                 {
-                    progress_note("prove:quotient:t_FH:identity:coset:P_Table_feat:coefficients:start");
-                    const auto coefficients = dependency_coefficients("P_Table_feat", *it->second.opening_polynomial);
-                    progress_note("prove:quotient:t_FH:identity:coset:P_Table_feat:coefficients:done");
-                    progress_note("prove:quotient:t_FH:identity:coset:P_Table_feat:coset_eval:start");
+                    progress_note("prove:quotient:t_FH:identity:coset:P_Table_feat:direct_eval:start");
                     auto values = std::make_shared<const std::vector<FieldElement>>(
-                        coset_evaluate_coefficients(coefficients, target_size_, shift_, "P_Table_feat", &shift_powers()));
-                    progress_note("prove:quotient:t_FH:identity:coset:P_Table_feat:coset_eval:done");
+                        coset_evaluate_polynomial(
+                            *it->second.opening_polynomial,
+                            target_size_,
+                            shift_,
+                            "P_Table_feat",
+                            &shift_powers()));
+                    progress_note("prove:quotient:t_FH:identity:coset:P_Table_feat:direct_eval:done");
                     return values;
                 }
                 const auto *row_poly = lookup_polynomial("P_Row_feat_tbl");
@@ -5317,9 +5519,13 @@ namespace gatzk::protocol
                     "P_Table_feat_fused",
                     std::move(table),
                     domain_);
-                const auto coefficients = coefficients_native_from_polynomial(table_poly);
                 auto values = std::make_shared<const std::vector<FieldElement>>(
-                    coset_evaluate_coefficients(coefficients, target_size_, shift_, "P_Table_feat_fused", &shift_powers()));
+                    coset_evaluate_polynomial(
+                        table_poly,
+                        target_size_,
+                        shift_,
+                        "P_Table_feat_fused",
+                        &shift_powers()));
                 return values;
             }
 
@@ -6036,9 +6242,13 @@ namespace gatzk::protocol
                     derived_label,
                     std::move(domain_values),
                     domain_);
-                const auto coefficients = coefficients_native_from_polynomial(polynomial);
                 return std::make_shared<const std::vector<FieldElement>>(
-                    coset_evaluate_coefficients(coefficients, target_size_, shift_, derived_label, &shift_powers()));
+                    coset_evaluate_polynomial(
+                        polynomial,
+                        target_size_,
+                        shift_,
+                        derived_label,
+                        &shift_powers()));
             }
 
             std::shared_ptr<const std::vector<FieldElement>> derived_hidden_edge_coset(const std::string &name)
@@ -6320,6 +6530,24 @@ namespace gatzk::protocol
                 return values;
             }
 
+            std::shared_ptr<const std::vector<FieldElement>> cached_public_fh_material_coset(const std::string &requested_name)
+            {
+                if (label_ != "t_FH" || domain_ != context_.domains.fh)
+                {
+                    return nullptr;
+                }
+                const auto it = context_.public_fh_coefficient_materials.find(requested_name);
+                if (it == context_.public_fh_coefficient_materials.end() || it->second == nullptr)
+                {
+                    return nullptr;
+                }
+                progress_note("prove:quotient:t_FH:public_coeff:" + requested_name + ":coset:start");
+                auto values = std::make_shared<const std::vector<FieldElement>>(
+                    coset_evaluate_polynomial(*it->second, target_size_, shift_, requested_name, &shift_powers()));
+                progress_note("prove:quotient:t_FH:public_coeff:" + requested_name + ":coset:done");
+                return values;
+            }
+
             std::shared_ptr<const std::vector<FieldElement>> coset_values_ptr(const std::string &requested_name)
             {
                 std::string alias_owner;
@@ -6366,6 +6594,10 @@ namespace gatzk::protocol
                 else if (lazy_full_feature_lookup_trace_enabled(context_) && is_lazy_full_feature_lookup_trace_label(requested_name))
                 {
                     values = materialize_lazy_feature_lookup_trace(requested_name);
+                }
+                else if (auto public_material = cached_public_fh_material_coset(requested_name); public_material != nullptr)
+                {
+                    values = std::move(public_material);
                 }
                 else if (auto selector = feature_selector_coset(requested_name); selector != nullptr)
                 {
@@ -7432,179 +7664,199 @@ namespace gatzk::protocol
         add_public_poly(
             context,
             "P_I",
-            make_eval_poly("P_I", ids_to_field(context.local.absolute_ids, n_size), context.domains.n));
+            make_shared_eval_poly("P_I", ids_to_field(context.local.absolute_ids, n_size), context.domains.n));
         add_public_poly(
             context,
             "P_src",
-            make_eval_poly("P_src", edge_component(context.local.edges, edge_size, true), context.domains.edge));
+            make_shared_eval_poly("P_src", edge_component(context.local.edges, edge_size, true), context.domains.edge));
         add_public_poly(
             context,
             "P_dst",
-            make_eval_poly("P_dst", edge_component(context.local.edges, edge_size, false), context.domains.edge));
+            make_shared_eval_poly("P_dst", edge_component(context.local.edges, edge_size, false), context.domains.edge));
         add_public_poly(
             context,
             "P_Q_new_edge",
-            make_eval_poly("P_Q_new_edge", q_new_selector(context.local.edges, edge_size), context.domains.edge));
+            make_shared_eval_poly("P_Q_new_edge", q_new_selector(context.local.edges, edge_size), context.domains.edge));
         add_public_poly(
             context,
             "P_Q_end_edge",
-            make_eval_poly("P_Q_end_edge", q_end_selector(context.local.edges, edge_size), context.domains.edge));
+            make_shared_eval_poly("P_Q_end_edge", q_end_selector(context.local.edges, edge_size), context.domains.edge));
         add_public_poly(
             context,
             "P_Q_edge_valid",
-            make_eval_poly("P_Q_edge_valid", edge_valid, context.domains.edge));
+            make_shared_eval_poly("P_Q_edge_valid", edge_valid, context.domains.edge));
         add_public_poly(
             context,
             "P_Q_N",
-            make_eval_poly("P_Q_N", build_selector(context.local.num_nodes, n_size), context.domains.n));
+            make_shared_eval_poly("P_Q_N", build_selector(context.local.num_nodes, n_size), context.domains.n));
         add_public_poly(
             context,
             "P_Q_proj_valid",
-            make_eval_poly("P_Q_proj_valid", build_selector(max_in, in_size), context.domains.in));
+            make_shared_eval_poly("P_Q_proj_valid", build_selector(max_in, in_size), context.domains.in));
         add_public_poly(
             context,
             "P_Q_d_valid",
-            make_eval_poly("P_Q_d_valid", build_selector(d_h, d_size), context.domains.d));
+            make_shared_eval_poly("P_Q_d_valid", build_selector(d_h, d_size), context.domains.d));
         add_public_poly(
             context,
             "P_Q_cat_valid",
-            make_eval_poly("P_Q_cat_valid", build_selector(d_cat, cat_size), context.domains.cat));
+            make_shared_eval_poly("P_Q_cat_valid", build_selector(d_cat, cat_size), context.domains.cat));
         add_public_poly(
             context,
             "P_Q_C_valid",
-            make_eval_poly("P_Q_C_valid", build_selector(context.local.num_classes, c_size), context.domains.c));
+            make_shared_eval_poly("P_Q_C_valid", build_selector(context.local.num_classes, c_size), context.domains.c));
         if (lazy_large_fh_public_enabled(context))
         {
             add_public_poly(
                 context,
                 "P_Q_tbl_feat",
-                make_eval_poly("P_Q_tbl_feat", build_selector(context.dataset.num_nodes * context.dataset.num_features, fh_size), context.domains.fh));
-            add_public_poly(
-                context,
-                "P_Q_qry_feat",
-                make_eval_poly("P_Q_qry_feat", build_selector(context.local.num_nodes * context.local.num_features, fh_size), context.domains.fh));
+                make_shared_eval_poly("P_Q_tbl_feat", build_selector(context.dataset.num_nodes * context.dataset.num_features, fh_size), context.domains.fh));
             add_public_poly(
                 context,
                 "P_Row_feat_tbl",
-                make_eval_poly(
+                make_shared_eval_poly(
                     "P_Row_feat_tbl",
                     feature_table_row_indices(context.dataset.num_nodes, context.dataset.num_features, fh_size),
                     context.domains.fh));
             add_public_poly(
                 context,
                 "P_Col_feat_tbl",
-                make_eval_poly(
+                make_shared_eval_poly(
                     "P_Col_feat_tbl",
                     feature_table_col_indices(context.dataset.num_nodes, context.dataset.num_features, fh_size),
                     context.domains.fh));
-            add_public_poly(
-                context,
-                "P_Row_feat_qry",
-                make_eval_poly(
+            if (full_graph_feature_identity_enabled(context))
+            {
+                add_public_poly_alias_from_source_checked(context, "P_Q_qry_feat", "P_Q_tbl_feat");
+                add_public_poly_alias_from_source_checked(context, "P_Row_feat_qry", "P_Row_feat_tbl");
+                add_public_poly_alias_from_source_checked(context, "P_Col_feat_qry", "P_Col_feat_tbl");
+                add_public_poly_alias_from_source_checked(context, "P_I_feat_qry", "P_Row_feat_tbl");
+            }
+            else
+            {
+                add_public_poly(
+                    context,
+                    "P_Q_qry_feat",
+                    make_shared_eval_poly("P_Q_qry_feat", build_selector(context.local.num_nodes * context.local.num_features, fh_size), context.domains.fh));
+                add_public_poly(
+                    context,
                     "P_Row_feat_qry",
-                    feature_query_row_indices(context.local.num_nodes, context.local.num_features, fh_size),
-                    context.domains.fh));
-            add_public_poly(
-                context,
-                "P_Col_feat_qry",
-                make_eval_poly(
+                    make_shared_eval_poly(
+                        "P_Row_feat_qry",
+                        feature_query_row_indices(context.local.num_nodes, context.local.num_features, fh_size),
+                        context.domains.fh));
+                add_public_poly(
+                    context,
                     "P_Col_feat_qry",
-                    feature_query_col_indices(context.local.num_nodes, context.local.num_features, fh_size),
-                    context.domains.fh));
-            add_public_poly(
-                context,
-                "P_I_feat_qry",
-                make_eval_poly(
+                    make_shared_eval_poly(
+                        "P_Col_feat_qry",
+                        feature_query_col_indices(context.local.num_nodes, context.local.num_features, fh_size),
+                        context.domains.fh));
+                add_public_poly(
+                    context,
                     "P_I_feat_qry",
-                    feature_query_absolute_ids(context.local.absolute_ids, context.local.num_features, fh_size),
-                    context.domains.fh));
+                    make_shared_eval_poly(
+                        "P_I_feat_qry",
+                        feature_query_absolute_ids(context.local.absolute_ids, context.local.num_features, fh_size),
+                        context.domains.fh));
+            }
         }
         else
         {
             add_public_poly(
                 context,
                 "P_Q_tbl_feat",
-                make_eval_poly("P_Q_tbl_feat", build_selector(context.dataset.num_nodes * context.dataset.num_features, fh_size), context.domains.fh));
-            add_public_poly(
-                context,
-                "P_Q_qry_feat",
-                make_eval_poly("P_Q_qry_feat", build_selector(context.local.num_nodes * context.local.num_features, fh_size), context.domains.fh));
+                make_shared_eval_poly("P_Q_tbl_feat", build_selector(context.dataset.num_nodes * context.dataset.num_features, fh_size), context.domains.fh));
             add_public_poly(
                 context,
                 "P_Row_feat_tbl",
-                make_eval_poly(
+                make_shared_eval_poly(
                     "P_Row_feat_tbl",
                     feature_table_row_indices(context.dataset.num_nodes, context.dataset.num_features, fh_size),
                     context.domains.fh));
             add_public_poly(
                 context,
                 "P_Col_feat_tbl",
-                make_eval_poly(
+                make_shared_eval_poly(
                     "P_Col_feat_tbl",
                     feature_table_col_indices(context.dataset.num_nodes, context.dataset.num_features, fh_size),
                     context.domains.fh));
-            add_public_poly(
-                context,
-                "P_Row_feat_qry",
-                make_eval_poly(
+            if (full_graph_feature_identity_enabled(context))
+            {
+                add_public_poly_alias_from_source_checked(context, "P_Q_qry_feat", "P_Q_tbl_feat");
+                add_public_poly_alias_from_source_checked(context, "P_Row_feat_qry", "P_Row_feat_tbl");
+                add_public_poly_alias_from_source_checked(context, "P_Col_feat_qry", "P_Col_feat_tbl");
+                add_public_poly_alias_from_source_checked(context, "P_I_feat_qry", "P_Row_feat_tbl");
+            }
+            else
+            {
+                add_public_poly(
+                    context,
+                    "P_Q_qry_feat",
+                    make_shared_eval_poly("P_Q_qry_feat", build_selector(context.local.num_nodes * context.local.num_features, fh_size), context.domains.fh));
+                add_public_poly(
+                    context,
                     "P_Row_feat_qry",
-                    feature_query_row_indices(context.local.num_nodes, context.local.num_features, fh_size),
-                    context.domains.fh));
-            add_public_poly(
-                context,
-                "P_Col_feat_qry",
-                make_eval_poly(
+                    make_shared_eval_poly(
+                        "P_Row_feat_qry",
+                        feature_query_row_indices(context.local.num_nodes, context.local.num_features, fh_size),
+                        context.domains.fh));
+                add_public_poly(
+                    context,
                     "P_Col_feat_qry",
-                    feature_query_col_indices(context.local.num_nodes, context.local.num_features, fh_size),
-                    context.domains.fh));
-            add_public_poly(
-                context,
-                "P_I_feat_qry",
-                make_eval_poly(
+                    make_shared_eval_poly(
+                        "P_Col_feat_qry",
+                        feature_query_col_indices(context.local.num_nodes, context.local.num_features, fh_size),
+                        context.domains.fh));
+                add_public_poly(
+                    context,
                     "P_I_feat_qry",
-                    feature_query_absolute_ids(context.local.absolute_ids, context.local.num_features, fh_size),
-                    context.domains.fh));
+                    make_shared_eval_poly(
+                        "P_I_feat_qry",
+                        feature_query_absolute_ids(context.local.absolute_ids, context.local.num_features, fh_size),
+                        context.domains.fh));
+            }
         }
         add_public_poly(
             context,
             "P_Q_qry_src",
-            make_eval_poly("P_Q_qry_src", edge_valid, context.domains.edge));
+            make_shared_eval_poly("P_Q_qry_src", edge_valid, context.domains.edge));
         add_public_poly(
             context,
             "P_Q_qry_dst",
-            make_eval_poly("P_Q_qry_dst", edge_valid, context.domains.edge));
+            make_shared_eval_poly("P_Q_qry_dst", edge_valid, context.domains.edge));
         add_public_poly(
             context,
             "P_Q_tbl_L",
-            make_eval_poly("P_Q_tbl_L", build_selector(context.tables.lrelu.size(), edge_size), context.domains.edge));
+            make_shared_eval_poly("P_Q_tbl_L", build_selector(context.tables.lrelu.size(), edge_size), context.domains.edge));
         add_public_poly(
             context,
             "P_Q_qry_L",
-            make_eval_poly("P_Q_qry_L", build_selector(context.local.edges.size(), edge_size), context.domains.edge));
+            make_shared_eval_poly("P_Q_qry_L", build_selector(context.local.edges.size(), edge_size), context.domains.edge));
         add_public_poly(
             context,
             "P_Q_tbl_R",
-            make_eval_poly("P_Q_tbl_R", build_selector(context.tables.range.size(), edge_size), context.domains.edge));
+            make_shared_eval_poly("P_Q_tbl_R", build_selector(context.tables.range.size(), edge_size), context.domains.edge));
         add_public_poly(
             context,
             "P_Q_qry_R",
-            make_eval_poly("P_Q_qry_R", build_selector(context.local.edges.size(), edge_size), context.domains.edge));
+            make_shared_eval_poly("P_Q_qry_R", build_selector(context.local.edges.size(), edge_size), context.domains.edge));
         add_public_poly(
             context,
             "P_Q_tbl_exp",
-            make_eval_poly("P_Q_tbl_exp", build_selector(context.tables.exp.size(), edge_size), context.domains.edge));
+            make_shared_eval_poly("P_Q_tbl_exp", build_selector(context.tables.exp.size(), edge_size), context.domains.edge));
         add_public_poly(
             context,
             "P_Q_qry_exp",
-            make_eval_poly("P_Q_qry_exp", build_selector(context.local.edges.size(), edge_size), context.domains.edge));
+            make_shared_eval_poly("P_Q_qry_exp", build_selector(context.local.edges.size(), edge_size), context.domains.edge));
         add_public_poly(
             context,
             "P_Q_tbl_ELU",
-            make_eval_poly("P_Q_tbl_ELU", build_selector(context.tables.elu.size(), edge_size), context.domains.edge));
+            make_shared_eval_poly("P_Q_tbl_ELU", build_selector(context.tables.elu.size(), edge_size), context.domains.edge));
         add_public_poly(
             context,
             "P_Q_qry_ELU",
-            make_eval_poly("P_Q_qry_ELU", build_selector(context.local.num_nodes * d_h, edge_size), context.domains.edge));
+            make_shared_eval_poly("P_Q_qry_ELU", build_selector(context.local.num_nodes * d_h, edge_size), context.domains.edge));
 
         const auto &feature_matrix_for_h =
             !context.dataset.features.empty() ? context.dataset.features : context.local.features;
@@ -7617,7 +7869,7 @@ namespace gatzk::protocol
             add_public_poly(
                 context,
                 "P_T_H",
-                make_eval_poly(
+                make_shared_eval_poly(
                     "P_T_H",
                     padded(algebra::flatten_matrix_coefficients(feature_matrix_for_h), fh_size),
                     context.domains.fh));
@@ -7631,10 +7883,30 @@ namespace gatzk::protocol
             add_public_poly(
                 context,
                 "P_T_H",
-                make_eval_poly(
+                make_shared_eval_poly(
                     "P_T_H",
                     padded(algebra::flatten_matrix_coefficients(feature_matrix_for_h), fh_size),
                     context.domains.fh));
+        }
+
+        if (full_graph_feature_identity_enabled(context))
+        {
+            cache_public_fh_coefficient_material(context, "P_T_H");
+            cache_public_fh_coefficient_material(context, "P_Q_tbl_feat");
+            cache_public_fh_coefficient_material(context, "P_Row_feat_tbl");
+            cache_public_fh_coefficient_material(context, "P_Col_feat_tbl");
+            rebind_public_fh_opening_material(context, "P_T_H", "P_T_H");
+            rebind_public_fh_opening_material(context, "P_Q_tbl_feat", "P_Q_tbl_feat");
+            rebind_public_fh_opening_material(context, "P_Q_qry_feat", "P_Q_tbl_feat");
+            rebind_public_fh_opening_material(context, "P_Row_feat_tbl", "P_Row_feat_tbl");
+            rebind_public_fh_opening_material(context, "P_Row_feat_qry", "P_Row_feat_tbl");
+            rebind_public_fh_opening_material(context, "P_I_feat_qry", "P_Row_feat_tbl");
+            rebind_public_fh_opening_material(context, "P_Col_feat_tbl", "P_Col_feat_tbl");
+            rebind_public_fh_opening_material(context, "P_Col_feat_qry", "P_Col_feat_tbl");
+            progress_note("context:public_fh_coset:P_Q_tbl_feat:boolean_quotient:start");
+            context.public_fh_coset_materials[fh_selector_boolean_quotient_coset_key("P_Q_tbl_feat")] =
+                build_fh_selector_boolean_quotient_coset_material(context, "P_Q_tbl_feat");
+            progress_note("context:public_fh_coset:P_Q_tbl_feat:boolean_quotient:done");
         }
 
         std::vector<FieldElement> l_x(edge_size, FieldElement::zero());
@@ -7644,8 +7916,8 @@ namespace gatzk::protocol
             l_x[i] = context.tables.lrelu[i].first;
             l_y[i] = context.tables.lrelu[i].second;
         }
-        add_public_poly(context, "P_T_L_x", make_eval_poly("P_T_L_x", l_x, context.domains.edge));
-        add_public_poly(context, "P_T_L_y", make_eval_poly("P_T_L_y", l_y, context.domains.edge));
+        add_public_poly(context, "P_T_L_x", make_shared_eval_poly("P_T_L_x", l_x, context.domains.edge));
+        add_public_poly(context, "P_T_L_y", make_shared_eval_poly("P_T_L_y", l_y, context.domains.edge));
         add_static_commitment(context, "V_T_L_x", make_eval_poly("V_T_L_x", l_x, context.domains.edge));
         add_static_commitment(context, "V_T_L_y", make_eval_poly("V_T_L_y", l_y, context.domains.edge));
 
@@ -7656,8 +7928,8 @@ namespace gatzk::protocol
             elu_x[i] = context.tables.elu[i].first;
             elu_y[i] = context.tables.elu[i].second;
         }
-        add_public_poly(context, "P_T_ELU_x", make_eval_poly("P_T_ELU_x", elu_x, context.domains.edge));
-        add_public_poly(context, "P_T_ELU_y", make_eval_poly("P_T_ELU_y", elu_y, context.domains.edge));
+        add_public_poly(context, "P_T_ELU_x", make_shared_eval_poly("P_T_ELU_x", elu_x, context.domains.edge));
+        add_public_poly(context, "P_T_ELU_y", make_shared_eval_poly("P_T_ELU_y", elu_y, context.domains.edge));
         add_static_commitment(context, "V_T_ELU_x", make_eval_poly("V_T_ELU_x", elu_x, context.domains.edge));
         add_static_commitment(context, "V_T_ELU_y", make_eval_poly("V_T_ELU_y", elu_y, context.domains.edge));
 
@@ -7668,14 +7940,14 @@ namespace gatzk::protocol
             exp_x[i] = context.tables.exp[i].first;
             exp_y[i] = context.tables.exp[i].second;
         }
-        add_public_poly(context, "P_T_exp_x", make_eval_poly("P_T_exp_x", exp_x, context.domains.edge));
-        add_public_poly(context, "P_T_exp_y", make_eval_poly("P_T_exp_y", exp_y, context.domains.edge));
+        add_public_poly(context, "P_T_exp_x", make_shared_eval_poly("P_T_exp_x", exp_x, context.domains.edge));
+        add_public_poly(context, "P_T_exp_y", make_shared_eval_poly("P_T_exp_y", exp_y, context.domains.edge));
         add_static_commitment(context, "V_T_exp_x", make_eval_poly("V_T_exp_x", exp_x, context.domains.edge));
         add_static_commitment(context, "V_T_exp_y", make_eval_poly("V_T_exp_y", exp_y, context.domains.edge));
         add_public_poly(
             context,
             "P_T_range",
-            make_eval_poly("P_T_range", padded(context.tables.range, edge_size), context.domains.edge));
+            make_shared_eval_poly("P_T_range", padded(context.tables.range, edge_size), context.domains.edge));
         add_static_commitment(
             context,
             "V_T_range",
