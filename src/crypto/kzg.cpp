@@ -867,6 +867,7 @@ namespace gatzk::crypto
             return out;
         }
 
+        // KZG多项式承诺主函数
         G1Point commit_polynomial_point(
             const algebra::Polynomial& polynomial,
             const KZGProverKey& pk,
@@ -877,6 +878,7 @@ namespace gatzk::crypto
             const auto msm_start = Clock::now();
             G1Point point;
             bool constant_tail_folding = false;
+            // 系数多项式采用SRS powers + MSM
             if (polynomial.basis == algebra::PolynomialBasis::Coefficient)
             {
                 if (pk.powers_g1 == nullptr)
@@ -900,6 +902,7 @@ namespace gatzk::crypto
                 {
                     throw std::runtime_error("evaluation polynomial is missing its domain: " + polynomial.name);
                 }
+                // 评估多项式采用 拉格朗日SRS + MSM
                 const auto base_key = srs_domain_name(polynomial.domain->name);
                 const auto exact_key = srs_exact_domain_name(polynomial.domain->name, polynomial.domain->size);
                 auto it = pk.lagrange_srs_by_domain.find(exact_key);

@@ -1,6 +1,5 @@
 #pragma once
-// 本文件定义 formal 主线使用的 KZG 承诺接口，
-// 负责承诺、批量 opening 与 verifier 侧 batch checking 的统一契约。
+// KZG承诺实现，负责承诺、批量opening与验证侧的批量检查
 
 #include <memory>
 #include <optional>
@@ -60,7 +59,7 @@ namespace gatzk::crypto
         std::string manifest_hash;
     };
 
-    // SRS / 验证键的最小实现集合。主程序只从 manifest/key files 加载，不从实验 seed 生成。
+    // SRS/验证键的最小实现集合，只从manifest/key文件中加载
     struct KZGKeyPair
     {
         SRSManifest manifest;
@@ -73,7 +72,7 @@ namespace gatzk::crypto
         std::shared_ptr<PreparedG2> g2_tau_prepared;
     };
 
-    // 承诺对象只携带 proof 可见的群元素；prover 侧可保留多项式材料用于生成 opening witness。
+    // 承诺对象只携带proof可见的群元素；prover侧可保留多项式材料用于生成opening见证
     struct Commitment
     {
         std::string name;
@@ -81,7 +80,7 @@ namespace gatzk::crypto
         std::shared_ptr<const algebra::Polynomial> opening_polynomial;
     };
 
-    // 批量 opening 的执行侧剖面，供正式 benchmark 细分 `domain_opening_ms`。
+    // 批量opening的执行，供正式 benchmark 细分 `domain_opening_ms`。
     struct BatchOpeningProfile
     {
         double precompute_ms = 0.0;
@@ -119,7 +118,7 @@ namespace gatzk::crypto
         std::vector<CommitObjectProfile> objects;
     };
 
-    // 序列化大小直接参与 proof_size_bytes 统计。
+    // 序列化大小直接参与proof_size_bytes统计
     std::size_t serialized_size(const Commitment& commitment);
 
     struct OpeningProof
@@ -132,7 +131,7 @@ namespace gatzk::crypto
     class KZG
     {
     public:
-        // 加载一次 secure formal run 使用的 SRS 参数。
+        // 加载一次安全正式运行使用的 SRS 参数。
         static KZGKeyPair load_keys(
             const std::string& srs_path,
             const std::string& expected_srs_type,
