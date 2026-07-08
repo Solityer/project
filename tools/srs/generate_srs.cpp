@@ -290,7 +290,7 @@ int main(int argc, char **argv)
         mcl::bn::hashAndMapToG2(g2, "gatzk:kzg:g2");
 
         mcl::Fr tau;
-        tau.setByCSPRNG();
+        tau.setByCSPRNG();  //随机采样
         if (tau.isZero())
         {
             tau = 1;

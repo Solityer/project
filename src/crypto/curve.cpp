@@ -20,11 +20,11 @@ namespace gatzk::crypto
 
     namespace
     {
-        struct ScalarKey
-        {
-            std::array<std::uint8_t, 32> bytes{};
+            struct ScalarKey
+            {
+                std::array<std::uint8_t, 32> bytes{};
 
-            bool operator==(const ScalarKey& other) const
+                bool operator==(const ScalarKey& other) const
             {
                 return bytes == other.bytes;
             }
