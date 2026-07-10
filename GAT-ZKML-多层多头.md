@@ -8,19 +8,13 @@
 
 1. 设注意力层的总层数为：$L$。其中前 $L-1$ 层是隐藏层，第 $L$ 层是最终输出层。
 
-2. 对每个隐藏层 $\ell\in\{1,2,\ldots,L-1\}$，记该层的注意力头数量为 $K_{hid}^{(\ell)}$，每个头的输出维度为 $d_h^{(\ell)}$。
+2. 对每个隐藏层 $\ell\in\{1,2,\ldots,L-1\}$，记该层的注意力头数量为 $K_{hid}^{(\ell)}$，每个头的输出维度为 $d_h^{(\ell)}$。该层每个头完成注意力聚合后，逐元素施加 ELU；
 
-	该层每个头完成注意力聚合后，逐元素施加 ELU；
-
-	随后把本层全部头的ELU后的输出沿特征维进行拼接，得到：$d_{cat}^{(\ell)}=K_{hid}^{(\ell)}\cdot d_h^{(\ell)}$ 
+	随后把本层全部头的ELU后的输出沿特征维进行拼接，得到：$d_{cat}^{(\ell)}=K_{hid}^{(\ell)}\cdot d_h^{(\ell)}$。
 
 3. 第 $\ell$ 个隐藏层的输入维度记为 $d_{in}^{(\ell)}$。其中 $d_{in}^{(1)}=d_{in}$，且对任意 $\ell\ge 2$，都有 $d_{in}^{(\ell)}=d_{cat}^{(\ell-1)}$。
 
-4. 最终输出层（第 $L$ 层）的注意力头数量记为 $K_{out}$。
-
-	输出层不是“仿射线性层 + 偏置”替代注意力，而是由 $K_{out}$ 个输出注意力头组成。每个输出注意力头先完成注意力聚合，再加上该头自己的输出偏置向量；
-
-	若 $K_{out}>1$，则全部输出头的后偏置输出按头维做算术平均，得到最终logits。
+4. 最终输出层（第 $L$ 层）的注意力头数量记为 $K_{out}$。输出层不是“仿射线性层 + 偏置”替代注意力，而是由 $K_{out}$ 个输出注意力头组成。每个输出注意力头先完成注意力聚合，再加上该头自己的输出偏置向量；若 $K_{out}>1$，则全部输出头的后偏置输出按头维做算术平均，得到最终logits。
 
 5. 输出注意力头的激活函数固定为恒等映射，不再施加 ELU；但恒等映射的输入是已经加上该输出头偏置后的注意力聚合结果。
 
@@ -63,11 +57,7 @@
 
 记双线性群为 $(\mathbb G_1,\mathbb G_2,\mathbb G_T,e)$，其中 $e:\mathbb G_1\times\mathbb G_2\to\mathbb G_T$ 是非退化双线性映射，生成元分别为 $G_1\in\mathbb G_1$ 与 $G_2\in\mathbb G_2$。
 
-本文正式协议使用 KZG 多项式承诺。对次数严格小于 $D$ 的多项式 $P(X)=\sum_{i=0}^{D-1}p_iX^i\in\mathbb F_p[X]$，数学上的承诺定义为：
-
-$$[P]=P(\tau)G_1.$$
-
-其中 $\tau\in\mathbb F_p$ 是参数生成阶段采样的隐藏陷门。该公式只定义承诺语义，不允许实现层在证明阶段直接读取、保存、打印、序列化或由 seed 派生 $\tau$。正式实现必须满足：
+正式协议使用KZG 多项式承诺。对次数严格小于 $D$ 的多项式 $P(X)=\sum_{i=0}^{D-1}p_iX^i\in\mathbb F_p[X]$，数学上的承诺定义为：$$[P]=P(\tau)G_1$$。其中 $\tau\in\mathbb F_p$ 是参数生成阶段采样的隐藏陷门。该公式只定义承诺语义，不允许实现层在证明阶段直接读取、保存、打印、序列化或由 seed 派生 $\tau$。正式实现必须满足：
 
 1. $\tau$ 只在 trusted setup 或 MPC ceremony 的临时内存中出现；
 2. 生成证明键和验证键后，$\tau$ 必须销毁；
@@ -75,37 +65,23 @@ $$[P]=P(\tau)G_1.$$
 4. 验证者只持有 $VK_{KZG}$；
 5. 主实验代码中不得存在 `seed -> tau`、`tau = seed + c`、`polynomial.evaluate(tau)` 作为承诺主路径的实现。
 
-KZG 验证键为：
+KZG 验证键为：$$VK_{KZG}=\{[1]_2,[\tau]_2\}=\{G_2,\tau G_2\}$$；证明键至少包含基于系数的SRS：$$PK_{coef}=\{[\tau^0]_1,[\tau^1]_1,\ldots,[\tau^{D_{max}}]_1\}$$。
 
-$$VK_{KZG}=\{[1]_2,[\tau]_2\}=\{G_2,\tau G_2\}.$$
+若多项式以系数形式给出，则承诺实现必须使用：$$[P]=\sum_{i=0}^{D-1}p_i[\tau^i]_1.$$
 
-证明键至少包含 coefficient-basis SRS：
+为了适配大量工作域插值多项式，正式实现可以进一步预计算每个工作域 $\mathbb H_{\mathcal D}$ 的基于拉格朗日的SRS：$$PK_{lag}^{(\mathcal D)}=\{[L_0^{(\mathcal D)}(\tau)]_1,[L_1^{(\mathcal D)}(\tau)]_1,\ldots,[L_{n_{\mathcal D}-1}^{(\mathcal D)}(\tau)]_1\}$$。
 
-$$PK_{coef}=\{[\tau^0]_1,[\tau^1]_1,\ldots,[\tau^{D_{max}}]_1\}.$$
+若多项式以工作域$\mathbb H_{\mathcal D}$上的评估形式给出，且 $P(X)=\sum_{i=0}^{n_{\mathcal D}-1}P(\omega_{\mathcal D}^i)L_i^{(\mathcal D)}(X)$，则承诺实现应使用：$$[P]=\sum_{i=0}^{n_{\mathcal D}-1}P(\omega_{\mathcal D}^i)[L_i^{(\mathcal D)}(\tau)]_1$$.
 
-为了适配本文大量工作域插值多项式，正式实现可以进一步预计算每个工作域 $\mathbb H_{\mathcal D}$ 的 Lagrange-basis SRS：
-
-$$PK_{lag}^{(\mathcal D)}=\{[L_0^{(\mathcal D)}(\tau)]_1,[L_1^{(\mathcal D)}(\tau)]_1,\ldots,[L_{n_{\mathcal D}-1}^{(\mathcal D)}(\tau)]_1\}.$$
-
-若多项式以系数形式给出，则承诺实现必须使用：
-
-$$[P]=\sum_{i=0}^{D-1}p_i[\tau^i]_1.$$
-
-若多项式以工作域 $\mathbb H_{\mathcal D}$ 上的 evaluation 形式给出，且 $P(X)=\sum_{i=0}^{n_{\mathcal D}-1}P(\omega_{\mathcal D}^i)L_i^{(\mathcal D)}(X)$，则承诺实现应使用：
-
-$$[P]=\sum_{i=0}^{n_{\mathcal D}-1}P(\omega_{\mathcal D}^i)[L_i^{(\mathcal D)}(\tau)]_1.$$
-
-该 Lagrange-basis 承诺路径是本文主实验的推荐实现，因为它避免在每个 trace 列上重复执行 IFFT，同时不暴露 $\tau$。
+该基于拉格朗日承诺路径是主实验的推荐实现，因为它避免在每个 trace 列上重复执行 IFFT，同时不暴露 $\tau$。
 
 #### 0.2.1 隐私、隐藏承诺与掩蔽 opening
 
-本文的正式目标是零知识可验证推理，而不是仅证明计算正确性。所有非公开见证多项式在进入承诺和 opening 之前都必须启用 hiding/blinding 规则。本文采用 domain-vanishing blinding：对定义在工作域 $\mathbb H_{\mathcal D}$ 上的私有多项式 $P$，证明者实际承诺的对象为
+正式目标是零知识可验证推理，而不是仅证明计算正确性。所有非公开见证多项式在进入承诺和 opening 之前都必须启用 hiding/blinding 规则。本文采用 domain-vanishing blinding：对定义在工作域 $\mathbb H_{\mathcal D}$ 上的私有多项式 $P$，证明者实际承诺的对象为$$P^{zk}(X)=P(X)+Z_{\mathcal D}(X)R_P(X)$$。
 
-$$P^{zk}(X)=P(X)+Z_{\mathcal D}(X)R_P(X),$$
+其中 $Z_{\mathcal D}(X)=X^{n_{\mathcal D}}-1$，$R_P(X)$ 是按 `privacy_policy` 规定采样的随机低次数掩蔽多项式。由于 $Z_{\mathcal D}$ 在工作域内恒为 0，$P^{zk}$ 与 $P$ 在工作域上的 trace 值完全一致，不改变所有域内约束语义；而在随机 opening 点上，验证者看到的是 $P^{zk}(z)$，不是裸见证值 $P(z)$。
 
-其中 $Z_{\mathcal D}(X)=X^{n_{\mathcal D}}-1$，$R_P(X)$ 是按 `privacy_policy` 规定采样的随机低次数掩蔽多项式。由于 $Z_{\mathcal D}$ 在工作域内恒为 0，$P^{zk}$ 与 $P$ 在工作域上的 trace 值完全一致，不改变所有域内约束语义；而在随机 opening 点上，验证者看到的是 $P^{zk}(z)$，不是裸 witness 值 $P(z)$。
-
-所有 quotient 构造、opening bundle、外点绑定子证明和 transcript 都必须消费 $P^{zk}$ 的承诺与评值。若某个绑定关系需要使用裸语义值，必须通过零知识绑定子证明 $\Pi_{bind}$ 给出，不得把裸折叠向量、裸中间激活、裸注意力权重或裸模型参数评值写入 proof object。
+所有商构造、opening bundle、外点绑定子证明和 transcript 都必须消费 $P^{zk}$ 的承诺与评值。若某个绑定关系需要使用裸语义值，必须通过零知识绑定子证明 $\Pi_{bind}$ 给出，不得把裸折叠向量、裸中间激活、裸注意力权重或裸模型参数评值写入 proof object。
 
 公开多项式不需要掩蔽，包括由验证者本地重建的拓扑列、选择器列、索引列、公开元数据和最终被声明公开的输出 $Y$。若最终 logits $Y$ 被定义为公开输出，则 $P_Y$ 和 $P_{Y^\star}$ 可按公开输出策略不掩蔽；若某次实验要求只公开 label 而隐藏 logits，则必须把 logits 改为私有 witness 并额外证明 label 与 logits 的 argmax 关系。
 
@@ -139,7 +115,7 @@ $$P^{zk}(X)=P(X)+Z_{\mathcal D}(X)R_P(X),$$
 
 $src(k),dst(k)\in\{0,1,\ldots,N-1\},\quad node\_gid(src(k))=edge\_gid(k),\quad node\_gid(dst(k))=edge\_gid(k)$ 
 
-若 $G_{batch}=1$，则本文的公共输入仍然必须显式写成 $node\_ptr=(0,N),\quad edge\_ptr=(0,E)$，不得省略，也不得以其他记号替代。
+若 $G_{batch}=1$，公共输入仍然必须显式写成 $node\_ptr=(0,N),\quad edge\_ptr=(0,E)$，不得省略，也不得以其他记号替代。
 
 固定要求边序列满足以下两级稳定排序：
 
@@ -214,7 +190,7 @@ $src(k),dst(k)\in\{0,1,\ldots,N-1\},\quad node\_gid(src(k))=edge\_gid(k),\quad n
 
    当且仅当 $quant\_cfg\_id$ 指定 $S_{out,pre}=S_{out,head}$ 时，$Rescale_{out}$ 定义为恒等映射；否则 $Rescale_{out}$ 必须按 $quant\_cfg\_id$ 唯一指定的舍入 / 截断规则执行，不存在第二种解释。
 
-2. 最终多头平均必须在共同尺度上执行。本文协议固定要求最终平均发生在输出头共同尺度 $S_{out,head}$ 上，并且最终 logits 继续保持这一共同尺度，即$S_{out}=S_{out,head}$，因而先在域内计算：$Y^{sum}_{i,c}=\sum_{s=0}^{K_{out}-1}Y_{i,c}^{(s)}$，再乘以公开整数 $K_{out}$ 在 $\mathbb F_p$ 中的逆元 $K_{out}^{-1}$，得到域内平均值与最终 logits：$Y_{i,c}=Y_{i,c}^{avg}=K_{out}^{-1}\cdot Y^{sum}_{i,c}$
+2. 最终多头平均必须在共同尺度上执行。协议固定要求最终平均发生在输出头共同尺度 $S_{out,head}$ 上，并且最终 logits 继续保持这一共同尺度，即$S_{out}=S_{out,head}$，因而先在域内计算：$Y^{sum}_{i,c}=\sum_{s=0}^{K_{out}-1}Y_{i,c}^{(s)}$，再乘以公开整数 $K_{out}$ 在 $\mathbb F_p$ 中的逆元 $K_{out}^{-1}$，得到域内平均值与最终 logits：$Y_{i,c}=Y_{i,c}^{avg}=K_{out}^{-1}\cdot Y^{sum}_{i,c}$
 
    换言之，本协议严格禁止在最终平均之后再额外引入第二个平均后重缩放子步骤。当前主协议中，最终平均的唯一正式语义就是上式；任何需要平均后重缩放的方案都不属于本文当前协议，必须另行定义为新的协议版本。
 
@@ -232,7 +208,7 @@ $src(k),dst(k)\in\{0,1,\ldots,N-1\},\quad node\_gid(src(k))=edge\_gid(k),\quad n
   
 - 目标方向注意力向量 $a_{dst}^{(\ell,r)}\in\mathbb F_p^{d_h^{(\ell)}}$
 
-在后文“单个隐藏层模板”的数学推导中，统一把 $W^{(\ell,r)},a_{src}^{(\ell,r)},a_{dst}^{(\ell,r)}$，记作 $W^{(r)},a_{src}^{(r)},a_{dst}^{(r)}$。这一重写只用于公式书写；代码实现中的对象名、序列化器字段名、证明标签以及日志字段名都必须保留完整层指标 $(\ell,r)$。
+在“单个隐藏层模板”章节的数学推导中，统一把 $W^{(\ell,r)},a_{src}^{(\ell,r)},a_{dst}^{(\ell,r)}$，记作 $W^{(r)},a_{src}^{(r)},a_{dst}^{(r)}$。这一重写只用于公式书写；代码实现中的对象名、序列化器字段名、证明标签以及日志字段名都必须保留完整层指标 $(\ell,r)$。
 
 #### 0.5.2 输出层参数
 
@@ -257,7 +233,7 @@ $src(k),dst(k)\in\{0,1,\ldots,N-1\},\quad node\_gid(src(k))=edge\_gid(k),\quad n
 - 最终输出层参数族：$\{W^{(out,s)},a_{src}^{(out,s)},a_{dst}^{(out,s)},b^{(out,s)}\}_{s=0}^{K_{out}-1}$。
 
 
-### 0.6 全部中间变量
+### 0.6 全部中间变量 
 
 #### 0.6.1 原始特征
 
@@ -324,7 +300,9 @@ $src(k),dst(k)\in\{0,1,\ldots,N-1\},\quad node\_gid(src(k))=edge\_gid(k),\quad n
 
 #### 0.6.4 单个隐藏层模板的拼接阶段变量
 
-定义拼接结果$H_{cat}\in\mathbb F_p^{N\times d_{cat}}$，其中对任意 $i\in\{0,1,\ldots,N-1\}$、$r\in\{0,1,\ldots,K_{hid}-1\}$、$j\in\{0,1,\ldots,d_h-1\}$，都有 $H_{cat,i,r\cdot d_h+j}=H_{agg,i,j}^{(r)}$
+定义拼接结果为：$H_{cat}\in\mathbb F_p^{N\times d_{cat}}$
+
+其中对任意 $i\in\{0,1,\ldots,N-1\}$、$r\in\{0,1,\ldots,K_{hid}-1\}$、$j\in\{0,1,\ldots,d_h-1\}$，都有 $H_{cat,i,r\cdot d_h+j}=H_{agg,i,j}^{(r)}$
 
 定义拼接压缩挑战：$\xi_{cat}\in\mathbb F_p$
 
@@ -400,29 +378,23 @@ $src(k),dst(k)\in\{0,1,\ldots,N-1\},\quad node\_gid(src(k))=edge\_gid(k),\quad n
 
 #### 0.7.2 拉格朗日基函数与首尾指示多项式
 
-对任意工作域 $\mathbb H_{\mathcal D}$，记其拉格朗日基函数为：$L_0^{(\mathcal D)}(X),L_1^{(\mathcal D)}(X),\ldots,L_{n_{\mathcal D}-1}^{(\mathcal D)}(X)$
+对任意工作域 $\mathbb H_{\mathcal D}$，记其拉格朗日基函数为：$L_0^{(\mathcal D)}(X),L_1^{(\mathcal D)}(X),\ldots,L_{n_{\mathcal D}-1}^{(\mathcal D)}(X)$。（特点：在域的第$i$取值$1$，在其他点上取值$0$）
 
 首点指示多项式记为：$First_{\mathcal D}(X)=L_0^{(\mathcal D)}(X)$
 
 末点指示多项式记为：$Last_{\mathcal D}(X)=L_{n_{\mathcal D}-1}^{(\mathcal D)}(X)$
 
-#### 0.7.3 公共有效区选择器与按层实例化规则
+#### 0.7.3 公共有效区选择器与按层实例化规则 
 
 1. 边域有效区选择器：$Q_{edge}^{valid}[k]= \begin{cases} 1 &0\le k\le E-1,\\ 0,&E\le k\le n_{edge}-1 \end{cases}$
 
 2. 节点域有效区选择器：$Q_N[i]= \begin{cases} 1 &0\le i\le N-1,\\ 0,&N\le i\le n_N-1 \end{cases}$
 
-3. 对每个隐藏层 $\ell\in\{1,2,\ldots,L-1\}$，输入共享维域有效区选择器族定义为：
+3. 对每个隐藏层 $\ell\in\{1,2,\ldots,L-1\}$，输入共享维域有效区选择器族定义为：$Q_{in}^{valid,(\ell)}[m]= \begin{cases} 1 &0\le m\le d_{in}^{(\ell)}-1 \\ 0 &d_{in}^{(\ell)}\le m\le n_{in}-1 \end{cases}$
    
-   $Q_{in}^{valid,(\ell)}[m]= \begin{cases} 1 &0\le m\le d_{in}^{(\ell)}-1 \\ 0 &d_{in}^{(\ell)}\le m\le n_{in}-1 \end{cases}$
+4. 对每个隐藏层 $\ell\in\{1,2,\ldots,L-1\}$，隐藏层单头共享维域有效区选择器族定义为：$Q_{d_h}^{valid,(\ell)}[j]= \begin{cases} 1 &0\le j\le d_h^{(\ell)}-1 \\ 0 &d_h^{(\ell)}\le j\le n_{d_h}-1 \end{cases}$ 
    
-4. 对每个隐藏层 $\ell\in\{1,2,\ldots,L-1\}$，隐藏层单头共享维域有效区选择器族定义为：
-   
-   $Q_{d_h}^{valid,(\ell)}[j]= \begin{cases} 1 &0\le j\le d_h^{(\ell)}-1 \\ 0 &d_h^{(\ell)}\le j\le n_{d_h}-1 \end{cases}$ 
-   
-5. 对每个隐藏层 $\ell\in\{1,2,\ldots,L-1\}$，拼接共享维域有效区选择器族定义为：
-   
-   $Q_{cat}^{valid,(\ell)}[m]= \begin{cases} 1 &0\le m\le d_{cat}^{(\ell)}-1 \\ 0 &d_{cat}^{(\ell)}\le m\le n_{cat}-1 \end{cases}$
+5. 对每个隐藏层 $\ell\in\{1,2,\ldots,L-1\}$，拼接共享维域有效区选择器族定义为：$Q_{cat}^{valid,(\ell)}[m]= \begin{cases} 1 &0\le m\le d_{cat}^{(\ell)}-1 \\ 0 &d_{cat}^{(\ell)}\le m\le n_{cat}-1 \end{cases}$
    
 6. 输出层输入共享维有效区选择器定义为：$Q_{cat}^{valid,(out)}[m]= \begin{cases} 1 &0\le m\le d_{in}^{(L)}-1,\\ 0,&d_{in}^{(L)}\le m\le n_{cat}-1 \end{cases}$
    
@@ -525,7 +497,7 @@ $src(k),dst(k)\in\{0,1,\ldots,N-1\},\quad node\_gid(src(k))=edge\_gid(k),\quad n
 
 ### 0.8 填充、零分母、Softmax 可行性与缓存要求
 
-#### 0.8.1 Padding 规则
+#### 0.8.1 填充规则
 
 对任意工作域 $\mathbb H_{\mathcal D}$，若真实长度为 $L_{\mathcal D}$、工作域长度为 $n_{\mathcal D}$，则所有离散列必须补到长度 $n_{\mathcal D}$。
 
@@ -583,7 +555,7 @@ $src(k),dst(k)\in\{0,1,\ldots,N-1\},\quad node\_gid(src(k))=edge\_gid(k),\quad n
 
 #### 0.8.5 公开元数据与安全设置字段
 
-为保证证明对象、SRS、静态表、模型参数、量化配置和隐私策略之间一致，证明对象中必须携带一份公开元数据。命名保持直接、易读，Codex 实现时必须按下列字段固定顺序序列化并吸入 transcript。
+为保证证明对象、SRS、静态表、模型参数、量化配置和隐私策略之间一致，证明对象中必须携带一份公开元数据。命名保持直接、易读，实现时必须按下列字段固定顺序序列化并吸入 transcript。
 
 1. `protocol_name`：协议名称。主实验固定为 `zkgat`。
 
@@ -656,8 +628,8 @@ $src(k),dst(k)\in\{0,1,\ldots,N-1\},\quad node\_gid(src(k))=edge\_gid(k),\quad n
 
 可见性枚举为：
 
-1. `Public`：验证者可由公共输入本地重建，或其值本身不携带私有 witness。
-2. `PublicOutput`：协议显式声明公开的输出对象。主实验默认公开最终 logits；若改为只公开 label，则必须改写输出证明范围。
+1. `Public`：验证者可由公共输入本地重建，或其值本身不携带私有witness。
+2. `PublicOutput`：协议显式声明公开的输出对象。主实验默认公开最终logits；若改为只公开label，则必须改写输出证明范围。
 3. `PrivateWitness`：模型参数、输入特征私有化场景下的特征值、中间激活、注意力分数、softmax 权重、查找 query、路由 query、PSQ 状态、折叠向量、累加器、中间矩阵和所有不属于 public / public-output 的对象。
 
 主实验默认分类如下：
@@ -771,7 +743,7 @@ $src(k),dst(k)\in\{0,1,\ldots,N-1\},\quad node\_gid(src(k))=edge\_gid(k),\quad n
 
 参数生成算法输出：
 
-- KZG 证明键：$PK_{coef}$ 与各工作域 Lagrange-basis SRS $\{PK_{lag}^{(\mathcal D)}\}_{\mathcal D\in\{FH,edge,in,d_h,cat,C,N\}}$
+- KZG 证明键：$PK_{coef}$ 与各工作域基于拉格朗日的SRS $\{PK_{lag}^{(\mathcal D)}\}_{\mathcal D\in\{FH,edge,in,d_h,cat,C,N\}}$
 
 - KZG 验证键：$VK_{KZG}$
 
@@ -789,7 +761,7 @@ $src(k),dst(k)\in\{0,1,\ldots,N-1\},\quad node\_gid(src(k))=edge\_gid(k),\quad n
 
 ### 1.3 工作域
 
-为避免在多层GAT的实现中为每一层重复维护一套不同长度的共享维工作域，本文正式协议统一采用全局共享域口径：
+为避免在多层GAT的实现中为每一层重复使用一套不同长度的共享维工作域，正式协议统一采用全局共享域口径：
 
 - 对全部隐藏层的输入共享维，统一用一个 $\mathbb H_{in}$；
   
@@ -859,9 +831,7 @@ $src(k),dst(k)\in\{0,1,\ldots,N-1\},\quad node\_gid(src(k))=edge\_gid(k),\quad n
 
 ### 1.4 安全 KZG 初始化与 SRS 生成
 
-参数生成阶段执行 trusted setup 或 MPC ceremony：
-
-$$\tau\xleftarrow{\$}\mathbb F_p.$$
+参数生成阶段执行可信设置或 MPC ceremony：$$\tau\xleftarrow{\$}\mathbb F_p$$
 
 该陷门只允许在 setup 临时上下文中存在。生成 $PK$ 与 $VK_{KZG}$ 后，setup 程序必须销毁 $\tau$，并输出可验证的 `srs_id`。主实验代码、prover、verifier、benchmark runner、serializer、manifest exporter 和 debug logger 均不得保存或访问 $\tau$。
 
@@ -881,30 +851,22 @@ $$\tau\xleftarrow{\$}\mathbb F_p.$$
 
 基础次数界为：
 
-$$D_{base}= \max\{ 3n_{FH}+8,\ 3n_{edge}+8,\ 2n_{in}+8,\ 2n_{d_h}+8,\ 2n_{cat}+8,\ 2n_C+8,\ 2n_N+8,\ Nd_{cat}^{max}+\max\{d_{in}^{max},C\},\ NC+1 \}.$$
+$$D_{base}= \max\{ 3n_{FH}+8,\ 3n_{edge}+8,\ 2n_{in}+8,\ 2n_{d_h}+8,\ 2n_{cat}+8,\ 2n_C+8,\ 2n_N+8,\ Nd_{cat}^{max}+\max\{d_{in}^{max},C\},\ NC+1 \}$$
 
-若 `privacy_policy` 指定每个私有多项式使用 blinding degree $d_{blind}$，则正式 SRS 次数界为：
+若 `privacy_policy` 指定每个私有多项式使用盲化次数$d_{blind}$，则正式 SRS 次数界为：$$D_{max}=D_{base}+d_{blind}+\max_{\mathcal D} n_{\mathcal D}$$
 
-$$D_{max}=D_{base}+d_{blind}+\max_{\mathcal D} n_{\mathcal D}.$$
+输出基于系数形式的证明键：$$PK_{coef}=\{[\tau^0]_1,[\tau^1]_1,\ldots,[\tau^{D_{max}}]_1\}$$
 
-输出 coefficient-basis 证明键：
+对每个工作域 $\mathbb H_{\mathcal D}$，输出或预计算基于拉格朗日基的 SRS：$$PK_{lag}^{(\mathcal D)}=\{[L_0^{(\mathcal D)}(\tau)]_1,\ldots,[L_{n_{\mathcal D}-1}^{(\mathcal D)}(\tau)]_1\}$$
 
-$$PK_{coef}=\{[\tau^0]_1,[\tau^1]_1,\ldots,[\tau^{D_{max}}]_1\}.$$
-
-对每个工作域 $\mathbb H_{\mathcal D}$，输出或预计算 Lagrange-basis SRS：
-
-$$PK_{lag}^{(\mathcal D)}=\{[L_0^{(\mathcal D)}(\tau)]_1,\ldots,[L_{n_{\mathcal D}-1}^{(\mathcal D)}(\tau)]_1\}.$$
-
-输出验证键：
-
-$$VK_{KZG}=\{[1]_2,[\tau]_2\}=\{G_2,\tau G_2\}.$$
+输出验证键：$$VK_{KZG}=\{[1]_2,[\tau]_2\}=\{G_2,\tau G_2\}$$
 
 实现要求：
 
 1. `KZGKeyPair` 不得在主实验路径中包含 `tau` 字段；
 2. `commit` 不得调用 `polynomial.evaluate(tau)`；
-3. coefficient-basis 多项式使用 $PK_{coef}$ 做多基 MSM；
-4. evaluation-basis 多项式使用对应工作域的 $PK_{lag}^{(\mathcal D)}$ 做多基 MSM；
+3. 基于系数形式的多项式使用 $PK_{coef}$ 做多基 MSM；
+4. 求值基多项式使用对应工作域的 $PK_{lag}^{(\mathcal D)}$ 做多基 MSM；
 5. 若某个对象没有可用工作域 Lagrange SRS，则必须先转为系数形式并使用 $PK_{coef}$；
 6. 所有 SRS 与 $VK_{KZG}$ 的摘要必须写入 `srs_id` 并纳入 transcript。
 
@@ -954,7 +916,7 @@ $P_{T_{exp},y}(X)=\sum_{t=0}^{|T_{exp}|-1}T_{exp}[t,1]L_t^{(edge)}(X)$
 
 因此，$VK_{model}$ 由两部分按固定顺序拼接而成：先按层序和头序写入全部隐藏层承诺 $[V_{W^{(\ell,r)}}],[V_{a_{src}^{(\ell,r)}}],[V_{a_{dst}^{(\ell,r)}}]$；再按 $s=0,\ldots,K_{out}-1$ 写入全部输出层承诺 $[V_{W^{(out,s)}}],[V_{a_{src}^{(out,s)}}],[V_{a_{dst}^{(out,s)}}],[V_{b^{(out,s)}}]$。
 
-模型参数值属于私有见证。`VK_model` 中只能出现模型参数的隐藏承诺和承诺摘要，不能出现裸参数值，也不能出现裸参数的 opening。若模型参数承诺需要在多次证明中复用，复用对象仍然必须是隐藏承诺；验证者只使用承诺和后续零知识绑定证明检查模型一致性。
+模型参数值属于私有见证。`VK_model`中只能出现模型参数的隐藏承诺和承诺摘要，不能出现裸参数值，也不能出现裸参数的 opening。若模型参数承诺需要在多次证明中复用，复用对象仍然必须是隐藏承诺；验证者只使用承诺和后续零知识绑定证明检查模型一致性。
 
 实现时，模型参数应先展平成独立的参数多项式，并在参数域上使用与动态私有多项式一致的隐藏承诺规则。`VK_model` 只保存隐藏后的模型承诺和摘要。所有投影矩阵、注意力向量和输出偏置在证明中的使用，都必须通过固定的零知识绑定证明完成；proof 不能打开裸模型参数，也不能把模型参数的随机点评值作为明文字段输出。
 
@@ -1041,7 +1003,7 @@ $P_{node\_gid},P_{edge\_gid},P_{Q_{graph\_new}^{edge}},P_{Q_{graph\_end}^{edge}}
 
 ### 2.0 总体顺序与实现约束
 
-按“前向计算 → 挑战与轨迹列生成 → 多项式编码 → 提交承诺”的顺序书写。 工程实现必须严格分为三阶段：
+按“前向计算 → 挑战与轨迹列生成 → 多项式编码 → 提交承诺”的顺序执行。 工程实现必须严格分为三阶段：
 
 1. 前向阶段：只计算神经网络明文对象；
 2. 挑战与轨迹阶段：按固定 Fiat–Shamir 顺序生成挑战，并据此构造表列、查询列、重数列、累加器列、状态机列；
@@ -1051,7 +1013,7 @@ $P_{node\_gid},P_{edge\_gid},P_{Q_{graph\_new}^{edge}},P_{Q_{graph\_end}^{edge}}
 
 #### 2.0.1 安全承诺、掩蔽与 opening 统一规则
 
-从本节开始，凡记为 $[P]$ 的动态承诺，在主实验路径中实际含义为 $[P^{zk}]$，其中：$$P^{zk}(X)=P(X)+Z_{\mathcal D}(X)R_P(X).$$
+凡记为 $[P]$ 的动态承诺，其实际含义为 $[P^{zk}]$，其中：$$P^{zk}(X)=P(X)+Z_{\mathcal D}(X)R_P(X)$$。
 
 若 $P$ 是公开多项式，或 `privacy_policy` 明确标记为 public-output polynomial，则 $R_P=0$。除此之外，所有模型相关、激活相关、注意力相关、路由相关、lookup query 相关、PSQ 相关、折叠向量相关和状态机相关多项式都视为 private witness polynomial，必须采样独立 blinding 多项式。
 
@@ -1068,19 +1030,14 @@ $P_{node\_gid},P_{edge\_gid},P_{Q_{graph\_new}^{edge}},P_{Q_{graph\_end}^{edge}}
 
 #### 2.1.2 特征检索表端与查询端
 
-生成挑战：$\eta_{feat},\beta_{feat}$ 
+生成挑战值：$\eta_{feat},\beta_{feat}$ 
 
 > - $\eta_{feat}$：把多个字段压成一个域元素
 > - $\beta_{feat}$：给后面的 LogUp/累加器公式使用，避免分母冲突。
 
 对每个全局表端索引定义：$u=v\cdot d_{in}+j \quad 0\le v\le N_{total}-1 \quad 0\le j\le d_{in}-1$
 
-> 这其实是在把二维表 $T_H[v,j]$ 展平成一维序列，v 指的是：全局特征表里的节点编号（行号）
-
 定义表端离散列：$Table^{feat}[u]=v+\eta_{feat}j+\eta_{feat}^2T_H[v,j]$ 
-
-> 把全局特征表里每个合法条目$(v,j,T_H[v,j])$压缩成一个域元素，表示“全局表里有哪些可被查询的合法特征项”
->
 
 对每个查询索引：$q=i\cdot d_{in}+j \quad 0\le i\le N-1 \quad 0\le j\le d_{in}-1$
 
@@ -1150,19 +1107,17 @@ $P_{node\_gid},P_{edge\_gid},P_{Q_{graph\_new}^{edge}},P_{Q_{graph\_end}^{edge}}
 
 定义输出系数多项式：$P_{H'^{(r)}}(X)=\sum_{i=0}^{N-1}\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}X^{i\cdot d_h+j}$ 
 
-> 把矩阵$H_{i,j}'^{(r)}$按行优先摊平成一个系数多项式
+> $X$的指数就是矩阵元素在内存中的顺序编号
 
-对每个共享维索引 $m\in\{0,1,\ldots,d_{in}-1\}$，定义：
+对每个共享维索引 $m\in\{0,1,\ldots,d_{in}-1\}$，定义：$A_m^{proj(r)}(X)=\sum_{i=0}^{N-1}H_{i,m}X^{i\cdot d_h} \quad B_m^{proj(r)}(X)=\sum_{j=0}^{d_h-1}W_{m,j}^{(r)}X^j$ 
 
-$A_m^{proj(r)}(X)=\sum_{i=0}^{N-1}H_{i,m}X^{i\cdot d_h} \quad B_m^{proj(r)}(X)=\sum_{j=0}^{d_h-1}W_{m,j}^{(r)}X^j$ 
+> 对特征矩阵按列提取并整理出每个维度（每列）的系数多项式；对权重矩阵按行提取，同理输出每个维度的系数多项式
 
 于是：$P_{H'^{(r)}}(X)=\sum_{m=0}^{d_{in}-1}A_m^{proj(r)}(X)B_m^{proj(r)}(X)$
 
-> 把原来的矩阵乘法，改写成沿共享维m的一串多项式乘加
-
 生成挑战：$y_{proj}^{(r)}=H_{FS}(\text{transcript},[P_H],[P_{H'^{(r)}}],[V_{W^{(r)}}])$
 
-定义折叠向量：
+定义折叠向量：（计算所有多项式在挑战点处的值）
 
 $a_m^{proj(r)}=A_m^{proj(r)}(y_{proj}^{(r)})=\sum_{i=0}^{N-1}H_{i,m}(y_{proj}^{(r)})^{i\cdot d_h}$ 
 
@@ -1171,8 +1126,6 @@ $b_m^{proj(r)}=B_m^{proj(r)}(y_{proj}^{(r)})=\sum_{j=0}^{d_h-1}W_{m,j}^{(r)}(y_{
 定义外点评值：$\mu_{proj}^{(r)}=\sum_{m=0}^{d_{in}-1}a_m^{proj(r)}b_m^{proj(r)}$
 
 要求：$P_{H'^{(r)}}(y_{proj}^{(r)})=\mu_{proj}^{(r)}$ 
-
-> 左边是声称的投影结果多项式在随机点的值；右边是按输入特征和权重重新算出来的值
 
 定义共享维累加器：$Acc_{proj}^{(r)}[0]=0$
 
@@ -1192,17 +1145,18 @@ $P_{Acc^{proj(r)}}(X)=\sum_{m=0}^{n_{in}-1}Acc_{proj}^{(r)}[m]L_m^{(in)}(X)$
 
 #### 2.2.2 源注意力绑定
 
-生成压缩挑战：$\xi^{(r)}=H_{FS}(\text{transcript},[P_{H'^{(r)}}])$
-
 对每个节点 $i$，定义：$E_{src,i}^{(r)}=\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}a_{src,j}^{(r)}$ 
 
-把 $E_{src}^{(r)}$ 填充到长度 $n_N$，插值成：$P_{E_{src}^{(r)}}(X)=\sum_{i=0}^{n_N-1}E_{src}^{(r)}[i]L_i^{(N)}(X)$ 
+把 $E_{src}^{(r)}$ 填充到长度 $n_N$，用拉格朗日把数组插值成多项式：$P_{E_{src}^{(r)}}(X)=\sum_{i=0}^{n_N-1}E_{src}^{(r)}[i]L_i^{(N)}(X)$ 
 
 生成挑战：$y_{src}^{(r)}=H_{FS}(\text{transcript},[P_{H'^{(r)}}],[P_{E_{src}^{(r)}}],[V_{a_{src}^{(r)}}])$ 
 
 定义折叠向量：$a_j^{src(r)}=\sum_{i=0}^{N-1}H_{i,j}'^{(r)}L_i^{(N)}(y_{src}^{(r)}) \quad b_j^{src(r)}=a_{src,j}^{(r)}$ 
 
-> 把原来“每个节点都做一次点积”，压缩成“在随机点上检查一个共享维上的内积”
+> $a_j^{src(r)}$：固定一个列索引$j$，从矩阵$H'$中取出第 $j$ 列的所有元素，每个元素乘以对应的拉格朗日基在随机点处的值$ L_i^{(N)}(y_{src})$。然后对所有节点$i$求和，得到一个数。
+>
+> $b_j^{src(r)}$：直接等于注意力向量$a_{src}$的第$ j $个分量，原封不动，不做任何压缩。
+>
 
 定义外点评值：$\mu_{src}^{(r)}=\sum_{j=0}^{d_h-1}a_j^{src(r)}b_j^{src(r)}$
 
@@ -1226,7 +1180,7 @@ $Acc_{src}^{(r)}[j+1]=Acc_{src}^{(r)}[j]+a_j^{src(r)}b_j^{src(r)} \quad 0\le j\l
 
 对每个节点 $i$，定义：$E_{dst,i}^{(r)}=\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}a_{dst,j}^{(r)}$
 
-把 $E_{dst}^{(r)}$ 填充到长度 $n_N$，插值成：$P_{E_{dst}^{(r)}}(X)=\sum_{i=0}^{n_N-1}E_{dst}^{(r)}[i]L_i^{(N)}(X)$
+把 $E_{dst}^{(r)}$ 填充到长度 $n_N$，用拉格朗日把数组插值成多项式：$P_{E_{dst}^{(r)}}(X)=\sum_{i=0}^{n_N-1}E_{dst}^{(r)}[i]L_i^{(N)}(X)$
 
 生成挑战：$y_{dst}^{(r)}=H_{FS}(\text{transcript},[P_{H'^{(r)}}],[P_{E_{dst}^{(r)}}],[V_{a_{dst}^{(r)}}])$
 
@@ -1246,9 +1200,11 @@ $Acc_{dst}^{(r)}[j+1]=Acc_{dst}^{(r)}[j]+a_j^{dst(r)}b_j^{dst(r)} \quad 0\le j\l
 
 #### 2.2.4 压缩特征绑定
 
+生成压缩挑战：$\xi^{(r)}=H_{FS}(\text{transcript},[P_{H'^{(r)}}])$ 
+
 对每个节点 $i$，定义：$H_i^{\star(r)}=\sum_{j=0}^{d_h-1}H_{i,j}'^{(r)}(\xi^{(r)})^j$ 
 
-> 原来节点i在第r个头上有一个$d_h$维向量，现在用$\xi^{(r)}$的幂作为权重，把这$d_h$个分量线性组合成一个数
+> 原来节点$i$在第$r$个头上有一个$d_h$维向量，现在用$\xi^{(r)}$的幂作为权重，把这$d_h$个分量线性组合成一个数
 
 插值成：$P_{H^{\star(r)}}(X)=\sum_{i=0}^{n_N-1}H^{\star(r)}[i]L_i^{(N)}(X)$ 
 
