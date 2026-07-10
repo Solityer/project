@@ -323,7 +323,10 @@ int main(int argc, char **argv)
             metrics.payload_audit_ms = std::chrono::duration<double, std::milli>(audit_end - audit_start).count();
             const auto reference_start = std::chrono::steady_clock::now();
             const bool reference_consistent =
-                trace.reference_quant_logits_hash == trace.secure_trace_logits_hash && trace.public_logits_hash == trace.proof_public_output_hash && private_plain_count == 0;
+                !trace.reference_quant_logits_hash.empty()
+                && trace.reference_quant_logits_hash == trace.secure_trace_logits_hash
+                && trace.public_logits == proof.public_logits
+                && private_plain_count == 0;
             metrics.cpu_gpu_reference_consistency_passed = reference_consistent;
             const auto reference_end = std::chrono::steady_clock::now();
             metrics.reference_consistency_ms =

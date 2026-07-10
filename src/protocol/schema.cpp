@@ -43,10 +43,7 @@ namespace gatzk::protocol
         };
         for (const auto &label : dynamic_commitment_labels(context))
         {
-            const auto visibility =
-                label == "P_H" ? PolynomialVisibility::Public
-                               : (label == "P_Y" || label.rfind("P_Y_", 0) == 0 ? PolynomialVisibility::PublicOutput
-                                                                                : PolynomialVisibility::PrivateWitness);
+            const auto visibility = polynomial_visibility(context, label);
             add(label, "dynamic", visibility, true, true, true);
         }
         for (const auto &label : quotient_commitment_labels(context))
@@ -55,6 +52,24 @@ namespace gatzk::protocol
         }
         schema.private_plain_value_count = 0;
         return schema;
+    }
+
+    PolynomialVisibility polynomial_visibility(
+        const ProtocolContext &context,
+        const std::string &label)
+    {
+        if (context.public_commitments.contains(label) || label == "P_H")
+        {
+            return PolynomialVisibility::Public;
+        }
+        // These are the only final-output polynomial identities. Prefix matches
+        // are forbidden: `P_Y_lin`, `P_Y_o0`, and head-local compressed outputs
+        // contain private intermediate state.
+        if (label == "P_Y" || label == "P_Y_star" || label == "P_Y_star_edge")
+        {
+            return PolynomialVisibility::PublicOutput;
+        }
+        return PolynomialVisibility::PrivateWitness;
     }
 
     bool schema_accepts_evaluation(PolynomialVisibility visibility, EvaluationKind kind)

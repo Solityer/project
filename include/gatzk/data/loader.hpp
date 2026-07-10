@@ -11,4 +11,7 @@ namespace gatzk::data
     GraphDataset load_dataset(const util::AppConfig &config);
     // 将完整数据集裁剪 / 排序 / 补自环后整理为 formal 主线使用的局部图。
     LocalGraph normalize_graph_input(const GraphDataset &dataset, const util::AppConfig &config);
+    // 验证者与证明者共用的公开图边界检查。任何指针、图编号、
+    // 边排序、跨图边或零入度节点不一致都必须在进入 trace 前失败。
+    void validate_normalized_graph_input(const LocalGraph &local);
 }

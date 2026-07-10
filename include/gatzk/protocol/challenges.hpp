@@ -23,6 +23,20 @@ namespace gatzk::protocol
     // 返回 quotient 承诺的正式顺序。
     std::vector<std::string> quotient_commitment_labels(const ProtocolContext& context);
 
+    struct PublicOutputChallenges {
+        algebra::FieldElement point = algebra::FieldElement::zero();
+        algebra::FieldElement folding = algebra::FieldElement::zero();
+    };
+
+    // 公开 logits 必须在独立 transcript 中先吸收完整声明，再生成 KZG
+    // 绑定点，防止看到旧挑战后替换为同一单点求值的另一组 logits。
+    PublicOutputChallenges derive_public_output_challenges(
+        const PublicMetadata& metadata,
+        const crypto::Commitment& output_commitment,
+        const std::vector<algebra::FieldElement>& public_logits,
+        std::size_t node_count,
+        std::size_t class_count);
+
     // 从公开元数据、动态承诺与 quotient 承诺重放全部挑战，是 verifier 的真值检查入口。
     std::map<std::string, algebra::FieldElement> replay_challenges(
         const ProtocolContext& context,

@@ -1,5 +1,6 @@
 #include "gatzk/protocol/verifier.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <future>
 #include <memory>
@@ -14,6 +15,7 @@
 
 #include "gatzk/algebra/domain_evaluation.hpp"
 #include "gatzk/algebra/eval_backend.hpp"
+#include "gatzk/data/loader.hpp"
 #include "gatzk/protocol/challenges.hpp"
 #include "gatzk/protocol/quotients.hpp"
 #include "gatzk/protocol/schema.hpp"
@@ -985,6 +987,55 @@ namespace gatzk::protocol
             return out;
         }
 
+        FieldElement evaluate_coefficient_vector(
+            const std::vector<FieldElement> &coefficients,
+            const FieldElement &point)
+        {
+            FieldElement out = FieldElement::zero();
+            for (auto it = coefficients.rbegin(); it != coefficients.rend(); ++it)
+            {
+                out *= point;
+                out += *it;
+            }
+            return out;
+        }
+
+        bool verify_public_output_binding(const ProtocolContext &context, const Proof &proof)
+        {
+            if (proof.public_logits.size() != context.local.num_nodes * context.local.num_classes)
+            {
+                return false;
+            }
+            const auto output_it = std::find_if(
+                proof.dynamic_commitments.begin(),
+                proof.dynamic_commitments.end(),
+                [](const auto &entry) { return entry.first == "P_Y"; });
+            if (output_it == proof.dynamic_commitments.end())
+            {
+                return false;
+            }
+            const auto binding_challenges = derive_public_output_challenges(
+                proof.public_metadata,
+                output_it->second,
+                proof.public_logits,
+                context.local.num_nodes,
+                context.local.num_classes);
+            if (!(proof.public_output_challenge == binding_challenges.point))
+            {
+                return false;
+            }
+            const auto value = evaluate_coefficient_vector(
+                proof.public_logits,
+                binding_challenges.point);
+            return crypto::KZG::verify_batch(
+                {output_it->second},
+                {binding_challenges.point},
+                {{value}},
+                binding_challenges.folding,
+                proof.public_output_opening,
+                context.kzg.vk);
+        }
+
         PublicMetadata build_public_metadata(const ProtocolContext &context)
         {
             return canonical_public_metadata(context);
@@ -1085,15 +1136,9 @@ namespace gatzk::protocol
 
         PayloadValueKind expected_payload_kind_for_label(const ProtocolContext &context, const std::string &label)
         {
-            if (context.public_commitments.contains(label))
-            {
-                return PayloadValueKind::PublicValue;
-            }
-            if (label == "P_H" || label == "P_Y" || label.rfind("P_Y_o", 0) == 0)
-            {
-                return PayloadValueKind::PublicValue;
-            }
-            return PayloadValueKind::MaskedPrivateValue;
+            return polynomial_visibility(context, label) == PolynomialVisibility::PrivateWitness
+                       ? PayloadValueKind::MaskedPrivateValue
+                       : PayloadValueKind::PublicValue;
         }
 
         bool audit_payload_values(
@@ -1225,6 +1270,14 @@ namespace gatzk::protocol
             return false;
         };
         const auto metadata_start = Clock::now();
+        try
+        {
+            data::validate_normalized_graph_input(context.local);
+        }
+        catch (const std::exception &)
+        {
+            return fail("public_graph_boundary");
+        }
         if (!metadata_matches(proof.public_metadata, build_public_metadata(context)))
         {
             return fail("metadata_mismatch");
@@ -1246,6 +1299,10 @@ namespace gatzk::protocol
         if (audited_private_plain_count != 0)
         {
             return fail("private_plain_value_count");
+        }
+        if (!verify_public_output_binding(context, proof))
+        {
+            return fail("public_output_binding");
         }
         if (metrics != nullptr)
         {
@@ -1456,8 +1513,7 @@ namespace gatzk::protocol
                 const auto quotient_start = Clock::now();
                 FieldElement expected_t = FieldElement::zero();
                 const auto cache_key = verifier_quotient_cache_key(context, proof, spec.quotient_name);
-                const bool quotient_cache_hit =
-                    shared_verifier_quotient_cache().lookup(cache_key, &expected_t);
+                const bool quotient_cache_hit = false;
                 if (!quotient_cache_hit)
                 {
                     if (context.config.batching_rule == "whole_graph_single" && context.local.num_nodes >= (1ULL << 16) && spec.domain != nullptr && spec.domain->size >= (1ULL << 20))
@@ -1496,7 +1552,9 @@ namespace gatzk::protocol
                     {
                         return bundle_fail("unknown_quotient:" + spec.quotient_name);
                     }
-                    shared_verifier_quotient_cache().store(cache_key, expected_t);
+                    // A fresh verification recomputes the quotient identity. Reusing an
+                    // earlier proof's acceptance-side value is reserved for an explicit
+                    // repeat_same_proof_verify benchmark, not this path.
                 }
                 if (bundle_value(indexed_bundle, spec.quotient_name, challenges.at(spec.z_name)) != expected_t)
                 {

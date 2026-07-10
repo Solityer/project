@@ -513,6 +513,88 @@ namespace gatzk::data
         return load_cached_dataset(cache_root);
     }
 
+    void validate_normalized_graph_input(const LocalGraph &local)
+    {
+        const auto &public_input = local.public_input;
+        if (public_input.N != local.num_nodes
+            || public_input.E != local.edges.size()
+            || public_input.G_batch != local.graph_count)
+        {
+            throw std::runtime_error("normalized graph size metadata mismatch");
+        }
+        if (public_input.N_total < public_input.N
+            || public_input.I.size() != public_input.N
+            || public_input.src.size() != public_input.E
+            || public_input.dst.size() != public_input.E)
+        {
+            throw std::runtime_error("normalized graph public vector size mismatch");
+        }
+        if (public_input.G_batch == 0
+            || public_input.node_ptr.size() != public_input.G_batch + 1
+            || public_input.edge_ptr.size() != public_input.G_batch + 1
+            || public_input.node_ptr.front() != 0
+            || public_input.edge_ptr.front() != 0
+            || public_input.node_ptr.back() != public_input.N
+            || public_input.edge_ptr.back() != public_input.E)
+        {
+            throw std::runtime_error("normalized graph batch pointer shape mismatch");
+        }
+        if (local.node_ptr != public_input.node_ptr || local.edge_ptr != public_input.edge_ptr)
+        {
+            throw std::runtime_error("local/public batch pointer mismatch");
+        }
+
+        std::unordered_set<std::size_t> absolute_ids;
+        absolute_ids.reserve(public_input.I.size());
+        for (const auto id : public_input.I)
+        {
+            if (id >= public_input.N_total || !absolute_ids.insert(id).second)
+            {
+                throw std::runtime_error("normalized graph contains an invalid or duplicate absolute node id");
+            }
+        }
+
+        std::vector<std::size_t> indegree(public_input.N, 0);
+        for (std::size_t graph_id = 0; graph_id < public_input.G_batch; ++graph_id)
+        {
+            const auto node_begin = public_input.node_ptr[graph_id];
+            const auto node_end = public_input.node_ptr[graph_id + 1];
+            const auto edge_begin = public_input.edge_ptr[graph_id];
+            const auto edge_end = public_input.edge_ptr[graph_id + 1];
+            if (node_begin >= node_end || edge_begin >= edge_end)
+            {
+                throw std::runtime_error("normalized graph batch pointers must be strictly increasing");
+            }
+            std::size_t previous_dst = 0;
+            bool have_previous = false;
+            for (std::size_t edge_index = edge_begin; edge_index < edge_end; ++edge_index)
+            {
+                const auto src = public_input.src[edge_index];
+                const auto dst = public_input.dst[edge_index];
+                const auto &edge = local.edges[edge_index];
+                if (src < node_begin || src >= node_end || dst < node_begin || dst >= node_end)
+                {
+                    throw std::runtime_error("normalized graph contains a cross-graph edge");
+                }
+                if (edge.graph_id != graph_id || edge.src != src || edge.dst != dst)
+                {
+                    throw std::runtime_error("normalized graph edge/public input mismatch");
+                }
+                if (have_previous && dst < previous_dst)
+                {
+                    throw std::runtime_error("normalized graph edges are not stably grouped by destination");
+                }
+                previous_dst = dst;
+                have_previous = true;
+                ++indegree[dst];
+            }
+        }
+        if (std::any_of(indegree.begin(), indegree.end(), [](std::size_t value) { return value == 0; }))
+        {
+            throw std::runtime_error("normalized graph contains a zero-indegree node");
+        }
+    }
+
     // 按 formal 约束补自环、排序、切 batch，并生成公开输入摘要。
     LocalGraph normalize_graph_input(const GraphDataset &dataset, const util::AppConfig &config)
     {
@@ -653,6 +735,7 @@ namespace gatzk::data
         }
         local.public_input.src.shrink_to_fit();
         local.public_input.dst.shrink_to_fit();
+        validate_normalized_graph_input(local);
         return local;
     }
 
