@@ -398,8 +398,8 @@ namespace gatzk::protocol
 
             const auto q_edge = eval_z("P_Q_edge_valid");
             const auto q_edge_next = eval_omega("P_Q_edge_valid");
-            const auto q_new_next = eval_omega("P_Q_new_edge");
-            const auto q_end = eval_z("P_Q_end_edge");
+            const auto q_new_next = eval_omega("P_Q_grp_new_edge");
+            const auto q_end = eval_z("P_Q_grp_end_edge");
             const auto src_z = eval_z("P_src");
             const auto dst_z = eval_z("P_dst");
             const auto q_tbl_l_z = eval_z("P_Q_tbl_L");
@@ -816,15 +816,15 @@ namespace gatzk::protocol
         const auto c_max_2 = eval("P_s_max", z) * eval("P_Delta", z);
         const auto c_max_3 = l0 * (eval("P_C_max", z) - eval("P_s_max", z));
         const auto c_max_4 =
-            eval("P_Q_edge_valid", omega_z) * (eval("P_C_max", omega_z) - eval("P_Q_new_edge", omega_z) * eval("P_s_max", omega_z) - (FieldElement::one() - eval("P_Q_new_edge", omega_z)) * (eval("P_C_max", z) + eval("P_s_max", omega_z))) + (FieldElement::one() - eval("P_Q_edge_valid", omega_z)) * (eval("P_C_max", omega_z) - eval("P_C_max", z));
-        const auto c_max_5 = eval("P_Q_end_edge", z) * (eval("P_C_max", z) - FieldElement::one());
+            eval("P_Q_edge_valid", omega_z) * (eval("P_C_max", omega_z) - eval("P_Q_grp_new_edge", omega_z) * eval("P_s_max", omega_z) - (FieldElement::one() - eval("P_Q_grp_new_edge", omega_z)) * (eval("P_C_max", z) + eval("P_s_max", omega_z))) + (FieldElement::one() - eval("P_Q_edge_valid", omega_z)) * (eval("P_C_max", omega_z) - eval("P_C_max", z));
+        const auto c_max_5 = eval("P_Q_grp_end_edge", z) * (eval("P_C_max", z) - FieldElement::one());
 
         const auto c_inv_1 = eval("P_alpha", z) - eval("P_U", z) * eval("P_inv_edge", z);
         const auto c_vhat_0 = eval("P_v_hat", z) - eval("P_alpha", z) * eval("P_H_src_star_edge", z);
         const auto c_psq_0 = l0 * (eval("P_PSQ", z) - eval("P_w_psq", z));
         const auto c_psq_1 =
-            eval("P_PSQ", omega_z) - eval("P_Q_new_edge", omega_z) * eval("P_w_psq", omega_z) - (FieldElement::one() - eval("P_Q_new_edge", omega_z)) * (eval("P_PSQ", z) + eval("P_w_psq", omega_z));
-        const auto c_psq_2 = eval("P_Q_end_edge", z) * (eval("P_PSQ", z) - eval("P_T_psq_edge", z));
+            eval("P_PSQ", omega_z) - eval("P_Q_grp_new_edge", omega_z) * eval("P_w_psq", omega_z) - (FieldElement::one() - eval("P_Q_grp_new_edge", omega_z)) * (eval("P_PSQ", z) + eval("P_w_psq", omega_z));
+        const auto c_psq_2 = eval("P_Q_grp_end_edge", z) * (eval("P_PSQ", z) - eval("P_T_psq_edge", z));
 
         FieldElement n_edge = FieldElement::zero();
         n_edge += alpha_powers[3] * c_src_0;

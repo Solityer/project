@@ -283,6 +283,7 @@ namespace gatzk::algebra
                 }
                 return out;
             }
+            throw std::runtime_error("CUDA weighted evaluation kernel failed; refusing silent CPU fallback");
         }
 
         // ---- CPU path ----
@@ -470,10 +471,7 @@ namespace gatzk::algebra
                     }
                     return out;
                 }
-                for (auto& value : native_out)
-                {
-                    value.clear();
-                }
+                throw std::runtime_error("CUDA rotated evaluation kernel failed; refusing silent CPU fallback");
             }
 
             // 旋转点评估共享同一代表权重，只是在域上做循环平移。
@@ -542,8 +540,7 @@ namespace gatzk::algebra
                 }
                 return out;
             }
-            // GPU 失败时诚实回退到 CPU，同一接口保证结果一致。
-            for (auto& value : native_out) { value.clear(); }
+            throw std::runtime_error("CUDA rotated multi-evaluation kernel failed; refusing silent CPU fallback");
         }
 
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());

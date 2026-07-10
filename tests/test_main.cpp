@@ -13,6 +13,7 @@
 #include "gatzk/algebra/polynomial.hpp"
 #include "gatzk/crypto/curve.hpp"
 #include "gatzk/crypto/kzg.hpp"
+#include "gatzk/data/loader.hpp"
 #include "gatzk/protocol/challenges.hpp"
 #include "gatzk/protocol/prover.hpp"
 #include "gatzk/protocol/schema.hpp"
@@ -283,6 +284,122 @@ void test_metadata_and_schema_gates() {
             gatzk::protocol::PolynomialVisibility::PrivateWitness,
             gatzk::protocol::EvaluationKind::PublicValue),
         "private witness must reject public values");
+
+    gatzk::protocol::ProtocolContext empty_context;
+    require(
+        gatzk::protocol::polynomial_visibility(empty_context, "P_Y") ==
+            gatzk::protocol::PolynomialVisibility::PublicOutput,
+        "only the final logits polynomial is public output");
+    require(
+        gatzk::protocol::polynomial_visibility(empty_context, "P_Y_lin") ==
+            gatzk::protocol::PolynomialVisibility::PrivateWitness,
+        "pre-bias output must remain private");
+    require(
+        gatzk::protocol::polynomial_visibility(empty_context, "P_Y_o0") ==
+            gatzk::protocol::PolynomialVisibility::PrivateWitness,
+        "per-head output must remain private");
+}
+
+gatzk::data::LocalGraph valid_two_graph_fixture() {
+    gatzk::data::LocalGraph local;
+    local.num_nodes = 4;
+    local.num_features = 1;
+    local.num_classes = 2;
+    local.graph_count = 2;
+    local.absolute_ids = {10, 11, 12, 13};
+    local.node_ptr = {0, 2, 4};
+    local.edge_ptr = {0, 3, 6};
+    local.edges = {
+        {.src = 0, .dst = 0, .graph_id = 0, .stable_index = 0},
+        {.src = 1, .dst = 0, .graph_id = 0, .stable_index = 1},
+        {.src = 1, .dst = 1, .graph_id = 0, .stable_index = 2},
+        {.src = 2, .dst = 2, .graph_id = 1, .stable_index = 0},
+        {.src = 3, .dst = 2, .graph_id = 1, .stable_index = 1},
+        {.src = 3, .dst = 3, .graph_id = 1, .stable_index = 2},
+    };
+    local.public_input.N_total = 20;
+    local.public_input.N = 4;
+    local.public_input.E = local.edges.size();
+    local.public_input.G_batch = 2;
+    local.public_input.I = local.absolute_ids;
+    local.public_input.node_ptr = local.node_ptr;
+    local.public_input.edge_ptr = local.edge_ptr;
+    for (const auto& edge : local.edges) {
+        local.public_input.src.push_back(edge.src);
+        local.public_input.dst.push_back(edge.dst);
+    }
+    return local;
+}
+
+void test_multi_graph_public_boundary_validation() {
+    const auto valid = valid_two_graph_fixture();
+    gatzk::data::validate_normalized_graph_input(valid);
+
+    auto cross_graph = valid;
+    cross_graph.edges[3].src = 0;
+    cross_graph.public_input.src[3] = 0;
+    require_throws(
+        [&] { gatzk::data::validate_normalized_graph_input(cross_graph); },
+        "cross-graph edge must reject");
+
+    auto bad_pointer = valid;
+    bad_pointer.edge_ptr = {0, 4, 6};
+    bad_pointer.public_input.edge_ptr = bad_pointer.edge_ptr;
+    require_throws(
+        [&] { gatzk::data::validate_normalized_graph_input(bad_pointer); },
+        "edge_ptr/graph_id mismatch must reject");
+
+    auto unsorted = valid;
+    std::swap(unsorted.edges[1], unsorted.edges[2]);
+    std::swap(unsorted.public_input.src[1], unsorted.public_input.src[2]);
+    std::swap(unsorted.public_input.dst[1], unsorted.public_input.dst[2]);
+    require_throws(
+        [&] { gatzk::data::validate_normalized_graph_input(unsorted); },
+        "non-monotone destination order must reject");
+
+    auto duplicate_node = valid;
+    duplicate_node.absolute_ids[3] = duplicate_node.absolute_ids[2];
+    duplicate_node.public_input.I = duplicate_node.absolute_ids;
+    require_throws(
+        [&] { gatzk::data::validate_normalized_graph_input(duplicate_node); },
+        "duplicate absolute node id must reject");
+}
+
+void test_real_ppi_representative_batch_boundary() {
+    auto config = gatzk::util::load_config((repo_root() / "configs/ppi_secure.cfg").string());
+    // Development validation uses two complete source graphs. No node or edge
+    // inside either graph is cropped, and this is not a formal full-PPI run.
+    config.batch_graphs = 2;
+    const auto dataset = gatzk::data::load_dataset(config);
+    require(dataset.name == "ppi", "PPI boundary test must load the real PPI cache");
+    require(dataset.graph_count >= config.batch_graphs, "PPI cache must contain the representative graphs");
+
+    const auto local = gatzk::data::normalize_graph_input(dataset, config);
+    gatzk::data::validate_normalized_graph_input(local);
+    require(local.graph_count == config.batch_graphs, "PPI representative batch graph count mismatch");
+    require(local.node_ptr.size() == config.batch_graphs + 1, "PPI node_ptr shape mismatch");
+    require(local.edge_ptr.size() == config.batch_graphs + 1, "PPI edge_ptr shape mismatch");
+
+    for (std::size_t graph = 0; graph < config.batch_graphs; ++graph) {
+        const auto source_node_begin = dataset.node_ptr.at(graph);
+        const auto source_node_end = dataset.node_ptr.at(graph + 1);
+        require(
+            local.node_ptr[graph + 1] - local.node_ptr[graph] == source_node_end - source_node_begin,
+            "PPI normalization must retain every node of each selected source graph");
+        for (std::size_t node = local.node_ptr[graph]; node < local.node_ptr[graph + 1]; ++node) {
+            require(
+                local.absolute_ids[node] == source_node_begin + node - local.node_ptr[graph],
+                "PPI normalization must preserve the complete source-graph node range");
+        }
+        for (std::size_t edge = local.edge_ptr[graph]; edge < local.edge_ptr[graph + 1]; ++edge) {
+            const auto& item = local.edges[edge];
+            require(item.graph_id == graph, "PPI edge block graph id mismatch");
+            require(
+                item.src >= local.node_ptr[graph] && item.src < local.node_ptr[graph + 1] &&
+                    item.dst >= local.node_ptr[graph] && item.dst < local.node_ptr[graph + 1],
+                "PPI representative batch contains a cross-graph edge");
+        }
+    }
 }
 
 void test_full_metadata_and_schema_gates() {
@@ -408,6 +525,14 @@ void test_tamper_rejection_suite() {
     external_value_tamper.external_evaluations.front().second += FieldElement::one();
     require_rejects(fixture, external_value_tamper, "external masked value tamper");
 
+    auto public_logits_tamper = fixture.proof;
+    public_logits_tamper.public_logits.front() += FieldElement::one();
+    require_rejects(fixture, public_logits_tamper, "public logits tamper");
+
+    auto public_output_point_tamper = fixture.proof;
+    public_output_point_tamper.public_output_challenge += FieldElement::one();
+    require_rejects(fixture, public_output_point_tamper, "public output opening point tamper");
+
     auto challenge_tamper = fixture.proof;
     challenge_tamper.challenges.begin()->second += FieldElement::one();
     require_rejects(fixture, challenge_tamper, "challenge tamper");
@@ -429,6 +554,14 @@ int main() {
         test_srs_mismatch_gate();
         std::cerr << "running test_metadata_and_schema_gates\n";
         test_metadata_and_schema_gates();
+        std::cerr << "running test_multi_graph_public_boundary_validation\n";
+        test_multi_graph_public_boundary_validation();
+        if (std::getenv("GATZK_RUN_PPI_BOUNDARY_TESTS") != nullptr) {
+            std::cerr << "running test_real_ppi_representative_batch_boundary\n";
+            test_real_ppi_representative_batch_boundary();
+        } else {
+            std::cerr << "skipping real PPI representative-batch boundary regression; set GATZK_RUN_PPI_BOUNDARY_TESTS=1 to run it\n";
+        }
         if (std::getenv("GATZK_RUN_FULL_SECURITY_TESTS") != nullptr) {
             std::cerr << "running test_full_metadata_and_schema_gates\n";
             test_full_metadata_and_schema_gates();

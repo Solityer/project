@@ -42,6 +42,9 @@ struct ProofSchema {
 // 它也决定哪些标签会进入 proof 的正式传输形状，因此间接影响 proof_size_bytes。
 const std::vector<std::string>& proof_block_order();
 ProofSchema build_proof_schema(const ProtocolContext& context);
+// Single source of truth for payload visibility. In particular, per-head output
+// objects (for example `P_Y_o0`) remain private even when final `P_Y` is public.
+PolynomialVisibility polynomial_visibility(const ProtocolContext& context, const std::string& label);
 bool schema_accepts_evaluation(PolynomialVisibility visibility, EvaluationKind kind);
 // 下面这些函数负责生成隐藏层、输出层与兼容单头路径使用的正式标签。
 // 它们共同决定 dynamic commitments、opening bundle 与 external evaluation 的命名真源。

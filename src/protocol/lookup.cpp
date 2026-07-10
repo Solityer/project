@@ -214,31 +214,15 @@ namespace gatzk::protocol
         std::size_t active_count)
     {
         active_count = table.empty() ? 0 : std::min(active_count, table.size() - 1U);
-        static std::mutex cache_mutex;
-        static std::unordered_map<std::string, std::shared_ptr<std::vector<algebra::FieldElement>>> cache;
-        const auto key = logup_cache_key(cache_key, table.size(), query.size(), active_count, beta);
-        {
-            std::lock_guard<std::mutex> lock(cache_mutex);
-            if (const auto it = cache.find(key); it != cache.end())
-            {
-                return *it->second;
-            }
-        }
-
-        auto values = std::make_shared<std::vector<algebra::FieldElement>>(
-            build_logup_accumulator_with_active_count(
-                table,
-                query,
-                multiplicity,
-                q_table,
-                q_query,
-                beta,
-                active_count));
-        {
-            std::lock_guard<std::mutex> lock(cache_mutex);
-            const auto [it, _] = cache.emplace(key, values);
-            return *it->second;
-        }
+        (void)cache_key;
+        return build_logup_accumulator_with_active_count(
+            table,
+            query,
+            multiplicity,
+            q_table,
+            q_query,
+            beta,
+            active_count);
     }
 
 }

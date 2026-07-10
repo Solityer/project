@@ -125,6 +125,9 @@ struct TraceArtifacts {
     // verifier 直接消费的外点值与 witness 标量。
     std::map<std::string, algebra::FieldElement> external_evaluations;
     std::map<std::string, algebra::FieldElement> witness_scalars;
+    // 主协议的公开 logits，按 N x C 行优先展平。这一份数据必须由
+    // verifier 独立重建多项式求值，不得用 trace 内部 hash 代替。
+    std::vector<algebra::FieldElement> public_logits;
     std::string public_logits_hash;
     std::string reference_fp32_logits_hash;
     std::string reference_quant_logits_hash;
@@ -190,6 +193,9 @@ struct Proof {
     std::vector<PayloadValueKind> external_evaluation_kinds;
     std::vector<std::pair<std::string, algebra::FieldElement>> witness_scalars;
     std::vector<PayloadValueKind> witness_scalar_kinds;
+    std::vector<algebra::FieldElement> public_logits;
+    algebra::FieldElement public_output_challenge = algebra::FieldElement::zero();
+    crypto::OpeningProof public_output_opening;
     crypto::OpeningProof external_proof;
     std::map<std::string, algebra::FieldElement> challenges;
 };

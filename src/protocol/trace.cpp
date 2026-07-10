@@ -129,16 +129,16 @@ namespace gatzk::protocol
 
         bool should_persist_large_trace_cache_key(const std::string &cache_key)
         {
-            return cache_key.find(":volatile_large_trace:") == std::string::npos;
+            (void)cache_key;
+            // Forward/route/lookup/PSQ/binding objects are proof-specific even when the
+            // public input is identical. A fresh proof must rebuild them.
+            return false;
         }
 
         bool should_persist_state_vector_cache_key(const std::string &cache_key)
         {
-            if (should_persist_large_trace_cache_key(cache_key))
-            {
-                return true;
-            }
-            return cache_key.find(":volatile_large_trace:") != std::string::npos && (cache_key.find(":cmax") != std::string::npos || cache_key.find(":psq:") != std::string::npos);
+            (void)cache_key;
+            return false;
         }
 
         std::vector<FieldElement> padded_column(const std::vector<FieldElement> &values, std::size_t size)
@@ -212,26 +212,38 @@ namespace gatzk::protocol
             return stable_hash(stream.str());
         }
 
+        FieldElement quantize_float(double value);
+
         void record_public_output_hashes(
             TraceArtifacts &trace,
             const Matrix &quant_logits,
             const model::FloatMatrix &reference_logits)
         {
-            const auto quant_hash = hash_field_matrix(quant_logits);
-            trace.public_logits_hash = quant_hash;
-            trace.reference_quant_logits_hash = quant_hash;
-            trace.secure_trace_logits_hash = quant_hash;
-            trace.proof_public_output_hash = quant_hash;
+            Matrix reference_quantized(reference_logits.size());
+            for (std::size_t row = 0; row < reference_logits.size(); ++row)
+            {
+                reference_quantized[row].reserve(reference_logits[row].size());
+                for (const auto value : reference_logits[row])
+                {
+                    reference_quantized[row].push_back(quantize_float(value));
+                }
+            }
+            trace.public_logits = algebra::flatten_matrix_coefficients(quant_logits);
+            trace.public_logits_hash = hash_field_matrix(quant_logits);
+            trace.reference_quant_logits_hash = hash_field_matrix(reference_quantized);
+            trace.secure_trace_logits_hash = hash_field_matrix(quant_logits);
+            trace.proof_public_output_hash.clear();
             trace.reference_fp32_logits_hash = hash_float_matrix(reference_logits);
         }
 
         void record_public_output_hashes(TraceArtifacts &trace, const Matrix &quant_logits)
         {
             const auto quant_hash = hash_field_matrix(quant_logits);
+            trace.public_logits = algebra::flatten_matrix_coefficients(quant_logits);
             trace.public_logits_hash = quant_hash;
-            trace.reference_quant_logits_hash = quant_hash;
+            trace.reference_quant_logits_hash.clear();
             trace.secure_trace_logits_hash = quant_hash;
-            trace.proof_public_output_hash = quant_hash;
+            trace.proof_public_output_hash.clear();
             trace.reference_fp32_logits_hash = quant_hash;
         }
 
@@ -1607,23 +1619,10 @@ namespace gatzk::protocol
             const PreparedDynamicCommitment &item,
             const Polynomial &polynomial)
         {
-            if (item.source_identity == 0)
-            {
-                return {};
-            }
-            std::ostringstream out;
-            out << srs_manifest_hash
-                << "|dynamic_source|"
-                << (polynomial.basis == algebra::PolynomialBasis::Coefficient ? "coef" : "eval")
-                << '|'
-                << (polynomial.domain != nullptr ? polynomial.domain->name : "coef")
-                << '|'
-                << (polynomial.domain != nullptr ? polynomial.domain->size : 0)
-                << '|'
-                << polynomial.size()
-                << '|'
-                << item.source_identity;
-            return out.str();
+            (void)srs_manifest_hash;
+            (void)item;
+            (void)polynomial;
+            return {};
         }
 
         void record_dynamic_commit_totals(RunMetrics *metrics)
@@ -1839,15 +1838,9 @@ namespace gatzk::protocol
             constexpr std::size_t kMaxRepeatedTableFingerprintSize = 1ULL << 20;
             auto should_full_value_fingerprint = [&](const PreparedDynamicCommitment &item, const Polynomial &polynomial)
             {
-                if (polynomial.size() < 1024)
-                {
-                    return false;
-                }
-                if (polynomial.size() <= kMaxFullValueFingerprintSize)
-                {
-                    return true;
-                }
-                return item.name.find("Table") != std::string::npos && polynomial.size() <= kMaxRepeatedTableFingerprintSize;
+                (void)item;
+                (void)polynomial;
+                return false;
             };
             for (std::size_t i = 0; i < prepared.size(); ++i)
             {
@@ -2577,6 +2570,7 @@ namespace gatzk::protocol
             const std::vector<std::size_t> &edge_src_indices,
             const std::vector<std::size_t> &edge_dst_indices,
             std::size_t edge_domain_size,
+            const std::unordered_map<std::string, FieldElement> &elu_output_by_input,
             const RawMatrix *h_prime_raw_override = nullptr,
             const std::vector<std::int64_t> *e_src_raw_override = nullptr,
             const std::vector<std::int64_t> *e_dst_raw_override = nullptr)
@@ -2694,6 +2688,20 @@ namespace gatzk::protocol
                 for (std::size_t column = 0; column < d_h; ++column)
                 {
                     out.h_agg_pre[dst][column] += out.alpha[edge_index] * out.h_prime[src][column];
+                }
+            }
+            for (std::size_t row = 0; row < node_count; ++row)
+            {
+                for (std::size_t column = 0; column < d_h; ++column)
+                {
+                    out.h_agg_pre_lookup[row][column] = out.h_agg_pre[row][column];
+                    const auto it = elu_output_by_input.find(out.h_agg_pre[row][column].to_string());
+                    if (it == elu_output_by_input.end())
+                    {
+                        throw std::runtime_error(
+                            "hidden aggregate escaped the public ELU table; quantization/rescale is not proven");
+                    }
+                    out.h_agg[row][column] = it->second;
                 }
             }
             return out;
@@ -2870,6 +2878,16 @@ namespace gatzk::protocol
                 hidden_head_count += layer_trace.head_traces.size();
             }
             artifacts->hidden_head_quantized.reserve(hidden_head_count);
+            std::unordered_map<std::string, FieldElement> elu_output_by_input;
+            elu_output_by_input.reserve(context.tables.elu.size());
+            for (const auto &[input, output] : context.tables.elu)
+            {
+                const auto [_, inserted] = elu_output_by_input.emplace(input.to_string(), output);
+                if (!inserted)
+                {
+                    throw std::runtime_error("ELU table contains a duplicate input");
+                }
+            }
             std::vector<RawMatrix> hidden_layer_concat_raw;
             hidden_layer_concat_raw.reserve(forward.hidden_layer_traces.size());
             std::size_t global_hidden_head_index = 0;
@@ -2900,15 +2918,23 @@ namespace gatzk::protocol
                         h_prime_raw,
                         attn_dst_raw,
                         "hidden destination attention " + std::to_string(global_hidden_head_index));
-                    artifacts->hidden_head_quantized.push_back(quantize_hidden_witness_cpu(
+                    auto quantized_head = quantize_hidden_witness_cpu(
                         head_trace,
                         edge_src_indices,
                         edge_dst_indices,
                         edge_domain_size,
+                        elu_output_by_input,
                         &h_prime_raw,
                         &e_src_raw,
-                        &e_dst_raw));
-                    layer_head_outputs_raw.push_back(quantize_matrix_raw(head_trace.H_agg));
+                        &e_dst_raw);
+                    const auto reference_head_output_raw = quantize_matrix_raw(head_trace.H_agg);
+                    if (field_matrix_from_raw(reference_head_output_raw) != quantized_head.h_agg)
+                    {
+                        throw std::runtime_error(
+                            "quantized hidden aggregate/ELU trace diverges from the independent reference forward");
+                    }
+                    layer_head_outputs_raw.push_back(reference_head_output_raw);
+                    artifacts->hidden_head_quantized.push_back(std::move(quantized_head));
                     ++global_hidden_head_index;
                 }
                 hidden_layer_concat_raw.push_back(concat_raw_columns(
@@ -3679,7 +3705,9 @@ namespace gatzk::protocol
                     }
                     return multiplicity;
                 }
-                // GPU 申请失败时直接回退 CPU 路线，保证 lookup 语义不变。
+                throw std::runtime_error("CUDA lookup histogram failed; refusing silent CPU fallback");
+#else
+                throw std::runtime_error("CUDA lookup histogram requested in a non-CUDA build");
 #endif
             }
             for (const auto index : indices)
@@ -3955,7 +3983,7 @@ namespace gatzk::protocol
 
             stage_start = Clock::now();
             // 这里先把公开选择器列取出来备用；真正的动态 witness 还没开始物化。
-            const auto q_new = eval_data(context, "P_Q_new_edge");
+            const auto q_new = eval_data(context, "P_Q_grp_new_edge");
             const auto q_tbl_feat = eval_data(context, "P_Q_tbl_feat");
             const auto q_qry_feat = eval_data(context, "P_Q_qry_feat");
             const auto q_tbl_l = eval_data(context, "P_Q_tbl_L");
@@ -3999,8 +4027,12 @@ namespace gatzk::protocol
             transcript.absorb_commitment("P_I", context.public_commitments.at("P_I").point);
             transcript.absorb_commitment("P_src", context.public_commitments.at("P_src").point);
             transcript.absorb_commitment("P_dst", context.public_commitments.at("P_dst").point);
-            transcript.absorb_commitment("P_Q_new_edge", context.public_commitments.at("P_Q_new_edge").point);
-            transcript.absorb_commitment("P_Q_end_edge", context.public_commitments.at("P_Q_end_edge").point);
+            transcript.absorb_commitment("P_node_gid", context.public_commitments.at("P_node_gid").point);
+            transcript.absorb_commitment("P_edge_gid", context.public_commitments.at("P_edge_gid").point);
+            transcript.absorb_commitment("P_Q_graph_new_edge", context.public_commitments.at("P_Q_graph_new_edge").point);
+            transcript.absorb_commitment("P_Q_graph_end_edge", context.public_commitments.at("P_Q_graph_end_edge").point);
+            transcript.absorb_commitment("P_Q_grp_new_edge", context.public_commitments.at("P_Q_grp_new_edge").point);
+            transcript.absorb_commitment("P_Q_grp_end_edge", context.public_commitments.at("P_Q_grp_end_edge").point);
             transcript.absorb_commitment("P_Q_edge_valid", context.public_commitments.at("P_Q_edge_valid").point);
             transcript.absorb_commitment("P_Q_N", context.public_commitments.at("P_Q_N").point);
             transcript.absorb_commitment("P_Q_proj_valid", context.public_commitments.at("P_Q_proj_valid").point);
@@ -6637,7 +6669,7 @@ namespace gatzk::protocol
             dataset_index_fields[i] = FieldElement(i);
         }
 
-        const auto q_new = eval_data(context, "P_Q_new_edge");
+        const auto q_new = eval_data(context, "P_Q_grp_new_edge");
         const auto q_tbl_feat = eval_data(context, "P_Q_tbl_feat");
         const auto q_qry_feat = eval_data(context, "P_Q_qry_feat");
         const auto q_tbl_l = eval_data(context, "P_Q_tbl_L");
@@ -6664,8 +6696,12 @@ namespace gatzk::protocol
         transcript.absorb_commitment("P_I", context.public_commitments.at("P_I").point);
         transcript.absorb_commitment("P_src", context.public_commitments.at("P_src").point);
         transcript.absorb_commitment("P_dst", context.public_commitments.at("P_dst").point);
-        transcript.absorb_commitment("P_Q_new_edge", context.public_commitments.at("P_Q_new_edge").point);
-        transcript.absorb_commitment("P_Q_end_edge", context.public_commitments.at("P_Q_end_edge").point);
+        transcript.absorb_commitment("P_node_gid", context.public_commitments.at("P_node_gid").point);
+        transcript.absorb_commitment("P_edge_gid", context.public_commitments.at("P_edge_gid").point);
+        transcript.absorb_commitment("P_Q_graph_new_edge", context.public_commitments.at("P_Q_graph_new_edge").point);
+        transcript.absorb_commitment("P_Q_graph_end_edge", context.public_commitments.at("P_Q_graph_end_edge").point);
+        transcript.absorb_commitment("P_Q_grp_new_edge", context.public_commitments.at("P_Q_grp_new_edge").point);
+        transcript.absorb_commitment("P_Q_grp_end_edge", context.public_commitments.at("P_Q_grp_end_edge").point);
         transcript.absorb_commitment("P_Q_edge_valid", context.public_commitments.at("P_Q_edge_valid").point);
         transcript.absorb_commitment("P_Q_N", context.public_commitments.at("P_Q_N").point);
         transcript.absorb_commitment("P_Q_proj_valid", context.public_commitments.at("P_Q_proj_valid").point);

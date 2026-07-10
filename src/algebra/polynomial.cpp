@@ -158,7 +158,7 @@ namespace gatzk::algebra
             {
                 return weights;
             }
-            // GPU 求权重失败时直接回退到 CPU，保持结果口径不变。
+            throw std::runtime_error("CUDA barycentric weight kernel failed; refusing silent CPU fallback");
         }
 
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());

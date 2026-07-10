@@ -99,15 +99,73 @@ namespace gatzk::protocol
 
         PayloadValueKind payload_kind_for_label(const ProtocolContext &context, const std::string &label)
         {
-            if (context.public_commitments.contains(label))
+            return polynomial_visibility(context, label) == PolynomialVisibility::PrivateWitness
+                       ? PayloadValueKind::MaskedPrivateValue
+                       : PayloadValueKind::PublicValue;
+        }
+
+        FieldElement evaluate_coefficient_vector(
+            const std::vector<FieldElement> &coefficients,
+            const FieldElement &point)
+        {
+            FieldElement out = FieldElement::zero();
+            for (auto it = coefficients.rbegin(); it != coefficients.rend(); ++it)
             {
-                return PayloadValueKind::PublicValue;
+                out *= point;
+                out += *it;
             }
-            if (label == "P_H" || label == "P_Y" || label.rfind("P_Y_o", 0) == 0)
+            return out;
+        }
+
+        void attach_public_output_binding(
+            const ProtocolContext &context,
+            const TraceArtifacts &trace,
+            Proof *proof)
+        {
+            if (proof == nullptr || trace.public_logits.empty())
             {
-                return PayloadValueKind::PublicValue;
+                throw std::runtime_error("public output binding is missing logits");
             }
-            return PayloadValueKind::MaskedPrivateValue;
+            const auto commitment_it = trace.commitments.find("P_Y");
+            if (commitment_it == trace.commitments.end())
+            {
+                throw std::runtime_error("public output binding is missing P_Y commitment");
+            }
+            proof->public_logits = trace.public_logits;
+            const auto binding_challenges = derive_public_output_challenges(
+                proof->public_metadata,
+                commitment_it->second,
+                proof->public_logits,
+                context.local.num_nodes,
+                context.local.num_classes);
+            const auto claimed_value = evaluate_coefficient_vector(
+                proof->public_logits,
+                binding_challenges.point);
+            proof->public_output_challenge = binding_challenges.point;
+            proof->public_output_opening = crypto::KZG::open_batch(
+                {commitment_it->second},
+                {binding_challenges.point},
+                {{claimed_value}},
+                binding_challenges.folding,
+                context.kzg);
+        }
+
+        void strip_prover_material_from_proof(Proof *proof)
+        {
+            if (proof == nullptr)
+            {
+                return;
+            }
+            for (auto &[name, commitment] : proof->dynamic_commitments)
+            {
+                (void)name;
+                commitment.opening_polynomial.reset();
+            }
+            for (auto &[name, commitment] : proof->quotient_commitments)
+            {
+                (void)name;
+                commitment.opening_polynomial.reset();
+            }
         }
 
         std::string hash_proof_transport(const Proof &proof)
@@ -209,6 +267,16 @@ namespace gatzk::protocol
             for (const auto kind : proof.witness_scalar_kinds)
             {
                 stream << payload_kind_name(kind) << '\n';
+            }
+            stream << "[public_output]\n";
+            for (const auto &value : proof.public_logits)
+            {
+                stream << value.to_string() << '\n';
+            }
+            stream << "point=" << proof.public_output_challenge.to_string() << '\n';
+            for (const auto &witness : proof.public_output_opening.witnesses)
+            {
+                stream << "witness=" << witness.to_string() << '\n';
             }
             stream << "[external_proof]\n";
             for (const auto &witness : proof.external_proof.witnesses)
@@ -840,6 +908,74 @@ namespace gatzk::protocol
             return out;
         }
 
+        std::vector<FieldElement> edge_gid_column(const std::vector<data::Edge> &edges, std::size_t size)
+        {
+            std::vector<FieldElement> out(size, FieldElement::zero());
+            for (std::size_t i = 0; i < edges.size(); ++i)
+            {
+                out[i] = FieldElement(edges[i].graph_id);
+            }
+            return out;
+        }
+
+        std::vector<FieldElement> node_gid_column(
+            const std::vector<std::size_t> &node_ptr,
+            std::size_t node_count,
+            std::size_t size)
+        {
+            std::vector<FieldElement> out(size, FieldElement::zero());
+            if (node_ptr.size() < 2 || node_ptr.back() != node_count)
+            {
+                throw std::runtime_error("invalid node_ptr while building node_gid");
+            }
+            for (std::size_t graph_id = 0; graph_id + 1 < node_ptr.size(); ++graph_id)
+            {
+                for (std::size_t node = node_ptr[graph_id]; node < node_ptr[graph_id + 1]; ++node)
+                {
+                    out[node] = FieldElement(graph_id);
+                }
+            }
+            return out;
+        }
+
+        std::vector<FieldElement> q_graph_new_selector(const std::vector<data::Edge> &edges, std::size_t size)
+        {
+            std::vector<FieldElement> out(size, FieldElement::zero());
+            for (std::size_t i = 0; i < edges.size(); ++i)
+            {
+                out[i] = FieldElement(i == 0 || edges[i].graph_id != edges[i - 1].graph_id);
+            }
+            return out;
+        }
+
+        std::vector<FieldElement> q_graph_end_selector(const std::vector<data::Edge> &edges, std::size_t size)
+        {
+            std::vector<FieldElement> out(size, FieldElement::zero());
+            for (std::size_t i = 0; i < edges.size(); ++i)
+            {
+                out[i] = FieldElement(i + 1 == edges.size() || edges[i].graph_id != edges[i + 1].graph_id);
+            }
+            return out;
+        }
+
+        std::vector<FieldElement> q_group_selector(
+            const std::vector<FieldElement> &graph_boundary,
+            const std::vector<FieldElement> &destination_boundary)
+        {
+            if (graph_boundary.size() != destination_boundary.size())
+            {
+                throw std::runtime_error("group selector input size mismatch");
+            }
+            std::vector<FieldElement> out(graph_boundary.size(), FieldElement::zero());
+            for (std::size_t i = 0; i < out.size(); ++i)
+            {
+                out[i] = FieldElement::one()
+                    - (FieldElement::one() - graph_boundary[i])
+                        * (FieldElement::one() - destination_boundary[i]);
+            }
+            return out;
+        }
+
         std::vector<FieldElement> make_range_table(std::size_t size)
         {
             std::vector<FieldElement> out(size, FieldElement::zero());
@@ -898,57 +1034,54 @@ namespace gatzk::protocol
             return out;
         }
 
-        std::size_t elu_table_band()
-        {
-            return 1;
-        }
-
         std::vector<std::pair<FieldElement, FieldElement>> make_elu_table(std::size_t bound)
         {
             std::vector<std::pair<FieldElement, FieldElement>> out;
-            out.reserve((bound * 2 + 1) * (2 * elu_table_band() + 1));
+            out.reserve(bound * 2 + 1);
             for (std::int64_t raw = -static_cast<std::int64_t>(bound); raw <= static_cast<std::int64_t>(bound); ++raw)
             {
                 const auto input = dequantize_trace_scalar(raw);
                 const auto central_signed = quantize_float_model_value_signed(input >= 0.0 ? input : std::exp(input) - 1.0);
-                for (std::int64_t offset = -static_cast<std::int64_t>(elu_table_band());
-                     offset <= static_cast<std::int64_t>(elu_table_band());
-                     ++offset)
-                {
-                    out.push_back({
-                        FieldElement::from_signed(raw),
-                        FieldElement::from_signed(central_signed + offset),
-                    });
-                }
+                out.push_back({
+                    FieldElement::from_signed(raw),
+                    FieldElement::from_signed(central_signed),
+                });
             }
             return out;
-        }
-
-        std::size_t exp_table_band()
-        {
-            return 2;
         }
 
         std::vector<std::pair<FieldElement, FieldElement>> make_exp_table(std::size_t size)
         {
             std::vector<std::pair<FieldElement, FieldElement>> out;
-            out.reserve(size * (2 * exp_table_band() + 1));
+            out.reserve(size);
             for (std::size_t i = 0; i < size; ++i)
             {
                 const auto input = static_cast<std::int64_t>(i);
                 const auto central_signed = quantize_float_model_value_signed(std::exp(-dequantize_trace_scalar(input)));
-                for (std::int64_t offset = -static_cast<std::int64_t>(exp_table_band());
-                     offset <= static_cast<std::int64_t>(exp_table_band());
-                     ++offset)
-                {
-                    const auto candidate = std::max<std::int64_t>(0, central_signed + offset);
-                    out.push_back({
-                        FieldElement(static_cast<std::uint64_t>(i)),
-                        FieldElement::from_signed(candidate),
-                    });
-                }
+                const auto candidate = std::max<std::int64_t>(0, central_signed);
+                out.push_back({
+                    FieldElement(static_cast<std::uint64_t>(i)),
+                    FieldElement::from_signed(candidate),
+                });
             }
             return out;
+        }
+
+        void require_functional_pair_table(
+            const std::vector<std::pair<FieldElement, FieldElement>> &table,
+            std::string_view label)
+        {
+            std::unordered_map<std::string, FieldElement> outputs;
+            outputs.reserve(table.size());
+            for (const auto &[input, output] : table)
+            {
+                const auto key = input.to_string();
+                const auto [it, inserted] = outputs.emplace(key, output);
+                if (!inserted && !(it->second == output))
+                {
+                    throw std::runtime_error(std::string(label) + " table is not a function");
+                }
+            }
         }
 
         std::vector<FieldElement> quantize_model_vector(const std::vector<double> &values)
@@ -4338,8 +4471,8 @@ namespace gatzk::protocol
                 plan.alpha_quot = challenges_.at("alpha_quot");
                 auto &global = plan.global;
                 global.q_edge = required_t_edge_coset("P_Q_edge_valid");
-                global.q_new = required_t_edge_coset("P_Q_new_edge");
-                global.q_end = required_t_edge_coset("P_Q_end_edge");
+                global.q_new = required_t_edge_coset("P_Q_grp_new_edge");
+                global.q_end = required_t_edge_coset("P_Q_grp_end_edge");
                 global.src = required_t_edge_coset("P_src");
                 global.dst = required_t_edge_coset("P_dst");
                 global.q_tbl_l = required_t_edge_coset("P_Q_tbl_L");
@@ -7009,8 +7142,8 @@ namespace gatzk::protocol
                 "P_s_max",
                 "P_C_max",
                 "P_Q_edge_valid",
-                "P_Q_new_edge",
-                "P_Q_end_edge",
+                "P_Q_grp_new_edge",
+                "P_Q_grp_end_edge",
                 "P_alpha",
                 "P_U",
                 "P_inv_edge",
@@ -7034,8 +7167,8 @@ namespace gatzk::protocol
         {
             std::vector<std::string> labels = {
                 "P_Q_edge_valid",
-                "P_Q_new_edge",
-                "P_Q_end_edge",
+                "P_Q_grp_new_edge",
+                "P_Q_grp_end_edge",
                 "P_Q_tbl_L",
                 "P_Q_qry_L",
                 "P_Q_tbl_R",
@@ -7563,7 +7696,7 @@ namespace gatzk::protocol
             const std::size_t max_rows_in_edge_domain = kLargeEdgeDomainSize - 2;
             range_size = std::max<std::size_t>(
                 range_size,
-                max_rows_in_edge_domain / (2 * exp_table_band() + 1));
+                max_rows_in_edge_domain);
             lrelu_min_raw = -static_cast<std::int64_t>(kLargeLReluNegativeRows);
             lrelu_max_raw = static_cast<std::int64_t>(
                 max_rows_in_edge_domain - kLargeLReluNegativeRows - 1);
@@ -7572,8 +7705,8 @@ namespace gatzk::protocol
             large_whole_graph_gat ? (1ULL << 20) : default_activation_table_bound,
             configured_range_size);
         const std::size_t lrelu_table_size = signed_table_size(lrelu_min_raw, lrelu_max_raw, "lrelu");
-        const std::size_t elu_table_size = (elu_bound * 2 + 1) * (2 * elu_table_band() + 1);
-        const std::size_t exp_table_size = range_size * (2 * exp_table_band() + 1);
+        const std::size_t elu_table_size = elu_bound * 2 + 1;
+        const std::size_t exp_table_size = range_size;
         const std::size_t edge_size = algebra::next_power_of_two(
             std::max<std::size_t>({
                 context.local.num_nodes,
@@ -7658,8 +7791,18 @@ namespace gatzk::protocol
         context.tables.exp = make_exp_table(range_size);
         context.tables.lrelu = make_lrelu_table(lrelu_min_raw, lrelu_max_raw);
         context.tables.elu = make_elu_table(elu_bound);
+        require_functional_pair_table(context.tables.lrelu, "LeakyReLU");
+        require_functional_pair_table(context.tables.elu, "ELU");
+        require_functional_pair_table(context.tables.exp, "ExpMap");
 
         const auto edge_valid = build_selector(context.local.edges.size(), edge_size);
+
+        const auto q_new_edge = q_new_selector(context.local.edges, edge_size);
+        const auto q_end_edge = q_end_selector(context.local.edges, edge_size);
+        const auto q_graph_new_edge = q_graph_new_selector(context.local.edges, edge_size);
+        const auto q_graph_end_edge = q_graph_end_selector(context.local.edges, edge_size);
+        const auto q_grp_new_edge = q_group_selector(q_graph_new_edge, q_new_edge);
+        const auto q_grp_end_edge = q_group_selector(q_graph_end_edge, q_end_edge);
 
         add_public_poly(
             context,
@@ -7676,11 +7819,38 @@ namespace gatzk::protocol
         add_public_poly(
             context,
             "P_Q_new_edge",
-            make_shared_eval_poly("P_Q_new_edge", q_new_selector(context.local.edges, edge_size), context.domains.edge));
+            make_shared_eval_poly("P_Q_new_edge", q_new_edge, context.domains.edge));
         add_public_poly(
             context,
             "P_Q_end_edge",
-            make_shared_eval_poly("P_Q_end_edge", q_end_selector(context.local.edges, edge_size), context.domains.edge));
+            make_shared_eval_poly("P_Q_end_edge", q_end_edge, context.domains.edge));
+        add_public_poly(
+            context,
+            "P_node_gid",
+            make_shared_eval_poly(
+                "P_node_gid",
+                node_gid_column(context.local.node_ptr, context.local.num_nodes, n_size),
+                context.domains.n));
+        add_public_poly(
+            context,
+            "P_edge_gid",
+            make_shared_eval_poly("P_edge_gid", edge_gid_column(context.local.edges, edge_size), context.domains.edge));
+        add_public_poly(
+            context,
+            "P_Q_graph_new_edge",
+            make_shared_eval_poly("P_Q_graph_new_edge", q_graph_new_edge, context.domains.edge));
+        add_public_poly(
+            context,
+            "P_Q_graph_end_edge",
+            make_shared_eval_poly("P_Q_graph_end_edge", q_graph_end_edge, context.domains.edge));
+        add_public_poly(
+            context,
+            "P_Q_grp_new_edge",
+            make_shared_eval_poly("P_Q_grp_new_edge", q_grp_new_edge, context.domains.edge));
+        add_public_poly(
+            context,
+            "P_Q_grp_end_edge",
+            make_shared_eval_poly("P_Q_grp_end_edge", q_grp_end_edge, context.domains.edge));
         add_public_poly(
             context,
             "P_Q_edge_valid",
@@ -8067,8 +8237,7 @@ namespace gatzk::protocol
             const std::vector<std::string> quotient_labels = {"t_FH", "t_edge", "t_in", "t_d_h", "t_cat", "t_C", "t_N"};
             std::unordered_map<std::string, Commitment> quotient_commitments;
             CachedQuotientArtifacts cached_quotients;
-            const bool quotient_cache_hit =
-                shared_quotient_artifacts_cache().lookup(quotient_cache_key, &cached_quotients);
+            const bool quotient_cache_hit = false;
             if (quotient_cache_hit)
             {
                 quotient_commitments = cached_quotients.quotient_commitments;
@@ -8095,11 +8264,8 @@ namespace gatzk::protocol
                     metrics->quotient_commitment_ms += quotient_commitment_ms;
                     metrics->quotient_bundle_pack_ms += quotient_commitment_ms;
                 }
-                shared_quotient_artifacts_cache().store(
-                    quotient_cache_key,
-                    CachedQuotientArtifacts{
-                        .quotient_commitments = quotient_commitments,
-                    });
+                // Quotient polynomials and commitments are proof-specific and must not be
+                // reused by a later fresh-proof measurement.
             }
             const auto challenges = replay_challenges(context, trace.commitments, quotient_commitments);
             if (metrics != nullptr)
@@ -8316,6 +8482,8 @@ namespace gatzk::protocol
                 proof.witness_scalars.push_back({name, value});
                 proof.witness_scalar_kinds.push_back(PayloadValueKind::MaskedPrivateValue);
             }
+            attach_public_output_binding(context, trace, &proof);
+            strip_prover_material_from_proof(&proof);
             if (metrics != nullptr)
             {
                 metrics->prove_time_ms = elapsed_ms(prove_start, Clock::now());
@@ -8608,6 +8776,8 @@ namespace gatzk::protocol
             proof.witness_scalars.push_back({name, value});
             proof.witness_scalar_kinds.push_back(PayloadValueKind::MaskedPrivateValue);
         }
+        attach_public_output_binding(context, trace, &proof);
+        strip_prover_material_from_proof(&proof);
         if (metrics != nullptr)
         {
             metrics->external_opening_ms += elapsed_ms(stage_start, Clock::now());
@@ -8718,6 +8888,9 @@ namespace gatzk::protocol
             total += kFieldBytes;
         }
         total += proof.witness_scalar_kinds.size();
+        total += kLengthPrefixBytes + proof.public_logits.size() * kFieldBytes;
+        total += kFieldBytes;
+        total += crypto::serialized_size(proof.public_output_opening);
         // `rho_ext` 折叠 opening 的 witness 需要单独发送。
         total += crypto::serialized_size(proof.external_proof);
         return total;

@@ -173,6 +173,20 @@ namespace gatzk::protocol
             return out.str();
         }
 
+        std::string size_vector_string(const std::vector<std::size_t> &values)
+        {
+            std::ostringstream out;
+            for (std::size_t i = 0; i < values.size(); ++i)
+            {
+                if (i != 0)
+                {
+                    out << ':';
+                }
+                out << values[i];
+            }
+            return out.str();
+        }
+
         void append_attention_head_dynamic_labels(std::vector<std::string> &labels, const std::string &prefix)
         {
             auto push = [&](const std::string &suffix)
@@ -401,7 +415,16 @@ namespace gatzk::protocol
         metadata.domain_cfg =
             "FH=" + context.domains.fh->name + ":" + std::to_string(context.domains.fh->size) + ",edge=" + context.domains.edge->name + ":" + std::to_string(context.domains.edge->size) + ",in=" + context.domains.in->name + ":" + std::to_string(context.domains.in->size) + ",d_h=" + context.domains.d->name + ":" + std::to_string(context.domains.d->size) + ",cat=" + context.domains.cat->name + ":" + std::to_string(context.domains.cat->size) + ",C=" + context.domains.c->name + ":" + std::to_string(context.domains.c->size) + ",N=" + context.domains.n->name + ":" + std::to_string(context.domains.n->size);
         metadata.dim_cfg =
-            "N=" + std::to_string(context.local.num_nodes) + ",E=" + std::to_string(context.local.edges.size()) + ",d_in=" + std::to_string(context.local.num_features) + ",d_h=" + std::to_string(hidden_head_width(context.model, context.config)) + ",d_cat=" + std::to_string(concat_width(context.model, context.config)) + ",C=" + std::to_string(context.local.num_classes);
+            "N_total=" + std::to_string(context.dataset.num_nodes)
+            + ",N=" + std::to_string(context.local.num_nodes)
+            + ",E=" + std::to_string(context.local.edges.size())
+            + ",G_batch=" + std::to_string(context.local.graph_count)
+            + ",node_ptr=" + size_vector_string(context.local.node_ptr)
+            + ",edge_ptr=" + size_vector_string(context.local.edge_ptr)
+            + ",d_in=" + std::to_string(context.local.num_features)
+            + ",d_h=" + std::to_string(hidden_head_width(context.model, context.config))
+            + ",d_cat=" + std::to_string(concat_width(context.model, context.config))
+            + ",C=" + std::to_string(context.local.num_classes);
         metadata.encoding_id = "project-fixed-order-v1";
         metadata.padding_rule_id = "zero-pad+selector-mask";
         metadata.degree_bound_id = !context.config.degree_bound_id.empty()
@@ -578,6 +601,33 @@ namespace gatzk::protocol
         return {"t_FH", "t_edge", "t_in", "t_d", "t_N"};
     }
 
+    PublicOutputChallenges derive_public_output_challenges(
+        const PublicMetadata &metadata,
+        const crypto::Commitment &output_commitment,
+        const std::vector<algebra::FieldElement> &public_logits,
+        std::size_t node_count,
+        std::size_t class_count)
+    {
+        if (node_count == 0 || class_count == 0
+            || public_logits.size() != node_count * class_count)
+        {
+            throw std::runtime_error("public logits shape mismatch");
+        }
+        crypto::Transcript transcript("zkgat-public-output-v1");
+        absorb_public_metadata(transcript, metadata);
+        transcript.absorb_scalar("public_output.N", algebra::FieldElement(node_count));
+        transcript.absorb_scalar("public_output.C", algebra::FieldElement(class_count));
+        transcript.absorb_commitment("public_output.P_Y", output_commitment.point);
+        for (std::size_t i = 0; i < public_logits.size(); ++i)
+        {
+            transcript.absorb_scalar("public_output.logit." + std::to_string(i), public_logits[i]);
+        }
+        PublicOutputChallenges out;
+        out.point = transcript.challenge("public_output.z");
+        out.folding = transcript.challenge("public_output.v");
+        return out;
+    }
+
     // 按正式 transcript 顺序重放 challenge，供 prove 与 verify 共享同一挑战语义。
     // 当 quotient commitment 仍未生成时，函数只返回前半段 challenge，避免在 build_context 阶段改写顺序。
     std::map<std::string, algebra::FieldElement> replay_challenges(
@@ -585,19 +635,8 @@ namespace gatzk::protocol
         const std::unordered_map<std::string, crypto::Commitment> &dynamic_commitments,
         const std::unordered_map<std::string, crypto::Commitment> &quotient_commitments)
     {
-        static std::mutex cache_mutex;
-        static std::unordered_map<std::string, std::map<std::string, algebra::FieldElement>> cache;
         const auto dynamic_labels = dynamic_commitment_labels(context);
         const auto quotient_labels = quotient_commitment_labels(context);
-        const auto cache_key =
-            challenge_context_cache_key(context) + "|dyn" + commitments_cache_fingerprint(dynamic_labels, dynamic_commitments) + "|quot" + commitments_cache_fingerprint(quotient_labels, quotient_commitments);
-        {
-            std::lock_guard<std::mutex> lock(cache_mutex);
-            if (const auto it = cache.find(cache_key); it != cache.end())
-            {
-                return it->second;
-            }
-        }
 
         if (context.model.has_real_multihead)
         {
@@ -618,8 +657,12 @@ namespace gatzk::protocol
             absorb_public(transcript, context, "P_I");
             absorb_public(transcript, context, "P_src");
             absorb_public(transcript, context, "P_dst");
-            absorb_public(transcript, context, "P_Q_new_edge");
-            absorb_public(transcript, context, "P_Q_end_edge");
+            absorb_public(transcript, context, "P_node_gid");
+            absorb_public(transcript, context, "P_edge_gid");
+            absorb_public(transcript, context, "P_Q_graph_new_edge");
+            absorb_public(transcript, context, "P_Q_graph_end_edge");
+            absorb_public(transcript, context, "P_Q_grp_new_edge");
+            absorb_public(transcript, context, "P_Q_grp_end_edge");
             absorb_public(transcript, context, "P_Q_edge_valid");
             absorb_public(transcript, context, "P_Q_N");
             absorb_public(transcript, context, "P_Q_proj_valid");
@@ -831,8 +874,6 @@ namespace gatzk::protocol
 
             if (quotient_commitments.empty())
             {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                cache.emplace(cache_key, out);
                 return out;
             }
 
@@ -855,10 +896,6 @@ namespace gatzk::protocol
             out["v_C"] = transcript.challenge("v_C");
             out["v_N"] = transcript.challenge("v_N");
             out["rho_ext"] = transcript.challenge("rho_ext");
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                cache.emplace(cache_key, out);
-            }
             return out;
         }
 
@@ -875,8 +912,12 @@ namespace gatzk::protocol
         absorb_public(transcript, context, "P_I");
         absorb_public(transcript, context, "P_src");
         absorb_public(transcript, context, "P_dst");
-        absorb_public(transcript, context, "P_Q_new_edge");
-        absorb_public(transcript, context, "P_Q_end_edge");
+        absorb_public(transcript, context, "P_node_gid");
+        absorb_public(transcript, context, "P_edge_gid");
+        absorb_public(transcript, context, "P_Q_graph_new_edge");
+        absorb_public(transcript, context, "P_Q_graph_end_edge");
+        absorb_public(transcript, context, "P_Q_grp_new_edge");
+        absorb_public(transcript, context, "P_Q_grp_end_edge");
         absorb_public(transcript, context, "P_Q_edge_valid");
         absorb_public(transcript, context, "P_Q_N");
         absorb_public(transcript, context, "P_Q_proj_valid");
@@ -990,8 +1031,6 @@ namespace gatzk::protocol
 
         if (quotient_commitments.empty())
         {
-            std::lock_guard<std::mutex> lock(cache_mutex);
-            cache.emplace(cache_key, out);
             return out;
         }
 
@@ -1010,10 +1049,6 @@ namespace gatzk::protocol
         out["v_d"] = transcript.challenge("v_d");
         out["v_N"] = transcript.challenge("v_N");
         out["rho_ext"] = transcript.challenge("rho_ext");
-        {
-            std::lock_guard<std::mutex> lock(cache_mutex);
-            cache.emplace(cache_key, out);
-        }
         return out;
     }
 }
