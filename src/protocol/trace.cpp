@@ -2727,7 +2727,8 @@ namespace gatzk::protocol
             out.e_dst.assign(fp.E_dst.size(), FieldElement::zero());
             out.m.assign(fp.M.size(), FieldElement::zero());
             out.sum.assign(fp.Sum.size(), FieldElement::zero());
-            out.inv.assign(fp.inv.size(), FieldElement::zero());
+            out.inv.assign(fp.inv.size(), FieldEleme
+            nt::zero());
             out.s.assign(edge_domain_size, FieldElement::zero());
             out.z.assign(edge_domain_size, FieldElement::zero());
             out.delta.assign(edge_domain_size, FieldElement::zero());
