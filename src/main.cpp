@@ -13,6 +13,7 @@
 #include "gatzk/crypto/curve.hpp"
 #include "gatzk/protocol/trace.hpp"
 #include "gatzk/protocol/prover.hpp"
+#include "gatzk/protocol/proof_codec.hpp"
 #include "gatzk/protocol/verifier.hpp"
 #include "gatzk/util/config.hpp"
 #include "gatzk/util/route2.hpp"
@@ -290,6 +291,7 @@ int main(int argc, char **argv)
             progress(mode_label + ":prove:start");
             const auto pcs_start = std::chrono::steady_clock::now();
             const auto proof = gatzk::protocol::prove(context, trace, &metrics);
+            const auto proof_bytes = gatzk::protocol::serialize_proof(proof);
             const auto pcs_end = std::chrono::steady_clock::now();
             progress(mode_label + ":prove:done");
             metrics.lookup_trace_ms =
@@ -308,7 +310,8 @@ int main(int argc, char **argv)
             metrics.prove_accounting_gap_ms = metrics.prove_time_ms - metrics.prove_accounted_ms;
             progress(mode_label + ":verify:start");
             const auto verify_start = std::chrono::steady_clock::now();
-            const auto accepted = gatzk::protocol::verify(context, proof, &metrics);
+            const auto parsed_proof = gatzk::protocol::parse_proof(context, proof_bytes);
+            const auto accepted = gatzk::protocol::verify(context, parsed_proof, &metrics);
             const auto verify_end = std::chrono::steady_clock::now();
             progress(mode_label + ":verify:done");
             metrics.verify_time_ms = std::chrono::duration<double, std::milli>(verify_end - verify_start).count();
@@ -316,16 +319,16 @@ int main(int argc, char **argv)
                 metrics.verify_time_ms - metrics.verify_metadata_ms - metrics.verify_transcript_ms - metrics.verify_domain_opening_ms - metrics.verify_quotient_ms - metrics.verify_external_fold_ms);
             metrics.verify_accounted_ms = verify_accounted_ms(metrics);
             metrics.verify_accounting_gap_ms = metrics.verify_time_ms - metrics.verify_accounted_ms;
-            metrics.proof_size_bytes = gatzk::protocol::proof_size_bytes(proof);
+            metrics.proof_size_bytes = proof_bytes.size();
             const auto audit_start = std::chrono::steady_clock::now();
-            const auto private_plain_count = gatzk::protocol::private_plain_value_count(context, proof);
+            const auto private_plain_count = gatzk::protocol::private_plain_value_count(context, parsed_proof);
             const auto audit_end = std::chrono::steady_clock::now();
             metrics.payload_audit_ms = std::chrono::duration<double, std::milli>(audit_end - audit_start).count();
             const auto reference_start = std::chrono::steady_clock::now();
             const bool reference_consistent =
                 !trace.reference_quant_logits_hash.empty()
                 && trace.reference_quant_logits_hash == trace.secure_trace_logits_hash
-                && trace.public_logits == proof.public_logits
+                && trace.public_logits == parsed_proof.public_logits
                 && private_plain_count == 0;
             metrics.cpu_gpu_reference_consistency_passed = reference_consistent;
             const auto reference_end = std::chrono::steady_clock::now();

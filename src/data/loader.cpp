@@ -79,7 +79,9 @@ namespace gatzk::data
 
         FieldElement quantize(double value)
         {
-            return FieldElement::from_signed(static_cast<std::int64_t>(value >= 0.0 ? value * 16.0 + 0.5 : value * 16.0 - 0.5));
+            // Registered input scale is one.  Projection weights carry scale 16,
+            // so the protocol's no-implicit-rescale chain yields S_H'=16.
+            return FieldElement::from_signed(static_cast<std::int64_t>(value >= 0.0 ? value + 0.5 : value - 0.5));
         }
 
         struct NpyArray

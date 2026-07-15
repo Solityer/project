@@ -97,6 +97,42 @@ namespace gatzk::protocol
         return out;
     }
 
+    IndexedViewSideTrace build_indexed_view_side(
+        const std::vector<algebra::FieldElement>& indices,
+        const std::vector<algebra::FieldElement>& values,
+        const std::vector<algebra::FieldElement>& selector,
+        const std::vector<algebra::FieldElement>& multiplicity,
+        const algebra::FieldElement& eta,
+        const algebra::FieldElement& beta)
+    {
+        const auto n = indices.size();
+        if (values.size() != n || selector.size() != n || multiplicity.size() != n)
+            throw std::runtime_error("indexed-view side input size mismatch");
+        IndexedViewSideTrace out;
+        out.tuples.assign(n, FieldElement::zero());
+        for (std::size_t i = 0; i < n; ++i)
+        {
+            if (!(selector[i] == FieldElement::zero())
+                && !(selector[i] == FieldElement::one()))
+                throw std::runtime_error("indexed-view selector must be boolean");
+            if (selector[i].is_zero() && !multiplicity[i].is_zero())
+                throw std::runtime_error(
+                    "indexed-view multiplicity must be zero outside the selected region");
+            out.tuples[i] = selector[i] * (indices[i] + eta * values[i]);
+        }
+        out.inverses = build_selected_inverse_column(out.tuples, selector, beta);
+        out.accumulator.assign(n, FieldElement::zero());
+        if (n == 0) return out;
+        auto running = FieldElement::zero();
+        out.accumulator[0] = running;
+        for (std::size_t i = 0; i + 1 < n; ++i)
+        {
+            running += selector[i] * multiplicity[i] * out.inverses[i];
+            out.accumulator[i + 1] = running;
+        }
+        return out;
+    }
+
     // 标准入口：自动按选择器截断到最后一个有效转移。
     std::vector<algebra::FieldElement> build_logup_accumulator(
         const std::vector<algebra::FieldElement> &table,
@@ -114,6 +150,85 @@ namespace gatzk::protocol
             q_query,
             beta,
             active_transition_count(q_table, q_query));
+    }
+
+    LogUpInverseColumns build_logup_inverse_columns(
+        const std::vector<algebra::FieldElement> &table,
+        const std::vector<algebra::FieldElement> &query,
+        const std::vector<algebra::FieldElement> &q_table,
+        const std::vector<algebra::FieldElement> &q_query,
+        const algebra::FieldElement &beta)
+    {
+        const auto n = table.size();
+        if (query.size() != n || q_table.size() != n || q_query.size() != n)
+        {
+            throw std::runtime_error("lookup inverse column input size mismatch");
+        }
+        LogUpInverseColumns out;
+        out.table.assign(n, FieldElement::zero());
+        out.query.assign(n, FieldElement::zero());
+        std::vector<mcl::Fr> denominators;
+        std::vector<std::pair<bool, std::size_t>> locations;
+        denominators.reserve(n * 2);
+        locations.reserve(n * 2);
+        for (std::size_t i = 0; i < n; ++i)
+        {
+            if (!q_table[i].is_zero())
+            {
+                mcl::Fr denominator;
+                mcl::Fr::add(denominator, table[i].native(), beta.native());
+                denominators.push_back(denominator);
+                locations.push_back({true, i});
+            }
+            if (!q_query[i].is_zero())
+            {
+                mcl::Fr denominator;
+                mcl::Fr::add(denominator, query[i].native(), beta.native());
+                denominators.push_back(denominator);
+                locations.push_back({false, i});
+            }
+        }
+        std::vector<mcl::Fr> inverses;
+        batch_inverse_native(denominators, inverses, "lookup inverse columns");
+        for (std::size_t i = 0; i < locations.size(); ++i)
+        {
+            auto &target = locations[i].first ? out.table : out.query;
+            target[locations[i].second] = FieldElement::from_native(inverses[i]);
+        }
+        return out;
+    }
+
+    std::vector<algebra::FieldElement> build_selected_inverse_column(
+        const std::vector<algebra::FieldElement> &values,
+        const std::vector<algebra::FieldElement> &selector,
+        const algebra::FieldElement &beta)
+    {
+        if (values.size() != selector.size())
+        {
+            throw std::runtime_error("selected inverse column input size mismatch");
+        }
+        std::vector<FieldElement> out(values.size(), FieldElement::zero());
+        std::vector<mcl::Fr> denominators;
+        std::vector<std::size_t> locations;
+        denominators.reserve(values.size());
+        locations.reserve(values.size());
+        for (std::size_t i = 0; i < values.size(); ++i)
+        {
+            if (!selector[i].is_zero())
+            {
+                mcl::Fr denominator;
+                mcl::Fr::add(denominator, values[i].native(), beta.native());
+                denominators.push_back(denominator);
+                locations.push_back(i);
+            }
+        }
+        std::vector<mcl::Fr> inverses;
+        batch_inverse_native(denominators, inverses, "selected inverse column");
+        for (std::size_t i = 0; i < locations.size(); ++i)
+        {
+            out[locations[i]] = FieldElement::from_native(inverses[i]);
+        }
+        return out;
     }
 
     // 真正的 LogUp 递推实现。`active_count` 只裁掉填充区，不改变 formal 递推本身。

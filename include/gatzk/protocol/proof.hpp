@@ -17,6 +17,8 @@
 
 namespace gatzk::protocol {
 
+struct ProtocolCompilerArtifact;
+
 // 固定静态查表集合，对应 formal note 中的激活、指数与范围表。
 struct StaticTables {
     std::vector<std::pair<algebra::FieldElement, algebra::FieldElement>> lrelu;
@@ -47,39 +49,30 @@ struct WorkDomains {
 // 对外公开且会进入 transcript / manifest / verifier 的元数据契约。
 struct PublicMetadata {
     std::string protocol_name;
+    std::string proof_nonce;
     std::string proof_task;
     std::string srs_id;
+    std::string protocol_schema_id;
+    std::string instance_schema_hash;
     std::string srs_type;
     std::string srs_degree_bound;
+    std::string kzg_assumption_profile;
     std::string privacy_policy;
     std::string input_privacy;
     std::string output_mode;
     std::string opening_mode;
     std::string binding_mode;
-    std::string protocol_id;
-    std::string dataset_name;
-    std::string task_type;
-    std::string report_unit;
-    std::string graph_count;
-    std::string L;
-    std::string hidden_profile;
-    std::string d_in_profile;
-    std::string K_out;
-    std::string C;
-    std::string batching_rule;
-    std::string subgraph_rule;
-    std::string self_loop_rule;
-    std::string edge_sort_rule;
-    std::string chunking_rule;
-    std::string model_arch_id;
-    std::string model_param_id;
-    std::string static_table_id;
-    std::string quant_cfg_id;
+    std::string model_arch;
+    std::string model_params;
+    std::string static_tables;
+    std::string quant_config;
     std::string domain_cfg;
     std::string dim_cfg;
-    std::string encoding_id;
-    std::string padding_rule_id;
-    std::string degree_bound_id;
+    std::string encoding;
+    std::string padding_rule;
+    std::string degree_bound;
+    std::string security_budget;
+    std::string public_output;
 };
 
 // 构建一次 formal 证明所需的静态上下文。
@@ -99,16 +92,24 @@ struct ProtocolContext {
     std::unordered_map<std::string, std::shared_ptr<const algebra::Polynomial>> public_fh_coefficient_materials;
     std::unordered_map<std::string, std::shared_ptr<const std::vector<algebra::FieldElement>>> public_fh_coset_materials;
     std::unordered_map<std::string, crypto::Commitment> static_commitments;
+    std::shared_ptr<const ProtocolCompilerArtifact> compiler_artifact;
 };
+
+struct PiBindProof;
 
 // `build_trace` 输出的全部动态对象。
 // 这里的标签、承诺顺序与挑战映射会直接进入 proof 生成阶段。
 struct TraceArtifacts {
+    // Read-only instance compiler contract used while materializing blinded
+    // objects. It is execution context and is never serialized into proof.
+    std::shared_ptr<const ProtocolCompilerArtifact> compiler_artifact;
+    PublicMetadata public_metadata;
     // 对超大 evaluation 列的临时落盘描述，只是执行层优化，不改变多项式语义。
     struct SpilledEvaluationPolynomial {
         std::string path;
         std::string domain_name;
         std::size_t size = 0;
+        std::vector<algebra::FieldElement> zero_domain_blinder;
     };
 
     // 原始列与矩阵，主要服务 artifact 导出与后续按标签取值。
@@ -133,6 +134,7 @@ struct TraceArtifacts {
     std::string reference_quant_logits_hash;
     std::string secure_trace_logits_hash;
     std::string proof_public_output_hash;
+    std::shared_ptr<PiBindProof> pi_bind;
 };
 
 struct DynamicCommitmentObjectProfile {
@@ -182,6 +184,103 @@ struct DomainOpeningBundle {
     crypto::OpeningProof proof;
 };
 
+// Pi_bind carries commitments and metadata references only.  KZG witnesses remain
+// owned by Open_dom/W_ext; a binding subproof can only refer to those owner groups.
+struct MetadataReference {
+    std::string object_id;
+};
+
+struct ModelReblindProof {
+    std::string object_id;
+    std::string domain;
+    MetadataReference vk_model_anchor;
+    crypto::Commitment proof_local_commitment;
+    crypto::Commitment blinder_commitment;
+};
+
+// Public, verifier-reconstructible metadata for one indexed-view relation.
+// None of these fields is prover-selectable witness data: the instance compiler
+// fixes the index map, selectors, multiplicity rule, challenge labels and the
+// exact Com_viewLogUp order.
+struct IndexedViewRelationMeta {
+    std::string relation_id;
+    std::string canonical_object;
+    std::string view_object;
+    std::string canonical_domain;
+    std::string view_domain;
+    std::size_t canonical_length = 0;
+    std::size_t view_length = 0;
+    std::string index_map_id;
+    std::string canonical_selector_id;
+    std::string query_selector_id;
+    std::string multiplicity_id;
+    std::string eta_challenge_label;
+    std::string beta_challenge_label;
+    std::vector<std::string> commitment_order;
+    bool operator==(const IndexedViewRelationMeta&) const = default;
+};
+
+// Canonical metadata for the KZG same-point normalization used by a binding
+// relation.  source_linear_maps describes the public linear reconstruction of
+// F_j from already-owned commitments; points and deltas are in canonical point
+// order, with points.front() the public pivot.
+struct KZGShiftRelationMeta {
+    std::string relation_id;
+    std::vector<std::string> source_linear_maps;
+    std::vector<std::string> source_domains;
+    std::vector<algebra::FieldElement> canonical_points;
+    algebra::FieldElement lambda0 = algebra::FieldElement::zero();
+    std::vector<algebra::FieldElement> deltas;
+    std::vector<std::string> source_value_kinds;
+    std::string challenge_label;
+    std::size_t exclusion_degree = 0;
+    std::size_t max_difference_degree = 0;
+    std::vector<std::size_t> configured_degrees;
+    std::vector<std::size_t> shift_domain_sizes;
+    std::vector<std::string> opening_claim_order;
+    bool operator==(const KZGShiftRelationMeta&) const = default;
+};
+
+struct BindingRelationMeta {
+    std::string relation_id;
+    std::string object_kind;
+    std::optional<std::size_t> layer_id;
+    std::optional<std::size_t> head_id;
+    std::vector<std::string> source_objects;
+    std::vector<std::string> target_objects;
+    std::vector<std::string> work_domains;
+    std::vector<std::size_t> real_lengths;
+    std::vector<std::string> quotient_relations;
+    std::vector<IndexedViewRelationMeta> indexed_views;
+    std::vector<KZGShiftRelationMeta> shift_relations;
+    bool operator==(const BindingRelationMeta&) const = default;
+};
+
+struct BindingEvaluation {
+    std::string domain;
+    std::string object_id;
+    std::vector<algebra::FieldElement> values;
+    PayloadValueKind kind = PayloadValueKind::MaskedPrivateValue;
+};
+
+struct BindingSubproof {
+    BindingRelationMeta relation_meta;
+    std::vector<ModelReblindProof> model_reblinds;
+    std::vector<MetadataReference> view_references;
+    std::vector<std::pair<std::string, crypto::Commitment>> view_commitments;
+    std::vector<std::pair<std::string, crypto::Commitment>> view_logup_commitments;
+    std::vector<std::pair<std::string, crypto::Commitment>> aggregation_commitments;
+    std::vector<std::pair<std::string, crypto::Commitment>> basis_commitments;
+    std::vector<std::pair<std::string, crypto::Commitment>> crpc_commitments;
+    std::vector<std::pair<std::string, crypto::Commitment>> relation_commitments;
+    std::vector<BindingEvaluation> evaluations;
+    std::vector<MetadataReference> opening_references;
+};
+
+struct PiBindProof {
+    std::vector<BindingSubproof> subproofs;
+};
+
 // 最终 proof 对象，顺序与字段语义必须与 verifier 和 artifact 导出保持一致。
 struct Proof {
     PublicMetadata public_metadata;
@@ -194,9 +293,8 @@ struct Proof {
     std::vector<std::pair<std::string, algebra::FieldElement>> witness_scalars;
     std::vector<PayloadValueKind> witness_scalar_kinds;
     std::vector<algebra::FieldElement> public_logits;
-    algebra::FieldElement public_output_challenge = algebra::FieldElement::zero();
-    crypto::OpeningProof public_output_opening;
     crypto::OpeningProof external_proof;
+    PiBindProof pi_bind;
     std::map<std::string, algebra::FieldElement> challenges;
 };
 

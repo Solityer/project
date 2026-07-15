@@ -171,7 +171,7 @@ void run_case(const CaseSpec& spec, std::size_t repeats, std::size_t requested_s
         auto sink = FieldElement::zero();
         const auto start = std::chrono::steady_clock::now();
         for (std::size_t i = 0; i < sample_points; ++i) {
-            sink += gatzk::protocol::evaluate_t_edge(context, challenges, witness, eval, z);
+            sink += gatzk::protocol::evaluate_t_edge(context, challenges, witness, {}, eval, z);
             z *= step_root;
         }
         const auto total_ms = elapsed_ms(start);

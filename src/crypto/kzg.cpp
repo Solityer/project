@@ -19,13 +19,16 @@
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <utility>
 
 #include <openssl/sha.h>
+#include <openssl/rand.h>
 
 #include "gatzk/algebra/vector_ops.hpp"
+#include "gatzk/protocol/schema.hpp"
 #include "gatzk/util/logging.hpp"
 #include "gatzk/util/route2.hpp"
 
@@ -59,6 +62,47 @@ namespace gatzk::crypto
             unsigned char digest[SHA256_DIGEST_LENGTH];
             SHA256(data.data(), data.size(), digest);
             return bytes_to_hex(digest, sizeof(digest));
+        }
+
+        std::string sha256_file_hex_cached(const std::filesystem::path& path)
+        {
+            static std::mutex cache_mutex;
+            static std::unordered_map<std::string, std::string> cache;
+            const auto size = std::filesystem::file_size(path);
+            const auto mtime = std::filesystem::last_write_time(path).time_since_epoch().count();
+            const auto key = path.string() + "|" + std::to_string(size) + "|" + std::to_string(mtime);
+            {
+                std::lock_guard<std::mutex> lock(cache_mutex);
+                if (const auto it = cache.find(key); it != cache.end())
+                {
+                    return it->second;
+                }
+            }
+            std::ifstream input(path, std::ios::binary);
+            if (!input)
+            {
+                throw std::runtime_error("failed to hash SRS material: " + path.string());
+            }
+            SHA256_CTX ctx;
+            SHA256_Init(&ctx);
+            std::vector<char> buffer(1U << 20);
+            while (input)
+            {
+                input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+                const auto count = input.gcount();
+                if (count > 0)
+                {
+                    SHA256_Update(&ctx, buffer.data(), static_cast<std::size_t>(count));
+                }
+            }
+            unsigned char digest[SHA256_DIGEST_LENGTH];
+            SHA256_Final(digest, &ctx);
+            auto hash = bytes_to_hex(digest, sizeof(digest));
+            {
+                std::lock_guard<std::mutex> lock(cache_mutex);
+                cache.emplace(key, hash);
+            }
+            return hash;
         }
 
         std::string trim(std::string value)
@@ -176,6 +220,66 @@ namespace gatzk::crypto
             return out;
         }
 
+        std::string canonical_domain_catalog_hash(
+            const std::unordered_map<std::string, std::size_t>& domains)
+        {
+            std::vector<std::pair<std::string, std::size_t>> ordered(
+                domains.begin(), domains.end());
+            std::sort(ordered.begin(), ordered.end());
+            std::ostringstream canonical;
+            canonical << "zkgat:domain-size-catalog:v1";
+            for (const auto& [name, size] : ordered)
+            {
+                canonical << '|' << name << '=' << size;
+            }
+            return sha256_hex(canonical.str());
+        }
+
+        std::string bytes_to_lower_hex(const std::uint8_t* bytes, std::size_t size)
+        {
+            static constexpr char alphabet[] = "0123456789abcdef";
+            std::string out(size * 2, '0');
+            for (std::size_t i = 0; i < size; ++i)
+            {
+                out[i * 2] = alphabet[bytes[i] >> 4U];
+                out[i * 2 + 1] = alphabet[bytes[i] & 0x0fU];
+            }
+            return out;
+        }
+
+        std::string canonical_field_hex(const FieldElement& value)
+        {
+            std::array<std::uint8_t, 32> bytes{};
+            value.write_little_endian(bytes.data(), bytes.size());
+            return bytes_to_lower_hex(bytes.data(), bytes.size());
+        }
+
+        std::string canonical_domain_generator_catalog_hash(
+            const std::unordered_map<std::string, std::size_t>& domains,
+            const std::unordered_map<std::string, std::string>& generators,
+            const std::string& root_derivation_id,
+            const std::string& row_order)
+        {
+            std::vector<std::pair<std::string, std::size_t>> ordered(
+                domains.begin(), domains.end());
+            std::sort(ordered.begin(), ordered.end());
+            std::ostringstream canonical;
+            canonical << "zkgat:domain-generator-catalog:v1"
+                      << "|root_derivation_id=" << root_derivation_id
+                      << "|row_order=" << row_order;
+            for (const auto& [name, size] : ordered)
+            {
+                const auto generator = generators.find(name);
+                if (generator == generators.end())
+                {
+                    throw std::runtime_error(
+                        "SRS domain generator catalogue is missing domain: " + name);
+                }
+                canonical << '|' << name << ':' << size << ':' << generator->second;
+            }
+            return sha256_hex(canonical.str());
+        }
+
         std::string read_text_file(const std::filesystem::path& path)
         {
             std::ifstream input(path);
@@ -188,11 +292,45 @@ namespace gatzk::crypto
             return stream.str();
         }
 
+        std::string compiler_artifact_scalar(
+            const std::string& text,
+            const std::string& key)
+        {
+            const auto prefix = key + "=";
+            const auto begin = text.find(prefix);
+            if (begin == std::string::npos || (begin != 0 && text[begin - 1] != '\n'))
+                throw std::runtime_error(
+                    "protocol compiler artifact is missing " + key);
+            const auto value_begin = begin + prefix.size();
+            const auto end = text.find('\n', value_begin);
+            return text.substr(value_begin, end - value_begin);
+        }
+
+        std::string decode_canonical_hex(std::string_view value)
+        {
+            if (value.empty() || (value.size() & 1U) != 0U)
+                throw std::runtime_error(
+                    "protocol compiler artifact hex field is malformed");
+            auto nibble = [](char c) -> unsigned {
+                if (c >= '0' && c <= '9') return static_cast<unsigned>(c - '0');
+                if (c >= 'a' && c <= 'f')
+                    return 10U + static_cast<unsigned>(c - 'a');
+                throw std::runtime_error(
+                    "protocol compiler artifact hex field is not canonical lowercase hex");
+            };
+            std::string out(value.size() / 2, '\0');
+            for (std::size_t i = 0; i < out.size(); ++i)
+                out[i] = static_cast<char>((nibble(value[2 * i]) << 4U)
+                    | nibble(value[2 * i + 1]));
+            return out;
+        }
+
         SRSManifest load_manifest_file(const std::string& srs_path)
         {
             const auto manifest_path = std::filesystem::path(srs_path) / "srs_manifest.json";
             const auto text = read_text_file(manifest_path);
             SRSManifest manifest;
+            manifest.manifest_format = manifest_scalar(text, "manifest_format");
             manifest.srs_id = manifest_scalar(text, "srs_id");
             manifest.curve_id = manifest_scalar(text, "curve_id");
             manifest.field_modulus_id = manifest_scalar(text, "field_modulus_id");
@@ -203,23 +341,224 @@ namespace gatzk::crypto
             manifest.pk_lagrange_paths = parse_string_map(manifest_object(text, "pk_lagrange_paths"));
             manifest.pk_lagrange_hashes = parse_string_map(manifest_object(text, "pk_lagrange_hashes"));
             manifest.domain_sizes = parse_size_map(manifest_object(text, "domain_sizes"));
+            manifest.domain_generators = parse_string_map(
+                manifest_object(text, "domain_generators"));
+            manifest.root_derivation_id = manifest_scalar(text, "root_derivation_id");
+            manifest.row_order = manifest_scalar(text, "row_order");
+            manifest.protocol_compiler_artifact_path =
+                manifest_scalar(text, "protocol_compiler_artifact_path");
+            manifest.protocol_compiler_artifact_hash =
+                manifest_scalar(text, "protocol_compiler_artifact_hash");
+            manifest.protocol_schema_id = manifest_scalar(text, "protocol_schema_id");
+            manifest.max_instance_envelope_id =
+                manifest_scalar(text, "max_instance_envelope_id");
+            manifest.max_instance_envelope_hash =
+                manifest_scalar(text, "max_instance_envelope_hash");
+            manifest.max_instance_envelope = parse_size_map(
+                manifest_object(text, "max_instance_envelope"));
+            manifest.proof_schema_template_hash =
+                manifest_scalar(text, "proof_schema_template_hash");
+            manifest.observation_ledger_hash =
+                manifest_scalar(text, "observation_ledger_hash");
+            manifest.random_identity_ledger_hash =
+                manifest_scalar(text, "random_identity_ledger_hash");
+            manifest.security_budget_ledger_hash =
+                manifest_scalar(text, "security_budget_ledger_hash");
             manifest.vk_path = manifest_scalar(text, "vk_path");
             manifest.vk_hash = manifest_scalar(text, "vk_hash");
             manifest.encoding = manifest_scalar(text, "encoding");
             manifest.generator_version = manifest_scalar(text, "generator_version");
             manifest.security_level = manifest_scalar(text, "security_level");
+            manifest.kzg_assumption_profile_id = manifest_scalar(text, "kzg_assumption_profile_id");
+            manifest.kzg_assumption_domain_catalog_hash =
+                manifest_scalar(text, "kzg_assumption_domain_catalog_hash");
+            manifest.domain_generator_catalog_hash =
+                manifest_scalar(text, "domain_generator_catalog_hash");
+            const auto declared_manifest_hash = manifest_scalar(text, "manifest_hash");
+            const auto manifest_hash_field = text.rfind("  \"manifest_hash\"");
+            if (declared_manifest_hash.empty() || manifest_hash_field == std::string::npos
+                || sha256_hex(text.substr(0, manifest_hash_field)) != declared_manifest_hash)
+            {
+                throw std::runtime_error("SRS manifest canonical hash mismatch");
+            }
             manifest.manifest_hash = sha256_hex(text);
             const auto degree_bound = manifest_scalar(text, "degree_bound");
             if (!degree_bound.empty())
             {
                 manifest.degree_bound = static_cast<std::size_t>(std::stoull(degree_bound));
             }
-            if (manifest.srs_id.empty() || manifest.srs_type.empty() || manifest.degree_bound == 0
-                || manifest.pk_coef_path.empty() || manifest.pk_lagrange_paths.empty() || manifest.vk_path.empty())
+            const auto assumption_degree_bound = manifest_scalar(text, "kzg_assumption_degree_bound");
+            if (!assumption_degree_bound.empty())
+            {
+                manifest.kzg_assumption_degree_bound =
+                    static_cast<std::size_t>(std::stoull(assumption_degree_bound));
+            }
+            const auto assumption_security_bits = manifest_scalar(text, "kzg_assumption_security_bits");
+            if (!assumption_security_bits.empty())
+            {
+                manifest.kzg_assumption_security_bits =
+                    static_cast<std::size_t>(std::stoull(assumption_security_bits));
+            }
+            if (manifest.manifest_format.empty() || manifest.srs_id.empty()
+                || manifest.srs_type.empty() || manifest.degree_bound == 0
+                || manifest.pk_coef_path.empty() || manifest.pk_lagrange_paths.empty()
+                || manifest.vk_path.empty()
+                || manifest.protocol_compiler_artifact_path.empty()
+                || manifest.protocol_compiler_artifact_hash.empty())
             {
                 throw std::runtime_error("SRS manifest is missing required material fields");
             }
             return manifest;
+        }
+
+        void validate_protocol_compiler_artifact_material(
+            const std::filesystem::path& srs_root,
+            const SRSManifest& manifest)
+        {
+            const auto artifact = read_text_file(
+                srs_root / manifest.protocol_compiler_artifact_path);
+            if (sha256_hex(artifact) != manifest.protocol_compiler_artifact_hash)
+                throw std::runtime_error(
+                    "protocol compiler artifact material hash mismatch");
+            constexpr std::string_view magic =
+                "GATZK-SRS-COMPILER-ARTIFACT-v3\n";
+            if (!artifact.starts_with(magic))
+                throw std::runtime_error("protocol compiler artifact magic mismatch");
+            const auto hash_field = artifact.rfind("artifact_hash=");
+            if (hash_field == std::string::npos
+                || compiler_artifact_scalar(artifact, "artifact_hash")
+                    != sha256_hex(artifact.substr(0, hash_field)))
+                throw std::runtime_error(
+                    "protocol compiler artifact canonical hash mismatch");
+            const auto protocol_template_hex =
+                compiler_artifact_scalar(artifact, "protocol_template_hex");
+            const auto proof_schema_template_hex =
+                compiler_artifact_scalar(artifact, "proof_schema_template_hex");
+            const auto observation_ledger_template_hex =
+                compiler_artifact_scalar(artifact, "observation_ledger_template_hex");
+            const auto random_identity_ledger_template_hex =
+                compiler_artifact_scalar(artifact, "random_identity_ledger_template_hex");
+            const auto security_budget_ledger_template_hex =
+                compiler_artifact_scalar(artifact, "security_budget_ledger_template_hex");
+            const auto max_instance_envelope_hex =
+                compiler_artifact_scalar(artifact, "max_instance_envelope_hex");
+            const auto max_instance_envelope_hash =
+                compiler_artifact_scalar(artifact, "max_instance_envelope_hash");
+            if (protocol_template_hex.empty()
+                || proof_schema_template_hex.empty()
+                || observation_ledger_template_hex.empty()
+                || random_identity_ledger_template_hex.empty()
+                || security_budget_ledger_template_hex.empty()
+                || max_instance_envelope_hex.empty()
+                || max_instance_envelope_hash.empty()
+                || compiler_artifact_scalar(artifact, "protocol_schema_id")
+                    != manifest.protocol_schema_id
+                || sha256_hex(decode_canonical_hex(protocol_template_hex))
+                    != manifest.protocol_schema_id
+                || compiler_artifact_scalar(artifact, "max_instance_envelope_id")
+                    != manifest.max_instance_envelope_id
+                || max_instance_envelope_hash
+                    != manifest.max_instance_envelope_hash
+                || max_instance_envelope_hash
+                    != sha256_hex(decode_canonical_hex(
+                        max_instance_envelope_hex))
+                || static_cast<std::size_t>(std::stoull(
+                       compiler_artifact_scalar(artifact, "degree_bound")))
+                    != manifest.degree_bound
+                || compiler_artifact_scalar(artifact, "domain_size_catalog_hash")
+                    != manifest.kzg_assumption_domain_catalog_hash
+                || compiler_artifact_scalar(artifact, "domain_generator_catalog_hash")
+                    != manifest.domain_generator_catalog_hash
+                || compiler_artifact_scalar(artifact, "proof_schema_template_hash")
+                    != manifest.proof_schema_template_hash
+                || compiler_artifact_scalar(artifact, "observation_ledger_hash")
+                    != manifest.observation_ledger_hash
+                || compiler_artifact_scalar(artifact, "random_identity_ledger_hash")
+                    != manifest.random_identity_ledger_hash
+                || compiler_artifact_scalar(artifact, "security_budget_ledger_hash")
+                    != manifest.security_budget_ledger_hash)
+                throw std::runtime_error(
+                    "protocol compiler artifact registries do not match the SRS manifest");
+            const auto envelope = decode_canonical_hex(max_instance_envelope_hex);
+            const std::vector<std::string> envelope_keys = {
+                "format", "max_layers", "max_hidden_heads_per_layer",
+                "max_hidden_head_dim", "max_input_dim", "max_output_heads",
+                "max_classes", "max_graphs", "max_nodes", "max_edges",
+                "max_total_nodes", "max_concat_dim", "max_range_bits",
+                "max_coefficient_object_length", "max_object_family_count",
+                "max_coefficient_chunks", "security_target_bits"};
+            std::string canonical_envelope;
+            std::unordered_map<std::string, std::size_t> envelope_sizes;
+            for (const auto &key : envelope_keys)
+            {
+                const auto value = compiler_artifact_scalar(envelope, key);
+                canonical_envelope += key + "=" + value + "\n";
+                if (key == "format")
+                {
+                    if (value != "zkgat_max_instance_envelope_v2")
+                        throw std::runtime_error(
+                            "protocol compiler max envelope format mismatch");
+                    continue;
+                }
+                if (value.empty()
+                    || (value.size() > 1 && value.front() == '0')
+                    || !std::all_of(value.begin(), value.end(), [](unsigned char ch)
+                       { return ch >= '0' && ch <= '9'; }))
+                    throw std::runtime_error(
+                        "protocol compiler max envelope integer mismatch: " + key);
+                const auto parsed = static_cast<std::size_t>(std::stoull(value));
+                if (parsed == 0) throw std::runtime_error(
+                    "protocol compiler max envelope has zero bound: " + key);
+                envelope_sizes.emplace(key, parsed);
+            }
+            if (canonical_envelope != envelope
+                || envelope_sizes != manifest.max_instance_envelope
+                || envelope_sizes.at("security_target_bits") != 120
+                || envelope_sizes.at("max_nodes") > manifest.domain_sizes.at("N")
+                || envelope_sizes.at("max_edges") > manifest.domain_sizes.at("edge")
+                || envelope_sizes.at("max_input_dim") > manifest.domain_sizes.at("in")
+                || envelope_sizes.at("max_hidden_head_dim") > manifest.domain_sizes.at("d")
+                || envelope_sizes.at("max_classes") > manifest.domain_sizes.at("cat")
+                || envelope_sizes.at("max_classes") > manifest.domain_sizes.at("C")
+                || envelope_sizes.at("max_concat_dim") > manifest.domain_sizes.at("cat")
+                || envelope_sizes.at("max_graphs") > envelope_sizes.at("max_nodes")
+                || envelope_sizes.at("max_total_nodes")
+                    < envelope_sizes.at("max_nodes")
+                || envelope_sizes.at("max_concat_dim")
+                    < envelope_sizes.at("max_hidden_head_dim")
+                || envelope_sizes.at("max_range_bits") >= 64
+                || envelope_sizes.at("max_coefficient_chunks")
+                    > std::numeric_limits<std::size_t>::max()
+                        / (manifest.domain_sizes.at("edge") - 1)
+                || envelope_sizes.at("max_coefficient_object_length")
+                    > envelope_sizes.at("max_coefficient_chunks")
+                        * (manifest.domain_sizes.at("edge") - 1)
+                || envelope_sizes.at("max_nodes")
+                    > std::numeric_limits<std::size_t>::max()
+                        / envelope_sizes.at("max_input_dim")
+                || envelope_sizes.at("max_nodes")
+                        * envelope_sizes.at("max_input_dim")
+                    > manifest.domain_sizes.at("FH"))
+                throw std::runtime_error(
+                    "protocol compiler max envelope exceeds the SRS domain catalogue");
+            if (decode_canonical_hex(proof_schema_template_hex)
+                    != ::gatzk::protocol::protocol_proof_schema_template_canonical_bytes()
+                || decode_canonical_hex(observation_ledger_template_hex)
+                    != ::gatzk::protocol::protocol_observation_ledger_template_canonical_bytes()
+                || decode_canonical_hex(random_identity_ledger_template_hex)
+                    != ::gatzk::protocol::protocol_random_identity_ledger_template_canonical_bytes()
+                || decode_canonical_hex(security_budget_ledger_template_hex)
+                    != ::gatzk::protocol::protocol_security_budget_ledger_template_canonical_bytes()
+                || sha256_hex(decode_canonical_hex(proof_schema_template_hex))
+                    != manifest.proof_schema_template_hash
+                || sha256_hex(decode_canonical_hex(observation_ledger_template_hex))
+                    != manifest.observation_ledger_hash
+                || sha256_hex(decode_canonical_hex(random_identity_ledger_template_hex))
+                    != manifest.random_identity_ledger_hash
+                || sha256_hex(decode_canonical_hex(security_budget_ledger_template_hex))
+                    != manifest.security_budget_ledger_hash)
+                throw std::runtime_error(
+                    "protocol compiler artifact embedded registry bytes mismatch");
         }
 
         void validate_material_hash_value(
@@ -501,7 +840,14 @@ namespace gatzk::crypto
             return out;
         }
 
-        std::pair<G2Point, G2Point> load_vk_file(const std::filesystem::path& path, std::string* actual_hash = nullptr)
+        struct LoadedVerifierKey
+        {
+            G2Point g2_one;
+            G2Point g2_tau;
+            std::unordered_map<std::string, G2Point> domain_zero_g2;
+        };
+
+        LoadedVerifierKey load_vk_file(const std::filesystem::path& path, std::string* actual_hash = nullptr)
         {
             std::ifstream file(path, std::ios::binary | std::ios::ate);
             if (!file)
@@ -527,7 +873,7 @@ namespace gatzk::crypto
             }
             std::string header;
             std::getline(input, header);
-            if (header != "GATZK-VK-v1")
+            if (header != "GATZK-VK-v2")
             {
                 throw std::runtime_error("invalid verifier key header: " + path.string());
             }
@@ -543,7 +889,39 @@ namespace gatzk::crypto
             };
             auto g2_one = read_g2();
             auto g2_tau = read_g2();
-            return {g2_one, g2_tau};
+            const auto domain_count = read_u64_le(input, "domain zero G2 count");
+            if (domain_count == 0 || domain_count > (1ULL << 20))
+            {
+                throw std::runtime_error("invalid verifier key domain zero G2 count");
+            }
+            std::unordered_map<std::string, G2Point> domain_zero_g2;
+            for (std::uint64_t i = 0; i < domain_count; ++i)
+            {
+                const auto name_size = read_u64_le(input, "domain zero G2 name size");
+                if (name_size == 0 || name_size > 1024)
+                {
+                    throw std::runtime_error("invalid verifier key domain name size");
+                }
+                std::string name(static_cast<std::size_t>(name_size), '\0');
+                input.read(name.data(), static_cast<std::streamsize>(name.size()));
+                if (input.gcount() != static_cast<std::streamsize>(name.size()))
+                {
+                    throw std::runtime_error("truncated verifier key domain name");
+                }
+                if (!domain_zero_g2.emplace(std::move(name), read_g2()).second)
+                {
+                    throw std::runtime_error("duplicate verifier key domain zero G2 entry");
+                }
+            }
+            if (input.peek() != std::char_traits<char>::eof())
+            {
+                throw std::runtime_error("trailing bytes in verifier key");
+            }
+            return LoadedVerifierKey{
+                .g2_one = std::move(g2_one),
+                .g2_tau = std::move(g2_tau),
+                .domain_zero_g2 = std::move(domain_zero_g2),
+            };
         }
 
         void validate_manifest(
@@ -551,13 +929,18 @@ namespace gatzk::crypto
             const std::string& expected_srs_type,
             const std::string& expected_srs_id)
         {
+            if (manifest.manifest_format != "zkgat_srs_manifest_v7"
+                || manifest.generator_version != "zkgat_srs_setup_tool_v7")
+            {
+                throw std::runtime_error("unsupported or legacy SRS manifest format");
+            }
             if (manifest.curve_id != "bls12_381" || manifest.field_modulus_id != "bls12_381_fr")
             {
                 throw std::runtime_error("SRS curve or field mismatch");
             }
-            if (manifest.srs_type != "trusted_srs" && manifest.srs_type != "mpc_srs")
+            if (manifest.srs_type != "trusted_srs")
             {
-                throw std::runtime_error("secure mainline requires trusted_srs or mpc_srs");
+                throw std::runtime_error("secure mainline requires srs_type=trusted_srs");
             }
             if (!expected_srs_type.empty() && manifest.srs_type != expected_srs_type)
             {
@@ -566,6 +949,59 @@ namespace gatzk::crypto
             if (!expected_srs_id.empty() && manifest.srs_id != expected_srs_id)
             {
                 throw std::runtime_error("SRS id mismatch");
+            }
+            if (manifest.kzg_assumption_profile_id != "shifted_kzg_divisibility_v1"
+                || manifest.kzg_assumption_degree_bound != manifest.degree_bound
+                || manifest.kzg_assumption_security_bits != 128
+                || manifest.kzg_assumption_domain_catalog_hash
+                    != canonical_domain_catalog_hash(manifest.domain_sizes))
+            {
+                throw std::runtime_error("SRS shifted-KZG assumption profile is missing or inconsistent");
+            }
+            if (manifest.root_derivation_id != "bls12_381_fr_generator_5_v1"
+                || manifest.row_order != "ascending_powers_from_one"
+                || manifest.domain_generators.size() != manifest.domain_sizes.size()
+                || manifest.domain_generator_catalog_hash
+                    != canonical_domain_generator_catalog_hash(
+                        manifest.domain_sizes,
+                        manifest.domain_generators,
+                        manifest.root_derivation_id,
+                        manifest.row_order))
+            {
+                throw std::runtime_error("SRS domain generator catalogue is missing or inconsistent");
+            }
+            if (manifest.protocol_schema_id.empty()
+                || manifest.max_instance_envelope_id.empty()
+                || manifest.max_instance_envelope_hash.empty()
+                || manifest.max_instance_envelope_id
+                    != manifest.max_instance_envelope_hash
+                || manifest.max_instance_envelope.empty()
+                || manifest.proof_schema_template_hash.empty()
+                || manifest.observation_ledger_hash.empty()
+                || manifest.random_identity_ledger_hash.empty()
+                || manifest.security_budget_ledger_hash.empty())
+            {
+                throw std::runtime_error(
+                    "SRS protocol compiler artifact binding is incomplete");
+            }
+            if (manifest.security_level != "120-bit")
+                throw std::runtime_error(
+                    "SRS manifest security target does not match compiler target");
+            for (const auto& [domain_name, domain_size] : manifest.domain_sizes)
+            {
+                if (domain_size == 0 || domain_size > manifest.degree_bound)
+                {
+                    throw std::runtime_error("SRS assumption profile does not cover a registered domain size");
+                }
+                const auto generator = manifest.domain_generators.find(domain_name);
+                if (generator == manifest.domain_generators.end()
+                    || generator->second
+                        != canonical_field_hex(FieldElement::root_of_unity(domain_size)))
+                {
+                    throw std::runtime_error(
+                        "SRS domain generator does not match canonical root derivation: "
+                        + domain_name);
+                }
             }
         }
 
@@ -867,6 +1303,35 @@ namespace gatzk::crypto
             return out;
         }
 
+        G1Point commit_zero_domain_multiple_point(
+            std::size_t domain_size,
+            const std::vector<FieldElement>& multiplier,
+            const KZGProverKey& pk,
+            std::string_view label)
+        {
+            if (pk.powers_g1 == nullptr
+                || domain_size + multiplier.size() > pk.powers_g1->size()
+                || domain_size + multiplier.size() > pk.degree_bound + 1)
+            {
+                throw std::runtime_error(
+                    "zero-domain multiple exceeds coefficient SRS degree bound: "
+                    + std::string(label));
+            }
+            auto out = g1_zero();
+            for (std::size_t i = 0; i < multiplier.size(); ++i)
+            {
+                if (multiplier[i].is_zero())
+                {
+                    continue;
+                }
+                const auto shifted = g1_sub(
+                    (*pk.powers_g1)[domain_size + i],
+                    (*pk.powers_g1)[i]);
+                out = g1_add(out, g1_mul(shifted, multiplier[i]));
+            }
+            return out;
+        }
+
         // KZG多项式承诺主函数
         G1Point commit_polynomial_point(
             const algebra::Polynomial& polynomial,
@@ -1007,6 +1472,16 @@ namespace gatzk::crypto
                         polynomial.size(),
                         profile != nullptr ? &msm_profile : nullptr,
                         msm_options);
+                }
+                if (polynomial.is_zero_domain_blinded())
+                {
+                    point = g1_add(
+                        point,
+                        commit_zero_domain_multiple_point(
+                            polynomial.domain->size,
+                            polynomial.zero_domain_blinder,
+                            pk,
+                            polynomial.name));
                 }
             }
             if (profile != nullptr)
@@ -1284,6 +1759,7 @@ namespace gatzk::crypto
         struct FoldedEvaluationTerm
         {
             const std::vector<FieldElement>* values = nullptr;
+            const std::vector<FieldElement>* zero_domain_blinder = nullptr;
             std::size_t value_count = 0;
             FieldElement scale = FieldElement::zero();
         };
@@ -1329,9 +1805,10 @@ namespace gatzk::crypto
             const std::vector<Commitment>& commitments,
             const std::vector<std::vector<FieldElement>>& claimed_values,
             const std::vector<FieldElement>& powers,
-            std::size_t point_count,
+            const std::vector<FieldElement>& points,
             std::size_t worker_cap)
         {
+            const auto point_count = points.size();
             struct FoldedOpeningTerm
             {
                 const Commitment* commitment = nullptr;
@@ -1392,6 +1869,17 @@ namespace gatzk::crypto
                 const auto& polynomial = *term.commitment->opening_polynomial;
                 if (polynomial.basis == algebra::PolynomialBasis::Coefficient)
                 {
+                    for (std::size_t point_index = 0; !term.scale.is_zero() && point_index < point_count; ++point_index)
+                    {
+                        const auto expected = polynomial.evaluate(points[point_index]);
+                        const auto claimed = term.scaled_claims[point_index] / term.scale;
+                        if (expected != claimed)
+                        {
+                            throw std::runtime_error(
+                                "coefficient opening claim mismatch for " + term.commitment->name
+                                + " at point index " + std::to_string(point_index));
+                        }
+                    }
                     if (!term.scale.is_zero())
                     {
                         accumulate_scaled_coefficients(&plan.coefficient_fold, polynomial.values(), term.scale, worker_cap);
@@ -1408,10 +1896,26 @@ namespace gatzk::crypto
                 }
                 auto& group = folded_evaluation_group(&plan, polynomial.domain, point_count);
                 const auto& source_values = polynomial.values();
+                for (std::size_t point_index = 0;
+                     !term.scale.is_zero() && point_index < point_count;
+                     ++point_index)
+                {
+                    const auto expected = polynomial.evaluate(points[point_index]);
+                    const auto claimed = term.scaled_claims[point_index] / term.scale;
+                    if (expected != claimed)
+                    {
+                        throw std::runtime_error(
+                            "evaluation opening claim mismatch for " + term.commitment->name
+                            + " at point index " + std::to_string(point_index));
+                    }
+                }
                 if (!term.scale.is_zero())
                 {
                     group.terms.push_back(FoldedEvaluationTerm{
                         .values = &source_values,
+                        .zero_domain_blinder = polynomial.is_zero_domain_blinded()
+                            ? &polynomial.zero_domain_blinder
+                            : nullptr,
                         .value_count = source_values.size(),
                         .scale = term.scale,
                     });
@@ -1614,6 +2118,49 @@ namespace gatzk::crypto
                         pk,
                         nullptr,
                         msm_options));
+
+                // The domain-value quotient above is the unique degree < n
+                // interpolant of the full quotient on H.  For
+                // P^zk=P+Z_H R, the omitted high-degree part is exactly
+                // Z_H * (R(X)-R(z))/(X-z); its quotient contribution is the
+                // small coefficient polynomial (R(X)-R(z))/(X-z).
+                std::vector<FieldElement> blinder_quotient_fold;
+                for (const auto &term : group.terms)
+                {
+                    if (term.zero_domain_blinder == nullptr
+                        || term.zero_domain_blinder->empty()
+                        || term.scale.is_zero())
+                    {
+                        continue;
+                    }
+                    std::vector<FieldElement> quotient;
+                    const auto blinder_value = algebra::horner(
+                        *term.zero_domain_blinder,
+                        point);
+                    if (coefficient_single_point_quotient_coefficients(
+                            &quotient,
+                            *term.zero_domain_blinder,
+                            point,
+                            blinder_value))
+                    {
+                        accumulate_scaled_coefficients(
+                            &blinder_quotient_fold,
+                            quotient,
+                            term.scale,
+                            worker_cap);
+                    }
+                }
+                trim_zero_coefficients(&blinder_quotient_fold);
+                if (!blinder_quotient_fold.empty())
+                {
+                    out = g1_add(
+                        out,
+                        commit_zero_domain_multiple_point(
+                            group.domain->size,
+                            blinder_quotient_fold,
+                            pk,
+                            "folded_" + group.domain->name + "_blinder_witness"));
+                }
             }
             return out;
         }
@@ -1642,6 +2189,13 @@ namespace gatzk::crypto
             const KZGVerifierKey& vk)
         {
             const auto rhs = g2_sub(vk.g2_tau, g2_mul(vk.g2_one, point));
+            if (rhs == g2_zero())
+            {
+                // tau must remain outside every proof-derived opening point.  A
+                // zero [tau-z]_2 makes the KZG equation degenerate and is an SRS
+                // compromise, never a valid proof result.
+                return false;
+            }
             if (util::route2_options().fast_verify_pairing && vk.g2_one_prepared != nullptr)
             {
                 return pairing_equal_with_prepared_rhs_a(numerator, *vk.g2_one_prepared, witness, rhs);
@@ -1796,6 +2350,7 @@ namespace gatzk::crypto
         const auto manifest = load_manifest_file(srs_path);
         validate_manifest(manifest, expected_srs_type, expected_srs_id);
         const auto srs_root = std::filesystem::path(srs_path);
+        validate_protocol_compiler_artifact_material(srs_root, manifest);
         const auto selected_lagrange_domains =
             select_lagrange_srs_domains(manifest, required_lagrange_domains);
 
@@ -1807,7 +2362,10 @@ namespace gatzk::crypto
             required_coefficient_count);
         if (pk_coef_hash.rfind("prefix:", 0) == 0)
         {
-            validate_material_hash_declared(manifest.pk_coef_hash, "pk_coef");
+            validate_material_hash_value(
+                sha256_file_hex_cached(srs_root / manifest.pk_coef_path),
+                manifest.pk_coef_hash,
+                "pk_coef");
         }
         else
         {
@@ -1841,8 +2399,79 @@ namespace gatzk::crypto
         }
         std::string vk_hash;
         progress_note("kzg:srs:vk:start");
-        const auto [g2_one, g2_tau] = load_vk_file(srs_root / manifest.vk_path, &vk_hash);
+        auto loaded_vk = load_vk_file(srs_root / manifest.vk_path, &vk_hash);
+        const auto &g2_one = loaded_vk.g2_one;
+        const auto &g2_tau = loaded_vk.g2_tau;
         validate_material_hash_value(vk_hash, manifest.vk_hash, "vk");
+        std::vector<std::string> ceremony_domains;
+        ceremony_domains.reserve(manifest.domain_sizes.size());
+        for (const auto &[domain, _] : manifest.domain_sizes)
+        {
+            (void)_;
+            ceremony_domains.push_back(domain);
+        }
+        std::sort(ceremony_domains.begin(), ceremony_domains.end());
+        std::ostringstream public_transcript;
+        public_transcript << "gatzk:trusted-srs-public-transcript:v7|"
+                          << manifest.srs_id << '|' << manifest.degree_bound << '|'
+                          << manifest.pk_coef_hash << '|' << manifest.vk_hash << '|'
+                          << canonical_domain_catalog_hash(manifest.domain_sizes) << '|'
+                          << manifest.protocol_compiler_artifact_hash;
+        for (const auto &domain : ceremony_domains)
+        {
+            const auto hash = manifest.pk_lagrange_hashes.find(domain);
+            if (hash == manifest.pk_lagrange_hashes.end())
+                throw std::runtime_error(
+                    "SRS public transcript is missing a Lagrange material hash: "
+                    + domain);
+            public_transcript << '|' << domain << '=' << hash->second;
+        }
+        if (sha256_hex(public_transcript.str())
+            != manifest.ceremony_transcript_hash)
+            throw std::runtime_error(
+                "SRS public ceremony transcript binding mismatch");
+        if (loaded_vk.domain_zero_g2.size() != manifest.domain_sizes.size())
+        {
+            throw std::runtime_error("verifier key domain zero G2 registry size mismatch");
+        }
+        for (const auto &[domain_name, _] : manifest.domain_sizes)
+        {
+            (void)_;
+            if (!loaded_vk.domain_zero_g2.contains(domain_name))
+            {
+                throw std::runtime_error("missing verifier-key zero-polynomial G2 commitment for domain: " + domain_name);
+            }
+        }
+
+        // The manifest hashes authenticate bytes, but they do not prove that the
+        // coefficient PK and the G2 verifier catalogue were generated from the
+        // same toxic-waste scalar.  Audit the relations needed by ordinary KZG
+        // and by proof-local model divisibility before exposing either key.
+        if (powers_g1.size() < 2
+            || !pairing_equal(powers_g1[1], g2_one, powers_g1[0], g2_tau))
+        {
+            throw std::runtime_error("SRS coefficient/G2 tau consistency audit failed");
+        }
+        for (const auto &domain_name : selected_lagrange_domains)
+        {
+            const auto size_it = manifest.domain_sizes.find(domain_name);
+            const auto zero_it = loaded_vk.domain_zero_g2.find(domain_name);
+            if (size_it == manifest.domain_sizes.end()
+                || zero_it == loaded_vk.domain_zero_g2.end()
+                || size_it->second >= powers_g1.size())
+            {
+                throw std::runtime_error(
+                    "SRS zero-polynomial consistency audit lacks coefficient material for domain: "
+                    + domain_name);
+            }
+            const auto zero_g1 = g1_sub(powers_g1[size_it->second], powers_g1[0]);
+            if (!pairing_equal(zero_g1, g2_one, powers_g1[0], zero_it->second))
+            {
+                throw std::runtime_error(
+                    "SRS zero-polynomial G2 consistency audit failed for domain: "
+                    + domain_name);
+            }
+        }
         progress_note("kzg:srs:vk:done");
 
         G1Point g1_generator = g1_zero();
@@ -1868,6 +2497,7 @@ namespace gatzk::crypto
             .g1_generator = g1_generator,
             .g2_one = g2_one,
             .g2_tau = g2_tau,
+            .domain_zero_g2 = std::move(loaded_vk.domain_zero_g2),
             .g2_one_prepared = std::make_shared<PreparedG2>(prepare_g2(g2_one)),
             .g2_tau_prepared = std::make_shared<PreparedG2>(prepare_g2(g2_tau)),
             .manifest_hash = manifest.manifest_hash,
@@ -1901,6 +2531,34 @@ namespace gatzk::crypto
     Commitment KZG::commit(const std::string& name, const algebra::Polynomial& polynomial, const KZGKeyPair& key)
     {
         return make_commitment(name, polynomial, key.pk);
+    }
+
+    Commitment KZG::commit_taylor_shifted(
+        const Commitment& source,
+        const std::string& shifted_name,
+        std::size_t configured_degree,
+        const FieldElement& delta,
+        const KZGKeyPair& key)
+    {
+        if (source.opening_polynomial == nullptr)
+        {
+            throw std::runtime_error(
+                "Taylor shift is missing source opening material: " + source.name);
+        }
+        if (configured_degree > key.pk.degree_bound)
+        {
+            throw std::runtime_error(
+                "Taylor shift exceeds the configured coefficient SRS degree bound");
+        }
+        auto coefficients = algebra::materialize_blinded_coefficients(
+            *source.opening_polynomial, configured_degree);
+        auto shifted = algebra::coefficient_taylor_shift(
+            coefficients, configured_degree, delta);
+        return make_commitment(
+            shifted_name,
+            algebra::Polynomial::from_coefficients(
+                shifted_name, std::move(shifted)),
+            key.pk);
     }
 
     std::vector<Commitment> KZG::commit_constant_batch(
@@ -2119,6 +2777,96 @@ namespace gatzk::crypto
         return out;
     }
 
+    std::pair<Commitment, Commitment> KZG::reblind_domain_polynomial(
+        const Commitment& long_term_anchor,
+        const std::string& proof_local_name,
+        const std::string& blinder_name,
+        const std::string& domain_name,
+        std::size_t domain_size,
+        std::size_t blinder_coefficient_count,
+        const KZGKeyPair& key)
+    {
+        if (long_term_anchor.opening_polynomial == nullptr
+            || long_term_anchor.opening_polynomial->basis != algebra::PolynomialBasis::Coefficient)
+        {
+            throw std::runtime_error("model reblinding requires a coefficient-basis anchor polynomial");
+        }
+        if (domain_size == 0 || blinder_coefficient_count == 0
+            || domain_size > key.pk.degree_bound
+            || blinder_coefficient_count - 1 > key.pk.degree_bound - domain_size)
+        {
+            throw std::runtime_error("model reblinding exceeds the configured shifted-KZG degree bound");
+        }
+        const auto manifest_domain = key.manifest.domain_sizes.find(domain_name);
+        if (manifest_domain == key.manifest.domain_sizes.end()
+            || manifest_domain->second != domain_size
+            || !key.vk.domain_zero_g2.contains(domain_name))
+        {
+            throw std::runtime_error("model reblinding domain is absent or inconsistent in the SRS manifest");
+        }
+
+        std::vector<FieldElement> blinder_coefficients(blinder_coefficient_count);
+        std::array<std::uint8_t, 64> random_bytes{};
+        bool any_nonzero = false;
+        for (auto& coefficient : blinder_coefficients)
+        {
+            if (RAND_bytes(random_bytes.data(), static_cast<int>(random_bytes.size())) != 1)
+            {
+                throw std::runtime_error("CSPRNG failed while sampling a model reblinder");
+            }
+            coefficient = FieldElement::from_little_endian_mod(random_bytes.data(), random_bytes.size());
+            any_nonzero = any_nonzero || !coefficient.is_zero();
+        }
+        if (!any_nonzero)
+        {
+            // A 512-bit reduction is zero only with negligible probability.  A
+            // deterministic fallback would violate the fresh-randomness rule,
+            // so resample the first coefficient from the CSPRNG instead.
+            do
+            {
+                if (RAND_bytes(random_bytes.data(), static_cast<int>(random_bytes.size())) != 1)
+                {
+                    throw std::runtime_error("CSPRNG failed while resampling a model reblinder");
+                }
+                blinder_coefficients.front() =
+                    FieldElement::from_little_endian_mod(random_bytes.data(), random_bytes.size());
+            } while (blinder_coefficients.front().is_zero());
+        }
+
+        auto proof_local_coefficients = long_term_anchor.opening_polynomial->values();
+        const auto required_size = domain_size + blinder_coefficients.size();
+        proof_local_coefficients.resize(
+            std::max(proof_local_coefficients.size(), required_size),
+            FieldElement::zero());
+        for (std::size_t i = 0; i < blinder_coefficients.size(); ++i)
+        {
+            proof_local_coefficients[i] -= blinder_coefficients[i];
+            proof_local_coefficients[domain_size + i] += blinder_coefficients[i];
+        }
+
+        auto commitments = commit_owned_batch(
+            {
+                {proof_local_name, algebra::Polynomial::from_coefficients(
+                    proof_local_name,
+                    std::move(proof_local_coefficients))},
+                {blinder_name, algebra::Polynomial::from_coefficients(
+                    blinder_name,
+                    std::move(blinder_coefficients))},
+            },
+            key);
+        if (commitments.size() != 2
+            || !verify_domain_divisibility(
+                commitments[0],
+                long_term_anchor,
+                commitments[1],
+                domain_name,
+                key.vk))
+        {
+            throw std::runtime_error("locally generated model reblinding failed its divisibility check");
+        }
+        return {std::move(commitments[0]), std::move(commitments[1])};
+    }
+
     OpeningProof KZG::open_batch(
         const std::vector<Commitment>& commitments,
         const std::vector<FieldElement>& points,
@@ -2170,7 +2918,7 @@ namespace gatzk::crypto
             commitments,
             claimed_values,
             powers,
-            points.size(),
+            points,
             run_point_parallel ? point_msm_worker_cap : 0);
         if (profile != nullptr)
         {
@@ -2303,26 +3051,65 @@ namespace gatzk::crypto
         const FieldElement& folding_challenge,
         const KZGKeyPair& key)
     {
-        (void)folding_challenge;
         if (commitments_and_values.size() != points.size())
         {
             throw std::runtime_error("external opening shape mismatch");
         }
+        struct PointGroup
+        {
+            FieldElement point = FieldElement::zero();
+            std::vector<std::size_t> claim_indices;
+        };
+        std::vector<PointGroup> groups;
+        for (std::size_t i = 0; i < points.size(); ++i)
+        {
+            auto it = std::find_if(groups.begin(), groups.end(), [&](const PointGroup& group) {
+                return group.point == points[i];
+            });
+            if (it == groups.end())
+            {
+                groups.push_back(PointGroup{.point = points[i], .claim_indices = {i}});
+            }
+            else
+            {
+                it->claim_indices.push_back(i);
+            }
+        }
         OpeningProof proof;
-        proof.witnesses.reserve(commitments_and_values.size());
+        proof.witnesses.reserve(groups.size());
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
         const auto worker_count = std::min<std::size_t>(
-            commitments_and_values.size(),
+            groups.size(),
             std::max<std::size_t>(1, cpu_count / 4));
         const bool run_parallel =
             util::route2_options().fast_msm
-            && commitments_and_values.size() > 1
+            && groups.size() > 1
             && worker_count > 1;
+        auto open_group = [&](std::size_t group_index, const G1MSMExecutionOptions* options) {
+            const auto& group = groups[group_index];
+            std::vector<Commitment> commitments;
+            std::vector<std::vector<FieldElement>> values;
+            commitments.reserve(group.claim_indices.size());
+            values.reserve(group.claim_indices.size());
+            for (const auto claim_index : group.claim_indices)
+            {
+                commitments.push_back(commitments_and_values[claim_index].first);
+                values.push_back({commitments_and_values[claim_index].second});
+            }
+            const auto powers = folding_powers(folding_challenge, commitments.size());
+            const auto plan = build_folded_opening_plan(
+                commitments,
+                values,
+                powers,
+                std::vector<FieldElement>{group.point},
+                options == nullptr ? 0 : options->max_worker_count);
+            return open_single_point_fold(plan, 0, group.point, key.pk, nullptr, nullptr, 0, options);
+        };
         if (run_parallel)
         {
             const auto worker_cap = std::max<std::size_t>(1, cpu_count / worker_count);
             const G1MSMExecutionOptions msm_options{.max_worker_count = worker_cap};
-            proof.witnesses.resize(commitments_and_values.size());
+            proof.witnesses.resize(groups.size());
             std::atomic<std::size_t> next{0};
             std::vector<std::future<void>> futures;
             futures.reserve(worker_count);
@@ -2332,17 +3119,11 @@ namespace gatzk::crypto
                     while (true)
                     {
                         const auto i = next.fetch_add(1);
-                        if (i >= commitments_and_values.size())
+                        if (i >= groups.size())
                         {
                             break;
                         }
-                        const auto& [commitment, value] = commitments_and_values[i];
-                        proof.witnesses[i] = open_external_witness_point(
-                            commitment,
-                            points[i],
-                            value,
-                            key.pk,
-                            &msm_options);
+                        proof.witnesses[i] = open_group(i, &msm_options);
                     }
                 }));
             }
@@ -2353,14 +3134,9 @@ namespace gatzk::crypto
         }
         else
         {
-            for (std::size_t i = 0; i < commitments_and_values.size(); ++i)
+            for (std::size_t i = 0; i < groups.size(); ++i)
             {
-                const auto& [commitment, value] = commitments_and_values[i];
-                proof.witnesses.push_back(open_external_witness_point(
-                    commitment,
-                    points[i],
-                    value,
-                    key.pk));
+                proof.witnesses.push_back(open_group(i, nullptr));
             }
         }
         return proof;
@@ -2373,24 +3149,83 @@ namespace gatzk::crypto
             const OpeningProof& proof,
             const KZGVerifierKey& vk)
     {
-        (void)folding_challenge;
-        if (commitments_and_values.size() != points.size() || proof.witnesses.size() != points.size())
+        if (commitments_and_values.size() != points.size())
         {
             throw std::runtime_error("external verification shape mismatch");
         }
-        for (std::size_t i = 0; i < commitments_and_values.size(); ++i)
+        struct PointGroup
         {
-            const auto& [commitment, value] = commitments_and_values[i];
-            const auto numerator = g1_sub(commitment.point, g1_mul(vk.g1_generator, value));
-            if (!verify_pairing_equation(numerator, proof.witnesses[i], points[i], vk))
+            FieldElement point = FieldElement::zero();
+            std::vector<std::size_t> claim_indices;
+        };
+        std::vector<PointGroup> groups;
+        for (std::size_t i = 0; i < points.size(); ++i)
+        {
+            auto it = std::find_if(groups.begin(), groups.end(), [&](const PointGroup& group) {
+                return group.point == points[i];
+            });
+            if (it == groups.end())
+            {
+                groups.push_back(PointGroup{.point = points[i], .claim_indices = {i}});
+            }
+            else
+            {
+                it->claim_indices.push_back(i);
+            }
+        }
+        if (proof.witnesses.size() != groups.size())
+        {
+            throw std::runtime_error("external point-group witness count mismatch");
+        }
+        for (std::size_t group_index = 0; group_index < groups.size(); ++group_index)
+        {
+            const auto& group = groups[group_index];
+            std::vector<Commitment> commitments;
+            std::vector<std::vector<FieldElement>> values;
+            for (const auto claim_index : group.claim_indices)
+            {
+                commitments.push_back(commitments_and_values[claim_index].first);
+                values.push_back({commitments_and_values[claim_index].second});
+            }
+            OpeningProof group_proof{.witnesses = {proof.witnesses[group_index]}};
+            if (!verify_batch(
+                    commitments,
+                    {group.point},
+                    values,
+                    folding_challenge,
+                    group_proof,
+                    vk))
             {
                 if (std::getenv("GATZK_DEBUG_VERIFY") != nullptr)
                 {
-                    util::info("external_fold_pairing_fail_index=" + std::to_string(i));
+                    util::info("external_fold_pairing_fail_group=" + std::to_string(group_index));
                 }
                 return false;
             }
         }
         return true;
+    }
+
+    bool KZG::verify_domain_divisibility(
+        const Commitment& proof_local,
+        const Commitment& long_term_anchor,
+        const Commitment& blinder,
+        const std::string& domain_name,
+        const KZGVerifierKey& vk)
+    {
+        const auto zero_it = vk.domain_zero_g2.find(domain_name);
+        if (zero_it == vk.domain_zero_g2.end() || blinder.point == g1_zero())
+        {
+            return false;
+        }
+        const auto tau_to_domain_size = g2_add(zero_it->second, vk.g2_one);
+        const auto shifted = g1_add(
+            g1_sub(proof_local.point, long_term_anchor.point),
+            blinder.point);
+        return pairing_equal(
+            blinder.point,
+            tau_to_domain_size,
+            shifted,
+            vk.g2_one);
     }
 }

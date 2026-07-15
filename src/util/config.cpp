@@ -174,8 +174,8 @@ void validate_config(const AppConfig& config) {
     if (config.num_classes == 0) {
         throw std::runtime_error("C/num_classes must be >= 1");
     }
-    if (config.srs_type != "trusted_srs" && config.srs_type != "mpc_srs") {
-        throw std::runtime_error("secure mainline only accepts trusted_srs or mpc_srs");
+    if (config.srs_type != "trusted_srs") {
+        throw std::runtime_error("secure mainline requires srs_type=trusted_srs");
     }
     if (config.privacy_policy != "model_and_trace_hidden") {
         throw std::runtime_error("secure mainline requires privacy_policy=model_and_trace_hidden");
@@ -186,8 +186,8 @@ void validate_config(const AppConfig& config) {
     if (config.output_mode != "public_logits") {
         throw std::runtime_error("secure mainline requires output_mode=public_logits");
     }
-    if (config.opening_mode != "domain_grouped_batch_opening") {
-        throw std::runtime_error("secure mainline requires opening_mode=domain_grouped_batch_opening");
+    if (config.opening_mode != "point_grouped_batch_opening") {
+        throw std::runtime_error("secure mainline requires opening_mode=point_grouped_batch_opening");
     }
     if (config.binding_mode != "zk_subproof_for_crpc") {
         throw std::runtime_error("secure mainline requires binding_mode=zk_subproof_for_crpc");

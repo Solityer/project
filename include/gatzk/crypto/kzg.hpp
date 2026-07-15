@@ -16,6 +16,7 @@ namespace gatzk::crypto
 {
     struct SRSManifest
     {
+        std::string manifest_format;
         std::string srs_id;
         std::string curve_id;
         std::string field_modulus_id;
@@ -23,6 +24,19 @@ namespace gatzk::crypto
         std::string ceremony_transcript_hash;
         std::size_t degree_bound = 0;
         std::unordered_map<std::string, std::size_t> domain_sizes;
+        std::unordered_map<std::string, std::string> domain_generators;
+        std::string root_derivation_id;
+        std::string row_order;
+        std::string protocol_compiler_artifact_path;
+        std::string protocol_compiler_artifact_hash;
+        std::string protocol_schema_id;
+        std::string max_instance_envelope_id;
+        std::string max_instance_envelope_hash;
+        std::unordered_map<std::string, std::size_t> max_instance_envelope;
+        std::string proof_schema_template_hash;
+        std::string observation_ledger_hash;
+        std::string random_identity_ledger_hash;
+        std::string security_budget_ledger_hash;
         std::string pk_coef_path;
         std::string pk_coef_hash;
         std::unordered_map<std::string, std::string> pk_lagrange_paths;
@@ -32,6 +46,11 @@ namespace gatzk::crypto
         std::string encoding;
         std::string generator_version;
         std::string security_level;
+        std::string kzg_assumption_profile_id;
+        std::string kzg_assumption_domain_catalog_hash;
+        std::string domain_generator_catalog_hash;
+        std::size_t kzg_assumption_degree_bound = 0;
+        std::size_t kzg_assumption_security_bits = 0;
         std::string manifest_hash;
     };
 
@@ -54,6 +73,7 @@ namespace gatzk::crypto
         G1Point g1_generator;
         G2Point g2_one;
         G2Point g2_tau;
+        std::unordered_map<std::string, G2Point> domain_zero_g2;
         std::shared_ptr<PreparedG2> g2_one_prepared;
         std::shared_ptr<PreparedG2> g2_tau_prepared;
         std::string manifest_hash;
@@ -167,6 +187,28 @@ namespace gatzk::crypto
             CommitBatchProfile* profile = nullptr,
             const std::string& progress_prefix = "");
 
+        // Prover-side construction of P_proof = P_anchor + (X^n - 1)S.
+        // `blinder_coefficient_count` is fixed by the observation ledger and
+        // must not depend on the polynomial's private effective degree.
+        static std::pair<Commitment, Commitment> reblind_domain_polynomial(
+            const Commitment& long_term_anchor,
+            const std::string& proof_local_name,
+            const std::string& blinder_name,
+            const std::string& domain_name,
+            std::size_t domain_size,
+            std::size_t blinder_coefficient_count,
+            const KZGKeyPair& key);
+
+        // Build the unique compiler-sized commitment to F(X + delta) using the
+        // protocol's coefficient_taylor_shift implementation.  The source
+        // opening material includes its registered domain/counter blinder.
+        static Commitment commit_taylor_shifted(
+            const Commitment& source,
+            const std::string& shifted_name,
+            std::size_t configured_degree,
+            const algebra::FieldElement& delta,
+            const KZGKeyPair& key);
+
         // 对同一域 opening bundle 中的多列做折叠 opening。
         static OpeningProof open_batch(
             const std::vector<Commitment>& commitments,
@@ -185,7 +227,7 @@ namespace gatzk::crypto
             const OpeningProof& proof,
             const KZGVerifierKey& vk);
 
-        // 对 external evaluation 列做折叠 opening，服务 `rho_ext` 外点检查。
+        // 对 external evaluation 列做全局 point-grouped 折叠 opening。
         static OpeningProof open_external_fold(
             const std::vector<std::pair<Commitment, algebra::FieldElement>>& commitments_and_values,
             const std::vector<algebra::FieldElement>& points,
@@ -199,6 +241,17 @@ namespace gatzk::crypto
             const std::vector<algebra::FieldElement>& points,
             const algebra::FieldElement& folding_challenge,
             const OpeningProof& proof,
+            const KZGVerifierKey& vk);
+
+        // Verify that a proof-local model polynomial differs from its long-term
+        // anchor by Z_domain(X) * blinder(X), using the shifted-KZG equation
+        // fixed by the verifier-key domain catalogue.  The blinder is committed
+        // but is never opened.
+        static bool verify_domain_divisibility(
+            const Commitment& proof_local,
+            const Commitment& long_term_anchor,
+            const Commitment& blinder,
+            const std::string& domain_name,
             const KZGVerifierKey& vk);
     };
 }

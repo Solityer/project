@@ -158,13 +158,35 @@ namespace gatzk::protocol
             {
                 return std::nullopt;
             }
-            if (label == "P_H" || label == "P_Table_feat" || label == "P_Query_feat" || label == "P_m_feat" || label == "P_R_feat")
+            if (label == "P_H" || label == "P_Table_feat" || label == "P_Query_feat"
+                || label == "P_m_feat" || label == "P_J_tbl_feat"
+                || label == "P_J_qry_feat" || label == "P_R_feat")
             {
                 return std::string("FH");
+            }
+            if (label == "P_Y_lin" || label == "P_Y")
+                return std::string("coef");
+            for (std::size_t head = 0; head < context.model.output_layer.heads.size(); ++head)
+            {
+                if (label == output_y_lin_label(head, false)
+                    || label == output_y_label(head, false))
+                    return std::string("coef");
+                for (const auto *suffix : {"Table_can", "m_can", "J_can", "R_can"})
+                {
+                    if (label == output_bias_view_label(head, suffix))
+                        return std::string("C");
+                }
+                for (const auto *suffix : {"Query", "J_qry", "R_qry"})
+                {
+                    if (label == output_bias_view_label(head, suffix))
+                        return std::string("edge");
+                }
             }
             for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
             {
                 const bool is_final_layer = layer_index + 1 == context.model.hidden_layers.size();
+                if (label == hidden_layer_concat_label(layer_index, is_final_layer))
+                    return std::string("coef");
                 if (label == hidden_layer_concat_star_label(layer_index, is_final_layer))
                 {
                     return std::string("N");
@@ -177,19 +199,26 @@ namespace gatzk::protocol
             if (const auto suffix = output_head_suffix(label); suffix.has_value())
             {
                 const auto &name = *suffix;
+                if (name == "Y_prime") return std::string("coef");
+                if (name.rfind("J_tbl_", 0) == 0 || name.rfind("J_qry_", 0) == 0)
+                {
+                    return std::string("edge");
+                }
                 if (name == "a_proj" || name == "b_proj" || name == "Acc_proj")
                 {
                     return std::string("cat");
                 }
+                if (name == "ModelBind_proj_R") return std::string("cat");
+                if (name == "ModelBind_src_R" || name == "ModelBind_dst_R") return std::string("C");
                 if (name == "a_src" || name == "b_src" || name == "Acc_src" || name == "a_dst" || name == "b_dst" || name == "Acc_dst" || name == "a_y" || name == "b_y" || name == "Acc_y")
                 {
                     return std::string("C");
                 }
-                if (name == "E_src" || name == "E_dst" || name == "M" || name == "Sum" || name == "inv" || name == "Y_prime_star" || name == "Table_src" || name == "m_src" || name == "R_src_node" || name == "Y_star" || name == "T" || name == "Table_dst" || name == "m_dst" || name == "R_dst_node" || name == "Table_t" || name == "m_t" || name == "R_t_node")
+                if (name == "E_src" || name == "E_dst" || name == "M" || name == "Sum" || name == "inv" || name == "Y_prime_star" || name == "Table_src" || name == "m_src" || name == "J_src_node" || name == "R_src_node" || name == "Y_star" || name == "T" || name == "Table_dst" || name == "m_dst" || name == "J_dst_node" || name == "R_dst_node" || name == "Table_t" || name == "m_t" || name == "J_t_node" || name == "R_t_node")
                 {
                     return std::string("N");
                 }
-                if (name == "E_src_edge" || name == "E_dst_edge" || name == "Query_src" || name == "R_src" || name == "S" || name == "Z" || name == "Table_L" || name == "Query_L" || name == "m_L" || name == "R_L" || name == "M_edge" || name == "Delta" || name == "U" || name == "s_max" || name == "C_max" || name == "Table_R" || name == "Query_R" || name == "m_R" || name == "R_R" || name == "Sum_edge" || name == "inv_edge" || name == "alpha" || name == "Table_exp" || name == "Query_exp" || name == "m_exp" || name == "R_exp" || name == "Y_prime_star_edge" || name == "widehat_y_star" || name == "w" || name == "T_edge" || name == "PSQ" || name == "Y_star_edge" || name == "Query_dst" || name == "R_dst" || name == "Query_t" || name == "R_t")
+                if (name.rfind("Div_", 0) == 0 || name.rfind("Bind_", 0) == 0 || name == "Y_pre_flat" || name == "Y_pre_field_flat" || name == "Y_agg_num_flat" || name == "Bias_flat" || name == "Y_flat" || name == "E_src_edge" || name == "E_dst_edge" || name == "Query_src" || name == "J_src_edge" || name == "R_src" || name == "S" || name == "Z" || name == "Table_L" || name == "Query_L" || name == "m_L" || name == "R_L" || name == "M_edge" || name == "Delta" || name == "U" || name == "Sum_flat" || name == "s_max" || name == "C_max" || name == "Table_R" || name == "Query_R" || name == "m_R" || name == "R_R" || name == "Sum_edge" || name == "inv_edge" || name == "alpha" || name == "Table_exp" || name == "Query_exp" || name == "m_exp" || name == "R_exp" || name == "Y_prime_star_edge" || name == "widehat_y_star" || name == "w" || name == "T_edge" || name == "PSQ" || name == "Y_star_edge" || name == "Query_dst" || name == "J_dst_edge" || name == "R_dst" || name == "Query_t" || name == "J_t_edge" || name == "R_t")
                 {
                     return std::string("edge");
                 }
@@ -205,22 +234,38 @@ namespace gatzk::protocol
             if (const auto suffix = hidden_head_suffix(label); suffix.has_value())
             {
                 const auto &name = *suffix;
+                if (name == "H_prime" || name == "H_agg_pre" || name == "H_agg")
+                    return std::string("coef");
+                if (name.rfind("J_tbl_", 0) == 0 || name.rfind("J_qry_", 0) == 0)
+                {
+                    return std::string("edge");
+                }
                 if (name == "a_proj" || name == "b_proj" || name == "Acc_proj")
                 {
                     return std::string("in");
                 }
+                if (name == "ModelBind_proj_R") return std::string("in");
+                if (name == "ModelBind_src_R" || name == "ModelBind_dst_R") return std::string("d");
                 if (name == "a_src" || name == "b_src" || name == "Acc_src" || name == "a_dst" || name == "b_dst" || name == "Acc_dst" || name == "a_star" || name == "b_star" || name == "Acc_star" || name == "a_agg_pre" || name == "b_agg_pre" || name == "Acc_agg_pre" || name == "a_agg" || name == "b_agg" || name == "Acc_agg")
                 {
                     return std::string("d");
                 }
-                if (name == "E_src" || name == "E_dst" || name == "M" || name == "Sum" || name == "inv" || name == "H_star" || name == "Table_src" || name == "m_src" || name == "R_src_node" || name == "H_agg_pre_star" || name == "T_psq" || name == "H_agg_star" || name == "Table_dst" || name == "m_dst" || name == "R_dst_node" || name == "Table_t" || name == "m_t" || name == "R_t_node")
+                if (name == "E_src" || name == "E_dst" || name == "M" || name == "Sum" || name == "inv" || name == "H_star" || name == "Table_src" || name == "m_src" || name == "J_src_node" || name == "R_src_node" || name == "H_agg_pre_star" || name == "T_psq" || name == "H_agg_star" || name == "Table_dst" || name == "m_dst" || name == "J_dst_node" || name == "R_dst_node" || name == "Table_t" || name == "m_t" || name == "J_t_node" || name == "R_t_node")
                 {
                     return std::string("N");
                 }
-                if (name == "E_src_edge" || name == "E_dst_edge" || name == "H_src_star_edge" || name == "Query_src" || name == "R_src" || name == "S" || name == "Z" || name == "Table_L" || name == "Query_L" || name == "m_L" || name == "R_L" || name == "M_edge" || name == "Delta" || name == "U" || name == "Sum_edge" || name == "s_max" || name == "C_max" || name == "Table_R" || name == "Query_R" || name == "m_R" || name == "R_R" || name == "inv_edge" || name == "alpha" || name == "H_agg_pre_star_edge" || name == "H_agg_pre_flat" || name == "H_agg_flat" || name == "Table_exp" || name == "Query_exp" || name == "m_exp" || name == "R_exp" || name == "Table_ELU" || name == "Query_ELU" || name == "m_ELU" || name == "R_ELU" || name == "widehat_v_pre_star" || name == "w_psq" || name == "T_psq_edge" || name == "PSQ" || name == "H_agg_star_edge" || name == "Query_dst" || name == "R_dst" || name == "Query_t" || name == "R_t")
+                if (name.rfind("Div_", 0) == 0 || name == "E_src_edge" || name == "E_dst_edge" || name == "H_src_star_edge" || name == "Query_src" || name == "J_src_edge" || name == "R_src" || name == "S" || name == "Z" || name == "Table_L" || name == "Query_L" || name == "m_L" || name == "R_L" || name == "M_edge" || name == "Delta" || name == "U" || name == "Sum_flat" || name == "Sum_edge" || name == "s_max" || name == "C_max" || name == "Table_R" || name == "Query_R" || name == "m_R" || name == "R_R" || name == "inv_edge" || name == "alpha" || name == "H_agg_pre_star_edge" || name == "H_agg_pre_flat" || name == "H_agg_num_flat" || name == "H_ELU_in_flat" || name == "H_agg_flat" || name == "Table_exp" || name == "Query_exp" || name == "m_exp" || name == "R_exp" || name == "Table_ELU" || name == "Query_ELU" || name == "m_ELU" || name == "R_ELU" || name == "widehat_v_pre_star" || name == "w_psq" || name == "T_psq_edge" || name == "PSQ" || name == "H_agg_star_edge" || name == "Query_dst" || name == "J_dst_edge" || name == "R_dst" || name == "Query_t" || name == "J_t_edge" || name == "R_t")
                 {
                     return std::string("edge");
                 }
+            }
+            if (label.rfind("P_avg_Div_", 0) == 0)
+            {
+                return std::string("edge");
+            }
+            if (label.rfind("P_avg_Bind_", 0) == 0)
+            {
+                return std::string("edge");
             }
             return std::nullopt;
         }
@@ -314,6 +359,13 @@ namespace gatzk::protocol
 
     }
 
+    std::optional<std::string> dynamic_commitment_domain_name(
+        const ProtocolContext &context,
+        const std::string &label)
+    {
+        return dynamic_label_domain_name(context, label);
+    }
+
     std::vector<std::string> domain_opening_labels(const ProtocolContext &context, const std::string &domain_name)
     {
         // opening bundle 的列集合由标签到工作域的映射唯一决定。
@@ -325,6 +377,22 @@ namespace gatzk::protocol
             {
                 labels.push_back(label);
             }
+        }
+        // Pi_bind-owned indexed-view claims share the same domain point groups
+        // and witnesses as ordinary trace claims, but their values are encoded
+        // by Eval_bind rather than duplicated in Eval_dom.
+        for (std::size_t head = 0; head < context.model.output_layer.heads.size(); ++head)
+        {
+            if (domain_name == "C")
+                labels.push_back(model_proof_local_label(
+                    output_bias_label(head, false)));
+            const auto suffixes = domain_name == "C"
+                ? std::vector<std::string>{"Table_can", "m_can", "J_can", "R_can"}
+                : (domain_name == "edge"
+                    ? std::vector<std::string>{"Query", "J_qry", "R_qry"}
+                    : std::vector<std::string>{});
+            for (const auto &suffix : suffixes)
+                labels.push_back(output_bias_view_label(head, suffix));
         }
         return labels;
     }
@@ -348,20 +416,38 @@ namespace gatzk::protocol
             }
             return value;
         };
-        const auto beta_feat = challenges.at("beta_feat");
         const auto eta_feat = challenges.at("eta_feat");
         const auto omega_z = z * context.domains.fh->omega;
         const auto l0 = lagrange_first(*context.domains.fh, z);
         const auto l_last = lagrange_last(*context.domains.fh, z);
+        const auto not_last = FieldElement::one() - l_last;
         const auto zero_eval = context.domains.fh->zero_polynomial_eval(z);
+        const auto q_table = profiled_eval("P_Q_tbl_feat", z);
+        const auto q_query = profiled_eval("P_Q_qry_feat", z);
+        const auto table = profiled_eval("P_Table_feat", z);
+        const auto query = profiled_eval("P_Query_feat", z);
+        const auto multiplicity = profiled_eval("P_m_feat", z);
+        const auto j_table = profiled_eval("P_J_tbl_feat", z);
+        const auto j_query = profiled_eval("P_J_qry_feat", z);
+        const auto accumulator = profiled_eval("P_R_feat", z);
+        const auto accumulator_next = profiled_eval("P_R_feat", omega_z);
+        const auto beta = challenges.at("beta_feat");
+        const auto one = FieldElement::one();
         QuotientAccumulator acc(challenges.at("alpha_quot"));
-        acc.add(l0 * profiled_eval("P_R_feat", z));
-        acc.add(c_lookup_1(profiled_eval, "feat", beta_feat, z, omega_z));
-        acc.add(l_last * profiled_eval("P_R_feat", z));
+        acc.add(l0 * accumulator);
+        acc.add(not_last * (
+            accumulator_next - accumulator
+            - q_table * multiplicity * j_table
+            + q_query * j_query));
+        acc.add(l_last * accumulator);
+        acc.add(q_table * ((table + beta) * j_table - one));
+        acc.add((one - q_table) * j_table);
+        acc.add(q_query * ((query + beta) * j_query - one));
+        acc.add((one - q_query) * j_query);
         acc.add(
-            profiled_eval("P_Table_feat", z) - (profiled_eval("P_Row_feat_tbl", z) + eta_feat * profiled_eval("P_Col_feat_tbl", z) + eta_feat.pow(2) * profiled_eval("P_T_H", z)));
+            table - (profiled_eval("P_Row_feat_tbl", z) + eta_feat * profiled_eval("P_Col_feat_tbl", z) + eta_feat.pow(2) * profiled_eval("P_T_H", z)));
         acc.add(
-            profiled_eval("P_Query_feat", z) - (profiled_eval("P_I_feat_qry", z) + eta_feat * profiled_eval("P_Col_feat_qry", z) + eta_feat.pow(2) * profiled_eval("P_H", z)));
+            query - (profiled_eval("P_I_feat_qry", z) + eta_feat * profiled_eval("P_Col_feat_qry", z) + eta_feat.pow(2) * profiled_eval("P_H", z)));
         const auto result = acc.value() / zero_eval;
         if (profile != nullptr)
         {
@@ -375,6 +461,7 @@ namespace gatzk::protocol
         const ProtocolContext &context,
         const std::map<std::string, FieldElement> &challenges,
         const std::map<std::string, FieldElement> &witness_scalars,
+        const std::map<std::string, FieldElement> &external_evaluations,
         const EvalFn &eval,
         const FieldElement &z)
     {
@@ -418,6 +505,157 @@ namespace gatzk::protocol
             const auto t_elu_x_z = eval_z("P_T_ELU_x");
             const auto t_elu_y_z = eval_z("P_T_ELU_y");
             QuotientAccumulator acc(challenges.at("alpha_quot"));
+            auto add_signed_division_constraints = [&](
+                const std::string &prefix,
+                const std::string &public_selector_label)
+            {
+                const auto selector = eval_z(public_selector_label);
+                auto value = [&](std::string_view suffix)
+                {
+                    return eval_z(prefix + std::string(suffix));
+                };
+                const auto active = value("Active");
+                const auto x = value("X");
+                const auto d = value("D");
+                const auto y = value("Y");
+                const auto sigma = value("Sigma");
+                const auto zero = value("Zero");
+                const auto a = value("A");
+                const auto a_inv = value("A_inv");
+                const auto d_inv = value("D_inv");
+                const auto q = value("Q");
+                const auto r = value("R");
+                const auto delta = value("Delta");
+                const auto sign = one - FieldElement(2) * sigma;
+
+                acc.add(active - selector);
+                acc.add(selector * sigma * (sigma - one));
+                acc.add(selector * (x - sign * a));
+                acc.add(selector * zero * (zero - one));
+                acc.add(selector * zero * a);
+                acc.add(selector * (a * a_inv - (one - zero)));
+                acc.add(selector * zero * sigma);
+                acc.add(selector * zero * a_inv);
+                acc.add(selector * (d * d_inv - one));
+                acc.add(selector * (y - sign * q));
+                acc.add(selector * (FieldElement(2) * a + d - FieldElement(2) * d * q - r));
+                acc.add(selector * (r + delta - FieldElement(2) * d + one));
+
+                // Canonical padding is part of the public column-padding
+                // registry: no auxiliary value may survive outside Q_div.
+                for (const auto &item : {x, d, y, sigma, zero, a, a_inv, d_inv, q, r, delta})
+                {
+                    acc.add((one - selector) * item);
+                }
+
+                const auto limb_count = signed_division_limb_count(context.config.range_bits);
+                const auto limb_base = FieldElement(std::uint64_t{1} << context.config.range_bits);
+                for (const auto *value_name : {"A", "DMinus1", "Q", "R", "Delta"})
+                {
+                    const FieldElement source =
+                        std::string_view(value_name) == "A" ? a
+                        : std::string_view(value_name) == "DMinus1" ? d - one
+                        : std::string_view(value_name) == "Q" ? q
+                        : std::string_view(value_name) == "R" ? r
+                        : delta;
+                    auto reconstructed = FieldElement::zero();
+                    auto place = FieldElement::one();
+                    for (std::size_t limb = 0; limb < limb_count; ++limb)
+                    {
+                        const auto limb_label = signed_division_limb_label(
+                            prefix, value_name, limb);
+                        const auto limb_value = eval_z(limb_label);
+                        reconstructed += place * limb_value;
+                        place *= limb_base;
+
+                        auto range_value = [&](std::string_view column)
+                        {
+                            return eval_z(signed_division_range_label(
+                                prefix, value_name, limb, column));
+                        };
+                        auto range_omega = [&](std::string_view column)
+                        {
+                            return eval_omega(signed_division_range_label(
+                                prefix, value_name, limb, column));
+                        };
+                        const auto table = range_value("Table");
+                        const auto query = range_value("Query");
+                        const auto multiplicity = range_value("m");
+                        const auto j_table = range_value("J_tbl");
+                        const auto j_query = range_value("J_qry");
+                        const auto accumulator = range_value("R");
+                        const auto accumulator_next = range_omega("R");
+                        const auto beta = challenges.at(signed_division_beta_name(
+                            prefix, value_name, limb));
+                        acc.add(first * accumulator);
+                        acc.add(not_last * (
+                            accumulator_next - accumulator
+                            - q_tbl_r_z * multiplicity * j_table
+                            + selector * j_query));
+                        acc.add(last * accumulator);
+                        acc.add(q_tbl_r_z * ((table + beta) * j_table - one));
+                        acc.add((one - q_tbl_r_z) * j_table);
+                        acc.add(selector * ((query + beta) * j_query - one));
+                        acc.add((one - selector) * j_query);
+                        acc.add(table - t_range_z);
+                        acc.add(query - limb_value);
+                        acc.add((one - q_tbl_r_z) * table);
+                        acc.add((one - q_tbl_r_z) * multiplicity);
+                        acc.add((one - selector) * query);
+                        acc.add((one - selector) * limb_value);
+                    }
+                    acc.add(selector * (source - reconstructed));
+                }
+            };
+            auto add_logup_constraints = [&](
+                const std::string &prefix,
+                const std::string &suffix,
+                const FieldElement &q_table,
+                const FieldElement &q_query,
+                const FieldElement &beta)
+            {
+                const auto table = eval_z(prefix + "Table_" + suffix);
+                const auto query = eval_z(prefix + "Query_" + suffix);
+                const auto multiplicity = eval_z(prefix + "m_" + suffix);
+                const auto j_table = eval_z(prefix + "J_tbl_" + suffix);
+                const auto j_query = eval_z(prefix + "J_qry_" + suffix);
+                const auto accumulator = eval_z(prefix + "R_" + suffix);
+                const auto accumulator_next = eval_omega(prefix + "R_" + suffix);
+                acc.add(first * accumulator);
+                acc.add(not_last * (
+                    accumulator_next - accumulator
+                    - q_table * multiplicity * j_table
+                    + q_query * j_query));
+                acc.add(last * accumulator);
+                acc.add(q_table * ((table + beta) * j_table - one));
+                acc.add((one - q_table) * j_table);
+                acc.add(q_query * ((query + beta) * j_query - one));
+                acc.add((one - q_query) * j_query);
+            };
+            auto add_coefficient_basis_binding = [&](
+                const std::string &prefix,
+                const std::string &public_selector_label,
+                const std::string &source_label,
+                const FieldElement &target)
+            {
+                const auto selector = eval_z(public_selector_label);
+                const auto selector_next = eval_omega(public_selector_label);
+                const auto a = eval_z(prefix + "a");
+                const auto b = eval_z(prefix + "b");
+                const auto b_next = eval_omega(prefix + "b");
+                const auto current = eval_z(prefix + "Acc");
+                const auto next = eval_omega(prefix + "Acc");
+                const auto source = eval_z(source_label);
+                acc.add(first * current);
+                acc.add(first * (b - one));
+                acc.add(selector_next * (b_next - challenges.at("y_out") * b));
+                acc.add(not_last * selector * (next - current - a * b));
+                acc.add(not_last * (one - selector) * (next - current));
+                acc.add(selector * (a - source));
+                acc.add((one - selector) * a);
+                acc.add((one - selector) * b);
+                acc.add(last * (current - target));
+            };
 
             for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index)
             {
@@ -495,7 +733,10 @@ namespace gatzk::protocol
                 const auto table_elu_z = z_head("Table_ELU");
                 const auto query_elu_z = z_head("Query_ELU");
                 const auto m_elu_z = z_head("m_ELU");
+                const auto sum_flat_z = z_head("Sum_flat");
                 const auto h_agg_pre_flat_z = z_head("H_agg_pre_flat");
+                const auto h_agg_num_flat_z = z_head("H_agg_num_flat");
+                const auto h_elu_in_flat_z = z_head("H_ELU_in_flat");
                 const auto h_agg_flat_z = z_head("H_agg_flat");
                 const auto r_dst_z = z_head("R_dst");
                 const auto r_dst_omega = omega_head("R_dst");
@@ -504,23 +745,14 @@ namespace gatzk::protocol
                 const auto h_agg_star_edge_z = z_head("H_agg_star_edge");
 
                 acc.add(first * r_src_z);
+                acc.add(q_edge * ((query_src_z + beta_src) * z_head("J_src_edge") - one));
                 acc.add(not_last * route_edge_step(r_src_omega, r_src_z, query_src_z, beta_src, q_edge));
                 acc.add(last * (r_src_z - witness_scalars.at("S_src_h" + std::to_string(head_index))));
                 acc.add(query_src_z - (src_z + eta_src * e_src_edge_z + eta_src_sq * h_src_star_edge_z));
                 acc.add(zero_on_unselected(q_edge, query_src_z));
 
                 acc.add(q_edge * (s_z - e_src_edge_z - e_dst_edge_z));
-                acc.add(first * r_l_z);
-                acc.add(lookup_step(
-                    r_l_omega,
-                    r_l_z,
-                    table_l_z,
-                    query_l_z,
-                    m_l_z,
-                    q_tbl_l_z,
-                    q_qry_l_z,
-                    beta_l));
-                acc.add(last * r_l_z);
+                add_logup_constraints(prefix, "L", q_tbl_l_z, q_qry_l_z, beta_l);
                 acc.add(table_l_z - (t_l_x_z + eta_l * t_l_y_z));
                 acc.add(query_l_z - (s_z + eta_l * z_z));
                 acc.add(zero_on_unselected(q_tbl_l_z, table_l_z));
@@ -536,17 +768,7 @@ namespace gatzk::protocol
                     q_edge_next * (c_max_omega - q_new_next * s_max_omega - (one - q_new_next) * (c_max_z + s_max_omega)) + (one - q_edge_next) * (c_max_omega - c_max_z));
                 acc.add(q_end * (c_max_z - one));
 
-                acc.add(first * r_r_z);
-                acc.add(lookup_step(
-                    r_r_omega,
-                    r_r_z,
-                    table_r_z,
-                    query_r_z,
-                    m_r_z,
-                    q_tbl_r_z,
-                    q_qry_r_z,
-                    beta_r));
-                acc.add(last * r_r_z);
+                add_logup_constraints(prefix, "R", q_tbl_r_z, q_qry_r_z, beta_r);
                 acc.add(table_r_z - t_range_z);
                 acc.add(query_r_z - delta_z);
                 acc.add(zero_on_unselected(q_tbl_r_z, table_r_z));
@@ -554,17 +776,7 @@ namespace gatzk::protocol
                 acc.add(zero_on_unselected(q_qry_r_z, query_r_z));
 
                 acc.add(q_edge * (alpha_z - u_z * inv_edge_z));
-                acc.add(first * r_exp_z);
-                acc.add(lookup_step(
-                    r_exp_omega,
-                    r_exp_z,
-                    table_exp_z,
-                    query_exp_z,
-                    m_exp_z,
-                    q_tbl_exp_z,
-                    q_qry_exp_z,
-                    beta_exp));
-                acc.add(last * r_exp_z);
+                add_logup_constraints(prefix, "exp", q_tbl_exp_z, q_qry_exp_z, beta_exp);
                 acc.add(table_exp_z - (t_exp_x_z + eta_exp * t_exp_y_z));
                 acc.add(query_exp_z - (delta_z + eta_exp * u_z));
                 acc.add(zero_on_unselected(q_tbl_exp_z, table_exp_z));
@@ -575,36 +787,42 @@ namespace gatzk::protocol
                 acc.add(psq_step(psq_omega, psq_z, w_psq_omega, q_edge_next, q_new_next));
                 acc.add(q_end * (psq_z - t_psq_edge_z));
                 acc.add(first * r_t_z);
+                acc.add(q_edge * ((query_t_z + beta_t) * z_head("J_t_edge") - one));
                 acc.add(not_last * route_edge_step(r_t_omega, r_t_z, query_t_z, beta_t, q_edge));
                 acc.add(last * (r_t_z - witness_scalars.at("S_t_h" + std::to_string(head_index))));
                 acc.add(query_t_z - (dst_z + eta_t * t_psq_edge_z));
                 acc.add(zero_on_unselected(q_edge, query_t_z));
 
-                acc.add(first * r_elu_z);
-                acc.add(lookup_step(
-                    r_elu_omega,
-                    r_elu_z,
-                    table_elu_z,
-                    query_elu_z,
-                    m_elu_z,
-                    q_tbl_elu_z,
-                    q_qry_elu_z,
-                    beta_elu));
-                acc.add(last * r_elu_z);
+                add_logup_constraints(prefix, "ELU", q_tbl_elu_z, q_qry_elu_z, beta_elu);
                 acc.add(table_elu_z - (t_elu_x_z + eta_elu * t_elu_y_z));
-                acc.add(query_elu_z - (h_agg_pre_flat_z + eta_elu * h_agg_flat_z));
+                acc.add(query_elu_z - (h_elu_in_flat_z + eta_elu * h_agg_flat_z));
                 acc.add(zero_on_unselected(q_tbl_elu_z, table_elu_z));
                 acc.add(zero_on_unselected(q_tbl_elu_z, m_elu_z));
                 acc.add(zero_on_unselected(q_qry_elu_z, query_elu_z));
 
                 acc.add(first * r_dst_z);
+                acc.add(q_edge * ((query_dst_z + beta_dst) * z_head("J_dst_edge") - one));
                 acc.add(not_last * route_edge_step(r_dst_omega, r_dst_z, query_dst_z, beta_dst, q_edge));
                 acc.add(last * (r_dst_z - witness_scalars.at("S_dst_h" + std::to_string(head_index))));
                 acc.add(query_dst_z - (dst_z + eta_dst * e_dst_edge_z + eta_dst_sq * m_edge_z + eta_dst_cu * sum_edge_z + eta_dst_4 * inv_edge_z + eta_dst_5 * h_agg_star_edge_z));
                 acc.add(zero_on_unselected(q_edge, query_dst_z));
+                add_signed_division_constraints(
+                    prefix + "Div_",
+                    "P_Q_div_h" + std::to_string(head_index));
+                const auto q_div = eval_z("P_Q_div_h" + std::to_string(head_index));
+                acc.add(q_div * (h_agg_num_flat_z - sum_flat_z * h_agg_pre_flat_z));
+                acc.add(q_div * (z_head("Div_X") - h_agg_num_flat_z));
+                acc.add(q_div * (z_head("Div_D") - sum_flat_z));
+                acc.add(q_div * (z_head("Div_Y") - h_elu_in_flat_z));
+                for (const auto &padding_value : {
+                         sum_flat_z, h_agg_pre_flat_z, h_agg_num_flat_z,
+                         h_elu_in_flat_z, h_agg_flat_z})
+                {
+                    acc.add((one - q_div) * padding_value);
+                }
             }
 
-            const bool legacy_single_output = context.model.output_layer.heads.size() == 1;
+            const bool legacy_single_output = false;
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {
                 const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
@@ -679,23 +897,14 @@ namespace gatzk::protocol
                 const auto y_star_edge_z = z_out("Y_star_edge");
 
                 acc.add(first * r_src_z);
+                acc.add(q_edge * ((query_src_z + beta_src_out) * z_out("J_src_edge") - one));
                 acc.add(not_last * route_edge_step(r_src_omega, r_src_z, query_src_z, beta_src_out, q_edge));
                 acc.add(last * (r_src_z - witness_scalars.at(output_witness_scalar_name("src", head_index, legacy_single_output))));
                 acc.add(query_src_z - (src_z + eta_src_out * e_src_edge_z));
                 acc.add(zero_on_unselected(q_edge, query_src_z));
 
                 acc.add(q_edge * (s_z - e_src_edge_z - e_dst_edge_z));
-                acc.add(first * r_l_z);
-                acc.add(lookup_step(
-                    r_l_omega,
-                    r_l_z,
-                    table_l_z,
-                    query_l_z,
-                    m_l_z,
-                    q_tbl_l_z,
-                    q_qry_l_z,
-                    beta_l_out));
-                acc.add(last * r_l_z);
+                add_logup_constraints(prefix, "L", q_tbl_l_z, q_qry_l_z, beta_l_out);
                 acc.add(table_l_z - (t_l_x_z + eta_l_out * t_l_y_z));
                 acc.add(query_l_z - (s_z + eta_l_out * z_z));
                 acc.add(zero_on_unselected(q_tbl_l_z, table_l_z));
@@ -711,17 +920,7 @@ namespace gatzk::protocol
                     q_edge_next * (c_max_omega - q_new_next * s_max_omega - (one - q_new_next) * (c_max_z + s_max_omega)) + (one - q_edge_next) * (c_max_omega - c_max_z));
                 acc.add(q_end * (c_max_z - one));
 
-                acc.add(first * r_r_z);
-                acc.add(lookup_step(
-                    r_r_omega,
-                    r_r_z,
-                    table_r_z,
-                    query_r_z,
-                    m_r_z,
-                    q_tbl_r_z,
-                    q_qry_r_z,
-                    beta_r_out));
-                acc.add(last * r_r_z);
+                add_logup_constraints(prefix, "R", q_tbl_r_z, q_qry_r_z, beta_r_out);
                 acc.add(table_r_z - t_range_z);
                 acc.add(query_r_z - delta_z);
                 acc.add(zero_on_unselected(q_tbl_r_z, table_r_z));
@@ -729,17 +928,7 @@ namespace gatzk::protocol
                 acc.add(zero_on_unselected(q_qry_r_z, query_r_z));
 
                 acc.add(q_edge * (alpha_z - u_z * inv_edge_z));
-                acc.add(first * r_exp_z);
-                acc.add(lookup_step(
-                    r_exp_omega,
-                    r_exp_z,
-                    table_exp_z,
-                    query_exp_z,
-                    m_exp_z,
-                    q_tbl_exp_z,
-                    q_qry_exp_z,
-                    beta_exp_out));
-                acc.add(last * r_exp_z);
+                add_logup_constraints(prefix, "exp", q_tbl_exp_z, q_qry_exp_z, beta_exp_out);
                 acc.add(table_exp_z - (t_exp_x_z + eta_exp_out * t_exp_y_z));
                 acc.add(query_exp_z - (delta_z + eta_exp_out * u_z));
                 acc.add(zero_on_unselected(q_tbl_exp_z, table_exp_z));
@@ -750,16 +939,83 @@ namespace gatzk::protocol
                 acc.add(psq_step(psq_omega, psq_z, w_omega, q_edge_next, q_new_next));
                 acc.add(q_end * (psq_z - t_edge_z));
                 acc.add(first * r_t_z);
+                acc.add(q_edge * ((query_t_z + beta_t_out) * z_out("J_t_edge") - one));
                 acc.add(not_last * route_edge_step(r_t_omega, r_t_z, query_t_z, beta_t_out, q_edge));
                 acc.add(last * (r_t_z - witness_scalars.at(output_witness_scalar_name("t", head_index, legacy_single_output))));
                 acc.add(query_t_z - (dst_z + eta_t_out * t_edge_z));
                 acc.add(zero_on_unselected(q_edge, query_t_z));
 
                 acc.add(first * r_dst_z);
+                acc.add(q_edge * ((query_dst_z + beta_dst_out) * z_out("J_dst_edge") - one));
                 acc.add(not_last * route_edge_step(r_dst_omega, r_dst_z, query_dst_z, beta_dst_out, q_edge));
                 acc.add(last * (r_dst_z - witness_scalars.at(output_witness_scalar_name("dst", head_index, legacy_single_output))));
                 acc.add(query_dst_z - (dst_z + eta_dst_out * e_dst_edge_z + eta_dst_out_sq * m_edge_z + eta_dst_out_cu * sum_edge_z + eta_dst_out_4 * inv_edge_z + eta_dst_out_5 * y_star_edge_z));
                 acc.add(zero_on_unselected(q_edge, query_dst_z));
+                add_signed_division_constraints(
+                    prefix + "Div_",
+                    "P_Q_div_out" + std::to_string(head_index));
+                const auto q_div = eval_z("P_Q_div_out" + std::to_string(head_index));
+                const auto y_pre_flat = z_out("Y_pre_flat");
+                const auto sum_flat = z_out("Sum_flat");
+                const auto y_pre_field_flat = z_out("Y_pre_field_flat");
+                const auto y_agg_num_flat = z_out("Y_agg_num_flat");
+                const auto bias_flat = z_out("Bias_flat");
+                const auto y_flat = z_out("Y_flat");
+                acc.add(q_div * (y_agg_num_flat - sum_flat * y_pre_field_flat));
+                acc.add(q_div * (z_out("Div_X") - y_agg_num_flat));
+                acc.add(q_div * (z_out("Div_D") - FieldElement(16) * sum_flat));
+                acc.add(q_div * (y_pre_flat - z_out("Div_Y")));
+                acc.add(q_div * (y_flat - y_pre_flat - bias_flat));
+                acc.add((one - q_div) * sum_flat);
+                acc.add((one - q_div) * y_pre_field_flat);
+                acc.add((one - q_div) * y_agg_num_flat);
+                acc.add((one - q_div) * y_pre_flat);
+                acc.add((one - q_div) * bias_flat);
+                acc.add((one - q_div) * y_flat);
+                add_coefficient_basis_binding(
+                    prefix + "Bind_",
+                    "P_Q_div_out" + std::to_string(head_index),
+                    prefix + "Y_flat",
+                    external_evaluations.at(output_external_eval_name("y", head_index, false)));
+                const auto view_prefix = output_bias_view_prefix(head_index);
+                const auto q_view = eval_z(
+                    "P_Q_div_out" + std::to_string(head_index));
+                const auto query_view = eval_z(view_prefix + "Query");
+                const auto j_view = eval_z(view_prefix + "J_qry");
+                const auto r_view = eval_z(view_prefix + "R_qry");
+                const auto r_view_next = eval_omega(view_prefix + "R_qry");
+                const auto beta_view = challenges.at(
+                    output_bias_view_beta_label(head_index));
+                const auto eta_view = challenges.at(
+                    output_bias_view_eta_label(head_index));
+                acc.add(first * r_view);
+                acc.add(not_last * (
+                    r_view_next - r_view - q_view * j_view));
+                acc.add(q_view * ((query_view + beta_view) * j_view - one));
+                acc.add((one - q_view) * j_view);
+                acc.add(query_view - q_view * (
+                    eval_z("P_BiasIndex_edge")
+                    + eta_view * bias_flat));
+            }
+
+            add_signed_division_constraints("P_avg_Div_", "P_Q_div_avg");
+            {
+                const auto q_avg = eval_z("P_Q_div_avg");
+                auto summed_heads = FieldElement::zero();
+                for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
+                {
+                    summed_heads += eval_z(
+                        output_head_prefix(head_index, false) + "_Y_flat");
+                }
+                acc.add(q_avg * (eval_z("P_avg_Div_X") - summed_heads));
+                acc.add(q_avg * (
+                    eval_z("P_avg_Div_D")
+                    - FieldElement(context.model.output_layer.heads.size())));
+                add_coefficient_basis_binding(
+                    "P_avg_Bind_",
+                    "P_Q_div_avg",
+                    "P_avg_Div_Y",
+                    external_evaluations.at("mu_out"));
             }
 
             return acc.value() / zero_eval;
@@ -896,12 +1152,15 @@ namespace gatzk::protocol
                 const auto lambda_psq = challenges.at("lambda_psq_h" + std::to_string(head_index));
 
                 acc.add(first * eval(prefix + "R_src_node", z));
+                acc.add(q_n * ((eval(prefix + "Table_src", z) + beta_src) * eval(prefix + "J_src_node", z) - FieldElement::one()));
                 acc.add(not_last * route_node_step(eval(prefix + "R_src_node", omega_z), eval(prefix + "R_src_node", z), eval(prefix + "Table_src", z), beta_src, q_n, eval(prefix + "m_src", z)));
                 acc.add(last * (eval(prefix + "R_src_node", z) - witness_scalars.at("S_src_h" + std::to_string(head_index))));
                 acc.add(first * eval(prefix + "R_dst_node", z));
+                acc.add(q_n * ((eval(prefix + "Table_dst", z) + beta_dst) * eval(prefix + "J_dst_node", z) - FieldElement::one()));
                 acc.add(not_last * route_node_step(eval(prefix + "R_dst_node", omega_z), eval(prefix + "R_dst_node", z), eval(prefix + "Table_dst", z), beta_dst, q_n, eval(prefix + "m_dst", z)));
                 acc.add(last * (eval(prefix + "R_dst_node", z) - witness_scalars.at("S_dst_h" + std::to_string(head_index))));
                 acc.add(first * eval(prefix + "R_t_node", z));
+                acc.add(q_n * ((eval(prefix + "Table_t", z) + beta_t) * eval(prefix + "J_t_node", z) - FieldElement::one()));
                 acc.add(not_last * route_node_step(eval(prefix + "R_t_node", omega_z), eval(prefix + "R_t_node", z), eval(prefix + "Table_t", z), beta_t, q_n, eval(prefix + "m_t", z)));
                 acc.add(last * (eval(prefix + "R_t_node", z) - witness_scalars.at("S_t_h" + std::to_string(head_index))));
                 acc.add(q_n * (eval(prefix + "Sum", z) * eval(prefix + "inv", z) - FieldElement::one()));
@@ -926,7 +1185,7 @@ namespace gatzk::protocol
                 acc.add(zero_on_unselected(q_n, eval(prefix + "m_t", z)));
             }
 
-            const bool legacy_single_output = context.model.output_layer.heads.size() == 1;
+            const bool legacy_single_output = false;
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {
                 const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
@@ -939,12 +1198,15 @@ namespace gatzk::protocol
                 const auto lambda_out = challenges.at(output_challenge_name("lambda_out", head_index, legacy_single_output));
 
                 acc.add(first * eval(prefix + "R_src_node", z));
+                acc.add(q_n * ((eval(prefix + "Table_src", z) + beta_src_out) * eval(prefix + "J_src_node", z) - FieldElement::one()));
                 acc.add(not_last * route_node_step(eval(prefix + "R_src_node", omega_z), eval(prefix + "R_src_node", z), eval(prefix + "Table_src", z), beta_src_out, q_n, eval(prefix + "m_src", z)));
                 acc.add(last * (eval(prefix + "R_src_node", z) - witness_scalars.at(output_witness_scalar_name("src", head_index, legacy_single_output))));
                 acc.add(first * eval(prefix + "R_dst_node", z));
+                acc.add(q_n * ((eval(prefix + "Table_dst", z) + beta_dst_out) * eval(prefix + "J_dst_node", z) - FieldElement::one()));
                 acc.add(not_last * route_node_step(eval(prefix + "R_dst_node", omega_z), eval(prefix + "R_dst_node", z), eval(prefix + "Table_dst", z), beta_dst_out, q_n, eval(prefix + "m_dst", z)));
                 acc.add(last * (eval(prefix + "R_dst_node", z) - witness_scalars.at(output_witness_scalar_name("dst", head_index, legacy_single_output))));
                 acc.add(first * eval(prefix + "R_t_node", z));
+                acc.add(q_n * ((eval(prefix + "Table_t", z) + beta_t_out) * eval(prefix + "J_t_node", z) - FieldElement::one()));
                 acc.add(not_last * route_node_step(eval(prefix + "R_t_node", omega_z), eval(prefix + "R_t_node", z), eval(prefix + "Table_t", z), beta_t_out, q_n, eval(prefix + "m_t", z)));
                 acc.add(last * (eval(prefix + "R_t_node", z) - witness_scalars.at(output_witness_scalar_name("t", head_index, legacy_single_output))));
                 acc.add(q_n * (eval(prefix + "Sum", z) * eval(prefix + "inv", z) - FieldElement::one()));
@@ -1192,7 +1454,7 @@ namespace gatzk::protocol
             acc.add(last * (eval(prefix + "_Acc", z) - external_evaluations.at(mu_name)));
         }
 
-        const bool legacy_single_output = context.model.output_layer.heads.size() == 1;
+        const bool legacy_single_output = false;
         for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
         {
             const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
@@ -1226,7 +1488,7 @@ namespace gatzk::protocol
         // C 域主要对齐输出层每头的源/目标打分绑定，以及 bias 后输出和多头平均的关系。
         QuotientAccumulator acc(challenges.at("alpha_quot"));
 
-        const bool legacy_single_output = context.model.output_layer.heads.size() == 1;
+        const bool legacy_single_output = false;
         for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
         {
             const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
@@ -1236,10 +1498,6 @@ namespace gatzk::protocol
                 legacy_single_output ? std::string("mu_out_dst") : output_external_eval_name("dst", head_index, false);
             const auto mu_star =
                 legacy_single_output ? std::string("mu_out_star") : output_external_eval_name("star", head_index, false);
-            const auto mu_y_lin =
-                legacy_single_output ? std::string("mu_Y_lin") : output_external_eval_name("y_lin", head_index, false);
-            const auto mu_y =
-                legacy_single_output ? std::string("mu_out") : output_external_eval_name("y", head_index, false);
 
             acc.add(first * eval(prefix + "Acc_src", z));
             acc.add(q_valid * acc_step(eval(prefix + "Acc_src", omega_z), eval(prefix + "Acc_src", z), eval(prefix + "a_src", z), eval(prefix + "b_src", z)));
@@ -1262,21 +1520,26 @@ namespace gatzk::protocol
             acc.add(zero_on_unselected(q_valid, eval(prefix + "b_y", z)));
             acc.add(last * (eval(prefix + "Acc_y", z) - external_evaluations.at(mu_star)));
 
-            acc.add(first * (external_evaluations.at(mu_y) - external_evaluations.at(mu_y_lin) - bias_fold_vector(context.model.output_layer.heads[head_index].output_bias_fp, context.local.num_nodes, challenges.at("y_out"))));
-        }
+            const auto view_prefix = output_bias_view_prefix(head_index);
+            const auto eta_view = challenges.at(output_bias_view_eta_label(head_index));
+            const auto beta_view = challenges.at(output_bias_view_beta_label(head_index));
+            const auto table = eval(view_prefix + "Table_can", z);
+            const auto multiplicity = eval(view_prefix + "m_can", z);
+            const auto inverse = eval(view_prefix + "J_can", z);
+            const auto accumulator = eval(view_prefix + "R_can", z);
+            const auto accumulator_next = eval(view_prefix + "R_can", omega_z);
+            acc.add(first * accumulator);
+            acc.add(not_last * (
+                accumulator_next - accumulator
+                - q_valid * multiplicity * inverse));
+            acc.add(q_valid * ((table + beta_view) * inverse - FieldElement::one()));
+            acc.add(q_invalid * inverse);
+            acc.add(table - q_valid * (
+                eval("P_BiasIndex_C", z)
+                + eta_view * eval(
+                    model_proof_local_label(output_bias_label(head_index, false)), z)));
+            acc.add(multiplicity - eval("P_BiasMultiplicity_C", z));
 
-        if (!legacy_single_output)
-        {
-            FieldElement summed_y_lin = FieldElement::zero();
-            FieldElement summed_y = FieldElement::zero();
-            for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
-            {
-                summed_y_lin += external_evaluations.at(output_external_eval_name("y_lin", head_index, false));
-                summed_y += external_evaluations.at(output_external_eval_name("y", head_index, false));
-            }
-            const auto k_out = FieldElement(context.model.output_layer.heads.size());
-            acc.add(first * (k_out * external_evaluations.at("mu_Y_lin") - summed_y_lin));
-            acc.add(first * (k_out * external_evaluations.at("mu_out") - summed_y));
         }
 
         return acc.value() / zero_eval;

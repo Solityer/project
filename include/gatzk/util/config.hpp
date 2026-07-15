@@ -44,7 +44,7 @@ struct AppConfig {
     std::string privacy_policy = "model_and_trace_hidden";
     std::string input_privacy = "public_graph_public_features";
     std::string output_mode = "public_logits";
-    std::string opening_mode = "domain_grouped_batch_opening";
+    std::string opening_mode = "point_grouped_batch_opening";
     std::string binding_mode = "zk_subproof_for_crpc";
     std::string proof_task = "node_classification_full_gat";
     std::string security_profile_id = "zkgat_secure_profile_v1";

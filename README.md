@@ -7,13 +7,13 @@ This repository is being brought into conformance with the secure zkGAT protocol
 - `privacy_policy = model_and_trace_hidden`
 - `input_privacy = public_graph_public_features`
 - `output_mode = public_logits`
-- `opening_mode = domain_grouped_batch_opening`
+- `opening_mode = point_grouped_batch_opening`
 - `binding_mode = zk_subproof_for_crpc`
-- `srs_type = trusted_srs` or `mpc_srs`
+- `srs_type = trusted_srs`
 
 The intended public input boundary is public graph structure and public node features. Model parameters, intermediate trace values, attention scores, softmax weights, lookup witness, route witness, PSQ state, folding vectors, private polynomial evaluations, and blinding randomness are private witness material. Final logits are public outputs.
 
-## Current implementation status (2026-07-11)
+## Current implementation status (2026-07-15)
 
 Protocol-correction phase is **not complete**, so the code is not yet eligible for paper-result generation or performance claims.
 
@@ -26,24 +26,20 @@ What has been revalidated from the current source:
 - proof-specific trace, lookup, quotient, challenge, and verifier-result reuse has been disabled on the fresh-proof path;
 - a separate transcript-derived KZG opening binds the complete public-logit vector to `P_Y`;
 - only final `P_Y` is classified as `PublicOutput`; pre-bias and per-output-head logits remain private payloads;
+- the strict wire-v2 serializer/parser covers all nine tagged proof blocks, rejects non-canonical/trailing data, and computes `proof_size_bytes` from the exact serialized byte vector;
+- the protocol compiler emits authenticated ProofSchema/ObservationLedger/RandomIdentityLedger/SecurityBudgetLedger templates; the current instance artifact includes the complete length-delimited `RelationMeta` registry and a canonical typed dependency DAG, enforces that every private schema object is exactly one independent blinder owner or one derived target, and enumerates the active feature, hidden, output, LogUp, SignedRoundDiv, quotient, public-output, and point-group random checks; all `RelationMeta` identity/source/target/domain/length/quotient fields now enter the transcript, and the compiler has a strict semantic/gap/tail selector plus fixed edge-chunk layout constructor, but formal `Com_basis` producers and equations are still open;
+- `unit_test_srs_v15` uses manifest v7, compiler artifact v3, the strict maximum-instance-envelope v2 (`N_total`, concat width, range bits, coefficient-object length and object-family count included), and has passed generation, loading, proof/verification self-tests, SRS/manifest/domain tamper rejection, obsolete-v14 rejection, and the real PPI representative-batch boundary regression;
 - requested CUDA algebra kernels now fail closed instead of silently falling back to CPU.
 
 Both the CPU and CUDA builds currently compile and pass the lightweight regression suite. This is a build/unit-test result only; the blocked full Cora proof has not passed on either backend.
 
-The full Cora security regression currently stops before proof generation with:
-
-```text
-hidden aggregate escaped the public ELU table; quantization/rescale is not proven
-```
-
-This is an intentional fail-closed gate. The current checkpoint declares only `quant_cfg_id=fp32_bundle_export`; it does not materialize the public softmax/aggregation scales and rounding rules required by the protocol. More importantly, the formal relations `Sum * inv = 1` and `alpha = U * inv` produce a general field element for the hidden aggregate, while the implemented finite ELU table is keyed by signed fixed-point integers. The former implementation hid this mismatch by feeding an independently rounded floating-point aggregate into ELU. That disconnected path has been removed and must not be restored.
+The full Cora security regression currently stops at SRS loading: all locally present large SRS directories use superseded, rejected manifest formats, while the current v7 compiler/manifest rules have only been exercised with the small trusted test SRS. A new formal large SRS must not be generated until the remaining protocol-compiler and `Pi_bind` rules are frozen.
 
 The following protocol requirements are still open and block phase completion:
 
-- a protocol-compatible, fully specified and proven quantization/rescale relation between softmax aggregation and ELU (and the corresponding output-head scale alignment);
-- actual domain-vanishing blinding for every private polynomial and quotient, with corrected quotient/opening equations;
-- real zero-knowledge `Pi_bind` subproofs for CRPC bindings; the present shared-dimension trace constraints are not a substitute;
-- a strict byte serializer/parser for all nine proof blocks and a complete per-object `ProofSchema` with layer/head/domain identity;
+- completion of the canonical symbolic ObservationLedger RREF/image-inclusion certificates and exact `BadCRS_obs` factor accounting for the full derived dependency DAG;
+- completion of the formal `Pi_bind` coefficient-tail, chunk/basis-link and CRPC objects for every model and dynamic matrix relation; the current proof-local model reblinding and output-bias indexed-view/shift relation are only a partial closure;
+- expansion of the maximum compiler artifact/envelope to the complete maximum ProofSchema and all three maximum ledgers before generating the formal large SRS;
 - verifier-only model/static verification-key separation and complete leakage/tamper coverage;
 - successful final Cora CPU/CUDA and representative real PPI-batch regressions.
 
@@ -65,7 +61,7 @@ The formal threat model is in `docs/security/threat_model.md`. The matching clai
 
 The verifier already applies several metadata, ordering, commitment, opening, public-output, and transcript checks, but the complete security claim is pending the open protocol items listed above. A payload tagged `MaskedPrivateValue` is not considered masked unless the committed polynomial is actually blinded.
 
-The trusted setup assumption is explicit: the main experiment loads and binds an SRS manifest from `artifacts/srs/zkgat_secure_main_srs_v1/srs_manifest.json`. The proof size excludes SRS files, SRS manifest files, local caches, raw witness, checkpoint files, dataset files, logs, and run manifest attachments.
+The trusted setup assumption is explicit. The old large SRS directories are not accepted by the current loader and are not evidence for the current protocol. The proof size excludes SRS files, SRS manifest files, local caches, raw witness, checkpoint files, dataset files, logs, and run manifest attachments.
 
 ## Secure configs
 
@@ -114,6 +110,6 @@ GATZK_RUN_PPI_BOUNDARY_TESTS=1 ./build/gatzk_tests
 python3 tools/security/static_scan_no_tau.py
 ```
 
-The full-security command currently fails at the quantization/ELU gate described above; a green lightweight suite must not be reported as a successful Cora proof. The static scan checks prohibited setup material and SRS hashes, but is not a proof of zero knowledge.
+The full-security command currently cannot pass without a current formal large SRS; a green lightweight suite must not be reported as a successful Cora proof. The static scan checks prohibited setup material and SRS hashes, but is not a proof of zero knowledge.
 
-`proof_size_bytes` is currently an in-memory field-size estimate because the formal byte serializer/parser is not implemented. It must not be used as the final transmitted proof-size result. The eventual byte count must include transmitted metadata, commitments, quotient commitments, opening proofs, typed claimed values, public outputs, block tags, family identities, and length prefixes, while excluding SRS and local artifacts.
+`proof_size_bytes` is the exact size of the strict canonical serialized proof bytes, including metadata, commitments, quotient commitments, opening proofs, typed claimed values, public outputs, block tags, family identities, and length prefixes, while excluding SRS and local artifacts. No current paper-result proof-size claim is authorized because phase one is incomplete.

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <future>
+#include <limits>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -441,7 +442,7 @@ namespace gatzk::algebra
 
     // 计算多项式在 x 处的值
     // 根据基选择不同算法：系数形式用霍纳法；求值形式用重心插值
-    FieldElement Polynomial::evaluate(const FieldElement& x) const
+    FieldElement Polynomial::semantic_evaluate(const FieldElement& x) const
     {
         // 系数形式：直接霍纳法
         if (basis == PolynomialBasis::Coefficient)
@@ -524,6 +525,34 @@ namespace gatzk::algebra
         return zero_eval * domain->inv_size * sum;
     }
 
+    void Polynomial::set_zero_domain_blinder(std::vector<FieldElement> coefficients)
+    {
+        if (basis != PolynomialBasis::Evaluation || domain == nullptr)
+        {
+            throw std::runtime_error("zero-domain blinding requires an evaluation polynomial");
+        }
+        while (!coefficients.empty() && coefficients.back() == FieldElement::zero())
+        {
+            coefficients.pop_back();
+        }
+        zero_domain_blinder = std::move(coefficients);
+    }
+
+    bool Polynomial::is_zero_domain_blinded() const
+    {
+        return !zero_domain_blinder.empty();
+    }
+
+    FieldElement Polynomial::evaluate(const FieldElement& x) const
+    {
+        const auto semantic = semantic_evaluate(x);
+        if (!is_zero_domain_blinded())
+        {
+            return semantic;
+        }
+        return semantic + domain->zero_polynomial_eval(x) * horner(zero_domain_blinder, x);
+    }
+
     // 霍纳方法求多项式值：系数从高次到低次存储
     FieldElement horner(const std::vector<FieldElement>& coefficients, const FieldElement& x)
     {
@@ -569,6 +598,128 @@ namespace gatzk::algebra
             total += basis * values[i];
         }
         return total;
+    }
+
+    std::vector<FieldElement> materialize_blinded_coefficients(
+        const Polynomial& polynomial,
+        std::size_t configured_degree)
+    {
+        if (configured_degree == std::numeric_limits<std::size_t>::max())
+        {
+            throw std::runtime_error("configured polynomial degree overflows coefficient length");
+        }
+        const auto configured_length = configured_degree + 1;
+        std::vector<FieldElement> out(configured_length, FieldElement::zero());
+        if (polynomial.basis == PolynomialBasis::Coefficient)
+        {
+            if (polynomial.data.size() > configured_length)
+            {
+                throw std::runtime_error(
+                    "coefficient polynomial exceeds configured shift degree: " + polynomial.name);
+            }
+            std::copy(polynomial.data.begin(), polynomial.data.end(), out.begin());
+            if (!polynomial.zero_domain_blinder.empty())
+            {
+                throw std::runtime_error(
+                    "coefficient polynomial cannot carry a domain-vanishing blinder: "
+                    + polynomial.name);
+            }
+            return out;
+        }
+        if (polynomial.domain == nullptr)
+        {
+            throw std::runtime_error(
+                "evaluation polynomial is missing its domain during coefficient materialization: "
+                + polynomial.name);
+        }
+        if (polynomial.values().size() > polynomial.domain->size
+            || polynomial.domain->size > configured_length)
+        {
+            throw std::runtime_error(
+                "evaluation polynomial exceeds configured shift degree: " + polynomial.name);
+        }
+
+        std::vector<FieldElement> semantic(polynomial.domain->size, FieldElement::zero());
+        std::copy(polynomial.values().begin(), polynomial.values().end(), semantic.begin());
+        ntt_plan(semantic.size())->intt(
+            FieldElement::mutable_native_array_data(semantic.data()));
+        std::copy(semantic.begin(), semantic.end(), out.begin());
+
+        const auto n = polynomial.domain->size;
+        if (n + polynomial.zero_domain_blinder.size() > configured_length)
+        {
+            throw std::runtime_error(
+                "domain-vanishing blinder exceeds configured shift degree: "
+                + polynomial.name);
+        }
+        // Z_D(X)R(X)=(X^n-1)R(X). The blinder must be added explicitly;
+        // domain evaluations alone do not contain this material.
+        for (std::size_t i = 0; i < polynomial.zero_domain_blinder.size(); ++i)
+        {
+            out[i] -= polynomial.zero_domain_blinder[i];
+            out[n + i] += polynomial.zero_domain_blinder[i];
+        }
+        return out;
+    }
+
+    std::vector<FieldElement> coefficient_taylor_shift(
+        const std::vector<FieldElement>& coefficients,
+        std::size_t configured_degree,
+        const FieldElement& delta)
+    {
+        if (configured_degree == std::numeric_limits<std::size_t>::max())
+        {
+            throw std::runtime_error("configured Taylor-shift degree overflows coefficient length");
+        }
+        const auto configured_length = configured_degree + 1;
+        if (coefficients.size() != configured_length)
+        {
+            throw std::runtime_error(
+                "Taylor shift requires the compiler-fixed coefficient vector length");
+        }
+        if (configured_degree > (std::numeric_limits<std::size_t>::max() - 1) / 2)
+        {
+            throw std::runtime_error("Taylor-shift convolution length overflow");
+        }
+        const auto convolution_length = configured_degree * 2 + 1;
+        const auto n_shift = next_power_of_two(convolution_length);
+
+        std::vector<FieldElement> factorial(configured_length, FieldElement::one());
+        for (std::size_t i = 1; i < configured_length; ++i)
+        {
+            factorial[i] = factorial[i - 1] * FieldElement(static_cast<std::uint64_t>(i));
+        }
+        std::vector<FieldElement> inverse_factorial(configured_length, FieldElement::one());
+        inverse_factorial.back() = factorial.back().inv();
+        for (std::size_t i = configured_degree; i > 0; --i)
+        {
+            inverse_factorial[i - 1]
+                = inverse_factorial[i] * FieldElement(static_cast<std::uint64_t>(i));
+        }
+
+        std::vector<FieldElement> a_rev(n_shift, FieldElement::zero());
+        std::vector<FieldElement> b(n_shift, FieldElement::zero());
+        auto delta_power = FieldElement::one();
+        for (std::size_t i = 0; i < configured_length; ++i)
+        {
+            const auto source_index = configured_degree - i;
+            a_rev[i] = coefficients[source_index] * factorial[source_index];
+            b[i] = delta_power * inverse_factorial[i];
+            delta_power *= delta;
+        }
+
+        const auto plan = ntt_plan(n_shift);
+        plan->ntt(FieldElement::mutable_native_array_data(a_rev.data()));
+        plan->ntt(FieldElement::mutable_native_array_data(b.data()));
+        for (std::size_t i = 0; i < n_shift; ++i) a_rev[i] *= b[i];
+        plan->intt(FieldElement::mutable_native_array_data(a_rev.data()));
+
+        std::vector<FieldElement> shifted(configured_length, FieldElement::zero());
+        for (std::size_t k = 0; k < configured_length; ++k)
+        {
+            shifted[k] = a_rev[configured_degree - k] * inverse_factorial[k];
+        }
+        return shifted;
     }
 
     // 将矩阵（二维向量）按行展平为一维向量

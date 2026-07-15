@@ -10,6 +10,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -30,10 +31,43 @@ namespace gatzk::protocol
 
     namespace
     {
-
         using algebra::FieldElement;
         using crypto::Commitment;
         using Clock = std::chrono::steady_clock;
+
+        bool public_u64_column_matches(
+            const ProtocolContext &context,
+            const std::string &label,
+            const std::vector<std::size_t> &expected)
+        {
+            const auto it = context.public_polynomials.find(label);
+            if (it == context.public_polynomials.end() || it->second.size() < expected.size())
+            {
+                return false;
+            }
+            const auto &values = it->second.values();
+            for (std::size_t i = 0; i < expected.size(); ++i)
+            {
+                if (!(values[i] == FieldElement(static_cast<std::uint64_t>(expected[i]))))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        bool public_statement_matches_registered_columns(const ProtocolContext &context)
+        {
+            std::vector<std::size_t> src;
+            std::vector<std::size_t> dst;
+            src.reserve(context.local.public_input.src.size());
+            dst.reserve(context.local.public_input.dst.size());
+            for (const auto value : context.local.public_input.src) src.push_back(value);
+            for (const auto value : context.local.public_input.dst) dst.push_back(value);
+            return public_u64_column_matches(context, "P_I", context.local.public_input.I)
+                && public_u64_column_matches(context, "P_src", src)
+                && public_u64_column_matches(context, "P_dst", dst);
+        }
 
         double elapsed_ms(const Clock::time_point &start, const Clock::time_point &end)
         {
@@ -1006,6 +1040,13 @@ namespace gatzk::protocol
             {
                 return false;
             }
+            if (proof.public_metadata.public_output != canonical_public_output_descriptor(
+                    proof.public_logits,
+                    context.local.num_nodes,
+                    context.local.num_classes))
+            {
+                return false;
+            }
             const auto output_it = std::find_if(
                 proof.dynamic_commitments.begin(),
                 proof.dynamic_commitments.end(),
@@ -1014,26 +1055,381 @@ namespace gatzk::protocol
             {
                 return false;
             }
-            const auto binding_challenges = derive_public_output_challenges(
+            (void)derive_public_output_challenges(
                 proof.public_metadata,
                 output_it->second,
                 proof.public_logits,
                 context.local.num_nodes,
                 context.local.num_classes);
-            if (!(proof.public_output_challenge == binding_challenges.point))
+            return true;
+        }
+
+        bool binding_relation_meta_matches(
+            const BindingRelationMeta &lhs,
+            const BindingRelationMeta &rhs)
+        {
+            auto indexed_view_matches = [](
+                const IndexedViewRelationMeta &a,
+                const IndexedViewRelationMeta &b)
             {
-                return false;
+                return a.relation_id == b.relation_id
+                    && a.canonical_object == b.canonical_object
+                    && a.view_object == b.view_object
+                    && a.canonical_domain == b.canonical_domain
+                    && a.view_domain == b.view_domain
+                    && a.canonical_length == b.canonical_length
+                    && a.view_length == b.view_length
+                    && a.index_map_id == b.index_map_id
+                    && a.canonical_selector_id == b.canonical_selector_id
+                    && a.query_selector_id == b.query_selector_id
+                    && a.multiplicity_id == b.multiplicity_id
+                    && a.eta_challenge_label == b.eta_challenge_label
+                    && a.beta_challenge_label == b.beta_challenge_label
+                    && a.commitment_order == b.commitment_order;
+            };
+            auto shift_relation_matches = [](
+                const KZGShiftRelationMeta &a,
+                const KZGShiftRelationMeta &b)
+            {
+                return a.relation_id == b.relation_id
+                    && a.source_linear_maps == b.source_linear_maps
+                    && a.source_domains == b.source_domains
+                    && a.canonical_points == b.canonical_points
+                    && a.lambda0 == b.lambda0
+                    && a.deltas == b.deltas
+                    && a.source_value_kinds == b.source_value_kinds
+                    && a.challenge_label == b.challenge_label
+                    && a.exclusion_degree == b.exclusion_degree
+                    && a.max_difference_degree == b.max_difference_degree
+                    && a.configured_degrees == b.configured_degrees
+                    && a.shift_domain_sizes == b.shift_domain_sizes
+                    && a.opening_claim_order == b.opening_claim_order;
+            };
+            const auto indexed_equal = lhs.indexed_views.size() == rhs.indexed_views.size()
+                && std::equal(
+                    lhs.indexed_views.begin(), lhs.indexed_views.end(),
+                    rhs.indexed_views.begin(), indexed_view_matches);
+            const auto shift_equal = lhs.shift_relations.size() == rhs.shift_relations.size()
+                && std::equal(
+                    lhs.shift_relations.begin(), lhs.shift_relations.end(),
+                    rhs.shift_relations.begin(), shift_relation_matches);
+            return lhs.relation_id == rhs.relation_id
+                && lhs.object_kind == rhs.object_kind
+                && lhs.layer_id == rhs.layer_id
+                && lhs.head_id == rhs.head_id
+                && lhs.source_objects == rhs.source_objects
+                && lhs.target_objects == rhs.target_objects
+                && lhs.work_domains == rhs.work_domains
+                && lhs.real_lengths == rhs.real_lengths
+                && lhs.quotient_relations == rhs.quotient_relations
+                && indexed_equal
+                && shift_equal;
+        }
+
+        bool validate_pi_bind_model_reblinds(
+            const ProtocolContext &context,
+            const Proof &proof,
+            const std::unordered_map<std::string, crypto::Commitment> &top_level_dynamic,
+            std::unordered_map<std::string, crypto::Commitment> *combined)
+        {
+            if (combined == nullptr) return false;
+            *combined = top_level_dynamic;
+            const auto expected_meta = build_binding_relation_metadata(context);
+            if (proof.pi_bind.subproofs.size() != expected_meta.size()) return false;
+
+            std::size_t global_hidden_head = 0;
+            std::unordered_set<std::string> model_object_ids;
+            for (std::size_t subproof_index = 0;
+                 subproof_index < expected_meta.size(); ++subproof_index)
+            {
+                const auto &subproof = proof.pi_bind.subproofs[subproof_index];
+                if (!binding_relation_meta_matches(
+                        subproof.relation_meta, expected_meta[subproof_index]))
+                    return false;
+                std::vector<std::pair<std::string, std::string>> expected_models;
+                if (subproof.relation_meta.object_kind == "hidden")
+                {
+                    const auto layer = subproof.relation_meta.layer_id.value() - 1;
+                    const auto width = context.model.hidden_layers.at(layer).shape.head_dim;
+                    for (std::size_t column = 0; column < width; ++column)
+                        expected_models.push_back({
+                            hidden_weight_column_label(global_hidden_head, column),
+                            context.domains.in->name});
+                    expected_models.push_back({hidden_src_label(global_hidden_head), context.domains.d->name});
+                    expected_models.push_back({hidden_dst_label(global_hidden_head), context.domains.d->name});
+                    ++global_hidden_head;
+                }
+                else if (subproof.relation_meta.object_kind == "output")
+                {
+                    const auto head = subproof.relation_meta.head_id.value();
+                    for (std::size_t column = 0; column < context.local.num_classes; ++column)
+                        expected_models.push_back({
+                            output_weight_column_label(head, column),
+                            context.domains.cat->name});
+                    expected_models.push_back({output_src_label(head, false), context.domains.c->name});
+                    expected_models.push_back({output_dst_label(head, false), context.domains.c->name});
+                    expected_models.push_back({output_bias_label(head, false), context.domains.c->name});
+                }
+                if (subproof.model_reblinds.size() != expected_models.size()) return false;
+                for (std::size_t model_index = 0;
+                     model_index < expected_models.size(); ++model_index)
+                {
+                    const auto &[expected_anchor, expected_domain] = expected_models[model_index];
+                    const auto &entry = subproof.model_reblinds[model_index];
+                    const auto anchor_it = context.static_commitments.find(expected_anchor);
+                    if (entry.object_id != expected_anchor
+                        || entry.domain != expected_domain
+                        || entry.vk_model_anchor.object_id != expected_anchor
+                        || entry.proof_local_commitment.name != model_proof_local_label(expected_anchor)
+                        || entry.blinder_commitment.name != model_reblind_witness_label(expected_anchor)
+                        || anchor_it == context.static_commitments.end()
+                        || entry.blinder_commitment.point == crypto::g1_zero()
+                        || !model_object_ids.insert(expected_anchor).second
+                        || !crypto::KZG::verify_domain_divisibility(
+                            entry.proof_local_commitment,
+                            anchor_it->second,
+                            entry.blinder_commitment,
+                            expected_domain,
+                            context.kzg.vk)
+                        || !combined->emplace(
+                            entry.proof_local_commitment.name,
+                            entry.proof_local_commitment).second
+                        || !combined->emplace(
+                            entry.blinder_commitment.name,
+                            entry.blinder_commitment).second)
+                    {
+                        return false;
+                    }
+                }
+                if (subproof.relation_meta.object_kind == "output")
+                {
+                    const auto head = subproof.relation_meta.head_id.value();
+                    const auto &view_meta = subproof.relation_meta.indexed_views.front();
+                    const auto *terminal_meta_ptr = find_unique_shift_relation_by_kind(
+                        subproof.relation_meta, "output-bias-terminal");
+                    if (terminal_meta_ptr == nullptr) return false;
+                    const auto &terminal_meta = *terminal_meta_ptr;
+                    const bool same_point = terminal_meta.configured_degrees.empty();
+                    const std::vector<std::string> expected_view_references = {
+                        view_meta.canonical_object,
+                        view_meta.view_object,
+                        "public:" + view_meta.canonical_selector_id,
+                        "public:" + view_meta.query_selector_id,
+                    };
+                    std::vector<std::tuple<
+                        std::string, std::string, std::size_t, PayloadValueKind>>
+                        expected_evaluations = {
+                            {output_bias_view_label(head, "m_can") + ":public_bind",
+                             "relation", 1, PayloadValueKind::PublicValue},
+                            {model_proof_local_label(output_bias_label(head, false)),
+                             "C", 2, PayloadValueKind::MaskedPrivateValue},
+                            {output_bias_view_label(head, "Table_can"),
+                             "C", 2, PayloadValueKind::MaskedPrivateValue},
+                            {output_bias_view_label(head, "m_can"),
+                             "C", 2, PayloadValueKind::PublicValue},
+                            {output_bias_view_label(head, "J_can"),
+                             "C", 2, PayloadValueKind::MaskedPrivateValue},
+                            {output_bias_view_label(head, "R_can"),
+                             "C", 2, PayloadValueKind::MaskedPrivateValue},
+                            {output_bias_view_label(head, "Query"),
+                             "edge", 2, PayloadValueKind::MaskedPrivateValue},
+                            {output_bias_view_label(head, "J_qry"),
+                             "edge", 2, PayloadValueKind::MaskedPrivateValue},
+                            {output_bias_view_label(head, "R_qry"),
+                             "edge", 2, PayloadValueKind::MaskedPrivateValue},
+                        };
+                    if (!same_point)
+                        expected_evaluations.insert(
+                            expected_evaluations.begin(),
+                            {output_bias_view_label(head, "R_shifted") + ":u_rel",
+                             "relation", 1, PayloadValueKind::MaskedPrivateValue});
+                    const bool evaluations_match =
+                        subproof.evaluations.size() == expected_evaluations.size()
+                        && std::equal(
+                            subproof.evaluations.begin(),
+                            subproof.evaluations.end(),
+                            expected_evaluations.begin(),
+                            [](const BindingEvaluation &evaluation, const auto &expected)
+                            {
+                                return evaluation.object_id == std::get<0>(expected)
+                                    && evaluation.domain == std::get<1>(expected)
+                                    && evaluation.values.size() == std::get<2>(expected)
+                                    && evaluation.kind == std::get<3>(expected);
+                            });
+                    if (subproof.view_references.size()
+                            != expected_view_references.size()
+                        || !std::equal(
+                            subproof.view_references.begin(),
+                            subproof.view_references.end(),
+                            expected_view_references.begin(),
+                            [](const MetadataReference &reference,
+                               const std::string &expected)
+                            { return reference.object_id == expected; })
+                        || !subproof.view_commitments.empty()
+                        || !subproof.aggregation_commitments.empty()
+                        || !subproof.basis_commitments.empty()
+                        || !subproof.crpc_commitments.empty()
+                        || subproof.view_logup_commitments.size()
+                            != view_meta.commitment_order.size()
+                        || !std::equal(
+                            subproof.view_logup_commitments.begin(),
+                            subproof.view_logup_commitments.end(),
+                            view_meta.commitment_order.begin(),
+                            [](const auto &entry, const std::string &expected)
+                            { return entry.first == expected; })
+                        || (same_point
+                            ? !subproof.relation_commitments.empty()
+                            : (subproof.relation_commitments.size() != 1
+                               || subproof.relation_commitments.front().first
+                                  != output_bias_view_label(head, "R_shifted")))
+                        || !evaluations_match)
+                    {
+                        return false;
+                    }
+                }
+                else if (!subproof.relation_meta.indexed_views.empty()
+                    || !subproof.relation_meta.shift_relations.empty()
+                    || !subproof.view_references.empty()
+                    || !subproof.view_commitments.empty()
+                    || !subproof.view_logup_commitments.empty()
+                    || !subproof.aggregation_commitments.empty()
+                    || !subproof.basis_commitments.empty()
+                    || !subproof.crpc_commitments.empty()
+                    || !subproof.relation_commitments.empty()
+                    || !subproof.evaluations.empty()
+                    || !subproof.opening_references.empty())
+                {
+                    return false;
+                }
+                for (const auto* group : {
+                         &subproof.view_commitments,
+                         &subproof.view_logup_commitments,
+                         &subproof.aggregation_commitments,
+                         &subproof.basis_commitments,
+                         &subproof.crpc_commitments,
+                         &subproof.relation_commitments})
+                {
+                    for (const auto& [name, commitment] : *group)
+                    {
+                        if (name != commitment.name
+                            || !combined->emplace(name, commitment).second)
+                            return false;
+                    }
+                }
             }
-            const auto value = evaluate_coefficient_vector(
-                proof.public_logits,
-                binding_challenges.point);
-            return crypto::KZG::verify_batch(
-                {output_it->second},
-                {binding_challenges.point},
-                {{value}},
-                binding_challenges.folding,
-                proof.public_output_opening,
-                context.kzg.vk);
+            return true;
+        }
+
+        bool verify_model_binding_relations(
+            const ProtocolContext &context,
+            const std::unordered_map<std::string, crypto::Commitment> &dynamic,
+            const std::map<std::string, FieldElement> &challenges)
+        {
+            auto required_dynamic = [&](const std::string &label) -> const crypto::Commitment *
+            {
+                const auto it = dynamic.find(label);
+                return it == dynamic.end() ? nullptr : &it->second;
+            };
+            auto verify_relation = [&]
+            (
+                const std::string &source_label,
+                const crypto::Commitment &anchor,
+                const std::string &blinder_label,
+                const std::string &domain_name)
+            {
+                const auto *source = required_dynamic(source_label);
+                const auto *blinder = required_dynamic(blinder_label);
+                return source != nullptr && blinder != nullptr
+                    && crypto::KZG::verify_domain_divisibility(
+                        *source, anchor, *blinder, domain_name, context.kzg.vk);
+            };
+            auto folded_anchor = [&]
+            (
+                const std::string &name,
+                const std::vector<std::string> &anchor_labels,
+                const FieldElement &folding) -> std::optional<crypto::Commitment>
+            {
+                crypto::Commitment out;
+                out.name = name;
+                out.point = crypto::g1_zero();
+                auto power = FieldElement::one();
+                for (const auto &anchor_label : anchor_labels)
+                {
+                    const auto it = dynamic.find(model_proof_local_label(anchor_label));
+                    if (it == dynamic.end()) return std::nullopt;
+                    out.point = crypto::g1_add(
+                        out.point, crypto::g1_mul(it->second.point, power));
+                    power *= folding;
+                }
+                return out;
+            };
+
+            for (std::size_t head = 0; head < context.model.hidden_heads.size(); ++head)
+            {
+                std::vector<std::string> weight_columns;
+                for (std::size_t column = 0;; ++column)
+                {
+                    const auto label = hidden_weight_column_label(head, column);
+                    if (!context.static_commitments.contains(label)) break;
+                    weight_columns.push_back(label);
+                }
+                const auto challenge_it = challenges.find("y_proj_h" + std::to_string(head));
+                if (weight_columns.empty() || challenge_it == challenges.end()) return false;
+                const auto anchor = folded_anchor(
+                    "folded_hidden_weight_proof_" + std::to_string(head),
+                    weight_columns, challenge_it->second);
+                const auto src_anchor = required_dynamic(
+                    model_proof_local_label(hidden_src_label(head)));
+                const auto dst_anchor = required_dynamic(
+                    model_proof_local_label(hidden_dst_label(head)));
+                const auto prefix = hidden_head_prefix(head) + "_";
+                if (!anchor.has_value() || src_anchor == nullptr || dst_anchor == nullptr
+                    || !verify_relation(prefix + "b_proj", *anchor,
+                        hidden_model_binding_blinder_label(head, "proj"), context.domains.in->name)
+                    || !verify_relation(prefix + "b_src", *src_anchor,
+                        hidden_model_binding_blinder_label(head, "src"), context.domains.d->name)
+                    || !verify_relation(prefix + "b_dst", *dst_anchor,
+                        hidden_model_binding_blinder_label(head, "dst"), context.domains.d->name))
+                    return false;
+            }
+            for (std::size_t head = 0; head < context.model.output_layer.heads.size(); ++head)
+            {
+                std::vector<std::string> weight_columns;
+                weight_columns.reserve(context.local.num_classes);
+                for (std::size_t column = 0; column < context.local.num_classes; ++column)
+                {
+                    weight_columns.push_back(output_weight_column_label(head, column));
+                }
+                const auto challenge_it = challenges.find(
+                    output_challenge_name("y_proj_out", head, false));
+                if (challenge_it == challenges.end()) return false;
+                const auto anchor = folded_anchor(
+                    "folded_output_weight_proof_" + std::to_string(head),
+                    weight_columns,
+                    challenge_it->second);
+                const auto src_anchor = required_dynamic(
+                    model_proof_local_label(output_src_label(head, false)));
+                const auto dst_anchor = required_dynamic(
+                    model_proof_local_label(output_dst_label(head, false)));
+                const auto prefix = output_head_prefix(head, false) + "_";
+                if (!anchor.has_value() || src_anchor == nullptr || dst_anchor == nullptr
+                    || !verify_relation(
+                        prefix + "b_proj", *anchor,
+                        output_model_binding_blinder_label(head, "proj"),
+                        context.domains.cat->name)
+                    || !verify_relation(
+                        prefix + "b_src", *src_anchor,
+                        output_model_binding_blinder_label(head, "src"),
+                        context.domains.c->name)
+                    || !verify_relation(
+                        prefix + "b_dst", *dst_anchor,
+                        output_model_binding_blinder_label(head, "dst"),
+                        context.domains.c->name))
+                {
+                    return false;
+                }
+            }
+            return true;
         }
 
         PublicMetadata build_public_metadata(const ProtocolContext &context)
@@ -1043,7 +1439,40 @@ namespace gatzk::protocol
 
         bool metadata_matches(const PublicMetadata &lhs, const PublicMetadata &rhs)
         {
-            return lhs.protocol_name == rhs.protocol_name && lhs.proof_task == rhs.proof_task && lhs.srs_id == rhs.srs_id && lhs.srs_type == rhs.srs_type && lhs.srs_degree_bound == rhs.srs_degree_bound && lhs.privacy_policy == rhs.privacy_policy && lhs.input_privacy == rhs.input_privacy && lhs.output_mode == rhs.output_mode && lhs.opening_mode == rhs.opening_mode && lhs.binding_mode == rhs.binding_mode && lhs.protocol_id == rhs.protocol_id && lhs.dataset_name == rhs.dataset_name && lhs.task_type == rhs.task_type && lhs.report_unit == rhs.report_unit && lhs.graph_count == rhs.graph_count && lhs.L == rhs.L && lhs.hidden_profile == rhs.hidden_profile && lhs.d_in_profile == rhs.d_in_profile && lhs.K_out == rhs.K_out && lhs.C == rhs.C && lhs.batching_rule == rhs.batching_rule && lhs.subgraph_rule == rhs.subgraph_rule && lhs.self_loop_rule == rhs.self_loop_rule && lhs.edge_sort_rule == rhs.edge_sort_rule && lhs.chunking_rule == rhs.chunking_rule && lhs.model_arch_id == rhs.model_arch_id && lhs.model_param_id == rhs.model_param_id && lhs.static_table_id == rhs.static_table_id && lhs.quant_cfg_id == rhs.quant_cfg_id && lhs.domain_cfg == rhs.domain_cfg && lhs.dim_cfg == rhs.dim_cfg && lhs.encoding_id == rhs.encoding_id && lhs.padding_rule_id == rhs.padding_rule_id && lhs.degree_bound_id == rhs.degree_bound_id;
+            const auto is_lower_hex_256 = [](const std::string &value)
+            {
+                return value.size() == 64 && std::all_of(value.begin(), value.end(), [](unsigned char ch)
+                {
+                    return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+                });
+            };
+            return lhs.protocol_name == rhs.protocol_name
+                && is_lower_hex_256(lhs.proof_nonce)
+                && lhs.proof_task == rhs.proof_task
+                && lhs.srs_id == rhs.srs_id
+                && lhs.protocol_schema_id == rhs.protocol_schema_id
+                && is_lower_hex_256(lhs.protocol_schema_id)
+                && lhs.instance_schema_hash == rhs.instance_schema_hash
+                && is_lower_hex_256(lhs.instance_schema_hash)
+                && lhs.srs_type == rhs.srs_type
+                && lhs.srs_degree_bound == rhs.srs_degree_bound
+                && lhs.kzg_assumption_profile == rhs.kzg_assumption_profile
+                && lhs.privacy_policy == rhs.privacy_policy
+                && lhs.input_privacy == rhs.input_privacy
+                && lhs.output_mode == rhs.output_mode
+                && lhs.opening_mode == rhs.opening_mode
+                && lhs.binding_mode == rhs.binding_mode
+                && lhs.model_arch == rhs.model_arch
+                && lhs.model_params == rhs.model_params
+                && lhs.static_tables == rhs.static_tables
+                && lhs.quant_config == rhs.quant_config
+                && lhs.domain_cfg == rhs.domain_cfg
+                && lhs.dim_cfg == rhs.dim_cfg
+                && lhs.encoding == rhs.encoding
+                && lhs.padding_rule == rhs.padding_rule
+                && lhs.degree_bound == rhs.degree_bound
+                && lhs.security_budget == rhs.security_budget
+                && !lhs.public_output.empty();
         }
 
         struct ExternalEvalSpec
@@ -1051,6 +1480,7 @@ namespace gatzk::protocol
             std::string proof_name;
             std::string label;
             std::string challenge_name;
+            bool static_commitment = false;
         };
 
         std::vector<ExternalEvalSpec> multihead_external_specs(const ProtocolContext &context)
@@ -1076,7 +1506,7 @@ namespace gatzk::protocol
                     hidden_concat_y_name(layer_index, is_final_layer),
                 });
             }
-            const bool legacy_single_output = context.model.output_layer.heads.size() == 1;
+            const bool legacy_single_output = false;
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {
                 const auto prefix = output_head_prefix(head_index, legacy_single_output);
@@ -1185,6 +1615,31 @@ namespace gatzk::protocol
                     }
                 }
             }
+            for (const auto &subproof : proof.pi_bind.subproofs)
+            {
+                for (const auto &evaluation : subproof.evaluations)
+                {
+                    const bool public_multiplicity =
+                        evaluation.object_id.ends_with(
+                            "_BiasView_m_can:public_bind");
+                    if (public_multiplicity)
+                    {
+                        if (evaluation.kind != PayloadValueKind::PublicValue)
+                            return fail(
+                                "Pi_bind public multiplicity kind mismatch");
+                    }
+                    else
+                    {
+                        auto source_label = evaluation.object_id;
+                        if (source_label.ends_with(":u_rel"))
+                            source_label.resize(source_label.size() - 6);
+                        if (!check(source_label, evaluation.kind))
+                            return fail(
+                                "Pi_bind evaluation payload kind mismatch: "
+                                + evaluation.object_id);
+                    }
+                }
+            }
             if (proof.external_evaluation_kinds.size() != proof.external_evaluations.size())
             {
                 return fail("external evaluation payload kind count mismatch");
@@ -1270,6 +1725,22 @@ namespace gatzk::protocol
             return false;
         };
         const auto metadata_start = Clock::now();
+        if (!context.model.has_real_multihead)
+        {
+            return fail("removed_single_output_compatibility_protocol");
+        }
+        if (context.compiler_artifact == nullptr)
+        {
+            return fail("missing_protocol_compiler_artifact");
+        }
+        std::string compiler_artifact_reason;
+        if (!validate_protocol_compiler_artifact(
+                context,
+                *context.compiler_artifact,
+                &compiler_artifact_reason))
+        {
+            return fail("protocol_compiler_artifact:" + compiler_artifact_reason);
+        }
         try
         {
             data::validate_normalized_graph_input(context.local);
@@ -1278,11 +1749,15 @@ namespace gatzk::protocol
         {
             return fail("public_graph_boundary");
         }
+        if (!public_statement_matches_registered_columns(context))
+        {
+            return fail("public_input_commitment_mismatch");
+        }
         if (!metadata_matches(proof.public_metadata, build_public_metadata(context)))
         {
             return fail("metadata_mismatch");
         }
-        if (proof.public_metadata.protocol_name != "zkgat" || proof.public_metadata.proof_task != "node_classification_full_gat" || (proof.public_metadata.srs_type != "trusted_srs" && proof.public_metadata.srs_type != "mpc_srs") || proof.public_metadata.privacy_policy != "model_and_trace_hidden" || proof.public_metadata.input_privacy != "public_graph_public_features" || proof.public_metadata.output_mode != "public_logits" || proof.public_metadata.opening_mode != "domain_grouped_batch_opening" || proof.public_metadata.binding_mode != "zk_subproof_for_crpc")
+        if (proof.public_metadata.protocol_name != "zkgat" || proof.public_metadata.proof_task != "node_classification_full_gat" || proof.public_metadata.srs_type != "trusted_srs" || proof.public_metadata.privacy_policy != "model_and_trace_hidden" || proof.public_metadata.input_privacy != "public_graph_public_features" || proof.public_metadata.output_mode != "public_logits" || proof.public_metadata.opening_mode != "point_grouped_batch_opening" || proof.public_metadata.binding_mode != "zk_subproof_for_crpc")
         {
             return fail("metadata_security_profile");
         }
@@ -1333,14 +1808,90 @@ namespace gatzk::protocol
                     return fail("quotient_commitment_order");
                 }
             }
-            const auto dynamic_commitments = to_map(proof.dynamic_commitments);
+            const auto top_level_dynamic_commitments = to_map(proof.dynamic_commitments);
             const auto quotient_commitments = to_map(proof.quotient_commitments);
             const auto witness_scalars = to_field_map(proof.witness_scalars);
             const auto external_evaluations = to_field_map(proof.external_evaluations);
-            const auto challenges = replay_challenges(context, dynamic_commitments, quotient_commitments);
+            std::unordered_map<std::string, Commitment> dynamic_commitments;
+            if (!validate_pi_bind_model_reblinds(
+                    context,
+                    proof,
+                    top_level_dynamic_commitments,
+                    &dynamic_commitments))
+            {
+                return fail("pi_bind_model_reblind");
+            }
+            const auto challenges = replay_challenges(
+                context, dynamic_commitments, quotient_commitments, &proof.public_metadata);
             if (proof.challenges != challenges)
             {
                 return fail("challenge_replay_mismatch");
+            }
+            for (std::size_t head = 0;
+                 head < context.model.output_layer.heads.size();
+                 ++head)
+            {
+                const auto relation_id =
+                    "bind:output:" + std::to_string(head);
+                const auto subproof_it = std::find_if(
+                    proof.pi_bind.subproofs.begin(), proof.pi_bind.subproofs.end(),
+                    [&](const BindingSubproof &subproof)
+                    { return subproof.relation_meta.relation_id == relation_id; });
+                if (subproof_it == proof.pi_bind.subproofs.end())
+                    return fail("missing_output_binding_open_refs");
+                const auto *relation_ptr = find_unique_shift_relation_by_kind(
+                    subproof_it->relation_meta, "output-bias-terminal");
+                if (relation_ptr == nullptr)
+                    return fail("output_binding_shift_relation_registry");
+                const auto &relation = *relation_ptr;
+                const auto y_rel = challenges.at(relation.challenge_label);
+                std::vector<std::string> expected_references;
+                auto append_unique_reference = [&](std::string reference)
+                {
+                    if (std::find(
+                            expected_references.begin(),
+                            expected_references.end(), reference)
+                        == expected_references.end())
+                        expected_references.push_back(std::move(reference));
+                };
+                if (relation.configured_degrees.empty())
+                {
+                    append_unique_reference("W_ext:" + y_rel.to_string());
+                    append_unique_reference(
+                        "W_ext:" + relation.canonical_points.front().to_string());
+                }
+                else
+                {
+                    for (const auto &point : std::vector<FieldElement>{
+                             y_rel,
+                             y_rel + relation.deltas.at(1),
+                             relation.canonical_points.at(0)})
+                        append_unique_reference("W_ext:" + point.to_string());
+                }
+                for (const auto &[domain, point, omega] : std::vector<std::tuple<
+                         std::string, FieldElement, FieldElement>>{
+                         {"C", challenges.at("z_C"), context.domains.c->omega},
+                         {"edge", challenges.at("z_edge"), context.domains.edge->omega}})
+                {
+                    append_unique_reference(
+                        "Open_dom:" + domain + ":" + point.to_string());
+                    append_unique_reference(
+                        "Open_dom:" + domain + ":" + (point * omega).to_string());
+                }
+                if (subproof_it->opening_references.size()
+                        != expected_references.size()
+                    || !std::equal(
+                        subproof_it->opening_references.begin(),
+                        subproof_it->opening_references.end(),
+                        expected_references.begin(),
+                        [](const MetadataReference &reference,
+                           const std::string &expected)
+                        { return reference.object_id == expected; }))
+                    return fail("output_binding_open_ref_registry");
+            }
+            if (!verify_model_binding_relations(context, dynamic_commitments, challenges))
+            {
+                return fail("model_binding_relation");
             }
             if (metrics != nullptr)
             {
@@ -1353,7 +1904,7 @@ namespace gatzk::protocol
                     return fail("missing_hidden_route_scalar");
                 }
             }
-            const bool legacy_single_output = context.model.output_layer.heads.size() == 1;
+            const bool legacy_single_output = false;
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {
                 if (!witness_scalars.contains(output_witness_scalar_name("src", head_index, legacy_single_output)) || !witness_scalars.contains(output_witness_scalar_name("dst", head_index, legacy_single_output)) || !witness_scalars.contains(output_witness_scalar_name("t", head_index, legacy_single_output)))
@@ -1367,35 +1918,6 @@ namespace gatzk::protocol
                 {
                     return fail("missing_external_eval:" + spec.proof_name);
                 }
-            }
-            FieldElement summed_y_lin = FieldElement::zero();
-            FieldElement summed_y = FieldElement::zero();
-            for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
-            {
-                const auto mu_y_lin_name =
-                    legacy_single_output ? std::string("mu_Y_lin") : output_external_eval_name("y_lin", head_index, false);
-                const auto mu_y_name =
-                    legacy_single_output ? std::string("mu_out") : output_external_eval_name("y", head_index, false);
-                // 先检查每个输出头自己的 bias-add 关系，再继续检查多头平均关系。
-                const auto expected = external_evaluations.at(mu_y_lin_name) + bias_fold_vector(
-                                                                                   context.model.output_layer.heads[head_index].output_bias_fp,
-                                                                                   context.local.num_nodes,
-                                                                                   challenges.at("y_out"));
-                if (external_evaluations.at(mu_y_name) != expected)
-                {
-                    return fail("output_bias_relation");
-                }
-                summed_y_lin += external_evaluations.at(mu_y_lin_name);
-                summed_y += external_evaluations.at(mu_y_name);
-            }
-            const auto k_out = FieldElement(context.model.output_layer.heads.size());
-            if (k_out * external_evaluations.at("mu_Y_lin") != summed_y_lin)
-            {
-                return fail("output_average_pre_bias_relation");
-            }
-            if (k_out * external_evaluations.at("mu_out") != summed_y)
-            {
-                return fail("output_average_relation");
             }
             struct BundleSpec
             {
@@ -1460,6 +1982,8 @@ namespace gatzk::protocol
                 const auto &bundle = *indexed_bundle.bundle;
                 auto labels = domain_opening_labels(context, spec.trace_domain_name);
                 labels.push_back(spec.quotient_name);
+                const auto quotient_mask_name = quotient_mask_label(spec.quotient_name);
+                labels.push_back(quotient_mask_name);
                 if (bundle.values.size() != labels.size())
                 {
                     return bundle_fail("value_count");
@@ -1500,7 +2024,12 @@ namespace gatzk::protocol
                         commitments,
                         bundle.points,
                         values,
-                        challenges.at(spec.v_name),
+                        derive_batch_opening_folding_challenge(
+                            proof.public_metadata,
+                            spec.v_name,
+                            commitments,
+                            bundle.points,
+                            values),
                         bundle.proof,
                         context.kzg.vk))
                 {
@@ -1526,7 +2055,7 @@ namespace gatzk::protocol
                     }
                     else if (spec.quotient_name == "t_edge")
                     {
-                        expected_t = evaluate_t_edge(context, challenges, witness_scalars, eval, challenges.at(spec.z_name));
+                        expected_t = evaluate_t_edge(context, challenges, witness_scalars, external_evaluations, eval, challenges.at(spec.z_name));
                     }
                     else if (spec.quotient_name == "t_in")
                     {
@@ -1556,7 +2085,15 @@ namespace gatzk::protocol
                     // earlier proof's acceptance-side value is reserved for an explicit
                     // repeat_same_proof_verify benchmark, not this path.
                 }
-                if (bundle_value(indexed_bundle, spec.quotient_name, challenges.at(spec.z_name)) != expected_t)
+                const auto quotient_point = challenges.at(spec.z_name);
+                const auto opened_mask = bundle_value(
+                    indexed_bundle,
+                    quotient_mask_name,
+                    quotient_point);
+                const auto expected_masked_quotient =
+                    expected_t + spec.domain->zero_polynomial_eval(quotient_point) * opened_mask;
+                if (bundle_value(indexed_bundle, spec.quotient_name, quotient_point)
+                    != expected_masked_quotient)
                 {
                     return bundle_fail("quotient_mismatch:" + spec.quotient_name);
                 }
@@ -1570,18 +2107,188 @@ namespace gatzk::protocol
             std::vector<FieldElement> external_points;
             for (const auto &spec : multihead_external_specs(context))
             {
-                if (!dynamic_commitments.contains(spec.label))
+                if ((!spec.static_commitment && !dynamic_commitments.contains(spec.label))
+                    || (spec.static_commitment && !context.static_commitments.contains(spec.label)))
                 {
                     return fail("missing_external_commitment:" + spec.label);
                 }
-                external_commitments.emplace_back(dynamic_commitments.at(spec.label), external_value(proof, spec.proof_name));
+                external_commitments.emplace_back(
+                    spec.static_commitment ? context.static_commitments.at(spec.label) : dynamic_commitments.at(spec.label),
+                    external_value(proof, spec.proof_name));
                 external_points.push_back(challenges.at(spec.challenge_name));
             }
+            for (std::size_t head_index = 0;
+                 head_index < context.model.output_layer.heads.size();
+                 ++head_index)
+            {
+                const auto relation_id =
+                    "bind:output:" + std::to_string(head_index);
+                const auto subproof_it = std::find_if(
+                    proof.pi_bind.subproofs.begin(), proof.pi_bind.subproofs.end(),
+                    [&](const BindingSubproof &subproof)
+                    { return subproof.relation_meta.relation_id == relation_id; });
+                if (subproof_it == proof.pi_bind.subproofs.end())
+                    return fail("missing_output_bias_shift_relation");
+                const auto *relation_ptr = find_unique_shift_relation_by_kind(
+                    subproof_it->relation_meta, "output-bias-terminal");
+                if (relation_ptr == nullptr)
+                    return fail("missing_output_bias_shift_relation");
+                const auto &relation = *relation_ptr;
+                if (relation.configured_degrees.empty())
+                {
+                    const auto r_can_label = output_bias_view_label(
+                        head_index, "R_can");
+                    const auto r_qry_label = output_bias_view_label(
+                        head_index, "R_qry");
+                    if (relation.canonical_points.size() != 1
+                        || !dynamic_commitments.contains(r_can_label)
+                        || !dynamic_commitments.contains(r_qry_label))
+                        return fail("invalid_same_point_output_bias_relation");
+                    const auto &c_bundle = indexed_bundles.at("C");
+                    for (const auto &point : c_bundle.bundle->points)
+                    {
+                        if (bundle_value(
+                                c_bundle,
+                                output_bias_view_label(head_index, "m_can"),
+                                point)
+                            != eval_memo.eval_named(
+                                "P_BiasMultiplicity_C", point))
+                            return fail("public_bias_multiplicity_domain_value");
+                    }
+                    const Commitment relation_commitment{
+                        .name = output_bias_view_label(
+                            head_index, "terminal_relation_virtual"),
+                        .point = crypto::g1_add(
+                            dynamic_commitments.at(r_can_label).point,
+                            crypto::g1_neg(
+                                dynamic_commitments.at(r_qry_label).point)),
+                    };
+                    external_commitments.push_back(
+                        {relation_commitment, FieldElement::zero()});
+                    external_points.push_back(relation.canonical_points.front());
+                    const auto public_m_id = output_bias_view_label(
+                        head_index, "m_can") + ":public_bind";
+                    const auto public_m_it = std::find_if(
+                        subproof_it->evaluations.begin(),
+                        subproof_it->evaluations.end(),
+                        [&](const BindingEvaluation &evaluation)
+                        { return evaluation.object_id == public_m_id; });
+                    const auto y_public = challenges.at(relation.challenge_label);
+                    if (public_m_it == subproof_it->evaluations.end()
+                        || public_m_it->values.size() != 1
+                        || public_m_it->kind != PayloadValueKind::PublicValue
+                        || public_m_it->values.front()
+                            != eval_memo.eval_named(
+                                output_bias_view_label(head_index, "m_can"),
+                                y_public))
+                        return fail("invalid_same_point_public_bias_multiplicity");
+                    external_commitments.push_back({
+                        dynamic_commitments.at(output_bias_view_label(
+                            head_index, "m_can")),
+                        public_m_it->values.front()});
+                    external_points.push_back(y_public);
+                    continue;
+                }
+                const auto shifted_label =
+                    output_bias_view_label(head_index, "R_shifted");
+                const auto u_id = shifted_label + ":u_rel";
+                const auto u_it = std::find_if(
+                    subproof_it->evaluations.begin(), subproof_it->evaluations.end(),
+                    [&](const BindingEvaluation &evaluation)
+                    { return evaluation.object_id == u_id; });
+                if (u_it == subproof_it->evaluations.end()
+                    || u_it->domain != "relation"
+                    || u_it->values.size() != 1
+                    || u_it->kind != PayloadValueKind::MaskedPrivateValue
+                    || !dynamic_commitments.contains(shifted_label))
+                    return fail("invalid_output_bias_shift_value");
+                const bool canonical_is_first =
+                    relation.source_domains.at(0) == context.domains.c->name;
+                const auto r_can_label =
+                    output_bias_view_label(head_index, "R_can");
+                const auto r_qry_label =
+                    output_bias_view_label(head_index, "R_qry");
+                if (!dynamic_commitments.contains(r_can_label)
+                    || !dynamic_commitments.contains(r_qry_label))
+                    return fail("missing_output_bias_terminal_commitment");
+                const auto &c_bundle = indexed_bundles.at("C");
+                for (const auto &point : c_bundle.bundle->points)
+                {
+                    if (bundle_value(
+                            c_bundle,
+                            output_bias_view_label(head_index, "m_can"),
+                            point)
+                        != eval_memo.eval_named("P_BiasMultiplicity_C", point))
+                        return fail("public_bias_multiplicity_domain_value");
+                }
+                const auto first_point = canonical_is_first
+                    ? dynamic_commitments.at(r_can_label).point
+                    : crypto::g1_neg(dynamic_commitments.at(r_qry_label).point);
+                const auto second_point = canonical_is_first
+                    ? crypto::g1_neg(dynamic_commitments.at(r_qry_label).point)
+                    : dynamic_commitments.at(r_can_label).point;
+                const Commitment second_source{
+                    .name = output_bias_view_prefix(head_index) + "F2",
+                    .point = second_point,
+                };
+                const Commitment relation_commitment{
+                    .name = output_bias_view_label(
+                        head_index, "terminal_relation_virtual"),
+                    .point = crypto::g1_add(
+                        first_point, dynamic_commitments.at(shifted_label).point),
+                };
+                const auto y_rel = challenges.at(relation.challenge_label);
+                external_commitments.push_back(
+                    {dynamic_commitments.at(shifted_label), u_it->values.front()});
+                external_points.push_back(y_rel);
+                external_commitments.push_back(
+                    {second_source, u_it->values.front()});
+                external_points.push_back(y_rel + relation.deltas.at(1));
+                external_commitments.push_back(
+                    {relation_commitment, FieldElement::zero()});
+                external_points.push_back(relation.canonical_points.at(0));
+
+                const auto public_m_id =
+                    output_bias_view_label(head_index, "m_can") + ":public_bind";
+                const auto public_m_it = std::find_if(
+                    subproof_it->evaluations.begin(), subproof_it->evaluations.end(),
+                    [&](const BindingEvaluation &evaluation)
+                    { return evaluation.object_id == public_m_id; });
+                const auto public_poly_it = context.public_commitments.find(
+                    "P_BiasMultiplicity_C");
+                if (public_m_it == subproof_it->evaluations.end()
+                    || public_m_it->domain != "relation"
+                    || public_m_it->values.size() != 1
+                    || public_m_it->kind != PayloadValueKind::PublicValue
+                    || public_poly_it == context.public_commitments.end()
+                    || public_poly_it->second.opening_polynomial == nullptr
+                    || public_m_it->values.front()
+                        != public_poly_it->second.opening_polynomial->evaluate(y_rel))
+                    return fail("invalid_public_bias_multiplicity_binding");
+                external_commitments.push_back({
+                    dynamic_commitments.at(
+                        output_bias_view_label(head_index, "m_can")),
+                    public_m_it->values.front()});
+                external_points.push_back(y_rel);
+            }
+            const auto output_binding = derive_public_output_challenges(
+                proof.public_metadata,
+                dynamic_commitments.at("P_Y"),
+                proof.public_logits,
+                context.local.num_nodes,
+                context.local.num_classes);
+            external_commitments.emplace_back(
+                dynamic_commitments.at("P_Y"),
+                evaluate_coefficient_vector(proof.public_logits, output_binding.point));
+            external_points.push_back(output_binding.point);
             const auto external_fold_start = Clock::now();
             if (!crypto::KZG::verify_external_fold(
                     external_commitments,
                     external_points,
-                    challenges.at("rho_ext"),
+                    derive_external_opening_folding_challenge(
+                        proof.public_metadata,
+                        external_commitments,
+                        external_points),
                     proof.external_proof,
                     context.kzg.vk))
             {
@@ -1609,201 +2316,7 @@ namespace gatzk::protocol
             }
             return true;
         }
-        // 下面保留旧单头兼容验证路径，只是标签兼容层；正式多头主线优先走上面的分支。
-        const auto dynamic_commitments = to_map(proof.dynamic_commitments);
-        const auto quotient_commitments = to_map(proof.quotient_commitments);
-        const auto witness_scalars = to_field_map(proof.witness_scalars);
-        if (!witness_scalars.contains("S_src") || !witness_scalars.contains("S_dst"))
-        {
-            return false;
-        }
-        const auto challenges = replay_challenges(context, dynamic_commitments, quotient_commitments);
-        if (proof.challenges != challenges)
-        {
-            return false;
-        }
-
-        const auto mu_bias_out = bias_fold(context, challenges.at("y_out"));
-        if (external_value(proof, "mu_out") != external_value(proof, "mu_Y_lin") + mu_bias_out)
-        {
-            return false;
-        }
-
-        const std::vector<std::pair<Commitment, FieldElement>> external_commitments = {
-            {dynamic_commitments.at("P_H_prime"), external_value(proof, "mu_proj")},
-            {dynamic_commitments.at("P_E_src"), external_value(proof, "mu_src")},
-            {dynamic_commitments.at("P_E_dst"), external_value(proof, "mu_dst")},
-            {dynamic_commitments.at("P_H_star"), external_value(proof, "mu_star")},
-            {dynamic_commitments.at("P_H_agg_star"), external_value(proof, "mu_agg")},
-            {dynamic_commitments.at("P_Y_lin"), external_value(proof, "mu_Y_lin")},
-            {dynamic_commitments.at("P_Y"), external_value(proof, "mu_out")},
-        };
-        const std::vector<FieldElement> external_points = {
-            challenges.at("y_proj"),
-            challenges.at("y_src"),
-            challenges.at("y_dst"),
-            challenges.at("y_star"),
-            challenges.at("y_agg"),
-            challenges.at("y_out"),
-            challenges.at("y_out"),
-        };
-
-        const auto indexed_bundles = index_bundles(proof);
-        const auto *bundle_fh = &bundle_by_name(indexed_bundles, "FH");
-        const auto *bundle_edge = &bundle_by_name(indexed_bundles, "edge");
-        const auto *bundle_in = &bundle_by_name(indexed_bundles, "in");
-        const auto *bundle_d = &bundle_by_name(indexed_bundles, "d");
-        const auto *bundle_n = &bundle_by_name(indexed_bundles, "N");
-
-        const auto eval = [&](const std::string &name, const FieldElement &point) -> FieldElement
-        {
-            if (lazy_large_fh_public_enabled(context) && is_lazy_large_fh_public_label(name))
-            {
-                return evaluate_lazy_large_fh_public_poly(context, name, point);
-            }
-            if (context.public_polynomials.contains(name))
-            {
-                return context.public_polynomials.at(name).evaluate(point);
-            }
-            if (name == "t_FH" || name == "P_Table_feat" || name == "P_Query_feat" || name == "P_m_feat" || name == "P_R_feat")
-            {
-                return bundle_value(*bundle_fh, name, point);
-            }
-            if (name == "t_edge" || name == "P_E_src_edge" || name == "P_H_src_star_edge" || name == "P_Query_src" || name == "P_R_src" || name == "P_E_dst_edge" || name == "P_M_edge" || name == "P_Sum_edge" || name == "P_inv_edge" || name == "P_H_agg_star_edge" || name == "P_Query_dst" || name == "P_R_dst" || name == "P_Table_L" || name == "P_Query_L" || name == "P_m_L" || name == "P_R_L" || name == "P_Table_R" || name == "P_Query_R" || name == "P_m_R" || name == "P_R_R" || name == "P_Table_exp" || name == "P_Query_exp" || name == "P_m_exp" || name == "P_R_exp" || name == "P_Delta" || name == "P_S" || name == "P_Z" || name == "P_s_max" || name == "P_C_max" || name == "P_alpha" || name == "P_U" || name == "P_v_hat" || name == "P_PSQ" || name == "P_w_psq" || name == "P_T_psq_edge")
-            {
-                return bundle_value(*bundle_edge, name, point);
-            }
-            if (name == "t_in" || name == "P_a_proj" || name == "P_b_proj" || name == "P_Acc_proj")
-            {
-                return bundle_value(*bundle_in, name, point);
-            }
-            if (name == "t_d" || name == "P_a_src" || name == "P_b_src" || name == "P_Acc_src" || name == "P_a_dst" || name == "P_b_dst" || name == "P_Acc_dst" || name == "P_a_star" || name == "P_b_star" || name == "P_Acc_star" || name == "P_a_agg" || name == "P_b_agg" || name == "P_Acc_agg" || name == "P_a_out" || name == "P_b_out" || name == "P_Acc_out")
-            {
-                return bundle_value(*bundle_d, name, point);
-            }
-            if (name == "t_N" || name == "P_E_src" || name == "P_H_star" || name == "P_Table_src" || name == "P_m_src" || name == "P_R_src_node" || name == "P_E_dst" || name == "P_M" || name == "P_Sum" || name == "P_inv" || name == "P_H_agg_star" || name == "P_Table_dst" || name == "P_m_dst" || name == "P_R_dst_node")
-            {
-                return bundle_value(*bundle_n, name, point);
-            }
-            throw std::runtime_error("missing evaluation in verifier: " + name);
-        };
-
-        const std::map<std::string, FieldElement> external_evals = {
-            {"mu_proj", external_value(proof, "mu_proj")},
-            {"mu_src", external_value(proof, "mu_src")},
-            {"mu_dst", external_value(proof, "mu_dst")},
-            {"mu_star", external_value(proof, "mu_star")},
-            {"mu_agg", external_value(proof, "mu_agg")},
-            {"mu_Y_lin", external_value(proof, "mu_Y_lin")},
-            {"mu_out", external_value(proof, "mu_out")},
-        };
-
-        if (evaluate_t_fh(context, challenges, eval, challenges.at("z_FH")) != eval("t_FH", challenges.at("z_FH")))
-        {
-            return false;
-        }
-        if (evaluate_t_edge(context, challenges, witness_scalars, eval, challenges.at("z_edge")) != eval("t_edge", challenges.at("z_edge")))
-        {
-            return false;
-        }
-        if (evaluate_t_n(context, challenges, witness_scalars, eval, challenges.at("z_N")) != eval("t_N", challenges.at("z_N")))
-        {
-            return false;
-        }
-        if (evaluate_t_in(context, challenges, external_evals, eval, challenges.at("z_in")) != eval("t_in", challenges.at("z_in")))
-        {
-            return false;
-        }
-        if (evaluate_t_d(context, challenges, external_evals, eval, challenges.at("z_d")) != eval("t_d", challenges.at("z_d")))
-        {
-            return false;
-        }
-
-        auto prepare_bundle = [&](const DomainOpeningBundle &bundle, const std::string &challenge_name)
-        {
-            BundleVerificationInput input;
-            input.bundle = &bundle;
-            input.folding_challenge = challenges.at(challenge_name);
-            input.commitments.reserve(bundle.values.size());
-            input.values.reserve(bundle.values.size());
-            for (const auto &[label, opened_values] : bundle.values)
-            {
-                if (dynamic_commitments.contains(label))
-                {
-                    input.commitments.push_back(dynamic_commitments.at(label));
-                }
-                else
-                {
-                    input.commitments.push_back(quotient_commitments.at(label));
-                }
-                input.values.push_back(opened_values);
-            }
-            return input;
-        };
-
-        auto verify_bundle = [&](const BundleVerificationInput &input)
-        {
-            return crypto::KZG::verify_batch(
-                input.commitments,
-                input.bundle->points,
-                input.values,
-                input.folding_challenge,
-                input.bundle->proof,
-                context.kzg.vk);
-        };
-
-        const auto prepared_fh = prepare_bundle(*bundle_fh->bundle, "v_FH");
-        const auto prepared_edge = prepare_bundle(*bundle_edge->bundle, "v_edge");
-        const auto prepared_in = prepare_bundle(*bundle_in->bundle, "v_in");
-        const auto prepared_d = prepare_bundle(*bundle_d->bundle, "v_d");
-        const auto prepared_n = prepare_bundle(*bundle_n->bundle, "v_N");
-
-        const bool run_parallel_verification = std::thread::hardware_concurrency() > 1;
-        if (run_parallel_verification)
-        {
-            auto external_future = std::async(
-                std::launch::async,
-                [&]()
-                {
-                    return crypto::KZG::verify_external_fold(
-                        external_commitments,
-                        external_points,
-                        challenges.at("rho_ext"),
-                        proof.external_proof,
-                        context.kzg.vk);
-                });
-            auto fh_future = std::async(std::launch::async, [&]()
-                                        { return verify_bundle(prepared_fh); });
-            auto edge_future = std::async(std::launch::async, [&]()
-                                          { return verify_bundle(prepared_edge); });
-            auto in_future = std::async(std::launch::async, [&]()
-                                        { return verify_bundle(prepared_in); });
-            auto d_future = std::async(std::launch::async, [&]()
-                                       { return verify_bundle(prepared_d); });
-            auto n_future = std::async(std::launch::async, [&]()
-                                       { return verify_bundle(prepared_n); });
-            if (!external_future.get() || !fh_future.get() || !edge_future.get() || !in_future.get() || !d_future.get() || !n_future.get())
-            {
-                return false;
-            }
-        }
-        else
-        {
-            if (!crypto::KZG::verify_external_fold(
-                    external_commitments,
-                    external_points,
-                    challenges.at("rho_ext"),
-                    proof.external_proof,
-                    context.kzg.vk))
-            {
-                return false;
-            }
-            if (!verify_bundle(prepared_fh) || !verify_bundle(prepared_edge) || !verify_bundle(prepared_in) || !verify_bundle(prepared_d) || !verify_bundle(prepared_n))
-            {
-                return false;
-            }
-        }
-
+        return fail("removed_single_output_compatibility_protocol");
         return true;
     }
 

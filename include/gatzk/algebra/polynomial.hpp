@@ -65,6 +65,10 @@ namespace gatzk::algebra
         // evaluation 形式必须绑定具体工作域，否则无法解释旋转与 opening 点。
         std::shared_ptr<RootOfUnityDomain> domain;
 
+        // Private evaluation traces commit to P + Z_domain * R. `data` keeps
+        // the canonical values P(omega^i); this coefficient vector stores R.
+        std::vector<FieldElement> zero_domain_blinder;
+
         static Polynomial from_coefficients(const std::string& name, std::vector<FieldElement> coefficients);
         static Polynomial from_evaluations(
             const std::string& name,
@@ -79,6 +83,10 @@ namespace gatzk::algebra
         std::size_t size() const;
         const FieldElement& value_at(std::size_t index) const;
 
+        void set_zero_domain_blinder(std::vector<FieldElement> coefficients);
+        bool is_zero_domain_blinded() const;
+        FieldElement semantic_evaluate(const FieldElement& x) const;
+
         // 按当前基在点 `x` 上求值，是 transcript 重放、quotient 与 verifier 复算的统一入口。
         FieldElement evaluate(const FieldElement& x) const;
     };
@@ -88,6 +96,21 @@ namespace gatzk::algebra
         const std::vector<FieldElement>& points,
         const std::vector<FieldElement>& values,
         const FieldElement& x);
+
+    // Materialize the exact blinded coefficient vector used by a KZG
+    // commitment. The result has configured_degree + 1 entries and is never
+    // trimmed according to witness-dependent high zero coefficients.
+    std::vector<FieldElement> materialize_blinded_coefficients(
+        const Polynomial& polynomial,
+        std::size_t configured_degree);
+
+    // Canonical coefficient Taylor shift fixed by the protocol compiler.
+    // Computes F(X + delta) with the registered radix-2 convolution size while
+    // preserving the public configured coefficient length.
+    std::vector<FieldElement> coefficient_taylor_shift(
+        const std::vector<FieldElement>& coefficients,
+        std::size_t configured_degree,
+        const FieldElement& delta);
 
     // 将矩阵按 formal 约定的行主序拍平成多项式系数列。
     std::vector<FieldElement> flatten_matrix_coefficients(const std::vector<std::vector<FieldElement>>& matrix);

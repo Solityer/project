@@ -1,12 +1,21 @@
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
+
+#include <openssl/sha.h>
 
 #include "gatzk/algebra/domain_evaluation.hpp"
 #include "gatzk/algebra/eval_backend.hpp"
@@ -15,7 +24,9 @@
 #include "gatzk/crypto/kzg.hpp"
 #include "gatzk/data/loader.hpp"
 #include "gatzk/protocol/challenges.hpp"
+#include "gatzk/protocol/lookup.hpp"
 #include "gatzk/protocol/prover.hpp"
+#include "gatzk/protocol/proof_codec.hpp"
 #include "gatzk/protocol/schema.hpp"
 #include "gatzk/protocol/trace.hpp"
 #include "gatzk/protocol/verifier.hpp"
@@ -36,10 +47,123 @@ std::filesystem::path repo_root() {
     return cwd;
 }
 
+std::filesystem::path test_srs_path() {
+    if (const auto* override_path = std::getenv("GATZK_TEST_SRS_PATH");
+        override_path != nullptr && *override_path != '\0') {
+        return override_path;
+    }
+    return repo_root() / "artifacts/srs/zkgat_secure_main_srs_v1";
+}
+
+std::string test_srs_id() {
+    if (const auto* override_id = std::getenv("GATZK_TEST_SRS_ID");
+        override_id != nullptr && *override_id != '\0') {
+        return override_id;
+    }
+    return "zkgat_secure_main_srs_v1";
+}
+
 void require(bool condition, const std::string& message) {
     if (!condition) {
         throw std::runtime_error(message);
     }
+}
+
+std::string sha256_hex(std::string_view data) {
+    std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+    SHA256(
+        reinterpret_cast<const unsigned char*>(data.data()),
+        data.size(),
+        digest.data());
+    std::ostringstream out;
+    out << std::hex << std::setfill('0');
+    for (const auto byte : digest) out << std::setw(2) << static_cast<unsigned>(byte);
+    return out.str();
+}
+
+std::string decode_canonical_hex(std::string_view value) {
+    require(!value.empty() && (value.size() & 1U) == 0U,
+            "test hex field must have an even nonzero length");
+    auto nibble = [](char c) -> unsigned {
+        if (c >= '0' && c <= '9') return static_cast<unsigned>(c - '0');
+        if (c >= 'a' && c <= 'f') return 10U + static_cast<unsigned>(c - 'a');
+        throw std::runtime_error("test hex field is not canonical lowercase hex");
+    };
+    std::string out(value.size() / 2, '\0');
+    for (std::size_t i = 0; i < out.size(); ++i)
+        out[i] = static_cast<char>((nibble(value[2 * i]) << 4U)
+            | nibble(value[2 * i + 1]));
+    return out;
+}
+
+std::string canonical_hex(std::string_view value) {
+    std::ostringstream out;
+    out << std::hex << std::setfill('0');
+    for (const auto byte : value)
+        out << std::setw(2)
+            << static_cast<unsigned>(static_cast<unsigned char>(byte));
+    return out.str();
+}
+
+void replace_artifact_scalar(
+    std::string& artifact,
+    const std::string& field_name,
+    const std::string& value) {
+    const auto prefix = field_name + "=";
+    const auto begin = artifact.find(prefix);
+    require(begin != std::string::npos
+                && (begin == 0 || artifact[begin - 1] == '\n'),
+            "test artifact field is missing: " + field_name);
+    const auto value_begin = begin + prefix.size();
+    const auto value_end = artifact.find('\n', value_begin);
+    require(value_end != std::string::npos,
+            "test artifact field is unterminated: " + field_name);
+    artifact.replace(value_begin, value_end - value_begin, value);
+}
+
+std::string read_file(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) throw std::runtime_error("failed to read test file: " + path.string());
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+void write_file(const std::filesystem::path& path, std::string_view bytes) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output) throw std::runtime_error("failed to write test file: " + path.string());
+    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+}
+
+void rewrite_manifest_hash(std::string& manifest) {
+    const auto field = manifest.rfind("  \"manifest_hash\"");
+    require(field != std::string::npos, "test manifest must contain manifest_hash");
+    const auto value_begin = manifest.find('"', manifest.find(':', field) + 1);
+    const auto value_end = manifest.find('"', value_begin + 1);
+    require(value_begin != std::string::npos && value_end != std::string::npos,
+            "test manifest hash field must be well formed");
+    manifest.replace(value_begin + 1, value_end - value_begin - 1,
+                     sha256_hex(std::string_view(manifest).substr(0, field)));
+}
+
+void replace_json_string_field(
+    std::string& json,
+    const std::string& field_name,
+    const std::string& value) {
+    const auto field = json.find("\"" + field_name + "\"");
+    require(field != std::string::npos, "test JSON field is missing: " + field_name);
+    const auto value_begin = json.find('"', json.find(':', field) + 1);
+    const auto value_end = json.find('"', value_begin + 1);
+    require(value_begin != std::string::npos && value_end != std::string::npos,
+            "test JSON string field is malformed: " + field_name);
+    json.replace(value_begin + 1, value_end - value_begin - 1, value);
+}
+
+std::filesystem::path copy_test_srs(const std::string& suffix) {
+    const auto root = repo_root() / "build" / ("srs_tamper_" + suffix);
+    std::filesystem::remove_all(root);
+    std::filesystem::copy(
+        test_srs_path(), root,
+        std::filesystem::copy_options::recursive);
+    return root;
 }
 
 template <typename Fn>
@@ -73,6 +197,25 @@ void strip_context_to_verifier_only(gatzk::protocol::ProtocolContext& context) {
         (void)name;
         strip_opening_material(commitment);
     }
+    auto clear_head = [](gatzk::model::AttentionHeadParameters& head) {
+        head.seq_kernel_fp.clear();
+        head.attn_dst_kernel_fp.clear();
+        head.attn_dst_bias_fp = 0.0;
+        head.attn_src_kernel_fp.clear();
+        head.attn_src_bias_fp = 0.0;
+        head.output_bias_fp.clear();
+    };
+    for (auto& head : context.model.hidden_heads) clear_head(head);
+    for (auto& layer : context.model.hidden_layers) {
+        for (auto& head : layer.heads) clear_head(head);
+    }
+    for (auto& head : context.model.output_layer.heads) clear_head(head);
+    clear_head(context.model.output_head);
+    context.model.W.clear();
+    context.model.a_src.clear();
+    context.model.a_dst.clear();
+    context.model.W_out.clear();
+    context.model.b.clear();
 }
 
 void strip_proof_to_verifier_only(gatzk::protocol::Proof& proof) {
@@ -106,6 +249,8 @@ FieldElement choose_non_domain_point(const gatzk::algebra::RootOfUnityDomain& do
 const SecureFixture& cora_secure_fixture() {
     static const SecureFixture fixture = [] {
         auto config = gatzk::util::load_config((repo_root() / "configs/cora_secure.cfg").string());
+        config.srs_path = test_srs_path().string();
+        config.srs_id = test_srs_id();
         auto context = gatzk::protocol::build_context(config, nullptr);
         auto trace = gatzk::protocol::build_trace(context, nullptr);
         auto proof = gatzk::protocol::prove(context, trace, nullptr);
@@ -116,9 +261,13 @@ const SecureFixture& cora_secure_fixture() {
 
 void test_kzg_opening_selftest() {
     const auto keys = gatzk::crypto::KZG::load_keys(
-        (repo_root() / "artifacts/srs/zkgat_secure_main_srs_v1").string(),
+        test_srs_path().string(),
         "trusted_srs",
-        "zkgat_secure_main_srs_v1");
+        test_srs_id());
+    require(
+        keys.manifest.protocol_schema_id
+            == sha256_hex(gatzk::protocol::protocol_template_canonical_bytes()),
+        "SRS manifest must authenticate the exact formal protocol template bytes");
     auto poly = gatzk::algebra::Polynomial::from_coefficients(
         "P_test",
         {FieldElement(3), FieldElement(5), FieldElement(7)});
@@ -134,19 +283,445 @@ void test_kzg_opening_selftest() {
     require(
         !gatzk::crypto::KZG::verify_batch({commitment}, points, bad_values, FieldElement(13), proof, keys.vk),
         "KZG claimed-value tamper must reject");
+    auto compromised_vk = keys.vk;
+    compromised_vk.g2_tau = gatzk::crypto::g2_mul(
+        compromised_vk.g2_one,
+        points.front());
+    require(
+        !gatzk::crypto::KZG::verify_batch(
+            {commitment}, points, values, FieldElement(13), proof, compromised_vk),
+        "KZG must reject a verifier key with [tau-z]_2 equal to the identity");
 
     auto verifier_commitment = commitment;
     strip_opening_material(verifier_commitment);
     require(
         gatzk::crypto::KZG::verify_batch({verifier_commitment}, points, values, FieldElement(13), proof, keys.vk),
         "KZG verifier-key-only opening must verify without prover polynomial material");
+
+    require(
+        keys.vk.domain_zero_g2.size() == keys.manifest.domain_sizes.size(),
+        "verifier key must carry the complete zero-polynomial G2 catalogue");
+    const auto model_anchor = gatzk::crypto::KZG::commit(
+        "V_model_test",
+        gatzk::algebra::Polynomial::from_coefficients(
+            "V_model_test",
+            {FieldElement(4), FieldElement(6), FieldElement(8)}),
+        keys);
+    const auto [proof_local, blinder] =
+        gatzk::crypto::KZG::reblind_domain_polynomial(
+            model_anchor,
+            "V_model_test_proof",
+            "S_model_test",
+            "C",
+            8,
+            4,
+            keys);
+    require(
+        gatzk::crypto::KZG::verify_domain_divisibility(
+            proof_local, model_anchor, blinder, "C", keys.vk),
+        "proof-local model reblinding divisibility must verify");
+    auto tampered_proof_local = proof_local;
+    tampered_proof_local.point = gatzk::crypto::g1_add(
+        tampered_proof_local.point,
+        keys.g1_generator);
+    require(
+        !gatzk::crypto::KZG::verify_domain_divisibility(
+            tampered_proof_local, model_anchor, blinder, "C", keys.vk),
+        "tampered proof-local model commitment must reject");
+    auto tampered_blinder = blinder;
+    tampered_blinder.point = gatzk::crypto::g1_add(
+        tampered_blinder.point,
+        keys.g1_generator);
+    require(
+        !gatzk::crypto::KZG::verify_domain_divisibility(
+            proof_local, model_anchor, tampered_blinder, "C", keys.vk),
+        "tampered model reblinder commitment must reject");
+
+    const auto private_domain = gatzk::algebra::RootOfUnityDomain::create(
+        "N", keys.manifest.domain_sizes.at("N"));
+    std::vector<FieldElement> private_values(private_domain->size, FieldElement::zero());
+    for (std::size_t i = 0; i < private_values.size(); ++i) {
+        private_values[i] = FieldElement(31 + i * 7);
+    }
+    auto unblinded_private = gatzk::algebra::Polynomial::from_evaluations(
+        "P_private_unblinded", private_values, private_domain);
+    auto blinded_private = gatzk::algebra::Polynomial::from_evaluations(
+        "P_private_blinded", std::move(private_values), private_domain);
+    blinded_private.set_zero_domain_blinder(
+        {FieldElement(5), FieldElement(9), FieldElement(17), FieldElement(33)});
+    for (std::size_t i = 0; i < private_domain->size; ++i) {
+        require(
+            blinded_private.evaluate(private_domain->point_at(i))
+                == unblinded_private.evaluate(private_domain->point_at(i)),
+            "zero-domain blinding must preserve every canonical trace value");
+    }
+    const auto private_point = choose_non_domain_point(*private_domain);
+    require(
+        !(blinded_private.evaluate(private_point)
+            == unblinded_private.evaluate(private_point)),
+        "zero-domain blinding must change a private off-domain observation");
+    const auto unblinded_commitment = gatzk::crypto::KZG::commit(
+        "P_private_unblinded", unblinded_private, keys);
+    const auto blinded_commitment = gatzk::crypto::KZG::commit(
+        "P_private_blinded", blinded_private, keys);
+    require(
+        !(unblinded_commitment.point == blinded_commitment.point),
+        "zero-domain blinding must change the private commitment");
+    const std::vector<FieldElement> private_points{
+        private_point, private_point * private_domain->omega};
+    const std::vector<std::vector<FieldElement>> private_claims{{
+        blinded_private.evaluate(private_points[0]),
+        blinded_private.evaluate(private_points[1]),
+    }};
+    const auto private_opening = gatzk::crypto::KZG::open_batch(
+        {blinded_commitment}, private_points, private_claims, FieldElement(41), keys);
+    require(
+        gatzk::crypto::KZG::verify_batch(
+            {blinded_commitment}, private_points, private_claims,
+            FieldElement(41), private_opening, keys.vk),
+        "zero-domain-blinded point-group opening must verify");
+    auto private_claim_tamper = private_claims;
+    private_claim_tamper[0][1] += FieldElement::one();
+    require(
+        !gatzk::crypto::KZG::verify_batch(
+            {blinded_commitment}, private_points, private_claim_tamper,
+            FieldElement(41), private_opening, keys.vk),
+        "zero-domain-blinded opening must reject a claimed-value tamper");
+}
+
+void test_coefficient_taylor_shift_fixed_shape() {
+    const std::size_t configured_degree = 7;
+    std::vector<FieldElement> coefficients(configured_degree + 1, FieldElement::zero());
+    coefficients[0] = FieldElement(3);
+    coefficients[1] = FieldElement(5);
+    coefficients[3] = FieldElement(11);
+    coefficients[7] = FieldElement(17);
+    const FieldElement delta(19);
+    const auto shifted = gatzk::algebra::coefficient_taylor_shift(
+        coefficients, configured_degree, delta);
+    require(
+        shifted.size() == configured_degree + 1,
+        "Taylor shift must preserve the compiler-fixed coefficient length");
+    for (const auto point : {FieldElement(2), FieldElement(23), FieldElement(41)}) {
+        require(
+            gatzk::algebra::horner(shifted, point)
+                == gatzk::algebra::horner(coefficients, point + delta),
+            "coefficient Taylor shift must satisfy F_shift(X)=F(X+delta)");
+    }
+    auto wrong_length = coefficients;
+    wrong_length.pop_back();
+    require_throws(
+        [&] {
+            (void)gatzk::algebra::coefficient_taylor_shift(
+                wrong_length, configured_degree, delta);
+        },
+        "Taylor shift must reject witness-dependent coefficient trimming");
+
+    const auto domain = gatzk::algebra::RootOfUnityDomain::create("shift_test", 8);
+    std::vector<FieldElement> values(8, FieldElement::zero());
+    for (std::size_t i = 0; i < values.size(); ++i) values[i] = FieldElement(7 + i * 3);
+    auto evaluation = gatzk::algebra::Polynomial::from_evaluations(
+        "P_shift_material", values, domain);
+    evaluation.set_zero_domain_blinder({FieldElement(13), FieldElement(29)});
+    const auto materialized = gatzk::algebra::materialize_blinded_coefficients(
+        evaluation, 9);
+    require(materialized.size() == 10,
+            "blinded coefficient materialization must preserve configured length");
+    for (const auto point : {FieldElement(3), FieldElement(31)}) {
+        require(
+            gatzk::algebra::horner(materialized, point) == evaluation.evaluate(point),
+            "materialized coefficients must include the exact domain blinder");
+    }
+
+    const auto keys = gatzk::crypto::KZG::load_keys(
+        test_srs_path().string(), "trusted_srs", test_srs_id());
+    const auto source = gatzk::crypto::KZG::commit(
+        "P_shift_source", evaluation, keys);
+    const auto shifted_commitment = gatzk::crypto::KZG::commit_taylor_shifted(
+        source, "P_shifted", 9, delta, keys);
+    const FieldElement relation_point(43);
+    const auto relation_value = shifted_commitment.opening_polynomial->evaluate(relation_point);
+    require(
+        relation_value == source.opening_polynomial->evaluate(relation_point + delta),
+        "Taylor-shift commitment material must share the registered relation value");
+    const std::vector<std::pair<gatzk::crypto::Commitment, FieldElement>> claims{
+        {shifted_commitment, relation_value},
+        {source, relation_value},
+    };
+    const std::vector<FieldElement> points{relation_point, relation_point + delta};
+    const auto opening = gatzk::crypto::KZG::open_external_fold(
+        claims, points, FieldElement(47), keys);
+    require(
+        gatzk::crypto::KZG::verify_external_fold(
+            claims, points, FieldElement(47), opening, keys.vk),
+        "Taylor-shift relation claims must verify through standard point groups");
+    auto tampered_claims = claims;
+    tampered_claims[0].first.point = gatzk::crypto::g1_add(
+        tampered_claims[0].first.point, keys.g1_generator);
+    require(
+        !gatzk::crypto::KZG::verify_external_fold(
+            tampered_claims, points, FieldElement(47), opening, keys.vk),
+        "tampered Taylor-shift commitment must be rejected");
+}
+
+void test_cross_domain_indexed_view_shift_relation() {
+    const auto keys = gatzk::crypto::KZG::load_keys(
+        test_srs_path().string(), "trusted_srs", test_srs_id());
+    const auto canonical_domain = gatzk::algebra::RootOfUnityDomain::create("C", 8);
+    const auto view_domain = gatzk::algebra::RootOfUnityDomain::create("N", 16);
+    constexpr std::size_t class_count = 4;
+    constexpr std::size_t row_count = 3;
+    std::vector<FieldElement> canonical_indices(8, FieldElement::zero());
+    std::vector<FieldElement> canonical_values(8, FieldElement::zero());
+    std::vector<FieldElement> canonical_selector(8, FieldElement::zero());
+    std::vector<FieldElement> canonical_multiplicity(8, FieldElement::zero());
+    const std::array<FieldElement, class_count> bias{
+        FieldElement(5), FieldElement(11), FieldElement(17), FieldElement(23)};
+    for (std::size_t column = 0; column < class_count; ++column) {
+        canonical_indices[column] = FieldElement(column);
+        canonical_values[column] = bias[column];
+        canonical_selector[column] = FieldElement::one();
+        canonical_multiplicity[column] = FieldElement(row_count);
+    }
+    std::vector<FieldElement> view_indices(16, FieldElement::zero());
+    std::vector<FieldElement> view_values(16, FieldElement::zero());
+    std::vector<FieldElement> view_selector(16, FieldElement::zero());
+    std::vector<FieldElement> view_multiplicity(16, FieldElement::zero());
+    for (std::size_t row = 0; row < row_count; ++row) {
+        for (std::size_t column = 0; column < class_count; ++column) {
+            const auto index = row * class_count + column;
+            view_indices[index] = FieldElement(column);
+            view_values[index] = bias[column];
+            view_selector[index] = FieldElement::one();
+            view_multiplicity[index] = FieldElement::one();
+        }
+    }
+    const FieldElement eta(31);
+    const FieldElement beta(37);
+    const auto canonical_side = gatzk::protocol::build_indexed_view_side(
+        canonical_indices, canonical_values, canonical_selector,
+        canonical_multiplicity, eta, beta);
+    const auto view_side = gatzk::protocol::build_indexed_view_side(
+        view_indices, view_values, view_selector,
+        view_multiplicity, eta, beta);
+    require(
+        canonical_side.accumulator[class_count]
+            == view_side.accumulator[row_count * class_count],
+        "indexed-view LogUp terminals must match across native domains");
+
+    auto canonical_accumulator = gatzk::algebra::Polynomial::from_evaluations(
+        "P_bias_R_can", canonical_side.accumulator, canonical_domain);
+    canonical_accumulator.set_zero_domain_blinder({FieldElement(41), FieldElement(43)});
+    std::vector<FieldElement> negative_view_values(view_side.accumulator.size());
+    for (std::size_t i = 0; i < negative_view_values.size(); ++i)
+        negative_view_values[i] = -view_side.accumulator[i];
+    auto negative_view_accumulator = gatzk::algebra::Polynomial::from_evaluations(
+        "P_bias_R_qry_neg", std::move(negative_view_values), view_domain);
+    negative_view_accumulator.set_zero_domain_blinder({FieldElement(47), FieldElement(53)});
+    const auto canonical_commitment = gatzk::crypto::KZG::commit(
+        "P_bias_R_can", canonical_accumulator, keys);
+    const auto negative_view_commitment = gatzk::crypto::KZG::commit(
+        "P_bias_R_qry_neg", negative_view_accumulator, keys);
+    const auto z_star = canonical_domain->point_at(class_count);
+    const auto z_query = view_domain->point_at(row_count * class_count);
+    const auto delta = z_query - z_star;
+    constexpr std::size_t shift_degree = 31;
+    const auto shifted_query = gatzk::crypto::KZG::commit_taylor_shifted(
+        negative_view_commitment, "P_bias_R_qry_shifted",
+        shift_degree, delta, keys);
+
+    auto relation_coefficients = gatzk::algebra::materialize_blinded_coefficients(
+        canonical_accumulator, shift_degree);
+    const auto& shifted_coefficients = shifted_query.opening_polynomial->data;
+    for (std::size_t i = 0; i < relation_coefficients.size(); ++i)
+        relation_coefficients[i] += shifted_coefficients[i];
+    const auto relation_commitment = gatzk::crypto::KZG::commit(
+        "P_bias_terminal_relation",
+        gatzk::algebra::Polynomial::from_coefficients(
+            "P_bias_terminal_relation", std::move(relation_coefficients)),
+        keys);
+    require(
+        relation_commitment.point == gatzk::crypto::g1_add(
+            canonical_commitment.point, shifted_query.point),
+        "indexed-view relation commitment must be verifier-reconstructible");
+    require(
+        relation_commitment.opening_polynomial->evaluate(z_star).is_zero(),
+        "cross-domain indexed-view terminal relation must be zero at z_star");
+
+    gatzk::crypto::Transcript relation_transcript("zkgat:kzg-shift-relation:v1");
+    relation_transcript.absorb_text("relation_id", "bias_indexed_view_terminal");
+    relation_transcript.absorb_commitment(
+        "source", negative_view_commitment.point);
+    relation_transcript.absorb_commitment("shifted", shifted_query.point);
+    relation_transcript.absorb_scalar("z_star", z_star);
+    relation_transcript.absorb_scalar("delta", delta);
+    const auto relation_check_point = relation_transcript.challenge_excluding(
+        "y_rel",
+        [&](const FieldElement& candidate) {
+            return candidate.is_zero()
+                || view_domain->zero_polynomial_eval(candidate + delta).is_zero();
+        });
+    gatzk::crypto::Transcript replay_transcript("zkgat:kzg-shift-relation:v1");
+    replay_transcript.absorb_text("relation_id", "bias_indexed_view_terminal");
+    replay_transcript.absorb_commitment("source", negative_view_commitment.point);
+    replay_transcript.absorb_commitment("shifted", shifted_query.point);
+    replay_transcript.absorb_scalar("z_star", z_star);
+    replay_transcript.absorb_scalar("delta", delta);
+    require(
+        replay_transcript.challenge_excluding(
+            "y_rel",
+            [&](const FieldElement& candidate) {
+                return candidate.is_zero()
+                    || view_domain->zero_polynomial_eval(candidate + delta).is_zero();
+            }) == relation_check_point,
+        "KZG shift challenge exclusion counter must replay deterministically");
+    const auto shift_value = shifted_query.opening_polynomial->evaluate(
+        relation_check_point);
+    require(
+        shift_value == negative_view_commitment.opening_polynomial->evaluate(
+            relation_check_point + delta),
+        "indexed-view terminal shift must reuse one masked relation value");
+    const std::vector<std::pair<gatzk::crypto::Commitment, FieldElement>> claims{
+        {shifted_query, shift_value},
+        {negative_view_commitment, shift_value},
+        {relation_commitment, FieldElement::zero()},
+    };
+    const std::vector<FieldElement> points{
+        relation_check_point, relation_check_point + delta, z_star};
+    const auto opening = gatzk::crypto::KZG::open_external_fold(
+        claims, points, FieldElement(61), keys);
+    require(
+        gatzk::crypto::KZG::verify_external_fold(
+            claims, points, FieldElement(61), opening, keys.vk),
+        "cross-domain indexed-view relation must verify via standard point groups");
+    auto tampered_claims = claims;
+    tampered_claims[1].first.point = gatzk::crypto::g1_add(
+        tampered_claims[1].first.point, keys.g1_generator);
+    require(
+        !gatzk::crypto::KZG::verify_external_fold(
+            tampered_claims, points, FieldElement(61), opening, keys.vk),
+        "cross-domain indexed-view source commitment tamper must reject");
+
+    auto invalid_multiplicity = canonical_multiplicity;
+    invalid_multiplicity.back() = FieldElement::one();
+    require_throws(
+        [&] {
+            (void)gatzk::protocol::build_indexed_view_side(
+                canonical_indices, canonical_values, canonical_selector,
+                invalid_multiplicity, eta, beta);
+        },
+        "indexed-view multiplicity outside the canonical selector must reject");
+}
+
+void test_same_point_indexed_view_relation() {
+    const auto keys = gatzk::crypto::KZG::load_keys(
+        test_srs_path().string(), "trusted_srs", test_srs_id());
+    const auto canonical_domain =
+        gatzk::algebra::RootOfUnityDomain::create("C", 8);
+    const auto view_domain =
+        gatzk::algebra::RootOfUnityDomain::create("edge", 16);
+    constexpr std::size_t class_count = 2;
+    constexpr std::size_t row_count = 2;
+    const auto z_c = canonical_domain->point_at(class_count);
+    const auto z_edge = view_domain->point_at(row_count * class_count);
+    require(z_c == z_edge,
+            "m=1 indexed-view fixture must collide after canonical point merging");
+
+    std::vector<FieldElement> canonical_indices(8, FieldElement::zero());
+    std::vector<FieldElement> canonical_values(8, FieldElement::zero());
+    std::vector<FieldElement> canonical_selector(8, FieldElement::zero());
+    std::vector<FieldElement> canonical_multiplicity(8, FieldElement::zero());
+    for (std::size_t column = 0; column < class_count; ++column) {
+        canonical_indices[column] = FieldElement(column);
+        canonical_values[column] = FieldElement(7 + 6 * column);
+        canonical_selector[column] = FieldElement::one();
+        canonical_multiplicity[column] = FieldElement(row_count);
+    }
+    std::vector<FieldElement> view_indices(16, FieldElement::zero());
+    std::vector<FieldElement> view_values(16, FieldElement::zero());
+    std::vector<FieldElement> view_selector(16, FieldElement::zero());
+    std::vector<FieldElement> view_multiplicity(16, FieldElement::zero());
+    for (std::size_t row = 0; row < row_count; ++row) {
+        for (std::size_t column = 0; column < class_count; ++column) {
+            const auto index = row * class_count + column;
+            view_indices[index] = FieldElement(column);
+            view_values[index] = canonical_values[column];
+            view_selector[index] = FieldElement::one();
+            view_multiplicity[index] = FieldElement::one();
+        }
+    }
+    const auto canonical_side = gatzk::protocol::build_indexed_view_side(
+        canonical_indices, canonical_values, canonical_selector,
+        canonical_multiplicity, FieldElement(31), FieldElement(37));
+    const auto view_side = gatzk::protocol::build_indexed_view_side(
+        view_indices, view_values, view_selector,
+        view_multiplicity, FieldElement(31), FieldElement(37));
+    require(canonical_side.accumulator[class_count]
+                == view_side.accumulator[row_count * class_count],
+            "m=1 indexed-view terminals must agree before blinding");
+
+    auto r_can = gatzk::algebra::Polynomial::from_evaluations(
+        "P_same_R_can", canonical_side.accumulator, canonical_domain);
+    r_can.set_zero_domain_blinder({FieldElement(41), FieldElement(43)});
+    auto r_qry = gatzk::algebra::Polynomial::from_evaluations(
+        "P_same_R_qry", view_side.accumulator, view_domain);
+    r_qry.set_zero_domain_blinder({FieldElement(47), FieldElement(53)});
+    const auto c_can = gatzk::crypto::KZG::commit("P_same_R_can", r_can, keys);
+    const auto c_qry = gatzk::crypto::KZG::commit("P_same_R_qry", r_qry, keys);
+
+    constexpr std::size_t relation_degree = 31;
+    auto relation_coefficients =
+        gatzk::algebra::materialize_blinded_coefficients(r_can, relation_degree);
+    const auto query_coefficients =
+        gatzk::algebra::materialize_blinded_coefficients(r_qry, relation_degree);
+    for (std::size_t i = 0; i < relation_coefficients.size(); ++i)
+        relation_coefficients[i] -= query_coefficients[i];
+    const auto relation_polynomial =
+        gatzk::algebra::Polynomial::from_coefficients(
+            "P_same_G_rel", std::move(relation_coefficients));
+    const auto relation_commitment = gatzk::crypto::KZG::commit(
+        "P_same_G_rel", relation_polynomial, keys);
+    require(relation_commitment.point == gatzk::crypto::g1_add(
+                c_can.point, gatzk::crypto::g1_neg(c_qry.point)),
+            "m=1 G_rel commitment must be verifier-reconstructible");
+    require(relation_polynomial.evaluate(z_c).is_zero(),
+            "m=1 G_rel must have the ordinary zero claim at the merged point");
+
+    const auto multiplicity_polynomial =
+        gatzk::algebra::Polynomial::from_evaluations(
+            "P_same_m_can", canonical_multiplicity, canonical_domain);
+    const auto multiplicity_commitment = gatzk::crypto::KZG::commit(
+        "P_same_m_can", multiplicity_polynomial, keys);
+    const FieldElement y_public(59);
+    const auto public_value = multiplicity_polynomial.evaluate(y_public);
+    const std::vector<std::pair<gatzk::crypto::Commitment, FieldElement>> claims{
+        {relation_commitment, FieldElement::zero()},
+        {multiplicity_commitment, public_value},
+    };
+    const std::vector<FieldElement> points{z_c, y_public};
+    const auto opening = gatzk::crypto::KZG::open_external_fold(
+        claims, points, FieldElement(61), keys);
+    require(gatzk::crypto::KZG::verify_external_fold(
+                claims, points, FieldElement(61), opening, keys.vk),
+            "m=1 relation must verify only through ordinary point-group claims");
+    auto tampered_commitment = claims;
+    tampered_commitment[0].first.point = gatzk::crypto::g1_add(
+        tampered_commitment[0].first.point, keys.g1_generator);
+    require(!gatzk::crypto::KZG::verify_external_fold(
+                tampered_commitment, points, FieldElement(61), opening, keys.vk),
+            "m=1 reconstructed G_rel commitment tamper must reject");
+    auto tampered_zero = claims;
+    tampered_zero[0].second = FieldElement::one();
+    require(!gatzk::crypto::KZG::verify_external_fold(
+                tampered_zero, points, FieldElement(61), opening, keys.vk),
+            "m=1 relation zero-claim tamper must reject");
 }
 
 void test_compact_eval_kzg_regression() {
     const auto keys = gatzk::crypto::KZG::load_keys(
-        (repo_root() / "artifacts/srs/zkgat_secure_main_srs_v1").string(),
+        test_srs_path().string(),
         "trusted_srs",
-        "zkgat_secure_main_srs_v1");
+        test_srs_id());
 
     const auto exact_n_it = keys.manifest.domain_sizes.find("N_4096");
     if (keys.manifest.domain_sizes.at("N") > 4096) {
@@ -178,6 +753,55 @@ void test_compact_eval_kzg_regression() {
     require(
         !gatzk::crypto::KZG::verify_external_fold(tampered, points, FieldElement(29), proof, keys.vk),
         "compact evaluation external opening must reject a tampered value");
+}
+
+void test_external_point_grouping_regression() {
+    const auto keys = gatzk::crypto::KZG::load_keys(
+        test_srs_path().string(),
+        "trusted_srs",
+        test_srs_id());
+    const auto p0 = gatzk::algebra::Polynomial::from_coefficients(
+        "P_group_0", {FieldElement(2), FieldElement(3), FieldElement(5)});
+    const auto p1 = gatzk::algebra::Polynomial::from_coefficients(
+        "P_group_1", {FieldElement(7), FieldElement(11)});
+    const auto p2 = gatzk::algebra::Polynomial::from_coefficients(
+        "P_group_2", {FieldElement(13), FieldElement(17), FieldElement(19)});
+    const auto c0 = gatzk::crypto::KZG::commit("P_group_0", p0, keys);
+    const auto c1 = gatzk::crypto::KZG::commit("P_group_1", p1, keys);
+    const auto c2 = gatzk::crypto::KZG::commit("P_group_2", p2, keys);
+    const FieldElement z0(23);
+    const FieldElement z1(29);
+    const std::vector<std::pair<gatzk::crypto::Commitment, FieldElement>> claims = {
+        {c0, p0.evaluate(z0)},
+        {c1, p1.evaluate(z1)},
+        {c2, p2.evaluate(z0)},
+    };
+    const std::vector<FieldElement> points = {z0, z1, z0};
+    gatzk::protocol::PublicMetadata metadata;
+    metadata.protocol_name = "zkgat-test";
+    const auto derived_folding =
+        gatzk::protocol::derive_external_opening_folding_challenge(metadata, claims, points);
+    const auto opening = gatzk::crypto::KZG::open_external_fold(
+        claims, points, derived_folding, keys);
+    require(opening.witnesses.size() == 2,
+            "external opening must encode one witness per distinct point");
+    require(gatzk::crypto::KZG::verify_external_fold(
+                claims, points, derived_folding, opening, keys.vk),
+            "point-grouped external opening must verify");
+    auto duplicate_witness = opening;
+    duplicate_witness.witnesses.push_back(opening.witnesses.front());
+    require_throws(
+        [&] {
+            (void)gatzk::crypto::KZG::verify_external_fold(
+                claims, points, derived_folding, duplicate_witness, keys.vk);
+        },
+        "duplicate point-group witness must reject");
+    auto tampered_claims = claims;
+    tampered_claims[0].second += FieldElement::one();
+    require(!(derived_folding ==
+                  gatzk::protocol::derive_external_opening_folding_challenge(
+                      metadata, tampered_claims, points)),
+            "claimed values must be absorbed before the point-group folding challenge");
 }
 
 void test_packed_backend_padded_tail_regression() {
@@ -242,9 +866,9 @@ void require_msm_matches_single_thread(
 
 void test_msm_chunked_equivalence_regression() {
     const auto keys = gatzk::crypto::KZG::load_keys(
-        (repo_root() / "artifacts/srs/zkgat_secure_main_srs_v1").string(),
+        test_srs_path().string(),
         "trusted_srs",
-        "zkgat_secure_main_srs_v1");
+        test_srs_id());
     require(keys.pk.powers_g1 != nullptr, "MSM regression requires coefficient SRS");
     require_msm_matches_single_thread("coef_21664_dense", *keys.pk.powers_g1, 21664, false);
 
@@ -255,13 +879,218 @@ void test_msm_chunked_equivalence_regression() {
 }
 
 void test_srs_mismatch_gate() {
-    const auto srs_path = (repo_root() / "artifacts/srs/zkgat_secure_main_srs_v1").string();
+    const auto srs_path = test_srs_path().string();
+    const auto expected_srs_id = test_srs_id();
     require_throws(
-        [&] { (void)gatzk::crypto::KZG::load_keys(srs_path, "mpc_srs", "zkgat_secure_main_srs_v1"); },
+        [&] { (void)gatzk::crypto::KZG::load_keys(srs_path, "mpc_srs", expected_srs_id); },
         "SRS type mismatch must hard fail");
     require_throws(
         [&] { (void)gatzk::crypto::KZG::load_keys(srs_path, "trusted_srs", "wrong_srs_id"); },
         "SRS id mismatch must hard fail");
+
+    const auto manifest_tamper = copy_test_srs("manifest");
+    auto manifest = read_file(manifest_tamper / "srs_manifest.json");
+    const auto format = manifest.find("zkgat_srs_manifest_v7");
+    require(format != std::string::npos, "unit SRS must use the frozen v7 manifest");
+    manifest[format] = 'x';
+    write_file(manifest_tamper / "srs_manifest.json", manifest);
+    require_throws(
+        [&] { (void)gatzk::crypto::KZG::load_keys(
+            manifest_tamper.string(), "trusted_srs", expected_srs_id); },
+        "manifest byte tamper must hard fail");
+
+    const auto domain_tamper = copy_test_srs("domain");
+    manifest = read_file(domain_tamper / "srs_manifest.json");
+    const auto generator_field = manifest.find("\"domain_generators\"");
+    const auto generator_key = manifest.find('"', manifest.find(':', generator_field) + 1);
+    const auto generator_key_end = manifest.find('"', generator_key + 1);
+    const auto generator_value = manifest.find('"', generator_key_end + 1);
+    const auto generator_hex = generator_value + 1;
+    require(generator_field != std::string::npos && generator_hex < manifest.size(),
+            "unit SRS must carry the domain generator catalogue");
+    manifest[generator_hex] = manifest[generator_hex] == '0' ? '1' : '0';
+    rewrite_manifest_hash(manifest);
+    write_file(domain_tamper / "srs_manifest.json", manifest);
+    require_throws(
+        [&] { (void)gatzk::crypto::KZG::load_keys(
+            domain_tamper.string(), "trusted_srs", expected_srs_id); },
+        "domain generator tamper with a valid outer manifest hash must hard fail");
+
+    const auto compiler_tamper = copy_test_srs("compiler_artifact");
+    auto compiler_artifact = read_file(
+        compiler_tamper / "protocol_compiler_artifact.txt");
+    const auto template_field = compiler_artifact.find("protocol_template_hex=");
+    require(template_field != std::string::npos,
+            "unit SRS must carry the full protocol compiler artifact");
+    const auto template_byte = template_field + std::string("protocol_template_hex=").size();
+    compiler_artifact[template_byte] = compiler_artifact[template_byte] == '0' ? '1' : '0';
+    write_file(
+        compiler_tamper / "protocol_compiler_artifact.txt", compiler_artifact);
+    require_throws(
+        [&] { (void)gatzk::crypto::KZG::load_keys(
+            compiler_tamper.string(), "trusted_srs", expected_srs_id); },
+        "protocol compiler artifact tamper must hard fail");
+
+    const auto compiler_rehashed_tamper = copy_test_srs("compiler_rehashed");
+    compiler_artifact = read_file(
+        compiler_rehashed_tamper / "protocol_compiler_artifact.txt");
+    const auto rehashed_template_field = compiler_artifact.find(
+        "protocol_template_hex=");
+    require(rehashed_template_field != std::string::npos,
+            "unit compiler artifact must carry protocol template bytes");
+    const auto rehashed_template_byte = rehashed_template_field
+        + std::string("protocol_template_hex=").size();
+    compiler_artifact[rehashed_template_byte] =
+        compiler_artifact[rehashed_template_byte] == '0' ? '1' : '0';
+    const auto artifact_hash_field = compiler_artifact.rfind("artifact_hash=");
+    require(artifact_hash_field != std::string::npos,
+            "unit compiler artifact must carry its canonical hash");
+    const auto artifact_hash_begin = artifact_hash_field
+        + std::string("artifact_hash=").size();
+    const auto artifact_hash_end = compiler_artifact.find('\n', artifact_hash_begin);
+    compiler_artifact.replace(
+        artifact_hash_begin, artifact_hash_end - artifact_hash_begin,
+        sha256_hex(std::string_view(compiler_artifact).substr(0, artifact_hash_field)));
+    write_file(
+        compiler_rehashed_tamper / "protocol_compiler_artifact.txt",
+        compiler_artifact);
+    manifest = read_file(compiler_rehashed_tamper / "srs_manifest.json");
+    replace_json_string_field(
+        manifest,
+        "protocol_compiler_artifact_hash",
+        sha256_hex(compiler_artifact));
+    rewrite_manifest_hash(manifest);
+    write_file(compiler_rehashed_tamper / "srs_manifest.json", manifest);
+    require_throws(
+        [&] { (void)gatzk::crypto::KZG::load_keys(
+            compiler_rehashed_tamper.string(), "trusted_srs", expected_srs_id); },
+        "rehashed compiler template tamper must fail protocol_schema_id validation");
+
+    const auto compiler_registry_rehashed_tamper =
+        copy_test_srs("compiler_registry_rehashed");
+    compiler_artifact = read_file(
+        compiler_registry_rehashed_tamper / "protocol_compiler_artifact.txt");
+    const auto registry_prefix = std::string("observation_ledger_template_hex=");
+    const auto registry_field = compiler_artifact.find(registry_prefix);
+    require(registry_field != std::string::npos,
+            "unit compiler artifact must embed ObservationLedger template bytes");
+    const auto registry_begin = registry_field + registry_prefix.size();
+    const auto registry_end = compiler_artifact.find('\n', registry_begin);
+    require(registry_end != std::string::npos
+                && registry_begin < registry_end,
+            "unit compiler artifact must embed ObservationLedger template bytes");
+    compiler_artifact[registry_begin] =
+        compiler_artifact[registry_begin] == '0' ? '1' : '0';
+    const auto tampered_registry_hex = compiler_artifact.substr(
+        registry_begin, registry_end - registry_begin);
+    const auto tampered_registry_hash = sha256_hex(
+        decode_canonical_hex(tampered_registry_hex));
+    replace_artifact_scalar(
+        compiler_artifact, "observation_ledger_hash", tampered_registry_hash);
+    const auto registry_artifact_hash_field = compiler_artifact.rfind("artifact_hash=");
+    require(registry_artifact_hash_field != std::string::npos,
+            "unit compiler artifact must carry its canonical hash");
+    replace_artifact_scalar(
+        compiler_artifact,
+        "artifact_hash",
+        sha256_hex(std::string_view(compiler_artifact).substr(
+            0, registry_artifact_hash_field)));
+    write_file(
+        compiler_registry_rehashed_tamper / "protocol_compiler_artifact.txt",
+        compiler_artifact);
+    manifest = read_file(
+        compiler_registry_rehashed_tamper / "srs_manifest.json");
+    replace_json_string_field(
+        manifest, "observation_ledger_hash", tampered_registry_hash);
+    replace_json_string_field(
+        manifest,
+        "protocol_compiler_artifact_hash",
+        sha256_hex(compiler_artifact));
+    rewrite_manifest_hash(manifest);
+    write_file(
+        compiler_registry_rehashed_tamper / "srs_manifest.json", manifest);
+    require_throws(
+        [&] { (void)gatzk::crypto::KZG::load_keys(
+            compiler_registry_rehashed_tamper.string(),
+            "trusted_srs", expected_srs_id); },
+        "rehashed embedded ObservationLedger template tamper must fail local registry validation");
+
+    const auto envelope_rehashed_tamper =
+        copy_test_srs("compiler_envelope_rehashed");
+    compiler_artifact = read_file(
+        envelope_rehashed_tamper / "protocol_compiler_artifact.txt");
+    const auto envelope_prefix = std::string("max_instance_envelope_hex=");
+    const auto envelope_field = compiler_artifact.find(envelope_prefix);
+    require(envelope_field != std::string::npos,
+            "unit compiler artifact must embed max instance envelope bytes");
+    const auto envelope_begin = envelope_field + envelope_prefix.size();
+    const auto envelope_end = compiler_artifact.find('\n', envelope_begin);
+    auto envelope = decode_canonical_hex(compiler_artifact.substr(
+        envelope_begin, envelope_end - envelope_begin));
+    const auto class_bound = envelope.find("max_classes=2\n");
+    require(class_bound != std::string::npos,
+            "unit max envelope must carry its class bound");
+    envelope[class_bound + std::string("max_classes=").size()] = '3';
+    const auto envelope_hash = sha256_hex(envelope);
+    replace_artifact_scalar(
+        compiler_artifact, "max_instance_envelope_hex", canonical_hex(envelope));
+    replace_artifact_scalar(
+        compiler_artifact, "max_instance_envelope_hash", envelope_hash);
+    replace_artifact_scalar(
+        compiler_artifact, "max_instance_envelope_id", envelope_hash);
+    const auto envelope_artifact_hash_field =
+        compiler_artifact.rfind("artifact_hash=");
+    require(envelope_artifact_hash_field != std::string::npos,
+            "unit compiler artifact must carry its canonical hash");
+    replace_artifact_scalar(
+        compiler_artifact, "artifact_hash",
+        sha256_hex(std::string_view(compiler_artifact).substr(
+            0, envelope_artifact_hash_field)));
+    write_file(
+        envelope_rehashed_tamper / "protocol_compiler_artifact.txt",
+        compiler_artifact);
+    manifest = read_file(envelope_rehashed_tamper / "srs_manifest.json");
+    replace_json_string_field(
+        manifest, "max_instance_envelope_id", envelope_hash);
+    replace_json_string_field(
+        manifest, "max_instance_envelope_hash", envelope_hash);
+    replace_json_string_field(
+        manifest, "protocol_compiler_artifact_hash",
+        sha256_hex(compiler_artifact));
+    rewrite_manifest_hash(manifest);
+    write_file(envelope_rehashed_tamper / "srs_manifest.json", manifest);
+    require_throws(
+        [&] { (void)gatzk::crypto::KZG::load_keys(
+            envelope_rehashed_tamper.string(),
+            "trusted_srs", expected_srs_id); },
+        "rehashed max-envelope substitution must fail ceremony transcript binding");
+
+    const auto vk_tamper = copy_test_srs("vk");
+    auto vk = read_file(vk_tamper / "vk.bin");
+    require(vk.size() > 32, "unit verifier key must contain material");
+    vk[vk.size() / 2] ^= 1;
+    write_file(vk_tamper / "vk.bin", vk);
+    require_throws(
+        [&] { (void)gatzk::crypto::KZG::load_keys(
+            vk_tamper.string(), "trusted_srs", expected_srs_id); },
+        "verifier-key material tamper must hard fail");
+
+    const auto pk_tamper = copy_test_srs("pk");
+    auto pk = read_file(pk_tamper / "pk_coef.bin");
+    require(pk.size() > 32, "unit coefficient SRS must contain material");
+    pk[pk.size() / 2] ^= 1;
+    write_file(pk_tamper / "pk_coef.bin", pk);
+    require_throws(
+        [&] { (void)gatzk::crypto::KZG::load_keys(
+            pk_tamper.string(), "trusted_srs", expected_srs_id); },
+        "coefficient SRS material tamper must hard fail");
+    for (const auto& path : {
+             manifest_tamper, domain_tamper, compiler_tamper,
+             compiler_rehashed_tamper, compiler_registry_rehashed_tamper,
+             envelope_rehashed_tamper,
+             vk_tamper, pk_tamper}) {
+        std::filesystem::remove_all(path);
+    }
 }
 
 void test_metadata_and_schema_gates() {
@@ -270,7 +1099,7 @@ void test_metadata_and_schema_gates() {
     require(config.privacy_policy == "model_and_trace_hidden", "config privacy policy mismatch");
     require(config.input_privacy == "public_graph_public_features", "config input privacy mismatch");
     require(config.output_mode == "public_logits", "config output mode mismatch");
-    require(config.opening_mode == "domain_grouped_batch_opening", "config opening mode mismatch");
+    require(config.opening_mode == "point_grouped_batch_opening", "config opening mode mismatch");
     require(config.binding_mode == "zk_subproof_for_crpc", "config binding mode mismatch");
     require(config.srs_type == "trusted_srs", "config SRS type mismatch");
     require(config.srs_id == "zkgat_secure_main_srs_v1", "config SRS id mismatch");
@@ -298,6 +1127,43 @@ void test_metadata_and_schema_gates() {
         gatzk::protocol::polynomial_visibility(empty_context, "P_Y_o0") ==
             gatzk::protocol::PolynomialVisibility::PrivateWitness,
         "per-head output must remain private");
+}
+
+void test_removed_compatibility_protocol_gate() {
+    gatzk::protocol::ProtocolContext legacy_context;
+    legacy_context.model.has_real_multihead = false;
+    gatzk::protocol::TraceArtifacts trace;
+    gatzk::protocol::Proof proof;
+    require_throws(
+        [&] { (void)gatzk::protocol::build_trace(legacy_context, nullptr); },
+        "formal trace builder must reject the removed single-output protocol");
+    require_throws(
+        [&] { (void)gatzk::protocol::prove(legacy_context, trace, nullptr); },
+        "formal prover must reject the removed single-output protocol");
+    require(
+        !gatzk::protocol::verify(legacy_context, proof, nullptr),
+        "formal verifier must reject the removed single-output protocol");
+}
+
+void test_canonical_output_digest_contract() {
+    const std::vector<FieldElement> logits = {
+        FieldElement::from_signed(-1), FieldElement(2),
+        FieldElement(3), FieldElement::from_signed(-4),
+    };
+    const auto digest = gatzk::protocol::canonical_output_digest(logits, 2, 2);
+    require(digest.size() == 64, "output digest must be a lowercase SHA-256 hex value");
+    auto tampered = logits;
+    tampered[3] += FieldElement::one();
+    require(!(digest == gatzk::protocol::canonical_output_digest(tampered, 2, 2)),
+            "output digest must bind every canonical field element");
+    require(!(digest == gatzk::protocol::canonical_output_digest(logits, 1, 4)),
+            "output digest must bind the declared N/C shape");
+    require_throws(
+        [&] {
+            (void)gatzk::protocol::canonical_output_digest(
+                {}, std::numeric_limits<std::size_t>::max(), 2);
+        },
+        "output digest must reject overflowing NC before encoding");
 }
 
 gatzk::data::LocalGraph valid_two_graph_fixture() {
@@ -365,6 +1231,626 @@ void test_multi_graph_public_boundary_validation() {
         "duplicate absolute node id must reject");
 }
 
+void test_compiler_observation_certificate_gate() {
+    const auto exact_chunks = gatzk::protocol::coefficient_chunk_layout(31, 16);
+    require(exact_chunks == std::vector<gatzk::protocol::CoefficientChunkLayoutEntry>{
+                {.chunk_index = 0, .offset = 0, .length = 15},
+                {.chunk_index = 1, .offset = 15, .length = 15},
+                {.chunk_index = 2, .offset = 30, .length = 1}},
+            "coefficient chunks must use the unique n_edge-1 layout");
+    require_throws(
+        [] { (void)gatzk::protocol::coefficient_chunk_layout(0, 16); },
+        "empty coefficient object must reject");
+    require_throws(
+        [] { (void)gatzk::protocol::coefficient_chunk_layout(1, 1); },
+        "coefficient chunk domain without a terminal row must reject");
+    const auto region = gatzk::protocol::coefficient_region_layout(
+        5, {0, 2, 4}, 3, 6);
+    require(region.total_length == 8 && region.tail_length == 3
+                && region.q_sem == std::vector<std::uint8_t>({1, 0, 1, 0, 1, 0, 0, 0})
+                && region.q_gap == std::vector<std::uint8_t>({0, 1, 0, 1, 0, 0, 0, 0})
+                && region.q_tail == std::vector<std::uint8_t>({0, 0, 0, 0, 0, 1, 1, 1})
+                && region.chunks.size() == 2
+                && region.chunks[0].offset == 0
+                && region.chunks[0].length == 5
+                && region.chunks[1].offset == 5
+                && region.chunks[1].length == 3,
+            "coefficient region must uniquely partition semantic/gap/tail positions and chunks");
+    require_throws(
+        [] { (void)gatzk::protocol::coefficient_region_layout(5, {0, 0}, 1, 8); },
+        "duplicate coefficient semantic positions must reject");
+    require_throws(
+        [] { (void)gatzk::protocol::coefficient_region_layout(5, {0, 5}, 1, 8); },
+        "out-of-range coefficient semantic position must reject");
+    require_throws(
+        [] { (void)gatzk::protocol::coefficient_region_layout(5, {0}, 0, 8); },
+        "zero coefficient tail must reject");
+    const auto materialized_tail =
+        gatzk::protocol::materialize_coefficient_tail(
+            region,
+            {FieldElement(2), FieldElement::zero(), FieldElement(3),
+             FieldElement::zero(), FieldElement(5)},
+            {FieldElement(7), FieldElement(11), FieldElement(13)});
+    require(materialized_tail == std::vector<FieldElement>({
+                FieldElement(2), FieldElement::zero(), FieldElement(3),
+                FieldElement::zero(), FieldElement(5), FieldElement(7),
+                FieldElement(11), FieldElement(13)}),
+            "coefficient-tail materializer must preserve semantic coefficients and append the exact tail");
+    require_throws(
+        [&] {
+            (void)gatzk::protocol::materialize_coefficient_tail(
+                region,
+                {FieldElement(2), FieldElement(9), FieldElement(3),
+                 FieldElement::zero(), FieldElement(5)},
+                {FieldElement(7), FieldElement(11), FieldElement(13)});
+        },
+        "nonzero low-degree gap must reject before commitment");
+    require_throws(
+        [&] {
+            (void)gatzk::protocol::materialize_coefficient_tail(
+                region,
+                {FieldElement(2), FieldElement::zero(), FieldElement(3),
+                 FieldElement::zero(), FieldElement(5)},
+                {FieldElement::zero(), FieldElement::zero(), FieldElement::zero()});
+        },
+        "all-zero coefficient tail must reject before commitment");
+    gatzk::protocol::ProtocolContext context;
+    context.config.opening_mode = "point_grouped_batch_opening";
+    context.config.binding_mode = "zk_subproof_for_crpc";
+    context.local.num_nodes = 3;
+    context.local.num_features = 2;
+    context.local.num_classes = 2;
+    context.local.edges = {
+        {.src = 0, .dst = 0, .graph_id = 0, .stable_index = 0},
+        {.src = 1, .dst = 1, .graph_id = 0, .stable_index = 1},
+        {.src = 2, .dst = 2, .graph_id = 0, .stable_index = 2},
+    };
+    context.model.L = 2;
+    context.model.K_out = 1;
+    context.model.C = 2;
+    context.model.has_real_multihead = true;
+    context.model.d_in_profile = {2};
+    context.model.hidden_layers = {{
+        .layer_index = 0,
+        .input_dim = 2,
+        .shape = {.head_count = 1, .head_dim = 2},
+        .heads = {gatzk::model::AttentionHeadParameters{}},
+    }};
+    context.model.hidden_heads.resize(1);
+    context.model.output_layer.input_dim = 2;
+    context.model.output_layer.output_dim = 2;
+    context.model.output_layer.head_count = 1;
+    context.model.output_layer.heads.resize(1);
+    context.kzg.manifest.degree_bound = 255;
+    context.domains.fh = gatzk::algebra::RootOfUnityDomain::create("FH", 16);
+    context.domains.edge = gatzk::algebra::RootOfUnityDomain::create("edge", 16);
+    context.domains.in = gatzk::algebra::RootOfUnityDomain::create("in", 16);
+    context.domains.d = gatzk::algebra::RootOfUnityDomain::create("d", 16);
+    context.domains.cat = gatzk::algebra::RootOfUnityDomain::create("cat", 16);
+    context.domains.c = gatzk::algebra::RootOfUnityDomain::create("C", 8);
+    context.domains.n = gatzk::algebra::RootOfUnityDomain::create("N", 16);
+    context.local.graph_count = 1;
+    context.kzg.manifest.max_instance_envelope = {
+        {"max_layers", 2}, {"max_hidden_heads_per_layer", 1},
+        {"max_hidden_head_dim", 2}, {"max_input_dim", 2},
+        {"max_output_heads", 1}, {"max_classes", 2},
+        {"max_graphs", 1}, {"max_nodes", 3}, {"max_edges", 3},
+        {"max_total_nodes", 3}, {"max_concat_dim", 2},
+        {"max_range_bits", 10}, {"max_coefficient_object_length", 6},
+        {"max_object_family_count", 2048},
+        {"max_coefficient_chunks", 2}, {"security_target_bits", 120},
+    };
+    context.local.public_input.N_total = 3;
+    std::string envelope_reason;
+    require(gatzk::protocol::instance_within_authenticated_max_envelope(
+                context, &envelope_reason),
+            "unit instance must fit its authenticated envelope: " + envelope_reason);
+    auto excessive_layers = context;
+    excessive_layers.model.L = 3;
+    require(!gatzk::protocol::instance_within_authenticated_max_envelope(
+                excessive_layers, &envelope_reason),
+            "max_layers must constrain the total GAT layer count");
+    auto excessive_output_input = context;
+    excessive_output_input.model.output_layer.input_dim = 3;
+    require(!gatzk::protocol::instance_within_authenticated_max_envelope(
+                excessive_output_input, &envelope_reason),
+            "max_input_dim must constrain the output-layer input dimension");
+    auto excessive_total_nodes = context;
+    excessive_total_nodes.local.public_input.N_total = 4;
+    require(!gatzk::protocol::instance_within_authenticated_max_envelope(
+                excessive_total_nodes, &envelope_reason),
+            "max_total_nodes must constrain the public dataset universe");
+    auto excessive_concat = context;
+    excessive_concat.kzg.manifest.max_instance_envelope["max_concat_dim"] = 1;
+    require(!gatzk::protocol::instance_within_authenticated_max_envelope(
+                excessive_concat, &envelope_reason),
+            "max_concat_dim must constrain the hidden concatenation width");
+    auto excessive_range_bits = context;
+    excessive_range_bits.config.range_bits = 11;
+    require(!gatzk::protocol::instance_within_authenticated_max_envelope(
+                excessive_range_bits, &envelope_reason),
+            "max_range_bits must constrain the registered range semantics");
+    auto excessive_coefficient_object = context;
+    excessive_coefficient_object.kzg.manifest.max_instance_envelope[
+        "max_coefficient_object_length"] = 5;
+    require(!gatzk::protocol::instance_within_authenticated_max_envelope(
+                excessive_coefficient_object, &envelope_reason),
+            "maximum coefficient object length must be enforced");
+    auto excessive_object_family = context;
+    excessive_object_family.kzg.manifest.max_instance_envelope[
+        "max_object_family_count"] = 1;
+    require(!gatzk::protocol::instance_within_authenticated_max_envelope(
+                excessive_object_family, &envelope_reason),
+            "maximum object family count must be enforced");
+    auto missing_envelope_bound = context;
+    missing_envelope_bound.kzg.manifest.max_instance_envelope.erase(
+        "max_total_nodes");
+    require(!gatzk::protocol::instance_within_authenticated_max_envelope(
+                missing_envelope_bound, &envelope_reason),
+            "missing maximum-envelope field must reject before proving");
+    auto inconsistent_total_nodes = context;
+    inconsistent_total_nodes.kzg.manifest.max_instance_envelope[
+        "max_total_nodes"] = 2;
+    require(!gatzk::protocol::instance_within_authenticated_max_envelope(
+                inconsistent_total_nodes, &envelope_reason),
+            "an instance larger than the authenticated N_total bound must reject");
+
+    auto artifact = gatzk::protocol::build_protocol_compiler_artifact(context);
+    context.compiler_artifact =
+        std::make_shared<gatzk::protocol::ProtocolCompilerArtifact>(artifact);
+    require(!artifact.observation_ledger.empty(),
+            "compiler unit context must produce ObservationLedger entries");
+    require(artifact.binding_relation_registry.size()
+                == gatzk::protocol::build_binding_relation_metadata(context).size()
+                && std::none_of(
+                    artifact.binding_relation_registry.begin(),
+                    artifact.binding_relation_registry.end(),
+                    [](const auto& record) { return record.empty(); }),
+            "compiler artifact must authenticate every instance RelationMeta record");
+    const auto derived_model_binding =
+        gatzk::protocol::output_model_binding_blinder_label(0, "proj");
+    const auto require_schema_basis = [&](const std::string& tag,
+                                          const std::string& expected) {
+        const auto it = std::find_if(
+            artifact.proof_schema.entries.begin(),
+            artifact.proof_schema.entries.end(),
+            [&](const auto& entry) { return entry.tag == tag; });
+        require(it != artifact.proof_schema.entries.end()
+                    && it->blinding_basis == expected,
+                "ProofSchema blinding basis mismatch for " + tag);
+    };
+    require_schema_basis("P_H", "None");
+    require_schema_basis("t_FH", "DerivedExpression");
+    require_schema_basis("R_t_FH", "CoefficientMask");
+    require_schema_basis(derived_model_binding, "DerivedExpression");
+    require_schema_basis(
+        gatzk::protocol::model_reblind_witness_label(
+            gatzk::protocol::output_weight_column_label(0, 0)),
+        "DerivedExpression");
+    require_schema_basis(
+        gatzk::protocol::model_proof_local_label(
+            gatzk::protocol::output_weight_column_label(0, 0)),
+        "DomainVanishing");
+    bool saw_formal_rank_certificate = false;
+    for (const auto& entry : artifact.observation_ledger) {
+        if (entry.expression_or_certificate.find("formal-full-row-rank-v2")
+            != std::string::npos) {
+            saw_formal_rank_certificate = true;
+            require(entry.query_bound > 0,
+                    "formal observation certificate must fix q_O_max");
+        }
+    }
+    require(saw_formal_rank_certificate,
+            "domain-blinded objects must carry a nonzero formal minor certificate");
+    const auto quotient_semantic_obs = std::find_if(
+        artifact.observation_ledger.begin(), artifact.observation_ledger.end(),
+        [](const auto& entry) { return entry.object_or_challenge == "t_FH"; });
+    require(quotient_semantic_obs == artifact.observation_ledger.end(),
+            "derived masked quotient must not invent an independent blinder owner");
+    const auto quotient_mask_obs = std::find_if(
+        artifact.observation_ledger.begin(), artifact.observation_ledger.end(),
+        [](const auto& entry) { return entry.object_or_challenge == "R_t_FH"; });
+    require(quotient_mask_obs != artifact.observation_ledger.end()
+                && quotient_mask_obs->query_bound == 8
+                && quotient_mask_obs->expression_or_certificate.find(
+                    "identity=t_zk=t+Z_D*R_t") != std::string::npos
+                && quotient_mask_obs->expression_or_certificate.find(
+                    "source-objects=") != std::string::npos,
+            "quotient mask must own the compiler resource and bind the derived quotient DAG");
+    require(gatzk::protocol::registered_blinder_coefficient_count(
+                context, "R_t_FH") == quotient_mask_obs->query_bound,
+            "quotient-mask sampler resource must come from ObservationLedger");
+    require(std::none_of(
+                artifact.observation_ledger.begin(),
+                artifact.observation_ledger.end(),
+                [&](const auto& entry) {
+                    return entry.object_or_challenge == derived_model_binding;
+                }),
+            "derived ModelBind_R must not invent an independent blinder owner");
+    const auto output_projection_source =
+        gatzk::protocol::output_head_prefix(0, false) + "_b_proj";
+    const auto output_projection_observation = std::find_if(
+        artifact.observation_ledger.begin(),
+        artifact.observation_ledger.end(),
+        [&](const auto& entry) {
+            return entry.object_or_challenge == output_projection_source;
+        });
+    require(output_projection_observation != artifact.observation_ledger.end()
+                && output_projection_observation->expression_or_certificate.find(
+                    "derived-model-binding-observations(") != std::string::npos,
+            "ModelBind_R serialized observations must propagate to their source certificate");
+    const auto model_binding_dependency = std::find_if(
+        artifact.observation_dependency_dag.begin(),
+        artifact.observation_dependency_dag.end(),
+        [&](const auto& edge) {
+            return edge.derived_object == derived_model_binding;
+        });
+    require(model_binding_dependency != artifact.observation_dependency_dag.end()
+                && model_binding_dependency->source_objects.size() == 3
+                && !model_binding_dependency->introduces_independent_randomness
+                && std::find(
+                    model_binding_dependency->serialized_observations.begin(),
+                    model_binding_dependency->serialized_observations.end(),
+                    "OpeningWitness@canonical-point-group")
+                    != model_binding_dependency->serialized_observations.end(),
+            "derived ModelBind_R must have a canonical cross-source observation DAG edge");
+    const auto output_projection_reblind =
+        gatzk::protocol::model_reblind_witness_label(
+            gatzk::protocol::output_weight_column_label(0, 0));
+    require(std::any_of(
+                artifact.observation_dependency_dag.begin(),
+                artifact.observation_dependency_dag.end(),
+                [&](const auto& edge) {
+                    return edge.derived_object == output_projection_reblind
+                        && edge.source_objects == std::vector<std::string>{
+                            gatzk::protocol::model_proof_local_label(
+                                gatzk::protocol::output_weight_column_label(0, 0))};
+                }),
+            "proof-local model blinder commitment must trace to its sampled owner");
+    require(std::any_of(
+                artifact.observation_dependency_dag.begin(),
+                artifact.observation_dependency_dag.end(),
+                [](const auto& edge) {
+                    return edge.derived_object == "t_FH"
+                        && std::find(
+                            edge.source_objects.begin(), edge.source_objects.end(),
+                            "R_t_FH") != edge.source_objects.end();
+                }),
+            "derived masked quotient must trace to its independent mask owner");
+    require(std::none_of(
+                artifact.random_identity_ledger.begin(),
+                artifact.random_identity_ledger.end(),
+                [](const auto& entry) {
+                    return entry.object_or_challenge.find("families")
+                        != std::string::npos
+                        || entry.object_or_challenge.find(',')
+                        != std::string::npos;
+                }),
+            "RandomIdentityLedger must not collapse concrete identities into family placeholders");
+    const std::vector<std::string> required_formal_challenges = {
+        "eta_feat", "beta_feat", "y_proj_h0", "xi_h0", "y_src_h0",
+        "y_dst_h0", "y_star_h0", "eta_src_h0", "beta_src_h0",
+        "eta_L_h0", "beta_L_h0", "beta_R_h0", "eta_exp_h0",
+        "beta_exp_h0", "lambda_psq_h0", "eta_t_h0", "beta_t_h0",
+        "y_agg_pre_h0", "eta_ELU_h0", "beta_ELU_h0", "y_agg_h0",
+        "eta_dst_h0", "beta_dst_h0", "xi_out", "y_out",
+        gatzk::protocol::output_challenge_name("y_proj_out", 0, false),
+        gatzk::protocol::output_challenge_name("y_src_out", 0, false),
+        gatzk::protocol::output_challenge_name("y_dst_out", 0, false),
+        gatzk::protocol::output_challenge_name("eta_src_out", 0, false),
+        gatzk::protocol::output_challenge_name("beta_src_out", 0, false),
+        gatzk::protocol::output_challenge_name("eta_L_out", 0, false),
+        gatzk::protocol::output_challenge_name("beta_L_out", 0, false),
+        gatzk::protocol::output_challenge_name("beta_R_out", 0, false),
+        gatzk::protocol::output_challenge_name("eta_exp_out", 0, false),
+        gatzk::protocol::output_challenge_name("beta_exp_out", 0, false),
+        gatzk::protocol::output_challenge_name("lambda_out", 0, false),
+        gatzk::protocol::output_challenge_name("eta_t_out", 0, false),
+        gatzk::protocol::output_challenge_name("beta_t_out", 0, false),
+        gatzk::protocol::output_challenge_name("y_out_star", 0, false),
+        gatzk::protocol::output_challenge_name("eta_dst_out", 0, false),
+        gatzk::protocol::output_challenge_name("beta_dst_out", 0, false),
+    };
+    for (const auto& challenge : required_formal_challenges) {
+        require(std::any_of(
+                    artifact.random_identity_ledger.begin(),
+                    artifact.random_identity_ledger.end(),
+                    [&](const auto& entry) {
+                        return entry.object_or_challenge == challenge;
+                    }),
+                "RandomIdentityLedger is missing formal challenge: " + challenge);
+    }
+    const auto signed_division_beta = gatzk::protocol::signed_division_beta_name(
+        gatzk::protocol::hidden_head_prefix(0) + "_Div_", "A", 0);
+    require(std::any_of(
+                artifact.random_identity_ledger.begin(),
+                artifact.random_identity_ledger.end(),
+                [&](const auto& entry) {
+                    return entry.object_or_challenge == signed_division_beta;
+                }),
+            "RandomIdentityLedger must enumerate SignedRoundDiv limb LogUp challenges");
+    require(artifact.security_budget_ledger.size()
+                == artifact.random_identity_ledger.size() + 1,
+            "each random identity must have one exact budget term plus the summary");
+    for (const auto& folding : {
+             std::string("point_group.rho@FH"),
+             std::string("point_group.rho@edge"),
+             std::string("point_group.rho@in"),
+             std::string("point_group.rho@d_h"),
+             std::string("point_group.rho@cat"),
+             std::string("point_group.rho@C"),
+             std::string("point_group.rho@N"),
+             std::string("external_group.rho")}) {
+        require(std::any_of(
+                    artifact.random_identity_ledger.begin(),
+                    artifact.random_identity_ledger.end(),
+                    [&](const auto& entry) {
+                        return entry.object_or_challenge == folding;
+                    }),
+                "RandomIdentityLedger is missing point-group folding: " + folding);
+    }
+    const auto z_fh_identity = std::find_if(
+        artifact.random_identity_ledger.begin(),
+        artifact.random_identity_ledger.end(),
+        [](const auto& entry) { return entry.id == "random:quotient:t_FH"; });
+    require(z_fh_identity != artifact.random_identity_ledger.end()
+                && z_fh_identity->object_or_challenge == "z_FH"
+                && z_fh_identity->exclusion_degree
+                    == context.domains.fh->size + 1
+                && z_fh_identity->expression_or_certificate.find(
+                    "sub(mul(Z_D,t_D_zk),constraint_accumulator_D)")
+                    != std::string::npos,
+            "FH quotient identity must bind its actual verifier DAG and opening exclusions");
+    const auto shift_identity = std::find_if(
+        artifact.random_identity_ledger.begin(),
+        artifact.random_identity_ledger.end(),
+        [](const auto& entry) {
+            return entry.id.find("random:shift:output-bias-terminal") == 0;
+        });
+    require(shift_identity != artifact.random_identity_ledger.end()
+                && shift_identity->degree_bound
+                    == context.kzg.manifest.degree_bound
+                && shift_identity->exclusion_degree
+                    == context.domains.edge->size,
+            "output-bias Taylor shift must have a concrete RandomIdentityLedger entry");
+    const auto security_summary = std::find_if(
+        artifact.security_budget_ledger.begin(),
+        artifact.security_budget_ledger.end(),
+        [](const auto& entry) { return entry.id == "budget:summary"; });
+    require(security_summary != artifact.security_budget_ledger.end()
+                && security_summary->expression_or_certificate.find(
+                    "lambda_target=120") != std::string::npos
+                && security_summary->expression_or_certificate.find(
+                    "epsilon_total=") != std::string::npos
+                && security_summary->expression_or_certificate.find(
+                    "gate=epsilon_total<=2^-120") != std::string::npos,
+            "SecurityBudgetLedger must carry an exact rational total and target gate");
+    require(security_summary->expression_or_certificate.find(
+                "epsilon_crs=0/1") == std::string::npos,
+            "SecurityBudgetLedger must include nonzero BadCRS_obs terms");
+    require(security_summary->expression_or_certificate.find(
+                "lambda_target=128") == std::string::npos,
+            "security metadata must not claim the impossible 2^-128 sum of three 128-bit base advantages");
+    const auto output_bias_proof = gatzk::protocol::model_proof_local_label(
+        gatzk::protocol::output_bias_label(0, false));
+    const auto output_bias_obs = std::find_if(
+        artifact.observation_ledger.begin(), artifact.observation_ledger.end(),
+        [&](const auto& entry) {
+            return entry.object_or_challenge == output_bias_proof;
+        });
+    require(output_bias_obs != artifact.observation_ledger.end()
+                && output_bias_obs->query_bound == 2
+                && output_bias_obs->expression_or_certificate.find(
+                    "S_model-row-eliminated-by-shifted-divisibility-DAG")
+                    != std::string::npos,
+            "proof-local output bias must use the canonical two-coefficient shared blinder budget");
+    require(!gatzk::protocol::observation_image_is_covered(
+                {{FieldElement::one()}, {FieldElement::one()}},
+                {{FieldElement::one()}, {FieldElement(2)}}),
+            "o1=s+r,o2=2s+r must fail full image inclusion despite nonzero blinder rank");
+    require(gatzk::protocol::observation_image_is_covered(
+                {{FieldElement::one()}, {FieldElement::one()}},
+                {{FieldElement::one()}, {FieldElement::one()}}),
+            "matching secret and blinder images must pass the exact inclusion gate");
+    std::string reason;
+    require(gatzk::protocol::validate_protocol_compiler_artifact(
+                context, *context.compiler_artifact, &reason),
+            "untampered compiler artifact must validate: " + reason);
+    auto tampered = artifact;
+    ++tampered.observation_ledger.front().query_bound;
+    require(!gatzk::protocol::validate_protocol_compiler_artifact(
+                context, tampered, &reason),
+            "re-encoding gate must reject ledger content with stale canonical bytes");
+    auto tampered_relation_registry = artifact;
+    tampered_relation_registry.binding_relation_registry.front().push_back('\0');
+    require(!gatzk::protocol::validate_protocol_compiler_artifact(
+                context, tampered_relation_registry, &reason),
+            "re-encoding gate must reject RelationMeta registry tamper");
+    auto missing_relation_registry = artifact;
+    missing_relation_registry.binding_relation_registry.pop_back();
+    require(!gatzk::protocol::validate_protocol_compiler_artifact(
+                context, missing_relation_registry, &reason),
+            "missing authenticated RelationMeta record must reject");
+    auto missing_dependency = artifact;
+    missing_dependency.observation_dependency_dag.erase(
+        missing_dependency.observation_dependency_dag.begin());
+    require(!gatzk::protocol::validate_protocol_compiler_artifact(
+                context, missing_dependency, &reason),
+            "missing ObservationLedger dependency edge must reject");
+    auto dangling_dependency = artifact;
+    dangling_dependency.observation_dependency_dag.front().source_objects.front()
+        += "_unknown";
+    require(!gatzk::protocol::validate_protocol_compiler_artifact(
+                context, dangling_dependency, &reason),
+            "dangling ObservationLedger dependency source must reject");
+    auto duplicate_randomness_owner = artifact;
+    const auto derived_schema_it = std::find_if(
+        duplicate_randomness_owner.proof_schema.entries.begin(),
+        duplicate_randomness_owner.proof_schema.entries.end(),
+        [&](const auto& entry) {
+            return entry.tag == derived_model_binding;
+        });
+    require(derived_schema_it != duplicate_randomness_owner.proof_schema.entries.end(),
+            "derived ModelBind_R must be present in ProofSchema");
+    duplicate_randomness_owner.observation_ledger.push_back({
+        .id = "obs:illegal-duplicate-owner",
+        .object_or_challenge = derived_model_binding,
+        .domain = derived_schema_it->domain,
+        .transcript_stage = derived_schema_it->owner_block,
+        .expression_or_certificate = "illegal-independent-owner-for-derived-object",
+        .degree_bound = context.kzg.manifest.degree_bound,
+        .query_bound = 1,
+        .exclusion_degree = 1,
+        .multiplicity = 1,
+    });
+    require(!gatzk::protocol::validate_protocol_compiler_artifact(
+                context, duplicate_randomness_owner, &reason),
+            "derived object with an invented independent blinder owner must reject");
+    auto missing_qfs = artifact;
+    const auto summary_index = static_cast<std::size_t>(std::distance(
+        missing_qfs.security_budget_ledger.begin(),
+        std::find_if(
+            missing_qfs.security_budget_ledger.begin(),
+            missing_qfs.security_budget_ledger.end(),
+            [](const auto& entry) { return entry.id == "budget:summary"; })));
+    require(summary_index < missing_qfs.security_budget_ledger.size(),
+            "compiler artifact must contain the security summary entry");
+    missing_qfs.security_budget_ledger[summary_index].query_bound = 0;
+    require(!gatzk::protocol::validate_protocol_compiler_artifact(
+                context, missing_qfs, &reason),
+            "missing Q_FS_max must fail the security budget gate");
+    auto floating_budget = artifact;
+    floating_budget.security_budget_ledger[summary_index]
+        .expression_or_certificate =
+        "exact-rational:lambda_target=120|epsilon_total=1e-40";
+    require(!gatzk::protocol::validate_protocol_compiler_artifact(
+                context, floating_budget, &reason),
+            "floating-point SecurityBudgetLedger encoding must reject");
+    auto target_mismatch = artifact;
+    auto& target_expression = target_mismatch.security_budget_ledger[summary_index]
+        .expression_or_certificate;
+    const auto target_position = target_expression.find("lambda_target=120");
+    require(target_position != std::string::npos,
+            "security summary must expose lambda_target");
+    target_expression.replace(
+        target_position, std::string("lambda_target=120").size(),
+        "lambda_target=128");
+    require(!gatzk::protocol::validate_protocol_compiler_artifact(
+                context, target_mismatch, &reason),
+            "manifest/instance target-security mismatch must reject");
+
+    const auto binding_meta = gatzk::protocol::build_binding_relation_metadata(context);
+    const auto output_meta = std::find_if(
+        binding_meta.begin(), binding_meta.end(), [](const auto& entry) {
+            return entry.object_kind == "output" && !entry.shift_relations.empty();
+        });
+    require(output_meta != binding_meta.end(),
+            "compiler unit context must expand output-bias relation metadata");
+    const auto* shift_ptr = gatzk::protocol::find_unique_shift_relation_by_kind(
+        *output_meta, "output-bias-terminal");
+    require(shift_ptr != nullptr,
+            "output bias terminal relation must be uniquely addressable by kind");
+    const auto& shift = *shift_ptr;
+    require(shift.max_difference_degree == context.kzg.manifest.degree_bound,
+            "unit shift soundness metadata must use global D_max");
+    require(shift.configured_degrees.size() == 1,
+            "unit output-bias relation must fix one Taylor-shift degree");
+
+    auto colliding = context;
+    colliding.local.num_nodes = 2;
+    colliding.local.edges.resize(2);
+    const auto colliding_meta =
+        gatzk::protocol::build_binding_relation_metadata(colliding);
+    const auto colliding_output = std::find_if(
+        colliding_meta.begin(), colliding_meta.end(), [](const auto& entry) {
+            return entry.object_kind == "output" && !entry.shift_relations.empty();
+        });
+    require(colliding_output != colliding_meta.end(),
+            "colliding terminals must retain a same-point RelationMeta");
+    const auto* same_point_ptr =
+        gatzk::protocol::find_unique_shift_relation_by_kind(
+            *colliding_output, "output-bias-terminal");
+    require(same_point_ptr != nullptr,
+            "same-point output bias relation must retain its unique kind");
+    const auto& same_point = *same_point_ptr;
+    require(same_point.canonical_points.size() == 1
+                && same_point.configured_degrees.empty()
+                && same_point.shift_domain_sizes.empty(),
+            "colliding terminals must canonicalize to m=1 without shift fields");
+    auto duplicate_relation_kind = *output_meta;
+    duplicate_relation_kind.shift_relations.push_back(shift);
+    require(gatzk::protocol::find_unique_shift_relation_by_kind(
+                duplicate_relation_kind, "output-bias-terminal") == nullptr,
+            "duplicate relation kind must not resolve by vector position");
+
+    const auto relation_challenge = [](const auto& meta) {
+        gatzk::crypto::Transcript transcript("relation-meta-coverage-test");
+        gatzk::protocol::absorb_binding_relation_metadata(transcript, meta);
+        return transcript.challenge("after_relation_meta");
+    };
+    const auto base_relation_challenge = relation_challenge(*output_meta);
+    auto require_relation_field_bound = [&](auto mutation,
+                                             const std::string& field) {
+        auto changed = *output_meta;
+        mutation(changed);
+        require(relation_challenge(changed) != base_relation_challenge,
+                "RelationMeta transcript omitted field: " + field);
+    };
+    require_relation_field_bound(
+        [](auto& meta) { meta.source_objects.front() += "_tampered"; },
+        "source_objects");
+    require_relation_field_bound(
+        [](auto& meta) { meta.target_objects.front() += "_tampered"; },
+        "target_objects");
+    require_relation_field_bound(
+        [](auto& meta) { meta.work_domains.front() += "_tampered"; },
+        "work_domains");
+    require_relation_field_bound(
+        [](auto& meta) { ++meta.real_lengths.front(); }, "real_lengths");
+    require_relation_field_bound(
+        [](auto& meta) { meta.quotient_relations.front() += "_tampered"; },
+        "quotient_relations");
+    require_relation_field_bound(
+        [](auto& meta) { ++*meta.layer_id; }, "layer_id");
+    require_relation_field_bound(
+        [](auto& meta) { ++*meta.head_id; }, "head_id");
+}
+
+void test_domain_opening_challenge_exclusion_registry() {
+    gatzk::protocol::ProtocolContext context;
+    context.domains.fh = gatzk::algebra::RootOfUnityDomain::create("FH", 16);
+    context.domains.edge = gatzk::algebra::RootOfUnityDomain::create("edge", 16);
+    context.domains.in = gatzk::algebra::RootOfUnityDomain::create("in", 16);
+    context.domains.d = gatzk::algebra::RootOfUnityDomain::create("d", 16);
+    context.domains.cat = gatzk::algebra::RootOfUnityDomain::create("cat", 16);
+    context.domains.c = gatzk::algebra::RootOfUnityDomain::create("C", 8);
+    context.domains.n = gatzk::algebra::RootOfUnityDomain::create("N", 16);
+    gatzk::crypto::Transcript transcript("domain-opening-registry-test");
+    transcript.absorb_text("instance", "canonical-test-instance");
+    const auto challenges =
+        gatzk::protocol::derive_domain_opening_challenges(context, transcript);
+    const std::vector<std::tuple<
+        std::string, std::shared_ptr<gatzk::algebra::RootOfUnityDomain>>> specs = {
+        {"z_FH", context.domains.fh}, {"z_edge", context.domains.edge},
+        {"z_in", context.domains.in}, {"z_d_h", context.domains.d},
+        {"z_cat", context.domains.cat}, {"z_C", context.domains.c},
+        {"z_N", context.domains.n},
+    };
+    std::vector<FieldElement> all_points;
+    for (const auto& [label, domain] : specs) {
+        const auto point = challenges.at(label);
+        require(!domain->zero_polynomial_eval(point).is_zero(),
+                label + " must be outside its registered work domain");
+        all_points.push_back(point);
+        all_points.push_back(point * domain->omega);
+    }
+    std::vector<std::string> encoded;
+    for (const auto& point : all_points) encoded.push_back(point.to_string());
+    std::sort(encoded.begin(), encoded.end());
+    require(std::adjacent_find(encoded.begin(), encoded.end()) == encoded.end(),
+            "all fourteen work-domain opening points must be mutually distinct");
+}
+
 void test_real_ppi_representative_batch_boundary() {
     auto config = gatzk::util::load_config((repo_root() / "configs/ppi_secure.cfg").string());
     // Development validation uses two complete source graphs. No node or edge
@@ -410,12 +1896,35 @@ void test_full_metadata_and_schema_gates() {
     require(metadata.privacy_policy == "model_and_trace_hidden", "metadata privacy policy mismatch");
     require(metadata.input_privacy == "public_graph_public_features", "metadata input privacy mismatch");
     require(metadata.output_mode == "public_logits", "metadata output mode mismatch");
-    require(metadata.opening_mode == "domain_grouped_batch_opening", "metadata opening mode mismatch");
+    require(metadata.opening_mode == "point_grouped_batch_opening", "metadata opening mode mismatch");
     require(metadata.binding_mode == "zk_subproof_for_crpc", "metadata binding mode mismatch");
 
     const auto schema = gatzk::protocol::build_proof_schema(fixture.context);
     require(!schema.entries.empty(), "ProofSchema must register committed objects");
     require(schema.private_plain_value_count == 0, "ProofSchema private plain value count must be zero");
+
+    const auto binding_meta = gatzk::protocol::build_binding_relation_metadata(
+        fixture.context);
+    const auto output_meta = std::find_if(
+        binding_meta.begin(), binding_meta.end(), [](const auto& entry) {
+            return entry.object_kind == "output" && !entry.shift_relations.empty();
+        });
+    require(output_meta != binding_meta.end(),
+            "compiler metadata must register output-bias shift relation");
+    const auto& shift = output_meta->shift_relations.front();
+    require(shift.max_difference_degree == fixture.context.kzg.manifest.degree_bound,
+            "shift soundness must use verifier-enforced global D_max");
+    require(shift.configured_degrees.size() == 1,
+            "output-bias relation must have one compiler-fixed shifted source");
+    const auto shifted_source = shift.source_linear_maps[1].substr(3);
+    const auto q_max = gatzk::protocol::registered_blinder_coefficient_count(
+        fixture.context, shifted_source);
+    const auto shifted_domain_size = shift.source_domains[1]
+            == fixture.context.domains.edge->name
+        ? fixture.context.domains.edge->size
+        : fixture.context.domains.c->size;
+    require(shift.configured_degrees.front() == shifted_domain_size + q_max - 1,
+            "Taylor shift degree must come from the registered source blinder budget");
 }
 
 void test_reference_consistency_and_verify() {
@@ -423,6 +1932,122 @@ void test_reference_consistency_and_verify() {
     require(gatzk::protocol::verify(fixture.context, fixture.proof), "secure Cora proof must verify");
     require(fixture.proof.public_metadata.output_mode == "public_logits", "secure proof must expose public logits");
     require(fixture.proof.public_metadata.srs_type == "trusted_srs", "secure proof must bind trusted SRS type");
+}
+
+std::size_t find_wire_token(
+    const std::vector<std::uint8_t>& bytes,
+    const std::string& token) {
+    const auto it = std::search(bytes.begin(), bytes.end(), token.begin(), token.end());
+    require(it != bytes.end(), "wire token not found: " + token);
+    return static_cast<std::size_t>(std::distance(bytes.begin(), it));
+}
+
+void test_strict_proof_codec() {
+    const auto& fixture = cora_secure_fixture();
+    const auto bytes = gatzk::protocol::serialize_proof(fixture.proof);
+    require(bytes.size() == gatzk::protocol::proof_size_bytes(fixture.proof),
+            "proof_size_bytes must equal canonical serialized bytes");
+    const auto parsed = gatzk::protocol::parse_proof(fixture.context, bytes);
+    require(gatzk::protocol::verify(fixture.context, parsed),
+            "canonical proof round-trip must verify");
+    require(gatzk::protocol::serialize_proof(parsed) == bytes,
+            "canonical proof round-trip must be byte stable");
+
+    auto truncated = bytes;
+    truncated.pop_back();
+    require_throws(
+        [&] { (void)gatzk::protocol::parse_proof(fixture.context, truncated); },
+        "truncated proof must be rejected by parser");
+
+    auto appended = bytes;
+    appended.push_back(0);
+    require_throws(
+        [&] { (void)gatzk::protocol::parse_proof(fixture.context, appended); },
+        "trailing proof bytes must be rejected by parser");
+
+    auto reordered = bytes;
+    const auto m_pub = find_wire_token(reordered, "M_pub");
+    const auto w_ext = find_wire_token(reordered, "W_ext");
+    std::swap_ranges(reordered.begin() + static_cast<std::ptrdiff_t>(m_pub),
+                     reordered.begin() + static_cast<std::ptrdiff_t>(m_pub + 5),
+                     reordered.begin() + static_cast<std::ptrdiff_t>(w_ext));
+    require_throws(
+        [&] { (void)gatzk::protocol::parse_proof(fixture.context, reordered); },
+        "reordered proof blocks must be rejected by parser");
+
+    auto duplicated = bytes;
+    std::copy_n(duplicated.begin() + static_cast<std::ptrdiff_t>(w_ext), 5,
+                duplicated.begin() + static_cast<std::ptrdiff_t>(m_pub));
+    require_throws(
+        [&] { (void)gatzk::protocol::parse_proof(fixture.context, duplicated); },
+        "duplicate/missing proof block tags must be rejected by parser");
+
+    auto invalid_length = bytes;
+    require(invalid_length.size() > 24, "proof wire header is unexpectedly short");
+    std::fill_n(invalid_length.begin() + 16, 8, 0xff);
+    require_throws(
+        [&] { (void)gatzk::protocol::parse_proof(fixture.context, invalid_length); },
+        "invalid proof length must be rejected by parser");
+
+    auto invalid_kind = fixture.proof;
+    require(!invalid_kind.external_evaluation_kinds.empty(),
+            "fixture must contain a typed external evaluation");
+    invalid_kind.external_evaluation_kinds[0] =
+        static_cast<gatzk::protocol::PayloadValueKind>(99);
+    const auto invalid_kind_bytes = gatzk::protocol::serialize_proof(invalid_kind);
+    require_throws(
+        [&] { (void)gatzk::protocol::parse_proof(fixture.context, invalid_kind_bytes); },
+        "invalid proof payload type must be rejected by parser");
+
+    const auto output_binding = std::find_if(
+        fixture.proof.pi_bind.subproofs.begin(),
+        fixture.proof.pi_bind.subproofs.end(),
+        [](const auto& subproof) {
+            return subproof.relation_meta.object_kind == "output";
+        });
+    require(output_binding != fixture.proof.pi_bind.subproofs.end(),
+            "fixture must contain output Pi_bind for strict parser tests");
+    const auto output_index = static_cast<std::size_t>(std::distance(
+        fixture.proof.pi_bind.subproofs.begin(), output_binding));
+
+    auto missing_open_reference = fixture.proof;
+    require(!missing_open_reference.pi_bind.subproofs[output_index]
+                 .opening_references.empty(),
+            "output Pi_bind must carry opening references");
+    missing_open_reference.pi_bind.subproofs[output_index]
+        .opening_references.pop_back();
+    const auto missing_open_reference_bytes =
+        gatzk::protocol::serialize_proof(missing_open_reference);
+    require_throws(
+        [&] { (void)gatzk::protocol::parse_proof(
+            fixture.context, missing_open_reference_bytes); },
+        "missing Pi_bind opening reference must be rejected by parser");
+
+    auto reordered_view_commitment = fixture.proof;
+    auto& view_commitments = reordered_view_commitment.pi_bind
+        .subproofs[output_index].view_logup_commitments;
+    require(view_commitments.size() >= 2,
+            "output Pi_bind must carry ordered view commitments");
+    std::swap(view_commitments[0], view_commitments[1]);
+    const auto reordered_view_commitment_bytes =
+        gatzk::protocol::serialize_proof(reordered_view_commitment);
+    require_throws(
+        [&] { (void)gatzk::protocol::parse_proof(
+            fixture.context, reordered_view_commitment_bytes); },
+        "reordered Pi_bind commitment group must be rejected by parser");
+
+    auto renamed_model_reblind = fixture.proof;
+    require(!renamed_model_reblind.pi_bind.subproofs[output_index]
+                 .model_reblinds.empty(),
+            "output Pi_bind must carry model reblinds");
+    renamed_model_reblind.pi_bind.subproofs[output_index]
+        .model_reblinds.front().proof_local_commitment.name += ":tampered";
+    const auto renamed_model_reblind_bytes =
+        gatzk::protocol::serialize_proof(renamed_model_reblind);
+    require_throws(
+        [&] { (void)gatzk::protocol::parse_proof(
+            fixture.context, renamed_model_reblind_bytes); },
+        "renamed Pi_bind model commitment must be rejected by parser");
 }
 
 void test_verifier_only_boundary() {
@@ -433,6 +2058,8 @@ void test_verifier_only_boundary() {
     strip_proof_to_verifier_only(proof);
     require(context.kzg.pk.powers_g1 == nullptr, "verifier-only context must not retain coefficient proving SRS");
     require(context.kzg.pk.lagrange_srs_by_domain.empty(), "verifier-only context must not retain Lagrange proving SRS");
+    require(context.model.hidden_heads.front().seq_kernel_fp.empty(),
+            "verifier-only context must not retain private model parameters");
     require(gatzk::protocol::verify(context, proof), "verifier-only proof path must verify without prover material");
     require(
         gatzk::protocol::private_plain_value_count(context, proof) == 0,
@@ -448,6 +2075,153 @@ void require_rejects(
 
 void test_tamper_rejection_suite() {
     const auto& fixture = cora_secure_fixture();
+
+    auto public_input_context_tamper = fixture.context;
+    require(public_input_context_tamper.local.absolute_ids.size() >= 2,
+            "fixture must expose at least two public node ids");
+    std::swap(public_input_context_tamper.local.absolute_ids[0],
+              public_input_context_tamper.local.absolute_ids[1]);
+    public_input_context_tamper.local.public_input.I =
+        public_input_context_tamper.local.absolute_ids;
+    require(!gatzk::protocol::verify(public_input_context_tamper, fixture.proof),
+            "public input replacement must reject against registered public columns");
+
+    auto model_commitment_context_tamper = fixture.context;
+    const auto model_label = gatzk::protocol::hidden_weight_column_label(0, 0);
+    require(model_commitment_context_tamper.static_commitments.contains(model_label),
+            "fixture must contain the first registered hidden-head commitment");
+    model_commitment_context_tamper.static_commitments.at(model_label).point =
+        gatzk::crypto::g1_zero();
+    require(!gatzk::protocol::verify(model_commitment_context_tamper, fixture.proof),
+            "registered model/static commitment replacement must reject");
+
+    auto missing_compiler_artifact = fixture.context;
+    missing_compiler_artifact.compiler_artifact.reset();
+    require(!gatzk::protocol::verify(missing_compiler_artifact, fixture.proof),
+            "missing ProtocolCompilerArtifact must reject");
+
+    auto tampered_compiler_artifact = fixture.context;
+    auto mutable_artifact = std::make_shared<gatzk::protocol::ProtocolCompilerArtifact>(
+        *tampered_compiler_artifact.compiler_artifact);
+    mutable_artifact->instance_canonical_bytes.push_back('\0');
+    tampered_compiler_artifact.compiler_artifact = std::move(mutable_artifact);
+    require(!gatzk::protocol::verify(tampered_compiler_artifact, fixture.proof),
+            "tampered ProtocolCompilerArtifact must reject");
+
+    auto observation_budget_tamper = fixture.context;
+    auto budget_artifact = std::make_shared<gatzk::protocol::ProtocolCompilerArtifact>(
+        *observation_budget_tamper.compiler_artifact);
+    require(!budget_artifact->observation_ledger.empty(),
+            "fixture compiler artifact must contain ObservationLedger entries");
+    ++budget_artifact->observation_ledger.front().query_bound;
+    observation_budget_tamper.compiler_artifact = std::move(budget_artifact);
+    require(!gatzk::protocol::verify(observation_budget_tamper, fixture.proof),
+            "ObservationLedger q_O_max tamper must reject");
+
+    auto observation_dependency_tamper = fixture.context;
+    auto dependency_artifact = std::make_shared<gatzk::protocol::ProtocolCompilerArtifact>(
+        *observation_dependency_tamper.compiler_artifact);
+    dependency_artifact->observation_ledger.front().expression_or_certificate +=
+        ":missing-shift-dependency";
+    observation_dependency_tamper.compiler_artifact = std::move(dependency_artifact);
+    require(!gatzk::protocol::verify(observation_dependency_tamper, fixture.proof),
+            "ObservationLedger dependency certificate tamper must reject");
+
+    auto pi_bind_meta_tamper = fixture.proof;
+    require(!pi_bind_meta_tamper.pi_bind.subproofs.empty(),
+            "fixture must contain Pi_bind subproofs");
+    pi_bind_meta_tamper.pi_bind.subproofs.front().relation_meta.relation_id += "_tampered";
+    require_rejects(fixture, pi_bind_meta_tamper, "Pi_bind RelationMeta tamper");
+
+    auto pi_bind_missing_tamper = fixture.proof;
+    pi_bind_missing_tamper.pi_bind.subproofs.pop_back();
+    require_rejects(fixture, pi_bind_missing_tamper, "Pi_bind subproof missing");
+
+    auto pi_bind_duplicate_tamper = fixture.proof;
+    pi_bind_duplicate_tamper.pi_bind.subproofs.push_back(
+        pi_bind_duplicate_tamper.pi_bind.subproofs.back());
+    require_rejects(fixture, pi_bind_duplicate_tamper, "Pi_bind subproof duplicate");
+
+    const auto output_binding = std::find_if(
+        fixture.proof.pi_bind.subproofs.begin(),
+        fixture.proof.pi_bind.subproofs.end(),
+        [](const auto& subproof) {
+            return !subproof.relation_meta.indexed_views.empty()
+                && !subproof.relation_meta.shift_relations.empty();
+        });
+    require(output_binding != fixture.proof.pi_bind.subproofs.end(),
+            "fixture must contain the formal output-bias Pi_bind relation");
+    const auto output_binding_index = static_cast<std::size_t>(
+        std::distance(fixture.proof.pi_bind.subproofs.begin(), output_binding));
+
+    auto bias_index_map_tamper = fixture.proof;
+    bias_index_map_tamper.pi_bind.subproofs[output_binding_index]
+        .relation_meta.indexed_views.front().index_map_id += ":tampered";
+    require_rejects(fixture, bias_index_map_tamper,
+                    "output-bias indexed-view map tamper");
+
+    auto bias_shift_degree_tamper = fixture.proof;
+    ++bias_shift_degree_tamper.pi_bind.subproofs[output_binding_index]
+          .relation_meta.shift_relations.front().max_difference_degree;
+    require_rejects(fixture, bias_shift_degree_tamper,
+                    "output-bias global shift degree tamper");
+
+    auto bias_shift_commitment_tamper = fixture.proof;
+    auto& shifted_commitments = bias_shift_commitment_tamper.pi_bind
+        .subproofs[output_binding_index].relation_commitments;
+    require(!shifted_commitments.empty(),
+            "output-bias Pi_bind must contain the shifted commitment");
+    shifted_commitments.front().second.point = gatzk::crypto::g1_add(
+        shifted_commitments.front().second.point,
+        fixture.context.kzg.g1_generator);
+    require_rejects(fixture, bias_shift_commitment_tamper,
+                    "output-bias shifted commitment tamper");
+
+    auto bias_shared_value_tamper = fixture.proof;
+    auto& binding_evaluations = bias_shared_value_tamper.pi_bind
+        .subproofs[output_binding_index].evaluations;
+    require(!binding_evaluations.empty()
+                && !binding_evaluations.front().values.empty(),
+            "output-bias Pi_bind must contain u_rel");
+    binding_evaluations.front().values.front() += FieldElement::one();
+    require_rejects(fixture, bias_shared_value_tamper,
+                    "output-bias shared u_rel tamper");
+
+    auto bias_opening_reference_tamper = fixture.proof;
+    auto& binding_opening_refs = bias_opening_reference_tamper.pi_bind
+        .subproofs[output_binding_index].opening_references;
+    require(!binding_opening_refs.empty(),
+            "output-bias Pi_bind must reference standard point groups");
+    binding_opening_refs.pop_back();
+    require_rejects(fixture, bias_opening_reference_tamper,
+                    "output-bias opening reference deletion");
+
+    auto model_reblind_tamper = fixture.proof;
+    auto model_subproof = std::find_if(
+        model_reblind_tamper.pi_bind.subproofs.begin(),
+        model_reblind_tamper.pi_bind.subproofs.end(),
+        [](const auto& subproof) { return !subproof.model_reblinds.empty(); });
+    require(model_subproof != model_reblind_tamper.pi_bind.subproofs.end(),
+            "fixture must contain a proof-local model reblinding");
+    model_subproof->model_reblinds.front().proof_local_commitment.point =
+        gatzk::crypto::g1_add(
+            model_subproof->model_reblinds.front().proof_local_commitment.point,
+            fixture.context.kzg.g1_generator);
+    require_rejects(fixture, model_reblind_tamper, "proof-local model commitment tamper");
+
+    auto model_reblind_witness_tamper = fixture.proof;
+    auto witness_subproof = std::find_if(
+        model_reblind_witness_tamper.pi_bind.subproofs.begin(),
+        model_reblind_witness_tamper.pi_bind.subproofs.end(),
+        [](const auto& subproof) { return !subproof.model_reblinds.empty(); });
+    require(witness_subproof != model_reblind_witness_tamper.pi_bind.subproofs.end(),
+            "fixture must contain a proof-local model reblinding witness");
+    witness_subproof->model_reblinds.front().blinder_commitment.point =
+        gatzk::crypto::g1_add(
+            witness_subproof->model_reblinds.front().blinder_commitment.point,
+            fixture.context.kzg.g1_generator);
+    require_rejects(
+        fixture, model_reblind_witness_tamper, "proof-local model S_model tamper");
 
     auto metadata_tamper = fixture.proof;
     metadata_tamper.public_metadata.privacy_policy = "wrong_policy";
@@ -529,9 +2303,31 @@ void test_tamper_rejection_suite() {
     public_logits_tamper.public_logits.front() += FieldElement::one();
     require_rejects(fixture, public_logits_tamper, "public logits tamper");
 
-    auto public_output_point_tamper = fixture.proof;
-    public_output_point_tamper.public_output_challenge += FieldElement::one();
-    require_rejects(fixture, public_output_point_tamper, "public output opening point tamper");
+    auto output_digest_tamper = fixture.proof;
+    require(!output_digest_tamper.public_metadata.public_output.empty(),
+            "fixture must carry canonical public-output metadata");
+    output_digest_tamper.public_metadata.public_output.back() =
+        output_digest_tamper.public_metadata.public_output.back() == '0' ? '1' : '0';
+    require_rejects(fixture, output_digest_tamper, "public output digest tamper");
+
+    auto proof_nonce_tamper = fixture.proof;
+    require(proof_nonce_tamper.public_metadata.proof_nonce.size() == 64,
+            "fixture must carry a 256-bit proof nonce");
+    proof_nonce_tamper.public_metadata.proof_nonce[0] =
+        proof_nonce_tamper.public_metadata.proof_nonce[0] == '0' ? '1' : '0';
+    require_rejects(fixture, proof_nonce_tamper, "proof nonce tamper");
+
+    auto public_output_owner_witness_tamper = fixture.proof;
+    require(!public_output_owner_witness_tamper.external_proof.witnesses.empty(),
+            "fixture must carry the public-output owner witness in W_ext");
+    public_output_owner_witness_tamper.external_proof.witnesses.front() =
+        gatzk::crypto::g1_add(
+            public_output_owner_witness_tamper.external_proof.witnesses.front(),
+            fixture.context.kzg.g1_generator);
+    require_rejects(
+        fixture,
+        public_output_owner_witness_tamper,
+        "public output W_ext owner witness tamper");
 
     auto challenge_tamper = fixture.proof;
     challenge_tamper.challenges.begin()->second += FieldElement::one();
@@ -542,20 +2338,47 @@ void test_tamper_rejection_suite() {
 
 int main() {
     try {
-        std::cerr << "running test_kzg_opening_selftest\n";
-        test_kzg_opening_selftest();
-        std::cerr << "running test_compact_eval_kzg_regression\n";
-        test_compact_eval_kzg_regression();
+        const bool skip_srs_tests = std::getenv("GATZK_SKIP_SRS_TESTS") != nullptr;
+        if (!skip_srs_tests) {
+            std::cerr << "running test_kzg_opening_selftest\n";
+            test_kzg_opening_selftest();
+            std::cerr << "running test_coefficient_taylor_shift_fixed_shape\n";
+            test_coefficient_taylor_shift_fixed_shape();
+            std::cerr << "running test_cross_domain_indexed_view_shift_relation\n";
+            test_cross_domain_indexed_view_shift_relation();
+            std::cerr << "running test_same_point_indexed_view_relation\n";
+            test_same_point_indexed_view_relation();
+            std::cerr << "running test_compact_eval_kzg_regression\n";
+            test_compact_eval_kzg_regression();
+            std::cerr << "running test_external_point_grouping_regression\n";
+            test_external_point_grouping_regression();
+        } else {
+            std::cerr << "skipping SRS-backed KZG regressions; GATZK_SKIP_SRS_TESTS is set\n";
+        }
         std::cerr << "running test_packed_backend_padded_tail_regression\n";
         test_packed_backend_padded_tail_regression();
-        std::cerr << "running test_msm_chunked_equivalence_regression\n";
-        test_msm_chunked_equivalence_regression();
-        std::cerr << "running test_srs_mismatch_gate\n";
-        test_srs_mismatch_gate();
+        if (!skip_srs_tests) {
+            if (std::getenv("GATZK_SKIP_LARGE_MSM_TESTS") == nullptr) {
+                std::cerr << "running test_msm_chunked_equivalence_regression\n";
+                test_msm_chunked_equivalence_regression();
+            } else {
+                std::cerr << "skipping large-SRS MSM regression; GATZK_SKIP_LARGE_MSM_TESTS is set\n";
+            }
+            std::cerr << "running test_srs_mismatch_gate\n";
+            test_srs_mismatch_gate();
+        }
         std::cerr << "running test_metadata_and_schema_gates\n";
         test_metadata_and_schema_gates();
+        std::cerr << "running test_removed_compatibility_protocol_gate\n";
+        test_removed_compatibility_protocol_gate();
+        std::cerr << "running test_canonical_output_digest_contract\n";
+        test_canonical_output_digest_contract();
         std::cerr << "running test_multi_graph_public_boundary_validation\n";
         test_multi_graph_public_boundary_validation();
+        std::cerr << "running test_compiler_observation_certificate_gate\n";
+        test_compiler_observation_certificate_gate();
+        std::cerr << "running test_domain_opening_challenge_exclusion_registry\n";
+        test_domain_opening_challenge_exclusion_registry();
         if (std::getenv("GATZK_RUN_PPI_BOUNDARY_TESTS") != nullptr) {
             std::cerr << "running test_real_ppi_representative_batch_boundary\n";
             test_real_ppi_representative_batch_boundary();
@@ -567,6 +2390,8 @@ int main() {
             test_full_metadata_and_schema_gates();
             std::cerr << "running test_reference_consistency_and_verify\n";
             test_reference_consistency_and_verify();
+            std::cerr << "running test_strict_proof_codec\n";
+            test_strict_proof_codec();
             std::cerr << "running test_verifier_only_boundary\n";
             test_verifier_only_boundary();
             std::cerr << "running test_tamper_rejection_suite\n";

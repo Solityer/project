@@ -24,6 +24,7 @@
 #include <unordered_map>
 
 #include <mcl/ntt.hpp>
+#include <openssl/rand.h>
 
 #include "gatzk/algebra/domain_evaluation.hpp"
 #include "gatzk/algebra/eval_backend.hpp"
@@ -34,6 +35,7 @@
 #include "gatzk/protocol/challenges.hpp"
 #include "gatzk/protocol/lookup.hpp"
 #include "gatzk/protocol/quotients.hpp"
+#include "gatzk/protocol/proof_codec.hpp"
 #include "gatzk/protocol/schema.hpp"
 #include "gatzk/util/logging.hpp"
 #include "gatzk/util/route2.hpp"
@@ -117,7 +119,7 @@ namespace gatzk::protocol
             return out;
         }
 
-        void attach_public_output_binding(
+        void attach_public_output_statement(
             const ProtocolContext &context,
             const TraceArtifacts &trace,
             Proof *proof)
@@ -126,28 +128,15 @@ namespace gatzk::protocol
             {
                 throw std::runtime_error("public output binding is missing logits");
             }
-            const auto commitment_it = trace.commitments.find("P_Y");
-            if (commitment_it == trace.commitments.end())
+            if (!trace.commitments.contains("P_Y"))
             {
                 throw std::runtime_error("public output binding is missing P_Y commitment");
             }
             proof->public_logits = trace.public_logits;
-            const auto binding_challenges = derive_public_output_challenges(
-                proof->public_metadata,
-                commitment_it->second,
+            proof->public_metadata.public_output = canonical_public_output_descriptor(
                 proof->public_logits,
                 context.local.num_nodes,
                 context.local.num_classes);
-            const auto claimed_value = evaluate_coefficient_vector(
-                proof->public_logits,
-                binding_challenges.point);
-            proof->public_output_challenge = binding_challenges.point;
-            proof->public_output_opening = crypto::KZG::open_batch(
-                {commitment_it->second},
-                {binding_challenges.point},
-                {{claimed_value}},
-                binding_challenges.folding,
-                context.kzg);
         }
 
         void strip_prover_material_from_proof(Proof *proof)
@@ -165,6 +154,28 @@ namespace gatzk::protocol
             {
                 (void)name;
                 commitment.opening_polynomial.reset();
+            }
+            for (auto &subproof : proof->pi_bind.subproofs)
+            {
+                for (auto &reblind : subproof.model_reblinds)
+                {
+                    reblind.proof_local_commitment.opening_polynomial.reset();
+                    reblind.blinder_commitment.opening_polynomial.reset();
+                }
+                for (auto *group : {
+                         &subproof.view_commitments,
+                         &subproof.view_logup_commitments,
+                         &subproof.aggregation_commitments,
+                         &subproof.basis_commitments,
+                         &subproof.crpc_commitments,
+                         &subproof.relation_commitments})
+                {
+                    for (auto &[name, commitment] : *group)
+                    {
+                        (void)name;
+                        commitment.opening_polynomial.reset();
+                    }
+                }
             }
         }
 
@@ -190,39 +201,30 @@ namespace gatzk::protocol
 
             stream << "[metadata]\n"
                    << proof.public_metadata.protocol_name << '\n'
+                   << proof.public_metadata.proof_nonce << '\n'
                    << proof.public_metadata.proof_task << '\n'
                    << proof.public_metadata.srs_id << '\n'
+                   << proof.public_metadata.protocol_schema_id << '\n'
+                   << proof.public_metadata.instance_schema_hash << '\n'
                    << proof.public_metadata.srs_type << '\n'
                    << proof.public_metadata.srs_degree_bound << '\n'
+                   << proof.public_metadata.kzg_assumption_profile << '\n'
                    << proof.public_metadata.privacy_policy << '\n'
                    << proof.public_metadata.input_privacy << '\n'
                    << proof.public_metadata.output_mode << '\n'
                    << proof.public_metadata.opening_mode << '\n'
                    << proof.public_metadata.binding_mode << '\n'
-                   << proof.public_metadata.protocol_id << '\n'
-                   << proof.public_metadata.dataset_name << '\n'
-                   << proof.public_metadata.task_type << '\n'
-                   << proof.public_metadata.report_unit << '\n'
-                   << proof.public_metadata.graph_count << '\n'
-                   << proof.public_metadata.L << '\n'
-                   << proof.public_metadata.hidden_profile << '\n'
-                   << proof.public_metadata.d_in_profile << '\n'
-                   << proof.public_metadata.K_out << '\n'
-                   << proof.public_metadata.C << '\n'
-                   << proof.public_metadata.batching_rule << '\n'
-                   << proof.public_metadata.subgraph_rule << '\n'
-                   << proof.public_metadata.self_loop_rule << '\n'
-                   << proof.public_metadata.edge_sort_rule << '\n'
-                   << proof.public_metadata.chunking_rule << '\n'
-                   << proof.public_metadata.model_arch_id << '\n'
-                   << proof.public_metadata.model_param_id << '\n'
-                   << proof.public_metadata.static_table_id << '\n'
-                   << proof.public_metadata.quant_cfg_id << '\n'
+                   << proof.public_metadata.model_arch << '\n'
+                   << proof.public_metadata.model_params << '\n'
+                   << proof.public_metadata.static_tables << '\n'
+                   << proof.public_metadata.quant_config << '\n'
                    << proof.public_metadata.domain_cfg << '\n'
                    << proof.public_metadata.dim_cfg << '\n'
-                   << proof.public_metadata.encoding_id << '\n'
-                   << proof.public_metadata.padding_rule_id << '\n'
-                   << proof.public_metadata.degree_bound_id << '\n';
+                   << proof.public_metadata.encoding << '\n'
+                   << proof.public_metadata.padding_rule << '\n'
+                   << proof.public_metadata.degree_bound << '\n'
+                   << proof.public_metadata.security_budget << '\n'
+                   << proof.public_metadata.public_output << '\n';
             stream << "[block_order]\n";
             for (const auto &block : proof.block_order)
             {
@@ -272,11 +274,6 @@ namespace gatzk::protocol
             for (const auto &value : proof.public_logits)
             {
                 stream << value.to_string() << '\n';
-            }
-            stream << "point=" << proof.public_output_challenge.to_string() << '\n';
-            for (const auto &witness : proof.public_output_opening.witnesses)
-            {
-                stream << "witness=" << witness.to_string() << '\n';
             }
             stream << "[external_proof]\n";
             for (const auto &witness : proof.external_proof.witnesses)
@@ -1019,13 +1016,16 @@ namespace gatzk::protocol
 
         std::vector<std::pair<FieldElement, FieldElement>> make_lrelu_table(std::int64_t min_raw, std::int64_t max_raw)
         {
+            constexpr double kAttentionScale = 256.0;
             std::vector<std::pair<FieldElement, FieldElement>> out;
             out.reserve(signed_table_size(min_raw, max_raw, "lrelu"));
             for (std::int64_t raw = min_raw; raw <= max_raw; ++raw)
             {
-                const auto input = dequantize_trace_scalar(raw);
+                const auto input = static_cast<double>(raw) / kAttentionScale;
                 const auto output = input >= 0.0 ? input : 0.2 * input;
-                out.push_back({FieldElement::from_signed(raw), quantize_float_model_value(output)});
+                const auto output_raw = static_cast<std::int64_t>(
+                    output >= 0.0 ? output * kAttentionScale + 0.5 : output * kAttentionScale - 0.5);
+                out.push_back({FieldElement::from_signed(raw), FieldElement::from_signed(output_raw)});
                 if (raw == max_raw)
                 {
                     break;
@@ -1052,12 +1052,14 @@ namespace gatzk::protocol
 
         std::vector<std::pair<FieldElement, FieldElement>> make_exp_table(std::size_t size)
         {
+            constexpr double kAttentionScale = 256.0;
             std::vector<std::pair<FieldElement, FieldElement>> out;
             out.reserve(size);
             for (std::size_t i = 0; i < size; ++i)
             {
                 const auto input = static_cast<std::int64_t>(i);
-                const auto central_signed = quantize_float_model_value_signed(std::exp(-dequantize_trace_scalar(input)));
+                const auto central_signed = quantize_float_model_value_signed(
+                    std::exp(-static_cast<double>(input) / kAttentionScale));
                 const auto candidate = std::max<std::int64_t>(0, central_signed);
                 out.push_back({
                     FieldElement(static_cast<std::uint64_t>(i)),
@@ -1090,6 +1092,20 @@ namespace gatzk::protocol
             for (std::size_t i = 0; i < values.size(); ++i)
             {
                 out[i] = quantize_float_model_value(values[i]);
+            }
+            return out;
+        }
+
+        std::vector<FieldElement> quantize_model_vector_at_scale(
+            const std::vector<double> &values,
+            double scale)
+        {
+            std::vector<FieldElement> out(values.size(), FieldElement::zero());
+            for (std::size_t i = 0; i < values.size(); ++i)
+            {
+                const auto scaled = values[i] * scale;
+                out[i] = FieldElement::from_signed(static_cast<std::int64_t>(
+                    scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5));
             }
             return out;
         }
@@ -1212,6 +1228,7 @@ namespace gatzk::protocol
             std::string proof_name;
             std::string label;
             std::string challenge_name;
+            bool static_commitment = false;
         };
 
         std::vector<ExternalEvalSpec> multihead_external_specs(const ProtocolContext &context)
@@ -1237,7 +1254,7 @@ namespace gatzk::protocol
                     hidden_concat_y_name(layer_index, is_final_layer),
                 });
             }
-            const bool legacy_single_output = context.model.output_layer.heads.size() == 1;
+            const bool legacy_single_output = false;
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {
                 const auto prefix = output_head_prefix(head_index, legacy_single_output);
@@ -1637,7 +1654,7 @@ namespace gatzk::protocol
         FieldElement evaluate_spilled_evaluation_polynomial(
             const TraceArtifacts::SpilledEvaluationPolynomial &spilled,
             const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
-            const FieldElement & /*point*/,
+            const FieldElement &point,
             const algebra::DomainEvaluationWeights &weight_entry)
         {
             if (domain == nullptr)
@@ -1681,7 +1698,13 @@ namespace gatzk::protocol
                 mcl::Fr::mul(term, value.native(), weight_entry.native_weights[index]);
                 mcl::Fr::add(native_sum, native_sum, term);
             }
-            return FieldElement::from_native(native_sum);
+            auto value = FieldElement::from_native(native_sum);
+            if (!spilled.zero_domain_blinder.empty())
+            {
+                value += domain->zero_polynomial_eval(point)
+                    * algebra::horner(spilled.zero_domain_blinder, point);
+            }
+            return value;
         }
 
         // proof 级 memoization 只缓存“当前 trace + 当前 Fiat-Shamir 挑战”派生出的值。
@@ -1780,6 +1803,7 @@ namespace gatzk::protocol
                         context_,
                         challenges_,
                         trace_.witness_scalars,
+                        trace_.external_evaluations,
                         [&](const std::string &inner_name, const FieldElement &inner_point)
                         {
                             return eval_named(inner_name, inner_point);
@@ -2934,7 +2958,17 @@ namespace gatzk::protocol
                                                   const std::vector<FieldElement> &values)
                     {
                         const auto copy_start = Clock::now();
-                        cache_group_values(group_labels, point, values);
+                        auto proof_values = values;
+                        for (std::size_t i = 0; i < group_labels.size(); ++i)
+                        {
+                            const auto *polynomial = lookup_polynomial(group_labels[i]);
+                            if (polynomial != nullptr && polynomial->is_zero_domain_blinded())
+                            {
+                                proof_values[i] += polynomial->domain->zero_polynomial_eval(point)
+                                    * algebra::horner(polynomial->zero_domain_blinder, point);
+                            }
+                        }
+                        cache_group_values(group_labels, point, proof_values);
                         if (metrics_ != nullptr && group.first->name == "FH")
                         {
                             metrics_->fh_copy_convert_ms += elapsed_ms(copy_start, Clock::now());
@@ -3110,10 +3144,16 @@ namespace gatzk::protocol
                 const auto &values = polynomial.values();
                 if (weight_entry.direct_index.has_value())
                 {
-                    return values.at(*weight_entry.direct_index);
+                    return polynomial.evaluate(point);
                 }
                 // `parallel_fft` 只改变域权重的归约方式，opened value 本身必须保持不变。
-                return algebra::dot_product_native_weights(values, weight_entry.native_weights);
+                auto value = algebra::dot_product_native_weights(values, weight_entry.native_weights);
+                if (polynomial.is_zero_domain_blinded())
+                {
+                    value += polynomial.domain->zero_polynomial_eval(point)
+                        * algebra::horner(polynomial.zero_domain_blinder, point);
+                }
+                return value;
             }
 
             const algebra::DomainEvaluationWeights &domain_weights(
@@ -3714,6 +3754,29 @@ namespace gatzk::protocol
                 copy_evaluation_values_to_native_domain(values, polynomial.domain->size, &coefficient_work, polynomial.name);
                 ntt_plan(coefficient_work.size())->intt(coefficient_work.data());
 
+                if (polynomial.is_zero_domain_blinded())
+                {
+                    const auto domain_size = polynomial.domain->size;
+                    const auto required_size = domain_size + polynomial.zero_domain_blinder.size();
+                    if (required_size > target_size)
+                    {
+                        throw std::runtime_error(
+                            "zero-domain-blinded polynomial exceeds quotient coset size: " + label);
+                    }
+                    coefficient_work.resize(required_size);
+                    for (std::size_t i = 0; i < polynomial.zero_domain_blinder.size(); ++i)
+                    {
+                        mcl::Fr::sub(
+                            coefficient_work[i],
+                            coefficient_work[i],
+                            polynomial.zero_domain_blinder[i].native());
+                        mcl::Fr::add(
+                            coefficient_work[domain_size + i],
+                            coefficient_work[domain_size + i],
+                            polynomial.zero_domain_blinder[i].native());
+                    }
+                }
+
                 coefficient_count = active_coefficient_size(coefficient_work);
                 if (coefficient_count > target_size)
                 {
@@ -3886,11 +3949,6 @@ namespace gatzk::protocol
                     throw std::runtime_error(
                         "SRS degree bound is too small for quotient polynomial " + label_ + ": need coefficients=" + std::to_string(target_size_) + " but degree_bound+1=" + std::to_string(key.pk.degree_bound + 1));
                 }
-                if (label_ == "t_FH" && full_graph_feature_identity_enabled(context_))
-                {
-                    return materialize_full_identity_fh();
-                }
-
                 const auto root = FieldElement::root_of_unity(target_size_);
                 auto evaluate_at_index = [&](std::size_t i, const FieldElement &z)
                 {
@@ -3915,7 +3973,7 @@ namespace gatzk::protocol
                     }
                     else if (label_ == "t_edge")
                     {
-                        return evaluate_t_edge(context_, challenges_, trace_.witness_scalars, eval, z);
+                        return evaluate_t_edge(context_, challenges_, trace_.witness_scalars, trace_.external_evaluations, eval, z);
                     }
                     else if (label_ == "t_N")
                     {
@@ -3963,10 +4021,12 @@ namespace gatzk::protocol
                     prewarm_coset_values(prewarm_labels);
                     seed_fast_coset_lookup(prewarm_labels);
                     progress_note("prove:quotient:t_edge:coset_prewarm:done");
-                    if (context_.model.has_real_multihead)
-                    {
-                        return materialize_t_edge_fast();
-                    }
+                    // The generic evaluator is the protocol source of truth.  The
+                    // former hand-unrolled route did not reproduce evaluate_t_edge
+                    // after the formal integer-scale constraints changed, producing
+                    // a commitment whose polynomial disagreed with verifier claims.
+                    // Keep it out of the formal path until equivalence is proved by
+                    // a pointwise regression over every registered constraint term.
                 }
                 if (label_ == "t_edge")
                 {
@@ -4549,7 +4609,7 @@ namespace gatzk::protocol
                     plan.hidden_heads.push_back(std::move(head));
                 }
 
-                const bool legacy_single_output = context_.model.output_layer.heads.size() == 1;
+                const bool legacy_single_output = false;
                 plan.output_heads.reserve(context_.model.output_layer.heads.size());
                 for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index)
                 {
@@ -5713,7 +5773,7 @@ namespace gatzk::protocol
                         return suffix == "w_psq" || suffix == "T_psq_edge";
                     }
                 }
-                const bool legacy_single_output = context_.model.output_layer.heads.size() == 1;
+                const bool legacy_single_output = false;
                 for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index)
                 {
                     const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
@@ -5766,7 +5826,7 @@ namespace gatzk::protocol
                     return is_edge_derived_coset_request(name);
                 }
 
-                const bool legacy_single_output = context_.model.output_layer.heads.size() == 1;
+                const bool legacy_single_output = false;
                 for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index)
                 {
                     const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
@@ -5916,7 +5976,7 @@ namespace gatzk::protocol
                     return std::nullopt;
                 }
 
-                const bool legacy_single_output = context_.model.output_layer.heads.size() == 1;
+                const bool legacy_single_output = false;
                 for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index)
                 {
                     const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
@@ -6233,7 +6293,7 @@ namespace gatzk::protocol
                         return is_hidden_derived_suffix(name.substr(prefix.size()));
                     }
                 }
-                const bool legacy_single_output = context_.model.output_layer.heads.size() == 1;
+                const bool legacy_single_output = false;
                 auto is_output_derived_suffix = [](std::string_view suffix)
                 {
                     return suffix == "S" || suffix == "Delta" || suffix == "Table_L" || suffix == "Query_L" || suffix == "Table_R" || suffix == "Query_R" || suffix == "Table_exp" || suffix == "Query_exp" || suffix == "Query_src" || suffix == "Query_t" || suffix == "Query_dst" || suffix == "w" || suffix == "T_edge";
@@ -6503,7 +6563,7 @@ namespace gatzk::protocol
                 {
                     return nullptr;
                 }
-                const bool legacy_single_output = context_.model.output_layer.heads.size() == 1;
+                const bool legacy_single_output = false;
                 for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index)
                 {
                     const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
@@ -6695,6 +6755,20 @@ namespace gatzk::protocol
                         alias_owner = alias_it->second;
                     }
                 }
+                if (const auto *private_polynomial = lookup_polynomial(requested_name);
+                    private_polynomial != nullptr && private_polynomial->is_zero_domain_blinded())
+                {
+                    auto direct_values = std::make_shared<const std::vector<FieldElement>>(
+                        coset_evaluate_polynomial(
+                            *private_polynomial,
+                            target_size_,
+                            shift_,
+                            requested_name,
+                            &shift_powers()));
+                    std::lock_guard<std::mutex> lock(coset_cache_mutex_);
+                    const auto [it, inserted] = coset_cache_.emplace(requested_name, direct_values);
+                    return inserted ? direct_values : it->second;
+                }
                 if (!alias_owner.empty() && alias_owner != requested_name)
                 {
                     auto values = coset_values_ptr(alias_owner);
@@ -6755,6 +6829,10 @@ namespace gatzk::protocol
                         requested_name,
                         load_spilled_values(it->second),
                         context_domain_by_name(context_, it->second.domain_name));
+                    if (!it->second.zero_domain_blinder.empty())
+                    {
+                        polynomial.set_zero_domain_blinder(it->second.zero_domain_blinder);
+                    }
                     values = std::make_shared<const std::vector<FieldElement>>(
                         coset_evaluate_polynomial(polynomial, target_size_, shift_, requested_name, &shift_powers()));
                 }
@@ -7008,6 +7086,86 @@ namespace gatzk::protocol
             return out;
         }
 
+        std::vector<FieldElement> sample_quotient_mask(
+            const ProtocolContext &context,
+            const std::string &label)
+        {
+            const auto kMaskCoefficientCount =
+                registered_blinder_coefficient_count(
+                    context, quotient_mask_label(label));
+            std::vector<FieldElement> mask(kMaskCoefficientCount, FieldElement::zero());
+            std::array<std::uint8_t, 64> bytes{};
+            for (auto &coefficient : mask)
+            {
+                if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
+                {
+                    throw std::runtime_error("CSPRNG failed while sampling quotient mask: " + label);
+                }
+                coefficient = FieldElement::from_little_endian_mod(bytes.data(), bytes.size());
+            }
+            while (std::all_of(mask.begin(), mask.end(), [](const FieldElement &value)
+                   { return value.is_zero(); }))
+            {
+                if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
+                {
+                    throw std::runtime_error("CSPRNG failed while resampling quotient mask: " + label);
+                }
+                mask.front() = FieldElement::from_little_endian_mod(bytes.data(), bytes.size());
+            }
+            return mask;
+        }
+
+        std::size_t quotient_domain_size(
+            const ProtocolContext &context,
+            const std::string &label)
+        {
+            if (label == "t_FH") return context.domains.fh->size;
+            if (label == "t_edge") return context.domains.edge->size;
+            if (label == "t_in") return context.domains.in->size;
+            if (label == "t_d" || label == "t_d_h") return context.domains.d->size;
+            if (label == "t_cat") return context.domains.cat->size;
+            if (label == "t_C") return context.domains.c->size;
+            if (label == "t_N") return context.domains.n->size;
+            throw std::runtime_error("unknown quotient domain: " + label);
+        }
+
+        std::vector<std::pair<std::string, algebra::Polynomial>> blind_quotient_polynomials(
+            const ProtocolContext &context,
+            std::vector<std::pair<std::string, algebra::Polynomial>> &&quotients)
+        {
+            std::vector<std::pair<std::string, algebra::Polynomial>> out;
+            out.reserve(quotients.size() * 2);
+            for (auto &[label, quotient] : quotients)
+            {
+                if (quotient.basis != algebra::PolynomialBasis::Coefficient)
+                {
+                    throw std::runtime_error("quotient masking requires coefficient basis: " + label);
+                }
+                auto mask = sample_quotient_mask(context, label);
+                const auto domain_size = quotient_domain_size(context, label);
+                const auto required_size = domain_size + mask.size();
+                if (required_size > context.kzg.pk.degree_bound + 1)
+                {
+                    throw std::runtime_error("masked quotient exceeds SRS degree bound: " + label);
+                }
+                if (quotient.data.size() < required_size)
+                {
+                    quotient.data.resize(required_size, FieldElement::zero());
+                }
+                for (std::size_t i = 0; i < mask.size(); ++i)
+                {
+                    quotient.data[i] -= mask[i];
+                    quotient.data[domain_size + i] += mask[i];
+                }
+                auto mask_polynomial = algebra::Polynomial::from_coefficients(
+                    quotient_mask_label(label),
+                    std::move(mask));
+                out.push_back({label, std::move(quotient)});
+                out.push_back({mask_polynomial.name, std::move(mask_polynomial)});
+            }
+            return out;
+        }
+
         std::unordered_map<std::string, Commitment> batch_quotient_commitments(
             std::vector<std::pair<std::string, algebra::Polynomial>> &&named_quotient_polynomials,
             const crypto::KZGKeyPair &key)
@@ -7186,6 +7344,7 @@ namespace gatzk::protocol
                 "P_T_ELU_y",
                 "P_src",
                 "P_dst",
+                "P_BiasIndex_edge",
             };
             auto append_label = [&](std::string label)
             {
@@ -7245,9 +7404,34 @@ namespace gatzk::protocol
                 "Sum_edge",
                 "H_agg_star_edge",
             };
+            const std::vector<std::string> division_suffixes = {
+                "Div_Active", "Div_X", "Div_D", "Div_Y", "Div_Sigma", "Div_Zero",
+                "Div_A", "Div_A_inv", "Div_D_inv", "Div_Q", "Div_R", "Div_Delta",
+            };
+            auto append_division_range_dependencies = [&](const std::string &division_prefix)
+            {
+                const auto limb_count = signed_division_limb_count(context.config.range_bits);
+                for (const auto *value_name : {"A", "DMinus1", "Q", "R", "Delta"})
+                {
+                    for (std::size_t limb = 0; limb < limb_count; ++limb)
+                    {
+                        append_label(signed_division_limb_label(
+                            division_prefix, value_name, limb));
+                        for (const auto *column : {"Table", "Query", "m", "J_tbl", "J_qry", "R"})
+                        {
+                            append_label(signed_division_range_label(
+                                division_prefix, value_name, limb, column));
+                        }
+                    }
+                }
+            };
             for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index)
             {
                 append_prefixed("P_h" + std::to_string(head_index) + "_", hidden_suffixes);
+                append_prefixed("P_h" + std::to_string(head_index) + "_", division_suffixes);
+                append_division_range_dependencies(
+                    hidden_head_prefix(head_index) + "_Div_");
+                append_label("P_Q_div_h" + std::to_string(head_index));
             }
 
             const std::vector<std::string> output_suffixes = {
@@ -7285,12 +7469,31 @@ namespace gatzk::protocol
                 "Query_dst",
                 "Sum_edge",
                 "Y_star_edge",
+                "Y_pre_flat",
+                "Bias_flat",
+                "Y_flat",
+                "Bind_a",
+                "Bind_b",
+                "Bind_Acc",
             };
-            const bool legacy_single_output = context.model.output_layer.heads.size() == 1;
+            const bool legacy_single_output = false;
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {
                 append_prefixed(output_head_prefix(head_index, legacy_single_output) + "_", output_suffixes);
+                append_prefixed(output_head_prefix(head_index, legacy_single_output) + "_", division_suffixes);
+                append_division_range_dependencies(
+                    output_head_prefix(head_index, legacy_single_output) + "_Div_");
+                append_label("P_Q_div_out" + std::to_string(head_index));
             }
+            for (const auto &suffix : division_suffixes)
+            {
+                append_label("P_avg_" + suffix);
+            }
+            append_division_range_dependencies("P_avg_Div_");
+            append_label("P_Q_div_avg");
+            append_label("P_avg_Bind_a");
+            append_label("P_avg_Bind_b");
+            append_label("P_avg_Bind_Acc");
             return labels;
         }
 
@@ -7318,7 +7521,9 @@ namespace gatzk::protocol
         std::vector<std::string> multihead_c_dependencies(const ProtocolContext &context)
         {
             std::vector<std::string> labels = domain_opening_labels(context, "C");
-            append_unique_labels(&labels, {"P_Q_C_valid"});
+            append_unique_labels(
+                &labels,
+                {"P_Q_C_valid", "P_BiasIndex_C", "P_BiasMultiplicity_C"});
             return labels;
         }
 
@@ -7493,7 +7698,32 @@ namespace gatzk::protocol
                 {
                     memo.precompute_named(dependency_labels, fh_dependency_points(domain, points));
                 }
-                values = memo.collect_named_values_from_cache(labels, points);
+                values.reserve(labels.size());
+                for (const auto &label : labels)
+                {
+                    if (const auto commitment_it = quotient_commitments.find(label);
+                        commitment_it != quotient_commitments.end())
+                    {
+                        if (commitment_it->second.opening_polynomial == nullptr)
+                        {
+                            throw std::runtime_error(
+                                "quotient opening material is unavailable: " + label);
+                        }
+                        std::vector<FieldElement> opened;
+                        opened.reserve(points.size());
+                        for (const auto &point : points)
+                        {
+                            opened.push_back(
+                                commitment_it->second.opening_polynomial->evaluate(point));
+                        }
+                        values.push_back(std::move(opened));
+                    }
+                    else
+                    {
+                        values.push_back(
+                            memo.collect_named_values_from_cache({label}, points).front());
+                    }
+                }
             }
             else
             {
@@ -7522,8 +7752,14 @@ namespace gatzk::protocol
                 progress_note(progress_prefix + ":witness:start");
             }
             crypto::BatchOpeningProfile batch_profile;
+            const auto folding_challenge = derive_batch_opening_folding_challenge(
+                trace.public_metadata,
+                folding_name,
+                commitments,
+                points,
+                values);
             bundle.proof =
-                crypto::KZG::open_batch(commitments, points, values, challenges.at(folding_name), context.kzg, &batch_profile);
+                crypto::KZG::open_batch(commitments, points, values, folding_challenge, context.kzg, &batch_profile);
             if (metrics != nullptr)
             {
                 metrics->domain_open_denominator_inverse_ms += batch_profile.denominator_inverse_ms;
@@ -7623,6 +7859,11 @@ namespace gatzk::protocol
             context.model = model::load_checkpoint_bundle_parameters(checkpoint_root.string());
             append_note(metrics, "model_source=checkpoint_bundle");
             append_note(metrics, "hidden_head_count=" + std::to_string(model::flattened_hidden_head_count(context.model)));
+        }
+        if (!context.model.has_real_multihead)
+        {
+            throw std::runtime_error(
+                "formal protocol requires the indexed multi-layer multi-head model representation");
         }
         if (context.model.has_real_multihead)
         {
@@ -7777,6 +8018,10 @@ namespace gatzk::protocol
                 {"N", n_size},
             },
             required_coefficient_count);
+        std::string envelope_reason;
+        if (!instance_within_authenticated_max_envelope(
+                context, &envelope_reason))
+            throw std::runtime_error(envelope_reason);
         end = Clock::now();
         if (metrics != nullptr)
         {
@@ -7855,6 +8100,41 @@ namespace gatzk::protocol
             context,
             "P_Q_edge_valid",
             make_shared_eval_poly("P_Q_edge_valid", edge_valid, context.domains.edge));
+        if (context.model.has_real_multihead)
+        {
+            for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index)
+            {
+                const auto width = context.model.hidden_heads[head_index].seq_kernel_fp.empty()
+                                       ? 0
+                                       : context.model.hidden_heads[head_index].seq_kernel_fp.front().size();
+                const auto label = "P_Q_div_h" + std::to_string(head_index);
+                add_public_poly(
+                    context,
+                    label,
+                    make_shared_eval_poly(
+                        label,
+                        build_selector(context.local.num_nodes * width, edge_size),
+                        context.domains.edge));
+            }
+            for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
+            {
+                const auto label = "P_Q_div_out" + std::to_string(head_index);
+                add_public_poly(
+                    context,
+                    label,
+                    make_shared_eval_poly(
+                        label,
+                        build_selector(context.local.num_nodes * context.local.num_classes, edge_size),
+                        context.domains.edge));
+            }
+            add_public_poly(
+                context,
+                "P_Q_div_avg",
+                make_shared_eval_poly(
+                    "P_Q_div_avg",
+                    build_selector(context.local.num_nodes * context.local.num_classes, edge_size),
+                    context.domains.edge));
+        }
         add_public_poly(
             context,
             "P_Q_N",
@@ -7875,6 +8155,33 @@ namespace gatzk::protocol
             context,
             "P_Q_C_valid",
             make_shared_eval_poly("P_Q_C_valid", build_selector(context.local.num_classes, c_size), context.domains.c));
+        std::vector<FieldElement> bias_index_c(c_size, FieldElement::zero());
+        std::vector<FieldElement> bias_multiplicity_c(c_size, FieldElement::zero());
+        for (std::size_t column = 0; column < context.local.num_classes; ++column)
+        {
+            bias_index_c[column] = FieldElement(column);
+            bias_multiplicity_c[column] = FieldElement(context.local.num_nodes);
+        }
+        add_public_poly(
+            context,
+            "P_BiasIndex_C",
+            make_shared_eval_poly(
+                "P_BiasIndex_C", std::move(bias_index_c), context.domains.c));
+        add_public_poly(
+            context,
+            "P_BiasMultiplicity_C",
+            make_shared_eval_poly(
+                "P_BiasMultiplicity_C", std::move(bias_multiplicity_c), context.domains.c));
+        std::vector<FieldElement> bias_index_edge(edge_size, FieldElement::zero());
+        const auto output_flat_count =
+            context.local.num_nodes * context.local.num_classes;
+        for (std::size_t index = 0; index < output_flat_count; ++index)
+            bias_index_edge[index] = FieldElement(index % context.local.num_classes);
+        add_public_poly(
+            context,
+            "P_BiasIndex_edge",
+            make_shared_eval_poly(
+                "P_BiasIndex_edge", std::move(bias_index_edge), context.domains.edge));
         if (lazy_large_fh_public_enabled(context))
         {
             add_public_poly(
@@ -8128,58 +8435,68 @@ namespace gatzk::protocol
             // 模型参数在 context 阶段就固定成静态承诺，后面的 trace 只引用标签，不再重复构造权重对象。
             for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index)
             {
-                add_static_commitment(
-                    context,
-                    hidden_weight_label(head_index),
-                    make_coeff_poly(
-                        hidden_weight_label(head_index),
-                        algebra::flatten_matrix_coefficients(quantize_model_matrix(context.model.hidden_heads[head_index].seq_kernel_fp))));
+                const auto weight = quantize_model_matrix(
+                    context.model.hidden_heads[head_index].seq_kernel_fp);
+                const auto column_count = weight.empty() ? 0 : weight.front().size();
+                for (std::size_t column = 0; column < column_count; ++column)
+                {
+                    std::vector<FieldElement> values(context.domains.in->size, FieldElement::zero());
+                    for (std::size_t row = 0; row < weight.size(); ++row) values[row] = weight[row][column];
+                    const auto label = hidden_weight_column_label(head_index, column);
+                    add_static_commitment(context, label, make_eval_poly(label, values, context.domains.in));
+                }
                 add_static_commitment(
                     context,
                     hidden_src_label(head_index),
-                    make_coeff_poly(hidden_src_label(head_index), quantize_model_vector(context.model.hidden_heads[head_index].attn_src_kernel_fp)));
+                    make_eval_poly(
+                        hidden_src_label(head_index),
+                        padded(quantize_model_vector(context.model.hidden_heads[head_index].attn_src_kernel_fp), context.domains.d->size),
+                        context.domains.d));
                 add_static_commitment(
                     context,
                     hidden_dst_label(head_index),
-                    make_coeff_poly(hidden_dst_label(head_index), quantize_model_vector(context.model.hidden_heads[head_index].attn_dst_kernel_fp)));
+                    make_eval_poly(
+                        hidden_dst_label(head_index),
+                        padded(quantize_model_vector(context.model.hidden_heads[head_index].attn_dst_kernel_fp), context.domains.d->size),
+                        context.domains.d));
             }
-            const bool legacy_single_output = context.model.output_layer.heads.size() == 1;
+            const bool legacy_single_output = false;
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {
                 const auto &head = context.model.output_layer.heads[head_index];
-                add_static_commitment(
-                    context,
-                    output_weight_label(head_index, legacy_single_output),
-                    make_coeff_poly(
-                        output_weight_label(head_index, legacy_single_output),
-                        algebra::flatten_matrix_coefficients(quantize_model_matrix(head.seq_kernel_fp))));
+                const auto weight = quantize_model_matrix(head.seq_kernel_fp);
+                const auto column_count = weight.empty() ? 0 : weight.front().size();
+                for (std::size_t column = 0; column < column_count; ++column)
+                {
+                    std::vector<FieldElement> values(context.domains.cat->size, FieldElement::zero());
+                    for (std::size_t row = 0; row < weight.size(); ++row) values[row] = weight[row][column];
+                    const auto label = output_weight_column_label(head_index, column);
+                    add_static_commitment(context, label, make_eval_poly(label, values, context.domains.cat));
+                }
                 add_static_commitment(
                     context,
                     output_src_label(head_index, legacy_single_output),
-                    make_coeff_poly(
+                    make_eval_poly(
                         output_src_label(head_index, legacy_single_output),
-                        quantize_model_vector(head.attn_src_kernel_fp)));
+                        padded(quantize_model_vector_at_scale(head.attn_src_kernel_fp, 1.0), context.domains.c->size),
+                        context.domains.c));
                 add_static_commitment(
                     context,
                     output_dst_label(head_index, legacy_single_output),
-                    make_coeff_poly(
+                    make_eval_poly(
                         output_dst_label(head_index, legacy_single_output),
-                        quantize_model_vector(head.attn_dst_kernel_fp)));
+                        padded(quantize_model_vector_at_scale(head.attn_dst_kernel_fp, 1.0), context.domains.c->size),
+                        context.domains.c));
+                add_static_commitment(
+                    context,
+                    output_bias_label(head_index, legacy_single_output),
+                    make_eval_poly(
+                        output_bias_label(head_index, legacy_single_output),
+                        padded(
+                            quantize_model_vector(head.output_bias_fp),
+                            context.domains.c->size),
+                        context.domains.c));
             }
-        }
-        else
-        {
-            add_static_commitment(
-                context,
-                "V_W",
-                make_coeff_poly("V_W", algebra::flatten_matrix_coefficients(context.model.W)));
-            add_static_commitment(context, "V_a_src", make_coeff_poly("V_a_src", context.model.a_src));
-            add_static_commitment(context, "V_a_dst", make_coeff_poly("V_a_dst", context.model.a_dst));
-            add_static_commitment(
-                context,
-                "V_W_out",
-                make_coeff_poly("V_W_out", algebra::flatten_matrix_coefficients(context.model.W_out)));
-            add_static_commitment(context, "V_b", make_coeff_poly("V_b", context.model.b));
         }
         end = Clock::now();
         if (metrics != nullptr)
@@ -8187,6 +8504,18 @@ namespace gatzk::protocol
             metrics->load_static_ms += elapsed_ms(start, end);
         }
         progress_note("context:public_static:done");
+
+        auto compiler_artifact = std::make_shared<ProtocolCompilerArtifact>(
+            build_protocol_compiler_artifact(context));
+        std::string compiler_artifact_reason;
+        if (!validate_protocol_compiler_artifact(
+                context, *compiler_artifact, &compiler_artifact_reason))
+        {
+            throw std::runtime_error(
+                "instance ProtocolCompilerArtifact validation failed: "
+                + compiler_artifact_reason);
+        }
+        context.compiler_artifact = std::move(compiler_artifact);
 
         if (full_graph_feature_identity_enabled(context))
         {
@@ -8211,6 +8540,11 @@ namespace gatzk::protocol
     {
         const auto prove_start = Clock::now();
         const auto &route2 = util::route2_options();
+        if (!context.model.has_real_multihead)
+        {
+            throw std::runtime_error(
+                "formal prover rejects the removed single-output compatibility protocol");
+        }
         // prove 入口只消费 trace 和固定挑战顺序，不在这里改写 proof schema 或 block 顺序。
         if (trace.commitment_order != dynamic_commitment_labels(context))
         {
@@ -8221,7 +8555,7 @@ namespace gatzk::protocol
             auto stage_start = Clock::now();
             progress_note("prove:quotient:start");
             // 先重放动态承诺之前的 transcript，再在这套固定挑战上构造各工作域 quotient。
-            const auto pre_quotient_challenges = replay_challenges(context, trace.commitments, {});
+            const auto pre_quotient_challenges = replay_challenges(context, trace.commitments, {}, &trace.public_metadata);
             const auto quotient_cache_key = quotient_build_cache_key(context, trace);
             std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry;
             if (route2.fft_backend_upgrade)
@@ -8252,6 +8586,9 @@ namespace gatzk::protocol
                     pre_quotient_challenges,
                     quotient_labels,
                     metrics);
+                named_quotient_polynomials = blind_quotient_polynomials(
+                    context,
+                    std::move(named_quotient_polynomials));
                 const auto quotient_pack_start = Clock::now();
                 progress_note("prove:quotient:commit_batch:start");
                 quotient_commitments = batch_quotient_commitments(
@@ -8267,7 +8604,7 @@ namespace gatzk::protocol
                 // Quotient polynomials and commitments are proof-specific and must not be
                 // reused by a later fresh-proof measurement.
             }
-            const auto challenges = replay_challenges(context, trace.commitments, quotient_commitments);
+            const auto challenges = replay_challenges(context, trace.commitments, quotient_commitments, &trace.public_metadata);
             if (metrics != nullptr)
             {
                 metrics->quotient_build_ms += elapsed_ms(stage_start, Clock::now());
@@ -8277,9 +8614,14 @@ namespace gatzk::protocol
             // 组装 proof 时必须严格按 schema 的 label 顺序回填，
             // 否则 serializer / parser 与 verifier 会同时失配。
             Proof proof;
-            proof.public_metadata = build_public_metadata(context);
+            proof.public_metadata = trace.public_metadata;
             proof.block_order = proof_block_order();
             proof.challenges = challenges;
+            if (trace.pi_bind == nullptr)
+            {
+                throw std::runtime_error("trace is missing Pi_bind proof material");
+            }
+            proof.pi_bind = *trace.pi_bind;
             for (const auto &label : dynamic_commitment_labels(context))
             {
                 proof.dynamic_commitments.push_back({label, trace.commitments.at(label)});
@@ -8332,6 +8674,7 @@ namespace gatzk::protocol
                     &local_metrics);
                 auto labels = domain_opening_labels(context, spec.trace_domain_name);
                 labels.push_back(spec.quotient_name);
+                labels.push_back(quotient_mask_label(spec.quotient_name));
                 const std::vector<FieldElement> points = {
                     challenges.at(spec.z_name),
                     challenges.at(spec.z_name) * spec.domain->omega,
@@ -8454,6 +8797,77 @@ namespace gatzk::protocol
             }
             progress_note("prove:domain_opening:done");
 
+            // Eval_bind owns every Pi_bind claim value.  The same claims remain
+            // inside the in-memory domain bundle solely so Open_dom can fold one
+            // global point group; the wire codec omits them from Eval_dom.
+            for (std::size_t head_index = 0;
+                 head_index < context.model.output_layer.heads.size();
+                 ++head_index)
+            {
+                const auto relation_id =
+                    "bind:output:" + std::to_string(head_index);
+                auto subproof_it = std::find_if(
+                    proof.pi_bind.subproofs.begin(), proof.pi_bind.subproofs.end(),
+                    [&](const BindingSubproof &subproof)
+                    { return subproof.relation_meta.relation_id == relation_id; });
+                if (subproof_it == proof.pi_bind.subproofs.end())
+                    throw std::runtime_error("missing output Eval_bind owner");
+                for (const auto &[bundle_name, bundle] : proof.domain_openings)
+                {
+                    const bool is_c = bundle_name == "C";
+                    const bool is_edge = bundle_name == "edge";
+                    if (!is_c && !is_edge) continue;
+                    std::vector<std::string> owned_labels;
+                    if (is_c)
+                    {
+                        owned_labels = {
+                            model_proof_local_label(output_bias_label(head_index, false)),
+                            output_bias_view_label(head_index, "Table_can"),
+                            output_bias_view_label(head_index, "m_can"),
+                            output_bias_view_label(head_index, "J_can"),
+                            output_bias_view_label(head_index, "R_can"),
+                        };
+                    }
+                    else
+                    {
+                        owned_labels = {
+                            output_bias_view_label(head_index, "Query"),
+                            output_bias_view_label(head_index, "J_qry"),
+                            output_bias_view_label(head_index, "R_qry"),
+                        };
+                    }
+                    for (const auto &label : owned_labels)
+                    {
+                        const auto value_it = std::find_if(
+                            bundle.values.begin(), bundle.values.end(),
+                            [&](const auto &entry) { return entry.first == label; });
+                        if (value_it == bundle.values.end())
+                            throw std::runtime_error(
+                                "Pi_bind domain value missing from global opening: " + label);
+                        subproof_it->evaluations.push_back(BindingEvaluation{
+                            .domain = bundle_name,
+                            .object_id = label,
+                            .values = value_it->second,
+                            .kind = label.ends_with("_BiasView_m_can")
+                                ? PayloadValueKind::PublicValue
+                                : PayloadValueKind::MaskedPrivateValue,
+                        });
+                    }
+                    for (const auto &point : bundle.points)
+                    {
+                        const auto group_id =
+                            "Open_dom:" + bundle_name + ":" + point.to_string();
+                        if (std::none_of(
+                                subproof_it->opening_references.begin(),
+                                subproof_it->opening_references.end(),
+                                [&](const MetadataReference &reference)
+                                { return reference.object_id == group_id; }))
+                            subproof_it->opening_references.push_back({group_id});
+                    }
+                }
+            }
+
+            attach_public_output_statement(context, trace, &proof);
             const auto ext_specs = multihead_external_specs(context);
             std::vector<std::pair<Commitment, FieldElement>> external_commitments;
             std::vector<FieldElement> external_points;
@@ -8464,13 +8878,110 @@ namespace gatzk::protocol
                 const auto value = trace.external_evaluations.at(spec.proof_name);
                 proof.external_evaluations.push_back({spec.proof_name, value});
                 proof.external_evaluation_kinds.push_back(payload_kind_for_label(context, spec.label));
-                external_commitments.push_back({trace.commitments.at(spec.label), value});
+                external_commitments.push_back({
+                    spec.static_commitment ? context.static_commitments.at(spec.label) : trace.commitments.at(spec.label),
+                    value});
                 external_points.push_back(challenges.at(spec.challenge_name));
             }
+            for (std::size_t head_index = 0;
+                 head_index < context.model.output_layer.heads.size();
+                 ++head_index)
+            {
+                const auto relation_id =
+                    "bind:output:" + std::to_string(head_index);
+                const auto subproof_it = std::find_if(
+                    proof.pi_bind.subproofs.begin(), proof.pi_bind.subproofs.end(),
+                    [&](const BindingSubproof &subproof)
+                    { return subproof.relation_meta.relation_id == relation_id; });
+                if (subproof_it == proof.pi_bind.subproofs.end())
+                    throw std::runtime_error("missing output bias shift proof");
+                const auto *relation_ptr = find_unique_shift_relation_by_kind(
+                    subproof_it->relation_meta, "output-bias-terminal");
+                if (relation_ptr == nullptr)
+                    throw std::runtime_error(
+                        "output bias shift proof relation is not unique");
+                const auto &relation = *relation_ptr;
+                if (relation.configured_degrees.empty())
+                {
+                    const auto y_public = challenges.at(relation.challenge_label);
+                    external_commitments.push_back({
+                        trace.commitments.at(output_bias_view_label(
+                            head_index, "terminal_relation_virtual")),
+                        FieldElement::zero()});
+                    external_points.push_back(relation.canonical_points.front());
+                    const auto public_m_id = output_bias_view_label(
+                        head_index, "m_can") + ":public_bind";
+                    const auto public_m_it = std::find_if(
+                        subproof_it->evaluations.begin(),
+                        subproof_it->evaluations.end(),
+                        [&](const BindingEvaluation &evaluation)
+                        { return evaluation.object_id == public_m_id; });
+                    if (public_m_it == subproof_it->evaluations.end()
+                        || public_m_it->values.size() != 1
+                        || public_m_it->kind != PayloadValueKind::PublicValue)
+                        throw std::runtime_error(
+                            "missing same-point public bias multiplicity binding");
+                    external_commitments.push_back({
+                        trace.commitments.at(output_bias_view_label(
+                            head_index, "m_can")),
+                        public_m_it->values.front()});
+                    external_points.push_back(y_public);
+                    continue;
+                }
+                const auto shifted_label =
+                    output_bias_view_label(head_index, "R_shifted");
+                const auto u_id = shifted_label + ":u_rel";
+                const auto u_it = std::find_if(
+                    subproof_it->evaluations.begin(), subproof_it->evaluations.end(),
+                    [&](const BindingEvaluation &evaluation)
+                    { return evaluation.object_id == u_id; });
+                if (u_it == subproof_it->evaluations.end()
+                    || u_it->values.size() != 1)
+                    throw std::runtime_error("missing output bias shift check value");
+                const auto y_rel = challenges.at(relation.challenge_label);
+                external_commitments.push_back(
+                    {trace.commitments.at(shifted_label), u_it->values.front()});
+                external_points.push_back(y_rel);
+                const auto virtual_prefix =
+                    output_head_prefix(head_index, false) + "_BiasView_";
+                external_commitments.push_back(
+                    {trace.commitments.at(virtual_prefix + "F2"), u_it->values.front()});
+                external_points.push_back(y_rel + relation.deltas.at(1));
+                external_commitments.push_back({
+                    trace.commitments.at(output_bias_view_label(
+                        head_index, "terminal_relation_virtual")),
+                    FieldElement::zero()});
+                external_points.push_back(relation.canonical_points.at(0));
+
+                const auto public_m_id =
+                    output_bias_view_label(head_index, "m_can") + ":public_bind";
+                const auto public_m_it = std::find_if(
+                    subproof_it->evaluations.begin(), subproof_it->evaluations.end(),
+                    [&](const BindingEvaluation &evaluation)
+                    { return evaluation.object_id == public_m_id; });
+                if (public_m_it == subproof_it->evaluations.end()
+                    || public_m_it->values.size() != 1
+                    || public_m_it->kind != PayloadValueKind::PublicValue)
+                    throw std::runtime_error("missing public bias multiplicity binding");
+                external_commitments.push_back({
+                    trace.commitments.at(output_bias_view_label(head_index, "m_can")),
+                    public_m_it->values.front()});
+                external_points.push_back(y_rel);
+            }
+            const auto output_binding = derive_public_output_challenges(
+                proof.public_metadata,
+                trace.commitments.at("P_Y"),
+                proof.public_logits,
+                context.local.num_nodes,
+                context.local.num_classes);
+            external_commitments.push_back({
+                trace.commitments.at("P_Y"),
+                evaluate_coefficient_vector(proof.public_logits, output_binding.point)});
+            external_points.push_back(output_binding.point);
             proof.external_proof = crypto::KZG::open_external_fold(
                 external_commitments,
                 external_points,
-                challenges.at("rho_ext"),
+                derive_external_opening_folding_challenge(proof.public_metadata, external_commitments, external_points),
                 context.kzg);
             if (metrics != nullptr)
             {
@@ -8482,7 +8993,6 @@ namespace gatzk::protocol
                 proof.witness_scalars.push_back({name, value});
                 proof.witness_scalar_kinds.push_back(PayloadValueKind::MaskedPrivateValue);
             }
-            attach_public_output_binding(context, trace, &proof);
             strip_prover_material_from_proof(&proof);
             if (metrics != nullptr)
             {
@@ -8491,299 +9001,8 @@ namespace gatzk::protocol
             return proof;
         }
 
-        std::unordered_map<std::string, Commitment> quotient_commitments;
-        auto stage_start = Clock::now();
-        auto challenges = replay_challenges(context, trace.commitments, quotient_commitments);
-        std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry;
-        const auto quotient_cache_seed = quotient_build_cache_key(context, trace);
-        if (route2.fft_backend_upgrade)
-        {
-            backend_registry = shared_proof_backend_registry_cache().get_or_build(
-                quotient_cache_seed + "|backend_registry",
-                [&]()
-                {
-                    return std::make_shared<ProofEvaluationBackendRegistry>(context, trace);
-                });
-        }
-        auto proof_domain_weight_cache = shared_proof_domain_weight_cache();
-        const bool run_parallel = std::thread::hardware_concurrency() > 1;
-        const std::vector<std::string> quotient_labels = {"t_FH", "t_edge", "t_in", "t_d", "t_N"};
-        auto named_quotient_polynomials = materialize_quotient_polynomials(
-            context,
-            trace,
-            challenges,
-            quotient_labels,
-            metrics);
-        const auto quotient_pack_start = Clock::now();
-        progress_note("prove:quotient:commit_batch:start");
-        quotient_commitments = batch_quotient_commitments(
-            std::move(named_quotient_polynomials),
-            context.kzg);
-        progress_note("prove:quotient:commit_batch:done");
-        if (metrics != nullptr)
-        {
-            const auto quotient_commitment_ms = elapsed_ms(quotient_pack_start, Clock::now());
-            metrics->quotient_commitment_ms += quotient_commitment_ms;
-            metrics->quotient_bundle_pack_ms += quotient_commitment_ms;
-        }
-
-        challenges = replay_challenges(context, trace.commitments, quotient_commitments);
-        if (metrics != nullptr)
-        {
-            metrics->quotient_build_ms += elapsed_ms(stage_start, Clock::now());
-        }
-
-        Proof proof;
-        proof.public_metadata = canonical_public_metadata(context);
-        proof.block_order = proof_block_order();
-        for (const auto &label : dynamic_commitment_labels(context))
-        {
-            proof.dynamic_commitments.push_back({label, trace.commitments.at(label)});
-        }
-        for (const auto &label : quotient_commitment_labels(context))
-        {
-            proof.quotient_commitments.push_back({label, quotient_commitments.at(label)});
-        }
-        proof.challenges = challenges;
-
-        stage_start = Clock::now();
-        // domain opening bundle 仍然在正式规范要求的同一对象集与同一点位上打开。
-        // memoizer 只在当前 proof 内复用相同点评估结果，不会改变 opening 内容。
-        struct BundleSpec
-        {
-            std::string domain_name;
-            std::vector<std::string> labels;
-            std::vector<FieldElement> points;
-            std::string folding_name;
-        };
-        const std::vector<BundleSpec> bundle_specs = {
-            {
-                "FH",
-                {"P_Table_feat", "P_Query_feat", "P_m_feat", "P_R_feat", "t_FH"},
-                {challenges.at("z_FH"), challenges.at("z_FH") * context.domains.fh->omega},
-                "v_FH",
-            },
-            {
-                "edge",
-                {
-                    "P_E_src_edge",
-                    "P_H_src_star_edge",
-                    "P_Query_src",
-                    "P_R_src",
-                    "P_Table_L",
-                    "P_Query_L",
-                    "P_m_L",
-                    "P_R_L",
-                    "P_Table_R",
-                    "P_Query_R",
-                    "P_m_R",
-                    "P_R_R",
-                    "P_Table_exp",
-                    "P_Query_exp",
-                    "P_m_exp",
-                    "P_R_exp",
-                    "P_E_dst_edge",
-                    "P_M_edge",
-                    "P_Query_dst",
-                    "P_R_dst",
-                    "P_Delta",
-                    "P_S",
-                    "P_Z",
-                    "P_s_max",
-                    "P_C_max",
-                    "P_alpha",
-                    "P_U",
-                    "P_Sum_edge",
-                    "P_inv_edge",
-                    "P_H_agg_star_edge",
-                    "P_v_hat",
-                    "P_PSQ",
-                    "P_w_psq",
-                    "P_T_psq_edge",
-                    "t_edge",
-                },
-                {challenges.at("z_edge"), challenges.at("z_edge") * context.domains.edge->omega},
-                "v_edge",
-            },
-            {
-                "in",
-                {"P_a_proj", "P_b_proj", "P_Acc_proj", "t_in"},
-                {challenges.at("z_in"), challenges.at("z_in") * context.domains.in->omega},
-                "v_in",
-            },
-            {
-                "d",
-                {
-                    "P_a_src",
-                    "P_b_src",
-                    "P_Acc_src",
-                    "P_a_dst",
-                    "P_b_dst",
-                    "P_Acc_dst",
-                    "P_a_star",
-                    "P_b_star",
-                    "P_Acc_star",
-                    "P_a_agg",
-                    "P_b_agg",
-                    "P_Acc_agg",
-                    "P_a_out",
-                    "P_b_out",
-                    "P_Acc_out",
-                    "t_d",
-                },
-                {challenges.at("z_d"), challenges.at("z_d") * context.domains.d->omega},
-                "v_d",
-            },
-            {
-                "N",
-                {
-                    "P_E_src",
-                    "P_H_star",
-                    "P_Table_src",
-                    "P_m_src",
-                    "P_R_src_node",
-                    "P_E_dst",
-                    "P_M",
-                    "P_Sum",
-                    "P_inv",
-                    "P_H_agg_star",
-                    "P_Table_dst",
-                    "P_m_dst",
-                    "P_R_dst_node",
-                    "t_N",
-                },
-                {challenges.at("z_N"), challenges.at("z_N") * context.domains.n->omega},
-                "v_N",
-            },
-        };
-        std::vector<DomainOpeningBundle> bundle_results(bundle_specs.size());
-        if (run_parallel && bundle_specs.size() > 1)
-        {
-            std::vector<std::future<DomainOpeningBundle>> futures;
-            futures.reserve(bundle_specs.size());
-            for (const auto &spec : bundle_specs)
-            {
-                futures.push_back(std::async(
-                    std::launch::async,
-                    [&, spec]()
-                    {
-                        EvaluationMemoization memo(
-                            context,
-                            trace,
-                            challenges,
-                            backend_registry,
-                            proof_domain_weight_cache,
-                            nullptr);
-                        return make_bundle(
-                            context,
-                            trace,
-                            memo,
-                            quotient_commitments,
-                            spec.labels,
-                            spec.points,
-                            spec.folding_name,
-                            challenges,
-                            nullptr,
-                            nullptr,
-                            nullptr,
-                            "prove:domain_opening:" + spec.domain_name);
-                    }));
-            }
-            for (std::size_t i = 0; i < futures.size(); ++i)
-            {
-                bundle_results[i] = futures[i].get();
-            }
-        }
-        else
-        {
-            EvaluationMemoization opening_eval(
-                context,
-                trace,
-                challenges,
-                backend_registry,
-                proof_domain_weight_cache,
-                nullptr);
-            for (std::size_t i = 0; i < bundle_specs.size(); ++i)
-            {
-                bundle_results[i] = make_bundle(
-                    context,
-                    trace,
-                    opening_eval,
-                    quotient_commitments,
-                    bundle_specs[i].labels,
-                    bundle_specs[i].points,
-                    bundle_specs[i].folding_name,
-                    challenges,
-                    nullptr,
-                    nullptr,
-                    nullptr,
-                    "prove:domain_opening:" + bundle_specs[i].domain_name);
-            }
-        }
-        for (std::size_t i = 0; i < bundle_specs.size(); ++i)
-        {
-            proof.domain_openings.push_back({bundle_specs[i].domain_name, std::move(bundle_results[i])});
-        }
-        if (metrics != nullptr)
-        {
-            metrics->domain_opening_ms += elapsed_ms(stage_start, Clock::now());
-        }
-
-        const std::vector<std::pair<Commitment, FieldElement>> external_commitments = {
-            {trace.commitments.at("P_H_prime"), trace.external_evaluations.at("mu_proj")},
-            {trace.commitments.at("P_E_src"), trace.external_evaluations.at("mu_src")},
-            {trace.commitments.at("P_E_dst"), trace.external_evaluations.at("mu_dst")},
-            {trace.commitments.at("P_H_star"), trace.external_evaluations.at("mu_star")},
-            {trace.commitments.at("P_H_agg_star"), trace.external_evaluations.at("mu_agg")},
-            {trace.commitments.at("P_Y_lin"), trace.external_evaluations.at("mu_Y_lin")},
-            {trace.commitments.at("P_Y"), trace.external_evaluations.at("mu_out")},
-        };
-        const std::vector<FieldElement> external_points = {
-            challenges.at("y_proj"),
-            challenges.at("y_src"),
-            challenges.at("y_dst"),
-            challenges.at("y_star"),
-            challenges.at("y_agg"),
-            challenges.at("y_out"),
-            challenges.at("y_out"),
-        };
-        stage_start = Clock::now();
-        proof.external_proof = crypto::KZG::open_external_fold(
-            external_commitments,
-            external_points,
-            challenges.at("rho_ext"),
-            context.kzg);
-        proof.external_evaluations = {
-            {"mu_proj", trace.external_evaluations.at("mu_proj")},
-            {"mu_src", trace.external_evaluations.at("mu_src")},
-            {"mu_dst", trace.external_evaluations.at("mu_dst")},
-            {"mu_star", trace.external_evaluations.at("mu_star")},
-            {"mu_agg", trace.external_evaluations.at("mu_agg")},
-            {"mu_Y_lin", trace.external_evaluations.at("mu_Y_lin")},
-            {"mu_out", trace.external_evaluations.at("mu_out")},
-        };
-        proof.external_evaluation_kinds = {
-            PayloadValueKind::MaskedPrivateValue,
-            PayloadValueKind::MaskedPrivateValue,
-            PayloadValueKind::MaskedPrivateValue,
-            PayloadValueKind::MaskedPrivateValue,
-            PayloadValueKind::MaskedPrivateValue,
-            PayloadValueKind::MaskedPrivateValue,
-            PayloadValueKind::PublicValue,
-        };
-        for (const auto &[name, value] : trace.witness_scalars)
-        {
-            proof.witness_scalars.push_back({name, value});
-            proof.witness_scalar_kinds.push_back(PayloadValueKind::MaskedPrivateValue);
-        }
-        attach_public_output_binding(context, trace, &proof);
-        strip_prover_material_from_proof(&proof);
-        if (metrics != nullptr)
-        {
-            metrics->external_opening_ms += elapsed_ms(stage_start, Clock::now());
-            metrics->prove_time_ms = elapsed_ms(prove_start, Clock::now());
-        }
-        return proof;
+        throw std::runtime_error(
+            "formal prover reached the removed single-output compatibility protocol");
     }
 
     // `proof_size_bytes` 统计的是 formal proof 的传输口径，
@@ -8792,6 +9011,8 @@ namespace gatzk::protocol
     // 真正需要随 proof 发送的元数据字符串、承诺点、opening 值、witness 与外点见证才计入。
     std::size_t proof_size_bytes(const Proof &proof)
     {
+        return serialize_proof(proof).size();
+#if 0
         constexpr std::size_t kLengthPrefixBytes = sizeof(std::uint64_t);
         constexpr std::size_t kFieldBytes = 32U;
         auto encoded_string_size = [](const std::string &value)
@@ -8891,9 +9112,10 @@ namespace gatzk::protocol
         total += kLengthPrefixBytes + proof.public_logits.size() * kFieldBytes;
         total += kFieldBytes;
         total += crypto::serialized_size(proof.public_output_opening);
-        // `rho_ext` 折叠 opening 的 witness 需要单独发送。
+        // 外点 claims 由全局 external point group 的唯一 witness 折叠。
         total += crypto::serialized_size(proof.external_proof);
         return total;
+#endif
     }
 
     void export_run_artifacts(
@@ -8982,40 +9204,30 @@ namespace gatzk::protocol
         {
             entries.insert({
                 {"protocol_name", proof.public_metadata.protocol_name},
+                {"proof_nonce", proof.public_metadata.proof_nonce},
                 {"proof_task", proof.public_metadata.proof_task},
                 {"srs_id", proof.public_metadata.srs_id},
+                {"protocol_schema_id", proof.public_metadata.protocol_schema_id},
+                {"instance_schema_hash", proof.public_metadata.instance_schema_hash},
                 {"srs_type", proof.public_metadata.srs_type},
                 {"srs_degree_bound", proof.public_metadata.srs_degree_bound},
+                {"kzg_assumption_profile", proof.public_metadata.kzg_assumption_profile},
                 {"privacy_policy", proof.public_metadata.privacy_policy},
                 {"input_privacy", proof.public_metadata.input_privacy},
                 {"output_mode", proof.public_metadata.output_mode},
                 {"opening_mode", proof.public_metadata.opening_mode},
                 {"binding_mode", proof.public_metadata.binding_mode},
-                {"security_profile_id", context.config.security_profile_id},
-                {"protocol_id", proof.public_metadata.protocol_id},
-                {"dataset_name", proof.public_metadata.dataset_name},
-                {"task_type", proof.public_metadata.task_type},
-                {"report_unit", proof.public_metadata.report_unit},
-                {"graph_count", proof.public_metadata.graph_count},
-                {"L", proof.public_metadata.L},
-                {"hidden_profile", proof.public_metadata.hidden_profile},
-                {"d_in_profile", proof.public_metadata.d_in_profile},
-                {"K_out", proof.public_metadata.K_out},
-                {"C", proof.public_metadata.C},
-                {"batching_rule", proof.public_metadata.batching_rule},
-                {"subgraph_rule", proof.public_metadata.subgraph_rule},
-                {"self_loop_rule", proof.public_metadata.self_loop_rule},
-                {"edge_sort_rule", proof.public_metadata.edge_sort_rule},
-                {"chunking_rule", proof.public_metadata.chunking_rule},
-                {"model_arch_id", proof.public_metadata.model_arch_id},
-                {"model_param_id", proof.public_metadata.model_param_id},
-                {"static_table_id", proof.public_metadata.static_table_id},
-                {"quant_cfg_id", proof.public_metadata.quant_cfg_id},
+                {"model_arch", proof.public_metadata.model_arch},
+                {"model_params", proof.public_metadata.model_params},
+                {"static_tables", proof.public_metadata.static_tables},
+                {"quant_config", proof.public_metadata.quant_config},
                 {"domain_cfg", proof.public_metadata.domain_cfg},
                 {"dim_cfg", proof.public_metadata.dim_cfg},
-                {"encoding_id", proof.public_metadata.encoding_id},
-                {"padding_rule_id", proof.public_metadata.padding_rule_id},
-                {"degree_bound_id", proof.public_metadata.degree_bound_id},
+                {"encoding", proof.public_metadata.encoding},
+                {"padding_rule", proof.public_metadata.padding_rule},
+                {"degree_bound", proof.public_metadata.degree_bound},
+                {"security_budget", proof.public_metadata.security_budget},
+                {"public_output", proof.public_metadata.public_output},
             });
         };
         auto benchmark_backend_label = [&]()
@@ -9286,9 +9498,9 @@ namespace gatzk::protocol
             {"full_dataset", metrics.is_full_dataset ? "true" : "false"},
             {"dataset_id", context.dataset.name},
             {"dataset_hash", std::to_string(std::hash<std::string>{}(context.dataset.name + ":" + std::to_string(context.dataset.num_nodes) + ":" + std::to_string(metrics.edge_count)))},
-            {"checkpoint_model_hash", stable_hash(proof.public_metadata.model_param_id)},
-            {"static_table_hash", stable_hash(proof.public_metadata.static_table_id)},
-            {"quant_config_hash", stable_hash(proof.public_metadata.quant_cfg_id)},
+            {"checkpoint_model_hash", stable_hash(proof.public_metadata.model_params)},
+            {"static_table_hash", stable_hash(proof.public_metadata.static_tables)},
+            {"quant_config_hash", stable_hash(proof.public_metadata.quant_config)},
             {"public_metadata_hash", public_metadata_hash},
             {"srs_manifest_hash", context.kzg.manifest.manifest_hash},
             {"proof_hash", proof_hash},

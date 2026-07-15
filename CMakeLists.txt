@@ -47,6 +47,7 @@ set(GATZK_SOURCES
     src/protocol/lookup.cpp
     src/protocol/challenges.cpp
     src/protocol/prover.cpp
+    src/protocol/proof_codec.cpp
     src/protocol/psq.cpp
     src/protocol/quotients.cpp
     src/protocol/schema.cpp

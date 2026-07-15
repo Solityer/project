@@ -111,6 +111,13 @@ namespace gatzk::algebra
             return value_.isZero();
         }
 
+        // Explicitly erase setup-only secret scalars before process teardown.
+        // Protocol code must not call this on ordinary value objects.
+        void clear_sensitive()
+        {
+            value_.clear();
+        }
+
         FieldElement operator+(const FieldElement& other) const
         {
             FieldElement out;

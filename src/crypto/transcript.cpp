@@ -1,6 +1,12 @@
 #include "gatzk/crypto/transcript.hpp"
 
+#include <array>
 #include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <vector>
+
+#include <openssl/sha.h>
 
 // 实现 transcript 的状态吸收与挑战派生。
 // prove 与 verify 都依赖相同的标签序列，因此这里只提供纯执行层状态机。
@@ -9,53 +15,160 @@ namespace gatzk::crypto
 {
     namespace
     {
-        // FNV-1a哈希函数：将字符串数据计算为64位哈希值
-        std::uint64_t fnv1a(const std::string &data)
+        constexpr std::uint8_t kDomainRecord = 1;
+        constexpr std::uint8_t kTextRecord = 2;
+        constexpr std::uint8_t kScalarRecord = 3;
+        constexpr std::uint8_t kCommitmentRecord = 4;
+        constexpr std::uint8_t kChallengeRecord = 5;
+        constexpr std::uint8_t kChallengeCandidateRecord = 6;
+
+        void append_u64(std::vector<std::uint8_t> &out, std::uint64_t value)
         {
-            std::uint64_t hash = 1469598103934665603ULL;
-            for (const unsigned char ch : data)
+            for (std::size_t i = 0; i < 8; ++i)
             {
-                hash ^= ch;
-                hash *= 1099511628211ULL; // FNV 素数
+                out.push_back(static_cast<std::uint8_t>((value >> (8U * i)) & 0xffU));
             }
-            return hash;
+        }
+
+        void append_u32(std::vector<std::uint8_t> &out, std::uint32_t value)
+        {
+            for (std::size_t i = 0; i < 4; ++i)
+            {
+                out.push_back(static_cast<std::uint8_t>((value >> (8U * i)) & 0xffU));
+            }
+        }
+
+        std::vector<std::uint8_t> canonical_record(
+            std::uint8_t type,
+            const std::string &label,
+            const std::uint8_t *payload,
+            std::size_t payload_size)
+        {
+            if (label.size() > std::numeric_limits<std::uint64_t>::max()
+                || payload_size > std::numeric_limits<std::uint64_t>::max())
+            {
+                throw std::runtime_error("transcript record exceeds canonical u64 length");
+            }
+            std::vector<std::uint8_t> out;
+            out.reserve(1 + 8 + label.size() + 8 + payload_size);
+            out.push_back(type);
+            append_u64(out, static_cast<std::uint64_t>(label.size()));
+            out.insert(out.end(), label.begin(), label.end());
+            append_u64(out, static_cast<std::uint64_t>(payload_size));
+            if (payload_size != 0)
+            {
+                if (payload == nullptr)
+                {
+                    throw std::runtime_error("transcript record has null payload");
+                }
+                out.insert(out.end(), payload, payload + payload_size);
+            }
+            return out;
+        }
+
+        std::array<std::uint8_t, SHA256_DIGEST_LENGTH> sha256(
+            const std::uint8_t *first,
+            std::size_t first_size,
+            const std::uint8_t *second,
+            std::size_t second_size)
+        {
+            SHA256_CTX hash;
+            SHA256_Init(&hash);
+            if (first_size != 0) SHA256_Update(&hash, first, first_size);
+            if (second_size != 0) SHA256_Update(&hash, second, second_size);
+            std::array<std::uint8_t, SHA256_DIGEST_LENGTH> digest{};
+            SHA256_Final(digest.data(), &hash);
+            return digest;
         }
     }
 
     // 以协议标签初始化 transcript 状态。
-    Transcript::Transcript(std::string label) : state_(std::move(label)) {}
+    Transcript::Transcript(std::string label)
+    {
+        const auto record = canonical_record(kDomainRecord, "domain", reinterpret_cast<const std::uint8_t *>(label.data()), label.size());
+        state_ = sha256(nullptr, 0, record.data(), record.size());
+    }
+
+    void Transcript::absorb_record(
+        std::uint8_t type,
+        const std::string &label,
+        const std::uint8_t *payload,
+        std::size_t payload_size)
+    {
+        const auto record = canonical_record(type, label, payload, payload_size);
+        state_ = sha256(state_.data(), state_.size(), record.data(), record.size());
+    }
+
+    void Transcript::absorb_text(const std::string &label, const std::string &value)
+    {
+        absorb_record(
+            kTextRecord,
+            label,
+            reinterpret_cast<const std::uint8_t *>(value.data()),
+            value.size());
+    }
 
     // 吸收一个标量（域元素）到Transcript中，附带标签
     void Transcript::absorb_scalar(const std::string &label, const algebra::FieldElement &value)
     {
-        state_.append("|");
-        state_.append(label);
-        state_.append("=");
-        state_.append(value.to_string());
+        std::array<std::uint8_t, 32> bytes{};
+        value.write_little_endian(bytes.data(), bytes.size());
+        absorb_record(kScalarRecord, label, bytes.data(), bytes.size());
     }
 
     // 吸收一个G1点（承诺值）到Transcript中，附带标签
     void Transcript::absorb_commitment(const std::string &label, const G1Point &point)
     {
-        state_.append("|");
-        state_.append(label);
-        state_.append("=");
-        for (const auto byte : serialize(point))
-        {
-            constexpr char kHex[] = "0123456789abcdef";
-            state_.push_back(kHex[(byte >> 4U) & 0x0FU]);
-            state_.push_back(kHex[byte & 0x0FU]);
-        }
+        const auto bytes = serialize(point);
+        absorb_record(kCommitmentRecord, label, bytes.data(), bytes.size());
     }
 
     // 派生挑战后立即回吸，保证后续挑战与前序结果绑定。
     algebra::FieldElement Transcript::challenge(const std::string &label)
     {
-        const auto hash = fnv1a(state_ + "|" + label + "|" + std::to_string(challenges_.size()));
-        const auto challenge = algebra::FieldElement(hash);
-        challenges_[label] = challenge;
-        absorb_scalar(label, challenge);
-        return challenge;
+        return challenge_excluding(
+            label, [](const algebra::FieldElement&) { return false; });
+    }
+
+    algebra::FieldElement Transcript::challenge_excluding(
+        const std::string &label,
+        const std::function<bool(const algebra::FieldElement&)> &reject)
+    {
+        if (challenges_.contains(label))
+        {
+            throw std::runtime_error("duplicate transcript challenge label: " + label);
+        }
+        for (std::uint64_t counter = 0; counter <= std::numeric_limits<std::uint32_t>::max(); ++counter)
+        {
+            std::vector<std::uint8_t> counter_bytes;
+            counter_bytes.reserve(4);
+            append_u32(counter_bytes, static_cast<std::uint32_t>(counter));
+            const auto candidate_record = canonical_record(
+                kChallengeCandidateRecord,
+                label,
+                counter_bytes.data(),
+                counter_bytes.size());
+            const auto digest = sha256(
+                state_.data(), state_.size(), candidate_record.data(), candidate_record.size());
+
+            mcl::Vint integer;
+            integer.setArray(digest.data(), digest.size());
+            if (integer >= mcl::Fr::getOp().mp)
+            {
+                continue;
+            }
+            const auto value = algebra::FieldElement::from_little_endian_mod(digest.data(), digest.size());
+            if (reject(value))
+            {
+                continue;
+            }
+            challenges_.emplace(label, value);
+            std::array<std::uint8_t, 32> canonical{};
+            value.write_little_endian(canonical.data(), canonical.size());
+            absorb_record(kChallengeRecord, label, canonical.data(), canonical.size());
+            return value;
+        }
+        throw std::runtime_error("transcript hash-to-field counter exhausted");
     }
 
     // 返回已发出的挑战，供 proof 持久化和 verifier 重放比对。

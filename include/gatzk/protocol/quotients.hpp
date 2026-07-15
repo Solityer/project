@@ -4,6 +4,7 @@
 
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,9 @@ struct FHQuotientProfile {
 // 返回某个工作域 opening bundle 中必须出现的标签顺序。
 // 该顺序会同时影响 prover 组包、verifier 取值和 proof_size_bytes 统计。
 std::vector<std::string> domain_opening_labels(const ProtocolContext& context, const std::string& domain_name);
+std::optional<std::string> dynamic_commitment_domain_name(
+    const ProtocolContext& context,
+    const std::string& label);
 
 // `t_FH` 是特征 lookup 域的总约束，prove / verify 都必须按同一等式重算。
 algebra::FieldElement evaluate_t_fh(
@@ -40,6 +44,7 @@ algebra::FieldElement evaluate_t_edge(
     const ProtocolContext& context,
     const std::map<std::string, algebra::FieldElement>& challenges,
     const std::map<std::string, algebra::FieldElement>& witness_scalars,
+    const std::map<std::string, algebra::FieldElement>& external_evaluations,
     const EvalFn& eval,
     const algebra::FieldElement& z);
 

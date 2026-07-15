@@ -18,7 +18,42 @@ struct LogUpTrace {
     std::vector<algebra::FieldElement> q_table;
     std::vector<algebra::FieldElement> q_query;
     std::vector<algebra::FieldElement> accumulator;
+    std::vector<algebra::FieldElement> table_inverse;
+    std::vector<algebra::FieldElement> query_inverse;
 };
+
+struct LogUpInverseColumns {
+    std::vector<algebra::FieldElement> table;
+    std::vector<algebra::FieldElement> query;
+};
+
+struct IndexedViewSideTrace {
+    std::vector<algebra::FieldElement> tuples;
+    std::vector<algebra::FieldElement> inverses;
+    std::vector<algebra::FieldElement> accumulator;
+};
+
+// Build one native-domain side of an indexed-view LogUp. Invalid rows are
+// selector-gated to zero; multiplicity is public and supplied explicitly.
+IndexedViewSideTrace build_indexed_view_side(
+    const std::vector<algebra::FieldElement>& indices,
+    const std::vector<algebra::FieldElement>& values,
+    const std::vector<algebra::FieldElement>& selector,
+    const std::vector<algebra::FieldElement>& multiplicity,
+    const algebra::FieldElement& eta,
+    const algebra::FieldElement& beta);
+
+LogUpInverseColumns build_logup_inverse_columns(
+    const std::vector<algebra::FieldElement>& table,
+    const std::vector<algebra::FieldElement>& query,
+    const std::vector<algebra::FieldElement>& q_table,
+    const std::vector<algebra::FieldElement>& q_query,
+    const algebra::FieldElement& beta);
+
+std::vector<algebra::FieldElement> build_selected_inverse_column(
+    const std::vector<algebra::FieldElement>& values,
+    const std::vector<algebra::FieldElement>& selector,
+    const algebra::FieldElement& beta);
 
 // 生成有效区选择器，控制 table / query 在工作域中的填充边界。
 std::vector<algebra::FieldElement> build_selector(std::size_t valid_length, std::size_t domain_size);
