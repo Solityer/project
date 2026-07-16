@@ -11,6 +11,7 @@
 #include <array>
 #include <functional>
 #include <limits>
+#include <numeric>
 #include <tuple>
 #include <memory>
 #include <openssl/bn.h>
@@ -557,6 +558,159 @@ namespace gatzk::protocol
         const ProtocolContext &context)
     {
         std::vector<BindingRelationMeta> out;
+        const auto canonical_matrix = [&](
+            std::string relation_id,
+            std::string matrix_object,
+            std::size_t rows,
+            std::size_t columns)
+        {
+            CanonicalMatrixRelationMeta meta{
+                .relation_id = relation_id,
+                .matrix_object = matrix_object,
+                .canonical_domain = context.domains.n->name,
+                .row_count = rows,
+                .column_count = columns,
+                .compressed_object = matrix_object + "_CanFold",
+                .compression_challenge_label =
+                    "xi_can:" + relation_id,
+            };
+            meta.column_objects.reserve(meta.column_count);
+            for (std::size_t column = 0; column < meta.column_count; ++column)
+                meta.column_objects.push_back(canonical_matrix_column_label(
+                    meta.matrix_object, column));
+            return meta;
+        };
+        const auto aggregation_route = [&](
+            const std::string &relation_id,
+            const std::string &prefix,
+            std::string_view role,
+            const std::string &index_object,
+            const std::string &node_value_object,
+            const std::string &edge_value_object)
+        {
+            const auto stem = prefix + std::string(role) + "_";
+            AggregationRouteRelationMeta route{
+                .relation_id = relation_id + ":" + std::string(role),
+                .index_object = index_object,
+                .node_value_object = node_value_object,
+                .edge_value_object = edge_value_object,
+                .table_object = stem + "Table",
+                .query_object = stem + "Query",
+                .multiplicity_object = std::string(role) == "src"
+                    ? "P_AggBind_m_src"
+                    : "P_AggBind_m_dst",
+                .node_inverse_object = stem + "J_node",
+                .edge_inverse_object = stem + "J_edge",
+                .node_accumulator_object = stem + "R_node",
+                .edge_accumulator_object = stem + "R_edge",
+                .shifted_accumulator_object = stem + "R_edge_shifted",
+                .relation_virtual_object = stem + "terminal_relation_virtual",
+                .eta_challenge_label = "eta:" + relation_id + ":"
+                    + std::string(role),
+                .beta_challenge_label = "beta:" + relation_id + ":"
+                    + std::string(role),
+                .terminal_challenge_label = "y_rel:" + relation_id + ":"
+                    + std::string(role) + ":terminal",
+                .node_terminal_point = context.domains.n->point_at(
+                    context.local.num_nodes),
+                .edge_terminal_point = context.domains.edge->point_at(
+                    context.local.edges.size()),
+            };
+            route.terminal_delta =
+                route.edge_terminal_point - route.node_terminal_point;
+            route.configured_shift_degree = context.domains.edge->size
+                + registered_blinder_coefficient_count(
+                    context, route.edge_accumulator_object) - 1;
+            route.shift_domain_size = next_power_of_two_checked(
+                2 * route.configured_shift_degree + 1);
+            return route;
+        };
+        const auto aggregation_relation = [&](
+            std::string relation_id,
+            std::string prefix,
+            std::string source_matrix,
+            std::string target_matrix,
+            std::string alpha_object,
+            std::size_t columns)
+        {
+            AggregationRelationMeta relation{
+                .relation_id = relation_id,
+                .source_matrix_object = std::move(source_matrix),
+                .target_matrix_object = std::move(target_matrix),
+                .alpha_object = std::move(alpha_object),
+                .node_domain = context.domains.n->name,
+                .edge_domain = context.domains.edge->name,
+                .row_count = context.local.num_nodes,
+                .column_count = columns,
+                .compression_challenge_label = "xi_agg_bind:" + relation_id,
+                .source_node_object = prefix + "Src_node",
+                .target_node_object = prefix + "Dst_node",
+                .source_edge_object = prefix + "Src_edge",
+                .target_edge_object = prefix + "Dst_edge",
+                .product_object = prefix + "V",
+                .psq_object = prefix + "PSQ",
+            };
+            relation.source_route = aggregation_route(
+                relation_id, prefix, "src", "P_src",
+                relation.source_node_object, relation.source_edge_object);
+            relation.target_route = aggregation_route(
+                relation_id, prefix, "dst", "P_dst",
+                relation.target_node_object, relation.target_edge_object);
+            relation.commitment_order = {
+                relation.source_node_object,
+                relation.target_node_object,
+                relation.source_edge_object,
+                relation.target_edge_object,
+                relation.product_object,
+                relation.psq_object,
+            };
+            const auto append_route = [&](const AggregationRouteRelationMeta &route)
+            {
+                for (const auto *object : {
+                         &route.table_object, &route.query_object,
+                         &route.node_inverse_object,
+                         &route.edge_inverse_object,
+                         &route.node_accumulator_object,
+                         &route.edge_accumulator_object})
+                    relation.commitment_order.push_back(*object);
+                relation.commitment_order.push_back(
+                    route.shifted_accumulator_object);
+            };
+            append_route(relation.source_route);
+            append_route(relation.target_route);
+            return relation;
+        };
+        const auto route_terminal_relation = [&] (
+            std::string relation_id,
+            std::string node_accumulator,
+            std::string edge_accumulator)
+        {
+            RouteTerminalRelationMeta relation{
+                .relation_id = std::move(relation_id),
+                .node_accumulator_object = std::move(node_accumulator),
+                .edge_accumulator_object = std::move(edge_accumulator),
+                .node_domain = context.domains.n->name,
+                .edge_domain = context.domains.edge->name,
+                .node_terminal_point = context.domains.n->point_at(
+                    context.domains.n->size - 1),
+                .edge_terminal_point = context.domains.edge->point_at(
+                    context.domains.edge->size - 1),
+            };
+            relation.shifted_accumulator_object =
+                relation.edge_accumulator_object + "_RouteShifted";
+            relation.relation_virtual_object =
+                relation.node_accumulator_object + "_RouteTerminalVirtual";
+            relation.challenge_label =
+                "y_route_terminal:" + relation.relation_id;
+            relation.terminal_delta = relation.edge_terminal_point
+                - relation.node_terminal_point;
+            relation.configured_shift_degree = context.domains.edge->size
+                + registered_blinder_coefficient_count(
+                    context, relation.edge_accumulator_object) - 1;
+            relation.shift_domain_size = next_power_of_two_checked(
+                2 * relation.configured_shift_degree + 1);
+            return relation;
+        };
         out.push_back(BindingRelationMeta{
             .relation_id = "bind:feat",
             .object_kind = "feature",
@@ -573,7 +727,7 @@ namespace gatzk::protocol
                  head < context.model.hidden_layers[layer].heads.size();
                  ++head, ++global_head)
             {
-                out.push_back(BindingRelationMeta{
+                BindingRelationMeta meta{
                     .relation_id = "bind:hidden:" + std::to_string(layer + 1) + ":" + std::to_string(head),
                     .object_kind = "hidden",
                     .layer_id = layer + 1,
@@ -590,10 +744,35 @@ namespace gatzk::protocol
                     .quotient_relations = {
                         "t_in:hidden_binding", "t_d_h:hidden_binding",
                         "t_edge:hidden_binding", "t_N:hidden_binding"},
-                });
+                };
+                const auto prefix = hidden_head_prefix(global_head);
+                const auto width =
+                    context.model.hidden_layers[layer].shape.head_dim;
+                meta.canonical_matrices.push_back(canonical_matrix(
+                    "canonical:hidden:H_prime:" + std::to_string(global_head),
+                    prefix + "_H_prime", context.local.num_nodes, width));
+                meta.canonical_matrices.push_back(canonical_matrix(
+                    "canonical:hidden:H_agg_pre:" + std::to_string(global_head),
+                    prefix + "_H_agg_pre", context.local.num_nodes, width));
+                meta.canonical_matrices.push_back(canonical_matrix(
+                    "canonical:hidden:H_agg:" + std::to_string(global_head),
+                    prefix + "_H_agg", context.local.num_nodes, width));
+                meta.aggregation_relations.push_back(aggregation_relation(
+                    "aggregation:hidden:" + std::to_string(global_head),
+                    hidden_aggregation_binding_label(global_head, ""),
+                    prefix + "_H_prime", prefix + "_H_agg_pre",
+                    prefix + "_alpha", width));
+                for (const auto *role : {"src", "dst", "t"})
+                    meta.route_terminal_relations.push_back(
+                        route_terminal_relation(
+                            "route-terminal:hidden:"
+                                + std::to_string(global_head) + ":" + role,
+                            prefix + "_R_" + role + "_node",
+                            prefix + "_R_" + role));
+                out.push_back(std::move(meta));
             }
             const bool is_final = layer + 1 == context.model.hidden_layers.size();
-            out.push_back(BindingRelationMeta{
+            BindingRelationMeta concat_meta{
                 .relation_id = "bind:concat:" + std::to_string(layer + 1),
                 .object_kind = "concat",
                 .layer_id = layer + 1,
@@ -605,7 +784,15 @@ namespace gatzk::protocol
                         * context.model.hidden_layers[layer].shape.head_dim,
                     context.local.num_nodes},
                 .quotient_relations = {"t_cat:concat_binding", "t_N:concat_binding"},
-            });
+            };
+            const auto concat_width =
+                context.model.hidden_layers[layer].shape.head_count
+                * context.model.hidden_layers[layer].shape.head_dim;
+            concat_meta.canonical_matrices.push_back(canonical_matrix(
+                "canonical:concat:" + std::to_string(layer + 1),
+                hidden_layer_concat_label(layer, is_final),
+                context.local.num_nodes, concat_width));
+            out.push_back(std::move(concat_meta));
         }
         for (std::size_t head = 0; head < context.model.output_layer.heads.size(); ++head)
         {
@@ -627,6 +814,32 @@ namespace gatzk::protocol
                     "t_cat:output_binding", "t_C:output_binding",
                     "t_edge:output_binding", "t_N:output_binding"},
             };
+            const auto matrix_prefix = output_head_prefix(head, false);
+            meta.canonical_matrices.push_back(canonical_matrix(
+                "canonical:output:Y_prime:" + std::to_string(head),
+                matrix_prefix + "_Y_prime", context.local.num_nodes,
+                context.local.num_classes));
+            meta.canonical_matrices.push_back(canonical_matrix(
+                "canonical:output:Y_pre:" + std::to_string(head),
+                output_y_lin_label(head, false), context.local.num_nodes,
+                context.local.num_classes));
+            meta.canonical_matrices.push_back(canonical_matrix(
+                "canonical:output:Y_head:" + std::to_string(head),
+                output_y_label(head, false), context.local.num_nodes,
+                context.local.num_classes));
+            meta.aggregation_relations.push_back(aggregation_relation(
+                "aggregation:output:" + std::to_string(head),
+                output_aggregation_binding_label(head, ""),
+                matrix_prefix + "_Y_prime",
+                output_y_lin_label(head, false), matrix_prefix + "_alpha",
+                context.local.num_classes));
+            for (const auto *role : {"src", "dst", "t"})
+                meta.route_terminal_relations.push_back(
+                    route_terminal_relation(
+                        "route-terminal:output:" + std::to_string(head)
+                            + ":" + role,
+                        matrix_prefix + "_R_" + role + "_node",
+                        matrix_prefix + "_R_" + role));
             const auto prefix = output_bias_view_prefix(head);
             const std::vector<std::string> logup_order = {
                 output_bias_view_label(head, "Table_can"),
@@ -653,6 +866,90 @@ namespace gatzk::protocol
                 .beta_challenge_label = output_bias_view_beta_label(head),
                 .commitment_order = logup_order,
             });
+
+            if (context.compiler_artifact == nullptr)
+                throw std::runtime_error(
+                    "coefficient basis RelationMeta requires ProtocolCompilerArtifact");
+            const auto coefficient_object = output_bias_basis_label(head, "Coeff");
+            const auto tail_length = registered_blinder_coefficient_count(
+                context, coefficient_object);
+            std::vector<std::size_t> semantic_positions(
+                context.local.num_classes, 0);
+            std::iota(
+                semantic_positions.begin(), semantic_positions.end(),
+                std::size_t{0});
+            const auto region = coefficient_region_layout(
+                context.local.num_classes, semantic_positions, tail_length,
+                context.domains.edge->size);
+            if (region.semantic_positions.back() >= region.chunks.front().length)
+                throw std::runtime_error(
+                    "output bias semantic coefficient view crosses the first chunk");
+            std::vector<CoefficientBasisChunkMeta> basis_chunks;
+            std::vector<std::string> basis_commitment_order = {
+                coefficient_object};
+            basis_chunks.reserve(region.chunks.size());
+            for (const auto &chunk : region.chunks)
+            {
+                const auto object = output_bias_basis_chunk_label(
+                    head, chunk.chunk_index);
+                basis_chunks.push_back(CoefficientBasisChunkMeta{
+                    .object_id = object,
+                    .accumulator_object =
+                        output_bias_basis_chunk_accumulator_label(
+                            head, chunk.chunk_index),
+                    .shifted_accumulator_object =
+                        output_bias_basis_chunk_shifted_accumulator_label(
+                            head, chunk.chunk_index),
+                    .chunk_index = chunk.chunk_index,
+                    .offset = chunk.offset,
+                    .length = chunk.length,
+                    .terminal_point = context.domains.edge->point_at(
+                        chunk.length),
+                    .configured_shift_degree = context.domains.edge->size
+                        + registered_blinder_coefficient_count(
+                            context,
+                            output_bias_basis_chunk_accumulator_label(
+                                head, chunk.chunk_index)) - 1,
+                });
+                basis_chunks.back().shift_domain_size =
+                    next_power_of_two_checked(
+                        2 * basis_chunks.back().configured_shift_degree + 1);
+                basis_commitment_order.push_back(object);
+            }
+            const auto power_object = output_bias_basis_label(head, "Powers");
+            for (const auto &chunk : basis_chunks)
+                basis_commitment_order.push_back(chunk.accumulator_object);
+            std::vector<std::string> opening_claim_order;
+            for (const auto &chunk : basis_chunks)
+            {
+                opening_claim_order.push_back(
+                    chunk.shifted_accumulator_object + "@relation-check");
+                opening_claim_order.push_back(
+                    chunk.accumulator_object
+                    + "@relation-check-plus-delta");
+            }
+            opening_claim_order.push_back(
+                output_bias_basis_prefix(head) + "G_rel@gamma");
+            meta.coefficient_basis_relations.push_back(
+                CoefficientBasisRelationMeta{
+                    .relation_id = "coefficient-basis:output-bias:"
+                        + std::to_string(head),
+                    .canonical_object = output_head_prefix(head, false)
+                        + "_Bias_flat",
+                    .coefficient_object = coefficient_object,
+                    .carrier_domain = context.domains.edge->name,
+                    .low_degree_length = region.low_degree_length,
+                    .tail_length = region.tail_length,
+                    .total_length = region.total_length,
+                    .semantic_positions = region.semantic_positions,
+                    .chunks = std::move(basis_chunks),
+                    .power_object = power_object,
+                    .gamma_challenge_label = output_bias_basis_gamma_label(head),
+                    .relation_challenge_label =
+                        output_bias_basis_relation_challenge_label(head),
+                    .commitment_order = std::move(basis_commitment_order),
+                    .opening_claim_order = std::move(opening_claim_order),
+                });
 
             const auto z_c = context.domains.c->point_at(context.local.num_classes);
             const auto z_edge = context.domains.edge->point_at(
@@ -722,7 +1019,7 @@ namespace gatzk::protocol
             });
             out.push_back(std::move(meta));
         }
-        out.push_back(BindingRelationMeta{
+        BindingRelationMeta average_meta{
             .relation_id = "bind:output:avg",
             .object_kind = "average",
             .layer_id = context.model.L,
@@ -734,7 +1031,14 @@ namespace gatzk::protocol
             .real_lengths = {context.local.num_nodes * context.local.num_classes},
             .quotient_relations = {
                 "t_edge:output_average", "t_C:output_average", "t_N:public_output"},
-        });
+        };
+        average_meta.canonical_matrices.push_back(canonical_matrix(
+            "canonical:output:Y_average_pre", "P_Y_lin",
+            context.local.num_nodes, context.local.num_classes));
+        average_meta.canonical_matrices.push_back(canonical_matrix(
+            "canonical:output:Y_average", "P_Y",
+            context.local.num_nodes, context.local.num_classes));
+        out.push_back(std::move(average_meta));
         return out;
     }
 
@@ -774,6 +1078,9 @@ namespace gatzk::protocol
             {
                 const bool derived = tag.ends_with("_S_model")
                     || tag.ends_with("_BiasView_R_shifted")
+                    || tag.ends_with("_Acc_shifted")
+                    || tag.find("_ScoreMask_") != std::string::npos
+                    || tag.ends_with("_ExternalMask")
                     || tag.find("_ModelBind_") != std::string::npos
                     || (owner_block == "Com_quot" && tag.rfind("t_", 0) == 0);
                 if (derived) blinding_basis = "DerivedExpression";
@@ -806,7 +1113,10 @@ namespace gatzk::protocol
             {
                 throw std::runtime_error("ProofSchema has no domain for dynamic object: " + label);
             }
-            const bool is_binding_reference = label.find("_ModelBind_") != std::string::npos;
+            const bool is_binding_reference =
+                label.find("_ModelBind_") != std::string::npos
+                || label.find("_ScoreMask_") != std::string::npos
+                || label.ends_with("_ExternalMask");
             add(label, *domain, "Com_dyn", "Commitment", padding_mode(label),
                 visibility, true, true, !is_binding_reference);
         }
@@ -878,7 +1188,145 @@ namespace gatzk::protocol
                 add(output_bias_view_label(head, "R_shifted"), "coef",
                     "Pi_bind.Com_rel", "Commitment", "FixedDegreeZeroPad",
                     PolynomialVisibility::PrivateWitness, true, true, false);
+
+            // Coefficient-tail owners use a coefficient-basis mask, while the
+            // H_edge chunks and fold accumulator use ordinary domain-vanishing
+            // masks.  Three is the compiler's canonical base observation
+            // prefix for an independently committed/opened private object;
+            // build_binding_relation_metadata verifies the completed ledger
+            // value before fixing the final region layout.
+            constexpr std::size_t kCoefficientTailBaseObservationCount = 3;
+            const auto coefficient_label = output_bias_basis_label(head, "Coeff");
+            add(coefficient_label, "coef", "Pi_bind.Com_basis", "Commitment",
+                "CoefficientTailSuffix", PolynomialVisibility::PrivateWitness,
+                true, true, false);
+            schema.entries.back().blinding_basis = "CoefficientTail";
+            const auto chunks = coefficient_chunk_layout(
+                context.local.num_classes + kCoefficientTailBaseObservationCount,
+                context.domains.edge->size);
+            for (const auto &chunk : chunks)
+            {
+                add(output_bias_basis_chunk_label(head, chunk.chunk_index),
+                    context.domains.edge->name, "Pi_bind.Com_basis", "Commitment",
+                    "CoefficientChunkZeroPad", PolynomialVisibility::PrivateWitness,
+                    true, true, true);
+                add(output_bias_basis_chunk_accumulator_label(
+                        head, chunk.chunk_index),
+                    context.domains.edge->name, "Pi_bind.Com_basis", "Commitment",
+                    "HoldLastState", PolynomialVisibility::PrivateWitness,
+                    true, true, true);
+                add(output_bias_basis_chunk_shifted_accumulator_label(
+                        head, chunk.chunk_index),
+                    "coef", "Pi_bind.Com_rel", "Commitment",
+                    "FixedDegreeZeroPad", PolynomialVisibility::PrivateWitness,
+                    true, true, false);
+            }
         }
+        auto add_canonical_columns = [&](const std::string &matrix,
+                                         std::size_t columns)
+        {
+            for (std::size_t column = 0; column < columns; ++column)
+                add(canonical_matrix_column_label(matrix, column),
+                    context.domains.n->name, "Pi_bind.Com_view",
+                    "Commitment", "ZeroPad",
+                    PolynomialVisibility::PrivateWitness,
+                    true, true, true);
+            add(matrix + "_CanFold", context.domains.n->name,
+                "Pi_bind.Com_view", "Commitment", "ZeroPad",
+                PolynomialVisibility::PrivateWitness,
+                true, true, true);
+        };
+        std::size_t canonical_hidden_head = 0;
+        for (std::size_t layer = 0;
+             layer < context.model.hidden_layers.size(); ++layer)
+        {
+            const auto width =
+                context.model.hidden_layers[layer].shape.head_dim;
+            for (std::size_t head = 0;
+                 head < context.model.hidden_layers[layer].heads.size();
+                 ++head, ++canonical_hidden_head)
+            {
+                const auto prefix = hidden_head_prefix(canonical_hidden_head);
+                add_canonical_columns(prefix + "_H_prime", width);
+                add_canonical_columns(prefix + "_H_agg_pre", width);
+                add_canonical_columns(prefix + "_H_agg", width);
+            }
+            const bool is_final =
+                layer + 1 == context.model.hidden_layers.size();
+            add_canonical_columns(
+                hidden_layer_concat_label(layer, is_final),
+                context.model.hidden_layers[layer].shape.head_count * width);
+        }
+        for (std::size_t head = 0;
+             head < context.model.output_layer.heads.size(); ++head)
+        {
+            add_canonical_columns(
+                output_head_prefix(head, false) + "_Y_prime",
+                context.local.num_classes);
+            add_canonical_columns(
+                output_y_lin_label(head, false),
+                context.local.num_classes);
+            add_canonical_columns(
+                output_y_label(head, false),
+                context.local.num_classes);
+        }
+        add_canonical_columns("P_Y_lin", context.local.num_classes);
+        add_canonical_columns("P_Y", context.local.num_classes);
+        const auto add_aggregation_binding = [&](const std::string &prefix)
+        {
+            const auto add_private = [&](
+                const std::string &label,
+                const std::string &domain,
+                const std::string &padding,
+                bool enters_quotient = true)
+            {
+                add(label, domain, "Pi_bind.Com_agg", "Commitment", padding,
+                    PolynomialVisibility::PrivateWitness,
+                    true, true, enters_quotient);
+            };
+            for (const auto *suffix : {"Src_node", "Dst_node"})
+                add_private(prefix + suffix, context.domains.n->name, "ZeroPad");
+            for (const auto *suffix : {"Src_edge", "Dst_edge", "V"})
+                add_private(prefix + suffix, context.domains.edge->name, "ZeroPad");
+            add_private(prefix + "PSQ", context.domains.edge->name, "HoldLastState");
+            for (const auto *role : {"src", "dst"})
+            {
+                const auto stem = prefix + role + "_";
+                add_private(stem + "Table", context.domains.n->name, "ZeroPad");
+                add_private(stem + "Query", context.domains.edge->name, "ZeroPad");
+                add_private(stem + "J_node", context.domains.n->name, "ZeroPad");
+                add_private(stem + "J_edge", context.domains.edge->name, "ZeroPad");
+                add_private(stem + "R_node", context.domains.n->name, "HoldLastState");
+                add_private(stem + "R_edge", context.domains.edge->name, "HoldLastState");
+                add_private(
+                    stem + "R_edge_shifted", "coef", "FixedDegreeZeroPad",
+                    false);
+            }
+        };
+        for (std::size_t head = 0;
+             head < context.model.hidden_heads.size(); ++head)
+            add_aggregation_binding(
+                hidden_aggregation_binding_label(head, ""));
+        for (std::size_t head = 0;
+             head < context.model.output_layer.heads.size(); ++head)
+            add_aggregation_binding(
+                output_aggregation_binding_label(head, ""));
+        const auto add_route_terminal_shift = [&](const std::string &prefix)
+        {
+            for (const auto *role : {"src", "dst", "t"})
+                add(
+                    prefix + "_R_" + role + "_RouteShifted",
+                    "coef", "Pi_bind.Com_rel", "Commitment",
+                    "FixedDegreeZeroPad",
+                    PolynomialVisibility::PrivateWitness,
+                    true, true, false);
+        };
+        for (std::size_t head = 0;
+             head < context.model.hidden_heads.size(); ++head)
+            add_route_terminal_shift(hidden_head_prefix(head));
+        for (std::size_t head = 0;
+             head < context.model.output_layer.heads.size(); ++head)
+            add_route_terminal_shift(output_head_prefix(head, false));
         schema.private_plain_value_count = 0;
         return schema;
     }
@@ -965,6 +1413,111 @@ namespace gatzk::protocol
             append_canonical_vector(
                 out, "quotient_relations", meta.quotient_relations);
 
+            append_canonical_string(out, "canonical_matrices");
+            append_canonical_string(
+                out, std::to_string(meta.canonical_matrices.size()));
+            for (const auto &matrix : meta.canonical_matrices)
+            {
+                append_canonical_string(out, matrix.relation_id);
+                append_canonical_string(out, matrix.matrix_object);
+                append_canonical_string(out, matrix.canonical_domain);
+                append_canonical_string(out, std::to_string(matrix.row_count));
+                append_canonical_string(out, std::to_string(matrix.column_count));
+                append_canonical_vector(
+                    out, "column_objects", matrix.column_objects);
+                append_canonical_string(out, matrix.compressed_object);
+                append_canonical_string(
+                    out, matrix.compression_challenge_label);
+            }
+
+            append_canonical_string(out, "aggregation_relations");
+            append_canonical_string(
+                out, std::to_string(meta.aggregation_relations.size()));
+            for (const auto &relation : meta.aggregation_relations)
+            {
+                for (const auto *value : {
+                         &relation.relation_id,
+                         &relation.source_matrix_object,
+                         &relation.target_matrix_object,
+                         &relation.alpha_object,
+                         &relation.node_domain,
+                         &relation.edge_domain,
+                         &relation.compression_challenge_label,
+                         &relation.source_node_object,
+                         &relation.target_node_object,
+                         &relation.source_edge_object,
+                         &relation.target_edge_object,
+                         &relation.product_object,
+                         &relation.psq_object})
+                    append_canonical_string(out, *value);
+                append_canonical_string(
+                    out, std::to_string(relation.row_count));
+                append_canonical_string(
+                    out, std::to_string(relation.column_count));
+                const auto append_route = [&](const auto &route)
+                {
+                    for (const auto *value : {
+                             &route.relation_id,
+                             &route.index_object,
+                             &route.node_value_object,
+                             &route.edge_value_object,
+                             &route.table_object,
+                             &route.query_object,
+                             &route.multiplicity_object,
+                             &route.node_inverse_object,
+                             &route.edge_inverse_object,
+                             &route.node_accumulator_object,
+                             &route.edge_accumulator_object,
+                             &route.shifted_accumulator_object,
+                             &route.relation_virtual_object,
+                             &route.eta_challenge_label,
+                             &route.beta_challenge_label,
+                             &route.terminal_challenge_label})
+                        append_canonical_string(out, *value);
+                    append_canonical_string(
+                        out, route.node_terminal_point.to_string());
+                    append_canonical_string(
+                        out, route.edge_terminal_point.to_string());
+                    append_canonical_string(
+                        out, route.terminal_delta.to_string());
+                    append_canonical_string(
+                        out, std::to_string(route.configured_shift_degree));
+                    append_canonical_string(
+                        out, std::to_string(route.shift_domain_size));
+                };
+                append_route(relation.source_route);
+                append_route(relation.target_route);
+                append_canonical_vector(
+                    out, "commitment_order", relation.commitment_order);
+            }
+
+            append_canonical_string(out, "route_terminal_relations");
+            append_canonical_string(
+                out, std::to_string(meta.route_terminal_relations.size()));
+            for (const auto &relation : meta.route_terminal_relations)
+            {
+                for (const auto *value : {
+                         &relation.relation_id,
+                         &relation.node_accumulator_object,
+                         &relation.edge_accumulator_object,
+                         &relation.shifted_accumulator_object,
+                         &relation.relation_virtual_object,
+                         &relation.node_domain,
+                         &relation.edge_domain,
+                         &relation.challenge_label})
+                    append_canonical_string(out, *value);
+                append_canonical_string(
+                    out, relation.node_terminal_point.to_string());
+                append_canonical_string(
+                    out, relation.edge_terminal_point.to_string());
+                append_canonical_string(
+                    out, relation.terminal_delta.to_string());
+                append_canonical_string(
+                    out, std::to_string(relation.configured_shift_degree));
+                append_canonical_string(
+                    out, std::to_string(relation.shift_domain_size));
+            }
+
             append_canonical_string(out, "indexed_views");
             append_canonical_string(out, std::to_string(meta.indexed_views.size()));
             for (const auto &view : meta.indexed_views)
@@ -982,6 +1535,55 @@ namespace gatzk::protocol
                 append_canonical_string(out, std::to_string(view.view_length));
                 append_canonical_vector(
                     out, "commitment_order", view.commitment_order);
+            }
+
+            append_canonical_string(out, "coefficient_basis_relations");
+            append_canonical_string(
+                out, std::to_string(meta.coefficient_basis_relations.size()));
+            for (const auto &relation : meta.coefficient_basis_relations)
+            {
+                for (const auto *value : {
+                         &relation.relation_id, &relation.canonical_object,
+                         &relation.coefficient_object, &relation.carrier_domain,
+                         &relation.power_object,
+                         &relation.gamma_challenge_label,
+                         &relation.relation_challenge_label})
+                    append_canonical_string(out, *value);
+                append_canonical_string(
+                    out, std::to_string(relation.low_degree_length));
+                append_canonical_string(
+                    out, std::to_string(relation.tail_length));
+                append_canonical_string(
+                    out, std::to_string(relation.total_length));
+                std::vector<std::string> semantic_positions;
+                for (const auto position : relation.semantic_positions)
+                    semantic_positions.push_back(std::to_string(position));
+                append_canonical_vector(
+                    out, "semantic_positions", semantic_positions);
+                append_canonical_string(out, "chunks");
+                append_canonical_string(
+                    out, std::to_string(relation.chunks.size()));
+                for (const auto &chunk : relation.chunks)
+                {
+                    append_canonical_string(out, chunk.object_id);
+                    append_canonical_string(out, chunk.accumulator_object);
+                    append_canonical_string(
+                        out, chunk.shifted_accumulator_object);
+                    append_canonical_string(
+                        out, std::to_string(chunk.chunk_index));
+                    append_canonical_string(out, std::to_string(chunk.offset));
+                    append_canonical_string(out, std::to_string(chunk.length));
+                    append_canonical_string(
+                        out, chunk.terminal_point.to_string());
+                    append_canonical_string(
+                        out, std::to_string(chunk.configured_shift_degree));
+                    append_canonical_string(
+                        out, std::to_string(chunk.shift_domain_size));
+                }
+                append_canonical_vector(
+                    out, "commitment_order", relation.commitment_order);
+                append_canonical_vector(
+                    out, "opening_claim_order", relation.opening_claim_order);
             }
 
             append_canonical_string(out, "shift_relations");
@@ -1186,6 +1788,8 @@ namespace gatzk::protocol
         }
         std::vector<std::pair<std::string, std::vector<std::string>>>
             derived_model_binding_dependencies;
+        std::vector<std::pair<std::string, std::vector<std::string>>>
+            derived_score_mask_dependencies;
         for (std::size_t head = 0; head < context.model.hidden_heads.size(); ++head)
         {
             std::vector<std::string> projection_dependencies = {
@@ -1207,6 +1811,28 @@ namespace gatzk::protocol
                 hidden_model_binding_blinder_label(head, "dst"),
                 {hidden_head_prefix(head) + "_b_dst",
                  model_proof_local_label(hidden_dst_label(head))}});
+            derived_score_mask_dependencies.push_back({
+                hidden_score_mask_label(head, "src"),
+                {hidden_head_prefix(head) + "_E_src"}});
+            derived_score_mask_dependencies.push_back({
+                hidden_score_mask_label(head, "dst"),
+                {hidden_head_prefix(head) + "_E_dst"}});
+            for (const auto *suffix : {
+                     "_H_star", "_H_agg_pre_star", "_H_agg_star"})
+            {
+                const auto source = hidden_head_prefix(head) + suffix;
+                derived_score_mask_dependencies.push_back({
+                    external_mask_label(source), {source}});
+            }
+        }
+        for (std::size_t layer = 0;
+             layer < context.model.hidden_layers.size(); ++layer)
+        {
+            const bool is_final =
+                layer + 1 == context.model.hidden_layers.size();
+            const auto source = hidden_layer_concat_star_label(layer, is_final);
+            derived_score_mask_dependencies.push_back({
+                external_mask_label(source), {source}});
         }
         for (std::size_t head = 0;
              head < context.model.output_layer.heads.size(); ++head)
@@ -1228,6 +1854,16 @@ namespace gatzk::protocol
                 output_model_binding_blinder_label(head, "dst"),
                 {output_head_prefix(head, false) + "_b_dst",
                  model_proof_local_label(output_dst_label(head, false))}});
+            derived_score_mask_dependencies.push_back({
+                output_score_mask_label(head, "src"),
+                {output_head_prefix(head, false) + "_E_src"}});
+            derived_score_mask_dependencies.push_back({
+                output_score_mask_label(head, "dst"),
+                {output_head_prefix(head, false) + "_E_dst"}});
+            const auto output_star =
+                output_head_prefix(head, false) + "_Y_star";
+            derived_score_mask_dependencies.push_back({
+                external_mask_label(output_star), {output_star}});
         }
         auto append_dependency = [&](ObservationDependencyEdge edge)
         {
@@ -1252,6 +1888,22 @@ namespace gatzk::protocol
                     "linear-blinder-difference:source-view-minus-proof-local-model-terms",
                 .introduces_independent_randomness = false,
             });
+
+        }
+        for (const auto &[derived, sources] : derived_score_mask_dependencies)
+        {
+            append_dependency(ObservationDependencyEdge{
+                .id = "obs-dep:" + derived,
+                .derived_object = derived,
+                .source_objects = sources,
+                .serialized_observations = {
+                    "Commitment", "MaskedPrivateValue@external-point",
+                    "OpeningWitness@external-point-group"},
+                .transcript_stage = "Com_dyn->Eval_ext->Open_ext",
+                .propagation_rule =
+                    "zero-domain-external-mask:P_committed=P_sem+Z_N*Mask",
+                .introduces_independent_randomness = false,
+            });
         }
         for (const auto &entry : artifact.proof_schema.entries)
         {
@@ -1272,6 +1924,31 @@ namespace gatzk::protocol
         for (std::size_t head = 0;
              head < context.model.output_layer.heads.size(); ++head)
         {
+            const auto chunks = coefficient_chunk_layout(
+                context.local.num_classes + 3,
+                context.domains.edge->size);
+            for (const auto &chunk : chunks)
+            {
+                const auto basis_shifted =
+                    output_bias_basis_chunk_shifted_accumulator_label(
+                        head, chunk.chunk_index);
+                append_dependency(ObservationDependencyEdge{
+                    .id = "obs-dep:" + basis_shifted,
+                    .derived_object = basis_shifted,
+                    .source_objects = {
+                        output_bias_basis_chunk_accumulator_label(
+                            head, chunk.chunk_index)},
+                    .serialized_observations = {
+                        "Commitment", "MaskedPrivateValue@relation-check",
+                        "OpeningWitness@relation-check",
+                        "OpeningWitness@relation-check-plus-delta"},
+                    .transcript_stage = "Pi_bind.Com_rel->Eval_bind->W_ext",
+                    .propagation_rule =
+                        "coefficient-taylor-shift:transcript-gamma-to-chunk-terminal"
+                        ":shared-source-random-coordinates",
+                    .introduces_independent_randomness = false,
+                });
+            }
             const auto shifted = output_bias_view_label(head, "R_shifted");
             if (std::none_of(
                     artifact.proof_schema.entries.begin(),
@@ -1401,12 +2078,19 @@ namespace gatzk::protocol
                     derived_model_binding_dependencies.end(),
                     [&](const auto &dependency)
                     { return dependency.first == entry.tag; });
+                const bool is_derived_score_mask = std::any_of(
+                    derived_score_mask_dependencies.begin(),
+                    derived_score_mask_dependencies.end(),
+                    [&](const auto &dependency)
+                    { return dependency.first == entry.tag; });
                 // _S_model, R_shifted and ModelBind_R use randomness from
                 // their registered source objects.  They are observations in
                 // those base-object certificates, never independent owners.
                 if (entry.tag.ends_with("_S_model")
                     || entry.tag.ends_with("_BiasView_R_shifted")
-                    || is_derived_model_binding)
+                    || entry.tag.ends_with("_Acc_shifted")
+                    || is_derived_model_binding
+                    || is_derived_score_mask)
                 {
                     continue;
                 }
@@ -1433,6 +2117,19 @@ namespace gatzk::protocol
                         "+derived-model-binding-observations(" + derived
                         + ":commitment+domain-eval(z,z_omega)"
                           "+point-group-witness(z,z_omega)"
+                          ":global-cross-source-DAG)";
+                }
+                for (const auto &[derived, dependencies] :
+                     derived_score_mask_dependencies)
+                {
+                    if (std::find(
+                            dependencies.begin(), dependencies.end(), entry.tag)
+                        == dependencies.end())
+                        continue;
+                    certificate +=
+                        "+derived-external-mask-observations(" + derived
+                        + ":commitment+external-eval(same-point)"
+                          "+external-point-group-witness"
                           ":global-cross-source-DAG)";
                 }
                 if (entry.enters_quotient)
@@ -1971,6 +2668,51 @@ namespace gatzk::protocol
             std::make_shared<ProtocolCompilerArtifact>(artifact);
         for (const auto &meta : build_binding_relation_metadata(relation_context))
         {
+            for (const auto &matrix : meta.canonical_matrices)
+                add_tuple_compression(
+                    matrix.relation_id + ":column-compression",
+                    matrix.compression_challenge_label,
+                    "canonical_matrix:compression",
+                    std::max<std::size_t>(2, matrix.column_count),
+                    std::max<std::size_t>(1, matrix.row_count));
+            for (const auto &aggregation : meta.aggregation_relations)
+            {
+                add_tuple_compression(
+                    aggregation.relation_id + ":coordinate-compression",
+                    aggregation.compression_challenge_label,
+                    "aggregation_binding:compression",
+                    std::max<std::size_t>(2, aggregation.column_count),
+                    std::max<std::size_t>(1, aggregation.row_count));
+                for (const auto *route : {
+                         &aggregation.source_route,
+                         &aggregation.target_route})
+                {
+                    add_tuple_compression(
+                        route->relation_id,
+                        route->eta_challenge_label,
+                        "aggregation_binding:eta", 2,
+                        std::max<std::size_t>(1, route_denominators));
+                    add_logup_endpoint(
+                        route->relation_id,
+                        route->beta_challenge_label,
+                        "aggregation_binding:beta", route_denominators);
+                    add_random_identity(
+                        route->relation_id + ":terminal-shift",
+                        route->terminal_challenge_label,
+                        "aggregation_binding:y_rel",
+                        "TaylorShift(R_edge,Delta)(Y)-R_edge(Y+Delta)"
+                        "|malicious-degree=global-D_max",
+                        d_max, context.domains.edge->size, 1);
+                }
+            }
+            for (const auto &relation : meta.route_terminal_relations)
+                add_random_identity(
+                    relation.relation_id + ":terminal-shift",
+                    relation.challenge_label,
+                    "route_terminal:y_rel",
+                    "TaylorShift(R_edge,Delta)(Y)-R_edge(Y+Delta)"
+                    "|malicious-degree=global-D_max",
+                    d_max, context.domains.edge->size, 1);
             if (meta.object_kind != "output") continue;
             const auto &view = meta.indexed_views.at(0);
             const auto &relation = meta.shift_relations.at(0);
@@ -2830,6 +3572,29 @@ namespace gatzk::protocol
         return "P_Y_o" + std::to_string(head_index);
     }
 
+    std::string canonical_matrix_column_label(
+        const std::string &matrix_object,
+        std::size_t column_index)
+    {
+        return matrix_object + "_CanCol" + std::to_string(column_index);
+    }
+
+    std::string hidden_aggregation_binding_label(
+        std::size_t global_head_index,
+        std::string_view suffix)
+    {
+        return hidden_head_prefix(global_head_index) + "_AggBind_"
+            + std::string(suffix);
+    }
+
+    std::string output_aggregation_binding_label(
+        std::size_t head_index,
+        std::string_view suffix)
+    {
+        return output_head_prefix(head_index, false) + "_AggBind_"
+            + std::string(suffix);
+    }
+
     std::string output_weight_label(std::size_t head_index, bool use_single_output_compat_labels)
     {
         if (use_single_output_compat_labels)
@@ -2890,6 +3655,41 @@ namespace gatzk::protocol
         return output_head_prefix(head_index, false) + "_ModelBind_" + std::string(role) + "_R";
     }
 
+    std::string hidden_score_mask_label(
+        std::size_t head_index, std::string_view role)
+    {
+        return hidden_head_prefix(head_index) + "_ScoreMask_" + std::string(role);
+    }
+
+    std::string output_score_mask_label(
+        std::size_t head_index, std::string_view role)
+    {
+        return output_head_prefix(head_index, false) + "_ScoreMask_"
+            + std::string(role);
+    }
+
+    std::string hidden_score_mask_eval_name(
+        std::size_t head_index, std::string_view role)
+    {
+        return "rho_h" + std::to_string(head_index) + "_" + std::string(role);
+    }
+
+    std::string output_score_mask_eval_name(
+        std::size_t head_index, std::string_view role)
+    {
+        return "rho_out" + std::to_string(head_index) + "_" + std::string(role);
+    }
+
+    std::string external_mask_label(std::string_view source_label)
+    {
+        return std::string(source_label) + "_ExternalMask";
+    }
+
+    std::string external_mask_eval_name(std::string_view source_eval_name)
+    {
+        return std::string(source_eval_name) + "_mask";
+    }
+
     std::string model_proof_local_label(std::string_view vk_model_anchor_label)
     {
         return std::string(vk_model_anchor_label) + "_proof";
@@ -2923,6 +3723,57 @@ namespace gatzk::protocol
     std::string output_bias_view_relation_challenge_label(std::size_t head_index)
     {
         return "y_rel:output-bias-terminal:" + std::to_string(head_index);
+    }
+
+    std::string output_bias_basis_prefix(std::size_t head_index)
+    {
+        return output_head_prefix(head_index, false) + "_BiasBasis_";
+    }
+
+    std::string output_bias_basis_label(
+        std::size_t head_index, std::string_view suffix)
+    {
+        return output_bias_basis_prefix(head_index) + std::string(suffix);
+    }
+
+    std::string output_bias_basis_chunk_label(
+        std::size_t head_index, std::size_t chunk_index)
+    {
+        return output_bias_basis_prefix(head_index) + "Chunk_"
+            + std::to_string(chunk_index);
+    }
+
+    std::string output_bias_basis_chunk_accumulator_label(
+        std::size_t head_index, std::size_t chunk_index)
+    {
+        return output_bias_basis_chunk_label(head_index, chunk_index) + "_Acc";
+    }
+
+    std::string output_bias_basis_chunk_shifted_accumulator_label(
+        std::size_t head_index, std::size_t chunk_index)
+    {
+        return output_bias_basis_chunk_label(head_index, chunk_index)
+            + "_Acc_shifted";
+    }
+
+    std::string output_bias_basis_region_selector_label(
+        std::size_t head_index, std::size_t chunk_index,
+        std::string_view region)
+    {
+        return output_bias_basis_prefix(head_index) + "Q_"
+            + std::string(region) + "_" + std::to_string(chunk_index);
+    }
+
+    std::string output_bias_basis_gamma_label(std::size_t head_index)
+    {
+        return "gamma_basis:output-bias:" + std::to_string(head_index);
+    }
+
+    std::string output_bias_basis_relation_challenge_label(
+        std::size_t head_index)
+    {
+        return "y_rel:coefficient-basis:output-bias:"
+            + std::to_string(head_index);
     }
 
     std::size_t signed_division_limb_count(std::size_t range_bits)

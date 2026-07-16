@@ -13,7 +13,7 @@ This repository is being brought into conformance with the secure zkGAT protocol
 
 The intended public input boundary is public graph structure and public node features. Model parameters, intermediate trace values, attention scores, softmax weights, lookup witness, route witness, PSQ state, folding vectors, private polynomial evaluations, and blinding randomness are private witness material. Final logits are public outputs.
 
-## Current implementation status (2026-07-15)
+## Current implementation status (2026-07-16)
 
 Protocol-correction phase is **not complete**, so the code is not yet eligible for paper-result generation or performance claims.
 
@@ -27,18 +27,19 @@ What has been revalidated from the current source:
 - a separate transcript-derived KZG opening binds the complete public-logit vector to `P_Y`;
 - only final `P_Y` is classified as `PublicOutput`; pre-bias and per-output-head logits remain private payloads;
 - the strict wire-v2 serializer/parser covers all nine tagged proof blocks, rejects non-canonical/trailing data, and computes `proof_size_bytes` from the exact serialized byte vector;
-- the protocol compiler emits authenticated ProofSchema/ObservationLedger/RandomIdentityLedger/SecurityBudgetLedger templates; the current instance artifact includes the complete length-delimited `RelationMeta` registry and a canonical typed dependency DAG, enforces that every private schema object is exactly one independent blinder owner or one derived target, and enumerates the active feature, hidden, output, LogUp, SignedRoundDiv, quotient, public-output, and point-group random checks; all `RelationMeta` identity/source/target/domain/length/quotient fields now enter the transcript, and the compiler has a strict semantic/gap/tail selector plus fixed edge-chunk layout constructor, but formal `Com_basis` producers and equations are still open;
+- the protocol compiler emits authenticated ProofSchema/ObservationLedger/RandomIdentityLedger/SecurityBudgetLedger templates; the current instance artifact includes the complete length-delimited `RelationMeta` registry and a canonical typed dependency DAG, enforces that every private schema object is exactly one independent blinder owner or one derived target, and enumerates the active feature, hidden, output, LogUp, SignedRoundDiv, quotient, public-output, and point-group random checks; all `RelationMeta` identity/source/target/domain/length/quotient fields enter the transcript, and the compiler has a strict semantic/gap/tail selector plus fixed edge-chunk layout constructor;
+- the output-bias `Com_basis` path now materializes the registered coefficient tail, fixed edge chunks, verifier-local Gamma powers, one accumulator and fixed terminal per chunk, Taylor-shifted basis-link commitments, strict wire/parser fields, global point-group openings, and verifier equations; the `unit_test_srs_v21_toy` CPU and CUDA-hotspot paths both complete generation/load/prove/parse/verify and tamper rejection (`212749` CPU / `212748` GPU proof bytes in the latest cold runs);
 - `unit_test_srs_v15` uses manifest v7, compiler artifact v3, the strict maximum-instance-envelope v2 (`N_total`, concat width, range bits, coefficient-object length and object-family count included), and has passed generation, loading, proof/verification self-tests, SRS/manifest/domain tamper rejection, obsolete-v14 rejection, and the real PPI representative-batch boundary regression;
 - requested CUDA algebra kernels now fail closed instead of silently falling back to CPU.
 
-Both the CPU and CUDA builds currently compile and pass the lightweight regression suite. This is a build/unit-test result only; the blocked full Cora proof has not passed on either backend.
+Both the CPU and CUDA builds currently compile and pass the lightweight regression suite. The small trusted-SRS formal proof passes on both backends, and the real two-graph PPI boundary regression passes. This remains development evidence only; the blocked full Cora proof has not passed on either backend.
 
 The full Cora security regression currently stops at SRS loading: all locally present large SRS directories use superseded, rejected manifest formats, while the current v7 compiler/manifest rules have only been exercised with the small trusted test SRS. A new formal large SRS must not be generated until the remaining protocol-compiler and `Pi_bind` rules are frozen.
 
 The following protocol requirements are still open and block phase completion:
 
 - completion of the canonical symbolic ObservationLedger RREF/image-inclusion certificates and exact `BadCRS_obs` factor accounting for the full derived dependency DAG;
-- completion of the formal `Pi_bind` coefficient-tail, chunk/basis-link and CRPC objects for every model and dynamic matrix relation; the current proof-local model reblinding and output-bias indexed-view/shift relation are only a partial closure;
+- expansion of the now-closed output-bias `Com_basis` machinery to every model and dynamic matrix relation, including canonical node-domain columns, row-major indexed views, coefficient tails, per-chunk basis links, CRPC identities, and aggregation bindings; the current proof-local model reblinding and output-bias relation remain only a partial closure;
 - expansion of the maximum compiler artifact/envelope to the complete maximum ProofSchema and all three maximum ledgers before generating the formal large SRS;
 - verifier-only model/static verification-key separation and complete leakage/tamper coverage;
 - successful final Cora CPU/CUDA and representative real PPI-batch regressions.

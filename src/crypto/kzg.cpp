@@ -1902,12 +1902,14 @@ namespace gatzk::crypto
                 {
                     const auto expected = polynomial.evaluate(points[point_index]);
                     const auto claimed = term.scaled_claims[point_index] / term.scale;
-                    if (expected != claimed)
-                    {
-                        throw std::runtime_error(
-                            "evaluation opening claim mismatch for " + term.commitment->name
-                            + " at point index " + std::to_string(point_index));
-                    }
+                        if (expected != claimed)
+                        {
+                            throw std::runtime_error(
+                                "evaluation opening claim mismatch for " + term.commitment->name
+                                + " at point index " + std::to_string(point_index)
+                                + " (expected=" + expected.to_string()
+                                + ", claimed=" + claimed.to_string() + ")");
+                        }
                 }
                 if (!term.scale.is_zero())
                 {

@@ -194,6 +194,15 @@ std::string hidden_dst_label(std::size_t global_head_index);
 std::string output_head_prefix(std::size_t head_index, bool use_single_output_compat_labels);
 std::string output_y_lin_label(std::size_t head_index, bool use_single_output_compat_labels);
 std::string output_y_label(std::size_t head_index, bool use_single_output_compat_labels);
+std::string canonical_matrix_column_label(
+    const std::string& matrix_object,
+    std::size_t column_index);
+std::string hidden_aggregation_binding_label(
+    std::size_t global_head_index,
+    std::string_view suffix);
+std::string output_aggregation_binding_label(
+    std::size_t head_index,
+    std::string_view suffix);
 std::string output_weight_label(std::size_t head_index, bool use_single_output_compat_labels);
 std::string output_weight_column_label(std::size_t head_index, std::size_t column_index);
 std::string output_src_label(std::size_t head_index, bool use_single_output_compat_labels);
@@ -202,6 +211,15 @@ std::string output_bias_label(std::size_t head_index, bool use_single_output_com
 std::string output_challenge_name(std::string_view base, std::size_t head_index, bool use_single_output_compat_labels);
 std::string hidden_model_binding_blinder_label(std::size_t head_index, std::string_view role);
 std::string output_model_binding_blinder_label(std::size_t head_index, std::string_view role);
+std::string hidden_score_mask_label(std::size_t head_index, std::string_view role);
+std::string output_score_mask_label(std::size_t head_index, std::string_view role);
+std::string hidden_score_mask_eval_name(std::size_t head_index, std::string_view role);
+std::string output_score_mask_eval_name(std::size_t head_index, std::string_view role);
+// A private evaluation-form object is committed as P_sem + Z_D R.  Whenever
+// an off-domain opening is used as a semantic accumulator target, R is exposed
+// through this derived commitment and opened at the same challenge point.
+std::string external_mask_label(std::string_view source_label);
+std::string external_mask_eval_name(std::string_view source_eval_name);
 std::string model_proof_local_label(std::string_view vk_model_anchor_label);
 std::string model_reblind_witness_label(std::string_view vk_model_anchor_label);
 std::string output_bias_view_prefix(std::size_t head_index);
@@ -209,6 +227,19 @@ std::string output_bias_view_label(std::size_t head_index, std::string_view suff
 std::string output_bias_view_eta_label(std::size_t head_index);
 std::string output_bias_view_beta_label(std::size_t head_index);
 std::string output_bias_view_relation_challenge_label(std::size_t head_index);
+std::string output_bias_basis_prefix(std::size_t head_index);
+std::string output_bias_basis_label(
+    std::size_t head_index, std::string_view suffix);
+std::string output_bias_basis_chunk_label(
+    std::size_t head_index, std::size_t chunk_index);
+std::string output_bias_basis_chunk_accumulator_label(
+    std::size_t head_index, std::size_t chunk_index);
+std::string output_bias_basis_chunk_shifted_accumulator_label(
+    std::size_t head_index, std::size_t chunk_index);
+std::string output_bias_basis_region_selector_label(
+    std::size_t head_index, std::size_t chunk_index, std::string_view region);
+std::string output_bias_basis_gamma_label(std::size_t head_index);
+std::string output_bias_basis_relation_challenge_label(std::size_t head_index);
 
 // Canonical SignedRoundDiv limb/range family naming.  These helpers are shared
 // by schema expansion, trace construction and transcript replay.

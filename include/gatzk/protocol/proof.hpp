@@ -241,6 +241,133 @@ struct KZGShiftRelationMeta {
     bool operator==(const KZGShiftRelationMeta&) const = default;
 };
 
+// Canonical instance metadata for a coefficient-tail/chunk basis link.  The
+// transcript derives gamma after the coefficient and chunk commitments; the
+// edge-domain accumulator is then Taylor-shifted back to gamma so the verifier
+// can check the link with ordinary KZG point groups without receiving either
+// private value in the clear.
+struct CoefficientBasisChunkMeta {
+    std::string object_id;
+    std::string accumulator_object;
+    std::string shifted_accumulator_object;
+    std::size_t chunk_index = 0;
+    std::size_t offset = 0;
+    std::size_t length = 0;
+    algebra::FieldElement terminal_point = algebra::FieldElement::zero();
+    std::size_t configured_shift_degree = 0;
+    std::size_t shift_domain_size = 0;
+    bool operator==(const CoefficientBasisChunkMeta&) const = default;
+};
+
+struct CoefficientBasisRelationMeta {
+    std::string relation_id;
+    std::string canonical_object;
+    std::string coefficient_object;
+    std::string carrier_domain;
+    std::size_t low_degree_length = 0;
+    std::size_t tail_length = 0;
+    std::size_t total_length = 0;
+    std::vector<std::size_t> semantic_positions;
+    std::vector<CoefficientBasisChunkMeta> chunks;
+    std::string power_object;
+    std::string gamma_challenge_label;
+    std::string relation_challenge_label;
+    std::vector<std::string> commitment_order;
+    std::vector<std::string> opening_claim_order;
+    bool operator==(const CoefficientBasisRelationMeta&) const = default;
+};
+
+// Canonical node-domain representation of one private matrix.  The column
+// family is the only H_N trace for the matrix.  compressed_object is committed
+// only after the column commitments have fixed compression_challenge_label;
+// its equality to the challenge-weighted canonical columns is enforced in the
+// global N-domain quotient.
+struct CanonicalMatrixRelationMeta {
+    std::string relation_id;
+    std::string matrix_object;
+    std::string canonical_domain;
+    std::size_t row_count = 0;
+    std::size_t column_count = 0;
+    std::vector<std::string> column_objects;
+    std::string compressed_object;
+    std::string compression_challenge_label;
+    bool operator==(const CanonicalMatrixRelationMeta&) const = default;
+};
+
+// One N-domain table / edge-domain query broadcast used by an aggregation
+// binding.  The two accumulators are related by the registered KZG Taylor
+// shift; no route terminal is serialized as a scalar.
+struct AggregationRouteRelationMeta {
+    std::string relation_id;
+    std::string index_object;
+    std::string node_value_object;
+    std::string edge_value_object;
+    std::string table_object;
+    std::string query_object;
+    std::string multiplicity_object;
+    std::string node_inverse_object;
+    std::string edge_inverse_object;
+    std::string node_accumulator_object;
+    std::string edge_accumulator_object;
+    std::string shifted_accumulator_object;
+    std::string relation_virtual_object;
+    std::string eta_challenge_label;
+    std::string beta_challenge_label;
+    std::string terminal_challenge_label;
+    algebra::FieldElement node_terminal_point = algebra::FieldElement::zero();
+    algebra::FieldElement edge_terminal_point = algebra::FieldElement::zero();
+    algebra::FieldElement terminal_delta = algebra::FieldElement::zero();
+    std::size_t configured_shift_degree = 0;
+    std::size_t shift_domain_size = 0;
+    bool operator==(const AggregationRouteRelationMeta&) const = default;
+};
+
+// Independent post-commit compression and PSQ proof for one attention
+// aggregation matrix.  commitment_order is the exact Pi_bind.Com_agg order.
+struct AggregationRelationMeta {
+    std::string relation_id;
+    std::string source_matrix_object;
+    std::string target_matrix_object;
+    std::string alpha_object;
+    std::string node_domain;
+    std::string edge_domain;
+    std::size_t row_count = 0;
+    std::size_t column_count = 0;
+    std::string compression_challenge_label;
+    std::string source_node_object;
+    std::string target_node_object;
+    std::string source_edge_object;
+    std::string target_edge_object;
+    std::string product_object;
+    std::string psq_object;
+    AggregationRouteRelationMeta source_route;
+    AggregationRouteRelationMeta target_route;
+    std::vector<std::string> commitment_order;
+    bool operator==(const AggregationRelationMeta&) const = default;
+};
+
+// Cross-domain terminal equality for one of the protocol's native LogUp
+// routes.  The edge accumulator is Taylor-shifted onto a verifier-chosen
+// relation point and the node/edge terminal difference is opened as a
+// verifier-reconstructed virtual commitment.  No route terminal scalar is
+// carried by the proof.
+struct RouteTerminalRelationMeta {
+    std::string relation_id;
+    std::string node_accumulator_object;
+    std::string edge_accumulator_object;
+    std::string shifted_accumulator_object;
+    std::string relation_virtual_object;
+    std::string node_domain;
+    std::string edge_domain;
+    std::string challenge_label;
+    algebra::FieldElement node_terminal_point = algebra::FieldElement::zero();
+    algebra::FieldElement edge_terminal_point = algebra::FieldElement::zero();
+    algebra::FieldElement terminal_delta = algebra::FieldElement::zero();
+    std::size_t configured_shift_degree = 0;
+    std::size_t shift_domain_size = 0;
+    bool operator==(const RouteTerminalRelationMeta&) const = default;
+};
+
 struct BindingRelationMeta {
     std::string relation_id;
     std::string object_kind;
@@ -251,7 +378,11 @@ struct BindingRelationMeta {
     std::vector<std::string> work_domains;
     std::vector<std::size_t> real_lengths;
     std::vector<std::string> quotient_relations;
+    std::vector<CanonicalMatrixRelationMeta> canonical_matrices;
+    std::vector<AggregationRelationMeta> aggregation_relations;
+    std::vector<RouteTerminalRelationMeta> route_terminal_relations;
     std::vector<IndexedViewRelationMeta> indexed_views;
+    std::vector<CoefficientBasisRelationMeta> coefficient_basis_relations;
     std::vector<KZGShiftRelationMeta> shift_relations;
     bool operator==(const BindingRelationMeta&) const = default;
 };

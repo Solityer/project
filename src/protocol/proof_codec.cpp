@@ -14,6 +14,7 @@
 
 #include "gatzk/crypto/curve.hpp"
 #include "gatzk/protocol/challenges.hpp"
+#include "gatzk/protocol/quotients.hpp"
 #include "gatzk/protocol/schema.hpp"
 
 namespace gatzk::protocol
@@ -409,25 +410,214 @@ namespace gatzk::protocol
                     }
                 }
 
-                const auto require_empty_non_output_payload = [&]
+                std::vector<std::string> expected_canonical_references;
+                std::vector<std::string> expected_canonical_commitments;
+                std::vector<std::tuple<
+                    std::string, std::string, std::size_t,
+                    PayloadValueKind>> expected_canonical_evaluations;
+                for (const auto& matrix : meta.canonical_matrices)
                 {
-                    if (!subproof.view_references.empty()
-                        || !subproof.view_commitments.empty()
+                    expected_canonical_references.push_back(
+                        matrix.matrix_object);
+                    for (const auto& column : matrix.column_objects)
+                    {
+                        expected_canonical_commitments.push_back(column);
+                        expected_canonical_evaluations.push_back({
+                            column, "N", 2,
+                            PayloadValueKind::MaskedPrivateValue});
+                    }
+                    expected_canonical_commitments.push_back(
+                        matrix.compressed_object);
+                    expected_canonical_evaluations.push_back({
+                        matrix.compressed_object, "N", 2,
+                        PayloadValueKind::MaskedPrivateValue});
+                }
+                const auto canonical_references_match = [&]
+                {
+                    return subproof.view_references.size()
+                            >= expected_canonical_references.size()
+                        && std::equal(
+                            subproof.view_references.begin(),
+                            subproof.view_references.begin()
+                                + static_cast<std::ptrdiff_t>(
+                                    expected_canonical_references.size()),
+                            expected_canonical_references.begin(),
+                            [](const MetadataReference& actual,
+                               const std::string& expected)
+                            { return actual.object_id == expected; });
+                };
+                const auto canonical_commitments_match = [&]
+                {
+                    return subproof.view_commitments.size()
+                            == expected_canonical_commitments.size()
+                        && std::equal(
+                            subproof.view_commitments.begin(),
+                            subproof.view_commitments.end(),
+                            expected_canonical_commitments.begin(),
+                            [](const auto& actual,
+                               const std::string& expected)
+                            { return actual.first == expected; });
+                };
+                std::vector<std::string> expected_aggregation_commitments;
+                std::vector<std::tuple<
+                    std::string, std::string, std::size_t,
+                    PayloadValueKind>> expected_aggregation_relation_evaluations;
+                std::vector<std::tuple<
+                    std::string, std::string, std::size_t,
+                    PayloadValueKind>> expected_aggregation_domain_evaluations;
+                std::vector<std::string> expected_aggregation_openings;
+                const auto append_aggregation_opening = [&](std::string value)
+                {
+                    if (std::find(
+                            expected_aggregation_openings.begin(),
+                            expected_aggregation_openings.end(), value)
+                        == expected_aggregation_openings.end())
+                        expected_aggregation_openings.push_back(
+                            std::move(value));
+                };
+                for (const auto& aggregation : meta.aggregation_relations)
+                {
+                    expected_aggregation_commitments.insert(
+                        expected_aggregation_commitments.end(),
+                        aggregation.commitment_order.begin(),
+                        aggregation.commitment_order.end());
+                    for (const auto* route : {
+                             &aggregation.source_route,
+                             &aggregation.target_route})
+                    {
+                        expected_aggregation_relation_evaluations.push_back({
+                            route->shifted_accumulator_object + ":u_rel",
+                            "relation", 1,
+                            PayloadValueKind::MaskedPrivateValue});
+                        const auto challenge = proof.challenges.find(
+                            route->terminal_challenge_label);
+                        if (challenge == proof.challenges.end())
+                            throw std::runtime_error(
+                                "proof parser Pi_bind missing aggregation terminal challenge");
+                        append_aggregation_opening(
+                            "W_ext:" + challenge->second.to_string());
+                        append_aggregation_opening(
+                            "W_ext:"
+                            + (challenge->second + route->terminal_delta)
+                                  .to_string());
+                        append_aggregation_opening(
+                            "W_ext:" + route->node_terminal_point.to_string());
+                    }
+                    for (const auto* object : {
+                             &aggregation.source_node_object,
+                             &aggregation.target_node_object})
+                        expected_aggregation_domain_evaluations.push_back({
+                            *object, aggregation.node_domain, 2,
+                            PayloadValueKind::MaskedPrivateValue});
+                    for (const auto* route : {
+                             &aggregation.source_route,
+                             &aggregation.target_route})
+                        for (const auto* object : {
+                                 &route->table_object,
+                                 &route->node_inverse_object,
+                                 &route->node_accumulator_object})
+                            expected_aggregation_domain_evaluations.push_back({
+                                *object, aggregation.node_domain, 2,
+                                PayloadValueKind::MaskedPrivateValue});
+                    for (const auto* object : {
+                             &aggregation.source_edge_object,
+                             &aggregation.target_edge_object,
+                             &aggregation.product_object,
+                             &aggregation.psq_object})
+                        expected_aggregation_domain_evaluations.push_back({
+                            *object, aggregation.edge_domain, 2,
+                            PayloadValueKind::MaskedPrivateValue});
+                    for (const auto* route : {
+                             &aggregation.source_route,
+                             &aggregation.target_route})
+                        for (const auto* object : {
+                                 &route->query_object,
+                                 &route->edge_inverse_object,
+                                 &route->edge_accumulator_object})
+                            expected_aggregation_domain_evaluations.push_back({
+                                *object, aggregation.edge_domain, 2,
+                                PayloadValueKind::MaskedPrivateValue});
+                }
+                const bool aggregation_commitments_match =
+                    subproof.aggregation_commitments.size()
+                        == expected_aggregation_commitments.size()
+                    && std::equal(
+                        subproof.aggregation_commitments.begin(),
+                        subproof.aggregation_commitments.end(),
+                        expected_aggregation_commitments.begin(),
+                        [](const auto& actual, const std::string& expected)
+                        { return actual.first == expected; });
+                if (meta.object_kind != "output")
+                {
+                    auto expected_evaluations =
+                        expected_aggregation_relation_evaluations;
+                    expected_evaluations.insert(
+                        expected_evaluations.end(),
+                        expected_canonical_evaluations.begin(),
+                        expected_canonical_evaluations.end());
+                    expected_evaluations.insert(
+                        expected_evaluations.end(),
+                        expected_aggregation_domain_evaluations.begin(),
+                        expected_aggregation_domain_evaluations.end());
+                    const bool evaluations_match =
+                        subproof.evaluations.size()
+                            == expected_evaluations.size()
+                        && std::equal(
+                            subproof.evaluations.begin(),
+                            subproof.evaluations.end(),
+                            expected_evaluations.begin(),
+                            [](const BindingEvaluation& actual,
+                               const auto& expected)
+                            {
+                                return actual.object_id == std::get<0>(expected)
+                                    && actual.domain == std::get<1>(expected)
+                                    && actual.values.size() == std::get<2>(expected)
+                                    && actual.kind == std::get<3>(expected);
+                            });
+                    auto expected_openings = expected_aggregation_openings;
+                    if (!meta.canonical_matrices.empty())
+                    {
+                        const auto point = proof.challenges.at("z_N");
+                        expected_openings.push_back(
+                            "Open_dom:N:" + point.to_string());
+                        expected_openings.push_back(
+                            "Open_dom:N:"
+                            + (point * context.domains.n->omega).to_string());
+                    }
+                    if (!meta.aggregation_relations.empty())
+                    {
+                        const auto point = proof.challenges.at("z_edge");
+                        expected_openings.push_back(
+                            "Open_dom:edge:" + point.to_string());
+                        expected_openings.push_back(
+                            "Open_dom:edge:"
+                            + (point * context.domains.edge->omega).to_string());
+                    }
+                    const bool opening_references_match =
+                        subproof.opening_references.size()
+                            == expected_openings.size()
+                        && std::equal(
+                            subproof.opening_references.begin(),
+                            subproof.opening_references.end(),
+                            expected_openings.begin(),
+                            [](const MetadataReference& actual,
+                               const std::string& expected)
+                            { return actual.object_id == expected; });
+                    if (!canonical_references_match()
+                        || subproof.view_references.size()
+                            != expected_canonical_references.size()
+                        || !canonical_commitments_match()
                         || !subproof.view_logup_commitments.empty()
-                        || !subproof.aggregation_commitments.empty()
+                        || !aggregation_commitments_match
                         || !subproof.basis_commitments.empty()
                         || !subproof.crpc_commitments.empty()
                         || !subproof.relation_commitments.empty()
-                        || !subproof.evaluations.empty()
-                        || !subproof.opening_references.empty())
+                        || !evaluations_match
+                        || !opening_references_match)
                     {
                         throw std::runtime_error(
                             "proof parser Pi_bind unexpected non-output payload");
                     }
-                };
-                if (meta.object_kind != "output")
-                {
-                    require_empty_non_output_payload();
                     continue;
                 }
 
@@ -443,12 +633,19 @@ namespace gatzk::protocol
                         "proof parser Pi_bind output bias relation is not unique");
                 const auto& relation = *relation_ptr;
                 const bool same_point = relation.configured_degrees.empty();
-                const std::vector<std::string> expected_view_references = {
-                    view.canonical_object,
-                    view.view_object,
-                    "public:" + view.canonical_selector_id,
-                    "public:" + view.query_selector_id,
-                };
+                if (meta.coefficient_basis_relations.size() != 1)
+                    throw std::runtime_error(
+                        "proof parser Pi_bind coefficient basis relation is not unique");
+                const auto& basis = meta.coefficient_basis_relations.front();
+                auto expected_view_references = expected_canonical_references;
+                expected_view_references.insert(
+                    expected_view_references.end(),
+                    {
+                        view.canonical_object,
+                        view.view_object,
+                        "public:" + view.canonical_selector_id,
+                        "public:" + view.query_selector_id,
+                    });
                 if (subproof.view_references.size()
                         != expected_view_references.size()
                     || !std::equal(
@@ -462,10 +659,17 @@ namespace gatzk::protocol
                     throw std::runtime_error(
                         "proof parser Pi_bind Com_view reference shape mismatch");
                 }
-                if (!subproof.view_commitments.empty()
-                    || !subproof.aggregation_commitments.empty()
-                    || !subproof.basis_commitments.empty()
+                if (!canonical_commitments_match()
+                    || !aggregation_commitments_match
                     || !subproof.crpc_commitments.empty()
+                    || subproof.basis_commitments.size()
+                        != basis.commitment_order.size()
+                    || !std::equal(
+                        subproof.basis_commitments.begin(),
+                        subproof.basis_commitments.end(),
+                        basis.commitment_order.begin(),
+                        [](const auto& actual, const std::string& expected)
+                        { return actual.first == expected; })
                     || subproof.view_logup_commitments.size()
                         != view.commitment_order.size()
                     || !std::equal(
@@ -474,11 +678,19 @@ namespace gatzk::protocol
                         view.commitment_order.begin(),
                         [](const auto& actual, const std::string& expected)
                         { return actual.first == expected; })
-                    || (same_point
-                        ? !subproof.relation_commitments.empty()
-                        : (subproof.relation_commitments.size() != 1
-                           || subproof.relation_commitments.front().first
-                              != output_bias_view_label(head, "R_shifted"))))
+                    || subproof.relation_commitments.size()
+                        != basis.chunks.size() + (same_point ? 0 : 1)
+                    || (!same_point
+                        && subproof.relation_commitments.front().first
+                            != output_bias_view_label(head, "R_shifted"))
+                    || !std::equal(
+                        subproof.relation_commitments.end()
+                            - static_cast<std::ptrdiff_t>(basis.chunks.size()),
+                        subproof.relation_commitments.end(),
+                        basis.chunks.begin(),
+                        [](const auto& actual, const auto& chunk)
+                        { return actual.first
+                            == chunk.shifted_accumulator_object; }))
                 {
                     throw std::runtime_error(
                         "proof parser Pi_bind commitment group shape mismatch");
@@ -506,12 +718,45 @@ namespace gatzk::protocol
                         {output_bias_view_label(head, "R_qry"),
                          "edge", 2, PayloadValueKind::MaskedPrivateValue},
                     };
+                expected_evaluations.insert(
+                    expected_evaluations.begin(),
+                    expected_aggregation_relation_evaluations.begin(),
+                    expected_aggregation_relation_evaluations.end());
                 if (!same_point)
                     expected_evaluations.insert(
-                        expected_evaluations.begin(),
+                        expected_evaluations.begin()
+                            + static_cast<std::ptrdiff_t>(
+                                expected_aggregation_relation_evaluations.size()),
                         {output_bias_view_label(head, "R_shifted") + ":u_rel",
                          "relation", 1,
                          PayloadValueKind::MaskedPrivateValue});
+                auto basis_eval_position = expected_evaluations.begin()
+                    + static_cast<std::ptrdiff_t>(
+                        expected_aggregation_relation_evaluations.size()
+                        + (same_point ? 1 : 2));
+                for (const auto& chunk : basis.chunks)
+                    basis_eval_position = expected_evaluations.insert(
+                        basis_eval_position,
+                        {chunk.shifted_accumulator_object + ":u_rel",
+                         "relation", 1,
+                         PayloadValueKind::MaskedPrivateValue}) + 1;
+                for (const auto& chunk : basis.chunks)
+                {
+                    expected_evaluations.push_back({
+                        chunk.object_id, "edge", 2,
+                        PayloadValueKind::MaskedPrivateValue});
+                    expected_evaluations.push_back({
+                        chunk.accumulator_object, "edge", 2,
+                        PayloadValueKind::MaskedPrivateValue});
+                }
+                expected_evaluations.insert(
+                    expected_evaluations.end(),
+                    expected_canonical_evaluations.begin(),
+                    expected_canonical_evaluations.end());
+                expected_evaluations.insert(
+                    expected_evaluations.end(),
+                    expected_aggregation_domain_evaluations.begin(),
+                    expected_aggregation_domain_evaluations.end());
                 if (subproof.evaluations.size() != expected_evaluations.size()
                     || !std::equal(
                         subproof.evaluations.begin(),
@@ -534,7 +779,8 @@ namespace gatzk::protocol
                 if (challenge_it == proof.challenges.end())
                     throw std::runtime_error(
                         "proof parser Pi_bind missing relation challenge");
-                std::vector<std::string> expected_opening_references;
+                std::vector<std::string> expected_opening_references =
+                    expected_aggregation_openings;
                 const auto append_unique = [&](std::string reference)
                 {
                     if (std::find(
@@ -560,6 +806,22 @@ namespace gatzk::protocol
                     append_unique(
                         "W_ext:" + relation.canonical_points.at(0).to_string());
                 }
+                const auto gamma_it = proof.challenges.find(
+                    basis.gamma_challenge_label);
+                const auto basis_y_it = proof.challenges.find(
+                    basis.relation_challenge_label);
+                if (gamma_it == proof.challenges.end()
+                    || basis_y_it == proof.challenges.end())
+                    throw std::runtime_error(
+                        "proof parser Pi_bind missing coefficient basis challenge");
+                append_unique(
+                    "W_ext:" + basis_y_it->second.to_string());
+                for (const auto& chunk : basis.chunks)
+                    append_unique(
+                        "W_ext:"
+                        + (basis_y_it->second + chunk.terminal_point
+                           - gamma_it->second).to_string());
+                append_unique("W_ext:" + gamma_it->second.to_string());
                 for (const auto& [domain, point, omega] :
                      std::vector<std::tuple<std::string,
                          algebra::FieldElement, algebra::FieldElement>>{
@@ -574,6 +836,12 @@ namespace gatzk::protocol
                         "Open_dom:" + domain + ":"
                         + (point * omega).to_string());
                 }
+                const auto n_point = proof.challenges.at("z_N");
+                append_unique(
+                    "Open_dom:N:" + n_point.to_string());
+                append_unique(
+                    "Open_dom:N:"
+                    + (n_point * context.domains.n->omega).to_string());
                 if (subproof.opening_references.size()
                         != expected_opening_references.size()
                     || !std::equal(
@@ -691,6 +959,83 @@ namespace gatzk::protocol
             write_string_vector(pi_bind, meta.work_domains);
             write_size_vector(pi_bind, meta.real_lengths);
             write_string_vector(pi_bind, meta.quotient_relations);
+            pi_bind.u64(meta.canonical_matrices.size());
+            for (const auto& matrix : meta.canonical_matrices)
+            {
+                pi_bind.string(matrix.relation_id);
+                pi_bind.string(matrix.matrix_object);
+                pi_bind.string(matrix.canonical_domain);
+                pi_bind.u64(matrix.row_count);
+                pi_bind.u64(matrix.column_count);
+                write_string_vector(pi_bind, matrix.column_objects);
+                pi_bind.string(matrix.compressed_object);
+                pi_bind.string(matrix.compression_challenge_label);
+            }
+            const auto write_aggregation_route = [&](const auto& route)
+            {
+                for (const auto* value : {
+                         &route.relation_id, &route.index_object,
+                         &route.node_value_object, &route.edge_value_object,
+                         &route.table_object, &route.query_object,
+                         &route.multiplicity_object, &route.node_inverse_object,
+                         &route.edge_inverse_object,
+                         &route.node_accumulator_object,
+                         &route.edge_accumulator_object,
+                         &route.shifted_accumulator_object,
+                         &route.relation_virtual_object,
+                         &route.eta_challenge_label,
+                         &route.beta_challenge_label,
+                         &route.terminal_challenge_label})
+                    pi_bind.string(*value);
+                pi_bind.scalar(route.node_terminal_point);
+                pi_bind.scalar(route.edge_terminal_point);
+                pi_bind.scalar(route.terminal_delta);
+                pi_bind.u64(route.configured_shift_degree);
+                pi_bind.u64(route.shift_domain_size);
+            };
+            pi_bind.u64(meta.aggregation_relations.size());
+            for (const auto& relation : meta.aggregation_relations)
+            {
+                for (const auto* value : {
+                         &relation.relation_id,
+                         &relation.source_matrix_object,
+                         &relation.target_matrix_object,
+                         &relation.alpha_object,
+                         &relation.node_domain,
+                         &relation.edge_domain,
+                         &relation.compression_challenge_label,
+                         &relation.source_node_object,
+                         &relation.target_node_object,
+                         &relation.source_edge_object,
+                         &relation.target_edge_object,
+                         &relation.product_object,
+                         &relation.psq_object})
+                    pi_bind.string(*value);
+                pi_bind.u64(relation.row_count);
+                pi_bind.u64(relation.column_count);
+                write_aggregation_route(relation.source_route);
+                write_aggregation_route(relation.target_route);
+                write_string_vector(pi_bind, relation.commitment_order);
+            }
+            pi_bind.u64(meta.route_terminal_relations.size());
+            for (const auto& relation : meta.route_terminal_relations)
+            {
+                for (const auto* value : {
+                         &relation.relation_id,
+                         &relation.node_accumulator_object,
+                         &relation.edge_accumulator_object,
+                         &relation.shifted_accumulator_object,
+                         &relation.relation_virtual_object,
+                         &relation.node_domain,
+                         &relation.edge_domain,
+                         &relation.challenge_label})
+                    pi_bind.string(*value);
+                pi_bind.scalar(relation.node_terminal_point);
+                pi_bind.scalar(relation.edge_terminal_point);
+                pi_bind.scalar(relation.terminal_delta);
+                pi_bind.u64(relation.configured_shift_degree);
+                pi_bind.u64(relation.shift_domain_size);
+            }
             pi_bind.u64(meta.indexed_views.size());
             for (const auto& view : meta.indexed_views)
             {
@@ -708,6 +1053,36 @@ namespace gatzk::protocol
                 pi_bind.string(view.eta_challenge_label);
                 pi_bind.string(view.beta_challenge_label);
                 write_string_vector(pi_bind, view.commitment_order);
+            }
+            pi_bind.u64(meta.coefficient_basis_relations.size());
+            for (const auto& relation : meta.coefficient_basis_relations)
+            {
+                pi_bind.string(relation.relation_id);
+                pi_bind.string(relation.canonical_object);
+                pi_bind.string(relation.coefficient_object);
+                pi_bind.string(relation.carrier_domain);
+                pi_bind.u64(relation.low_degree_length);
+                pi_bind.u64(relation.tail_length);
+                pi_bind.u64(relation.total_length);
+                write_size_vector(pi_bind, relation.semantic_positions);
+                pi_bind.u64(relation.chunks.size());
+                for (const auto& chunk : relation.chunks)
+                {
+                    pi_bind.string(chunk.object_id);
+                    pi_bind.string(chunk.accumulator_object);
+                    pi_bind.string(chunk.shifted_accumulator_object);
+                    pi_bind.u64(chunk.chunk_index);
+                    pi_bind.u64(chunk.offset);
+                    pi_bind.u64(chunk.length);
+                    pi_bind.scalar(chunk.terminal_point);
+                    pi_bind.u64(chunk.configured_shift_degree);
+                    pi_bind.u64(chunk.shift_domain_size);
+                }
+                pi_bind.string(relation.power_object);
+                pi_bind.string(relation.gamma_challenge_label);
+                pi_bind.string(relation.relation_challenge_label);
+                write_string_vector(pi_bind, relation.commitment_order);
+                write_string_vector(pi_bind, relation.opening_claim_order);
             }
             pi_bind.u64(meta.shift_relations.size());
             for (const auto& relation : meta.shift_relations)
@@ -901,6 +1276,105 @@ namespace gatzk::protocol
             meta.work_domains = read_string_vector(pi_bind, "Pi_bind domains");
             meta.real_lengths = read_size_vector(pi_bind, "Pi_bind real lengths");
             meta.quotient_relations = read_string_vector(pi_bind, "Pi_bind quotient relations");
+            const auto canonical_matrix_count = pi_bind.count(
+                "Pi_bind canonical matrices");
+            meta.canonical_matrices.reserve(canonical_matrix_count);
+            for (std::size_t i = 0; i < canonical_matrix_count; ++i)
+            {
+                CanonicalMatrixRelationMeta matrix;
+                matrix.relation_id = pi_bind.string();
+                matrix.matrix_object = pi_bind.string();
+                matrix.canonical_domain = pi_bind.string();
+                matrix.row_count = pi_bind.count(
+                    "Pi_bind canonical matrix rows");
+                matrix.column_count = pi_bind.count(
+                    "Pi_bind canonical matrix columns");
+                matrix.column_objects = read_string_vector(
+                    pi_bind, "Pi_bind canonical column objects");
+                matrix.compressed_object = pi_bind.string();
+                matrix.compression_challenge_label = pi_bind.string();
+                meta.canonical_matrices.push_back(std::move(matrix));
+            }
+            const auto read_aggregation_route = [&]
+            {
+                AggregationRouteRelationMeta route;
+                route.relation_id = pi_bind.string();
+                route.index_object = pi_bind.string();
+                route.node_value_object = pi_bind.string();
+                route.edge_value_object = pi_bind.string();
+                route.table_object = pi_bind.string();
+                route.query_object = pi_bind.string();
+                route.multiplicity_object = pi_bind.string();
+                route.node_inverse_object = pi_bind.string();
+                route.edge_inverse_object = pi_bind.string();
+                route.node_accumulator_object = pi_bind.string();
+                route.edge_accumulator_object = pi_bind.string();
+                route.shifted_accumulator_object = pi_bind.string();
+                route.relation_virtual_object = pi_bind.string();
+                route.eta_challenge_label = pi_bind.string();
+                route.beta_challenge_label = pi_bind.string();
+                route.terminal_challenge_label = pi_bind.string();
+                route.node_terminal_point = pi_bind.scalar();
+                route.edge_terminal_point = pi_bind.scalar();
+                route.terminal_delta = pi_bind.scalar();
+                route.configured_shift_degree = pi_bind.count(
+                    "Pi_bind aggregation route shift degree");
+                route.shift_domain_size = pi_bind.count(
+                    "Pi_bind aggregation route shift domain");
+                return route;
+            };
+            const auto aggregation_relation_count = pi_bind.count(
+                "Pi_bind aggregation relations");
+            meta.aggregation_relations.reserve(aggregation_relation_count);
+            for (std::size_t i = 0; i < aggregation_relation_count; ++i)
+            {
+                AggregationRelationMeta relation;
+                relation.relation_id = pi_bind.string();
+                relation.source_matrix_object = pi_bind.string();
+                relation.target_matrix_object = pi_bind.string();
+                relation.alpha_object = pi_bind.string();
+                relation.node_domain = pi_bind.string();
+                relation.edge_domain = pi_bind.string();
+                relation.compression_challenge_label = pi_bind.string();
+                relation.source_node_object = pi_bind.string();
+                relation.target_node_object = pi_bind.string();
+                relation.source_edge_object = pi_bind.string();
+                relation.target_edge_object = pi_bind.string();
+                relation.product_object = pi_bind.string();
+                relation.psq_object = pi_bind.string();
+                relation.row_count = pi_bind.count(
+                    "Pi_bind aggregation rows");
+                relation.column_count = pi_bind.count(
+                    "Pi_bind aggregation columns");
+                relation.source_route = read_aggregation_route();
+                relation.target_route = read_aggregation_route();
+                relation.commitment_order = read_string_vector(
+                    pi_bind, "Pi_bind aggregation commitment order");
+                meta.aggregation_relations.push_back(std::move(relation));
+            }
+            const auto route_terminal_count = pi_bind.count(
+                "Pi_bind route terminal relations");
+            meta.route_terminal_relations.reserve(route_terminal_count);
+            for (std::size_t i = 0; i < route_terminal_count; ++i)
+            {
+                RouteTerminalRelationMeta relation;
+                relation.relation_id = pi_bind.string();
+                relation.node_accumulator_object = pi_bind.string();
+                relation.edge_accumulator_object = pi_bind.string();
+                relation.shifted_accumulator_object = pi_bind.string();
+                relation.relation_virtual_object = pi_bind.string();
+                relation.node_domain = pi_bind.string();
+                relation.edge_domain = pi_bind.string();
+                relation.challenge_label = pi_bind.string();
+                relation.node_terminal_point = pi_bind.scalar();
+                relation.edge_terminal_point = pi_bind.scalar();
+                relation.terminal_delta = pi_bind.scalar();
+                relation.configured_shift_degree = pi_bind.count(
+                    "Pi_bind route terminal shift degree");
+                relation.shift_domain_size = pi_bind.count(
+                    "Pi_bind route terminal shift domain");
+                meta.route_terminal_relations.push_back(std::move(relation));
+            }
             const auto indexed_view_count = pi_bind.count("Pi_bind indexed views");
             meta.indexed_views.reserve(indexed_view_count);
             for (std::size_t i = 0; i < indexed_view_count; ++i)
@@ -922,6 +1396,55 @@ namespace gatzk::protocol
                 view.commitment_order = read_string_vector(
                     pi_bind, "Pi_bind indexed commitment order");
                 meta.indexed_views.push_back(std::move(view));
+            }
+            const auto basis_relation_count = pi_bind.count(
+                "Pi_bind coefficient basis relations");
+            meta.coefficient_basis_relations.reserve(basis_relation_count);
+            for (std::size_t i = 0; i < basis_relation_count; ++i)
+            {
+                CoefficientBasisRelationMeta relation;
+                relation.relation_id = pi_bind.string();
+                relation.canonical_object = pi_bind.string();
+                relation.coefficient_object = pi_bind.string();
+                relation.carrier_domain = pi_bind.string();
+                relation.low_degree_length = pi_bind.count(
+                    "Pi_bind coefficient basis low degree length");
+                relation.tail_length = pi_bind.count(
+                    "Pi_bind coefficient basis tail length");
+                relation.total_length = pi_bind.count(
+                    "Pi_bind coefficient basis total length");
+                relation.semantic_positions = read_size_vector(
+                    pi_bind, "Pi_bind coefficient basis semantic positions");
+                const auto chunk_count = pi_bind.count(
+                    "Pi_bind coefficient basis chunks");
+                relation.chunks.reserve(chunk_count);
+                for (std::size_t j = 0; j < chunk_count; ++j)
+                {
+                    relation.chunks.push_back(CoefficientBasisChunkMeta{
+                        .object_id = pi_bind.string(),
+                        .accumulator_object = pi_bind.string(),
+                        .shifted_accumulator_object = pi_bind.string(),
+                        .chunk_index = pi_bind.count(
+                            "Pi_bind coefficient basis chunk index"),
+                        .offset = pi_bind.count(
+                            "Pi_bind coefficient basis chunk offset"),
+                        .length = pi_bind.count(
+                            "Pi_bind coefficient basis chunk length"),
+                        .terminal_point = pi_bind.scalar(),
+                        .configured_shift_degree = pi_bind.count(
+                            "Pi_bind coefficient basis chunk shift degree"),
+                        .shift_domain_size = pi_bind.count(
+                            "Pi_bind coefficient basis chunk shift domain size"),
+                    });
+                }
+                relation.power_object = pi_bind.string();
+                relation.gamma_challenge_label = pi_bind.string();
+                relation.relation_challenge_label = pi_bind.string();
+                relation.commitment_order = read_string_vector(
+                    pi_bind, "Pi_bind coefficient basis commitment order");
+                relation.opening_claim_order = read_string_vector(
+                    pi_bind, "Pi_bind coefficient basis opening order");
+                meta.coefficient_basis_relations.push_back(std::move(relation));
             }
             const auto shift_relation_count = pi_bind.count("Pi_bind shift relations");
             meta.shift_relations.reserve(shift_relation_count);
@@ -1063,6 +1586,92 @@ namespace gatzk::protocol
                     {evaluation.object_id, evaluation.values});
                 bundle_it->second.value_kinds.push_back(evaluation.kind);
             }
+        }
+        // Eval_dom omits values whose unique wire owner is Eval_bind.  Restore
+        // the canonical global point-group order after merging both blocks;
+        // appending Eval_bind values would place them after t_D/R_t_D and make
+        // the parser disagree with the shared prover/verifier schema.
+        for (auto& [bundle_name, bundle] : proof.domain_openings)
+        {
+            std::string trace_domain;
+            std::string quotient_name;
+            if (bundle_name == "FH")
+            {
+                trace_domain = "FH";
+                quotient_name = "t_FH";
+            }
+            else if (bundle_name == "edge")
+            {
+                trace_domain = "edge";
+                quotient_name = "t_edge";
+            }
+            else if (bundle_name == "in")
+            {
+                trace_domain = "in";
+                quotient_name = "t_in";
+            }
+            else if (bundle_name == "d_h")
+            {
+                trace_domain = "d";
+                quotient_name = "t_d_h";
+            }
+            else if (bundle_name == "cat")
+            {
+                trace_domain = "cat";
+                quotient_name = "t_cat";
+            }
+            else if (bundle_name == "C")
+            {
+                trace_domain = "C";
+                quotient_name = "t_C";
+            }
+            else if (bundle_name == "N")
+            {
+                trace_domain = "N";
+                quotient_name = "t_N";
+            }
+            else
+            {
+                throw std::runtime_error(
+                    "proof parser encountered unknown domain bundle: "
+                    + bundle_name);
+            }
+
+            auto expected_labels = domain_opening_labels(context, trace_domain);
+            expected_labels.push_back(quotient_name);
+            expected_labels.push_back(quotient_mask_label(quotient_name));
+            if (bundle.values.size() != expected_labels.size()
+                || bundle.value_kinds.size() != bundle.values.size())
+                throw std::runtime_error(
+                    "proof parser reconstructed domain bundle shape mismatch: "
+                    + bundle_name);
+
+            std::unordered_map<std::string, std::size_t> positions;
+            positions.reserve(bundle.values.size());
+            for (std::size_t i = 0; i < bundle.values.size(); ++i)
+                if (!positions.emplace(bundle.values[i].first, i).second)
+                    throw std::runtime_error(
+                        "proof parser reconstructed duplicate domain value: "
+                        + bundle.values[i].first);
+
+            std::vector<std::pair<std::string, std::vector<algebra::FieldElement>>>
+                ordered_values;
+            std::vector<PayloadValueKind> ordered_kinds;
+            ordered_values.reserve(expected_labels.size());
+            ordered_kinds.reserve(expected_labels.size());
+            for (const auto& label : expected_labels)
+            {
+                const auto position = positions.find(label);
+                if (position == positions.end())
+                    throw std::runtime_error(
+                        "proof parser reconstructed domain bundle is missing: "
+                        + label);
+                ordered_values.push_back(
+                    std::move(bundle.values[position->second]));
+                ordered_kinds.push_back(bundle.value_kinds[position->second]);
+            }
+            bundle.values = std::move(ordered_values);
+            bundle.value_kinds = std::move(ordered_kinds);
         }
 
         std::unordered_map<std::string, crypto::Commitment> dynamic;

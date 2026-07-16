@@ -342,7 +342,23 @@ int main(int argc, char **argv)
             metrics.tamper_tests_ms = std::chrono::duration<double, std::milli>(tamper_end - tamper_start).count();
             if (!reference_consistent)
             {
-                throw std::runtime_error("reference consistency check failed");
+                throw std::runtime_error(
+                    "reference consistency check failed"
+                    " (reference_hash_present="
+                    + std::string(
+                        trace.reference_quant_logits_hash.empty()
+                            ? "false" : "true")
+                    + ", reference_matches_secure="
+                    + std::string(
+                        trace.reference_quant_logits_hash
+                                == trace.secure_trace_logits_hash
+                            ? "true" : "false")
+                    + ", proof_output_matches_trace="
+                    + std::string(
+                        trace.public_logits == parsed_proof.public_logits
+                            ? "true" : "false")
+                    + ", private_plain_count="
+                    + std::to_string(private_plain_count) + ")");
             }
             if (!tamper_rejected)
             {

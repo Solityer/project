@@ -1240,10 +1240,30 @@ namespace gatzk::protocol
                 const auto prefix = "P_h" + std::to_string(head_index) + "_";
                 specs.push_back({"mu_" + suffix + "_proj", prefix + "H_prime", "y_proj_h" + std::to_string(head_index)});
                 specs.push_back({"mu_" + suffix + "_src", prefix + "E_src", "y_src_h" + std::to_string(head_index)});
+                specs.push_back({
+                    hidden_score_mask_eval_name(head_index, "src"),
+                    hidden_score_mask_label(head_index, "src"),
+                    "y_src_h" + std::to_string(head_index)});
                 specs.push_back({"mu_" + suffix + "_dst", prefix + "E_dst", "y_dst_h" + std::to_string(head_index)});
+                specs.push_back({
+                    hidden_score_mask_eval_name(head_index, "dst"),
+                    hidden_score_mask_label(head_index, "dst"),
+                    "y_dst_h" + std::to_string(head_index)});
                 specs.push_back({"mu_" + suffix + "_star", prefix + "H_star", "y_star_h" + std::to_string(head_index)});
+                specs.push_back({
+                    external_mask_eval_name("mu_" + suffix + "_star"),
+                    external_mask_label(prefix + "H_star"),
+                    "y_star_h" + std::to_string(head_index)});
                 specs.push_back({"mu_" + suffix + "_agg_pre", prefix + "H_agg_pre_star", "y_agg_pre_h" + std::to_string(head_index)});
+                specs.push_back({
+                    external_mask_eval_name("mu_" + suffix + "_agg_pre"),
+                    external_mask_label(prefix + "H_agg_pre_star"),
+                    "y_agg_pre_h" + std::to_string(head_index)});
                 specs.push_back({"mu_" + suffix + "_agg", prefix + "H_agg_star", "y_agg_h" + std::to_string(head_index)});
+                specs.push_back({
+                    external_mask_eval_name("mu_" + suffix + "_agg"),
+                    external_mask_label(prefix + "H_agg_star"),
+                    "y_agg_h" + std::to_string(head_index)});
             }
             for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
             {
@@ -1251,6 +1271,15 @@ namespace gatzk::protocol
                 specs.push_back({
                     is_final_layer ? "mu_cat" : "mu_cat_l" + std::to_string(layer_index),
                     hidden_layer_concat_star_label(layer_index, is_final_layer),
+                    hidden_concat_y_name(layer_index, is_final_layer),
+                });
+                const auto concat_eval_name =
+                    is_final_layer ? std::string("mu_cat")
+                                   : "mu_cat_l" + std::to_string(layer_index);
+                specs.push_back({
+                    external_mask_eval_name(concat_eval_name),
+                    external_mask_label(hidden_layer_concat_star_label(
+                        layer_index, is_final_layer)),
                     hidden_concat_y_name(layer_index, is_final_layer),
                 });
             }
@@ -1269,13 +1298,31 @@ namespace gatzk::protocol
                     output_challenge_name("y_src_out", head_index, legacy_single_output),
                 });
                 specs.push_back({
+                    output_score_mask_eval_name(head_index, "src"),
+                    output_score_mask_label(head_index, "src"),
+                    output_challenge_name("y_src_out", head_index, legacy_single_output),
+                });
+                specs.push_back({
                     legacy_single_output ? "mu_out_dst" : output_external_eval_name("dst", head_index, false),
                     prefix + "_E_dst",
                     output_challenge_name("y_dst_out", head_index, legacy_single_output),
                 });
                 specs.push_back({
+                    output_score_mask_eval_name(head_index, "dst"),
+                    output_score_mask_label(head_index, "dst"),
+                    output_challenge_name("y_dst_out", head_index, legacy_single_output),
+                });
+                specs.push_back({
                     legacy_single_output ? "mu_out_star" : output_external_eval_name("star", head_index, false),
                     prefix + "_Y_star",
+                    output_challenge_name("y_out_star", head_index, legacy_single_output),
+                });
+                const auto output_star_eval_name =
+                    legacy_single_output ? std::string("mu_out_star")
+                                         : output_external_eval_name("star", head_index, false);
+                specs.push_back({
+                    external_mask_eval_name(output_star_eval_name),
+                    external_mask_label(prefix + "_Y_star"),
                     output_challenge_name("y_out_star", head_index, legacy_single_output),
                 });
                 if (!legacy_single_output)
@@ -1757,6 +1804,15 @@ namespace gatzk::protocol
                 else if (lazy_full_feature_lookup_trace_enabled(context_) && is_lazy_full_feature_lookup_trace_label(name))
                 {
                     value = evaluate_lazy_full_feature_lookup_trace_poly(context_, challenges_, name, point);
+                    if (const auto polynomial_it = trace_.polynomials.find(name);
+                        polynomial_it != trace_.polynomials.end()
+                        && polynomial_it->second.is_zero_domain_blinded())
+                    {
+                        value += polynomial_it->second.domain->zero_polynomial_eval(point)
+                            * algebra::horner(
+                                polynomial_it->second.zero_domain_blinder,
+                                point);
+                    }
                 }
                 else if (trace_.polynomials.contains(name))
                 {
@@ -2641,6 +2697,16 @@ namespace gatzk::protocol
                 {
                     out[accumulator_index] = FieldElement::zero();
                 }
+                for (std::size_t i = 0; i < labels.size(); ++i)
+                {
+                    const auto polynomial_it = trace_.polynomials.find(labels[i]);
+                    if (polynomial_it == trace_.polynomials.end()
+                        || !polynomial_it->second.is_zero_domain_blinded())
+                        continue;
+                    out[i] += polynomial_it->second.domain->zero_polynomial_eval(point)
+                        * algebra::horner(
+                            polynomial_it->second.zero_domain_blinder, point);
+                }
                 return out;
             }
 
@@ -3521,21 +3587,23 @@ namespace gatzk::protocol
             }
             if (label == "t_FH" || label == "t_edge")
             {
-                // Current edge/FH relations multiply at most three degree-<n columns.
-                // Rotations z -> omega*z keep the same degree; first/last/not_last
-                // have degree n-1. Thus the numerator is <= 3n-3, and after
-                // division by Z_H of degree n the quotient is <= 2n-3.
-                return 2 * domain_size - 3;
+                // FH/edge lookup relations multiply as many as three blinded
+                // columns.  Each private column includes a registered
+                // Z_D*R tail, so the old 2|D| interpolation coset aliased the
+                // highest quotient coefficients.  A 4|D| coset covers the
+                // compiled tail budget.  FH's three registered blinder
+                // coefficients give degree at most 3|D|+2 after division.
+                // The edge relation reaches that same bound because its
+                // blinded lookup/state columns are multiplied by degree-|D|
+                // selectors; the toy regression attains degree 3|D|+2.
+                return 3 * domain_size + 2;
             }
             return std::nullopt;
         }
 
         std::size_t quotient_coset_multiplier(const std::string &label)
         {
-            if (label == "t_FH" || label == "t_edge")
-            {
-                return 2;
-            }
+            (void)label;
             return 4;
         }
 
@@ -3764,6 +3832,14 @@ namespace gatzk::protocol
                             "zero-domain-blinded polynomial exceeds quotient coset size: " + label);
                     }
                     coefficient_work.resize(required_size);
+                    // `mcl::Fr` default construction does not establish a
+                    // canonical zero value.  These are new high-degree
+                    // coefficient slots, so they must be cleared before the
+                    // Z_D*R tail is accumulated into them.
+                    for (std::size_t i = domain_size; i < required_size; ++i)
+                    {
+                        coefficient_work[i].clear();
+                    }
                     for (std::size_t i = 0; i < polynomial.zero_domain_blinder.size(); ++i)
                     {
                         mcl::Fr::sub(
@@ -4028,6 +4104,97 @@ namespace gatzk::protocol
                     // Keep it out of the formal path until equivalence is proved by
                     // a pointwise regression over every registered constraint term.
                 }
+                if (label_ == "t_FH"
+                    && std::getenv("GATZK_DEBUG_QUOTIENT_SELF_CHECK") != nullptr)
+                {
+                    if (root.pow(static_cast<std::uint64_t>(rotation_step_))
+                        != domain_->omega)
+                    {
+                        throw std::runtime_error(
+                            "FH quotient coset rotation is incompatible with domain omega");
+                    }
+                    for (const auto &name : quotient_dependency_labels(
+                             context_, label_))
+                    {
+                        const auto *polynomial = lookup_polynomial(name);
+                        if (polynomial == nullptr && name == "P_H"
+                            && lazy_full_feature_lookup_trace_enabled(context_))
+                            polynomial = lookup_polynomial("P_T_H");
+                        if (polynomial == nullptr)
+                            continue;
+                        const auto materialized_values = coset_values_ptr(name);
+                        auto point = shift_;
+                        for (std::size_t index = 0;
+                             index < target_size_; ++index)
+                        {
+                            const auto direct = polynomial->evaluate(point);
+                            if (materialized_values->at(index) != direct)
+                            {
+                                throw std::runtime_error(
+                                    "FH quotient coset dependency mismatch: "
+                                    + name + " index=" + std::to_string(index)
+                                    + " materialized="
+                                    + materialized_values->at(index).to_string()
+                                    + " direct=" + direct.to_string());
+                            }
+                            point *= root;
+                        }
+                    }
+                }
+                if (label_ == "t_edge"
+                    && std::getenv("GATZK_DEBUG_QUOTIENT_SELF_CHECK") != nullptr)
+                {
+                    EvaluationMemoization direct_memo(
+                        context_, trace_, challenges_);
+                    const auto dependencies = quotient_dependency_labels(
+                        context_, label_);
+                    direct_memo.precompute_named(
+                        dependencies,
+                        {shift_, shift_ * domain_->omega});
+                    for (const auto &name : dependencies)
+                    {
+                        const auto materialized_values = coset_values_ptr(name);
+                        for (const auto &[point, index] : std::array<
+                                 std::pair<FieldElement, std::size_t>, 2>{
+                                 std::pair{shift_, std::size_t{0}},
+                                 std::pair{
+                                     shift_ * domain_->omega,
+                                     rotation_step_}})
+                        {
+                            const auto direct_dependency =
+                                direct_memo.eval_named(name, point);
+                            const auto materialized_dependency =
+                                materialized_values->at(index);
+                            if (materialized_dependency != direct_dependency)
+                            {
+                                throw std::runtime_error(
+                                    "edge quotient coset dependency mismatch: "
+                                    + name + " index=" + std::to_string(index)
+                                    + " materialized="
+                                    + materialized_dependency.to_string()
+                                    + " direct=" + direct_dependency.to_string());
+                            }
+                        }
+                    }
+                    const auto direct = evaluate_t_edge(
+                        context_,
+                        challenges_,
+                        trace_.witness_scalars,
+                        trace_.external_evaluations,
+                        [&](const std::string &name, const FieldElement &point)
+                        {
+                            return direct_memo.eval_named(name, point);
+                        },
+                        shift_);
+                    const auto materialized = evaluate_at_index(0, shift_);
+                    if (materialized != direct)
+                    {
+                        throw std::runtime_error(
+                            "edge quotient coset evaluator mismatch at index 0: "
+                            "materialized=" + materialized.to_string()
+                            + " direct=" + direct.to_string());
+                    }
+                }
                 if (label_ == "t_edge")
                 {
                     progress_note("prove:quotient:t_edge:evaluate:start");
@@ -4084,6 +4251,13 @@ namespace gatzk::protocol
                 }
 
                 auto coefficients = coefficients_from_coset_evaluations(quotient_values, shift_);
+                if (std::getenv("GATZK_DEBUG_QUOTIENT_SELF_CHECK") != nullptr)
+                {
+                    std::cerr << "[quotient-debug] " << label_
+                              << " coefficient_count="
+                              << coefficients.size() << " target_size="
+                              << target_size_ << '\n';
+                }
                 if (label_ == "t_edge")
                 {
                     progress_note("prove:quotient:t_edge:coefficients:done");
@@ -5794,6 +5968,14 @@ namespace gatzk::protocol
                 {
                     return false;
                 }
+                // A committed column carries its own registered Z_edge*R
+                // blinder.  Its semantic expression is equal only on the
+                // edge domain and cannot replace that polynomial on a coset.
+                if (lookup_polynomial(name) != nullptr
+                    || trace_.spilled_polynomials.contains(name))
+                {
+                    return false;
+                }
                 for (std::size_t head_index = 0; head_index < context_.model.hidden_heads.size(); ++head_index)
                 {
                     const auto prefix = "P_h" + std::to_string(head_index) + "_";
@@ -5868,6 +6050,11 @@ namespace gatzk::protocol
             std::optional<FieldElement> t_edge_derived_value_at(const std::string &name, std::size_t index)
             {
                 if (!context_.model.has_real_multihead || label_ != "t_edge")
+                {
+                    return std::nullopt;
+                }
+                if (lookup_polynomial(name) != nullptr
+                    || trace_.spilled_polynomials.contains(name))
                 {
                     return std::nullopt;
                 }
@@ -7484,6 +7671,33 @@ namespace gatzk::protocol
                 append_division_range_dependencies(
                     output_head_prefix(head_index, legacy_single_output) + "_Div_");
                 append_label("P_Q_div_out" + std::to_string(head_index));
+                const auto metadata = build_binding_relation_metadata(context);
+                const auto relation_id =
+                    "bind:output:" + std::to_string(head_index);
+                const auto relation = std::find_if(
+                    metadata.begin(), metadata.end(),
+                    [&](const BindingRelationMeta &candidate)
+                    { return candidate.relation_id == relation_id; });
+                if (relation == metadata.end()
+                    || relation->coefficient_basis_relations.size() != 1)
+                    throw std::runtime_error(
+                        "edge quotient dependency registry is missing coefficient basis metadata");
+                const auto &basis =
+                    relation->coefficient_basis_relations.front();
+                for (const auto &chunk : basis.chunks)
+                {
+                    append_label(chunk.object_id);
+                    for (const auto *region : {
+                             "active", "semantic", "gap", "tail"})
+                        append_label(output_bias_basis_region_selector_label(
+                            head_index, chunk.chunk_index, region));
+                }
+                // Gamma powers are a verifier-reconstructible virtual column,
+                // not a committed/opened Pi_bind object.  The prover keeps the
+                // interpolant only as quotient-construction material.
+                append_label(basis.power_object);
+                for (const auto &chunk : basis.chunks)
+                    append_label(chunk.accumulator_object);
             }
             for (const auto &suffix : division_suffixes)
             {
@@ -7530,7 +7744,10 @@ namespace gatzk::protocol
         std::vector<std::string> multihead_n_dependencies(const ProtocolContext &context)
         {
             std::vector<std::string> labels = domain_opening_labels(context, "N");
-            append_unique_labels(&labels, {"P_I", "P_Q_N"});
+            append_unique_labels(
+                &labels,
+                {"P_I", "P_Q_N", "P_AggBind_index_N",
+                 "P_AggBind_m_src", "P_AggBind_m_dst"});
             return labels;
         }
 
@@ -8139,6 +8356,41 @@ namespace gatzk::protocol
             context,
             "P_Q_N",
             make_shared_eval_poly("P_Q_N", build_selector(context.local.num_nodes, n_size), context.domains.n));
+        std::vector<FieldElement> aggregation_src_multiplicity(
+            n_size, FieldElement::zero());
+        std::vector<FieldElement> aggregation_dst_multiplicity(
+            n_size, FieldElement::zero());
+        for (const auto &edge : context.local.edges)
+        {
+            if (edge.src >= context.local.num_nodes
+                || edge.dst >= context.local.num_nodes)
+                throw std::runtime_error(
+                    "aggregation multiplicity edge escapes local node range");
+            aggregation_src_multiplicity[edge.src] += FieldElement::one();
+            aggregation_dst_multiplicity[edge.dst] += FieldElement::one();
+        }
+        add_public_poly(
+            context,
+            "P_AggBind_m_src",
+            make_shared_eval_poly(
+                "P_AggBind_m_src", std::move(aggregation_src_multiplicity),
+                context.domains.n));
+        add_public_poly(
+            context,
+            "P_AggBind_m_dst",
+            make_shared_eval_poly(
+                "P_AggBind_m_dst", std::move(aggregation_dst_multiplicity),
+                context.domains.n));
+        std::vector<FieldElement> aggregation_node_index(
+            n_size, FieldElement::zero());
+        for (std::size_t node = 0; node < context.local.num_nodes; ++node)
+            aggregation_node_index[node] = FieldElement(node);
+        add_public_poly(
+            context,
+            "P_AggBind_index_N",
+            make_shared_eval_poly(
+                "P_AggBind_index_N", std::move(aggregation_node_index),
+                context.domains.n));
         add_public_poly(
             context,
             "P_Q_proj_valid",
@@ -8182,6 +8434,50 @@ namespace gatzk::protocol
             "P_BiasIndex_edge",
             make_shared_eval_poly(
                 "P_BiasIndex_edge", std::move(bias_index_edge), context.domains.edge));
+        constexpr std::size_t kCoefficientTailBaseObservationCount = 3;
+        const auto bias_basis_chunks = coefficient_chunk_layout(
+            context.local.num_classes + kCoefficientTailBaseObservationCount,
+            edge_size);
+        for (std::size_t head = 0;
+             head < context.model.output_layer.heads.size(); ++head)
+        {
+            for (const auto &chunk : bias_basis_chunks)
+            {
+                std::vector<FieldElement> active(
+                    edge_size, FieldElement::zero());
+                std::vector<FieldElement> semantic(
+                    edge_size, FieldElement::zero());
+                std::vector<FieldElement> gap(
+                    edge_size, FieldElement::zero());
+                std::vector<FieldElement> tail(
+                    edge_size, FieldElement::zero());
+                for (std::size_t row = 0; row < chunk.length; ++row)
+                {
+                    const auto global_index = chunk.offset + row;
+                    active[row] = FieldElement::one();
+                    if (global_index < context.local.num_classes)
+                        semantic[row] = FieldElement::one();
+                    else
+                        tail[row] = FieldElement::one();
+                }
+                for (const auto &[region, values] :
+                     std::vector<std::pair<std::string,
+                         std::vector<FieldElement>>>{
+                         {"active", std::move(active)},
+                         {"semantic", std::move(semantic)},
+                         {"gap", std::move(gap)},
+                         {"tail", std::move(tail)}})
+                {
+                    const auto label =
+                        output_bias_basis_region_selector_label(
+                            head, chunk.chunk_index, region);
+                    add_public_poly(
+                        context, label,
+                        make_shared_eval_poly(
+                            label, values, context.domains.edge));
+                }
+            }
+        }
         if (lazy_large_fh_public_enabled(context))
         {
             add_public_poly(
@@ -8556,6 +8852,213 @@ namespace gatzk::protocol
             progress_note("prove:quotient:start");
             // 先重放动态承诺之前的 transcript，再在这套固定挑战上构造各工作域 quotient。
             const auto pre_quotient_challenges = replay_challenges(context, trace.commitments, {}, &trace.public_metadata);
+            const auto check_fh_domain_constraints = [&]()
+            {
+                const auto fh_value = [&](const std::string &name, std::size_t row)
+                    -> FieldElement
+                {
+                    if (name == "P_H"
+                        && lazy_full_feature_lookup_trace_enabled(context))
+                        return context.public_polynomials.at("P_T_H")
+                            .values().at(row);
+                    if (const auto it = trace.polynomials.find(name);
+                        it != trace.polynomials.end())
+                        return it->second.values().at(row);
+                    if (const auto it = context.public_polynomials.find(name);
+                        it != context.public_polynomials.end())
+                        return it->second.values().at(row);
+                    throw std::runtime_error(
+                        "FH domain self-check is missing polynomial: " + name);
+                };
+                const auto one = FieldElement::one();
+                const auto eta = pre_quotient_challenges.at("eta_feat");
+                const auto eta_squared = eta * eta;
+                const auto beta = pre_quotient_challenges.at("beta_feat");
+                for (std::size_t row = 0; row < context.domains.fh->size; ++row)
+                {
+                    const auto next = (row + 1) % context.domains.fh->size;
+                    const auto q_table = fh_value("P_Q_tbl_feat", row);
+                    const auto q_query = fh_value("P_Q_qry_feat", row);
+                    const auto table = fh_value("P_Table_feat", row);
+                    const auto query = fh_value("P_Query_feat", row);
+                    const auto multiplicity = fh_value("P_m_feat", row);
+                    const auto j_table = fh_value("P_J_tbl_feat", row);
+                    const auto j_query = fh_value("P_J_qry_feat", row);
+                    const auto accumulator = fh_value("P_R_feat", row);
+                    const std::vector<std::pair<std::string, FieldElement>> terms = {
+                        {"first_accumulator", row == 0
+                            ? accumulator : FieldElement::zero()},
+                        {"recurrence", row + 1 < context.domains.fh->size
+                            ? fh_value("P_R_feat", next) - accumulator
+                                - q_table * multiplicity * j_table
+                                + q_query * j_query
+                            : FieldElement::zero()},
+                        {"last_accumulator", row + 1 == context.domains.fh->size
+                            ? accumulator : FieldElement::zero()},
+                        {"table_inverse", q_table
+                            * ((table + beta) * j_table - one)},
+                        {"table_padding", (one - q_table) * j_table},
+                        {"query_inverse", q_query
+                            * ((query + beta) * j_query - one)},
+                        {"query_padding", (one - q_query) * j_query},
+                        {"table_encoding", table
+                            - (fh_value("P_Row_feat_tbl", row)
+                                + eta * fh_value("P_Col_feat_tbl", row)
+                                + eta_squared * fh_value("P_T_H", row))},
+                        {"query_encoding", query
+                            - (fh_value("P_I_feat_qry", row)
+                                + eta * fh_value("P_Col_feat_qry", row)
+                                + eta_squared * fh_value("P_H", row))},
+                    };
+                    for (const auto &[term_name, term] : terms)
+                    {
+                        if (!term.is_zero())
+                        {
+                            throw std::runtime_error(
+                                "FH domain constraint violation: row="
+                                + std::to_string(row) + " term=" + term_name
+                                + " value=" + term.to_string());
+                        }
+                    }
+                }
+            };
+            if (std::getenv("GATZK_DEBUG_QUOTIENT_SELF_CHECK") != nullptr)
+            {
+                check_fh_domain_constraints();
+                std::size_t max_edge_blinder = 0;
+                std::vector<std::string> max_edge_blinder_labels;
+                for (const auto &[name, polynomial] : trace.polynomials)
+                {
+                    if (polynomial.domain != context.domains.edge)
+                        continue;
+                    const auto size = polynomial.zero_domain_blinder.size();
+                    if (size > max_edge_blinder)
+                    {
+                        max_edge_blinder = size;
+                        max_edge_blinder_labels = {name};
+                    }
+                    else if (size == max_edge_blinder && size != 0)
+                    {
+                        max_edge_blinder_labels.push_back(name);
+                    }
+                }
+                std::cerr << "[quotient-debug] edge max_blinder="
+                          << max_edge_blinder << " labels=";
+                for (std::size_t i = 0;
+                     i < std::min<std::size_t>(
+                         max_edge_blinder_labels.size(), 8); ++i)
+                {
+                    if (i != 0) std::cerr << ',';
+                    std::cerr << max_edge_blinder_labels[i];
+                }
+                std::cerr << '\n';
+
+                std::vector<std::size_t> sample_rows = {
+                    0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+                    context.local.edges.size(),
+                    context.local.num_nodes * context.local.num_classes,
+                    context.tables.range.size(),
+                    context.domains.edge->size - 2,
+                    context.domains.edge->size - 1,
+                };
+                std::sort(sample_rows.begin(), sample_rows.end());
+                sample_rows.erase(
+                    std::remove_if(
+                        sample_rows.begin(), sample_rows.end(),
+                        [&](std::size_t row)
+                        { return row >= context.domains.edge->size; }),
+                    sample_rows.end());
+                sample_rows.erase(
+                    std::unique(sample_rows.begin(), sample_rows.end()),
+                    sample_rows.end());
+                std::vector<FieldElement> sample_points;
+                sample_points.reserve(sample_rows.size() * 2);
+                for (const auto row : sample_rows)
+                {
+                    const auto point = context.domains.edge->point_at(row);
+                    sample_points.push_back(point);
+                    sample_points.push_back(point * context.domains.edge->omega);
+                }
+                EvaluationMemoization edge_domain_memo(
+                    context, trace, pre_quotient_challenges);
+                edge_domain_memo.precompute_named(
+                    quotient_dependency_labels(context, "t_edge"),
+                    sample_points);
+                for (const auto row : sample_rows)
+                {
+                    const auto point = context.domains.edge->point_at(row);
+                    std::size_t first_nonzero_term =
+                        std::numeric_limits<std::size_t>::max();
+                    FieldElement first_nonzero_value = FieldElement::zero();
+                    const auto numerator = evaluate_t_edge(
+                        context,
+                        pre_quotient_challenges,
+                        trace.witness_scalars,
+                        trace.external_evaluations,
+                        [&](const std::string &name, const FieldElement &at)
+                        {
+                            return edge_domain_memo.eval_named(name, at);
+                        },
+                        point,
+                        true,
+                        &first_nonzero_term,
+                        &first_nonzero_value);
+                    if (!numerator.is_zero())
+                    {
+                        throw std::runtime_error(
+                            "edge domain constraint violation: row="
+                            + std::to_string(row)
+                            + " first_term="
+                            + std::to_string(first_nonzero_term)
+                            + " first_value="
+                            + first_nonzero_value.to_string()
+                            + " numerator=" + numerator.to_string());
+                    }
+                }
+
+                std::vector<FieldElement> d_points;
+                d_points.reserve(context.domains.d->size * 2);
+                for (std::size_t row = 0; row < context.domains.d->size; ++row)
+                {
+                    const auto point = context.domains.d->point_at(row);
+                    d_points.push_back(point);
+                    d_points.push_back(point * context.domains.d->omega);
+                }
+                EvaluationMemoization d_domain_memo(
+                    context, trace, pre_quotient_challenges);
+                d_domain_memo.precompute_named(
+                    quotient_dependency_labels(context, "t_d_h"), d_points);
+                for (std::size_t row = 0; row < context.domains.d->size; ++row)
+                {
+                    const auto point = context.domains.d->point_at(row);
+                    std::size_t first_nonzero_term =
+                        std::numeric_limits<std::size_t>::max();
+                    FieldElement first_nonzero_value = FieldElement::zero();
+                    const auto numerator = evaluate_t_d(
+                        context,
+                        pre_quotient_challenges,
+                        trace.external_evaluations,
+                        [&](const std::string &name, const FieldElement &at)
+                        {
+                            return d_domain_memo.eval_named(name, at);
+                        },
+                        point,
+                        true,
+                        &first_nonzero_term,
+                        &first_nonzero_value);
+                    if (!numerator.is_zero())
+                    {
+                        throw std::runtime_error(
+                            "d_h domain constraint violation: row="
+                            + std::to_string(row)
+                            + " first_term="
+                            + std::to_string(first_nonzero_term)
+                            + " first_value="
+                            + first_nonzero_value.to_string()
+                            + " numerator=" + numerator.to_string());
+                    }
+                }
+            }
             const auto quotient_cache_key = quotient_build_cache_key(context, trace);
             std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry;
             if (route2.fft_backend_upgrade)
@@ -8605,6 +9108,54 @@ namespace gatzk::protocol
                 // reused by a later fresh-proof measurement.
             }
             const auto challenges = replay_challenges(context, trace.commitments, quotient_commitments, &trace.public_metadata);
+            if (std::getenv("GATZK_DEBUG_QUOTIENT_SELF_CHECK") != nullptr)
+            {
+                const auto z = challenges.at("z_FH");
+                EvaluationMemoization self_check_memo(
+                    context,
+                    trace,
+                    challenges,
+                    backend_registry,
+                    proof_domain_weight_cache,
+                    nullptr);
+                self_check_memo.precompute_named(
+                    quotient_dependency_labels(context, "t_FH"),
+                    {z, z * context.domains.fh->omega});
+                const auto expected = evaluate_t_fh(
+                    context,
+                    challenges,
+                    [&](const std::string &name, const FieldElement &point)
+                    {
+                        return self_check_memo.eval_named(name, point);
+                    },
+                    z);
+                const auto quotient_it = quotient_commitments.find("t_FH");
+                const auto mask_it = quotient_commitments.find(
+                    quotient_mask_label("t_FH"));
+                if (quotient_it == quotient_commitments.end()
+                    || mask_it == quotient_commitments.end()
+                    || quotient_it->second.opening_polynomial == nullptr
+                    || mask_it->second.opening_polynomial == nullptr)
+                {
+                    throw std::runtime_error(
+                        "FH quotient self-check is missing opening material");
+                }
+                const auto opened =
+                    quotient_it->second.opening_polynomial->evaluate(z);
+                const auto mask =
+                    mask_it->second.opening_polynomial->evaluate(z);
+                const auto expected_masked = expected
+                    + context.domains.fh->zero_polynomial_eval(z) * mask;
+                if (opened != expected_masked)
+                {
+                    throw std::runtime_error(
+                        "FH quotient prover self-check mismatch: opened="
+                        + opened.to_string() + " expected=" + expected.to_string()
+                        + " mask=" + mask.to_string()
+                        + " expected_masked=" + expected_masked.to_string());
+                }
+                progress_note("prove:quotient:t_FH:self_check:ok");
+            }
             if (metrics != nullptr)
             {
                 metrics->quotient_build_ms += elapsed_ms(stage_start, Clock::now());
@@ -8812,11 +9363,21 @@ namespace gatzk::protocol
                     { return subproof.relation_meta.relation_id == relation_id; });
                 if (subproof_it == proof.pi_bind.subproofs.end())
                     throw std::runtime_error("missing output Eval_bind owner");
-                for (const auto &[bundle_name, bundle] : proof.domain_openings)
+                for (const auto *expected_bundle_name : {"C", "edge"})
                 {
+                    const auto bundle_it = std::find_if(
+                        proof.domain_openings.begin(),
+                        proof.domain_openings.end(),
+                        [&](const auto &entry)
+                        { return entry.first == expected_bundle_name; });
+                    if (bundle_it == proof.domain_openings.end())
+                        throw std::runtime_error(
+                            "missing Pi_bind global opening bundle: "
+                            + std::string(expected_bundle_name));
+                    const auto &bundle_name = bundle_it->first;
+                    const auto &bundle = bundle_it->second;
                     const bool is_c = bundle_name == "C";
                     const bool is_edge = bundle_name == "edge";
-                    if (!is_c && !is_edge) continue;
                     std::vector<std::string> owned_labels;
                     if (is_c)
                     {
@@ -8835,6 +9396,17 @@ namespace gatzk::protocol
                             output_bias_view_label(head_index, "J_qry"),
                             output_bias_view_label(head_index, "R_qry"),
                         };
+                        if (subproof_it->relation_meta
+                                .coefficient_basis_relations.size() != 1)
+                            throw std::runtime_error(
+                                "missing output coefficient basis Eval_bind metadata");
+                        const auto &basis = subproof_it->relation_meta
+                            .coefficient_basis_relations.front();
+                        for (const auto &chunk : basis.chunks)
+                        {
+                            owned_labels.push_back(chunk.object_id);
+                            owned_labels.push_back(chunk.accumulator_object);
+                        }
                     }
                     for (const auto &label : owned_labels)
                     {
@@ -8866,6 +9438,131 @@ namespace gatzk::protocol
                     }
                 }
             }
+            const auto n_bundle_it = std::find_if(
+                proof.domain_openings.begin(), proof.domain_openings.end(),
+                [](const auto &entry) { return entry.first == "N"; });
+            if (n_bundle_it == proof.domain_openings.end())
+                throw std::runtime_error(
+                    "missing canonical matrix N-domain opening bundle");
+            for (auto &subproof : proof.pi_bind.subproofs)
+            {
+                if (subproof.relation_meta.canonical_matrices.empty())
+                    continue;
+                for (const auto &matrix :
+                     subproof.relation_meta.canonical_matrices)
+                {
+                    auto owned_objects = matrix.column_objects;
+                    owned_objects.push_back(matrix.compressed_object);
+                    for (const auto &column : owned_objects)
+                    {
+                        const auto value_it = std::find_if(
+                            n_bundle_it->second.values.begin(),
+                            n_bundle_it->second.values.end(),
+                            [&](const auto &entry)
+                            { return entry.first == column; });
+                        if (value_it == n_bundle_it->second.values.end())
+                            throw std::runtime_error(
+                                "canonical matrix value missing from N opening: "
+                                + column);
+                        subproof.evaluations.push_back(BindingEvaluation{
+                            .domain = "N",
+                            .object_id = column,
+                            .values = value_it->second,
+                            .kind = PayloadValueKind::MaskedPrivateValue,
+                        });
+                    }
+                }
+                for (const auto &point : n_bundle_it->second.points)
+                {
+                    const auto group_id =
+                        "Open_dom:N:" + point.to_string();
+                    if (std::none_of(
+                            subproof.opening_references.begin(),
+                            subproof.opening_references.end(),
+                            [&](const MetadataReference &reference)
+                            { return reference.object_id == group_id; }))
+                        subproof.opening_references.push_back({group_id});
+                }
+            }
+            const auto append_binding_domain_values = [&]
+            (
+                BindingSubproof &subproof,
+                const std::string &bundle_name,
+                const std::vector<std::string> &objects)
+            {
+                const auto bundle_it = std::find_if(
+                    proof.domain_openings.begin(),
+                    proof.domain_openings.end(),
+                    [&](const auto &entry)
+                    { return entry.first == bundle_name; });
+                if (bundle_it == proof.domain_openings.end())
+                    throw std::runtime_error(
+                        "aggregation binding opening bundle missing: "
+                        + bundle_name);
+                for (const auto &object : objects)
+                {
+                    const auto value_it = std::find_if(
+                        bundle_it->second.values.begin(),
+                        bundle_it->second.values.end(),
+                        [&](const auto &entry)
+                        { return entry.first == object; });
+                    if (value_it == bundle_it->second.values.end())
+                        throw std::runtime_error(
+                            "aggregation binding domain value missing: "
+                            + object);
+                    subproof.evaluations.push_back(BindingEvaluation{
+                        .domain = bundle_name,
+                        .object_id = object,
+                        .values = value_it->second,
+                        .kind = PayloadValueKind::MaskedPrivateValue,
+                    });
+                }
+                for (const auto &point : bundle_it->second.points)
+                {
+                    const auto group_id = "Open_dom:" + bundle_name + ":"
+                        + point.to_string();
+                    if (std::none_of(
+                            subproof.opening_references.begin(),
+                            subproof.opening_references.end(),
+                            [&](const MetadataReference &reference)
+                            { return reference.object_id == group_id; }))
+                        subproof.opening_references.push_back({group_id});
+                }
+            };
+            for (auto &subproof : proof.pi_bind.subproofs)
+            {
+                for (const auto &relation :
+                     subproof.relation_meta.aggregation_relations)
+                {
+                    std::vector<std::string> node_objects = {
+                        relation.source_node_object,
+                        relation.target_node_object,
+                    };
+                    std::vector<std::string> edge_objects = {
+                        relation.source_edge_object,
+                        relation.target_edge_object,
+                        relation.product_object,
+                        relation.psq_object,
+                    };
+                    for (const auto *route : {
+                             &relation.source_route,
+                             &relation.target_route})
+                    {
+                        node_objects.push_back(route->table_object);
+                        node_objects.push_back(route->node_inverse_object);
+                        node_objects.push_back(
+                            route->node_accumulator_object);
+                        edge_objects.push_back(route->query_object);
+                        edge_objects.push_back(route->edge_inverse_object);
+                        edge_objects.push_back(
+                            route->edge_accumulator_object);
+                    }
+                    append_binding_domain_values(
+                        subproof, relation.node_domain, node_objects);
+                    append_binding_domain_values(
+                        subproof, relation.edge_domain, edge_objects);
+                }
+            }
 
             attach_public_output_statement(context, trace, &proof);
             const auto ext_specs = multihead_external_specs(context);
@@ -8882,6 +9579,88 @@ namespace gatzk::protocol
                     spec.static_commitment ? context.static_commitments.at(spec.label) : trace.commitments.at(spec.label),
                     value});
                 external_points.push_back(challenges.at(spec.challenge_name));
+            }
+            for (const auto &subproof : proof.pi_bind.subproofs)
+            {
+                for (const auto &relation :
+                     subproof.relation_meta.route_terminal_relations)
+                {
+                    const auto evaluation_id =
+                        relation.shifted_accumulator_object + ":u_rel";
+                    const auto evaluation = std::find_if(
+                        subproof.evaluations.begin(),
+                        subproof.evaluations.end(),
+                        [&](const BindingEvaluation &candidate)
+                        { return candidate.object_id == evaluation_id; });
+                    if (evaluation == subproof.evaluations.end()
+                        || evaluation->values.size() != 1
+                        || evaluation->kind
+                            != PayloadValueKind::MaskedPrivateValue)
+                        throw std::runtime_error(
+                            "missing route terminal shift value: "
+                            + relation.relation_id);
+                    const auto y_rel = challenges.at(
+                        relation.challenge_label);
+                    external_commitments.push_back({
+                        trace.commitments.at(
+                            relation.shifted_accumulator_object),
+                        evaluation->values.front()});
+                    external_points.push_back(y_rel);
+                    external_commitments.push_back({
+                        trace.commitments.at(
+                            relation.edge_accumulator_object),
+                        evaluation->values.front()});
+                    external_points.push_back(
+                        y_rel + relation.terminal_delta);
+                    external_commitments.push_back({
+                        trace.commitments.at(
+                            relation.relation_virtual_object),
+                        FieldElement::zero()});
+                    external_points.push_back(
+                        relation.node_terminal_point);
+                }
+                for (const auto &relation :
+                     subproof.relation_meta.aggregation_relations)
+                {
+                    for (const auto *route : {
+                             &relation.source_route,
+                             &relation.target_route})
+                    {
+                        const auto evaluation_id =
+                            route->shifted_accumulator_object + ":u_rel";
+                        const auto evaluation = std::find_if(
+                            subproof.evaluations.begin(),
+                            subproof.evaluations.end(),
+                            [&](const BindingEvaluation &candidate)
+                            { return candidate.object_id == evaluation_id; });
+                        if (evaluation == subproof.evaluations.end()
+                            || evaluation->values.size() != 1
+                            || evaluation->kind
+                                != PayloadValueKind::MaskedPrivateValue)
+                            throw std::runtime_error(
+                                "missing aggregation terminal shift value: "
+                                + route->relation_id);
+                        const auto y_rel = challenges.at(
+                            route->terminal_challenge_label);
+                        external_commitments.push_back({
+                            trace.commitments.at(
+                                route->shifted_accumulator_object),
+                            evaluation->values.front()});
+                        external_points.push_back(y_rel);
+                        external_commitments.push_back({
+                            trace.commitments.at(
+                                route->edge_accumulator_object),
+                            evaluation->values.front()});
+                        external_points.push_back(
+                            y_rel + route->terminal_delta);
+                        external_commitments.push_back({
+                            trace.commitments.at(
+                                route->relation_virtual_object),
+                            FieldElement::zero()});
+                        external_points.push_back(
+                            route->node_terminal_point);
+                    }
+                }
             }
             for (std::size_t head_index = 0;
                  head_index < context.model.output_layer.heads.size();
@@ -8967,6 +9746,60 @@ namespace gatzk::protocol
                     trace.commitments.at(output_bias_view_label(head_index, "m_can")),
                     public_m_it->values.front()});
                 external_points.push_back(y_rel);
+            }
+            for (std::size_t head_index = 0;
+                 head_index < context.model.output_layer.heads.size();
+                 ++head_index)
+            {
+                const auto relation_id =
+                    "bind:output:" + std::to_string(head_index);
+                const auto subproof_it = std::find_if(
+                    proof.pi_bind.subproofs.begin(),
+                    proof.pi_bind.subproofs.end(),
+                    [&](const BindingSubproof &subproof)
+                    { return subproof.relation_meta.relation_id == relation_id; });
+                if (subproof_it == proof.pi_bind.subproofs.end()
+                    || subproof_it->relation_meta
+                           .coefficient_basis_relations.size() != 1)
+                    throw std::runtime_error(
+                        "missing output coefficient basis external proof");
+                const auto &basis = subproof_it->relation_meta
+                    .coefficient_basis_relations.front();
+                const auto gamma = challenges.at(
+                    basis.gamma_challenge_label);
+                const auto y_rel = challenges.at(
+                    basis.relation_challenge_label);
+                for (const auto &chunk : basis.chunks)
+                {
+                    const auto u_id = chunk.shifted_accumulator_object
+                        + ":u_rel";
+                    const auto u_it = std::find_if(
+                        subproof_it->evaluations.begin(),
+                        subproof_it->evaluations.end(),
+                        [&](const BindingEvaluation &evaluation)
+                        { return evaluation.object_id == u_id; });
+                    if (u_it == subproof_it->evaluations.end()
+                        || u_it->values.size() != 1
+                        || u_it->kind
+                            != PayloadValueKind::MaskedPrivateValue)
+                        throw std::runtime_error(
+                            "missing output coefficient chunk shift value");
+                    external_commitments.push_back({
+                        trace.commitments.at(
+                            chunk.shifted_accumulator_object),
+                        u_it->values.front()});
+                    external_points.push_back(y_rel);
+                    external_commitments.push_back({
+                        trace.commitments.at(chunk.accumulator_object),
+                        u_it->values.front()});
+                    external_points.push_back(
+                        y_rel + chunk.terminal_point - gamma);
+                }
+                external_commitments.push_back({
+                    trace.commitments.at(output_bias_basis_label(
+                        head_index, "relation_virtual")),
+                    FieldElement::zero()});
+                external_points.push_back(gamma);
             }
             const auto output_binding = derive_public_output_challenges(
                 proof.public_metadata,

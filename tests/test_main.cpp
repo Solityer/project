@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -255,6 +256,22 @@ const SecureFixture& cora_secure_fixture() {
         auto trace = gatzk::protocol::build_trace(context, nullptr);
         auto proof = gatzk::protocol::prove(context, trace, nullptr);
         return SecureFixture{std::move(context), std::move(trace), std::move(proof)};
+    }();
+    return fixture;
+}
+
+const SecureFixture& toy_secure_fixture() {
+    static const SecureFixture fixture = [] {
+        auto config = gatzk::util::load_config(
+            (repo_root() / "configs/toy_secure.cfg").string());
+        config.srs_path =
+            (repo_root() / "artifacts/srs/unit_test_srs_v27_toy").string();
+        config.srs_id = "unit_test_srs_v27_toy";
+        auto context = gatzk::protocol::build_context(config, nullptr);
+        auto trace = gatzk::protocol::build_trace(context, nullptr);
+        auto proof = gatzk::protocol::prove(context, trace, nullptr);
+        return SecureFixture{
+            std::move(context), std::move(trace), std::move(proof)};
     }();
     return fixture;
 }
@@ -1276,6 +1293,20 @@ void test_compiler_observation_certificate_gate() {
                 FieldElement::zero(), FieldElement(5), FieldElement(7),
                 FieldElement(11), FieldElement(13)}),
             "coefficient-tail materializer must preserve semantic coefficients and append the exact tail");
+    const auto gamma = FieldElement(17);
+    auto reconstructed = FieldElement::zero();
+    for (const auto& chunk : region.chunks) {
+        auto local_terminal = FieldElement::zero();
+        auto local_power = FieldElement::one();
+        for (std::size_t row = 0; row < chunk.length; ++row) {
+            local_terminal += materialized_tail[chunk.offset + row]
+                * local_power;
+            local_power *= gamma;
+        }
+        reconstructed += gamma.pow(chunk.offset) * local_terminal;
+    }
+    require(reconstructed == gatzk::algebra::horner(materialized_tail, gamma),
+            "multi-chunk local accumulators must reconstruct the complete coefficient-tail evaluation");
     require_throws(
         [&] {
             (void)gatzk::protocol::materialize_coefficient_tail(
@@ -1419,6 +1450,30 @@ void test_compiler_observation_certificate_gate() {
                     && it->blinding_basis == expected,
                 "ProofSchema blinding basis mismatch for " + tag);
     };
+    const auto hidden_star =
+        gatzk::protocol::hidden_head_prefix(0) + "_H_star";
+    const auto hidden_star_mask =
+        gatzk::protocol::external_mask_label(hidden_star);
+    require_schema_basis(hidden_star_mask, "DerivedExpression");
+    require(std::none_of(
+                artifact.observation_ledger.begin(),
+                artifact.observation_ledger.end(),
+                [&](const auto& entry) {
+                    return entry.object_or_challenge == hidden_star_mask;
+                }),
+            "derived external mask must not own independent randomness");
+    const auto hidden_star_dependency = std::find_if(
+        artifact.observation_dependency_dag.begin(),
+        artifact.observation_dependency_dag.end(),
+        [&](const auto& edge) {
+            return edge.derived_object == hidden_star_mask;
+        });
+    require(hidden_star_dependency != artifact.observation_dependency_dag.end()
+                && hidden_star_dependency->source_objects
+                    == std::vector<std::string>{hidden_star}
+                && hidden_star_dependency->propagation_rule.find(
+                    "P_committed=P_sem+Z_N*Mask") != std::string::npos,
+            "external semantic opening mask must be registered as a source-derived DAG object");
     require_schema_basis("P_H", "None");
     require_schema_basis("t_FH", "DerivedExpression");
     require_schema_basis("R_t_FH", "CoefficientMask");
@@ -2073,6 +2128,349 @@ void require_rejects(
     require(!gatzk::protocol::verify(fixture.context, proof), label + " must reject");
 }
 
+void test_toy_coefficient_basis_closure() {
+    const auto& fixture = toy_secure_fixture();
+    require(gatzk::protocol::verify(fixture.context, fixture.proof),
+            "toy coefficient-basis proof must verify");
+    const auto bytes = gatzk::protocol::serialize_proof(fixture.proof);
+    const auto parsed = gatzk::protocol::parse_proof(fixture.context, bytes);
+    require(gatzk::protocol::verify(fixture.context, parsed),
+            "toy coefficient-basis proof must survive strict parser round-trip");
+    require(gatzk::protocol::serialize_proof(parsed) == bytes,
+            "toy coefficient-basis proof wire encoding must be canonical");
+
+    const auto output_subproof = std::find_if(
+        fixture.proof.pi_bind.subproofs.begin(),
+        fixture.proof.pi_bind.subproofs.end(),
+        [](const auto& subproof) {
+            return subproof.relation_meta.object_kind == "output"
+                && subproof.relation_meta.coefficient_basis_relations.size() == 1;
+        });
+    require(output_subproof != fixture.proof.pi_bind.subproofs.end(),
+            "toy proof must contain the formal output coefficient-basis relation");
+    const auto subproof_index = static_cast<std::size_t>(std::distance(
+        fixture.proof.pi_bind.subproofs.begin(), output_subproof));
+    const auto& basis =
+        output_subproof->relation_meta.coefficient_basis_relations.front();
+    require(output_subproof->relation_meta.canonical_matrices.size() == 3,
+            "toy output relation must register Y-prime, Y-pre, and head-output canonical matrices");
+    std::size_t expected_canonical_commitments = 0;
+    std::set<std::string> canonical_challenge_labels;
+    for (const auto& matrix : output_subproof->relation_meta.canonical_matrices) {
+        require(matrix.column_objects.size() == matrix.column_count
+                    && matrix.row_count == fixture.context.local.num_nodes
+                    && matrix.canonical_domain == fixture.context.domains.n->name,
+                "toy canonical matrix RelationMeta shape mismatch");
+        require(matrix.compressed_object == matrix.matrix_object + "_CanFold"
+                    && matrix.compression_challenge_label
+                        == "xi_can:" + matrix.relation_id
+                    && canonical_challenge_labels.insert(
+                           matrix.compression_challenge_label).second
+                    && fixture.proof.challenges.contains(
+                           matrix.compression_challenge_label),
+                "canonical matrix must own a unique post-commit compression challenge");
+        expected_canonical_commitments += matrix.column_count + 1;
+    }
+    require(output_subproof->view_commitments.size()
+                == expected_canonical_commitments,
+            "toy Com_view must encode every canonical matrix column and fold");
+    require(output_subproof->relation_meta.aggregation_relations.size() == 1,
+            "toy output relation must own one independent aggregation binding");
+    const auto& aggregation =
+        output_subproof->relation_meta.aggregation_relations.front();
+    require(aggregation.source_matrix_object
+                == output_subproof->relation_meta.canonical_matrices[0]
+                       .matrix_object
+                && aggregation.target_matrix_object
+                    == output_subproof->relation_meta.canonical_matrices[1]
+                           .matrix_object
+                && aggregation.alpha_object == "P_out0_alpha"
+                && aggregation.compression_challenge_label
+                    == "xi_agg_bind:" + aggregation.relation_id
+                && fixture.proof.challenges.contains(
+                    aggregation.compression_challenge_label)
+                && aggregation.compression_challenge_label
+                    != output_subproof->relation_meta.canonical_matrices[0]
+                           .compression_challenge_label,
+            "aggregation binding must use the registered independent post-commit challenge");
+    require(output_subproof->aggregation_commitments.size()
+                == aggregation.commitment_order.size()
+                && std::equal(
+                    output_subproof->aggregation_commitments.begin(),
+                    output_subproof->aggregation_commitments.end(),
+                    aggregation.commitment_order.begin(),
+                    [](const auto& actual, const std::string& expected) {
+                        return actual.first == expected;
+                    }),
+            "toy Com_agg must follow its exact RelationMeta commitment order");
+    for (const auto* route : {
+             &aggregation.source_route, &aggregation.target_route}) {
+        require(route->configured_shift_degree > 0
+                    && route->shift_domain_size
+                        >= 2 * route->configured_shift_degree + 1
+                    && fixture.proof.challenges.contains(
+                        route->eta_challenge_label)
+                    && fixture.proof.challenges.contains(
+                        route->beta_challenge_label)
+                    && fixture.proof.challenges.contains(
+                        route->terminal_challenge_label),
+                "aggregation broadcast must register LogUp and KZG terminal challenges");
+    }
+    require(std::none_of(
+                fixture.proof.witness_scalars.begin(),
+                fixture.proof.witness_scalars.end(),
+                [&](const auto& scalar) {
+                    return scalar.first.find("AggBind") != std::string::npos;
+                }),
+            "aggregation binding must not serialize a naked route terminal");
+    const auto average_subproof = std::find_if(
+        fixture.proof.pi_bind.subproofs.begin(),
+        fixture.proof.pi_bind.subproofs.end(),
+        [](const auto& subproof) {
+            return subproof.relation_meta.object_kind == "average";
+        });
+    require(average_subproof != fixture.proof.pi_bind.subproofs.end()
+                && average_subproof->relation_meta.canonical_matrices.size() == 2
+                && average_subproof->relation_meta.canonical_matrices[0]
+                       .matrix_object == "P_Y_lin"
+                && average_subproof->relation_meta.canonical_matrices[1]
+                       .matrix_object == "P_Y",
+            "toy average relation must register pre-average and final-output canonical matrices");
+    require(!basis.chunks.empty()
+                && output_subproof->basis_commitments.size()
+                    == basis.commitment_order.size(),
+            "toy coefficient-basis commitment group must match RelationMeta");
+    require(std::none_of(
+                output_subproof->basis_commitments.begin(),
+                output_subproof->basis_commitments.end(),
+                [&](const auto& item) { return item.first == basis.power_object; }),
+            "Gamma powers must remain a verifier-local uncommitted column");
+    require(std::none_of(
+                output_subproof->evaluations.begin(),
+                output_subproof->evaluations.end(),
+                [&](const auto& item) { return item.object_id == basis.power_object; }),
+            "Gamma powers must not be serialized as a Pi_bind evaluation");
+    require(std::none_of(
+                fixture.proof.dynamic_commitments.begin(),
+                fixture.proof.dynamic_commitments.end(),
+                [&](const auto& item) { return item.first == basis.power_object; }),
+            "Gamma powers must not appear in Com_dyn");
+    require(std::none_of(
+                fixture.proof.domain_openings.begin(),
+                fixture.proof.domain_openings.end(),
+                [&](const auto& bundle) {
+                    return std::any_of(
+                        bundle.second.values.begin(), bundle.second.values.end(),
+                        [&](const auto& item) {
+                            return item.first == basis.power_object;
+                        });
+                }),
+            "Gamma powers must not appear in Open_dom");
+
+    auto canonical_commitment_tamper = fixture.proof;
+    auto& canonical_commitment = canonical_commitment_tamper.pi_bind
+        .subproofs[subproof_index].view_commitments.front().second;
+    canonical_commitment.point = gatzk::crypto::g1_add(
+        canonical_commitment.point, fixture.context.kzg.g1_generator);
+    require_rejects(
+        fixture, std::move(canonical_commitment_tamper),
+        "canonical matrix column commitment tamper");
+
+    auto canonical_value_tamper = fixture.proof;
+    const auto canonical_label = output_subproof->view_commitments.front().first;
+    auto& canonical_evaluations = canonical_value_tamper.pi_bind
+        .subproofs[subproof_index].evaluations;
+    const auto canonical_evaluation = std::find_if(
+        canonical_evaluations.begin(), canonical_evaluations.end(),
+        [&](const auto& evaluation) {
+            return evaluation.object_id == canonical_label;
+        });
+    require(canonical_evaluation != canonical_evaluations.end()
+                && canonical_evaluation->domain == "N"
+                && canonical_evaluation->values.size() == 2,
+            "canonical matrix column must own two masked N-domain values");
+    canonical_evaluation->values.front() += FieldElement::one();
+    require_rejects(
+        fixture, std::move(canonical_value_tamper),
+        "canonical matrix masked-value tamper");
+
+    const auto& first_canonical =
+        output_subproof->relation_meta.canonical_matrices.front();
+    auto canonical_fold_commitment_tamper = fixture.proof;
+    auto& fold_commitments = canonical_fold_commitment_tamper.pi_bind
+        .subproofs[subproof_index].view_commitments;
+    const auto fold_commitment = std::find_if(
+        fold_commitments.begin(), fold_commitments.end(),
+        [&](const auto& entry) {
+            return entry.first == first_canonical.compressed_object;
+        });
+    require(fold_commitment != fold_commitments.end(),
+            "canonical matrix fold commitment must be serialized in Com_view");
+    fold_commitment->second.point = gatzk::crypto::g1_add(
+        fold_commitment->second.point, fixture.context.kzg.g1_generator);
+    require_rejects(
+        fixture, std::move(canonical_fold_commitment_tamper),
+        "canonical matrix post-challenge fold commitment tamper");
+
+    auto canonical_fold_value_tamper = fixture.proof;
+    auto& fold_evaluations = canonical_fold_value_tamper.pi_bind
+        .subproofs[subproof_index].evaluations;
+    const auto fold_evaluation = std::find_if(
+        fold_evaluations.begin(), fold_evaluations.end(),
+        [&](const auto& evaluation) {
+            return evaluation.object_id == first_canonical.compressed_object;
+        });
+    require(fold_evaluation != fold_evaluations.end()
+                && fold_evaluation->domain == "N"
+                && fold_evaluation->values.size() == 2,
+            "canonical matrix fold must own two masked N-domain values");
+    fold_evaluation->values.front() += FieldElement::one();
+    require_rejects(
+        fixture, std::move(canonical_fold_value_tamper),
+        "canonical matrix post-challenge fold value tamper");
+
+    auto canonical_challenge_tamper = fixture.proof;
+    canonical_challenge_tamper.challenges.at(
+        first_canonical.compression_challenge_label) += FieldElement::one();
+    require_rejects(
+        fixture, std::move(canonical_challenge_tamper),
+        "canonical matrix compression challenge tamper");
+
+    auto aggregation_product_commitment_tamper = fixture.proof;
+    auto& aggregation_commitments = aggregation_product_commitment_tamper
+        .pi_bind.subproofs[subproof_index].aggregation_commitments;
+    const auto product_commitment = std::find_if(
+        aggregation_commitments.begin(), aggregation_commitments.end(),
+        [&](const auto& entry) {
+            return entry.first == aggregation.product_object;
+        });
+    require(product_commitment != aggregation_commitments.end(),
+            "aggregation product commitment must be serialized in Com_agg");
+    product_commitment->second.point = gatzk::crypto::g1_add(
+        product_commitment->second.point, fixture.context.kzg.g1_generator);
+    require_rejects(
+        fixture, std::move(aggregation_product_commitment_tamper),
+        "aggregation product commitment tamper");
+
+    auto aggregation_product_value_tamper = fixture.proof;
+    auto& aggregation_evaluations = aggregation_product_value_tamper.pi_bind
+        .subproofs[subproof_index].evaluations;
+    const auto product_evaluation = std::find_if(
+        aggregation_evaluations.begin(), aggregation_evaluations.end(),
+        [&](const auto& evaluation) {
+            return evaluation.object_id == aggregation.product_object;
+        });
+    require(product_evaluation != aggregation_evaluations.end()
+                && product_evaluation->domain == "edge"
+                && product_evaluation->values.size() == 2,
+            "aggregation product must own two masked edge-domain values");
+    product_evaluation->values.front() += FieldElement::one();
+    require_rejects(
+        fixture, std::move(aggregation_product_value_tamper),
+        "aggregation product masked-value tamper");
+
+    auto aggregation_shift_commitment_tamper = fixture.proof;
+    auto& shift_commitments = aggregation_shift_commitment_tamper.pi_bind
+        .subproofs[subproof_index].aggregation_commitments;
+    const auto shift_commitment = std::find_if(
+        shift_commitments.begin(), shift_commitments.end(),
+        [&](const auto& entry) {
+            return entry.first
+                == aggregation.source_route.shifted_accumulator_object;
+        });
+    require(shift_commitment != shift_commitments.end(),
+            "aggregation route shifted accumulator must be serialized");
+    shift_commitment->second.point = gatzk::crypto::g1_add(
+        shift_commitment->second.point, fixture.context.kzg.g1_generator);
+    require_rejects(
+        fixture, std::move(aggregation_shift_commitment_tamper),
+        "aggregation route shifted-accumulator commitment tamper");
+
+    auto aggregation_shift_value_tamper = fixture.proof;
+    auto& shift_evaluations = aggregation_shift_value_tamper.pi_bind
+        .subproofs[subproof_index].evaluations;
+    const auto shift_evaluation = std::find_if(
+        shift_evaluations.begin(), shift_evaluations.end(),
+        [&](const auto& evaluation) {
+            return evaluation.object_id
+                == aggregation.source_route.shifted_accumulator_object
+                    + ":u_rel";
+        });
+    require(shift_evaluation != shift_evaluations.end()
+                && shift_evaluation->domain == "relation"
+                && shift_evaluation->values.size() == 1,
+            "aggregation route must encode one masked Taylor-shift value");
+    shift_evaluation->values.front() += FieldElement::one();
+    require_rejects(
+        fixture, std::move(aggregation_shift_value_tamper),
+        "aggregation route Taylor-shift value tamper");
+
+    auto aggregation_challenge_tamper = fixture.proof;
+    aggregation_challenge_tamper.challenges.at(
+        aggregation.compression_challenge_label) += FieldElement::one();
+    require_rejects(
+        fixture, std::move(aggregation_challenge_tamper),
+        "aggregation compression challenge tamper");
+
+    auto chunk_value_tamper = fixture.proof;
+    auto& chunk_evaluations =
+        chunk_value_tamper.pi_bind.subproofs[subproof_index].evaluations;
+    const auto chunk_evaluation = std::find_if(
+        chunk_evaluations.begin(), chunk_evaluations.end(),
+        [&](const auto& evaluation) {
+            return evaluation.object_id == basis.chunks.front().object_id;
+        });
+    require(chunk_evaluation != chunk_evaluations.end()
+                && chunk_evaluation->values.size() == 2,
+            "toy coefficient chunk must own its two masked edge evaluations");
+    chunk_evaluation->values.front() += FieldElement::one();
+    require_rejects(
+        fixture, std::move(chunk_value_tamper),
+        "coefficient chunk masked-value tamper");
+
+    auto basis_commitment_tamper = fixture.proof;
+    auto& basis_commitment = basis_commitment_tamper.pi_bind
+        .subproofs[subproof_index].basis_commitments.front().second;
+    basis_commitment.point = gatzk::crypto::g1_add(
+        basis_commitment.point, fixture.context.kzg.g1_generator);
+    require_rejects(
+        fixture, std::move(basis_commitment_tamper),
+        "Com_basis coefficient commitment tamper");
+
+    auto basis_shift_value_tamper = fixture.proof;
+    auto& basis_evaluations = basis_shift_value_tamper.pi_bind
+        .subproofs[subproof_index].evaluations;
+    const auto shifted_value = std::find_if(
+        basis_evaluations.begin(), basis_evaluations.end(),
+        [&](const auto& evaluation) {
+            return evaluation.object_id
+                == basis.chunks.front().shifted_accumulator_object + ":u_rel";
+        });
+    require(shifted_value != basis_evaluations.end()
+                && shifted_value->values.size() == 1,
+            "toy basis link must encode one shared shifted value");
+    shifted_value->values.front() += FieldElement::one();
+    require_rejects(
+        fixture, std::move(basis_shift_value_tamper),
+        "coefficient basis-link shifted-value tamper");
+
+    auto basis_metadata_tamper = fixture.proof;
+    ++basis_metadata_tamper.pi_bind.subproofs[subproof_index]
+          .relation_meta.coefficient_basis_relations.front()
+          .chunks.front().offset;
+    require_rejects(
+        fixture, basis_metadata_tamper,
+        "coefficient chunk RelationMeta offset tamper");
+    require_throws(
+        [&] {
+            const auto tampered_bytes =
+                gatzk::protocol::serialize_proof(basis_metadata_tamper);
+            (void)gatzk::protocol::parse_proof(
+                fixture.context, tampered_bytes);
+        },
+        "strict parser must reject tampered coefficient chunk metadata");
+}
+
 void test_tamper_rejection_suite() {
     const auto& fixture = cora_secure_fixture();
 
@@ -2299,6 +2697,38 @@ void test_tamper_rejection_suite() {
     external_value_tamper.external_evaluations.front().second += FieldElement::one();
     require_rejects(fixture, external_value_tamper, "external masked value tamper");
 
+    auto external_mask_value_tamper = fixture.proof;
+    const auto external_mask_value = std::find_if(
+        external_mask_value_tamper.external_evaluations.begin(),
+        external_mask_value_tamper.external_evaluations.end(),
+        [](const auto& evaluation) {
+            return evaluation.first.ends_with("_mask");
+        });
+    require(external_mask_value
+                != external_mask_value_tamper.external_evaluations.end(),
+            "fixture must contain an external semantic-mask evaluation");
+    external_mask_value->second += FieldElement::one();
+    require_rejects(
+        fixture, external_mask_value_tamper,
+        "external semantic-mask evaluation tamper");
+
+    auto external_mask_commitment_tamper = fixture.proof;
+    const auto external_mask_commitment = std::find_if(
+        external_mask_commitment_tamper.dynamic_commitments.begin(),
+        external_mask_commitment_tamper.dynamic_commitments.end(),
+        [](const auto& commitment) {
+            return commitment.first.ends_with("_ExternalMask");
+        });
+    require(external_mask_commitment
+                != external_mask_commitment_tamper.dynamic_commitments.end(),
+            "fixture must contain an external semantic-mask commitment");
+    external_mask_commitment->second.point = gatzk::crypto::g1_add(
+        external_mask_commitment->second.point,
+        fixture.context.kzg.g1_generator);
+    require_rejects(
+        fixture, external_mask_commitment_tamper,
+        "external semantic-mask commitment tamper");
+
     auto public_logits_tamper = fixture.proof;
     public_logits_tamper.public_logits.front() += FieldElement::one();
     require_rejects(fixture, public_logits_tamper, "public logits tamper");
@@ -2379,6 +2809,12 @@ int main() {
         test_compiler_observation_certificate_gate();
         std::cerr << "running test_domain_opening_challenge_exclusion_registry\n";
         test_domain_opening_challenge_exclusion_registry();
+        if (std::getenv("GATZK_RUN_TOY_BASIS_TESTS") != nullptr) {
+            std::cerr << "running test_toy_coefficient_basis_closure\n";
+            test_toy_coefficient_basis_closure();
+        } else {
+            std::cerr << "skipping toy coefficient-basis closure regression; set GATZK_RUN_TOY_BASIS_TESTS=1 to run it\n";
+        }
         if (std::getenv("GATZK_RUN_PPI_BOUNDARY_TESTS") != nullptr) {
             std::cerr << "running test_real_ppi_representative_batch_boundary\n";
             test_real_ppi_representative_batch_boundary();

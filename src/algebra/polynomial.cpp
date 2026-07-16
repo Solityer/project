@@ -126,6 +126,30 @@ namespace gatzk::algebra
     // 计算第index个拉格朗日基函数在x处的值
     FieldElement RootOfUnityDomain::lagrange_basis_eval(std::size_t index, const FieldElement& x) const
     {
+        if (index >= size)
+        {
+            throw std::out_of_range("Lagrange basis index exceeds domain size");
+        }
+        if (points_precomputed)
+        {
+            for (std::size_t point_index = 0; point_index < points.size(); ++point_index)
+            {
+                if (points[point_index] == x)
+                {
+                    return point_index == index
+                        ? FieldElement::one()
+                        : FieldElement::zero();
+                }
+            }
+        }
+        else if (const auto point_index = rotation_shift(
+                     FieldElement::one(), x);
+                 point_index.has_value())
+        {
+            return *point_index == index
+                ? FieldElement::one()
+                : FieldElement::zero();
+        }
         const FieldElement xi = point_at(index);
         const FieldElement numerator = zero_polynomial_eval(x) * xi;
         return numerator * inv_size / (x - xi);

@@ -10,6 +10,7 @@
 
 #include "gatzk/algebra/eval_backend.hpp"
 #include "gatzk/algebra/field.hpp"
+#include "gatzk/algebra/polynomial.hpp"
 #include "gatzk/protocol/proof.hpp"
 
 namespace gatzk::protocol {
@@ -30,6 +31,13 @@ std::optional<std::string> dynamic_commitment_domain_name(
     const ProtocolContext& context,
     const std::string& label);
 
+// Evaluate the verifier-local column [1, gamma, gamma^2, ...] interpolated
+// over `domain`. This quotient input is neither committed nor opened.
+algebra::FieldElement evaluate_geometric_power_column(
+    const algebra::RootOfUnityDomain& domain,
+    const algebra::FieldElement& gamma,
+    const algebra::FieldElement& point);
+
 // `t_FH` 是特征 lookup 域的总约束，prove / verify 都必须按同一等式重算。
 algebra::FieldElement evaluate_t_fh(
     const ProtocolContext& context,
@@ -46,7 +54,10 @@ algebra::FieldElement evaluate_t_edge(
     const std::map<std::string, algebra::FieldElement>& witness_scalars,
     const std::map<std::string, algebra::FieldElement>& external_evaluations,
     const EvalFn& eval,
-    const algebra::FieldElement& z);
+    const algebra::FieldElement& z,
+    bool return_numerator = false,
+    std::size_t* first_nonzero_term = nullptr,
+    algebra::FieldElement* first_nonzero_value = nullptr);
 
 algebra::FieldElement evaluate_t_n(
     const ProtocolContext& context,
@@ -60,14 +71,20 @@ algebra::FieldElement evaluate_t_in(
     const std::map<std::string, algebra::FieldElement>& challenges,
     const std::map<std::string, algebra::FieldElement>& external_evaluations,
     const EvalFn& eval,
-    const algebra::FieldElement& z);
+    const algebra::FieldElement& z,
+    bool return_numerator = false,
+    std::size_t* first_nonzero_term = nullptr,
+    algebra::FieldElement* first_nonzero_value = nullptr);
 
 algebra::FieldElement evaluate_t_d(
     const ProtocolContext& context,
     const std::map<std::string, algebra::FieldElement>& challenges,
     const std::map<std::string, algebra::FieldElement>& external_evaluations,
     const EvalFn& eval,
-    const algebra::FieldElement& z);
+    const algebra::FieldElement& z,
+    bool return_numerator = false,
+    std::size_t* first_nonzero_term = nullptr,
+    algebra::FieldElement* first_nonzero_value = nullptr);
 
 algebra::FieldElement evaluate_t_cat(
     const ProtocolContext& context,
