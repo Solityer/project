@@ -147,9 +147,9 @@ int main(int argc, char** argv) {
             repeats = static_cast<std::size_t>(std::stoull(argv[1]));
         }
         const auto keys = gatzk::crypto::KZG::load_keys(
-            (repo_root() / "artifacts/srs/zkgat_secure_main_srs_v1").string(),
+            (repo_root() / "artifacts/srs/cora_formal_srs_v1").string(),
             "trusted_srs",
-            "zkgat_secure_main_srs_v1");
+            "cora_formal_srs_v1");
         const auto edge_it = keys.pk.lagrange_srs_by_domain.find("edge");
         if (edge_it == keys.pk.lagrange_srs_by_domain.end() || edge_it->second == nullptr) {
             throw std::runtime_error("missing edge Lagrange SRS");

@@ -18,7 +18,7 @@ struct HiddenLayerProfile {
 
 // 一次正式运行的统一配置。这里的字段会被 context、metadata、benchmark 与 tests 共同消费。
 struct AppConfig {
-    std::string dataset = "toy";
+    std::string dataset = "unit_security";
     std::string data_root = "data";
     std::string cache_root = "data/cache";
     std::string export_dir = "runs/default";
@@ -39,8 +39,8 @@ struct AppConfig {
     std::string static_table_id;
     std::string degree_bound_id;
     std::string srs_type = "trusted_srs";
-    std::string srs_id = "zkgat_secure_main_srs_v1";
-    std::string srs_path = "artifacts/srs/zkgat_secure_main_srs_v1";
+    std::string srs_id = "unit_security_srs_v1";
+    std::string srs_path = "artifacts/srs/unit_security_srs_v1";
     std::string privacy_policy = "model_and_trace_hidden";
     std::string input_privacy = "public_graph_public_features";
     std::string output_mode = "public_logits";

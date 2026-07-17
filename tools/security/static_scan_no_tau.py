@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import pathlib
 import sys
+import argparse
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -51,7 +52,43 @@ def scan_paths():
     return files
 
 
+def configured_srs_roots():
+    config_paths = sorted((ROOT / "configs").glob("*_secure.cfg"))
+    config_paths.append(ROOT / "configs" / "unit_security_regression.cfg")
+    roots = []
+    for config in config_paths:
+        if not config.exists():
+            continue
+        for raw_line in config.read_text(encoding="utf-8").splitlines():
+            line = raw_line.split("#", 1)[0].strip()
+            if not line.startswith("srs_path") or "=" not in line:
+                continue
+            relative = line.split("=", 1)[1].strip()
+            root = ROOT / relative
+            if root not in roots:
+                roots.append(root)
+            break
+    return roots
+
+
+def sha256_file(path):
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as material:
+        while chunk := material.read(8 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def main():
+    parser = argparse.ArgumentParser(
+        description="Scan formal sources and every currently materialized configured SRS.")
+    parser.add_argument(
+        "--require-all-configured-srs",
+        action="store_true",
+        help="also fail when a configured dataset SRS has not been generated")
+    args = parser.parse_args()
     patterns = blocked_patterns()
     failures = []
     for path in scan_paths():
@@ -82,15 +119,24 @@ def main():
         leftovers = [path for path in diagnostics.rglob("*") if path.is_file()]
         for path in leftovers:
             failures.append((path.relative_to(ROOT), 1, "unformalized diagnostics file"))
-    srs_root = ROOT / "artifacts" / "srs" / "zkgat_secure_main_srs_v1"
-    manifest = srs_root / "srs_manifest.json"
-    if not manifest.exists():
-        failures.append((manifest.relative_to(ROOT), 1, "missing SRS manifest"))
-    else:
-        import hashlib
-        import json
+    import json
 
+    expected_schema_id = None
+    skipped_srs_roots = []
+    for srs_root in configured_srs_roots():
+        manifest = srs_root / "srs_manifest.json"
+        if not manifest.exists():
+            if args.require_all_configured_srs:
+                failures.append((manifest.relative_to(ROOT), 1, "missing SRS manifest"))
+            else:
+                skipped_srs_roots.append(srs_root.relative_to(ROOT))
+            continue
         data = json.loads(manifest.read_text(encoding="utf-8"))
+        schema_id = data.get("protocol_schema_id")
+        if expected_schema_id is None:
+            expected_schema_id = schema_id
+        elif schema_id != expected_schema_id:
+            failures.append((manifest.relative_to(ROOT), 1, "protocol schema id mismatch"))
         required_keys = ("pk_coef_path", "pk_coef_hash", "vk_path", "vk_hash")
         for key in required_keys:
             if not data.get(key):
@@ -111,7 +157,7 @@ def main():
             if not material.exists():
                 failures.append((material.relative_to(ROOT), 1, "missing SRS material"))
                 continue
-            actual = hashlib.sha256(material.read_bytes()).hexdigest()
+            actual = sha256_file(material)
             if actual != expected:
                 failures.append((material.relative_to(ROOT), 1, f"hash mismatch {hash_key}"))
         lagrange_paths = data.get("pk_lagrange_paths") or {}
@@ -127,7 +173,7 @@ def main():
             if not material.exists():
                 failures.append((material.relative_to(ROOT), 1, "missing SRS material"))
                 continue
-            actual = hashlib.sha256(material.read_bytes()).hexdigest()
+            actual = sha256_file(material)
             if actual != expected:
                 failures.append((material.relative_to(ROOT), 1, f"hash mismatch pk_lagrange_hashes.{domain}"))
         legacy_aux = srs_root / (aux + ".bin")
@@ -137,6 +183,8 @@ def main():
         for path, line_no, pattern in failures:
             print(f"{path}:{line_no}: blocked pattern {pattern!r}", file=sys.stderr)
         return 1
+    for srs_root in skipped_srs_roots:
+        print(f"skipped unmaterialized configured SRS: {srs_root}")
     print("static secure scan passed")
     return 0
 

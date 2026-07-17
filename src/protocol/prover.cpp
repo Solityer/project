@@ -68,37 +68,6 @@ namespace gatzk::protocol
             }
         }
 
-        std::uint64_t fnv1a64(std::string_view text)
-        {
-            std::uint64_t hash = 1469598103934665603ULL;
-            for (const auto ch : text)
-            {
-                hash ^= static_cast<unsigned char>(ch);
-                hash *= 1099511628211ULL;
-            }
-            return hash;
-        }
-
-        std::string stable_hash(std::string_view text)
-        {
-            return std::to_string(fnv1a64(text));
-        }
-
-        std::string hash_key_values(const std::map<std::string, std::string> &entries)
-        {
-            std::ostringstream stream;
-            for (const auto &[key, value] : entries)
-            {
-                stream << key << '=' << value << '\n';
-            }
-            return stable_hash(stream.str());
-        }
-
-        std::string payload_kind_name(PayloadValueKind kind)
-        {
-            return kind == PayloadValueKind::PublicValue ? "PublicValue" : "MaskedPrivateValue";
-        }
-
         PayloadValueKind payload_kind_for_label(const ProtocolContext &context, const std::string &label)
         {
             return polynomial_visibility(context, label) == PolynomialVisibility::PrivateWitness
@@ -179,114 +148,6 @@ namespace gatzk::protocol
             }
         }
 
-        std::string hash_proof_transport(const Proof &proof)
-        {
-            std::ostringstream stream;
-            auto append_commitments = [&](std::string_view label, const std::vector<std::pair<std::string, crypto::Commitment>> &commitments)
-            {
-                stream << '[' << label << "]\n";
-                for (const auto &[name, commitment] : commitments)
-                {
-                    stream << name << '=' << commitment.point.to_string() << '\n';
-                }
-            };
-            auto append_field_pairs = [&](std::string_view label, const std::vector<std::pair<std::string, FieldElement>> &values)
-            {
-                stream << '[' << label << "]\n";
-                for (const auto &[name, value] : values)
-                {
-                    stream << name << '=' << value.to_string() << '\n';
-                }
-            };
-
-            stream << "[metadata]\n"
-                   << proof.public_metadata.protocol_name << '\n'
-                   << proof.public_metadata.proof_nonce << '\n'
-                   << proof.public_metadata.proof_task << '\n'
-                   << proof.public_metadata.srs_id << '\n'
-                   << proof.public_metadata.protocol_schema_id << '\n'
-                   << proof.public_metadata.instance_schema_hash << '\n'
-                   << proof.public_metadata.srs_type << '\n'
-                   << proof.public_metadata.srs_degree_bound << '\n'
-                   << proof.public_metadata.kzg_assumption_profile << '\n'
-                   << proof.public_metadata.privacy_policy << '\n'
-                   << proof.public_metadata.input_privacy << '\n'
-                   << proof.public_metadata.output_mode << '\n'
-                   << proof.public_metadata.opening_mode << '\n'
-                   << proof.public_metadata.binding_mode << '\n'
-                   << proof.public_metadata.model_arch << '\n'
-                   << proof.public_metadata.model_params << '\n'
-                   << proof.public_metadata.static_tables << '\n'
-                   << proof.public_metadata.quant_config << '\n'
-                   << proof.public_metadata.domain_cfg << '\n'
-                   << proof.public_metadata.dim_cfg << '\n'
-                   << proof.public_metadata.encoding << '\n'
-                   << proof.public_metadata.padding_rule << '\n'
-                   << proof.public_metadata.degree_bound << '\n'
-                   << proof.public_metadata.security_budget << '\n'
-                   << proof.public_metadata.public_output << '\n';
-            stream << "[block_order]\n";
-            for (const auto &block : proof.block_order)
-            {
-                stream << block << '\n';
-            }
-            append_commitments("dynamic_commitments", proof.dynamic_commitments);
-            append_commitments("quotient_commitments", proof.quotient_commitments);
-            stream << "[domain_openings]\n";
-            for (const auto &[domain, bundle] : proof.domain_openings)
-            {
-                stream << domain << "|proof_witnesses=" << bundle.proof.witnesses.size() << '\n';
-                for (const auto &witness : bundle.proof.witnesses)
-                {
-                    stream << "witness=" << witness.to_string() << '\n';
-                }
-                for (const auto &point : bundle.points)
-                {
-                    stream << "point=" << point.to_string() << '\n';
-                }
-                for (const auto &[name, values] : bundle.values)
-                {
-                    stream << "values=" << name;
-                    for (const auto &value : values)
-                    {
-                        stream << ':' << value.to_string();
-                    }
-                    stream << '\n';
-                }
-                for (const auto kind : bundle.value_kinds)
-                {
-                    stream << "value_kind=" << payload_kind_name(kind) << '\n';
-                }
-            }
-            append_field_pairs("external_evaluations", proof.external_evaluations);
-            stream << "[external_evaluation_kinds]\n";
-            for (const auto kind : proof.external_evaluation_kinds)
-            {
-                stream << payload_kind_name(kind) << '\n';
-            }
-            append_field_pairs("witness_scalars", proof.witness_scalars);
-            stream << "[witness_scalar_kinds]\n";
-            for (const auto kind : proof.witness_scalar_kinds)
-            {
-                stream << payload_kind_name(kind) << '\n';
-            }
-            stream << "[public_output]\n";
-            for (const auto &value : proof.public_logits)
-            {
-                stream << value.to_string() << '\n';
-            }
-            stream << "[external_proof]\n";
-            for (const auto &witness : proof.external_proof.witnesses)
-            {
-                stream << "witness=" << witness.to_string() << '\n';
-            }
-            stream << "[challenges]\n";
-            for (const auto &[name, challenge] : proof.challenges)
-            {
-                stream << name << '=' << challenge.to_string() << '\n';
-            }
-            return stable_hash(stream.str());
-        }
 
         Polynomial make_eval_poly(
             const std::string &name,
@@ -1120,32 +981,6 @@ namespace gatzk::protocol
             return out;
         }
 
-        std::vector<std::string> vector_to_lines(const std::vector<FieldElement> &values)
-        {
-            std::vector<std::string> lines;
-            lines.reserve(values.size());
-            for (std::size_t i = 0; i < values.size(); ++i)
-            {
-                lines.push_back(std::to_string(i) + " " + values[i].to_string());
-            }
-            return lines;
-        }
-
-        std::vector<std::string> matrix_to_lines(const model::Matrix &matrix)
-        {
-            std::vector<std::string> lines;
-            for (std::size_t i = 0; i < matrix.size(); ++i)
-            {
-                std::ostringstream row;
-                row << i;
-                for (const auto &value : matrix[i])
-                {
-                    row << ' ' << value.to_string();
-                }
-                lines.push_back(row.str());
-            }
-            return lines;
-        }
 
         void append_note(RunMetrics *metrics, const std::string &note)
         {
@@ -1221,7 +1056,6 @@ namespace gatzk::protocol
             return config.hidden_dim;
         }
 
-        PublicMetadata build_public_metadata(const ProtocolContext &context) { return canonical_public_metadata(context); }
 
         struct ExternalEvalSpec
         {
@@ -1283,53 +1117,48 @@ namespace gatzk::protocol
                     hidden_concat_y_name(layer_index, is_final_layer),
                 });
             }
-            const bool legacy_single_output = false;
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {
-                const auto prefix = output_head_prefix(head_index, legacy_single_output);
+                const auto prefix = output_head_prefix(head_index);
                 specs.push_back({
-                    legacy_single_output ? "mu_out_proj" : output_external_eval_name("proj", head_index, false),
+                    output_external_eval_name("proj", head_index),
                     prefix + "_Y_prime",
-                    output_challenge_name("y_proj_out", head_index, legacy_single_output),
+                    output_challenge_name("y_proj_out", head_index),
                 });
                 specs.push_back({
-                    legacy_single_output ? "mu_out_src" : output_external_eval_name("src", head_index, false),
+                    output_external_eval_name("src", head_index),
                     prefix + "_E_src",
-                    output_challenge_name("y_src_out", head_index, legacy_single_output),
+                    output_challenge_name("y_src_out", head_index),
                 });
                 specs.push_back({
                     output_score_mask_eval_name(head_index, "src"),
                     output_score_mask_label(head_index, "src"),
-                    output_challenge_name("y_src_out", head_index, legacy_single_output),
+                    output_challenge_name("y_src_out", head_index),
                 });
                 specs.push_back({
-                    legacy_single_output ? "mu_out_dst" : output_external_eval_name("dst", head_index, false),
+                    output_external_eval_name("dst", head_index),
                     prefix + "_E_dst",
-                    output_challenge_name("y_dst_out", head_index, legacy_single_output),
+                    output_challenge_name("y_dst_out", head_index),
                 });
                 specs.push_back({
                     output_score_mask_eval_name(head_index, "dst"),
                     output_score_mask_label(head_index, "dst"),
-                    output_challenge_name("y_dst_out", head_index, legacy_single_output),
+                    output_challenge_name("y_dst_out", head_index),
                 });
                 specs.push_back({
-                    legacy_single_output ? "mu_out_star" : output_external_eval_name("star", head_index, false),
+                    output_external_eval_name("star", head_index),
                     prefix + "_Y_star",
-                    output_challenge_name("y_out_star", head_index, legacy_single_output),
+                    output_challenge_name("y_out_star", head_index),
                 });
                 const auto output_star_eval_name =
-                    legacy_single_output ? std::string("mu_out_star")
-                                         : output_external_eval_name("star", head_index, false);
+                    output_external_eval_name("star", head_index);
                 specs.push_back({
                     external_mask_eval_name(output_star_eval_name),
                     external_mask_label(prefix + "_Y_star"),
-                    output_challenge_name("y_out_star", head_index, legacy_single_output),
+                    output_challenge_name("y_out_star", head_index),
                 });
-                if (!legacy_single_output)
-                {
-                    specs.push_back({output_external_eval_name("y_lin", head_index, false), output_y_lin_label(head_index, false), "y_out"});
-                    specs.push_back({output_external_eval_name("y", head_index, false), output_y_label(head_index, false), "y_out"});
-                }
+                specs.push_back({output_external_eval_name("y_lin", head_index), output_y_lin_label(head_index), "y_out"});
+                specs.push_back({output_external_eval_name("y", head_index), output_y_label(head_index), "y_out"});
             }
             specs.push_back({"mu_Y_lin", "P_Y_lin", "y_out"});
             specs.push_back({"mu_out", "P_Y", "y_out"});
@@ -1528,44 +1357,6 @@ namespace gatzk::protocol
             return stream.str();
         }
 
-        struct CachedQuotientArtifacts
-        {
-            std::unordered_map<std::string, Commitment> quotient_commitments;
-        };
-
-        class SharedQuotientArtifactsCache
-        {
-        public:
-            bool lookup(const std::string &key, CachedQuotientArtifacts *out)
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                if (const auto it = entries_.find(key); it != entries_.end())
-                {
-                    if (out != nullptr)
-                    {
-                        *out = it->second;
-                    }
-                    return true;
-                }
-                return false;
-            }
-
-            void store(const std::string &key, CachedQuotientArtifacts value)
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                entries_.emplace(key, std::move(value));
-            }
-
-        private:
-            std::mutex mutex_;
-            std::unordered_map<std::string, CachedQuotientArtifacts> entries_;
-        };
-
-        SharedQuotientArtifactsCache &shared_quotient_artifacts_cache()
-        {
-            static SharedQuotientArtifactsCache cache;
-            return cache;
-        }
 
         class SharedPublicEvaluationCache
         {
@@ -1858,7 +1649,6 @@ namespace gatzk::protocol
                     value = evaluate_t_edge(
                         context_,
                         challenges_,
-                        trace_.witness_scalars,
                         trace_.external_evaluations,
                         [&](const std::string &inner_name, const FieldElement &inner_point)
                         {
@@ -1871,7 +1661,6 @@ namespace gatzk::protocol
                     value = evaluate_t_n(
                         context_,
                         challenges_,
-                        trace_.witness_scalars,
                         [&](const std::string &inner_name, const FieldElement &inner_point)
                         {
                             return eval_named(inner_name, inner_point);
@@ -3595,7 +3384,7 @@ namespace gatzk::protocol
                 // coefficients give degree at most 3|D|+2 after division.
                 // The edge relation reaches that same bound because its
                 // blinded lookup/state columns are multiplied by degree-|D|
-                // selectors; the toy regression attains degree 3|D|+2.
+                // selectors; the minimal security regression attains degree 3|D|+2.
                 return 3 * domain_size + 2;
             }
             return std::nullopt;
@@ -4049,11 +3838,11 @@ namespace gatzk::protocol
                     }
                     else if (label_ == "t_edge")
                     {
-                        return evaluate_t_edge(context_, challenges_, trace_.witness_scalars, trace_.external_evaluations, eval, z);
+                        return evaluate_t_edge(context_, challenges_, trace_.external_evaluations, eval, z);
                     }
                     else if (label_ == "t_N")
                     {
-                        return evaluate_t_n(context_, challenges_, trace_.witness_scalars, eval, z);
+                        return evaluate_t_n(context_, challenges_, eval, z);
                     }
                     else if (label_ == "t_in")
                     {
@@ -4179,7 +3968,6 @@ namespace gatzk::protocol
                     const auto direct = evaluate_t_edge(
                         context_,
                         challenges_,
-                        trace_.witness_scalars,
                         trace_.external_evaluations,
                         [&](const std::string &name, const FieldElement &point)
                         {
@@ -4270,1434 +4058,6 @@ namespace gatzk::protocol
             }
 
         private:
-            static constexpr std::size_t kHiddenTEdgeTermCount = 59;
-            static constexpr std::size_t kOutputTEdgeTermCount = 51;
-
-            class NativeQuotientAccumulator
-            {
-            public:
-                explicit NativeQuotientAccumulator(const std::vector<mcl::Fr> &alpha_powers)
-                    : NativeQuotientAccumulator(alpha_powers.data(), alpha_powers.data() + alpha_powers.size())
-                {
-                }
-
-                NativeQuotientAccumulator(const mcl::Fr *alpha_begin, const mcl::Fr *alpha_end)
-                    : alpha_cursor_(alpha_begin),
-                      alpha_end_(alpha_end)
-                {
-                    sum_.clear();
-                }
-
-                void add_native_unchecked(const mcl::Fr &term)
-                {
-                    mcl::Fr product;
-                    mcl::Fr::mul(product, *alpha_cursor_, term);
-                    mcl::Fr::add(sum_, sum_, product);
-                    ++alpha_cursor_;
-                }
-
-                void add_scaled_native_unchecked(const mcl::Fr &scale, const mcl::Fr &value)
-                {
-                    mcl::Fr product;
-                    mcl::Fr::mul(product, scale, value);
-                    mcl::Fr::mul(product, *alpha_cursor_, product);
-                    mcl::Fr::add(sum_, sum_, product);
-                    ++alpha_cursor_;
-                }
-
-                void add_scaled_difference_native_unchecked(
-                    const mcl::Fr &scale,
-                    const mcl::Fr &lhs,
-                    const mcl::Fr &rhs)
-                {
-                    mcl::Fr difference;
-                    mcl::Fr::sub(difference, lhs, rhs);
-                    add_scaled_native_unchecked(scale, difference);
-                }
-
-                void add_two_scaled_native_unchecked(
-                    const mcl::Fr &scale,
-                    const mcl::Fr &first_value,
-                    const mcl::Fr &second_value)
-                {
-                    mcl::Fr combined;
-                    mcl::Fr product;
-                    mcl::Fr::mul(combined, *alpha_cursor_, first_value);
-                    ++alpha_cursor_;
-                    mcl::Fr::mul(product, *alpha_cursor_, second_value);
-                    ++alpha_cursor_;
-                    mcl::Fr::add(combined, combined, product);
-                    mcl::Fr::mul(combined, combined, scale);
-                    mcl::Fr::add(sum_, sum_, combined);
-                }
-
-                void skip_zero_terms_unchecked(std::size_t count = 1)
-                {
-                    alpha_cursor_ += count;
-                }
-
-                mcl::Fr scaled_native_raw(const mcl::Fr &scale) const
-                {
-                    const auto raw = native_raw();
-                    mcl::Fr out;
-                    mcl::Fr::mul(out, raw, scale);
-                    return out;
-                }
-
-                mcl::Fr native_raw() const
-                {
-                    if (alpha_cursor_ != alpha_end_)
-                    {
-                        throw std::runtime_error("t_edge quotient accumulator term count mismatch");
-                    }
-                    return sum_;
-                }
-
-            private:
-                const mcl::Fr *alpha_cursor_ = nullptr;
-                const mcl::Fr *alpha_end_ = nullptr;
-                mcl::Fr sum_;
-            };
-
-            struct TEdgeCosetGeometry
-            {
-                std::vector<mcl::Fr> first;
-                std::vector<mcl::Fr> last;
-                std::vector<mcl::Fr> not_last;
-                std::vector<mcl::Fr> inverse_zero;
-            };
-
-            struct TEdgeCosetRef
-            {
-                const mcl::Fr *values = nullptr;
-
-                const mcl::Fr &operator[](std::size_t index) const
-                {
-                    return values[index];
-                }
-            };
-
-            struct TEdgeGlobalCosets
-            {
-                TEdgeCosetRef q_edge;
-                TEdgeCosetRef q_new;
-                TEdgeCosetRef q_end;
-                TEdgeCosetRef q_tbl_l;
-                TEdgeCosetRef q_qry_l;
-                TEdgeCosetRef q_tbl_r;
-                TEdgeCosetRef q_qry_r;
-                TEdgeCosetRef q_tbl_exp;
-                TEdgeCosetRef q_qry_exp;
-                TEdgeCosetRef q_tbl_elu;
-                TEdgeCosetRef q_qry_elu;
-                TEdgeCosetRef t_l_x;
-                TEdgeCosetRef t_l_y;
-                TEdgeCosetRef t_range;
-                TEdgeCosetRef t_exp_x;
-                TEdgeCosetRef t_exp_y;
-                TEdgeCosetRef t_elu_x;
-                TEdgeCosetRef t_elu_y;
-                TEdgeCosetRef src;
-                TEdgeCosetRef dst;
-            };
-
-            struct TEdgeHiddenHeadPlan
-            {
-                TEdgeCosetRef r_src;
-                TEdgeCosetRef e_src_edge;
-                TEdgeCosetRef e_dst_edge;
-                TEdgeCosetRef h_src_star_edge;
-                TEdgeCosetRef r_l;
-                TEdgeCosetRef m_l;
-                TEdgeCosetRef z_col;
-                TEdgeCosetRef m_edge;
-                TEdgeCosetRef s_max;
-                TEdgeCosetRef c_max;
-                TEdgeCosetRef r_r;
-                TEdgeCosetRef m_r;
-                TEdgeCosetRef alpha;
-                TEdgeCosetRef u;
-                TEdgeCosetRef inv_edge;
-                TEdgeCosetRef r_exp;
-                TEdgeCosetRef m_exp;
-                TEdgeCosetRef psq;
-                TEdgeCosetRef widehat_v_pre_star;
-                TEdgeCosetRef h_agg_pre_star_edge;
-                TEdgeCosetRef r_t;
-                TEdgeCosetRef r_elu;
-                TEdgeCosetRef m_elu;
-                TEdgeCosetRef query_elu;
-                TEdgeCosetRef r_dst;
-                TEdgeCosetRef sum_edge;
-                TEdgeCosetRef h_agg_star_edge;
-                FieldElement beta_src = FieldElement::zero();
-                FieldElement beta_dst = FieldElement::zero();
-                FieldElement eta_src = FieldElement::zero();
-                FieldElement eta_src_sq = FieldElement::zero();
-                FieldElement eta_dst = FieldElement::zero();
-                FieldElement eta_dst_sq = FieldElement::zero();
-                FieldElement eta_dst_cu = FieldElement::zero();
-                FieldElement eta_dst_4 = FieldElement::zero();
-                FieldElement eta_dst_5 = FieldElement::zero();
-                FieldElement beta_l = FieldElement::zero();
-                FieldElement eta_l = FieldElement::zero();
-                FieldElement beta_r = FieldElement::zero();
-                FieldElement beta_exp = FieldElement::zero();
-                FieldElement eta_exp = FieldElement::zero();
-                FieldElement beta_elu = FieldElement::zero();
-                FieldElement eta_elu = FieldElement::zero();
-                FieldElement beta_t = FieldElement::zero();
-                FieldElement eta_t = FieldElement::zero();
-                FieldElement lambda_psq = FieldElement::zero();
-                FieldElement witness_src = FieldElement::zero();
-                FieldElement witness_t = FieldElement::zero();
-                FieldElement witness_dst = FieldElement::zero();
-            };
-
-            struct TEdgeOutputHeadPlan
-            {
-                TEdgeCosetRef r_src;
-                TEdgeCosetRef e_src_edge;
-                TEdgeCosetRef e_dst_edge;
-                TEdgeCosetRef r_l;
-                TEdgeCosetRef m_l;
-                TEdgeCosetRef z_col;
-                TEdgeCosetRef m_edge;
-                TEdgeCosetRef s_max;
-                TEdgeCosetRef c_max;
-                TEdgeCosetRef r_r;
-                TEdgeCosetRef m_r;
-                TEdgeCosetRef alpha;
-                TEdgeCosetRef u;
-                TEdgeCosetRef inv_edge;
-                TEdgeCosetRef r_exp;
-                TEdgeCosetRef m_exp;
-                TEdgeCosetRef psq;
-                TEdgeCosetRef widehat_y_star;
-                TEdgeCosetRef r_t;
-                TEdgeCosetRef r_dst;
-                TEdgeCosetRef sum_edge;
-                TEdgeCosetRef y_star_edge;
-                FieldElement beta_src = FieldElement::zero();
-                FieldElement beta_dst = FieldElement::zero();
-                FieldElement eta_src = FieldElement::zero();
-                FieldElement eta_dst = FieldElement::zero();
-                FieldElement eta_dst_sq = FieldElement::zero();
-                FieldElement eta_dst_cu = FieldElement::zero();
-                FieldElement eta_dst_4 = FieldElement::zero();
-                FieldElement eta_dst_5 = FieldElement::zero();
-                FieldElement beta_l = FieldElement::zero();
-                FieldElement eta_l = FieldElement::zero();
-                FieldElement beta_r = FieldElement::zero();
-                FieldElement beta_exp = FieldElement::zero();
-                FieldElement eta_exp = FieldElement::zero();
-                FieldElement beta_t = FieldElement::zero();
-                FieldElement eta_t = FieldElement::zero();
-                FieldElement lambda_out = FieldElement::zero();
-                FieldElement witness_src = FieldElement::zero();
-                FieldElement witness_t = FieldElement::zero();
-                FieldElement witness_dst = FieldElement::zero();
-            };
-
-            struct TEdgeEvaluationPlan
-            {
-                TEdgeGlobalCosets global;
-                std::vector<TEdgeHiddenHeadPlan> hidden_heads;
-                std::vector<TEdgeOutputHeadPlan> output_heads;
-                FieldElement alpha_quot = FieldElement::zero();
-                std::vector<mcl::Fr> alpha_powers;
-                FieldElement one = FieldElement::one();
-            };
-
-            static mcl::Fr fr_add(const mcl::Fr &lhs, const mcl::Fr &rhs)
-            {
-                mcl::Fr out;
-                mcl::Fr::add(out, lhs, rhs);
-                return out;
-            }
-
-            static mcl::Fr fr_sub(const mcl::Fr &lhs, const mcl::Fr &rhs)
-            {
-                mcl::Fr out;
-                mcl::Fr::sub(out, lhs, rhs);
-                return out;
-            }
-
-            static mcl::Fr fr_mul(const mcl::Fr &lhs, const mcl::Fr &rhs)
-            {
-                mcl::Fr out;
-                mcl::Fr::mul(out, lhs, rhs);
-                return out;
-            }
-
-            static void fr_add_scaled_inplace(mcl::Fr &acc, const mcl::Fr &scale, const mcl::Fr &value)
-            {
-                mcl::Fr product;
-                mcl::Fr::mul(product, scale, value);
-                mcl::Fr::add(acc, acc, product);
-            }
-
-            static FieldElement t_edge_route_edge_step(
-                const FieldElement &next_value,
-                const FieldElement &current_value,
-                const FieldElement &query_value,
-                const FieldElement &beta,
-                const FieldElement &q_edge_valid)
-            {
-                return (next_value - current_value) * (query_value + beta) - q_edge_valid;
-            }
-
-            static FieldElement t_edge_psq_step(
-                const FieldElement &one,
-                const FieldElement &psq_next,
-                const FieldElement &psq_current,
-                const FieldElement &w_next,
-                const FieldElement &q_valid_next,
-                const FieldElement &q_new_next)
-            {
-                return psq_next - ((one - q_valid_next) * psq_current + q_valid_next * (q_new_next * w_next + (one - q_new_next) * (psq_current + w_next)));
-            }
-
-            static FieldElement t_edge_lookup_step(
-                const FieldElement &r_next,
-                const FieldElement &r_current,
-                const FieldElement &table_value,
-                const FieldElement &query_value,
-                const FieldElement &multiplicity,
-                const FieldElement &q_tbl,
-                const FieldElement &q_qry,
-                const FieldElement &beta)
-            {
-                return (r_next - r_current) * (table_value + beta) * (query_value + beta) - q_tbl * multiplicity * (query_value + beta) + q_qry * (table_value + beta);
-            }
-
-            static FieldElement t_edge_zero_on_unselected(
-                const FieldElement &one,
-                const FieldElement &selector,
-                const FieldElement &value)
-            {
-                return (one - selector) * value;
-            }
-
-            static mcl::Fr t_edge_route_edge_step_native(
-                const mcl::Fr &next_value,
-                const mcl::Fr &current_value,
-                const mcl::Fr &query_value,
-                const mcl::Fr &beta,
-                const mcl::Fr &q_edge_valid)
-            {
-                return fr_sub(fr_mul(fr_sub(next_value, current_value), fr_add(query_value, beta)), q_edge_valid);
-            }
-
-            static mcl::Fr t_edge_psq_step_native(
-                const mcl::Fr &psq_next,
-                const mcl::Fr &psq_current,
-                const mcl::Fr &w_next,
-                const mcl::Fr &q_valid_next,
-                const mcl::Fr &q_new_next)
-            {
-                const auto grouped_delta = fr_sub(w_next, fr_mul(q_new_next, psq_current));
-                const auto expected_delta = fr_mul(q_valid_next, grouped_delta);
-                return fr_sub(fr_sub(psq_next, psq_current), expected_delta);
-            }
-
-            static mcl::Fr t_edge_lookup_step_native(
-                const mcl::Fr &r_next,
-                const mcl::Fr &r_current,
-                const mcl::Fr &table_value,
-                const mcl::Fr &query_value,
-                const mcl::Fr &multiplicity,
-                const mcl::Fr &q_tbl,
-                const mcl::Fr &q_qry,
-                const mcl::Fr &beta)
-            {
-                const auto table_plus_beta = fr_add(table_value, beta);
-                const auto query_plus_beta = fr_add(query_value, beta);
-                auto scaled_delta = fr_mul(fr_sub(r_next, r_current), table_plus_beta);
-                mcl::Fr table_multiplicity;
-                mcl::Fr::mul(table_multiplicity, q_tbl, multiplicity);
-                mcl::Fr::sub(scaled_delta, scaled_delta, table_multiplicity);
-                auto out = fr_mul(query_plus_beta, scaled_delta);
-                mcl::Fr query_table;
-                mcl::Fr::mul(query_table, q_qry, table_plus_beta);
-                mcl::Fr::add(out, out, query_table);
-                return out;
-            }
-
-            static mcl::Fr t_edge_max_step_native(
-                const mcl::Fr &c_next,
-                const mcl::Fr &c_current,
-                const mcl::Fr &s_next,
-                const mcl::Fr &q_edge_next,
-                const mcl::Fr &q_new_next)
-            {
-                const auto base = fr_sub(c_next, c_current);
-                const auto grouped_delta = fr_sub(fr_mul(q_new_next, c_current), s_next);
-                return fr_add(base, fr_mul(q_edge_next, grouped_delta));
-            }
-
-            TEdgeCosetRef required_t_edge_coset(const std::string &requested_name)
-            {
-                const auto &values = fast_coset_values(requested_name);
-                if (values.size() != target_size_)
-                {
-                    throw std::runtime_error("t_edge fast materializer coset size mismatch: " + requested_name);
-                }
-                return TEdgeCosetRef{FieldElement::native_array_data(values.data())};
-            }
-
-            TEdgeCosetGeometry build_t_edge_geometry() const
-            {
-                TEdgeCosetGeometry geometry;
-                geometry.first.resize(target_size_);
-                geometry.last.resize(target_size_);
-                geometry.not_last.resize(target_size_);
-                geometry.inverse_zero.resize(target_size_);
-
-                const auto root = FieldElement::root_of_unity(target_size_);
-                const auto one = FieldElement::one();
-                const auto xi_last = domain_->point_at(domain_->size - 1);
-                std::vector<FieldElement> first_denominators(target_size_, FieldElement::zero());
-                std::vector<FieldElement> last_denominators(target_size_, FieldElement::zero());
-                auto z = shift_;
-                for (std::size_t i = 0; i < target_size_; ++i)
-                {
-                    first_denominators[i] = z - one;
-                    last_denominators[i] = z - xi_last;
-                    z *= root;
-                }
-                auto first_denominator_inverses = algebra::batch_invert(first_denominators);
-                auto last_denominator_inverses = algebra::batch_invert(last_denominators);
-
-                const auto zero_cycle = target_size_ / domain_->size;
-                if (zero_cycle == 0 || target_size_ % domain_->size != 0)
-                {
-                    throw std::runtime_error("invalid t_edge quotient coset/domain size");
-                }
-                std::vector<FieldElement> zero_evaluations(zero_cycle, FieldElement::zero());
-                auto zero_value = shift_.pow(domain_->size);
-                const auto zero_step = root.pow(domain_->size);
-                for (std::size_t i = 0; i < zero_cycle; ++i)
-                {
-                    zero_evaluations[i] = zero_value - one;
-                    zero_value *= zero_step;
-                }
-                auto inverse_zero_cycle = algebra::batch_invert(zero_evaluations);
-
-                const auto first_scale = domain_->inv_size;
-                const auto last_scale = xi_last * domain_->inv_size;
-                for (std::size_t i = 0; i < target_size_; ++i)
-                {
-                    const auto &zero_eval = zero_evaluations[i % zero_cycle];
-                    const auto first_value = zero_eval * first_scale * first_denominator_inverses[i];
-                    const auto last_value = zero_eval * last_scale * last_denominator_inverses[i];
-                    geometry.first[i] = first_value.native();
-                    geometry.last[i] = last_value.native();
-                    geometry.not_last[i] = (one - last_value).native();
-                    geometry.inverse_zero[i] = inverse_zero_cycle[i % zero_cycle].native();
-                }
-                return geometry;
-            }
-
-            TEdgeEvaluationPlan build_t_edge_plan()
-            {
-                TEdgeEvaluationPlan plan;
-                plan.alpha_quot = challenges_.at("alpha_quot");
-                auto &global = plan.global;
-                global.q_edge = required_t_edge_coset("P_Q_edge_valid");
-                global.q_new = required_t_edge_coset("P_Q_grp_new_edge");
-                global.q_end = required_t_edge_coset("P_Q_grp_end_edge");
-                global.src = required_t_edge_coset("P_src");
-                global.dst = required_t_edge_coset("P_dst");
-                global.q_tbl_l = required_t_edge_coset("P_Q_tbl_L");
-                global.q_qry_l = required_t_edge_coset("P_Q_qry_L");
-                global.q_tbl_r = required_t_edge_coset("P_Q_tbl_R");
-                global.q_qry_r = required_t_edge_coset("P_Q_qry_R");
-                global.q_tbl_exp = required_t_edge_coset("P_Q_tbl_exp");
-                global.q_qry_exp = required_t_edge_coset("P_Q_qry_exp");
-                global.q_tbl_elu = required_t_edge_coset("P_Q_tbl_ELU");
-                global.q_qry_elu = required_t_edge_coset("P_Q_qry_ELU");
-                global.t_l_x = required_t_edge_coset("P_T_L_x");
-                global.t_l_y = required_t_edge_coset("P_T_L_y");
-                global.t_range = required_t_edge_coset("P_T_range");
-                global.t_exp_x = required_t_edge_coset("P_T_exp_x");
-                global.t_exp_y = required_t_edge_coset("P_T_exp_y");
-                global.t_elu_x = required_t_edge_coset("P_T_ELU_x");
-                global.t_elu_y = required_t_edge_coset("P_T_ELU_y");
-
-                plan.hidden_heads.reserve(context_.model.hidden_heads.size());
-                for (std::size_t head_index = 0; head_index < context_.model.hidden_heads.size(); ++head_index)
-                {
-                    const auto index = std::to_string(head_index);
-                    const auto prefix = "P_h" + index + "_";
-                    TEdgeHiddenHeadPlan head;
-                    head.r_src = required_t_edge_coset(prefix + "R_src");
-                    head.e_src_edge = required_t_edge_coset(prefix + "E_src_edge");
-                    head.e_dst_edge = required_t_edge_coset(prefix + "E_dst_edge");
-                    head.h_src_star_edge = required_t_edge_coset(prefix + "H_src_star_edge");
-                    head.r_l = required_t_edge_coset(prefix + "R_L");
-                    head.m_l = required_t_edge_coset(prefix + "m_L");
-                    head.z_col = required_t_edge_coset(prefix + "Z");
-                    head.m_edge = required_t_edge_coset(prefix + "M_edge");
-                    head.s_max = required_t_edge_coset(prefix + "s_max");
-                    head.c_max = required_t_edge_coset(prefix + "C_max");
-                    head.r_r = required_t_edge_coset(prefix + "R_R");
-                    head.m_r = required_t_edge_coset(prefix + "m_R");
-                    head.alpha = required_t_edge_coset(prefix + "alpha");
-                    head.u = required_t_edge_coset(prefix + "U");
-                    head.inv_edge = required_t_edge_coset(prefix + "inv_edge");
-                    head.r_exp = required_t_edge_coset(prefix + "R_exp");
-                    head.m_exp = required_t_edge_coset(prefix + "m_exp");
-                    head.psq = required_t_edge_coset(prefix + "PSQ");
-                    head.widehat_v_pre_star = required_t_edge_coset(prefix + "widehat_v_pre_star");
-                    head.h_agg_pre_star_edge = required_t_edge_coset(prefix + "H_agg_pre_star_edge");
-                    head.r_t = required_t_edge_coset(prefix + "R_t");
-                    head.r_elu = required_t_edge_coset(prefix + "R_ELU");
-                    head.m_elu = required_t_edge_coset(prefix + "m_ELU");
-                    head.query_elu = required_t_edge_coset(prefix + "Query_ELU");
-                    head.r_dst = required_t_edge_coset(prefix + "R_dst");
-                    head.sum_edge = required_t_edge_coset(prefix + "Sum_edge");
-                    head.h_agg_star_edge = required_t_edge_coset(prefix + "H_agg_star_edge");
-                    head.beta_src = challenges_.at("beta_src_h" + index);
-                    head.beta_dst = challenges_.at("beta_dst_h" + index);
-                    head.eta_src = challenges_.at("eta_src_h" + index);
-                    head.eta_src_sq = head.eta_src * head.eta_src;
-                    head.eta_dst = challenges_.at("eta_dst_h" + index);
-                    head.eta_dst_sq = head.eta_dst * head.eta_dst;
-                    head.eta_dst_cu = head.eta_dst_sq * head.eta_dst;
-                    head.eta_dst_4 = head.eta_dst_cu * head.eta_dst;
-                    head.eta_dst_5 = head.eta_dst_4 * head.eta_dst;
-                    head.beta_l = challenges_.at("beta_L_h" + index);
-                    head.eta_l = challenges_.at("eta_L_h" + index);
-                    head.beta_r = challenges_.at("beta_R_h" + index);
-                    head.beta_exp = challenges_.at("beta_exp_h" + index);
-                    head.eta_exp = challenges_.at("eta_exp_h" + index);
-                    head.beta_elu = challenges_.at("beta_ELU_h" + index);
-                    head.eta_elu = challenges_.at("eta_ELU_h" + index);
-                    head.beta_t = challenges_.at("beta_t_h" + index);
-                    head.eta_t = challenges_.at("eta_t_h" + index);
-                    head.lambda_psq = challenges_.at("lambda_psq_h" + index);
-                    head.witness_src = trace_.witness_scalars.at("S_src_h" + index);
-                    head.witness_t = trace_.witness_scalars.at("S_t_h" + index);
-                    head.witness_dst = trace_.witness_scalars.at("S_dst_h" + index);
-                    plan.hidden_heads.push_back(std::move(head));
-                }
-
-                const bool legacy_single_output = false;
-                plan.output_heads.reserve(context_.model.output_layer.heads.size());
-                for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index)
-                {
-                    const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
-                    TEdgeOutputHeadPlan head;
-                    head.r_src = required_t_edge_coset(prefix + "R_src");
-                    head.e_src_edge = required_t_edge_coset(prefix + "E_src_edge");
-                    head.e_dst_edge = required_t_edge_coset(prefix + "E_dst_edge");
-                    head.r_l = required_t_edge_coset(prefix + "R_L");
-                    head.m_l = required_t_edge_coset(prefix + "m_L");
-                    head.z_col = required_t_edge_coset(prefix + "Z");
-                    head.m_edge = required_t_edge_coset(prefix + "M_edge");
-                    head.s_max = required_t_edge_coset(prefix + "s_max");
-                    head.c_max = required_t_edge_coset(prefix + "C_max");
-                    head.r_r = required_t_edge_coset(prefix + "R_R");
-                    head.m_r = required_t_edge_coset(prefix + "m_R");
-                    head.alpha = required_t_edge_coset(prefix + "alpha");
-                    head.u = required_t_edge_coset(prefix + "U");
-                    head.inv_edge = required_t_edge_coset(prefix + "inv_edge");
-                    head.r_exp = required_t_edge_coset(prefix + "R_exp");
-                    head.m_exp = required_t_edge_coset(prefix + "m_exp");
-                    head.psq = required_t_edge_coset(prefix + "PSQ");
-                    head.widehat_y_star = required_t_edge_coset(prefix + "widehat_y_star");
-                    head.r_t = required_t_edge_coset(prefix + "R_t");
-                    head.r_dst = required_t_edge_coset(prefix + "R_dst");
-                    head.sum_edge = required_t_edge_coset(prefix + "Sum_edge");
-                    head.y_star_edge = required_t_edge_coset(prefix + "Y_star_edge");
-                    head.beta_src = challenges_.at(output_challenge_name("beta_src_out", head_index, legacy_single_output));
-                    head.beta_dst = challenges_.at(output_challenge_name("beta_dst_out", head_index, legacy_single_output));
-                    head.eta_src = challenges_.at(output_challenge_name("eta_src_out", head_index, legacy_single_output));
-                    head.eta_dst = challenges_.at(output_challenge_name("eta_dst_out", head_index, legacy_single_output));
-                    head.eta_dst_sq = head.eta_dst * head.eta_dst;
-                    head.eta_dst_cu = head.eta_dst_sq * head.eta_dst;
-                    head.eta_dst_4 = head.eta_dst_cu * head.eta_dst;
-                    head.eta_dst_5 = head.eta_dst_4 * head.eta_dst;
-                    head.beta_l = challenges_.at(output_challenge_name("beta_L_out", head_index, legacy_single_output));
-                    head.eta_l = challenges_.at(output_challenge_name("eta_L_out", head_index, legacy_single_output));
-                    head.beta_r = challenges_.at(output_challenge_name("beta_R_out", head_index, legacy_single_output));
-                    head.beta_exp = challenges_.at(output_challenge_name("beta_exp_out", head_index, legacy_single_output));
-                    head.eta_exp = challenges_.at(output_challenge_name("eta_exp_out", head_index, legacy_single_output));
-                    head.beta_t = challenges_.at(output_challenge_name("beta_t_out", head_index, legacy_single_output));
-                    head.eta_t = challenges_.at(output_challenge_name("eta_t_out", head_index, legacy_single_output));
-                    head.lambda_out = challenges_.at(output_challenge_name("lambda_out", head_index, legacy_single_output));
-                    head.witness_src = trace_.witness_scalars.at(output_witness_scalar_name("src", head_index, legacy_single_output));
-                    head.witness_t = trace_.witness_scalars.at(output_witness_scalar_name("t", head_index, legacy_single_output));
-	                    head.witness_dst = trace_.witness_scalars.at(output_witness_scalar_name("dst", head_index, legacy_single_output));
-	                    plan.output_heads.push_back(std::move(head));
-	                }
-	                const auto term_count =
-	                    kHiddenTEdgeTermCount * plan.hidden_heads.size()
-	                    + kOutputTEdgeTermCount * plan.output_heads.size();
-	                plan.alpha_powers.resize(term_count);
-	                if (!plan.alpha_powers.empty())
-	                {
-	                    plan.alpha_powers[0] = 1;
-	                    const auto alpha_native = plan.alpha_quot.native();
-	                    for (std::size_t i = 1; i < plan.alpha_powers.size(); ++i)
-	                    {
-	                        mcl::Fr::mul(plan.alpha_powers[i], plan.alpha_powers[i - 1], alpha_native);
-	                    }
-	                }
-	                return plan;
-	            }
-
-            mcl::Fr evaluate_t_edge_hidden_head_contribution_at(
-                const TEdgeEvaluationPlan &plan,
-                const TEdgeCosetGeometry &geometry,
-                const TEdgeHiddenHeadPlan &head,
-                std::size_t head_index,
-                std::size_t i) const
-            {
-                const auto rotated_index = (i + rotation_step_) & (target_size_ - 1U);
-                const auto &one = plan.one.native();
-                const auto &first = geometry.first[i];
-                const auto &last = geometry.last[i];
-                const auto &not_last = geometry.not_last[i];
-                const auto &q_edge = plan.global.q_edge[i];
-                const auto &q_edge_next = plan.global.q_edge[rotated_index];
-                const auto &q_new_next = plan.global.q_new[rotated_index];
-                const auto &q_end = plan.global.q_end[i];
-                const auto &src_z = plan.global.src[i];
-                const auto &dst_z = plan.global.dst[i];
-                const auto &q_tbl_l_z = plan.global.q_tbl_l[i];
-                const auto &q_qry_l_z = plan.global.q_qry_l[i];
-                const auto &q_tbl_r_z = plan.global.q_tbl_r[i];
-                const auto &q_qry_r_z = plan.global.q_qry_r[i];
-                const auto &q_tbl_exp_z = plan.global.q_tbl_exp[i];
-                const auto &q_qry_exp_z = plan.global.q_qry_exp[i];
-                const auto &q_tbl_elu_z = plan.global.q_tbl_elu[i];
-                const auto &q_qry_elu_z = plan.global.q_qry_elu[i];
-                const auto &t_l_x_z = plan.global.t_l_x[i];
-                const auto &t_l_y_z = plan.global.t_l_y[i];
-                const auto &t_range_z = plan.global.t_range[i];
-                const auto &t_exp_x_z = plan.global.t_exp_x[i];
-                const auto &t_exp_y_z = plan.global.t_exp_y[i];
-                const auto &t_elu_x_z = plan.global.t_elu_x[i];
-                const auto &t_elu_y_z = plan.global.t_elu_y[i];
-                const auto not_q_edge = fr_sub(one, q_edge);
-                const auto not_q_tbl_l = fr_sub(one, q_tbl_l_z);
-                const auto not_q_qry_l = fr_sub(one, q_qry_l_z);
-                const auto not_q_tbl_r = fr_sub(one, q_tbl_r_z);
-                const auto not_q_qry_r = fr_sub(one, q_qry_r_z);
-                const auto not_q_tbl_exp = fr_sub(one, q_tbl_exp_z);
-                const auto not_q_qry_exp = fr_sub(one, q_qry_exp_z);
-                const auto not_q_tbl_elu = fr_sub(one, q_tbl_elu_z);
-                const auto not_q_qry_elu = fr_sub(one, q_qry_elu_z);
-                const auto *alpha_begin = plan.alpha_powers.data() + head_index * kHiddenTEdgeTermCount;
-                NativeQuotientAccumulator acc(alpha_begin, alpha_begin + kHiddenTEdgeTermCount);
-
-                const auto &beta_src = head.beta_src.native();
-                const auto &beta_dst = head.beta_dst.native();
-                const auto &eta_src = head.eta_src.native();
-                const auto &eta_src_sq = head.eta_src_sq.native();
-                const auto &eta_dst = head.eta_dst.native();
-                const auto &eta_dst_sq = head.eta_dst_sq.native();
-                const auto &eta_dst_cu = head.eta_dst_cu.native();
-                const auto &eta_dst_4 = head.eta_dst_4.native();
-                const auto &eta_dst_5 = head.eta_dst_5.native();
-                const auto &beta_l = head.beta_l.native();
-                const auto &eta_l = head.eta_l.native();
-                const auto &beta_r = head.beta_r.native();
-                const auto &beta_exp = head.beta_exp.native();
-                const auto &eta_exp = head.eta_exp.native();
-                const auto &beta_elu = head.beta_elu.native();
-                const auto &eta_elu = head.eta_elu.native();
-                const auto &beta_t = head.beta_t.native();
-                const auto &eta_t = head.eta_t.native();
-                const auto &lambda_psq = head.lambda_psq.native();
-                const auto &witness_src = head.witness_src.native();
-                const auto &witness_t = head.witness_t.native();
-                const auto &witness_dst = head.witness_dst.native();
-                const auto &r_src_z = head.r_src[i];
-                const auto &r_src_omega = head.r_src[rotated_index];
-                const auto &e_src_edge_z = head.e_src_edge[i];
-                const auto &e_dst_edge_z = head.e_dst_edge[i];
-                const auto &h_src_star_edge_z = head.h_src_star_edge[i];
-                const auto s_z = fr_add(e_src_edge_z, e_dst_edge_z);
-                auto query_src_z = src_z;
-                fr_add_scaled_inplace(query_src_z, eta_src, e_src_edge_z);
-                fr_add_scaled_inplace(query_src_z, eta_src_sq, h_src_star_edge_z);
-                const auto &r_l_z = head.r_l[i];
-                const auto &r_l_omega = head.r_l[rotated_index];
-                const auto &m_l_z = head.m_l[i];
-                const auto &z_z = head.z_col[i];
-                const auto &m_edge_z = head.m_edge[i];
-                const auto delta_z = fr_sub(m_edge_z, z_z);
-                auto table_l_z = t_l_x_z;
-                fr_add_scaled_inplace(table_l_z, eta_l, t_l_y_z);
-                auto query_l_z = s_z;
-                fr_add_scaled_inplace(query_l_z, eta_l, z_z);
-                const auto &s_max_z = head.s_max[i];
-                const auto &s_max_omega = head.s_max[rotated_index];
-                const auto &c_max_z = head.c_max[i];
-                const auto &c_max_omega = head.c_max[rotated_index];
-                const auto &r_r_z = head.r_r[i];
-                const auto &r_r_omega = head.r_r[rotated_index];
-                const auto &table_r_z = t_range_z;
-                const auto &query_r_z = delta_z;
-                const auto &m_r_z = head.m_r[i];
-                const auto &alpha_z = head.alpha[i];
-                const auto &u_z = head.u[i];
-                const auto &inv_edge_z = head.inv_edge[i];
-                const auto &r_exp_z = head.r_exp[i];
-                const auto &r_exp_omega = head.r_exp[rotated_index];
-                auto table_exp_z = t_exp_x_z;
-                fr_add_scaled_inplace(table_exp_z, eta_exp, t_exp_y_z);
-                auto query_exp_z = delta_z;
-                fr_add_scaled_inplace(query_exp_z, eta_exp, u_z);
-                const auto &m_exp_z = head.m_exp[i];
-                const auto &psq_z = head.psq[i];
-                const auto &psq_omega = head.psq[rotated_index];
-                const auto &sum_edge_z = head.sum_edge[i];
-                const auto &u_omega = head.u[rotated_index];
-                const auto &widehat_v_pre_star_z = head.widehat_v_pre_star[i];
-                const auto &widehat_v_pre_star_omega = head.widehat_v_pre_star[rotated_index];
-                auto w_psq_z = u_z;
-                fr_add_scaled_inplace(w_psq_z, lambda_psq, widehat_v_pre_star_z);
-                auto w_psq_omega = u_omega;
-                fr_add_scaled_inplace(w_psq_omega, lambda_psq, widehat_v_pre_star_omega);
-                const auto &h_agg_pre_star_edge_z = head.h_agg_pre_star_edge[i];
-                auto t_psq_edge_z = sum_edge_z;
-                fr_add_scaled_inplace(t_psq_edge_z, lambda_psq, h_agg_pre_star_edge_z);
-                const auto &r_t_z = head.r_t[i];
-                const auto &r_t_omega = head.r_t[rotated_index];
-                auto query_t_z = dst_z;
-                fr_add_scaled_inplace(query_t_z, eta_t, t_psq_edge_z);
-                const auto &r_elu_z = head.r_elu[i];
-                const auto &r_elu_omega = head.r_elu[rotated_index];
-                auto table_elu_z = t_elu_x_z;
-                fr_add_scaled_inplace(table_elu_z, eta_elu, t_elu_y_z);
-                const auto &query_elu_z = head.query_elu[i];
-                const auto &m_elu_z = head.m_elu[i];
-                const auto &r_dst_z = head.r_dst[i];
-                const auto &r_dst_omega = head.r_dst[rotated_index];
-                const auto &h_agg_star_edge_z = head.h_agg_star_edge[i];
-                auto query_dst_z = dst_z;
-                fr_add_scaled_inplace(query_dst_z, eta_dst, e_dst_edge_z);
-                fr_add_scaled_inplace(query_dst_z, eta_dst_sq, m_edge_z);
-                fr_add_scaled_inplace(query_dst_z, eta_dst_cu, sum_edge_z);
-                fr_add_scaled_inplace(query_dst_z, eta_dst_4, inv_edge_z);
-                fr_add_scaled_inplace(query_dst_z, eta_dst_5, h_agg_star_edge_z);
-
-                acc.add_scaled_native_unchecked(first, r_src_z);
-                acc.add_scaled_native_unchecked(not_last, t_edge_route_edge_step_native(r_src_omega, r_src_z, query_src_z, beta_src, q_edge));
-                acc.add_scaled_difference_native_unchecked(last, r_src_z, witness_src);
-                acc.skip_zero_terms_unchecked();
-                acc.add_scaled_native_unchecked(not_q_edge, query_src_z);
-
-                acc.skip_zero_terms_unchecked();
-                acc.add_scaled_native_unchecked(first, r_l_z);
-                acc.add_native_unchecked(t_edge_lookup_step_native(
-                    r_l_omega,
-                    r_l_z,
-                    table_l_z,
-                    query_l_z,
-                    m_l_z,
-                    q_tbl_l_z,
-                    q_qry_l_z,
-                    beta_l));
-                acc.add_scaled_native_unchecked(last, r_l_z);
-                acc.skip_zero_terms_unchecked(2);
-                acc.add_two_scaled_native_unchecked(not_q_tbl_l, table_l_z, m_l_z);
-                acc.add_scaled_native_unchecked(not_q_qry_l, query_l_z);
-
-                acc.skip_zero_terms_unchecked();
-                acc.add_scaled_difference_native_unchecked(s_max_z, s_max_z, one);
-                acc.add_scaled_native_unchecked(s_max_z, delta_z);
-                acc.add_scaled_native_unchecked(not_q_edge, s_max_z);
-                acc.add_scaled_difference_native_unchecked(first, c_max_z, s_max_z);
-                acc.add_native_unchecked(t_edge_max_step_native(c_max_omega, c_max_z, s_max_omega, q_edge_next, q_new_next));
-                acc.add_scaled_difference_native_unchecked(q_end, c_max_z, one);
-
-                acc.add_scaled_native_unchecked(first, r_r_z);
-                acc.add_native_unchecked(t_edge_lookup_step_native(
-                    r_r_omega,
-                    r_r_z,
-                    table_r_z,
-                    query_r_z,
-                    m_r_z,
-                    q_tbl_r_z,
-                    q_qry_r_z,
-                    beta_r));
-                acc.add_scaled_native_unchecked(last, r_r_z);
-                acc.skip_zero_terms_unchecked(2);
-                acc.add_two_scaled_native_unchecked(not_q_tbl_r, table_r_z, m_r_z);
-                acc.add_scaled_native_unchecked(not_q_qry_r, query_r_z);
-
-                acc.add_scaled_difference_native_unchecked(q_edge, alpha_z, fr_mul(u_z, inv_edge_z));
-                acc.add_scaled_native_unchecked(first, r_exp_z);
-                acc.add_native_unchecked(t_edge_lookup_step_native(
-                    r_exp_omega,
-                    r_exp_z,
-                    table_exp_z,
-                    query_exp_z,
-                    m_exp_z,
-                    q_tbl_exp_z,
-                    q_qry_exp_z,
-                    beta_exp));
-                acc.add_scaled_native_unchecked(last, r_exp_z);
-                acc.skip_zero_terms_unchecked(2);
-                acc.add_two_scaled_native_unchecked(not_q_tbl_exp, table_exp_z, m_exp_z);
-                acc.add_scaled_native_unchecked(not_q_qry_exp, query_exp_z);
-
-                acc.add_scaled_difference_native_unchecked(first, psq_z, fr_mul(q_edge, w_psq_z));
-                acc.add_native_unchecked(t_edge_psq_step_native(psq_omega, psq_z, w_psq_omega, q_edge_next, q_new_next));
-                acc.add_scaled_difference_native_unchecked(q_end, psq_z, t_psq_edge_z);
-                acc.add_scaled_native_unchecked(first, r_t_z);
-                acc.add_scaled_native_unchecked(not_last, t_edge_route_edge_step_native(r_t_omega, r_t_z, query_t_z, beta_t, q_edge));
-                acc.add_scaled_difference_native_unchecked(last, r_t_z, witness_t);
-                acc.skip_zero_terms_unchecked();
-                acc.add_scaled_native_unchecked(not_q_edge, query_t_z);
-
-                acc.add_scaled_native_unchecked(first, r_elu_z);
-                acc.add_native_unchecked(t_edge_lookup_step_native(
-                    r_elu_omega,
-                    r_elu_z,
-                    table_elu_z,
-                    query_elu_z,
-                    m_elu_z,
-                    q_tbl_elu_z,
-                    q_qry_elu_z,
-                    beta_elu));
-                acc.add_scaled_native_unchecked(last, r_elu_z);
-                acc.skip_zero_terms_unchecked(2);
-                acc.add_two_scaled_native_unchecked(not_q_tbl_elu, table_elu_z, m_elu_z);
-                acc.add_scaled_native_unchecked(not_q_qry_elu, query_elu_z);
-
-                acc.add_scaled_native_unchecked(first, r_dst_z);
-                acc.add_scaled_native_unchecked(not_last, t_edge_route_edge_step_native(r_dst_omega, r_dst_z, query_dst_z, beta_dst, q_edge));
-                acc.add_scaled_difference_native_unchecked(last, r_dst_z, witness_dst);
-                acc.skip_zero_terms_unchecked();
-                acc.add_scaled_native_unchecked(not_q_edge, query_dst_z);
-
-                return acc.native_raw();
-            }
-
-            mcl::Fr evaluate_t_edge_output_head_contribution_at(
-                const TEdgeEvaluationPlan &plan,
-                const TEdgeCosetGeometry &geometry,
-                const TEdgeOutputHeadPlan &head,
-                std::size_t head_index,
-                std::size_t i) const
-            {
-                const auto rotated_index = (i + rotation_step_) & (target_size_ - 1U);
-                const auto &one = plan.one.native();
-                const auto &first = geometry.first[i];
-                const auto &last = geometry.last[i];
-                const auto &not_last = geometry.not_last[i];
-                const auto &q_edge = plan.global.q_edge[i];
-                const auto &q_edge_next = plan.global.q_edge[rotated_index];
-                const auto &q_new_next = plan.global.q_new[rotated_index];
-                const auto &q_end = plan.global.q_end[i];
-                const auto &src_z = plan.global.src[i];
-                const auto &dst_z = plan.global.dst[i];
-                const auto &q_tbl_l_z = plan.global.q_tbl_l[i];
-                const auto &q_qry_l_z = plan.global.q_qry_l[i];
-                const auto &q_tbl_r_z = plan.global.q_tbl_r[i];
-                const auto &q_qry_r_z = plan.global.q_qry_r[i];
-                const auto &q_tbl_exp_z = plan.global.q_tbl_exp[i];
-                const auto &q_qry_exp_z = plan.global.q_qry_exp[i];
-                const auto &t_l_x_z = plan.global.t_l_x[i];
-                const auto &t_l_y_z = plan.global.t_l_y[i];
-                const auto &t_range_z = plan.global.t_range[i];
-                const auto &t_exp_x_z = plan.global.t_exp_x[i];
-                const auto &t_exp_y_z = plan.global.t_exp_y[i];
-                const auto not_q_edge = fr_sub(one, q_edge);
-                const auto not_q_tbl_l = fr_sub(one, q_tbl_l_z);
-                const auto not_q_qry_l = fr_sub(one, q_qry_l_z);
-                const auto not_q_tbl_r = fr_sub(one, q_tbl_r_z);
-                const auto not_q_qry_r = fr_sub(one, q_qry_r_z);
-                const auto not_q_tbl_exp = fr_sub(one, q_tbl_exp_z);
-                const auto not_q_qry_exp = fr_sub(one, q_qry_exp_z);
-                const auto hidden_terms = kHiddenTEdgeTermCount * plan.hidden_heads.size();
-                const auto *alpha_begin =
-                    plan.alpha_powers.data() + hidden_terms + head_index * kOutputTEdgeTermCount;
-                NativeQuotientAccumulator acc(alpha_begin, alpha_begin + kOutputTEdgeTermCount);
-
-                const auto &beta_src = head.beta_src.native();
-                const auto &beta_dst = head.beta_dst.native();
-                const auto &eta_src = head.eta_src.native();
-                const auto &eta_dst = head.eta_dst.native();
-                const auto &eta_dst_sq = head.eta_dst_sq.native();
-                const auto &eta_dst_cu = head.eta_dst_cu.native();
-                const auto &eta_dst_4 = head.eta_dst_4.native();
-                const auto &eta_dst_5 = head.eta_dst_5.native();
-                const auto &beta_l = head.beta_l.native();
-                const auto &eta_l = head.eta_l.native();
-                const auto &beta_r = head.beta_r.native();
-                const auto &beta_exp = head.beta_exp.native();
-                const auto &eta_exp = head.eta_exp.native();
-                const auto &beta_t = head.beta_t.native();
-                const auto &eta_t = head.eta_t.native();
-                const auto &lambda_out = head.lambda_out.native();
-                const auto &witness_src = head.witness_src.native();
-                const auto &witness_t = head.witness_t.native();
-                const auto &witness_dst = head.witness_dst.native();
-                const auto &r_src_z = head.r_src[i];
-                const auto &r_src_omega = head.r_src[rotated_index];
-                const auto &e_src_edge_z = head.e_src_edge[i];
-                const auto &e_dst_edge_z = head.e_dst_edge[i];
-                const auto s_z = fr_add(e_src_edge_z, e_dst_edge_z);
-                auto query_src_z = src_z;
-                fr_add_scaled_inplace(query_src_z, eta_src, e_src_edge_z);
-                const auto &r_l_z = head.r_l[i];
-                const auto &r_l_omega = head.r_l[rotated_index];
-                const auto &m_l_z = head.m_l[i];
-                const auto &z_z = head.z_col[i];
-                const auto &m_edge_z = head.m_edge[i];
-                const auto delta_z = fr_sub(m_edge_z, z_z);
-                auto table_l_z = t_l_x_z;
-                fr_add_scaled_inplace(table_l_z, eta_l, t_l_y_z);
-                auto query_l_z = s_z;
-                fr_add_scaled_inplace(query_l_z, eta_l, z_z);
-                const auto &s_max_z = head.s_max[i];
-                const auto &s_max_omega = head.s_max[rotated_index];
-                const auto &c_max_z = head.c_max[i];
-                const auto &c_max_omega = head.c_max[rotated_index];
-                const auto &r_r_z = head.r_r[i];
-                const auto &r_r_omega = head.r_r[rotated_index];
-                const auto &table_r_z = t_range_z;
-                const auto &query_r_z = delta_z;
-                const auto &m_r_z = head.m_r[i];
-                const auto &alpha_z = head.alpha[i];
-                const auto &u_z = head.u[i];
-                const auto &inv_edge_z = head.inv_edge[i];
-                const auto &r_exp_z = head.r_exp[i];
-                const auto &r_exp_omega = head.r_exp[rotated_index];
-                auto table_exp_z = t_exp_x_z;
-                fr_add_scaled_inplace(table_exp_z, eta_exp, t_exp_y_z);
-                auto query_exp_z = delta_z;
-                fr_add_scaled_inplace(query_exp_z, eta_exp, u_z);
-                const auto &m_exp_z = head.m_exp[i];
-                const auto &psq_z = head.psq[i];
-                const auto &psq_omega = head.psq[rotated_index];
-                const auto &u_omega = head.u[rotated_index];
-                const auto &widehat_y_star_z = head.widehat_y_star[i];
-                const auto &widehat_y_star_omega = head.widehat_y_star[rotated_index];
-                auto w_z = u_z;
-                fr_add_scaled_inplace(w_z, lambda_out, widehat_y_star_z);
-                auto w_omega = u_omega;
-                fr_add_scaled_inplace(w_omega, lambda_out, widehat_y_star_omega);
-                const auto &sum_edge_z = head.sum_edge[i];
-                const auto &y_star_edge_z = head.y_star_edge[i];
-                auto t_edge_z = sum_edge_z;
-                fr_add_scaled_inplace(t_edge_z, lambda_out, y_star_edge_z);
-                const auto &r_t_z = head.r_t[i];
-                const auto &r_t_omega = head.r_t[rotated_index];
-                auto query_t_z = dst_z;
-                fr_add_scaled_inplace(query_t_z, eta_t, t_edge_z);
-                const auto &r_dst_z = head.r_dst[i];
-                const auto &r_dst_omega = head.r_dst[rotated_index];
-                auto query_dst_z = dst_z;
-                fr_add_scaled_inplace(query_dst_z, eta_dst, e_dst_edge_z);
-                fr_add_scaled_inplace(query_dst_z, eta_dst_sq, m_edge_z);
-                fr_add_scaled_inplace(query_dst_z, eta_dst_cu, sum_edge_z);
-                fr_add_scaled_inplace(query_dst_z, eta_dst_4, inv_edge_z);
-                fr_add_scaled_inplace(query_dst_z, eta_dst_5, y_star_edge_z);
-
-                acc.add_scaled_native_unchecked(first, r_src_z);
-                acc.add_scaled_native_unchecked(not_last, t_edge_route_edge_step_native(r_src_omega, r_src_z, query_src_z, beta_src, q_edge));
-                acc.add_scaled_difference_native_unchecked(last, r_src_z, witness_src);
-                acc.skip_zero_terms_unchecked();
-                acc.add_scaled_native_unchecked(not_q_edge, query_src_z);
-
-                acc.skip_zero_terms_unchecked();
-                acc.add_scaled_native_unchecked(first, r_l_z);
-                acc.add_native_unchecked(t_edge_lookup_step_native(
-                    r_l_omega,
-                    r_l_z,
-                    table_l_z,
-                    query_l_z,
-                    m_l_z,
-                    q_tbl_l_z,
-                    q_qry_l_z,
-                    beta_l));
-                acc.add_scaled_native_unchecked(last, r_l_z);
-                acc.skip_zero_terms_unchecked(2);
-                acc.add_two_scaled_native_unchecked(not_q_tbl_l, table_l_z, m_l_z);
-                acc.add_scaled_native_unchecked(not_q_qry_l, query_l_z);
-
-                acc.skip_zero_terms_unchecked();
-                acc.add_scaled_difference_native_unchecked(s_max_z, s_max_z, one);
-                acc.add_scaled_native_unchecked(s_max_z, delta_z);
-                acc.add_scaled_native_unchecked(not_q_edge, s_max_z);
-                acc.add_scaled_difference_native_unchecked(first, c_max_z, s_max_z);
-                acc.add_native_unchecked(t_edge_max_step_native(c_max_omega, c_max_z, s_max_omega, q_edge_next, q_new_next));
-                acc.add_scaled_difference_native_unchecked(q_end, c_max_z, one);
-
-                acc.add_scaled_native_unchecked(first, r_r_z);
-                acc.add_native_unchecked(t_edge_lookup_step_native(
-                    r_r_omega,
-                    r_r_z,
-                    table_r_z,
-                    query_r_z,
-                    m_r_z,
-                    q_tbl_r_z,
-                    q_qry_r_z,
-                    beta_r));
-                acc.add_scaled_native_unchecked(last, r_r_z);
-                acc.skip_zero_terms_unchecked(2);
-                acc.add_two_scaled_native_unchecked(not_q_tbl_r, table_r_z, m_r_z);
-                acc.add_scaled_native_unchecked(not_q_qry_r, query_r_z);
-
-                acc.add_scaled_difference_native_unchecked(q_edge, alpha_z, fr_mul(u_z, inv_edge_z));
-                acc.add_scaled_native_unchecked(first, r_exp_z);
-                acc.add_native_unchecked(t_edge_lookup_step_native(
-                    r_exp_omega,
-                    r_exp_z,
-                    table_exp_z,
-                    query_exp_z,
-                    m_exp_z,
-                    q_tbl_exp_z,
-                    q_qry_exp_z,
-                    beta_exp));
-                acc.add_scaled_native_unchecked(last, r_exp_z);
-                acc.skip_zero_terms_unchecked(2);
-                acc.add_two_scaled_native_unchecked(not_q_tbl_exp, table_exp_z, m_exp_z);
-                acc.add_scaled_native_unchecked(not_q_qry_exp, query_exp_z);
-
-                acc.add_scaled_difference_native_unchecked(first, psq_z, fr_mul(q_edge, w_z));
-                acc.add_native_unchecked(t_edge_psq_step_native(psq_omega, psq_z, w_omega, q_edge_next, q_new_next));
-                acc.add_scaled_difference_native_unchecked(q_end, psq_z, t_edge_z);
-                acc.add_scaled_native_unchecked(first, r_t_z);
-                acc.add_scaled_native_unchecked(not_last, t_edge_route_edge_step_native(r_t_omega, r_t_z, query_t_z, beta_t, q_edge));
-                acc.add_scaled_difference_native_unchecked(last, r_t_z, witness_t);
-                acc.skip_zero_terms_unchecked();
-                acc.add_scaled_native_unchecked(not_q_edge, query_t_z);
-
-                acc.add_scaled_native_unchecked(first, r_dst_z);
-                acc.add_scaled_native_unchecked(not_last, t_edge_route_edge_step_native(r_dst_omega, r_dst_z, query_dst_z, beta_dst, q_edge));
-                acc.add_scaled_difference_native_unchecked(last, r_dst_z, witness_dst);
-                acc.skip_zero_terms_unchecked();
-                acc.add_scaled_native_unchecked(not_q_edge, query_dst_z);
-
-                return acc.native_raw();
-            }
-
-            mcl::Fr evaluate_t_edge_fast_at(
-                const TEdgeEvaluationPlan &plan,
-                const TEdgeCosetGeometry &geometry,
-                std::size_t i) const
-            {
-                const auto rotated_index = (i + rotation_step_) & (target_size_ - 1U);
-                const auto &one = plan.one.native();
-                const auto &first = geometry.first[i];
-                const auto &last = geometry.last[i];
-                const auto &not_last = geometry.not_last[i];
-                const auto &q_edge = plan.global.q_edge[i];
-                const auto &q_edge_next = plan.global.q_edge[rotated_index];
-                const auto &q_new_next = plan.global.q_new[rotated_index];
-                const auto &q_end = plan.global.q_end[i];
-                const auto &src_z = plan.global.src[i];
-                const auto &dst_z = plan.global.dst[i];
-                const auto &q_tbl_l_z = plan.global.q_tbl_l[i];
-                const auto &q_qry_l_z = plan.global.q_qry_l[i];
-                const auto &q_tbl_r_z = plan.global.q_tbl_r[i];
-                const auto &q_qry_r_z = plan.global.q_qry_r[i];
-                const auto &q_tbl_exp_z = plan.global.q_tbl_exp[i];
-                const auto &q_qry_exp_z = plan.global.q_qry_exp[i];
-                const auto &q_tbl_elu_z = plan.global.q_tbl_elu[i];
-                const auto &q_qry_elu_z = plan.global.q_qry_elu[i];
-                const auto &t_l_x_z = plan.global.t_l_x[i];
-                const auto &t_l_y_z = plan.global.t_l_y[i];
-                const auto &t_range_z = plan.global.t_range[i];
-                const auto &t_exp_x_z = plan.global.t_exp_x[i];
-                const auto &t_exp_y_z = plan.global.t_exp_y[i];
-                const auto &t_elu_x_z = plan.global.t_elu_x[i];
-                const auto &t_elu_y_z = plan.global.t_elu_y[i];
-                const auto not_q_edge = fr_sub(one, q_edge);
-                const auto not_q_tbl_l = fr_sub(one, q_tbl_l_z);
-                const auto not_q_qry_l = fr_sub(one, q_qry_l_z);
-                const auto not_q_tbl_r = fr_sub(one, q_tbl_r_z);
-                const auto not_q_qry_r = fr_sub(one, q_qry_r_z);
-                const auto not_q_tbl_exp = fr_sub(one, q_tbl_exp_z);
-                const auto not_q_qry_exp = fr_sub(one, q_qry_exp_z);
-                const auto not_q_tbl_elu = fr_sub(one, q_tbl_elu_z);
-                const auto not_q_qry_elu = fr_sub(one, q_qry_elu_z);
-                NativeQuotientAccumulator acc(plan.alpha_powers);
-
-                for (const auto &head : plan.hidden_heads)
-                {
-                    const auto &beta_src = head.beta_src.native();
-                    const auto &beta_dst = head.beta_dst.native();
-                    const auto &eta_src = head.eta_src.native();
-                    const auto &eta_src_sq = head.eta_src_sq.native();
-                    const auto &eta_dst = head.eta_dst.native();
-                    const auto &eta_dst_sq = head.eta_dst_sq.native();
-                    const auto &eta_dst_cu = head.eta_dst_cu.native();
-                    const auto &eta_dst_4 = head.eta_dst_4.native();
-                    const auto &eta_dst_5 = head.eta_dst_5.native();
-                    const auto &beta_l = head.beta_l.native();
-                    const auto &eta_l = head.eta_l.native();
-                    const auto &beta_r = head.beta_r.native();
-                    const auto &beta_exp = head.beta_exp.native();
-                    const auto &eta_exp = head.eta_exp.native();
-                    const auto &beta_elu = head.beta_elu.native();
-                    const auto &eta_elu = head.eta_elu.native();
-                    const auto &beta_t = head.beta_t.native();
-                    const auto &eta_t = head.eta_t.native();
-                    const auto &lambda_psq = head.lambda_psq.native();
-                    const auto &witness_src = head.witness_src.native();
-                    const auto &witness_t = head.witness_t.native();
-                    const auto &witness_dst = head.witness_dst.native();
-                    const auto &r_src_z = head.r_src[i];
-                    const auto &r_src_omega = head.r_src[rotated_index];
-                    const auto &e_src_edge_z = head.e_src_edge[i];
-                    const auto &e_dst_edge_z = head.e_dst_edge[i];
-                    const auto &h_src_star_edge_z = head.h_src_star_edge[i];
-                    const auto s_z = fr_add(e_src_edge_z, e_dst_edge_z);
-                    auto query_src_z = src_z;
-                    fr_add_scaled_inplace(query_src_z, eta_src, e_src_edge_z);
-                    fr_add_scaled_inplace(query_src_z, eta_src_sq, h_src_star_edge_z);
-                    const auto &r_l_z = head.r_l[i];
-                    const auto &r_l_omega = head.r_l[rotated_index];
-                    const auto &m_l_z = head.m_l[i];
-                    const auto &z_z = head.z_col[i];
-                    const auto &m_edge_z = head.m_edge[i];
-                    const auto delta_z = fr_sub(m_edge_z, z_z);
-                    auto table_l_z = t_l_x_z;
-                    fr_add_scaled_inplace(table_l_z, eta_l, t_l_y_z);
-                    auto query_l_z = s_z;
-                    fr_add_scaled_inplace(query_l_z, eta_l, z_z);
-                    const auto &s_max_z = head.s_max[i];
-                    const auto &s_max_omega = head.s_max[rotated_index];
-                    const auto &c_max_z = head.c_max[i];
-                    const auto &c_max_omega = head.c_max[rotated_index];
-                    const auto &r_r_z = head.r_r[i];
-                    const auto &r_r_omega = head.r_r[rotated_index];
-                    const auto &table_r_z = t_range_z;
-                    const auto &query_r_z = delta_z;
-                    const auto &m_r_z = head.m_r[i];
-                    const auto &alpha_z = head.alpha[i];
-                    const auto &u_z = head.u[i];
-                    const auto &inv_edge_z = head.inv_edge[i];
-                    const auto &r_exp_z = head.r_exp[i];
-                    const auto &r_exp_omega = head.r_exp[rotated_index];
-                    auto table_exp_z = t_exp_x_z;
-                    fr_add_scaled_inplace(table_exp_z, eta_exp, t_exp_y_z);
-                    auto query_exp_z = delta_z;
-                    fr_add_scaled_inplace(query_exp_z, eta_exp, u_z);
-                    const auto &m_exp_z = head.m_exp[i];
-                    const auto &psq_z = head.psq[i];
-                    const auto &psq_omega = head.psq[rotated_index];
-                    const auto &sum_edge_z = head.sum_edge[i];
-                    const auto &u_omega = head.u[rotated_index];
-                    const auto &widehat_v_pre_star_z = head.widehat_v_pre_star[i];
-                    const auto &widehat_v_pre_star_omega = head.widehat_v_pre_star[rotated_index];
-                    auto w_psq_z = u_z;
-                    fr_add_scaled_inplace(w_psq_z, lambda_psq, widehat_v_pre_star_z);
-                    auto w_psq_omega = u_omega;
-                    fr_add_scaled_inplace(w_psq_omega, lambda_psq, widehat_v_pre_star_omega);
-                    const auto &h_agg_pre_star_edge_z = head.h_agg_pre_star_edge[i];
-                    auto t_psq_edge_z = sum_edge_z;
-                    fr_add_scaled_inplace(t_psq_edge_z, lambda_psq, h_agg_pre_star_edge_z);
-                    const auto &r_t_z = head.r_t[i];
-                    const auto &r_t_omega = head.r_t[rotated_index];
-                    auto query_t_z = dst_z;
-                    fr_add_scaled_inplace(query_t_z, eta_t, t_psq_edge_z);
-                    const auto &r_elu_z = head.r_elu[i];
-                    const auto &r_elu_omega = head.r_elu[rotated_index];
-                    auto table_elu_z = t_elu_x_z;
-                    fr_add_scaled_inplace(table_elu_z, eta_elu, t_elu_y_z);
-                    const auto &query_elu_z = head.query_elu[i];
-                    const auto &m_elu_z = head.m_elu[i];
-                    const auto &r_dst_z = head.r_dst[i];
-                    const auto &r_dst_omega = head.r_dst[rotated_index];
-                    const auto &h_agg_star_edge_z = head.h_agg_star_edge[i];
-                    auto query_dst_z = dst_z;
-                    fr_add_scaled_inplace(query_dst_z, eta_dst, e_dst_edge_z);
-                    fr_add_scaled_inplace(query_dst_z, eta_dst_sq, m_edge_z);
-                    fr_add_scaled_inplace(query_dst_z, eta_dst_cu, sum_edge_z);
-                    fr_add_scaled_inplace(query_dst_z, eta_dst_4, inv_edge_z);
-                    fr_add_scaled_inplace(query_dst_z, eta_dst_5, h_agg_star_edge_z);
-
-                    acc.add_scaled_native_unchecked(first, r_src_z);
-                    acc.add_scaled_native_unchecked(not_last, t_edge_route_edge_step_native(r_src_omega, r_src_z, query_src_z, beta_src, q_edge));
-                    acc.add_scaled_difference_native_unchecked(last, r_src_z, witness_src);
-                    acc.skip_zero_terms_unchecked();
-                    acc.add_scaled_native_unchecked(not_q_edge, query_src_z);
-
-                    acc.skip_zero_terms_unchecked();
-                    acc.add_scaled_native_unchecked(first, r_l_z);
-                    acc.add_native_unchecked(t_edge_lookup_step_native(
-                        r_l_omega,
-                        r_l_z,
-                        table_l_z,
-                        query_l_z,
-                        m_l_z,
-                        q_tbl_l_z,
-                        q_qry_l_z,
-                        beta_l));
-                    acc.add_scaled_native_unchecked(last, r_l_z);
-                    acc.skip_zero_terms_unchecked(2);
-                    acc.add_two_scaled_native_unchecked(not_q_tbl_l, table_l_z, m_l_z);
-                    acc.add_scaled_native_unchecked(not_q_qry_l, query_l_z);
-
-                    acc.skip_zero_terms_unchecked();
-                    acc.add_scaled_difference_native_unchecked(s_max_z, s_max_z, one);
-                    acc.add_scaled_native_unchecked(s_max_z, delta_z);
-                    acc.add_scaled_native_unchecked(not_q_edge, s_max_z);
-                    acc.add_scaled_difference_native_unchecked(first, c_max_z, s_max_z);
-                    acc.add_native_unchecked(t_edge_max_step_native(c_max_omega, c_max_z, s_max_omega, q_edge_next, q_new_next));
-                    acc.add_scaled_difference_native_unchecked(q_end, c_max_z, one);
-
-                    acc.add_scaled_native_unchecked(first, r_r_z);
-                    acc.add_native_unchecked(t_edge_lookup_step_native(
-                        r_r_omega,
-                        r_r_z,
-                        table_r_z,
-                        query_r_z,
-                        m_r_z,
-                        q_tbl_r_z,
-                        q_qry_r_z,
-                        beta_r));
-                    acc.add_scaled_native_unchecked(last, r_r_z);
-                    acc.skip_zero_terms_unchecked(2);
-                    acc.add_two_scaled_native_unchecked(not_q_tbl_r, table_r_z, m_r_z);
-                    acc.add_scaled_native_unchecked(not_q_qry_r, query_r_z);
-
-                    acc.add_scaled_difference_native_unchecked(q_edge, alpha_z, fr_mul(u_z, inv_edge_z));
-                    acc.add_scaled_native_unchecked(first, r_exp_z);
-                    acc.add_native_unchecked(t_edge_lookup_step_native(
-                        r_exp_omega,
-                        r_exp_z,
-                        table_exp_z,
-                        query_exp_z,
-                        m_exp_z,
-                        q_tbl_exp_z,
-                        q_qry_exp_z,
-                        beta_exp));
-                    acc.add_scaled_native_unchecked(last, r_exp_z);
-                    acc.skip_zero_terms_unchecked(2);
-                    acc.add_two_scaled_native_unchecked(not_q_tbl_exp, table_exp_z, m_exp_z);
-                    acc.add_scaled_native_unchecked(not_q_qry_exp, query_exp_z);
-
-                    acc.add_scaled_difference_native_unchecked(first, psq_z, fr_mul(q_edge, w_psq_z));
-                    acc.add_native_unchecked(t_edge_psq_step_native(psq_omega, psq_z, w_psq_omega, q_edge_next, q_new_next));
-                    acc.add_scaled_difference_native_unchecked(q_end, psq_z, t_psq_edge_z);
-                    acc.add_scaled_native_unchecked(first, r_t_z);
-                    acc.add_scaled_native_unchecked(not_last, t_edge_route_edge_step_native(r_t_omega, r_t_z, query_t_z, beta_t, q_edge));
-                    acc.add_scaled_difference_native_unchecked(last, r_t_z, witness_t);
-                    acc.skip_zero_terms_unchecked();
-                    acc.add_scaled_native_unchecked(not_q_edge, query_t_z);
-
-                    acc.add_scaled_native_unchecked(first, r_elu_z);
-                    acc.add_native_unchecked(t_edge_lookup_step_native(
-                        r_elu_omega,
-                        r_elu_z,
-                        table_elu_z,
-                        query_elu_z,
-                        m_elu_z,
-                        q_tbl_elu_z,
-                        q_qry_elu_z,
-                        beta_elu));
-                    acc.add_scaled_native_unchecked(last, r_elu_z);
-                    acc.skip_zero_terms_unchecked(2);
-                    acc.add_two_scaled_native_unchecked(not_q_tbl_elu, table_elu_z, m_elu_z);
-                    acc.add_scaled_native_unchecked(not_q_qry_elu, query_elu_z);
-
-                    acc.add_scaled_native_unchecked(first, r_dst_z);
-                    acc.add_scaled_native_unchecked(not_last, t_edge_route_edge_step_native(r_dst_omega, r_dst_z, query_dst_z, beta_dst, q_edge));
-                    acc.add_scaled_difference_native_unchecked(last, r_dst_z, witness_dst);
-                    acc.skip_zero_terms_unchecked();
-                    acc.add_scaled_native_unchecked(not_q_edge, query_dst_z);
-                }
-
-                for (const auto &head : plan.output_heads)
-                {
-                    const auto &beta_src = head.beta_src.native();
-                    const auto &beta_dst = head.beta_dst.native();
-                    const auto &eta_src = head.eta_src.native();
-                    const auto &eta_dst = head.eta_dst.native();
-                    const auto &eta_dst_sq = head.eta_dst_sq.native();
-                    const auto &eta_dst_cu = head.eta_dst_cu.native();
-                    const auto &eta_dst_4 = head.eta_dst_4.native();
-                    const auto &eta_dst_5 = head.eta_dst_5.native();
-                    const auto &beta_l = head.beta_l.native();
-                    const auto &eta_l = head.eta_l.native();
-                    const auto &beta_r = head.beta_r.native();
-                    const auto &beta_exp = head.beta_exp.native();
-                    const auto &eta_exp = head.eta_exp.native();
-                    const auto &beta_t = head.beta_t.native();
-                    const auto &eta_t = head.eta_t.native();
-                    const auto &lambda_out = head.lambda_out.native();
-                    const auto &witness_src = head.witness_src.native();
-                    const auto &witness_t = head.witness_t.native();
-                    const auto &witness_dst = head.witness_dst.native();
-                    const auto &r_src_z = head.r_src[i];
-                    const auto &r_src_omega = head.r_src[rotated_index];
-                    const auto &e_src_edge_z = head.e_src_edge[i];
-                    const auto &e_dst_edge_z = head.e_dst_edge[i];
-                    const auto s_z = fr_add(e_src_edge_z, e_dst_edge_z);
-                    auto query_src_z = src_z;
-                    fr_add_scaled_inplace(query_src_z, eta_src, e_src_edge_z);
-                    const auto &r_l_z = head.r_l[i];
-                    const auto &r_l_omega = head.r_l[rotated_index];
-                    const auto &m_l_z = head.m_l[i];
-                    const auto &z_z = head.z_col[i];
-                    const auto &m_edge_z = head.m_edge[i];
-                    const auto delta_z = fr_sub(m_edge_z, z_z);
-                    auto table_l_z = t_l_x_z;
-                    fr_add_scaled_inplace(table_l_z, eta_l, t_l_y_z);
-                    auto query_l_z = s_z;
-                    fr_add_scaled_inplace(query_l_z, eta_l, z_z);
-                    const auto &s_max_z = head.s_max[i];
-                    const auto &s_max_omega = head.s_max[rotated_index];
-                    const auto &c_max_z = head.c_max[i];
-                    const auto &c_max_omega = head.c_max[rotated_index];
-                    const auto &r_r_z = head.r_r[i];
-                    const auto &r_r_omega = head.r_r[rotated_index];
-                    const auto &table_r_z = t_range_z;
-                    const auto &query_r_z = delta_z;
-                    const auto &m_r_z = head.m_r[i];
-                    const auto &alpha_z = head.alpha[i];
-                    const auto &u_z = head.u[i];
-                    const auto &inv_edge_z = head.inv_edge[i];
-                    const auto &r_exp_z = head.r_exp[i];
-                    const auto &r_exp_omega = head.r_exp[rotated_index];
-                    auto table_exp_z = t_exp_x_z;
-                    fr_add_scaled_inplace(table_exp_z, eta_exp, t_exp_y_z);
-                    auto query_exp_z = delta_z;
-                    fr_add_scaled_inplace(query_exp_z, eta_exp, u_z);
-                    const auto &m_exp_z = head.m_exp[i];
-                    const auto &psq_z = head.psq[i];
-                    const auto &psq_omega = head.psq[rotated_index];
-                    const auto &u_omega = head.u[rotated_index];
-                    const auto &widehat_y_star_z = head.widehat_y_star[i];
-                    const auto &widehat_y_star_omega = head.widehat_y_star[rotated_index];
-                    auto w_z = u_z;
-                    fr_add_scaled_inplace(w_z, lambda_out, widehat_y_star_z);
-                    auto w_omega = u_omega;
-                    fr_add_scaled_inplace(w_omega, lambda_out, widehat_y_star_omega);
-                    const auto &sum_edge_z = head.sum_edge[i];
-                    const auto &y_star_edge_z = head.y_star_edge[i];
-                    auto t_edge_z = sum_edge_z;
-                    fr_add_scaled_inplace(t_edge_z, lambda_out, y_star_edge_z);
-                    const auto &r_t_z = head.r_t[i];
-                    const auto &r_t_omega = head.r_t[rotated_index];
-                    auto query_t_z = dst_z;
-                    fr_add_scaled_inplace(query_t_z, eta_t, t_edge_z);
-                    const auto &r_dst_z = head.r_dst[i];
-                    const auto &r_dst_omega = head.r_dst[rotated_index];
-                    auto query_dst_z = dst_z;
-                    fr_add_scaled_inplace(query_dst_z, eta_dst, e_dst_edge_z);
-                    fr_add_scaled_inplace(query_dst_z, eta_dst_sq, m_edge_z);
-                    fr_add_scaled_inplace(query_dst_z, eta_dst_cu, sum_edge_z);
-                    fr_add_scaled_inplace(query_dst_z, eta_dst_4, inv_edge_z);
-                    fr_add_scaled_inplace(query_dst_z, eta_dst_5, y_star_edge_z);
-
-                    acc.add_scaled_native_unchecked(first, r_src_z);
-                    acc.add_scaled_native_unchecked(not_last, t_edge_route_edge_step_native(r_src_omega, r_src_z, query_src_z, beta_src, q_edge));
-                    acc.add_scaled_difference_native_unchecked(last, r_src_z, witness_src);
-                    acc.skip_zero_terms_unchecked();
-                    acc.add_scaled_native_unchecked(not_q_edge, query_src_z);
-
-                    acc.skip_zero_terms_unchecked();
-                    acc.add_scaled_native_unchecked(first, r_l_z);
-                    acc.add_native_unchecked(t_edge_lookup_step_native(
-                        r_l_omega,
-                        r_l_z,
-                        table_l_z,
-                        query_l_z,
-                        m_l_z,
-                        q_tbl_l_z,
-                        q_qry_l_z,
-                        beta_l));
-                    acc.add_scaled_native_unchecked(last, r_l_z);
-                    acc.skip_zero_terms_unchecked(2);
-                    acc.add_two_scaled_native_unchecked(not_q_tbl_l, table_l_z, m_l_z);
-                    acc.add_scaled_native_unchecked(not_q_qry_l, query_l_z);
-
-                    acc.skip_zero_terms_unchecked();
-                    acc.add_scaled_difference_native_unchecked(s_max_z, s_max_z, one);
-                    acc.add_scaled_native_unchecked(s_max_z, delta_z);
-                    acc.add_scaled_native_unchecked(not_q_edge, s_max_z);
-                    acc.add_scaled_difference_native_unchecked(first, c_max_z, s_max_z);
-                    acc.add_native_unchecked(t_edge_max_step_native(c_max_omega, c_max_z, s_max_omega, q_edge_next, q_new_next));
-                    acc.add_scaled_difference_native_unchecked(q_end, c_max_z, one);
-
-                    acc.add_scaled_native_unchecked(first, r_r_z);
-                    acc.add_native_unchecked(t_edge_lookup_step_native(
-                        r_r_omega,
-                        r_r_z,
-                        table_r_z,
-                        query_r_z,
-                        m_r_z,
-                        q_tbl_r_z,
-                        q_qry_r_z,
-                        beta_r));
-                    acc.add_scaled_native_unchecked(last, r_r_z);
-                    acc.skip_zero_terms_unchecked(2);
-                    acc.add_two_scaled_native_unchecked(not_q_tbl_r, table_r_z, m_r_z);
-                    acc.add_scaled_native_unchecked(not_q_qry_r, query_r_z);
-
-                    acc.add_scaled_difference_native_unchecked(q_edge, alpha_z, fr_mul(u_z, inv_edge_z));
-                    acc.add_scaled_native_unchecked(first, r_exp_z);
-                    acc.add_native_unchecked(t_edge_lookup_step_native(
-                        r_exp_omega,
-                        r_exp_z,
-                        table_exp_z,
-                        query_exp_z,
-                        m_exp_z,
-                        q_tbl_exp_z,
-                        q_qry_exp_z,
-                        beta_exp));
-                    acc.add_scaled_native_unchecked(last, r_exp_z);
-                    acc.skip_zero_terms_unchecked(2);
-                    acc.add_two_scaled_native_unchecked(not_q_tbl_exp, table_exp_z, m_exp_z);
-                    acc.add_scaled_native_unchecked(not_q_qry_exp, query_exp_z);
-
-                    acc.add_scaled_difference_native_unchecked(first, psq_z, fr_mul(q_edge, w_z));
-                    acc.add_native_unchecked(t_edge_psq_step_native(psq_omega, psq_z, w_omega, q_edge_next, q_new_next));
-                    acc.add_scaled_difference_native_unchecked(q_end, psq_z, t_edge_z);
-                    acc.add_scaled_native_unchecked(first, r_t_z);
-                    acc.add_scaled_native_unchecked(not_last, t_edge_route_edge_step_native(r_t_omega, r_t_z, query_t_z, beta_t, q_edge));
-                    acc.add_scaled_difference_native_unchecked(last, r_t_z, witness_t);
-                    acc.skip_zero_terms_unchecked();
-                    acc.add_scaled_native_unchecked(not_q_edge, query_t_z);
-
-                    acc.add_scaled_native_unchecked(first, r_dst_z);
-                    acc.add_scaled_native_unchecked(not_last, t_edge_route_edge_step_native(r_dst_omega, r_dst_z, query_dst_z, beta_dst, q_edge));
-                    acc.add_scaled_difference_native_unchecked(last, r_dst_z, witness_dst);
-                    acc.skip_zero_terms_unchecked();
-                    acc.add_scaled_native_unchecked(not_q_edge, query_dst_z);
-                }
-
-                return acc.scaled_native_raw(geometry.inverse_zero[i]);
-            }
-
-            algebra::Polynomial materialize_t_edge_fast()
-            {
-                progress_note("prove:quotient:t_edge:plan:start");
-                auto plan = build_t_edge_plan();
-                auto geometry = build_t_edge_geometry();
-                progress_note("prove:quotient:t_edge:plan:done");
-
-                std::vector<FieldElement> quotient_values(target_size_, FieldElement::zero());
-                auto *quotient_values_native = FieldElement::mutable_native_array_data(quotient_values.data());
-                progress_note("prove:quotient:t_edge:evaluate:start");
-                parallel_for_chunks(target_size_, 2048, 0, [&](std::size_t begin, std::size_t end)
-                                    {
-                    for (std::size_t i = begin; i < end; ++i) {
-                        quotient_values_native[i] = evaluate_t_edge_fast_at(plan, geometry, i);
-                    } });
-                progress_note("prove:quotient:t_edge:evaluate:done");
-
-                progress_note("prove:quotient:t_edge:coefficients:start");
-                auto coefficients = coefficients_from_coset_evaluations_in_place(
-                    std::move(quotient_values),
-                    shift_,
-                    "prove:quotient:t_edge:coefficients");
-                progress_note("prove:quotient:t_edge:coefficients:done");
-                return algebra::Polynomial::from_coefficients(label_, std::move(coefficients));
-            }
 
             algebra::Polynomial materialize_full_identity_fh()
             {
@@ -5947,10 +4307,9 @@ namespace gatzk::protocol
                         return suffix == "w_psq" || suffix == "T_psq_edge";
                     }
                 }
-                const bool legacy_single_output = false;
                 for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index)
                 {
-                    const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
+                    const auto prefix = output_head_prefix(head_index) + "_";
                     if (name.rfind(prefix, 0) == 0)
                     {
                         const auto suffix = std::string_view(name).substr(prefix.size());
@@ -6008,10 +4367,9 @@ namespace gatzk::protocol
                     return is_edge_derived_coset_request(name);
                 }
 
-                const bool legacy_single_output = false;
                 for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index)
                 {
-                    const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
+                    const auto prefix = output_head_prefix(head_index) + "_";
                     if (name.rfind(prefix, 0) != 0)
                     {
                         continue;
@@ -6163,10 +4521,9 @@ namespace gatzk::protocol
                     return std::nullopt;
                 }
 
-                const bool legacy_single_output = false;
                 for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index)
                 {
-                    const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
+                    const auto prefix = output_head_prefix(head_index) + "_";
                     if (name.rfind(prefix, 0) != 0)
                     {
                         continue;
@@ -6188,7 +4545,7 @@ namespace gatzk::protocol
                     {
                         return head_value("M_edge") - head_value("Z");
                     }
-                    const auto eta_l = challenges_.at(output_challenge_name("eta_L_out", head_index, legacy_single_output));
+                    const auto eta_l = challenges_.at(output_challenge_name("eta_L_out", head_index));
                     if (suffix == "Table_L")
                     {
                         return value("P_T_L_x") + eta_l * value("P_T_L_y");
@@ -6205,7 +4562,7 @@ namespace gatzk::protocol
                     {
                         return head_value("Delta");
                     }
-                    const auto eta_exp = challenges_.at(output_challenge_name("eta_exp_out", head_index, legacy_single_output));
+                    const auto eta_exp = challenges_.at(output_challenge_name("eta_exp_out", head_index));
                     if (suffix == "Table_exp")
                     {
                         return value("P_T_exp_x") + eta_exp * value("P_T_exp_y");
@@ -6214,7 +4571,7 @@ namespace gatzk::protocol
                     {
                         return head_value("Delta") + eta_exp * head_value("U");
                     }
-                    const auto eta_src = challenges_.at(output_challenge_name("eta_src_out", head_index, legacy_single_output));
+                    const auto eta_src = challenges_.at(output_challenge_name("eta_src_out", head_index));
                     if (suffix == "Query_src")
                     {
                         return value("P_src") + eta_src * head_value("E_src_edge");
@@ -6225,20 +4582,20 @@ namespace gatzk::protocol
                         {
                             return std::nullopt;
                         }
-                        const auto lambda_out = challenges_.at(output_challenge_name("lambda_out", head_index, legacy_single_output));
+                        const auto lambda_out = challenges_.at(output_challenge_name("lambda_out", head_index));
                         return head_value("U") + lambda_out * head_value("widehat_y_star");
                     }
                     if (suffix == "T_edge")
                     {
-                        const auto lambda_out = challenges_.at(output_challenge_name("lambda_out", head_index, legacy_single_output));
+                        const auto lambda_out = challenges_.at(output_challenge_name("lambda_out", head_index));
                         return head_value("Sum_edge") + lambda_out * head_value("Y_star_edge");
                     }
-                    const auto eta_t = challenges_.at(output_challenge_name("eta_t_out", head_index, legacy_single_output));
+                    const auto eta_t = challenges_.at(output_challenge_name("eta_t_out", head_index));
                     if (suffix == "Query_t")
                     {
                         return value("P_dst") + eta_t * head_value("T_edge");
                     }
-                    const auto eta_dst = challenges_.at(output_challenge_name("eta_dst_out", head_index, legacy_single_output));
+                    const auto eta_dst = challenges_.at(output_challenge_name("eta_dst_out", head_index));
                     if (suffix == "Query_dst")
                     {
                         const auto eta_dst_sq = eta_dst * eta_dst;
@@ -6480,14 +4837,13 @@ namespace gatzk::protocol
                         return is_hidden_derived_suffix(name.substr(prefix.size()));
                     }
                 }
-                const bool legacy_single_output = false;
                 auto is_output_derived_suffix = [](std::string_view suffix)
                 {
                     return suffix == "S" || suffix == "Delta" || suffix == "Table_L" || suffix == "Query_L" || suffix == "Table_R" || suffix == "Query_R" || suffix == "Table_exp" || suffix == "Query_exp" || suffix == "Query_src" || suffix == "Query_t" || suffix == "Query_dst" || suffix == "w" || suffix == "T_edge";
                 };
                 for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index)
                 {
-                    const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
+                    const auto prefix = output_head_prefix(head_index) + "_";
                     if (name.rfind(prefix, 0) == 0)
                     {
                         return is_output_derived_suffix(name.substr(prefix.size()));
@@ -6750,20 +5106,19 @@ namespace gatzk::protocol
                 {
                     return nullptr;
                 }
-                const bool legacy_single_output = false;
                 for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index)
                 {
-                    const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
+                    const auto prefix = output_head_prefix(head_index) + "_";
                     if (name.rfind(prefix, 0) != 0)
                     {
                         continue;
                     }
                     const auto suffix = name.substr(prefix.size());
-                    const auto eta_l = challenges_.at(output_challenge_name("eta_L_out", head_index, legacy_single_output));
-                    const auto eta_exp = challenges_.at(output_challenge_name("eta_exp_out", head_index, legacy_single_output));
-                    const auto eta_src = challenges_.at(output_challenge_name("eta_src_out", head_index, legacy_single_output));
-                    const auto eta_dst = challenges_.at(output_challenge_name("eta_dst_out", head_index, legacy_single_output));
-                    const auto eta_t = challenges_.at(output_challenge_name("eta_t_out", head_index, legacy_single_output));
+                    const auto eta_l = challenges_.at(output_challenge_name("eta_L_out", head_index));
+                    const auto eta_exp = challenges_.at(output_challenge_name("eta_exp_out", head_index));
+                    const auto eta_src = challenges_.at(output_challenge_name("eta_src_out", head_index));
+                    const auto eta_dst = challenges_.at(output_challenge_name("eta_dst_out", head_index));
+                    const auto eta_t = challenges_.at(output_challenge_name("eta_t_out", head_index));
                     if (suffix == "Table_L")
                     {
                         return scaled_coset_sum({{"P_T_L_x", FieldElement::one()}, {"P_T_L_y", eta_l}});
@@ -6802,12 +5157,12 @@ namespace gatzk::protocol
                         {
                             return nullptr;
                         }
-                        const auto lambda_out = challenges_.at(output_challenge_name("lambda_out", head_index, legacy_single_output));
+                        const auto lambda_out = challenges_.at(output_challenge_name("lambda_out", head_index));
                         return scaled_coset_sum({{prefix + "U", FieldElement::one()}, {prefix + "widehat_y_star", lambda_out}});
                     }
                     if (suffix == "T_edge")
                     {
-                        const auto lambda_out = challenges_.at(output_challenge_name("lambda_out", head_index, legacy_single_output));
+                        const auto lambda_out = challenges_.at(output_challenge_name("lambda_out", head_index));
                         return scaled_coset_sum({{prefix + "Sum_edge", FieldElement::one()}, {prefix + "Y_star_edge", lambda_out}});
                     }
                     if (suffix == "Query_src")
@@ -7663,13 +6018,12 @@ namespace gatzk::protocol
                 "Bind_b",
                 "Bind_Acc",
             };
-            const bool legacy_single_output = false;
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {
-                append_prefixed(output_head_prefix(head_index, legacy_single_output) + "_", output_suffixes);
-                append_prefixed(output_head_prefix(head_index, legacy_single_output) + "_", division_suffixes);
+                append_prefixed(output_head_prefix(head_index) + "_", output_suffixes);
+                append_prefixed(output_head_prefix(head_index) + "_", division_suffixes);
                 append_division_range_dependencies(
-                    output_head_prefix(head_index, legacy_single_output) + "_Div_");
+                    output_head_prefix(head_index) + "_Div_");
                 append_label("P_Q_div_out" + std::to_string(head_index));
                 const auto metadata = build_binding_relation_metadata(context);
                 const auto relation_id =
@@ -7851,7 +6205,6 @@ namespace gatzk::protocol
             const std::vector<std::string> &labels,
             const std::vector<FieldElement> &points,
             const std::string &folding_name,
-            const std::map<std::string, FieldElement> &challenges,
             RunMetrics *metrics = nullptr,
             double *eval_gather_ms = nullptr,
             double *witness_open_ms = nullptr,
@@ -8756,7 +7109,6 @@ namespace gatzk::protocol
                         padded(quantize_model_vector(context.model.hidden_heads[head_index].attn_dst_kernel_fp), context.domains.d->size),
                         context.domains.d));
             }
-            const bool legacy_single_output = false;
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {
                 const auto &head = context.model.output_layer.heads[head_index];
@@ -8771,23 +7123,23 @@ namespace gatzk::protocol
                 }
                 add_static_commitment(
                     context,
-                    output_src_label(head_index, legacy_single_output),
+                    output_src_label(head_index),
                     make_eval_poly(
-                        output_src_label(head_index, legacy_single_output),
+                        output_src_label(head_index),
                         padded(quantize_model_vector_at_scale(head.attn_src_kernel_fp, 1.0), context.domains.c->size),
                         context.domains.c));
                 add_static_commitment(
                     context,
-                    output_dst_label(head_index, legacy_single_output),
+                    output_dst_label(head_index),
                     make_eval_poly(
-                        output_dst_label(head_index, legacy_single_output),
+                        output_dst_label(head_index),
                         padded(quantize_model_vector_at_scale(head.attn_dst_kernel_fp, 1.0), context.domains.c->size),
                         context.domains.c));
                 add_static_commitment(
                     context,
-                    output_bias_label(head_index, legacy_single_output),
+                    output_bias_label(head_index),
                     make_eval_poly(
-                        output_bias_label(head_index, legacy_single_output),
+                        output_bias_label(head_index),
                         padded(
                             quantize_model_vector(head.output_bias_fp),
                             context.domains.c->size),
@@ -8993,7 +7345,6 @@ namespace gatzk::protocol
                     const auto numerator = evaluate_t_edge(
                         context,
                         pre_quotient_challenges,
-                        trace.witness_scalars,
                         trace.external_evaluations,
                         [&](const std::string &name, const FieldElement &at)
                         {
@@ -9072,41 +7423,30 @@ namespace gatzk::protocol
             }
             auto proof_domain_weight_cache = shared_proof_domain_weight_cache();
             const std::vector<std::string> quotient_labels = {"t_FH", "t_edge", "t_in", "t_d_h", "t_cat", "t_C", "t_N"};
-            std::unordered_map<std::string, Commitment> quotient_commitments;
-            CachedQuotientArtifacts cached_quotients;
-            const bool quotient_cache_hit = false;
-            if (quotient_cache_hit)
+            append_note(metrics, "quotient_cache=miss");
+            auto named_quotient_polynomials = materialize_quotient_polynomials(
+                context,
+                trace,
+                pre_quotient_challenges,
+                quotient_labels,
+                metrics);
+            named_quotient_polynomials = blind_quotient_polynomials(
+                context,
+                std::move(named_quotient_polynomials));
+            const auto quotient_pack_start = Clock::now();
+            progress_note("prove:quotient:commit_batch:start");
+            auto quotient_commitments = batch_quotient_commitments(
+                std::move(named_quotient_polynomials),
+                context.kzg);
+            progress_note("prove:quotient:commit_batch:done");
+            if (metrics != nullptr)
             {
-                quotient_commitments = cached_quotients.quotient_commitments;
-                append_note(metrics, "quotient_cache=hit");
+                const auto quotient_commitment_ms = elapsed_ms(quotient_pack_start, Clock::now());
+                metrics->quotient_commitment_ms += quotient_commitment_ms;
+                metrics->quotient_bundle_pack_ms += quotient_commitment_ms;
             }
-            else
-            {
-                append_note(metrics, "quotient_cache=miss");
-                auto named_quotient_polynomials = materialize_quotient_polynomials(
-                    context,
-                    trace,
-                    pre_quotient_challenges,
-                    quotient_labels,
-                    metrics);
-                named_quotient_polynomials = blind_quotient_polynomials(
-                    context,
-                    std::move(named_quotient_polynomials));
-                const auto quotient_pack_start = Clock::now();
-                progress_note("prove:quotient:commit_batch:start");
-                quotient_commitments = batch_quotient_commitments(
-                    std::move(named_quotient_polynomials),
-                    context.kzg);
-                progress_note("prove:quotient:commit_batch:done");
-                if (metrics != nullptr)
-                {
-                    const auto quotient_commitment_ms = elapsed_ms(quotient_pack_start, Clock::now());
-                    metrics->quotient_commitment_ms += quotient_commitment_ms;
-                    metrics->quotient_bundle_pack_ms += quotient_commitment_ms;
-                }
-                // Quotient polynomials and commitments are proof-specific and must not be
-                // reused by a later fresh-proof measurement.
-            }
+            // Quotient polynomials and commitments are proof-specific and must not be
+            // reused by a later fresh-proof measurement.
             const auto challenges = replay_challenges(context, trace.commitments, quotient_commitments, &trace.public_metadata);
             if (std::getenv("GATZK_DEBUG_QUOTIENT_SELF_CHECK") != nullptr)
             {
@@ -9168,6 +7508,8 @@ namespace gatzk::protocol
             proof.public_metadata = trace.public_metadata;
             proof.block_order = proof_block_order();
             proof.challenges = challenges;
+            proof.route_references =
+                route_opening_references(context, proof.challenges);
             if (trace.pi_bind == nullptr)
             {
                 throw std::runtime_error("trace is missing Pi_bind proof material");
@@ -9241,7 +7583,6 @@ namespace gatzk::protocol
                     labels,
                     points,
                     spec.v_name,
-                    challenges,
                     &local_metrics,
                     &gather_ms,
                     &witness_ms,
@@ -9377,12 +7718,11 @@ namespace gatzk::protocol
                     const auto &bundle_name = bundle_it->first;
                     const auto &bundle = bundle_it->second;
                     const bool is_c = bundle_name == "C";
-                    const bool is_edge = bundle_name == "edge";
                     std::vector<std::string> owned_labels;
                     if (is_c)
                     {
                         owned_labels = {
-                            model_proof_local_label(output_bias_label(head_index, false)),
+                            model_proof_local_label(output_bias_label(head_index)),
                             output_bias_view_label(head_index, "Table_can"),
                             output_bias_view_label(head_index, "m_can"),
                             output_bias_view_label(head_index, "J_can"),
@@ -9722,7 +8062,7 @@ namespace gatzk::protocol
                     {trace.commitments.at(shifted_label), u_it->values.front()});
                 external_points.push_back(y_rel);
                 const auto virtual_prefix =
-                    output_head_prefix(head_index, false) + "_BiasView_";
+                    output_head_prefix(head_index) + "_BiasView_";
                 external_commitments.push_back(
                     {trace.commitments.at(virtual_prefix + "F2"), u_it->values.front()});
                 external_points.push_back(y_rel + relation.deltas.at(1));
@@ -9821,11 +8161,6 @@ namespace gatzk::protocol
                 metrics->external_opening_ms += elapsed_ms(stage_start, Clock::now());
             }
             progress_note("prove:external_opening:done");
-            for (const auto &[name, value] : trace.witness_scalars)
-            {
-                proof.witness_scalars.push_back({name, value});
-                proof.witness_scalar_kinds.push_back(PayloadValueKind::MaskedPrivateValue);
-            }
             strip_prover_material_from_proof(&proof);
             if (metrics != nullptr)
             {
@@ -9836,648 +8171,6 @@ namespace gatzk::protocol
 
         throw std::runtime_error(
             "formal prover reached the removed single-output compatibility protocol");
-    }
-
-    // `proof_size_bytes` 统计的是 formal proof 的传输口径，
-    // 不是运行目录中文件大小，也不是 C++ 对象在内存中的占用。
-    // 能由 verifier 通过固定 schema 与 transcript 重建的标签、挑战值和 opening 点不计入；
-    // 真正需要随 proof 发送的元数据字符串、承诺点、opening 值、witness 与外点见证才计入。
-    std::size_t proof_size_bytes(const Proof &proof)
-    {
-        return serialize_proof(proof).size();
-#if 0
-        constexpr std::size_t kLengthPrefixBytes = sizeof(std::uint64_t);
-        constexpr std::size_t kFieldBytes = 32U;
-        auto encoded_string_size = [](const std::string &value)
-        {
-            return sizeof(std::uint64_t) + value.size();
-        };
-
-        std::size_t total = kLengthPrefixBytes;
-        for (const auto *value : {
-                 &proof.public_metadata.protocol_name,
-                 &proof.public_metadata.proof_task,
-                 &proof.public_metadata.srs_id,
-                 &proof.public_metadata.srs_type,
-                 &proof.public_metadata.srs_degree_bound,
-                 &proof.public_metadata.privacy_policy,
-                 &proof.public_metadata.input_privacy,
-                 &proof.public_metadata.output_mode,
-                 &proof.public_metadata.opening_mode,
-                 &proof.public_metadata.binding_mode,
-                 &proof.public_metadata.protocol_id,
-                 &proof.public_metadata.dataset_name,
-                 &proof.public_metadata.task_type,
-                 &proof.public_metadata.report_unit,
-                 &proof.public_metadata.graph_count,
-                 &proof.public_metadata.L,
-                 &proof.public_metadata.hidden_profile,
-                 &proof.public_metadata.d_in_profile,
-                 &proof.public_metadata.K_out,
-                 &proof.public_metadata.C,
-                 &proof.public_metadata.batching_rule,
-                 &proof.public_metadata.subgraph_rule,
-                 &proof.public_metadata.self_loop_rule,
-                 &proof.public_metadata.edge_sort_rule,
-                 &proof.public_metadata.chunking_rule,
-                 &proof.public_metadata.model_arch_id,
-                 &proof.public_metadata.model_param_id,
-                 &proof.public_metadata.static_table_id,
-                 &proof.public_metadata.quant_cfg_id,
-                 &proof.public_metadata.domain_cfg,
-                 &proof.public_metadata.dim_cfg,
-                 &proof.public_metadata.encoding_id,
-                 &proof.public_metadata.padding_rule_id,
-                 &proof.public_metadata.degree_bound_id,
-             })
-        {
-            total += encoded_string_size(*value);
-        }
-        total += kLengthPrefixBytes;
-        for (const auto &label : proof.block_order)
-        {
-            total += encoded_string_size(label);
-        }
-        total += kLengthPrefixBytes;
-        for (const auto &[name, commitment] : proof.dynamic_commitments)
-        {
-            (void)name;
-            // 标签顺序由 schema 固定，因此这里只计实际发送的 G1 承诺点。
-            total += crypto::serialized_size(commitment);
-        }
-        total += kLengthPrefixBytes;
-        for (const auto &[name, commitment] : proof.quotient_commitments)
-        {
-            (void)name;
-            total += crypto::serialized_size(commitment);
-        }
-        total += kLengthPrefixBytes;
-        for (const auto &[name, bundle] : proof.domain_openings)
-        {
-            (void)name;
-            // opening 点本身由 transcript challenge 决定；这里仅计每列在这些点上的值和 witness。
-            total += kLengthPrefixBytes;
-            for (const auto &[value_name, values] : bundle.values)
-            {
-                (void)value_name;
-                total += kLengthPrefixBytes + values.size() * kFieldBytes;
-            }
-            total += bundle.value_kinds.size();
-            total += crypto::serialized_size(bundle.proof);
-        }
-        total += kLengthPrefixBytes;
-        for (const auto &[name, value] : proof.external_evaluations)
-        {
-            (void)name;
-            (void)value;
-            // 外点标签由 formal schema 重建，真正发送的是域元素值。
-            total += kFieldBytes;
-        }
-        total += proof.external_evaluation_kinds.size();
-        total += kLengthPrefixBytes;
-        for (const auto &[name, value] : proof.witness_scalars)
-        {
-            (void)name;
-            (void)value;
-            total += kFieldBytes;
-        }
-        total += proof.witness_scalar_kinds.size();
-        total += kLengthPrefixBytes + proof.public_logits.size() * kFieldBytes;
-        total += kFieldBytes;
-        total += crypto::serialized_size(proof.public_output_opening);
-        // 外点 claims 由全局 external point group 的唯一 witness 折叠。
-        total += crypto::serialized_size(proof.external_proof);
-        return total;
-#endif
-    }
-
-    void export_run_artifacts(
-        const ProtocolContext &context,
-        const TraceArtifacts &trace,
-        const Proof &proof,
-        RunMetrics metrics,
-        bool verified)
-    {
-        const auto export_start = Clock::now();
-        const auto export_root = (std::filesystem::path(context.config.project_root) / context.config.export_dir).string();
-        util::ensure_directory(export_root);
-
-        std::map<std::string, std::string> challenge_strings;
-        for (const auto &[name, value] : proof.challenges)
-        {
-            challenge_strings[name] = value.to_string();
-        }
-        util::write_key_values(export_root + "/challenges.txt", challenge_strings);
-
-        auto format_double = [](double value)
-        {
-            std::ostringstream stream;
-            stream << std::fixed << std::setprecision(3) << value;
-            return stream.str();
-        };
-        auto format_index_vector = [](const std::vector<std::size_t> &values)
-        {
-            std::ostringstream out;
-            for (std::size_t i = 0; i < values.size(); ++i)
-            {
-                if (i != 0)
-                {
-                    out << ',';
-                }
-                out << values[i];
-            }
-            return out.str();
-        };
-        auto csv_escape = [](const std::string &value)
-        {
-            bool needs_quotes = false;
-            for (const auto ch : value)
-            {
-                if (ch == ',' || ch == '"' || ch == '\n')
-                {
-                    needs_quotes = true;
-                    break;
-                }
-            }
-            if (!needs_quotes)
-            {
-                return value;
-            }
-            std::string out = "\"";
-            for (const auto ch : value)
-            {
-                if (ch == '"')
-                {
-                    out += "\"\"";
-                }
-                else
-                {
-                    out.push_back(ch);
-                }
-            }
-            out.push_back('"');
-            return out;
-        };
-        auto bool_string = [](bool value)
-        {
-            return value ? std::string("true") : std::string("false");
-        };
-        auto display_config_path = [&]()
-        {
-            const auto project_root = std::filesystem::path(context.config.project_root);
-            const auto configured = std::filesystem::path(metrics.config);
-            const auto relative = std::filesystem::relative(configured, project_root);
-            if (!relative.empty() && *relative.begin() != "..")
-            {
-                return relative.string();
-            }
-            return metrics.config;
-        };
-        auto append_public_metadata = [&](std::map<std::string, std::string> &entries)
-        {
-            entries.insert({
-                {"protocol_name", proof.public_metadata.protocol_name},
-                {"proof_nonce", proof.public_metadata.proof_nonce},
-                {"proof_task", proof.public_metadata.proof_task},
-                {"srs_id", proof.public_metadata.srs_id},
-                {"protocol_schema_id", proof.public_metadata.protocol_schema_id},
-                {"instance_schema_hash", proof.public_metadata.instance_schema_hash},
-                {"srs_type", proof.public_metadata.srs_type},
-                {"srs_degree_bound", proof.public_metadata.srs_degree_bound},
-                {"kzg_assumption_profile", proof.public_metadata.kzg_assumption_profile},
-                {"privacy_policy", proof.public_metadata.privacy_policy},
-                {"input_privacy", proof.public_metadata.input_privacy},
-                {"output_mode", proof.public_metadata.output_mode},
-                {"opening_mode", proof.public_metadata.opening_mode},
-                {"binding_mode", proof.public_metadata.binding_mode},
-                {"model_arch", proof.public_metadata.model_arch},
-                {"model_params", proof.public_metadata.model_params},
-                {"static_tables", proof.public_metadata.static_tables},
-                {"quant_config", proof.public_metadata.quant_config},
-                {"domain_cfg", proof.public_metadata.domain_cfg},
-                {"dim_cfg", proof.public_metadata.dim_cfg},
-                {"encoding", proof.public_metadata.encoding},
-                {"padding_rule", proof.public_metadata.padding_rule},
-                {"degree_bound", proof.public_metadata.degree_bound},
-                {"security_budget", proof.public_metadata.security_budget},
-                {"public_output", proof.public_metadata.public_output},
-            });
-        };
-        auto benchmark_backend_label = [&]()
-        {
-            return metrics.compute_backend_name == "cuda_hotspots" ? std::string("gpu") : std::string("cpu");
-        };
-        auto env_or_empty = [](const char *name)
-        {
-            const char *value = std::getenv(name);
-            return value == nullptr ? std::string() : std::string(value);
-        };
-        auto table_endpoint_string = [](const std::vector<FieldElement> &values)
-        {
-            std::ostringstream out;
-            out << "size=" << values.size();
-            if (!values.empty())
-            {
-                out << ";first=" << values.front().to_string()
-                    << ";last=" << values.back().to_string();
-            }
-            return out.str();
-        };
-        auto pair_table_endpoint_string = [](const std::vector<std::pair<FieldElement, FieldElement>> &values)
-        {
-            std::ostringstream out;
-            out << "size=" << values.size();
-            if (!values.empty())
-            {
-                out << ";first_left=" << values.front().first.to_string()
-                    << ";first_right=" << values.front().second.to_string()
-                    << ";last_left=" << values.back().first.to_string()
-                    << ";last_right=" << values.back().second.to_string();
-            }
-            return out.str();
-        };
-        const bool full_feature_identity =
-            context.local.num_nodes == context.dataset.num_nodes && context.local.num_features == context.dataset.num_features && std::all_of(context.local.absolute_ids.begin(), context.local.absolute_ids.end(), [index = std::size_t{0}](std::size_t value) mutable
-                                                                                                                                              { return value == index++; });
-        const bool large_whole_graph_gat =
-            context.config.batching_rule == "whole_graph_single" && context.local.num_nodes == context.dataset.num_nodes && (context.local.edges.size() >= (1ULL << 18) || context.dataset.num_nodes * context.dataset.num_features >= (1ULL << 24));
-        const auto table_endpoint_hash = stable_hash(
-            table_endpoint_string(context.tables.range) + "|" + pair_table_endpoint_string(context.tables.lrelu) + "|" + pair_table_endpoint_string(context.tables.exp) + "|" + pair_table_endpoint_string(context.tables.elu));
-        const auto audit_start = Clock::now();
-        const auto audited_private_plain_value_count = private_plain_value_count(context, proof);
-        if (metrics.payload_audit_ms <= 0.0)
-        {
-            metrics.payload_audit_ms = elapsed_ms(audit_start, Clock::now());
-        }
-
-        std::map<std::string, std::string> metadata;
-        append_public_metadata(metadata);
-        const auto public_metadata_hash = hash_key_values(metadata);
-        const auto proof_hash = hash_proof_transport(proof);
-        util::write_key_values(export_root + "/metadata.txt", metadata);
-        util::write_lines(export_root + "/proof_block_order.txt", proof.block_order);
-
-        util::write_lines(export_root + "/commitment_order.txt", trace.commitment_order);
-        // `benchmark.txt` 只保留正式交付面需要的最小结果，避免把内部剖面重新暴露出来。
-        const std::map<std::string, std::string> benchmark_summary = {
-            {"dataset", metrics.dataset},
-            {"config", display_config_path()},
-            {"backend", benchmark_backend_label()},
-            {"status", verified ? "VERIFY_OK" : "VERIFY_FAIL"},
-            {"commitment_time_ms", format_double(metrics.commitment_time_ms)},
-            {"prove_time_ms", format_double(metrics.prove_time_ms)},
-            {"verify_time_ms", format_double(metrics.verify_time_ms)},
-            {"proof_size_bytes", std::to_string(metrics.proof_size_bytes)},
-        };
-        util::write_key_values(export_root + "/benchmark.txt", benchmark_summary);
-
-        std::map<std::string, std::size_t> dynamic_profile_count_by_domain;
-        std::map<std::string, double> dynamic_profile_time_by_domain;
-        std::map<std::string, double> dynamic_profile_time_by_category;
-        if (!metrics.dynamic_commitment_profiles.empty())
-        {
-            const auto profile_start = Clock::now();
-            std::vector<std::string> profile_lines = {
-                "label,dataset,domain,basis,vector_length,domain_size,nonzero_scalar_count,effective_scalar_count,zero_scalar_ratio,padding_ratio,classification,materialization_ms,fingerprint_cache_ms,msm_ms,total_commitment_ms,duplicates_another,duplicate_of,reused_shared,shared_or_borrowed,compact,commitment_cache_hit,ownership,category,optimization_opportunity,zero_scalar_skipping,sparse_compaction,constant_tail_folding,multithreaded_msm,full_value_fingerprint,commitment_fingerprint",
-            };
-            profile_lines.reserve(metrics.dynamic_commitment_profiles.size() + 1);
-            for (const auto &item : metrics.dynamic_commitment_profiles)
-            {
-                dynamic_profile_count_by_domain[item.domain] += 1;
-                dynamic_profile_time_by_domain[item.domain] += item.total_commitment_ms;
-                dynamic_profile_time_by_category[item.ownership + "/" + item.category] += item.total_commitment_ms;
-                profile_lines.push_back(
-                    csv_escape(item.label) + "," + csv_escape(item.dataset) + "," + csv_escape(item.domain) + "," + csv_escape(item.basis) + "," + std::to_string(item.vector_length) + "," + std::to_string(item.domain_size) + "," + std::to_string(item.nonzero_scalar_count) + "," + std::to_string(item.effective_scalar_count) + "," + format_double(item.zero_scalar_ratio) + "," + format_double(item.padding_ratio) + "," + csv_escape(item.classification) + "," + format_double(item.materialization_ms) + "," + format_double(item.fingerprint_cache_ms) + "," + format_double(item.msm_ms) + "," + format_double(item.total_commitment_ms) + "," + bool_string(item.duplicates_another) + "," + csv_escape(item.duplicate_of) + "," + bool_string(item.reused_shared) + "," + bool_string(item.shared_or_borrowed) + "," + bool_string(item.compact) + "," + bool_string(item.commitment_cache_hit) + "," + csv_escape(item.ownership) + "," + csv_escape(item.category) + "," + csv_escape(item.optimization_opportunity) + "," + bool_string(item.zero_scalar_skipping) + "," + bool_string(item.sparse_compaction) + "," + bool_string(item.constant_tail_folding) + "," + bool_string(item.multithreaded_msm) + "," + bool_string(item.full_value_fingerprint) + "," + csv_escape(item.commitment_fingerprint));
-            }
-            util::write_lines(export_root + "/dynamic_commitment_object_profile.csv", profile_lines);
-            metrics.profile_logging_overhead_ms += elapsed_ms(profile_start, Clock::now());
-        }
-        auto format_size_map = [](const std::map<std::string, std::size_t> &values)
-        {
-            std::ostringstream out;
-            bool first = true;
-            for (const auto &[key, value] : values)
-            {
-                if (!first)
-                {
-                    out << ';';
-                }
-                first = false;
-                out << key << ':' << value;
-            }
-            return out.str();
-        };
-        auto format_double_map = [&](const std::map<std::string, double> &values)
-        {
-            std::ostringstream out;
-            bool first = true;
-            for (const auto &[key, value] : values)
-            {
-                if (!first)
-                {
-                    out << ';';
-                }
-                first = false;
-                out << key << ':' << format_double(value);
-            }
-            return out.str();
-        };
-
-        for (const auto &[name, spilled] : trace.spilled_polynomials)
-        {
-            (void)name;
-            std::error_code ignored;
-            std::filesystem::remove(spilled.path, ignored);
-        }
-        metrics.export_artifact_ms = elapsed_ms(export_start, Clock::now());
-        metrics.total_wall_clock_ms += metrics.export_artifact_ms;
-        if (metrics.is_cold_run)
-        {
-            metrics.cold_end_to_end_wall_clock_ms = metrics.total_wall_clock_ms;
-            metrics.warm_end_to_end_wall_clock_ms = 0.0;
-        }
-        else
-        {
-            metrics.warm_end_to_end_wall_clock_ms = metrics.total_wall_clock_ms;
-            metrics.cold_end_to_end_wall_clock_ms = 0.0;
-        }
-        metrics.total_cost_for_fresh_reproduction_ms =
-            metrics.total_wall_clock_ms + metrics.amortized_preprocessing_ms;
-
-        // `run_manifest.json` 保留完整内部字段，供 formal suite、artifact 校验和内部分析复核。
-        std::map<std::string, std::string> run_manifest = {
-            {"backend", benchmark_backend_label()},
-            {"backend_name", metrics.backend_name},
-            {"crypto_backend_name", metrics.crypto_backend_name},
-            {"algebra_backend_name", metrics.algebra_backend_name},
-            {"compute_backend_name", metrics.compute_backend_name},
-            {"config", display_config_path()},
-            {"dataset", metrics.dataset},
-            {"status", verified ? "VERIFY_OK" : "VERIFY_FAIL"},
-            {"benchmark_mode", metrics.benchmark_mode},
-            {"enabled_fft_backend_upgrade", metrics.enabled_fft_backend_upgrade ? "true" : "false"},
-            {"enabled_fft_kernel_upgrade", metrics.enabled_fft_kernel_upgrade ? "true" : "false"},
-            {"enabled_fast_msm", metrics.enabled_fast_msm ? "true" : "false"},
-            {"enabled_parallel_fft", metrics.enabled_parallel_fft ? "true" : "false"},
-            {"enabled_trace_layout_upgrade", metrics.enabled_trace_layout_upgrade ? "true" : "false"},
-            {"enabled_fast_verify_pairing", metrics.enabled_fast_verify_pairing ? "true" : "false"},
-            {"enabled_cuda_trace_hotspots", metrics.enabled_cuda_trace_hotspots ? "true" : "false"},
-            {"enabled_cuda_field_hotspots", metrics.enabled_cuda_field_hotspots ? "true" : "false"},
-            {"route2_label", metrics.route2_label},
-            {"optimization_profile_id", metrics.optimization_profile_id},
-            {"optimization_flags", metrics.optimization_flags},
-            {"hardware_and_device", metrics.hardware_and_device},
-            {"gpu_acceleration_status", metrics.gpu_acceleration_status},
-            {"gpu_backend_requested", metrics.gpu_backend_requested ? "true" : "false"},
-            {"gpu_device", metrics.gpu_device},
-            {"gpu_used_for", metrics.gpu_used_for},
-            {"gpu_fallback_stages", metrics.gpu_fallback_stages},
-            {"gpu_fallback_reason", metrics.gpu_fallback_reason},
-            {"gpu_runtime_loaded", metrics.gpu_runtime_present ? "true" : "false"},
-            {"gpu_kernel_invocation_count", std::to_string(metrics.gpu_kernel_invocation_count)},
-            {"cpu_gpu_reference_consistency_passed", metrics.cpu_gpu_reference_consistency_passed ? "true" : "false"},
-            {"node_count", std::to_string(metrics.node_count)},
-            {"edge_count", std::to_string(metrics.edge_count)},
-            {"gpu_runtime_present", metrics.gpu_runtime_present ? "true" : "false"},
-            {"source_tree_hash", env_or_empty("GATZK_SOURCE_TREE_HASH")},
-            {"binary_hash", env_or_empty("GATZK_BINARY_HASH")},
-            {"build_identity", env_or_empty("GATZK_BUILD_IDENTITY")},
-            {"runner_hash", env_or_empty("GATZK_RUNNER_HASH")},
-            {"run_started_at", env_or_empty("GATZK_RUN_STARTED_AT")},
-            {"run_ended_at", env_or_empty("GATZK_RUN_ENDED_AT")},
-            {"exit_code", env_or_empty("GATZK_RUN_EXIT_CODE")},
-            {"timeout", env_or_empty("GATZK_RUN_TIMEOUT").empty() ? "false" : env_or_empty("GATZK_RUN_TIMEOUT")},
-            {"stale_result", "false"},
-            {"run_manifest_hash", env_or_empty("GATZK_RUN_MANIFEST_HASH")},
-            {"activation_table_policy", large_whole_graph_gat ? "public_large_whole_graph_shape_bound_v1" : "public_default_shape_bound_v1"},
-            {"large_graph_table_policy_triggered", large_whole_graph_gat ? "true" : "false"},
-            {"feature_lookup_identity_predicate", full_feature_identity ? "full_public_shape_and_absolute_id_identity" : "general_public_shape_and_absolute_ids"},
-            {"static_table_endpoint_hash", table_endpoint_hash},
-            {"range_table_endpoint", table_endpoint_string(context.tables.range)},
-            {"lrelu_table_endpoint", pair_table_endpoint_string(context.tables.lrelu)},
-            {"exp_table_endpoint", pair_table_endpoint_string(context.tables.exp)},
-            {"elu_table_endpoint", pair_table_endpoint_string(context.tables.elu)},
-            {"range_table_size", std::to_string(context.tables.range.size())},
-            {"lrelu_table_size", std::to_string(context.tables.lrelu.size())},
-            {"exp_table_size", std::to_string(context.tables.exp.size())},
-            {"elu_table_size", std::to_string(context.tables.elu.size())},
-            {"total_wall_clock_ms", format_double(metrics.total_wall_clock_ms)},
-            {"cold_end_to_end_wall_clock_ms", format_double(metrics.cold_end_to_end_wall_clock_ms)},
-            {"warm_end_to_end_wall_clock_ms", format_double(metrics.warm_end_to_end_wall_clock_ms)},
-            {"amortized_preprocessing_ms", format_double(metrics.amortized_preprocessing_ms)},
-            {"total_cost_for_fresh_reproduction_ms", format_double(metrics.total_cost_for_fresh_reproduction_ms)},
-            {"reference_forward_ms", format_double(metrics.reference_forward_ms)},
-            {"payload_audit_ms", format_double(metrics.payload_audit_ms)},
-            {"reference_consistency_ms", format_double(metrics.reference_consistency_ms)},
-            {"tamper_tests_ms", format_double(metrics.tamper_tests_ms)},
-            {"export_artifact_ms", format_double(metrics.export_artifact_ms)},
-            {"export_manifest_validation_ms", format_double(metrics.export_manifest_validation_ms)},
-            {"runner_overhead_ms", format_double(metrics.runner_overhead_ms)},
-            {"profile_logging_overhead_ms", format_double(metrics.profile_logging_overhead_ms)},
-            {"context_build_ms", format_double(metrics.context_build_ms)},
-            {"domain_opening_ms", format_double(metrics.domain_opening_ms)},
-            {"external_opening_ms", format_double(metrics.external_opening_ms)},
-            {"fft_plan_ms", format_double(metrics.fft_plan_ms)},
-            {"fft_backend_route", metrics.fft_backend_route},
-            {"feature_projection_ms", format_double(metrics.feature_projection_ms)},
-            {"hidden_forward_projection_ms", format_double(metrics.hidden_forward_projection_ms)},
-            {"hidden_forward_attention_ms", format_double(metrics.hidden_forward_attention_ms)},
-            {"hidden_forward_activation_ms", format_double(metrics.hidden_forward_activation_ms)},
-            {"hidden_concat_ms", format_double(metrics.hidden_concat_ms)},
-            {"output_forward_projection_ms", format_double(metrics.output_forward_projection_ms)},
-            {"output_forward_attention_ms", format_double(metrics.output_forward_attention_ms)},
-            {"output_forward_activation_ms", format_double(metrics.output_forward_activation_ms)},
-            {"forward_ms", format_double(metrics.forward_ms)},
-            {"commit_dynamic_ms", format_double(metrics.commit_dynamic_ms)},
-            {"commitment_time_ms", format_double(metrics.commitment_time_ms)},
-            {"dynamic_commit_finalize_ms", format_double(metrics.dynamic_commit_finalize_ms)},
-            {"dynamic_commit_fingerprint_ms", format_double(metrics.dynamic_commit_fingerprint_ms)},
-            {"dynamic_commit_cache_lookups", std::to_string(metrics.dynamic_commit_cache_lookups)},
-            {"dynamic_commit_cache_hits", std::to_string(metrics.dynamic_commit_cache_hits)},
-            {"dynamic_commit_cache_misses", std::to_string(metrics.dynamic_commit_cache_misses)},
-            {"dynamic_commit_cache_hit_rate", format_double(
-                                                  metrics.dynamic_commit_cache_lookups == 0
-                                                      ? 0.0
-                                                      : static_cast<double>(metrics.dynamic_commit_cache_hits) / static_cast<double>(metrics.dynamic_commit_cache_lookups))},
-            {"dynamic_commit_full_fingerprint_scans", std::to_string(metrics.dynamic_commit_full_fingerprint_scans)},
-            {"dynamic_commit_fingerprint_skipped", std::to_string(metrics.dynamic_commit_fingerprint_skipped)},
-            {"dynamic_commit_input_ms", format_double(metrics.dynamic_commit_input_ms)},
-            {"dynamic_commit_pack_ms", format_double(metrics.dynamic_commit_pack_ms)},
-            {"dynamic_fft_ms", format_double(metrics.dynamic_fft_ms)},
-            {"dynamic_domain_convert_ms", format_double(metrics.dynamic_domain_convert_ms)},
-            {"dynamic_copy_convert_ms", format_double(metrics.dynamic_copy_convert_ms)},
-            {"dynamic_commit_msm_ms", format_double(metrics.dynamic_commit_msm_ms)},
-            {"dynamic_bundle_finalize_ms", format_double(metrics.dynamic_bundle_finalize_ms)},
-            {"dynamic_polynomial_materialization_ms", format_double(metrics.dynamic_polynomial_materialization_ms)},
-            {"dynamic_commitment_object_profile_csv", "dynamic_commitment_object_profile.csv"},
-            {"dynamic_commitment_object_count", std::to_string(metrics.dynamic_commitment_profiles.size())},
-            {"dynamic_commitment_count_by_domain", format_size_map(dynamic_profile_count_by_domain)},
-            {"dynamic_commitment_time_by_domain_ms", format_double_map(dynamic_profile_time_by_domain)},
-            {"dynamic_commitment_time_by_ownership_category_ms", format_double_map(dynamic_profile_time_by_category)},
-            {"is_cold_run", metrics.is_cold_run ? "true" : "false"},
-            {"is_full_dataset", metrics.is_full_dataset ? "true" : "false"},
-            {"N_total", std::to_string(context.local.public_input.N_total)},
-            {"G_batch", std::to_string(context.local.public_input.G_batch)},
-            {"node_ptr", format_index_vector(context.local.node_ptr)},
-            {"edge_ptr", format_index_vector(context.local.edge_ptr)},
-            {"load_static_ms", format_double(metrics.load_static_ms)},
-            {"notes", metrics.notes},
-            {"proof_size_bytes", std::to_string(metrics.proof_size_bytes)},
-            {"verifier_reads_witness", "false"},
-            {"private_plain_value_count", std::to_string(audited_private_plain_value_count)},
-            {"proof_payload_audit_status", audited_private_plain_value_count == 0 ? "passed" : "failed"},
-            {"reference_consistency_passed", verified ? "true" : "false"},
-            {"tamper_tests_passed", verified ? "true" : "false"},
-            {"full_dataset", metrics.is_full_dataset ? "true" : "false"},
-            {"dataset_id", context.dataset.name},
-            {"dataset_hash", std::to_string(std::hash<std::string>{}(context.dataset.name + ":" + std::to_string(context.dataset.num_nodes) + ":" + std::to_string(metrics.edge_count)))},
-            {"checkpoint_model_hash", stable_hash(proof.public_metadata.model_params)},
-            {"static_table_hash", stable_hash(proof.public_metadata.static_tables)},
-            {"quant_config_hash", stable_hash(proof.public_metadata.quant_config)},
-            {"public_metadata_hash", public_metadata_hash},
-            {"srs_manifest_hash", context.kzg.manifest.manifest_hash},
-            {"proof_hash", proof_hash},
-            {"public_logits_hash", trace.public_logits_hash},
-            {"reference_fp32_logits_hash", trace.reference_fp32_logits_hash},
-            {"reference_quant_logits_hash", trace.reference_quant_logits_hash},
-            {"secure_trace_logits_hash", trace.secure_trace_logits_hash},
-            {"proof_public_output_hash", trace.proof_public_output_hash},
-            {"security_profile_id", context.config.security_profile_id},
-            {"prove_accounted_ms", format_double(metrics.prove_accounted_ms)},
-            {"prove_accounting_gap_ms", format_double(metrics.prove_accounting_gap_ms)},
-            {"prove_time_ms", format_double(metrics.prove_time_ms)},
-            {"prove_finalize_ms", format_double(metrics.prove_finalize_ms)},
-            {"quotient_build_ms", format_double(metrics.quotient_build_ms)},
-            {"quotient_t_fh_ms", format_double(metrics.quotient_t_fh_ms)},
-            {"quotient_t_edge_ms", format_double(metrics.quotient_t_edge_ms)},
-            {"quotient_t_in_ms", format_double(metrics.quotient_t_in_ms)},
-            {"quotient_t_d_h_ms", format_double(metrics.quotient_t_d_h_ms)},
-            {"quotient_t_cat_ms", format_double(metrics.quotient_t_cat_ms)},
-            {"quotient_t_C_ms", format_double(metrics.quotient_t_c_ms)},
-            {"quotient_t_N_ms", format_double(metrics.quotient_t_n_ms)},
-            {"quotient_public_eval_ms", format_double(metrics.quotient_public_eval_ms)},
-            {"quotient_commitment_ms", format_double(metrics.quotient_commitment_ms)},
-            {"quotient_bundle_pack_ms", format_double(metrics.quotient_bundle_pack_ms)},
-            {"quotient_fold_prepare_ms", format_double(metrics.quotient_fold_prepare_ms)},
-            {"quotient_copy_convert_ms", format_double(metrics.quotient_copy_convert_ms)},
-            {"srs_prepare_ms", format_double(metrics.srs_prepare_ms)},
-            {"trace_generation_ms", format_double(metrics.trace_generation_ms)},
-            {"trace_misc_ms", format_double(metrics.trace_misc_ms)},
-            {"witness_materialization_ms", format_double(metrics.witness_materialization_ms)},
-            {"lookup_trace_ms", format_double(metrics.lookup_trace_ms)},
-            {"lookup_table_pack_ms", format_double(metrics.lookup_table_pack_ms)},
-            {"lookup_query_pack_ms", format_double(metrics.lookup_query_pack_ms)},
-            {"lookup_key_build_ms", format_double(metrics.lookup_key_build_ms)},
-            {"lookup_multiplicity_ms", format_double(metrics.lookup_multiplicity_ms)},
-            {"lookup_accumulator_ms", format_double(metrics.lookup_accumulator_ms)},
-            {"lookup_state_machine_ms", format_double(metrics.lookup_state_machine_ms)},
-            {"lookup_selector_mask_ms", format_double(metrics.lookup_selector_mask_ms)},
-            {"lookup_public_helper_ms", format_double(metrics.lookup_public_helper_ms)},
-            {"lookup_copy_convert_ms", format_double(metrics.lookup_copy_convert_ms)},
-            {"route_trace_ms", format_double(metrics.route_trace_ms)},
-            {"psq_trace_ms", format_double(metrics.psq_trace_ms)},
-            {"zkmap_trace_ms", format_double(metrics.zkmap_trace_ms)},
-            {"state_machine_trace_ms", format_double(metrics.state_machine_trace_ms)},
-            {"padding_selector_trace_ms", format_double(metrics.padding_selector_trace_ms)},
-            {"public_poly_trace_ms", format_double(metrics.public_poly_trace_ms)},
-            {"hidden_head_trace_ms", format_double(metrics.hidden_head_trace_ms)},
-            {"hidden_projection_trace_ms", format_double(metrics.hidden_projection_trace_ms)},
-            {"hidden_src_attention_trace_ms", format_double(metrics.hidden_src_attention_trace_ms)},
-            {"hidden_dst_attention_trace_ms", format_double(metrics.hidden_dst_attention_trace_ms)},
-            {"hidden_edge_score_trace_ms", format_double(metrics.hidden_edge_score_trace_ms)},
-            {"hidden_softmax_chain_trace_ms", format_double(metrics.hidden_softmax_chain_trace_ms)},
-            {"hidden_h_star_trace_ms", format_double(metrics.hidden_h_star_trace_ms)},
-            {"hidden_h_agg_pre_star_trace_ms", format_double(metrics.hidden_h_agg_pre_star_trace_ms)},
-            {"hidden_h_agg_star_trace_ms", format_double(metrics.hidden_h_agg_star_trace_ms)},
-            {"hidden_route_trace_ms", format_double(metrics.hidden_route_trace_ms)},
-            {"hidden_copy_convert_ms", format_double(metrics.hidden_copy_convert_ms)},
-            {"output_head_trace_ms", format_double(metrics.output_head_trace_ms)},
-            {"route_pack_residual_ms", format_double(metrics.route_pack_residual_ms)},
-            {"selector_padding_residual_ms", format_double(metrics.selector_padding_residual_ms)},
-            {"public_poly_residual_ms", format_double(metrics.public_poly_residual_ms)},
-            {"hidden_output_object_residual_ms", format_double(metrics.hidden_output_object_residual_ms)},
-            {"shared_helper_build_ms", format_double(metrics.shared_helper_build_ms)},
-            {"field_conversion_residual_ms", format_double(metrics.field_conversion_residual_ms)},
-            {"copy_move_residual_ms", format_double(metrics.copy_move_residual_ms)},
-            {"trace_finalize_ms", format_double(metrics.trace_finalize_ms)},
-            {"fh_table_materialization_ms", format_double(metrics.fh_table_materialization_ms)},
-            {"fh_query_materialization_ms", format_double(metrics.fh_query_materialization_ms)},
-            {"fh_multiplicity_build_ms", format_double(metrics.fh_multiplicity_build_ms)},
-            {"fh_accumulator_build_ms", format_double(metrics.fh_accumulator_build_ms)},
-            {"fh_interpolation_ms", format_double(metrics.fh_interpolation_ms)},
-            {"fh_lagrange_eval_ms", format_double(metrics.fh_lagrange_eval_ms)},
-            {"fh_barycentric_weight_fetch_ms", format_double(metrics.fh_barycentric_weight_fetch_ms)},
-            {"fh_point_powers_ms", format_double(metrics.fh_point_powers_ms)},
-            {"fh_public_poly_interp_ms", format_double(metrics.fh_public_poly_interp_ms)},
-            {"fh_feature_poly_interp_ms", format_double(metrics.fh_feature_poly_interp_ms)},
-            {"fh_fold_prep_ms", format_double(metrics.fh_fold_prep_ms)},
-            {"fh_opening_eval_prep_ms", format_double(metrics.fh_opening_eval_prep_ms)},
-            {"fh_copy_convert_ms", format_double(metrics.fh_copy_convert_ms)},
-            {"fh_eval_prep_ms", format_double(metrics.fh_eval_prep_ms)},
-            {"fh_public_eval_reuse_ms", format_double(metrics.fh_public_eval_reuse_ms)},
-            {"fh_quotient_assembly_ms", format_double(metrics.fh_quotient_assembly_ms)},
-            {"fh_open_gather_ms", format_double(metrics.fh_open_gather_ms)},
-            {"fh_open_witness_ms", format_double(metrics.fh_open_witness_ms)},
-            {"fh_open_fold_prepare_ms", format_double(metrics.fh_open_fold_prepare_ms)},
-            {"domain_eval_gather_ms", format_double(metrics.domain_eval_gather_ms)},
-            {"domain_open_witness_ms", format_double(metrics.domain_open_witness_ms)},
-            {"domain_open_denominator_inverse_ms", format_double(metrics.domain_open_denominator_inverse_ms)},
-            {"domain_open_denominator_inverse_reuse_ms", format_double(metrics.domain_open_denominator_inverse_reuse_ms)},
-            {"domain_open_denominator_inverse_reuse_hits", std::to_string(metrics.domain_open_denominator_inverse_reuse_hits)},
-            {"domain_open_denominator_inverse_cache_misses", std::to_string(metrics.domain_open_denominator_inverse_cache_misses)},
-            {"domain_open_point_parallel_batches", std::to_string(metrics.domain_open_point_parallel_batches)},
-            {"domain_open_point_parallel_workers", std::to_string(metrics.domain_open_point_parallel_workers)},
-            {"domain_open_point_msm_worker_cap", std::to_string(metrics.domain_open_point_msm_worker_cap)},
-            {"domain_open_FH_ms", format_double(metrics.domain_open_fh_ms)},
-            {"domain_open_edge_ms", format_double(metrics.domain_open_edge_ms)},
-            {"domain_open_in_ms", format_double(metrics.domain_open_in_ms)},
-            {"domain_open_d_h_ms", format_double(metrics.domain_open_d_h_ms)},
-            {"domain_open_cat_ms", format_double(metrics.domain_open_cat_ms)},
-            {"domain_open_C_ms", format_double(metrics.domain_open_c_ms)},
-            {"domain_open_N_ms", format_double(metrics.domain_open_n_ms)},
-            {"verified", verified ? "true" : "false"},
-            {"verify_time_ms", format_double(metrics.verify_time_ms)},
-            {"verify_metadata_ms", format_double(metrics.verify_metadata_ms)},
-            {"verify_transcript_ms", format_double(metrics.verify_transcript_ms)},
-            {"verify_domain_opening_ms", format_double(metrics.verify_domain_opening_ms)},
-            {"verify_quotient_ms", format_double(metrics.verify_quotient_ms)},
-            {"verify_external_fold_ms", format_double(metrics.verify_external_fold_ms)},
-            {"verify_misc_ms", format_double(metrics.verify_misc_ms)},
-            {"verify_accounted_ms", format_double(metrics.verify_accounted_ms)},
-            {"verify_accounting_gap_ms", format_double(metrics.verify_accounting_gap_ms)},
-            {"verify_FH_ms", format_double(metrics.verify_fh_ms)},
-            {"verify_edge_ms", format_double(metrics.verify_edge_ms)},
-            {"verify_in_ms", format_double(metrics.verify_in_ms)},
-            {"verify_d_h_ms", format_double(metrics.verify_d_h_ms)},
-            {"verify_cat_ms", format_double(metrics.verify_cat_ms)},
-            {"verify_C_ms", format_double(metrics.verify_c_ms)},
-            {"verify_N_ms", format_double(metrics.verify_n_ms)},
-            {"verify_public_eval_ms", format_double(metrics.verify_public_eval_ms)},
-            {"verify_bundle_lookup_ms", format_double(metrics.verify_bundle_lookup_ms)},
-            {"verify_fold_ms", format_double(metrics.verify_fold_ms)},
-            {"verify_copy_convert_ms", format_double(metrics.verify_copy_convert_ms)},
-        };
-        append_public_metadata(run_manifest);
-        const auto manifest_validation_start = Clock::now();
-        metrics.export_manifest_validation_ms = elapsed_ms(manifest_validation_start, Clock::now());
-        run_manifest["export_manifest_validation_ms"] = format_double(metrics.export_manifest_validation_ms);
-        util::write_json_object(export_root + "/run_manifest.json", run_manifest);
-
-        if (!context.config.dump_trace)
-        {
-            return;
-        }
-
-        util::ensure_directory(export_root + "/columns");
-        util::ensure_directory(export_root + "/matrices");
-        for (const auto &[name, column] : trace.columns)
-        {
-            util::write_lines(export_root + "/columns/" + name + ".txt", vector_to_lines(column));
-        }
-        for (const auto &[name, matrix] : trace.matrices)
-        {
-            util::write_lines(export_root + "/matrices/" + name + ".txt", matrix_to_lines(matrix));
-        }
     }
 
 } // namespace gatzk::protocol

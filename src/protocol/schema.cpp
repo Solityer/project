@@ -801,8 +801,8 @@ namespace gatzk::protocol
                 .object_kind = "output",
                 .layer_id = context.model.L,
                 .head_id = head,
-                .source_objects = {output_head_prefix(head, false)},
-                .target_objects = {output_y_label(head, false)},
+                .source_objects = {output_head_prefix(head)},
+                .target_objects = {output_y_label(head)},
                 .work_domains = {
                     context.domains.cat->name, context.domains.c->name,
                     context.domains.edge->name, context.domains.n->name},
@@ -814,24 +814,24 @@ namespace gatzk::protocol
                     "t_cat:output_binding", "t_C:output_binding",
                     "t_edge:output_binding", "t_N:output_binding"},
             };
-            const auto matrix_prefix = output_head_prefix(head, false);
+            const auto matrix_prefix = output_head_prefix(head);
             meta.canonical_matrices.push_back(canonical_matrix(
                 "canonical:output:Y_prime:" + std::to_string(head),
                 matrix_prefix + "_Y_prime", context.local.num_nodes,
                 context.local.num_classes));
             meta.canonical_matrices.push_back(canonical_matrix(
                 "canonical:output:Y_pre:" + std::to_string(head),
-                output_y_lin_label(head, false), context.local.num_nodes,
+                output_y_lin_label(head), context.local.num_nodes,
                 context.local.num_classes));
             meta.canonical_matrices.push_back(canonical_matrix(
                 "canonical:output:Y_head:" + std::to_string(head),
-                output_y_label(head, false), context.local.num_nodes,
+                output_y_label(head), context.local.num_nodes,
                 context.local.num_classes));
             meta.aggregation_relations.push_back(aggregation_relation(
                 "aggregation:output:" + std::to_string(head),
                 output_aggregation_binding_label(head, ""),
                 matrix_prefix + "_Y_prime",
-                output_y_lin_label(head, false), matrix_prefix + "_alpha",
+                output_y_lin_label(head), matrix_prefix + "_alpha",
                 context.local.num_classes));
             for (const auto *role : {"src", "dst", "t"})
                 meta.route_terminal_relations.push_back(
@@ -852,8 +852,8 @@ namespace gatzk::protocol
             };
             meta.indexed_views.push_back(IndexedViewRelationMeta{
                 .relation_id = "indexed-view:output-bias:" + std::to_string(head),
-                .canonical_object = model_proof_local_label(output_bias_label(head, false)),
-                .view_object = output_head_prefix(head, false) + "_Bias_flat",
+                .canonical_object = model_proof_local_label(output_bias_label(head)),
+                .view_object = output_head_prefix(head) + "_Bias_flat",
                 .canonical_domain = context.domains.c->name,
                 .view_domain = context.domains.edge->name,
                 .canonical_length = context.local.num_classes,
@@ -934,7 +934,7 @@ namespace gatzk::protocol
                 CoefficientBasisRelationMeta{
                     .relation_id = "coefficient-basis:output-bias:"
                         + std::to_string(head),
-                    .canonical_object = output_head_prefix(head, false)
+                    .canonical_object = output_head_prefix(head)
                         + "_Bias_flat",
                     .coefficient_object = coefficient_object,
                     .carrier_domain = context.domains.edge->name,
@@ -1040,6 +1040,40 @@ namespace gatzk::protocol
             context.local.num_nodes, context.local.num_classes));
         out.push_back(std::move(average_meta));
         return out;
+    }
+
+    std::vector<MetadataReference> route_opening_references(
+        const ProtocolContext &context,
+        const std::map<std::string, algebra::FieldElement> &challenges)
+    {
+        std::vector<MetadataReference> references;
+        const auto append_route = [&](const auto &route,
+                                      const std::string &challenge_label)
+        {
+            const auto challenge = challenges.find(challenge_label);
+            if (challenge == challenges.end())
+                throw std::runtime_error(
+                    "S_route is missing terminal challenge: "
+                    + challenge_label);
+            references.push_back({"W_ext:" + challenge->second.to_string()});
+            references.push_back({
+                "W_ext:"
+                + (challenge->second + route.terminal_delta).to_string()});
+            references.push_back({
+                "W_ext:" + route.node_terminal_point.to_string()});
+        };
+
+        for (const auto &binding : build_binding_relation_metadata(context))
+        {
+            for (const auto &route : binding.route_terminal_relations)
+                append_route(route, route.challenge_label);
+            for (const auto &aggregation : binding.aggregation_relations)
+                for (const auto *route : {
+                         &aggregation.source_route,
+                         &aggregation.target_route})
+                    append_route(*route, route->terminal_challenge_label);
+        }
+        return references;
     }
 
     const KZGShiftRelationMeta *find_unique_shift_relation_by_kind(
@@ -1164,9 +1198,9 @@ namespace gatzk::protocol
         {
             for (std::size_t column = 0; column < context.local.num_classes; ++column)
                 add_model(output_weight_column_label(head, column), context.domains.cat->name);
-            add_model(output_src_label(head, false), context.domains.c->name);
-            add_model(output_dst_label(head, false), context.domains.c->name);
-            add_model(output_bias_label(head, false), context.domains.c->name, true);
+            add_model(output_src_label(head), context.domains.c->name);
+            add_model(output_dst_label(head), context.domains.c->name);
+            add_model(output_bias_label(head), context.domains.c->name, true);
             for (const auto &[suffix, domain, visibility] : std::vector<std::tuple<
                      std::string, std::string, PolynomialVisibility>>{
                      {"Table_can", context.domains.c->name, PolynomialVisibility::PrivateWitness},
@@ -1261,13 +1295,13 @@ namespace gatzk::protocol
              head < context.model.output_layer.heads.size(); ++head)
         {
             add_canonical_columns(
-                output_head_prefix(head, false) + "_Y_prime",
+                output_head_prefix(head) + "_Y_prime",
                 context.local.num_classes);
             add_canonical_columns(
-                output_y_lin_label(head, false),
+                output_y_lin_label(head),
                 context.local.num_classes);
             add_canonical_columns(
-                output_y_label(head, false),
+                output_y_label(head),
                 context.local.num_classes);
         }
         add_canonical_columns("P_Y_lin", context.local.num_classes);
@@ -1326,7 +1360,7 @@ namespace gatzk::protocol
             add_route_terminal_shift(hidden_head_prefix(head));
         for (std::size_t head = 0;
              head < context.model.output_layer.heads.size(); ++head)
-            add_route_terminal_shift(output_head_prefix(head, false));
+            add_route_terminal_shift(output_head_prefix(head));
         schema.private_plain_value_count = 0;
         return schema;
     }
@@ -1838,7 +1872,7 @@ namespace gatzk::protocol
              head < context.model.output_layer.heads.size(); ++head)
         {
             std::vector<std::string> projection_dependencies = {
-                output_head_prefix(head, false) + "_b_proj"};
+                output_head_prefix(head) + "_b_proj"};
             for (std::size_t column = 0;
                  column < context.local.num_classes; ++column)
                 projection_dependencies.push_back(model_proof_local_label(
@@ -1848,20 +1882,20 @@ namespace gatzk::protocol
                 std::move(projection_dependencies)});
             derived_model_binding_dependencies.push_back({
                 output_model_binding_blinder_label(head, "src"),
-                {output_head_prefix(head, false) + "_b_src",
-                 model_proof_local_label(output_src_label(head, false))}});
+                {output_head_prefix(head) + "_b_src",
+                 model_proof_local_label(output_src_label(head))}});
             derived_model_binding_dependencies.push_back({
                 output_model_binding_blinder_label(head, "dst"),
-                {output_head_prefix(head, false) + "_b_dst",
-                 model_proof_local_label(output_dst_label(head, false))}});
+                {output_head_prefix(head) + "_b_dst",
+                 model_proof_local_label(output_dst_label(head))}});
             derived_score_mask_dependencies.push_back({
                 output_score_mask_label(head, "src"),
-                {output_head_prefix(head, false) + "_E_src"}});
+                {output_head_prefix(head) + "_E_src"}});
             derived_score_mask_dependencies.push_back({
                 output_score_mask_label(head, "dst"),
-                {output_head_prefix(head, false) + "_E_dst"}});
+                {output_head_prefix(head) + "_E_dst"}});
             const auto output_star =
-                output_head_prefix(head, false) + "_Y_star";
+                output_head_prefix(head) + "_Y_star";
             derived_score_mask_dependencies.push_back({
                 external_mask_label(output_star), {output_star}});
         }
@@ -2357,7 +2391,7 @@ namespace gatzk::protocol
             {"t_C", "z_C", context.domains.c, 3},
             {"t_N", "z_N", context.domains.n, 3},
         };
-        std::size_t prior_opening_point_count = 0;
+        std::size_t prior_evaluation_challenge_count = 0;
         for (const auto &identity : quotient_identities)
         {
             if (identity.domain == nullptr)
@@ -2371,7 +2405,7 @@ namespace gatzk::protocol
             const auto identity_degree = std::max(
                 constraint_degree, masked_quotient_degree);
             const auto collision_degree = checked_mul(
-                std::size_t{2}, prior_opening_point_count,
+                std::size_t{2}, prior_evaluation_challenge_count,
                 identity.challenge + ":collision");
             const auto exclusion_degree = checked_add(
                 checked_add(
@@ -2391,7 +2425,7 @@ namespace gatzk::protocol
                 identity_degree,
                 exclusion_degree,
                 1);
-            prior_opening_point_count += 2;
+            prior_evaluation_challenge_count += 2;
         }
 
         const auto alpha_degree = std::max<std::size_t>(
@@ -2613,7 +2647,7 @@ namespace gatzk::protocol
             const auto suffix = std::to_string(head);
             const auto stage = "output-head:" + suffix;
             auto out_challenge = [&](std::string_view base)
-            { return output_challenge_name(base, head, false); };
+            { return output_challenge_name(base, head); };
             for (const auto *role : {"proj", "src", "dst", "out_star"})
             {
                 const auto challenge = std::string(role) == "out_star"
@@ -2649,7 +2683,7 @@ namespace gatzk::protocol
                 "output:" + suffix + ":dst-route", out_challenge("eta_dst_out"),
                 out_challenge("beta_dst_out"), 6, stage);
             add_signed_division_ranges(
-                output_head_prefix(head, false) + "_Div_",
+                output_head_prefix(head) + "_Div_",
                 checked_mul(context.local.num_nodes, class_count,
                     "output-value-rows"), stage);
         }
@@ -3489,367 +3523,6 @@ namespace gatzk::protocol
             return kind == EvaluationKind::MaskedPrivateValue;
         }
         return kind == EvaluationKind::PublicValue;
-    }
-
-    std::string hidden_head_prefix(std::size_t global_head_index)
-    {
-        return "P_h" + std::to_string(global_head_index);
-    }
-
-    // 隐藏层的 concat 标签按层区分，方便把多层主线和笔记里的“多头拼接”步骤一一对应。
-    std::string hidden_layer_concat_label(std::size_t layer_index, bool is_final_layer)
-    {
-        if (is_final_layer)
-        {
-            return "P_H_cat";
-        }
-        return "P_H_cat_l" + std::to_string(layer_index);
-    }
-
-    std::string hidden_layer_concat_star_label(std::size_t layer_index, bool is_final_layer)
-    {
-        if (is_final_layer)
-        {
-            return "P_H_cat_star";
-        }
-        return "P_H_cat_star_l" + std::to_string(layer_index);
-    }
-
-    std::string hidden_layer_cat_prefix(std::size_t layer_index, bool is_final_layer)
-    {
-        if (is_final_layer)
-        {
-            return "P_cat";
-        }
-        return "P_cat_l" + std::to_string(layer_index);
-    }
-
-    std::string hidden_weight_label(std::size_t global_head_index)
-    {
-        return "V_h" + std::to_string(global_head_index) + "_W";
-    }
-
-    std::string hidden_weight_column_label(std::size_t global_head_index, std::size_t column_index)
-    {
-        return hidden_weight_label(global_head_index) + "_col" + std::to_string(column_index);
-    }
-
-    std::string hidden_src_label(std::size_t global_head_index)
-    {
-        return "V_h" + std::to_string(global_head_index) + "_a_src";
-    }
-
-    std::string hidden_dst_label(std::size_t global_head_index)
-    {
-        return "V_h" + std::to_string(global_head_index) + "_a_dst";
-    }
-
-    // 输出层允许单头兼容标签，但这只是命名兼容，不是第二套协议。
-    std::string output_head_prefix(std::size_t head_index, bool use_single_output_compat_labels)
-    {
-        if (use_single_output_compat_labels)
-        {
-            return "P_out";
-        }
-        return "P_out" + std::to_string(head_index);
-    }
-
-    std::string output_y_lin_label(std::size_t head_index, bool use_single_output_compat_labels)
-    {
-        if (use_single_output_compat_labels)
-        {
-            return "P_Y_lin";
-        }
-        return "P_Y_lin_o" + std::to_string(head_index);
-    }
-
-    std::string output_y_label(std::size_t head_index, bool use_single_output_compat_labels)
-    {
-        if (use_single_output_compat_labels)
-        {
-            return "P_Y";
-        }
-        return "P_Y_o" + std::to_string(head_index);
-    }
-
-    std::string canonical_matrix_column_label(
-        const std::string &matrix_object,
-        std::size_t column_index)
-    {
-        return matrix_object + "_CanCol" + std::to_string(column_index);
-    }
-
-    std::string hidden_aggregation_binding_label(
-        std::size_t global_head_index,
-        std::string_view suffix)
-    {
-        return hidden_head_prefix(global_head_index) + "_AggBind_"
-            + std::string(suffix);
-    }
-
-    std::string output_aggregation_binding_label(
-        std::size_t head_index,
-        std::string_view suffix)
-    {
-        return output_head_prefix(head_index, false) + "_AggBind_"
-            + std::string(suffix);
-    }
-
-    std::string output_weight_label(std::size_t head_index, bool use_single_output_compat_labels)
-    {
-        if (use_single_output_compat_labels)
-        {
-            return "V_out_W";
-        }
-        return "V_out" + std::to_string(head_index) + "_W";
-    }
-
-    std::string output_weight_column_label(std::size_t head_index, std::size_t column_index)
-    {
-        return output_weight_label(head_index, false) + "_col" + std::to_string(column_index);
-    }
-
-    std::string output_src_label(std::size_t head_index, bool use_single_output_compat_labels)
-    {
-        if (use_single_output_compat_labels)
-        {
-            return "V_out_a_src";
-        }
-        return "V_out" + std::to_string(head_index) + "_a_src";
-    }
-
-    std::string output_dst_label(std::size_t head_index, bool use_single_output_compat_labels)
-    {
-        if (use_single_output_compat_labels)
-        {
-            return "V_out_a_dst";
-        }
-        return "V_out" + std::to_string(head_index) + "_a_dst";
-    }
-
-    std::string output_bias_label(std::size_t head_index, bool use_single_output_compat_labels)
-    {
-        if (use_single_output_compat_labels)
-        {
-            return "V_b_out";
-        }
-        return "V_o" + std::to_string(head_index) + "_b";
-    }
-
-    std::string output_challenge_name(std::string_view base, std::size_t head_index, bool use_single_output_compat_labels)
-    {
-        if (use_single_output_compat_labels)
-        {
-            return std::string(base);
-        }
-        return std::string(base) + "_o" + std::to_string(head_index);
-    }
-
-    std::string hidden_model_binding_blinder_label(std::size_t head_index, std::string_view role)
-    {
-        return hidden_head_prefix(head_index) + "_ModelBind_" + std::string(role) + "_R";
-    }
-
-    std::string output_model_binding_blinder_label(std::size_t head_index, std::string_view role)
-    {
-        return output_head_prefix(head_index, false) + "_ModelBind_" + std::string(role) + "_R";
-    }
-
-    std::string hidden_score_mask_label(
-        std::size_t head_index, std::string_view role)
-    {
-        return hidden_head_prefix(head_index) + "_ScoreMask_" + std::string(role);
-    }
-
-    std::string output_score_mask_label(
-        std::size_t head_index, std::string_view role)
-    {
-        return output_head_prefix(head_index, false) + "_ScoreMask_"
-            + std::string(role);
-    }
-
-    std::string hidden_score_mask_eval_name(
-        std::size_t head_index, std::string_view role)
-    {
-        return "rho_h" + std::to_string(head_index) + "_" + std::string(role);
-    }
-
-    std::string output_score_mask_eval_name(
-        std::size_t head_index, std::string_view role)
-    {
-        return "rho_out" + std::to_string(head_index) + "_" + std::string(role);
-    }
-
-    std::string external_mask_label(std::string_view source_label)
-    {
-        return std::string(source_label) + "_ExternalMask";
-    }
-
-    std::string external_mask_eval_name(std::string_view source_eval_name)
-    {
-        return std::string(source_eval_name) + "_mask";
-    }
-
-    std::string model_proof_local_label(std::string_view vk_model_anchor_label)
-    {
-        return std::string(vk_model_anchor_label) + "_proof";
-    }
-
-    std::string model_reblind_witness_label(std::string_view vk_model_anchor_label)
-    {
-        return std::string(vk_model_anchor_label) + "_S_model";
-    }
-
-    std::string output_bias_view_prefix(std::size_t head_index)
-    {
-        return output_head_prefix(head_index, false) + "_BiasView_";
-    }
-
-    std::string output_bias_view_label(std::size_t head_index, std::string_view suffix)
-    {
-        return output_bias_view_prefix(head_index) + std::string(suffix);
-    }
-
-    std::string output_bias_view_eta_label(std::size_t head_index)
-    {
-        return "eta_view:output-bias:" + std::to_string(head_index);
-    }
-
-    std::string output_bias_view_beta_label(std::size_t head_index)
-    {
-        return "beta_view:output-bias:" + std::to_string(head_index);
-    }
-
-    std::string output_bias_view_relation_challenge_label(std::size_t head_index)
-    {
-        return "y_rel:output-bias-terminal:" + std::to_string(head_index);
-    }
-
-    std::string output_bias_basis_prefix(std::size_t head_index)
-    {
-        return output_head_prefix(head_index, false) + "_BiasBasis_";
-    }
-
-    std::string output_bias_basis_label(
-        std::size_t head_index, std::string_view suffix)
-    {
-        return output_bias_basis_prefix(head_index) + std::string(suffix);
-    }
-
-    std::string output_bias_basis_chunk_label(
-        std::size_t head_index, std::size_t chunk_index)
-    {
-        return output_bias_basis_prefix(head_index) + "Chunk_"
-            + std::to_string(chunk_index);
-    }
-
-    std::string output_bias_basis_chunk_accumulator_label(
-        std::size_t head_index, std::size_t chunk_index)
-    {
-        return output_bias_basis_chunk_label(head_index, chunk_index) + "_Acc";
-    }
-
-    std::string output_bias_basis_chunk_shifted_accumulator_label(
-        std::size_t head_index, std::size_t chunk_index)
-    {
-        return output_bias_basis_chunk_label(head_index, chunk_index)
-            + "_Acc_shifted";
-    }
-
-    std::string output_bias_basis_region_selector_label(
-        std::size_t head_index, std::size_t chunk_index,
-        std::string_view region)
-    {
-        return output_bias_basis_prefix(head_index) + "Q_"
-            + std::string(region) + "_" + std::to_string(chunk_index);
-    }
-
-    std::string output_bias_basis_gamma_label(std::size_t head_index)
-    {
-        return "gamma_basis:output-bias:" + std::to_string(head_index);
-    }
-
-    std::string output_bias_basis_relation_challenge_label(
-        std::size_t head_index)
-    {
-        return "y_rel:coefficient-basis:output-bias:"
-            + std::to_string(head_index);
-    }
-
-    std::size_t signed_division_limb_count(std::size_t range_bits)
-    {
-        if (range_bits == 0 || range_bits >= 64)
-        {
-            throw std::runtime_error("SignedRoundDiv range_bits must be in [1,63]");
-        }
-        return (64U + range_bits - 1U) / range_bits;
-    }
-
-    std::string signed_division_limb_label(
-        std::string_view division_prefix,
-        std::string_view value_name,
-        std::size_t limb_index)
-    {
-        return std::string(division_prefix) + "Limb_" + std::string(value_name)
-            + "_" + std::to_string(limb_index);
-    }
-
-    std::string signed_division_range_label(
-        std::string_view division_prefix,
-        std::string_view value_name,
-        std::size_t limb_index,
-        std::string_view column_name)
-    {
-        return std::string(division_prefix) + "Range_" + std::string(value_name)
-            + "_" + std::to_string(limb_index) + "_" + std::string(column_name);
-    }
-
-    std::string signed_division_beta_name(
-        std::string_view division_prefix,
-        std::string_view value_name,
-        std::size_t limb_index)
-    {
-        std::string prefix(division_prefix);
-        if (!prefix.empty() && prefix.back() == '_') prefix.pop_back();
-        return "beta_div_range:" + prefix + ":" + std::string(value_name)
-            + ":" + std::to_string(limb_index);
-    }
-
-    std::string output_external_eval_name(std::string_view base, std::size_t head_index, bool use_single_output_compat_labels)
-    {
-        if (use_single_output_compat_labels)
-        {
-            return "mu_" + std::string(base);
-        }
-        return "mu_out" + std::to_string(head_index) + "_" + std::string(base);
-    }
-
-    std::string output_witness_scalar_name(std::string_view base, std::size_t head_index, bool use_single_output_compat_labels)
-    {
-        if (use_single_output_compat_labels)
-        {
-            return "S_" + std::string(base) + "_out";
-        }
-        return "S_" + std::string(base) + "_out" + std::to_string(head_index);
-    }
-
-    // 拼接层的挑战名单独保留层号，保证跨层复用时不会和别的头混淆。
-    std::string hidden_concat_xi_name(std::size_t layer_index, bool is_final_layer)
-    {
-        if (is_final_layer)
-        {
-            return "xi_cat";
-        }
-        return "xi_cat_l" + std::to_string(layer_index);
-    }
-
-    std::string hidden_concat_y_name(std::size_t layer_index, bool is_final_layer)
-    {
-        if (is_final_layer)
-        {
-            return "y_cat";
-        }
-        return "y_cat_l" + std::to_string(layer_index);
     }
 
 } // namespace gatzk::protocol

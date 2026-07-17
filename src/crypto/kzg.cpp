@@ -518,7 +518,6 @@ namespace gatzk::crypto
                 || envelope_sizes.at("max_edges") > manifest.domain_sizes.at("edge")
                 || envelope_sizes.at("max_input_dim") > manifest.domain_sizes.at("in")
                 || envelope_sizes.at("max_hidden_head_dim") > manifest.domain_sizes.at("d")
-                || envelope_sizes.at("max_classes") > manifest.domain_sizes.at("cat")
                 || envelope_sizes.at("max_classes") > manifest.domain_sizes.at("C")
                 || envelope_sizes.at("max_concat_dim") > manifest.domain_sizes.at("cat")
                 || envelope_sizes.at("max_graphs") > envelope_sizes.at("max_nodes")
@@ -576,15 +575,6 @@ namespace gatzk::crypto
             }
         }
 
-        void validate_material_hash_declared(
-            const std::string& expected_hash,
-            const std::string& label)
-        {
-            if (expected_hash.empty())
-            {
-                throw std::runtime_error("SRS manifest is missing material hash: " + label);
-            }
-        }
 
         std::uint64_t read_u64_le(std::istream& input, const std::string& label)
         {
@@ -1522,11 +1512,6 @@ namespace gatzk::crypto
             return algebra::Polynomial::from_coefficients(name, {value});
         }
 
-        algebra::Polynomial coefficient_single_point_quotient_polynomial(
-            const std::string& witness_name,
-            const std::vector<FieldElement>& coefficients,
-            const FieldElement& point,
-            const FieldElement& value);
 
         bool coefficient_single_point_quotient_coefficients(
             std::vector<FieldElement>* quotient,
@@ -1534,72 +1519,7 @@ namespace gatzk::crypto
             const FieldElement& point,
             const FieldElement& value);
 
-        algebra::Polynomial single_point_quotient_polynomial(
-            const algebra::Polynomial& polynomial,
-            const FieldElement& point,
-            const FieldElement& value)
-        {
-            if (polynomial.basis == algebra::PolynomialBasis::Coefficient)
-            {
-                return coefficient_single_point_quotient_polynomial(
-                    polynomial.name + "_witness",
-                    polynomial.values(),
-                    point,
-                    value);
-            }
 
-            if (polynomial.domain == nullptr)
-            {
-                throw std::runtime_error("evaluation polynomial is missing its domain");
-            }
-            const auto& values = polynomial.values();
-            std::vector<FieldElement> denominators(polynomial.domain->size, FieldElement::zero());
-            parallel_for_chunks(polynomial.domain->size, 1ULL << 15, [&](std::size_t begin, std::size_t end) {
-                for (std::size_t i = begin; i < end; ++i)
-                {
-                    const auto domain_point = polynomial.domain->point_at(i);
-                    if (domain_point == point)
-                    {
-                        throw std::runtime_error("opening point overlaps evaluation domain; derivative witness path is not implemented");
-                    }
-                    denominators[i] = domain_point - point;
-                }
-            });
-            const auto inverse_denominators = algebra::batch_invert(denominators);
-            std::vector<FieldElement> quotient_values(polynomial.domain->size, FieldElement::zero());
-            const auto* values_native = values.empty() ? nullptr : FieldElement::native_array_data(values.data());
-            const auto* inverse_native = FieldElement::native_array_data(inverse_denominators.data());
-            auto* quotient_native = FieldElement::mutable_native_array_data(quotient_values.data());
-            const auto& value_native = value.native();
-            mcl::Fr zero;
-            zero.clear();
-            parallel_for_chunks(polynomial.domain->size, 1ULL << 15, [&](std::size_t begin, std::size_t end) {
-                for (std::size_t i = begin; i < end; ++i)
-                {
-                    mcl::Fr numerator;
-                    mcl::Fr::sub(numerator, i < values.size() ? values_native[i] : zero, value_native);
-                    mcl::Fr::mul(quotient_native[i], numerator, inverse_native[i]);
-                }
-            });
-            return algebra::Polynomial::from_evaluations(
-                polynomial.name + "_witness",
-                std::move(quotient_values),
-                polynomial.domain);
-        }
-
-        algebra::Polynomial coefficient_single_point_quotient_polynomial(
-            const std::string& witness_name,
-            const std::vector<FieldElement>& coefficients,
-            const FieldElement& point,
-            const FieldElement& value)
-        {
-            std::vector<FieldElement> quotient;
-            if (!coefficient_single_point_quotient_coefficients(&quotient, coefficients, point, value))
-            {
-                return algebra::Polynomial::from_coefficients(witness_name, {FieldElement::zero()});
-            }
-            return algebra::Polynomial::from_coefficients(witness_name, std::move(quotient));
-        }
 
         bool coefficient_single_point_quotient_coefficients(
             std::vector<FieldElement>* quotient,
@@ -1680,30 +1600,6 @@ namespace gatzk::crypto
                 msm_options);
         }
 
-        G1Point open_external_witness_point(
-            const Commitment& commitment,
-            const FieldElement& point,
-            const FieldElement& value,
-            const KZGProverKey& pk,
-            const G1MSMExecutionOptions* msm_options = nullptr)
-        {
-            if (commitment.opening_polynomial == nullptr)
-            {
-                throw std::runtime_error("external commitment is missing prover-side opening polynomial: " + commitment.name);
-            }
-            const auto& polynomial = *commitment.opening_polynomial;
-            if (polynomial.basis == algebra::PolynomialBasis::Coefficient)
-            {
-                return commit_coefficient_single_point_quotient(
-                    polynomial.values(),
-                    point,
-                    value,
-                    pk,
-                    msm_options);
-            }
-            const auto quotient = single_point_quotient_polynomial(polynomial, point, value);
-            return commit_polynomial_point(quotient, pk, nullptr, msm_options);
-        }
 
         void accumulate_scaled_coefficients(
             std::vector<FieldElement>* target,

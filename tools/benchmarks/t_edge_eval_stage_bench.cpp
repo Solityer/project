@@ -63,7 +63,6 @@ void add_hidden_challenges(
 void add_output_challenges(
     std::map<std::string, FieldElement>& challenges,
     std::size_t head_index,
-    bool legacy_single_output,
     std::uint64_t& seed) {
     for (std::string_view base : {
              "beta_src_out",
@@ -80,7 +79,7 @@ void add_output_challenges(
          }) {
         set_field(
             challenges,
-            gatzk::protocol::output_challenge_name(base, head_index, legacy_single_output),
+            gatzk::protocol::output_challenge_name(base, head_index),
             ++seed);
     }
 }
@@ -106,38 +105,10 @@ std::map<std::string, FieldElement> make_challenges(const CaseSpec& spec) {
     for (std::size_t head = 0; head < spec.hidden_head_count; ++head) {
         add_hidden_challenges(challenges, head, seed);
     }
-    const bool legacy_single_output = spec.output_head_count == 1;
     for (std::size_t head = 0; head < spec.output_head_count; ++head) {
-        add_output_challenges(challenges, head, legacy_single_output, seed);
+        add_output_challenges(challenges, head, seed);
     }
     return challenges;
-}
-
-std::map<std::string, FieldElement> make_witness_scalars(const CaseSpec& spec) {
-    std::map<std::string, FieldElement> witness;
-    std::uint64_t seed = 2000;
-    for (std::size_t head = 0; head < spec.hidden_head_count; ++head) {
-        const auto suffix = "_h" + std::to_string(head);
-        set_field(witness, "S_src" + suffix, ++seed);
-        set_field(witness, "S_t" + suffix, ++seed);
-        set_field(witness, "S_dst" + suffix, ++seed);
-    }
-    const bool legacy_single_output = spec.output_head_count == 1;
-    for (std::size_t head = 0; head < spec.output_head_count; ++head) {
-        set_field(
-            witness,
-            gatzk::protocol::output_witness_scalar_name("src", head, legacy_single_output),
-            ++seed);
-        set_field(
-            witness,
-            gatzk::protocol::output_witness_scalar_name("t", head, legacy_single_output),
-            ++seed);
-        set_field(
-            witness,
-            gatzk::protocol::output_witness_scalar_name("dst", head, legacy_single_output),
-            ++seed);
-    }
-    return witness;
 }
 
 FieldElement synthetic_eval(const std::string& label, const FieldElement&) {
@@ -152,7 +123,6 @@ FieldElement synthetic_eval(const std::string& label, const FieldElement&) {
 void run_case(const CaseSpec& spec, std::size_t repeats, std::size_t requested_sample_points) {
     const auto context = make_context(spec);
     const auto challenges = make_challenges(spec);
-    const auto witness = make_witness_scalars(spec);
     const auto sample_points = std::min(
         requested_sample_points == 0 ? spec.edge_domain_size : requested_sample_points,
         spec.edge_domain_size);
@@ -171,7 +141,7 @@ void run_case(const CaseSpec& spec, std::size_t repeats, std::size_t requested_s
         auto sink = FieldElement::zero();
         const auto start = std::chrono::steady_clock::now();
         for (std::size_t i = 0; i < sample_points; ++i) {
-            sink += gatzk::protocol::evaluate_t_edge(context, challenges, witness, {}, eval, z);
+            sink += gatzk::protocol::evaluate_t_edge(context, challenges, {}, eval, z);
             z *= step_root;
         }
         const auto total_ms = elapsed_ms(start);

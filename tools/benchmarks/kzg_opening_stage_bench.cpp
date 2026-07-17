@@ -149,9 +149,9 @@ void run_case(const CaseSpec& spec, const gatzk::crypto::KZGKeyPair& key) {
 int main() {
     try {
         const auto key = gatzk::crypto::KZG::load_keys(
-            (repo_root() / "artifacts/srs/zkgat_secure_main_srs_v1").string(),
+            (repo_root() / "artifacts/srs/cora_formal_srs_v1").string(),
             "trusted_srs",
-            "zkgat_secure_main_srs_v1");
+            "cora_formal_srs_v1");
         const std::vector<CaseSpec> cases = {
             {"cora_edge_opening_terms96", "edge", 131072, 96, 7},
             {"pubmed_edge_opening_terms96", "edge", 262144, 96, 7},

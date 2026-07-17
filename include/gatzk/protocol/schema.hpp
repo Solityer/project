@@ -3,6 +3,7 @@
 // 是 trace、prove、verify 与 artifact 共享的命名真源。
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -14,6 +15,7 @@ namespace gatzk::protocol {
 struct ProtocolContext;
 struct BindingRelationMeta;
 struct KZGShiftRelationMeta;
+struct MetadataReference;
 
 enum class PolynomialVisibility {
     Public,
@@ -139,6 +141,12 @@ std::string protocol_security_budget_ledger_template_canonical_bytes();
 ProofSchema build_proof_schema(const ProtocolContext& context);
 ProtocolCompilerArtifact build_protocol_compiler_artifact(const ProtocolContext& context);
 std::vector<BindingRelationMeta> build_binding_relation_metadata(const ProtocolContext& context);
+// Canonical S_route payload.  Every entry is a reference to the unique
+// standard point-group owner in Open_dom/W_ext; no route terminal value is
+// ever materialized in the proof object.
+std::vector<MetadataReference> route_opening_references(
+    const ProtocolContext& context,
+    const std::map<std::string, algebra::FieldElement>& challenges);
 const KZGShiftRelationMeta* find_unique_shift_relation_by_kind(
     const BindingRelationMeta& metadata,
     std::string_view relation_kind);
@@ -181,7 +189,7 @@ bool observation_image_is_covered(
 // objects (for example `P_Y_o0`) remain private even when final `P_Y` is public.
 PolynomialVisibility polynomial_visibility(const ProtocolContext& context, const std::string& label);
 bool schema_accepts_evaluation(PolynomialVisibility visibility, EvaluationKind kind);
-// 下面这些函数负责生成隐藏层、输出层与兼容单头路径使用的正式标签。
+// 下面这些函数负责生成隐藏层和输出层使用的正式标签。
 // 它们共同决定 dynamic commitments、opening bundle 与 external evaluation 的命名真源。
 std::string hidden_head_prefix(std::size_t global_head_index);
 std::string hidden_layer_concat_label(std::size_t layer_index, bool is_final_layer);
@@ -191,9 +199,9 @@ std::string hidden_weight_label(std::size_t global_head_index);
 std::string hidden_weight_column_label(std::size_t global_head_index, std::size_t column_index);
 std::string hidden_src_label(std::size_t global_head_index);
 std::string hidden_dst_label(std::size_t global_head_index);
-std::string output_head_prefix(std::size_t head_index, bool use_single_output_compat_labels);
-std::string output_y_lin_label(std::size_t head_index, bool use_single_output_compat_labels);
-std::string output_y_label(std::size_t head_index, bool use_single_output_compat_labels);
+std::string output_head_prefix(std::size_t head_index);
+std::string output_y_lin_label(std::size_t head_index);
+std::string output_y_label(std::size_t head_index);
 std::string canonical_matrix_column_label(
     const std::string& matrix_object,
     std::size_t column_index);
@@ -203,12 +211,12 @@ std::string hidden_aggregation_binding_label(
 std::string output_aggregation_binding_label(
     std::size_t head_index,
     std::string_view suffix);
-std::string output_weight_label(std::size_t head_index, bool use_single_output_compat_labels);
+std::string output_weight_label(std::size_t head_index);
 std::string output_weight_column_label(std::size_t head_index, std::size_t column_index);
-std::string output_src_label(std::size_t head_index, bool use_single_output_compat_labels);
-std::string output_dst_label(std::size_t head_index, bool use_single_output_compat_labels);
-std::string output_bias_label(std::size_t head_index, bool use_single_output_compat_labels);
-std::string output_challenge_name(std::string_view base, std::size_t head_index, bool use_single_output_compat_labels);
+std::string output_src_label(std::size_t head_index);
+std::string output_dst_label(std::size_t head_index);
+std::string output_bias_label(std::size_t head_index);
+std::string output_challenge_name(std::string_view base, std::size_t head_index);
 std::string hidden_model_binding_blinder_label(std::size_t head_index, std::string_view role);
 std::string output_model_binding_blinder_label(std::size_t head_index, std::string_view role);
 std::string hidden_score_mask_label(std::size_t head_index, std::string_view role);
@@ -257,8 +265,7 @@ std::string signed_division_beta_name(
     std::string_view division_prefix,
     std::string_view value_name,
     std::size_t limb_index);
-std::string output_external_eval_name(std::string_view base, std::size_t head_index, bool use_single_output_compat_labels);
-std::string output_witness_scalar_name(std::string_view base, std::size_t head_index, bool use_single_output_compat_labels);
+std::string output_external_eval_name(std::string_view base, std::size_t head_index);
 std::string hidden_concat_xi_name(std::size_t layer_index, bool is_final_layer);
 std::string hidden_concat_y_name(std::size_t layer_index, bool is_final_layer);
 

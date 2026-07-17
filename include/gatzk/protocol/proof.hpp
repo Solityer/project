@@ -123,9 +123,9 @@ struct TraceArtifacts {
     std::unordered_map<std::string, crypto::Commitment> commitments;
     std::vector<std::string> commitment_order;
     std::map<std::string, algebra::FieldElement> challenges;
-    // verifier 直接消费的外点值与 witness 标量。
+    // verifier 直接消费的外点值。route 终值不是 proof 标量；
+    // 它们只能通过 S_route 中的全局 point-group 引用进入正式关系。
     std::map<std::string, algebra::FieldElement> external_evaluations;
-    std::map<std::string, algebra::FieldElement> witness_scalars;
     // 主协议的公开 logits，按 N x C 行优先展平。这一份数据必须由
     // verifier 独立重建多项式求值，不得用 trace 内部 hash 代替。
     std::vector<algebra::FieldElement> public_logits;
@@ -188,6 +188,7 @@ struct DomainOpeningBundle {
 // owned by Open_dom/W_ext; a binding subproof can only refer to those owner groups.
 struct MetadataReference {
     std::string object_id;
+    bool operator==(const MetadataReference&) const = default;
 };
 
 struct ModelReblindProof {
@@ -421,8 +422,9 @@ struct Proof {
     std::vector<std::pair<std::string, DomainOpeningBundle>> domain_openings;
     std::vector<std::pair<std::string, algebra::FieldElement>> external_evaluations;
     std::vector<PayloadValueKind> external_evaluation_kinds;
-    std::vector<std::pair<std::string, algebra::FieldElement>> witness_scalars;
-    std::vector<PayloadValueKind> witness_scalar_kinds;
+    // S_route 仅编码已由 Open_dom/W_ext 唯一 owner 持有的 point-group
+    // MetadataReference，不编码共同终值或 route 专用 witness。
+    std::vector<MetadataReference> route_references;
     std::vector<algebra::FieldElement> public_logits;
     crypto::OpeningProof external_proof;
     PiBindProof pi_bind;

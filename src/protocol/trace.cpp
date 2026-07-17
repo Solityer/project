@@ -239,16 +239,6 @@ namespace gatzk::protocol
             trace.reference_fp32_logits_hash = hash_float_matrix(reference_logits);
         }
 
-        void record_public_output_hashes(TraceArtifacts &trace, const Matrix &quant_logits)
-        {
-            const auto quant_hash = hash_field_matrix(quant_logits);
-            trace.public_logits = algebra::flatten_matrix_coefficients(quant_logits);
-            trace.public_logits_hash = quant_hash;
-            trace.reference_quant_logits_hash.clear();
-            trace.secure_trace_logits_hash = quant_hash;
-            trace.proof_public_output_hash.clear();
-            trace.reference_fp32_logits_hash = quant_hash;
-        }
 
         template <typename Fn>
         void parallel_for_ranges(std::size_t item_count, std::size_t min_parallel_items, Fn &&fn)
@@ -309,40 +299,6 @@ namespace gatzk::protocol
             return out;
         }
 
-        std::vector<FieldElement> weighted_column_sum(
-            const Matrix &matrix,
-            const std::vector<FieldElement> &row_weights)
-        {
-            if (matrix.size() != row_weights.size())
-            {
-                throw std::runtime_error("weighted column sum input size mismatch");
-            }
-            if (matrix.empty())
-            {
-                return {};
-            }
-            std::vector<mcl::Fr> native_out(matrix.front().size());
-            for (auto &value : native_out)
-            {
-                value.clear();
-            }
-            for (std::size_t i = 0; i < matrix.size(); ++i)
-            {
-                const auto &weight = row_weights[i].native();
-                for (std::size_t j = 0; j < matrix[i].size(); ++j)
-                {
-                    mcl::Fr term;
-                    mcl::Fr::mul(term, matrix[i][j].native(), weight);
-                    mcl::Fr::add(native_out[j], native_out[j], term);
-                }
-            }
-            std::vector<FieldElement> out(matrix.front().size(), FieldElement::zero());
-            for (std::size_t j = 0; j < native_out.size(); ++j)
-            {
-                out[j] = FieldElement::from_native(native_out[j]);
-            }
-            return out;
-        }
 
         const std::vector<mcl::Fr> &cached_barycentric_weights_native(
             const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
@@ -708,31 +664,6 @@ namespace gatzk::protocol
             };
         }
 
-        crypto::G1Point linear_commitment_point(
-            std::initializer_list<std::pair<crypto::G1Point, FieldElement>> terms)
-        {
-            auto point = crypto::g1_zero();
-            for (const auto &[base, scale] : terms)
-            {
-                if (scale == FieldElement::zero())
-                {
-                    continue;
-                }
-                point = crypto::g1_add(point, crypto::g1_mul(base, scale));
-            }
-            return point;
-        }
-
-        DynamicCommitmentLinearTerm linear_point_term(
-            const crypto::G1Point &point,
-            const FieldElement &scale)
-        {
-            return DynamicCommitmentLinearTerm{
-                .point = point,
-                .label = std::string(),
-                .scale = scale,
-            };
-        }
 
         DynamicCommitmentLinearTerm linear_label_term(
             std::string label,
@@ -1051,17 +982,6 @@ namespace gatzk::protocol
             return spec;
         }
 
-        DynamicCommitmentSpec linear_column_spec(
-            const std::string &name,
-            std::shared_ptr<const std::vector<FieldElement>> values,
-            const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
-            const crypto::G1Point &commitment_point)
-        {
-            auto spec = column_spec(name, std::move(values), domain);
-            spec.precomputed_commitment_point = commitment_point;
-            spec.linear_commitment_derived = true;
-            return spec;
-        }
 
         DynamicCommitmentSpec deferred_linear_column_spec(
             const std::string &name,
@@ -1087,16 +1007,6 @@ namespace gatzk::protocol
             return spec;
         }
 
-        DynamicCommitmentSpec deferred_linear_compact_column_spec(
-            const std::string &name,
-            std::vector<FieldElement> &&values,
-            const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
-            std::vector<DynamicCommitmentLinearTerm> terms)
-        {
-            auto spec = deferred_linear_column_spec(name, std::move(values), domain, std::move(terms));
-            spec.compact = true;
-            return spec;
-        }
 
         DynamicCommitmentSpec deferred_linear_compact_column_spec(
             const std::string &name,
@@ -1129,15 +1039,6 @@ namespace gatzk::protocol
             return spec;
         }
 
-        DynamicCommitmentSpec compact_column_spec(
-            const std::string &name,
-            const std::vector<FieldElement> &values,
-            const std::shared_ptr<algebra::RootOfUnityDomain> &domain)
-        {
-            auto spec = column_spec(name, values, domain);
-            spec.compact = true;
-            return spec;
-        }
 
         template <typename Owner>
         std::shared_ptr<const std::vector<FieldElement>> alias_column_values(
@@ -1161,31 +1062,6 @@ namespace gatzk::protocol
             return column_spec(name, alias_column_values(owner, &values), domain);
         }
 
-        template <typename Owner>
-        DynamicCommitmentSpec linear_shared_column_spec(
-            const std::string &name,
-            const std::shared_ptr<const Owner> &owner,
-            const std::vector<FieldElement> &values,
-            const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
-            const crypto::G1Point &commitment_point)
-        {
-            return linear_column_spec(name, alias_column_values(owner, &values), domain, commitment_point);
-        }
-
-        template <typename Owner>
-        DynamicCommitmentSpec deferred_linear_shared_column_spec(
-            const std::string &name,
-            const std::shared_ptr<const Owner> &owner,
-            const std::vector<FieldElement> &values,
-            const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
-            std::vector<DynamicCommitmentLinearTerm> terms)
-        {
-            return deferred_linear_column_spec(
-                name,
-                alias_column_values(owner, &values),
-                domain,
-                std::move(terms));
-        }
 
         template <typename Owner>
         DynamicCommitmentSpec deferred_linear_compact_shared_column_spec(
@@ -1923,8 +1799,6 @@ namespace gatzk::protocol
                 object_profile.msm_ms = 0.0;
                 return object_profile;
             };
-            constexpr std::size_t kMaxFullValueFingerprintSize = 1ULL << 16;
-            constexpr std::size_t kMaxRepeatedTableFingerprintSize = 1ULL << 20;
             auto should_full_value_fingerprint = [&](const PreparedDynamicCommitment &item, const Polynomial &polynomial)
             {
                 (void)item;
@@ -2279,41 +2153,6 @@ namespace gatzk::protocol
             return context.public_polynomials.at(name).values();
         }
 
-        FieldElement exp_map(const FieldElement &delta, std::size_t range_size)
-        {
-            return FieldElement(range_size - delta.value());
-        }
-
-        FieldElement evaluate_bias_fold(
-            const std::vector<FieldElement> &bias,
-            std::size_t rows,
-            const FieldElement &point)
-        {
-            if (bias.empty() || rows == 0)
-            {
-                return FieldElement::zero();
-            }
-
-            FieldElement column_fold = FieldElement::zero();
-            FieldElement column_power = FieldElement::one();
-            for (const auto &bias_value : bias)
-            {
-                column_fold += bias_value * column_power;
-                column_power *= point;
-            }
-
-            const auto row_stride = point.pow(static_cast<std::uint64_t>(bias.size()));
-            FieldElement row_sum = FieldElement::zero();
-            if (row_stride == FieldElement::one())
-            {
-                row_sum = FieldElement(static_cast<std::uint64_t>(rows));
-            }
-            else
-            {
-                row_sum = (row_stride.pow(static_cast<std::uint64_t>(rows)) - FieldElement::one()) / (row_stride - FieldElement::one());
-            }
-            return column_fold * row_sum;
-        }
 
         std::int64_t quantize_float_raw(double value)
         {
@@ -4306,6 +4145,110 @@ namespace gatzk::protocol
             return out;
         }
 
+        void finalize_trace_registry(
+            const ProtocolContext &context,
+            crypto::Transcript &transcript,
+            TraceArtifacts &trace,
+            RunMetrics *metrics)
+        {
+            const auto stage_start = Clock::now();
+            trace.challenges["alpha_quot"] = transcript.challenge("alpha_quot");
+            for (const auto &[label, point] :
+                 derive_domain_opening_challenges(context, transcript))
+                trace.challenges[label] = point;
+            add_metric(metrics != nullptr ? &metrics->trace_finalize_ms : nullptr, stage_start);
+
+            const auto canonical_commitment_order = dynamic_commitment_labels(context);
+            std::set<std::string> expected_commitments(
+                canonical_commitment_order.begin(),
+                canonical_commitment_order.end());
+            for (const auto &subproof : trace.pi_bind->subproofs)
+            {
+                for (const auto &reblind : subproof.model_reblinds)
+                {
+                    expected_commitments.insert(reblind.proof_local_commitment.name);
+                    expected_commitments.insert(reblind.blinder_commitment.name);
+                }
+                for (const auto *group : {
+                         &subproof.view_commitments,
+                         &subproof.view_logup_commitments,
+                         &subproof.aggregation_commitments,
+                         &subproof.basis_commitments,
+                         &subproof.crpc_commitments,
+                         &subproof.relation_commitments})
+                {
+                    for (const auto &[label, commitment] : *group)
+                    {
+                        if (label != commitment.name)
+                            throw std::runtime_error(
+                                "Pi_bind commitment key/name mismatch: " + label);
+                        expected_commitments.insert(label);
+                    }
+                }
+            }
+            for (std::size_t head = 0;
+                 head < context.model.output_layer.heads.size(); ++head)
+            {
+                for (const auto &label : {
+                         output_bias_view_label(head, "F1"),
+                         output_bias_view_label(head, "F2"),
+                         output_bias_view_label(head, "terminal_relation_virtual"),
+                         output_bias_basis_label(head, "relation_virtual")})
+                    expected_commitments.insert(label);
+            }
+            for (const auto &subproof : trace.pi_bind->subproofs)
+            {
+                for (const auto &route :
+                     subproof.relation_meta.route_terminal_relations)
+                    expected_commitments.insert(route.relation_virtual_object);
+                for (const auto &aggregation :
+                     subproof.relation_meta.aggregation_relations)
+                    for (const auto *route : {
+                             &aggregation.source_route,
+                             &aggregation.target_route})
+                        expected_commitments.insert(route->relation_virtual_object);
+            }
+            if (trace.commitments.size() != expected_commitments.size())
+            {
+                std::ostringstream detail;
+                detail << "dynamic commitment set size diverged from ProofSchema"
+                       << " (actual=" << trace.commitments.size()
+                       << ", expected=" << expected_commitments.size()
+                       << ", unexpected=";
+                bool first = true;
+                for (const auto &[label, _] : trace.commitments)
+                {
+                    if (expected_commitments.contains(label)) continue;
+                    if (!first) detail << ',';
+                    detail << label;
+                    first = false;
+                }
+                detail << ')';
+                throw std::runtime_error(detail.str());
+            }
+            for (const auto &label : expected_commitments)
+            {
+                if (!trace.commitments.contains(label))
+                    throw std::runtime_error(
+                        "dynamic commitment is missing from ProofSchema: " + label);
+            }
+            trace.commitment_order = canonical_commitment_order;
+            const auto replayed_pre_quotient =
+                replay_challenges(context, trace.commitments, {}, &trace.public_metadata);
+            for (const auto &[label, value] : trace.challenges)
+            {
+                if (label == "alpha_quot" || !replayed_pre_quotient.contains(label))
+                    continue;
+                if (replayed_pre_quotient.at(label) != value)
+                    throw std::runtime_error(
+                        "trace challenge diverged from canonical verifier replay: "
+                        + label + " trace=" + value.to_string()
+                        + " replay="
+                        + replayed_pre_quotient.at(label).to_string());
+            }
+            trace.challenges["alpha_quot"] = replayed_pre_quotient.at("alpha_quot");
+        }
+
         // 多层多头正式路径：按层序物化隐藏头、输出头与跨层拼接相关的全部 witness 列。
         TraceArtifacts build_multihead_trace(const ProtocolContext &context, RunMetrics *metrics)
         {
@@ -4358,18 +4301,6 @@ namespace gatzk::protocol
                     accounted_ms += value;
                 }
                 metrics->*member += std::max(0.0, total_ms - accounted_ms);
-            };
-            auto public_point = [&](const std::string &label) -> const crypto::G1Point &
-            {
-                return context.public_commitments.at(label).point;
-            };
-            auto static_point = [&](const std::string &label) -> const crypto::G1Point &
-            {
-                return context.static_commitments.at(label).point;
-            };
-            auto trace_point = [&](const std::string &label) -> const crypto::G1Point &
-            {
-                return trace.commitments.at(label).point;
             };
 
             auto stage_start = Clock::now();
@@ -6046,7 +5977,7 @@ namespace gatzk::protocol
                      head_index < context.model.output_layer.heads.size();
                      ++head_index)
                 {
-                    const auto label = output_head_prefix(head_index, false) + "_Y_prime";
+                    const auto label = output_head_prefix(head_index) + "_Y_prime";
                     add_dynamic_commitment_batch(
                         trace,
                         {matrix_commitment_only_spec(
@@ -6061,10 +5992,10 @@ namespace gatzk::protocol
 
                 auto commit_output_head = [&](std::size_t head_index)
                 {
-                    const auto prefix_base = output_head_prefix(head_index, false);
+                    const auto prefix_base = output_head_prefix(head_index);
                     const auto prefix = prefix_base + "_";
-                    const auto y_lin_label = output_y_lin_label(head_index, false);
-                    const auto y_label = output_y_label(head_index, false);
+                    const auto y_lin_label = output_y_lin_label(head_index);
+                    const auto y_label = output_y_label(head_index);
                     const auto head_cache_prefix = output_cache_prefix + ":" + std::to_string(head_index);
                     const auto &quantized = forward_artifacts->output_head_quantized.at(head_index);
                     const auto &y_prime = quantized.y_prime;
@@ -6097,15 +6028,15 @@ namespace gatzk::protocol
                     }
                     append_model_reblind(
                         binding_subproof,
-                        output_src_label(head_index, false),
+                        output_src_label(head_index),
                         domains.c);
                     append_model_reblind(
                         binding_subproof,
-                        output_dst_label(head_index, false),
+                        output_dst_label(head_index),
                         domains.c);
                     append_model_reblind(
                         binding_subproof,
-                        output_bias_label(head_index, false),
+                        output_bias_label(head_index),
                         domains.c);
                     add_dynamic_commitment_batch(
                         trace,
@@ -6165,34 +6096,34 @@ namespace gatzk::protocol
                             model_reblind_witness_label(label),
                             trace.commitments.at(model_reblind_witness_label(label)).point);
                     }
-                    trace.challenges[output_challenge_name("y_proj_out", head_index, false)] =
-                        transcript.challenge(output_challenge_name("y_proj_out", head_index, false));
+                    trace.challenges[output_challenge_name("y_proj_out", head_index)] =
+                        transcript.challenge(output_challenge_name("y_proj_out", head_index));
                     transcript.absorb_commitment(prefix + "Y_prime", trace.commitments.at(prefix + "Y_prime").point);
                     transcript.absorb_commitment(prefix + "E_src", trace.commitments.at(prefix + "E_src").point);
                     transcript.absorb_commitment(
                         output_score_mask_label(head_index, "src"),
                         trace.commitments.at(output_score_mask_label(head_index, "src")).point);
                     transcript.absorb_commitment(
-                        model_proof_local_label(output_src_label(head_index, false)),
-                        trace.commitments.at(model_proof_local_label(output_src_label(head_index, false))).point);
+                        model_proof_local_label(output_src_label(head_index)),
+                        trace.commitments.at(model_proof_local_label(output_src_label(head_index))).point);
                     transcript.absorb_commitment(
-                        model_reblind_witness_label(output_src_label(head_index, false)),
-                        trace.commitments.at(model_reblind_witness_label(output_src_label(head_index, false))).point);
-                    trace.challenges[output_challenge_name("y_src_out", head_index, false)] =
-                        transcript.challenge(output_challenge_name("y_src_out", head_index, false));
+                        model_reblind_witness_label(output_src_label(head_index)),
+                        trace.commitments.at(model_reblind_witness_label(output_src_label(head_index))).point);
+                    trace.challenges[output_challenge_name("y_src_out", head_index)] =
+                        transcript.challenge(output_challenge_name("y_src_out", head_index));
                     transcript.absorb_commitment(prefix + "Y_prime", trace.commitments.at(prefix + "Y_prime").point);
                     transcript.absorb_commitment(prefix + "E_dst", trace.commitments.at(prefix + "E_dst").point);
                     transcript.absorb_commitment(
                         output_score_mask_label(head_index, "dst"),
                         trace.commitments.at(output_score_mask_label(head_index, "dst")).point);
                     transcript.absorb_commitment(
-                        model_proof_local_label(output_dst_label(head_index, false)),
-                        trace.commitments.at(model_proof_local_label(output_dst_label(head_index, false))).point);
+                        model_proof_local_label(output_dst_label(head_index)),
+                        trace.commitments.at(model_proof_local_label(output_dst_label(head_index))).point);
                     transcript.absorb_commitment(
-                        model_reblind_witness_label(output_dst_label(head_index, false)),
-                        trace.commitments.at(model_reblind_witness_label(output_dst_label(head_index, false))).point);
-                    trace.challenges[output_challenge_name("y_dst_out", head_index, false)] =
-                        transcript.challenge(output_challenge_name("y_dst_out", head_index, false));
+                        model_reblind_witness_label(output_dst_label(head_index)),
+                        trace.commitments.at(model_reblind_witness_label(output_dst_label(head_index))).point);
+                    trace.challenges[output_challenge_name("y_dst_out", head_index)] =
+                        transcript.challenge(output_challenge_name("y_dst_out", head_index));
                     const auto xi_out = trace.challenges.at("xi_out");
                     const auto compressed = cached_output_compressed_trace(
                         head_cache_prefix + ":compressed:" + xi_out.to_string(),
@@ -6216,8 +6147,8 @@ namespace gatzk::protocol
                         metrics);
                     transcript.absorb_commitment(prefix + "Y_prime_star", trace.commitments.at(prefix + "Y_prime_star").point);
                     transcript.absorb_commitment(prefix + "Y_prime_star_edge", trace.commitments.at(prefix + "Y_prime_star_edge").point);
-                    const auto eta_src_out = transcript.challenge(output_challenge_name("eta_src_out", head_index, false));
-                    trace.challenges[output_challenge_name("eta_src_out", head_index, false)] = eta_src_out;
+                    const auto eta_src_out = transcript.challenge(output_challenge_name("eta_src_out", head_index));
+                    trace.challenges[output_challenge_name("eta_src_out", head_index)] = eta_src_out;
                     const auto eta_src_out_powers = powers(eta_src_out, 2);
                     std::vector<FieldElement> out_src_table(n_nodes, FieldElement::zero());
                     std::vector<FieldElement> out_src_query(n_edges, FieldElement::zero());
@@ -6256,8 +6187,8 @@ namespace gatzk::protocol
                         const auto label = prefix + suffix;
                         transcript.absorb_commitment(label, trace.commitments.at(label).point);
                     }
-                    const auto beta_src_out = transcript.challenge(output_challenge_name("beta_src_out", head_index, false));
-                    trace.challenges[output_challenge_name("beta_src_out", head_index, false)] = beta_src_out;
+                    const auto beta_src_out = transcript.challenge(output_challenge_name("beta_src_out", head_index));
+                    trace.challenges[output_challenge_name("beta_src_out", head_index)] = beta_src_out;
                     const auto out_src_route = cached_route_trace(
                         head_cache_prefix + ":src_route:" + eta_src_out.to_string() + ":" + beta_src_out.to_string(),
                         [&]()
@@ -6349,7 +6280,7 @@ namespace gatzk::protocol
                     transcript.absorb_commitment(prefix + "Z", trace.commitments.at(prefix + "Z").point);
                     transcript.absorb_commitment("V_T_L_x", context.static_commitments.at("V_T_L_x").point);
                     transcript.absorb_commitment("V_T_L_y", context.static_commitments.at("V_T_L_y").point);
-                    const auto eta_l_out_name = output_challenge_name("eta_L_out", head_index, false);
+                    const auto eta_l_out_name = output_challenge_name("eta_L_out", head_index);
                     const auto eta_l_out = transcript.challenge(eta_l_out_name);
                     trace.challenges[eta_l_out_name] = eta_l_out;
                     const std::vector<FieldElement> out_table_l =
@@ -6370,7 +6301,7 @@ namespace gatzk::protocol
                         });
                     commit_output_logup_round(
                         "L",
-                        output_challenge_name("beta_L_out", head_index, false),
+                        output_challenge_name("beta_L_out", head_index),
                         out_table_l,
                         out_l_artifacts->query,
                         out_l_artifacts->multiplicity,
@@ -6406,7 +6337,7 @@ namespace gatzk::protocol
                         });
                     commit_output_logup_round(
                         "R",
-                        output_challenge_name("beta_R_out", head_index, false),
+                        output_challenge_name("beta_R_out", head_index),
                         out_table_r,
                         out_r_artifacts->query,
                         out_r_artifacts->multiplicity,
@@ -6418,7 +6349,7 @@ namespace gatzk::protocol
                     transcript.absorb_commitment(prefix + "U", trace.commitments.at(prefix + "U").point);
                     transcript.absorb_commitment("V_T_exp_x", context.static_commitments.at("V_T_exp_x").point);
                     transcript.absorb_commitment("V_T_exp_y", context.static_commitments.at("V_T_exp_y").point);
-                    const auto eta_exp_out_name = output_challenge_name("eta_exp_out", head_index, false);
+                    const auto eta_exp_out_name = output_challenge_name("eta_exp_out", head_index);
                     const auto eta_exp_out = transcript.challenge(eta_exp_out_name);
                     trace.challenges[eta_exp_out_name] = eta_exp_out;
                     const std::vector<FieldElement> out_table_exp =
@@ -6439,7 +6370,7 @@ namespace gatzk::protocol
                         });
                     commit_output_logup_round(
                         "exp",
-                        output_challenge_name("beta_exp_out", head_index, false),
+                        output_challenge_name("beta_exp_out", head_index),
                         out_table_exp,
                         out_exp_artifacts->query,
                         out_exp_artifacts->multiplicity,
@@ -6447,8 +6378,8 @@ namespace gatzk::protocol
                         q_qry_exp,
                         lookup_active_transition_limit(context.tables.exp.size(), n_edges, domains.edge->size));
 
-                    const auto lambda_out = transcript.challenge(output_challenge_name("lambda_out", head_index, false));
-                    trace.challenges[output_challenge_name("lambda_out", head_index, false)] = lambda_out;
+                    const auto lambda_out = transcript.challenge(output_challenge_name("lambda_out", head_index));
+                    trace.challenges[output_challenge_name("lambda_out", head_index)] = lambda_out;
                     std::vector<FieldElement> widehat_y_star(domains.edge->size, FieldElement::zero());
                     parallel_for_ranges(
                         n_edges,
@@ -6523,8 +6454,8 @@ namespace gatzk::protocol
 
                     transcript.absorb_commitment(prefix + "T", trace.commitments.at(prefix + "T").point);
                     transcript.absorb_commitment(prefix + "T_edge", trace.commitments.at(prefix + "T_edge").point);
-                    const auto eta_t_out = transcript.challenge(output_challenge_name("eta_t_out", head_index, false));
-                    trace.challenges[output_challenge_name("eta_t_out", head_index, false)] = eta_t_out;
+                    const auto eta_t_out = transcript.challenge(output_challenge_name("eta_t_out", head_index));
+                    trace.challenges[output_challenge_name("eta_t_out", head_index)] = eta_t_out;
                     const auto eta_t_out_powers = powers(eta_t_out, 2);
                     std::vector<FieldElement> out_t_table(n_nodes, FieldElement::zero());
                     std::vector<FieldElement> out_t_query(n_edges, FieldElement::zero());
@@ -6563,8 +6494,8 @@ namespace gatzk::protocol
                         const auto label = prefix + suffix;
                         transcript.absorb_commitment(label, trace.commitments.at(label).point);
                     }
-                    const auto beta_t_out = transcript.challenge(output_challenge_name("beta_t_out", head_index, false));
-                    trace.challenges[output_challenge_name("beta_t_out", head_index, false)] = beta_t_out;
+                    const auto beta_t_out = transcript.challenge(output_challenge_name("beta_t_out", head_index));
+                    trace.challenges[output_challenge_name("beta_t_out", head_index)] = beta_t_out;
                     const auto out_t_route = cached_route_trace(
                         head_cache_prefix + ":t_route:" + eta_t_out.to_string() + ":" + beta_t_out.to_string(),
                         [&]()
@@ -6600,13 +6531,13 @@ namespace gatzk::protocol
                     transcript.absorb_commitment(
                         external_mask_label(prefix + "Y_star"),
                         trace.commitments.at(external_mask_label(prefix + "Y_star")).point);
-                    trace.challenges[output_challenge_name("y_out_star", head_index, false)] =
-                        transcript.challenge(output_challenge_name("y_out_star", head_index, false));
+                    trace.challenges[output_challenge_name("y_out_star", head_index)] =
+                        transcript.challenge(output_challenge_name("y_out_star", head_index));
 
-                    const auto y_proj_out = trace.challenges.at(output_challenge_name("y_proj_out", head_index, false));
-                    const auto y_src_out = trace.challenges.at(output_challenge_name("y_src_out", head_index, false));
-                    const auto y_dst_out = trace.challenges.at(output_challenge_name("y_dst_out", head_index, false));
-                    const auto y_out_star = trace.challenges.at(output_challenge_name("y_out_star", head_index, false));
+                    const auto y_proj_out = trace.challenges.at(output_challenge_name("y_proj_out", head_index));
+                    const auto y_src_out = trace.challenges.at(output_challenge_name("y_src_out", head_index));
+                    const auto y_dst_out = trace.challenges.at(output_challenge_name("y_dst_out", head_index));
+                    const auto y_out_star = trace.challenges.at(output_challenge_name("y_out_star", head_index));
                     const auto &output_parameters = cached_quantized_output_head_parameters(context, head_index);
                     const auto output_proj_b = linear_form_by_powers(output_parameters.seq_kernel, powers(y_proj_out, context.local.num_classes));
                     const auto xi_out_powers = powers(xi_out, context.local.num_classes);
@@ -6669,8 +6600,8 @@ namespace gatzk::protocol
                         const auto label = prefix + suffix;
                         transcript.absorb_commitment(label, trace.commitments.at(label).point);
                     }
-                    const auto eta_dst_out = transcript.challenge(output_challenge_name("eta_dst_out", head_index, false));
-                    trace.challenges[output_challenge_name("eta_dst_out", head_index, false)] = eta_dst_out;
+                    const auto eta_dst_out = transcript.challenge(output_challenge_name("eta_dst_out", head_index));
+                    trace.challenges[output_challenge_name("eta_dst_out", head_index)] = eta_dst_out;
                     const auto eta_dst_out_powers = powers(eta_dst_out, 6);
                     std::vector<FieldElement> out_dst_table(n_nodes, FieldElement::zero());
                     std::vector<FieldElement> out_dst_query(n_edges, FieldElement::zero());
@@ -6710,8 +6641,8 @@ namespace gatzk::protocol
                         const auto label = prefix + suffix;
                         transcript.absorb_commitment(label, trace.commitments.at(label).point);
                     }
-                    const auto beta_dst_out = transcript.challenge(output_challenge_name("beta_dst_out", head_index, false));
-                    trace.challenges[output_challenge_name("beta_dst_out", head_index, false)] = beta_dst_out;
+                    const auto beta_dst_out = transcript.challenge(output_challenge_name("beta_dst_out", head_index));
+                    trace.challenges[output_challenge_name("beta_dst_out", head_index)] = beta_dst_out;
                     const auto out_dst_route = cached_route_trace(
                         head_cache_prefix + ":dst_route:" + eta_dst_out.to_string() + ":" + beta_dst_out.to_string(),
                         [&]()
@@ -6808,7 +6739,7 @@ namespace gatzk::protocol
                             output_weight_column_label(head_index, column),
                             output_weight_power});
                         output_weight_power *= trace.challenges.at(
-                            output_challenge_name("y_proj_out", head_index, false));
+                            output_challenge_name("y_proj_out", head_index));
                     }
                     append_model_binding_blinder(
                         prefix + "b_proj",
@@ -6819,30 +6750,30 @@ namespace gatzk::protocol
                         prefix + "b_src",
                         output_model_binding_blinder_label(head_index, "src"),
                         domains.c,
-                        {{output_src_label(head_index, false), FieldElement::one()}});
+                        {{output_src_label(head_index), FieldElement::one()}});
                     append_model_binding_blinder(
                         prefix + "b_dst",
                         output_model_binding_blinder_label(head_index, "dst"),
                         domains.c,
-                        {{output_dst_label(head_index, false), FieldElement::one()}});
-                    trace.external_evaluations[output_external_eval_name("proj", head_index, false)] =
-                        matrix_row_major_evaluation(y_prime, trace.challenges.at(output_challenge_name("y_proj_out", head_index, false)));
-                    trace.external_evaluations[output_external_eval_name("src", head_index, false)] =
-                        trace.polynomials.at(prefix + "E_src").evaluate(trace.challenges.at(output_challenge_name("y_src_out", head_index, false)));
+                        {{output_dst_label(head_index), FieldElement::one()}});
+                    trace.external_evaluations[output_external_eval_name("proj", head_index)] =
+                        matrix_row_major_evaluation(y_prime, trace.challenges.at(output_challenge_name("y_proj_out", head_index)));
+                    trace.external_evaluations[output_external_eval_name("src", head_index)] =
+                        trace.polynomials.at(prefix + "E_src").evaluate(trace.challenges.at(output_challenge_name("y_src_out", head_index)));
                     trace.external_evaluations[output_score_mask_eval_name(head_index, "src")] =
                         trace.polynomials.at(output_score_mask_label(head_index, "src"))
-                            .evaluate(trace.challenges.at(output_challenge_name("y_src_out", head_index, false)));
-                    trace.external_evaluations[output_external_eval_name("dst", head_index, false)] =
-                        trace.polynomials.at(prefix + "E_dst").evaluate(trace.challenges.at(output_challenge_name("y_dst_out", head_index, false)));
+                            .evaluate(trace.challenges.at(output_challenge_name("y_src_out", head_index)));
+                    trace.external_evaluations[output_external_eval_name("dst", head_index)] =
+                        trace.polynomials.at(prefix + "E_dst").evaluate(trace.challenges.at(output_challenge_name("y_dst_out", head_index)));
                     trace.external_evaluations[output_score_mask_eval_name(head_index, "dst")] =
                         trace.polynomials.at(output_score_mask_label(head_index, "dst"))
-                            .evaluate(trace.challenges.at(output_challenge_name("y_dst_out", head_index, false)));
-                    trace.external_evaluations[output_external_eval_name("star", head_index, false)] =
-                        trace.polynomials.at(prefix + "Y_star").evaluate(trace.challenges.at(output_challenge_name("y_out_star", head_index, false)));
+                            .evaluate(trace.challenges.at(output_challenge_name("y_dst_out", head_index)));
+                    trace.external_evaluations[output_external_eval_name("star", head_index)] =
+                        trace.polynomials.at(prefix + "Y_star").evaluate(trace.challenges.at(output_challenge_name("y_out_star", head_index)));
                     trace.external_evaluations[external_mask_eval_name(
-                        output_external_eval_name("star", head_index, false))] =
+                        output_external_eval_name("star", head_index))] =
                         trace.polynomials.at(external_mask_label(prefix + "Y_star"))
-                            .evaluate(trace.challenges.at(output_challenge_name("y_out_star", head_index, false)));
+                            .evaluate(trace.challenges.at(output_challenge_name("y_out_star", head_index)));
                 };
 
                 for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
@@ -7420,15 +7351,15 @@ namespace gatzk::protocol
                 }
                 for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
                 {
-                    const auto prefix = output_head_prefix(head_index, false) + "_";
-                    transcript.absorb_commitment(output_y_lin_label(head_index, false), trace.commitments.at(output_y_lin_label(head_index, false)).point);
-                    transcript.absorb_commitment(output_y_label(head_index, false), trace.commitments.at(output_y_label(head_index, false)).point);
+                    const auto prefix = output_head_prefix(head_index) + "_";
+                    transcript.absorb_commitment(output_y_lin_label(head_index), trace.commitments.at(output_y_lin_label(head_index)).point);
+                    transcript.absorb_commitment(output_y_label(head_index), trace.commitments.at(output_y_label(head_index)).point);
                     transcript.absorb_commitment(
-                        model_proof_local_label(output_bias_label(head_index, false)),
-                        trace.commitments.at(model_proof_local_label(output_bias_label(head_index, false))).point);
+                        model_proof_local_label(output_bias_label(head_index)),
+                        trace.commitments.at(model_proof_local_label(output_bias_label(head_index))).point);
                     transcript.absorb_commitment(
-                        model_reblind_witness_label(output_bias_label(head_index, false)),
-                        trace.commitments.at(model_reblind_witness_label(output_bias_label(head_index, false))).point);
+                        model_reblind_witness_label(output_bias_label(head_index)),
+                        trace.commitments.at(model_reblind_witness_label(output_bias_label(head_index))).point);
                     transcript.absorb_commitment(prefix + "Y_star", trace.commitments.at(prefix + "Y_star").point);
                     transcript.absorb_commitment(prefix + "Table_dst", trace.commitments.at(prefix + "Table_dst").point);
                     transcript.absorb_commitment(prefix + "Query_dst", trace.commitments.at(prefix + "Query_dst").point);
@@ -8093,7 +8024,7 @@ namespace gatzk::protocol
                 const auto output_powers = powers(trace.challenges.at("y_out"), output_flat_count);
                 for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
                 {
-                    const auto prefix = output_head_prefix(head_index, false) + "_";
+                    const auto prefix = output_head_prefix(head_index) + "_";
                     auto binding = build_binding_trace_from_folded_columns(
                         forward_artifacts->output_head_quantized[head_index].y_flat,
                         output_powers,
@@ -8139,9 +8070,9 @@ namespace gatzk::protocol
                     metrics);
                 for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
                 {
-                    trace.external_evaluations[output_external_eval_name("y_lin", head_index, false)] =
+                    trace.external_evaluations[output_external_eval_name("y_lin", head_index)] =
                         matrix_row_major_evaluation(per_head_y_lin_matrices[head_index], trace.challenges.at("y_out"));
-                    trace.external_evaluations[output_external_eval_name("y", head_index, false)] =
+                    trace.external_evaluations[output_external_eval_name("y", head_index)] =
                         matrix_row_major_evaluation(per_head_y_matrices[head_index], trace.challenges.at("y_out"));
                 }
                 trace.external_evaluations["mu_Y_lin"] = matrix_row_major_evaluation(y_lin_average, trace.challenges.at("y_out"));
@@ -8164,108 +8095,7 @@ namespace gatzk::protocol
                         metric_value(&RunMetrics::hidden_output_object_residual_ms) - output_initial_object_ms,
                     });
 
-            stage_start = Clock::now();
-            trace.challenges["alpha_quot"] = transcript.challenge("alpha_quot");
-            for (const auto &[label, point] :
-                 derive_domain_opening_challenges(context, transcript))
-                trace.challenges[label] = point;
-            add_metric(metrics != nullptr ? &metrics->trace_finalize_ms : nullptr, stage_start);
-
-            const auto canonical_commitment_order = dynamic_commitment_labels(context);
-            std::set<std::string> expected_commitments(
-                canonical_commitment_order.begin(),
-                canonical_commitment_order.end());
-            for (const auto &subproof : trace.pi_bind->subproofs)
-            {
-                for (const auto &reblind : subproof.model_reblinds)
-                {
-                    expected_commitments.insert(
-                        reblind.proof_local_commitment.name);
-                    expected_commitments.insert(
-                        reblind.blinder_commitment.name);
-                }
-                for (const auto *group : {
-                         &subproof.view_commitments,
-                         &subproof.view_logup_commitments,
-                         &subproof.aggregation_commitments,
-                         &subproof.basis_commitments,
-                         &subproof.crpc_commitments,
-                         &subproof.relation_commitments})
-                {
-                    for (const auto &[label, commitment] : *group)
-                    {
-                        if (label != commitment.name)
-                            throw std::runtime_error(
-                                "Pi_bind commitment key/name mismatch: " + label);
-                        expected_commitments.insert(label);
-                    }
-                }
-            }
-            for (std::size_t head = 0;
-                 head < context.model.output_layer.heads.size(); ++head)
-            {
-                for (const auto &label : {
-                         output_bias_view_label(head, "F1"),
-                         output_bias_view_label(head, "F2"),
-                         output_bias_view_label(
-                             head, "terminal_relation_virtual"),
-                         output_bias_basis_label(
-                             head, "relation_virtual")})
-                    expected_commitments.insert(label);
-            }
-            for (const auto &subproof : trace.pi_bind->subproofs)
-                for (const auto &aggregation :
-                     subproof.relation_meta.aggregation_relations)
-                    for (const auto *route : {
-                             &aggregation.source_route,
-                             &aggregation.target_route})
-                        expected_commitments.insert(
-                            route->relation_virtual_object);
-            if (trace.commitments.size() != expected_commitments.size())
-            {
-                std::ostringstream detail;
-                detail << "dynamic commitment set size diverged from ProofSchema"
-                       << " (actual=" << trace.commitments.size()
-                       << ", expected=" << expected_commitments.size()
-                       << ", unexpected=";
-                bool first = true;
-                for (const auto &[label, _] : trace.commitments)
-                {
-                    if (expected_commitments.contains(label)) continue;
-                    if (!first) detail << ',';
-                    detail << label;
-                    first = false;
-                }
-                detail << ')';
-                throw std::runtime_error(detail.str());
-            }
-            for (const auto &label : expected_commitments)
-            {
-                if (!trace.commitments.contains(label))
-                {
-                    throw std::runtime_error(
-                        "dynamic commitment is missing from ProofSchema: " + label);
-                }
-            }
-            trace.commitment_order = canonical_commitment_order;
-            const auto replayed_pre_quotient =
-                replay_challenges(context, trace.commitments, {}, &trace.public_metadata);
-            for (const auto &[label, value] : trace.challenges)
-            {
-                if (label == "alpha_quot" || !replayed_pre_quotient.contains(label))
-                {
-                    continue;
-                }
-                if (replayed_pre_quotient.at(label) != value)
-                {
-                    throw std::runtime_error(
-                        "trace challenge diverged from canonical verifier replay: "
-                        + label + " trace=" + value.to_string()
-                        + " replay="
-                        + replayed_pre_quotient.at(label).to_string());
-                }
-            }
-            trace.challenges["alpha_quot"] = replayed_pre_quotient.at("alpha_quot");
+            finalize_trace_registry(context, transcript, trace, metrics);
             if (metrics != nullptr)
             {
                 const auto total_trace_ms = elapsed_ms(trace_start, Clock::now());

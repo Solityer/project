@@ -35,6 +35,27 @@ namespace gatzk::protocol
         using crypto::Commitment;
         using Clock = std::chrono::steady_clock;
 
+        std::size_t formal_hidden_head_count(const ProtocolContext &context)
+        {
+            std::size_t count = 0;
+            for (const auto &layer : context.config.hidden_profile)
+            {
+                count += layer.head_count;
+            }
+            return count;
+        }
+
+        bool has_formal_public_architecture(const ProtocolContext &context)
+        {
+            return context.config.layer_count != 0
+                && context.config.layer_count
+                    == context.config.hidden_profile.size() + 1
+                && context.config.d_in_profile.size()
+                    == context.config.hidden_profile.size()
+                && formal_hidden_head_count(context) != 0
+                && context.config.K_out != 0;
+        }
+
         bool public_u64_column_matches(
             const ProtocolContext &context,
             const std::string &label,
@@ -131,10 +152,8 @@ namespace gatzk::protocol
             {
                 stream << '|' << name << '=' << commitment.point.to_string();
             }
-            for (const auto &[name, value] : proof.witness_scalars)
-            {
-                stream << '|' << name << '=' << value.to_string();
-            }
+            for (const auto &reference : proof.route_references)
+                stream << "|route-ref=" << reference.object_id;
             for (const auto &[name, value] : proof.external_evaluations)
             {
                 stream << '|' << name << '=' << value.to_string();
@@ -813,39 +832,6 @@ namespace gatzk::protocol
             RunMetrics *metrics_ = nullptr;
         };
 
-        class SharedVerifierQuotientCache
-        {
-        public:
-            bool lookup(const std::string &key, FieldElement *out)
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                if (const auto it = entries_.find(key); it != entries_.end())
-                {
-                    if (out != nullptr)
-                    {
-                        *out = it->second;
-                    }
-                    return true;
-                }
-                return false;
-            }
-
-            void store(const std::string &key, const FieldElement &value)
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                entries_.emplace(key, value);
-            }
-
-        private:
-            std::mutex mutex_;
-            std::unordered_map<std::string, FieldElement> entries_;
-        };
-
-        SharedVerifierQuotientCache &shared_verifier_quotient_cache()
-        {
-            static SharedVerifierQuotientCache cache;
-            return cache;
-        }
 
         struct BundleVerificationInput
         {
@@ -918,87 +904,6 @@ namespace gatzk::protocol
                 }
             }
             throw std::runtime_error("missing external evaluation: " + label);
-        }
-
-        FieldElement bias_fold(const ProtocolContext &context, const FieldElement &y_out)
-        {
-            FieldElement out = FieldElement::zero();
-            FieldElement power = FieldElement::one();
-            for (std::size_t i = 0; i < context.local.num_nodes; ++i)
-            {
-                for (std::size_t j = 0; j < context.model.b.size(); ++j)
-                {
-                    out += context.model.b[j] * power;
-                    power *= y_out;
-                }
-            }
-            return out;
-        }
-
-        FieldElement bias_fold_vector(
-            const std::vector<double> &bias,
-            std::size_t node_count,
-            const FieldElement &y_out)
-        {
-            std::vector<FieldElement> quantized_bias;
-            quantized_bias.reserve(bias.size());
-            for (const auto value : bias)
-            {
-                quantized_bias.push_back(FieldElement::from_signed(static_cast<std::int64_t>(
-                    value >= 0.0 ? value * 16.0 + 0.5 : value * 16.0 - 0.5)));
-            }
-            const auto total_iter = node_count * quantized_bias.size();
-            const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-            if (total_iter >= (1ULL << 18) && cpu_count > 1)
-            {
-                const auto step = quantized_bias.size();
-                const auto task_count = std::min<std::size_t>(cpu_count, (node_count + 255) / 256);
-                const auto chunk = (node_count + task_count - 1) / task_count;
-                std::vector<std::future<FieldElement>> futures;
-                futures.reserve(task_count);
-                for (std::size_t t = 0; t < task_count; ++t)
-                {
-                    const auto begin = t * chunk;
-                    const auto end = std::min(node_count, begin + chunk);
-                    if (begin >= end)
-                    {
-                        break;
-                    }
-                    futures.push_back(std::async(
-                        std::launch::async,
-                        [&, begin, end]()
-                        {
-                            FieldElement partial = FieldElement::zero();
-                            FieldElement power = y_out.pow(static_cast<std::uint64_t>(begin * step));
-                            for (std::size_t i = begin; i < end; ++i)
-                            {
-                                for (const auto &quantized : quantized_bias)
-                                {
-                                    partial += quantized * power;
-                                    power *= y_out;
-                                }
-                            }
-                            return partial;
-                        }));
-                }
-                FieldElement out = FieldElement::zero();
-                for (auto &f : futures)
-                {
-                    out += f.get();
-                }
-                return out;
-            }
-            FieldElement out = FieldElement::zero();
-            FieldElement power = FieldElement::one();
-            for (std::size_t i = 0; i < node_count; ++i)
-            {
-                for (const auto &quantized : quantized_bias)
-                {
-                    out += quantized * power;
-                    power *= y_out;
-                }
-            }
-            return out;
         }
 
         std::unordered_map<std::string, Commitment> to_map(const std::vector<std::pair<std::string, Commitment>> &entries)
@@ -1124,6 +1029,8 @@ namespace gatzk::protocol
                 && lhs.quotient_relations == rhs.quotient_relations
                 && lhs.canonical_matrices == rhs.canonical_matrices
                 && lhs.aggregation_relations == rhs.aggregation_relations
+                && lhs.route_terminal_relations
+                    == rhs.route_terminal_relations
                 && indexed_equal
                 && lhs.coefficient_basis_relations
                     == rhs.coefficient_basis_relations
@@ -1154,7 +1061,7 @@ namespace gatzk::protocol
                 if (subproof.relation_meta.object_kind == "hidden")
                 {
                     const auto layer = subproof.relation_meta.layer_id.value() - 1;
-                    const auto width = context.model.hidden_layers.at(layer).shape.head_dim;
+                    const auto width = context.config.hidden_profile.at(layer).head_dim;
                     for (std::size_t column = 0; column < width; ++column)
                         expected_models.push_back({
                             hidden_weight_column_label(global_hidden_head, column),
@@ -1170,9 +1077,9 @@ namespace gatzk::protocol
                         expected_models.push_back({
                             output_weight_column_label(head, column),
                             context.domains.cat->name});
-                    expected_models.push_back({output_src_label(head, false), context.domains.c->name});
-                    expected_models.push_back({output_dst_label(head, false), context.domains.c->name});
-                    expected_models.push_back({output_bias_label(head, false), context.domains.c->name});
+                    expected_models.push_back({output_src_label(head), context.domains.c->name});
+                    expected_models.push_back({output_dst_label(head), context.domains.c->name});
+                    expected_models.push_back({output_bias_label(head), context.domains.c->name});
                 }
                 if (subproof.model_reblinds.size() != expected_models.size()) return false;
                 for (std::size_t model_index = 0;
@@ -1244,6 +1151,17 @@ namespace gatzk::protocol
                 std::vector<std::tuple<
                     std::string, std::string, std::size_t,
                     PayloadValueKind>> expected_aggregation_relation_evaluations;
+                std::vector<std::string> expected_route_commitments;
+                for (const auto &route :
+                     subproof.relation_meta.route_terminal_relations)
+                {
+                    expected_route_commitments.push_back(
+                        route.shifted_accumulator_object);
+                    expected_aggregation_relation_evaluations.push_back({
+                        route.shifted_accumulator_object + ":u_rel",
+                        "relation", 1,
+                        PayloadValueKind::MaskedPrivateValue});
+                }
                 std::vector<std::tuple<
                     std::string, std::string, std::size_t,
                     PayloadValueKind>> expected_aggregation_domain_evaluations;
@@ -1334,7 +1252,7 @@ namespace gatzk::protocol
                         expected_evaluations = {
                             {output_bias_view_label(head, "m_can") + ":public_bind",
                              "relation", 1, PayloadValueKind::PublicValue},
-                            {model_proof_local_label(output_bias_label(head, false)),
+                            {model_proof_local_label(output_bias_label(head)),
                              "C", 2, PayloadValueKind::MaskedPrivateValue},
                             {output_bias_view_label(head, "Table_can"),
                              "C", 2, PayloadValueKind::MaskedPrivateValue},
@@ -1467,9 +1385,21 @@ namespace gatzk::protocol
                             [](const auto &entry, const std::string &expected)
                             { return entry.first == expected; })
                         || subproof.relation_commitments.size()
-                            != basis.chunks.size() + (same_point ? 0 : 1)
+                            != expected_route_commitments.size()
+                                + basis.chunks.size()
+                                + (same_point ? 0 : 1)
+                        || !std::equal(
+                            subproof.relation_commitments.begin(),
+                            subproof.relation_commitments.begin()
+                                + static_cast<std::ptrdiff_t>(
+                                    expected_route_commitments.size()),
+                            expected_route_commitments.begin(),
+                            [](const auto &entry,
+                               const std::string &expected)
+                            { return entry.first == expected; })
                         || (!same_point
-                            && subproof.relation_commitments.front().first
+                            && subproof.relation_commitments[
+                                   expected_route_commitments.size()].first
                                 != output_bias_view_label(head, "R_shifted"))
                         || !std::equal(
                             subproof.relation_commitments.end()
@@ -1558,6 +1488,20 @@ namespace gatzk::protocol
                             == expected_openings.end())
                             expected_openings.push_back(std::move(value));
                     };
+                    for (const auto &route :
+                         subproof.relation_meta.route_terminal_relations)
+                    {
+                        const auto y_rel = proof.challenges.at(
+                            route.challenge_label);
+                        append_unique_opening(
+                            "W_ext:" + y_rel.to_string());
+                        append_unique_opening(
+                            "W_ext:"
+                            + (y_rel + route.terminal_delta).to_string());
+                        append_unique_opening(
+                            "W_ext:"
+                            + route.node_terminal_point.to_string());
+                    }
                     for (const auto &aggregation :
                          subproof.relation_meta.aggregation_relations)
                     {
@@ -1617,7 +1561,14 @@ namespace gatzk::protocol
                     || !aggregation_commitments_match
                     || !subproof.basis_commitments.empty()
                     || !subproof.crpc_commitments.empty()
-                    || !subproof.relation_commitments.empty()
+                    || subproof.relation_commitments.size()
+                        != expected_route_commitments.size()
+                    || !std::equal(
+                        subproof.relation_commitments.begin(),
+                        subproof.relation_commitments.end(),
+                        expected_route_commitments.begin(),
+                        [](const auto &entry, const std::string &expected)
+                        { return entry.first == expected; })
                     )
                     {
                         return false;
@@ -1686,7 +1637,8 @@ namespace gatzk::protocol
                 return out;
             };
 
-            for (std::size_t head = 0; head < context.model.hidden_heads.size(); ++head)
+            for (std::size_t head = 0;
+                 head < formal_hidden_head_count(context); ++head)
             {
                 std::vector<std::string> weight_columns;
                 for (std::size_t column = 0;; ++column)
@@ -1714,7 +1666,7 @@ namespace gatzk::protocol
                         hidden_model_binding_blinder_label(head, "dst"), context.domains.d->name))
                     return false;
             }
-            for (std::size_t head = 0; head < context.model.output_layer.heads.size(); ++head)
+            for (std::size_t head = 0; head < context.config.K_out; ++head)
             {
                 std::vector<std::string> weight_columns;
                 weight_columns.reserve(context.local.num_classes);
@@ -1723,17 +1675,17 @@ namespace gatzk::protocol
                     weight_columns.push_back(output_weight_column_label(head, column));
                 }
                 const auto challenge_it = challenges.find(
-                    output_challenge_name("y_proj_out", head, false));
+                    output_challenge_name("y_proj_out", head));
                 if (challenge_it == challenges.end()) return false;
                 const auto anchor = folded_anchor(
                     "folded_output_weight_proof_" + std::to_string(head),
                     weight_columns,
                     challenge_it->second);
                 const auto src_anchor = required_dynamic(
-                    model_proof_local_label(output_src_label(head, false)));
+                    model_proof_local_label(output_src_label(head)));
                 const auto dst_anchor = required_dynamic(
-                    model_proof_local_label(output_dst_label(head, false)));
-                const auto prefix = output_head_prefix(head, false) + "_";
+                    model_proof_local_label(output_dst_label(head)));
+                const auto prefix = output_head_prefix(head) + "_";
                 if (!anchor.has_value() || src_anchor == nullptr || dst_anchor == nullptr
                     || !verify_relation(
                         prefix + "b_proj", *anchor,
@@ -1808,7 +1760,8 @@ namespace gatzk::protocol
         std::vector<ExternalEvalSpec> multihead_external_specs(const ProtocolContext &context)
         {
             std::vector<ExternalEvalSpec> specs;
-            for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index)
+            for (std::size_t head_index = 0;
+                 head_index < formal_hidden_head_count(context); ++head_index)
             {
                 const auto suffix = "h" + std::to_string(head_index);
                 const auto prefix = "P_h" + std::to_string(head_index) + "_";
@@ -1839,9 +1792,11 @@ namespace gatzk::protocol
                     external_mask_label(prefix + "H_agg_star"),
                     "y_agg_h" + std::to_string(head_index)});
             }
-            for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
+            for (std::size_t layer_index = 0;
+                 layer_index < context.config.hidden_profile.size(); ++layer_index)
             {
-                const bool is_final_layer = layer_index + 1 == context.model.hidden_layers.size();
+                const bool is_final_layer =
+                    layer_index + 1 == context.config.hidden_profile.size();
                 specs.push_back({
                     is_final_layer ? "mu_cat" : "mu_cat_l" + std::to_string(layer_index),
                     hidden_layer_concat_star_label(layer_index, is_final_layer),
@@ -1857,53 +1812,49 @@ namespace gatzk::protocol
                     hidden_concat_y_name(layer_index, is_final_layer),
                 });
             }
-            const bool legacy_single_output = false;
-            for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
+            for (std::size_t head_index = 0;
+                 head_index < context.config.K_out; ++head_index)
             {
-                const auto prefix = output_head_prefix(head_index, legacy_single_output);
+                const auto prefix = output_head_prefix(head_index);
                 specs.push_back({
-                    legacy_single_output ? "mu_out_proj" : output_external_eval_name("proj", head_index, false),
+                    output_external_eval_name("proj", head_index),
                     prefix + "_Y_prime",
-                    output_challenge_name("y_proj_out", head_index, legacy_single_output),
+                    output_challenge_name("y_proj_out", head_index),
                 });
                 specs.push_back({
-                    legacy_single_output ? "mu_out_src" : output_external_eval_name("src", head_index, false),
+                    output_external_eval_name("src", head_index),
                     prefix + "_E_src",
-                    output_challenge_name("y_src_out", head_index, legacy_single_output),
+                    output_challenge_name("y_src_out", head_index),
                 });
                 specs.push_back({
                     output_score_mask_eval_name(head_index, "src"),
                     output_score_mask_label(head_index, "src"),
-                    output_challenge_name("y_src_out", head_index, legacy_single_output),
+                    output_challenge_name("y_src_out", head_index),
                 });
                 specs.push_back({
-                    legacy_single_output ? "mu_out_dst" : output_external_eval_name("dst", head_index, false),
+                    output_external_eval_name("dst", head_index),
                     prefix + "_E_dst",
-                    output_challenge_name("y_dst_out", head_index, legacy_single_output),
+                    output_challenge_name("y_dst_out", head_index),
                 });
                 specs.push_back({
                     output_score_mask_eval_name(head_index, "dst"),
                     output_score_mask_label(head_index, "dst"),
-                    output_challenge_name("y_dst_out", head_index, legacy_single_output),
+                    output_challenge_name("y_dst_out", head_index),
                 });
                 specs.push_back({
-                    legacy_single_output ? "mu_out_star" : output_external_eval_name("star", head_index, false),
+                    output_external_eval_name("star", head_index),
                     prefix + "_Y_star",
-                    output_challenge_name("y_out_star", head_index, legacy_single_output),
+                    output_challenge_name("y_out_star", head_index),
                 });
                 const auto output_star_eval_name =
-                    legacy_single_output ? std::string("mu_out_star")
-                                         : output_external_eval_name("star", head_index, false);
+                    output_external_eval_name("star", head_index);
                 specs.push_back({
                     external_mask_eval_name(output_star_eval_name),
                     external_mask_label(prefix + "_Y_star"),
-                    output_challenge_name("y_out_star", head_index, legacy_single_output),
+                    output_challenge_name("y_out_star", head_index),
                 });
-                if (!legacy_single_output)
-                {
-                    specs.push_back({output_external_eval_name("y_lin", head_index, false), output_y_lin_label(head_index, false), "y_out"});
-                    specs.push_back({output_external_eval_name("y", head_index, false), output_y_label(head_index, false), "y_out"});
-                }
+                specs.push_back({output_external_eval_name("y_lin", head_index), output_y_lin_label(head_index), "y_out"});
+                specs.push_back({output_external_eval_name("y", head_index), output_y_label(head_index), "y_out"});
             }
             specs.push_back({"mu_Y_lin", "P_Y_lin", "y_out"});
             specs.push_back({"mu_out", "P_Y", "y_out"});
@@ -2014,22 +1965,9 @@ namespace gatzk::protocol
                 return fail("external evaluation payload kind count mismatch");
             }
             std::unordered_map<std::string, std::string> external_sources;
-            if (context.model.has_real_multihead)
+            for (const auto &spec : multihead_external_specs(context))
             {
-                for (const auto &spec : multihead_external_specs(context))
-                {
-                    external_sources.emplace(spec.proof_name, spec.label);
-                }
-            }
-            else
-            {
-                external_sources.emplace("mu_proj", "P_H_prime");
-                external_sources.emplace("mu_src", "P_E_src");
-                external_sources.emplace("mu_dst", "P_E_dst");
-                external_sources.emplace("mu_star", "P_H_star");
-                external_sources.emplace("mu_agg", "P_H_agg_star");
-                external_sources.emplace("mu_Y_lin", "P_Y_lin");
-                external_sources.emplace("mu_out", "P_Y");
+                external_sources.emplace(spec.proof_name, spec.label);
             }
             for (std::size_t i = 0; i < proof.external_evaluations.size(); ++i)
             {
@@ -2042,18 +1980,6 @@ namespace gatzk::protocol
                 if (!check(it->second, proof.external_evaluation_kinds[i]))
                 {
                     return fail("external evaluation payload kind mismatch: " + name);
-                }
-            }
-            if (proof.witness_scalar_kinds.size() != proof.witness_scalars.size())
-            {
-                return fail("witness scalar payload kind count mismatch");
-            }
-            for (std::size_t i = 0; i < proof.witness_scalars.size(); ++i)
-            {
-                if (proof.witness_scalar_kinds[i] == PayloadValueKind::PublicValue)
-                {
-                    ++count;
-                    return fail("private witness scalar exposed as public: " + proof.witness_scalars[i].first);
                 }
             }
             if (private_plain_count != nullptr)
@@ -2094,7 +2020,7 @@ namespace gatzk::protocol
             return false;
         };
         const auto metadata_start = Clock::now();
-        if (!context.model.has_real_multihead)
+        if (!has_formal_public_architecture(context))
         {
             return fail("removed_single_output_compatibility_protocol");
         }
@@ -2152,7 +2078,6 @@ namespace gatzk::protocol
         {
             metrics->verify_metadata_ms += elapsed_ms(metadata_start, Clock::now());
         }
-        if (context.model.has_real_multihead)
         {
             const auto transcript_start = Clock::now();
             if (proof.dynamic_commitments.size() != dynamic_commitment_labels(context).size())
@@ -2179,7 +2104,6 @@ namespace gatzk::protocol
             }
             const auto top_level_dynamic_commitments = to_map(proof.dynamic_commitments);
             const auto quotient_commitments = to_map(proof.quotient_commitments);
-            const auto witness_scalars = to_field_map(proof.witness_scalars);
             const auto external_evaluations = to_field_map(proof.external_evaluations);
             std::unordered_map<std::string, Commitment> dynamic_commitments;
             if (!validate_pi_bind_model_reblinds(
@@ -2197,7 +2121,7 @@ namespace gatzk::protocol
                 return fail("challenge_replay_mismatch");
             }
             for (std::size_t head = 0;
-                 head < context.model.output_layer.heads.size();
+                 head < context.config.K_out;
                  ++head)
             {
                 const auto relation_id =
@@ -2223,6 +2147,20 @@ namespace gatzk::protocol
                         == expected_references.end())
                         expected_references.push_back(std::move(reference));
                 };
+                for (const auto &route :
+                     subproof_it->relation_meta.route_terminal_relations)
+                {
+                    const auto route_y = challenges.at(
+                        route.challenge_label);
+                    append_unique_reference(
+                        "W_ext:" + route_y.to_string());
+                    append_unique_reference(
+                        "W_ext:"
+                        + (route_y + route.terminal_delta).to_string());
+                    append_unique_reference(
+                        "W_ext:"
+                        + route.node_terminal_point.to_string());
+                }
                 for (const auto &aggregation :
                      subproof_it->relation_meta.aggregation_relations)
                 {
@@ -2307,9 +2245,9 @@ namespace gatzk::protocol
             {
                 metrics->verify_transcript_ms += elapsed_ms(transcript_start, Clock::now());
             }
-            if (!proof.witness_scalars.empty()
-                || !proof.witness_scalar_kinds.empty())
-                return fail("unexpected_route_scalar_payload");
+            if (proof.route_references
+                    != route_opening_references(context, challenges))
+                return fail("route_reference_registry");
             for (const auto &spec : multihead_external_specs(context))
             {
                 if (!external_evaluations.contains(spec.proof_name))
@@ -2471,7 +2409,7 @@ namespace gatzk::protocol
                     }
                     else if (spec.quotient_name == "t_edge")
                     {
-                        expected_t = evaluate_t_edge(context, challenges, witness_scalars, external_evaluations, eval, challenges.at(spec.z_name));
+                        expected_t = evaluate_t_edge(context, challenges, external_evaluations, eval, challenges.at(spec.z_name));
                     }
                     else if (spec.quotient_name == "t_in")
                     {
@@ -2491,7 +2429,7 @@ namespace gatzk::protocol
                     }
                     else if (spec.quotient_name == "t_N")
                     {
-                        expected_t = evaluate_t_n(context, challenges, witness_scalars, eval, challenges.at(spec.z_name));
+                        expected_t = evaluate_t_n(context, challenges, eval, challenges.at(spec.z_name));
                     }
                     else
                     {
@@ -2658,7 +2596,7 @@ namespace gatzk::protocol
                 }
             }
             for (std::size_t head_index = 0;
-                 head_index < context.model.output_layer.heads.size();
+                 head_index < context.config.K_out;
                  ++head_index)
             {
                 const auto relation_id =
@@ -2801,9 +2739,9 @@ namespace gatzk::protocol
                     || public_m_it->values.size() != 1
                     || public_m_it->kind != PayloadValueKind::PublicValue
                     || public_poly_it == context.public_commitments.end()
-                    || public_poly_it->second.opening_polynomial == nullptr
                     || public_m_it->values.front()
-                        != public_poly_it->second.opening_polynomial->evaluate(y_rel))
+                        != eval_memo.eval_named(
+                            "P_BiasMultiplicity_C", y_rel))
                     return fail("invalid_public_bias_multiplicity_binding");
                 external_commitments.push_back({
                     dynamic_commitments.at(
@@ -2812,7 +2750,7 @@ namespace gatzk::protocol
                 external_points.push_back(y_rel);
             }
             for (std::size_t head_index = 0;
-                 head_index < context.model.output_layer.heads.size();
+                 head_index < context.config.K_out;
                  ++head_index)
             {
                 const auto relation_id =
@@ -2928,8 +2866,6 @@ namespace gatzk::protocol
             }
             return true;
         }
-        return fail("removed_single_output_compatibility_protocol");
-        return true;
     }
 
 } // namespace gatzk::protocol

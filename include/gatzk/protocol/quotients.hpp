@@ -51,7 +51,6 @@ algebra::FieldElement evaluate_t_fh(
 algebra::FieldElement evaluate_t_edge(
     const ProtocolContext& context,
     const std::map<std::string, algebra::FieldElement>& challenges,
-    const std::map<std::string, algebra::FieldElement>& witness_scalars,
     const std::map<std::string, algebra::FieldElement>& external_evaluations,
     const EvalFn& eval,
     const algebra::FieldElement& z,
@@ -62,7 +61,6 @@ algebra::FieldElement evaluate_t_edge(
 algebra::FieldElement evaluate_t_n(
     const ProtocolContext& context,
     const std::map<std::string, algebra::FieldElement>& challenges,
-    const std::map<std::string, algebra::FieldElement>& witness_scalars,
     const EvalFn& eval,
     const algebra::FieldElement& z);
 

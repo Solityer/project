@@ -46,11 +46,13 @@ set(GATZK_SOURCES
     src/model/gat.cpp
     src/protocol/lookup.cpp
     src/protocol/challenges.cpp
+    src/protocol/artifact_export.cpp
     src/protocol/prover.cpp
     src/protocol/proof_codec.cpp
     src/protocol/psq.cpp
     src/protocol/quotients.cpp
     src/protocol/schema.cpp
+    src/protocol/schema_labels.cpp
     src/protocol/trace.cpp
     src/protocol/verifier.cpp
     src/protocol/zkmap.cpp

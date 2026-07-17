@@ -74,15 +74,6 @@ namespace gatzk::protocol
             }
         }
 
-        std::string logup_cache_key(
-            const std::string &cache_key,
-            std::size_t table_size,
-            std::size_t query_size,
-            std::size_t active_count,
-            const algebra::FieldElement &beta)
-        {
-            return cache_key + ":" + std::to_string(table_size) + ":" + std::to_string(query_size) + ":" + std::to_string(active_count) + ":" + beta.to_string();
-        }
 
     }
 

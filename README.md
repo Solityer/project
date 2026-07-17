@@ -1,116 +1,110 @@
 # zkGAT Secure Main Experiment
 
-This repository is being brought into conformance with the secure zkGAT protocol for full-graph node classification. The target main-path profile is fixed to:
+本仓库实现完整图节点分类的正式 zkGAT 协议。协议与执行约束以只读文件
+`GAT-ZKML-多层多头.md` 和 `PROJECT_CONTEXT_AND_EXECUTION_CONSTRAINTS.md`
+为准；`comparison/` 不属于主实验构建、测试或运行依赖。
 
-- `protocol_name = zkgat`
-- `proof_task = node_classification_full_gat`
-- `privacy_policy = model_and_trace_hidden`
-- `input_privacy = public_graph_public_features`
-- `output_mode = public_logits`
-- `opening_mode = point_grouped_batch_opening`
-- `binding_mode = zk_subproof_for_crpc`
-- `srs_type = trusted_srs`
+## 当前状态（2026-07-17）
 
-The intended public input boundary is public graph structure and public node features. Model parameters, intermediate trace values, attention scores, softmax weights, lookup witness, route witness, PSQ state, folding vectors, private polynomial evaluations, and blinding randomness are private witness material. Final logits are public outputs.
+**协议实现完成，跨后端验收待完成。** 当前 proof schema、transcript、proof
+wire format、parser 与 verifier 语义处于候选冻结状态。此表述不代表第一阶段
+已经通过，也不授权生成论文正式结果。
 
-## Current implementation status (2026-07-16)
+最新 Cora CPU 完整安全验收由项目负责人调整调度并人工终止：
 
-Protocol-correction phase is **not complete**, so the code is not yet eligible for paper-result generation or performance claims.
+- 状态：`ABORTED_BY_USER_FOR_SCHEDULE`，不得解释为 `PASS` 或 `FAIL`；
+- 命令：`/usr/bin/time -v env GATZK_DEBUG_VERIFY=1 GATZK_SKIP_LARGE_MSM_TESTS=1 GATZK_RUN_FULL_SECURITY_TESTS=1 ./build/gatzk_tests`；
+- 终止时 wall time `3:21:22`，累计 CPU time `55:48:37.32`；
+- RSS `35,118,756 KiB`，峰值 RSS `35,640,900 KiB`，线程数 `22`，swap `0`；
+- 未完成阶段：正式 proof 构造尚未返回，direct verify、strict parser 往返、verifier-only 与篡改拒绝尚未开始；
+- 诊断记录：`runs/diagnostics/cora_cpu_security_20260717T133640+0800.aborted.md`。
 
-What has been revalidated from the current source:
+本轮没有写入正式实验结果。`artifacts/srs/cora_formal_srs_v1` 已完整保留，
+degree bound 为 `16777215`，绑定的 protocol schema id 为
+`e834d4d301c8ff94921cfc90b2fe00ba35896270ba3bf8beaf13417f79f77cdc`。
 
-- the lightweight CPU regression suite passes, including KZG opening, compact/padded evaluation, MSM equivalence, SRS mismatch, metadata/schema, and public multi-graph boundary checks;
-- public batch boundaries are now validated (`node_ptr`, `edge_ptr`, graph-local node/edge ownership, graph-local edges, destination ordering, unique node IDs, and nonzero indegree);
-- a representative real PPI batch made from two complete source graphs passes the boundary validator without cropping nodes or intra-graph edges;
-- batch-aware graph/group selectors and public graph IDs are committed to the transcript;
-- proof-specific trace, lookup, quotient, challenge, and verifier-result reuse has been disabled on the fresh-proof path;
-- a separate transcript-derived KZG opening binds the complete public-logit vector to `P_Y`;
-- only final `P_Y` is classified as `PublicOutput`; pre-bias and per-output-head logits remain private payloads;
-- the strict wire-v2 serializer/parser covers all nine tagged proof blocks, rejects non-canonical/trailing data, and computes `proof_size_bytes` from the exact serialized byte vector;
-- the protocol compiler emits authenticated ProofSchema/ObservationLedger/RandomIdentityLedger/SecurityBudgetLedger templates; the current instance artifact includes the complete length-delimited `RelationMeta` registry and a canonical typed dependency DAG, enforces that every private schema object is exactly one independent blinder owner or one derived target, and enumerates the active feature, hidden, output, LogUp, SignedRoundDiv, quotient, public-output, and point-group random checks; all `RelationMeta` identity/source/target/domain/length/quotient fields enter the transcript, and the compiler has a strict semantic/gap/tail selector plus fixed edge-chunk layout constructor;
-- the output-bias `Com_basis` path now materializes the registered coefficient tail, fixed edge chunks, verifier-local Gamma powers, one accumulator and fixed terminal per chunk, Taylor-shifted basis-link commitments, strict wire/parser fields, global point-group openings, and verifier equations; the `unit_test_srs_v21_toy` CPU and CUDA-hotspot paths both complete generation/load/prove/parse/verify and tamper rejection (`212749` CPU / `212748` GPU proof bytes in the latest cold runs);
-- `unit_test_srs_v15` uses manifest v7, compiler artifact v3, the strict maximum-instance-envelope v2 (`N_total`, concat width, range bits, coefficient-object length and object-family count included), and has passed generation, loading, proof/verification self-tests, SRS/manifest/domain tamper rejection, obsolete-v14 rejection, and the real PPI representative-batch boundary regression;
-- requested CUDA algebra kernels now fail closed instead of silently falling back to CPU.
+## 正式协议边界
 
-Both the CPU and CUDA builds currently compile and pass the lightweight regression suite. The small trusted-SRS formal proof passes on both backends, and the real two-graph PPI boundary regression passes. This remains development evidence only; the blocked full Cora proof has not passed on either backend.
+- 公开输入是图结构和节点特征；最终 logits 是公开输出。
+- 模型参数、PK、trace、attention/softmax、lookup、route、PSQ、folding、私有多项式求值和 blinding randomness 均不是 verifier 输入。
+- route terminal 已由 proof 内 `S_route` commitment/reference、正式 quotient identity、点群 opening 与 verifier 方程闭环；旧裸标量通道已删除。
+- strict parser 只接受 canonical schema/registry/order/length；proof 往返不携带 witness polynomial、PK 或私有模型。
+- verifier-only 路径只消费公开上下文、VK、proof 和公开 metadata，不读取 prover 私有状态。
+- 旧单输出协议仅保留 fail-closed 拒绝门，不存在兼容接受路径。
+- `proof_size_bytes` 是 strict canonical wire bytes 的精确长度，不包含 SRS、缓存、日志、checkpoint 或数据集。
 
-The full Cora security regression currently stops at SRS loading: all locally present large SRS directories use superseded, rejected manifest formats, while the current v7 compiler/manifest rules have only been exercised with the small trusted test SRS. A new formal large SRS must not be generated until the remaining protocol-compiler and `Pi_bind` rules are frozen.
+## 代码结构与执行后端
 
-The following protocol requirements are still open and block phase completion:
+主要模块边界如下：
 
-- completion of the canonical symbolic ObservationLedger RREF/image-inclusion certificates and exact `BadCRS_obs` factor accounting for the full derived dependency DAG;
-- expansion of the now-closed output-bias `Com_basis` machinery to every model and dynamic matrix relation, including canonical node-domain columns, row-major indexed views, coefficient tails, per-chunk basis links, CRPC identities, and aggregation bindings; the current proof-local model reblinding and output-bias relation remain only a partial closure;
-- expansion of the maximum compiler artifact/envelope to the complete maximum ProofSchema and all three maximum ledgers before generating the formal large SRS;
-- verifier-only model/static verification-key separation and complete leakage/tamper coverage;
-- successful final Cora CPU/CUDA and representative real PPI-batch regressions.
+- `src/protocol/schema.cpp`：schema/ledger/关系注册；标签构造已拆到 `schema_labels.cpp`；
+- `src/protocol/trace.cpp`：正式 witness、lookup/route/PSQ/zkMaP 组装；transcript/schema 收尾核对为独立内部阶段；
+- `src/protocol/prover.cpp`：quotient、opening 与 proof 组装；运行工件导出已拆到 `artifact_export.cpp`；
+- `src/protocol/proof_codec.cpp`：strict wire serializer/parser；
+- `src/protocol/verifier.cpp`：verifier-only 验证；
+- `src/algebra/vector_ops.cpp` 与 CUDA translation units：唯一 CPU/CUDA 执行路由边界。
 
-Consequently, structure governance and performance optimization have not started. Existing run artifacts and performance reports are historical only and are not evidence for the current source.
+`--compute-backend cpu` 与 `--compute-backend cuda_hotspots` 共享同一协议、schema、
+transcript 和 verifier 接受条件。CUDA 当前仅覆盖 barycentric weights、packed weighted
+evaluation 和 size-aware lookup histogram；KZG MSM、pairing、小域及未迁移阶段明确记录为
+CPU fallback。请求 CUDA 后端而运行时不可用时会 fail closed。
 
-## Build
+第二阶段只进行了结构移动、引用确认后的死代码/重复路径清理和构建项清理。CPU/CUDA
+主程序及测试二进制均已编译链接；阶段内未运行 Cora/PPI 正式 proof。toy 数据、toy
+配置、toy 入口及旧开发/中止/重复 SRS 已清理；最小 `unit_security` 安全夹具及其 SRS
+继续保留到最终跨后端验收。
+
+## 构建
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
+cmake --build build --target gatzk_run gatzk_tests -j
 
-cmake -S . -B build_cuda -DCMAKE_BUILD_TYPE=Release -DGATZK_ENABLE_CUDA_BACKEND=ON
-cmake --build build_cuda -j
+cmake -S . -B build_cuda -DCMAKE_BUILD_TYPE=Release \
+  -DGATZK_ENABLE_CUDA_BACKEND=ON
+cmake --build build_cuda --target gatzk_run gatzk_tests -j
 ```
 
-## Security model / threat model
+## 配置与 SRS
 
-The formal threat model is in `docs/security/threat_model.md`. The matching claims and limitations are in `docs/security/security_claims.md`.
+正式配置使用数据集专属 SRS id，不再依赖旧共享主 SRS：
 
-The verifier already applies several metadata, ordering, commitment, opening, public-output, and transcript checks, but the complete security claim is pending the open protocol items listed above. A payload tagged `MaskedPrivateValue` is not considered masked unless the committed polynomial is actually blinded.
+- `configs/cora_secure.cfg` → `cora_formal_srs_v1`（已生成并保留）；
+- `configs/ppi_representative_secure.cfg` → `ppi_representative_srs_v1`（最终验收前按需生成）；
+- `configs/ppi_secure.cfg` → `ppi_formal_srs_v1`；
+- `configs/citeseer_secure.cfg` → `citeseer_formal_srs_v1`；
+- `configs/pubmed_secure.cfg` → `pubmed_formal_srs_v1`；
+- `configs/ogbn_arxiv_secure.cfg` → `ogbn_arxiv_formal_srs_v1`。
 
-The trusted setup assumption is explicit. The old large SRS directories are not accepted by the current loader and are not evidence for the current protocol. The proof size excludes SRS files, SRS manifest files, local caches, raw witness, checkpoint files, dataset files, logs, and run manifest attachments.
+当前调度不生成 PPI 全量、Citeseer、Pubmed 或 ogbn-arxiv 大型 SRS，也不得运行五个
+数据集 × CPU/GPU 的十组正式实验。对应 envelope compiler artifact 可保留，但不是
+SRS 或正式实验结果。
 
-## Secure configs
+## 验证顺序
 
-The five intended full-dataset configs are present, but full formal runs are not authorized during protocol development:
+第三阶段先运行一次 Cora GPU 端到端验证，同时建立优化前基线。只保留具有稳定端到端
+收益且不改变协议语义的优化。最终统一验收包含：
 
-- `configs/cora_secure.cfg`
-- `configs/citeseer_secure.cfg`
-- `configs/pubmed_secure.cfg`
-- `configs/ppi_secure.cfg`
-- `configs/ogbn_arxiv_secure.cfg`
+1. Cora CPU 最终回归；
+2. Cora GPU 最终回归；
+3. PPI 代表性真实多图 CPU/GPU；
+4. strict parser、verifier-only 与必要篡改拒绝回归。
 
-Each config points to the same SRS manifest. `allow_synthetic_model=true` is not used in paper-result configs. The presence of secure-looking metadata does not establish protocol conformance.
+上述跨后端验收全部完成前，不得宣称第一阶段或三个阶段全部通过。
 
-## Development execution boundary
-
-During protocol correction, end-to-end work is limited to Cora and a representative real PPI batch. Do not run full formal end-to-end jobs for the other datasets, do not run the full PPI formal experiment, and do not generate or overwrite the ten CPU/GPU paper-result runs. Those runs require explicit project-owner authorization after all protocol, structure, performance, and final-review gates pass.
-
-The CUDA path is currently a hybrid implementation: only selected field-evaluation and histogram hotspots have CUDA kernels; witness construction, most commitments/MSMs, quotient work, KZG openings, transcript work, and verification remain CPU-side. It must not be described as a full-GPU proof path. A requested CUDA kernel failure is fatal rather than a silent CPU fallback.
-
-## Export paper results
-
-```bash
-python3 scripts/export_paper_secure.py \
-  --cpu cora=runs/cora_secure/warm \
-  --cpu citeseer=runs/citeseer_secure/warm \
-  --cpu pubmed=runs/pubmed_secure/warm \
-  --cpu ppi=runs/ppi_secure/warm \
-  --cpu ogbn-arxiv=runs/ogbn_arxiv_secure/warm \
-  --gpu cora=runs/cora_secure/cuda_formal/warm \
-  --gpu citeseer=runs/citeseer_secure/cuda_formal/warm \
-  --gpu pubmed=runs/pubmed_secure/cuda_formal/warm \
-  --gpu ppi=runs/ppi_secure/cuda_formal/warm \
-  --gpu ogbn-arxiv=runs/ogbn_arxiv_secure/cuda_formal/warm \
-  --output-dir results/paper_secure
-```
-
-Do not invoke this command until the project owner authorizes the final ten runs. The exporter is expected to fail closed for incomplete or nonconforming manifests, but exporter checks do not repair an insecure proof implementation.
-
-## Tests and security scan
+静态安全扫描默认检查正式源代码和所有已经物化的配置 SRS；未获准生成的 SRS 会明确
+列为 skipped。只有所有数据集 SRS 均已生成时才使用严格全配置模式：
 
 ```bash
-cmake --build build --target gatzk_tests -j
-./build/gatzk_tests
-GATZK_RUN_FULL_SECURITY_TESTS=1 ./build/gatzk_tests
-GATZK_RUN_PPI_BOUNDARY_TESTS=1 ./build/gatzk_tests
 python3 tools/security/static_scan_no_tau.py
+python3 tools/security/static_scan_no_tau.py --require-all-configured-srs
 ```
 
-The full-security command currently cannot pass without a current formal large SRS; a green lightweight suite must not be reported as a successful Cora proof. The static scan checks prohibited setup material and SRS hashes, but is not a proof of zero knowledge.
+扫描会检查禁止的 setup 辅助材料、已存在 SRS 的 manifest/hash/schema 一致性，但扫描
+通过本身不等价于正式 proof 或零知识证明验收。
 
-`proof_size_bytes` is the exact size of the strict canonical serialized proof bytes, including metadata, commitments, quotient commitments, opening proofs, typed claimed values, public outputs, block tags, family identities, and length prefixes, while excluding SRS and local artifacts. No current paper-result proof-size claim is authorized because phase one is incomplete.
+## 正式结果导出边界
+
+`results/paper_secure/` 中既有内容属于旧协议历史记录，不是当前候选冻结实现的证据。
+在项目负责人明确授权最终十组实验、所有运行通过当前 strict gates 且结果重新生成前，
+不得调用正式结果导出流程或据此发布性能数字。

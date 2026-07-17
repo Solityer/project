@@ -50,16 +50,6 @@ namespace gatzk::protocol
             return domain.lagrange_basis_eval(index, z);
         }
 
-        // 单个 lookup 链的标准 LogUp 约束项，供 feat / range / exp / ELU 等表复用。
-        FieldElement c_lookup_1(
-            const EvalFn &eval,
-            const std::string &prefix,
-            const FieldElement &beta,
-            const FieldElement &z,
-            const FieldElement &omega_z)
-        {
-            return (eval("P_R_" + prefix, omega_z) - eval("P_R_" + prefix, z)) * (eval("P_Table_" + prefix, z) + beta) * (eval("P_Query_" + prefix, z) + beta) - eval("P_Q_tbl_" + prefix, z) * eval("P_m_" + prefix, z) * (eval("P_Query_" + prefix, z) + beta) + eval("P_Q_qry_" + prefix, z) * (eval("P_Table_" + prefix, z) + beta);
-        }
 
         bool starts_with(const std::string &value, std::string_view prefix)
         {
@@ -115,42 +105,6 @@ namespace gatzk::protocol
             return false;
         }
 
-        // bias 在 quotient 中只以量化后域元素形式出现，这里与 trace / verify 保持同一规则。
-        FieldElement quantize_bias_value(double value)
-        {
-            const auto scaled = value >= 0.0 ? value * 16.0 + 0.5 : value * 16.0 - 0.5;
-            return FieldElement::from_signed(static_cast<std::int64_t>(scaled));
-        }
-
-        FieldElement bias_fold_vector(
-            const std::vector<double> &bias,
-            std::size_t node_count,
-            const FieldElement &y_out)
-        {
-            if (bias.empty() || node_count == 0)
-            {
-                return FieldElement::zero();
-            }
-
-            FieldElement column_fold = FieldElement::zero();
-            FieldElement column_power = FieldElement::one();
-            for (std::size_t col = 0; col < bias.size(); ++col)
-            {
-                column_fold += quantize_bias_value(bias[col]) * column_power;
-                column_power *= y_out;
-            }
-            const auto row_stride = y_out.pow(static_cast<std::uint64_t>(bias.size()));
-            FieldElement row_sum = FieldElement::zero();
-            if (row_stride == FieldElement::one())
-            {
-                row_sum = FieldElement(static_cast<std::uint64_t>(node_count));
-            }
-            else
-            {
-                row_sum = (row_stride.pow(static_cast<std::uint64_t>(node_count)) - FieldElement::one()) / (row_stride - FieldElement::one());
-            }
-            return column_fold * row_sum;
-        }
 
         std::optional<std::string> dynamic_label_domain_name(const ProtocolContext &context, const std::string &label)
         {
@@ -168,8 +122,8 @@ namespace gatzk::protocol
                 return std::string("coef");
             for (std::size_t head = 0; head < context.model.output_layer.heads.size(); ++head)
             {
-                if (label == output_y_lin_label(head, false)
-                    || label == output_y_label(head, false))
+                if (label == output_y_lin_label(head)
+                    || label == output_y_label(head))
                     return std::string("coef");
                 for (const auto *suffix : {"Table_can", "m_can", "J_can", "R_can"})
                 {
@@ -368,18 +322,6 @@ namespace gatzk::protocol
             return psq_next - ((FieldElement::one() - q_valid_next) * psq_current + q_valid_next * (q_new_next * w_next + (FieldElement::one() - q_new_next) * (psq_current + w_next)));
         }
 
-        FieldElement lookup_step(
-            const FieldElement &r_next,
-            const FieldElement &r_current,
-            const FieldElement &table_value,
-            const FieldElement &query_value,
-            const FieldElement &multiplicity,
-            const FieldElement &q_tbl,
-            const FieldElement &q_qry,
-            const FieldElement &beta)
-        {
-            return (r_next - r_current) * (table_value + beta) * (query_value + beta) - q_tbl * multiplicity * (query_value + beta) + q_qry * (table_value + beta);
-        }
 
         FieldElement zero_on_unselected(const FieldElement &selector, const FieldElement &value)
         {
@@ -440,7 +382,7 @@ namespace gatzk::protocol
         {
             if (domain_name == "C")
                 labels.push_back(model_proof_local_label(
-                    output_bias_label(head, false)));
+                    output_bias_label(head)));
             const auto suffixes = domain_name == "C"
                 ? std::vector<std::string>{"Table_can", "m_can", "J_can", "R_can"}
                 : (domain_name == "edge"
@@ -585,7 +527,6 @@ namespace gatzk::protocol
     FieldElement evaluate_t_edge(
         const ProtocolContext &context,
         const std::map<std::string, FieldElement> &challenges,
-        const std::map<std::string, FieldElement> &witness_scalars,
         const std::map<std::string, FieldElement> &external_evaluations,
         const EvalFn &eval,
         const FieldElement &z,
@@ -825,8 +766,6 @@ namespace gatzk::protocol
                 const auto e_dst_edge_z = z_head("E_dst_edge");
                 const auto h_src_star_edge_z = z_head("H_src_star_edge");
                 const auto s_z = z_head("S");
-                const auto r_l_z = z_head("R_L");
-                const auto r_l_omega = omega_head("R_L");
                 const auto table_l_z = z_head("Table_L");
                 const auto query_l_z = z_head("Query_L");
                 const auto m_l_z = z_head("m_L");
@@ -837,16 +776,12 @@ namespace gatzk::protocol
                 const auto s_max_omega = omega_head("s_max");
                 const auto c_max_z = z_head("C_max");
                 const auto c_max_omega = omega_head("C_max");
-                const auto r_r_z = z_head("R_R");
-                const auto r_r_omega = omega_head("R_R");
                 const auto table_r_z = z_head("Table_R");
                 const auto query_r_z = z_head("Query_R");
                 const auto m_r_z = z_head("m_R");
                 const auto alpha_z = z_head("alpha");
                 const auto u_z = z_head("U");
                 const auto inv_edge_z = z_head("inv_edge");
-                const auto r_exp_z = z_head("R_exp");
-                const auto r_exp_omega = omega_head("R_exp");
                 const auto table_exp_z = z_head("Table_exp");
                 const auto query_exp_z = z_head("Query_exp");
                 const auto m_exp_z = z_head("m_exp");
@@ -858,8 +793,6 @@ namespace gatzk::protocol
                 const auto r_t_z = z_head("R_t");
                 const auto r_t_omega = omega_head("R_t");
                 const auto query_t_z = z_head("Query_t");
-                const auto r_elu_z = z_head("R_ELU");
-                const auto r_elu_omega = omega_head("R_ELU");
                 const auto table_elu_z = z_head("Table_ELU");
                 const auto query_elu_z = z_head("Query_ELU");
                 const auto m_elu_z = z_head("m_ELU");
@@ -949,21 +882,20 @@ namespace gatzk::protocol
                 }
             }
 
-            const bool legacy_single_output = false;
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {
-                const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
-                const auto beta_src_out = challenges.at(output_challenge_name("beta_src_out", head_index, legacy_single_output));
-                const auto beta_dst_out = challenges.at(output_challenge_name("beta_dst_out", head_index, legacy_single_output));
-                const auto eta_src_out = challenges.at(output_challenge_name("eta_src_out", head_index, legacy_single_output));
-                const auto eta_dst_out = challenges.at(output_challenge_name("eta_dst_out", head_index, legacy_single_output));
-                const auto beta_l_out = challenges.at(output_challenge_name("beta_L_out", head_index, legacy_single_output));
-                const auto eta_l_out = challenges.at(output_challenge_name("eta_L_out", head_index, legacy_single_output));
-                const auto beta_r_out = challenges.at(output_challenge_name("beta_R_out", head_index, legacy_single_output));
-                const auto beta_exp_out = challenges.at(output_challenge_name("beta_exp_out", head_index, legacy_single_output));
-                const auto eta_exp_out = challenges.at(output_challenge_name("eta_exp_out", head_index, legacy_single_output));
-                const auto beta_t_out = challenges.at(output_challenge_name("beta_t_out", head_index, legacy_single_output));
-                const auto eta_t_out = challenges.at(output_challenge_name("eta_t_out", head_index, legacy_single_output));
+                const auto prefix = output_head_prefix(head_index) + "_";
+                const auto beta_src_out = challenges.at(output_challenge_name("beta_src_out", head_index));
+                const auto beta_dst_out = challenges.at(output_challenge_name("beta_dst_out", head_index));
+                const auto eta_src_out = challenges.at(output_challenge_name("eta_src_out", head_index));
+                const auto eta_dst_out = challenges.at(output_challenge_name("eta_dst_out", head_index));
+                const auto beta_l_out = challenges.at(output_challenge_name("beta_L_out", head_index));
+                const auto eta_l_out = challenges.at(output_challenge_name("eta_L_out", head_index));
+                const auto beta_r_out = challenges.at(output_challenge_name("beta_R_out", head_index));
+                const auto beta_exp_out = challenges.at(output_challenge_name("beta_exp_out", head_index));
+                const auto eta_exp_out = challenges.at(output_challenge_name("eta_exp_out", head_index));
+                const auto beta_t_out = challenges.at(output_challenge_name("beta_t_out", head_index));
+                const auto eta_t_out = challenges.at(output_challenge_name("eta_t_out", head_index));
                 const auto eta_dst_out_sq = eta_dst_out * eta_dst_out;
                 const auto eta_dst_out_cu = eta_dst_out_sq * eta_dst_out;
                 const auto eta_dst_out_4 = eta_dst_out_cu * eta_dst_out;
@@ -984,8 +916,6 @@ namespace gatzk::protocol
                 const auto e_src_edge_z = z_out("E_src_edge");
                 const auto e_dst_edge_z = z_out("E_dst_edge");
                 const auto s_z = z_out("S");
-                const auto r_l_z = z_out("R_L");
-                const auto r_l_omega = omega_out("R_L");
                 const auto table_l_z = z_out("Table_L");
                 const auto query_l_z = z_out("Query_L");
                 const auto m_l_z = z_out("m_L");
@@ -996,16 +926,12 @@ namespace gatzk::protocol
                 const auto s_max_omega = omega_out("s_max");
                 const auto c_max_z = z_out("C_max");
                 const auto c_max_omega = omega_out("C_max");
-                const auto r_r_z = z_out("R_R");
-                const auto r_r_omega = omega_out("R_R");
                 const auto table_r_z = z_out("Table_R");
                 const auto query_r_z = z_out("Query_R");
                 const auto m_r_z = z_out("m_R");
                 const auto alpha_z = z_out("alpha");
                 const auto u_z = z_out("U");
                 const auto inv_edge_z = z_out("inv_edge");
-                const auto r_exp_z = z_out("R_exp");
-                const auto r_exp_omega = omega_out("R_exp");
                 const auto table_exp_z = z_out("Table_exp");
                 const auto query_exp_z = z_out("Query_exp");
                 const auto m_exp_z = z_out("m_exp");
@@ -1100,7 +1026,7 @@ namespace gatzk::protocol
                     prefix + "Bind_",
                     "P_Q_div_out" + std::to_string(head_index),
                     prefix + "Y_flat",
-                    external_evaluations.at(output_external_eval_name("y", head_index, false)));
+                    external_evaluations.at(output_external_eval_name("y", head_index)));
                 const auto view_prefix = output_bias_view_prefix(head_index);
                 const auto q_view = eval_z(
                     "P_Q_div_out" + std::to_string(head_index));
@@ -1229,7 +1155,7 @@ namespace gatzk::protocol
                 for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
                 {
                     summed_heads += eval_z(
-                        output_head_prefix(head_index, false) + "_Y_flat");
+                        output_head_prefix(head_index) + "_Y_flat");
                 }
                 acc.add(q_avg * (eval_z("P_avg_Div_X") - summed_heads));
                 acc.add(q_avg * (
@@ -1252,111 +1178,13 @@ namespace gatzk::protocol
             return return_numerator ? acc.value() : acc.value() / zero_eval;
         }
 
-        const auto alpha = challenges.at("alpha_quot");
-        const auto alpha_powers = powers(alpha, 73);
-        const auto omega_z = z * context.domains.edge->omega;
-        const auto beta_src = challenges.at("beta_src");
-        const auto beta_dst = challenges.at("beta_dst");
-        const auto eta_src = challenges.at("eta_src");
-        const auto eta_dst = challenges.at("eta_dst");
-        const auto beta_l = challenges.at("beta_L");
-        const auto eta_l = challenges.at("eta_L");
-        const auto beta_r = challenges.at("beta_R");
-        const auto beta_exp = challenges.at("beta_exp");
-        const auto eta_exp = challenges.at("eta_exp");
-        const auto l0 = lagrange_first(*context.domains.edge, z);
-        const auto l_last = lagrange_last(*context.domains.edge, z);
-        const auto zero_eval = context.domains.edge->zero_polynomial_eval(z);
-
-        const auto c_src_0 = l0 * eval("P_R_src", z);
-        const auto c_src_1 = eval("P_Q_qry_src", z) * ((eval("P_R_src", omega_z) - eval("P_R_src", z)) * (eval("P_Query_src", z) + beta_src) - FieldElement::one());
-        const auto c_src_2 = (FieldElement::one() - eval("P_Q_qry_src", z)) * (eval("P_R_src", omega_z) - eval("P_R_src", z));
-        const auto c_src_3 = l_last * (eval("P_R_src", z) - witness_scalars.at("S_src"));
-        const auto c_src_bind = eval("P_Query_src", z) - (eval("P_src", z) + eta_src * eval("P_E_src_edge", z) + eta_src.pow(2) * eval("P_H_src_star_edge", z));
-
-        const auto c_dst_0 = l0 * eval("P_R_dst", z);
-        const auto c_dst_1 = eval("P_Q_qry_dst", z) * ((eval("P_R_dst", omega_z) - eval("P_R_dst", z)) * (eval("P_Query_dst", z) + beta_dst) - FieldElement::one());
-        const auto c_dst_2 = (FieldElement::one() - eval("P_Q_qry_dst", z)) * (eval("P_R_dst", omega_z) - eval("P_R_dst", z));
-        const auto c_dst_3 = l_last * (eval("P_R_dst", z) - witness_scalars.at("S_dst"));
-        const auto c_dst_bind = eval("P_Query_dst", z) - (eval("P_dst", z) + eta_dst * eval("P_E_dst_edge", z) + eta_dst.pow(2) * eval("P_M_edge", z) + eta_dst.pow(3) * eval("P_Sum_edge", z) + eta_dst.pow(4) * eval("P_inv_edge", z) + eta_dst.pow(5) * eval("P_H_agg_star_edge", z));
-
-        const auto c_l_0 = l0 * eval("P_R_L", z);
-        const auto c_l_1 = c_lookup_1(eval, "L", beta_l, z, omega_z);
-        const auto c_l_2 = l_last * eval("P_R_L", z);
-        const auto c_l_bind_tbl = eval("P_Table_L", z) - (eval("P_T_L_x", z) + eta_l * eval("P_T_L_y", z));
-        const auto c_l_bind_qry = eval("P_Query_L", z) - (eval("P_S", z) + eta_l * eval("P_Z", z));
-
-        const auto c_r_0 = l0 * eval("P_R_R", z);
-        const auto c_r_1 = c_lookup_1(eval, "R", beta_r, z, omega_z);
-        const auto c_r_2 = l_last * eval("P_R_R", z);
-        const auto c_r_bind_tbl = eval("P_Table_R", z) - eval("P_T_range", z);
-        const auto c_r_bind_qry = eval("P_Query_R", z) - eval("P_Delta", z);
-
-        const auto c_exp_0 = l0 * eval("P_R_exp", z);
-        const auto c_exp_1 = c_lookup_1(eval, "exp", beta_exp, z, omega_z);
-        const auto c_exp_2 = l_last * eval("P_R_exp", z);
-        const auto c_exp_bind_tbl = eval("P_Table_exp", z) - (eval("P_T_exp_x", z) + eta_exp * eval("P_T_exp_y", z));
-        const auto c_exp_bind_qry = eval("P_Query_exp", z) - (eval("P_Delta", z) + eta_exp * eval("P_U", z));
-
-        const auto c_max_0 = eval("P_Delta", z) - eval("P_M_edge", z) + eval("P_Z", z);
-        const auto c_max_1 = eval("P_s_max", z) * (eval("P_s_max", z) - FieldElement::one());
-        const auto c_max_2 = eval("P_s_max", z) * eval("P_Delta", z);
-        const auto c_max_3 = l0 * (eval("P_C_max", z) - eval("P_s_max", z));
-        const auto c_max_4 =
-            eval("P_Q_edge_valid", omega_z) * (eval("P_C_max", omega_z) - eval("P_Q_grp_new_edge", omega_z) * eval("P_s_max", omega_z) - (FieldElement::one() - eval("P_Q_grp_new_edge", omega_z)) * (eval("P_C_max", z) + eval("P_s_max", omega_z))) + (FieldElement::one() - eval("P_Q_edge_valid", omega_z)) * (eval("P_C_max", omega_z) - eval("P_C_max", z));
-        const auto c_max_5 = eval("P_Q_grp_end_edge", z) * (eval("P_C_max", z) - FieldElement::one());
-
-        const auto c_inv_1 = eval("P_alpha", z) - eval("P_U", z) * eval("P_inv_edge", z);
-        const auto c_vhat_0 = eval("P_v_hat", z) - eval("P_alpha", z) * eval("P_H_src_star_edge", z);
-        const auto c_psq_0 = l0 * (eval("P_PSQ", z) - eval("P_w_psq", z));
-        const auto c_psq_1 =
-            eval("P_PSQ", omega_z) - eval("P_Q_grp_new_edge", omega_z) * eval("P_w_psq", omega_z) - (FieldElement::one() - eval("P_Q_grp_new_edge", omega_z)) * (eval("P_PSQ", z) + eval("P_w_psq", omega_z));
-        const auto c_psq_2 = eval("P_Q_grp_end_edge", z) * (eval("P_PSQ", z) - eval("P_T_psq_edge", z));
-
-        FieldElement n_edge = FieldElement::zero();
-        n_edge += alpha_powers[3] * c_src_0;
-        n_edge += alpha_powers[4] * c_src_1;
-        n_edge += alpha_powers[5] * c_src_2;
-        n_edge += alpha_powers[6] * c_dst_0;
-        n_edge += alpha_powers[7] * c_dst_1;
-        n_edge += alpha_powers[8] * c_dst_2;
-        n_edge += alpha_powers[9] * c_l_0;
-        n_edge += alpha_powers[10] * c_l_1;
-        n_edge += alpha_powers[11] * c_l_2;
-        n_edge += alpha_powers[12] * c_r_0;
-        n_edge += alpha_powers[13] * c_r_1;
-        n_edge += alpha_powers[14] * c_r_2;
-        n_edge += alpha_powers[15] * c_exp_0;
-        n_edge += alpha_powers[16] * c_exp_1;
-        n_edge += alpha_powers[17] * c_exp_2;
-        n_edge += alpha_powers[18] * c_max_0;
-        n_edge += alpha_powers[19] * c_max_1;
-        n_edge += alpha_powers[20] * c_max_2;
-        n_edge += alpha_powers[21] * c_max_3;
-        n_edge += alpha_powers[22] * c_max_4;
-        n_edge += alpha_powers[23] * c_max_5;
-        n_edge += alpha_powers[24] * c_inv_1;
-        n_edge += alpha_powers[25] * c_vhat_0;
-        n_edge += alpha_powers[26] * c_psq_0;
-        n_edge += alpha_powers[27] * c_psq_1;
-        n_edge += alpha_powers[28] * c_psq_2;
-        n_edge += alpha_powers[54] * c_l_bind_tbl;
-        n_edge += alpha_powers[55] * c_l_bind_qry;
-        n_edge += alpha_powers[56] * c_r_bind_tbl;
-        n_edge += alpha_powers[57] * c_r_bind_qry;
-        n_edge += alpha_powers[58] * c_exp_bind_tbl;
-        n_edge += alpha_powers[59] * c_exp_bind_qry;
-        n_edge += alpha_powers[70] * c_src_3;
-        n_edge += alpha_powers[71] * c_src_bind;
-        n_edge += alpha_powers[72] * c_dst_3;
-        n_edge += alpha_powers[73] * c_dst_bind;
-        return return_numerator ? n_edge : n_edge / zero_eval;
+        throw std::runtime_error(
+            "t_edge reached the removed single-output compatibility protocol");
     }
 
     FieldElement evaluate_t_n(
         const ProtocolContext &context,
         const std::map<std::string, FieldElement> &challenges,
-        const std::map<std::string, FieldElement> &witness_scalars,
         const EvalFn &eval,
         const FieldElement &z)
     {
@@ -1413,17 +1241,16 @@ namespace gatzk::protocol
                 acc.add(zero_on_unselected(q_n, eval(prefix + "m_t", z)));
             }
 
-            const bool legacy_single_output = false;
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {
-                const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
-                const auto beta_src_out = challenges.at(output_challenge_name("beta_src_out", head_index, legacy_single_output));
-                const auto beta_dst_out = challenges.at(output_challenge_name("beta_dst_out", head_index, legacy_single_output));
-                const auto eta_src_out = challenges.at(output_challenge_name("eta_src_out", head_index, legacy_single_output));
-                const auto eta_dst_out = challenges.at(output_challenge_name("eta_dst_out", head_index, legacy_single_output));
-                const auto beta_t_out = challenges.at(output_challenge_name("beta_t_out", head_index, legacy_single_output));
-                const auto eta_t_out = challenges.at(output_challenge_name("eta_t_out", head_index, legacy_single_output));
-                const auto lambda_out = challenges.at(output_challenge_name("lambda_out", head_index, legacy_single_output));
+                const auto prefix = output_head_prefix(head_index) + "_";
+                const auto beta_src_out = challenges.at(output_challenge_name("beta_src_out", head_index));
+                const auto beta_dst_out = challenges.at(output_challenge_name("beta_dst_out", head_index));
+                const auto eta_src_out = challenges.at(output_challenge_name("eta_src_out", head_index));
+                const auto eta_dst_out = challenges.at(output_challenge_name("eta_dst_out", head_index));
+                const auto beta_t_out = challenges.at(output_challenge_name("beta_t_out", head_index));
+                const auto eta_t_out = challenges.at(output_challenge_name("eta_t_out", head_index));
+                const auto lambda_out = challenges.at(output_challenge_name("lambda_out", head_index));
 
                 acc.add(first * eval(prefix + "R_src_node", z));
                 acc.add(q_n * ((eval(prefix + "Table_src", z) + beta_src_out) * eval(prefix + "J_src_node", z) - FieldElement::one()));
@@ -1558,42 +1385,8 @@ namespace gatzk::protocol
             return acc.value() / zero_eval;
         }
 
-        const auto c_inv_0 = eval("P_Q_N", z) * (eval("P_Sum", z) * eval("P_inv", z) - FieldElement::one());
-        const auto alpha_powers = powers(challenges.at("alpha_quot"), 69);
-        const auto q_n = eval("P_Q_N", z);
-        const auto q_invalid = FieldElement::one() - q_n;
-        const auto omega_z = z * context.domains.n->omega;
-        const auto l0 = lagrange_first(*context.domains.n, z);
-        const auto l_last = lagrange_last(*context.domains.n, z);
-        const auto beta_src = challenges.at("beta_src");
-        const auto eta_src = challenges.at("eta_src");
-        const auto beta_dst = challenges.at("beta_dst");
-        const auto eta_dst = challenges.at("eta_dst");
-
-        const auto c_src_node_0 = l0 * eval("P_R_src_node", z);
-        const auto c_src_node_1 = q_n * ((eval("P_R_src_node", omega_z) - eval("P_R_src_node", z)) * (eval("P_Table_src", z) + beta_src) - eval("P_m_src", z));
-        const auto c_src_node_2 = q_invalid * (eval("P_R_src_node", omega_z) - eval("P_R_src_node", z));
-        const auto c_src_node_3 = l_last * (eval("P_R_src_node", z) - witness_scalars.at("S_src"));
-        const auto c_src_node_bind = eval("P_Table_src", z) - (eval("P_I", z) + eta_src * eval("P_E_src", z) + eta_src.pow(2) * eval("P_H_star", z));
-
-        const auto c_dst_node_0 = l0 * eval("P_R_dst_node", z);
-        const auto c_dst_node_1 = q_n * ((eval("P_R_dst_node", omega_z) - eval("P_R_dst_node", z)) * (eval("P_Table_dst", z) + beta_dst) - eval("P_m_dst", z));
-        const auto c_dst_node_2 = q_invalid * (eval("P_R_dst_node", omega_z) - eval("P_R_dst_node", z));
-        const auto c_dst_node_3 = l_last * (eval("P_R_dst_node", z) - witness_scalars.at("S_dst"));
-        const auto c_dst_node_bind = eval("P_Table_dst", z) - (eval("P_I", z) + eta_dst * eval("P_E_dst", z) + eta_dst.pow(2) * eval("P_M", z) + eta_dst.pow(3) * eval("P_Sum", z) + eta_dst.pow(4) * eval("P_inv", z) + eta_dst.pow(5) * eval("P_H_agg_star", z));
-
-        FieldElement numerator = alpha_powers[29] * c_inv_0;
-        numerator += alpha_powers[60] * c_src_node_0;
-        numerator += alpha_powers[61] * c_src_node_1;
-        numerator += alpha_powers[62] * c_src_node_2;
-        numerator += alpha_powers[63] * c_src_node_3;
-        numerator += alpha_powers[64] * c_src_node_bind;
-        numerator += alpha_powers[65] * c_dst_node_0;
-        numerator += alpha_powers[66] * c_dst_node_1;
-        numerator += alpha_powers[67] * c_dst_node_2;
-        numerator += alpha_powers[68] * c_dst_node_3;
-        numerator += alpha_powers[69] * c_dst_node_bind;
-        return numerator / context.domains.n->zero_polynomial_eval(z);
+        throw std::runtime_error(
+            "t_N reached the removed single-output compatibility protocol");
     }
 
     FieldElement evaluate_t_in(
@@ -1837,12 +1630,10 @@ namespace gatzk::protocol
             acc.add(last * (eval(prefix + "_Acc", z) - semantic_mu));
         }
 
-        const bool legacy_single_output = false;
         for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
         {
-            const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
-            const auto mu_name =
-                legacy_single_output ? std::string("mu_out_proj") : output_external_eval_name("proj", head_index, false);
+            const auto prefix = output_head_prefix(head_index) + "_";
+            const auto mu_name = output_external_eval_name("proj", head_index);
             acc.add(first * eval(prefix + "Acc_proj", z));
             acc.add(q_valid * acc_step(eval(prefix + "Acc_proj", omega_z), eval(prefix + "Acc_proj", z), eval(prefix + "a_proj", z), eval(prefix + "b_proj", z)));
             acc.add(not_last * q_invalid * (eval(prefix + "Acc_proj", omega_z) - eval(prefix + "Acc_proj", z)));
@@ -1871,35 +1662,28 @@ namespace gatzk::protocol
         // C 域主要对齐输出层每头的源/目标打分绑定，以及 bias 后输出和多头平均的关系。
         QuotientAccumulator acc(challenges.at("alpha_quot"));
 
-        const bool legacy_single_output = false;
         for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
         {
-            const auto prefix = output_head_prefix(head_index, legacy_single_output) + "_";
-            const auto mu_src =
-                legacy_single_output ? std::string("mu_out_src") : output_external_eval_name("src", head_index, false);
-            const auto mu_dst =
-                legacy_single_output ? std::string("mu_out_dst") : output_external_eval_name("dst", head_index, false);
-            const auto mu_star =
-                legacy_single_output ? std::string("mu_out_star") : output_external_eval_name("star", head_index, false);
+            const auto prefix = output_head_prefix(head_index) + "_";
+            const auto mu_src = output_external_eval_name("src", head_index);
+            const auto mu_dst = output_external_eval_name("dst", head_index);
+            const auto mu_star = output_external_eval_name("star", head_index);
             const auto star_semantic_eval =
                 external_evaluations.at(mu_star)
                 - context.domains.n->zero_polynomial_eval(challenges.at(
-                    output_challenge_name(
-                        "y_out_star", head_index, legacy_single_output)))
+                    output_challenge_name("y_out_star", head_index)))
                     * external_evaluations.at(
                         external_mask_eval_name(mu_star));
             const auto src_semantic_eval =
                 external_evaluations.at(mu_src)
                 - context.domains.n->zero_polynomial_eval(challenges.at(
-                    output_challenge_name(
-                        "y_src_out", head_index, legacy_single_output)))
+                    output_challenge_name("y_src_out", head_index)))
                     * external_evaluations.at(
                         output_score_mask_eval_name(head_index, "src"));
             const auto dst_semantic_eval =
                 external_evaluations.at(mu_dst)
                 - context.domains.n->zero_polynomial_eval(challenges.at(
-                    output_challenge_name(
-                        "y_dst_out", head_index, legacy_single_output)))
+                    output_challenge_name("y_dst_out", head_index)))
                     * external_evaluations.at(
                         output_score_mask_eval_name(head_index, "dst"));
 
@@ -1941,7 +1725,7 @@ namespace gatzk::protocol
             acc.add(table - q_valid * (
                 eval("P_BiasIndex_C", z)
                 + eta_view * eval(
-                    model_proof_local_label(output_bias_label(head_index, false)), z)));
+                    model_proof_local_label(output_bias_label(head_index)), z)));
             acc.add(multiplicity - eval("P_BiasMultiplicity_C", z));
 
         }

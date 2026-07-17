@@ -360,7 +360,7 @@ namespace gatzk::protocol
                 {
                     const auto layer = meta.layer_id.value() - 1;
                     const auto width =
-                        context.model.hidden_layers.at(layer).shape.head_dim;
+                        context.config.hidden_profile.at(layer).head_dim;
                     for (std::size_t column = 0; column < width; ++column)
                         expected_models.push_back({
                             hidden_weight_column_label(global_hidden_head, column),
@@ -382,11 +382,11 @@ namespace gatzk::protocol
                             output_weight_column_label(head, column),
                             context.domains.cat->name});
                     expected_models.push_back({
-                        output_src_label(head, false), context.domains.c->name});
+                        output_src_label(head), context.domains.c->name});
                     expected_models.push_back({
-                        output_dst_label(head, false), context.domains.c->name});
+                        output_dst_label(head), context.domains.c->name});
                     expected_models.push_back({
-                        output_bias_label(head, false), context.domains.c->name});
+                        output_bias_label(head), context.domains.c->name});
                 }
                 if (subproof.model_reblinds.size() != expected_models.size())
                     throw std::runtime_error(
@@ -462,6 +462,16 @@ namespace gatzk::protocol
                 std::vector<std::tuple<
                     std::string, std::string, std::size_t,
                     PayloadValueKind>> expected_aggregation_relation_evaluations;
+                std::vector<std::string> expected_route_commitments;
+                for (const auto& route : meta.route_terminal_relations)
+                {
+                    expected_route_commitments.push_back(
+                        route.shifted_accumulator_object);
+                    expected_aggregation_relation_evaluations.push_back({
+                        route.shifted_accumulator_object + ":u_rel",
+                        "relation", 1,
+                        PayloadValueKind::MaskedPrivateValue});
+                }
                 std::vector<std::tuple<
                     std::string, std::string, std::size_t,
                     PayloadValueKind>> expected_aggregation_domain_evaluations;
@@ -475,6 +485,22 @@ namespace gatzk::protocol
                         expected_aggregation_openings.push_back(
                             std::move(value));
                 };
+                for (const auto& route : meta.route_terminal_relations)
+                {
+                    const auto challenge = proof.challenges.find(
+                        route.challenge_label);
+                    if (challenge == proof.challenges.end())
+                        throw std::runtime_error(
+                            "proof parser Pi_bind missing route terminal challenge");
+                    append_aggregation_opening(
+                        "W_ext:" + challenge->second.to_string());
+                    append_aggregation_opening(
+                        "W_ext:"
+                        + (challenge->second + route.terminal_delta)
+                              .to_string());
+                    append_aggregation_opening(
+                        "W_ext:" + route.node_terminal_point.to_string());
+                }
                 for (const auto& aggregation : meta.aggregation_relations)
                 {
                     expected_aggregation_commitments.insert(
@@ -611,7 +637,15 @@ namespace gatzk::protocol
                         || !aggregation_commitments_match
                         || !subproof.basis_commitments.empty()
                         || !subproof.crpc_commitments.empty()
-                        || !subproof.relation_commitments.empty()
+                        || subproof.relation_commitments.size()
+                            != expected_route_commitments.size()
+                        || !std::equal(
+                            subproof.relation_commitments.begin(),
+                            subproof.relation_commitments.end(),
+                            expected_route_commitments.begin(),
+                            [](const auto& actual,
+                               const std::string& expected)
+                            { return actual.first == expected; })
                         || !evaluations_match
                         || !opening_references_match)
                     {
@@ -679,9 +713,21 @@ namespace gatzk::protocol
                         [](const auto& actual, const std::string& expected)
                         { return actual.first == expected; })
                     || subproof.relation_commitments.size()
-                        != basis.chunks.size() + (same_point ? 0 : 1)
+                        != expected_route_commitments.size()
+                            + basis.chunks.size()
+                            + (same_point ? 0 : 1)
+                    || !std::equal(
+                        subproof.relation_commitments.begin(),
+                        subproof.relation_commitments.begin()
+                            + static_cast<std::ptrdiff_t>(
+                                expected_route_commitments.size()),
+                        expected_route_commitments.begin(),
+                        [](const auto& actual,
+                           const std::string& expected)
+                        { return actual.first == expected; })
                     || (!same_point
-                        && subproof.relation_commitments.front().first
+                        && subproof.relation_commitments[
+                               expected_route_commitments.size()].first
                             != output_bias_view_label(head, "R_shifted"))
                     || !std::equal(
                         subproof.relation_commitments.end()
@@ -701,7 +747,7 @@ namespace gatzk::protocol
                     expected_evaluations = {
                         {output_bias_view_label(head, "m_can") + ":public_bind",
                          "relation", 1, PayloadValueKind::PublicValue},
-                        {model_proof_local_label(output_bias_label(head, false)),
+                        {model_proof_local_label(output_bias_label(head)),
                          "C", 2, PayloadValueKind::MaskedPrivateValue},
                         {output_bias_view_label(head, "Table_can"),
                          "C", 2, PayloadValueKind::MaskedPrivateValue},
@@ -879,13 +925,9 @@ namespace gatzk::protocol
         wire.block("Com_dyn", std::move(com_dyn));
 
         Writer s_route;
-        s_route.u64(proof.witness_scalars.size());
-        for (std::size_t i = 0; i < proof.witness_scalars.size(); ++i)
-        {
-            s_route.string(proof.witness_scalars[i].first);
-            s_route.scalar(proof.witness_scalars[i].second);
-            s_route.u64(static_cast<std::uint64_t>(proof.witness_scalar_kinds.at(i)));
-        }
+        s_route.u64(proof.route_references.size());
+        for (const auto& reference : proof.route_references)
+            s_route.string(reference.object_id);
         wire.block("S_route", std::move(s_route));
 
         Writer eval_ext;
@@ -1184,16 +1226,11 @@ namespace gatzk::protocol
         com_dyn.finish("Com_dyn");
 
         auto s_route = body.block("S_route");
-        const auto scalar_count = s_route.count("route scalars");
-        for (std::size_t i = 0; i < scalar_count; ++i)
-        {
-            auto name = s_route.string();
-            auto value = s_route.scalar();
-            proof.witness_scalars.push_back({std::move(name), value});
-            proof.witness_scalar_kinds.push_back(read_kind(s_route));
-        }
+        const auto reference_count = s_route.count("route references");
+        proof.route_references.reserve(reference_count);
+        for (std::size_t i = 0; i < reference_count; ++i)
+            proof.route_references.push_back({s_route.string()});
         s_route.finish("S_route");
-        require_unique_names(proof.witness_scalars, "S_route");
 
         auto eval_ext = body.block("Eval_ext");
         const auto ext_count = eval_ext.count("external evaluations");
@@ -1714,6 +1751,11 @@ namespace gatzk::protocol
         }
         for (const auto& [name, commitment] : proof.quotient_commitments) quotient.emplace(name, commitment);
         proof.challenges = replay_challenges(context, dynamic, quotient, &proof.public_metadata);
+        const auto expected_route_references =
+            route_opening_references(context, proof.challenges);
+        if (proof.route_references != expected_route_references)
+            throw std::runtime_error(
+                "proof parser S_route reference registry mismatch");
         require_exact_pi_bind_shape(context, proof);
         return proof;
     }

@@ -494,9 +494,9 @@ namespace gatzk::data
     GraphDataset load_dataset(const util::AppConfig &config)
     {
         const std::filesystem::path project_root(config.project_root);
-        if (config.dataset == "toy")
+        if (config.dataset == "unit_security")
         {
-            return load_cached_dataset(project_root / "data/toy");
+            return load_cached_dataset(project_root / "data/security_fixture");
         }
 
         const auto cache_root = project_root / config.cache_root / config.dataset;

@@ -40,64 +40,6 @@ namespace gatzk::protocol
             return out.str();
         }
 
-        std::string challenge_context_cache_key(const ProtocolContext &context)
-        {
-            std::ostringstream stream;
-            stream << context.config.project_root << '|'
-                   << context.config.dataset << '|'
-                   << context.config.data_root << '|'
-                   << context.config.cache_root << '|'
-                   << context.config.checkpoint_bundle << '|'
-                   << context.config.hidden_dim << '|'
-                   << context.config.num_classes << '|'
-                   << context.config.range_bits << '|'
-                   << context.config.seed << '|'
-                   << context.config.layer_count << '|'
-                   << context.config.K_out << '|'
-                   << context.config.batch_graphs << '|'
-                   << context.config.task_type << '|'
-                   << context.config.report_unit << '|'
-                   << context.config.batching_rule << '|'
-                   << context.config.subgraph_rule << '|'
-                   << context.config.self_loop_rule << '|'
-                   << context.config.edge_sort_rule << '|'
-                   << context.config.chunking_rule << '|'
-                   << context.config.srs_id << '|'
-                   << context.config.srs_type << '|'
-                   << context.config.privacy_policy << '|'
-                   << context.config.input_privacy << '|'
-                   << context.config.output_mode << '|'
-                   << context.config.opening_mode << '|'
-                   << context.config.binding_mode << '|'
-                   << context.config.proof_task << '|'
-                   << (context.config.allow_synthetic_model ? "synthetic" : "formal");
-            for (const auto input_dim : context.config.d_in_profile)
-            {
-                stream << "|din=" << input_dim;
-            }
-            for (const auto &layer : context.config.hidden_profile)
-            {
-                stream << "|hid=" << layer.head_count << 'x' << layer.head_dim;
-            }
-            return stream.str();
-        }
-
-        std::string commitments_cache_fingerprint(
-            const std::vector<std::string> &labels,
-            const std::unordered_map<std::string, crypto::Commitment> &commitments)
-        {
-            std::ostringstream stream;
-            for (const auto &label : labels)
-            {
-                const auto it = commitments.find(label);
-                if (it == commitments.end())
-                {
-                    continue;
-                }
-                stream << '|' << label << '=' << it->second.point.to_string();
-            }
-            return stream.str();
-        }
 
         void absorb_text_scalar(crypto::Transcript &transcript, const std::string &label, const std::string &value)
         {
@@ -178,22 +120,6 @@ namespace gatzk::protocol
             return out.str();
         }
 
-        std::string d_in_profile_string(const model::ModelParameters &parameters, const ProtocolContext &context)
-        {
-            std::ostringstream out;
-            const auto profile = parameters.has_real_multihead && !parameters.d_in_profile.empty()
-                                     ? parameters.d_in_profile
-                                     : std::vector<std::size_t>{context.local.num_features};
-            for (std::size_t i = 0; i < profile.size(); ++i)
-            {
-                if (i != 0)
-                {
-                    out << ',';
-                }
-                out << profile[i];
-            }
-            return out.str();
-        }
 
         std::string size_vector_string(const std::vector<std::size_t> &values)
         {
@@ -531,8 +457,8 @@ namespace gatzk::protocol
                 model_registry << '|' << label << '=' << context.static_commitments.at(label).point.to_string();
             }
             for (const auto &label : {
-                     output_src_label(head, false), output_dst_label(head, false),
-                     output_bias_label(head, false)})
+                     output_src_label(head), output_dst_label(head),
+                     output_bias_label(head)})
             {
                 model_registry << '|' << label << '=' << context.static_commitments.at(label).point.to_string();
             }
@@ -1228,38 +1154,34 @@ namespace gatzk::protocol
                 hidden_layer_concat_star_label(layer_index, is_final_layer),
                 hidden_layer_cat_prefix(layer_index, is_final_layer));
         }
-        const bool legacy_single_output = false;
         for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
         {
             append_output_head_dynamic_labels(
                 labels,
-                output_head_prefix(head_index, legacy_single_output),
-                output_y_lin_label(head_index, legacy_single_output),
-                output_y_label(head_index, legacy_single_output));
+                output_head_prefix(head_index),
+                output_y_lin_label(head_index),
+                output_y_label(head_index));
             append_signed_division_labels(
                 labels,
-                output_head_prefix(head_index, legacy_single_output) + "_Div_",
+                output_head_prefix(head_index) + "_Div_",
                 context.config.range_bits);
             labels.push_back(output_model_binding_blinder_label(head_index, "proj"));
             labels.push_back(output_model_binding_blinder_label(head_index, "src"));
             labels.push_back(output_model_binding_blinder_label(head_index, "dst"));
         }
-        if (!legacy_single_output)
+        labels.push_back("P_Y_lin");
+        labels.push_back("P_Y");
+        append_signed_division_labels(labels, "P_avg_Div_", context.config.range_bits);
+        for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
         {
-            labels.push_back("P_Y_lin");
-            labels.push_back("P_Y");
-            append_signed_division_labels(labels, "P_avg_Div_", context.config.range_bits);
-            for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
-            {
-                const auto prefix = output_head_prefix(head_index, false) + "_Bind_";
-                labels.push_back(prefix + "a");
-                labels.push_back(prefix + "b");
-                labels.push_back(prefix + "Acc");
-            }
-            labels.push_back("P_avg_Bind_a");
-            labels.push_back("P_avg_Bind_b");
-            labels.push_back("P_avg_Bind_Acc");
+            const auto prefix = output_head_prefix(head_index) + "_Bind_";
+            labels.push_back(prefix + "a");
+            labels.push_back(prefix + "b");
+            labels.push_back(prefix + "Acc");
         }
+        labels.push_back("P_avg_Bind_a");
+        labels.push_back("P_avg_Bind_b");
+        labels.push_back("P_avg_Bind_Acc");
         return labels;
     }
 
@@ -1667,7 +1589,6 @@ namespace gatzk::protocol
                     transcript.challenge(hidden_concat_y_name(layer_index, is_final_layer));
             }
 
-            const bool legacy_single_output = false;
             const auto final_hidden_label =
                 hidden_layer_concat_label(context.model.hidden_layers.size() - 1, true);
             for (std::size_t head_index = 0;
@@ -1676,14 +1597,14 @@ namespace gatzk::protocol
             {
                 absorb(
                     transcript,
-                    output_head_prefix(head_index, legacy_single_output) + "_Y_prime",
+                    output_head_prefix(head_index) + "_Y_prime",
                     dynamic_commitments);
             }
             out["xi_out"] = transcript.challenge("xi_out");
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {
-                const auto prefix = output_head_prefix(head_index, legacy_single_output);
-                const auto y_label = output_y_label(head_index, legacy_single_output);
+                const auto prefix = output_head_prefix(head_index);
+                const auto y_label = output_y_label(head_index);
                 absorb(transcript, final_hidden_label, dynamic_commitments);
                 absorb(transcript, prefix + "_Y_prime", dynamic_commitments);
                 for (std::size_t column = 0; column < context.local.num_classes; ++column)
@@ -1693,8 +1614,8 @@ namespace gatzk::protocol
                         output_weight_column_label(head_index, column),
                         dynamic_commitments);
                 }
-                out[output_challenge_name("y_proj_out", head_index, legacy_single_output)] =
-                    transcript.challenge(output_challenge_name("y_proj_out", head_index, legacy_single_output));
+                out[output_challenge_name("y_proj_out", head_index)] =
+                    transcript.challenge(output_challenge_name("y_proj_out", head_index));
                     absorb(transcript, prefix + "_Y_prime", dynamic_commitments);
                     absorb(transcript, prefix + "_E_src", dynamic_commitments);
                     absorb(
@@ -1703,10 +1624,10 @@ namespace gatzk::protocol
                         dynamic_commitments);
                     absorb_model_reblind(
                     transcript,
-                    output_src_label(head_index, legacy_single_output),
+                    output_src_label(head_index),
                     dynamic_commitments);
-                out[output_challenge_name("y_src_out", head_index, legacy_single_output)] =
-                    transcript.challenge(output_challenge_name("y_src_out", head_index, legacy_single_output));
+                out[output_challenge_name("y_src_out", head_index)] =
+                    transcript.challenge(output_challenge_name("y_src_out", head_index));
                     absorb(transcript, prefix + "_Y_prime", dynamic_commitments);
                     absorb(transcript, prefix + "_E_dst", dynamic_commitments);
                     absorb(
@@ -1715,19 +1636,19 @@ namespace gatzk::protocol
                         dynamic_commitments);
                     absorb_model_reblind(
                     transcript,
-                    output_dst_label(head_index, legacy_single_output),
+                    output_dst_label(head_index),
                     dynamic_commitments);
-                out[output_challenge_name("y_dst_out", head_index, legacy_single_output)] =
-                    transcript.challenge(output_challenge_name("y_dst_out", head_index, legacy_single_output));
+                out[output_challenge_name("y_dst_out", head_index)] =
+                    transcript.challenge(output_challenge_name("y_dst_out", head_index));
                 absorb(transcript, prefix + "_Y_prime_star", dynamic_commitments);
                 absorb(transcript, prefix + "_Y_prime_star_edge", dynamic_commitments);
-                out[output_challenge_name("eta_src_out", head_index, legacy_single_output)] =
-                    transcript.challenge(output_challenge_name("eta_src_out", head_index, legacy_single_output));
+                out[output_challenge_name("eta_src_out", head_index)] =
+                    transcript.challenge(output_challenge_name("eta_src_out", head_index));
                 absorb(transcript, prefix + "_Table_src", dynamic_commitments);
                 absorb(transcript, prefix + "_Query_src", dynamic_commitments);
                 absorb(transcript, prefix + "_m_src", dynamic_commitments);
-                out[output_challenge_name("beta_src_out", head_index, legacy_single_output)] =
-                    transcript.challenge(output_challenge_name("beta_src_out", head_index, legacy_single_output));
+                out[output_challenge_name("beta_src_out", head_index)] =
+                    transcript.challenge(output_challenge_name("beta_src_out", head_index));
                 absorb(transcript, prefix + "_J_src_node", dynamic_commitments);
                 absorb(transcript, prefix + "_J_src_edge", dynamic_commitments);
                 absorb(transcript, prefix + "_R_src_node", dynamic_commitments);
@@ -1736,14 +1657,14 @@ namespace gatzk::protocol
                 absorb(transcript, prefix + "_Z", dynamic_commitments);
                 absorb_static(transcript, context, "V_T_L_x");
                 absorb_static(transcript, context, "V_T_L_y");
-                out[output_challenge_name("eta_L_out", head_index, legacy_single_output)] =
-                    transcript.challenge(output_challenge_name("eta_L_out", head_index, legacy_single_output));
+                out[output_challenge_name("eta_L_out", head_index)] =
+                    transcript.challenge(output_challenge_name("eta_L_out", head_index));
                 for (const auto *suffix : {"_Table_L", "_Query_L", "_m_L"})
                 {
                     absorb(transcript, prefix + suffix, dynamic_commitments);
                 }
-                out[output_challenge_name("beta_L_out", head_index, legacy_single_output)] =
-                    transcript.challenge(output_challenge_name("beta_L_out", head_index, legacy_single_output));
+                out[output_challenge_name("beta_L_out", head_index)] =
+                    transcript.challenge(output_challenge_name("beta_L_out", head_index));
                 for (const auto *suffix : {"_J_tbl_L", "_J_qry_L", "_R_L"})
                 {
                     absorb(transcript, prefix + suffix, dynamic_commitments);
@@ -1756,8 +1677,8 @@ namespace gatzk::protocol
                 {
                     absorb(transcript, prefix + suffix, dynamic_commitments);
                 }
-                out[output_challenge_name("beta_R_out", head_index, legacy_single_output)] =
-                    transcript.challenge(output_challenge_name("beta_R_out", head_index, legacy_single_output));
+                out[output_challenge_name("beta_R_out", head_index)] =
+                    transcript.challenge(output_challenge_name("beta_R_out", head_index));
                 for (const auto *suffix : {"_J_tbl_R", "_J_qry_R", "_R_R"})
                 {
                     absorb(transcript, prefix + suffix, dynamic_commitments);
@@ -1766,29 +1687,29 @@ namespace gatzk::protocol
                 absorb(transcript, prefix + "_U", dynamic_commitments);
                 absorb_static(transcript, context, "V_T_exp_x");
                 absorb_static(transcript, context, "V_T_exp_y");
-                out[output_challenge_name("eta_exp_out", head_index, legacy_single_output)] =
-                    transcript.challenge(output_challenge_name("eta_exp_out", head_index, legacy_single_output));
+                out[output_challenge_name("eta_exp_out", head_index)] =
+                    transcript.challenge(output_challenge_name("eta_exp_out", head_index));
                 for (const auto *suffix : {"_Table_exp", "_Query_exp", "_m_exp"})
                 {
                     absorb(transcript, prefix + suffix, dynamic_commitments);
                 }
-                out[output_challenge_name("beta_exp_out", head_index, legacy_single_output)] =
-                    transcript.challenge(output_challenge_name("beta_exp_out", head_index, legacy_single_output));
+                out[output_challenge_name("beta_exp_out", head_index)] =
+                    transcript.challenge(output_challenge_name("beta_exp_out", head_index));
                 for (const auto *suffix : {"_J_tbl_exp", "_J_qry_exp", "_R_exp"})
                 {
                     absorb(transcript, prefix + suffix, dynamic_commitments);
                 }
-                out[output_challenge_name("lambda_out", head_index, legacy_single_output)] =
-                    transcript.challenge(output_challenge_name("lambda_out", head_index, legacy_single_output));
+                out[output_challenge_name("lambda_out", head_index)] =
+                    transcript.challenge(output_challenge_name("lambda_out", head_index));
                 absorb(transcript, prefix + "_T", dynamic_commitments);
                 absorb(transcript, prefix + "_T_edge", dynamic_commitments);
-                out[output_challenge_name("eta_t_out", head_index, legacy_single_output)] =
-                    transcript.challenge(output_challenge_name("eta_t_out", head_index, legacy_single_output));
+                out[output_challenge_name("eta_t_out", head_index)] =
+                    transcript.challenge(output_challenge_name("eta_t_out", head_index));
                 absorb(transcript, prefix + "_Table_t", dynamic_commitments);
                 absorb(transcript, prefix + "_Query_t", dynamic_commitments);
                 absorb(transcript, prefix + "_m_t", dynamic_commitments);
-                out[output_challenge_name("beta_t_out", head_index, legacy_single_output)] =
-                    transcript.challenge(output_challenge_name("beta_t_out", head_index, legacy_single_output));
+                out[output_challenge_name("beta_t_out", head_index)] =
+                    transcript.challenge(output_challenge_name("beta_t_out", head_index));
                 absorb(transcript, prefix + "_J_t_node", dynamic_commitments);
                 absorb(transcript, prefix + "_J_t_edge", dynamic_commitments);
                 absorb(transcript, prefix + "_R_t_node", dynamic_commitments);
@@ -1799,21 +1720,21 @@ namespace gatzk::protocol
                     transcript,
                     external_mask_label(prefix + "_Y_star"),
                     dynamic_commitments);
-                out[output_challenge_name("y_out_star", head_index, legacy_single_output)] =
-                    transcript.challenge(output_challenge_name("y_out_star", head_index, legacy_single_output));
+                out[output_challenge_name("y_out_star", head_index)] =
+                    transcript.challenge(output_challenge_name("y_out_star", head_index));
                 for (const auto *suffix : {
                          "_E_dst", "_M", "_Sum", "_inv", "_Y_star",
                          "_E_dst_edge", "_M_edge", "_Sum_edge", "_inv_edge", "_Y_star_edge"})
                 {
                     absorb(transcript, prefix + suffix, dynamic_commitments);
                 }
-                out[output_challenge_name("eta_dst_out", head_index, legacy_single_output)] =
-                    transcript.challenge(output_challenge_name("eta_dst_out", head_index, legacy_single_output));
+                out[output_challenge_name("eta_dst_out", head_index)] =
+                    transcript.challenge(output_challenge_name("eta_dst_out", head_index));
                 absorb(transcript, prefix + "_Table_dst", dynamic_commitments);
                 absorb(transcript, prefix + "_Query_dst", dynamic_commitments);
                 absorb(transcript, prefix + "_m_dst", dynamic_commitments);
-                out[output_challenge_name("beta_dst_out", head_index, legacy_single_output)] =
-                    transcript.challenge(output_challenge_name("beta_dst_out", head_index, legacy_single_output));
+                out[output_challenge_name("beta_dst_out", head_index)] =
+                    transcript.challenge(output_challenge_name("beta_dst_out", head_index));
                 absorb(transcript, prefix + "_J_dst_node", dynamic_commitments);
                 absorb(transcript, prefix + "_J_dst_edge", dynamic_commitments);
                 absorb(transcript, prefix + "_R_dst_node", dynamic_commitments);
@@ -1924,29 +1845,27 @@ namespace gatzk::protocol
                 }
             }
 
-            if (!legacy_single_output)
+            for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {
-                for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
-                {
-                    absorb(transcript, output_y_lin_label(head_index, false), dynamic_commitments);
-                absorb(transcript, output_y_label(head_index, false), dynamic_commitments);
+                    absorb(transcript, output_y_lin_label(head_index), dynamic_commitments);
+                absorb(transcript, output_y_label(head_index), dynamic_commitments);
                     absorb_model_reblind(
                         transcript,
-                        output_bias_label(head_index, false),
+                        output_bias_label(head_index),
                         dynamic_commitments);
-                    absorb(transcript, output_head_prefix(head_index, false) + "_Y_star", dynamic_commitments);
-                    absorb(transcript, output_head_prefix(head_index, false) + "_Table_dst", dynamic_commitments);
-                    absorb(transcript, output_head_prefix(head_index, false) + "_Query_dst", dynamic_commitments);
-                    absorb(transcript, output_head_prefix(head_index, false) + "_Y_pre_flat", dynamic_commitments);
-                    absorb(transcript, output_head_prefix(head_index, false) + "_Bias_flat", dynamic_commitments);
-                    absorb(transcript, output_head_prefix(head_index, false) + "_Y_flat", dynamic_commitments);
+                    absorb(transcript, output_head_prefix(head_index) + "_Y_star", dynamic_commitments);
+                    absorb(transcript, output_head_prefix(head_index) + "_Table_dst", dynamic_commitments);
+                    absorb(transcript, output_head_prefix(head_index) + "_Query_dst", dynamic_commitments);
+                    absorb(transcript, output_head_prefix(head_index) + "_Y_pre_flat", dynamic_commitments);
+                    absorb(transcript, output_head_prefix(head_index) + "_Bias_flat", dynamic_commitments);
+                    absorb(transcript, output_head_prefix(head_index) + "_Y_flat", dynamic_commitments);
                     for (const auto *suffix : {
                              "Active", "X", "D", "Y", "Sigma", "Zero",
                              "A", "A_inv", "D_inv", "Q", "R", "Delta"})
                     {
                         absorb(
                             transcript,
-                            output_head_prefix(head_index, false) + "_Div_" + suffix,
+                            output_head_prefix(head_index) + "_Div_" + suffix,
                             dynamic_commitments);
                     }
                     const auto relation_id = "bind:output:" + std::to_string(head_index);
@@ -2063,24 +1982,14 @@ namespace gatzk::protocol
                                             .is_zero();
                                     });
                             });
-                }
-                absorb(transcript, "P_Y_lin", dynamic_commitments);
-                absorb(transcript, "P_Y", dynamic_commitments);
-                for (const auto *suffix : {
-                         "Active", "X", "D", "Y", "Sigma", "Zero",
-                         "A", "A_inv", "D_inv", "Q", "R", "Delta"})
-                {
-                    absorb(transcript, "P_avg_Div_" + std::string(suffix), dynamic_commitments);
-                }
             }
-            else
+            absorb(transcript, "P_Y_lin", dynamic_commitments);
+            absorb(transcript, "P_Y", dynamic_commitments);
+            for (const auto *suffix : {
+                     "Active", "X", "D", "Y", "Sigma", "Zero",
+                     "A", "A_inv", "D_inv", "Q", "R", "Delta"})
             {
-                absorb(transcript, "P_out_Y_prime", dynamic_commitments);
-                absorb(transcript, "P_Y", dynamic_commitments);
-                absorb(transcript, "P_out_Y_star", dynamic_commitments);
-                absorb(transcript, "P_out_Table_dst", dynamic_commitments);
-                absorb(transcript, "P_out_Query_dst", dynamic_commitments);
-                absorb_static(transcript, context, output_bias_label(0, true));
+                absorb(transcript, "P_avg_Div_" + std::string(suffix), dynamic_commitments);
             }
             out["y_out"] = transcript.challenge("y_out");
 

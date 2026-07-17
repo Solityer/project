@@ -447,7 +447,6 @@ namespace
             || out.max_edges > domains.at("edge")
             || out.max_input_dim > domains.at("in")
             || out.max_hidden_head_dim > domains.at("d")
-            || out.max_classes > domains.at("cat")
             || out.max_classes > domains.at("C")
             || out.max_concat_dim > domains.at("cat")
             || out.max_graphs > out.max_nodes)
