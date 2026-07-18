@@ -29,11 +29,11 @@ namespace gatzk::algebra
     std::size_t cuda_kernel_invocation_count();
     void record_cuda_kernel_invocations(std::size_t count);
 
-    // full_gpu 的 Fr 域热点能力探针。
+    // partial CUDA Fr 热点能力探针；KZG、pairing 与 quotient 仍走 CPU。
     bool cuda_field_hotspots_build_enabled();
     bool cuda_field_hotspots_available();
 
-    // full_gpu 的统一 size-aware 路由策略，只决定实现路线，不改变 formal 结果。
+    // partial CUDA 的统一 size-aware 路由策略，只决定实现路线，不改变 formal 结果。
     bool should_use_cuda_barycentric_weights(
         std::size_t domain_size,
         bool points_precomputed);
@@ -54,7 +54,7 @@ namespace gatzk::algebra
         uint64_t* output_weight_limbs,
         std::size_t domain_size);
 
-    // 使用共享权重对打包列做 GPU 加权求值，是 full_gpu 下 PackedEvaluationBackend 的核心加速入口。
+    // 使用共享权重对打包列做 GPU 加权求值，是 partial CUDA PackedEvaluationBackend 的加速入口。
     bool weighted_poly_eval_gpu(
         const uint64_t* weight_limbs,
         const uint64_t* interleaved_value_limbs,

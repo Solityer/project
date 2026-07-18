@@ -199,7 +199,7 @@ namespace gatzk::crypto
         }
         else if (scalar_count >= 1024)
         {
-            by_size = 2;
+            by_size = 4;
         }
         else
         {

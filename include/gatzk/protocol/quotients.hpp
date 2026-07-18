@@ -56,7 +56,8 @@ algebra::FieldElement evaluate_t_edge(
     const algebra::FieldElement& z,
     bool return_numerator = false,
     std::size_t* first_nonzero_term = nullptr,
-    algebra::FieldElement* first_nonzero_value = nullptr);
+    algebra::FieldElement* first_nonzero_value = nullptr,
+    const std::vector<algebra::FieldElement>* precomputed_alpha_powers = nullptr);
 
 algebra::FieldElement evaluate_t_n(
     const ProtocolContext& context,

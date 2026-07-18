@@ -4,11 +4,14 @@
 `GAT-ZKML-多层多头.md` 和 `PROJECT_CONTEXT_AND_EXECUTION_CONSTRAINTS.md`
 为准；`comparison/` 不属于主实验构建、测试或运行依赖。
 
-## 当前状态（2026-07-17）
+## 当前状态（2026-07-18）
 
-**协议实现完成，跨后端验收待完成。** 当前 proof schema、transcript、proof
-wire format、parser 与 verifier 语义处于候选冻结状态。此表述不代表第一阶段
-已经通过，也不授权生成论文正式结果。
+**协议实现处于候选冻结状态，第三阶段非全量性能工程范围已收敛，跨后端全量验收待用户执行。**
+当前 proof schema、transcript、proof wire format、parser 与 verifier 语义未因性能优化
+改变。第三阶段保留了 CPU MSM/批调度、`t_edge`、KZG opening/verifier 和部分 CUDA
+hotspot 优化；完整证据、回滚项和断点见
+[`PHASE3_PERFORMANCE_OPTIMIZATION.md`](PHASE3_PERFORMANCE_OPTIMIZATION.md)。此状态不代表
+第一阶段最终全量验收已通过，也不授权自动生成论文正式结果。
 
 最新 Cora CPU 完整安全验收由项目负责人调整调度并人工终止：
 
@@ -63,6 +66,9 @@ cmake --build build --target gatzk_run gatzk_tests -j
 cmake -S . -B build_cuda -DCMAKE_BUILD_TYPE=Release \
   -DGATZK_ENABLE_CUDA_BACKEND=ON
 cmake --build build_cuda --target gatzk_run gatzk_tests -j
+
+# 仅 CUDA 配置提供该有界热点 benchmark
+cmake --build build_cuda --target gatzk_cuda_hotspots_stage_bench -j
 ```
 
 ## 配置与 SRS
@@ -80,17 +86,17 @@ cmake --build build_cuda --target gatzk_run gatzk_tests -j
 数据集 × CPU/GPU 的十组正式实验。对应 envelope compiler artifact 可保留，但不是
 SRS 或正式实验结果。
 
-## 验证顺序
+## 验证状态与后续顺序
 
-第三阶段先运行一次 Cora GPU 端到端验证，同时建立优化前基线。只保留具有稳定端到端
-收益且不改变协议语义的优化。最终统一验收包含：
+第三阶段已完成 bounded stage benchmark、极小正式调用链、strict parser/verifier、扩展
+安全单元回归和 CUDA 精确一致性测试；未执行任何完整数据集证明。最终统一验收仍包括
+Cora、Citeseer、Pubmed、PPI、ogbn-arxiv 的 CPU/GPU 正式行，并且只能由项目负责人决定
+何时运行。建议逐行串行执行并先完成缺失 SRS 的生成和严格扫描；命令、恢复规则、资源
+风险和中断注意事项统一维护在第三阶段性能记录的“Remaining user-authorized
+full-dataset handoff”一节。
 
-1. Cora CPU 最终回归；
-2. Cora GPU 最终回归；
-3. PPI 代表性真实多图 CPU/GPU；
-4. strict parser、verifier-only 与必要篡改拒绝回归。
-
-上述跨后端验收全部完成前，不得宣称第一阶段或三个阶段全部通过。
+上述跨后端验收全部完成前，不得宣称第一阶段或三个阶段全部通过，也不得把小输入或
+stage benchmark 的数据写成正式数据集结果。
 
 静态安全扫描默认检查正式源代码和所有已经物化的配置 SRS；未获准生成的 SRS 会明确
 列为 skipped。只有所有数据集 SRS 均已生成时才使用严格全配置模式：

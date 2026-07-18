@@ -392,6 +392,15 @@ void test_kzg_opening_selftest() {
             {blinded_commitment}, private_points, private_claims,
             FieldElement(41), private_opening, keys.vk),
         "zero-domain-blinded point-group opening must verify");
+    auto invalid_private_claim = private_claims;
+    invalid_private_claim[0][0] += FieldElement::one();
+    require_throws(
+        [&] {
+            (void)gatzk::crypto::KZG::open_batch(
+                {blinded_commitment}, private_points, invalid_private_claim,
+                FieldElement(41), keys);
+        },
+        "KZG prover must reject an incorrect individual evaluation claim");
     auto private_claim_tamper = private_claims;
     private_claim_tamper[0][1] += FieldElement::one();
     require(
@@ -2851,11 +2860,14 @@ int main() {
         std::cerr << "running test_packed_backend_padded_tail_regression\n";
         test_packed_backend_padded_tail_regression();
         if (!skip_srs_tests) {
-            if (std::getenv("GATZK_SKIP_LARGE_MSM_TESTS") == nullptr) {
+            const bool run_large_msm_tests =
+                std::getenv("GATZK_RUN_LARGE_MSM_TESTS") != nullptr
+                && std::getenv("GATZK_SKIP_LARGE_MSM_TESTS") == nullptr;
+            if (run_large_msm_tests) {
                 std::cerr << "running test_msm_chunked_equivalence_regression\n";
                 test_msm_chunked_equivalence_regression();
             } else {
-                std::cerr << "skipping large-SRS MSM regression; GATZK_SKIP_LARGE_MSM_TESTS is set\n";
+                std::cerr << "skipping opt-in large-SRS MSM regression; set GATZK_RUN_LARGE_MSM_TESTS=1 with a sufficiently large test SRS to run it\n";
             }
             std::cerr << "running test_srs_mismatch_gate\n";
             test_srs_mismatch_gate();

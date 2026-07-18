@@ -203,12 +203,64 @@ namespace gatzk::algebra
             throw std::runtime_error("domain evaluation backend weight size mismatch");
         }
 
-        const auto& subset = subset_for(labels);
-        const auto row_count = subset.row_indices.size();
-        const bool use_cached_subset = !subset.interleaved_values.empty();
-
         const auto& route2 = util::route2_options();
+        const auto row_count = labels.size();
         const bool try_gpu = should_use_cuda_weighted_evaluation(domain_->size, row_count);
+
+        // On a unified-memory device, full-domain evaluation polynomials are
+        // already stored in the columnar layout consumed by the CUDA kernel.
+        // Use those read-only columns directly instead of materializing or
+        // scanning an interleaved label subset first. Short columns must keep
+        // the existing zero-padding path below.
+        if (try_gpu && cuda_backend_unified_addressing_available())
+        {
+            std::vector<const uint64_t*> direct_column_ptrs;
+            direct_column_ptrs.reserve(row_count);
+            bool full_domain_columns = true;
+            for (const auto& label : labels)
+            {
+                const auto label_it = label_to_index_.find(label);
+                if (label_it == label_to_index_.end())
+                {
+                    throw std::runtime_error(
+                        "domain evaluation backend is missing label: " + label);
+                }
+                const auto& values = polynomials_[label_it->second].second->values();
+                if (values.size() < domain_->size)
+                {
+                    full_domain_columns = false;
+                    break;
+                }
+                direct_column_ptrs.push_back(reinterpret_cast<const uint64_t*>(
+                    FieldElement::native_array_data(values.data())));
+            }
+            if (full_domain_columns)
+            {
+                std::vector<mcl::Fr> gpu_results(row_count);
+                for (auto& value : gpu_results) value.clear();
+                const bool gpu_ok = weighted_poly_eval_gpu_multi(
+                    reinterpret_cast<const uint64_t*>(weights.data()),
+                    direct_column_ptrs.data(),
+                    reinterpret_cast<uint64_t*>(gpu_results.data()),
+                    domain_->size,
+                    row_count);
+                if (!gpu_ok)
+                {
+                    throw std::runtime_error(
+                        "CUDA direct columnar evaluation kernel failed; refusing silent CPU fallback");
+                }
+                std::vector<FieldElement> out;
+                out.reserve(row_count);
+                for (const auto& value : gpu_results)
+                {
+                    out.push_back(FieldElement::from_native(value));
+                }
+                return out;
+            }
+        }
+
+        const auto& subset = subset_for(labels);
+        const bool use_cached_subset = !subset.interleaved_values.empty();
 
         if (try_gpu)
         {

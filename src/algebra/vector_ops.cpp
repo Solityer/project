@@ -308,7 +308,7 @@ namespace gatzk::algebra
         }
 
         const bool unified = cuda_backend_unified_addressing_available();
-        const auto min_index_count = unified ? 4096ULL : 16384ULL;
+        const auto min_index_count = 16384ULL;
         const auto min_bucket_count = unified ? 1024ULL : 4096ULL;
         return index_count >= min_index_count && bucket_count >= min_bucket_count;
     }

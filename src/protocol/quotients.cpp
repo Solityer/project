@@ -1,5 +1,6 @@
 #include "gatzk/protocol/quotients.hpp"
 
+#include <array>
 #include <chrono>
 #include <cctype>
 #include <cstdint>
@@ -228,14 +229,17 @@ namespace gatzk::protocol
             return std::nullopt;
         }
 
-        class QuotientAccumulator
+        template <bool UsePrecomputedAlphaPowers>
+        class BasicQuotientAccumulator
         {
         public:
-            explicit QuotientAccumulator(
+            explicit BasicQuotientAccumulator(
                 const FieldElement &alpha,
-                bool track_first_nonzero = false)
+                bool track_first_nonzero = false,
+                const std::vector<FieldElement> *precomputed_alpha_powers = nullptr)
                 : alpha_(alpha.native()),
-                  track_first_nonzero_(track_first_nonzero)
+                  track_first_nonzero_(track_first_nonzero),
+                  precomputed_alpha_powers_(precomputed_alpha_powers)
             {
                 power_ = 1;
                 sum_.clear();
@@ -251,9 +255,24 @@ namespace gatzk::protocol
                     first_nonzero_value_ = term;
                 }
                 mcl::Fr product;
-                mcl::Fr::mul(product, power_, term.native());
-                mcl::Fr::add(sum_, sum_, product);
-                mcl::Fr::mul(power_, power_, alpha_);
+                if constexpr (!UsePrecomputedAlphaPowers)
+                {
+                    mcl::Fr::mul(product, power_, term.native());
+                    mcl::Fr::add(sum_, sum_, product);
+                    mcl::Fr::mul(power_, power_, alpha_);
+                }
+                else
+                {
+                    const auto &power = term_count_ < precomputed_alpha_powers_->size()
+                        ? precomputed_alpha_powers_->at(term_count_).native()
+                        : power_;
+                    mcl::Fr::mul(product, power, term.native());
+                    mcl::Fr::add(sum_, sum_, product);
+                    if (term_count_ + 1 >= precomputed_alpha_powers_->size())
+                    {
+                        mcl::Fr::mul(power_, power, alpha_);
+                    }
+                }
                 ++term_count_;
             }
 
@@ -277,10 +296,13 @@ namespace gatzk::protocol
             mcl::Fr power_;
             mcl::Fr sum_;
             bool track_first_nonzero_ = false;
+            const std::vector<FieldElement> *precomputed_alpha_powers_ = nullptr;
             std::size_t term_count_ = 0;
             std::optional<std::size_t> first_nonzero_term_;
             FieldElement first_nonzero_value_ = FieldElement::zero();
         };
+
+        using QuotientAccumulator = BasicQuotientAccumulator<false>;
 
         FieldElement route_node_step(
             const FieldElement &next_value,
@@ -326,6 +348,78 @@ namespace gatzk::protocol
         FieldElement zero_on_unselected(const FieldElement &selector, const FieldElement &value)
         {
             return (FieldElement::one() - selector) * value;
+        }
+
+        struct SignedDivisionLimbLabelPlan
+        {
+            std::string limb;
+            std::array<std::string, 6> range;
+            std::string beta;
+        };
+
+        struct SignedDivisionLabelPlan
+        {
+            std::string prefix;
+            std::size_t range_bits = 0;
+            std::array<std::string, 12> values;
+            std::array<std::vector<SignedDivisionLimbLabelPlan>, 5> decompositions;
+        };
+
+        const SignedDivisionLabelPlan &signed_division_label_plan(
+            const std::string &prefix,
+            std::size_t range_bits)
+        {
+            thread_local std::vector<SignedDivisionLabelPlan> cache;
+            for (const auto &entry : cache)
+            {
+                if (entry.range_bits == range_bits && entry.prefix == prefix)
+                    return entry;
+            }
+
+            constexpr std::array<std::string_view, 12> value_suffixes = {
+                "Active", "X", "D", "Y", "Sigma", "Zero",
+                "A", "A_inv", "D_inv", "Q", "R", "Delta",
+            };
+            constexpr std::array<std::string_view, 5> decomposition_names = {
+                "A", "DMinus1", "Q", "R", "Delta",
+            };
+            constexpr std::array<std::string_view, 6> range_columns = {
+                "Table", "Query", "m", "J_tbl", "J_qry", "R",
+            };
+
+            SignedDivisionLabelPlan plan;
+            plan.prefix = prefix;
+            plan.range_bits = range_bits;
+            for (std::size_t index = 0; index < value_suffixes.size(); ++index)
+                plan.values[index] = prefix + std::string(value_suffixes[index]);
+
+            const auto limb_count = signed_division_limb_count(range_bits);
+            for (std::size_t value_index = 0;
+                 value_index < decomposition_names.size(); ++value_index)
+            {
+                auto &limbs = plan.decompositions[value_index];
+                limbs.reserve(limb_count);
+                for (std::size_t limb = 0; limb < limb_count; ++limb)
+                {
+                    SignedDivisionLimbLabelPlan limb_plan;
+                    limb_plan.limb = signed_division_limb_label(
+                        prefix, decomposition_names[value_index], limb);
+                    for (std::size_t column = 0;
+                         column < range_columns.size(); ++column)
+                    {
+                        limb_plan.range[column] = signed_division_range_label(
+                            prefix,
+                            decomposition_names[value_index],
+                            limb,
+                            range_columns[column]);
+                    }
+                    limb_plan.beta = signed_division_beta_name(
+                        prefix, decomposition_names[value_index], limb);
+                    limbs.push_back(std::move(limb_plan));
+                }
+            }
+            cache.push_back(std::move(plan));
+            return cache.back();
         }
 
     }
@@ -524,7 +618,8 @@ namespace gatzk::protocol
         return result;
     }
 
-    FieldElement evaluate_t_edge(
+    template <bool UsePrecomputedAlphaPowers>
+    FieldElement evaluate_t_edge_impl(
         const ProtocolContext &context,
         const std::map<std::string, FieldElement> &challenges,
         const std::map<std::string, FieldElement> &external_evaluations,
@@ -532,7 +627,8 @@ namespace gatzk::protocol
         const FieldElement &z,
         bool return_numerator,
         std::size_t *first_nonzero_term,
-        FieldElement *first_nonzero_value)
+        FieldElement *first_nonzero_value,
+        const std::vector<FieldElement> *precomputed_alpha_powers)
     {
         if (context.model.has_real_multihead)
         {
@@ -543,6 +639,10 @@ namespace gatzk::protocol
             const auto not_last = FieldElement::one() - last;
             const auto zero_eval = context.domains.edge->zero_polynomial_eval(z);
             const auto one = FieldElement::one();
+            const auto two = FieldElement(2);
+            (void)signed_division_limb_count(context.config.range_bits);
+            const auto signed_division_limb_base =
+                FieldElement(std::uint64_t{1} << context.config.range_bits);
             auto eval_z = [&](const std::string &label)
             {
                 return eval(label, z);
@@ -573,30 +673,30 @@ namespace gatzk::protocol
             const auto t_exp_y_z = eval_z("P_T_exp_y");
             const auto t_elu_x_z = eval_z("P_T_ELU_x");
             const auto t_elu_y_z = eval_z("P_T_ELU_y");
-            QuotientAccumulator acc(
-                challenges.at("alpha_quot"), return_numerator);
+            BasicQuotientAccumulator<UsePrecomputedAlphaPowers> acc(
+                challenges.at("alpha_quot"),
+                return_numerator,
+                precomputed_alpha_powers);
             auto add_signed_division_constraints = [&](
                 const std::string &prefix,
                 const std::string &public_selector_label)
             {
                 const auto selector = eval_z(public_selector_label);
-                auto value = [&](std::string_view suffix)
-                {
-                    return eval_z(prefix + std::string(suffix));
-                };
-                const auto active = value("Active");
-                const auto x = value("X");
-                const auto d = value("D");
-                const auto y = value("Y");
-                const auto sigma = value("Sigma");
-                const auto zero = value("Zero");
-                const auto a = value("A");
-                const auto a_inv = value("A_inv");
-                const auto d_inv = value("D_inv");
-                const auto q = value("Q");
-                const auto r = value("R");
-                const auto delta = value("Delta");
-                const auto sign = one - FieldElement(2) * sigma;
+                const auto &labels = signed_division_label_plan(
+                    prefix, context.config.range_bits);
+                const auto active = eval_z(labels.values[0]);
+                const auto x = eval_z(labels.values[1]);
+                const auto d = eval_z(labels.values[2]);
+                const auto y = eval_z(labels.values[3]);
+                const auto sigma = eval_z(labels.values[4]);
+                const auto zero = eval_z(labels.values[5]);
+                const auto a = eval_z(labels.values[6]);
+                const auto a_inv = eval_z(labels.values[7]);
+                const auto d_inv = eval_z(labels.values[8]);
+                const auto q = eval_z(labels.values[9]);
+                const auto r = eval_z(labels.values[10]);
+                const auto delta = eval_z(labels.values[11]);
+                const auto sign = one - two * sigma;
 
                 acc.add(active - selector);
                 acc.add(selector * sigma * (sigma - one));
@@ -608,8 +708,8 @@ namespace gatzk::protocol
                 acc.add(selector * zero * a_inv);
                 acc.add(selector * (d * d_inv - one));
                 acc.add(selector * (y - sign * q));
-                acc.add(selector * (FieldElement(2) * a + d - FieldElement(2) * d * q - r));
-                acc.add(selector * (r + delta - FieldElement(2) * d + one));
+                acc.add(selector * (two * a + d - two * d * q - r));
+                acc.add(selector * (r + delta - two * d + one));
 
                 // Canonical padding is part of the public column-padding
                 // registry: no auxiliary value may survive outside Q_div.
@@ -618,45 +718,32 @@ namespace gatzk::protocol
                     acc.add((one - selector) * item);
                 }
 
-                const auto limb_count = signed_division_limb_count(context.config.range_bits);
-                const auto limb_base = FieldElement(std::uint64_t{1} << context.config.range_bits);
-                for (const auto *value_name : {"A", "DMinus1", "Q", "R", "Delta"})
+                for (std::size_t value_index = 0;
+                     value_index < labels.decompositions.size(); ++value_index)
                 {
                     const FieldElement source =
-                        std::string_view(value_name) == "A" ? a
-                        : std::string_view(value_name) == "DMinus1" ? d - one
-                        : std::string_view(value_name) == "Q" ? q
-                        : std::string_view(value_name) == "R" ? r
+                        value_index == 0 ? a
+                        : value_index == 1 ? d - one
+                        : value_index == 2 ? q
+                        : value_index == 3 ? r
                         : delta;
                     auto reconstructed = FieldElement::zero();
                     auto place = FieldElement::one();
-                    for (std::size_t limb = 0; limb < limb_count; ++limb)
+                    for (const auto &limb_labels :
+                         labels.decompositions[value_index])
                     {
-                        const auto limb_label = signed_division_limb_label(
-                            prefix, value_name, limb);
-                        const auto limb_value = eval_z(limb_label);
+                        const auto limb_value = eval_z(limb_labels.limb);
                         reconstructed += place * limb_value;
-                        place *= limb_base;
+                        place *= signed_division_limb_base;
 
-                        auto range_value = [&](std::string_view column)
-                        {
-                            return eval_z(signed_division_range_label(
-                                prefix, value_name, limb, column));
-                        };
-                        auto range_omega = [&](std::string_view column)
-                        {
-                            return eval_omega(signed_division_range_label(
-                                prefix, value_name, limb, column));
-                        };
-                        const auto table = range_value("Table");
-                        const auto query = range_value("Query");
-                        const auto multiplicity = range_value("m");
-                        const auto j_table = range_value("J_tbl");
-                        const auto j_query = range_value("J_qry");
-                        const auto accumulator = range_value("R");
-                        const auto accumulator_next = range_omega("R");
-                        const auto beta = challenges.at(signed_division_beta_name(
-                            prefix, value_name, limb));
+                        const auto table = eval_z(limb_labels.range[0]);
+                        const auto query = eval_z(limb_labels.range[1]);
+                        const auto multiplicity = eval_z(limb_labels.range[2]);
+                        const auto j_table = eval_z(limb_labels.range[3]);
+                        const auto j_query = eval_z(limb_labels.range[4]);
+                        const auto accumulator = eval_z(limb_labels.range[5]);
+                        const auto accumulator_next = eval_omega(limb_labels.range[5]);
+                        const auto beta = challenges.at(limb_labels.beta);
                         acc.add(first * accumulator);
                         acc.add(not_last * (
                             accumulator_next - accumulator
@@ -1180,6 +1267,42 @@ namespace gatzk::protocol
 
         throw std::runtime_error(
             "t_edge reached the removed single-output compatibility protocol");
+    }
+
+    FieldElement evaluate_t_edge(
+        const ProtocolContext &context,
+        const std::map<std::string, FieldElement> &challenges,
+        const std::map<std::string, FieldElement> &external_evaluations,
+        const EvalFn &eval,
+        const FieldElement &z,
+        bool return_numerator,
+        std::size_t *first_nonzero_term,
+        FieldElement *first_nonzero_value,
+        const std::vector<FieldElement> *precomputed_alpha_powers)
+    {
+        if (precomputed_alpha_powers != nullptr)
+        {
+            return evaluate_t_edge_impl<true>(
+                context,
+                challenges,
+                external_evaluations,
+                eval,
+                z,
+                return_numerator,
+                first_nonzero_term,
+                first_nonzero_value,
+                precomputed_alpha_powers);
+        }
+        return evaluate_t_edge_impl<false>(
+            context,
+            challenges,
+            external_evaluations,
+            eval,
+            z,
+            return_numerator,
+            first_nonzero_term,
+            first_nonzero_value,
+            nullptr);
     }
 
     FieldElement evaluate_t_n(

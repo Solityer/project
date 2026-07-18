@@ -1598,12 +1598,21 @@ namespace gatzk::protocol
             const std::unordered_map<std::string, crypto::Commitment> &dynamic,
             const std::map<std::string, FieldElement> &challenges)
         {
+            struct DivisibilityCheck
+            {
+                crypto::Commitment proof_local;
+                crypto::Commitment anchor;
+                crypto::Commitment blinder;
+                std::string domain_name;
+            };
+            std::vector<DivisibilityCheck> checks;
+            checks.reserve((formal_hidden_head_count(context) + context.config.K_out) * 3);
             auto required_dynamic = [&](const std::string &label) -> const crypto::Commitment *
             {
                 const auto it = dynamic.find(label);
                 return it == dynamic.end() ? nullptr : &it->second;
             };
-            auto verify_relation = [&]
+            auto append_relation = [&]
             (
                 const std::string &source_label,
                 const crypto::Commitment &anchor,
@@ -1612,9 +1621,17 @@ namespace gatzk::protocol
             {
                 const auto *source = required_dynamic(source_label);
                 const auto *blinder = required_dynamic(blinder_label);
-                return source != nullptr && blinder != nullptr
-                    && crypto::KZG::verify_domain_divisibility(
-                        *source, anchor, *blinder, domain_name, context.kzg.vk);
+                if (source == nullptr || blinder == nullptr)
+                {
+                    return false;
+                }
+                checks.push_back(DivisibilityCheck{
+                    .proof_local = *source,
+                    .anchor = anchor,
+                    .blinder = *blinder,
+                    .domain_name = domain_name,
+                });
+                return true;
             };
             auto folded_anchor = [&]
             (
@@ -1658,11 +1675,11 @@ namespace gatzk::protocol
                     model_proof_local_label(hidden_dst_label(head)));
                 const auto prefix = hidden_head_prefix(head) + "_";
                 if (!anchor.has_value() || src_anchor == nullptr || dst_anchor == nullptr
-                    || !verify_relation(prefix + "b_proj", *anchor,
+                    || !append_relation(prefix + "b_proj", *anchor,
                         hidden_model_binding_blinder_label(head, "proj"), context.domains.in->name)
-                    || !verify_relation(prefix + "b_src", *src_anchor,
+                    || !append_relation(prefix + "b_src", *src_anchor,
                         hidden_model_binding_blinder_label(head, "src"), context.domains.d->name)
-                    || !verify_relation(prefix + "b_dst", *dst_anchor,
+                    || !append_relation(prefix + "b_dst", *dst_anchor,
                         hidden_model_binding_blinder_label(head, "dst"), context.domains.d->name))
                     return false;
             }
@@ -1687,15 +1704,15 @@ namespace gatzk::protocol
                     model_proof_local_label(output_dst_label(head)));
                 const auto prefix = output_head_prefix(head) + "_";
                 if (!anchor.has_value() || src_anchor == nullptr || dst_anchor == nullptr
-                    || !verify_relation(
+                    || !append_relation(
                         prefix + "b_proj", *anchor,
                         output_model_binding_blinder_label(head, "proj"),
                         context.domains.cat->name)
-                    || !verify_relation(
+                    || !append_relation(
                         prefix + "b_src", *src_anchor,
                         output_model_binding_blinder_label(head, "src"),
                         context.domains.c->name)
-                    || !verify_relation(
+                    || !append_relation(
                         prefix + "b_dst", *dst_anchor,
                         output_model_binding_blinder_label(head, "dst"),
                         context.domains.c->name))
@@ -1703,12 +1720,54 @@ namespace gatzk::protocol
                     return false;
                 }
             }
-            return true;
+            std::vector<std::uint8_t> results(checks.size(), 0);
+            auto verify_range = [&](std::size_t begin, std::size_t end)
+            {
+                for (std::size_t index = begin; index < end; ++index)
+                {
+                    const auto &check = checks[index];
+                    results[index] = crypto::KZG::verify_domain_divisibility(
+                        check.proof_local,
+                        check.anchor,
+                        check.blinder,
+                        check.domain_name,
+                        context.kzg.vk)
+                        ? 1
+                        : 0;
+                }
+            };
+            const auto cpu_count = std::max<std::size_t>(
+                1, std::thread::hardware_concurrency());
+            const auto worker_count = std::min(checks.size(), cpu_count);
+            if (worker_count <= 1)
+            {
+                verify_range(0, checks.size());
+            }
+            else
+            {
+                const auto chunk_size = (checks.size() + worker_count - 1) / worker_count;
+                std::vector<std::future<void>> futures;
+                futures.reserve(worker_count);
+                for (std::size_t worker = 0; worker < worker_count; ++worker)
+                {
+                    const auto begin = worker * chunk_size;
+                    const auto end = std::min(checks.size(), begin + chunk_size);
+                    if (begin >= end) break;
+                    futures.push_back(std::async(
+                        std::launch::async, verify_range, begin, end));
+                }
+                for (auto &future : futures) future.get();
+            }
+            return std::all_of(
+                results.begin(), results.end(),
+                [](std::uint8_t result) { return result != 0; });
         }
 
         PublicMetadata build_public_metadata(const ProtocolContext &context)
         {
-            return canonical_public_metadata(context);
+            // verify() validates this immutable artifact immediately before
+            // rebuilding metadata, so do not repeat the full compiler rebuild.
+            return canonical_public_metadata(context, true);
         }
 
         bool metadata_matches(const PublicMetadata &lhs, const PublicMetadata &rhs)
@@ -2080,24 +2139,26 @@ namespace gatzk::protocol
         }
         {
             const auto transcript_start = Clock::now();
-            if (proof.dynamic_commitments.size() != dynamic_commitment_labels(context).size())
+            const auto expected_dynamic_labels = dynamic_commitment_labels(context);
+            if (proof.dynamic_commitments.size() != expected_dynamic_labels.size())
             {
                 return fail("dynamic_commitment_count");
             }
             for (std::size_t i = 0; i < proof.dynamic_commitments.size(); ++i)
             {
-                if (proof.dynamic_commitments[i].first != dynamic_commitment_labels(context)[i])
+                if (proof.dynamic_commitments[i].first != expected_dynamic_labels[i])
                 {
                     return fail("dynamic_commitment_order");
                 }
             }
-            if (proof.quotient_commitments.size() != quotient_commitment_labels(context).size())
+            const auto expected_quotient_labels = quotient_commitment_labels(context);
+            if (proof.quotient_commitments.size() != expected_quotient_labels.size())
             {
                 return fail("quotient_commitment_count");
             }
             for (std::size_t i = 0; i < proof.quotient_commitments.size(); ++i)
             {
-                if (proof.quotient_commitments[i].first != quotient_commitment_labels(context)[i])
+                if (proof.quotient_commitments[i].first != expected_quotient_labels[i])
                 {
                     return fail("quotient_commitment_order");
                 }

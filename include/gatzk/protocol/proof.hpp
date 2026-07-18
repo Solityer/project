@@ -570,11 +570,13 @@ struct RunMetrics {
     double domain_open_c_ms = 0.0;
     double domain_open_n_ms = 0.0;
     double external_opening_ms = 0.0;
+    double proof_serialization_ms = 0.0;
     double prove_finalize_ms = 0.0;
     double prove_accounted_ms = 0.0;
     double prove_accounting_gap_ms = 0.0;
     double prove_time_ms = 0.0;
     double verify_time_ms = 0.0;
+    double proof_parse_ms = 0.0;
     double verify_metadata_ms = 0.0;
     double verify_transcript_ms = 0.0;
     double verify_domain_opening_ms = 0.0;

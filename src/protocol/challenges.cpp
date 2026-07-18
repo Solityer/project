@@ -385,7 +385,9 @@ namespace gatzk::protocol
 
     // 统一构造会进入 transcript、proof metadata 与 run manifest 的公开元数据。
     // 这些字段既参与 verifier 重放，也会影响 proof_size_bytes 中被计入的字符串载荷。
-    PublicMetadata canonical_public_metadata(const ProtocolContext &context)
+    PublicMetadata canonical_public_metadata(
+        const ProtocolContext &context,
+        bool compiler_artifact_already_validated)
     {
         PublicMetadata metadata;
         metadata.protocol_name = "zkgat";
@@ -399,7 +401,9 @@ namespace gatzk::protocol
         }
         const auto &compiler_artifact = *context.compiler_artifact;
         std::string artifact_reason;
-        if (!validate_protocol_compiler_artifact(context, compiler_artifact, &artifact_reason))
+        if (!compiler_artifact_already_validated
+            && !validate_protocol_compiler_artifact(
+                context, compiler_artifact, &artifact_reason))
         {
             throw std::runtime_error("invalid ProtocolCompilerArtifact: " + artifact_reason);
         }
@@ -1347,8 +1351,14 @@ namespace gatzk::protocol
             const std::size_t d_h = model::max_hidden_head_dim(context.model);
             const std::size_t d_cat = model::max_hidden_concat_width(context.model);
 
-            const auto canonical_metadata = canonical_public_metadata(context);
-            absorb_public_metadata(transcript, proof_metadata != nullptr ? *proof_metadata : canonical_metadata);
+            if (proof_metadata != nullptr)
+            {
+                absorb_public_metadata(transcript, *proof_metadata);
+            }
+            else
+            {
+                absorb_public_metadata(transcript, canonical_public_metadata(context));
+            }
             transcript.absorb_scalar("N", algebra::FieldElement(context.local.num_nodes));
             transcript.absorb_scalar("E", algebra::FieldElement(context.local.edges.size()));
             transcript.absorb_scalar("d_in", algebra::FieldElement(context.local.num_features));
@@ -2030,8 +2040,14 @@ namespace gatzk::protocol
         crypto::Transcript transcript("gatzkml");
         std::map<std::string, algebra::FieldElement> out;
 
-        const auto canonical_metadata = canonical_public_metadata(context);
-        absorb_public_metadata(transcript, proof_metadata != nullptr ? *proof_metadata : canonical_metadata);
+        if (proof_metadata != nullptr)
+        {
+            absorb_public_metadata(transcript, *proof_metadata);
+        }
+        else
+        {
+            absorb_public_metadata(transcript, canonical_public_metadata(context));
+        }
         transcript.absorb_scalar("N", algebra::FieldElement(context.local.num_nodes));
         transcript.absorb_scalar("E", algebra::FieldElement(context.local.edges.size()));
         transcript.absorb_scalar("d_in", algebra::FieldElement(context.local.num_features));

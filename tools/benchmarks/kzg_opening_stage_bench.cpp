@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
@@ -20,10 +21,15 @@ using gatzk::algebra::RootOfUnityDomain;
 
 struct CaseSpec {
     std::string label;
+    std::string srs_dir;
+    std::string srs_id;
     std::string domain_name;
     std::size_t domain_size = 0;
     std::size_t commitment_count = 0;
     std::size_t nonzero_stride = 1;
+    bool full_width_values = false;
+    bool external_unique_points = false;
+    bool commit_only = false;
 };
 
 std::filesystem::path repo_root() {
@@ -45,14 +51,35 @@ std::vector<FieldElement> make_values(
     std::size_t size,
     std::size_t case_seed,
     std::size_t commitment_index,
-    std::size_t nonzero_stride) {
+    std::size_t nonzero_stride,
+    bool full_width_values) {
     std::vector<FieldElement> values(size, FieldElement::zero());
+    std::uint64_t state = 0x6a09e667f3bcc909ULL
+        ^ static_cast<std::uint64_t>(case_seed)
+        ^ (static_cast<std::uint64_t>(commitment_index) << 32U);
     for (std::size_t i = 0; i < size; ++i) {
         if (nonzero_stride > 1 && ((i + commitment_index) % nonzero_stride) != 0) {
             continue;
         }
-        const auto raw = 31 + ((case_seed + 17 * commitment_index + 131 * i) % 1000003ULL);
-        values[i] = FieldElement(raw);
+        if (!full_width_values) {
+            const auto raw = 31 + ((case_seed + 17 * commitment_index + 131 * i) % 1000003ULL);
+            values[i] = FieldElement(raw);
+            continue;
+        }
+        std::array<std::uint8_t, 32> bytes{};
+        for (std::size_t word = 0; word < 4; ++word) {
+            state ^= state >> 12U;
+            state ^= state << 25U;
+            state ^= state >> 27U;
+            const auto value = state * 0x2545f4914f6cdd1dULL;
+            for (std::size_t byte = 0; byte < 8; ++byte) {
+                bytes[word * 8 + byte] = static_cast<std::uint8_t>(value >> (byte * 8));
+            }
+        }
+        values[i] = FieldElement::from_little_endian_mod(bytes.data(), bytes.size());
+        if (values[i].is_zero()) {
+            values[i] = FieldElement::one();
+        }
     }
     return values;
 }
@@ -73,16 +100,33 @@ std::vector<std::vector<FieldElement>> claimed_values_for_points(
     return out;
 }
 
-void run_case(const CaseSpec& spec, const gatzk::crypto::KZGKeyPair& key) {
+void run_case(const CaseSpec& spec) {
+    const auto key = gatzk::crypto::KZG::load_keys(
+        (repo_root() / spec.srs_dir).string(),
+        "trusted_srs",
+        spec.srs_id);
     const auto domain = RootOfUnityDomain::create(spec.domain_name, spec.domain_size);
-    const auto point = FieldElement(7);
-    const std::vector<FieldElement> points = {point, point * domain->omega};
+    std::vector<FieldElement> points;
+    if (spec.external_unique_points) {
+        points.reserve(spec.commitment_count);
+        for (std::size_t i = 0; i < spec.commitment_count; ++i) {
+            points.push_back(FieldElement(1009 + 37 * i));
+        }
+    } else {
+        const auto point = FieldElement(7);
+        points = {point, point * domain->omega};
+    }
     std::vector<Polynomial> polynomials;
     polynomials.reserve(spec.commitment_count);
     for (std::size_t i = 0; i < spec.commitment_count; ++i) {
         polynomials.push_back(Polynomial::from_evaluations(
             "bench_" + spec.label + "_" + std::to_string(i),
-            make_values(spec.domain_size, spec.domain_size, i, spec.nonzero_stride),
+            make_values(
+                spec.domain_size,
+                spec.domain_size,
+                i,
+                spec.nonzero_stride,
+                spec.full_width_values),
             domain));
     }
 
@@ -96,33 +140,65 @@ void run_case(const CaseSpec& spec, const gatzk::crypto::KZGKeyPair& key) {
     auto commitments = gatzk::crypto::KZG::commit_batch(named_polynomials, key);
     const auto commit_ms = elapsed_ms(commit_start);
 
+    if (spec.commit_only) {
+        std::cout
+            << spec.label << ',' << spec.srs_id << ',' << spec.domain_name << ','
+            << spec.domain_size << ',' << spec.commitment_count << ','
+            << spec.nonzero_stride << ',' << std::fixed << std::setprecision(3)
+            << commit_ms << ",0.000,0.000,0.000,0.000,0.000,0.000,0,0,0,0,0,0,true\n";
+        return;
+    }
+
     const auto claim_start = std::chrono::steady_clock::now();
-    const auto claimed_values = claimed_values_for_points(polynomials, points);
+    std::vector<std::vector<FieldElement>> claimed_values;
+    if (spec.external_unique_points) {
+        claimed_values.reserve(polynomials.size());
+        for (std::size_t i = 0; i < polynomials.size(); ++i) {
+            claimed_values.push_back({polynomials[i].evaluate(points[i])});
+        }
+    } else {
+        claimed_values = claimed_values_for_points(polynomials, points);
+    }
     const auto claim_ms = elapsed_ms(claim_start);
 
     gatzk::crypto::BatchOpeningProfile profile;
     const auto open_start = std::chrono::steady_clock::now();
-    const auto proof = gatzk::crypto::KZG::open_batch(
-        commitments,
-        points,
-        claimed_values,
-        FieldElement(19),
-        key,
-        &profile);
+    gatzk::crypto::OpeningProof proof;
+    std::vector<std::pair<gatzk::crypto::Commitment, FieldElement>> external_claims;
+    if (spec.external_unique_points) {
+        external_claims.reserve(commitments.size());
+        for (std::size_t i = 0; i < commitments.size(); ++i) {
+            external_claims.push_back({commitments[i], claimed_values[i][0]});
+        }
+        proof = gatzk::crypto::KZG::open_external_fold(
+            external_claims, points, FieldElement(19), key);
+    } else {
+        proof = gatzk::crypto::KZG::open_batch(
+            commitments,
+            points,
+            claimed_values,
+            FieldElement(19),
+            key,
+            &profile);
+    }
     const auto open_ms = elapsed_ms(open_start);
 
     const auto verify_start = std::chrono::steady_clock::now();
-    const bool verify_ok = gatzk::crypto::KZG::verify_batch(
-        commitments,
-        points,
-        claimed_values,
-        FieldElement(19),
-        proof,
-        key.vk);
+    const bool verify_ok = spec.external_unique_points
+        ? gatzk::crypto::KZG::verify_external_fold(
+            external_claims, points, FieldElement(19), proof, key.vk)
+        : gatzk::crypto::KZG::verify_batch(
+            commitments,
+            points,
+            claimed_values,
+            FieldElement(19),
+            proof,
+            key.vk);
     const auto verify_ms = elapsed_ms(verify_start);
 
     std::cout
         << spec.label << ','
+        << spec.srs_id << ','
         << spec.domain_name << ','
         << spec.domain_size << ','
         << spec.commitment_count << ','
@@ -146,26 +222,130 @@ void run_case(const CaseSpec& spec, const gatzk::crypto::KZGKeyPair& key) {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     try {
-        const auto key = gatzk::crypto::KZG::load_keys(
-            (repo_root() / "artifacts/srs/cora_formal_srs_v1").string(),
-            "trusted_srs",
-            "cora_formal_srs_v1");
         const std::vector<CaseSpec> cases = {
-            {"cora_edge_opening_terms96", "edge", 131072, 96, 7},
-            {"pubmed_edge_opening_terms96", "edge", 262144, 96, 7},
-            {"ppi_edge_opening_terms32", "edge", 1048576, 32, 11},
+            {
+                "unit_edge_opening_terms910",
+                "artifacts/srs/unit_security_srs_v1",
+                "unit_security_srs_v1",
+                "edge",
+                4096,
+                910,
+                7,
+                false,
+                false,
+            },
+            {
+                "unit_edge_commit_batch3_full",
+                "artifacts/srs/unit_security_srs_v1",
+                "unit_security_srs_v1",
+                "edge",
+                4096,
+                3,
+                1,
+                true,
+                false,
+            },
+            {
+                "unit_edge_commit_batch4_full",
+                "artifacts/srs/unit_security_srs_v1",
+                "unit_security_srs_v1",
+                "edge",
+                4096,
+                4,
+                1,
+                true,
+                false,
+            },
+            {
+                "unit_edge_commit_batch32_sparse4",
+                "artifacts/srs/unit_security_srs_v1",
+                "unit_security_srs_v1",
+                "edge",
+                4096,
+                32,
+                4,
+                true,
+                false,
+                true,
+            },
+            {
+                "unit_edge_commit_batch64_sparse4",
+                "artifacts/srs/unit_security_srs_v1",
+                "unit_security_srs_v1",
+                "edge",
+                4096,
+                64,
+                4,
+                true,
+                false,
+                true,
+            },
+            {
+                "unit_edge_commit_batch256_sparse4",
+                "artifacts/srs/unit_security_srs_v1",
+                "unit_security_srs_v1",
+                "edge",
+                4096,
+                256,
+                4,
+                true,
+                false,
+                true,
+            },
+            {
+                "unit_external_groups8_full",
+                "artifacts/srs/unit_security_srs_v1",
+                "unit_security_srs_v1",
+                "edge",
+                4096,
+                8,
+                1,
+                true,
+                true,
+            },
+            {
+                "unit_external_groups17_full",
+                "artifacts/srs/unit_security_srs_v1",
+                "unit_security_srs_v1",
+                "edge",
+                4096,
+                17,
+                1,
+                true,
+                true,
+            },
+            {
+                "cora_edge_opening_terms96",
+                "artifacts/srs/cora_formal_srs_v1",
+                "cora_formal_srs_v1",
+                "edge",
+                32768,
+                96,
+                7,
+                false,
+                false,
+            },
         };
+        if (argc != 2) {
+            throw std::runtime_error(
+                "usage: gatzk_kzg_opening_stage_bench <case|all>");
+        }
+        const std::string selected_case = argv[1];
         std::cout
-            << "case,domain_name,domain_size,commitment_count,nonzero_stride,"
+            << "case,srs_id,domain_name,domain_size,commitment_count,nonzero_stride,"
             << "commit_setup_ms,claim_eval_ms,open_batch_ms,verify_ms,precompute_ms,"
             << "denominator_inverse_ms,denominator_inverse_reuse_ms,"
             << "denominator_inverse_cache_misses,denominator_inverse_reuse_hits,"
             << "point_parallel_batches,point_parallel_workers,point_msm_worker_cap,"
             << "proof_witness_count,verify_ok\n";
         for (const auto& spec : cases) {
-            run_case(spec, key);
+            if (selected_case != "all" && selected_case != spec.label) {
+                continue;
+            }
+            std::cout.flush();
+            run_case(spec);
         }
     } catch (const std::exception& error) {
         std::cerr << "fatal: " << error.what() << '\n';

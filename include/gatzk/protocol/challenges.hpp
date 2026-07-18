@@ -15,7 +15,9 @@
 namespace gatzk::protocol
 {
     // 生成对外公开的元数据视图，README / manifest / verifier 都以它为准。
-    PublicMetadata canonical_public_metadata(const ProtocolContext& context);
+    PublicMetadata canonical_public_metadata(
+        const ProtocolContext& context,
+        bool compiler_artifact_already_validated = false);
     // 按固定字段顺序把公开元数据吸收到 transcript。
     void absorb_public_metadata(crypto::Transcript& transcript, const PublicMetadata& metadata);
     void absorb_binding_relation_metadata(

@@ -18,7 +18,7 @@
 #include "gatzk/util/config.hpp"
 #include "gatzk/util/route2.hpp"
 
-// 读取配置、选择 full_cpu / full_gpu 执行路线，并串联 context、trace、prove、verify 与 artifact 导出。
+// 读取配置、选择 CPU / partial CUDA-hotspot 执行路线，并串联 context、trace、prove、verify 与 artifact 导出。
 // 只汇总正式四项指标与 manifest，不允许在入口层改写 proof contract。
 // 控制台正式输出必须收口为“每次运行一行”，避免把开发过程日志重新暴露到提交表面。
 
@@ -38,11 +38,16 @@ int main(int argc, char **argv)
         };
         auto prove_accounted_ms = [](const gatzk::protocol::RunMetrics &metrics)
         {
-            return metrics.forward_ms + metrics.trace_generation_ms + metrics.commit_dynamic_ms + metrics.quotient_build_ms + metrics.domain_opening_ms + metrics.external_opening_ms + metrics.prove_finalize_ms;
+            return metrics.commit_dynamic_ms + metrics.quotient_build_ms
+                + metrics.domain_opening_ms + metrics.external_opening_ms
+                + metrics.proof_serialization_ms + metrics.prove_finalize_ms;
         };
         auto verify_accounted_ms = [](const gatzk::protocol::RunMetrics &metrics)
         {
-            return metrics.verify_metadata_ms + metrics.verify_transcript_ms + metrics.verify_domain_opening_ms + metrics.verify_quotient_ms + metrics.verify_external_fold_ms + metrics.verify_misc_ms;
+            return metrics.proof_parse_ms + metrics.verify_metadata_ms
+                + metrics.verify_transcript_ms + metrics.verify_domain_opening_ms
+                + metrics.verify_quotient_ms + metrics.verify_external_fold_ms
+                + metrics.verify_misc_ms;
         };
         auto append_note = [](gatzk::protocol::RunMetrics &metrics, const std::string &note)
         {
@@ -258,7 +263,13 @@ int main(int argc, char **argv)
             metrics.is_cold_run = is_cold_run;
             append_note(metrics, "benchmark_mode=" + mode_label);
             append_note(metrics, "compute_backend=" + metrics.compute_backend_name);
-            append_note(metrics, "full_backend=" + std::string(metrics.compute_backend_name == "cuda_hotspots" ? "full_gpu" : "full_cpu"));
+            append_note(
+                metrics,
+                "execution_scope="
+                    + std::string(
+                        metrics.compute_backend_name == "cuda_hotspots"
+                            ? "partial_cuda_hotspots_with_cpu_fallback"
+                            : "full_cpu"));
             if (metrics.compute_backend_name == "cuda_hotspots")
             {
                 append_note(metrics, "cuda_routing=size_aware");
@@ -291,7 +302,10 @@ int main(int argc, char **argv)
             progress(mode_label + ":prove:start");
             const auto pcs_start = std::chrono::steady_clock::now();
             const auto proof = gatzk::protocol::prove(context, trace, &metrics);
+            const auto serialization_start = std::chrono::steady_clock::now();
             const auto proof_bytes = gatzk::protocol::serialize_proof(proof);
+            metrics.proof_serialization_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - serialization_start).count();
             const auto pcs_end = std::chrono::steady_clock::now();
             progress(mode_label + ":prove:done");
             metrics.lookup_trace_ms =
@@ -300,23 +314,34 @@ int main(int argc, char **argv)
                 metrics.hidden_projection_trace_ms + metrics.hidden_src_attention_trace_ms + metrics.hidden_dst_attention_trace_ms + metrics.hidden_edge_score_trace_ms + metrics.hidden_softmax_chain_trace_ms + metrics.hidden_h_star_trace_ms + metrics.hidden_h_agg_pre_star_trace_ms + metrics.hidden_h_agg_star_trace_ms + metrics.hidden_route_trace_ms + metrics.hidden_copy_convert_ms;
             metrics.trace_misc_ms =
                 metrics.route_pack_residual_ms + metrics.selector_padding_residual_ms + metrics.public_poly_residual_ms + metrics.hidden_output_object_residual_ms + metrics.shared_helper_build_ms + metrics.field_conversion_residual_ms + metrics.copy_move_residual_ms + metrics.trace_finalize_ms;
-            const auto prove_core_ms = std::chrono::duration<double, std::milli>(pcs_end - trace_start).count();
-            metrics.prove_time_ms = prove_core_ms;
+            // build_trace interleaves witness materialization and dynamic commitments.
+            // The formal prove boundary excludes forward/trace work, so account the
+            // commitment portion explicitly and add the contiguous prove/serialize span.
+            metrics.prove_time_ms = metrics.commit_dynamic_ms
+                + std::chrono::duration<double, std::milli>(pcs_end - pcs_start).count();
             metrics.commitment_time_ms =
                 metrics.commit_dynamic_ms + metrics.quotient_bundle_pack_ms;
             metrics.prove_finalize_ms = clamp_non_negative(
-                metrics.prove_time_ms - metrics.forward_ms - metrics.trace_generation_ms - metrics.commit_dynamic_ms - metrics.quotient_build_ms - metrics.domain_opening_ms - metrics.external_opening_ms);
+                metrics.prove_time_ms - metrics.commit_dynamic_ms
+                - metrics.quotient_build_ms - metrics.domain_opening_ms
+                - metrics.external_opening_ms - metrics.proof_serialization_ms);
             metrics.prove_accounted_ms = prove_accounted_ms(metrics);
             metrics.prove_accounting_gap_ms = metrics.prove_time_ms - metrics.prove_accounted_ms;
             progress(mode_label + ":verify:start");
             const auto verify_start = std::chrono::steady_clock::now();
+            const auto parse_start = std::chrono::steady_clock::now();
             const auto parsed_proof = gatzk::protocol::parse_proof(context, proof_bytes);
+            metrics.proof_parse_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - parse_start).count();
             const auto accepted = gatzk::protocol::verify(context, parsed_proof, &metrics);
             const auto verify_end = std::chrono::steady_clock::now();
             progress(mode_label + ":verify:done");
             metrics.verify_time_ms = std::chrono::duration<double, std::milli>(verify_end - verify_start).count();
             metrics.verify_misc_ms = clamp_non_negative(
-                metrics.verify_time_ms - metrics.verify_metadata_ms - metrics.verify_transcript_ms - metrics.verify_domain_opening_ms - metrics.verify_quotient_ms - metrics.verify_external_fold_ms);
+                metrics.verify_time_ms - metrics.proof_parse_ms
+                - metrics.verify_metadata_ms - metrics.verify_transcript_ms
+                - metrics.verify_domain_opening_ms - metrics.verify_quotient_ms
+                - metrics.verify_external_fold_ms);
             metrics.verify_accounted_ms = verify_accounted_ms(metrics);
             metrics.verify_accounting_gap_ms = metrics.verify_time_ms - metrics.verify_accounted_ms;
             metrics.proof_size_bytes = proof_bytes.size();
@@ -367,6 +392,29 @@ int main(int argc, char **argv)
             metrics.total_wall_clock_ms =
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - row_start).count();
             metrics.gpu_kernel_invocation_count = gatzk::algebra::cuda_kernel_invocation_count();
+            if (metrics.compute_backend_name == "cuda_hotspots")
+            {
+                if (metrics.gpu_kernel_invocation_count == 0)
+                {
+                    metrics.gpu_used_for = "none_on_this_input";
+                    metrics.gpu_fallback_reason =
+                        "all eligible CUDA hotspots were below the size-aware dispatch thresholds on this input";
+                    metrics.gpu_acceleration_status =
+                        "requested_cuda_hotspots; kernels_executed=0; actual_execution=cpu_fallback_for_this_input";
+                    append_note(metrics, "cuda_kernel_execution=none_below_threshold");
+                }
+                else
+                {
+                    metrics.gpu_used_for =
+                        "partial_size_aware_hotspots; kernel_invocations="
+                        + std::to_string(metrics.gpu_kernel_invocation_count);
+                    metrics.gpu_acceleration_status =
+                        "partial_cuda_hotspots_executed; kernels_executed="
+                        + std::to_string(metrics.gpu_kernel_invocation_count)
+                        + "; cpu_fallback=KZG_MSM,pairing,NTT_IFFT,quotient_materialization,opening_witness,small_domains";
+                    append_note(metrics, "cuda_kernel_execution=partial_hotspots_only");
+                }
+            }
 
             if (log_benchmark)
             {

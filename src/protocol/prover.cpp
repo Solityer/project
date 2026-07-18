@@ -3805,6 +3805,21 @@ namespace gatzk::protocol
                         + " degree_bound=" + std::to_string(*degree_bound)
                         + " target_size=" + std::to_string(target_size_));
                 }
+                const auto edge_head_count = context_.model.hidden_heads.size()
+                    + context_.model.output_layer.heads.size();
+                if (label_ == "t_edge" && edge_head_count >= 4)
+                {
+                    const auto power_count = std::size_t{2048}
+                        + std::size_t{1024} * edge_head_count;
+                    quotient_alpha_powers_.reserve(power_count);
+                    auto power = FieldElement::one();
+                    const auto alpha = challenges_.at("alpha_quot");
+                    for (std::size_t i = 0; i < power_count; ++i)
+                    {
+                        quotient_alpha_powers_.push_back(power);
+                        power *= alpha;
+                    }
+                }
             }
 
             algebra::Polynomial materialize(const crypto::KZGKeyPair &key)
@@ -3838,7 +3853,18 @@ namespace gatzk::protocol
                     }
                     else if (label_ == "t_edge")
                     {
-                        return evaluate_t_edge(context_, challenges_, trace_.external_evaluations, eval, z);
+                        return evaluate_t_edge(
+                            context_,
+                            challenges_,
+                            trace_.external_evaluations,
+                            eval,
+                            z,
+                            false,
+                            nullptr,
+                            nullptr,
+                            quotient_alpha_powers_.empty()
+                                ? nullptr
+                                : &quotient_alpha_powers_);
                     }
                     else if (label_ == "t_N")
                     {
@@ -3992,9 +4018,11 @@ namespace gatzk::protocol
                 const bool run_parallel = cpu_count > 1 && target_size_ >= 4096;
                 if (run_parallel)
                 {
+                    const auto min_points_per_task =
+                        label_ == "t_edge" ? std::size_t{8192} : std::size_t{32768};
                     const auto task_count = std::min<std::size_t>(
                         std::min<std::size_t>(cpu_count, 32),
-                        std::max<std::size_t>(1, target_size_ / 32768));
+                        std::max<std::size_t>(1, target_size_ / min_points_per_task));
                     const auto chunk_size = (target_size_ + task_count - 1) / task_count;
                     std::vector<std::future<void>> futures;
                     futures.reserve(task_count);
@@ -4276,6 +4304,16 @@ namespace gatzk::protocol
                         continue;
                     }
                     const auto values = coset_values_ptr(label);
+                    // Derived expressions without their own committed/spilled
+                    // polynomial must still be evaluated pointwise from the
+                    // blinded source cosets.  A separately materialized
+                    // semantic-domain vector is not interchangeable here.
+                    if (lookup_polynomial(label) == nullptr
+                        && !trace_.spilled_polynomials.contains(label)
+                        && is_edge_derived_coset_request(label))
+                    {
+                        continue;
+                    }
                     fast_coset_lookup_.emplace(label, values.get());
                 }
             }
@@ -4397,6 +4435,11 @@ namespace gatzk::protocol
             {
                 if (label_ == "t_edge")
                 {
+                    if (const auto it = fast_coset_lookup_.find(requested_name);
+                        it != fast_coset_lookup_.end())
+                    {
+                        return (*it->second)[index];
+                    }
                     if (const auto derived = t_edge_derived_value_at(requested_name, index); derived.has_value())
                     {
                         return *derived;
@@ -4613,6 +4656,8 @@ namespace gatzk::protocol
                 }
                 return std::nullopt;
             }
+
+            std::vector<FieldElement> quotient_alpha_powers_;
 
             void prewarm_coset_values(const std::vector<std::string> &labels)
             {
