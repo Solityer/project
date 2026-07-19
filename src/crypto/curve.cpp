@@ -180,7 +180,7 @@ namespace gatzk::crypto
 
     std::size_t msm_worker_count(std::size_t scalar_count, std::size_t cpu_count)
     {
-        if (scalar_count < 1024 || cpu_count <= 1)
+        if (scalar_count < 256 || cpu_count <= 1)
         {
             return 1;
         }
@@ -197,7 +197,7 @@ namespace gatzk::crypto
         {
             by_size = 4;
         }
-        else if (scalar_count >= 1024)
+        else if (scalar_count >= 256)
         {
             by_size = 4;
         }
@@ -353,7 +353,7 @@ namespace gatzk::crypto
         std::size_t count,
         std::size_t worker_count)
     {
-        if (worker_count <= 1 || count < 1024)
+        if (worker_count <= 1 || count < 256)
         {
             msm_execute_single(out, points, scalars, count);
             return;
@@ -1074,13 +1074,17 @@ namespace gatzk::crypto
         const G2Point& rhs_b)
     {
         algebra::ensure_mcl_field_ready();
-        mcl::Fp12 eval_a;
-        mcl::Fp12 eval_b;
-        mcl::precomputedMillerLoop(eval_a, lhs_a.value, rhs_a_prepared.coeffs);
-        mcl::millerLoop(eval_b, lhs_b.value, rhs_b.value);
-        mcl::finalExp(eval_a, eval_a);
-        mcl::finalExp(eval_b, eval_b);
-        return eval_a == eval_b;
+        mcl::G1 neg_lhs_b;
+        mcl::G1::neg(neg_lhs_b, lhs_b.value);
+        mcl::Fp12 miller_product;
+        mcl::precomputedMillerLoop2mixed(
+            miller_product,
+            neg_lhs_b,
+            rhs_b.value,
+            lhs_a.value,
+            rhs_a_prepared.coeffs);
+        mcl::finalExp(miller_product, miller_product);
+        return miller_product.isOne();
     }
 
     // 判断动态点对与预计算点对的配对乘积是否为 1

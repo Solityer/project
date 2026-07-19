@@ -249,6 +249,42 @@ int main(int argc, char** argv) {
                 max_worker_count);
             ran_case = true;
         }
+        if (should_run("edge_prefix_910_full")) {
+            run_case(
+                "edge_current_prefix_910_full",
+                *edge_it->second,
+                make_full_width_prefix_scalars(edge_it->second->size(), 910),
+                repeats,
+                max_worker_count);
+            ran_case = true;
+        }
+        if (should_run("edge_prefix_512_full")) {
+            run_case(
+                "edge_current_prefix_512_full",
+                *edge_it->second,
+                make_full_width_prefix_scalars(edge_it->second->size(), 512),
+                repeats,
+                max_worker_count);
+            ran_case = true;
+        }
+        if (should_run("edge_prefix_256_full")) {
+            run_case(
+                "edge_current_prefix_256_full",
+                *edge_it->second,
+                make_full_width_prefix_scalars(edge_it->second->size(), 256),
+                repeats,
+                max_worker_count);
+            ran_case = true;
+        }
+        if (should_run("edge_prefix_128_full")) {
+            run_case(
+                "edge_current_prefix_128_full",
+                *edge_it->second,
+                make_full_width_prefix_scalars(edge_it->second->size(), 128),
+                repeats,
+                max_worker_count);
+            ran_case = true;
+        }
         if (should_run("coef_1048576_sparse3")) {
             run_case(
                 "coef_1048576_sparse3",

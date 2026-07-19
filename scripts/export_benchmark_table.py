@@ -80,13 +80,6 @@ def infer_benchmark_mode(manifest: Dict[str, object]) -> str:
     return value
 
 
-def infer_commitment_time_ms(manifest: Dict[str, object]) -> float:
-    explicit = manifest.get("commitment_time_ms")
-    if explicit is not None:
-        return float(explicit)
-    return float(manifest.get("commit_dynamic_ms", 0.0)) + float(manifest.get("quotient_bundle_pack_ms", 0.0))
-
-
 def make_success_row(dataset: str, manifest: Dict[str, object]) -> Dict[str, object]:
     # 主表只接收正式 warm + full-dataset + verified manifest，避免实验 run 混入 accepted truth。
     # `backend_name` 与 `is_full_dataset` 只保留在 latest.json 这类机器复核产物中，
@@ -103,7 +96,7 @@ def make_success_row(dataset: str, manifest: Dict[str, object]) -> Dict[str, obj
         "status": "ok",
         "blocker": "",
         "benchmark_mode": benchmark_mode,
-        "commitment_time_ms": infer_commitment_time_ms(manifest),
+        "commitment_time_ms": float(manifest["commitment_time_ms"]),
         "prove_time_ms": float(manifest["prove_time_ms"]),
         "verify_time_ms": float(manifest["verify_time_ms"]),
         "proof_size_bytes": int(manifest["proof_size_bytes"]),

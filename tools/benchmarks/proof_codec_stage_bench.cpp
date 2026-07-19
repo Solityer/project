@@ -12,6 +12,8 @@
 
 #include "gatzk/protocol/proof_codec.hpp"
 #include "gatzk/protocol/prover.hpp"
+#include "gatzk/protocol/quotients.hpp"
+#include "gatzk/protocol/schema.hpp"
 #include "gatzk/protocol/trace.hpp"
 #include "gatzk/protocol/verifier.hpp"
 #include "gatzk/util/config.hpp"
@@ -79,7 +81,9 @@ int main(int argc, char** argv) {
     try {
         if (argc < 4 || argc > 5) {
             throw std::runtime_error(
-                "usage: gatzk_proof_codec_stage_bench <generate|parse|verify> <config> <proof.bin> [repeats]");
+                "usage: gatzk_proof_codec_stage_bench "
+                "<generate|parse|verify|artifact|artifact-build|proof-schema|binding-metadata> "
+                "<config> <proof.bin> [repeats]");
         }
         const std::string mode = argv[1];
         const auto config = gatzk::util::load_config(argv[2]);
@@ -106,10 +110,59 @@ int main(int argc, char** argv) {
             return 0;
         }
 
-        const auto bytes = read_bytes(proof_path);
         std::vector<double> samples;
         samples.reserve(repeats);
+        std::vector<double> verify_metadata_samples;
+        std::vector<double> verify_transcript_samples;
+        std::vector<double> verify_domain_opening_samples;
+        std::vector<double> verify_quotient_samples;
+        std::vector<double> verify_external_samples;
         bool verify_ok = true;
+        std::size_t metadata_sink = 0;
+        if (mode == "artifact") {
+            for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
+                std::string reason;
+                const auto start = Clock::now();
+                const auto valid = context.compiler_artifact != nullptr
+                    && gatzk::protocol::validate_protocol_compiler_artifact(
+                        context, *context.compiler_artifact, &reason);
+                samples.push_back(elapsed_ms(start));
+                if (!valid) {
+                    throw std::runtime_error(
+                        "compiler artifact validation failed: " + reason);
+                }
+                metadata_sink += reason.size();
+            }
+        } else if (mode == "artifact-build") {
+            for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
+                const auto start = Clock::now();
+                const auto artifact =
+                    gatzk::protocol::build_protocol_compiler_artifact(context);
+                samples.push_back(elapsed_ms(start));
+                metadata_sink += artifact.proof_schema.entries.size();
+            }
+        } else if (mode == "proof-schema") {
+            for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
+                const auto start = Clock::now();
+                const auto schema = gatzk::protocol::build_proof_schema(context);
+                samples.push_back(elapsed_ms(start));
+                metadata_sink += schema.entries.size();
+            }
+        } else if (mode == "binding-metadata") {
+            for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
+                const auto start = Clock::now();
+                const auto metadata =
+                    gatzk::protocol::build_binding_relation_metadata(context);
+                samples.push_back(elapsed_ms(start));
+                metadata_sink += metadata.size();
+            }
+        }
+
+        const auto bytes = mode == "artifact" || mode == "artifact-build"
+                || mode == "proof-schema"
+                || mode == "binding-metadata"
+            ? std::vector<std::uint8_t>{}
+            : read_bytes(proof_path);
         if (mode == "parse") {
             for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
                 const auto start = Clock::now();
@@ -122,10 +175,23 @@ int main(int argc, char** argv) {
         } else if (mode == "verify") {
             const auto proof = gatzk::protocol::parse_proof(context, bytes);
             for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
+                gatzk::protocol::RunMetrics metrics;
                 const auto start = Clock::now();
-                verify_ok = gatzk::protocol::verify(context, proof, nullptr) && verify_ok;
+                verify_ok = gatzk::protocol::verify(
+                    context, proof, &metrics) && verify_ok;
                 samples.push_back(elapsed_ms(start));
+                verify_metadata_samples.push_back(metrics.verify_metadata_ms);
+                verify_transcript_samples.push_back(metrics.verify_transcript_ms);
+                verify_domain_opening_samples.push_back(
+                    metrics.verify_domain_opening_ms);
+                verify_quotient_samples.push_back(metrics.verify_quotient_ms);
+                verify_external_samples.push_back(metrics.verify_external_fold_ms);
             }
+        } else if (mode == "artifact" || mode == "artifact-build"
+                   || mode == "proof-schema"
+                   || mode == "binding-metadata") {
+            // The corresponding samples were collected before proof bytes are
+            // loaded so these modes isolate parser setup work.
         } else {
             throw std::runtime_error("unknown mode: " + mode);
         }
@@ -137,7 +203,23 @@ int main(int argc, char** argv) {
                   << " median_ms=" << median(samples)
                   << " min_ms=" << *std::min_element(samples.begin(), samples.end())
                   << " max_ms=" << *std::max_element(samples.begin(), samples.end())
+                  << " verify_metadata_median_ms="
+                  << (verify_metadata_samples.empty()
+                        ? 0.0 : median(verify_metadata_samples))
+                  << " verify_transcript_median_ms="
+                  << (verify_transcript_samples.empty()
+                        ? 0.0 : median(verify_transcript_samples))
+                  << " verify_domain_opening_median_ms="
+                  << (verify_domain_opening_samples.empty()
+                        ? 0.0 : median(verify_domain_opening_samples))
+                  << " verify_quotient_median_ms="
+                  << (verify_quotient_samples.empty()
+                        ? 0.0 : median(verify_quotient_samples))
+                  << " verify_external_median_ms="
+                  << (verify_external_samples.empty()
+                        ? 0.0 : median(verify_external_samples))
                   << " verify_ok=" << (verify_ok ? "true" : "false")
+                  << " metadata_sink=" << metadata_sink
                   << '\n';
         return verify_ok ? 0 : 1;
     } catch (const std::exception& error) {

@@ -561,16 +561,13 @@ namespace gatzk::protocol
             bool compact = false;
             bool shared_or_borrowed = false;
             bool reused_shared = false;
-            bool commitment_cache_hit = false;
             bool commitment_ready = false;
             bool precomputed_commitment = false;
             bool deferred_linear_commitment = false;
             bool linear_commitment_derived = false;
-            bool full_value_fingerprint = false;
             bool proof_local_blinded = false;
             std::vector<DynamicCommitmentLinearTerm> deferred_linear_terms;
             std::uintptr_t source_identity = 0;
-            double fingerprint_cache_ms = 0.0;
             double materialization_ms = 0.0;
         };
 
@@ -1207,6 +1204,22 @@ namespace gatzk::protocol
             out->linear_commitment_derived = spec.linear_commitment_derived;
         }
 
+        void promote_evaluation_values_to_shared_backing(Polynomial *polynomial)
+        {
+            constexpr std::size_t kMinSharedValueCount = 1024;
+            if (polynomial == nullptr
+                || polynomial->basis != algebra::PolynomialBasis::Evaluation
+                || polynomial->shared_data != nullptr
+                || polynomial->data.size() < kMinSharedValueCount)
+            {
+                return;
+            }
+            polynomial->shared_data =
+                std::make_shared<const std::vector<FieldElement>>(
+                    std::move(polynomial->data));
+            polynomial->data.clear();
+        }
+
         void fill_feature_lookup_rows(
             const std::vector<FieldElement> &row_ids,
             const std::vector<FieldElement> &feature_indices,
@@ -1334,7 +1347,9 @@ namespace gatzk::protocol
                     out.deferred_linear_commitment = false;
                     out.linear_commitment_derived = false;
                 }
-                else
+                promote_evaluation_values_to_shared_backing(
+                    &*out.polynomial);
+                if (is_public_dynamic_polynomial(spec.name))
                 {
                     attach_precomputed_commitment(&out, spec);
                 }
@@ -1437,10 +1452,6 @@ namespace gatzk::protocol
             {
                 return "linear_commitment_derivation";
             }
-            if (item.commitment_cache_hit)
-            {
-                return "duplicate_commitment_reuse";
-            }
             if (object.constant_tail_folding)
             {
                 return "constant_tail_commitment_folding";
@@ -1466,116 +1477,6 @@ namespace gatzk::protocol
                 return "multithreaded_srs_msm";
             }
             return "dense_srs_msm";
-        }
-
-        struct PolynomialFingerprint
-        {
-            std::string key;
-            std::size_t nonzero_scalar_count = 0;
-        };
-
-        void absorb_hash_text(std::uint64_t *hash, std::string_view text)
-        {
-            for (const auto ch : text)
-            {
-                *hash ^= static_cast<unsigned char>(ch);
-                *hash *= 1099511628211ULL;
-            }
-        }
-
-        void absorb_hash_u64(std::uint64_t *hash, std::uint64_t value)
-        {
-            for (std::size_t i = 0; i < 8; ++i)
-            {
-                *hash ^= static_cast<unsigned char>((value >> (i * 8)) & 0xffU);
-                *hash *= 1099511628211ULL;
-            }
-        }
-
-        PolynomialFingerprint fingerprint_polynomial(
-            const std::string &srs_manifest_hash,
-            const Polynomial &polynomial)
-        {
-            std::uint64_t hash = 1469598103934665603ULL;
-            absorb_hash_text(&hash, srs_manifest_hash);
-            absorb_hash_text(&hash, polynomial.basis == algebra::PolynomialBasis::Coefficient ? "coef" : "eval");
-            absorb_hash_text(&hash, polynomial.domain != nullptr ? polynomial.domain->name : "coef");
-            absorb_hash_u64(&hash, static_cast<std::uint64_t>(polynomial.domain != nullptr ? polynomial.domain->size : 0));
-            absorb_hash_u64(&hash, static_cast<std::uint64_t>(polynomial.size()));
-            const auto zero = FieldElement::zero();
-            std::array<std::uint8_t, 32> bytes{};
-            std::size_t nonzero = 0;
-            for (const auto &value : polynomial.values())
-            {
-                if (!(value == zero))
-                {
-                    ++nonzero;
-                }
-                value.write_little_endian(bytes.data(), bytes.size());
-                for (const auto byte : bytes)
-                {
-                    hash ^= byte;
-                    hash *= 1099511628211ULL;
-                }
-            }
-            return PolynomialFingerprint{
-                .key = std::to_string(hash),
-                .nonzero_scalar_count = nonzero,
-            };
-        }
-
-        class DynamicCommitmentReuseCache
-        {
-        public:
-            struct Entry
-            {
-                crypto::Commitment commitment;
-                crypto::CommitObjectProfile profile;
-            };
-
-            bool lookup(const std::string &key, Entry *out)
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                if (const auto it = entries_.find(key); it != entries_.end())
-                {
-                    if (out != nullptr)
-                    {
-                        *out = it->second;
-                    }
-                    return true;
-                }
-                return false;
-            }
-
-            void store(
-                const std::string &key,
-                const crypto::Commitment &commitment,
-                const crypto::CommitObjectProfile &profile)
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                entries_.emplace(key, Entry{commitment, profile});
-            }
-
-        private:
-            std::mutex mutex_;
-            std::unordered_map<std::string, Entry> entries_;
-        };
-
-        DynamicCommitmentReuseCache &dynamic_commitment_reuse_cache()
-        {
-            static DynamicCommitmentReuseCache cache;
-            return cache;
-        }
-
-        std::string source_identity_commitment_key(
-            const std::string &srs_manifest_hash,
-            const PreparedDynamicCommitment &item,
-            const Polynomial &polynomial)
-        {
-            (void)srs_manifest_hash;
-            (void)item;
-            (void)polynomial;
-            return {};
         }
 
         void record_dynamic_commit_totals(RunMetrics *metrics)
@@ -1771,17 +1672,8 @@ namespace gatzk::protocol
             const auto pack_start = Clock::now();
             std::vector<std::pair<std::string, const algebra::Polynomial *>> named_polynomials;
             std::vector<std::size_t> polynomial_indices;
-            std::vector<std::string> reuse_cache_keys(prepared.size());
-            std::unordered_map<std::string, crypto::CommitObjectProfile> cached_object_profiles;
             std::unordered_map<std::string, crypto::CommitObjectProfile> precomputed_object_profiles;
             std::vector<std::size_t> deferred_linear_indices;
-            struct PendingReuseAlias
-            {
-                std::size_t prepared_index = 0;
-                std::size_t named_polynomial_index = 0;
-            };
-            std::unordered_map<std::string, std::size_t> pending_reuse_key_to_named_index;
-            std::vector<PendingReuseAlias> pending_reuse_aliases;
             named_polynomials.reserve(prepared.size());
             auto make_zero_msm_profile = [](const PreparedDynamicCommitment &item, const Polynomial &polynomial)
             {
@@ -1798,12 +1690,6 @@ namespace gatzk::protocol
                 object_profile.multithreaded_msm = false;
                 object_profile.msm_ms = 0.0;
                 return object_profile;
-            };
-            auto should_full_value_fingerprint = [&](const PreparedDynamicCommitment &item, const Polynomial &polynomial)
-            {
-                (void)item;
-                (void)polynomial;
-                return false;
             };
             for (std::size_t i = 0; i < prepared.size(); ++i)
             {
@@ -1822,90 +1708,8 @@ namespace gatzk::protocol
                         precomputed_object_profiles.emplace(item.name, make_zero_msm_profile(item, polynomial));
                         continue;
                     }
-                    const auto fingerprint_start = Clock::now();
-                    std::string reuse_key;
-                    bool full_value_fingerprint = false;
-                    if (item.proof_local_blinded)
-                    {
-                        reuse_key.clear();
-                    }
-                    else if (should_full_value_fingerprint(item, polynomial))
-                    {
-                        const auto fingerprint = fingerprint_polynomial(key.pk.manifest_hash, polynomial);
-                        reuse_key = key.pk.manifest_hash + "|dynamic|" + fingerprint.key;
-                        full_value_fingerprint = true;
-                        if (metrics != nullptr)
-                        {
-                            metrics->dynamic_commit_full_fingerprint_scans += 1;
-                        }
-                    }
-                    else
-                    {
-                        reuse_key = source_identity_commitment_key(key.pk.manifest_hash, item, polynomial);
-                        if (reuse_key.empty())
-                        {
-                            if (metrics != nullptr && polynomial.size() >= 1024)
-                            {
-                                metrics->dynamic_commit_fingerprint_skipped += 1;
-                            }
-                        }
-                    }
-                    item.full_value_fingerprint = full_value_fingerprint;
-                    item.fingerprint_cache_ms = elapsed_ms(fingerprint_start, Clock::now());
-                    if (metrics != nullptr)
-                    {
-                        metrics->dynamic_commit_fingerprint_ms += item.fingerprint_cache_ms;
-                    }
-                    if (!reuse_key.empty())
-                    {
-                        if (metrics != nullptr)
-                        {
-                            metrics->dynamic_commit_cache_lookups += 1;
-                        }
-                        DynamicCommitmentReuseCache::Entry cached_entry;
-                        if (dynamic_commitment_reuse_cache().lookup(reuse_key, &cached_entry))
-                        {
-                            item.commitment = renamed_commitment(item.name, cached_entry.commitment);
-                            item.commitment_cache_hit = true;
-                            item.commitment_ready = true;
-                            auto object_profile = cached_entry.profile;
-                            object_profile.name = item.name;
-                            object_profile.msm_ms = 0.0;
-                            cached_object_profiles.emplace(item.name, std::move(object_profile));
-                            if (metrics != nullptr)
-                            {
-                                metrics->dynamic_commit_cache_hits += 1;
-                            }
-                            continue;
-                        }
-                        const auto pending_it = pending_reuse_key_to_named_index.find(reuse_key);
-                        if (pending_it != pending_reuse_key_to_named_index.end())
-                        {
-                            item.commitment_cache_hit = true;
-                            reuse_cache_keys[i] = reuse_key;
-                            pending_reuse_aliases.push_back(PendingReuseAlias{
-                                .prepared_index = i,
-                                .named_polynomial_index = pending_it->second,
-                            });
-                            if (metrics != nullptr)
-                            {
-                                metrics->dynamic_commit_cache_hits += 1;
-                            }
-                            continue;
-                        }
-                        if (metrics != nullptr)
-                        {
-                            metrics->dynamic_commit_cache_misses += 1;
-                        }
-                        reuse_cache_keys[i] = reuse_key;
-                    }
-                    const auto named_index = named_polynomials.size();
                     named_polynomials.push_back({item.name, &*item.polynomial});
                     polynomial_indices.push_back(i);
-                    if (!reuse_key.empty())
-                    {
-                        pending_reuse_key_to_named_index.emplace(reuse_key, named_index);
-                    }
                 }
                 else
                 {
@@ -1913,11 +1717,10 @@ namespace gatzk::protocol
                 }
             }
             add_metric(metrics != nullptr ? &metrics->dynamic_commit_pack_ms : nullptr, pack_start);
-            const auto reuse_hit_count = cached_object_profiles.size() + pending_reuse_aliases.size();
-            if (reuse_hit_count != 0 || !deferred_linear_indices.empty())
+            if (!deferred_linear_indices.empty())
             {
                 progress_note(
-                    batch_progress_label + ":reuse_cache_hits=" + std::to_string(reuse_hit_count) + ":linear_derived=" + std::to_string(deferred_linear_indices.size()) + ":msm_inputs=" + std::to_string(named_polynomials.size()));
+                    batch_progress_label + ":linear_derived=" + std::to_string(deferred_linear_indices.size()) + ":msm_inputs=" + std::to_string(named_polynomials.size()));
             }
 
             crypto::CommitBatchProfile polynomial_profile;
@@ -1932,26 +1735,6 @@ namespace gatzk::protocol
                     const auto prepared_index = polynomial_indices[i];
                     prepared[prepared_index].commitment = commitments[i];
                     prepared[prepared_index].commitment_ready = true;
-                    if (!reuse_cache_keys[prepared_index].empty())
-                    {
-                        dynamic_commitment_reuse_cache().store(
-                            reuse_cache_keys[prepared_index],
-                            commitments[i],
-                            polynomial_profile.objects[i]);
-                    }
-                }
-                for (const auto &alias : pending_reuse_aliases)
-                {
-                    auto &item = prepared[alias.prepared_index];
-                    item.commitment = renamed_commitment(item.name, commitments[alias.named_polynomial_index]);
-                    item.commitment_ready = true;
-                    if (alias.named_polynomial_index < polynomial_profile.objects.size())
-                    {
-                        auto object_profile = polynomial_profile.objects[alias.named_polynomial_index];
-                        object_profile.name = item.name;
-                        object_profile.msm_ms = 0.0;
-                        cached_object_profiles.emplace(item.name, std::move(object_profile));
-                    }
                 }
             }
             if (!deferred_linear_indices.empty())
@@ -1999,10 +1782,6 @@ namespace gatzk::protocol
                 for (auto &object : polynomial_profile.objects)
                 {
                     object_profiles.emplace(object.name, std::move(object));
-                }
-                for (auto &[name, object] : cached_object_profiles)
-                {
-                    object_profiles.emplace(name, std::move(object));
                 }
                 for (auto &[name, object] : precomputed_object_profiles)
                 {
@@ -2055,20 +1834,17 @@ namespace gatzk::protocol
                     dynamic_profile.zero_scalar_ratio = zero_scalar_ratio;
                     dynamic_profile.padding_ratio = padding_ratio;
                     dynamic_profile.materialization_ms = item.materialization_ms;
-                    dynamic_profile.fingerprint_cache_ms = item.fingerprint_cache_ms;
                     dynamic_profile.msm_ms = object.msm_ms;
                     dynamic_profile.total_commitment_ms =
-                        item.materialization_ms + item.fingerprint_cache_ms + object.msm_ms;
+                        item.materialization_ms + object.msm_ms;
                     dynamic_profile.compact = item.compact;
                     dynamic_profile.shared_or_borrowed = item.shared_or_borrowed;
                     dynamic_profile.reused_shared = item.reused_shared;
                     dynamic_profile.duplicates_another = !duplicate_of.empty();
-                    dynamic_profile.commitment_cache_hit = item.commitment_cache_hit;
                     dynamic_profile.zero_scalar_skipping = object.zero_scalar_skipping;
                     dynamic_profile.sparse_compaction = object.sparse_compaction;
                     dynamic_profile.constant_tail_folding = object.constant_tail_folding;
                     dynamic_profile.multithreaded_msm = object.multithreaded_msm;
-                    dynamic_profile.full_value_fingerprint = item.full_value_fingerprint;
                     metrics->dynamic_commitment_profiles.push_back(std::move(dynamic_profile));
                 }
             }

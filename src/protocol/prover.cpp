@@ -3435,7 +3435,7 @@ namespace gatzk::protocol
             std::vector<mcl::Fr> work;
             const auto &values = polynomial.values();
             copy_evaluation_values_to_native_domain(values, polynomial.domain->size, &work, polynomial.name);
-            ntt_plan(work.size())->intt(work.data());
+            algebra::intt_in_place(work.data(), work.size());
             trim_native_coefficients(&work);
             return work;
         }
@@ -3505,8 +3505,8 @@ namespace gatzk::protocol
                     even_work[i].clear();
                     odd_work[i].clear();
                 }
-                ntt_plan(half_size)->ntt(even_work.data());
-                ntt_plan(half_size)->ntt(odd_work.data());
+                algebra::ntt_pair_in_place(
+                    even_work.data(), odd_work.data(), half_size);
                 auto *out_native = FieldElement::mutable_native_array_data(out.data());
                 for (std::size_t i = 0; i < half_size; ++i)
                 {
@@ -3609,7 +3609,8 @@ namespace gatzk::protocol
                 }
                 const auto &values = polynomial.values();
                 copy_evaluation_values_to_native_domain(values, polynomial.domain->size, &coefficient_work, polynomial.name);
-                ntt_plan(coefficient_work.size())->intt(coefficient_work.data());
+                algebra::intt_in_place(
+                    coefficient_work.data(), coefficient_work.size());
 
                 if (polynomial.is_zero_domain_blinded())
                 {
@@ -3660,26 +3661,6 @@ namespace gatzk::protocol
             }
         }
 
-        std::vector<FieldElement> coefficients_from_coset_evaluations(
-            const std::vector<FieldElement> &values,
-            const FieldElement &shift)
-        {
-            std::vector<mcl::Fr> work(values.size());
-            copy_field_values_to_native(values, &work);
-            ntt_plan(work.size())->intt(work.data());
-
-            const auto powers = inverse_shift_powers(work.size(), shift);
-            std::vector<FieldElement> coefficients(work.size(), FieldElement::zero());
-            auto *coefficients_native = FieldElement::mutable_native_array_data(coefficients.data());
-            parallel_for_chunks_static(work.size(), 1ULL << 12, 0, [&](std::size_t begin, std::size_t end)
-                                       {
-                for (std::size_t i = begin; i < end; ++i) {
-                    mcl::Fr::mul(coefficients_native[i], work[i], (*powers)[i]);
-                } });
-            trim_field_coefficients(&coefficients);
-            return coefficients;
-        }
-
         std::vector<FieldElement> coefficients_from_coset_evaluations_in_place(
             std::vector<FieldElement> values,
             const FieldElement &shift,
@@ -3690,7 +3671,7 @@ namespace gatzk::protocol
             {
                 progress_note(std::string(progress_prefix) + ":intt:start");
             }
-            ntt_plan(values.size())->intt(work);
+            algebra::intt_in_place(work, values.size());
             if (!progress_prefix.empty())
             {
                 progress_note(std::string(progress_prefix) + ":intt:done");
@@ -3807,7 +3788,7 @@ namespace gatzk::protocol
                 }
                 const auto edge_head_count = context_.model.hidden_heads.size()
                     + context_.model.output_layer.heads.size();
-                if (label_ == "t_edge" && edge_head_count >= 4)
+                if (label_ == "t_edge" && edge_head_count >= 2)
                 {
                     const auto power_count = std::size_t{2048}
                         + std::size_t{1024} * edge_head_count;
@@ -3820,6 +3801,11 @@ namespace gatzk::protocol
                         power *= alpha;
                     }
                 }
+                if (label_ == "t_edge")
+                {
+                    edge_evaluation_plan_ = build_t_edge_evaluation_plan(
+                        context_, challenges_);
+                }
             }
 
             algebra::Polynomial materialize(const crypto::KZGKeyPair &key)
@@ -3830,7 +3816,10 @@ namespace gatzk::protocol
                         "SRS degree bound is too small for quotient polynomial " + label_ + ": need coefficients=" + std::to_string(target_size_) + " but degree_bound+1=" + std::to_string(key.pk.degree_bound + 1));
                 }
                 const auto root = FieldElement::root_of_unity(target_size_);
-                auto evaluate_at_index = [&](std::size_t i, const FieldElement &z)
+                auto evaluate_at_index = [&] (
+                    std::size_t i,
+                    const FieldElement &z,
+                    const QuotientBoundaryValues *boundary_values = nullptr)
                 {
                     const auto omega_z = z * domain_->omega;
                     const auto rotated_index = (i + rotation_step_) & (target_size_ - 1U);
@@ -3864,7 +3853,9 @@ namespace gatzk::protocol
                             nullptr,
                             quotient_alpha_powers_.empty()
                                 ? nullptr
-                                : &quotient_alpha_powers_);
+                                : &quotient_alpha_powers_,
+                            edge_evaluation_plan_.get(),
+                            boundary_values);
                     }
                     else if (label_ == "t_N")
                     {
@@ -4013,7 +4004,6 @@ namespace gatzk::protocol
                 {
                     progress_note("prove:quotient:t_edge:evaluate:start");
                 }
-                quotient_values[0] = evaluate_at_index(0, shift_);
                 const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
                 const bool run_parallel = cpu_count > 1 && target_size_ >= 4096;
                 if (run_parallel)
@@ -4039,6 +4029,80 @@ namespace gatzk::protocol
                             [&, begin, end]()
                             {
                                 auto z = shift_ * root.pow(static_cast<std::uint64_t>(begin));
+                                if (label_ == "t_edge")
+                                {
+                                    const auto one = FieldElement::one();
+                                    const auto last_point =
+                                        domain_->point_at(domain_->size - 1);
+                                    const auto zero_step = root.pow(domain_->size);
+                                    auto zero_power = shift_.pow(domain_->size)
+                                        * zero_step.pow(
+                                            static_cast<std::uint64_t>(begin));
+                                    constexpr std::size_t kInverseBlockSize = 8192;
+                                    for (std::size_t block_begin = begin;
+                                         block_begin < end;
+                                         block_begin += kInverseBlockSize)
+                                    {
+                                        const auto block_end = std::min(
+                                            end, block_begin + kInverseBlockSize);
+                                        std::vector<mcl::Fr> denominator_products(
+                                            block_end - block_begin);
+                                        auto denominator_z = z;
+                                        for (std::size_t i = block_begin;
+                                             i < block_end; ++i)
+                                        {
+                                            mcl::Fr first_denominator;
+                                            mcl::Fr last_denominator;
+                                            mcl::Fr::sub(
+                                                first_denominator,
+                                                denominator_z.native(),
+                                                one.native());
+                                            mcl::Fr::sub(
+                                                last_denominator,
+                                                denominator_z.native(),
+                                                last_point.native());
+                                            mcl::Fr::mul(
+                                                denominator_products[
+                                                    i - block_begin],
+                                                first_denominator,
+                                                last_denominator);
+                                            denominator_z *= root;
+                                        }
+                                        batch_invert_native_in_place(
+                                            &denominator_products);
+                                        for (std::size_t i = block_begin;
+                                             i < block_end; ++i)
+                                        {
+                                            const auto first_denominator =
+                                                z - one;
+                                            const auto last_denominator =
+                                                z - last_point;
+                                            const auto inverse_product =
+                                                FieldElement::from_native(
+                                                    denominator_products[
+                                                        i - block_begin]);
+                                            const auto zero = zero_power - one;
+                                            const auto zero_scaled =
+                                                zero * domain_->inv_size;
+                                            const QuotientBoundaryValues boundary{
+                                                .first = zero_scaled
+                                                    * last_denominator
+                                                    * inverse_product,
+                                                .last = zero_scaled
+                                                    * last_point
+                                                    * first_denominator
+                                                    * inverse_product,
+                                                .zero = zero,
+                                            };
+                                            quotient_values[i] =
+                                                evaluate_at_index(
+                                                    i, z, &boundary);
+                                            z *= root;
+                                            zero_power *= zero_step;
+                                        }
+                                    }
+                                    return;
+                                }
                                 for (std::size_t i = begin; i < end; ++i)
                                 {
                                     quotient_values[i] = evaluate_at_index(i, z);
@@ -4066,7 +4130,8 @@ namespace gatzk::protocol
                     progress_note("prove:quotient:t_edge:coefficients:start");
                 }
 
-                auto coefficients = coefficients_from_coset_evaluations(quotient_values, shift_);
+                auto coefficients = coefficients_from_coset_evaluations_in_place(
+                    std::move(quotient_values), shift_);
                 if (std::getenv("GATZK_DEBUG_QUOTIENT_SELF_CHECK") != nullptr)
                 {
                     std::cerr << "[quotient-debug] " << label_
@@ -5514,6 +5579,7 @@ namespace gatzk::protocol
             std::size_t rotation_step_ = 0;
             FieldElement shift_;
             std::vector<mcl::Fr> shift_powers_;
+            std::shared_ptr<const TEdgeEvaluationPlan> edge_evaluation_plan_;
             std::mutex coset_cache_mutex_;
             std::unordered_map<std::string, std::shared_ptr<const std::vector<FieldElement>>> coset_cache_;
             std::unordered_map<std::string, std::string> coset_aliases_;
@@ -6374,7 +6440,15 @@ namespace gatzk::protocol
                 points,
                 values);
             bundle.proof =
-                crypto::KZG::open_batch(commitments, points, values, folding_challenge, context.kzg, &batch_profile);
+                crypto::KZG::open_batch(
+                    commitments,
+                    points,
+                    values,
+                    folding_challenge,
+                    context.kzg,
+                    &batch_profile,
+                    crypto::BatchOpeningClaimValidation::
+                        AlreadyComputedFromOpeningPolynomials);
             if (metrics != nullptr)
             {
                 metrics->domain_open_denominator_inverse_ms += batch_profile.denominator_inverse_ms;
@@ -7231,7 +7305,6 @@ namespace gatzk::protocol
     // 消费 trace 生成最终 proof，对外保证 commitment 顺序、block 顺序与 opening 结构稳定。
     Proof prove(const ProtocolContext &context, const TraceArtifacts &trace, RunMetrics *metrics)
     {
-        const auto prove_start = Clock::now();
         const auto &route2 = util::route2_options();
         if (!context.model.has_real_multihead)
         {
@@ -8200,17 +8273,15 @@ namespace gatzk::protocol
                 external_commitments,
                 external_points,
                 derive_external_opening_folding_challenge(proof.public_metadata, external_commitments, external_points),
-                context.kzg);
+                context.kzg,
+                crypto::BatchOpeningClaimValidation::
+                    AlreadyComputedFromOpeningPolynomials);
             if (metrics != nullptr)
             {
                 metrics->external_opening_ms += elapsed_ms(stage_start, Clock::now());
             }
             progress_note("prove:external_opening:done");
             strip_prover_material_from_proof(&proof);
-            if (metrics != nullptr)
-            {
-                metrics->prove_time_ms = elapsed_ms(prove_start, Clock::now());
-            }
             return proof;
         }
 

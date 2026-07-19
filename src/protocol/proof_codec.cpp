@@ -4,9 +4,11 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <future>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -25,6 +27,18 @@ namespace gatzk::protocol
         constexpr std::uint64_t kWireVersion = 2;
         constexpr std::uint64_t kMaxContainerItems = 1ULL << 24;
         constexpr std::uint64_t kMaxStringBytes = 1ULL << 20;
+
+        crypto::G1Point decode_canonical_g1(
+            const std::vector<std::uint8_t>& encoded)
+        {
+            auto point = crypto::deserialize_g1(encoded);
+            if (crypto::serialize(point) != encoded)
+            {
+                throw std::runtime_error(
+                    "proof parser rejected non-canonical G1 encoding");
+            }
+            return point;
+        }
 
         class Writer
         {
@@ -132,7 +146,7 @@ namespace gatzk::protocol
                 return value;
             }
 
-            crypto::G1Point point()
+            std::vector<std::uint8_t> point_encoding()
             {
                 const auto length = u64();
                 if (length == 0 || length > 256 || length > remaining())
@@ -142,12 +156,12 @@ namespace gatzk::protocol
                 std::vector<std::uint8_t> encoded(
                     data_ + offset_, data_ + offset_ + static_cast<std::ptrdiff_t>(length));
                 offset_ += static_cast<std::size_t>(length);
-                auto point = crypto::deserialize_g1(encoded);
-                if (crypto::serialize(point) != encoded)
-                {
-                    throw std::runtime_error("proof parser rejected non-canonical G1 encoding");
-                }
-                return point;
+                return encoded;
+            }
+
+            crypto::G1Point point()
+            {
+                return decode_canonical_g1(point_encoding());
             }
 
             Reader block(const std::string& expected_tag)
@@ -190,6 +204,43 @@ namespace gatzk::protocol
             std::size_t offset_ = 0;
         };
 
+        std::vector<crypto::G1Point> decode_canonical_g1_batch(
+            const std::vector<std::vector<std::uint8_t>>& encodings)
+        {
+            std::vector<crypto::G1Point> points(encodings.size());
+            const auto hardware_workers = std::max<unsigned>(
+                1, std::thread::hardware_concurrency());
+            const auto worker_count = encodings.size() >= 8
+                ? std::min<std::size_t>(hardware_workers, encodings.size())
+                : 1;
+            const auto decode_range = [&](std::size_t begin, std::size_t end)
+            {
+                for (std::size_t i = begin; i < end; ++i)
+                {
+                    points[i] = decode_canonical_g1(encodings[i]);
+                }
+            };
+            if (worker_count == 1)
+            {
+                decode_range(0, encodings.size());
+                return points;
+            }
+            const auto chunk_size =
+                (encodings.size() + worker_count - 1) / worker_count;
+            std::vector<std::future<void>> futures;
+            futures.reserve(worker_count);
+            for (std::size_t worker = 0; worker < worker_count; ++worker)
+            {
+                const auto begin = worker * chunk_size;
+                const auto end = std::min(encodings.size(), begin + chunk_size);
+                if (begin >= end) break;
+                futures.push_back(std::async(
+                    std::launch::async, decode_range, begin, end));
+            }
+            for (auto& future : futures) future.get();
+            return points;
+        }
+
         template <typename Fn>
         void metadata_fields(PublicMetadata& metadata, Fn&& fn)
         {
@@ -214,8 +265,11 @@ namespace gatzk::protocol
         {
             crypto::OpeningProof proof;
             const auto count = reader.count("opening witnesses");
-            proof.witnesses.reserve(count);
-            for (std::size_t i = 0; i < count; ++i) proof.witnesses.push_back(reader.point());
+            std::vector<std::vector<std::uint8_t>> encodings;
+            encodings.reserve(count);
+            for (std::size_t i = 0; i < count; ++i)
+                encodings.push_back(reader.point_encoding());
+            proof.witnesses = decode_canonical_g1_batch(encodings);
             return proof;
         }
 
@@ -243,16 +297,25 @@ namespace gatzk::protocol
 
         std::vector<std::pair<std::string, crypto::Commitment>> read_named_commitments(Reader& reader)
         {
-            std::vector<std::pair<std::string, crypto::Commitment>> out;
             const auto count = reader.count("commitments");
+            std::vector<std::string> names;
+            std::vector<std::vector<std::uint8_t>> encodings;
+            names.reserve(count);
+            encodings.reserve(count);
+            for (std::size_t i = 0; i < count; ++i)
+            {
+                names.push_back(reader.string());
+                encodings.push_back(reader.point_encoding());
+            }
+            auto points = decode_canonical_g1_batch(encodings);
+            std::vector<std::pair<std::string, crypto::Commitment>> out;
             out.reserve(count);
             for (std::size_t i = 0; i < count; ++i)
             {
-                auto name = reader.string();
                 crypto::Commitment commitment;
-                commitment.name = name;
-                commitment.point = reader.point();
-                out.push_back({std::move(name), std::move(commitment)});
+                commitment.name = names[i];
+                commitment.point = std::move(points[i]);
+                out.push_back({std::move(names[i]), std::move(commitment)});
             }
             return out;
         }

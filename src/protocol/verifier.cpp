@@ -137,30 +137,6 @@ namespace gatzk::protocol
             return stream.str();
         }
 
-        std::string verifier_quotient_cache_key(
-            const ProtocolContext &context,
-            const Proof &proof,
-            const std::string &quotient_name)
-        {
-            std::ostringstream stream;
-            stream << verifier_context_cache_key(context.config) << "|verify-quot|" << quotient_name;
-            for (const auto &[name, value] : proof.challenges)
-            {
-                stream << '|' << name << '=' << value.to_string();
-            }
-            for (const auto &[name, commitment] : proof.quotient_commitments)
-            {
-                stream << '|' << name << '=' << commitment.point.to_string();
-            }
-            for (const auto &reference : proof.route_references)
-                stream << "|route-ref=" << reference.object_id;
-            for (const auto &[name, value] : proof.external_evaluations)
-            {
-                stream << '|' << name << '=' << value.to_string();
-            }
-            return stream.str();
-        }
-
         bool full_graph_feature_identity_enabled(const ProtocolContext &context)
         {
             if (context.local.num_nodes != context.dataset.num_nodes || context.local.num_features != context.dataset.num_features)
@@ -2381,18 +2357,21 @@ namespace gatzk::protocol
                 return eval_memo.eval_named(name, point);
             };
             std::string bundle_failure_reason;
-            auto verify_bundle_spec = [&](const BundleSpec &spec)
+            const auto bundle_fail = [&](const BundleSpec &spec, const std::string &reason)
             {
-                // 每个 bundle 都要同时满足：标签集合正确、打开点正确、KZG witness 正确、quotient 重算正确。
-                auto bundle_fail = [&](const std::string &reason)
+                bundle_failure_reason = spec.bundle_name + ":" + reason;
+                if (debug_verify)
                 {
-                    bundle_failure_reason = spec.bundle_name + ":" + reason;
-                    if (debug_verify)
-                    {
-                        util::info("bundle_fail=" + bundle_failure_reason);
-                    }
-                    return false;
-                };
+                    util::info("bundle_fail=" + bundle_failure_reason);
+                }
+                return false;
+            };
+            std::vector<BundleVerificationInput> bundle_inputs(
+                bundle_specs.size());
+            for (std::size_t spec_index = 0;
+                 spec_index < bundle_specs.size(); ++spec_index)
+            {
+                const auto &spec = bundle_specs[spec_index];
                 const auto &indexed_bundle = bundle_by_name(indexed_bundles, spec.bundle_name);
                 const auto &bundle = *indexed_bundle.bundle;
                 auto labels = domain_opening_labels(context, spec.trace_domain_name);
@@ -2401,104 +2380,103 @@ namespace gatzk::protocol
                 labels.push_back(quotient_mask_name);
                 if (bundle.values.size() != labels.size())
                 {
-                    return bundle_fail("value_count");
+                    return bundle_fail(spec, "value_count");
                 }
                 if (bundle.points.size() != 2 || bundle.points[0] != challenges.at(spec.z_name) || bundle.points[1] != challenges.at(spec.z_name) * spec.domain->omega)
                 {
-                    return bundle_fail("points");
+                    return bundle_fail(spec, "points");
                 }
-                std::vector<Commitment> commitments;
-                std::vector<std::vector<FieldElement>> values;
+                auto &input = bundle_inputs[spec_index];
+                input.bundle = &bundle;
+                input.commitments.reserve(labels.size());
+                input.values.reserve(labels.size());
                 const auto bundle_lookup_start = Clock::now();
                 for (std::size_t i = 0; i < labels.size(); ++i)
                 {
                     if (bundle.values[i].first != labels[i])
                     {
-                        return bundle_fail("label:" + bundle.values[i].first + "!=" + labels[i]);
+                        return bundle_fail(
+                            spec,
+                            "label:" + bundle.values[i].first + "!="
+                                + labels[i]);
                     }
                     if (dynamic_commitments.contains(labels[i]))
                     {
-                        commitments.push_back(dynamic_commitments.at(labels[i]));
+                        input.commitments.push_back(
+                            dynamic_commitments.at(labels[i]));
                     }
                     else if (quotient_commitments.contains(labels[i]))
                     {
-                        commitments.push_back(quotient_commitments.at(labels[i]));
+                        input.commitments.push_back(
+                            quotient_commitments.at(labels[i]));
                     }
                     else
                     {
-                        return bundle_fail("missing_commitment:" + labels[i]);
+                        return bundle_fail(
+                            spec, "missing_commitment:" + labels[i]);
                     }
-                    values.push_back(bundle.values[i].second);
+                    input.values.push_back(bundle.values[i].second);
                 }
+                input.folding_challenge =
+                    derive_batch_opening_folding_challenge(
+                        proof.public_metadata,
+                        spec.v_name,
+                        input.commitments,
+                        bundle.points,
+                        input.values);
                 if (metrics != nullptr)
                 {
                     metrics->verify_bundle_lookup_ms += elapsed_ms(bundle_lookup_start, Clock::now());
                 }
-                const auto opening_start = Clock::now();
-                if (!crypto::KZG::verify_batch(
-                        commitments,
-                        bundle.points,
-                        values,
-                        derive_batch_opening_folding_challenge(
-                            proof.public_metadata,
-                            spec.v_name,
-                            commitments,
-                            bundle.points,
-                            values),
-                        bundle.proof,
-                        context.kzg.vk))
-                {
-                    return bundle_fail("kzg_batch");
-                }
-                if (metrics != nullptr)
-                {
-                    metrics->verify_domain_opening_ms += elapsed_ms(opening_start, Clock::now());
-                }
+            }
+            auto verify_bundle_spec = [&](const BundleSpec &spec)
+            {
+                // Opening shape and KZG checks were completed before quotient
+                // evaluation so the seven independent pairings can run in
+                // parallel without sharing verifier evaluation caches.
+                const auto &indexed_bundle = bundle_by_name(
+                    indexed_bundles, spec.bundle_name);
+                const auto &bundle = *indexed_bundle.bundle;
+                const auto quotient_mask_name = quotient_mask_label(
+                    spec.quotient_name);
                 const auto quotient_start = Clock::now();
                 FieldElement expected_t = FieldElement::zero();
-                const auto cache_key = verifier_quotient_cache_key(context, proof, spec.quotient_name);
-                const bool quotient_cache_hit = false;
-                if (!quotient_cache_hit)
+                if (context.config.batching_rule == "whole_graph_single" && context.local.num_nodes >= (1ULL << 16) && spec.domain != nullptr && spec.domain->size >= (1ULL << 20))
                 {
-                    if (context.config.batching_rule == "whole_graph_single" && context.local.num_nodes >= (1ULL << 16) && spec.domain != nullptr && spec.domain->size >= (1ULL << 20))
-                    {
-                        eval_memo.prefetch_public_domain_points(spec.domain, bundle.points);
-                    }
-                    if (spec.quotient_name == "t_FH")
-                    {
-                        expected_t = evaluate_t_fh(context, challenges, eval, challenges.at(spec.z_name));
-                    }
-                    else if (spec.quotient_name == "t_edge")
-                    {
-                        expected_t = evaluate_t_edge(context, challenges, external_evaluations, eval, challenges.at(spec.z_name));
-                    }
-                    else if (spec.quotient_name == "t_in")
-                    {
-                        expected_t = evaluate_t_in(context, challenges, external_evaluations, eval, challenges.at(spec.z_name));
-                    }
-                    else if (spec.quotient_name == "t_d_h")
-                    {
-                        expected_t = evaluate_t_d(context, challenges, external_evaluations, eval, challenges.at(spec.z_name));
-                    }
-                    else if (spec.quotient_name == "t_cat")
-                    {
-                        expected_t = evaluate_t_cat(context, challenges, external_evaluations, eval, challenges.at(spec.z_name));
-                    }
-                    else if (spec.quotient_name == "t_C")
-                    {
-                        expected_t = evaluate_t_c(context, challenges, external_evaluations, eval, challenges.at(spec.z_name));
-                    }
-                    else if (spec.quotient_name == "t_N")
-                    {
-                        expected_t = evaluate_t_n(context, challenges, eval, challenges.at(spec.z_name));
-                    }
-                    else
-                    {
-                        return bundle_fail("unknown_quotient:" + spec.quotient_name);
-                    }
-                    // A fresh verification recomputes the quotient identity. Reusing an
-                    // earlier proof's acceptance-side value is reserved for an explicit
-                    // repeat_same_proof_verify benchmark, not this path.
+                    eval_memo.prefetch_public_domain_points(spec.domain, bundle.points);
+                }
+                if (spec.quotient_name == "t_FH")
+                {
+                    expected_t = evaluate_t_fh(context, challenges, eval, challenges.at(spec.z_name));
+                }
+                else if (spec.quotient_name == "t_edge")
+                {
+                    expected_t = evaluate_t_edge(context, challenges, external_evaluations, eval, challenges.at(spec.z_name));
+                }
+                else if (spec.quotient_name == "t_in")
+                {
+                    expected_t = evaluate_t_in(context, challenges, external_evaluations, eval, challenges.at(spec.z_name));
+                }
+                else if (spec.quotient_name == "t_d_h")
+                {
+                    expected_t = evaluate_t_d(context, challenges, external_evaluations, eval, challenges.at(spec.z_name));
+                }
+                else if (spec.quotient_name == "t_cat")
+                {
+                    expected_t = evaluate_t_cat(context, challenges, external_evaluations, eval, challenges.at(spec.z_name));
+                }
+                else if (spec.quotient_name == "t_C")
+                {
+                    expected_t = evaluate_t_c(context, challenges, external_evaluations, eval, challenges.at(spec.z_name));
+                }
+                else if (spec.quotient_name == "t_N")
+                {
+                    expected_t = evaluate_t_n(context, challenges, eval, challenges.at(spec.z_name));
+                }
+                else
+                {
+                    return bundle_fail(
+                        spec, "unknown_quotient:" + spec.quotient_name);
                 }
                 const auto quotient_point = challenges.at(spec.z_name);
                 const auto opened_mask = bundle_value(
@@ -2512,6 +2490,7 @@ namespace gatzk::protocol
                 if (opened_quotient != expected_masked_quotient)
                 {
                     return bundle_fail(
+                        spec,
                         "quotient_mismatch:" + spec.quotient_name
                         + ":opened=" + opened_quotient.to_string()
                         + ":expected=" + expected_t.to_string()
@@ -2909,8 +2888,57 @@ namespace gatzk::protocol
             {
                 metrics->verify_external_fold_ms += elapsed_ms(external_fold_start, Clock::now());
             }
-            for (const auto &spec : bundle_specs)
+            std::vector<std::uint8_t> bundle_opening_results(
+                bundle_inputs.size(), 0);
+            std::vector<double> bundle_opening_elapsed_ms(
+                bundle_inputs.size(), 0.0);
+            const auto domain_opening_start = Clock::now();
+            std::vector<std::future<void>> bundle_opening_futures;
+            bundle_opening_futures.reserve(bundle_inputs.size());
+            for (std::size_t spec_index = 0;
+                 spec_index < bundle_inputs.size(); ++spec_index)
             {
+                bundle_opening_futures.push_back(std::async(
+                    std::launch::async,
+                    [&, spec_index]
+                    {
+                        const auto opening_start = Clock::now();
+                        const auto &input = bundle_inputs[spec_index];
+                        bundle_opening_results[spec_index] =
+                            crypto::KZG::verify_batch(
+                                input.commitments,
+                                input.bundle->points,
+                                input.values,
+                                input.folding_challenge,
+                                input.bundle->proof,
+                                context.kzg.vk)
+                            ? 1
+                            : 0;
+                        bundle_opening_elapsed_ms[spec_index] =
+                            elapsed_ms(opening_start, Clock::now());
+                    }));
+            }
+            for (auto &future : bundle_opening_futures) future.get();
+            if (metrics != nullptr)
+            {
+                metrics->verify_domain_opening_ms += elapsed_ms(
+                    domain_opening_start, Clock::now());
+            }
+            for (std::size_t spec_index = 0;
+                 spec_index < bundle_specs.size(); ++spec_index)
+            {
+                if (bundle_opening_results[spec_index] == 0)
+                {
+                    const auto &spec = bundle_specs[spec_index];
+                    return fail(
+                        "bundle_verify:"
+                        + spec.bundle_name + ":kzg_batch");
+                }
+            }
+            for (std::size_t spec_index = 0;
+                 spec_index < bundle_specs.size(); ++spec_index)
+            {
+                const auto &spec = bundle_specs[spec_index];
                 const auto bundle_start = Clock::now();
                 if (!verify_bundle_spec(spec))
                 {
@@ -2921,7 +2949,8 @@ namespace gatzk::protocol
                     const auto elapsed = elapsed_ms(bundle_start, Clock::now());
                     if (auto *metric = verify_domain_metric(metrics, spec.bundle_name); metric != nullptr)
                     {
-                        *metric += elapsed;
+                        *metric += bundle_opening_elapsed_ms[spec_index]
+                            + elapsed;
                     }
                 }
             }

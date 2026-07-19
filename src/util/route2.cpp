@@ -89,23 +89,7 @@ std::string route2_feature_notes(const Route2Options& options) {
         + "; enabled_trace_layout_upgrade=" + std::string(options.trace_layout_upgrade ? "true" : "false")
         + "; enabled_fast_verify_pairing=" + std::string(options.fast_verify_pairing ? "true" : "false")
         + "; enabled_cuda_trace_hotspots=" + std::string(options.cuda_trace_hotspots ? "true" : "false")
-        + "; enabled_cuda_field_hotspots=" + std::string(options.cuda_field_hotspots ? "true" : "false")
-        + "; enabled_domain_basis_batch_msm_scheduler=" + std::string(options.fast_msm ? "true" : "false")
-        + "; enabled_small_batch_msm_tail_balancing=" + std::string(options.fast_msm ? "true" : "false")
-        + "; enabled_owned_quotient_commit_batch=true"
-        + "; enabled_rotated_opening_denominator_reuse=true"
-        + "; enabled_point_parallel_opening_witness=true"
-        + "; enabled_parallel_quotient_materialization=true"
-        + "; enabled_edge_coset_prewarm_scaling=true"
-        + "; enabled_zero_copy_dense_msm_scalars=true"
-        + "; enabled_zero_copy_sparse_msm_scalars=true"
-        + "; enabled_constant_tail_commitment_folding=true"
-        + "; enabled_huge_single_msm_worker_priority=true"
-        + "; enabled_fused_fh_table_coset=true"
-        + "; enabled_parallel_linear_coset_sum=true"
-        + "; dynamic_commit_full_fingerprint_limit=65536"
-        + "; dynamic_commit_repeated_table_fingerprint_limit=1048576"
-        + "; enabled_source_identity_commitment_cache=true";
+        + "; enabled_cuda_field_hotspots=" + std::string(options.cuda_field_hotspots ? "true" : "false");
 }
 
 }

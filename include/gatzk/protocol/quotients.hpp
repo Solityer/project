@@ -4,6 +4,7 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -23,6 +24,18 @@ struct FHQuotientProfile {
     double dependency_eval_ms = 0.0;
     double assembly_ms = 0.0;
 };
+
+struct TEdgeEvaluationPlan;
+
+struct QuotientBoundaryValues {
+    algebra::FieldElement first;
+    algebra::FieldElement last;
+    algebra::FieldElement zero;
+};
+
+std::shared_ptr<const TEdgeEvaluationPlan> build_t_edge_evaluation_plan(
+    const ProtocolContext& context,
+    const std::map<std::string, algebra::FieldElement>& challenges);
 
 // 返回某个工作域 opening bundle 中必须出现的标签顺序。
 // 该顺序会同时影响 prover 组包、verifier 取值和 proof_size_bytes 统计。
@@ -57,7 +70,9 @@ algebra::FieldElement evaluate_t_edge(
     bool return_numerator = false,
     std::size_t* first_nonzero_term = nullptr,
     algebra::FieldElement* first_nonzero_value = nullptr,
-    const std::vector<algebra::FieldElement>* precomputed_alpha_powers = nullptr);
+    const std::vector<algebra::FieldElement>* precomputed_alpha_powers = nullptr,
+    const TEdgeEvaluationPlan* evaluation_plan = nullptr,
+    const QuotientBoundaryValues* boundary_values = nullptr);
 
 algebra::FieldElement evaluate_t_n(
     const ProtocolContext& context,

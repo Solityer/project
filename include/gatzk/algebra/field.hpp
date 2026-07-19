@@ -120,21 +120,21 @@ namespace gatzk::algebra
 
         FieldElement operator+(const FieldElement& other) const
         {
-            FieldElement out;
+            FieldElement out(UninitializedTag{});
             mcl::Fr::add(out.value_, value_, other.value_);
             return out;
         }
 
         FieldElement operator-(const FieldElement& other) const
         {
-            FieldElement out;
+            FieldElement out(UninitializedTag{});
             mcl::Fr::sub(out.value_, value_, other.value_);
             return out;
         }
 
         FieldElement operator*(const FieldElement& other) const
         {
-            FieldElement out;
+            FieldElement out(UninitializedTag{});
             mcl::Fr::mul(out.value_, value_, other.value_);
             return out;
         }
@@ -169,7 +169,7 @@ namespace gatzk::algebra
 
         FieldElement pow(std::uint64_t exponent) const
         {
-            FieldElement out;
+            FieldElement out(UninitializedTag{});
             mcl::Fr::pow(out.value_, value_, exponent);
             return out;
         }
@@ -181,7 +181,7 @@ namespace gatzk::algebra
             {
                 throw std::runtime_error("attempted to invert zero in FieldElement");
             }
-            FieldElement out;
+            FieldElement out(UninitializedTag{});
             // 调用 mcl::Fr::inv 计算逆元
             mcl::Fr::inv(out.value_, value_);
             return out;
@@ -224,6 +224,14 @@ namespace gatzk::algebra
         }
 
     private:
+        // Arithmetic operators are only reachable from an already-constructed
+        // field element, so mcl has already been initialized. Their output is
+        // immediately and completely overwritten by mcl; clearing it and
+        // rechecking the global once flag on every scalar operation is pure
+        // hot-path work.
+        struct UninitializedTag {};
+        explicit FieldElement(UninitializedTag) noexcept {}
+
         mcl::Fr value_;
     };
 

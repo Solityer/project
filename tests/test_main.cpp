@@ -21,6 +21,7 @@
 #include "gatzk/algebra/domain_evaluation.hpp"
 #include "gatzk/algebra/eval_backend.hpp"
 #include "gatzk/algebra/polynomial.hpp"
+#include "gatzk/algebra/vector_ops.hpp"
 #include "gatzk/crypto/curve.hpp"
 #include "gatzk/crypto/kzg.hpp"
 #include "gatzk/data/loader.hpp"
@@ -68,6 +69,39 @@ void require(bool condition, const std::string& message) {
     if (!condition) {
         throw std::runtime_error(message);
     }
+}
+
+void test_parallel_split_intt_equivalence() {
+    constexpr std::size_t size = 1ULL << 15;
+    std::vector<FieldElement> serial(size);
+    for (std::size_t i = 0; i < size; ++i) {
+        serial[i] = FieldElement(
+            31 + ((i * 2654435761ULL) % 104729ULL));
+    }
+    auto split = serial;
+    gatzk::algebra::ntt_plan(size)->intt(
+        FieldElement::mutable_native_array_data(serial.data()));
+    gatzk::algebra::intt_in_place(
+        FieldElement::mutable_native_array_data(split.data()), split.size());
+    require(serial == split,
+            "parallel split INTT must equal the canonical full INTT");
+
+    auto first_serial = split;
+    auto second_serial = split;
+    second_serial.front() += FieldElement(19);
+    auto first_parallel = first_serial;
+    auto second_parallel = second_serial;
+    gatzk::algebra::ntt_plan(size)->ntt(
+        FieldElement::mutable_native_array_data(first_serial.data()));
+    gatzk::algebra::ntt_plan(size)->ntt(
+        FieldElement::mutable_native_array_data(second_serial.data()));
+    gatzk::algebra::ntt_pair_in_place(
+        FieldElement::mutable_native_array_data(first_parallel.data()),
+        FieldElement::mutable_native_array_data(second_parallel.data()),
+        size);
+    require(first_serial == first_parallel
+            && second_serial == second_parallel,
+            "parallel paired NTT must equal two canonical forward NTTs");
 }
 
 std::string sha256_hex(std::string_view data) {
@@ -408,6 +442,78 @@ void test_kzg_opening_selftest() {
             {blinded_commitment}, private_points, private_claim_tamper,
             FieldElement(41), private_opening, keys.vk),
         "zero-domain-blinded opening must reject a claimed-value tamper");
+
+    const auto fold_domain = gatzk::algebra::RootOfUnityDomain::create(
+        "C", keys.manifest.domain_sizes.at("C"));
+    std::vector<FieldElement> fold_values_0(fold_domain->size);
+    std::vector<FieldElement> fold_values_1(fold_domain->size);
+    for (std::size_t i = 0; i < fold_domain->size; ++i) {
+        fold_values_0[i] = FieldElement(17 + 3 * i);
+        fold_values_1[i] = FieldElement(29 + 5 * i);
+    }
+    auto fold_polynomial_0 = gatzk::algebra::Polynomial::from_evaluations(
+        "P_fold_0", fold_values_0, fold_domain);
+    auto fold_polynomial_1 = gatzk::algebra::Polynomial::from_evaluations(
+        "P_fold_1", fold_values_1, fold_domain);
+    fold_polynomial_0.set_zero_domain_blinder(
+        {FieldElement(7), FieldElement(11)});
+    fold_polynomial_1.set_zero_domain_blinder(
+        {FieldElement(13), FieldElement(19)});
+    const auto fold_commitment_0 = gatzk::crypto::KZG::commit(
+        "P_fold_0", fold_polynomial_0, keys);
+    const auto fold_commitment_1 = gatzk::crypto::KZG::commit(
+        "P_fold_1", fold_polynomial_1, keys);
+    const FieldElement fold_challenge(43);
+    const auto fold_point = choose_non_domain_point(*fold_domain);
+    const std::vector<FieldElement> fold_points{
+        fold_point, fold_point * fold_domain->omega};
+    const std::vector<std::vector<FieldElement>> fold_claims{
+        {fold_polynomial_0.evaluate(fold_points[0]),
+         fold_polynomial_0.evaluate(fold_points[1])},
+        {fold_polynomial_1.evaluate(fold_points[0]),
+         fold_polynomial_1.evaluate(fold_points[1])},
+    };
+    const auto folded_batch_opening = gatzk::crypto::KZG::open_batch(
+        {fold_commitment_0, fold_commitment_1},
+        fold_points,
+        fold_claims,
+        fold_challenge,
+        keys);
+
+    std::vector<FieldElement> explicit_fold_values(fold_domain->size);
+    for (std::size_t i = 0; i < fold_domain->size; ++i) {
+        explicit_fold_values[i] =
+            fold_values_0[i] + fold_values_1[i] * fold_challenge;
+    }
+    auto explicit_fold_polynomial =
+        gatzk::algebra::Polynomial::from_evaluations(
+            "P_fold_explicit", std::move(explicit_fold_values), fold_domain);
+    explicit_fold_polynomial.set_zero_domain_blinder({
+        FieldElement(7) + FieldElement(13) * fold_challenge,
+        FieldElement(11) + FieldElement(19) * fold_challenge,
+    });
+    const auto explicit_fold_commitment = gatzk::crypto::KZG::commit(
+        "P_fold_explicit", explicit_fold_polynomial, keys);
+    require(
+        explicit_fold_commitment.point
+            == gatzk::crypto::g1_add(
+                fold_commitment_0.point,
+                gatzk::crypto::g1_mul(
+                    fold_commitment_1.point, fold_challenge)),
+        "folded evaluation commitment must equal the explicit polynomial commitment");
+    const std::vector<std::vector<FieldElement>> explicit_fold_claims{{
+        fold_claims[0][0] + fold_claims[1][0] * fold_challenge,
+        fold_claims[0][1] + fold_claims[1][1] * fold_challenge,
+    }};
+    const auto explicit_fold_opening = gatzk::crypto::KZG::open_batch(
+        {explicit_fold_commitment},
+        fold_points,
+        explicit_fold_claims,
+        FieldElement(47),
+        keys);
+    require(
+        folded_batch_opening.witnesses == explicit_fold_opening.witnesses,
+        "folded evaluation witnesses must equal explicit polynomial witnesses");
 }
 
 void test_coefficient_taylor_shift_fixed_shape() {
@@ -2147,6 +2253,27 @@ void test_unit_coefficient_basis_closure() {
     require(gatzk::protocol::serialize_proof(parsed) == bytes,
             "unit coefficient-basis proof wire encoding must be canonical");
 
+    require(!fixture.proof.dynamic_commitments.empty(),
+            "unit proof must contain a batched dynamic commitment group");
+    const auto encoded_commitment = gatzk::crypto::serialize(
+        fixture.proof.dynamic_commitments.front().second.point);
+    auto invalid_subgroup_encoding = bytes;
+    const auto encoded_position = std::search(
+        invalid_subgroup_encoding.begin(), invalid_subgroup_encoding.end(),
+        encoded_commitment.begin(), encoded_commitment.end());
+    require(encoded_position != invalid_subgroup_encoding.end(),
+            "unit proof wire must contain the selected commitment encoding");
+    std::fill(
+        encoded_position,
+        encoded_position + static_cast<std::ptrdiff_t>(encoded_commitment.size()),
+        0xff);
+    require_throws(
+        [&] {
+            (void)gatzk::protocol::parse_proof(
+                fixture.context, invalid_subgroup_encoding);
+        },
+        "parallel strict parser must reject an invalid G1/subgroup encoding");
+
     const auto output_subproof = std::find_if(
         fixture.proof.pi_bind.subproofs.begin(),
         fixture.proof.pi_bind.subproofs.end(),
@@ -2840,6 +2967,8 @@ void test_tamper_rejection_suite() {
 
 int main() {
     try {
+        std::cerr << "running test_parallel_split_intt_equivalence\n";
+        test_parallel_split_intt_equivalence();
         const bool skip_srs_tests = std::getenv("GATZK_SKIP_SRS_TESTS") != nullptr;
         if (!skip_srs_tests) {
             std::cerr << "running test_kzg_opening_selftest\n";

@@ -125,6 +125,10 @@ add_executable(gatzk_proof_codec_stage_bench tools/benchmarks/proof_codec_stage_
 target_include_directories(gatzk_proof_codec_stage_bench PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(gatzk_proof_codec_stage_bench PRIVATE gatzkml)
 
+add_executable(gatzk_quotient_transform_stage_bench tools/benchmarks/quotient_transform_stage_bench.cpp)
+target_include_directories(gatzk_quotient_transform_stage_bench PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(gatzk_quotient_transform_stage_bench PRIVATE gatzkml)
+
 if(GATZK_ENABLE_CUDA_BACKEND)
     add_executable(gatzk_cuda_hotspots_stage_bench tools/benchmarks/cuda_hotspots_stage_bench.cpp)
     target_include_directories(gatzk_cuda_hotspots_stage_bench PRIVATE ${PROJECT_SOURCE_DIR}/include)
@@ -145,5 +149,10 @@ if(GATZK_BUILD_TESTS)
         add_test(
             NAME static_secure_scan
             COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/security/static_scan_no_tau.py)
+        add_test(
+            NAME runner_semantics
+            COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_runner_semantics.py)
+        set_tests_properties(runner_semantics PROPERTIES
+            ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     endif()
 endif()

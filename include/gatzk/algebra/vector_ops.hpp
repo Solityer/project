@@ -86,6 +86,14 @@ namespace gatzk::algebra
     // 共享 NTT plan 缓存，供 quotient materialization 与可复用 prover-side material 转换使用。
     std::shared_ptr<const mcl::Ntt<mcl::Fr>> ntt_plan(std::size_t size);
 
+    // 大型逆变换按偶/奇频点拆成两个独立半长 INTT；结果与标准
+    // `ntt_plan(size)->intt` 逐元素一致，小规模保持标准实现。
+    void intt_in_place(mcl::Fr* values, std::size_t size);
+
+    // Execute two independent same-size forward NTTs concurrently at formal
+    // transform sizes.  Small inputs retain the canonical serial plan calls.
+    void ntt_pair_in_place(mcl::Fr* first, mcl::Fr* second, std::size_t size);
+
     // 直接消费原生权重，避免 barycentric 热路径中反复包装 `FieldElement`。
     FieldElement dot_product_native_weights(
         const std::vector<FieldElement>& lhs,

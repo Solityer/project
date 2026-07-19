@@ -1666,6 +1666,7 @@ namespace gatzk::crypto
         {
             std::shared_ptr<algebra::RootOfUnityDomain> domain;
             std::vector<FoldedEvaluationTerm> terms;
+            std::vector<FieldElement> folded_values;
             std::vector<FieldElement> scaled_claim_sums;
         };
 
@@ -1749,7 +1750,8 @@ namespace gatzk::crypto
             const std::vector<std::vector<FieldElement>>& claimed_values,
             const std::vector<FieldElement>& powers,
             const std::vector<FieldElement>& points,
-            std::size_t worker_cap)
+            std::size_t worker_cap,
+            bool validate_claims = true)
         {
             const auto point_count = points.size();
             algebra::DomainEvaluationWeightCache claim_weight_cache;
@@ -1798,59 +1800,70 @@ namespace gatzk::crypto
                 }
             }
 
-            parallel_for_chunks_capped(
-                folded_terms.size(),
-                16,
-                worker_cap,
-                [&](std::size_t begin, std::size_t end)
-                {
-                    for (std::size_t term_index = begin; term_index < end; ++term_index)
+            if (validate_claims)
+            {
+                parallel_for_chunks_capped(
+                    folded_terms.size(),
+                    16,
+                    worker_cap,
+                    [&](std::size_t begin, std::size_t end)
                     {
-                        const auto& term = folded_terms[term_index];
-                        if (term.commitment == nullptr
-                            || term.commitment->opening_polynomial == nullptr
-                            || term.scale.is_zero())
+                        for (std::size_t term_index = begin;
+                             term_index < end; ++term_index)
                         {
-                            continue;
-                        }
-                        const auto& polynomial = *term.commitment->opening_polynomial;
-                        for (std::size_t point_index = 0;
-                             point_index < point_count;
-                             ++point_index)
-                        {
-                            FieldElement expected = FieldElement::zero();
-                            if (polynomial.basis == algebra::PolynomialBasis::Coefficient)
+                            const auto& term = folded_terms[term_index];
+                            if (term.commitment == nullptr
+                                || term.commitment->opening_polynomial == nullptr
+                                || term.scale.is_zero())
                             {
-                                expected = polynomial.evaluate(points[point_index]);
+                                continue;
                             }
-                            else
+                            const auto& polynomial =
+                                *term.commitment->opening_polynomial;
+                            for (std::size_t point_index = 0;
+                                 point_index < point_count;
+                                 ++point_index)
                             {
-                                if (polynomial.domain == nullptr)
+                                FieldElement expected = FieldElement::zero();
+                                if (polynomial.basis
+                                    == algebra::PolynomialBasis::Coefficient)
+                                {
+                                    expected = polynomial.evaluate(
+                                        points[point_index]);
+                                }
+                                else
+                                {
+                                    if (polynomial.domain == nullptr)
+                                    {
+                                        throw std::runtime_error(
+                                            "evaluation polynomial is missing its domain: "
+                                            + term.commitment->name);
+                                    }
+                                    const auto& weights = claim_weight_cache.get(
+                                        polynomial.domain,
+                                        points[point_index]);
+                                    expected = evaluate_with_shared_domain_weights(
+                                        polynomial,
+                                        points[point_index],
+                                        weights);
+                                }
+                                const auto claimed =
+                                    term.scaled_claims[point_index] / term.scale;
+                                if (expected != claimed)
                                 {
                                     throw std::runtime_error(
-                                        "evaluation polynomial is missing its domain: "
-                                        + term.commitment->name);
+                                        (polynomial.basis
+                                                == algebra::PolynomialBasis::Coefficient
+                                             ? "coefficient opening claim mismatch for "
+                                             : "evaluation opening claim mismatch for ")
+                                        + term.commitment->name
+                                        + " at point index "
+                                        + std::to_string(point_index));
                                 }
-                                const auto& weights = claim_weight_cache.get(
-                                    polynomial.domain, points[point_index]);
-                                expected = evaluate_with_shared_domain_weights(
-                                    polynomial, points[point_index], weights);
-                            }
-                            const auto claimed =
-                                term.scaled_claims[point_index] / term.scale;
-                            if (expected != claimed)
-                            {
-                                throw std::runtime_error(
-                                    (polynomial.basis == algebra::PolynomialBasis::Coefficient
-                                         ? "coefficient opening claim mismatch for "
-                                         : "evaluation opening claim mismatch for ")
-                                    + term.commitment->name
-                                    + " at point index "
-                                    + std::to_string(point_index));
                             }
                         }
-                    }
-                });
+                    });
+            }
 
             FoldedOpeningPlan plan;
             plan.coefficient_scaled_claim_sums.assign(point_count, FieldElement::zero());
@@ -1898,6 +1911,51 @@ namespace gatzk::crypto
                 {
                     group.scaled_claim_sums[point_index] += term.scaled_claims[point_index];
                 }
+            }
+            for (auto& group : plan.evaluation_groups)
+            {
+                group.folded_values.assign(group.domain->size, FieldElement::zero());
+                auto* folded_values_native =
+                    FieldElement::mutable_native_array_data(group.folded_values.data());
+                struct NativeTerm
+                {
+                    const std::vector<FieldElement>* values = nullptr;
+                    std::size_t value_count = 0;
+                    mcl::Fr scale;
+                };
+                std::vector<NativeTerm> native_terms;
+                native_terms.reserve(group.terms.size());
+                for (const auto& term : group.terms)
+                {
+                    native_terms.push_back(NativeTerm{
+                        .values = term.values,
+                        .value_count = term.value_count,
+                        .scale = term.scale.native(),
+                    });
+                }
+                parallel_for_chunks_capped(
+                    group.domain->size,
+                    1ULL << 15,
+                    worker_cap,
+                    [&](std::size_t begin, std::size_t end)
+                    {
+                        for (const auto& term : native_terms)
+                        {
+                            const auto term_end = std::min(end, term.value_count);
+                            for (std::size_t row = begin; row < term_end; ++row)
+                            {
+                                mcl::Fr product;
+                                mcl::Fr::mul(
+                                    product,
+                                    (*term.values)[row].native(),
+                                    term.scale);
+                                mcl::Fr::add(
+                                    folded_values_native[row],
+                                    folded_values_native[row],
+                                    product);
+                            }
+                        }
+                    });
             }
             trim_zero_coefficients(&plan.coefficient_fold);
             return plan;
@@ -2033,41 +2091,22 @@ namespace gatzk::crypto
 
                 std::vector<FieldElement> quotient_values(group.domain->size, FieldElement::zero());
                 auto* quotient_values_native = FieldElement::mutable_native_array_data(quotient_values.data());
-                struct NativeTerm
-                {
-                    const std::vector<FieldElement>* values = nullptr;
-                    std::size_t value_count = 0;
-                    mcl::Fr scale;
-                };
-                std::vector<NativeTerm> native_terms;
-                native_terms.reserve(group.terms.size());
-                for (const auto& term : group.terms)
-                {
-                    native_terms.push_back(NativeTerm{
-                        .values = term.values,
-                        .value_count = term.value_count,
-                        .scale = term.scale.native(),
-                    });
-                }
                 mcl::Fr zero;
                 zero.clear();
                 mcl::Fr base_numerator;
                 mcl::Fr::sub(base_numerator, zero, group.scaled_claim_sums[point_index].native());
                 const bool has_rotation = inverse_rotation_shift != 0;
                 const mcl::Fr rotation_scale_native = inverse_rotation_scale.native();
+                const auto* folded_values_native =
+                    FieldElement::native_array_data(group.folded_values.data());
                 parallel_for_chunks_capped(group.domain->size, 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end) {
                     for (std::size_t row = begin; row < end; ++row)
                     {
                         mcl::Fr native_numerator = base_numerator;
-                        for (const auto& term : native_terms)
-                        {
-                            if (row < term.value_count)
-                            {
-                                mcl::Fr product;
-                                mcl::Fr::mul(product, (*term.values)[row].native(), term.scale);
-                                mcl::Fr::add(native_numerator, native_numerator, product);
-                            }
-                        }
+                        mcl::Fr::add(
+                            native_numerator,
+                            native_numerator,
+                            folded_values_native[row]);
                         const auto inverse_index =
                             !has_rotation
                             ? row
@@ -2139,24 +2178,49 @@ namespace gatzk::crypto
             return out;
         }
 
-        G1Point folded_single_point_commitment(
+        G1Point folded_commitment_points(
             const std::vector<Commitment>& commitments,
-            const std::vector<FieldElement>& values,
-            const std::vector<FieldElement>& powers,
-            const G1Point& g1_generator)
+            const std::vector<FieldElement>& powers)
         {
             if (powers.size() != commitments.size())
             {
                 throw std::runtime_error("folded commitment power count mismatch");
             }
-            auto out = g1_zero();
-            for (std::size_t i = 0; i < commitments.size(); ++i)
+            if (commitments.empty())
             {
-                const auto value_commitment = g1_mul(g1_generator, values[i]);
-                const auto numerator = g1_sub(commitments[i].point, value_commitment);
-                out = g1_add(out, g1_mul(numerator, powers[i]));
+                return g1_zero();
             }
-            return out;
+            std::vector<G1Point> points;
+            points.reserve(commitments.size());
+            for (const auto& commitment : commitments)
+            {
+                points.push_back(commitment.point);
+            }
+            return g1_multi_scalar_mul(
+                points.data(), powers.data(), powers.size());
+        }
+
+        FieldElement folded_claim_value(
+            const std::vector<std::vector<FieldElement>>& claimed_values,
+            const std::vector<FieldElement>& powers,
+            std::size_t point_index)
+        {
+            if (powers.size() != claimed_values.size())
+            {
+                throw std::runtime_error("folded claim power count mismatch");
+            }
+            mcl::Fr sum;
+            sum.clear();
+            for (std::size_t i = 0; i < claimed_values.size(); ++i)
+            {
+                mcl::Fr product;
+                mcl::Fr::mul(
+                    product,
+                    claimed_values[i][point_index].native(),
+                    powers[i].native());
+                mcl::Fr::add(sum, sum, product);
+            }
+            return FieldElement::from_native(sum);
         }
 
         bool verify_pairing_equation(
@@ -2850,7 +2914,8 @@ namespace gatzk::crypto
         const std::vector<std::vector<FieldElement>>& claimed_values,
         const FieldElement& folding_challenge,
         const KZGKeyPair& key,
-        BatchOpeningProfile* profile)
+        BatchOpeningProfile* profile,
+        BatchOpeningClaimValidation claim_validation)
     {
         if (commitments.size() != claimed_values.size())
         {
@@ -2896,7 +2961,9 @@ namespace gatzk::crypto
             claimed_values,
             powers,
             points,
-            run_point_parallel ? point_msm_worker_cap : 0);
+            run_point_parallel ? point_msm_worker_cap : 0,
+            claim_validation
+                == BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials);
         if (profile != nullptr)
         {
             profile->precompute_ms += elapsed_ms(precompute_start, Clock::now());
@@ -3002,22 +3069,18 @@ namespace gatzk::crypto
         }
 
         const auto powers = folding_powers(folding_challenge, commitments.size());
+        const auto folded_commitments = folded_commitment_points(
+            commitments, powers);
         std::vector<std::uint8_t> point_results(points.size(), 0);
         auto verify_point_range = [&](std::size_t begin, std::size_t end)
         {
             for (std::size_t point_index = begin; point_index < end; ++point_index)
             {
-                std::vector<FieldElement> values_for_point;
-                values_for_point.reserve(commitments.size());
-                for (const auto& values : claimed_values)
-                {
-                    values_for_point.push_back(values[point_index]);
-                }
-                const auto folded_commitment = folded_single_point_commitment(
-                    commitments,
-                    values_for_point,
-                    powers,
-                    vk.g1_generator);
+                const auto folded_value = folded_claim_value(
+                    claimed_values, powers, point_index);
+                const auto folded_commitment = g1_sub(
+                    folded_commitments,
+                    g1_mul(vk.g1_generator, folded_value));
                 point_results[point_index] = verify_pairing_equation(
                     folded_commitment,
                     proof.witnesses[point_index],
@@ -3049,7 +3112,8 @@ namespace gatzk::crypto
         const std::vector<std::pair<Commitment, FieldElement>>& commitments_and_values,
         const std::vector<FieldElement>& points,
         const FieldElement& folding_challenge,
-        const KZGKeyPair& key)
+        const KZGKeyPair& key,
+        BatchOpeningClaimValidation claim_validation)
     {
         if (commitments_and_values.size() != points.size())
         {
@@ -3102,7 +3166,10 @@ namespace gatzk::crypto
                 values,
                 powers,
                 std::vector<FieldElement>{group.point},
-                options == nullptr ? 0 : options->max_worker_count);
+                options == nullptr ? 0 : options->max_worker_count,
+                claim_validation
+                    == BatchOpeningClaimValidation::
+                        VerifyAgainstOpeningPolynomials);
             return open_single_point_fold(plan, 0, group.point, key.pk, nullptr, nullptr, 0, options);
         };
         if (run_parallel)

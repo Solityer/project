@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
+#include <future>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -30,6 +31,8 @@ struct CaseSpec {
     bool full_width_values = false;
     bool external_unique_points = false;
     bool commit_only = false;
+    std::size_t verify_bundle_fanout = 1;
+    bool materialized_claims = false;
 };
 
 std::filesystem::path repo_root() {
@@ -119,15 +122,23 @@ void run_case(const CaseSpec& spec) {
     std::vector<Polynomial> polynomials;
     polynomials.reserve(spec.commitment_count);
     for (std::size_t i = 0; i < spec.commitment_count; ++i) {
-        polynomials.push_back(Polynomial::from_evaluations(
-            "bench_" + spec.label + "_" + std::to_string(i),
-            make_values(
+        auto values = make_values(
                 spec.domain_size,
                 spec.domain_size,
                 i,
                 spec.nonzero_stride,
-                spec.full_width_values),
-            domain));
+                spec.full_width_values);
+        const auto name = "bench_" + spec.label + "_" + std::to_string(i);
+        if (spec.commit_only && values.size() >= 1024) {
+            polynomials.push_back(Polynomial::from_shared_evaluations(
+                name,
+                std::make_shared<const std::vector<FieldElement>>(
+                    std::move(values)),
+                domain));
+        } else {
+            polynomials.push_back(Polynomial::from_evaluations(
+                name, std::move(values), domain));
+        }
     }
 
     std::vector<std::pair<std::string, const Polynomial*>> named_polynomials;
@@ -140,12 +151,24 @@ void run_case(const CaseSpec& spec) {
     auto commitments = gatzk::crypto::KZG::commit_batch(named_polynomials, key);
     const auto commit_ms = elapsed_ms(commit_start);
 
+    for (std::size_t i = 0; i < polynomials.size(); ++i) {
+        if (polynomials[i].shared_data != nullptr
+            && (commitments[i].opening_polynomial == nullptr
+                || commitments[i].opening_polynomial->shared_data.get()
+                    != polynomials[i].shared_data.get())) {
+            throw std::runtime_error(
+                "commitment opening material did not retain shared values");
+        }
+    }
+
     if (spec.commit_only) {
         std::cout
             << spec.label << ',' << spec.srs_id << ',' << spec.domain_name << ','
             << spec.domain_size << ',' << spec.commitment_count << ','
             << spec.nonzero_stride << ',' << std::fixed << std::setprecision(3)
-            << commit_ms << ",0.000,0.000,0.000,0.000,0.000,0.000,0,0,0,0,0,0,true\n";
+            << commit_ms
+            << ",0.000,0.000,0.000,0.000,0.000,0.000,0,0,0,0,0,0,"
+               "0.000,0.000,1,true\n";
         return;
     }
 
@@ -171,7 +194,15 @@ void run_case(const CaseSpec& spec) {
             external_claims.push_back({commitments[i], claimed_values[i][0]});
         }
         proof = gatzk::crypto::KZG::open_external_fold(
-            external_claims, points, FieldElement(19), key);
+            external_claims,
+            points,
+            FieldElement(19),
+            key,
+            spec.materialized_claims
+                ? gatzk::crypto::BatchOpeningClaimValidation::
+                    AlreadyComputedFromOpeningPolynomials
+                : gatzk::crypto::BatchOpeningClaimValidation::
+                    VerifyAgainstOpeningPolynomials);
     } else {
         proof = gatzk::crypto::KZG::open_batch(
             commitments,
@@ -179,7 +210,12 @@ void run_case(const CaseSpec& spec) {
             claimed_values,
             FieldElement(19),
             key,
-            &profile);
+            &profile,
+            spec.materialized_claims
+                ? gatzk::crypto::BatchOpeningClaimValidation::
+                    AlreadyComputedFromOpeningPolynomials
+                : gatzk::crypto::BatchOpeningClaimValidation::
+                    VerifyAgainstOpeningPolynomials);
     }
     const auto open_ms = elapsed_ms(open_start);
 
@@ -195,6 +231,34 @@ void run_case(const CaseSpec& spec) {
             proof,
             key.vk);
     const auto verify_ms = elapsed_ms(verify_start);
+
+    double serial_bundle_verify_ms = 0.0;
+    double parallel_bundle_verify_ms = 0.0;
+    bool bundle_verify_ok = true;
+    if (!spec.external_unique_points && spec.verify_bundle_fanout > 1) {
+        const auto serial_start = std::chrono::steady_clock::now();
+        for (std::size_t i = 0; i < spec.verify_bundle_fanout; ++i) {
+            bundle_verify_ok = gatzk::crypto::KZG::verify_batch(
+                commitments, points, claimed_values, FieldElement(19), proof,
+                key.vk) && bundle_verify_ok;
+        }
+        serial_bundle_verify_ms = elapsed_ms(serial_start);
+
+        const auto parallel_start = std::chrono::steady_clock::now();
+        std::vector<std::future<bool>> futures;
+        futures.reserve(spec.verify_bundle_fanout);
+        for (std::size_t i = 0; i < spec.verify_bundle_fanout; ++i) {
+            futures.push_back(std::async(std::launch::async, [&] {
+                return gatzk::crypto::KZG::verify_batch(
+                    commitments, points, claimed_values, FieldElement(19),
+                    proof, key.vk);
+            }));
+        }
+        for (auto& future : futures) {
+            bundle_verify_ok = future.get() && bundle_verify_ok;
+        }
+        parallel_bundle_verify_ms = elapsed_ms(parallel_start);
+    }
 
     std::cout
         << spec.label << ','
@@ -217,7 +281,10 @@ void run_case(const CaseSpec& spec) {
         << profile.point_parallel_workers << ','
         << profile.point_msm_worker_cap << ','
         << proof.witnesses.size() << ','
-        << (verify_ok ? "true" : "false") << '\n';
+        << serial_bundle_verify_ms << ','
+        << parallel_bundle_verify_ms << ','
+        << spec.verify_bundle_fanout << ','
+        << (verify_ok && bundle_verify_ok ? "true" : "false") << '\n';
 }
 
 }  // namespace
@@ -235,6 +302,20 @@ int main(int argc, char** argv) {
                 7,
                 false,
                 false,
+            },
+            {
+                "unit_edge_opening_terms910_materialized_claims",
+                "artifacts/srs/unit_security_srs_v1",
+                "unit_security_srs_v1",
+                "edge",
+                4096,
+                910,
+                7,
+                false,
+                false,
+                false,
+                1,
+                true,
             },
             {
                 "unit_edge_commit_batch3_full",
@@ -257,6 +338,18 @@ int main(int argc, char** argv) {
                 1,
                 true,
                 false,
+            },
+            {
+                "unit_edge_commit_batch12_sparse4",
+                "artifacts/srs/unit_security_srs_v1",
+                "unit_security_srs_v1",
+                "edge",
+                4096,
+                12,
+                4,
+                true,
+                false,
+                true,
             },
             {
                 "unit_edge_commit_batch32_sparse4",
@@ -306,6 +399,19 @@ int main(int argc, char** argv) {
                 true,
             },
             {
+                "unit_domain_bundle_fanout7_terms96",
+                "artifacts/srs/unit_security_srs_v1",
+                "unit_security_srs_v1",
+                "edge",
+                4096,
+                96,
+                7,
+                false,
+                false,
+                false,
+                7,
+            },
+            {
                 "unit_external_groups17_full",
                 "artifacts/srs/unit_security_srs_v1",
                 "unit_security_srs_v1",
@@ -314,6 +420,20 @@ int main(int argc, char** argv) {
                 17,
                 1,
                 true,
+                true,
+            },
+            {
+                "unit_external_groups17_materialized_claims",
+                "artifacts/srs/unit_security_srs_v1",
+                "unit_security_srs_v1",
+                "edge",
+                4096,
+                17,
+                1,
+                true,
+                true,
+                false,
+                1,
                 true,
             },
             {
@@ -327,6 +447,18 @@ int main(int argc, char** argv) {
                 false,
                 false,
             },
+            {
+                "cora_edge_commit_batch12_sparse7",
+                "artifacts/srs/cora_formal_srs_v1",
+                "cora_formal_srs_v1",
+                "edge",
+                32768,
+                12,
+                7,
+                true,
+                false,
+                true,
+            },
         };
         if (argc != 2) {
             throw std::runtime_error(
@@ -339,7 +471,8 @@ int main(int argc, char** argv) {
             << "denominator_inverse_ms,denominator_inverse_reuse_ms,"
             << "denominator_inverse_cache_misses,denominator_inverse_reuse_hits,"
             << "point_parallel_batches,point_parallel_workers,point_msm_worker_cap,"
-            << "proof_witness_count,verify_ok\n";
+            << "proof_witness_count,serial_bundle_verify_ms,parallel_bundle_verify_ms,"
+            << "verify_bundle_fanout,verify_ok\n";
         for (const auto& spec : cases) {
             if (selected_case != "all" && selected_case != spec.label) {
                 continue;

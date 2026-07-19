@@ -11,6 +11,7 @@
 #include <array>
 #include <functional>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <tuple>
 #include <memory>
@@ -2303,7 +2304,8 @@ namespace gatzk::protocol
         constexpr std::size_t kLambdaKzg = 128;
         constexpr std::size_t kLambdaRegister = 128;
         constexpr std::size_t kLambdaRandomOracle = 128;
-        ExactRational epsilon_alg;
+        std::map<std::size_t, ExactInteger>
+            epsilon_alg_numerators_by_exclusion;
         const auto checked_mul = [](std::size_t lhs, std::size_t rhs,
                                     const std::string &label)
         {
@@ -2371,7 +2373,13 @@ namespace gatzk::protocol
                 + "|d_max=" + std::to_string(degree)
                 + "|B=" + std::to_string(exclusion_degree)
                 + "|multiplicity=" + std::to_string(multiplicity);
-            epsilon_alg = exact_add(std::move(epsilon_alg), term);
+            const auto [numerator_it, inserted] =
+                epsilon_alg_numerators_by_exclusion.emplace(
+                    exclusion_degree, numerator);
+            if (!inserted)
+            {
+                numerator_it->second = numerator_it->second + numerator;
+            }
         };
 
         const auto d_max = context.kzg.manifest.degree_bound;
@@ -2859,7 +2867,7 @@ namespace gatzk::protocol
             + "|degree-in-rho=claim-count-1",
             external_claim_count - 1, 0, 1);
 
-        ExactRational epsilon_abort;
+        ExactInteger epsilon_abort_numerator(0);
         for (const auto &entry : artifact.random_identity_ledger)
         {
             if (entry.id.find(":logup-cleared-endpoint") == std::string::npos)
@@ -2890,12 +2898,13 @@ namespace gatzk::protocol
             if (denominator_count == 0)
                 throw std::runtime_error(
                     "LogUp RandomIdentityLedger q_den is zero: " + entry.id);
-            ExactRational term{
-                exact_integer(denominator_count),
-                bls12_381_scalar_modulus()};
-            term.normalize();
-            epsilon_abort = exact_add(std::move(epsilon_abort), term);
+            epsilon_abort_numerator = epsilon_abort_numerator
+                + exact_integer(denominator_count);
         }
+        ExactRational epsilon_abort{
+            epsilon_abort_numerator,
+            bls12_381_scalar_modulus()};
+        epsilon_abort.normalize();
         const auto max_domain_size = std::max({
             context.domains.fh->size, context.domains.edge->size,
             context.domains.in->size, context.domains.d->size,
@@ -2903,13 +2912,25 @@ namespace gatzk::protocol
             context.domains.n->size});
         const ExactInteger n_tau = bls12_381_scalar_modulus() - 1
             - exact_integer(max_domain_size);
-        ExactRational epsilon_crs;
+        ExactInteger epsilon_crs_numerator(0);
         for (const auto &entry : artifact.observation_ledger)
         {
             if (entry.exclusion_degree == 0) continue;
-            ExactRational term{exact_integer(entry.exclusion_degree), n_tau};
+            epsilon_crs_numerator = epsilon_crs_numerator
+                + exact_integer(entry.exclusion_degree);
+        }
+        ExactRational epsilon_crs{epsilon_crs_numerator, n_tau};
+        epsilon_crs.normalize();
+        ExactRational epsilon_alg;
+        for (const auto &[exclusion_degree, numerator] :
+             epsilon_alg_numerators_by_exclusion)
+        {
+            ExactRational term{
+                numerator,
+                bls12_381_scalar_modulus()
+                    - exact_integer(exclusion_degree)};
             term.normalize();
-            epsilon_crs = exact_add(std::move(epsilon_crs), term);
+            epsilon_alg = exact_add(std::move(epsilon_alg), term);
         }
         ExactRational epsilon_total = epsilon_alg;
         epsilon_total = exact_add(epsilon_total, epsilon_abort);

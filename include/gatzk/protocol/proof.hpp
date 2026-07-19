@@ -155,19 +155,16 @@ struct DynamicCommitmentObjectProfile {
     double zero_scalar_ratio = 0.0;
     double padding_ratio = 0.0;
     double materialization_ms = 0.0;
-    double fingerprint_cache_ms = 0.0;
     double msm_ms = 0.0;
     double total_commitment_ms = 0.0;
     bool compact = false;
     bool shared_or_borrowed = false;
     bool reused_shared = false;
     bool duplicates_another = false;
-    bool commitment_cache_hit = false;
     bool zero_scalar_skipping = false;
     bool sparse_compaction = false;
     bool constant_tail_folding = false;
     bool multithreaded_msm = false;
-    bool full_value_fingerprint = false;
 };
 
 // 单个工作域 opening bundle 的 proof 载体。
@@ -531,7 +528,6 @@ struct RunMetrics {
     double dynamic_commit_input_ms = 0.0;
     double dynamic_polynomial_materialization_ms = 0.0;
     double dynamic_commit_pack_ms = 0.0;
-    double dynamic_commit_fingerprint_ms = 0.0;
     double dynamic_fft_ms = 0.0;
     double dynamic_domain_convert_ms = 0.0;
     double dynamic_copy_convert_ms = 0.0;
@@ -617,11 +613,6 @@ struct RunMetrics {
     std::string gpu_fallback_stages;
     std::string gpu_fallback_reason;
     std::vector<DynamicCommitmentObjectProfile> dynamic_commitment_profiles;
-    std::size_t dynamic_commit_cache_lookups = 0;
-    std::size_t dynamic_commit_cache_hits = 0;
-    std::size_t dynamic_commit_cache_misses = 0;
-    std::size_t dynamic_commit_full_fingerprint_scans = 0;
-    std::size_t dynamic_commit_fingerprint_skipped = 0;
     std::string benchmark_mode = "single";
     std::string fft_backend_route = "plain";
     std::string route2_label = "baseline";

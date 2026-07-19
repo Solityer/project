@@ -417,7 +417,7 @@ namespace gatzk::protocol
         {
             const auto profile_start = Clock::now();
             std::vector<std::string> profile_lines = {
-                "label,dataset,domain,basis,vector_length,domain_size,nonzero_scalar_count,effective_scalar_count,zero_scalar_ratio,padding_ratio,classification,materialization_ms,fingerprint_cache_ms,msm_ms,total_commitment_ms,duplicates_another,duplicate_of,reused_shared,shared_or_borrowed,compact,commitment_cache_hit,ownership,category,optimization_opportunity,zero_scalar_skipping,sparse_compaction,constant_tail_folding,multithreaded_msm,full_value_fingerprint,commitment_fingerprint",
+                "label,dataset,domain,basis,vector_length,domain_size,nonzero_scalar_count,effective_scalar_count,zero_scalar_ratio,padding_ratio,classification,materialization_ms,msm_ms,total_commitment_ms,duplicates_another,duplicate_of,reused_shared,shared_or_borrowed,compact,ownership,category,optimization_opportunity,zero_scalar_skipping,sparse_compaction,constant_tail_folding,multithreaded_msm,commitment_fingerprint",
             };
             profile_lines.reserve(metrics.dynamic_commitment_profiles.size() + 1);
             for (const auto &item : metrics.dynamic_commitment_profiles)
@@ -426,7 +426,7 @@ namespace gatzk::protocol
                 dynamic_profile_time_by_domain[item.domain] += item.total_commitment_ms;
                 dynamic_profile_time_by_category[item.ownership + "/" + item.category] += item.total_commitment_ms;
                 profile_lines.push_back(
-                    csv_escape(item.label) + "," + csv_escape(item.dataset) + "," + csv_escape(item.domain) + "," + csv_escape(item.basis) + "," + std::to_string(item.vector_length) + "," + std::to_string(item.domain_size) + "," + std::to_string(item.nonzero_scalar_count) + "," + std::to_string(item.effective_scalar_count) + "," + format_double(item.zero_scalar_ratio) + "," + format_double(item.padding_ratio) + "," + csv_escape(item.classification) + "," + format_double(item.materialization_ms) + "," + format_double(item.fingerprint_cache_ms) + "," + format_double(item.msm_ms) + "," + format_double(item.total_commitment_ms) + "," + bool_string(item.duplicates_another) + "," + csv_escape(item.duplicate_of) + "," + bool_string(item.reused_shared) + "," + bool_string(item.shared_or_borrowed) + "," + bool_string(item.compact) + "," + bool_string(item.commitment_cache_hit) + "," + csv_escape(item.ownership) + "," + csv_escape(item.category) + "," + csv_escape(item.optimization_opportunity) + "," + bool_string(item.zero_scalar_skipping) + "," + bool_string(item.sparse_compaction) + "," + bool_string(item.constant_tail_folding) + "," + bool_string(item.multithreaded_msm) + "," + bool_string(item.full_value_fingerprint) + "," + csv_escape(item.commitment_fingerprint));
+                    csv_escape(item.label) + "," + csv_escape(item.dataset) + "," + csv_escape(item.domain) + "," + csv_escape(item.basis) + "," + std::to_string(item.vector_length) + "," + std::to_string(item.domain_size) + "," + std::to_string(item.nonzero_scalar_count) + "," + std::to_string(item.effective_scalar_count) + "," + format_double(item.zero_scalar_ratio) + "," + format_double(item.padding_ratio) + "," + csv_escape(item.classification) + "," + format_double(item.materialization_ms) + "," + format_double(item.msm_ms) + "," + format_double(item.total_commitment_ms) + "," + bool_string(item.duplicates_another) + "," + csv_escape(item.duplicate_of) + "," + bool_string(item.reused_shared) + "," + bool_string(item.shared_or_borrowed) + "," + bool_string(item.compact) + "," + csv_escape(item.ownership) + "," + csv_escape(item.category) + "," + csv_escape(item.optimization_opportunity) + "," + bool_string(item.zero_scalar_skipping) + "," + bool_string(item.sparse_compaction) + "," + bool_string(item.constant_tail_folding) + "," + bool_string(item.multithreaded_msm) + "," + csv_escape(item.commitment_fingerprint));
             }
             util::write_lines(export_root + "/dynamic_commitment_object_profile.csv", profile_lines);
             metrics.profile_logging_overhead_ms += elapsed_ms(profile_start, Clock::now());
@@ -570,16 +570,6 @@ namespace gatzk::protocol
             {"commit_dynamic_ms", format_double(metrics.commit_dynamic_ms)},
             {"commitment_time_ms", format_double(metrics.commitment_time_ms)},
             {"dynamic_commit_finalize_ms", format_double(metrics.dynamic_commit_finalize_ms)},
-            {"dynamic_commit_fingerprint_ms", format_double(metrics.dynamic_commit_fingerprint_ms)},
-            {"dynamic_commit_cache_lookups", std::to_string(metrics.dynamic_commit_cache_lookups)},
-            {"dynamic_commit_cache_hits", std::to_string(metrics.dynamic_commit_cache_hits)},
-            {"dynamic_commit_cache_misses", std::to_string(metrics.dynamic_commit_cache_misses)},
-            {"dynamic_commit_cache_hit_rate", format_double(
-                                                  metrics.dynamic_commit_cache_lookups == 0
-                                                      ? 0.0
-                                                      : static_cast<double>(metrics.dynamic_commit_cache_hits) / static_cast<double>(metrics.dynamic_commit_cache_lookups))},
-            {"dynamic_commit_full_fingerprint_scans", std::to_string(metrics.dynamic_commit_full_fingerprint_scans)},
-            {"dynamic_commit_fingerprint_skipped", std::to_string(metrics.dynamic_commit_fingerprint_skipped)},
             {"dynamic_commit_input_ms", format_double(metrics.dynamic_commit_input_ms)},
             {"dynamic_commit_pack_ms", format_double(metrics.dynamic_commit_pack_ms)},
             {"dynamic_fft_ms", format_double(metrics.dynamic_fft_ms)},

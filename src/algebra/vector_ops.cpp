@@ -158,6 +158,78 @@ namespace gatzk::algebra
         return it->second;
     }
 
+    void intt_in_place(mcl::Fr* values, std::size_t size)
+    {
+        if (values == nullptr || size == 0
+            || (size & (size - 1U)) != 0U)
+        {
+            throw std::runtime_error(
+                "INTT requires a non-null power-of-two field vector");
+        }
+        constexpr std::size_t kParallelSplitThreshold = 1ULL << 15;
+        if (size < kParallelSplitThreshold
+            || std::thread::hardware_concurrency() < 2)
+        {
+            ntt_plan(size)->intt(values);
+            return;
+        }
+
+        const auto half_size = size / 2;
+        std::vector<mcl::Fr> even(half_size);
+        std::vector<mcl::Fr> odd(half_size);
+        for (std::size_t i = 0; i < half_size; ++i)
+        {
+            even[i] = values[2 * i];
+            odd[i] = values[2 * i + 1];
+        }
+        const auto half_plan = ntt_plan(half_size);
+        auto even_task = std::async(std::launch::async, [&]
+                                    { half_plan->intt(even.data()); });
+        half_plan->intt(odd.data());
+        even_task.get();
+
+        const auto omega_inverse =
+            FieldElement::root_of_unity(size).inv().native();
+        const auto inverse_two = FieldElement(2).inv().native();
+        mcl::Fr omega_power;
+        omega_power = 1;
+        for (std::size_t i = 0; i < half_size; ++i)
+        {
+            mcl::Fr odd_scaled;
+            mcl::Fr sum;
+            mcl::Fr difference;
+            mcl::Fr::mul(odd_scaled, odd[i], omega_power);
+            mcl::Fr::add(sum, even[i], odd_scaled);
+            mcl::Fr::sub(difference, even[i], odd_scaled);
+            mcl::Fr::mul(values[i], sum, inverse_two);
+            mcl::Fr::mul(values[i + half_size], difference, inverse_two);
+            mcl::Fr::mul(omega_power, omega_power, omega_inverse);
+        }
+    }
+
+    void ntt_pair_in_place(mcl::Fr* first, mcl::Fr* second, std::size_t size)
+    {
+        if (first == nullptr || second == nullptr || first == second
+            || size == 0 || (size & (size - 1U)) != 0U)
+        {
+            throw std::runtime_error(
+                "paired NTT requires two distinct non-null power-of-two vectors");
+        }
+        const auto plan = ntt_plan(size);
+        constexpr std::size_t kParallelPairThreshold = 1ULL << 15;
+        if (size < kParallelPairThreshold
+            || std::thread::hardware_concurrency() < 2)
+        {
+            plan->ntt(first);
+            plan->ntt(second);
+            return;
+        }
+        auto first_task = std::async(std::launch::async, [=]
+                                     { plan->ntt(first); });
+        plan->ntt(second);
+        first_task.get();
+    }
+
     std::size_t cuda_kernel_invocation_count()
     {
         return cuda_kernel_counter().load(std::memory_order_relaxed);

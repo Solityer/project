@@ -13,6 +13,79 @@
 
 namespace gatzk::protocol
 {
+    struct HiddenHeadEvaluationConstants
+    {
+        std::string prefix;
+        std::string division_prefix;
+        std::string division_selector;
+        algebra::FieldElement beta_src;
+        algebra::FieldElement beta_dst;
+        algebra::FieldElement eta_src;
+        algebra::FieldElement eta_src_sq;
+        algebra::FieldElement eta_dst;
+        algebra::FieldElement eta_dst_sq;
+        algebra::FieldElement eta_dst_cu;
+        algebra::FieldElement eta_dst_4;
+        algebra::FieldElement eta_dst_5;
+        algebra::FieldElement beta_l;
+        algebra::FieldElement eta_l;
+        algebra::FieldElement beta_r;
+        algebra::FieldElement beta_exp;
+        algebra::FieldElement eta_exp;
+        algebra::FieldElement beta_elu;
+        algebra::FieldElement eta_elu;
+        algebra::FieldElement beta_t;
+        algebra::FieldElement eta_t;
+    };
+
+    struct OutputHeadEvaluationConstants
+    {
+        struct BasisChunkLabels
+        {
+            std::string value;
+            std::string active_selector;
+            std::string semantic_selector;
+            std::string gap_selector;
+            std::string tail_selector;
+            std::string accumulator;
+        };
+
+        std::string prefix;
+        std::string division_prefix;
+        std::string division_selector;
+        std::string binding_prefix;
+        std::string y_flat_label;
+        std::string external_y_name;
+        std::string view_prefix;
+        std::string power_label;
+        algebra::FieldElement beta_src;
+        algebra::FieldElement beta_dst;
+        algebra::FieldElement eta_src;
+        algebra::FieldElement eta_dst;
+        algebra::FieldElement eta_dst_sq;
+        algebra::FieldElement eta_dst_cu;
+        algebra::FieldElement eta_dst_4;
+        algebra::FieldElement eta_dst_5;
+        algebra::FieldElement beta_l;
+        algebra::FieldElement eta_l;
+        algebra::FieldElement beta_r;
+        algebra::FieldElement beta_exp;
+        algebra::FieldElement eta_exp;
+        algebra::FieldElement beta_t;
+        algebra::FieldElement eta_t;
+        algebra::FieldElement beta_view;
+        algebra::FieldElement eta_view;
+        algebra::FieldElement gamma;
+        std::vector<BasisChunkLabels> basis_chunks;
+    };
+
+    struct TEdgeEvaluationPlan
+    {
+        std::vector<BindingRelationMeta> binding_metadata;
+        std::vector<HiddenHeadEvaluationConstants> hidden_heads;
+        std::vector<OutputHeadEvaluationConstants> output_heads;
+    };
+
     // 实现各工作域 quotient 恒等式的求值逻辑，
     // prove 会在hidden_point或挑战点上构造相应承诺，verify 会按同一公式重算并检查 opening。
     namespace
@@ -44,6 +117,36 @@ namespace gatzk::protocol
         FieldElement lagrange_last(const algebra::RootOfUnityDomain &domain, const FieldElement &z)
         {
             return domain.lagrange_basis_eval(domain.size - 1, z);
+        }
+
+        QuotientBoundaryValues boundary_lagrange_values(
+            const algebra::RootOfUnityDomain &domain,
+            const FieldElement &z)
+        {
+            const auto one = FieldElement::one();
+            const auto last_point = domain.point_at(domain.size - 1);
+            const auto zero = domain.zero_polynomial_eval(z);
+            if (zero.is_zero())
+            {
+                return QuotientBoundaryValues{
+                    .first = z == one ? one : FieldElement::zero(),
+                    .last = z == last_point ? one : FieldElement::zero(),
+                    .zero = zero,
+                };
+            }
+
+            const auto first_denominator = z - one;
+            const auto last_denominator = z - last_point;
+            const auto denominator_product_inverse =
+                (first_denominator * last_denominator).inv();
+            const auto zero_scaled = zero * domain.inv_size;
+            return QuotientBoundaryValues{
+                .first = zero_scaled * last_denominator
+                    * denominator_product_inverse,
+                .last = zero_scaled * last_point * first_denominator
+                    * denominator_product_inverse,
+                .zero = zero,
+            };
         }
 
         FieldElement lagrange_at(const algebra::RootOfUnityDomain &domain, std::size_t index, const FieldElement &z)
@@ -424,6 +527,123 @@ namespace gatzk::protocol
 
     }
 
+    std::shared_ptr<const TEdgeEvaluationPlan> build_t_edge_evaluation_plan(
+        const ProtocolContext &context,
+        const std::map<std::string, FieldElement> &challenges)
+    {
+        auto plan = std::make_shared<TEdgeEvaluationPlan>();
+        plan->binding_metadata = build_binding_relation_metadata(context);
+        plan->hidden_heads.reserve(context.model.hidden_heads.size());
+        for (std::size_t head_index = 0;
+             head_index < context.model.hidden_heads.size(); ++head_index)
+        {
+            const auto index = std::to_string(head_index);
+            HiddenHeadEvaluationConstants constants;
+            constants.prefix = "P_h" + index + "_";
+            constants.division_prefix = constants.prefix + "Div_";
+            constants.division_selector = "P_Q_div_h" + index;
+            constants.beta_src = challenges.at("beta_src_h" + index);
+            constants.beta_dst = challenges.at("beta_dst_h" + index);
+            constants.eta_src = challenges.at("eta_src_h" + index);
+            constants.eta_src_sq = constants.eta_src * constants.eta_src;
+            constants.eta_dst = challenges.at("eta_dst_h" + index);
+            constants.eta_dst_sq = constants.eta_dst * constants.eta_dst;
+            constants.eta_dst_cu = constants.eta_dst_sq * constants.eta_dst;
+            constants.eta_dst_4 = constants.eta_dst_cu * constants.eta_dst;
+            constants.eta_dst_5 = constants.eta_dst_4 * constants.eta_dst;
+            constants.beta_l = challenges.at("beta_L_h" + index);
+            constants.eta_l = challenges.at("eta_L_h" + index);
+            constants.beta_r = challenges.at("beta_R_h" + index);
+            constants.beta_exp = challenges.at("beta_exp_h" + index);
+            constants.eta_exp = challenges.at("eta_exp_h" + index);
+            constants.beta_elu = challenges.at("beta_ELU_h" + index);
+            constants.eta_elu = challenges.at("eta_ELU_h" + index);
+            constants.beta_t = challenges.at("beta_t_h" + index);
+            constants.eta_t = challenges.at("eta_t_h" + index);
+            plan->hidden_heads.push_back(std::move(constants));
+        }
+        plan->output_heads.reserve(context.model.output_layer.heads.size());
+        for (std::size_t head_index = 0;
+             head_index < context.model.output_layer.heads.size(); ++head_index)
+        {
+            OutputHeadEvaluationConstants constants;
+            constants.prefix = output_head_prefix(head_index) + "_";
+            constants.division_prefix = constants.prefix + "Div_";
+            constants.division_selector =
+                "P_Q_div_out" + std::to_string(head_index);
+            constants.binding_prefix = constants.prefix + "Bind_";
+            constants.y_flat_label = constants.prefix + "Y_flat";
+            constants.external_y_name =
+                output_external_eval_name("y", head_index);
+            constants.view_prefix = output_bias_view_prefix(head_index);
+            constants.power_label =
+                output_bias_basis_label(head_index, "Powers");
+            constants.beta_src = challenges.at(
+                output_challenge_name("beta_src_out", head_index));
+            constants.beta_dst = challenges.at(
+                output_challenge_name("beta_dst_out", head_index));
+            constants.eta_src = challenges.at(
+                output_challenge_name("eta_src_out", head_index));
+            constants.eta_dst = challenges.at(
+                output_challenge_name("eta_dst_out", head_index));
+            constants.eta_dst_sq = constants.eta_dst * constants.eta_dst;
+            constants.eta_dst_cu = constants.eta_dst_sq * constants.eta_dst;
+            constants.eta_dst_4 = constants.eta_dst_cu * constants.eta_dst;
+            constants.eta_dst_5 = constants.eta_dst_4 * constants.eta_dst;
+            constants.beta_l = challenges.at(
+                output_challenge_name("beta_L_out", head_index));
+            constants.eta_l = challenges.at(
+                output_challenge_name("eta_L_out", head_index));
+            constants.beta_r = challenges.at(
+                output_challenge_name("beta_R_out", head_index));
+            constants.beta_exp = challenges.at(
+                output_challenge_name("beta_exp_out", head_index));
+            constants.eta_exp = challenges.at(
+                output_challenge_name("eta_exp_out", head_index));
+            constants.beta_t = challenges.at(
+                output_challenge_name("beta_t_out", head_index));
+            constants.eta_t = challenges.at(
+                output_challenge_name("eta_t_out", head_index));
+            constants.beta_view = challenges.at(
+                output_bias_view_beta_label(head_index));
+            constants.eta_view = challenges.at(
+                output_bias_view_eta_label(head_index));
+            constants.gamma = challenges.at(
+                output_bias_basis_gamma_label(head_index));
+            const auto basis_layout = coefficient_chunk_layout(
+                context.local.num_classes
+                    + registered_blinder_coefficient_count(
+                        context,
+                        output_bias_basis_label(head_index, "Coeff")),
+                context.domains.edge->size);
+            constants.basis_chunks.reserve(basis_layout.size());
+            for (const auto &chunk : basis_layout)
+            {
+                OutputHeadEvaluationConstants::BasisChunkLabels labels;
+                labels.value = output_bias_basis_chunk_label(
+                    head_index, chunk.chunk_index);
+                labels.active_selector =
+                    output_bias_basis_region_selector_label(
+                        head_index, chunk.chunk_index, "active");
+                labels.semantic_selector =
+                    output_bias_basis_region_selector_label(
+                        head_index, chunk.chunk_index, "semantic");
+                labels.gap_selector =
+                    output_bias_basis_region_selector_label(
+                        head_index, chunk.chunk_index, "gap");
+                labels.tail_selector =
+                    output_bias_basis_region_selector_label(
+                        head_index, chunk.chunk_index, "tail");
+                labels.accumulator =
+                    output_bias_basis_chunk_accumulator_label(
+                        head_index, chunk.chunk_index);
+                constants.basis_chunks.push_back(std::move(labels));
+            }
+            plan->output_heads.push_back(std::move(constants));
+        }
+        return plan;
+    }
+
     std::optional<std::string> dynamic_commitment_domain_name(
         const ProtocolContext &context,
         const std::string &label)
@@ -579,10 +799,11 @@ namespace gatzk::protocol
         };
         const auto eta_feat = challenges.at("eta_feat");
         const auto omega_z = z * context.domains.fh->omega;
-        const auto l0 = lagrange_first(*context.domains.fh, z);
-        const auto l_last = lagrange_last(*context.domains.fh, z);
+        const auto boundary = boundary_lagrange_values(*context.domains.fh, z);
+        const auto l0 = boundary.first;
+        const auto l_last = boundary.last;
         const auto not_last = FieldElement::one() - l_last;
-        const auto zero_eval = context.domains.fh->zero_polynomial_eval(z);
+        const auto zero_eval = boundary.zero;
         const auto q_table = profiled_eval("P_Q_tbl_feat", z);
         const auto q_query = profiled_eval("P_Q_qry_feat", z);
         const auto table = profiled_eval("P_Table_feat", z);
@@ -628,16 +849,21 @@ namespace gatzk::protocol
         bool return_numerator,
         std::size_t *first_nonzero_term,
         FieldElement *first_nonzero_value,
-        const std::vector<FieldElement> *precomputed_alpha_powers)
+        const std::vector<FieldElement> *precomputed_alpha_powers,
+        const TEdgeEvaluationPlan *evaluation_plan,
+        const QuotientBoundaryValues *boundary_values)
     {
         if (context.model.has_real_multihead)
         {
             // edge 域承载大部分“边上对象”约束：softmax 链、lookup、route 和 PSQ 都在这里闭合。
             const auto omega_z = z * context.domains.edge->omega;
-            const auto first = lagrange_first(*context.domains.edge, z);
-            const auto last = lagrange_last(*context.domains.edge, z);
+            const auto boundary = boundary_values != nullptr
+                ? *boundary_values
+                : boundary_lagrange_values(*context.domains.edge, z);
+            const auto first = boundary.first;
+            const auto last = boundary.last;
             const auto not_last = FieldElement::one() - last;
-            const auto zero_eval = context.domains.edge->zero_polynomial_eval(z);
+            const auto zero_eval = boundary.zero;
             const auto one = FieldElement::one();
             const auto two = FieldElement(2);
             (void)signed_division_limb_count(context.config.range_bits);
@@ -817,25 +1043,72 @@ namespace gatzk::protocol
 
             for (std::size_t head_index = 0; head_index < context.model.hidden_heads.size(); ++head_index)
             {
-                const auto prefix = "P_h" + std::to_string(head_index) + "_";
-                const auto beta_src = challenges.at("beta_src_h" + std::to_string(head_index));
-                const auto beta_dst = challenges.at("beta_dst_h" + std::to_string(head_index));
-                const auto eta_src = challenges.at("eta_src_h" + std::to_string(head_index));
-                const auto eta_dst = challenges.at("eta_dst_h" + std::to_string(head_index));
-                const auto beta_l = challenges.at("beta_L_h" + std::to_string(head_index));
-                const auto eta_l = challenges.at("eta_L_h" + std::to_string(head_index));
-                const auto beta_r = challenges.at("beta_R_h" + std::to_string(head_index));
-                const auto beta_exp = challenges.at("beta_exp_h" + std::to_string(head_index));
-                const auto eta_exp = challenges.at("eta_exp_h" + std::to_string(head_index));
-                const auto beta_elu = challenges.at("beta_ELU_h" + std::to_string(head_index));
-                const auto eta_elu = challenges.at("eta_ELU_h" + std::to_string(head_index));
-                const auto beta_t = challenges.at("beta_t_h" + std::to_string(head_index));
-                const auto eta_t = challenges.at("eta_t_h" + std::to_string(head_index));
-                const auto eta_src_sq = eta_src * eta_src;
-                const auto eta_dst_sq = eta_dst * eta_dst;
-                const auto eta_dst_cu = eta_dst_sq * eta_dst;
-                const auto eta_dst_4 = eta_dst_cu * eta_dst;
-                const auto eta_dst_5 = eta_dst_4 * eta_dst;
+                const auto *planned = evaluation_plan != nullptr
+                    ? &evaluation_plan->hidden_heads.at(head_index)
+                    : nullptr;
+                const auto index = planned == nullptr
+                    ? std::to_string(head_index)
+                    : std::string{};
+                const auto fallback_prefix = planned == nullptr
+                    ? "P_h" + index + "_"
+                    : std::string{};
+                const std::string &prefix = planned != nullptr
+                    ? planned->prefix
+                    : fallback_prefix;
+                const auto beta_src = planned != nullptr
+                    ? planned->beta_src
+                    : challenges.at("beta_src_h" + index);
+                const auto beta_dst = planned != nullptr
+                    ? planned->beta_dst
+                    : challenges.at("beta_dst_h" + index);
+                const auto eta_src = planned != nullptr
+                    ? planned->eta_src
+                    : challenges.at("eta_src_h" + index);
+                const auto eta_src_sq = planned != nullptr
+                    ? planned->eta_src_sq
+                    : eta_src * eta_src;
+                const auto eta_dst = planned != nullptr
+                    ? planned->eta_dst
+                    : challenges.at("eta_dst_h" + index);
+                const auto eta_dst_sq = planned != nullptr
+                    ? planned->eta_dst_sq
+                    : eta_dst * eta_dst;
+                const auto eta_dst_cu = planned != nullptr
+                    ? planned->eta_dst_cu
+                    : eta_dst_sq * eta_dst;
+                const auto eta_dst_4 = planned != nullptr
+                    ? planned->eta_dst_4
+                    : eta_dst_cu * eta_dst;
+                const auto eta_dst_5 = planned != nullptr
+                    ? planned->eta_dst_5
+                    : eta_dst_4 * eta_dst;
+                const auto beta_l = planned != nullptr
+                    ? planned->beta_l
+                    : challenges.at("beta_L_h" + index);
+                const auto eta_l = planned != nullptr
+                    ? planned->eta_l
+                    : challenges.at("eta_L_h" + index);
+                const auto beta_r = planned != nullptr
+                    ? planned->beta_r
+                    : challenges.at("beta_R_h" + index);
+                const auto beta_exp = planned != nullptr
+                    ? planned->beta_exp
+                    : challenges.at("beta_exp_h" + index);
+                const auto eta_exp = planned != nullptr
+                    ? planned->eta_exp
+                    : challenges.at("eta_exp_h" + index);
+                const auto beta_elu = planned != nullptr
+                    ? planned->beta_elu
+                    : challenges.at("beta_ELU_h" + index);
+                const auto eta_elu = planned != nullptr
+                    ? planned->eta_elu
+                    : challenges.at("eta_ELU_h" + index);
+                const auto beta_t = planned != nullptr
+                    ? planned->beta_t
+                    : challenges.at("beta_t_h" + index);
+                const auto eta_t = planned != nullptr
+                    ? planned->eta_t
+                    : challenges.at("eta_t_h" + index);
 
                 auto z_head = [&](std::string_view suffix)
                 {
@@ -954,9 +1227,16 @@ namespace gatzk::protocol
                 acc.add(query_dst_z - (dst_z + eta_dst * e_dst_edge_z + eta_dst_sq * m_edge_z + eta_dst_cu * sum_edge_z + eta_dst_4 * inv_edge_z + eta_dst_5 * h_agg_star_edge_z));
                 acc.add(zero_on_unselected(q_edge, query_dst_z));
                 add_signed_division_constraints(
-                    prefix + "Div_",
-                    "P_Q_div_h" + std::to_string(head_index));
-                const auto q_div = eval_z("P_Q_div_h" + std::to_string(head_index));
+                    planned != nullptr
+                        ? planned->division_prefix
+                        : prefix + "Div_",
+                    planned != nullptr
+                        ? planned->division_selector
+                        : "P_Q_div_h" + index);
+                const auto q_div = eval_z(
+                    planned != nullptr
+                        ? planned->division_selector
+                        : "P_Q_div_h" + index);
                 acc.add(q_div * (h_agg_num_flat_z - sum_flat_z * h_agg_pre_flat_z));
                 acc.add(q_div * (z_head("Div_X") - h_agg_num_flat_z));
                 acc.add(q_div * (z_head("Div_D") - sum_flat_z));
@@ -971,22 +1251,71 @@ namespace gatzk::protocol
 
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {
-                const auto prefix = output_head_prefix(head_index) + "_";
-                const auto beta_src_out = challenges.at(output_challenge_name("beta_src_out", head_index));
-                const auto beta_dst_out = challenges.at(output_challenge_name("beta_dst_out", head_index));
-                const auto eta_src_out = challenges.at(output_challenge_name("eta_src_out", head_index));
-                const auto eta_dst_out = challenges.at(output_challenge_name("eta_dst_out", head_index));
-                const auto beta_l_out = challenges.at(output_challenge_name("beta_L_out", head_index));
-                const auto eta_l_out = challenges.at(output_challenge_name("eta_L_out", head_index));
-                const auto beta_r_out = challenges.at(output_challenge_name("beta_R_out", head_index));
-                const auto beta_exp_out = challenges.at(output_challenge_name("beta_exp_out", head_index));
-                const auto eta_exp_out = challenges.at(output_challenge_name("eta_exp_out", head_index));
-                const auto beta_t_out = challenges.at(output_challenge_name("beta_t_out", head_index));
-                const auto eta_t_out = challenges.at(output_challenge_name("eta_t_out", head_index));
-                const auto eta_dst_out_sq = eta_dst_out * eta_dst_out;
-                const auto eta_dst_out_cu = eta_dst_out_sq * eta_dst_out;
-                const auto eta_dst_out_4 = eta_dst_out_cu * eta_dst_out;
-                const auto eta_dst_out_5 = eta_dst_out_4 * eta_dst_out;
+                const auto *planned = evaluation_plan != nullptr
+                    ? &evaluation_plan->output_heads.at(head_index)
+                    : nullptr;
+                const auto fallback_prefix = planned == nullptr
+                    ? output_head_prefix(head_index) + "_"
+                    : std::string{};
+                const std::string &prefix = planned != nullptr
+                    ? planned->prefix
+                    : fallback_prefix;
+                const auto beta_src_out = planned != nullptr
+                    ? planned->beta_src
+                    : challenges.at(output_challenge_name(
+                        "beta_src_out", head_index));
+                const auto beta_dst_out = planned != nullptr
+                    ? planned->beta_dst
+                    : challenges.at(output_challenge_name(
+                        "beta_dst_out", head_index));
+                const auto eta_src_out = planned != nullptr
+                    ? planned->eta_src
+                    : challenges.at(output_challenge_name(
+                        "eta_src_out", head_index));
+                const auto eta_dst_out = planned != nullptr
+                    ? planned->eta_dst
+                    : challenges.at(output_challenge_name(
+                        "eta_dst_out", head_index));
+                const auto eta_dst_out_sq = planned != nullptr
+                    ? planned->eta_dst_sq
+                    : eta_dst_out * eta_dst_out;
+                const auto eta_dst_out_cu = planned != nullptr
+                    ? planned->eta_dst_cu
+                    : eta_dst_out_sq * eta_dst_out;
+                const auto eta_dst_out_4 = planned != nullptr
+                    ? planned->eta_dst_4
+                    : eta_dst_out_cu * eta_dst_out;
+                const auto eta_dst_out_5 = planned != nullptr
+                    ? planned->eta_dst_5
+                    : eta_dst_out_4 * eta_dst_out;
+                const auto beta_l_out = planned != nullptr
+                    ? planned->beta_l
+                    : challenges.at(output_challenge_name(
+                        "beta_L_out", head_index));
+                const auto eta_l_out = planned != nullptr
+                    ? planned->eta_l
+                    : challenges.at(output_challenge_name(
+                        "eta_L_out", head_index));
+                const auto beta_r_out = planned != nullptr
+                    ? planned->beta_r
+                    : challenges.at(output_challenge_name(
+                        "beta_R_out", head_index));
+                const auto beta_exp_out = planned != nullptr
+                    ? planned->beta_exp
+                    : challenges.at(output_challenge_name(
+                        "beta_exp_out", head_index));
+                const auto eta_exp_out = planned != nullptr
+                    ? planned->eta_exp
+                    : challenges.at(output_challenge_name(
+                        "eta_exp_out", head_index));
+                const auto beta_t_out = planned != nullptr
+                    ? planned->beta_t
+                    : challenges.at(output_challenge_name(
+                        "beta_t_out", head_index));
+                const auto eta_t_out = planned != nullptr
+                    ? planned->eta_t
+                    : challenges.at(output_challenge_name(
+                        "eta_t_out", head_index));
 
                 auto z_out = [&](std::string_view suffix)
                 {
@@ -1089,9 +1418,16 @@ namespace gatzk::protocol
                 acc.add(query_dst_z - (dst_z + eta_dst_out * e_dst_edge_z + eta_dst_out_sq * m_edge_z + eta_dst_out_cu * sum_edge_z + eta_dst_out_4 * inv_edge_z + eta_dst_out_5 * y_star_edge_z));
                 acc.add(zero_on_unselected(q_edge, query_dst_z));
                 add_signed_division_constraints(
-                    prefix + "Div_",
-                    "P_Q_div_out" + std::to_string(head_index));
-                const auto q_div = eval_z("P_Q_div_out" + std::to_string(head_index));
+                    planned != nullptr
+                        ? planned->division_prefix
+                        : prefix + "Div_",
+                    planned != nullptr
+                        ? planned->division_selector
+                        : "P_Q_div_out" + std::to_string(head_index));
+                const auto q_div = eval_z(
+                    planned != nullptr
+                        ? planned->division_selector
+                        : "P_Q_div_out" + std::to_string(head_index));
                 const auto y_pre_flat = z_out("Y_pre_flat");
                 const auto sum_flat = z_out("Sum_flat");
                 const auto y_pre_field_flat = z_out("Y_pre_field_flat");
@@ -1110,21 +1446,36 @@ namespace gatzk::protocol
                 acc.add((one - q_div) * bias_flat);
                 acc.add((one - q_div) * y_flat);
                 add_coefficient_basis_binding(
-                    prefix + "Bind_",
-                    "P_Q_div_out" + std::to_string(head_index),
-                    prefix + "Y_flat",
-                    external_evaluations.at(output_external_eval_name("y", head_index)));
-                const auto view_prefix = output_bias_view_prefix(head_index);
-                const auto q_view = eval_z(
-                    "P_Q_div_out" + std::to_string(head_index));
+                    planned != nullptr
+                        ? planned->binding_prefix
+                        : prefix + "Bind_",
+                    planned != nullptr
+                        ? planned->division_selector
+                        : "P_Q_div_out" + std::to_string(head_index),
+                    planned != nullptr
+                        ? planned->y_flat_label
+                        : prefix + "Y_flat",
+                    external_evaluations.at(
+                        planned != nullptr
+                            ? planned->external_y_name
+                            : output_external_eval_name("y", head_index)));
+                const auto fallback_view_prefix = planned == nullptr
+                    ? output_bias_view_prefix(head_index)
+                    : std::string{};
+                const std::string &view_prefix = planned != nullptr
+                    ? planned->view_prefix
+                    : fallback_view_prefix;
+                const auto q_view = q_div;
                 const auto query_view = eval_z(view_prefix + "Query");
                 const auto j_view = eval_z(view_prefix + "J_qry");
                 const auto r_view = eval_z(view_prefix + "R_qry");
                 const auto r_view_next = eval_omega(view_prefix + "R_qry");
-                const auto beta_view = challenges.at(
-                    output_bias_view_beta_label(head_index));
-                const auto eta_view = challenges.at(
-                    output_bias_view_eta_label(head_index));
+                const auto beta_view = planned != nullptr
+                    ? planned->beta_view
+                    : challenges.at(output_bias_view_beta_label(head_index));
+                const auto eta_view = planned != nullptr
+                    ? planned->eta_view
+                    : challenges.at(output_bias_view_eta_label(head_index));
                 acc.add(first * r_view);
                 acc.add(not_last * (
                     r_view_next - r_view - q_view * j_view));
@@ -1134,42 +1485,92 @@ namespace gatzk::protocol
                     eval_z("P_BiasIndex_edge")
                     + eta_view * bias_flat));
 
-                const auto basis_chunks = coefficient_chunk_layout(
-                    context.local.num_classes
-                        + registered_blinder_coefficient_count(
-                            context,
-                            output_bias_basis_label(head_index, "Coeff")),
-                    context.domains.edge->size);
-                const auto gamma = challenges.at(
-                    output_bias_basis_gamma_label(head_index));
-                const auto power_label = output_bias_basis_label(
-                    head_index, "Powers");
+                std::vector<CoefficientChunkLayoutEntry> fallback_basis_chunks;
+                if (planned == nullptr)
+                {
+                    fallback_basis_chunks = coefficient_chunk_layout(
+                        context.local.num_classes
+                            + registered_blinder_coefficient_count(
+                                context,
+                                output_bias_basis_label(head_index, "Coeff")),
+                        context.domains.edge->size);
+                }
+                const auto gamma = planned != nullptr
+                    ? planned->gamma
+                    : challenges.at(output_bias_basis_gamma_label(head_index));
+                const auto fallback_power_label = planned == nullptr
+                    ? output_bias_basis_label(head_index, "Powers")
+                    : std::string{};
+                const std::string &power_label = planned != nullptr
+                    ? planned->power_label
+                    : fallback_power_label;
                 const auto power = eval_z(power_label);
                 const auto power_next = eval_omega(power_label);
                 acc.add(first * (power - one));
                 acc.add(not_last * (power_next - gamma * power));
-                for (const auto &chunk : basis_chunks)
+                const auto chunk_count = planned != nullptr
+                    ? planned->basis_chunks.size()
+                    : fallback_basis_chunks.size();
+                for (std::size_t chunk_index = 0;
+                     chunk_index < chunk_count; ++chunk_index)
                 {
-                    const auto chunk_value = eval_z(
-                        output_bias_basis_chunk_label(
-                            head_index, chunk.chunk_index));
-                    const auto selector = [&](std::string_view region)
-                    {
-                        return eval_z(
-                            output_bias_basis_region_selector_label(
-                                head_index, chunk.chunk_index, region));
-                    };
-                    const auto q_active = selector("active");
-                    const auto q_semantic = selector("semantic");
-                    const auto q_gap = selector("gap");
-                    const auto q_tail = selector("tail");
+                    const auto fallback_chunk = planned == nullptr
+                        ? fallback_basis_chunks[chunk_index].chunk_index
+                        : std::size_t{0};
+                    const auto fallback_value_label = planned == nullptr
+                        ? output_bias_basis_chunk_label(
+                            head_index, fallback_chunk)
+                        : std::string{};
+                    const auto fallback_active_selector = planned == nullptr
+                        ? output_bias_basis_region_selector_label(
+                            head_index, fallback_chunk, "active")
+                        : std::string{};
+                    const auto fallback_semantic_selector = planned == nullptr
+                        ? output_bias_basis_region_selector_label(
+                            head_index, fallback_chunk, "semantic")
+                        : std::string{};
+                    const auto fallback_gap_selector = planned == nullptr
+                        ? output_bias_basis_region_selector_label(
+                            head_index, fallback_chunk, "gap")
+                        : std::string{};
+                    const auto fallback_tail_selector = planned == nullptr
+                        ? output_bias_basis_region_selector_label(
+                            head_index, fallback_chunk, "tail")
+                        : std::string{};
+                    const auto fallback_accumulator_label = planned == nullptr
+                        ? output_bias_basis_chunk_accumulator_label(
+                            head_index, fallback_chunk)
+                        : std::string{};
+                    const auto *planned_chunk = planned != nullptr
+                        ? &planned->basis_chunks[chunk_index]
+                        : nullptr;
+                    const auto &value_label = planned != nullptr
+                        ? planned_chunk->value
+                        : fallback_value_label;
+                    const auto &active_selector = planned != nullptr
+                        ? planned_chunk->active_selector
+                        : fallback_active_selector;
+                    const auto &semantic_selector = planned != nullptr
+                        ? planned_chunk->semantic_selector
+                        : fallback_semantic_selector;
+                    const auto &gap_selector = planned != nullptr
+                        ? planned_chunk->gap_selector
+                        : fallback_gap_selector;
+                    const auto &tail_selector = planned != nullptr
+                        ? planned_chunk->tail_selector
+                        : fallback_tail_selector;
+                    const auto &accumulator_label = planned != nullptr
+                        ? planned_chunk->accumulator
+                        : fallback_accumulator_label;
+                    const auto chunk_value = eval_z(value_label);
+                    const auto q_active = eval_z(active_selector);
+                    const auto q_semantic = eval_z(semantic_selector);
+                    const auto q_gap = eval_z(gap_selector);
+                    const auto q_tail = eval_z(tail_selector);
                     acc.add(q_semantic + q_gap + q_tail - q_active);
                     acc.add((one - q_active) * chunk_value);
                     acc.add(q_gap * chunk_value);
                     acc.add(q_semantic * (chunk_value - bias_flat));
-                    const auto accumulator_label =
-                        output_bias_basis_chunk_accumulator_label(
-                            head_index, chunk.chunk_index);
                     const auto basis_accumulator = eval_z(accumulator_label);
                     const auto basis_accumulator_next =
                         eval_omega(accumulator_label);
@@ -1180,8 +1581,17 @@ namespace gatzk::protocol
                 }
             }
 
-            for (const auto &binding :
-                 build_binding_relation_metadata(context))
+            std::vector<BindingRelationMeta> local_binding_metadata;
+            const std::vector<BindingRelationMeta> *binding_metadata =
+                evaluation_plan != nullptr
+                    ? &evaluation_plan->binding_metadata
+                    : nullptr;
+            if (binding_metadata == nullptr)
+            {
+                local_binding_metadata = build_binding_relation_metadata(context);
+                binding_metadata = &local_binding_metadata;
+            }
+            for (const auto &binding : *binding_metadata)
             {
                 for (const auto &relation : binding.aggregation_relations)
                 {
@@ -1278,7 +1688,9 @@ namespace gatzk::protocol
         bool return_numerator,
         std::size_t *first_nonzero_term,
         FieldElement *first_nonzero_value,
-        const std::vector<FieldElement> *precomputed_alpha_powers)
+        const std::vector<FieldElement> *precomputed_alpha_powers,
+        const TEdgeEvaluationPlan *evaluation_plan,
+        const QuotientBoundaryValues *boundary_values)
     {
         if (precomputed_alpha_powers != nullptr)
         {
@@ -1291,7 +1703,9 @@ namespace gatzk::protocol
                 return_numerator,
                 first_nonzero_term,
                 first_nonzero_value,
-                precomputed_alpha_powers);
+                precomputed_alpha_powers,
+                evaluation_plan,
+                boundary_values);
         }
         return evaluate_t_edge_impl<false>(
             context,
@@ -1302,7 +1716,9 @@ namespace gatzk::protocol
             return_numerator,
             first_nonzero_term,
             first_nonzero_value,
-            nullptr);
+            nullptr,
+            evaluation_plan,
+            boundary_values);
     }
 
     FieldElement evaluate_t_n(
@@ -1315,10 +1731,11 @@ namespace gatzk::protocol
         {
             // N 域负责把边上广播的量重新收回到目标点，并补上分母倒数、PSQ 目标表和 route 节点侧约束。
             const auto omega_z = z * context.domains.n->omega;
-            const auto first = lagrange_first(*context.domains.n, z);
-            const auto last = lagrange_last(*context.domains.n, z);
+            const auto boundary = boundary_lagrange_values(*context.domains.n, z);
+            const auto first = boundary.first;
+            const auto last = boundary.last;
             const auto not_last = FieldElement::one() - last;
-            const auto zero_eval = context.domains.n->zero_polynomial_eval(z);
+            const auto zero_eval = boundary.zero;
             const auto q_n = eval("P_Q_N", z);
             QuotientAccumulator acc(challenges.at("alpha_quot"));
 
@@ -1525,10 +1942,11 @@ namespace gatzk::protocol
         if (context.model.has_real_multihead)
         {
             const auto omega_z = z * context.domains.in->omega;
-            const auto first = lagrange_first(*context.domains.in, z);
-            const auto last = lagrange_last(*context.domains.in, z);
+            const auto boundary = boundary_lagrange_values(*context.domains.in, z);
+            const auto first = boundary.first;
+            const auto last = boundary.last;
             const auto not_last = FieldElement::one() - last;
-            const auto zero_eval = context.domains.in->zero_polynomial_eval(z);
+            const auto zero_eval = boundary.zero;
             const auto q_valid = eval("P_Q_proj_valid", z);
             const auto q_invalid = FieldElement::one() - q_valid;
             QuotientAccumulator acc(
@@ -1582,10 +2000,11 @@ namespace gatzk::protocol
         if (context.model.has_real_multihead)
         {
             const auto omega_z = z * context.domains.d->omega;
-            const auto first = lagrange_first(*context.domains.d, z);
-            const auto last = lagrange_last(*context.domains.d, z);
+            const auto boundary = boundary_lagrange_values(*context.domains.d, z);
+            const auto first = boundary.first;
+            const auto last = boundary.last;
             const auto not_last = FieldElement::one() - last;
-            const auto zero_eval = context.domains.d->zero_polynomial_eval(z);
+            const auto zero_eval = boundary.zero;
             const auto q_valid = eval("P_Q_d_valid", z);
             const auto q_invalid = FieldElement::one() - q_valid;
             QuotientAccumulator acc(
@@ -1725,10 +2144,11 @@ namespace gatzk::protocol
         const FieldElement &z)
     {
         const auto omega_z = z * context.domains.cat->omega;
-        const auto first = lagrange_first(*context.domains.cat, z);
-        const auto last = lagrange_last(*context.domains.cat, z);
+        const auto boundary = boundary_lagrange_values(*context.domains.cat, z);
+        const auto first = boundary.first;
+        const auto last = boundary.last;
         const auto not_last = FieldElement::one() - last;
-        const auto zero_eval = context.domains.cat->zero_polynomial_eval(z);
+        const auto zero_eval = boundary.zero;
         const auto q_valid = eval("P_Q_cat_valid", z);
         const auto q_invalid = FieldElement::one() - q_valid;
         // cat 域只约束多头拼接与输出投影输入，不重复承担 edge 域上的 softmax/lookup 主链。
@@ -1776,10 +2196,11 @@ namespace gatzk::protocol
         const FieldElement &z)
     {
         const auto omega_z = z * context.domains.c->omega;
-        const auto first = lagrange_first(*context.domains.c, z);
-        const auto last = lagrange_last(*context.domains.c, z);
+        const auto boundary = boundary_lagrange_values(*context.domains.c, z);
+        const auto first = boundary.first;
+        const auto last = boundary.last;
         const auto not_last = FieldElement::one() - last;
-        const auto zero_eval = context.domains.c->zero_polynomial_eval(z);
+        const auto zero_eval = boundary.zero;
         const auto q_valid = eval("P_Q_C_valid", z);
         const auto q_invalid = FieldElement::one() - q_valid;
         // C 域主要对齐输出层每头的源/目标打分绑定，以及 bias 后输出和多头平均的关系。

@@ -115,6 +115,12 @@ namespace gatzk::crypto
         std::size_t point_msm_worker_cap = 0;
     };
 
+    enum class BatchOpeningClaimValidation
+    {
+        VerifyAgainstOpeningPolynomials,
+        AlreadyComputedFromOpeningPolynomials,
+    };
+
     // 批量承诺的执行侧剖面，供 `commit_dynamic_ms` 拆分热点。
     struct CommitObjectProfile
     {
@@ -216,7 +222,9 @@ namespace gatzk::crypto
             const std::vector<std::vector<algebra::FieldElement>>& claimed_values,
             const algebra::FieldElement& folding_challenge,
             const KZGKeyPair& key,
-            BatchOpeningProfile* profile = nullptr);
+            BatchOpeningProfile* profile = nullptr,
+            BatchOpeningClaimValidation claim_validation =
+                BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials);
 
         // verifier 侧复验 `open_batch` 生成的见证。
         static bool verify_batch(
@@ -231,9 +239,10 @@ namespace gatzk::crypto
         static OpeningProof open_external_fold(
             const std::vector<std::pair<Commitment, algebra::FieldElement>>& commitments_and_values,
             const std::vector<algebra::FieldElement>& points,
-            
             const algebra::FieldElement& folding_challenge,
-            const KZGKeyPair& key);
+            const KZGKeyPair& key,
+            BatchOpeningClaimValidation claim_validation =
+                BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials);
 
         // verifier 侧复验 external fold opening。
         static bool verify_external_fold(

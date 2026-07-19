@@ -6,25 +6,16 @@
 
 ## 当前状态（2026-07-18）
 
-**协议实现处于候选冻结状态，第三阶段非全量性能工程范围已收敛，跨后端全量验收待用户执行。**
+**协议实现处于候选冻结状态；第三阶段性能工程已重新打开，撤回“非全量范围已收敛”的结论。**
 当前 proof schema、transcript、proof wire format、parser 与 verifier 语义未因性能优化
-改变。第三阶段保留了 CPU MSM/批调度、`t_edge`、KZG opening/verifier 和部分 CUDA
-hotspot 优化；完整证据、回滚项和断点见
+改变。当前正式性能基线标记为待重建；旧协议时代的性能预算和速度门槛不再参与
+运行有效性、恢复、正确性或安全性判断。第三阶段当前证据、回滚项和断点见
 [`PHASE3_PERFORMANCE_OPTIMIZATION.md`](PHASE3_PERFORMANCE_OPTIMIZATION.md)。此状态不代表
 第一阶段最终全量验收已通过，也不授权自动生成论文正式结果。
 
-最新 Cora CPU 完整安全验收由项目负责人调整调度并人工终止：
-
-- 状态：`ABORTED_BY_USER_FOR_SCHEDULE`，不得解释为 `PASS` 或 `FAIL`；
-- 命令：`/usr/bin/time -v env GATZK_DEBUG_VERIFY=1 GATZK_SKIP_LARGE_MSM_TESTS=1 GATZK_RUN_FULL_SECURITY_TESTS=1 ./build/gatzk_tests`；
-- 终止时 wall time `3:21:22`，累计 CPU time `55:48:37.32`；
-- RSS `35,118,756 KiB`，峰值 RSS `35,640,900 KiB`，线程数 `22`，swap `0`；
-- 未完成阶段：正式 proof 构造尚未返回，direct verify、strict parser 往返、verifier-only 与篡改拒绝尚未开始；
-- 诊断记录：`runs/diagnostics/cora_cpu_security_20260717T133640+0800.aborted.md`。
-
-本轮没有写入正式实验结果。`artifacts/srs/cora_formal_srs_v1` 已完整保留，
-degree bound 为 `16777215`，绑定的 protocol schema id 为
-`e834d4d301c8ff94921cfc90b2fe00ba35896270ba3bf8beaf13417f79f77cdc`。
+当前没有可信的完整数据集性能基线，旧协议运行数字不再在 README 中作为当前证据展示。
+用户启动任何正式行前，必须用当前代码重新核验对应数据集 SRS 的 manifest、hash、
+degree bound 和 schema 绑定。
 
 ## 正式协议边界
 
@@ -88,8 +79,9 @@ SRS 或正式实验结果。
 
 ## 验证状态与后续顺序
 
-第三阶段已完成 bounded stage benchmark、极小正式调用链、strict parser/verifier、扩展
-安全单元回归和 CUDA 精确一致性测试；未执行任何完整数据集证明。最终统一验收仍包括
+第三阶段当前断点已完成多组 bounded stage benchmark、极小正式调用链、strict
+parser/verifier、扩展安全单元回归和 CUDA 精确一致性测试，但主要性能路径仍在继续优化；
+未执行任何完整数据集证明。最终统一验收仍包括
 Cora、Citeseer、Pubmed、PPI、ogbn-arxiv 的 CPU/GPU 正式行，并且只能由项目负责人决定
 何时运行。建议逐行串行执行并先完成缺失 SRS 的生成和严格扫描；命令、恢复规则、资源
 风险和中断注意事项统一维护在第三阶段性能记录的“Remaining user-authorized
@@ -111,6 +103,6 @@ python3 tools/security/static_scan_no_tau.py --require-all-configured-srs
 
 ## 正式结果导出边界
 
-`results/paper_secure/` 中既有内容属于旧协议历史记录，不是当前候选冻结实现的证据。
+`results/paper_secure/` 的旧协议结果已清理，不是当前候选冻结实现的证据。
 在项目负责人明确授权最终十组实验、所有运行通过当前 strict gates 且结果重新生成前，
 不得调用正式结果导出流程或据此发布性能数字。
