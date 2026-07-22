@@ -180,6 +180,10 @@ namespace gatzk::protocol
                 {
                     out << "/mt";
                 }
+                if (object.semantic_commitment_reuse)
+                {
+                    out << "/semantic-reuse";
+                }
             }
             progress_note(out.str());
         }
@@ -1658,7 +1662,11 @@ namespace gatzk::protocol
             if (!named_polynomials.empty())
             {
                 progress_note(batch_progress_label + ":msm:start");
-                const auto commitments = crypto::KZG::commit_batch(named_polynomials, key, &polynomial_profile);
+                const auto commitments = crypto::KZG::commit_batch(
+                    named_polynomials,
+                    key,
+                    &polynomial_profile,
+                    trace.evaluation_commitment_cache.get());
                 progress_note(batch_progress_label + ":msm:done");
                 progress_commit_batch_profile(batch_progress_label, polynomial_profile);
                 for (std::size_t i = 0; i < commitments.size(); ++i)
@@ -3975,6 +3983,8 @@ namespace gatzk::protocol
             const auto initial_commit_dynamic_ms = metrics != nullptr ? metrics->commit_dynamic_ms : 0.0;
             TraceArtifacts trace;
             trace.compiler_artifact = context.compiler_artifact;
+            trace.evaluation_commitment_cache =
+                std::make_shared<crypto::EvaluationCommitmentCache>();
             if (trace.compiler_artifact == nullptr)
             {
                 throw std::runtime_error(

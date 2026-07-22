@@ -151,6 +151,14 @@ int main(int argc, char** argv) {
                 0.0,
                 generation_metrics.total_wall_clock_ms
                     - generation_metrics.formal_time_sum_ms);
+            std::size_t duplicate_dynamic_commitments = 0;
+            double duplicate_dynamic_commitment_ms = 0.0;
+            for (const auto& item : generation_metrics.dynamic_commitment_profiles) {
+                if (item.duplicates_another) {
+                    ++duplicate_dynamic_commitments;
+                    duplicate_dynamic_commitment_ms += item.msm_ms;
+                }
+            }
             const auto prove_trace_ms = std::max(
                 0.0,
                 generation_metrics.trace_generation_ms
@@ -196,6 +204,10 @@ int main(int argc, char** argv) {
                       << generation_metrics.point_group_registry_ms
                       << " dynamic_commit_msm_ms="
                       << generation_metrics.dynamic_commit_msm_ms
+                      << " duplicate_dynamic_commitments="
+                      << duplicate_dynamic_commitments
+                      << " duplicate_dynamic_commitment_ms="
+                      << duplicate_dynamic_commitment_ms
                       << " derived_commitment_point_ms="
                       << generation_metrics.derived_commitment_point_ms
                       << " quotient_commitment_ms="
@@ -207,6 +219,16 @@ int main(int argc, char** argv) {
                       << prove_commit_preparation_ms
                       << " prove_quotient_noncommitment_ms="
                       << prove_quotient_noncommitment_ms
+                      << " quotient_t_fh_ms="
+                      << generation_metrics.quotient_t_fh_ms
+                      << " quotient_t_edge_ms="
+                      << generation_metrics.quotient_t_edge_ms
+                      << " quotient_other_materialization_ms="
+                      << generation_metrics.quotient_t_in_ms
+                            + generation_metrics.quotient_t_d_h_ms
+                            + generation_metrics.quotient_t_cat_ms
+                            + generation_metrics.quotient_t_c_ms
+                            + generation_metrics.quotient_t_n_ms
                       << " prove_domain_opening_ms="
                       << generation_metrics.domain_opening_ms
                       << " prove_external_opening_ms="

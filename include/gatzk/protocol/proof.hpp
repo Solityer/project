@@ -110,6 +110,10 @@ struct TraceArtifacts {
     // Read-only instance compiler contract used while materializing blinded
     // objects. It is execution context and is never serialized into proof.
     std::shared_ptr<const ProtocolCompilerArtifact> compiler_artifact;
+    // Per-proof execution cache for identical semantic evaluation columns.
+    // It never crosses proof boundaries and is never serialized.
+    std::shared_ptr<crypto::EvaluationCommitmentCache>
+        evaluation_commitment_cache;
     PublicMetadata public_metadata;
     // 对超大 evaluation 列的临时落盘描述，只是执行层优化，不改变多项式语义。
     struct SpilledEvaluationPolynomial {

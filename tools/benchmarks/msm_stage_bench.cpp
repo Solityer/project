@@ -184,13 +184,20 @@ int main(int argc, char** argv) {
         const auto should_run = [&](const std::string& label) {
             return selected_case == "all" || selected_case == label;
         };
-        if (argc > 4) {
-            throw std::runtime_error("usage: gatzk_msm_stage_bench [repeats] [case|all] [max_workers|0]");
+        if (argc > 7) {
+            throw std::runtime_error(
+                "usage: gatzk_msm_stage_bench [repeats] [case|all] [max_workers|0] "
+                "[srs_path] [srs_type] [srs_id]");
         }
+        const auto srs_path = argc > 4
+            ? std::filesystem::path(argv[4])
+            : repo_root() / "artifacts/srs/unit_security_srs_v1";
+        const std::string srs_type = argc > 5 ? argv[5] : "trusted_srs";
+        const std::string srs_id = argc > 6 ? argv[6] : "unit_security_srs_v1";
         const auto keys = gatzk::crypto::KZG::load_keys(
-            (repo_root() / "artifacts/srs/cora_formal_srs_v1").string(),
-            "trusted_srs",
-            "cora_formal_srs_v1");
+            srs_path.string(),
+            srs_type,
+            srs_id);
         const auto edge_it = keys.pk.lagrange_srs_by_domain.find("edge");
         if (edge_it == keys.pk.lagrange_srs_by_domain.end() || edge_it->second == nullptr) {
             throw std::runtime_error("missing edge Lagrange SRS");

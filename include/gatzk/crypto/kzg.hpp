@@ -134,7 +134,33 @@ namespace gatzk::crypto
         bool sparse_compaction = false;
         bool constant_tail_folding = false;
         bool multithreaded_msm = false;
+        bool semantic_commitment_reuse = false;
         double msm_ms = 0.0;
+    };
+
+    class EvaluationCommitmentCache
+    {
+    public:
+        EvaluationCommitmentCache();
+        ~EvaluationCommitmentCache();
+        EvaluationCommitmentCache(const EvaluationCommitmentCache&) = delete;
+        EvaluationCommitmentCache& operator=(const EvaluationCommitmentCache&) = delete;
+
+        bool lookup_semantic(
+            const algebra::RootOfUnityDomain* domain,
+            const std::vector<G1Point>* lagrange_srs,
+            const std::shared_ptr<const std::vector<algebra::FieldElement>>& values,
+            G1Point* point);
+        void store_semantic(
+            const algebra::RootOfUnityDomain* domain,
+            const std::vector<G1Point>* lagrange_srs,
+            std::shared_ptr<const std::vector<algebra::FieldElement>> values,
+            const G1Point& point);
+
+    private:
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
+        friend class KZG;
     };
 
     struct CommitBatchProfile
@@ -182,7 +208,8 @@ namespace gatzk::crypto
         static std::vector<Commitment> commit_batch(
             const std::vector<std::pair<std::string, const algebra::Polynomial*>>& named_polynomials,
             const KZGKeyPair& key,
-            CommitBatchProfile* profile = nullptr);
+            CommitBatchProfile* profile = nullptr,
+            EvaluationCommitmentCache* reuse_cache = nullptr);
         // 对刚物化出的多项式批量承诺并接管 opening 材料，避免为 quotient 等一次性对象再复制整列标量。
         static std::vector<Commitment> commit_owned_batch(
             std::vector<std::pair<std::string, algebra::Polynomial>>&& named_polynomials,

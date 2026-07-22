@@ -6,17 +6,23 @@
 
 ## 当前状态（2026-07-22）
 
-**协议实现处于候选冻结状态；第三阶段性能工程已重新打开，撤回“非全量范围已收敛”的结论。**
+**协议实现处于候选冻结状态；第三阶段本轮有界正式路径性能目标已达到，但五个数据集的正式性能验收仍未执行。**
 当前 proof schema、transcript、proof wire format、parser 与 verifier 已统一为全局
 point-group opening：每个不同点独立派生非零 challenge，同点 claim 只对应一个 owner
-和一个 witness。当前正式性能基线标记为待重建；旧协议时代的性能预算和速度门槛不再参与
-运行有效性、恢复、正确性或安全性判断。第三阶段当前证据、回滚项和断点见
+和一个 witness。完整数据集正式性能基线仍标记为待重建；旧协议时代的性能预算和速度门槛不再参与
+运行有效性、恢复、正确性或安全性判断。第三阶段当前证据、回滚项和真实边界见
 [`PHASE3_PERFORMANCE_OPTIMIZATION.md`](PHASE3_PERFORMANCE_OPTIMIZATION.md)。此状态不代表
 第一阶段最终全量验收已通过，也不授权自动生成论文正式结果。
 
 当前没有可信的完整数据集性能基线，旧协议运行数字不再在 README 中作为当前证据展示。
 用户启动任何正式行前，必须用当前代码重新核验对应数据集 SRS 的 manifest、hash、
 degree bound 和 schema 绑定。
+
+本轮在同一小型 SRS、相同 20 核绑定和 `exclusive_commit_prove_verify_v2` 口径下冻结
+3 次原始基线并复测 3 次最终状态。代表性正式调用链的三项时间总和中位数由
+46612.391 ms 降至 3715.614 ms（-92.029%），wall time 中位数由 48876.405 ms
+降至 3926.298 ms（-91.967%）。该有界入口完整执行 commitment、prove、canonical
+serialization、strict parse 和 verify，但不是任何完整数据集的论文性能结果。
 
 ## 正式协议边界
 
@@ -49,6 +55,11 @@ SRS/PK/VK 加载、I/O、工件导出、审计和 runner 开销只进入 wall-ti
 transcript 和 verifier 接受条件。CUDA 当前仅覆盖 barycentric weights、packed weighted
 evaluation 和 size-aware lookup histogram；KZG MSM、pairing、小域及未迁移阶段明确记录为
 CPU fallback。请求 CUDA 后端而运行时不可用时会 fail closed。
+
+vendored MCL 现在由正式 CMake Release 规则以 `-O3 -DNDEBUG` 构建；此前其静态库遗漏
+优化级别。动态 commitment 使用每个 proof 内的精确语义列复用并为每个对象独立加入
+zero-domain blinder，quotient 的相同语义列只共享只读 base coset material。两类缓存均不
+进入 proof，不跨 proof、challenge、owner、witness 或 opening group。
 
 第二阶段只进行了结构移动、引用确认后的死代码/重复路径清理和构建项清理。CPU/CUDA
 主程序及测试二进制均已编译链接；阶段内未运行 Cora/PPI 正式 proof。toy 数据、toy
@@ -90,13 +101,13 @@ v2 正式 SRS 时必须先按 setup-only compiler 流程重新产生，不能复
 
 ## 验证状态与后续顺序
 
-第三阶段当前断点已完成多组 bounded stage benchmark、极小正式调用链、strict
-parser/verifier、扩展安全单元回归和 CUDA 精确一致性测试，但主要性能路径仍在继续优化；
-未执行任何完整数据集证明。最终统一验收仍包括
+第三阶段本轮已完成冻结前后各 3 次的有界正式调用链、strict parser/verifier、扩展安全
+单元回归、CPU/CUDA Release 全构建与 CUDA 精确一致性测试；`private_plain_value_count=0`
+且 `verifier_reads_witness=false`。本轮 75% 目标已超过，但未执行任何完整数据集证明。
+最终统一验收仍包括
 Cora、Citeseer、Pubmed、PPI、ogbn-arxiv 的 CPU/GPU 正式行，并且只能由项目负责人决定
-何时运行。建议逐行串行执行并先完成缺失 SRS 的生成和严格扫描；命令、恢复规则、资源
-风险和中断注意事项统一维护在第三阶段性能记录的“Remaining user-authorized
-full-dataset handoff”一节。
+何时运行。建议逐行串行执行并先完成缺失 SRS 的生成和严格扫描；当前未测量的资源与
+硬件边界统一维护在第三阶段性能记录的“Remaining real boundaries”一节。
 
 上述跨后端验收全部完成前，不得宣称第一阶段或三个阶段全部通过，也不得把小输入或
 stage benchmark 的数据写成正式数据集结果。

@@ -17,7 +17,7 @@ function(gatzk_configure_vendored_mcl)
 
     add_custom_command(
         OUTPUT "${GATZK_VENDOR_MCL_LIBRARY}"
-        COMMAND "${GATZK_HOST_MAKE}" -C "${GATZK_VENDOR_MCL_SOURCE_DIR}" lib/libmcl.a MCL_USE_LLVM=0 MCL_BINT_ASM=0 MCL_MSM=0 -j4
+        COMMAND "${GATZK_HOST_MAKE}" -C "${GATZK_VENDOR_MCL_SOURCE_DIR}" lib/libmcl.a MCL_USE_LLVM=0 MCL_BINT_ASM=0 MCL_MSM=0 "CFLAGS_USER=-O3 -DNDEBUG" -j4
         WORKING_DIRECTORY "${GATZK_VENDOR_MCL_SOURCE_DIR}"
         COMMENT "Building vendored mcl backend"
         VERBATIM

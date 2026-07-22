@@ -3889,6 +3889,7 @@ namespace gatzk::protocol
                 // threads only read the cached coset vectors.
                 if (label_ == "t_edge")
                 {
+                    const auto prewarm_start = Clock::now();
                     const auto dependency_labels = quotient_dependency_labels(context_, label_);
                     std::vector<std::string> prewarm_labels;
                     prewarm_labels.reserve(dependency_labels.size());
@@ -3903,7 +3904,9 @@ namespace gatzk::protocol
                     progress_note("prove:quotient:t_edge:coset_prewarm:start");
                     prewarm_coset_values(prewarm_labels);
                     seed_fast_coset_lookup(prewarm_labels);
-                    progress_note("prove:quotient:t_edge:coset_prewarm:done");
+                    progress_note(
+                        "prove:quotient:t_edge:coset_prewarm:done:ms="
+                        + std::to_string(elapsed_ms(prewarm_start, Clock::now())));
                     // The generic evaluator is the protocol source of truth.  The
                     // former hand-unrolled route did not reproduce evaluate_t_edge
                     // after the formal integer-scale constraints changed, producing
@@ -4005,12 +4008,13 @@ namespace gatzk::protocol
                 {
                     progress_note("prove:quotient:t_edge:evaluate:start");
                 }
+                const auto point_evaluation_start = Clock::now();
                 const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
                 const bool run_parallel = cpu_count > 1 && target_size_ >= 4096;
                 if (run_parallel)
                 {
                     const auto min_points_per_task =
-                        label_ == "t_edge" ? std::size_t{8192} : std::size_t{32768};
+                        label_ == "t_edge" ? std::size_t{1024} : std::size_t{32768};
                     const auto task_count = std::min<std::size_t>(
                         std::min<std::size_t>(cpu_count, 32),
                         std::max<std::size_t>(1, target_size_ / min_points_per_task));
@@ -4127,10 +4131,14 @@ namespace gatzk::protocol
                 }
                 if (label_ == "t_edge")
                 {
-                    progress_note("prove:quotient:t_edge:evaluate:done");
+                    progress_note(
+                        "prove:quotient:t_edge:evaluate:done:ms="
+                        + std::to_string(elapsed_ms(
+                            point_evaluation_start, Clock::now())));
                     progress_note("prove:quotient:t_edge:coefficients:start");
                 }
 
+                const auto coefficient_start = Clock::now();
                 auto coefficients = coefficients_from_coset_evaluations_in_place(
                     std::move(quotient_values), shift_);
                 if (std::getenv("GATZK_DEBUG_QUOTIENT_SELF_CHECK") != nullptr)
@@ -4142,7 +4150,10 @@ namespace gatzk::protocol
                 }
                 if (label_ == "t_edge")
                 {
-                    progress_note("prove:quotient:t_edge:coefficients:done");
+                    progress_note(
+                        "prove:quotient:t_edge:coefficients:done:ms="
+                        + std::to_string(elapsed_ms(
+                            coefficient_start, Clock::now())));
                 }
                 if (coefficients.size() > key.pk.degree_bound + 1)
                 {
@@ -4370,16 +4381,6 @@ namespace gatzk::protocol
                         continue;
                     }
                     const auto values = coset_values_ptr(label);
-                    // Derived expressions without their own committed/spilled
-                    // polynomial must still be evaluated pointwise from the
-                    // blinded source cosets.  A separately materialized
-                    // semantic-domain vector is not interchangeable here.
-                    if (lookup_polynomial(label) == nullptr
-                        && !trace_.spilled_polynomials.contains(label)
-                        && is_edge_derived_coset_request(label))
-                    {
-                        continue;
-                    }
                     fast_coset_lookup_.emplace(label, values.get());
                 }
             }
@@ -4725,6 +4726,210 @@ namespace gatzk::protocol
 
             std::vector<FieldElement> quotient_alpha_powers_;
 
+            struct SemanticCosetGroup
+            {
+                const algebra::Polynomial* owner = nullptr;
+                std::string owner_label;
+                std::vector<std::string> labels;
+                std::mutex mutex;
+                std::shared_ptr<const std::vector<FieldElement>> base_values;
+                std::size_t remaining = 0;
+            };
+
+            std::uint64_t semantic_values_hash(
+                const std::vector<FieldElement>& values) const
+            {
+                std::uint64_t hash = 1469598103934665603ULL;
+                for (const auto& value : values)
+                {
+                    const auto* units = value.native().getUnit();
+                    for (std::size_t unit = 0;
+                         unit < mcl::Fr::getUnitSize(); ++unit)
+                    {
+                        hash ^= static_cast<std::uint64_t>(units[unit]);
+                        hash *= 1099511628211ULL;
+                    }
+                }
+                hash ^= values.size();
+                hash *= 1099511628211ULL;
+                return hash;
+            }
+
+            void seed_semantic_coset_groups(
+                const std::vector<std::string>& wave)
+            {
+                semantic_coset_group_by_label_.clear();
+                semantic_coset_groups_.clear();
+                std::unordered_map<
+                    std::uint64_t,
+                    std::vector<std::shared_ptr<SemanticCosetGroup>>>
+                    groups_by_hash;
+                std::size_t semantic_objects = 0;
+                for (const auto& item_label : wave)
+                {
+                    const auto* polynomial = lookup_polynomial(item_label);
+                    if (polynomial == nullptr
+                        || polynomial->basis
+                            != algebra::PolynomialBasis::Evaluation
+                        || polynomial->domain.get() != domain_.get())
+                    {
+                        continue;
+                    }
+                    ++semantic_objects;
+                    const auto& values = polynomial->values();
+                    auto& candidates = groups_by_hash[
+                        semantic_values_hash(values)];
+                    auto group = std::find_if(
+                        candidates.begin(),
+                        candidates.end(),
+                        [&](const auto& candidate)
+                        {
+                            return candidate->owner->values() == values;
+                        });
+                    if (group == candidates.end())
+                    {
+                        auto created = std::make_shared<SemanticCosetGroup>();
+                        created->owner = polynomial;
+                        created->owner_label = item_label;
+                        created->labels.push_back(item_label);
+                        candidates.push_back(created);
+                    }
+                    else
+                    {
+                        (*group)->labels.push_back(item_label);
+                    }
+                }
+
+                std::size_t semantic_unique = 0;
+                for (auto& [_, candidates] : groups_by_hash)
+                {
+                    semantic_unique += candidates.size();
+                    for (auto& group : candidates)
+                    {
+                        if (group->labels.size() <= 1)
+                        {
+                            continue;
+                        }
+                        group->remaining = group->labels.size();
+                        semantic_coset_groups_.push_back(group);
+                        for (const auto& item_label : group->labels)
+                        {
+                            semantic_coset_group_by_label_.emplace(
+                                item_label, group);
+                        }
+                    }
+                }
+
+                if (!semantic_coset_groups_.empty())
+                {
+                    semantic_coset_points_.resize(target_size_);
+                    semantic_coset_zero_values_.resize(target_size_);
+                    const auto root = FieldElement::root_of_unity(target_size_);
+                    const auto zero_step = root.pow(domain_->size);
+                    auto point = shift_;
+                    auto zero_power = shift_.pow(domain_->size);
+                    const auto one = FieldElement::one();
+                    for (std::size_t index = 0; index < target_size_; ++index)
+                    {
+                        semantic_coset_points_[index] = point;
+                        semantic_coset_zero_values_[index] = zero_power - one;
+                        point *= root;
+                        zero_power *= zero_step;
+                    }
+                }
+
+                if (progress_enabled())
+                {
+                    progress_note(
+                        "prove:quotient:t_edge:coset_prewarm:semantic_objects="
+                        + std::to_string(semantic_objects)
+                        + ":semantic_unique="
+                        + std::to_string(semantic_unique)
+                        + ":semantic_duplicates="
+                        + std::to_string(semantic_objects - semantic_unique)
+                        + ":semantic_reuse_groups="
+                        + std::to_string(semantic_coset_groups_.size()));
+                }
+            }
+
+            std::shared_ptr<const std::vector<FieldElement>>
+            reused_semantic_coset_values(
+                const std::string& requested_name,
+                const algebra::Polynomial& polynomial)
+            {
+                const auto group_it = semantic_coset_group_by_label_.find(
+                    requested_name);
+                if (group_it == semantic_coset_group_by_label_.end())
+                {
+                    return nullptr;
+                }
+                const auto& group = group_it->second;
+                std::shared_ptr<const std::vector<FieldElement>> base_values;
+                {
+                    std::lock_guard<std::mutex> lock(group->mutex);
+                    if (group->base_values == nullptr)
+                    {
+                        auto semantic_polynomial = *group->owner;
+                        semantic_polynomial.zero_domain_blinder.clear();
+                        group->base_values =
+                            std::make_shared<const std::vector<FieldElement>>(
+                                coset_evaluate_polynomial(
+                                    semantic_polynomial,
+                                    target_size_,
+                                    shift_,
+                                    group->owner_label,
+                                    &shift_powers()));
+                    }
+                    base_values = group->base_values;
+                }
+
+                auto values = std::make_shared<std::vector<FieldElement>>(
+                    *base_values);
+                if (!polynomial.zero_domain_blinder.empty())
+                {
+                    auto* out = FieldElement::mutable_native_array_data(
+                        values->data());
+                    for (std::size_t index = 0; index < target_size_; ++index)
+                    {
+                        mcl::Fr blinder_value =
+                            polynomial.zero_domain_blinder.back().native();
+                        for (std::size_t coefficient =
+                                 polynomial.zero_domain_blinder.size() - 1;
+                             coefficient-- > 0;)
+                        {
+                            mcl::Fr::mul(
+                                blinder_value,
+                                blinder_value,
+                                semantic_coset_points_[index].native());
+                            mcl::Fr::add(
+                                blinder_value,
+                                blinder_value,
+                                polynomial.zero_domain_blinder[coefficient]
+                                    .native());
+                        }
+                        mcl::Fr contribution;
+                        mcl::Fr::mul(
+                            contribution,
+                            blinder_value,
+                            semantic_coset_zero_values_[index].native());
+                        mcl::Fr::add(out[index], out[index], contribution);
+                    }
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(group->mutex);
+                    if (group->remaining != 0)
+                    {
+                        --group->remaining;
+                        if (group->remaining == 0)
+                        {
+                            group->base_values.reset();
+                        }
+                    }
+                }
+                return values;
+            }
+
             void prewarm_coset_values(const std::vector<std::string> &labels)
             {
                 std::vector<std::string> unique_labels;
@@ -4770,6 +4975,7 @@ namespace gatzk::protocol
                     std::vector<std::string> wave(begin_it, end_it);
                     if (wave_name == std::string_view("base"))
                     {
+                        seed_semantic_coset_groups(wave);
                         seed_canonical_coset_aliases(wave);
                     }
                     progress_note(
@@ -5411,13 +5617,19 @@ namespace gatzk::protocol
                 if (const auto *private_polynomial = lookup_polynomial(requested_name);
                     private_polynomial != nullptr && private_polynomial->is_zero_domain_blinded())
                 {
-                    auto direct_values = std::make_shared<const std::vector<FieldElement>>(
-                        coset_evaluate_polynomial(
-                            *private_polynomial,
-                            target_size_,
-                            shift_,
-                            requested_name,
-                            &shift_powers()));
+                    auto direct_values = reused_semantic_coset_values(
+                        requested_name, *private_polynomial);
+                    if (direct_values == nullptr)
+                    {
+                        direct_values =
+                            std::make_shared<const std::vector<FieldElement>>(
+                                coset_evaluate_polynomial(
+                                    *private_polynomial,
+                                    target_size_,
+                                    shift_,
+                                    requested_name,
+                                    &shift_powers()));
+                    }
                     std::lock_guard<std::mutex> lock(coset_cache_mutex_);
                     const auto [it, inserted] = coset_cache_.emplace(requested_name, direct_values);
                     return inserted ? direct_values : it->second;
@@ -5585,6 +5797,11 @@ namespace gatzk::protocol
             std::unordered_map<std::string, std::shared_ptr<const std::vector<FieldElement>>> coset_cache_;
             std::unordered_map<std::string, std::string> coset_aliases_;
             std::unordered_map<std::string, const std::vector<FieldElement> *> fast_coset_lookup_;
+            std::vector<std::shared_ptr<SemanticCosetGroup>> semantic_coset_groups_;
+            std::unordered_map<std::string, std::shared_ptr<SemanticCosetGroup>>
+                semantic_coset_group_by_label_;
+            std::vector<FieldElement> semantic_coset_points_;
+            std::vector<FieldElement> semantic_coset_zero_values_;
         };
 
         std::vector<std::pair<std::string, algebra::Polynomial>> materialize_quotient_polynomials(

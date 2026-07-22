@@ -1101,8 +1101,7 @@ namespace gatzk::crypto
         {
             if (!util::route2_options().fast_msm
                 || object_count <= 1
-                || cpu_count < 4
-                || total_scalar_count < (1ULL << 13))
+                || cpu_count < 4)
             {
                 return 1;
             }
@@ -1172,6 +1171,41 @@ namespace gatzk::crypto
             const auto tail_length = size - tail_start;
             const auto min_tail_length = std::max<std::size_t>(4096, size / 8);
             return tail_length >= min_tail_length;
+        }
+
+        std::size_t estimated_commitment_msm_work(const algebra::Polynomial& polynomial)
+        {
+            const auto& values = polynomial.values();
+            if (values.empty())
+            {
+                return 0;
+            }
+
+            if (polynomial.basis == algebra::PolynomialBasis::Evaluation
+                && polynomial.domain != nullptr
+                && values.size() == polynomial.domain->size)
+            {
+                std::size_t tail_start = values.size();
+                const auto& tail_value = values.back();
+                while (tail_start > 0 && values[tail_start - 1] == tail_value)
+                {
+                    --tail_start;
+                }
+                if (should_fold_constant_evaluation_tail(values.size(), tail_start))
+                {
+                    std::size_t work = tail_value.is_zero() ? 0 : 1;
+                    for (std::size_t i = 0; i < tail_start; ++i)
+                    {
+                        work += values[i] == tail_value ? 0 : 1;
+                    }
+                    return work;
+                }
+            }
+
+            return static_cast<std::size_t>(std::count_if(
+                values.begin(),
+                values.end(),
+                [](const FieldElement& value) { return !value.is_zero(); }));
         }
 
         bool should_compact_lagrange_prefix_delta(
@@ -1329,12 +1363,14 @@ namespace gatzk::crypto
             const algebra::Polynomial& polynomial,
             const KZGProverKey& pk,
             CommitObjectProfile* profile = nullptr,
-            const G1MSMExecutionOptions* msm_options = nullptr)
+            const G1MSMExecutionOptions* msm_options = nullptr,
+            EvaluationCommitmentCache* reuse_cache = nullptr)
         {
             G1MSMProfile msm_profile;
             const auto msm_start = Clock::now();
             G1Point point;
             bool constant_tail_folding = false;
+            bool semantic_commitment_reuse = false;
             // 系数多项式采用SRS powers + MSM
             if (polynomial.basis == algebra::PolynomialBasis::Coefficient)
             {
@@ -1403,67 +1439,108 @@ namespace gatzk::crypto
                     throw std::runtime_error("evaluation polynomial exceeds Lagrange SRS domain size: " + polynomial.name);
                 }
                 const auto& values = polynomial.values();
-                const auto can_fold_tail = values.size() == polynomial.domain->size;
-                std::size_t tail_start = values.size();
-                if (can_fold_tail && !values.empty())
+                if (reuse_cache != nullptr
+                    && polynomial.shared_data != nullptr
+                    && reuse_cache->lookup_semantic(
+                        polynomial.domain.get(),
+                        it->second.get(),
+                        polynomial.shared_data,
+                        &point))
                 {
-                    const auto& tail_value = values.back();
-                    while (tail_start > 0 && values[tail_start - 1] == tail_value)
+                    semantic_commitment_reuse = true;
+                    if (profile != nullptr)
                     {
-                        --tail_start;
-                    }
-                }
-                if (can_fold_tail && should_fold_constant_evaluation_tail(values.size(), tail_start))
-                {
-                    constant_tail_folding = true;
-                    const auto& tail_value = values.back();
-                    const auto tail_commitment = tail_value.is_zero()
-                        ? g1_zero()
-                        : g1_mul(pk.g1_generator, tail_value);
-                    if (tail_start == 0)
-                    {
-                        point = tail_commitment;
-                        if (profile != nullptr)
-                        {
-                            msm_profile.input_count = polynomial.size();
-                            msm_profile.nonzero_scalar_count = 0;
-                            msm_profile.effective_scalar_count = 0;
-                            msm_profile.zero_scalar_skipping = true;
-                            msm_profile.sparse_compaction = true;
-                            msm_profile.multithreaded = false;
-                        }
-                    }
-                    else
-                    {
-                        const auto folded_prefix_commitment = tail_value.is_zero()
-                            ? g1_multi_scalar_mul_profiled(
-                                it->second->data(),
-                                values.data(),
-                                tail_start,
-                                profile != nullptr ? &msm_profile : nullptr,
-                                msm_options)
-                            : commit_lagrange_prefix_delta(
-                                *it->second,
-                                values,
-                                tail_start,
-                                tail_value,
-                                profile != nullptr ? &msm_profile : nullptr,
-                                msm_options);
-                        if (profile != nullptr)
-                        {
-                            msm_profile.input_count = polynomial.size();
-                        }
-                        point = g1_add(tail_commitment, folded_prefix_commitment);
+                        msm_profile.input_count = polynomial.size();
+                        msm_profile.nonzero_scalar_count =
+                            estimated_commitment_msm_work(polynomial);
+                        msm_profile.effective_scalar_count = 0;
+                        msm_profile.zero_scalar_skipping = true;
+                        msm_profile.sparse_compaction = false;
+                        msm_profile.multithreaded = false;
                     }
                 }
                 else
                 {
-                    point = g1_multi_scalar_mul_profiled(
-                        it->second->data(),
-                        values.data(),
-                        polynomial.size(),
-                        profile != nullptr ? &msm_profile : nullptr,
-                        msm_options);
+                    const auto can_fold_tail =
+                        values.size() == polynomial.domain->size;
+                    std::size_t tail_start = values.size();
+                    if (can_fold_tail && !values.empty())
+                    {
+                        const auto& tail_value = values.back();
+                        while (tail_start > 0
+                               && values[tail_start - 1] == tail_value)
+                        {
+                            --tail_start;
+                        }
+                    }
+                    if (can_fold_tail
+                        && should_fold_constant_evaluation_tail(
+                            values.size(), tail_start))
+                    {
+                        constant_tail_folding = true;
+                        const auto& tail_value = values.back();
+                        const auto tail_commitment = tail_value.is_zero()
+                            ? g1_zero()
+                            : g1_mul(pk.g1_generator, tail_value);
+                        if (tail_start == 0)
+                        {
+                            point = tail_commitment;
+                            if (profile != nullptr)
+                            {
+                                msm_profile.input_count = polynomial.size();
+                                msm_profile.nonzero_scalar_count = 0;
+                                msm_profile.effective_scalar_count = 0;
+                                msm_profile.zero_scalar_skipping = true;
+                                msm_profile.sparse_compaction = true;
+                                msm_profile.multithreaded = false;
+                            }
+                        }
+                        else
+                        {
+                            const auto folded_prefix_commitment =
+                                tail_value.is_zero()
+                                ? g1_multi_scalar_mul_profiled(
+                                    it->second->data(),
+                                    values.data(),
+                                    tail_start,
+                                    profile != nullptr
+                                        ? &msm_profile : nullptr,
+                                    msm_options)
+                                : commit_lagrange_prefix_delta(
+                                    *it->second,
+                                    values,
+                                    tail_start,
+                                    tail_value,
+                                    profile != nullptr
+                                        ? &msm_profile : nullptr,
+                                    msm_options);
+                            if (profile != nullptr)
+                            {
+                                msm_profile.input_count = polynomial.size();
+                            }
+                            point = g1_add(
+                                tail_commitment,
+                                folded_prefix_commitment);
+                        }
+                    }
+                    else
+                    {
+                        point = g1_multi_scalar_mul_profiled(
+                            it->second->data(),
+                            values.data(),
+                            polynomial.size(),
+                            profile != nullptr ? &msm_profile : nullptr,
+                            msm_options);
+                    }
+                    if (reuse_cache != nullptr
+                        && polynomial.shared_data != nullptr)
+                    {
+                        reuse_cache->store_semantic(
+                            polynomial.domain.get(),
+                            it->second.get(),
+                            polynomial.shared_data,
+                            point);
+                    }
                 }
                 if (polynomial.is_zero_domain_blinded())
                 {
@@ -1488,6 +1565,8 @@ namespace gatzk::crypto
                 profile->sparse_compaction = msm_profile.sparse_compaction;
                 profile->constant_tail_folding = constant_tail_folding;
                 profile->multithreaded_msm = msm_profile.multithreaded;
+                profile->semantic_commitment_reuse =
+                    semantic_commitment_reuse;
                 profile->msm_ms = elapsed_ms(msm_start, Clock::now());
             }
             return point;
@@ -1498,13 +1577,15 @@ namespace gatzk::crypto
             algebra::Polynomial polynomial,
             const KZGProverKey& pk,
             CommitObjectProfile* profile = nullptr,
-            const G1MSMExecutionOptions* msm_options = nullptr)
+            const G1MSMExecutionOptions* msm_options = nullptr,
+            EvaluationCommitmentCache* reuse_cache = nullptr)
         {
             polynomial.name = name;
             auto material = std::make_shared<algebra::Polynomial>(std::move(polynomial));
             return Commitment{
                 .name = name,
-                .point = commit_polynomial_point(*material, pk, profile, msm_options),
+                .point = commit_polynomial_point(
+                    *material, pk, profile, msm_options, reuse_cache),
                 .opening_polynomial = material,
             };
         }
@@ -2231,6 +2312,121 @@ namespace gatzk::crypto
         }
     }
 
+    struct EvaluationCommitmentCache::Impl
+    {
+        struct Entry
+        {
+            const algebra::RootOfUnityDomain* domain = nullptr;
+            const std::vector<G1Point>* lagrange_srs = nullptr;
+            std::shared_ptr<const std::vector<algebra::FieldElement>> values;
+            G1Point point;
+        };
+
+        std::mutex mutex;
+        std::unordered_map<std::uint64_t, std::vector<Entry>> entries;
+    };
+
+    EvaluationCommitmentCache::EvaluationCommitmentCache()
+        : impl_(std::make_unique<Impl>())
+    {
+    }
+
+    EvaluationCommitmentCache::~EvaluationCommitmentCache() = default;
+
+    namespace
+    {
+        std::uint64_t evaluation_commitment_cache_key(
+            const algebra::RootOfUnityDomain* domain,
+            const std::vector<G1Point>* lagrange_srs,
+            const std::vector<algebra::FieldElement>& values)
+        {
+            std::uint64_t hash = 1469598103934665603ULL;
+            auto absorb = [&](std::uint64_t word)
+            {
+                hash ^= word;
+                hash *= 1099511628211ULL;
+            };
+            absorb(reinterpret_cast<std::uintptr_t>(domain));
+            absorb(reinterpret_cast<std::uintptr_t>(lagrange_srs));
+            absorb(values.size());
+            for (const auto& value : values)
+            {
+                const auto* units = value.native().getUnit();
+                for (std::size_t unit = 0;
+                     unit < mcl::Fr::getUnitSize(); ++unit)
+                {
+                    absorb(static_cast<std::uint64_t>(units[unit]));
+                }
+            }
+            return hash;
+        }
+    }
+
+    bool EvaluationCommitmentCache::lookup_semantic(
+        const algebra::RootOfUnityDomain* domain,
+        const std::vector<G1Point>* lagrange_srs,
+        const std::shared_ptr<const std::vector<algebra::FieldElement>>& values,
+        G1Point* point)
+    {
+        if (domain == nullptr || lagrange_srs == nullptr || values == nullptr)
+        {
+            return false;
+        }
+        const auto key = evaluation_commitment_cache_key(
+            domain, lagrange_srs, *values);
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        const auto bucket = impl_->entries.find(key);
+        if (bucket == impl_->entries.end())
+        {
+            return false;
+        }
+        for (const auto& entry : bucket->second)
+        {
+            if (entry.domain == domain
+                && entry.lagrange_srs == lagrange_srs
+                && *entry.values == *values)
+            {
+                if (point != nullptr)
+                {
+                    *point = entry.point;
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void EvaluationCommitmentCache::store_semantic(
+        const algebra::RootOfUnityDomain* domain,
+        const std::vector<G1Point>* lagrange_srs,
+        std::shared_ptr<const std::vector<algebra::FieldElement>> values,
+        const G1Point& point)
+    {
+        if (domain == nullptr || lagrange_srs == nullptr || values == nullptr)
+        {
+            return;
+        }
+        const auto key = evaluation_commitment_cache_key(
+            domain, lagrange_srs, *values);
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        auto& bucket = impl_->entries[key];
+        for (const auto& entry : bucket)
+        {
+            if (entry.domain == domain
+                && entry.lagrange_srs == lagrange_srs
+                && *entry.values == *values)
+            {
+                return;
+            }
+        }
+        bucket.push_back(Impl::Entry{
+            .domain = domain,
+            .lagrange_srs = lagrange_srs,
+            .values = std::move(values),
+            .point = point,
+        });
+    }
+
     std::size_t serialized_size(const Commitment& commitment)
     {
         return serialized_size(commitment.point);
@@ -2606,7 +2802,8 @@ namespace gatzk::crypto
     std::vector<Commitment> KZG::commit_batch(
         const std::vector<std::pair<std::string, const algebra::Polynomial*>>& named_polynomials,
         const KZGKeyPair& key,
-        CommitBatchProfile* profile)
+        CommitBatchProfile* profile,
+        EvaluationCommitmentCache* reuse_cache)
     {
         std::vector<Commitment> out(named_polynomials.size());
         std::vector<CommitObjectProfile> object_profiles(named_polynomials.size());
@@ -2620,8 +2817,9 @@ namespace gatzk::crypto
             {
                 throw std::runtime_error("null polynomial in KZG::commit_batch: " + name);
             }
-            total_scalar_count += polynomial->size();
-            max_scalar_count = std::max(max_scalar_count, polynomial->size());
+            const auto estimated_work = estimated_commitment_msm_work(*polynomial);
+            total_scalar_count += estimated_work;
+            max_scalar_count = std::max(max_scalar_count, estimated_work);
         }
         const auto outer_worker_count = commit_batch_outer_worker_count(
             named_polynomials.size(),
@@ -2641,7 +2839,8 @@ namespace gatzk::crypto
                 *polynomial,
                 key.pk,
                 profile != nullptr ? &object_profile : nullptr,
-                outer_worker_count > 1 ? &msm_options : nullptr);
+                outer_worker_count > 1 ? &msm_options : nullptr,
+                reuse_cache);
             if (profile != nullptr)
             {
                 object_profiles[index] = std::move(object_profile);
@@ -2710,8 +2909,9 @@ namespace gatzk::crypto
         view.reserve(named_polynomials.size());
         for (const auto& [name, polynomial] : named_polynomials)
         {
-            total_scalar_count += polynomial.size();
-            max_scalar_count = std::max(max_scalar_count, polynomial.size());
+            const auto estimated_work = estimated_commitment_msm_work(polynomial);
+            total_scalar_count += estimated_work;
+            max_scalar_count = std::max(max_scalar_count, estimated_work);
             view.push_back({name, &polynomial});
         }
 
