@@ -143,11 +143,7 @@ namespace gatzk::protocol
             stream << "[domain_openings]\n";
             for (const auto &[domain, bundle] : proof.domain_openings)
             {
-                stream << domain << "|proof_witnesses=" << bundle.proof.witnesses.size() << '\n';
-                for (const auto &witness : bundle.proof.witnesses)
-                {
-                    stream << "witness=" << witness.to_string() << '\n';
-                }
+                stream << domain << "|point_count=" << bundle.points.size() << '\n';
                 for (const auto &point : bundle.points)
                 {
                     stream << "point=" << point.to_string() << '\n';
@@ -180,10 +176,13 @@ namespace gatzk::protocol
             {
                 stream << value.to_string() << '\n';
             }
-            stream << "[external_proof]\n";
-            for (const auto &witness : proof.external_proof.witnesses)
+            stream << "[opening_groups]\n";
+            for (const auto &group : proof.opening_groups)
             {
-                stream << "witness=" << witness.to_string() << '\n';
+                stream << group.group_id << '|'
+                       << group.owner_block << '|'
+                       << group.point.to_string() << '|'
+                       << group.witness.to_string() << '\n';
             }
             stream << "[challenges]\n";
             for (const auto &[name, challenge] : proof.challenges)
@@ -403,6 +402,7 @@ namespace gatzk::protocol
             {"config", display_config_path()},
             {"backend", benchmark_backend_label()},
             {"status", verified ? "VERIFY_OK" : "VERIFY_FAIL"},
+            {"timing_schema", kFormalTimingSchema},
             {"commitment_time_ms", format_double(metrics.commitment_time_ms)},
             {"prove_time_ms", format_double(metrics.prove_time_ms)},
             {"verify_time_ms", format_double(metrics.verify_time_ms)},
@@ -470,19 +470,13 @@ namespace gatzk::protocol
         }
         metrics.export_artifact_ms = elapsed_ms(export_start, Clock::now());
         metrics.total_wall_clock_ms += metrics.export_artifact_ms;
-        if (metrics.is_cold_run)
-        {
-            metrics.cold_end_to_end_wall_clock_ms = metrics.total_wall_clock_ms;
-            metrics.warm_end_to_end_wall_clock_ms = 0.0;
-        }
-        else
-        {
-            metrics.warm_end_to_end_wall_clock_ms = metrics.total_wall_clock_ms;
-            metrics.cold_end_to_end_wall_clock_ms = 0.0;
-        }
-        metrics.total_cost_for_fresh_reproduction_ms =
-            metrics.total_wall_clock_ms + metrics.amortized_preprocessing_ms;
-
+        metrics.formal_time_sum_ms =
+            metrics.commitment_time_ms
+            + metrics.prove_time_ms
+            + metrics.verify_time_ms;
+        metrics.non_formal_overhead_ms = std::max(
+            0.0,
+            metrics.total_wall_clock_ms - metrics.formal_time_sum_ms);
         // `run_manifest.json` 保留完整内部字段，供 formal suite、artifact 校验和内部分析复核。
         std::map<std::string, std::string> run_manifest = {
             {"backend", benchmark_backend_label()},
@@ -494,6 +488,7 @@ namespace gatzk::protocol
             {"dataset", metrics.dataset},
             {"status", verified ? "VERIFY_OK" : "VERIFY_FAIL"},
             {"benchmark_mode", metrics.benchmark_mode},
+            {"timing_schema", kFormalTimingSchema},
             {"enabled_fft_backend_upgrade", metrics.enabled_fft_backend_upgrade ? "true" : "false"},
             {"enabled_fft_kernel_upgrade", metrics.enabled_fft_kernel_upgrade ? "true" : "false"},
             {"enabled_fast_msm", metrics.enabled_fast_msm ? "true" : "false"},
@@ -541,10 +536,8 @@ namespace gatzk::protocol
             {"exp_table_size", std::to_string(context.tables.exp.size())},
             {"elu_table_size", std::to_string(context.tables.elu.size())},
             {"total_wall_clock_ms", format_double(metrics.total_wall_clock_ms)},
-            {"cold_end_to_end_wall_clock_ms", format_double(metrics.cold_end_to_end_wall_clock_ms)},
-            {"warm_end_to_end_wall_clock_ms", format_double(metrics.warm_end_to_end_wall_clock_ms)},
-            {"amortized_preprocessing_ms", format_double(metrics.amortized_preprocessing_ms)},
-            {"total_cost_for_fresh_reproduction_ms", format_double(metrics.total_cost_for_fresh_reproduction_ms)},
+            {"formal_time_sum_ms", format_double(metrics.formal_time_sum_ms)},
+            {"non_formal_overhead_ms", format_double(metrics.non_formal_overhead_ms)},
             {"reference_forward_ms", format_double(metrics.reference_forward_ms)},
             {"payload_audit_ms", format_double(metrics.payload_audit_ms)},
             {"reference_consistency_ms", format_double(metrics.reference_consistency_ms)},
@@ -555,6 +548,7 @@ namespace gatzk::protocol
             {"profile_logging_overhead_ms", format_double(metrics.profile_logging_overhead_ms)},
             {"context_build_ms", format_double(metrics.context_build_ms)},
             {"domain_opening_ms", format_double(metrics.domain_opening_ms)},
+            {"point_group_registry_ms", format_double(metrics.point_group_registry_ms)},
             {"external_opening_ms", format_double(metrics.external_opening_ms)},
             {"fft_plan_ms", format_double(metrics.fft_plan_ms)},
             {"fft_backend_route", metrics.fft_backend_route},
@@ -576,6 +570,7 @@ namespace gatzk::protocol
             {"dynamic_domain_convert_ms", format_double(metrics.dynamic_domain_convert_ms)},
             {"dynamic_copy_convert_ms", format_double(metrics.dynamic_copy_convert_ms)},
             {"dynamic_commit_msm_ms", format_double(metrics.dynamic_commit_msm_ms)},
+            {"derived_commitment_point_ms", format_double(metrics.derived_commitment_point_ms)},
             {"dynamic_bundle_finalize_ms", format_double(metrics.dynamic_bundle_finalize_ms)},
             {"dynamic_polynomial_materialization_ms", format_double(metrics.dynamic_polynomial_materialization_ms)},
             {"dynamic_commitment_object_profile_csv", "dynamic_commitment_object_profile.csv"},
@@ -583,7 +578,6 @@ namespace gatzk::protocol
             {"dynamic_commitment_count_by_domain", format_size_map(dynamic_profile_count_by_domain)},
             {"dynamic_commitment_time_by_domain_ms", format_double_map(dynamic_profile_time_by_domain)},
             {"dynamic_commitment_time_by_ownership_category_ms", format_double_map(dynamic_profile_time_by_category)},
-            {"is_cold_run", metrics.is_cold_run ? "true" : "false"},
             {"is_full_dataset", metrics.is_full_dataset ? "true" : "false"},
             {"N_total", std::to_string(context.local.public_input.N_total)},
             {"G_batch", std::to_string(context.local.public_input.G_batch)},
@@ -627,7 +621,6 @@ namespace gatzk::protocol
             {"quotient_t_N_ms", format_double(metrics.quotient_t_n_ms)},
             {"quotient_public_eval_ms", format_double(metrics.quotient_public_eval_ms)},
             {"quotient_commitment_ms", format_double(metrics.quotient_commitment_ms)},
-            {"quotient_bundle_pack_ms", format_double(metrics.quotient_bundle_pack_ms)},
             {"quotient_fold_prepare_ms", format_double(metrics.quotient_fold_prepare_ms)},
             {"quotient_copy_convert_ms", format_double(metrics.quotient_copy_convert_ms)},
             {"srs_prepare_ms", format_double(metrics.srs_prepare_ms)},
@@ -711,8 +704,9 @@ namespace gatzk::protocol
             {"verify_metadata_ms", format_double(metrics.verify_metadata_ms)},
             {"verify_transcript_ms", format_double(metrics.verify_transcript_ms)},
             {"verify_domain_opening_ms", format_double(metrics.verify_domain_opening_ms)},
+            {"verify_point_group_registry_ms", format_double(metrics.verify_point_group_registry_ms)},
             {"verify_quotient_ms", format_double(metrics.verify_quotient_ms)},
-            {"verify_external_fold_ms", format_double(metrics.verify_external_fold_ms)},
+            {"verify_external_opening_ms", format_double(metrics.verify_external_opening_ms)},
             {"verify_misc_ms", format_double(metrics.verify_misc_ms)},
             {"verify_accounted_ms", format_double(metrics.verify_accounted_ms)},
             {"verify_accounting_gap_ms", format_double(metrics.verify_accounting_gap_ms)},

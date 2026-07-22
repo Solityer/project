@@ -46,6 +46,7 @@ set(GATZK_SOURCES
     src/model/gat.cpp
     src/protocol/lookup.cpp
     src/protocol/challenges.cpp
+    src/protocol/opening_registry.cpp
     src/protocol/artifact_export.cpp
     src/protocol/prover.cpp
     src/protocol/proof_codec.cpp

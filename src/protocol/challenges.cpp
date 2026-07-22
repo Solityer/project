@@ -200,10 +200,10 @@ namespace gatzk::protocol
             push("J_qry_exp");
             push("R_exp");
             push("H_agg_pre");
-            push("Sum_flat");
+            push("Sum_flat"); // 注意力权重归一化分母
             push("H_agg_pre_flat");
-            push("H_agg_num_flat");
-            push("H_ELU_in_flat");
+            push("H_agg_num_flat"); // 整数特征聚合的分子
+            push("H_ELU_in_flat"); // 经过除法和舍入后进入ELU的整数
             push("H_agg_flat");
             push("Table_ELU");
             push("Query_ELU");
@@ -350,8 +350,8 @@ namespace gatzk::protocol
             labels.push_back(prefix + "_R_dst");
             labels.push_back(prefix + "_Y_pre_flat");
             labels.push_back(prefix + "_Sum_flat");
-            labels.push_back(prefix + "_Y_pre_field_flat");
-            labels.push_back(prefix + "_Y_agg_num_flat");
+            labels.push_back(prefix + "_Y_pre_field_flat"); // 聚合辅助值
+            labels.push_back(prefix + "_Y_agg_num_flat"); // 整数聚合分子
             labels.push_back(prefix + "_Bias_flat");
             labels.push_back(prefix + "_Y_flat");
         }
@@ -385,28 +385,21 @@ namespace gatzk::protocol
 
     // 统一构造会进入 transcript、proof metadata 与 run manifest 的公开元数据。
     // 这些字段既参与 verifier 重放，也会影响 proof_size_bytes 中被计入的字符串载荷。
-    PublicMetadata canonical_public_metadata(
-        const ProtocolContext &context,
-        bool compiler_artifact_already_validated)
+    PublicMetadata canonical_public_metadata(const ProtocolContext &context)
     {
         PublicMetadata metadata;
         metadata.protocol_name = "zkgat";
         metadata.proof_nonce.clear();
         metadata.proof_task = context.config.proof_task;
         metadata.srs_id = context.kzg.manifest.srs_id;
-        if (context.compiler_artifact == nullptr)
+        if (context.compiler_artifact == nullptr
+            || context.validated_compiler_artifact_identity
+                != context.compiler_artifact.get())
         {
             throw std::runtime_error(
-                "VerifierContext is missing the authenticated ProtocolCompilerArtifact");
+                "VerifierContext is missing the authenticated ProtocolCompilerArtifact identity");
         }
         const auto &compiler_artifact = *context.compiler_artifact;
-        std::string artifact_reason;
-        if (!compiler_artifact_already_validated
-            && !validate_protocol_compiler_artifact(
-                context, compiler_artifact, &artifact_reason))
-        {
-            throw std::runtime_error("invalid ProtocolCompilerArtifact: " + artifact_reason);
-        }
         metadata.protocol_schema_id = sha256_hex(compiler_artifact.protocol_canonical_bytes);
         metadata.instance_schema_hash = sha256_hex(compiler_artifact.instance_canonical_bytes);
         if (context.kzg.manifest.protocol_schema_id.empty()
@@ -983,66 +976,6 @@ namespace gatzk::protocol
             + "|C=" + std::to_string(class_count)
             + "|encoding=canonical-field-le32"
             + "|digest=" + canonical_output_digest(public_logits, node_count, class_count);
-    }
-
-    algebra::FieldElement derive_batch_opening_folding_challenge(
-        const PublicMetadata &metadata,
-        const std::string &group_id,
-        const std::vector<crypto::Commitment> &commitments,
-        const std::vector<algebra::FieldElement> &points,
-        const std::vector<std::vector<algebra::FieldElement>> &values)
-    {
-        if (commitments.empty() || points.empty() || values.size() != commitments.size())
-        {
-            throw std::runtime_error("invalid batch opening point-group shape");
-        }
-        crypto::Transcript transcript("zkgat-point-group-v1");
-        absorb_public_metadata(transcript, metadata);
-        absorb_text_scalar(transcript, "point_group.id", group_id);
-        transcript.absorb_scalar("point_group.commitment_count", algebra::FieldElement(commitments.size()));
-        transcript.absorb_scalar("point_group.point_count", algebra::FieldElement(points.size()));
-        for (std::size_t i = 0; i < commitments.size(); ++i)
-        {
-            if (values[i].size() != points.size())
-            {
-                throw std::runtime_error("invalid batch opening claimed-value shape");
-            }
-            absorb_text_scalar(transcript, "point_group.commitment_name." + std::to_string(i), commitments[i].name);
-            transcript.absorb_commitment("point_group.commitment." + std::to_string(i), commitments[i].point);
-        }
-        for (std::size_t point_index = 0; point_index < points.size(); ++point_index)
-        {
-            transcript.absorb_scalar("point_group.point." + std::to_string(point_index), points[point_index]);
-            for (std::size_t claim_index = 0; claim_index < commitments.size(); ++claim_index)
-            {
-                transcript.absorb_scalar(
-                    "point_group.value." + std::to_string(point_index) + "." + std::to_string(claim_index),
-                    values[claim_index][point_index]);
-            }
-        }
-        return transcript.challenge("point_group.rho");
-    }
-
-    algebra::FieldElement derive_external_opening_folding_challenge(
-        const PublicMetadata &metadata,
-        const std::vector<std::pair<crypto::Commitment, algebra::FieldElement>> &claims,
-        const std::vector<algebra::FieldElement> &points)
-    {
-        if (claims.empty() || claims.size() != points.size())
-        {
-            throw std::runtime_error("invalid external point-group shape");
-        }
-        crypto::Transcript transcript("zkgat-external-point-group-v1");
-        absorb_public_metadata(transcript, metadata);
-        transcript.absorb_scalar("external_group.claim_count", algebra::FieldElement(claims.size()));
-        for (std::size_t i = 0; i < claims.size(); ++i)
-        {
-            absorb_text_scalar(transcript, "external_group.commitment_name." + std::to_string(i), claims[i].first.name);
-            transcript.absorb_commitment("external_group.commitment." + std::to_string(i), claims[i].first.point);
-            transcript.absorb_scalar("external_group.point." + std::to_string(i), points[i]);
-            transcript.absorb_scalar("external_group.value." + std::to_string(i), claims[i].second);
-        }
-        return transcript.challenge("external_group.rho");
     }
 
     std::vector<std::string> dynamic_commitment_labels(const ProtocolContext &context)

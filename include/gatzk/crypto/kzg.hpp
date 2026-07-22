@@ -147,13 +147,6 @@ namespace gatzk::crypto
     // 序列化大小直接参与proof_size_bytes统计
     std::size_t serialized_size(const Commitment& commitment);
 
-    struct OpeningProof
-    {
-        std::vector<G1Point> witnesses;
-    };
-
-    std::size_t serialized_size(const OpeningProof& proof);
-
     class KZG
     {
     public:
@@ -175,7 +168,11 @@ namespace gatzk::crypto
             const algebra::FieldElement& value,
             const KZGKeyPair& key);
         // 对单个多项式做正式承诺。
-        static Commitment commit(const std::string& name, const algebra::Polynomial& polynomial, const KZGKeyPair& key);
+        static Commitment commit(
+            const std::string& name,
+            const algebra::Polynomial& polynomial,
+            const KZGKeyPair& key,
+            CommitObjectProfile* profile = nullptr);
         // 对一批常数多项式做正式 SRS 承诺。
         static std::vector<Commitment> commit_constant_batch(
             const std::vector<std::pair<std::string, algebra::FieldElement>>& named_values,
@@ -213,43 +210,28 @@ namespace gatzk::crypto
             const std::string& shifted_name,
             std::size_t configured_degree,
             const algebra::FieldElement& delta,
-            const KZGKeyPair& key);
+            const KZGKeyPair& key,
+            CommitObjectProfile* profile = nullptr);
 
-        // 对同一域 opening bundle 中的多列做折叠 opening。
-        static OpeningProof open_batch(
+        // Open exactly one canonical point group.  Every distinct evaluation
+        // point has an independently derived, non-zero folding challenge.
+        static G1Point open_point_group(
             const std::vector<Commitment>& commitments,
-            const std::vector<algebra::FieldElement>& points,
-            const std::vector<std::vector<algebra::FieldElement>>& claimed_values,
+            const algebra::FieldElement& point,
+            const std::vector<algebra::FieldElement>& claimed_values,
             const algebra::FieldElement& folding_challenge,
             const KZGKeyPair& key,
             BatchOpeningProfile* profile = nullptr,
             BatchOpeningClaimValidation claim_validation =
                 BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials);
 
-        // verifier 侧复验 `open_batch` 生成的见证。
-        static bool verify_batch(
+        // Verify exactly one canonical point group and its single witness.
+        static bool verify_point_group(
             const std::vector<Commitment>& commitments,
-            const std::vector<algebra::FieldElement>& points,
-            const std::vector<std::vector<algebra::FieldElement>>& claimed_values,
+            const algebra::FieldElement& point,
+            const std::vector<algebra::FieldElement>& claimed_values,
             const algebra::FieldElement& folding_challenge,
-            const OpeningProof& proof,
-            const KZGVerifierKey& vk);
-
-        // 对 external evaluation 列做全局 point-grouped 折叠 opening。
-        static OpeningProof open_external_fold(
-            const std::vector<std::pair<Commitment, algebra::FieldElement>>& commitments_and_values,
-            const std::vector<algebra::FieldElement>& points,
-            const algebra::FieldElement& folding_challenge,
-            const KZGKeyPair& key,
-            BatchOpeningClaimValidation claim_validation =
-                BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials);
-
-        // verifier 侧复验 external fold opening。
-        static bool verify_external_fold(
-            const std::vector<std::pair<Commitment, algebra::FieldElement>>& commitments_and_values,
-            const std::vector<algebra::FieldElement>& points,
-            const algebra::FieldElement& folding_challenge,
-            const OpeningProof& proof,
+            const G1Point& witness,
             const KZGVerifierKey& vk);
 
         // Verify that a proof-local model polynomial differs from its long-term

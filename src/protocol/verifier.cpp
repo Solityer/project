@@ -1,6 +1,7 @@
 #include "gatzk/protocol/verifier.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <future>
 #include <memory>
@@ -18,6 +19,7 @@
 #include "gatzk/algebra/eval_backend.hpp"
 #include "gatzk/data/loader.hpp"
 #include "gatzk/protocol/challenges.hpp"
+#include "gatzk/protocol/opening_registry.hpp"
 #include "gatzk/protocol/quotients.hpp"
 #include "gatzk/protocol/schema.hpp"
 #include "gatzk/util/logging.hpp"
@@ -809,14 +811,6 @@ namespace gatzk::protocol
         };
 
 
-        struct BundleVerificationInput
-        {
-            const DomainOpeningBundle *bundle = nullptr;
-            FieldElement folding_challenge = FieldElement::zero();
-            std::vector<Commitment> commitments;
-            std::vector<std::vector<FieldElement>> values;
-        };
-
         struct IndexedBundleView
         {
             const DomainOpeningBundle *bundle = nullptr;
@@ -1470,13 +1464,18 @@ namespace gatzk::protocol
                         const auto y_rel = proof.challenges.at(
                             route.challenge_label);
                         append_unique_opening(
-                            "W_ext:" + y_rel.to_string());
+                            opening_group_reference(
+                                context, proof.challenges, y_rel));
                         append_unique_opening(
-                            "W_ext:"
-                            + (y_rel + route.terminal_delta).to_string());
+                            opening_group_reference(
+                                context,
+                                proof.challenges,
+                                y_rel + route.terminal_delta));
                         append_unique_opening(
-                            "W_ext:"
-                            + route.node_terminal_point.to_string());
+                            opening_group_reference(
+                                context,
+                                proof.challenges,
+                                route.node_terminal_point));
                     }
                     for (const auto &aggregation :
                          subproof.relation_meta.aggregation_relations)
@@ -1488,13 +1487,18 @@ namespace gatzk::protocol
                             const auto y_rel = proof.challenges.at(
                                 route->terminal_challenge_label);
                             append_unique_opening(
-                                "W_ext:" + y_rel.to_string());
+                                opening_group_reference(
+                                    context, proof.challenges, y_rel));
                             append_unique_opening(
-                                "W_ext:"
-                                + (y_rel + route->terminal_delta).to_string());
+                                opening_group_reference(
+                                    context,
+                                    proof.challenges,
+                                    y_rel + route->terminal_delta));
                             append_unique_opening(
-                                "W_ext:"
-                                + route->node_terminal_point.to_string());
+                                opening_group_reference(
+                                    context,
+                                    proof.challenges,
+                                    route->node_terminal_point));
                         }
                     }
                     if (!subproof.relation_meta.canonical_matrices.empty())
@@ -1741,9 +1745,7 @@ namespace gatzk::protocol
 
         PublicMetadata build_public_metadata(const ProtocolContext &context)
         {
-            // verify() validates this immutable artifact immediately before
-            // rebuilding metadata, so do not repeat the full compiler rebuild.
-            return canonical_public_metadata(context, true);
+            return canonical_public_metadata(context);
         }
 
         bool metadata_matches(const PublicMetadata &lhs, const PublicMetadata &rhs)
@@ -2059,17 +2061,11 @@ namespace gatzk::protocol
         {
             return fail("removed_single_output_compatibility_protocol");
         }
-        if (context.compiler_artifact == nullptr)
+        if (context.compiler_artifact == nullptr
+            || context.validated_compiler_artifact_identity
+                != context.compiler_artifact.get())
         {
-            return fail("missing_protocol_compiler_artifact");
-        }
-        std::string compiler_artifact_reason;
-        if (!validate_protocol_compiler_artifact(
-                context,
-                *context.compiler_artifact,
-                &compiler_artifact_reason))
-        {
-            return fail("protocol_compiler_artifact:" + compiler_artifact_reason);
+            return fail("missing_or_swapped_protocol_compiler_artifact");
         }
         try
         {
@@ -2190,13 +2186,18 @@ namespace gatzk::protocol
                     const auto route_y = challenges.at(
                         route.challenge_label);
                     append_unique_reference(
-                        "W_ext:" + route_y.to_string());
+                        opening_group_reference(
+                            context, challenges, route_y));
                     append_unique_reference(
-                        "W_ext:"
-                        + (route_y + route.terminal_delta).to_string());
+                        opening_group_reference(
+                            context,
+                            challenges,
+                            route_y + route.terminal_delta));
                     append_unique_reference(
-                        "W_ext:"
-                        + route.node_terminal_point.to_string());
+                        opening_group_reference(
+                            context,
+                            challenges,
+                            route.node_terminal_point));
                 }
                 for (const auto &aggregation :
                      subproof_it->relation_meta.aggregation_relations)
@@ -2208,21 +2209,29 @@ namespace gatzk::protocol
                         const auto aggregation_y = challenges.at(
                             route->terminal_challenge_label);
                         append_unique_reference(
-                            "W_ext:" + aggregation_y.to_string());
+                            opening_group_reference(
+                                context, challenges, aggregation_y));
                         append_unique_reference(
-                            "W_ext:"
-                            + (aggregation_y + route->terminal_delta)
-                                  .to_string());
+                            opening_group_reference(
+                                context,
+                                challenges,
+                                aggregation_y + route->terminal_delta));
                         append_unique_reference(
-                            "W_ext:"
-                            + route->node_terminal_point.to_string());
+                            opening_group_reference(
+                                context,
+                                challenges,
+                                route->node_terminal_point));
                     }
                 }
                 if (relation.configured_degrees.empty())
                 {
-                    append_unique_reference("W_ext:" + y_rel.to_string());
+                    append_unique_reference(opening_group_reference(
+                        context, challenges, y_rel));
                     append_unique_reference(
-                        "W_ext:" + relation.canonical_points.front().to_string());
+                        opening_group_reference(
+                            context,
+                            challenges,
+                            relation.canonical_points.front()));
                 }
                 else
                 {
@@ -2230,7 +2239,8 @@ namespace gatzk::protocol
                              y_rel,
                              y_rel + relation.deltas.at(1),
                              relation.canonical_points.at(0)})
-                        append_unique_reference("W_ext:" + point.to_string());
+                        append_unique_reference(opening_group_reference(
+                            context, challenges, point));
                 }
                 if (subproof_it->relation_meta
                         .coefficient_basis_relations.size() != 1)
@@ -2241,12 +2251,16 @@ namespace gatzk::protocol
                     basis.gamma_challenge_label);
                 const auto basis_y = challenges.at(
                     basis.relation_challenge_label);
-                append_unique_reference("W_ext:" + basis_y.to_string());
+                append_unique_reference(opening_group_reference(
+                    context, challenges, basis_y));
                 for (const auto &chunk : basis.chunks)
                     append_unique_reference(
-                        "W_ext:"
-                        + (basis_y + chunk.terminal_point - gamma).to_string());
-                append_unique_reference("W_ext:" + gamma.to_string());
+                        opening_group_reference(
+                            context,
+                            challenges,
+                            basis_y + chunk.terminal_point - gamma));
+                append_unique_reference(opening_group_reference(
+                    context, challenges, gamma));
                 for (const auto &[domain, point, omega] : std::vector<std::tuple<
                          std::string, FieldElement, FieldElement>>{
                          {"C", challenges.at("z_C"), context.domains.c->omega},
@@ -2366,8 +2380,8 @@ namespace gatzk::protocol
                 }
                 return false;
             };
-            std::vector<BundleVerificationInput> bundle_inputs(
-                bundle_specs.size());
+            const auto point_group_registry_start = Clock::now();
+            StandardPointGroupRegistry opening_registry;
             for (std::size_t spec_index = 0;
                  spec_index < bundle_specs.size(); ++spec_index)
             {
@@ -2386,10 +2400,8 @@ namespace gatzk::protocol
                 {
                     return bundle_fail(spec, "points");
                 }
-                auto &input = bundle_inputs[spec_index];
-                input.bundle = &bundle;
-                input.commitments.reserve(labels.size());
-                input.values.reserve(labels.size());
+                std::vector<Commitment> commitments;
+                commitments.reserve(labels.size());
                 const auto bundle_lookup_start = Clock::now();
                 for (std::size_t i = 0; i < labels.size(); ++i)
                 {
@@ -2402,12 +2414,12 @@ namespace gatzk::protocol
                     }
                     if (dynamic_commitments.contains(labels[i]))
                     {
-                        input.commitments.push_back(
+                        commitments.push_back(
                             dynamic_commitments.at(labels[i]));
                     }
                     else if (quotient_commitments.contains(labels[i]))
                     {
-                        input.commitments.push_back(
+                        commitments.push_back(
                             quotient_commitments.at(labels[i]));
                     }
                     else
@@ -2415,15 +2427,12 @@ namespace gatzk::protocol
                         return bundle_fail(
                             spec, "missing_commitment:" + labels[i]);
                     }
-                    input.values.push_back(bundle.values[i].second);
                 }
-                input.folding_challenge =
-                    derive_batch_opening_folding_challenge(
-                        proof.public_metadata,
-                        spec.v_name,
-                        input.commitments,
-                        bundle.points,
-                        input.values);
+                add_domain_bundle_claims(
+                    opening_registry,
+                    spec.bundle_name,
+                    bundle,
+                    commitments);
                 if (metrics != nullptr)
                 {
                     metrics->verify_bundle_lookup_ms += elapsed_ms(bundle_lookup_start, Clock::now());
@@ -2871,69 +2880,147 @@ namespace gatzk::protocol
                 dynamic_commitments.at("P_Y"),
                 evaluate_coefficient_vector(proof.public_logits, output_binding.point));
             external_points.push_back(output_binding.point);
-            const auto external_fold_start = Clock::now();
-            if (!crypto::KZG::verify_external_fold(
-                    external_commitments,
-                    external_points,
-                    derive_external_opening_folding_challenge(
-                        proof.public_metadata,
-                        external_commitments,
-                        external_points),
-                    proof.external_proof,
-                    context.kzg.vk))
-            {
-                return fail("external_fold");
-            }
+            add_external_claims(
+                opening_registry,
+                external_commitments,
+                external_points,
+                proof.external_evaluation_kinds);
+            opening_registry.finalize();
+            const auto& point_groups = opening_registry.groups();
             if (metrics != nullptr)
             {
-                metrics->verify_external_fold_ms += elapsed_ms(external_fold_start, Clock::now());
+                metrics->verify_point_group_registry_ms += elapsed_ms(
+                    point_group_registry_start, Clock::now());
             }
-            std::vector<std::uint8_t> bundle_opening_results(
-                bundle_inputs.size(), 0);
-            std::vector<double> bundle_opening_elapsed_ms(
-                bundle_inputs.size(), 0.0);
-            const auto domain_opening_start = Clock::now();
-            std::vector<std::future<void>> bundle_opening_futures;
-            bundle_opening_futures.reserve(bundle_inputs.size());
-            for (std::size_t spec_index = 0;
-                 spec_index < bundle_inputs.size(); ++spec_index)
+            try
             {
-                bundle_opening_futures.push_back(std::async(
-                    std::launch::async,
-                    [&, spec_index]
-                    {
-                        const auto opening_start = Clock::now();
-                        const auto &input = bundle_inputs[spec_index];
-                        bundle_opening_results[spec_index] =
-                            crypto::KZG::verify_batch(
-                                input.commitments,
-                                input.bundle->points,
-                                input.values,
-                                input.folding_challenge,
-                                input.bundle->proof,
-                                context.kzg.vk)
-                            ? 1
-                            : 0;
-                        bundle_opening_elapsed_ms[spec_index] =
-                            elapsed_ms(opening_start, Clock::now());
-                    }));
+                require_opening_layout(proof.opening_groups, point_groups);
             }
-            for (auto &future : bundle_opening_futures) future.get();
-            if (metrics != nullptr)
+            catch (const std::exception&)
             {
-                metrics->verify_domain_opening_ms += elapsed_ms(
-                    domain_opening_start, Clock::now());
+                return fail("point_group_layout");
             }
-            for (std::size_t spec_index = 0;
-                 spec_index < bundle_specs.size(); ++spec_index)
+
+            std::vector<std::uint8_t> group_results(point_groups.size(), 0);
+            std::vector<double> group_elapsed_ms(point_groups.size(), 0.0);
+            const auto verify_group_indices = [&]
+            (const std::vector<std::size_t>& indices)
             {
-                if (bundle_opening_results[spec_index] == 0)
+                if (indices.empty()) return 0.0;
+                const auto phase_start = Clock::now();
+                const auto hardware_workers = std::max<unsigned>(
+                    1, std::thread::hardware_concurrency());
+                const auto worker_count = std::min<std::size_t>(
+                    indices.size(), std::min<std::size_t>(
+                        16, hardware_workers));
+                std::atomic<std::size_t> next{0};
+                std::vector<std::future<void>> futures;
+                futures.reserve(worker_count);
+                for (std::size_t worker = 0; worker < worker_count; ++worker)
                 {
-                    const auto &spec = bundle_specs[spec_index];
-                    return fail(
-                        "bundle_verify:"
-                        + spec.bundle_name + ":kzg_batch");
+                    futures.push_back(std::async(
+                        std::launch::async,
+                        [&]
+                        {
+                            while (true)
+                            {
+                                const auto position = next.fetch_add(1);
+                                if (position >= indices.size()) break;
+                                const auto group_index = indices[position];
+                                const auto& group = point_groups[group_index];
+                                std::vector<Commitment> commitments;
+                                std::vector<FieldElement> values;
+                                commitments.reserve(group.claims.size());
+                                values.reserve(group.claims.size());
+                                for (const auto& claim : group.claims)
+                                {
+                                    commitments.push_back(claim.commitment);
+                                    values.push_back(claim.value);
+                                }
+                                const auto local_start = Clock::now();
+                                group_results[group_index] =
+                                    crypto::KZG::verify_point_group(
+                                        commitments,
+                                        group.point,
+                                        values,
+                                        derive_point_group_challenge(
+                                            proof.public_metadata, group),
+                                        proof.opening_groups[group_index].witness,
+                                        context.kzg.vk)
+                                    ? 1
+                                    : 0;
+                                group_elapsed_ms[group_index] = elapsed_ms(
+                                    local_start, Clock::now());
+                            }
+                        }));
                 }
+                for (auto& future : futures) future.get();
+                return elapsed_ms(phase_start, Clock::now());
+            };
+
+            std::vector<std::size_t> domain_group_indices;
+            std::vector<std::size_t> external_group_indices;
+            for (std::size_t i = 0; i < point_groups.size(); ++i)
+            {
+                (point_groups[i].owner_block == "W_ext"
+                    ? external_group_indices
+                    : domain_group_indices).push_back(i);
+            }
+            double domain_opening_wall_ms = 0.0;
+            double external_opening_wall_ms = 0.0;
+            try
+            {
+                std::vector<std::size_t> all_group_indices;
+                all_group_indices.reserve(point_groups.size());
+                for (std::size_t i = 0; i < point_groups.size(); ++i)
+                    all_group_indices.push_back(i);
+                const auto point_group_wall_ms = verify_group_indices(
+                    all_group_indices);
+                double domain_group_cpu_ms = 0.0;
+                double external_group_cpu_ms = 0.0;
+                for (const auto group_index : domain_group_indices)
+                    domain_group_cpu_ms += group_elapsed_ms[group_index];
+                for (const auto group_index : external_group_indices)
+                    external_group_cpu_ms += group_elapsed_ms[group_index];
+                const auto group_cpu_ms =
+                    domain_group_cpu_ms + external_group_cpu_ms;
+                if (group_cpu_ms > 0.0)
+                {
+                    domain_opening_wall_ms = point_group_wall_ms
+                        * domain_group_cpu_ms / group_cpu_ms;
+                    external_opening_wall_ms =
+                        point_group_wall_ms - domain_opening_wall_ms;
+                }
+                else
+                {
+                    domain_opening_wall_ms = point_group_wall_ms;
+                }
+            }
+            catch (const std::exception&)
+            {
+                return fail("point_group_verification_exception");
+            }
+            const auto failed_group = std::find(
+                group_results.begin(), group_results.end(), 0);
+            if (failed_group != group_results.end())
+            {
+                return fail(
+                    "point_group_pairing:"
+                    + point_groups[static_cast<std::size_t>(std::distance(
+                        group_results.begin(), failed_group))].group_id);
+            }
+            std::unordered_map<std::string, double>
+                domain_opening_elapsed_by_name;
+            for (const auto group_index : domain_group_indices)
+            {
+                domain_opening_elapsed_by_name[
+                    point_groups[group_index].owner_block.substr(9)]
+                    += group_elapsed_ms[group_index];
+            }
+            if (metrics != nullptr)
+            {
+                metrics->verify_domain_opening_ms += domain_opening_wall_ms;
+                metrics->verify_external_opening_ms += external_opening_wall_ms;
             }
             for (std::size_t spec_index = 0;
                  spec_index < bundle_specs.size(); ++spec_index)
@@ -2949,7 +3036,8 @@ namespace gatzk::protocol
                     const auto elapsed = elapsed_ms(bundle_start, Clock::now());
                     if (auto *metric = verify_domain_metric(metrics, spec.bundle_name); metric != nullptr)
                     {
-                        *metric += bundle_opening_elapsed_ms[spec_index]
+                        *metric += domain_opening_elapsed_by_name[
+                                spec.bundle_name]
                             + elapsed;
                     }
                 }

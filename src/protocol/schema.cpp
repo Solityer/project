@@ -1043,6 +1043,44 @@ namespace gatzk::protocol
         return out;
     }
 
+    std::string opening_group_reference(
+        const ProtocolContext &context,
+        const std::map<std::string, algebra::FieldElement> &challenges,
+        const algebra::FieldElement &point)
+    {
+        struct DomainPointSpec
+        {
+            const char* domain;
+            const char* challenge;
+            std::shared_ptr<algebra::RootOfUnityDomain> root_domain;
+        };
+        const std::vector<DomainPointSpec> domains = {
+            {"FH", "z_FH", context.domains.fh},
+            {"edge", "z_edge", context.domains.edge},
+            {"in", "z_in", context.domains.in},
+            {"d_h", "z_d_h", context.domains.d},
+            {"cat", "z_cat", context.domains.cat},
+            {"C", "z_C", context.domains.c},
+            {"N", "z_N", context.domains.n},
+        };
+        for (const auto& spec : domains)
+        {
+            const auto challenge = challenges.find(spec.challenge);
+            if (challenge == challenges.end() || spec.root_domain == nullptr)
+            {
+                throw std::runtime_error(
+                    "point-group owner lookup is missing domain challenge");
+            }
+            if (point == challenge->second
+                || point == challenge->second * spec.root_domain->omega)
+            {
+                return "Open_dom:" + std::string(spec.domain) + ":"
+                    + point.to_string();
+            }
+        }
+        return "W_ext:" + point.to_string();
+    }
+
     std::vector<MetadataReference> route_opening_references(
         const ProtocolContext &context,
         const std::map<std::string, algebra::FieldElement> &challenges)
@@ -1056,12 +1094,14 @@ namespace gatzk::protocol
                 throw std::runtime_error(
                     "S_route is missing terminal challenge: "
                     + challenge_label);
-            references.push_back({"W_ext:" + challenge->second.to_string()});
-            references.push_back({
-                "W_ext:"
-                + (challenge->second + route.terminal_delta).to_string()});
-            references.push_back({
-                "W_ext:" + route.node_terminal_point.to_string()});
+            references.push_back({opening_group_reference(
+                context, challenges, challenge->second)});
+            references.push_back({opening_group_reference(
+                context,
+                challenges,
+                challenge->second + route.terminal_delta)});
+            references.push_back({opening_group_reference(
+                context, challenges, route.node_terminal_point)});
         };
 
         for (const auto &binding : build_binding_relation_metadata(context))
@@ -1666,13 +1706,14 @@ namespace gatzk::protocol
         {
             artifact.proof_blocks = proof_block_order();
             artifact.serializer_tag_table = {
-                "wire:v2:type-tagged-length-prefixed:no-trailing-bytes"
+                "wire:v3:type-tagged-length-prefixed:no-trailing-bytes"
                 "+M_pub:PublicMetadata[25]+Y_public",
                 "Com_dyn:Commitment[]", "S_route:MetadataReference[]",
                 "Eval_ext:(PublicValue|MaskedPrivateValue)[]",
                 "Eval_dom:(PublicValue|MaskedPrivateValue)[]",
-                "Com_quot:Commitment[]", "Open_dom:OpeningWitness[]",
-                "W_ext:OpeningWitness[]",
+                "Com_quot:Commitment[]",
+                "Open_dom:PointGroupOwner(group_id+point+witness)[]",
+                "W_ext:PointGroupOwner(group_id+point+witness)[]",
                 "Pi_bind:RelationMeta(indexed_view+KZGShiftRelationMeta)"
                 "+Com_modelReblind+Com_view(ref|commitment)+Com_viewLogUp"
                 "+Com_agg+Com_basis+Com_CRPC+Com_rel+Eval_bind+OpenRef_bind",
@@ -1690,18 +1731,26 @@ namespace gatzk::protocol
                 "signed_division_limb_lookups", "public_output_binding",
                 "model_and_relation_binding_registry", "alpha_quot",
                 "seven_quotient_commitments", "fourteen_domain_points",
-                "point_group_folding", "external_group_folding",
+                "standard_point_group_rho_per_distinct_point",
             };
             artifact.point_group_registry_template = {
-                "FH:z,z_omega", "edge:z,z_omega", "in:z,z_omega",
-                "d_h:z,z_omega", "cat:z,z_omega", "C:z,z_omega",
-                "N:z,z_omega", "external:canonical_claim_order",
-                "public_output:single_owner",
+                "global:one_group_owner_witness_per_canonical_field_point",
+                "domain_points:FH,edge,in,d_h,cat,C,N:z,z_omega:all_distinct",
+                "external_route_binding_at_domain_point:merge_into_Open_dom",
+                "non_domain_point:owner=W_ext",
+                "same_commitment_point_equal_value:deduplicate",
+                "same_commitment_point_conflicting_value:reject_before_rho",
+                "rho:independent_nonzero_per_distinct_point",
+                "rho_tuple:claim_id+object_id+commitment_reference"
+                "+commitment_point+evaluation_kind+claim_role+visibility_tag"
+                "+value_type+value_reference_id+resolved_canonical_value",
+                "canonical_order:field_point_then_full_claim_tuple",
+                "route_and_Pi_bind:MetadataReference_only",
+                "public_output:single_group_owner",
             };
             artifact.verifier_equation_registry = {
                 "metadata_and_public_statement_exact_match",
-                "seven_global_point_group_openings",
-                "external_standard_point_group_openings",
+                "global_standard_point_group_openings_one_equation_per_point",
                 "seven_masked_quotient_identities",
                 "shifted_kzg_model_divisibility",
                 "indexed_view_logup",
@@ -2794,6 +2843,45 @@ namespace gatzk::protocol
             "|malicious-degree=global-D_max",
             d_max, 0, 1);
 
+        const auto opening_schema_claim_count =
+            static_cast<std::size_t>(std::count_if(
+                artifact.proof_schema.entries.begin(),
+                artifact.proof_schema.entries.end(),
+                [](const ProofSchemaEntry &entry)
+                { return entry.enters_opening; }));
+        // The compiler registers a conservative instance-bound envelope for
+        // external/route/binding claims.  Runtime grouping can only merge or
+        // deduplicate this set, never exceed it.
+        const auto relation_family_envelope = checked_add(
+            artifact.proof_schema.entries.size(),
+            checked_add(
+                context.model.hidden_heads.size(),
+                checked_add(
+                    context.model.hidden_layers.size(),
+                    context.model.output_layer.heads.size(),
+                    "point-group-relation-family"),
+                "point-group-relation-family"),
+            "point-group-relation-family");
+        const auto relation_envelope = checked_add(
+            std::size_t{1},
+            checked_mul(
+                std::size_t{16}, relation_family_envelope,
+                "point-group-relation-envelope"),
+            "point-group-relation-envelope");
+        const auto external_claim_count = checked_add(
+            checked_mul(
+                std::size_t{4}, opening_schema_claim_count,
+                "external-point-group-schema-envelope"),
+            relation_envelope,
+            "external-point-group-claim-envelope");
+        const auto max_group_claim_count = checked_add(
+            opening_schema_claim_count,
+            external_claim_count,
+            "global-point-group-claim-envelope");
+        if (opening_schema_claim_count < 2 || external_claim_count < 2)
+            throw std::runtime_error(
+                "standard point-group claim envelope is too small");
+
         for (const auto &[group_id, domain_name] :
              std::vector<std::pair<std::string, std::string>>{
                  {"FH", context.domains.fh->name},
@@ -2804,68 +2892,55 @@ namespace gatzk::protocol
                  {"C", context.domains.c->name},
                  {"N", context.domains.n->name}})
         {
-            const auto claim_count = static_cast<std::size_t>(std::count_if(
-                artifact.proof_schema.entries.begin(),
-                artifact.proof_schema.entries.end(),
-                [&](const ProofSchemaEntry &entry)
-                { return entry.enters_opening && entry.domain == domain_name; }));
-            if (claim_count < 2)
+            const auto domain_claim_count =
+                static_cast<std::size_t>(std::count_if(
+                    artifact.proof_schema.entries.begin(),
+                    artifact.proof_schema.entries.end(),
+                    [&](const ProofSchemaEntry &entry)
+                    {
+                        return entry.enters_opening
+                            && entry.domain == domain_name;
+                    }));
+            if (domain_claim_count < 2)
                 throw std::runtime_error(
-                    "point-group registry has fewer than two claims: " + group_id);
-            add_random_identity(
-                "point-group-fold:" + group_id,
-                "point_group.rho@" + group_id,
-                "point_group_folding",
-                "sum_i(rho^i*(P_i(X)-v_i))"
-                "|group-id=" + group_id
-                + "|canonical-claim-count=" + std::to_string(claim_count)
-                + "|degree-in-rho=claim-count-1",
-                claim_count - 1, 0, 1);
+                    "point-group registry has fewer than two domain claims: "
+                    + group_id);
+            for (std::size_t point_index = 0; point_index < 2; ++point_index)
+            {
+                add_random_identity(
+                    "point-group-fold:" + group_id + ":"
+                        + std::to_string(point_index),
+                    "point_group.rho@Open_dom:" + group_id + ":"
+                        + std::to_string(point_index),
+                    "standard_point_group_folding",
+                    "sum_i(rho_z^i*(P_i(z)-v_i))"
+                    "|one-independent-nonzero-rho-per-point"
+                    "|full-canonical-claim-tuple"
+                    "|external-collision-merges-into-domain-owner"
+                    "|domain=" + group_id
+                    + "|point-index=" + std::to_string(point_index)
+                    + "|honest-domain-claim-count="
+                        + std::to_string(domain_claim_count)
+                    + "|max-group-claim-count="
+                        + std::to_string(max_group_claim_count),
+                    max_group_claim_count - 1, 0, 1);
+            }
         }
-        std::size_t external_claim_count =
-            checked_mul(std::size_t{6}, context.model.hidden_heads.size(),
-                "external-hidden-claims");
-        external_claim_count = checked_add(
-            external_claim_count, context.model.hidden_layers.size(),
-            "external-concat-claims");
-        external_claim_count = checked_add(
-            external_claim_count,
-            checked_mul(std::size_t{6},
-                context.model.output_layer.heads.size(),
-                "external-output-claims"),
-            "external-output-claim-total");
-        // P_Y_lin/P_Y at y_out, one terminal relation plus public
-        // multiplicity binding per output head, and P_Y at public_output.z.
-        external_claim_count = checked_add(
-            external_claim_count, std::size_t{3},
-            "external-public-output-claims");
-        std::size_t external_bias_claims = 0;
-        const auto bias_c_terminal = context.domains.c->point_at(
-            context.local.num_classes);
-        const auto bias_edge_terminal = context.domains.edge->point_at(
-            checked_mul(context.local.num_nodes, context.local.num_classes,
-                "output-bias-view-length"));
-        for (std::size_t head = 0;
-             head < context.model.output_layer.heads.size(); ++head)
-        {
-            external_bias_claims = checked_add(
-                external_bias_claims,
-                bias_c_terminal == bias_edge_terminal ? 2 : 4,
-                "external-bias-relation-claims");
-        }
-        external_claim_count = checked_add(
-            external_claim_count, external_bias_claims,
-            "external-bias-claim-total");
-        if (external_claim_count < 2)
-            throw std::runtime_error(
-                "external point-group registry has fewer than two claims");
         add_random_identity(
-            "external-point-group-fold", "external_group.rho",
-            "external_group_folding",
-            "sum_i(rho^i*(P_i(X_i)-v_i))"
-            "|canonical-claim-count=" + std::to_string(external_claim_count)
-            + "|degree-in-rho=claim-count-1",
-            external_claim_count - 1, 0, 1);
+            "point-group-fold:W_ext-family",
+            "point_group.rho@W_ext:each-distinct-point",
+            "standard_point_group_folding",
+            "sum_i(rho_z^i*(P_i(z)-v_i))"
+            "|one-independent-nonzero-rho-per-point"
+            "|full-canonical-claim-tuple"
+            "|same-commitment-point-dedup-conflict-reject"
+            "|max-group-claim-count="
+                + std::to_string(max_group_claim_count)
+            + "|max-distinct-external-points="
+                + std::to_string(external_claim_count),
+            max_group_claim_count - 1,
+            0,
+            external_claim_count);
 
         ExactInteger epsilon_abort_numerator(0);
         for (const auto &entry : artifact.random_identity_ledger)

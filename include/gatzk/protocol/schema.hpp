@@ -147,6 +147,11 @@ std::vector<BindingRelationMeta> build_binding_relation_metadata(const ProtocolC
 std::vector<MetadataReference> route_opening_references(
     const ProtocolContext& context,
     const std::map<std::string, algebra::FieldElement>& challenges);
+
+std::string opening_group_reference(
+    const ProtocolContext& context,
+    const std::map<std::string, algebra::FieldElement>& challenges,
+    const algebra::FieldElement& point);
 const KZGShiftRelationMeta* find_unique_shift_relation_by_kind(
     const BindingRelationMeta& metadata,
     std::string_view relation_kind);

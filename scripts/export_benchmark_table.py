@@ -157,7 +157,8 @@ def status_label(status: object) -> str:
 
 def write_outputs(output_dir: pathlib.Path, mode: str, rows: List[Dict[str, object]]) -> None:
     # latest.json / latest.csv / summary.md 必须从同一批 rows 同步导出，避免真源分叉。
-    # 其中 latest.json 保留机器可读的最小内部字段；latest.csv 与 summary.md 只展示正式四项指标。
+    # latest.json 保留机器可读的最小内部字段；latest.csv 与 summary.md
+    # 只展示三项正式时间和 canonical proof bytes 大小。
     output_dir.mkdir(parents=True, exist_ok=True)
 
     payload = {

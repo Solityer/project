@@ -4,11 +4,12 @@
 `GAT-ZKML-多层多头.md` 和 `PROJECT_CONTEXT_AND_EXECUTION_CONSTRAINTS.md`
 为准；`comparison/` 不属于主实验构建、测试或运行依赖。
 
-## 当前状态（2026-07-18）
+## 当前状态（2026-07-22）
 
 **协议实现处于候选冻结状态；第三阶段性能工程已重新打开，撤回“非全量范围已收敛”的结论。**
-当前 proof schema、transcript、proof wire format、parser 与 verifier 语义未因性能优化
-改变。当前正式性能基线标记为待重建；旧协议时代的性能预算和速度门槛不再参与
+当前 proof schema、transcript、proof wire format、parser 与 verifier 已统一为全局
+point-group opening：每个不同点独立派生非零 challenge，同点 claim 只对应一个 owner
+和一个 witness。当前正式性能基线标记为待重建；旧协议时代的性能预算和速度门槛不再参与
 运行有效性、恢复、正确性或安全性判断。第三阶段当前证据、回滚项和断点见
 [`PHASE3_PERFORMANCE_OPTIMIZATION.md`](PHASE3_PERFORMANCE_OPTIMIZATION.md)。此状态不代表
 第一阶段最终全量验收已通过，也不授权自动生成论文正式结果。
@@ -26,6 +27,12 @@ degree bound 和 schema 绑定。
 - verifier-only 路径只消费公开上下文、VK、proof 和公开 metadata，不读取 prover 私有状态。
 - 旧单输出协议仅保留 fail-closed 拒绝门，不存在兼容接受路径。
 - `proof_size_bytes` 是 strict canonical wire bytes 的精确长度，不包含 SRS、缓存、日志、checkpoint 或数据集。
+
+正式计时 schema 是 `exclusive_commit_prove_verify_v2`。`commitment_time_ms` 仅统计
+proof-specific commitment point 生成及必要同步；`prove_time_ms` 统计从 trace/witness
+生成到内存中 canonical serialization 的其余全部 prover 工作；`verify_time_ms` 从
+canonical bytes 的 strict parse 开始，到 verifier 接受或拒绝结束。三者互斥；上下文、
+SRS/PK/VK 加载、I/O、工件导出、审计和 runner 开销只进入 wall-time 对账。
 
 ## 代码结构与执行后端
 
@@ -66,16 +73,20 @@ cmake --build build_cuda --target gatzk_cuda_hotspots_stage_bench -j
 
 正式配置使用数据集专属 SRS id，不再依赖旧共享主 SRS：
 
-- `configs/cora_secure.cfg` → `cora_formal_srs_v1`（已生成并保留）；
-- `configs/ppi_representative_secure.cfg` → `ppi_representative_srs_v1`（最终验收前按需生成）；
-- `configs/ppi_secure.cfg` → `ppi_formal_srs_v1`；
-- `configs/citeseer_secure.cfg` → `citeseer_formal_srs_v1`；
-- `configs/pubmed_secure.cfg` → `pubmed_formal_srs_v1`；
-- `configs/ogbn_arxiv_secure.cfg` → `ogbn_arxiv_formal_srs_v1`。
+- `configs/cora_secure.cfg` → `cora_formal_srs_v2`；
+- `configs/ppi_representative_secure.cfg` → `ppi_representative_srs_v2`；
+- `configs/ppi_secure.cfg` → `ppi_formal_srs_v2`；
+- `configs/citeseer_secure.cfg` → `citeseer_formal_srs_v2`；
+- `configs/pubmed_secure.cfg` → `pubmed_formal_srs_v2`；
+- `configs/ogbn_arxiv_secure.cfg` → `ogbn_arxiv_formal_srs_v2`。
+
+这些 v2 正式 SRS 尚未生成；旧 v1 物料仍保留，但不再被任何正式配置引用，因而不能
+绕过新 opening schema 绑定。只有 `unit_security_srs_v1` 已按 setup-only 流程重生并与
+当前 schema、compiler artifact 和 manifest 一致。
 
 当前调度不生成 PPI 全量、Citeseer、Pubmed 或 ogbn-arxiv 大型 SRS，也不得运行五个
-数据集 × CPU/GPU 的十组正式实验。对应 envelope compiler artifact 可保留，但不是
-SRS 或正式实验结果。
+数据集 × CPU/GPU 的十组正式实验。旧 v1 envelope compiler artifact 已清理；需要生成
+v2 正式 SRS 时必须先按 setup-only compiler 流程重新产生，不能复用旧 schema 物料。
 
 ## 验证状态与后续顺序
 

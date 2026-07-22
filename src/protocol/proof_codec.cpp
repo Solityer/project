@@ -16,6 +16,7 @@
 
 #include "gatzk/crypto/curve.hpp"
 #include "gatzk/protocol/challenges.hpp"
+#include "gatzk/protocol/opening_registry.hpp"
 #include "gatzk/protocol/quotients.hpp"
 #include "gatzk/protocol/schema.hpp"
 
@@ -24,7 +25,7 @@ namespace gatzk::protocol
     namespace
     {
         constexpr std::array<std::uint8_t, 8> kMagic{'Z', 'K', 'G', 'A', 'T', 'P', 'F', '1'};
-        constexpr std::uint64_t kWireVersion = 2;
+        constexpr std::uint64_t kWireVersion = 3;
         constexpr std::uint64_t kMaxContainerItems = 1ULL << 24;
         constexpr std::uint64_t kMaxStringBytes = 1ULL << 20;
 
@@ -255,22 +256,55 @@ namespace gatzk::protocol
             fn(metadata.public_output);
         }
 
-        void write_opening(Writer& writer, const crypto::OpeningProof& proof)
+        void write_point_group_opening(
+            Writer& writer,
+            const PointGroupOpening& opening)
         {
-            writer.u64(proof.witnesses.size());
-            for (const auto& witness : proof.witnesses) writer.point(witness);
+            writer.string(opening.group_id);
+            writer.string(opening.owner_block);
+            writer.scalar(opening.point);
+            writer.point(opening.witness);
         }
 
-        crypto::OpeningProof read_opening(Reader& reader)
+        struct EncodedPointGroupOpening
         {
-            crypto::OpeningProof proof;
-            const auto count = reader.count("opening witnesses");
+            std::string group_id;
+            std::string owner_block;
+            algebra::FieldElement point = algebra::FieldElement::zero();
+            std::vector<std::uint8_t> witness_encoding;
+        };
+
+        EncodedPointGroupOpening read_encoded_point_group_opening(
+            Reader& reader)
+        {
+            return EncodedPointGroupOpening{
+                .group_id = reader.string(),
+                .owner_block = reader.string(),
+                .point = reader.scalar(),
+                .witness_encoding = reader.point_encoding(),
+            };
+        }
+
+        std::vector<PointGroupOpening> decode_point_group_openings(
+            std::vector<EncodedPointGroupOpening> encoded)
+        {
             std::vector<std::vector<std::uint8_t>> encodings;
-            encodings.reserve(count);
-            for (std::size_t i = 0; i < count; ++i)
-                encodings.push_back(reader.point_encoding());
-            proof.witnesses = decode_canonical_g1_batch(encodings);
-            return proof;
+            encodings.reserve(encoded.size());
+            for (const auto& opening : encoded)
+                encodings.push_back(opening.witness_encoding);
+            auto witnesses = decode_canonical_g1_batch(encodings);
+            std::vector<PointGroupOpening> openings;
+            openings.reserve(encoded.size());
+            for (std::size_t i = 0; i < encoded.size(); ++i)
+            {
+                openings.push_back(PointGroupOpening{
+                    .group_id = std::move(encoded[i].group_id),
+                    .owner_block = std::move(encoded[i].owner_block),
+                    .point = encoded[i].point,
+                    .witness = std::move(witnesses[i]),
+                });
+            }
+            return openings;
         }
 
         PayloadValueKind read_kind(Reader& reader)
@@ -387,16 +421,80 @@ namespace gatzk::protocol
             }
         }
 
-        void require_canonical_point_group_shape(
-            const std::vector<algebra::FieldElement>& points,
-            const crypto::OpeningProof& opening,
-            const char* label)
+        void require_structural_point_group_layout(const Proof& proof)
         {
+            std::unordered_set<std::string> unique_ids;
             std::unordered_set<std::string> unique_points;
-            for (const auto& point : points) unique_points.insert(point.to_string());
-            if (opening.witnesses.size() != unique_points.size())
+            std::unordered_set<std::string> expected_domain_ids;
+            for (const auto& [domain, bundle] : proof.domain_openings)
             {
-                throw std::runtime_error(std::string("proof parser non-canonical point-group witness count in ") + label);
+                for (const auto& point : bundle.points)
+                {
+                    expected_domain_ids.insert(point_group_id(
+                        "Open_dom:" + domain, point));
+                }
+            }
+            if (!std::is_sorted(
+                    proof.opening_groups.begin(),
+                    proof.opening_groups.end(),
+                    [](const PointGroupOpening& lhs,
+                       const PointGroupOpening& rhs)
+                    { return lhs.point.to_string() < rhs.point.to_string(); }))
+            {
+                throw std::runtime_error(
+                    "proof parser point groups are not in canonical point order");
+            }
+            for (const auto& opening : proof.opening_groups)
+            {
+                if (opening.group_id
+                        != point_group_id(opening.owner_block, opening.point)
+                    || !unique_ids.insert(opening.group_id).second
+                    || !unique_points.insert(opening.point.to_string()).second)
+                {
+                    throw std::runtime_error(
+                        "proof parser non-canonical or duplicate point group");
+                }
+                if (opening.owner_block.rfind("Open_dom:", 0) == 0)
+                {
+                    if (!expected_domain_ids.contains(opening.group_id))
+                    {
+                        throw std::runtime_error(
+                            "proof parser unregistered domain point-group owner");
+                    }
+                }
+                else if (opening.owner_block != "W_ext")
+                {
+                    throw std::runtime_error(
+                        "proof parser invalid point-group owner block");
+                }
+            }
+            for (const auto& [domain, bundle] : proof.domain_openings)
+            {
+                for (const auto& point : bundle.points)
+                {
+                    const auto expected_id = point_group_id(
+                        "Open_dom:" + domain, point);
+                    const auto count = std::count_if(
+                        proof.opening_groups.begin(),
+                        proof.opening_groups.end(),
+                        [&](const PointGroupOpening& opening)
+                        { return opening.group_id == expected_id; });
+                    if (count != 1)
+                    {
+                        throw std::runtime_error(
+                            "proof parser domain point lacks its unique owner/witness");
+                    }
+                }
+            }
+            const auto actual_domain_count = static_cast<std::size_t>(std::count_if(
+                proof.opening_groups.begin(),
+                proof.opening_groups.end(),
+                [](const PointGroupOpening& opening)
+                { return opening.owner_block.rfind("Open_dom:", 0) == 0; }));
+            if (actual_domain_count != expected_domain_ids.size())
+            {
+                throw std::runtime_error(
+                    "proof parser domain point-group owner count mismatch");
             }
         }
 
@@ -556,13 +654,18 @@ namespace gatzk::protocol
                         throw std::runtime_error(
                             "proof parser Pi_bind missing route terminal challenge");
                     append_aggregation_opening(
-                        "W_ext:" + challenge->second.to_string());
+                        opening_group_reference(
+                            context, proof.challenges, challenge->second));
                     append_aggregation_opening(
-                        "W_ext:"
-                        + (challenge->second + route.terminal_delta)
-                              .to_string());
+                        opening_group_reference(
+                            context,
+                            proof.challenges,
+                            challenge->second + route.terminal_delta));
                     append_aggregation_opening(
-                        "W_ext:" + route.node_terminal_point.to_string());
+                        opening_group_reference(
+                            context,
+                            proof.challenges,
+                            route.node_terminal_point));
                 }
                 for (const auto& aggregation : meta.aggregation_relations)
                 {
@@ -584,13 +687,21 @@ namespace gatzk::protocol
                             throw std::runtime_error(
                                 "proof parser Pi_bind missing aggregation terminal challenge");
                         append_aggregation_opening(
-                            "W_ext:" + challenge->second.to_string());
+                            opening_group_reference(
+                                context,
+                                proof.challenges,
+                                challenge->second));
                         append_aggregation_opening(
-                            "W_ext:"
-                            + (challenge->second + route->terminal_delta)
-                                  .to_string());
+                            opening_group_reference(
+                                context,
+                                proof.challenges,
+                                challenge->second
+                                    + route->terminal_delta));
                         append_aggregation_opening(
-                            "W_ext:" + route->node_terminal_point.to_string());
+                            opening_group_reference(
+                                context,
+                                proof.challenges,
+                                route->node_terminal_point));
                     }
                     for (const auto* object : {
                              &aggregation.source_node_object,
@@ -902,18 +1013,28 @@ namespace gatzk::protocol
                 const auto y_rel = challenge_it->second;
                 if (same_point)
                 {
-                    append_unique("W_ext:" + y_rel.to_string());
+                    append_unique(opening_group_reference(
+                        context, proof.challenges, y_rel));
                     append_unique(
-                        "W_ext:" + relation.canonical_points.front().to_string());
+                        opening_group_reference(
+                            context,
+                            proof.challenges,
+                            relation.canonical_points.front()));
                 }
                 else
                 {
-                    append_unique("W_ext:" + y_rel.to_string());
+                    append_unique(opening_group_reference(
+                        context, proof.challenges, y_rel));
                     append_unique(
-                        "W_ext:"
-                        + (y_rel + relation.deltas.at(1)).to_string());
+                        opening_group_reference(
+                            context,
+                            proof.challenges,
+                            y_rel + relation.deltas.at(1)));
                     append_unique(
-                        "W_ext:" + relation.canonical_points.at(0).to_string());
+                        opening_group_reference(
+                            context,
+                            proof.challenges,
+                            relation.canonical_points.at(0)));
                 }
                 const auto gamma_it = proof.challenges.find(
                     basis.gamma_challenge_label);
@@ -924,13 +1045,17 @@ namespace gatzk::protocol
                     throw std::runtime_error(
                         "proof parser Pi_bind missing coefficient basis challenge");
                 append_unique(
-                    "W_ext:" + basis_y_it->second.to_string());
+                    opening_group_reference(
+                        context, proof.challenges, basis_y_it->second));
                 for (const auto& chunk : basis.chunks)
                     append_unique(
-                        "W_ext:"
-                        + (basis_y_it->second + chunk.terminal_point
-                           - gamma_it->second).to_string());
-                append_unique("W_ext:" + gamma_it->second.to_string());
+                        opening_group_reference(
+                            context,
+                            proof.challenges,
+                            basis_y_it->second + chunk.terminal_point
+                                - gamma_it->second));
+                append_unique(opening_group_reference(
+                    context, proof.challenges, gamma_it->second));
                 for (const auto& [domain, point, omega] :
                      std::vector<std::tuple<std::string,
                          algebra::FieldElement, algebra::FieldElement>>{
@@ -970,6 +1095,7 @@ namespace gatzk::protocol
 
     std::vector<std::uint8_t> serialize_proof(const Proof& proof)
     {
+        require_structural_point_group_layout(proof);
         Writer wire;
         wire.raw(kMagic.data(), kMagic.size());
         wire.u64(kWireVersion);
@@ -1042,12 +1168,37 @@ namespace gatzk::protocol
         for (const auto& [name, bundle] : proof.domain_openings)
         {
             open_dom.string(name);
-            write_opening(open_dom, bundle.proof);
+            open_dom.u64(bundle.points.size());
+            for (const auto& point : bundle.points)
+            {
+                const auto group_id = point_group_id(
+                    "Open_dom:" + name, point);
+                const auto opening = std::find_if(
+                    proof.opening_groups.begin(),
+                    proof.opening_groups.end(),
+                    [&](const PointGroupOpening& candidate)
+                    { return candidate.group_id == group_id; });
+                if (opening == proof.opening_groups.end())
+                {
+                    throw std::runtime_error(
+                        "proof serializer missing domain point-group witness");
+                }
+                write_point_group_opening(open_dom, *opening);
+            }
         }
         wire.block("Open_dom", std::move(open_dom));
 
         Writer w_ext;
-        write_opening(w_ext, proof.external_proof);
+        const auto external_count = std::count_if(
+            proof.opening_groups.begin(), proof.opening_groups.end(),
+            [](const PointGroupOpening& opening)
+            { return opening.owner_block == "W_ext"; });
+        w_ext.u64(external_count);
+        for (const auto& opening : proof.opening_groups)
+        {
+            if (opening.owner_block == "W_ext")
+                write_point_group_opening(w_ext, opening);
+        }
         wire.block("W_ext", std::move(w_ext));
 
         Writer pi_bind;
@@ -1252,16 +1403,12 @@ namespace gatzk::protocol
 
     Proof parse_proof(const ProtocolContext& context, const std::vector<std::uint8_t>& bytes)
     {
-        if (context.compiler_artifact == nullptr)
+        if (context.compiler_artifact == nullptr
+            || context.validated_compiler_artifact_identity
+                != context.compiler_artifact.get())
         {
             throw std::runtime_error(
-                "proof parser is missing the authenticated ProtocolCompilerArtifact");
-        }
-        const auto& compiler_artifact = *context.compiler_artifact;
-        std::string artifact_reason;
-        if (!validate_protocol_compiler_artifact(context, compiler_artifact, &artifact_reason))
-        {
-            throw std::runtime_error("proof parser compiler artifact mismatch: " + artifact_reason);
+                "proof parser is missing the authenticated ProtocolCompilerArtifact identity");
         }
         // Read the fixed magic without accepting a length-delimited alias.
         if (bytes.size() < kMagic.size() + 8 || !std::equal(kMagic.begin(), kMagic.end(), bytes.begin()))
@@ -1340,20 +1487,62 @@ namespace gatzk::protocol
         auto open_dom = body.block("Open_dom");
         const auto opening_count = open_dom.count("domain opening proofs");
         if (opening_count != proof.domain_openings.size()) throw std::runtime_error("proof parser domain opening count mismatch");
+        std::vector<EncodedPointGroupOpening> encoded_openings;
         for (std::size_t i = 0; i < opening_count; ++i)
         {
             if (open_dom.string() != proof.domain_openings[i].first) throw std::runtime_error("proof parser domain opening name mismatch");
-            proof.domain_openings[i].second.proof = read_opening(open_dom);
-            require_canonical_point_group_shape(
-                proof.domain_openings[i].second.points,
-                proof.domain_openings[i].second.proof,
-                proof.domain_openings[i].first.c_str());
+            const auto group_count = open_dom.count(
+                "domain point-group openings");
+            if (group_count != proof.domain_openings[i].second.points.size())
+                throw std::runtime_error(
+                    "proof parser domain point-group count mismatch");
+            for (std::size_t j = 0; j < group_count; ++j)
+            {
+                auto encoded = read_encoded_point_group_opening(open_dom);
+                const auto expected_owner =
+                    "Open_dom:" + proof.domain_openings[i].first;
+                if (encoded.owner_block != expected_owner
+                    || encoded.point
+                        != proof.domain_openings[i].second.points[j]
+                    || encoded.group_id
+                        != point_group_id(expected_owner, encoded.point))
+                {
+                    throw std::runtime_error(
+                        "proof parser domain point-group owner/point mismatch");
+                }
+                encoded_openings.push_back(std::move(encoded));
+            }
         }
         open_dom.finish("Open_dom");
 
         auto w_ext = body.block("W_ext");
-        proof.external_proof = read_opening(w_ext);
+        const auto external_group_count = w_ext.count(
+            "external point-group openings");
+        std::string previous_external_point;
+        for (std::size_t i = 0; i < external_group_count; ++i)
+        {
+            auto encoded = read_encoded_point_group_opening(w_ext);
+            const auto point_text = encoded.point.to_string();
+            if (encoded.owner_block != "W_ext"
+                || encoded.group_id
+                    != point_group_id("W_ext", encoded.point)
+                || (i != 0 && !(previous_external_point < point_text)))
+            {
+                throw std::runtime_error(
+                    "proof parser non-canonical external point-group order/owner");
+            }
+            previous_external_point = point_text;
+            encoded_openings.push_back(std::move(encoded));
+        }
         w_ext.finish("W_ext");
+        proof.opening_groups = decode_point_group_openings(
+            std::move(encoded_openings));
+        std::sort(
+            proof.opening_groups.begin(), proof.opening_groups.end(),
+            [](const PointGroupOpening& lhs,
+               const PointGroupOpening& rhs)
+            { return lhs.point.to_string() < rhs.point.to_string(); });
+        require_structural_point_group_layout(proof);
 
         auto pi_bind = body.block("Pi_bind");
         const auto expected_binding_metadata =

@@ -34,6 +34,7 @@
 #include "gatzk/model/gat.hpp"
 #include "gatzk/protocol/challenges.hpp"
 #include "gatzk/protocol/lookup.hpp"
+#include "gatzk/protocol/opening_registry.hpp"
 #include "gatzk/protocol/quotients.hpp"
 #include "gatzk/protocol/proof_codec.hpp"
 #include "gatzk/protocol/schema.hpp"
@@ -5821,7 +5822,8 @@ namespace gatzk::protocol
 
         std::unordered_map<std::string, Commitment> batch_quotient_commitments(
             std::vector<std::pair<std::string, algebra::Polynomial>> &&named_quotient_polynomials,
-            const crypto::KZGKeyPair &key)
+            const crypto::KZGKeyPair &key,
+            crypto::CommitBatchProfile *profile)
         {
             std::unordered_map<std::string, Commitment> out;
             out.reserve(named_quotient_polynomials.size());
@@ -5833,7 +5835,7 @@ namespace gatzk::protocol
             auto commitments = crypto::KZG::commit_owned_batch(
                 std::move(named_quotient_polynomials),
                 key,
-                nullptr,
+                profile,
                 "prove:quotient:commit_batch");
             for (const auto &commitment : commitments)
             {
@@ -6315,10 +6317,8 @@ namespace gatzk::protocol
             const std::unordered_map<std::string, Commitment> &quotient_commitments,
             const std::vector<std::string> &labels,
             const std::vector<FieldElement> &points,
-            const std::string &folding_name,
             RunMetrics *metrics = nullptr,
             double *eval_gather_ms = nullptr,
-            double *witness_open_ms = nullptr,
             const std::string &progress_prefix = "")
         {
             // 一个 bundle 对应 formal schema 中某个工作域的一次 opening。
@@ -6426,53 +6426,6 @@ namespace gatzk::protocol
             {
                 bundle.values.push_back({labels[i], values[i]});
                 bundle.value_kinds.push_back(payload_kind_for_label(context, labels[i]));
-            }
-            const auto witness_start = Clock::now();
-            if (!progress_prefix.empty())
-            {
-                progress_note(progress_prefix + ":witness:start");
-            }
-            crypto::BatchOpeningProfile batch_profile;
-            const auto folding_challenge = derive_batch_opening_folding_challenge(
-                trace.public_metadata,
-                folding_name,
-                commitments,
-                points,
-                values);
-            bundle.proof =
-                crypto::KZG::open_batch(
-                    commitments,
-                    points,
-                    values,
-                    folding_challenge,
-                    context.kzg,
-                    &batch_profile,
-                    crypto::BatchOpeningClaimValidation::
-                        AlreadyComputedFromOpeningPolynomials);
-            if (metrics != nullptr)
-            {
-                metrics->domain_open_denominator_inverse_ms += batch_profile.denominator_inverse_ms;
-                metrics->domain_open_denominator_inverse_reuse_ms += batch_profile.denominator_inverse_reuse_ms;
-                metrics->domain_open_denominator_inverse_reuse_hits += batch_profile.denominator_inverse_reuse_hits;
-                metrics->domain_open_denominator_inverse_cache_misses += batch_profile.denominator_inverse_cache_misses;
-                metrics->domain_open_point_parallel_batches += batch_profile.point_parallel_batches;
-                metrics->domain_open_point_parallel_workers += batch_profile.point_parallel_workers;
-                metrics->domain_open_point_msm_worker_cap += batch_profile.point_msm_worker_cap;
-            }
-            if (witness_open_ms != nullptr)
-            {
-                *witness_open_ms += elapsed_ms(witness_start, Clock::now());
-            }
-            if (metrics != nullptr && is_fh_bundle)
-            {
-                const auto witness_total_ms = elapsed_ms(witness_start, Clock::now());
-                metrics->fh_open_witness_ms += std::max(0.0, witness_total_ms - batch_profile.precompute_ms);
-                metrics->fh_open_fold_prepare_ms += batch_profile.precompute_ms;
-                metrics->fh_fold_prep_ms += batch_profile.precompute_ms;
-            }
-            if (!progress_prefix.empty())
-            {
-                progress_note(progress_prefix + ":witness:done");
             }
             return bundle;
         }
@@ -7283,6 +7236,8 @@ namespace gatzk::protocol
                 + compiler_artifact_reason);
         }
         context.compiler_artifact = std::move(compiler_artifact);
+        context.validated_compiler_artifact_identity =
+            context.compiler_artifact.get();
 
         if (full_graph_feature_identity_enabled(context))
         {
@@ -7551,17 +7506,17 @@ namespace gatzk::protocol
             named_quotient_polynomials = blind_quotient_polynomials(
                 context,
                 std::move(named_quotient_polynomials));
-            const auto quotient_pack_start = Clock::now();
             progress_note("prove:quotient:commit_batch:start");
+            crypto::CommitBatchProfile quotient_commit_profile;
             auto quotient_commitments = batch_quotient_commitments(
                 std::move(named_quotient_polynomials),
-                context.kzg);
+                context.kzg,
+                metrics != nullptr ? &quotient_commit_profile : nullptr);
             progress_note("prove:quotient:commit_batch:done");
             if (metrics != nullptr)
             {
-                const auto quotient_commitment_ms = elapsed_ms(quotient_pack_start, Clock::now());
-                metrics->quotient_commitment_ms += quotient_commitment_ms;
-                metrics->quotient_bundle_pack_ms += quotient_commitment_ms;
+                metrics->quotient_commitment_ms +=
+                    quotient_commit_profile.msm_ms;
             }
             // Quotient polynomials and commitments are proof-specific and must not be
             // reused by a later fresh-proof measurement.
@@ -7667,7 +7622,6 @@ namespace gatzk::protocol
                 std::string bundle_name;
                 DomainOpeningBundle bundle;
                 double gather_ms = 0.0;
-                double witness_ms = 0.0;
                 double total_ms = 0.0;
                 RunMetrics local_metrics;
             };
@@ -7691,7 +7645,6 @@ namespace gatzk::protocol
                     challenges.at(spec.z_name) * spec.domain->omega,
                 };
                 double gather_ms = 0.0;
-                double witness_ms = 0.0;
                 const auto local_start = Clock::now();
                 auto bundle = make_bundle(
                     context,
@@ -7700,10 +7653,8 @@ namespace gatzk::protocol
                     quotient_commitments,
                     labels,
                     points,
-                    spec.v_name,
                     &local_metrics,
                     &gather_ms,
-                    &witness_ms,
                     progress_prefix);
                 if (spec.bundle_name == "FH")
                 {
@@ -7717,7 +7668,6 @@ namespace gatzk::protocol
                     spec.bundle_name,
                     std::move(bundle),
                     gather_ms,
-                    witness_ms,
                     elapsed_ms(local_start, Clock::now()),
                     std::move(local_metrics),
                 };
@@ -7771,7 +7721,6 @@ namespace gatzk::protocol
                 if (metrics != nullptr)
                 {
                     metrics->domain_eval_gather_ms += it->gather_ms;
-                    metrics->domain_open_witness_ms += it->witness_ms;
                     metrics->domain_open_denominator_inverse_ms += it->local_metrics.domain_open_denominator_inverse_ms;
                     metrics->domain_open_denominator_inverse_reuse_ms +=
                         it->local_metrics.domain_open_denominator_inverse_reuse_ms;
@@ -8022,6 +7971,32 @@ namespace gatzk::protocol
                 }
             }
 
+            const auto point_group_registry_start = Clock::now();
+            StandardPointGroupRegistry opening_registry;
+            for (const auto& spec : bundle_specs)
+            {
+                const auto bundle_it = std::find_if(
+                    proof.domain_openings.begin(),
+                    proof.domain_openings.end(),
+                    [&](const auto& entry)
+                    { return entry.first == spec.bundle_name; });
+                if (bundle_it == proof.domain_openings.end())
+                {
+                    throw std::runtime_error(
+                        "missing domain bundle while building global point groups: "
+                        + spec.bundle_name);
+                }
+                auto labels = domain_opening_labels(
+                    context, spec.trace_domain_name);
+                labels.push_back(spec.quotient_name);
+                labels.push_back(quotient_mask_label(spec.quotient_name));
+                add_domain_bundle_claims(
+                    opening_registry,
+                    spec.bundle_name,
+                    bundle_it->second,
+                    collect_commitments(trace, quotient_commitments, labels));
+            }
+
             attach_public_output_statement(context, trace, &proof);
             const auto ext_specs = multihead_external_specs(context);
             std::vector<std::pair<Commitment, FieldElement>> external_commitments;
@@ -8269,16 +8244,169 @@ namespace gatzk::protocol
                 trace.commitments.at("P_Y"),
                 evaluate_coefficient_vector(proof.public_logits, output_binding.point)});
             external_points.push_back(output_binding.point);
-            proof.external_proof = crypto::KZG::open_external_fold(
+            add_external_claims(
+                opening_registry,
                 external_commitments,
                 external_points,
-                derive_external_opening_folding_challenge(proof.public_metadata, external_commitments, external_points),
-                context.kzg,
-                crypto::BatchOpeningClaimValidation::
-                    AlreadyComputedFromOpeningPolynomials);
+                proof.external_evaluation_kinds);
+            opening_registry.finalize();
             if (metrics != nullptr)
             {
-                metrics->external_opening_ms += elapsed_ms(stage_start, Clock::now());
+                metrics->point_group_registry_ms += elapsed_ms(
+                    point_group_registry_start, Clock::now());
+            }
+            for (auto& subproof : proof.pi_bind.subproofs)
+            {
+                std::vector<MetadataReference> normalized;
+                normalized.reserve(subproof.opening_references.size());
+                for (auto reference : subproof.opening_references)
+                {
+                    for (const auto& group : opening_registry.groups())
+                    {
+                        if (reference.object_id
+                            == "W_ext:" + group.point.to_string())
+                        {
+                            reference.object_id = group.group_id;
+                            break;
+                        }
+                    }
+                    if (std::none_of(
+                            normalized.begin(), normalized.end(),
+                            [&](const MetadataReference& existing)
+                            { return existing == reference; }))
+                    {
+                        normalized.push_back(std::move(reference));
+                    }
+                }
+                subproof.opening_references = std::move(normalized);
+            }
+
+            struct PointGroupOpeningResult
+            {
+                crypto::G1Point witness;
+                crypto::BatchOpeningProfile profile;
+                double elapsed_ms = 0.0;
+            };
+            const auto& point_groups = opening_registry.groups();
+            std::vector<PointGroupOpeningResult> opening_results(
+                point_groups.size());
+            const auto open_group_indices = [&]
+            (const std::vector<std::size_t>& indices)
+            {
+                if (indices.empty()) return 0.0;
+                const auto phase_start = Clock::now();
+                const auto hardware_workers = std::max<unsigned>(
+                    1, std::thread::hardware_concurrency());
+                const auto worker_count = std::min<std::size_t>(
+                    indices.size(),
+                    std::min<std::size_t>(8, std::max<unsigned>(
+                        1, hardware_workers / 4)));
+                std::atomic<std::size_t> next{0};
+                std::vector<std::future<void>> futures;
+                futures.reserve(worker_count);
+                for (std::size_t worker = 0; worker < worker_count; ++worker)
+                {
+                    futures.push_back(std::async(
+                        std::launch::async,
+                        [&]
+                        {
+                            while (true)
+                            {
+                                const auto position = next.fetch_add(1);
+                                if (position >= indices.size()) break;
+                                const auto group_index = indices[position];
+                                const auto& group = point_groups[group_index];
+                                std::vector<Commitment> commitments;
+                                std::vector<FieldElement> values;
+                                commitments.reserve(group.claims.size());
+                                values.reserve(group.claims.size());
+                                for (const auto& claim : group.claims)
+                                {
+                                    commitments.push_back(claim.commitment);
+                                    values.push_back(claim.value);
+                                }
+                                const auto local_start = Clock::now();
+                                opening_results[group_index].witness =
+                                    crypto::KZG::open_point_group(
+                                        commitments,
+                                        group.point,
+                                        values,
+                                        derive_point_group_challenge(
+                                            proof.public_metadata, group),
+                                        context.kzg,
+                                        &opening_results[group_index].profile,
+                                        crypto::BatchOpeningClaimValidation::
+                                            AlreadyComputedFromOpeningPolynomials);
+                                opening_results[group_index].elapsed_ms =
+                                    elapsed_ms(local_start, Clock::now());
+                            }
+                        }));
+                }
+                for (auto& future : futures) future.get();
+                return elapsed_ms(phase_start, Clock::now());
+            };
+
+            std::vector<std::size_t> domain_group_indices;
+            std::vector<std::size_t> external_group_indices;
+            for (std::size_t i = 0; i < point_groups.size(); ++i)
+            {
+                (point_groups[i].owner_block == "W_ext"
+                    ? external_group_indices
+                    : domain_group_indices).push_back(i);
+            }
+            const auto external_claim_assembly_ms = elapsed_ms(
+                stage_start, Clock::now());
+            const auto domain_witness_wall_ms = open_group_indices(
+                domain_group_indices);
+            const auto external_witness_wall_ms = open_group_indices(
+                external_group_indices);
+
+            proof.opening_groups.reserve(point_groups.size());
+            for (std::size_t i = 0; i < point_groups.size(); ++i)
+            {
+                proof.opening_groups.push_back(PointGroupOpening{
+                    .group_id = point_groups[i].group_id,
+                    .owner_block = point_groups[i].owner_block,
+                    .point = point_groups[i].point,
+                    .witness = opening_results[i].witness,
+                });
+                if (metrics == nullptr) continue;
+                const auto& profile = opening_results[i].profile;
+                metrics->domain_open_denominator_inverse_ms +=
+                    profile.denominator_inverse_ms;
+                metrics->domain_open_denominator_inverse_reuse_ms +=
+                    profile.denominator_inverse_reuse_ms;
+                metrics->domain_open_denominator_inverse_reuse_hits +=
+                    profile.denominator_inverse_reuse_hits;
+                metrics->domain_open_denominator_inverse_cache_misses +=
+                    profile.denominator_inverse_cache_misses;
+                if (point_groups[i].owner_block.rfind(
+                        "Open_dom:", 0) == 0)
+                {
+                    const auto domain = point_groups[i].owner_block.substr(9);
+                    metrics->domain_open_witness_ms +=
+                        opening_results[i].elapsed_ms;
+                    if (auto* metric = domain_open_metric(metrics, domain);
+                        metric != nullptr)
+                    {
+                        *metric += opening_results[i].elapsed_ms;
+                    }
+                    if (domain == "FH")
+                    {
+                        metrics->fh_open_fold_prepare_ms += profile.precompute_ms;
+                        metrics->fh_fold_prep_ms += profile.precompute_ms;
+                        metrics->fh_open_witness_ms += std::max(
+                            0.0,
+                            opening_results[i].elapsed_ms
+                                - profile.precompute_ms);
+                    }
+                }
+            }
+            if (metrics != nullptr)
+            {
+                metrics->domain_opening_ms += domain_witness_wall_ms;
+                metrics->external_opening_ms +=
+                    external_claim_assembly_ms + external_witness_wall_ms;
             }
             progress_note("prove:external_opening:done");
             strip_prover_material_from_proof(&proof);

@@ -93,20 +93,145 @@ int main(int argc, char** argv) {
             throw std::runtime_error("repeats must be positive");
         }
 
-        const auto context = gatzk::protocol::build_context(config, nullptr);
+        const auto benchmark_wall_start = Clock::now();
+        gatzk::protocol::RunMetrics generation_metrics;
+        const auto context = gatzk::protocol::build_context(
+            config, mode == "generate" ? &generation_metrics : nullptr);
         require_small_benchmark_config(context);
 
         if (mode == "generate") {
-            const auto trace = gatzk::protocol::build_trace(context, nullptr);
-            const auto proof = gatzk::protocol::prove(context, trace, nullptr);
+            const auto prover_pipeline_start = Clock::now();
+            const auto trace = gatzk::protocol::build_trace(
+                context, &generation_metrics);
+            const auto proof = gatzk::protocol::prove(
+                context, trace, &generation_metrics);
+            const auto serialization_start = Clock::now();
             const auto bytes = gatzk::protocol::serialize_proof(proof);
+            generation_metrics.proof_serialization_ms =
+                elapsed_ms(serialization_start);
+            const auto prover_pipeline_ms = elapsed_ms(prover_pipeline_start);
+            generation_metrics.commitment_time_ms =
+                generation_metrics.dynamic_commit_msm_ms
+                + generation_metrics.derived_commitment_point_ms
+                + generation_metrics.quotient_commitment_ms;
+            if (generation_metrics.commitment_time_ms < 0.0
+                || generation_metrics.commitment_time_ms
+                    > prover_pipeline_ms + 1.0) {
+                throw std::runtime_error(
+                    "formal commitment timing escaped the prover pipeline");
+            }
+            generation_metrics.prove_time_ms = std::max(
+                0.0,
+                prover_pipeline_ms - generation_metrics.commitment_time_ms);
+
+            const auto verify_start = Clock::now();
+            const auto parse_start = Clock::now();
             const auto parsed = gatzk::protocol::parse_proof(context, bytes);
-            if (!gatzk::protocol::verify(context, parsed, nullptr)) {
+            generation_metrics.proof_parse_ms = elapsed_ms(parse_start);
+            if (!gatzk::protocol::verify(
+                    context, parsed, &generation_metrics)) {
                 throw std::runtime_error("generated proof did not verify");
             }
+            generation_metrics.verify_time_ms = elapsed_ms(verify_start);
+            generation_metrics.proof_size_bytes = bytes.size();
+            const auto private_plain_count =
+                gatzk::protocol::private_plain_value_count(context, parsed);
+            if (private_plain_count != 0) {
+                throw std::runtime_error(
+                    "generated proof exposed private plain values");
+            }
             write_bytes(proof_path, bytes);
-            std::cout << "mode=generate proof_size_bytes=" << bytes.size()
-                      << " verify_ok=true path=" << proof_path.string() << '\n';
+            generation_metrics.total_wall_clock_ms =
+                elapsed_ms(benchmark_wall_start);
+            generation_metrics.formal_time_sum_ms =
+                generation_metrics.commitment_time_ms
+                + generation_metrics.prove_time_ms
+                + generation_metrics.verify_time_ms;
+            generation_metrics.non_formal_overhead_ms = std::max(
+                0.0,
+                generation_metrics.total_wall_clock_ms
+                    - generation_metrics.formal_time_sum_ms);
+            const auto prove_trace_ms = std::max(
+                0.0,
+                generation_metrics.trace_generation_ms
+                    - generation_metrics.derived_commitment_point_ms);
+            const auto prove_commit_preparation_ms = std::max(
+                0.0,
+                generation_metrics.commit_dynamic_ms
+                    - generation_metrics.dynamic_commit_msm_ms);
+            const auto prove_quotient_noncommitment_ms = std::max(
+                0.0,
+                generation_metrics.quotient_build_ms
+                    - generation_metrics.quotient_commitment_ms);
+            const auto prove_profiled_ms =
+                generation_metrics.forward_ms
+                + prove_trace_ms
+                + prove_commit_preparation_ms
+                + prove_quotient_noncommitment_ms
+                + generation_metrics.domain_opening_ms
+                + generation_metrics.external_opening_ms
+                + generation_metrics.proof_serialization_ms;
+            const auto prove_residual_ms = std::max(
+                0.0,
+                generation_metrics.prove_time_ms - prove_profiled_ms);
+            std::cout << std::fixed << std::setprecision(3)
+                      << "mode=generate"
+                      << " timing_schema="
+                      << gatzk::protocol::kFormalTimingSchema
+                      << " commitment_time_ms="
+                      << generation_metrics.commitment_time_ms
+                      << " prove_time_ms="
+                      << generation_metrics.prove_time_ms
+                      << " verify_time_ms="
+                      << generation_metrics.verify_time_ms
+                      << " formal_time_sum_ms="
+                      << generation_metrics.formal_time_sum_ms
+                      << " total_wall_clock_ms="
+                      << generation_metrics.total_wall_clock_ms
+                      << " non_formal_overhead_ms="
+                      << generation_metrics.non_formal_overhead_ms
+                      << " proof_parse_ms="
+                      << generation_metrics.proof_parse_ms
+                      << " point_group_registry_ms="
+                      << generation_metrics.point_group_registry_ms
+                      << " dynamic_commit_msm_ms="
+                      << generation_metrics.dynamic_commit_msm_ms
+                      << " derived_commitment_point_ms="
+                      << generation_metrics.derived_commitment_point_ms
+                      << " quotient_commitment_ms="
+                      << generation_metrics.quotient_commitment_ms
+                      << " prove_forward_ms="
+                      << generation_metrics.forward_ms
+                      << " prove_trace_ms=" << prove_trace_ms
+                      << " prove_commit_preparation_ms="
+                      << prove_commit_preparation_ms
+                      << " prove_quotient_noncommitment_ms="
+                      << prove_quotient_noncommitment_ms
+                      << " prove_domain_opening_ms="
+                      << generation_metrics.domain_opening_ms
+                      << " prove_external_opening_ms="
+                      << generation_metrics.external_opening_ms
+                      << " proof_serialization_ms="
+                      << generation_metrics.proof_serialization_ms
+                      << " prove_residual_ms=" << prove_residual_ms
+                      << " verify_metadata_ms="
+                      << generation_metrics.verify_metadata_ms
+                      << " verify_transcript_ms="
+                      << generation_metrics.verify_transcript_ms
+                      << " verify_domain_opening_ms="
+                      << generation_metrics.verify_domain_opening_ms
+                      << " verify_point_group_registry_ms="
+                      << generation_metrics.verify_point_group_registry_ms
+                      << " verify_quotient_ms="
+                      << generation_metrics.verify_quotient_ms
+                      << " verify_external_opening_ms="
+                      << generation_metrics.verify_external_opening_ms
+                      << " private_plain_value_count="
+                      << private_plain_count
+                      << " verifier_reads_witness=false"
+                      << " proof_size_bytes=" << bytes.size()
+                      << " verify_ok=true path=" << proof_path.string()
+                      << '\n';
             return 0;
         }
 
@@ -115,6 +240,7 @@ int main(int argc, char** argv) {
         std::vector<double> verify_metadata_samples;
         std::vector<double> verify_transcript_samples;
         std::vector<double> verify_domain_opening_samples;
+        std::vector<double> verify_point_group_registry_samples;
         std::vector<double> verify_quotient_samples;
         std::vector<double> verify_external_samples;
         bool verify_ok = true;
@@ -184,8 +310,10 @@ int main(int argc, char** argv) {
                 verify_transcript_samples.push_back(metrics.verify_transcript_ms);
                 verify_domain_opening_samples.push_back(
                     metrics.verify_domain_opening_ms);
+                verify_point_group_registry_samples.push_back(
+                    metrics.verify_point_group_registry_ms);
                 verify_quotient_samples.push_back(metrics.verify_quotient_ms);
-                verify_external_samples.push_back(metrics.verify_external_fold_ms);
+                verify_external_samples.push_back(metrics.verify_external_opening_ms);
             }
         } else if (mode == "artifact" || mode == "artifact-build"
                    || mode == "proof-schema"
@@ -212,6 +340,9 @@ int main(int argc, char** argv) {
                   << " verify_domain_opening_median_ms="
                   << (verify_domain_opening_samples.empty()
                         ? 0.0 : median(verify_domain_opening_samples))
+                  << " verify_point_group_registry_median_ms="
+                  << (verify_point_group_registry_samples.empty()
+                        ? 0.0 : median(verify_point_group_registry_samples))
                   << " verify_quotient_median_ms="
                   << (verify_quotient_samples.empty()
                         ? 0.0 : median(verify_quotient_samples))

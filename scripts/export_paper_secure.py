@@ -19,6 +19,7 @@ SECURE_FIELDS = {
     "output_mode": "public_logits",
     "opening_mode": "point_grouped_batch_opening",
     "binding_mode": "zk_subproof_for_crpc",
+    "timing_schema": "exclusive_commit_prove_verify_v2",
     "verifier_reads_witness": "false",
     "private_plain_value_count": "0",
     "proof_payload_audit_status": "passed",
@@ -30,10 +31,8 @@ SECURE_FIELDS = {
 }
 TIMING_FIELDS = [
     "total_wall_clock_ms",
-    "cold_end_to_end_wall_clock_ms",
-    "warm_end_to_end_wall_clock_ms",
-    "amortized_preprocessing_ms",
-    "total_cost_for_fresh_reproduction_ms",
+    "formal_time_sum_ms",
+    "non_formal_overhead_ms",
     "context_build_ms",
     "reference_forward_ms",
     "trace_generation_ms",
@@ -41,7 +40,6 @@ TIMING_FIELDS = [
     "prove_time_ms",
     "quotient_build_ms",
     "quotient_commitment_ms",
-    "quotient_bundle_pack_ms",
     "domain_opening_ms",
     "external_opening_ms",
     "verify_time_ms",
@@ -66,12 +64,11 @@ OUTPUT_FIELDS = [
     "output_mode",
     "opening_mode",
     "binding_mode",
+    "timing_schema",
     "proof_task",
     "total_wall_clock_ms",
-    "cold_end_to_end_wall_clock_ms",
-    "warm_end_to_end_wall_clock_ms",
-    "amortized_preprocessing_ms",
-    "total_cost_for_fresh_reproduction_ms",
+    "formal_time_sum_ms",
+    "non_formal_overhead_ms",
     "context_build_ms",
     "reference_forward_ms",
     "trace_generation_ms",
@@ -79,7 +76,6 @@ OUTPUT_FIELDS = [
     "prove_time_ms",
     "quotient_build_ms",
     "quotient_commitment_ms",
-    "quotient_bundle_pack_ms",
     "domain_opening_ms",
     "external_opening_ms",
     "verify_time_ms",
@@ -238,10 +234,6 @@ def validate_row(dataset, backend, row, expected_source_hash="", expected_cpu_bi
             raise ValueError(f"{dataset}/{backend} has negative {key}")
     if float(row["total_wall_clock_ms"]) <= 0:
         raise ValueError(f"{dataset}/{backend} has non-positive total_wall_clock_ms")
-    warm_ms = float(row["warm_end_to_end_wall_clock_ms"])
-    cold_ms = float(row["cold_end_to_end_wall_clock_ms"])
-    if warm_ms <= 0 and cold_ms <= 0:
-        raise ValueError(f"{dataset}/{backend} must record cold or warm end-to-end wall clock")
     if pathlib.Path(str(row.get("config", ""))).is_absolute():
         raise ValueError(f"{dataset}/{backend} manifest contains absolute config path")
     if row.get("reference_quant_logits_hash") != row.get("secure_trace_logits_hash"):

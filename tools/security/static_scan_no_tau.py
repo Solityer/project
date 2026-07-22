@@ -101,7 +101,21 @@ def main():
                 if pattern in line:
                     failures.append((path.relative_to(ROOT), line_no, pattern))
         if path.name != "static_scan_no_tau.py":
-            for marker in ("KZG::verify_batch(", "KZG::verify_external_fold("):
+            for legacy_marker in (
+                "KZG::open_batch(",
+                "KZG::verify_batch(",
+                "KZG::open_external_fold(",
+                "KZG::verify_external_fold(",
+                "external_proof",
+            ):
+                if legacy_marker in text:
+                    line_no = text.count(
+                        "\n", 0, text.index(legacy_marker)
+                    ) + 1
+                    failures.append(
+                        (path.relative_to(ROOT), line_no, legacy_marker)
+                    )
+            for marker in ("KZG::verify_point_group(",):
                 pos = 0
                 while True:
                     pos = text.find(marker, pos)

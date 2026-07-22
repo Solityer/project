@@ -49,21 +49,20 @@ def valid_cpu_row() -> dict[str, object]:
         "security_budget_passed": "true",
         "private_plain_value_count": "0",
         "verifier_reads_witness": "false",
+        "timing_schema": "exclusive_commit_prove_verify_v2",
         "dynamic_commitment_object_profile_csv": "profile.csv",
         "performance_baseline_status": "pending_rebuild_current_protocol",
         "performance_evaluation_status": "informational_not_run_validity_gate",
     }
     for key in (
         "total_wall_clock_ms",
-        "warm_end_to_end_wall_clock_ms",
-        "amortized_preprocessing_ms",
-        "total_cost_for_fresh_reproduction_ms",
+        "formal_time_sum_ms",
+        "non_formal_overhead_ms",
         "context_build_ms",
         "reference_forward_ms",
         "trace_generation_ms",
         "quotient_build_ms",
         "quotient_commitment_ms",
-        "quotient_bundle_pack_ms",
         "domain_opening_ms",
         "external_opening_ms",
         "payload_audit_ms",
@@ -74,10 +73,12 @@ def valid_cpu_row() -> dict[str, object]:
         "profile_logging_overhead_ms",
         "official_runner_wall_clock_ms",
     ):
-        row[key] = "999999999.000" if key == "total_wall_clock_ms" else "0.000"
+        row[key] = "1400000000.000" if key == "total_wall_clock_ms" else "0.000"
     row["commitment_time_ms"] = "300000000.000"
     row["prove_time_ms"] = "900000000.000"
     row["verify_time_ms"] = "100000000.000"
+    row["formal_time_sum_ms"] = "1300000000.000"
+    row["non_formal_overhead_ms"] = "100000000.000"
     return row
 
 
@@ -96,6 +97,23 @@ def main() -> int:
         row = valid_cpu_row()
         write_manifest(runner, temp, row)
         assert runner.valid_manifest(temp, "cora", "cpu", "source", "binary", "runner")
+
+        stale_timing_row = dict(row)
+        stale_timing_row.pop("timing_schema")
+        write_manifest(runner, temp, stale_timing_row)
+        assert not runner.valid_manifest(temp, "cora", "cpu", "source", "binary", "runner")
+
+        legacy_timing_row = dict(row)
+        legacy_timing_row["commitment_ms"] = legacy_timing_row.pop(
+            "commitment_time_ms"
+        )
+        legacy_timing_row["prove_ms"] = legacy_timing_row.pop("prove_time_ms")
+        legacy_timing_row["verify_ms"] = legacy_timing_row.pop("verify_time_ms")
+        write_manifest(runner, temp, legacy_timing_row)
+        assert not runner.valid_manifest(
+            temp, "cora", "cpu", "source", "binary", "runner"
+        )
+        write_manifest(runner, temp, row)
 
         row["performance_baseline_status"] = "deliberately_not_a_resume_gate"
         row["performance_evaluation_status"] = "deliberately_not_a_resume_gate"
@@ -122,6 +140,14 @@ def main() -> int:
         "near_2_2x_proof_core_total_ms",
         "budget_status",
         "row_hard_timeout_ms",
+        "commitment_ms",
+        "prove_ms",
+        "verify_ms",
+        "cold_end_to_end_wall_clock_ms",
+        "warm_end_to_end_wall_clock_ms",
+        "amortized_preprocessing_ms",
+        "total_cost_for_fresh_reproduction_ms",
+        "is_cold_run",
     }
     assert not legacy_fields.intersection(exporter.TIMING_FIELDS)
     assert not legacy_fields.intersection(exporter.OUTPUT_FIELDS)

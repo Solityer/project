@@ -63,6 +63,60 @@ namespace gatzk::protocol
             return std::chrono::duration<double, std::milli>(end - start).count();
         }
 
+        template <typename Builder>
+        crypto::G1Point timed_derived_commitment_point(
+            RunMetrics *metrics,
+            Builder builder)
+        {
+            const auto start = Clock::now();
+            auto point = builder();
+            if (metrics != nullptr)
+            {
+                metrics->derived_commitment_point_ms +=
+                    elapsed_ms(start, Clock::now());
+            }
+            return point;
+        }
+
+        crypto::Commitment commit_proof_polynomial(
+            const std::string &name,
+            const Polynomial &polynomial,
+            const crypto::KZGKeyPair &key,
+            RunMetrics *metrics)
+        {
+            crypto::CommitObjectProfile profile;
+            auto commitment = crypto::KZG::commit(
+                name, polynomial, key, metrics != nullptr ? &profile : nullptr);
+            if (metrics != nullptr)
+            {
+                metrics->derived_commitment_point_ms += profile.msm_ms;
+            }
+            return commitment;
+        }
+
+        crypto::Commitment commit_shifted_proof_polynomial(
+            const crypto::Commitment &source,
+            const std::string &shifted_name,
+            std::size_t configured_degree,
+            const FieldElement &delta,
+            const crypto::KZGKeyPair &key,
+            RunMetrics *metrics)
+        {
+            crypto::CommitObjectProfile profile;
+            auto commitment = crypto::KZG::commit_taylor_shifted(
+                source,
+                shifted_name,
+                configured_degree,
+                delta,
+                key,
+                metrics != nullptr ? &profile : nullptr);
+            if (metrics != nullptr)
+            {
+                metrics->derived_commitment_point_ms += profile.msm_ms;
+            }
+            return commitment;
+        }
+
         bool progress_enabled()
         {
             return std::getenv("GATZK_RUN_PROGRESS") != nullptr;
@@ -631,15 +685,6 @@ namespace gatzk::protocol
             return out;
         }
 
-        crypto::Commitment renamed_commitment(const std::string &name, const crypto::Commitment &source)
-        {
-            return crypto::Commitment{
-                .name = name,
-                .point = source.point,
-                .opening_polynomial = source.opening_polynomial,
-            };
-        }
-
         void append_dynamic_commitment(
             TraceArtifacts &trace,
             const std::string &name,
@@ -649,18 +694,6 @@ namespace gatzk::protocol
             trace.commitments[name] = std::move(commitment);
             trace.commitment_order.push_back(name);
         }
-
-        crypto::Commitment zero_dynamic_commitment(const std::string &name)
-        {
-            auto polynomial = std::make_shared<Polynomial>(
-                Polynomial::from_coefficients(name, {FieldElement::zero()}));
-            return crypto::Commitment{
-                .name = name,
-                .point = crypto::g1_zero(),
-                .opening_polynomial = std::move(polynomial),
-            };
-        }
-
 
         DynamicCommitmentLinearTerm linear_label_term(
             std::string label,
@@ -805,108 +838,6 @@ namespace gatzk::protocol
                 .name = name,
                 .point = source.point,
                 .opening_polynomial = std::move(material),
-            };
-        }
-
-        crypto::Commitment linear_fh_coefficient_material_commitment(
-            const ProtocolContext &context,
-            const std::string &name,
-            std::initializer_list<std::pair<std::string, FieldElement>> terms)
-        {
-            auto point = crypto::g1_zero();
-            std::vector<const mcl::Fr *> coefficient_data;
-            std::vector<std::size_t> coefficient_sizes;
-            std::vector<mcl::Fr> scales;
-            std::size_t coefficient_count = 1;
-            for (const auto &[label, scale] : terms)
-            {
-                if (scale == FieldElement::zero())
-                {
-                    continue;
-                }
-                const auto commitment_it = context.public_commitments.find(label);
-                if (commitment_it == context.public_commitments.end())
-                {
-                    throw std::runtime_error("missing public commitment for linear FH coefficient commitment: " + label);
-                }
-                point = crypto::g1_add(point, crypto::g1_mul(commitment_it->second.point, scale));
-
-                const auto material_it = context.public_fh_coefficient_materials.find(label);
-                if (material_it == context.public_fh_coefficient_materials.end()
-                    || material_it->second == nullptr
-                    || material_it->second->basis != algebra::PolynomialBasis::Coefficient)
-                {
-                    throw std::runtime_error("missing public FH coefficient material for linear commitment: " + label);
-                }
-                const auto &coefficients = material_it->second->values();
-                coefficient_data.push_back(FieldElement::native_array_data(coefficients.data()));
-                coefficient_sizes.push_back(coefficients.size());
-                scales.push_back(scale.native());
-                coefficient_count = std::max(coefficient_count, coefficients.size());
-            }
-
-            std::vector<FieldElement> coefficients(coefficient_count, FieldElement::zero());
-            auto *out_native = FieldElement::mutable_native_array_data(coefficients.data());
-            if (coefficient_data.size() <= 3)
-            {
-                parallel_for_ranges(
-                    coefficient_count,
-                    1ULL << 15,
-                    [&](std::size_t begin, std::size_t end)
-                    {
-                        mcl::Fr term;
-                        for (std::size_t i = begin; i < end; ++i)
-                        {
-                            out_native[i].clear();
-                            if (!coefficient_data.empty() && i < coefficient_sizes[0])
-                            {
-                                mcl::Fr::mul(out_native[i], coefficient_data[0][i], scales[0]);
-                            }
-                            if (coefficient_data.size() > 1 && i < coefficient_sizes[1])
-                            {
-                                mcl::Fr::mul(term, coefficient_data[1][i], scales[1]);
-                                mcl::Fr::add(out_native[i], out_native[i], term);
-                            }
-                            if (coefficient_data.size() > 2 && i < coefficient_sizes[2])
-                            {
-                                mcl::Fr::mul(term, coefficient_data[2][i], scales[2]);
-                                mcl::Fr::add(out_native[i], out_native[i], term);
-                            }
-                        }
-                    });
-            }
-            else
-            {
-                parallel_for_ranges(
-                    coefficient_count,
-                    1ULL << 15,
-                    [&](std::size_t begin, std::size_t end)
-                    {
-                        mcl::Fr accumulator;
-                        mcl::Fr term;
-                        for (std::size_t i = begin; i < end; ++i)
-                        {
-                            accumulator.clear();
-                            for (std::size_t term_index = 0; term_index < coefficient_data.size(); ++term_index)
-                            {
-                                if (i >= coefficient_sizes[term_index])
-                                {
-                                    continue;
-                                }
-                                mcl::Fr::mul(term, coefficient_data[term_index][i], scales[term_index]);
-                                mcl::Fr::add(accumulator, accumulator, term);
-                            }
-                            out_native[i] = accumulator;
-                        }
-                    });
-            }
-            trim_coefficients(&coefficients);
-            auto polynomial = std::make_shared<Polynomial>(
-                Polynomial::from_coefficients(name, std::move(coefficients)));
-            return crypto::Commitment{
-                .name = name,
-                .point = point,
-                .opening_polynomial = std::move(polynomial),
             };
         }
 
@@ -1758,11 +1689,16 @@ namespace gatzk::protocol
                     }
                     auto material = std::make_shared<Polynomial>(*item.polynomial);
                     material->name = item.name;
-                    const auto point = resolve_deferred_linear_commitment_point(
-                        item.deferred_linear_terms,
-                        trace,
-                        batch_points,
-                        item.name);
+                    const auto point = timed_derived_commitment_point(
+                        metrics,
+                        [&]()
+                        {
+                            return resolve_deferred_linear_commitment_point(
+                                item.deferred_linear_terms,
+                                trace,
+                                batch_points,
+                                item.name);
+                        });
                     item.commitment = crypto::Commitment{
                         .name = item.name,
                         .point = point,
@@ -4235,35 +4171,8 @@ namespace gatzk::protocol
                 const auto eta_feat_powers = powers(trace.challenges.at("eta_feat"), 3);
                 const auto eta_feature_index = eta_feat_powers[1];
                 const auto eta_feature_value = eta_feat_powers[2];
-                // Even when the local batch is the complete dataset, the formal
-                // feature lookup follows the same two-round commitment schedule:
+                // The formal lookup always follows the same two-round schedule:
                 // Table/Query/m precede beta, while J/R are beta-dependent.
-                // Keeping a commitment-alias shortcut here would skip that
-                // schedule and omit the explicit inverse columns.
-                const bool full_feature_identity = false;
-                {
-                    if (full_feature_identity)
-                    {
-                        const auto lookup_stage_start = Clock::now();
-                        const auto table_commitment = linear_fh_coefficient_material_commitment(
-                            context,
-                            "P_Table_feat",
-                            {
-                                {"P_Row_feat_tbl", FieldElement::one()},
-                                {"P_Col_feat_tbl", eta_feature_index},
-                                {"P_T_H", eta_feature_value},
-                            });
-                        append_dynamic_commitment(trace, "P_Table_feat", table_commitment);
-                        append_dynamic_commitment(trace, "P_Query_feat", renamed_commitment("P_Query_feat", table_commitment));
-                        append_dynamic_commitment(
-                            trace,
-                            "P_m_feat",
-                            fh_coefficient_renamed_commitment("P_m_feat", context, "P_Q_tbl_feat", context.public_commitments.at("P_Q_tbl_feat"), domains.fh));
-                        append_dynamic_commitment(trace, "P_R_feat", zero_dynamic_commitment("P_R_feat"));
-                        add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, lookup_stage_start);
-                    }
-                    else
-                    {
                         std::vector<FieldElement> table_feat(domains.fh->size, FieldElement::zero());
                         std::vector<FieldElement> query_feat(domains.fh->size, FieldElement::zero());
                         std::vector<FieldElement> multiplicity_feat(domains.fh->size, FieldElement::zero());
@@ -4367,8 +4276,6 @@ namespace gatzk::protocol
                             "P_J_qry_feat", trace.commitments.at("P_J_qry_feat").point);
                         transcript.absorb_commitment(
                             "P_R_feat", trace.commitments.at("P_R_feat").point);
-                    }
-                }
             }
 
             // 从这里开始进入“量化入口 / witness 物化入口”：先跑参考前向，再把中间量转成域元素列。
@@ -4552,8 +4459,8 @@ namespace gatzk::protocol
                 auto polynomial = Polynomial::from_coefficients(
                     blinder_label,
                     std::move(relation_blinder));
-                auto commitment = crypto::KZG::commit(
-                    blinder_label, polynomial, context.kzg);
+                auto commitment = commit_proof_polynomial(
+                    blinder_label, polynomial, context.kzg, metrics);
                 trace.polynomials.emplace(blinder_label, polynomial);
                 trace.polynomial_domains[blinder_label] = domain->name;
                 append_dynamic_commitment(trace, blinder_label, std::move(commitment));
@@ -4576,8 +4483,8 @@ namespace gatzk::protocol
                 }
                 auto mask = Polynomial::from_coefficients(
                     mask_label, source_it->second.zero_domain_blinder);
-                auto commitment = crypto::KZG::commit(
-                    mask_label, mask, context.kzg);
+                auto commitment = commit_proof_polynomial(
+                    mask_label, mask, context.kzg, metrics);
                 trace.polynomials.emplace(mask_label, mask);
                 trace.polynomial_domains[mask_label] = domains.n->name;
                 append_dynamic_commitment(
@@ -4636,12 +4543,12 @@ namespace gatzk::protocol
                         *context.compiler_artifact, proof_label);
                     proof_polynomial.set_zero_domain_blinder(blinder);
                     witness_polynomial = Polynomial::from_coefficients(witness_label, blinder);
-                    witness_commitment = crypto::KZG::commit(
-                        witness_label, witness_polynomial, context.kzg);
+                    witness_commitment = commit_proof_polynomial(
+                        witness_label, witness_polynomial, context.kzg, metrics);
                 }
                 while (witness_commitment.point == crypto::g1_zero());
-                auto proof_commitment = crypto::KZG::commit(
-                    proof_label, proof_polynomial, context.kzg);
+                auto proof_commitment = commit_proof_polynomial(
+                    proof_label, proof_polynomial, context.kzg, metrics);
 
                 trace.polynomial_domains[proof_label] = domain->name;
                 trace.polynomial_domains[witness_label] = domain->name;
@@ -6776,12 +6683,13 @@ namespace gatzk::protocol
                              &route.edge_accumulator_object})
                         append_aggregation_commitment(subproof, *object);
 
-                    auto shifted = crypto::KZG::commit_taylor_shifted(
+                    auto shifted = commit_shifted_proof_polynomial(
                         trace.commitments.at(route.edge_accumulator_object),
                         route.shifted_accumulator_object,
                         route.configured_shift_degree,
                         route.terminal_delta,
-                        context.kzg);
+                        context.kzg,
+                        metrics);
                     trace.commitments.emplace(
                         route.shifted_accumulator_object, shifted);
                     trace.polynomials.emplace(
@@ -6845,10 +6753,15 @@ namespace gatzk::protocol
                         route.relation_virtual_object,
                         crypto::Commitment{
                             .name = route.relation_virtual_object,
-                            .point = crypto::g1_add(
-                                trace.commitments.at(
-                                    route.node_accumulator_object).point,
-                                crypto::g1_neg(shifted.point)),
+                            .point = timed_derived_commitment_point(
+                                metrics,
+                                [&]()
+                                {
+                                    return crypto::g1_add(
+                                        trace.commitments.at(
+                                            route.node_accumulator_object).point,
+                                        crypto::g1_neg(shifted.point));
+                                }),
                             .opening_polynomial =
                                 std::move(relation_polynomial),
                         });
@@ -6876,13 +6789,14 @@ namespace gatzk::protocol
                         throw std::runtime_error(
                             "route terminal relation domain mismatch: "
                             + relation.relation_id);
-                    auto shifted = crypto::KZG::commit_taylor_shifted(
+                    auto shifted = commit_shifted_proof_polynomial(
                         trace.commitments.at(
                             relation.edge_accumulator_object),
                         relation.shifted_accumulator_object,
                         relation.configured_shift_degree,
                         relation.terminal_delta,
-                        context.kzg);
+                        context.kzg,
+                        metrics);
                     trace.commitments.emplace(
                         relation.shifted_accumulator_object, shifted);
                     trace.polynomials.emplace(
@@ -6949,10 +6863,15 @@ namespace gatzk::protocol
                         relation.relation_virtual_object,
                         crypto::Commitment{
                             .name = relation.relation_virtual_object,
-                            .point = crypto::g1_add(
-                                trace.commitments.at(
-                                    relation.node_accumulator_object).point,
-                                crypto::g1_neg(shifted.point)),
+                            .point = timed_derived_commitment_point(
+                                metrics,
+                                [&]()
+                                {
+                                    return crypto::g1_add(
+                                        trace.commitments.at(
+                                            relation.node_accumulator_object).point,
+                                        crypto::g1_neg(shifted.point));
+                                }),
                             .opening_polynomial =
                                 std::move(relation_polynomial),
                         });
@@ -7454,11 +7373,13 @@ namespace gatzk::protocol
                         for (const auto &chunk : basis_meta.chunks)
                         {
                             const auto delta = chunk.terminal_point - gamma;
-                            auto shifted = crypto::KZG::commit_taylor_shifted(
+                            auto shifted = commit_shifted_proof_polynomial(
                                 trace.commitments.at(chunk.accumulator_object),
                                 chunk.shifted_accumulator_object,
-                                chunk.configured_shift_degree, delta,
-                                context.kzg);
+                                chunk.configured_shift_degree,
+                                delta,
+                                context.kzg,
+                                metrics);
                             trace.commitments.emplace(
                                 chunk.shifted_accumulator_object, shifted);
                             trace.polynomials.emplace(
@@ -7535,10 +7456,15 @@ namespace gatzk::protocol
                                  index < shifted_coefficients.size(); ++index)
                                 relation_coefficients[index] -=
                                     scale * shifted_coefficients[index];
-                            relation_point = crypto::g1_add(
-                                relation_point,
-                                crypto::g1_neg(crypto::g1_mul(
-                                    shifted.point, scale)));
+                            relation_point = timed_derived_commitment_point(
+                                metrics,
+                                [&]()
+                                {
+                                    return crypto::g1_add(
+                                        relation_point,
+                                        crypto::g1_neg(crypto::g1_mul(
+                                            shifted.point, scale)));
+                                });
                         }
                         const auto relation_label = output_bias_basis_label(
                             head_index, "relation_virtual");
@@ -7612,10 +7538,15 @@ namespace gatzk::protocol
                             relation_label,
                             crypto::Commitment{
                                 .name = relation_label,
-                                .point = crypto::g1_add(
-                                    trace.commitments.at(r_can_label).point,
-                                    crypto::g1_neg(
-                                        trace.commitments.at(r_qry_label).point)),
+                                .point = timed_derived_commitment_point(
+                                    metrics,
+                                    [&]()
+                                    {
+                                        return crypto::g1_add(
+                                            trace.commitments.at(r_can_label).point,
+                                            crypto::g1_neg(
+                                                trace.commitments.at(r_qry_label).point));
+                                    }),
                                 .opening_polynomial = std::move(relation_polynomial),
                             });
                         const auto y_public = transcript.challenge(
@@ -7684,7 +7615,9 @@ namespace gatzk::protocol
                         negated.set_zero_domain_blinder(std::move(negated_blinder));
                         return crypto::Commitment{
                             .name = virtual_label,
-                            .point = crypto::g1_neg(source.point),
+                            .point = timed_derived_commitment_point(
+                                metrics,
+                                [&]() { return crypto::g1_neg(source.point); }),
                             .opening_polynomial = std::make_shared<Polynomial>(std::move(negated)),
                         };
                     };
@@ -7696,12 +7629,13 @@ namespace gatzk::protocol
                     trace.commitments.emplace(second_source.name, second_source);
                     const auto shifted_label = output_bias_view_label(
                         head_index, "R_shifted");
-                    auto shifted = crypto::KZG::commit_taylor_shifted(
+                    auto shifted = commit_shifted_proof_polynomial(
                         second_source,
                         shifted_label,
                         shift_meta.configured_degrees.at(0),
                         shift_meta.deltas.at(1),
-                        context.kzg);
+                        context.kzg,
+                        metrics);
                     trace.commitments.emplace(shifted_label, shifted);
                     trace.polynomials.emplace(
                         shifted_label, *shifted.opening_polynomial);
@@ -7759,7 +7693,13 @@ namespace gatzk::protocol
                         relation_label,
                         crypto::Commitment{
                             .name = relation_label,
-                            .point = crypto::g1_add(first_source.point, shifted.point),
+                            .point = timed_derived_commitment_point(
+                                metrics,
+                                [&]()
+                                {
+                                    return crypto::g1_add(
+                                        first_source.point, shifted.point);
+                                }),
                             .opening_polynomial = std::move(relation_polynomial),
                         });
                     const auto public_m_value = trace.polynomials.at(

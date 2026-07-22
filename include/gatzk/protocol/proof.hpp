@@ -1,6 +1,6 @@
 #pragma once
-// 本文件定义 protocol 层共享的数据契约，
-// 包括 context、trace、proof 与 benchmark 指标，是 artifact contract 的核心真源。
+// 定义协议层共享的数据契约，
+// 包括 context、trace、proof 与 benchmark 指标，是 artifact contract 的核心来源。
 
 #include <map>
 #include <memory>
@@ -18,6 +18,9 @@
 namespace gatzk::protocol {
 
 struct ProtocolCompilerArtifact;
+
+inline constexpr const char* kFormalTimingSchema =
+    "exclusive_commit_prove_verify_v2";
 
 // 固定静态查表集合，对应 formal note 中的激活、指数与范围表。
 struct StaticTables {
@@ -93,6 +96,10 @@ struct ProtocolContext {
     std::unordered_map<std::string, std::shared_ptr<const std::vector<algebra::FieldElement>>> public_fh_coset_materials;
     std::unordered_map<std::string, crypto::Commitment> static_commitments;
     std::shared_ptr<const ProtocolCompilerArtifact> compiler_artifact;
+    // Exact immutable artifact object that passed the full setup-time
+    // canonical rebuild.  Proof verification rejects a swapped pointer but
+    // does not repeat the expensive compiler pass inside verify_time.
+    const ProtocolCompilerArtifact* validated_compiler_artifact_identity = nullptr;
 };
 
 struct PiBindProof;
@@ -178,7 +185,16 @@ struct DomainOpeningBundle {
     std::vector<algebra::FieldElement> points;
     std::vector<std::pair<std::string, std::vector<algebra::FieldElement>>> values;
     std::vector<PayloadValueKind> value_kinds;
-    crypto::OpeningProof proof;
+};
+
+// One physical KZG witness is owned by exactly one canonical point group.
+// Claims and their values remain in Eval_dom/Eval_ext/Eval_bind and are
+// reconstructed from the compiler schema; they are never duplicated here.
+struct PointGroupOpening {
+    std::string group_id;
+    std::string owner_block;
+    algebra::FieldElement point = algebra::FieldElement::zero();
+    crypto::G1Point witness;
 };
 
 // Pi_bind carries commitments and metadata references only.  KZG witnesses remain
@@ -419,17 +435,15 @@ struct Proof {
     std::vector<std::pair<std::string, DomainOpeningBundle>> domain_openings;
     std::vector<std::pair<std::string, algebra::FieldElement>> external_evaluations;
     std::vector<PayloadValueKind> external_evaluation_kinds;
-    // S_route 仅编码已由 Open_dom/W_ext 唯一 owner 持有的 point-group
-    // MetadataReference，不编码共同终值或 route 专用 witness。
     std::vector<MetadataReference> route_references;
     std::vector<algebra::FieldElement> public_logits;
-    crypto::OpeningProof external_proof;
+    std::vector<PointGroupOpening> opening_groups;
     PiBindProof pi_bind;
     std::map<std::string, algebra::FieldElement> challenges;
 };
 
 // 运行期与 benchmark 统一使用的指标表。
-// 这里既记录正式四项指标，也记录热路径拆分，方便 tests / manifests / README 对齐。
+// 这里记录三项正式时间、canonical proof bytes 大小及内部热路径拆分。
 // 正式展示面只能读取最小指标；细粒度字段只允许停留在内部 manifest。
 struct RunMetrics {
     std::string backend_name;
@@ -442,10 +456,8 @@ struct RunMetrics {
     std::size_t edge_count = 0;
     double context_build_ms = 0.0;
     double total_wall_clock_ms = 0.0;
-    double cold_end_to_end_wall_clock_ms = 0.0;
-    double warm_end_to_end_wall_clock_ms = 0.0;
-    double amortized_preprocessing_ms = 0.0;
-    double total_cost_for_fresh_reproduction_ms = 0.0;
+    double formal_time_sum_ms = 0.0;
+    double non_formal_overhead_ms = 0.0;
     double reference_forward_ms = 0.0;
     double payload_audit_ms = 0.0;
     double reference_consistency_ms = 0.0;
@@ -532,6 +544,7 @@ struct RunMetrics {
     double dynamic_domain_convert_ms = 0.0;
     double dynamic_copy_convert_ms = 0.0;
     double dynamic_commit_msm_ms = 0.0;
+    double derived_commitment_point_ms = 0.0;
     double dynamic_commit_finalize_ms = 0.0;
     double dynamic_bundle_finalize_ms = 0.0;
     double commitment_time_ms = 0.0;
@@ -544,11 +557,13 @@ struct RunMetrics {
     double quotient_t_c_ms = 0.0;
     double quotient_t_n_ms = 0.0;
     double quotient_public_eval_ms = 0.0;
+    // Point generation and its required batch synchronization only.  Quotient
+    // materialization and proof-object packing remain in prove_time.
     double quotient_commitment_ms = 0.0;
-    double quotient_bundle_pack_ms = 0.0;
     double quotient_fold_prepare_ms = 0.0;
     double quotient_copy_convert_ms = 0.0;
     double domain_opening_ms = 0.0;
+    double point_group_registry_ms = 0.0;
     double domain_eval_gather_ms = 0.0;
     double domain_open_witness_ms = 0.0;
     double domain_open_denominator_inverse_ms = 0.0;
@@ -576,8 +591,9 @@ struct RunMetrics {
     double verify_metadata_ms = 0.0;
     double verify_transcript_ms = 0.0;
     double verify_domain_opening_ms = 0.0;
+    double verify_point_group_registry_ms = 0.0;
     double verify_quotient_ms = 0.0;
-    double verify_external_fold_ms = 0.0;
+    double verify_external_opening_ms = 0.0;
     double verify_misc_ms = 0.0;
     double verify_accounted_ms = 0.0;
     double verify_accounting_gap_ms = 0.0;
@@ -602,7 +618,6 @@ struct RunMetrics {
     bool enabled_fast_verify_pairing = false;
     bool enabled_cuda_trace_hotspots = false;
     bool enabled_cuda_field_hotspots = false;
-    bool is_cold_run = true;
     bool is_full_dataset = false;
     bool gpu_runtime_present = false;
     bool gpu_backend_requested = false;

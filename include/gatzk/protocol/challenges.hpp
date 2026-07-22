@@ -15,9 +15,7 @@
 namespace gatzk::protocol
 {
     // 生成对外公开的元数据视图，README / manifest / verifier 都以它为准。
-    PublicMetadata canonical_public_metadata(
-        const ProtocolContext& context,
-        bool compiler_artifact_already_validated = false);
+    PublicMetadata canonical_public_metadata(const ProtocolContext& context);
     // 按固定字段顺序把公开元数据吸收到 transcript。
     void absorb_public_metadata(crypto::Transcript& transcript, const PublicMetadata& metadata);
     void absorb_binding_relation_metadata(
@@ -52,16 +50,6 @@ namespace gatzk::protocol
         std::size_t class_count);
     std::string fresh_proof_nonce();
 
-    algebra::FieldElement derive_batch_opening_folding_challenge(
-        const PublicMetadata& metadata,
-        const std::string& group_id,
-        const std::vector<crypto::Commitment>& commitments,
-        const std::vector<algebra::FieldElement>& points,
-        const std::vector<std::vector<algebra::FieldElement>>& values);
-    algebra::FieldElement derive_external_opening_folding_challenge(
-        const PublicMetadata& metadata,
-        const std::vector<std::pair<crypto::Commitment, algebra::FieldElement>>& claims,
-        const std::vector<algebra::FieldElement>& points);
     // Derive the seven work-domain opening points with the canonical public
     // rejection rules: every z is outside its domain and all z,z*omega pairs
     // are mutually distinct across FH,edge,in,d_h,cat,C,N.

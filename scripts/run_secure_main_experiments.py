@@ -91,12 +91,11 @@ def bool_text(row: Dict[str, object], key: str) -> str:
     return str(row.get(key, "")).lower()
 
 
-def numeric_field(row: Dict[str, object], *keys: str) -> float:
-    for key in keys:
-        value = row.get(key)
-        if value not in (None, ""):
-            return float(value)
-    raise ValueError(f"missing numeric field: {'/'.join(keys)}")
+def numeric_field(row: Dict[str, object], key: str) -> float:
+    value = row.get(key)
+    if value in (None, ""):
+        raise ValueError(f"missing numeric field: {key}")
+    return float(value)
 
 
 def write_failure_record(
@@ -138,13 +137,25 @@ def strict_row_gate(row: Dict[str, object], dataset: str, backend: str) -> None:
         "security_budget_passed": "true",
         "private_plain_value_count": "0",
         "verifier_reads_witness": "false",
+        "timing_schema": "exclusive_commit_prove_verify_v2",
     }
     for key, expected in required.items():
         if str(row.get(key, "")).lower() != expected.lower():
             raise RuntimeError(f"{backend}/{dataset} has {key}={row.get(key, '')}, expected {expected}")
-    numeric_field(row, "commitment_ms", "commitment_time_ms")
-    numeric_field(row, "prove_ms", "prove_time_ms")
-    numeric_field(row, "verify_ms", "verify_time_ms")
+    commitment_ms = numeric_field(row, "commitment_time_ms")
+    prove_ms = numeric_field(row, "prove_time_ms")
+    verify_ms = numeric_field(row, "verify_time_ms")
+    formal_sum_ms = commitment_ms + prove_ms + verify_ms
+    reported_formal_sum_ms = numeric_field(row, "formal_time_sum_ms")
+    wall_ms = numeric_field(row, "total_wall_clock_ms")
+    reported_overhead_ms = numeric_field(row, "non_formal_overhead_ms")
+    tolerance_ms = max(0.01, formal_sum_ms * 1e-9)
+    if abs(reported_formal_sum_ms - formal_sum_ms) > tolerance_ms:
+        raise RuntimeError(f"{backend}/{dataset} formal timing sum mismatch")
+    if wall_ms + tolerance_ms < formal_sum_ms:
+        raise RuntimeError(f"{backend}/{dataset} formal metrics exceed wall time")
+    if abs(reported_overhead_ms - max(0.0, wall_ms - formal_sum_ms)) > tolerance_ms:
+        raise RuntimeError(f"{backend}/{dataset} non-formal overhead mismatch")
     if backend == "gpu":
         if bool_text(row, "gpu_backend_requested") != "true":
             raise RuntimeError(f"{backend}/{dataset} missing gpu_backend_requested=true")
@@ -340,6 +351,7 @@ def valid_manifest(
         "security_budget_passed": "true",
         "private_plain_value_count": "0",
         "verifier_reads_witness": "false",
+        "timing_schema": "exclusive_commit_prove_verify_v2",
     }
     if dataset == "ogbn-arxiv":
         dataset_ok = row.get("dataset") in {"ogbn-arxiv", "ogbn_arxiv"}
@@ -356,19 +368,17 @@ def valid_manifest(
         return False
     try:
         strict_row_gate(row, dataset, backend)
-    except RuntimeError:
+    except (RuntimeError, TypeError, ValueError):
         return False
     for key in (
         "total_wall_clock_ms",
-        "warm_end_to_end_wall_clock_ms",
-        "amortized_preprocessing_ms",
-        "total_cost_for_fresh_reproduction_ms",
+        "formal_time_sum_ms",
+        "non_formal_overhead_ms",
         "context_build_ms",
         "reference_forward_ms",
         "trace_generation_ms",
         "quotient_build_ms",
         "quotient_commitment_ms",
-        "quotient_bundle_pack_ms",
         "domain_opening_ms",
         "external_opening_ms",
         "payload_audit_ms",

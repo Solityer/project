@@ -186,50 +186,71 @@ void run_case(const CaseSpec& spec) {
 
     gatzk::crypto::BatchOpeningProfile profile;
     const auto open_start = std::chrono::steady_clock::now();
-    gatzk::crypto::OpeningProof proof;
-    std::vector<std::pair<gatzk::crypto::Commitment, FieldElement>> external_claims;
+    std::vector<std::vector<gatzk::crypto::Commitment>> group_commitments;
+    std::vector<std::vector<FieldElement>> group_values;
+    std::vector<FieldElement> group_points;
     if (spec.external_unique_points) {
-        external_claims.reserve(commitments.size());
         for (std::size_t i = 0; i < commitments.size(); ++i) {
-            external_claims.push_back({commitments[i], claimed_values[i][0]});
+            group_commitments.push_back({commitments[i]});
+            group_values.push_back({claimed_values[i][0]});
+            group_points.push_back(points[i]);
         }
-        proof = gatzk::crypto::KZG::open_external_fold(
-            external_claims,
-            points,
-            FieldElement(19),
-            key,
-            spec.materialized_claims
-                ? gatzk::crypto::BatchOpeningClaimValidation::
-                    AlreadyComputedFromOpeningPolynomials
-                : gatzk::crypto::BatchOpeningClaimValidation::
-                    VerifyAgainstOpeningPolynomials);
     } else {
-        proof = gatzk::crypto::KZG::open_batch(
-            commitments,
-            points,
-            claimed_values,
-            FieldElement(19),
+        for (std::size_t point_index = 0;
+             point_index < points.size(); ++point_index) {
+            group_commitments.push_back(commitments);
+            std::vector<FieldElement> values;
+            values.reserve(claimed_values.size());
+            for (const auto& column : claimed_values) {
+                values.push_back(column[point_index]);
+            }
+            group_values.push_back(std::move(values));
+            group_points.push_back(points[point_index]);
+        }
+    }
+    std::vector<gatzk::crypto::G1Point> witnesses;
+    witnesses.reserve(group_points.size());
+    for (std::size_t i = 0; i < group_points.size(); ++i) {
+        gatzk::crypto::BatchOpeningProfile local_profile;
+        witnesses.push_back(gatzk::crypto::KZG::open_point_group(
+            group_commitments[i],
+            group_points[i],
+            group_values[i],
+            FieldElement(19 + i),
             key,
-            &profile,
+            &local_profile,
             spec.materialized_claims
                 ? gatzk::crypto::BatchOpeningClaimValidation::
                     AlreadyComputedFromOpeningPolynomials
                 : gatzk::crypto::BatchOpeningClaimValidation::
-                    VerifyAgainstOpeningPolynomials);
+                    VerifyAgainstOpeningPolynomials));
+        profile.precompute_ms += local_profile.precompute_ms;
+        profile.denominator_inverse_ms += local_profile.denominator_inverse_ms;
+        profile.denominator_inverse_reuse_ms +=
+            local_profile.denominator_inverse_reuse_ms;
+        profile.denominator_inverse_cache_misses +=
+            local_profile.denominator_inverse_cache_misses;
+        profile.denominator_inverse_reuse_hits +=
+            local_profile.denominator_inverse_reuse_hits;
     }
     const auto open_ms = elapsed_ms(open_start);
 
+    const auto verify_all = [&] {
+        for (std::size_t i = 0; i < group_points.size(); ++i) {
+            if (!gatzk::crypto::KZG::verify_point_group(
+                    group_commitments[i],
+                    group_points[i],
+                    group_values[i],
+                    FieldElement(19 + i),
+                    witnesses[i],
+                    key.vk)) {
+                return false;
+            }
+        }
+        return true;
+    };
     const auto verify_start = std::chrono::steady_clock::now();
-    const bool verify_ok = spec.external_unique_points
-        ? gatzk::crypto::KZG::verify_external_fold(
-            external_claims, points, FieldElement(19), proof, key.vk)
-        : gatzk::crypto::KZG::verify_batch(
-            commitments,
-            points,
-            claimed_values,
-            FieldElement(19),
-            proof,
-            key.vk);
+    const bool verify_ok = verify_all();
     const auto verify_ms = elapsed_ms(verify_start);
 
     double serial_bundle_verify_ms = 0.0;
@@ -238,9 +259,7 @@ void run_case(const CaseSpec& spec) {
     if (!spec.external_unique_points && spec.verify_bundle_fanout > 1) {
         const auto serial_start = std::chrono::steady_clock::now();
         for (std::size_t i = 0; i < spec.verify_bundle_fanout; ++i) {
-            bundle_verify_ok = gatzk::crypto::KZG::verify_batch(
-                commitments, points, claimed_values, FieldElement(19), proof,
-                key.vk) && bundle_verify_ok;
+            bundle_verify_ok = verify_all() && bundle_verify_ok;
         }
         serial_bundle_verify_ms = elapsed_ms(serial_start);
 
@@ -249,9 +268,7 @@ void run_case(const CaseSpec& spec) {
         futures.reserve(spec.verify_bundle_fanout);
         for (std::size_t i = 0; i < spec.verify_bundle_fanout; ++i) {
             futures.push_back(std::async(std::launch::async, [&] {
-                return gatzk::crypto::KZG::verify_batch(
-                    commitments, points, claimed_values, FieldElement(19),
-                    proof, key.vk);
+                return verify_all();
             }));
         }
         for (auto& future : futures) {
@@ -280,7 +297,7 @@ void run_case(const CaseSpec& spec) {
         << profile.point_parallel_batches << ','
         << profile.point_parallel_workers << ','
         << profile.point_msm_worker_cap << ','
-        << proof.witnesses.size() << ','
+        << witnesses.size() << ','
         << serial_bundle_verify_ms << ','
         << parallel_bundle_verify_ms << ','
         << spec.verify_bundle_fanout << ','
@@ -467,7 +484,7 @@ int main(int argc, char** argv) {
         const std::string selected_case = argv[1];
         std::cout
             << "case,srs_id,domain_name,domain_size,commitment_count,nonzero_stride,"
-            << "commit_setup_ms,claim_eval_ms,open_batch_ms,verify_ms,precompute_ms,"
+            << "commit_setup_ms,claim_eval_ms,open_point_groups_ms,verify_ms,precompute_ms,"
             << "denominator_inverse_ms,denominator_inverse_reuse_ms,"
             << "denominator_inverse_cache_misses,denominator_inverse_reuse_hits,"
             << "point_parallel_batches,point_parallel_workers,point_msm_worker_cap,"

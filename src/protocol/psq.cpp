@@ -7,10 +7,8 @@
 
 namespace gatzk::protocol
 {
-
     namespace
     {
-
         // 统一的前缀状态递推，`q_new` 为 1 时从新组开始，为 0 时延续上一组。
         std::vector<algebra::FieldElement> build_selector_prefix_state(
             const std::vector<algebra::FieldElement> &values,

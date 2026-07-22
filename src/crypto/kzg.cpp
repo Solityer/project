@@ -2200,29 +2200,6 @@ namespace gatzk::crypto
                 points.data(), powers.data(), powers.size());
         }
 
-        FieldElement folded_claim_value(
-            const std::vector<std::vector<FieldElement>>& claimed_values,
-            const std::vector<FieldElement>& powers,
-            std::size_t point_index)
-        {
-            if (powers.size() != claimed_values.size())
-            {
-                throw std::runtime_error("folded claim power count mismatch");
-            }
-            mcl::Fr sum;
-            sum.clear();
-            for (std::size_t i = 0; i < claimed_values.size(); ++i)
-            {
-                mcl::Fr product;
-                mcl::Fr::mul(
-                    product,
-                    claimed_values[i][point_index].native(),
-                    powers[i].native());
-                mcl::Fr::add(sum, sum, product);
-            }
-            return FieldElement::from_native(sum);
-        }
-
         bool verify_pairing_equation(
             const G1Point& numerator,
             const G1Point& witness,
@@ -2237,6 +2214,15 @@ namespace gatzk::crypto
                 // compromise, never a valid proof result.
                 return false;
             }
+            const bool numerator_is_zero = numerator == g1_zero();
+            const bool witness_is_zero = witness == g1_zero();
+            if (numerator_is_zero || witness_is_zero)
+            {
+                // The identically-zero folded polynomial has the valid
+                // equation e(0,G2)=e(0,[tau-z]2).  Handle it explicitly since
+                // the pairing backend rejects zero affine inputs.
+                return numerator_is_zero && witness_is_zero;
+            }
             if (util::route2_options().fast_verify_pairing && vk.g2_one_prepared != nullptr)
             {
                 return pairing_equal_with_prepared_rhs_a(numerator, *vk.g2_one_prepared, witness, rhs);
@@ -2248,16 +2234,6 @@ namespace gatzk::crypto
     std::size_t serialized_size(const Commitment& commitment)
     {
         return serialized_size(commitment.point);
-    }
-
-    std::size_t serialized_size(const OpeningProof& proof)
-    {
-        std::size_t out = 0;
-        for (const auto& witness : proof.witnesses)
-        {
-            out += serialized_size(witness);
-        }
-        return out;
     }
 
         std::string required_lagrange_cache_fragment(
@@ -2569,9 +2545,13 @@ namespace gatzk::crypto
         return make_commitment(name, constant_polynomial(name, value), key.pk);
     }
 
-    Commitment KZG::commit(const std::string& name, const algebra::Polynomial& polynomial, const KZGKeyPair& key)
+    Commitment KZG::commit(
+        const std::string& name,
+        const algebra::Polynomial& polynomial,
+        const KZGKeyPair& key,
+        CommitObjectProfile* profile)
     {
-        return make_commitment(name, polynomial, key.pk);
+        return make_commitment(name, polynomial, key.pk, profile);
     }
 
     Commitment KZG::commit_taylor_shifted(
@@ -2579,7 +2559,8 @@ namespace gatzk::crypto
         const std::string& shifted_name,
         std::size_t configured_degree,
         const FieldElement& delta,
-        const KZGKeyPair& key)
+        const KZGKeyPair& key,
+        CommitObjectProfile* profile)
     {
         if (source.opening_polynomial == nullptr)
         {
@@ -2599,7 +2580,8 @@ namespace gatzk::crypto
             shifted_name,
             algebra::Polynomial::from_coefficients(
                 shifted_name, std::move(shifted)),
-            key.pk);
+            key.pk,
+            profile);
     }
 
     std::vector<Commitment> KZG::commit_constant_batch(
@@ -2908,60 +2890,39 @@ namespace gatzk::crypto
         return {std::move(commitments[0]), std::move(commitments[1])};
     }
 
-    OpeningProof KZG::open_batch(
+    G1Point KZG::open_point_group(
         const std::vector<Commitment>& commitments,
-        const std::vector<FieldElement>& points,
-        const std::vector<std::vector<FieldElement>>& claimed_values,
+        const FieldElement& point,
+        const std::vector<FieldElement>& claimed_values,
         const FieldElement& folding_challenge,
         const KZGKeyPair& key,
         BatchOpeningProfile* profile,
         BatchOpeningClaimValidation claim_validation)
     {
-        if (commitments.size() != claimed_values.size())
+        if (commitments.empty() || commitments.size() != claimed_values.size())
         {
-            throw std::runtime_error("batch opening mismatch between commitments and values");
+            throw std::runtime_error(
+                "point-group opening mismatch between commitments and values");
         }
-        for (const auto& values : claimed_values)
+        if (folding_challenge.is_zero())
         {
-            if (values.size() != points.size())
-            {
-                throw std::runtime_error("batch opening value count does not match points");
-            }
+            throw std::runtime_error(
+                "point-group opening folding challenge must be non-zero");
+        }
+        std::vector<std::vector<FieldElement>> value_columns;
+        value_columns.reserve(claimed_values.size());
+        for (const auto& value : claimed_values)
+        {
+            value_columns.push_back({value});
         }
         const auto precompute_start = Clock::now();
         const auto powers = folding_powers(folding_challenge, commitments.size());
-        std::size_t max_evaluation_domain_size = 0;
-        std::size_t max_coefficient_size = 0;
-        for (const auto& commitment : commitments)
-        {
-            if (commitment.opening_polynomial == nullptr)
-            {
-                continue;
-            }
-            const auto& polynomial = *commitment.opening_polynomial;
-            if (polynomial.basis == algebra::PolynomialBasis::Evaluation && polynomial.domain != nullptr)
-            {
-                max_evaluation_domain_size = std::max(max_evaluation_domain_size, polynomial.domain->size);
-            }
-            else
-            {
-                max_coefficient_size = std::max(max_coefficient_size, polynomial.size());
-            }
-        }
-        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-        const auto point_worker_count = std::min<std::size_t>(points.size(), std::max<std::size_t>(1, cpu_count / 4));
-        const auto point_msm_worker_cap = std::max<std::size_t>(1, cpu_count / point_worker_count);
-        const bool run_point_parallel =
-            util::route2_options().fast_msm
-            && points.size() > 1
-            && point_worker_count > 1
-            && (max_evaluation_domain_size >= (1ULL << 16) || max_coefficient_size >= (1ULL << 16));
         const auto folded_plan = build_folded_opening_plan(
             commitments,
-            claimed_values,
+            value_columns,
             powers,
-            points,
-            run_point_parallel ? point_msm_worker_cap : 0,
+            std::vector<FieldElement>{point},
+            0,
             claim_validation
                 == BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials);
         if (profile != nullptr)
@@ -2969,327 +2930,60 @@ namespace gatzk::crypto
             profile->precompute_ms += elapsed_ms(precompute_start, Clock::now());
         }
 
-        OpeningProof proof;
-        proof.witnesses.reserve(points.size());
         std::vector<EvaluationInverseDenominatorCacheEntry> inverse_denominator_cache;
-        inverse_denominator_cache.reserve(points.size());
+        inverse_denominator_cache.reserve(1);
         const auto witness_start = Clock::now();
-        if (run_point_parallel && profile != nullptr)
-        {
-            profile->point_parallel_batches += 1;
-            profile->point_parallel_workers += point_worker_count;
-            profile->point_msm_worker_cap += point_msm_worker_cap;
-        }
-        if (run_point_parallel)
-        {
-            const auto worker_cap = point_msm_worker_cap;
-            const G1MSMExecutionOptions msm_options{.max_worker_count = worker_cap};
-            proof.witnesses.resize(points.size());
-            std::vector<BatchOpeningProfile> local_profiles(points.size());
-            std::atomic<std::size_t> next{0};
-            std::vector<std::future<void>> futures;
-            futures.reserve(point_worker_count);
-            for (std::size_t worker = 0; worker < point_worker_count; ++worker)
-            {
-                futures.push_back(std::async(std::launch::async, [&]() {
-                    while (true)
-                    {
-                        const auto point_index = next.fetch_add(1);
-                        if (point_index >= points.size())
-                        {
-                            break;
-                        }
-                        std::vector<EvaluationInverseDenominatorCacheEntry> local_inverse_cache;
-                        local_inverse_cache.reserve(1);
-                        proof.witnesses[point_index] = open_single_point_fold(
-                            folded_plan,
-                            point_index,
-                            points[point_index],
-                            key.pk,
-                            &local_inverse_cache,
-                            profile != nullptr ? &local_profiles[point_index] : nullptr,
-                            worker_cap,
-                            &msm_options);
-                    }
-                }));
-            }
-            for (auto& future : futures)
-            {
-                future.get();
-            }
-            if (profile != nullptr)
-            {
-                for (const auto& local : local_profiles)
-                {
-                    profile->denominator_inverse_ms += local.denominator_inverse_ms;
-                    profile->denominator_inverse_reuse_ms += local.denominator_inverse_reuse_ms;
-                    profile->denominator_inverse_reuse_hits += local.denominator_inverse_reuse_hits;
-                    profile->denominator_inverse_cache_misses += local.denominator_inverse_cache_misses;
-                }
-            }
-        }
-        else
-        {
-            for (std::size_t point_index = 0; point_index < points.size(); ++point_index)
-            {
-                proof.witnesses.push_back(open_single_point_fold(
-                    folded_plan,
-                    point_index,
-                    points[point_index],
-                    key.pk,
-                    &inverse_denominator_cache,
-                    profile));
-            }
-        }
+        const auto witness = open_single_point_fold(
+            folded_plan,
+            0,
+            point,
+            key.pk,
+            &inverse_denominator_cache,
+            profile);
         if (profile != nullptr)
         {
             profile->finalize_ms += elapsed_ms(witness_start, Clock::now());
         }
-        return proof;
+        return witness;
     }
 
-    bool KZG::verify_batch(
+    bool KZG::verify_point_group(
         const std::vector<Commitment>& commitments,
-        const std::vector<FieldElement>& points,
-            const std::vector<std::vector<FieldElement>>& claimed_values,
-            const FieldElement& folding_challenge,
-            const OpeningProof& proof,
-            const KZGVerifierKey& vk)
+        const FieldElement& point,
+        const std::vector<FieldElement>& claimed_values,
+        const FieldElement& folding_challenge,
+        const G1Point& witness,
+        const KZGVerifierKey& vk)
     {
-        if (commitments.size() != claimed_values.size() || proof.witnesses.size() != points.size())
+        if (commitments.empty() || commitments.size() != claimed_values.size())
         {
-            throw std::runtime_error("batch verification shape mismatch");
+            throw std::runtime_error("point-group verification shape mismatch");
         }
-        for (const auto& values : claimed_values)
+        if (folding_challenge.is_zero())
         {
-            if (values.size() != points.size())
-            {
-                throw std::runtime_error("batch verification value count does not match points");
-            }
+            throw std::runtime_error(
+                "point-group verification folding challenge must be non-zero");
         }
 
         const auto powers = folding_powers(folding_challenge, commitments.size());
         const auto folded_commitments = folded_commitment_points(
             commitments, powers);
-        std::vector<std::uint8_t> point_results(points.size(), 0);
-        auto verify_point_range = [&](std::size_t begin, std::size_t end)
+        mcl::Fr sum;
+        sum.clear();
+        for (std::size_t i = 0; i < claimed_values.size(); ++i)
         {
-            for (std::size_t point_index = begin; point_index < end; ++point_index)
-            {
-                const auto folded_value = folded_claim_value(
-                    claimed_values, powers, point_index);
-                const auto folded_commitment = g1_sub(
-                    folded_commitments,
-                    g1_mul(vk.g1_generator, folded_value));
-                point_results[point_index] = verify_pairing_equation(
-                    folded_commitment,
-                    proof.witnesses[point_index],
-                    points[point_index],
-                    vk)
-                    ? 1
-                    : 0;
-            }
-        };
-        // Each opening point keeps its own pairing equation and acceptance bit.
-        // The two canonical domain points are independent and expensive enough
-        // to verify concurrently; cap the fan-out so nested verifier work cannot
-        // oversubscribe the machine.
-        if (points.size() == 1)
-        {
-            verify_point_range(0, 1);
+            mcl::Fr product;
+            mcl::Fr::mul(
+                product,
+                claimed_values[i].native(),
+                powers[i].native());
+            mcl::Fr::add(sum, sum, product);
         }
-        else
-        {
-            parallel_for_chunks_capped(
-                points.size(), 1, 2, verify_point_range);
-        }
-        return std::all_of(
-            point_results.begin(), point_results.end(),
-            [](std::uint8_t result) { return result != 0; });
-    }
-
-    OpeningProof KZG::open_external_fold(
-        const std::vector<std::pair<Commitment, FieldElement>>& commitments_and_values,
-        const std::vector<FieldElement>& points,
-        const FieldElement& folding_challenge,
-        const KZGKeyPair& key,
-        BatchOpeningClaimValidation claim_validation)
-    {
-        if (commitments_and_values.size() != points.size())
-        {
-            throw std::runtime_error("external opening shape mismatch");
-        }
-        struct PointGroup
-        {
-            FieldElement point = FieldElement::zero();
-            std::vector<std::size_t> claim_indices;
-        };
-        std::vector<PointGroup> groups;
-        for (std::size_t i = 0; i < points.size(); ++i)
-        {
-            auto it = std::find_if(groups.begin(), groups.end(), [&](const PointGroup& group) {
-                return group.point == points[i];
-            });
-            if (it == groups.end())
-            {
-                groups.push_back(PointGroup{.point = points[i], .claim_indices = {i}});
-            }
-            else
-            {
-                it->claim_indices.push_back(i);
-            }
-        }
-        OpeningProof proof;
-        proof.witnesses.reserve(groups.size());
-        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-        const auto worker_count = std::min<std::size_t>(
-            groups.size(),
-            std::max<std::size_t>(1, cpu_count / 2));
-        const bool run_parallel =
-            util::route2_options().fast_msm
-            && groups.size() > 1
-            && worker_count > 1;
-        auto open_group = [&](std::size_t group_index, const G1MSMExecutionOptions* options) {
-            const auto& group = groups[group_index];
-            std::vector<Commitment> commitments;
-            std::vector<std::vector<FieldElement>> values;
-            commitments.reserve(group.claim_indices.size());
-            values.reserve(group.claim_indices.size());
-            for (const auto claim_index : group.claim_indices)
-            {
-                commitments.push_back(commitments_and_values[claim_index].first);
-                values.push_back({commitments_and_values[claim_index].second});
-            }
-            const auto powers = folding_powers(folding_challenge, commitments.size());
-            const auto plan = build_folded_opening_plan(
-                commitments,
-                values,
-                powers,
-                std::vector<FieldElement>{group.point},
-                options == nullptr ? 0 : options->max_worker_count,
-                claim_validation
-                    == BatchOpeningClaimValidation::
-                        VerifyAgainstOpeningPolynomials);
-            return open_single_point_fold(plan, 0, group.point, key.pk, nullptr, nullptr, 0, options);
-        };
-        if (run_parallel)
-        {
-            const auto worker_cap = std::max<std::size_t>(1, cpu_count / worker_count);
-            const G1MSMExecutionOptions msm_options{.max_worker_count = worker_cap};
-            proof.witnesses.resize(groups.size());
-            std::atomic<std::size_t> next{0};
-            std::vector<std::future<void>> futures;
-            futures.reserve(worker_count);
-            for (std::size_t worker = 0; worker < worker_count; ++worker)
-            {
-                futures.push_back(std::async(std::launch::async, [&]() {
-                    while (true)
-                    {
-                        const auto i = next.fetch_add(1);
-                        if (i >= groups.size())
-                        {
-                            break;
-                        }
-                        proof.witnesses[i] = open_group(i, &msm_options);
-                    }
-                }));
-            }
-            for (auto& future : futures)
-            {
-                future.get();
-            }
-        }
-        else
-        {
-            for (std::size_t i = 0; i < groups.size(); ++i)
-            {
-                proof.witnesses.push_back(open_group(i, nullptr));
-            }
-        }
-        return proof;
-    }
-
-    bool KZG::verify_external_fold(
-        const std::vector<std::pair<Commitment, FieldElement>>& commitments_and_values,
-            const std::vector<FieldElement>& points,
-            const FieldElement& folding_challenge,
-            const OpeningProof& proof,
-            const KZGVerifierKey& vk)
-    {
-        if (commitments_and_values.size() != points.size())
-        {
-            throw std::runtime_error("external verification shape mismatch");
-        }
-        struct PointGroup
-        {
-            FieldElement point = FieldElement::zero();
-            std::vector<std::size_t> claim_indices;
-        };
-        std::vector<PointGroup> groups;
-        for (std::size_t i = 0; i < points.size(); ++i)
-        {
-            auto it = std::find_if(groups.begin(), groups.end(), [&](const PointGroup& group) {
-                return group.point == points[i];
-            });
-            if (it == groups.end())
-            {
-                groups.push_back(PointGroup{.point = points[i], .claim_indices = {i}});
-            }
-            else
-            {
-                it->claim_indices.push_back(i);
-            }
-        }
-        if (proof.witnesses.size() != groups.size())
-        {
-            throw std::runtime_error("external point-group witness count mismatch");
-        }
-        std::vector<std::uint8_t> group_results(groups.size(), 0);
-        parallel_for_chunks_capped(
-            groups.size(),
-            1,
-            0,
-            [&](std::size_t begin, std::size_t end)
-            {
-                for (std::size_t group_index = begin; group_index < end; ++group_index)
-                {
-                    const auto& group = groups[group_index];
-                    std::vector<Commitment> commitments;
-                    std::vector<std::vector<FieldElement>> values;
-                    commitments.reserve(group.claim_indices.size());
-                    values.reserve(group.claim_indices.size());
-                    for (const auto claim_index : group.claim_indices)
-                    {
-                        commitments.push_back(commitments_and_values[claim_index].first);
-                        values.push_back({commitments_and_values[claim_index].second});
-                    }
-                    OpeningProof group_proof{
-                        .witnesses = {proof.witnesses[group_index]}};
-                    group_results[group_index] = verify_batch(
-                        commitments,
-                        {group.point},
-                        values,
-                        folding_challenge,
-                        group_proof,
-                        vk)
-                        ? 1
-                        : 0;
-                }
-            });
-        const auto failed = std::find(group_results.begin(), group_results.end(), 0);
-        if (failed != group_results.end())
-        {
-            if (std::getenv("GATZK_DEBUG_VERIFY") != nullptr)
-            {
-                util::info(
-                    "external_fold_pairing_fail_group="
-                    + std::to_string(
-                        static_cast<std::size_t>(
-                            std::distance(group_results.begin(), failed))));
-            }
-            return false;
-        }
-        return true;
+        const auto folded_value = FieldElement::from_native(sum);
+        const auto numerator = g1_sub(
+            folded_commitments,
+            g1_mul(vk.g1_generator, folded_value));
+        return verify_pairing_equation(numerator, witness, point, vk);
     }
 
     bool KZG::verify_domain_divisibility(

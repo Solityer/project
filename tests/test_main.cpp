@@ -27,6 +27,7 @@
 #include "gatzk/data/loader.hpp"
 #include "gatzk/protocol/challenges.hpp"
 #include "gatzk/protocol/lookup.hpp"
+#include "gatzk/protocol/opening_registry.hpp"
 #include "gatzk/protocol/prover.hpp"
 #include "gatzk/protocol/proof_codec.hpp"
 #include "gatzk/protocol/schema.hpp"
@@ -69,6 +70,139 @@ void require(bool condition, const std::string& message) {
     if (!condition) {
         throw std::runtime_error(message);
     }
+}
+
+struct TestPointGroupProof {
+    std::vector<FieldElement> points;
+    std::vector<gatzk::crypto::G1Point> witnesses;
+};
+
+TestPointGroupProof open_matrix_point_groups(
+    const std::vector<gatzk::crypto::Commitment>& commitments,
+    const std::vector<FieldElement>& points,
+    const std::vector<std::vector<FieldElement>>& values,
+    const FieldElement& first_challenge,
+    const gatzk::crypto::KZGKeyPair& keys) {
+    if (commitments.size() != values.size()) {
+        throw std::runtime_error("test point-group matrix shape mismatch");
+    }
+    TestPointGroupProof proof;
+    proof.points = points;
+    for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
+        std::vector<FieldElement> point_values;
+        point_values.reserve(values.size());
+        for (const auto& column : values) {
+            if (column.size() != points.size()) {
+                throw std::runtime_error("test point-group value shape mismatch");
+            }
+            point_values.push_back(column[point_index]);
+        }
+        proof.witnesses.push_back(gatzk::crypto::KZG::open_point_group(
+            commitments,
+            points[point_index],
+            point_values,
+            first_challenge + FieldElement(point_index),
+            keys));
+    }
+    return proof;
+}
+
+bool verify_matrix_point_groups(
+    const std::vector<gatzk::crypto::Commitment>& commitments,
+    const std::vector<FieldElement>& points,
+    const std::vector<std::vector<FieldElement>>& values,
+    const FieldElement& first_challenge,
+    const TestPointGroupProof& proof,
+    const gatzk::crypto::KZGVerifierKey& vk) {
+    if (proof.points != points || proof.witnesses.size() != points.size()
+        || commitments.size() != values.size()) {
+        throw std::runtime_error("test point-group proof shape mismatch");
+    }
+    for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
+        std::vector<FieldElement> point_values;
+        for (const auto& column : values) {
+            if (column.size() != points.size()) {
+                throw std::runtime_error("test point-group verify shape mismatch");
+            }
+            point_values.push_back(column[point_index]);
+        }
+        if (!gatzk::crypto::KZG::verify_point_group(
+                commitments,
+                points[point_index],
+                point_values,
+                first_challenge + FieldElement(point_index),
+                proof.witnesses[point_index],
+                vk)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+TestPointGroupProof open_claim_point_groups(
+    const std::vector<std::pair<gatzk::crypto::Commitment, FieldElement>>& claims,
+    const std::vector<FieldElement>& points,
+    const FieldElement& first_challenge,
+    const gatzk::crypto::KZGKeyPair& keys) {
+    if (claims.size() != points.size()) {
+        throw std::runtime_error("test external point-group shape mismatch");
+    }
+    TestPointGroupProof proof;
+    for (const auto& point : points) {
+        if (std::find(proof.points.begin(), proof.points.end(), point)
+            == proof.points.end()) {
+            proof.points.push_back(point);
+        }
+    }
+    for (std::size_t group_index = 0; group_index < proof.points.size(); ++group_index) {
+        std::vector<gatzk::crypto::Commitment> commitments;
+        std::vector<FieldElement> values;
+        for (std::size_t i = 0; i < claims.size(); ++i) {
+            if (points[i] == proof.points[group_index]) {
+                commitments.push_back(claims[i].first);
+                values.push_back(claims[i].second);
+            }
+        }
+        proof.witnesses.push_back(gatzk::crypto::KZG::open_point_group(
+            commitments,
+            proof.points[group_index],
+            values,
+            first_challenge + FieldElement(group_index),
+            keys));
+    }
+    return proof;
+}
+
+bool verify_claim_point_groups(
+    const std::vector<std::pair<gatzk::crypto::Commitment, FieldElement>>& claims,
+    const std::vector<FieldElement>& points,
+    const FieldElement& first_challenge,
+    const TestPointGroupProof& proof,
+    const gatzk::crypto::KZGVerifierKey& vk) {
+    if (claims.size() != points.size()
+        || proof.points.size() != proof.witnesses.size()) {
+        throw std::runtime_error("test external point-group proof shape mismatch");
+    }
+    for (std::size_t group_index = 0; group_index < proof.points.size(); ++group_index) {
+        std::vector<gatzk::crypto::Commitment> commitments;
+        std::vector<FieldElement> values;
+        for (std::size_t i = 0; i < claims.size(); ++i) {
+            if (points[i] == proof.points[group_index]) {
+                commitments.push_back(claims[i].first);
+                values.push_back(claims[i].second);
+            }
+        }
+        if (!gatzk::crypto::KZG::verify_point_group(
+                commitments,
+                proof.points[group_index],
+                values,
+                first_challenge + FieldElement(group_index),
+                proof.witnesses[group_index],
+                vk)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void test_parallel_split_intt_equivalence() {
@@ -320,28 +454,33 @@ void test_kzg_opening_selftest() {
     const auto commitment = gatzk::crypto::KZG::commit("P_test", poly, keys);
     const std::vector<FieldElement> points{FieldElement(9)};
     const std::vector<std::vector<FieldElement>> values{{poly.evaluate(points.front())}};
-    const auto proof = gatzk::crypto::KZG::open_batch({commitment}, points, values, FieldElement(13), keys);
+    const auto proof = open_matrix_point_groups(
+        {commitment}, points, values, FieldElement(13), keys);
     require(
-        gatzk::crypto::KZG::verify_batch({commitment}, points, values, FieldElement(13), proof, keys.vk),
+        verify_matrix_point_groups(
+            {commitment}, points, values, FieldElement(13), proof, keys.vk),
         "KZG single-point opening must verify");
     auto bad_values = values;
     bad_values[0][0] += FieldElement::one();
     require(
-        !gatzk::crypto::KZG::verify_batch({commitment}, points, bad_values, FieldElement(13), proof, keys.vk),
+        !verify_matrix_point_groups(
+            {commitment}, points, bad_values, FieldElement(13), proof, keys.vk),
         "KZG claimed-value tamper must reject");
     auto compromised_vk = keys.vk;
     compromised_vk.g2_tau = gatzk::crypto::g2_mul(
         compromised_vk.g2_one,
         points.front());
     require(
-        !gatzk::crypto::KZG::verify_batch(
+        !verify_matrix_point_groups(
             {commitment}, points, values, FieldElement(13), proof, compromised_vk),
         "KZG must reject a verifier key with [tau-z]_2 equal to the identity");
 
     auto verifier_commitment = commitment;
     strip_opening_material(verifier_commitment);
     require(
-        gatzk::crypto::KZG::verify_batch({verifier_commitment}, points, values, FieldElement(13), proof, keys.vk),
+        verify_matrix_point_groups(
+            {verifier_commitment}, points, values,
+            FieldElement(13), proof, keys.vk),
         "KZG verifier-key-only opening must verify without prover polynomial material");
 
     require(
@@ -419,10 +558,10 @@ void test_kzg_opening_selftest() {
         blinded_private.evaluate(private_points[0]),
         blinded_private.evaluate(private_points[1]),
     }};
-    const auto private_opening = gatzk::crypto::KZG::open_batch(
+    const auto private_opening = open_matrix_point_groups(
         {blinded_commitment}, private_points, private_claims, FieldElement(41), keys);
     require(
-        gatzk::crypto::KZG::verify_batch(
+        verify_matrix_point_groups(
             {blinded_commitment}, private_points, private_claims,
             FieldElement(41), private_opening, keys.vk),
         "zero-domain-blinded point-group opening must verify");
@@ -430,7 +569,7 @@ void test_kzg_opening_selftest() {
     invalid_private_claim[0][0] += FieldElement::one();
     require_throws(
         [&] {
-            (void)gatzk::crypto::KZG::open_batch(
+            (void)open_matrix_point_groups(
                 {blinded_commitment}, private_points, invalid_private_claim,
                 FieldElement(41), keys);
         },
@@ -438,7 +577,7 @@ void test_kzg_opening_selftest() {
     auto private_claim_tamper = private_claims;
     private_claim_tamper[0][1] += FieldElement::one();
     require(
-        !gatzk::crypto::KZG::verify_batch(
+        !verify_matrix_point_groups(
             {blinded_commitment}, private_points, private_claim_tamper,
             FieldElement(41), private_opening, keys.vk),
         "zero-domain-blinded opening must reject a claimed-value tamper");
@@ -473,7 +612,7 @@ void test_kzg_opening_selftest() {
         {fold_polynomial_1.evaluate(fold_points[0]),
          fold_polynomial_1.evaluate(fold_points[1])},
     };
-    const auto folded_batch_opening = gatzk::crypto::KZG::open_batch(
+    const auto folded_batch_opening = open_matrix_point_groups(
         {fold_commitment_0, fold_commitment_1},
         fold_points,
         fold_claims,
@@ -505,15 +644,25 @@ void test_kzg_opening_selftest() {
         fold_claims[0][0] + fold_claims[1][0] * fold_challenge,
         fold_claims[0][1] + fold_claims[1][1] * fold_challenge,
     }};
-    const auto explicit_fold_opening = gatzk::crypto::KZG::open_batch(
+    const auto explicit_fold_opening = open_matrix_point_groups(
         {explicit_fold_commitment},
-        fold_points,
-        explicit_fold_claims,
+        {fold_points.front()},
+        {{explicit_fold_claims.front().front()}},
         FieldElement(47),
         keys);
     require(
-        folded_batch_opening.witnesses == explicit_fold_opening.witnesses,
-        "folded evaluation witnesses must equal explicit polynomial witnesses");
+        folded_batch_opening.witnesses.front()
+            == explicit_fold_opening.witnesses.front(),
+        "single point-group folded witness must equal its explicit polynomial witness");
+    require(
+        verify_matrix_point_groups(
+            {fold_commitment_0, fold_commitment_1},
+            fold_points,
+            fold_claims,
+            fold_challenge,
+            folded_batch_opening,
+            keys.vk),
+        "independently challenged point groups must verify");
 }
 
 void test_coefficient_taylor_shift_fixed_shape() {
@@ -576,17 +725,17 @@ void test_coefficient_taylor_shift_fixed_shape() {
         {source, relation_value},
     };
     const std::vector<FieldElement> points{relation_point, relation_point + delta};
-    const auto opening = gatzk::crypto::KZG::open_external_fold(
+    const auto opening = open_claim_point_groups(
         claims, points, FieldElement(47), keys);
     require(
-        gatzk::crypto::KZG::verify_external_fold(
+        verify_claim_point_groups(
             claims, points, FieldElement(47), opening, keys.vk),
         "Taylor-shift relation claims must verify through standard point groups");
     auto tampered_claims = claims;
     tampered_claims[0].first.point = gatzk::crypto::g1_add(
         tampered_claims[0].first.point, keys.g1_generator);
     require(
-        !gatzk::crypto::KZG::verify_external_fold(
+        !verify_claim_point_groups(
             tampered_claims, points, FieldElement(47), opening, keys.vk),
         "tampered Taylor-shift commitment must be rejected");
 }
@@ -715,17 +864,17 @@ void test_cross_domain_indexed_view_shift_relation() {
     };
     const std::vector<FieldElement> points{
         relation_check_point, relation_check_point + delta, z_star};
-    const auto opening = gatzk::crypto::KZG::open_external_fold(
+    const auto opening = open_claim_point_groups(
         claims, points, FieldElement(61), keys);
     require(
-        gatzk::crypto::KZG::verify_external_fold(
+        verify_claim_point_groups(
             claims, points, FieldElement(61), opening, keys.vk),
         "cross-domain indexed-view relation must verify via standard point groups");
     auto tampered_claims = claims;
     tampered_claims[1].first.point = gatzk::crypto::g1_add(
         tampered_claims[1].first.point, keys.g1_generator);
     require(
-        !gatzk::crypto::KZG::verify_external_fold(
+        !verify_claim_point_groups(
             tampered_claims, points, FieldElement(61), opening, keys.vk),
         "cross-domain indexed-view source commitment tamper must reject");
 
@@ -826,20 +975,20 @@ void test_same_point_indexed_view_relation() {
         {multiplicity_commitment, public_value},
     };
     const std::vector<FieldElement> points{z_c, y_public};
-    const auto opening = gatzk::crypto::KZG::open_external_fold(
+    const auto opening = open_claim_point_groups(
         claims, points, FieldElement(61), keys);
-    require(gatzk::crypto::KZG::verify_external_fold(
+    require(verify_claim_point_groups(
                 claims, points, FieldElement(61), opening, keys.vk),
             "m=1 relation must verify only through ordinary point-group claims");
     auto tampered_commitment = claims;
     tampered_commitment[0].first.point = gatzk::crypto::g1_add(
         tampered_commitment[0].first.point, keys.g1_generator);
-    require(!gatzk::crypto::KZG::verify_external_fold(
+    require(!verify_claim_point_groups(
                 tampered_commitment, points, FieldElement(61), opening, keys.vk),
             "m=1 reconstructed G_rel commitment tamper must reject");
     auto tampered_zero = claims;
     tampered_zero[0].second = FieldElement::one();
-    require(!gatzk::crypto::KZG::verify_external_fold(
+    require(!verify_claim_point_groups(
                 tampered_zero, points, FieldElement(61), opening, keys.vk),
             "m=1 relation zero-claim tamper must reject");
 }
@@ -869,16 +1018,19 @@ void test_compact_eval_kzg_regression() {
         {commitment, value},
     };
     const std::vector<FieldElement> points{point};
-    const auto proof = gatzk::crypto::KZG::open_external_fold(openings, points, FieldElement(29), keys);
+    const auto proof = open_claim_point_groups(
+        openings, points, FieldElement(29), keys);
 
     require(
-        gatzk::crypto::KZG::verify_external_fold(openings, points, FieldElement(29), proof, keys.vk),
+        verify_claim_point_groups(
+            openings, points, FieldElement(29), proof, keys.vk),
         "compact evaluation external opening must verify");
 
     auto tampered = openings;
     tampered[0].second += FieldElement::one();
     require(
-        !gatzk::crypto::KZG::verify_external_fold(tampered, points, FieldElement(29), proof, keys.vk),
+        !verify_claim_point_groups(
+            tampered, points, FieldElement(29), proof, keys.vk),
         "compact evaluation external opening must reject a tampered value");
 }
 
@@ -906,29 +1058,132 @@ void test_external_point_grouping_regression() {
     const std::vector<FieldElement> points = {z0, z1, z0};
     gatzk::protocol::PublicMetadata metadata;
     metadata.protocol_name = "zkgat-test";
-    const auto derived_folding =
-        gatzk::protocol::derive_external_opening_folding_challenge(metadata, claims, points);
-    const auto opening = gatzk::crypto::KZG::open_external_fold(
-        claims, points, derived_folding, keys);
-    require(opening.witnesses.size() == 2,
+    const std::vector<gatzk::protocol::PayloadValueKind> kinds(
+        claims.size(),
+        gatzk::protocol::PayloadValueKind::MaskedPrivateValue);
+    gatzk::protocol::StandardPointGroupRegistry registry;
+    gatzk::protocol::add_external_claims(registry, claims, points, kinds);
+    registry.finalize();
+    require(registry.groups().size() == 2,
             "external opening must encode one witness per distinct point");
-    require(gatzk::crypto::KZG::verify_external_fold(
-                claims, points, derived_folding, opening, keys.vk),
-            "point-grouped external opening must verify");
-    auto duplicate_witness = opening;
-    duplicate_witness.witnesses.push_back(opening.witnesses.front());
+    const auto rho0 = gatzk::protocol::derive_point_group_challenge(
+        metadata, registry.group_at(z0));
+    const auto rho1 = gatzk::protocol::derive_point_group_challenge(
+        metadata, registry.group_at(z1));
+    require(!rho0.is_zero() && !rho1.is_zero() && rho0 != rho1,
+            "distinct points must derive independent non-zero challenges");
+
+    std::vector<gatzk::protocol::PointGroupOpening> openings;
+    for (const auto& group : registry.groups()) {
+        std::vector<gatzk::crypto::Commitment> group_commitments;
+        std::vector<FieldElement> group_values;
+        for (const auto& claim : group.claims) {
+            group_commitments.push_back(claim.commitment);
+            group_values.push_back(claim.value);
+        }
+        const auto rho = gatzk::protocol::derive_point_group_challenge(
+            metadata, group);
+        const auto witness = gatzk::crypto::KZG::open_point_group(
+            group_commitments, group.point, group_values, rho, keys);
+        require(gatzk::crypto::KZG::verify_point_group(
+                    group_commitments, group.point, group_values, rho,
+                    witness, keys.vk),
+                "point-grouped external opening must verify");
+        openings.push_back({
+            .group_id = group.group_id,
+            .owner_block = group.owner_block,
+            .point = group.point,
+            .witness = witness,
+        });
+    }
+    auto duplicate_witness = openings;
+    duplicate_witness.push_back(openings.front());
     require_throws(
         [&] {
-            (void)gatzk::crypto::KZG::verify_external_fold(
-                claims, points, derived_folding, duplicate_witness, keys.vk);
+            gatzk::protocol::require_opening_layout(
+                duplicate_witness, registry.groups());
         },
         "duplicate point-group witness must reject");
+
     auto tampered_claims = claims;
     tampered_claims[0].second += FieldElement::one();
-    require(!(derived_folding ==
-                  gatzk::protocol::derive_external_opening_folding_challenge(
-                      metadata, tampered_claims, points)),
+    gatzk::protocol::StandardPointGroupRegistry tampered_registry;
+    gatzk::protocol::add_external_claims(
+        tampered_registry, tampered_claims, points, kinds);
+    tampered_registry.finalize();
+    require(rho0 != gatzk::protocol::derive_point_group_challenge(
+                        metadata, tampered_registry.group_at(z0)),
             "claimed values must be absorbed before the point-group folding challenge");
+
+    auto duplicate_claims = claims;
+    duplicate_claims.push_back(claims.front());
+    auto duplicate_points = points;
+    duplicate_points.push_back(z0);
+    auto duplicate_kinds = kinds;
+    duplicate_kinds.push_back(kinds.front());
+    gatzk::protocol::StandardPointGroupRegistry deduplicated_registry;
+    gatzk::protocol::add_external_claims(
+        deduplicated_registry,
+        duplicate_claims,
+        duplicate_points,
+        duplicate_kinds);
+    deduplicated_registry.finalize();
+    require(deduplicated_registry.group_at(z0).claims.size() == 2,
+            "identical commitment-point claims must deduplicate");
+
+    auto conflicting_claims = duplicate_claims;
+    conflicting_claims.back().second += FieldElement::one();
+    gatzk::protocol::StandardPointGroupRegistry conflict_registry;
+    require_throws(
+        [&] {
+            gatzk::protocol::add_external_claims(
+                conflict_registry,
+                conflicting_claims,
+                duplicate_points,
+                duplicate_kinds);
+        },
+        "conflicting duplicate claims must reject before challenge derivation");
+
+    auto reverse_claims = claims;
+    auto reverse_points = points;
+    auto reverse_kinds = kinds;
+    std::reverse(reverse_claims.begin(), reverse_claims.end());
+    std::reverse(reverse_points.begin(), reverse_points.end());
+    std::reverse(reverse_kinds.begin(), reverse_kinds.end());
+    gatzk::protocol::StandardPointGroupRegistry reverse_registry;
+    gatzk::protocol::add_external_claims(
+        reverse_registry, reverse_claims, reverse_points, reverse_kinds);
+    reverse_registry.finalize();
+    require(
+        gatzk::protocol::derive_point_group_challenge(
+            metadata, reverse_registry.group_at(z0)) == rho0
+        && gatzk::protocol::derive_point_group_challenge(
+            metadata, reverse_registry.group_at(z1)) == rho1,
+        "canonical groups and challenges must not depend on insertion order");
+
+    gatzk::protocol::StandardPointGroupRegistry domain_merge_registry;
+    domain_merge_registry.add_domain_claim(
+        "unit",
+        z0,
+        gatzk::protocol::make_standard_opening_claim(
+            "claim:domain:unit:P_group_0:0",
+            c0.name,
+            "domain_evaluation",
+            "domain_polynomial",
+            gatzk::protocol::PayloadValueKind::MaskedPrivateValue,
+            "Eval_dom:unit:P_group_0:0",
+            c0,
+            p0.evaluate(z0)));
+    gatzk::protocol::add_external_claims(
+        domain_merge_registry,
+        {{c2, p2.evaluate(z0)}},
+        {z0},
+        {gatzk::protocol::PayloadValueKind::MaskedPrivateValue});
+    domain_merge_registry.finalize();
+    require(domain_merge_registry.groups().size() == 1
+                && domain_merge_registry.groups().front().owner_block
+                    == "Open_dom:unit",
+            "external claim at a work-domain point must merge into Open_dom");
 }
 
 void test_packed_backend_padded_tail_regression() {
@@ -1229,7 +1484,7 @@ void test_metadata_and_schema_gates() {
     require(config.opening_mode == "point_grouped_batch_opening", "config opening mode mismatch");
     require(config.binding_mode == "zk_subproof_for_crpc", "config binding mode mismatch");
     require(config.srs_type == "trusted_srs", "config SRS type mismatch");
-    require(config.srs_id == "cora_formal_srs_v1", "config SRS id mismatch");
+    require(config.srs_id == "cora_formal_srs_v2", "config SRS id mismatch");
     require(
         gatzk::protocol::schema_accepts_evaluation(
             gatzk::protocol::PolynomialVisibility::PrivateWitness,
@@ -1737,15 +1992,16 @@ void test_compiler_observation_certificate_gate() {
     require(artifact.security_budget_ledger.size()
                 == artifact.random_identity_ledger.size() + 1,
             "each random identity must have one exact budget term plus the summary");
-    for (const auto& folding : {
-             std::string("point_group.rho@FH"),
-             std::string("point_group.rho@edge"),
-             std::string("point_group.rho@in"),
-             std::string("point_group.rho@d_h"),
-             std::string("point_group.rho@cat"),
-             std::string("point_group.rho@C"),
-             std::string("point_group.rho@N"),
-             std::string("external_group.rho")}) {
+    std::vector<std::string> point_group_foldings;
+    for (const auto* domain : {"FH", "edge", "in", "d_h", "cat", "C", "N"}) {
+        point_group_foldings.push_back(
+            "point_group.rho@Open_dom:" + std::string(domain) + ":0");
+        point_group_foldings.push_back(
+            "point_group.rho@Open_dom:" + std::string(domain) + ":1");
+    }
+    point_group_foldings.push_back(
+        "point_group.rho@W_ext:each-distinct-point");
+    for (const auto& folding : point_group_foldings) {
         require(std::any_of(
                     artifact.random_identity_ledger.begin(),
                     artifact.random_identity_ledger.end(),
@@ -2215,8 +2471,7 @@ void test_strict_proof_codec() {
         "renamed Pi_bind model commitment must be rejected by parser");
 }
 
-void test_verifier_only_boundary() {
-    const auto& fixture = cora_secure_fixture();
+void require_verifier_only_boundary(const SecureFixture& fixture) {
     auto context = fixture.context;
     auto proof = fixture.proof;
     strip_context_to_verifier_only(context);
@@ -2235,6 +2490,10 @@ void test_verifier_only_boundary() {
         "verifier payload audit must observe zero private plain values");
 }
 
+void test_verifier_only_boundary() {
+    require_verifier_only_boundary(cora_secure_fixture());
+}
+
 void require_rejects(
     const SecureFixture& fixture,
     gatzk::protocol::Proof proof,
@@ -2242,16 +2501,117 @@ void require_rejects(
     require(!gatzk::protocol::verify(fixture.context, proof), label + " must reject");
 }
 
+void require_point_group_proof_tampers_reject(
+    const SecureFixture& fixture) {
+    auto witness_tamper = fixture.proof;
+    require(!witness_tamper.opening_groups.empty(),
+            "fixture must carry standard point-group openings");
+    witness_tamper.opening_groups.front().witness = gatzk::crypto::g1_add(
+        witness_tamper.opening_groups.front().witness,
+        fixture.context.kzg.g1_generator);
+    require_rejects(
+        fixture, std::move(witness_tamper), "point-group witness tamper");
+
+    auto group_id_tamper = fixture.proof;
+    group_id_tamper.opening_groups.front().group_id += ":tampered";
+    require_rejects(fixture, group_id_tamper, "point-group id tamper");
+    require_throws(
+        [&] { (void)gatzk::protocol::serialize_proof(group_id_tamper); },
+        "serializer must reject a non-canonical point-group id");
+
+    auto owner_tamper = fixture.proof;
+    auto& owner_group = owner_tamper.opening_groups.front();
+    owner_group.owner_block = "Open_dom:unregistered";
+    owner_group.group_id = gatzk::protocol::point_group_id(
+        owner_group.owner_block, owner_group.point);
+    require_rejects(fixture, owner_tamper, "point-group owner tamper");
+    require_throws(
+        [&] { (void)gatzk::protocol::serialize_proof(owner_tamper); },
+        "serializer must reject an unregistered point-group owner");
+
+    auto point_tamper = fixture.proof;
+    point_tamper.opening_groups.front().point += FieldElement::one();
+    require_rejects(
+        fixture, std::move(point_tamper),
+        "point-group evaluation point tamper");
+
+    auto duplicate_tamper = fixture.proof;
+    duplicate_tamper.opening_groups.push_back(
+        duplicate_tamper.opening_groups.front());
+    require_rejects(
+        fixture, duplicate_tamper,
+        "duplicate point-group owner/witness tamper");
+    require_throws(
+        [&] { (void)gatzk::protocol::serialize_proof(duplicate_tamper); },
+        "serializer must reject a duplicate point-group owner/witness");
+
+    auto order_tamper = fixture.proof;
+    require(order_tamper.opening_groups.size() >= 2,
+            "fixture must carry multiple point groups");
+    std::swap(order_tamper.opening_groups[0], order_tamper.opening_groups[1]);
+    require_rejects(
+        fixture, order_tamper, "point-group canonical order tamper");
+    require_throws(
+        [&] { (void)gatzk::protocol::serialize_proof(order_tamper); },
+        "serializer must reject non-canonical point-group order");
+
+    auto malformed_wire = gatzk::protocol::serialize_proof(fixture.proof);
+    const auto& encoded_group_id = fixture.proof.opening_groups.front().group_id;
+    const auto encoded_group_id_offset = find_wire_token(
+        malformed_wire, encoded_group_id);
+    malformed_wire[
+        encoded_group_id_offset + encoded_group_id.size() - 1] ^= 1;
+    require_throws(
+        [&] {
+            (void)gatzk::protocol::parse_proof(
+                fixture.context, malformed_wire);
+        },
+        "strict parser must reject a tampered point-group reference");
+}
+
 void test_unit_coefficient_basis_closure() {
     const auto& fixture = unit_security_fixture();
     require(gatzk::protocol::verify(fixture.context, fixture.proof),
             "unit coefficient-basis proof must verify");
+
+    auto swapped_artifact_context = fixture.context;
+    swapped_artifact_context.compiler_artifact =
+        std::make_shared<gatzk::protocol::ProtocolCompilerArtifact>(
+            *fixture.context.compiler_artifact);
+    require(!gatzk::protocol::verify(
+                swapped_artifact_context, fixture.proof),
+            "an unvalidated compiler-artifact object swap must reject");
+
+    auto mutated_artifact_context = fixture.context;
+    auto mutated_artifact =
+        std::make_shared<gatzk::protocol::ProtocolCompilerArtifact>(
+            *fixture.context.compiler_artifact);
+    mutated_artifact->instance_canonical_bytes.push_back('\0');
+    mutated_artifact_context.compiler_artifact = std::move(mutated_artifact);
+    require(!gatzk::protocol::verify(
+                mutated_artifact_context, fixture.proof),
+            "a mutated compiler-artifact replacement must reject");
+
     const auto bytes = gatzk::protocol::serialize_proof(fixture.proof);
+    require_throws(
+        [&] {
+            (void)gatzk::protocol::parse_proof(
+                swapped_artifact_context, bytes);
+        },
+        "strict parser must reject an unvalidated compiler-artifact object swap");
+    require_throws(
+        [&] {
+            (void)gatzk::protocol::parse_proof(
+                mutated_artifact_context, bytes);
+        },
+        "strict parser must reject a mutated compiler-artifact replacement");
     const auto parsed = gatzk::protocol::parse_proof(fixture.context, bytes);
     require(gatzk::protocol::verify(fixture.context, parsed),
             "unit coefficient-basis proof must survive strict parser round-trip");
     require(gatzk::protocol::serialize_proof(parsed) == bytes,
             "unit coefficient-basis proof wire encoding must be canonical");
+    require_point_group_proof_tampers_reject(fixture);
+    require_verifier_only_boundary(fixture);
 
     require(!fixture.proof.dynamic_commitments.empty(),
             "unit proof must contain a batched dynamic commitment group");
@@ -2946,17 +3306,7 @@ void test_tamper_rejection_suite() {
         proof_nonce_tamper.public_metadata.proof_nonce[0] == '0' ? '1' : '0';
     require_rejects(fixture, proof_nonce_tamper, "proof nonce tamper");
 
-    auto public_output_owner_witness_tamper = fixture.proof;
-    require(!public_output_owner_witness_tamper.external_proof.witnesses.empty(),
-            "fixture must carry the public-output owner witness in W_ext");
-    public_output_owner_witness_tamper.external_proof.witnesses.front() =
-        gatzk::crypto::g1_add(
-            public_output_owner_witness_tamper.external_proof.witnesses.front(),
-            fixture.context.kzg.g1_generator);
-    require_rejects(
-        fixture,
-        public_output_owner_witness_tamper,
-        "public output W_ext owner witness tamper");
+    require_point_group_proof_tampers_reject(fixture);
 
     auto challenge_tamper = fixture.proof;
     challenge_tamper.challenges.begin()->second += FieldElement::one();
