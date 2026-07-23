@@ -1,0 +1,2 @@
+$ /home/pzh/project/build/gatzk_srs_setup compile /home/pzh/project/results/performance_engineering/cora_capture/20260723T033929Z/srs_preflight/current_protocol_compiler_artifact.txt 16777215 /home/pzh/project/configs/srs_cora_max_envelope_v1.cfg C=8 FH=4194304 N=4096 cat=128 d=16 edge=32768 in=2048
+wrote protocol compiler artifact "/home/pzh/project/results/performance_engineering/cora_capture/20260723T033929Z/srs_preflight/current_protocol_compiler_artifact.txt"

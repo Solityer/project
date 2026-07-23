@@ -1,0 +1,12 @@
+timestamp_utc,phase,pid,rss_kib,cpu_percent,thread_count,mem_total_used_available_mib,gpu_util_percent_used_total_mib
+2026-07-23T03:39:29Z,build,3291190,6836,0.0,1,not_available,0; [N/A]; [N/A]
+2026-07-23T03:39:34Z,build,3291190,not_available,not_available,0,not_available,0; [N/A]; [N/A]
+2026-07-23T03:39:34Z,build_compile,3291343,2824,0.0,1,not_available,0; [N/A]; [N/A]
+2026-07-23T03:39:40Z,build_compile,3291343,not_available,not_available,0,not_available,0; [N/A]; [N/A]
+2026-07-23T03:39:40Z,srs_compile,3291496,5236,not_available,0,not_available,0; [N/A]; [N/A]
+2026-07-23T03:39:45Z,srs_compile,3291496,not_available,not_available,0,not_available,0; [N/A]; [N/A]
+2026-07-23T03:39:46Z,main,3291631,5420,100,1,not_available,0; [N/A]; [N/A]
+2026-07-23T03:39:51Z,main,3291631,3297572,366,20,not_available,0; [N/A]; [N/A]
+2026-07-23T03:39:56Z,main,3291631,3727960,233,20,not_available,0; [N/A]; [N/A]
+2026-07-23T03:40:01Z,main,3291631,5038708,205,21,not_available,0; [N/A]; [N/A]
+2026-07-23T03:40:06Z,main,3291631,not_available,not_available,0,not_available,0; [N/A]; [N/A]
