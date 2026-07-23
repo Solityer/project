@@ -1,0 +1,1 @@
+mode=parse repeats=3 proof_size_bytes=250441 median_ms=22.469 min_ms=22.395 max_ms=23.688 verify_metadata_median_ms=0.000 verify_transcript_median_ms=0.000 verify_domain_opening_median_ms=0.000 verify_point_group_registry_median_ms=0.000 verify_quotient_median_ms=0.000 verify_external_median_ms=0.000 verify_ok=true metadata_sink=0

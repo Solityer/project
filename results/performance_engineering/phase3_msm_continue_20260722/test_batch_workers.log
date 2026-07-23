@@ -1,0 +1,8 @@
+Internal ctest changing into directory: /home/pzh/project/build
+Test project /home/pzh/project/build
+    Start 1: gatzk_tests
+1/1 Test #1: gatzk_tests ......................   Passed    0.57 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =   0.57 sec

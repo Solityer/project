@@ -1,0 +1,102 @@
+[  3%] Built target gatzk_mcl_build
+[  7%] Building CXX object CMakeFiles/gatzkml.dir/src/protocol/schema.cpp.o
+[ 14%] Building CXX object CMakeFiles/gatzkml.dir/src/protocol/artifact_export.cpp.o
+[ 14%] Building CXX object CMakeFiles/gatzkml.dir/src/protocol/prover.cpp.o
+[ 17%] Building CXX object CMakeFiles/gatzkml.dir/src/protocol/proof_codec.cpp.o
+[ 21%] Building CXX object CMakeFiles/gatzkml.dir/src/protocol/quotients.cpp.o
+[ 25%] Building CXX object CMakeFiles/gatzkml.dir/src/protocol/schema_labels.cpp.o
+/home/pzh/project/src/protocol/schema.cpp: In lambda function:
+/home/pzh/project/src/protocol/schema.cpp:577:13: warning: missing initializer for member ‘gatzk::protocol::CanonicalMatrixRelationMeta::column_objects’ [-Wmissing-field-initializers]
+  577 |             };
+      |             ^
+/home/pzh/project/src/protocol/schema.cpp: In lambda function:
+/home/pzh/project/src/protocol/schema.cpp:653:13: warning: missing initializer for member ‘gatzk::protocol::AggregationRelationMeta::source_route’ [-Wmissing-field-initializers]
+  653 |             };
+      |             ^
+/home/pzh/project/src/protocol/schema.cpp:653:13: warning: missing initializer for member ‘gatzk::protocol::AggregationRelationMeta::target_route’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:653:13: warning: missing initializer for member ‘gatzk::protocol::AggregationRelationMeta::commitment_order’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp: In lambda function:
+/home/pzh/project/src/protocol/schema.cpp:699:13: warning: missing initializer for member ‘gatzk::protocol::RouteTerminalRelationMeta::shifted_accumulator_object’ [-Wmissing-field-initializers]
+  699 |             };
+      |             ^
+/home/pzh/project/src/protocol/schema.cpp:699:13: warning: missing initializer for member ‘gatzk::protocol::RouteTerminalRelationMeta::relation_virtual_object’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:699:13: warning: missing initializer for member ‘gatzk::protocol::RouteTerminalRelationMeta::challenge_label’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp: In function ‘std::vector<gatzk::protocol::BindingRelationMeta> gatzk::protocol::build_binding_relation_metadata(const ProtocolContext&)’:
+/home/pzh/project/src/protocol/schema.cpp:723:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::layer_id’ [-Wmissing-field-initializers]
+  723 |         });
+      |         ^
+/home/pzh/project/src/protocol/schema.cpp:723:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::head_id’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:723:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::canonical_matrices’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:723:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::aggregation_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:723:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::route_terminal_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:723:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::indexed_views’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:723:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::coefficient_basis_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:723:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::shift_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:748:17: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::canonical_matrices’ [-Wmissing-field-initializers]
+  748 |                 };
+      |                 ^
+/home/pzh/project/src/protocol/schema.cpp:748:17: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::aggregation_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:748:17: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::route_terminal_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:748:17: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::indexed_views’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:748:17: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::coefficient_basis_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:748:17: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::shift_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:788:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::head_id’ [-Wmissing-field-initializers]
+  788 |             };
+      |             ^
+/home/pzh/project/src/protocol/schema.cpp:788:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::canonical_matrices’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:788:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::aggregation_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:788:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::route_terminal_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:788:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::indexed_views’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:788:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::coefficient_basis_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:788:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::shift_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:817:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::canonical_matrices’ [-Wmissing-field-initializers]
+  817 |             };
+      |             ^
+/home/pzh/project/src/protocol/schema.cpp:817:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::aggregation_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:817:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::route_terminal_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:817:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::indexed_views’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:817:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::coefficient_basis_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:817:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::shift_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:1035:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::head_id’ [-Wmissing-field-initializers]
+ 1035 |         };
+      |         ^
+/home/pzh/project/src/protocol/schema.cpp:1035:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::canonical_matrices’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:1035:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::aggregation_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:1035:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::route_terminal_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:1035:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::indexed_views’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:1035:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::coefficient_basis_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:1035:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::shift_relations’ [-Wmissing-field-initializers]
+[ 28%] Building CXX object CMakeFiles/gatzkml.dir/src/protocol/verifier.cpp.o
+/home/pzh/project/src/protocol/verifier.cpp: In function ‘bool gatzk::protocol::verify(const ProtocolContext&, const Proof&, RunMetrics*)’:
+/home/pzh/project/src/protocol/verifier.cpp:2582:25: warning: missing initializer for member ‘gatzk::crypto::Commitment::opening_polynomial’ [-Wmissing-field-initializers]
+ 2582 |                         },
+      |                         ^
+/home/pzh/project/src/protocol/verifier.cpp:2640:29: warning: missing initializer for member ‘gatzk::crypto::Commitment::opening_polynomial’ [-Wmissing-field-initializers]
+ 2640 |                             },
+      |                             ^
+/home/pzh/project/src/protocol/verifier.cpp:2692:21: warning: missing initializer for member ‘gatzk::crypto::Commitment::opening_polynomial’ [-Wmissing-field-initializers]
+ 2692 |                     };
+      |                     ^
+/home/pzh/project/src/protocol/verifier.cpp:2760:17: warning: missing initializer for member ‘gatzk::crypto::Commitment::opening_polynomial’ [-Wmissing-field-initializers]
+ 2760 |                 };
+      |                 ^
+/home/pzh/project/src/protocol/verifier.cpp:2766:17: warning: missing initializer for member ‘gatzk::crypto::Commitment::opening_polynomial’ [-Wmissing-field-initializers]
+ 2766 |                 };
+      |                 ^
+/home/pzh/project/src/protocol/verifier.cpp:2868:17: warning: missing initializer for member ‘gatzk::crypto::Commitment::opening_polynomial’ [-Wmissing-field-initializers]
+ 2868 |                 };
+      |                 ^
+[ 32%] Linking CXX static library libgatzkml.a
+[ 92%] Built target gatzkml
+[ 96%] Building CXX object CMakeFiles/gatzk_t_edge_eval_stage_bench.dir/tools/benchmarks/t_edge_eval_stage_bench.cpp.o
+[100%] Linking CXX executable gatzk_t_edge_eval_stage_bench
+[100%] Built target gatzk_t_edge_eval_stage_bench
+[  3%] Built target gatzk_mcl_build
+[ 92%] Built target gatzkml
+[ 96%] Building CXX object CMakeFiles/gatzk_proof_codec_stage_bench.dir/tools/benchmarks/proof_codec_stage_bench.cpp.o
+[100%] Linking CXX executable gatzk_proof_codec_stage_bench
+[100%] Built target gatzk_proof_codec_stage_bench
+[  3%] Built target gatzk_mcl_build
+[ 92%] Built target gatzkml
+[ 96%] Linking CXX executable gatzk_tests
+[100%] Built target gatzk_tests

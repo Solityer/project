@@ -2,173 +2,208 @@
 
 Last updated: 2026-07-22 (Asia/Shanghai)
 
-## Status and scope
+## Status and measurement contract
 
-The bounded representative-path objective for this round is met.  The median
-of `commitment_time + prove_time + verify_time` fell by 92.029% against the
-single frozen baseline, and the median wall time fell by 91.967%.  This is not
-a five-dataset result and does not authorize or claim completion of the full
-CPU/GPU experiment matrix.
+This record describes only bounded production-path work. No complete Cora,
+Citeseer, Pubmed, PPI, or ogbn-arxiv proof and no five-dataset CPU/GPU matrix
+was run. No SRS was generated or modified.
 
-No complete Cora, Citeseer, Pubmed, PPI, or ogbn-arxiv proof was run.  No large
-SRS was generated.  All measurements used the existing
-`unit_security_srs_v1`, the Release build, CPUs 0-19, and the production
-`exclusive_commit_prove_verify_v2` timing contract.
+The representative entry is:
 
-The representative entry was
-`gatzk_proof_codec_stage_bench generate configs/unit_security_regression.cfg`.
-It executes the production context, trace, dynamic commitments, quotient,
-point-group openings, proof assembly, in-memory canonical serialization,
-strict parsing, and verifier.  Its input is bounded, but it uses the same
-algorithms, proof objects, KZG keys, codec/parser, and verifier entry points as
-the five formal configurations.  Every sample was a fresh process with the
-same config, seed policy, backend, CPU affinity, and SRS.
+```text
+taskset -c 0-19 build/gatzk_proof_codec_stage_bench generate \
+  configs/unit_security_regression.cfg <proof.bin> 1
+```
+
+Each fresh process uses the Release CPU build and the existing
+`unit_security_srs_v1`. The entry executes the production context, trace,
+dynamic commitments, quotient materialization, point-group witnesses, proof
+assembly, in-memory canonical serialization, strict parsing, and verifier.
+All timing uses `exclusive_commit_prove_verify_v2`; the formal acceptance
+metric is the sum of `commitment_time`, `prove_time`, and `verify_time`.
+
+The prior 75% reduction target was not reached. The retained final median is
+26.207% below the one frozen baseline, with a corresponding 24.859% wall-time
+reduction. This document therefore does not claim that Phase 3 or the complete
+experiment matrix is finished.
 
 ## Frozen baseline
 
-Exactly three runs were taken before the first production optimization in this
-round.  The baseline was never rolled forward.
+Exactly three runs were taken before this round's production changes. The
+baseline was never rolled forward.
 
 | Metric | Median | Min | Max |
 | --- | ---: | ---: | ---: |
-| `commitment_time` (ms) | 21184.461 | 21143.730 | 21302.674 |
-| `prove_time` (ms) | 24829.257 | 24761.946 | 24991.354 |
-| `verify_time` (ms) | 649.522 | 627.620 | 665.983 |
-| Three-time sum (ms) | 46612.391 | 46600.606 | 46943.551 |
-| Wall time (ms) | 48876.405 | 48817.595 | 49185.314 |
-| Peak RSS (KiB) | 793004 | 792960 | 793140 |
-| `proof_size_bytes` | 250449 | 250439 | 250451 |
+| `commitment_time` (ms) | 1682.144 | 1677.759 | 1696.085 |
+| `prove_time` (ms) | 2143.149 | 2101.188 | 2146.575 |
+| `verify_time` (ms) | 76.633 | 75.903 | 77.822 |
+| Three-time sum (ms) | 3897.541 | 3873.176 | 3906.541 |
+| Program wall time (ms) | 4110.572 | 4085.059 | 4115.829 |
+| Peak RSS (KiB) | 803868 | 803760 | 804364 |
+| `proof_size_bytes` | 250447 | 250440 | 250448 |
 
-The mutually exclusive baseline candidates covered 91.516% of the formal
-three-time sum:
-
-| Candidate | Median (ms) | Share of formal sum |
-| --- | ---: | ---: |
-| Dynamic commitments/MSM | 17046.960 | 36.57% |
-| Quotient non-commitment materialization | 16764.043 | 35.96% |
-| Domain plus external opening witnesses | 5402.863 | 11.59% |
-| Derived commitment points | 3444.044 | 7.39% |
+Baseline diagnostic medians included dynamic commitment MSM 1411.456 ms,
+`t_edge` 945.998 ms, and domain plus external opening 607.476 ms.
 
 ## Retained production changes
 
-### Shared arithmetic backend
+### Common MSM and commitment paths
 
-The vendored MCL archive was previously compiled without any optimization
-level even though the main project was a Release build.  Its formal CMake rule
-now supplies `-O3 -DNDEBUG`.  This is the largest retained change and directly
-accelerates field arithmetic, curve multiplication/MSM, opening witnesses, and
-pairing without changing their inputs, equations, or serialized results.
+- Replaced repeated per-call `std::async` creation in the common curve layer
+  with bounded persistent inner-MSM and object-batch worker pools. The pools
+  are separate so an object worker can wait for an inner MSM without consuming
+  the same queue needed to complete it.
+- Split large independent MSM work into twice as many chunks as active workers
+  to reduce long-tail imbalance on this heterogeneous 20-core aarch64 CPU.
+- Routed dynamic commitment batches and same-base multiplication through the
+  shared bounded workers. Results are accumulated in original index order, so
+  commitment and transcript order are unchanged.
+- Added a proof-local pointer-identity fast lookup ahead of the existing exact
+  semantic evaluation-commitment cache. It only reuses a point for the same
+  retained Polynomial value object, domain, and Lagrange SRS; the existing
+  hash plus full-vector equality path remains the semantic fallback. No scalar,
+  blinder, randomness, or cache state crosses proofs.
 
-MCL LLVM, bint assembly, and MCL's native MSM remain disabled.  On this aarch64
-host the bundled native MSM implementation is AVX-512-only, and the LLVM
-material requires a clang toolchain that is not installed.  The retained build
-therefore uses the existing portable backend and current dependencies.
+These changes apply to the production KZG commitment helpers used by dynamic,
+binding/helper/shift, quotient, proof-local reblinding, and witness MSM paths.
+Every benchmark compares the resulting G1 point against the original exact
+MCL result and rejects a mismatch.
 
-### Dynamic commitments/MSM
+### Point-group opening witnesses
 
-- MSM fanout for 256-or-larger effective inputs is raised to at most 16 workers.
-- Batch scheduling uses effective nonzero/folded work rather than padded vector
-  length, and cached/small batches may use bounded outer parallelism.
-- A per-proof exact semantic evaluation-commitment cache shares only
-  `sum(value_i * L_i)` for byte-for-byte equal field vectors on the same domain
-  and Lagrange SRS.  Hash matches are confirmed by full vector equality.
-- Every polynomial still adds its own independent `Z_D * R` blinding
-  commitment.  The cache is execution-only, never serialized, and does not
-  cross proofs, challenges, owners, witnesses, or opening groups.
+- Replaced the folded-plan linear search by a proof-local pointer index while
+  preserving first-occurrence order and point-local powers.
+- Made folded-row fanout depend on both row count and term count, avoiding
+  parallel overhead for small groups and exposing work for large groups.
+- Added execution-only field/MSM caps to `open_point_group`; they do not enter
+  the transcript, proof, or verifier equation.
+- Scheduled larger groups first. Domain groups use bounded outer workers with
+  adaptive inner caps; external groups use full outer concurrency and one
+  inner worker per group on this host. Witnesses are stored back by canonical
+  group index, so proof order is unchanged.
+- Added mutually exclusive opening diagnostics for quotient assembly, witness
+  MSM, and blinder witness work.
 
-### Quotient materialization and `t_edge`
+Each evaluation point still has its own challenge, group, owner, witness, and
+KZG equation. No point, commitment, opening, or blinding contribution was
+removed or merged.
 
-- The bounded `t_edge` point evaluator now exposes enough independent work to
-  all 20 CPUs instead of producing only two oversized tasks.
-- Derived coset material that is already computed by the production source of
-  truth is admitted to the fast read-only lookup table.
-- Exact-equal semantic evaluation columns share one base coset transform.  Each
-  label then adds its own zero-domain blinder pointwise, preserving its exact
-  private polynomial.  Base material is released after the group is consumed.
-- Debug quotient self-checks compared the optimized materialization with the
-  canonical evaluator before the non-debug final measurements.
+## Local and real-work-unit evidence
 
-### Measurement support
+The final common-MSM benchmark used production `g1_multi_scalar_mul` and three
+repeats per shape:
 
-The production-path benchmark now reports dynamic duplicate diagnostics and
-mutually exclusive quotient subcomponents.  The MSM stage benchmark accepts an
-explicit SRS path/type/id, allowing the same test SRS as the formal-path canary.
-These additions do not create a benchmark-only execution route.
+| Shape | Production median (ms) | Raw MCL median (ms) |
+| --- | ---: | ---: |
+| 1024 nonzero scalars in edge SRS | 5.189 | 22.425 |
+| 4096 dense edge scalars | 14.311 | 67.214 |
+| 1,048,576 dense coefficient scalars | 152.479 | 1267.784 |
+
+The one-million-scalar case is a complete single real commitment using the
+existing read-only `cora_formal_srs_v2`; it is not a complete Cora run. The
+retained 2x overdecomposition reduced its earlier production median from about
+179.833 ms to about 152.5 ms.
+
+For a 910-term materialized opening group, three production runs had opening
+medians of 53.987 ms, including 25.057 ms plan/precompute and 27.040 ms witness
+MSM. The pre-change opening/precompute measurements were 211.536/181.544 ms.
+All runs produced two independent witnesses and verified successfully. A
+17-point external-group shape had a 242.934 ms median in the serial stage
+driver; the formal outer scheduler is measured by the canary below.
+
+The existing production `t_edge` evaluator was also checked for 8192 complete
+relation points with 20 workers. Three-run medians were 273.606 ms (Cora),
+274.865 ms (Citeseer), 260.601 ms (Pubmed), 65.602 ms (PPI), and 71.795 ms
+(ogbn-arxiv). Repeated accumulators were identical for every shape.
 
 ## Reverted or rejected schemes
 
-- Lowering the custom Pippenger threshold from 262144 to 256 scalars regressed
-  the 1024-scalar case from about 109 ms to 147-152 ms and the 4096-scalar case
-  from about 278 ms to 406-412 ms.  The threshold change and all associated
-  experimental code were fully reverted.
-- A final-commitment-point duplicate cache was rejected before implementation:
-  only 9 duplicates totaling about 15 ms existed, so it could not materially
-  move the formal sum.
-- Earlier persistent worker-pool, forced all-core batch, folded cross-point
-  opening, parser cache/direct-decode, and generic `t_edge` memoization
-  candidates remain removed.  Their premises did not change in this round.
+All code for the following candidates was removed after measurement:
+
+- A whole-window custom Pippenger route was exact but regressed 1024 scalars
+  from about 1.94 to 7.88 ms and one million scalars from about 180 to 835 ms.
+- MCL `mulVec` with OpenMP outer splitting regressed 512 scalars from about
+  2.576 to 3.079 ms and 1024 scalars from about 4.438 to 5.994 ms.
+- A public fixed-base window table was exact but regressed 512/1024 scalar
+  cases from 2.576/4.438 to 4.028/7.345 ms and increased memory.
+- Opening schedulers using uniform outer-5/inner-4, external outer-10/inner-2,
+  and full-outer/inner-2 either regressed domain work or raised external
+  opening from about 152 to 184 ms. Only the adaptive scheduler remains.
+- `t_edge` prebound string views, proof-local compiled derived expressions, a
+  fuller SignedRoundDiv/logup binding plan, and raw native alpha-power access
+  were pointwise exact but did not lower the formal total. The final candidate
+  had a 2878.393 ms total median versus 2874.400 ms for the retained state.
+- Reusing half-domain coset NTT scratch was exact, but its formal median was
+  2905.216 ms, `t_edge` was 958.992 ms, and RSS was about 808700 KiB; it was
+  removed.
+- Full-outer opening with inner-2 MSM had a roughly 2950.8 ms formal median and
+  was removed.
 
 ## Final three-run result
 
-The final state was measured three times under the frozen conditions.
-
 | Metric | Baseline median | Final median | Final min-max | Change |
 | --- | ---: | ---: | ---: | ---: |
-| `commitment_time` (ms) | 21184.461 | 1617.852 | 1595.454-1634.098 | -92.36% |
-| `prove_time` (ms) | 24829.257 | 2005.447 | 1951.463-2106.865 | -91.92% |
-| `verify_time` (ms) | 649.522 | 76.822 | 76.069-77.142 | -88.17% |
-| Three-time sum (ms) | 46612.391 | 3715.614 | 3623.739-3801.860 | -92.029% |
-| Wall time (ms) | 48876.405 | 3926.298 | 3837.015-4010.134 | -91.967% |
-| Peak RSS (KiB) | 793004 | 803772 | 803580-804260 | +1.36% |
-| `proof_size_bytes` | 250449 | 250435 | 250431-250453 | recorded only |
+| `commitment_time` (ms) | 1682.144 | 976.702 | 968.523-977.619 | -41.937% |
+| `prove_time` (ms) | 2143.149 | 1823.338 | 1811.814-1859.302 | -14.922% |
+| `verify_time` (ms) | 76.633 | 78.102 | 76.085-79.085 | +1.917% |
+| Three-time sum (ms) | 3897.541 | 2876.125 | 2858.439-2916.007 | -26.207% |
+| Program wall time (ms) | 4110.572 | 3088.730 | 3056.590-3127.245 | -24.859% |
+| Peak RSS (KiB) | 803868 | 808164 | 808016-808312 | +0.534% |
+| `proof_size_bytes` | 250447 | 250441 | 250436-250446 | recorded only |
 
-The formal speedup is 12.545x and the wall-time speedup is 12.448x.  The
-formal target was at most 11653.098 ms; the final median is 3715.614 ms.
+The final formal/wall difference is 212.605 ms at the median, versus 213.030
+ms at baseline. It remains setup, SRS/config loading, I/O, scheduling, and
+harness overhead outside the three formal metrics. No timed work moved across
+a boundary.
 
-The baseline median formal/wall difference was 2264.015 ms.  The final median
-difference is 210.684 ms.  Both are outside the three formal metrics and are
-attributable to context/SRS loading, scheduling, logging, and benchmark
-harness work.  No work was moved across a formal timing boundary.
+The post-optimization mutually exclusive candidates covering the formal sum
+are dynamic commitment MSM 749.159 ms (26.048%), quotient non-commitment
+materialization 1048.971 ms (36.472%, including `t_edge` 940.858 ms), domain
+plus external openings 401.395 ms (13.956%), and non-commit trace construction
+279.192 ms (9.707%). Their cumulative coverage is 86.183%.
 
-The latest mutually exclusive candidates still cover 85.218% of the formal
-sum: dynamic commitment MSM 1343.849 ms (36.16%), quotient non-commitment
-materialization 1046.301 ms (28.16%, including `t_edge` 938.105 ms), domain
-plus external opening witnesses 572.141 ms (15.40%), and derived commitments
-204.075 ms (5.49%).  The 75% termination condition is already satisfied, so
-the alternate requirement to exhaust three scheme classes for every remaining
-10% hotspot does not apply.
+## Validation
 
-## Verification
-
-- CPU Release full build: passed.
-- CUDA Release full build on NVIDIA GB10: passed.
-- CPU and CUDA `ctest`: `gatzk_tests`, `static_secure_scan`, and
-  `runner_semantics` all passed.
-- `GATZK_RUN_UNIT_SECURITY_TESTS=1 gatzk_tests`: passed.
-- Three final generation runs each completed canonical serialization, strict
+- CPU Release and CUDA Release full builds passed.
+- CPU and CUDA `ctest` each passed `gatzk_tests`, `static_secure_scan`, and
+  `runner_semantics` (3/3).
+- `GATZK_RUN_UNIT_SECURITY_TESTS=1 build/gatzk_tests` passed, including KZG
+  opening, external point grouping, schema/metadata gates, canonical digest,
+  domain challenge exclusion, and tamper/security checks.
+- All three final generation runs completed canonical serialization, strict
   parse, and verification with `private_plain_value_count=0` and
   `verifier_reads_witness=false`.
-- Independent strict parse and verifier-only runs: three repeats each, passed.
-- CUDA bounded exact-match stages: all passed; 90 kernel invocations were
-  observed.
-- Failed Pippenger code is absent and `git diff --check` passes.
+- Independent strict parse (three repeats), verifier-only (three repeats), and
+  compiler artifact validation passed. Verifier-only median was 48.525 ms
+  after its one-time parse.
+- `git diff --check` passed after rejected code was removed.
 
-The proof schema, transcript, canonical codec, parser, SRS structure, and KZG
-opening equations did not change.  The existing small SRS, compiler artifact,
-and manifest remain valid.  Formal dataset v2 SRS files are still absent and
-must later be generated only through the setup-only flow; this round neither
-requires nor authorizes their generation.
+The proof schema, transcript, canonical codec/parser, verifier checks, SRS and
+KZG structures, and public/private boundary did not change. Existing SRS,
+compiler artifacts, and manifests therefore require no regeneration.
 
-## Remaining real boundaries
+## Remaining measured boundaries and full-run risks
 
-- These numbers are a bounded production-path canary, not a complete-dataset
-  performance claim.  Full-scale cache lifetime, memory, and scheduling remain
-  unmeasured until user-authorized formal rows exist.
-- CUDA still does not implement curve MSM, pairing, NTT/IFFT, quotient
-  materialization, or opening witnesses.  Current exact CUDA coverage remains
-  limited to the existing field hotspots.
-- Further portable aarch64 curve gains would require a materially different
-  fixed-base/MSM implementation or an available LLVM/aarch64 backend.  The
-  bundled AVX-512 MCL MSM cannot run on this hardware.
-- The five-dataset CPU/GPU experiment matrix and formal v2 SRS generation
-  remain explicitly user-authorized work.
+- Dynamic commitments remain 26.048% of the bounded formal total. Profiling
+  found 290 sequential commitment batches whose results are absorbed before
+  subsequent challenges or polynomial construction. Cross-barrier batching
+  would change the transcript/protocol. Each existing batch already finishes
+  close to its largest object; the tested Pippenger, OpenMP, and fixed-base
+  alternatives were slower on this aarch64 backend.
+- `t_edge` remains the largest single kernel (32.713% of the total). Its
+  prewarm already deduplicates semantic columns and caches plans/shift powers;
+  point evaluation is field-arithmetic bound. Five materially different
+  layout/materialization/reuse candidates failed to give a stable formal gain.
+- Domain plus external openings remain 13.956%. The retained scheduler is the
+  best of the measured outer/inner combinations; further curve acceleration
+  needs a faster aarch64 MSM backend or a production GPU curve implementation.
+- The installed MCL GPU/CPU dependencies provide no production CUDA curve MSM,
+  KZG witness, or pairing path. The project instruction forbids introducing a
+  new GPU curve/KZG/pairing implementation in this phase.
+- The 0.534% RSS increase and two dormant bounded worker pools should be
+  watched in user-run full Cora/Pubmed/PPI rows, especially under simultaneous
+  large quotient materialization. Formal-run commitment order, peak RSS,
+  thread saturation, and external-opening long tails are the main follow-up
+  observations.
+- Full-dataset behavior and the CPU/GPU ten-row matrix remain unmeasured and
+  must be executed by the project owner.

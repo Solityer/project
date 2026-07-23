@@ -1,0 +1,23 @@
+	Command being timed: "taskset -c 0-19 build/gatzk_proof_codec_stage_bench generate configs/unit_security_regression.cfg results/performance_engineering/phase3_msm_continue_20260722/canary_t_edge_view_1.proof 1"
+	User time (seconds): 30.03
+	System time (seconds): 2.91
+	Percent of CPU this job got: 928%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:03.55
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 807524
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 238726
+	Voluntary context switches: 121516
+	Involuntary context switches: 3336
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 504
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

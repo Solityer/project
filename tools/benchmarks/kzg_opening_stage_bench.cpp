@@ -167,7 +167,7 @@ void run_case(const CaseSpec& spec) {
             << spec.domain_size << ',' << spec.commitment_count << ','
             << spec.nonzero_stride << ',' << std::fixed << std::setprecision(3)
             << commit_ms
-            << ",0.000,0.000,0.000,0.000,0.000,0.000,0,0,0,0,0,0,"
+            << ",0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0.000,0,0,0,0,0,0,"
                "0.000,0.000,1,true\n";
         return;
     }
@@ -228,6 +228,9 @@ void run_case(const CaseSpec& spec) {
         profile.denominator_inverse_ms += local_profile.denominator_inverse_ms;
         profile.denominator_inverse_reuse_ms +=
             local_profile.denominator_inverse_reuse_ms;
+        profile.quotient_assembly_ms += local_profile.quotient_assembly_ms;
+        profile.witness_msm_ms += local_profile.witness_msm_ms;
+        profile.blinder_witness_ms += local_profile.blinder_witness_ms;
         profile.denominator_inverse_cache_misses +=
             local_profile.denominator_inverse_cache_misses;
         profile.denominator_inverse_reuse_hits +=
@@ -292,6 +295,9 @@ void run_case(const CaseSpec& spec) {
         << profile.precompute_ms << ','
         << profile.denominator_inverse_ms << ','
         << profile.denominator_inverse_reuse_ms << ','
+        << profile.quotient_assembly_ms << ','
+        << profile.witness_msm_ms << ','
+        << profile.blinder_witness_ms << ','
         << profile.denominator_inverse_cache_misses << ','
         << profile.denominator_inverse_reuse_hits << ','
         << profile.point_parallel_batches << ','
@@ -486,6 +492,7 @@ int main(int argc, char** argv) {
             << "case,srs_id,domain_name,domain_size,commitment_count,nonzero_stride,"
             << "commit_setup_ms,claim_eval_ms,open_point_groups_ms,verify_ms,precompute_ms,"
             << "denominator_inverse_ms,denominator_inverse_reuse_ms,"
+            << "quotient_assembly_ms,witness_msm_ms,blinder_witness_ms,"
             << "denominator_inverse_cache_misses,denominator_inverse_reuse_hits,"
             << "point_parallel_batches,point_parallel_workers,point_msm_worker_cap,"
             << "proof_witness_count,serial_bundle_verify_ms,parallel_bundle_verify_ms,"

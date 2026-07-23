@@ -1,0 +1,20 @@
+running test_parallel_split_intt_equivalence
+running test_kzg_opening_selftest
+running test_coefficient_taylor_shift_fixed_shape
+running test_cross_domain_indexed_view_shift_relation
+running test_same_point_indexed_view_relation
+running test_compact_eval_kzg_regression
+running test_external_point_grouping_regression
+running test_packed_backend_padded_tail_regression
+skipping opt-in large-SRS MSM regression; set GATZK_RUN_LARGE_MSM_TESTS=1 with a sufficiently large test SRS to run it
+running test_srs_mismatch_gate
+running test_metadata_and_schema_gates
+running test_removed_compatibility_protocol_gate
+running test_canonical_output_digest_contract
+running test_multi_graph_public_boundary_validation
+running test_compiler_observation_certificate_gate
+running test_domain_opening_challenge_exclusion_registry
+running test_unit_coefficient_basis_closure
+skipping real PPI representative-batch boundary regression; set GATZK_RUN_PPI_BOUNDARY_TESTS=1 to run it
+skipping full Cora security regression; set GATZK_RUN_FULL_SECURITY_TESTS=1 to run it
+secure regression tests passed

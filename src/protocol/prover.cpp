@@ -8512,54 +8512,103 @@ namespace gatzk::protocol
             {
                 if (indices.empty()) return 0.0;
                 const auto phase_start = Clock::now();
+                auto work_order = indices;
+                const auto estimated_work = [&](std::size_t index)
+                {
+                    std::size_t total = 0;
+                    for (const auto &claim : point_groups[index].claims)
+                    {
+                        if (claim.commitment.opening_polynomial != nullptr)
+                        {
+                            total += claim.commitment
+                                .opening_polynomial->size();
+                        }
+                    }
+                    return total;
+                };
+                std::stable_sort(
+                    work_order.begin(), work_order.end(),
+                    [&](std::size_t lhs, std::size_t rhs)
+                    {
+                        return estimated_work(lhs) > estimated_work(rhs);
+                    });
                 const auto hardware_workers = std::max<unsigned>(
                     1, std::thread::hardware_concurrency());
+                const bool external_phase =
+                    point_groups[work_order.front()].owner_block == "W_ext";
+                const auto outer_worker_limit = external_phase
+                    ? std::min<std::size_t>(
+                        20, hardware_workers)
+                    : std::min<std::size_t>(
+                        8, std::max<unsigned>(
+                            1, hardware_workers / 4));
                 const auto worker_count = std::min<std::size_t>(
-                    indices.size(),
-                    std::min<std::size_t>(8, std::max<unsigned>(
-                        1, hardware_workers / 4)));
+                    work_order.size(),
+                    outer_worker_limit);
+                const auto base_inner_worker_count = worker_count > 1
+                    ? std::max<std::size_t>(
+                        1, hardware_workers / worker_count)
+                    : 0;
                 std::atomic<std::size_t> next{0};
-                std::vector<std::future<void>> futures;
-                futures.reserve(worker_count);
-                for (std::size_t worker = 0; worker < worker_count; ++worker)
-                {
-                    futures.push_back(std::async(
-                        std::launch::async,
-                        [&]
+                crypto::g1_parallel_msm_batch_workers(
+                    worker_count,
+                    [&](std::size_t)
+                    {
+                        while (true)
                         {
-                            while (true)
+                            const auto position = next.fetch_add(1);
+                            if (position >= work_order.size()) break;
+                            const auto group_index = work_order[position];
+                            const auto& group = point_groups[group_index];
+                            std::vector<Commitment> commitments;
+                            std::vector<FieldElement> values;
+                            commitments.reserve(group.claims.size());
+                            values.reserve(group.claims.size());
+                            for (const auto& claim : group.claims)
                             {
-                                const auto position = next.fetch_add(1);
-                                if (position >= indices.size()) break;
-                                const auto group_index = indices[position];
-                                const auto& group = point_groups[group_index];
-                                std::vector<Commitment> commitments;
-                                std::vector<FieldElement> values;
-                                commitments.reserve(group.claims.size());
-                                values.reserve(group.claims.size());
-                                for (const auto& claim : group.claims)
-                                {
-                                    commitments.push_back(claim.commitment);
-                                    values.push_back(claim.value);
-                                }
-                                const auto local_start = Clock::now();
-                                opening_results[group_index].witness =
-                                    crypto::KZG::open_point_group(
-                                        commitments,
-                                        group.point,
-                                        values,
-                                        derive_point_group_challenge(
-                                            proof.public_metadata, group),
-                                        context.kzg,
-                                        &opening_results[group_index].profile,
-                                        crypto::BatchOpeningClaimValidation::
-                                            AlreadyComputedFromOpeningPolynomials);
-                                opening_results[group_index].elapsed_ms =
-                                    elapsed_ms(local_start, Clock::now());
+                                commitments.push_back(claim.commitment);
+                                values.push_back(claim.value);
                             }
-                        }));
-                }
-                for (auto& future : futures) future.get();
+                            const auto inner_worker_count =
+                                worker_count > 1
+                                && !external_phase
+                                && estimated_work(group_index)
+                                    >= (1ULL << 18)
+                                ? std::min<std::size_t>(
+                                    8, hardware_workers)
+                                : base_inner_worker_count;
+                            const crypto::PointGroupOpeningExecutionOptions
+                                execution_options{
+                                    .max_field_worker_count =
+                                        inner_worker_count,
+                                    .msm = {
+                                        .max_worker_count =
+                                            inner_worker_count,
+                                    },
+                                };
+                            const auto local_start = Clock::now();
+                            opening_results[group_index].witness =
+                                crypto::KZG::open_point_group(
+                                    commitments,
+                                    group.point,
+                                    values,
+                                    derive_point_group_challenge(
+                                        proof.public_metadata, group),
+                                    context.kzg,
+                                    &opening_results[group_index].profile,
+                                    crypto::BatchOpeningClaimValidation::
+                                        AlreadyComputedFromOpeningPolynomials,
+                                    worker_count > 1
+                                        ? &execution_options
+                                        : nullptr);
+                            opening_results[group_index].profile
+                                .point_parallel_batches = 1;
+                            opening_results[group_index].profile
+                                .point_parallel_workers = worker_count;
+                            opening_results[group_index].elapsed_ms =
+                                elapsed_ms(local_start, Clock::now());
+                        }
+                    });
                 return elapsed_ms(phase_start, Clock::now());
             };
 

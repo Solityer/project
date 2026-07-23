@@ -1,0 +1,4 @@
+case,input_count,nonzero_count,max_workers,repeat,profiled_ms,raw_mulvec_ms,compact_raw_mulvec_ms,profiled_multithreaded,profiled_sparse_compaction
+edge_current_dense,4096,4096,0,0,2.559,7.105,7.082,true,false
+edge_current_dense,4096,4096,0,1,1.728,6.430,6.438,true,false
+edge_current_dense,4096,4096,0,2,1.892,6.396,6.411,true,false

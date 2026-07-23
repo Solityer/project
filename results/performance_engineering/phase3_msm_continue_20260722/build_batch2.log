@@ -1,0 +1,14 @@
+[  3%] Built target gatzk_mcl_build
+[  7%] Building CXX object CMakeFiles/gatzkml.dir/src/crypto/curve.cpp.o
+[ 10%] Linking CXX static library libgatzkml.a
+[ 92%] Built target gatzkml
+[ 96%] Linking CXX executable gatzk_msm_stage_bench
+[100%] Built target gatzk_msm_stage_bench
+[  3%] Built target gatzk_mcl_build
+[ 92%] Built target gatzkml
+[ 96%] Linking CXX executable gatzk_proof_codec_stage_bench
+[100%] Built target gatzk_proof_codec_stage_bench
+[  3%] Built target gatzk_mcl_build
+[ 92%] Built target gatzkml
+[ 96%] Linking CXX executable gatzk_tests
+[100%] Built target gatzk_tests

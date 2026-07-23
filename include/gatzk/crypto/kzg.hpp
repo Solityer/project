@@ -108,6 +108,9 @@ namespace gatzk::crypto
         double finalize_ms = 0.0;
         double denominator_inverse_ms = 0.0;
         double denominator_inverse_reuse_ms = 0.0;
+        double quotient_assembly_ms = 0.0;
+        double witness_msm_ms = 0.0;
+        double blinder_witness_ms = 0.0;
         std::size_t denominator_inverse_reuse_hits = 0;
         std::size_t denominator_inverse_cache_misses = 0;
         std::size_t point_parallel_batches = 0;
@@ -119,6 +122,14 @@ namespace gatzk::crypto
     {
         VerifyAgainstOpeningPolynomials,
         AlreadyComputedFromOpeningPolynomials,
+    };
+
+    struct PointGroupOpeningExecutionOptions
+    {
+        // These caps only govern execution resources. They never alter the
+        // point-local folding challenge, witness polynomial, or KZG equation.
+        std::size_t max_field_worker_count = 0;
+        G1MSMExecutionOptions msm;
     };
 
     // 批量承诺的执行侧剖面，供 `commit_dynamic_ms` 拆分热点。
@@ -156,7 +167,6 @@ namespace gatzk::crypto
             const std::vector<G1Point>* lagrange_srs,
             std::shared_ptr<const std::vector<algebra::FieldElement>> values,
             const G1Point& point);
-
     private:
         struct Impl;
         std::unique_ptr<Impl> impl_;
@@ -250,7 +260,9 @@ namespace gatzk::crypto
             const KZGKeyPair& key,
             BatchOpeningProfile* profile = nullptr,
             BatchOpeningClaimValidation claim_validation =
-                BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials);
+                BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials,
+            const PointGroupOpeningExecutionOptions* execution_options =
+                nullptr);
 
         // Verify exactly one canonical point group and its single witness.
         static bool verify_point_group(

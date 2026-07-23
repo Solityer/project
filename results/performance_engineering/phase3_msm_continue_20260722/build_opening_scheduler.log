@@ -1,0 +1,308 @@
+[  3%] Built target gatzk_mcl_build
+[  7%] Building CXX object CMakeFiles/gatzkml.dir/src/protocol/challenges.cpp.o
+[ 10%] Building CXX object CMakeFiles/gatzkml.dir/src/protocol/artifact_export.cpp.o
+[ 14%] Building CXX object CMakeFiles/gatzkml.dir/src/crypto/kzg.cpp.o
+[ 17%] Building CXX object CMakeFiles/gatzkml.dir/src/protocol/proof_codec.cpp.o
+[ 21%] Building CXX object CMakeFiles/gatzkml.dir/src/protocol/opening_registry.cpp.o
+[ 25%] Building CXX object CMakeFiles/gatzkml.dir/src/protocol/prover.cpp.o
+/home/pzh/project/src/protocol/challenges.cpp: In function ‘std::string gatzk::protocol::canonical_output_digest(const std::vector<gatzk::algebra::FieldElement>&, std::size_t, std::size_t)’:
+/home/pzh/project/src/protocol/challenges.cpp:911:54: warning: ISO C++ does not support ‘__int128’ for ‘type name’ [-Wpedantic]
+  911 |         const auto wide_count = static_cast<unsigned __int128>(node_count)
+      |                                                      ^~~~~~~~
+/home/pzh/project/src/protocol/challenges.cpp:912:36: warning: ISO C++ does not support ‘__int128’ for ‘type name’ [-Wpedantic]
+  912 |             * static_cast<unsigned __int128>(class_count);
+      |                                    ^~~~~~~~
+/home/pzh/project/src/protocol/challenges.cpp:924:20: warning: ‘int SHA256_Init(SHA256_CTX*)’ is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+  924 |         SHA256_Init(&hash);
+      |         ~~~~~~~~~~~^~~~~~~
+In file included from /home/pzh/project/src/protocol/challenges.cpp:13:
+/usr/include/openssl/sha.h:73:27: note: declared here
+   73 | OSSL_DEPRECATEDIN_3_0 int SHA256_Init(SHA256_CTX *c);
+      |                           ^~~~~~~~~~~
+/home/pzh/project/src/protocol/challenges.cpp:926:22: warning: ‘int SHA256_Update(SHA256_CTX*, const void*, size_t)’ is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+  926 |         SHA256_Update(&hash, tag.data(), tag.size());
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/openssl/sha.h:74:27: note: declared here
+   74 | OSSL_DEPRECATEDIN_3_0 int SHA256_Update(SHA256_CTX *c,
+      |                           ^~~~~~~~~~~~~
+/home/pzh/project/src/protocol/challenges.cpp: In lambda function:
+/home/pzh/project/src/protocol/challenges.cpp:934:26: warning: ‘int SHA256_Update(SHA256_CTX*, const void*, size_t)’ is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+  934 |             SHA256_Update(&hash, bytes.data(), bytes.size());
+      |             ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/openssl/sha.h:74:27: note: declared here
+   74 | OSSL_DEPRECATEDIN_3_0 int SHA256_Update(SHA256_CTX *c,
+      |                           ^~~~~~~~~~~~~
+/home/pzh/project/src/protocol/challenges.cpp: In function ‘std::string gatzk::protocol::canonical_output_digest(const std::vector<gatzk::algebra::FieldElement>&, std::size_t, std::size_t)’:
+/home/pzh/project/src/protocol/challenges.cpp:943:26: warning: ‘int SHA256_Update(SHA256_CTX*, const void*, size_t)’ is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+  943 |             SHA256_Update(&hash, scalar.data(), scalar.size());
+      |             ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/openssl/sha.h:74:27: note: declared here
+   74 | OSSL_DEPRECATEDIN_3_0 int SHA256_Update(SHA256_CTX *c,
+      |                           ^~~~~~~~~~~~~
+/home/pzh/project/src/protocol/challenges.cpp:946:21: warning: ‘int SHA256_Final(unsigned char*, SHA256_CTX*)’ is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+  946 |         SHA256_Final(digest.data(), &hash);
+      |         ~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~
+/usr/include/openssl/sha.h:76:27: note: declared here
+   76 | OSSL_DEPRECATEDIN_3_0 int SHA256_Final(unsigned char *md, SHA256_CTX *c);
+      |                           ^~~~~~~~~~~~
+/home/pzh/project/src/crypto/kzg.cpp: In function ‘std::string gatzk::crypto::{anonymous}::sha256_file_hex_cached(const std::filesystem::__cxx11::path&)’:
+/home/pzh/project/src/crypto/kzg.cpp:88:24: warning: ‘int SHA256_Init(SHA256_CTX*)’ is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+   88 |             SHA256_Init(&ctx);
+      |             ~~~~~~~~~~~^~~~~~
+In file included from /home/pzh/project/src/crypto/kzg.cpp:27:
+/usr/include/openssl/sha.h:73:27: note: declared here
+   73 | OSSL_DEPRECATEDIN_3_0 int SHA256_Init(SHA256_CTX *c);
+      |                           ^~~~~~~~~~~
+/home/pzh/project/src/crypto/kzg.cpp:96:34: warning: ‘int SHA256_Update(SHA256_CTX*, const void*, size_t)’ is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+   96 |                     SHA256_Update(&ctx, buffer.data(), static_cast<std::size_t>(count));
+      |                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/openssl/sha.h:74:27: note: declared here
+   74 | OSSL_DEPRECATEDIN_3_0 int SHA256_Update(SHA256_CTX *c,
+      |                           ^~~~~~~~~~~~~
+/home/pzh/project/src/crypto/kzg.cpp:100:25: warning: ‘int SHA256_Final(unsigned char*, SHA256_CTX*)’ is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+  100 |             SHA256_Final(digest, &ctx);
+      |             ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/usr/include/openssl/sha.h:76:27: note: declared here
+   76 | OSSL_DEPRECATEDIN_3_0 int SHA256_Final(unsigned char *md, SHA256_CTX *c);
+      |                           ^~~~~~~~~~~~
+/home/pzh/project/src/crypto/kzg.cpp: In function ‘std::vector<gatzk::crypto::G1Point> gatzk::crypto::{anonymous}::load_raw_g1_vector_file_prefix(const std::filesystem::__cxx11::path&, std::streamoff, std::size_t, std::string*)’:
+/home/pzh/project/src/crypto/kzg.cpp:641:24: warning: ‘int SHA256_Init(SHA256_CTX*)’ is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+  641 |             SHA256_Init(&ctx);
+      |             ~~~~~~~~~~~^~~~~~
+/usr/include/openssl/sha.h:73:27: note: declared here
+   73 | OSSL_DEPRECATEDIN_3_0 int SHA256_Init(SHA256_CTX *c);
+      |                           ^~~~~~~~~~~
+/home/pzh/project/src/crypto/kzg.cpp: In lambda function:
+/home/pzh/project/src/crypto/kzg.cpp:648:30: warning: ‘int SHA256_Update(SHA256_CTX*, const void*, size_t)’ is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+  648 |                 SHA256_Update(&ctx, out, size);
+      |                 ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~
+/usr/include/openssl/sha.h:74:27: note: declared here
+   74 | OSSL_DEPRECATEDIN_3_0 int SHA256_Update(SHA256_CTX *c,
+      |                           ^~~~~~~~~~~~~
+/home/pzh/project/src/crypto/kzg.cpp: In function ‘std::vector<gatzk::crypto::G1Point> gatzk::crypto::{anonymous}::load_raw_g1_vector_file_prefix(const std::filesystem::__cxx11::path&, std::streamoff, std::size_t, std::string*)’:
+/home/pzh/project/src/crypto/kzg.cpp:690:29: warning: ‘int SHA256_Final(unsigned char*, SHA256_CTX*)’ is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+  690 |                 SHA256_Final(digest, &ctx);
+      |                 ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/usr/include/openssl/sha.h:76:27: note: declared here
+   76 | OSSL_DEPRECATEDIN_3_0 int SHA256_Final(unsigned char *md, SHA256_CTX *c);
+      |                           ^~~~~~~~~~~~
+/home/pzh/project/src/crypto/kzg.cpp:706:25: warning: ‘int SHA256_Final(unsigned char*, SHA256_CTX*)’ is deprecated: Since OpenSSL 3.0 [-Wdeprecated-declarations]
+  706 |             SHA256_Final(digest, &ctx);
+      |             ~~~~~~~~~~~~^~~~~~~~~~~~~~
+/usr/include/openssl/sha.h:76:27: note: declared here
+   76 | OSSL_DEPRECATEDIN_3_0 int SHA256_Final(unsigned char *md, SHA256_CTX *c);
+      |                           ^~~~~~~~~~~~
+/home/pzh/project/src/crypto/kzg.cpp: In function ‘std::vector<gatzk::crypto::G1Point> gatzk::crypto::{anonymous}::load_g1_vector_file(const std::filesystem::__cxx11::path&, std::string*, std::size_t)’:
+/home/pzh/project/src/crypto/kzg.cpp:781:32: warning: ‘void* memcpy(void*, const void*, size_t)’ writing to an object of type ‘mcl::G1’ {aka ‘class mcl::EcT<mcl::FpT<0, 384> >’} with no trivial copy-assignment; use copy-assignment or copy-initialization instead [-Wclass-memaccess]
+  781 |                     std::memcpy(
+      |                     ~~~~~~~~~~~^
+  782 |                         &out.front().value,
+      |                         ~~~~~~~~~~~~~~~~~~~
+  783 |                         file_bytes.data() + offset,
+      |                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  784 |                         point_count * sizeof(mcl::G1));
+      |                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /home/pzh/project/third_party/mcl/include/mcl/g1_def.hpp:10,
+                 from /home/pzh/project/third_party/mcl/include/mcl/bn.hpp:9,
+                 from /home/pzh/project/include/gatzk/algebra/field.hpp:9,
+                 from /home/pzh/project/include/gatzk/crypto/kzg.hpp:11,
+                 from /home/pzh/project/src/crypto/kzg.cpp:1:
+/home/pzh/project/third_party/mcl/include/mcl/ec.hpp:1005:7: note: ‘mcl::G1’ {aka ‘class mcl::EcT<mcl::FpT<0, 384> >’} declared here
+ 1005 | class EcT : public fp::Serializable<EcT<_Fp> > {
+      |       ^~~
+[ 28%] Building CXX object CMakeFiles/gatzkml.dir/src/protocol/quotients.cpp.o
+[ 32%] Building CXX object CMakeFiles/gatzkml.dir/src/protocol/schema.cpp.o
+/home/pzh/project/src/protocol/schema.cpp: In lambda function:
+/home/pzh/project/src/protocol/schema.cpp:577:13: warning: missing initializer for member ‘gatzk::protocol::CanonicalMatrixRelationMeta::column_objects’ [-Wmissing-field-initializers]
+  577 |             };
+      |             ^
+/home/pzh/project/src/protocol/schema.cpp: In lambda function:
+/home/pzh/project/src/protocol/schema.cpp:653:13: warning: missing initializer for member ‘gatzk::protocol::AggregationRelationMeta::source_route’ [-Wmissing-field-initializers]
+  653 |             };
+      |             ^
+/home/pzh/project/src/protocol/schema.cpp:653:13: warning: missing initializer for member ‘gatzk::protocol::AggregationRelationMeta::target_route’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:653:13: warning: missing initializer for member ‘gatzk::protocol::AggregationRelationMeta::commitment_order’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp: In lambda function:
+/home/pzh/project/src/protocol/schema.cpp:699:13: warning: missing initializer for member ‘gatzk::protocol::RouteTerminalRelationMeta::shifted_accumulator_object’ [-Wmissing-field-initializers]
+  699 |             };
+      |             ^
+/home/pzh/project/src/protocol/schema.cpp:699:13: warning: missing initializer for member ‘gatzk::protocol::RouteTerminalRelationMeta::relation_virtual_object’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:699:13: warning: missing initializer for member ‘gatzk::protocol::RouteTerminalRelationMeta::challenge_label’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp: In function ‘std::vector<gatzk::protocol::BindingRelationMeta> gatzk::protocol::build_binding_relation_metadata(const ProtocolContext&)’:
+/home/pzh/project/src/protocol/schema.cpp:723:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::layer_id’ [-Wmissing-field-initializers]
+  723 |         });
+      |         ^
+/home/pzh/project/src/protocol/schema.cpp:723:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::head_id’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:723:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::canonical_matrices’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:723:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::aggregation_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:723:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::route_terminal_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:723:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::indexed_views’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:723:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::coefficient_basis_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:723:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::shift_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:748:17: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::canonical_matrices’ [-Wmissing-field-initializers]
+  748 |                 };
+      |                 ^
+/home/pzh/project/src/protocol/schema.cpp:748:17: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::aggregation_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:748:17: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::route_terminal_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:748:17: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::indexed_views’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:748:17: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::coefficient_basis_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:748:17: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::shift_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:788:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::head_id’ [-Wmissing-field-initializers]
+  788 |             };
+      |             ^
+/home/pzh/project/src/protocol/schema.cpp:788:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::canonical_matrices’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:788:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::aggregation_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:788:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::route_terminal_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:788:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::indexed_views’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:788:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::coefficient_basis_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:788:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::shift_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:817:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::canonical_matrices’ [-Wmissing-field-initializers]
+  817 |             };
+      |             ^
+/home/pzh/project/src/protocol/schema.cpp:817:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::aggregation_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:817:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::route_terminal_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:817:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::indexed_views’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:817:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::coefficient_basis_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:817:13: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::shift_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:1035:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::head_id’ [-Wmissing-field-initializers]
+ 1035 |         };
+      |         ^
+/home/pzh/project/src/protocol/schema.cpp:1035:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::canonical_matrices’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:1035:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::aggregation_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:1035:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::route_terminal_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:1035:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::indexed_views’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:1035:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::coefficient_basis_relations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/schema.cpp:1035:9: warning: missing initializer for member ‘gatzk::protocol::BindingRelationMeta::shift_relations’ [-Wmissing-field-initializers]
+[ 35%] Building CXX object CMakeFiles/gatzkml.dir/src/protocol/schema_labels.cpp.o
+[ 39%] Building CXX object CMakeFiles/gatzkml.dir/src/protocol/trace.cpp.o
+[ 42%] Building CXX object CMakeFiles/gatzkml.dir/src/protocol/verifier.cpp.o
+/home/pzh/project/src/protocol/trace.cpp:1943:40: warning: ISO C++ does not support ‘__int128’ for ‘value’ [-Wpedantic]
+ 1943 |         std::int64_t checked_raw_value(__int128 value, std::string_view label)
+      |                                        ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp: In function ‘int64_t gatzk::protocol::{anonymous}::checked_raw_value(__int128, std::string_view)’:
+/home/pzh/project/src/protocol/trace.cpp:1945:37: warning: ISO C++ does not support ‘__int128’ for ‘type name’ [-Wpedantic]
+ 1945 |             if (value > static_cast<__int128>(std::numeric_limits<std::int64_t>::max()) || value < static_cast<__int128>(std::numeric_limits<std::int64_t>::min()))
+      |                                     ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp:1945:112: warning: ISO C++ does not support ‘__int128’ for ‘type name’ [-Wpedantic]
+ 1945 |             if (value > static_cast<__int128>(std::numeric_limits<std::int64_t>::max()) || value < static_cast<__int128>(std::numeric_limits<std::int64_t>::min()))
+      |                                                                                                                ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp: At global scope:
+/home/pzh/project/src/protocol/trace.cpp:1956:47: warning: ISO C++ does not support ‘__int128’ for ‘numerator’ [-Wpedantic]
+ 1956 |         std::int64_t signed_round_div_nearest(__int128 numerator, __int128 denominator, std::string_view label)
+      |                                               ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp:1956:67: warning: ISO C++ does not support ‘__int128’ for ‘denominator’ [-Wpedantic]
+ 1956 |         std::int64_t signed_round_div_nearest(__int128 numerator, __int128 denominator, std::string_view label)
+      |                                                                   ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp: In function ‘gatzk::protocol::{anonymous}::SignedRoundDivWitness gatzk::protocol::{anonymous}::build_signed_round_div_witness(const std::vector<long int>&, const std::vector<long int>&, std::size_t, std::size_t, std::string_view)’:
+/home/pzh/project/src/protocol/trace.cpp:2036:44: warning: ISO C++ does not support ‘__int128’ for ‘type name’ [-Wpedantic]
+ 2036 |                 const auto x = static_cast<__int128>(numerators[i]);
+      |                                            ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp:2037:44: warning: ISO C++ does not support ‘__int128’ for ‘type name’ [-Wpedantic]
+ 2037 |                 const auto d = static_cast<__int128>(denominators[i]);
+      |                                            ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp: In lambda function:
+/home/pzh/project/src/protocol/trace.cpp:2158:29: warning: ISO C++ does not support ‘__int128’ for ‘sum’ [-Wpedantic]
+ 2158 |                             __int128 sum = 0;
+      |                             ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp:2161:52: warning: ISO C++ does not support ‘__int128’ for ‘type name’ [-Wpedantic]
+ 2161 |                                 sum += static_cast<__int128>(left[row][k]) * static_cast<__int128>(right[k][col]);
+      |                                                    ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp:2161:90: warning: ISO C++ does not support ‘__int128’ for ‘type name’ [-Wpedantic]
+ 2161 |                                 sum += static_cast<__int128>(left[row][k]) * static_cast<__int128>(right[k][col]);
+      |                                                                                          ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp: In lambda function:
+/home/pzh/project/src/protocol/trace.cpp:2187:25: warning: ISO C++ does not support ‘__int128’ for ‘sum’ [-Wpedantic]
+ 2187 |                         __int128 sum = 0;
+      |                         ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp:2190:48: warning: ISO C++ does not support ‘__int128’ for ‘type name’ [-Wpedantic]
+ 2190 |                             sum += static_cast<__int128>(matrix[row][col]) * static_cast<__int128>(vector[col]);
+      |                                                ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp:2190:90: warning: ISO C++ does not support ‘__int128’ for ‘type name’ [-Wpedantic]
+ 2190 |                             sum += static_cast<__int128>(matrix[row][col]) * static_cast<__int128>(vector[col]);
+      |                                                                                          ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp: In function ‘gatzk::protocol::{anonymous}::HiddenQuantizedWitness gatzk::protocol::{anonymous}::quantize_hidden_witness_cpu(const gatzk::model::HeadForwardTrace&, const std::vector<long unsigned int>&, const std::vector<long unsigned int>&, std::size_t, std::size_t, const std::unordered_map<std::__cxx11::basic_string<char>, gatzk::algebra::FieldElement>&, const RawMatrix*, const std::vector<long int>*, const std::vector<long int>*)’:
+/home/pzh/project/src/protocol/trace.cpp:2505:33: warning: ISO C++ does not support ‘__int128’ for ‘type name’ [-Wpedantic]
+ 2505 |                     static_cast<__int128>(sum_raw[dst]) + u_raw[edge_index],
+      |                                 ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp:2539:21: warning: ISO C++ does not support ‘__int128’ for ‘aggregate_numerator’ [-Wpedantic]
+ 2539 |                     __int128 aggregate_numerator = 0;
+      |                     ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp:2544:64: warning: ISO C++ does not support ‘__int128’ for ‘type name’ [-Wpedantic]
+ 2544 |                             aggregate_numerator += static_cast<__int128>(u_raw[edge_index])
+      |                                                                ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp:2545:47: warning: ISO C++ does not support ‘__int128’ for ‘type name’ [-Wpedantic]
+ 2545 |                                 * static_cast<__int128>(h_prime_raw[edge_src_indices[edge_index]][column]);
+      |                                               ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp: In function ‘gatzk::protocol::{anonymous}::OutputQuantizedWitness gatzk::protocol::{anonymous}::quantize_output_witness_cpu(const gatzk::model::HeadForwardTrace&, const std::vector<double>&, const std::vector<long unsigned int>&, const std::vector<long unsigned int>&, std::size_t, std::size_t, const RawMatrix*, const std::vector<long int>*, const std::vector<long int>*)’:
+/home/pzh/project/src/protocol/trace.cpp:2694:33: warning: ISO C++ does not support ‘__int128’ for ‘type name’ [-Wpedantic]
+ 2694 |                     static_cast<__int128>(sum_raw[dst]) + u_raw[edge_index],
+      |                                 ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp:2729:21: warning: ISO C++ does not support ‘__int128’ for ‘aggregate_numerator’ [-Wpedantic]
+ 2729 |                     __int128 aggregate_numerator = 0;
+      |                     ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp:2734:64: warning: ISO C++ does not support ‘__int128’ for ‘type name’ [-Wpedantic]
+ 2734 |                             aggregate_numerator += static_cast<__int128>(u_raw[edge_index])
+      |                                                                ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp:2735:47: warning: ISO C++ does not support ‘__int128’ for ‘type name’ [-Wpedantic]
+ 2735 |                                 * static_cast<__int128>(y_prime_raw_override->at(edge_src_indices[edge_index]).at(column));
+      |                                               ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp:2743:37: warning: ISO C++ does not support ‘__int128’ for ‘type name’ [-Wpedantic]
+ 2743 |                         static_cast<__int128>(sum_raw[row]) * 16,
+      |                                     ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp:2747:37: warning: ISO C++ does not support ‘__int128’ for ‘type name’ [-Wpedantic]
+ 2747 |                         static_cast<__int128>(sum_raw[row]) * 16,
+      |                                     ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp:2750:37: warning: ISO C++ does not support ‘__int128’ for ‘type name’ [-Wpedantic]
+ 2750 |                         static_cast<__int128>(y_quantized)
+      |                                     ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp: In function ‘std::shared_ptr<const gatzk::protocol::{anonymous}::CachedForwardArtifacts> gatzk::protocol::{anonymous}::cached_forward_artifacts(const gatzk::protocol::ProtocolContext&, const std::vector<gatzk::data::Edge>&, const std::vector<long unsigned int>&, const std::vector<long unsigned int>&, std::size_t)’:
+/home/pzh/project/src/protocol/trace.cpp:2928:25: warning: ISO C++ does not support ‘__int128’ for ‘sum’ [-Wpedantic]
+ 2928 |                         __int128 sum = 0;
+      |                         ^~~~~~~~
+/home/pzh/project/src/protocol/trace.cpp: In function ‘gatzk::protocol::TraceArtifacts gatzk::protocol::{anonymous}::build_multihead_trace(const gatzk::protocol::ProtocolContext&, gatzk::protocol::RunMetrics*)’:
+/home/pzh/project/src/protocol/trace.cpp:3996:100: warning: missing initializer for member ‘gatzk::protocol::BindingSubproof::model_reblinds’ [-Wmissing-field-initializers]
+ 3996 |                 trace.pi_bind->subproofs.push_back(BindingSubproof{.relation_meta = std::move(meta)});
+      |                                                                                                    ^
+/home/pzh/project/src/protocol/trace.cpp:3996:100: warning: missing initializer for member ‘gatzk::protocol::BindingSubproof::view_references’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/trace.cpp:3996:100: warning: missing initializer for member ‘gatzk::protocol::BindingSubproof::view_commitments’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/trace.cpp:3996:100: warning: missing initializer for member ‘gatzk::protocol::BindingSubproof::view_logup_commitments’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/trace.cpp:3996:100: warning: missing initializer for member ‘gatzk::protocol::BindingSubproof::aggregation_commitments’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/trace.cpp:3996:100: warning: missing initializer for member ‘gatzk::protocol::BindingSubproof::basis_commitments’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/trace.cpp:3996:100: warning: missing initializer for member ‘gatzk::protocol::BindingSubproof::crpc_commitments’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/trace.cpp:3996:100: warning: missing initializer for member ‘gatzk::protocol::BindingSubproof::relation_commitments’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/trace.cpp:3996:100: warning: missing initializer for member ‘gatzk::protocol::BindingSubproof::evaluations’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/trace.cpp:3996:100: warning: missing initializer for member ‘gatzk::protocol::BindingSubproof::opening_references’ [-Wmissing-field-initializers]
+/home/pzh/project/src/protocol/verifier.cpp: In function ‘bool gatzk::protocol::verify(const ProtocolContext&, const Proof&, RunMetrics*)’:
+/home/pzh/project/src/protocol/verifier.cpp:2582:25: warning: missing initializer for member ‘gatzk::crypto::Commitment::opening_polynomial’ [-Wmissing-field-initializers]
+ 2582 |                         },
+      |                         ^
+/home/pzh/project/src/protocol/verifier.cpp:2640:29: warning: missing initializer for member ‘gatzk::crypto::Commitment::opening_polynomial’ [-Wmissing-field-initializers]
+ 2640 |                             },
+      |                             ^
+/home/pzh/project/src/protocol/verifier.cpp:2692:21: warning: missing initializer for member ‘gatzk::crypto::Commitment::opening_polynomial’ [-Wmissing-field-initializers]
+ 2692 |                     };
+      |                     ^
+/home/pzh/project/src/protocol/verifier.cpp:2760:17: warning: missing initializer for member ‘gatzk::crypto::Commitment::opening_polynomial’ [-Wmissing-field-initializers]
+ 2760 |                 };
+      |                 ^
+/home/pzh/project/src/protocol/verifier.cpp:2766:17: warning: missing initializer for member ‘gatzk::crypto::Commitment::opening_polynomial’ [-Wmissing-field-initializers]
+ 2766 |                 };
+      |                 ^
+/home/pzh/project/src/protocol/verifier.cpp:2868:17: warning: missing initializer for member ‘gatzk::crypto::Commitment::opening_polynomial’ [-Wmissing-field-initializers]
+ 2868 |                 };
+      |                 ^
+[ 46%] Linking CXX static library libgatzkml.a
+[ 92%] Built target gatzkml
+[ 96%] Building CXX object CMakeFiles/gatzk_kzg_opening_stage_bench.dir/tools/benchmarks/kzg_opening_stage_bench.cpp.o
+[100%] Linking CXX executable gatzk_kzg_opening_stage_bench
+[100%] Built target gatzk_kzg_opening_stage_bench
+[  3%] Built target gatzk_mcl_build
+[ 92%] Built target gatzkml
+[ 96%] Building CXX object CMakeFiles/gatzk_proof_codec_stage_bench.dir/tools/benchmarks/proof_codec_stage_bench.cpp.o
+[100%] Linking CXX executable gatzk_proof_codec_stage_bench
+[100%] Built target gatzk_proof_codec_stage_bench
+[  3%] Built target gatzk_mcl_build
+[ 92%] Built target gatzkml
+[ 96%] Building CXX object CMakeFiles/gatzk_tests.dir/tests/test_main.cpp.o
+[100%] Linking CXX executable gatzk_tests
+[100%] Built target gatzk_tests

@@ -1845,21 +1845,21 @@ namespace gatzk::crypto
 
             std::vector<FoldedOpeningTerm> folded_terms;
             folded_terms.reserve(commitments.size());
+            std::unordered_map<const algebra::Polynomial*, std::size_t>
+                folded_term_index;
+            folded_term_index.reserve(commitments.size());
             for (std::size_t i = 0; i < commitments.size(); ++i)
             {
                 if (commitments[i].opening_polynomial == nullptr)
                 {
                     throw std::runtime_error("commitment is missing prover-side opening polynomial: " + commitments[i].name);
                 }
-                auto existing = std::find_if(
-                    folded_terms.begin(),
-                    folded_terms.end(),
-                    [&](const FoldedOpeningTerm& term)
-                    {
-                        return term.commitment != nullptr
-                            && term.commitment->opening_polynomial.get() == commitments[i].opening_polynomial.get();
-                    });
-                if (existing == folded_terms.end())
+                const auto *polynomial =
+                    commitments[i].opening_polynomial.get();
+                const auto [existing, inserted] =
+                    folded_term_index.emplace(
+                        polynomial, folded_terms.size());
+                if (inserted)
                 {
                     FoldedOpeningTerm term;
                     term.commitment = &commitments[i];
@@ -1873,10 +1873,12 @@ namespace gatzk::crypto
                 }
                 else
                 {
-                    existing->scale += powers[i];
+                    auto &term = folded_terms[existing->second];
+                    term.scale += powers[i];
                     for (std::size_t point_index = 0; point_index < point_count; ++point_index)
                     {
-                        existing->scaled_claims[point_index] += claimed_values[i][point_index] * powers[i];
+                        term.scaled_claims[point_index] +=
+                            claimed_values[i][point_index] * powers[i];
                     }
                 }
             }
@@ -2014,9 +2016,13 @@ namespace gatzk::crypto
                         .scale = term.scale.native(),
                     });
                 }
+                const auto min_rows_per_task = std::max<std::size_t>(
+                    256,
+                    (1ULL << 18)
+                        / std::max<std::size_t>(1, native_terms.size()));
                 parallel_for_chunks_capped(
                     group.domain->size,
-                    1ULL << 15,
+                    min_rows_per_task,
                     worker_cap,
                     [&](std::size_t begin, std::size_t end)
                     {
@@ -2090,6 +2096,7 @@ namespace gatzk::crypto
             const auto& coefficient_scaled_claim_sum = plan.coefficient_scaled_claim_sums[point_index];
             if (!plan.coefficient_fold.empty() || !(coefficient_scaled_claim_sum == FieldElement::zero()))
             {
+                const auto coefficient_msm_start = Clock::now();
                 try
                 {
                     out = g1_add(
@@ -2104,6 +2111,11 @@ namespace gatzk::crypto
                 catch (const std::exception& ex)
                 {
                     throw std::runtime_error("opening mismatch for folded coefficient group: " + std::string(ex.what()));
+                }
+                if (profile != nullptr)
+                {
+                    profile->witness_msm_ms += elapsed_ms(
+                        coefficient_msm_start, Clock::now());
                 }
             }
             for (const auto& group : plan.evaluation_groups)
@@ -2170,6 +2182,7 @@ namespace gatzk::crypto
                     inverse_denominators = &inverse_cache->back().base_inverse_denominators;
                 }
 
+                const auto quotient_assembly_start = Clock::now();
                 std::vector<FieldElement> quotient_values(group.domain->size, FieldElement::zero());
                 auto* quotient_values_native = FieldElement::mutable_native_array_data(quotient_values.data());
                 mcl::Fr zero;
@@ -2202,6 +2215,12 @@ namespace gatzk::crypto
                         }
                     }
                 });
+                if (profile != nullptr)
+                {
+                    profile->quotient_assembly_ms += elapsed_ms(
+                        quotient_assembly_start, Clock::now());
+                }
+                const auto witness_msm_start = Clock::now();
                 out = g1_add(
                     out,
                     commit_polynomial_point(
@@ -2212,12 +2231,18 @@ namespace gatzk::crypto
                         pk,
                         nullptr,
                         msm_options));
+                if (profile != nullptr)
+                {
+                    profile->witness_msm_ms += elapsed_ms(
+                        witness_msm_start, Clock::now());
+                }
 
                 // The domain-value quotient above is the unique degree < n
                 // interpolant of the full quotient on H.  For
                 // P^zk=P+Z_H R, the omitted high-degree part is exactly
                 // Z_H * (R(X)-R(z))/(X-z); its quotient contribution is the
                 // small coefficient polynomial (R(X)-R(z))/(X-z).
+                const auto blinder_witness_start = Clock::now();
                 std::vector<FieldElement> blinder_quotient_fold;
                 for (const auto &term : group.terms)
                 {
@@ -2254,6 +2279,11 @@ namespace gatzk::crypto
                             blinder_quotient_fold,
                             pk,
                             "folded_" + group.domain->name + "_blinder_witness"));
+                }
+                if (profile != nullptr)
+                {
+                    profile->blinder_witness_ms += elapsed_ms(
+                        blinder_witness_start, Clock::now());
                 }
             }
             return out;
@@ -2314,6 +2344,36 @@ namespace gatzk::crypto
 
     struct EvaluationCommitmentCache::Impl
     {
+        struct PointerKey
+        {
+            const algebra::RootOfUnityDomain* domain = nullptr;
+            const std::vector<G1Point>* lagrange_srs = nullptr;
+            const std::vector<algebra::FieldElement>* values = nullptr;
+
+            bool operator==(const PointerKey& other) const
+            {
+                return domain == other.domain
+                    && lagrange_srs == other.lagrange_srs
+                    && values == other.values;
+            }
+        };
+
+        struct PointerKeyHash
+        {
+            std::size_t operator()(const PointerKey& key) const
+            {
+                auto hash = static_cast<std::size_t>(
+                    reinterpret_cast<std::uintptr_t>(key.domain));
+                hash ^= static_cast<std::size_t>(
+                    reinterpret_cast<std::uintptr_t>(key.lagrange_srs))
+                    + 0x9e3779b9U + (hash << 6U) + (hash >> 2U);
+                hash ^= static_cast<std::size_t>(
+                    reinterpret_cast<std::uintptr_t>(key.values))
+                    + 0x9e3779b9U + (hash << 6U) + (hash >> 2U);
+                return hash;
+            }
+        };
+
         struct Entry
         {
             const algebra::RootOfUnityDomain* domain = nullptr;
@@ -2324,6 +2384,8 @@ namespace gatzk::crypto
 
         std::mutex mutex;
         std::unordered_map<std::uint64_t, std::vector<Entry>> entries;
+        std::unordered_map<PointerKey, G1Point, PointerKeyHash> pointer_entries;
+        std::unordered_map<PointerKey, std::uint64_t, PointerKeyHash> pointer_hashes;
     };
 
     EvaluationCommitmentCache::EvaluationCommitmentCache()
@@ -2372,9 +2434,43 @@ namespace gatzk::crypto
         {
             return false;
         }
-        const auto key = evaluation_commitment_cache_key(
-            domain, lagrange_srs, *values);
+        const Impl::PointerKey pointer_key{
+            .domain = domain,
+            .lagrange_srs = lagrange_srs,
+            .values = values.get(),
+        };
+        std::optional<std::uint64_t> cached_hash;
+        {
+            std::lock_guard<std::mutex> lock(impl_->mutex);
+            if (const auto it = impl_->pointer_entries.find(pointer_key);
+                it != impl_->pointer_entries.end())
+            {
+                if (point != nullptr)
+                {
+                    *point = it->second;
+                }
+                return true;
+            }
+            if (const auto it = impl_->pointer_hashes.find(pointer_key);
+                it != impl_->pointer_hashes.end())
+            {
+                cached_hash = it->second;
+            }
+        }
+        const auto key = cached_hash.has_value()
+            ? *cached_hash
+            : evaluation_commitment_cache_key(domain, lagrange_srs, *values);
         std::lock_guard<std::mutex> lock(impl_->mutex);
+        impl_->pointer_hashes.try_emplace(pointer_key, key);
+        if (const auto it = impl_->pointer_entries.find(pointer_key);
+            it != impl_->pointer_entries.end())
+        {
+            if (point != nullptr)
+            {
+                *point = it->second;
+            }
+            return true;
+        }
         const auto bucket = impl_->entries.find(key);
         if (bucket == impl_->entries.end())
         {
@@ -2390,6 +2486,7 @@ namespace gatzk::crypto
                 {
                     *point = entry.point;
                 }
+                impl_->pointer_entries.emplace(pointer_key, entry.point);
                 return true;
             }
         }
@@ -2406,9 +2503,33 @@ namespace gatzk::crypto
         {
             return;
         }
-        const auto key = evaluation_commitment_cache_key(
-            domain, lagrange_srs, *values);
+        const Impl::PointerKey pointer_key{
+            .domain = domain,
+            .lagrange_srs = lagrange_srs,
+            .values = values.get(),
+        };
+        std::optional<std::uint64_t> cached_hash;
+        {
+            std::lock_guard<std::mutex> lock(impl_->mutex);
+            if (impl_->pointer_entries.contains(pointer_key))
+            {
+                return;
+            }
+            if (const auto it = impl_->pointer_hashes.find(pointer_key);
+                it != impl_->pointer_hashes.end())
+            {
+                cached_hash = it->second;
+            }
+        }
+        const auto key = cached_hash.has_value()
+            ? *cached_hash
+            : evaluation_commitment_cache_key(domain, lagrange_srs, *values);
         std::lock_guard<std::mutex> lock(impl_->mutex);
+        impl_->pointer_hashes.try_emplace(pointer_key, key);
+        if (impl_->pointer_entries.contains(pointer_key))
+        {
+            return;
+        }
         auto& bucket = impl_->entries[key];
         for (const auto& entry : bucket)
         {
@@ -2416,6 +2537,7 @@ namespace gatzk::crypto
                 && entry.lagrange_srs == lagrange_srs
                 && *entry.values == *values)
             {
+                impl_->pointer_entries.emplace(pointer_key, entry.point);
                 return;
             }
         }
@@ -2425,6 +2547,7 @@ namespace gatzk::crypto
             .values = std::move(values),
             .point = point,
         });
+        impl_->pointer_entries.emplace(pointer_key, point);
     }
 
     std::size_t serialized_size(const Commitment& commitment)
@@ -2851,11 +2974,9 @@ namespace gatzk::crypto
         {
             const auto work_order = commitment_work_order(named_polynomials);
             std::atomic<std::size_t> next{0};
-            std::vector<std::future<void>> futures;
-            futures.reserve(outer_worker_count);
-            for (std::size_t worker = 0; worker < outer_worker_count; ++worker)
-            {
-                futures.push_back(std::async(std::launch::async, [&]() {
+            g1_parallel_msm_batch_workers(
+                outer_worker_count,
+                [&](std::size_t) {
                     while (true)
                     {
                         const auto index = next.fetch_add(1);
@@ -2865,12 +2986,7 @@ namespace gatzk::crypto
                         }
                         commit_one(work_order[index]);
                     }
-                }));
-            }
-            for (auto& future : futures)
-            {
-                future.get();
-            }
+                });
         }
         else
         {
@@ -2957,11 +3073,9 @@ namespace gatzk::crypto
         if (outer_worker_count > 1)
         {
             std::atomic<std::size_t> next{0};
-            std::vector<std::future<void>> futures;
-            futures.reserve(outer_worker_count);
-            for (std::size_t worker = 0; worker < outer_worker_count; ++worker)
-            {
-                futures.push_back(std::async(std::launch::async, [&]() {
+            g1_parallel_msm_batch_workers(
+                outer_worker_count,
+                [&](std::size_t) {
                     while (true)
                     {
                         const auto order_index = next.fetch_add(1);
@@ -2971,12 +3085,7 @@ namespace gatzk::crypto
                         }
                         commit_one(work_order[order_index]);
                     }
-                }));
-            }
-            for (auto& future : futures)
-            {
-                future.get();
-            }
+                });
         }
         else
         {
@@ -3097,7 +3206,8 @@ namespace gatzk::crypto
         const FieldElement& folding_challenge,
         const KZGKeyPair& key,
         BatchOpeningProfile* profile,
-        BatchOpeningClaimValidation claim_validation)
+        BatchOpeningClaimValidation claim_validation,
+        const PointGroupOpeningExecutionOptions* execution_options)
     {
         if (commitments.empty() || commitments.size() != claimed_values.size())
         {
@@ -3109,6 +3219,12 @@ namespace gatzk::crypto
             throw std::runtime_error(
                 "point-group opening folding challenge must be non-zero");
         }
+        const auto field_worker_cap = execution_options != nullptr
+            ? execution_options->max_field_worker_count
+            : 0;
+        const auto* msm_options = execution_options != nullptr
+            ? &execution_options->msm
+            : nullptr;
         std::vector<std::vector<FieldElement>> value_columns;
         value_columns.reserve(claimed_values.size());
         for (const auto& value : claimed_values)
@@ -3122,12 +3238,16 @@ namespace gatzk::crypto
             value_columns,
             powers,
             std::vector<FieldElement>{point},
-            0,
+            field_worker_cap,
             claim_validation
                 == BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials);
         if (profile != nullptr)
         {
             profile->precompute_ms += elapsed_ms(precompute_start, Clock::now());
+            profile->point_msm_worker_cap =
+                msm_options != nullptr
+                ? msm_options->max_worker_count
+                : 0;
         }
 
         std::vector<EvaluationInverseDenominatorCacheEntry> inverse_denominator_cache;
@@ -3139,7 +3259,9 @@ namespace gatzk::crypto
             point,
             key.pk,
             &inverse_denominator_cache,
-            profile);
+            profile,
+            field_worker_cap,
+            msm_options);
         if (profile != nullptr)
         {
             profile->finalize_ms += elapsed_ms(witness_start, Clock::now());

@@ -4,7 +4,11 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <future>
+#include <condition_variable>
+#include <deque>
+#include <exception>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -20,15 +24,180 @@ namespace gatzk::crypto
 
     namespace
     {
-            struct ScalarKey
-            {
-                std::array<std::uint8_t, 32> bytes{};
+        struct ScalarKey
+        {
+            std::array<std::uint8_t, 32> bytes{};
 
-                bool operator==(const ScalarKey& other) const
+            bool operator==(const ScalarKey& other) const
             {
                 return bytes == other.bytes;
             }
         };
+
+        class MsmWorkerPool
+        {
+        public:
+            explicit MsmWorkerPool(std::size_t background_worker_count)
+            {
+                workers_.reserve(background_worker_count);
+                for (std::size_t worker = 0;
+                     worker < background_worker_count;
+                     ++worker)
+                {
+                    workers_.emplace_back([this]() { worker_loop(); });
+                }
+            }
+
+            ~MsmWorkerPool()
+            {
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    stopping_ = true;
+                }
+                ready_.notify_all();
+                for (auto& worker : workers_)
+                {
+                    worker.join();
+                }
+            }
+
+            MsmWorkerPool(const MsmWorkerPool&) = delete;
+            MsmWorkerPool& operator=(const MsmWorkerPool&) = delete;
+
+            template <class Fn>
+            void parallel_for(std::size_t task_count, Fn&& fn)
+            {
+                if (task_count <= 1 || workers_.empty())
+                {
+                    fn(0);
+                    return;
+                }
+
+                struct TaskGroup
+                {
+                    explicit TaskGroup(std::size_t queued)
+                        : remaining(queued)
+                    {
+                    }
+
+                    void record_failure(std::exception_ptr error)
+                    {
+                        std::lock_guard<std::mutex> lock(mutex);
+                        if (failure == nullptr)
+                        {
+                            failure = std::move(error);
+                        }
+                    }
+
+                    void finish_one()
+                    {
+                        std::lock_guard<std::mutex> lock(mutex);
+                        if (--remaining == 0)
+                        {
+                            finished.notify_one();
+                        }
+                    }
+
+                    void wait()
+                    {
+                        std::unique_lock<std::mutex> lock(mutex);
+                        finished.wait(lock, [&]() { return remaining == 0; });
+                    }
+
+                    std::mutex mutex;
+                    std::condition_variable finished;
+                    std::size_t remaining;
+                    std::exception_ptr failure;
+                };
+
+                const auto queued_task_count = task_count - 1;
+                auto group = std::make_shared<TaskGroup>(queued_task_count);
+                auto operation = std::make_shared<std::decay_t<Fn>>(
+                    std::forward<Fn>(fn));
+                for (std::size_t task = 0; task < queued_task_count; ++task)
+                {
+                    enqueue([group, operation, task]() {
+                        try
+                        {
+                            (*operation)(task);
+                        }
+                        catch (...)
+                        {
+                            group->record_failure(std::current_exception());
+                        }
+                        group->finish_one();
+                    });
+                }
+
+                try
+                {
+                    (*operation)(task_count - 1);
+                }
+                catch (...)
+                {
+                    group->record_failure(std::current_exception());
+                }
+                group->wait();
+                if (group->failure != nullptr)
+                {
+                    std::rethrow_exception(group->failure);
+                }
+            }
+
+        private:
+            void enqueue(std::function<void()> task)
+            {
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    tasks_.push_back(std::move(task));
+                }
+                ready_.notify_one();
+            }
+
+            void worker_loop()
+            {
+                while (true)
+                {
+                    std::function<void()> task;
+                    {
+                        std::unique_lock<std::mutex> lock(mutex_);
+                        ready_.wait(lock, [&]() {
+                            return stopping_ || !tasks_.empty();
+                        });
+                        if (stopping_ && tasks_.empty())
+                        {
+                            return;
+                        }
+                        task = std::move(tasks_.front());
+                        tasks_.pop_front();
+                    }
+                    task();
+                }
+            }
+
+            std::mutex mutex_;
+            std::condition_variable ready_;
+            std::deque<std::function<void()>> tasks_;
+            std::vector<std::thread> workers_;
+            bool stopping_ = false;
+        };
+
+        MsmWorkerPool& msm_worker_pool()
+        {
+            const auto cpu_count = std::max<std::size_t>(
+                1, std::thread::hardware_concurrency());
+            static MsmWorkerPool pool(cpu_count > 1 ? cpu_count - 1 : 0);
+            return pool;
+        }
+
+        MsmWorkerPool& msm_batch_worker_pool()
+        {
+            const auto cpu_count = std::max<std::size_t>(
+                1, std::thread::hardware_concurrency());
+            static MsmWorkerPool pool(
+                cpu_count > 1 ? cpu_count - 1 : 0);
+            return pool;
+        }
 
         struct ScalarKeyHash
         {
@@ -358,29 +527,20 @@ namespace gatzk::crypto
             msm_execute_single(out, points, scalars, count);
             return;
         }
-        const auto task_count = std::min<std::size_t>(worker_count, count);
+        const auto task_count = std::min<std::size_t>(worker_count * 2, count);
         const auto chunk_size = (count + task_count - 1) / task_count;
-        std::vector<std::future<mcl::G1>> futures;
-        futures.reserve(task_count);
-        for (std::size_t task = 0; task < task_count; ++task)
-        {
+        std::vector<mcl::G1> partials(task_count);
+        msm_worker_pool().parallel_for(task_count, [&](std::size_t task) {
             const auto begin = task * chunk_size;
             const auto end = std::min(count, begin + chunk_size);
-            if (begin >= end)
-            {
-                break;
-            }
-            futures.push_back(std::async(
-                std::launch::async,
-                [points, scalars, begin, end]() {
-                    mcl::G1 partial;
-                    msm_execute_single(partial, points + begin, scalars + begin, end - begin);
-                    return partial;
-                }));
-        }
-        for (auto& future : futures)
+            msm_execute_single(
+                partials[task],
+                points + begin,
+                scalars + begin,
+                end - begin);
+        });
+        for (const auto& partial : partials)
         {
-            mcl::G1 partial = future.get();
             mcl::G1::add(out, out, partial);
         }
     }
@@ -525,21 +685,14 @@ namespace gatzk::crypto
         {
             const auto task_count = std::min<std::size_t>(worker_count, count);
             const auto chunk_size = (count + task_count - 1) / task_count;
-            std::vector<std::future<PartialSum>> futures;
-            futures.reserve(task_count);
-            for (std::size_t task = 0; task < task_count; ++task)
-            {
+            std::vector<PartialSum> partials(task_count);
+            msm_worker_pool().parallel_for(task_count, [&](std::size_t task) {
                 const auto begin = task * chunk_size;
                 const auto end = std::min(count, begin + chunk_size);
-                if (begin >= end)
-                {
-                    break;
-                }
-                futures.push_back(std::async(std::launch::async, accumulate_range, begin, end));
-            }
-            for (auto& future : futures)
+                partials[task] = accumulate_range(begin, end);
+            });
+            for (const auto& partial : partials)
             {
-                auto partial = future.get();
                 if (!partial.ok)
                 {
                     ok = false;
@@ -858,6 +1011,17 @@ namespace gatzk::crypto
         return g1_multi_scalar_mul(points.data(), scalars.data(), points.size());
     }
 
+    void g1_parallel_msm_batch_workers(
+        std::size_t worker_count,
+        const std::function<void(std::size_t)>& worker)
+    {
+        if (worker_count == 0)
+        {
+            return;
+        }
+        msm_batch_worker_pool().parallel_for(worker_count, worker);
+    }
+
     // 同基点批量乘法是 KZG 承诺与 witness 构造的典型热点。（--fast-msm on）
     std::vector<G1Point> g1_mul_same_base_batch(const G1Point& point, const std::vector<algebra::FieldElement>& scalars)
     {
@@ -915,36 +1079,20 @@ namespace gatzk::crypto
             if (task_count > 1)
             {
                 const auto chunk_size = (miss_scalars.size() + task_count - 1) / task_count;
-                std::vector<std::future<std::vector<mcl::G1>>> futures;
-                futures.reserve(task_count);
-                for (std::size_t task = 0; task < task_count; ++task)
-                {
+                msm_worker_pool().parallel_for(task_count, [&](std::size_t task) {
                     const auto begin = task * chunk_size;
                     const auto end = std::min<std::size_t>(miss_scalars.size(), begin + chunk_size);
-                    if (begin >= end)
-                    {
-                        break;
-                    }
-                    futures.push_back(std::async(
-                        std::launch::async,
-                        [&, begin, end]() {
-                            std::vector<mcl::G1> chunk(end - begin, point.value);
-                            mcl::G1::mulEach(chunk.data(), native_scalars.data() + begin, chunk.size());
-                            return chunk;
-                        }));
-                }
-                std::size_t begin = 0;
-                for (auto& future : futures)
+                    mcl::G1::mulEach(
+                        points.data() + begin,
+                        native_scalars.data() + begin,
+                        end - begin);
+                });
+                for (std::size_t i = 0; i < points.size(); ++i)
                 {
-                    auto chunk = future.get();
-                    for (std::size_t i = 0; i < chunk.size(); ++i)
-                    {
-                        G1Point value;
-                        value.value = chunk[i];
-                        out[miss_indices[begin + i]] = value;
-                        same_base_mul_cache().store(point, miss_scalars[begin + i], value);
-                    }
-                    begin += chunk.size();
+                    G1Point value;
+                    value.value = points[i];
+                    out[miss_indices[i]] = value;
+                    same_base_mul_cache().store(point, miss_scalars[i], value);
                 }
                 return out;
             }

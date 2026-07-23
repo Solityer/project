@@ -1,0 +1,4 @@
+case,input_count,nonzero_count,max_workers,repeat,profiled_ms,raw_mulvec_ms,compact_raw_mulvec_ms,fixed_prepare_ms,fixed_ms,profiled_multithreaded,profiled_sparse_compaction
+edge_current_prefix_512_full,4096,512,0,0,2.576,15.251,13.769,3.169,4.028,true,false
+edge_current_prefix_512_full,4096,512,0,1,3.115,14.993,13.849,3.169,3.714,true,false
+edge_current_prefix_512_full,4096,512,0,2,2.303,14.578,13.647,3.169,4.224,true,false

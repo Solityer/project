@@ -1,0 +1,7 @@
+Internal ctest changing into directory: /home/pzh/project/build
+Test project /home/pzh/project/build
+  Test #1: gatzk_tests
+  Test #2: static_secure_scan
+  Test #3: runner_semantics
+
+Total Tests: 3

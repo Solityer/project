@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <mcl/bn.hpp>
 #include <memory>
 #include <string>
@@ -70,6 +71,11 @@ namespace gatzk::crypto
         G1MSMProfile* profile,
         const G1MSMExecutionOptions* options = nullptr);
     G1Point g1_multi_scalar_mul(const std::vector<G1Point>& points, const std::vector<algebra::FieldElement>& scalars);
+    // Reuse bounded object-level workers around several independent MSMs.
+    // Per-MSM fanout remains separately capped by G1MSMExecutionOptions.
+    void g1_parallel_msm_batch_workers(
+        std::size_t worker_count,
+        const std::function<void(std::size_t)>& worker);
     std::vector<G1Point> g1_mul_same_base_batch(const G1Point& point, const std::vector<algebra::FieldElement>& scalars);
     G2Point g2_add(const G2Point& lhs, const G2Point& rhs);
     G2Point g2_sub(const G2Point& lhs, const G2Point& rhs);
