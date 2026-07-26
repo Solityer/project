@@ -175,6 +175,61 @@ CPU 端到端受控证据满足稳定比较；CUDA 正式热点 benchmark 在 NV
 端到端受控时间，不能用 CPU 数字代替。四个代表性正式 SRS 缺失且完整 Cora GPU 被本轮
 禁止运行，这是未闭合限制。
 
+### 第三阶段续轮新增结果
+
+本续轮先用当前源码重新冻结五次 CPU 基线，中位数为 commitment 999.433 ms、
+prove 1845.469 ms、verify 76.099 ms、三项合计 2924.897 ms。此前 26.207% 不计入
+本续轮新增成果。
+
+锁定证据：HEAD `18d92aa1f5c532f57f68b7ec173db8c06cec3d70`，代码/配置树
+（`CMakeLists.txt`、`include/`、`src/`、`tools/`、`tests/`、`configs/`、
+`scripts/`）SHA-256
+`475f913a32b209f8c82d67c6f5cd33fbeda1fcba53a9b892e8e13be5b29e1993`，
+CPU/CUDA `gatzk_run` SHA-256 分别为
+`05d73247e704fc085646ade04559b1341cec66d8c6e9d1ed42f6bad8ebe651ed` 和
+`53580a10ab3f184b39f9729ab376e86cbea74ab63d3183be601d09e929eb7ddc`。
+硬件为 10 Cortex-X925 + 10 Cortex-A725、121 GiB RAM、NVIDIA GB10/driver
+580.142；两套均为 Release + native-architecture 构建。
+
+保留两组公共生产改动：
+
+1. 同域 proof-local model reblind 在对象数不少于 4 时调用正式
+   `KZG::commit_batch`；1 至 3 个对象严格保留原逐对象顺序。8 列、domain
+   128/2048/4096 的 commitment stage 中位分别从 34.500/57.290/120.680 ms
+   降至 28.583/47.778/96.732 ms，即 -17.151%/-16.604%/-19.846%。3 列、
+   domain 16 的 batch 反而 +5.182%，因此没有让小组进入默认 batch。
+2. CUDA 的单点、补零列和多旋转 domain evaluation 直接读取 canonical 列及真实
+   长度；rotation 由 kernel 索引完成，多点合为一次 3-D launch 和一次归约，并以
+   256 MiB 限制 partial storage。domain 65536、32 列、3 点的 full/padded
+   中位从 4.591/4.948 ms 降至 1.596/1.567 ms，即 -65.236%/-68.331%；
+   单点 padded 从 1.462 降至 0.734 ms，即 -49.795%。
+
+CUDA 最终扩展 shape 回归在 NVIDIA GB10 上真实执行 129 个 kernel，所有结果 exact
+match。padded 三点在 `32768 x 64`、`262144 x 8`、`1048576 x 2` 和
+`4194304 x 1` 的中位分别是 1.585、2.631、3.242、6.825 ms，未出现随 domain
+增长的异常放大。固定可比子集的 kernel 数由 175 降为 105；扩展套件额外 24 个
+kernel 来自四种 shape 检查。
+
+续轮 clean CPU canary 的 commitment/prove/verify/合计中位为
+1013.382/1839.767/79.591/2921.514 ms，相对新基线分别
++1.396%/-0.309%/+4.589%/-0.116%，wall 仍为 3.20 s。unit 模型的同域 reblind
+组少于 4，因此该 canary 按设计不触发新增 batch；它证明未转移计时和整链无显著回退，
+不能冒充正式规模 CPU 总收益。之后另一用户 `zkdl_cpu_cli` 与编辑器进程提高主机负载的
+样本已排除，没有用来制造正负结论。
+
+本续轮还测量并完整删除了 dynamic `t_edge` scheduling/temp reuse、shifted-base、
+共享 opening inverse workspace、LTO、`-mcpu=native`、降低 commitment threshold、
+capacity-weighted pinned range、12-worker medium MSM 和 16-worker `t_edge` cap。
+其中 16-worker 在五种局部正式形态汇总有收益，但七组完整受控 proof 中 `t_edge`
+仅从 949.160 降至 948.036 ms，三项合计反而从 2926.495 升至 2936.719 ms，故回滚。
+
+当前 CPU 大头 `t_edge`、dynamic MSM、opening witness、FFT/coset、内存与线程调度均
+已通过局部和整链候选闭环；未保留只在极小输入变快或把长尾/内存转移到其他阶段的方案。
+CUDA field-domain 路径取得新的稳定大幅下降；curve MSM、KZG witness 和 pairing 因
+现有依赖没有 production GPU curve backend 而仍在 CPU，这只限制这些具体阶段。
+由于 unit 低于 CUDA dispatch threshold、完整 Cora 被禁止，本报告仍不声称 CUDA
+端到端 commitment/prove/verify 已测量。
+
 ## 仓库收敛清理
 
 已删除：
@@ -208,7 +263,7 @@ CPU 端到端受控证据满足稳定比较；CUDA 正式热点 benchmark 在 NV
   build/gatzk_tests`：通过；
 - 257/1009 非整除 MSM 回归：通过；
 - CPU direct unit `gatzk_run`：`VERIFY_OK`；
-- CUDA production hotspot benchmark：90 kernels，全部 exact match；
+- CUDA production hotspot benchmark：扩展套件 129 kernels，全部 exact match；
 - CPU build 请求 CUDA：fail closed；
 - CUDA unit measured run 零 kernel：fail closed；
 - unknown/missing/invalid CLI negative checks：全部按预期失败；
@@ -228,8 +283,9 @@ CPU 端到端受控证据满足稳定比较；CUDA 正式热点 benchmark 在 NV
    必须重新执行并通过。
 3. 五个完整正式数据集的 CPU/GPU 十行没有运行，正式结果、规模趋势和 GPU 端到端收益
    尚未验收。
-4. `t_edge` 和 dynamic commitments 仍是大热点；当前纯 CPU 曲线后端和 transcript
-   barrier 限制了继续等价优化的收益。未来若引入生产级 GPU curve MSM/KZG/pairing，
-   必须重新走协议等价、安全回归和 CPU/GPU 分别测量。
+4. `t_edge` 和 dynamic commitments 仍是 CPU 大热点；本续轮已对 evaluator、
+   materialization、MSM worker、commit batch、opening、FFT/coset 和调度候选做了
+   局部与整链闭环，未找到新的稳定 CPU 总收益。未来若引入生产级 GPU curve
+   MSM/KZG/pairing，必须重新走协议等价、安全回归和 CPU/GPU 分别测量。
 
 正式命令、日志、结果读取、消融和 SRS 安装步骤见 `README.md`。

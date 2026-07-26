@@ -216,6 +216,87 @@ void bench_formal_weighted_route(
               << " gpu_median_ms=" << median(gpu_samples) << " exact_match=true\n";
 }
 
+void bench_formal_weighted_rotations(
+    const std::size_t domain_size,
+    const std::size_t row_count,
+    const std::size_t repeats,
+    const bool padded_tail) {
+    const auto domain = gatzk::algebra::RootOfUnityDomain::create(
+        "edge", domain_size);
+    std::vector<gatzk::algebra::Polynomial> polynomials;
+    polynomials.reserve(row_count);
+    for (std::size_t row = 0; row < row_count; ++row) {
+        std::vector<FieldElement> values(domain_size);
+        for (std::size_t column = 0; column < domain_size; ++column) {
+            values[column] = FieldElement(static_cast<std::uint64_t>(
+                (column * 29 + row * 11 + 5) % 1013));
+        }
+        if (padded_tail && row == 0) values.resize(domain_size / 2);
+        polynomials.push_back(gatzk::algebra::Polynomial::from_evaluations(
+            "cuda_rotation_" + std::to_string(row),
+            std::move(values),
+            domain));
+    }
+    std::vector<std::pair<std::string, const gatzk::algebra::Polynomial*>> named;
+    std::vector<std::string> labels;
+    named.reserve(row_count);
+    labels.reserve(row_count);
+    for (const auto& polynomial : polynomials) {
+        named.emplace_back(polynomial.name, &polynomial);
+        labels.push_back(polynomial.name);
+    }
+    gatzk::algebra::PackedEvaluationBackend backend(domain, std::move(named));
+    std::vector<mcl::Fr> weights(domain_size);
+    for (std::size_t column = 0; column < domain_size; ++column) {
+        weights[column] = static_cast<long long>((column * 17 + 3) % 1009);
+    }
+    const std::vector<std::size_t> rotations = {
+        0,
+        1,
+        domain_size / 2,
+    };
+
+    gatzk::util::Route2Options cpu_route;
+    gatzk::util::set_route2_options(cpu_route);
+    std::vector<double> cpu_samples;
+    std::vector<std::vector<FieldElement>> expected;
+    for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
+        const auto start = Clock::now();
+        expected = backend.evaluate_with_native_weight_rotations(
+            labels, weights, rotations);
+        cpu_samples.push_back(elapsed_ms(start));
+    }
+
+    auto gpu_route = cpu_route;
+    gpu_route.cuda_field_hotspots = true;
+    gatzk::util::set_route2_options(gpu_route);
+    if (!gatzk::algebra::should_use_cuda_weighted_evaluation(
+            domain_size, row_count, rotations.size())) {
+        throw std::runtime_error(
+            "representative rotated weighted case did not enter formal CUDA route");
+    }
+    std::vector<double> gpu_samples;
+    for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
+        const auto start = Clock::now();
+        const auto actual = backend.evaluate_with_native_weight_rotations(
+            labels, weights, rotations);
+        gpu_samples.push_back(elapsed_ms(start));
+        if (actual != expected) {
+            throw std::runtime_error("formal CUDA rotated weighted route mismatch");
+        }
+    }
+    std::cout << "case="
+              << (padded_tail
+                      ? "formal_weighted_padded_rotations"
+                      : "formal_weighted_rotations")
+              << " domain_size=" << domain_size
+              << " rows=" << row_count
+              << " points=" << rotations.size()
+              << " cpu_median_ms=" << median(cpu_samples)
+              << " gpu_median_ms=" << median(gpu_samples)
+              << " exact_match=true\n";
+}
+
 void bench_histogram(
     const std::size_t index_count,
     const std::size_t bucket_count,
@@ -278,6 +359,17 @@ int main(int argc, char** argv) {
         bench_weighted(kDomainSize, kRows, kRepeats);
         bench_formal_weighted_route(kDomainSize, kRows, kRepeats, false);
         bench_formal_weighted_route(kDomainSize, kRows, kRepeats, true);
+        bench_formal_weighted_rotations(kDomainSize, kRows, kRepeats, false);
+        bench_formal_weighted_rotations(kDomainSize, kRows, kRepeats, true);
+        constexpr std::size_t kShapeRepeats = 3;
+        bench_formal_weighted_rotations(
+            1ULL << 15, 64, kShapeRepeats, true);
+        bench_formal_weighted_rotations(
+            1ULL << 18, 8, kShapeRepeats, true);
+        bench_formal_weighted_rotations(
+            1ULL << 20, 2, kShapeRepeats, true);
+        bench_formal_weighted_rotations(
+            1ULL << 22, 1, kShapeRepeats, true);
         gatzk::util::Route2Options cuda_route;
         cuda_route.cuda_trace_hotspots = true;
         cuda_route.cuda_field_hotspots = true;

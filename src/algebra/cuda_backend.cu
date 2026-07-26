@@ -271,9 +271,11 @@ namespace gatzk::algebra
         __global__ void weighted_eval_columnar_kernel(
             const gpu::GpuFr *__restrict__ weights,        // 主机/统一地址空间中的 `[domain_size]`
             const gpu::GpuFr *const *__restrict__ columns, // 每列一个指针，均指向 `[domain_size]`
+            const std::size_t *__restrict__ column_lengths,// 可选的每列真实长度，尾部按零处理
             gpu::GpuFr *__restrict__ partial_results,      // `[num_blocks * row_count]`
             std::size_t domain_size,
-            std::size_t row_count)
+            std::size_t row_count,
+            std::size_t weight_rotation)
         {
 
             const auto tid = threadIdx.x;
@@ -284,9 +286,15 @@ namespace gatzk::algebra
                 return;
 
             gpu::GpuFr acc = gpu::fr_zero();
-            if (col < domain_size)
+            if (col < domain_size
+                && (column_lengths == nullptr || col < column_lengths[row]))
             {
-                acc = gpu::fr_mul(weights[col], columns[row][col]);
+                const auto weight_index =
+                    col >= weight_rotation
+                    ? col - weight_rotation
+                    : domain_size - (weight_rotation - col);
+                acc = gpu::fr_mul(
+                    weights[weight_index], columns[row][col]);
             }
 
             extern __shared__ gpu::GpuFr smem[];
@@ -306,6 +314,87 @@ namespace gatzk::algebra
             {
                 partial_results[static_cast<std::size_t>(blockIdx.x) * row_count + row] = smem[0];
             }
+        }
+
+        __global__ void weighted_eval_columnar_rotations_kernel(
+            const gpu::GpuFr *__restrict__ weights,
+            const gpu::GpuFr *const *__restrict__ columns,
+            const std::size_t *__restrict__ column_lengths,
+            const std::size_t *__restrict__ rotations,
+            gpu::GpuFr *__restrict__ partial_results,
+            std::size_t domain_size,
+            std::size_t row_count,
+            std::size_t num_blocks)
+        {
+            const auto tid = threadIdx.x;
+            const auto col =
+                static_cast<std::size_t>(blockIdx.x) * blockDim.x + tid;
+            const auto row = static_cast<std::size_t>(blockIdx.y);
+            const auto point = static_cast<std::size_t>(blockIdx.z);
+            if (row >= row_count)
+                return;
+
+            gpu::GpuFr acc = gpu::fr_zero();
+            if (col < domain_size
+                && (column_lengths == nullptr || col < column_lengths[row]))
+            {
+                const auto rotation = rotations[point];
+                const auto weight_index =
+                    col >= rotation
+                    ? col - rotation
+                    : domain_size - (rotation - col);
+                acc = gpu::fr_mul(
+                    weights[weight_index], columns[row][col]);
+            }
+
+            extern __shared__ gpu::GpuFr smem[];
+            smem[tid] = acc;
+            __syncthreads();
+            for (unsigned stride = blockDim.x / 2;
+                 stride > 0;
+                 stride >>= 1)
+            {
+                if (tid < stride)
+                {
+                    smem[tid] = gpu::fr_add(
+                        smem[tid], smem[tid + stride]);
+                }
+                __syncthreads();
+            }
+            if (tid == 0)
+            {
+                partial_results[
+                    (point * num_blocks
+                     + static_cast<std::size_t>(blockIdx.x))
+                        * row_count
+                    + row] = smem[0];
+            }
+        }
+
+        __global__ void reduce_rotation_partials_kernel(
+            const gpu::GpuFr *__restrict__ partial_results,
+            gpu::GpuFr *__restrict__ final_results,
+            std::size_t num_blocks,
+            std::size_t row_count,
+            std::size_t rotation_count)
+        {
+            const auto output_index =
+                static_cast<std::size_t>(blockIdx.x) * blockDim.x
+                + threadIdx.x;
+            const auto output_count = row_count * rotation_count;
+            if (output_index >= output_count)
+                return;
+            const auto point = output_index / row_count;
+            const auto row = output_index % row_count;
+            gpu::GpuFr sum = gpu::fr_zero();
+            for (std::size_t block = 0; block < num_blocks; ++block)
+            {
+                sum = gpu::fr_add(
+                    sum,
+                    partial_results[
+                        (point * num_blocks + block) * row_count + row]);
+            }
+            final_results[output_index] = sum;
         }
 
         // 分块加权求值 kernel。
@@ -538,7 +627,9 @@ namespace gatzk::algebra
         const uint64_t *const *column_ptrs, // 每列一个主机指针
         uint64_t *output_limbs,             // 主机侧 `poly_count × 4 uint64`
         std::size_t domain_size,
-        std::size_t row_count)
+        std::size_t row_count,
+        const std::size_t *column_lengths,
+        std::size_t weight_rotation)
     {
 
         if (domain_size == 0 || row_count == 0)
@@ -563,11 +654,33 @@ namespace gatzk::algebra
         }
         cudaMemcpy(d_columns, h_columns.data(), ptr_bytes, cudaMemcpyHostToDevice);
 
+        std::size_t *d_column_lengths = nullptr;
+        if (column_lengths != nullptr)
+        {
+            const auto length_bytes = row_count * sizeof(std::size_t);
+            if (cudaMalloc(&d_column_lengths, length_bytes) != cudaSuccess)
+            {
+                cudaFree(d_columns);
+                return false;
+            }
+            if (cudaMemcpy(
+                    d_column_lengths,
+                    column_lengths,
+                    length_bytes,
+                    cudaMemcpyHostToDevice) != cudaSuccess)
+            {
+                cudaFree(d_column_lengths);
+                cudaFree(d_columns);
+                return false;
+            }
+        }
+
         // 为局部结果申请设备缓冲区。
         const auto partial_bytes = static_cast<std::size_t>(num_blocks) * row_count * sizeof(gpu::GpuFr);
         gpu::GpuFr *d_partials = nullptr;
         if (cudaMalloc(&d_partials, partial_bytes) != cudaSuccess)
         {
+            cudaFree(d_column_lengths);
             cudaFree(d_columns);
             return false;
         }
@@ -579,9 +692,11 @@ namespace gatzk::algebra
         weighted_eval_columnar_kernel<<<grid, kBlockDim, smem_bytes>>>(
             reinterpret_cast<const gpu::GpuFr *>(weight_limbs),
             d_columns,
+            d_column_lengths,
             d_partials,
             domain_size,
-            row_count);
+            row_count,
+            weight_rotation % domain_size);
 
         // 汇总局部结果。
         const auto result_bytes = row_count * sizeof(gpu::GpuFr);
@@ -589,6 +704,7 @@ namespace gatzk::algebra
         if (cudaMalloc(&d_final, result_bytes) != cudaSuccess)
         {
             cudaFree(d_partials);
+            cudaFree(d_column_lengths);
             cudaFree(d_columns);
             return false;
         }
@@ -603,6 +719,7 @@ namespace gatzk::algebra
         {
             cudaFree(d_final);
             cudaFree(d_partials);
+            cudaFree(d_column_lengths);
             cudaFree(d_columns);
             return false;
         }
@@ -612,6 +729,7 @@ namespace gatzk::algebra
 
         cudaFree(d_final);
         cudaFree(d_partials);
+        cudaFree(d_column_lengths);
         cudaFree(d_columns);
         record_cuda_kernel_invocations(2);
         return true;
@@ -624,7 +742,9 @@ namespace gatzk::algebra
         const uint64_t *const *column_value_ptrs,
         uint64_t *output_limbs, // `poly_count × 4 uint64`
         std::size_t domain_size,
-        std::size_t poly_count)
+        std::size_t poly_count,
+        const std::size_t *column_lengths,
+        std::size_t weight_rotation)
     {
 
         if (domain_size == 0 || poly_count == 0)
@@ -635,7 +755,7 @@ namespace gatzk::algebra
         {
             return weighted_poly_eval_gpu_columnar(
                 weight_limbs, column_value_ptrs, output_limbs,
-                domain_size, poly_count);
+                domain_size, poly_count, column_lengths, weight_rotation);
         }
 
         // ---- Discrete GPU fallback: sequential per-polynomial with weight reuse ----
@@ -680,7 +800,18 @@ namespace gatzk::algebra
 
         for (std::size_t p = 0; p < poly_count; ++p)
         {
-            cudaMemcpy(d_values, column_value_ptrs[p], single_val_bytes, cudaMemcpyHostToDevice);
+            const auto column_size = column_lengths == nullptr
+                ? domain_size
+                : std::min(domain_size, column_lengths[p]);
+            if (column_size < domain_size)
+            {
+                cudaMemset(d_values, 0, single_val_bytes);
+            }
+            cudaMemcpy(
+                d_values,
+                column_value_ptrs[p],
+                column_size * sizeof(gpu::GpuFr),
+                cudaMemcpyHostToDevice);
             cudaMemset(d_partials, 0, partial_bytes);
 
             dim3 grid(num_blocks, 1);
@@ -709,6 +840,157 @@ namespace gatzk::algebra
         cudaFree(d_values);
         cudaFree(d_weights);
         record_cuda_kernel_invocations(poly_count * 2);
+        return true;
+    }
+
+    bool weighted_poly_eval_gpu_multi_rotations(
+        const uint64_t *weight_limbs,
+        const uint64_t *const *column_value_ptrs,
+        uint64_t *output_limbs,
+        std::size_t domain_size,
+        std::size_t poly_count,
+        const std::size_t *rotations,
+        std::size_t rotation_count,
+        const std::size_t *column_lengths)
+    {
+        if (domain_size == 0 || poly_count == 0 || rotation_count == 0)
+            return true;
+        if (!cuda_backend_unified_addressing_available()
+            || poly_count > 65535
+            || rotation_count > 65535)
+            return false;
+
+        constexpr unsigned kBlockDim = 256;
+        const auto num_blocks = static_cast<unsigned>(
+            (domain_size + kBlockDim - 1) / kBlockDim);
+        const auto grid_y = static_cast<unsigned>(
+            std::min(poly_count, static_cast<std::size_t>(65535)));
+
+        const gpu::GpuFr **d_columns = nullptr;
+        const auto ptr_bytes = poly_count * sizeof(const gpu::GpuFr *);
+        if (cudaMalloc(&d_columns, ptr_bytes) != cudaSuccess)
+            return false;
+        auto cleanup_columns = [&]() {
+            cudaFree(d_columns);
+        };
+        std::vector<const gpu::GpuFr *> h_columns(poly_count);
+        for (std::size_t index = 0; index < poly_count; ++index)
+        {
+            h_columns[index] = reinterpret_cast<const gpu::GpuFr *>(
+                column_value_ptrs[index]);
+        }
+        if (cudaMemcpy(
+                d_columns,
+                h_columns.data(),
+                ptr_bytes,
+                cudaMemcpyHostToDevice) != cudaSuccess)
+        {
+            cleanup_columns();
+            return false;
+        }
+
+        std::size_t *d_column_lengths = nullptr;
+        if (column_lengths != nullptr)
+        {
+            const auto length_bytes = poly_count * sizeof(std::size_t);
+            if (cudaMalloc(&d_column_lengths, length_bytes) != cudaSuccess
+                || cudaMemcpy(
+                       d_column_lengths,
+                       column_lengths,
+                       length_bytes,
+                       cudaMemcpyHostToDevice) != cudaSuccess)
+            {
+                cudaFree(d_column_lengths);
+                cleanup_columns();
+                return false;
+            }
+        }
+
+        std::vector<std::size_t> normalized_rotations(rotation_count);
+        for (std::size_t index = 0; index < rotation_count; ++index)
+        {
+            normalized_rotations[index] = rotations[index] % domain_size;
+        }
+        std::size_t *d_rotations = nullptr;
+        const auto rotation_bytes = rotation_count * sizeof(std::size_t);
+        if (cudaMalloc(&d_rotations, rotation_bytes) != cudaSuccess
+            || cudaMemcpy(
+                   d_rotations,
+                   normalized_rotations.data(),
+                   rotation_bytes,
+                   cudaMemcpyHostToDevice) != cudaSuccess)
+        {
+            cudaFree(d_rotations);
+            cudaFree(d_column_lengths);
+            cleanup_columns();
+            return false;
+        }
+
+        const auto partial_count =
+            static_cast<std::size_t>(num_blocks)
+            * poly_count
+            * rotation_count;
+        gpu::GpuFr *d_partials = nullptr;
+        if (cudaMalloc(
+                &d_partials,
+                partial_count * sizeof(gpu::GpuFr)) != cudaSuccess)
+        {
+            cudaFree(d_rotations);
+            cudaFree(d_column_lengths);
+            cleanup_columns();
+            return false;
+        }
+        const auto output_count = poly_count * rotation_count;
+        gpu::GpuFr *d_final = nullptr;
+        if (cudaMalloc(
+                &d_final,
+                output_count * sizeof(gpu::GpuFr)) != cudaSuccess)
+        {
+            cudaFree(d_partials);
+            cudaFree(d_rotations);
+            cudaFree(d_column_lengths);
+            cleanup_columns();
+            return false;
+        }
+
+        dim3 grid(num_blocks, grid_y, static_cast<unsigned>(rotation_count));
+        const auto smem_bytes = kBlockDim * sizeof(gpu::GpuFr);
+        weighted_eval_columnar_rotations_kernel<<<
+            grid, kBlockDim, smem_bytes>>>(
+            reinterpret_cast<const gpu::GpuFr *>(weight_limbs),
+            d_columns,
+            d_column_lengths,
+            d_rotations,
+            d_partials,
+            domain_size,
+            poly_count,
+            num_blocks);
+        constexpr unsigned kReduceBlockDim = 256;
+        const auto reduce_grid = static_cast<unsigned>(
+            (output_count + kReduceBlockDim - 1) / kReduceBlockDim);
+        reduce_rotation_partials_kernel<<<
+            reduce_grid, kReduceBlockDim>>>(
+            d_partials,
+            d_final,
+            num_blocks,
+            poly_count,
+            rotation_count);
+
+        const bool ok =
+            cudaDeviceSynchronize() == cudaSuccess
+            && cudaMemcpy(
+                   output_limbs,
+                   d_final,
+                   output_count * sizeof(gpu::GpuFr),
+                   cudaMemcpyDeviceToHost) == cudaSuccess;
+        cudaFree(d_final);
+        cudaFree(d_partials);
+        cudaFree(d_rotations);
+        cudaFree(d_column_lengths);
+        cleanup_columns();
+        if (!ok)
+            return false;
+        record_cuda_kernel_invocations(2);
         return true;
     }
 

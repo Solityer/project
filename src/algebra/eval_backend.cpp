@@ -210,13 +210,14 @@ namespace gatzk::algebra
         // On a unified-memory device, full-domain evaluation polynomials are
         // already stored in the columnar layout consumed by the CUDA kernel.
         // Use those read-only columns directly instead of materializing or
-        // scanning an interleaved label subset first. Short columns must keep
-        // the existing zero-padding path below.
+        // scanning an interleaved label subset first. Per-column lengths let
+        // the same kernel preserve the canonical zero-padded tail semantics.
         if (try_gpu && cuda_backend_unified_addressing_available())
         {
             std::vector<const uint64_t*> direct_column_ptrs;
+            std::vector<std::size_t> direct_column_lengths;
             direct_column_ptrs.reserve(row_count);
-            bool full_domain_columns = true;
+            direct_column_lengths.reserve(row_count);
             for (const auto& label : labels)
             {
                 const auto label_it = label_to_index_.find(label);
@@ -226,37 +227,31 @@ namespace gatzk::algebra
                         "domain evaluation backend is missing label: " + label);
                 }
                 const auto& values = polynomials_[label_it->second].second->values();
-                if (values.size() < domain_->size)
-                {
-                    full_domain_columns = false;
-                    break;
-                }
                 direct_column_ptrs.push_back(reinterpret_cast<const uint64_t*>(
                     FieldElement::native_array_data(values.data())));
+                direct_column_lengths.push_back(std::min(values.size(), domain_->size));
             }
-            if (full_domain_columns)
+            std::vector<mcl::Fr> gpu_results(row_count);
+            for (auto& value : gpu_results) value.clear();
+            const bool gpu_ok = weighted_poly_eval_gpu_multi(
+                reinterpret_cast<const uint64_t*>(weights.data()),
+                direct_column_ptrs.data(),
+                reinterpret_cast<uint64_t*>(gpu_results.data()),
+                domain_->size,
+                row_count,
+                direct_column_lengths.data());
+            if (!gpu_ok)
             {
-                std::vector<mcl::Fr> gpu_results(row_count);
-                for (auto& value : gpu_results) value.clear();
-                const bool gpu_ok = weighted_poly_eval_gpu_multi(
-                    reinterpret_cast<const uint64_t*>(weights.data()),
-                    direct_column_ptrs.data(),
-                    reinterpret_cast<uint64_t*>(gpu_results.data()),
-                    domain_->size,
-                    row_count);
-                if (!gpu_ok)
-                {
-                    throw std::runtime_error(
-                        "CUDA direct columnar evaluation kernel failed; refusing silent CPU fallback");
-                }
-                std::vector<FieldElement> out;
-                out.reserve(row_count);
-                for (const auto& value : gpu_results)
-                {
-                    out.push_back(FieldElement::from_native(value));
-                }
-                return out;
+                throw std::runtime_error(
+                    "CUDA direct columnar evaluation kernel failed; refusing silent CPU fallback");
             }
+            std::vector<FieldElement> out;
+            out.reserve(row_count);
+            for (const auto& value : gpu_results)
+            {
+                out.push_back(FieldElement::from_native(value));
+            }
+            return out;
         }
 
         const auto& subset = subset_for(labels);
@@ -458,11 +453,9 @@ namespace gatzk::algebra
             return {};
         }
 
-        const auto& subset = subset_for(labels);
-        const auto row_count = subset.row_indices.size();
+        const auto row_count = labels.size();
         const auto point_count = rotations.size();
         const auto domain_mask = domain_->size - 1U;
-        const bool use_cached_subset = !subset.interleaved_values.empty();
         std::vector<mcl::Fr> native_out(point_count * row_count);
         for (auto& value : native_out)
         {
@@ -470,10 +463,99 @@ namespace gatzk::algebra
         }
 
         const auto& route2 = util::route2_options();
-
-        // ---- GPU path for rotated evaluations ----
         const bool try_gpu = should_use_cuda_weighted_evaluation(domain_->size, row_count, point_count);
 
+        // Unified-memory CUDA uses the canonical evaluation columns directly.
+        // This avoids materializing an interleaved subset (or copying it back
+        // into column buffers) before every group of rotated opening points.
+        if (try_gpu && cuda_backend_unified_addressing_available())
+        {
+            std::vector<const uint64_t*> direct_column_ptrs;
+            std::vector<std::size_t> direct_column_lengths;
+            direct_column_ptrs.reserve(row_count);
+            direct_column_lengths.reserve(row_count);
+            for (const auto& label : labels)
+            {
+                const auto label_it = label_to_index_.find(label);
+                if (label_it == label_to_index_.end())
+                {
+                    throw std::runtime_error(
+                        "domain evaluation backend is missing label: " + label);
+                }
+                const auto& values = polynomials_[label_it->second].second->values();
+                direct_column_ptrs.push_back(reinterpret_cast<const uint64_t*>(
+                    FieldElement::native_array_data(values.data())));
+                direct_column_lengths.push_back(
+                    std::min(values.size(), domain_->size));
+            }
+
+            constexpr std::size_t kMaxRotationPartialBytes =
+                256ULL * 1024ULL * 1024ULL;
+            constexpr std::size_t kCudaReductionBlockSize = 256;
+            const auto partial_blocks =
+                (domain_->size + kCudaReductionBlockSize - 1)
+                / kCudaReductionBlockSize;
+            const auto partial_bytes_per_point =
+                static_cast<unsigned __int128>(partial_blocks)
+                * static_cast<unsigned __int128>(row_count)
+                * sizeof(mcl::Fr);
+            const auto rotations_per_launch =
+                partial_bytes_per_point
+                        > static_cast<unsigned __int128>(
+                            kMaxRotationPartialBytes)
+                    ? std::size_t{1}
+                    : std::max<std::size_t>(
+                        1,
+                        kMaxRotationPartialBytes
+                            / static_cast<std::size_t>(
+                                partial_bytes_per_point));
+            for (std::size_t rotation_begin = 0;
+                 rotation_begin < point_count;
+                 rotation_begin += rotations_per_launch)
+            {
+                const auto launch_count = std::min(
+                    rotations_per_launch,
+                    point_count - rotation_begin);
+                const bool gpu_ok =
+                    weighted_poly_eval_gpu_multi_rotations(
+                        reinterpret_cast<const uint64_t*>(
+                            representative_weights.data()),
+                        direct_column_ptrs.data(),
+                        reinterpret_cast<uint64_t*>(
+                            native_out.data()
+                            + rotation_begin * row_count),
+                        domain_->size,
+                        row_count,
+                        rotations.data() + rotation_begin,
+                        launch_count,
+                        direct_column_lengths.data());
+                if (!gpu_ok)
+                {
+                    throw std::runtime_error(
+                        "CUDA direct batched rotated columnar evaluation kernel failed; refusing silent CPU fallback");
+                }
+            }
+
+            std::vector<std::vector<FieldElement>> out(
+                point_count,
+                std::vector<FieldElement>(row_count, FieldElement::zero()));
+            for (std::size_t point_index = 0;
+                 point_index < point_count;
+                 ++point_index)
+            {
+                for (std::size_t row = 0; row < row_count; ++row)
+                {
+                    out[point_index][row] = FieldElement::from_native(
+                        native_out[point_index * row_count + row]);
+                }
+            }
+            return out;
+        }
+
+        const auto& subset = subset_for(labels);
+        const bool use_cached_subset = !subset.interleaved_values.empty();
+
+        // ---- GPU path for rotated evaluations ----
         if (try_gpu)
         {
             if (use_cached_subset)

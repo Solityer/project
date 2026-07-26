@@ -276,7 +276,15 @@ namespace gatzk::algebra
             {
                 return false;
             }
-            return unified != 0;
+            int pageable_access = 0;
+            if (cudaDeviceGetAttribute(
+                    &pageable_access,
+                    cudaDevAttrPageableMemoryAccess,
+                    device) != cudaSuccess)
+            {
+                return false;
+            }
+            return unified != 0 && pageable_access != 0;
         }();
         return available;
 #else
@@ -395,10 +403,14 @@ namespace gatzk::algebra
         std::size_t, std::size_t) { return false; }
     bool weighted_poly_eval_gpu_columnar(
         const uint64_t*, const uint64_t* const*, uint64_t*,
-        std::size_t, std::size_t) { return false; }
+        std::size_t, std::size_t, const std::size_t*, std::size_t) { return false; }
     bool weighted_poly_eval_gpu_multi(
         const uint64_t*, const uint64_t* const*, uint64_t*,
-        std::size_t, std::size_t) { return false; }
+        std::size_t, std::size_t, const std::size_t*, std::size_t) { return false; }
+    bool weighted_poly_eval_gpu_multi_rotations(
+        const uint64_t*, const uint64_t* const*, uint64_t*,
+        std::size_t, std::size_t, const std::size_t*, std::size_t,
+        const std::size_t*) { return false; }
 #endif
 
     // 点积是 polynomial / KZG / verifier 会反复调用的基础热路径。

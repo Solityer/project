@@ -22,10 +22,12 @@ assembly, in-memory canonical serialization, strict parsing, and verifier.
 All timing uses `exclusive_commit_prove_verify_v2`; the formal acceptance
 metric is the sum of `commitment_time`, `prove_time`, and `verify_time`.
 
-The prior 75% reduction target was not reached. The retained final median is
-26.207% below the one frozen baseline, with a corresponding 24.859% wall-time
-reduction. This document therefore does not claim that Phase 3 or the complete
-experiment matrix is finished.
+The prior 75% reduction target was not reached. The retained 2026-07-22 median
+is 26.207% below that round's frozen baseline, with a corresponding 24.859%
+wall-time reduction. The continuation at the end of this document freezes a
+new current-source baseline and reports only newly measured changes; it does
+not count the earlier 26.207% as a new result and does not claim that the
+complete experiment matrix was run.
 
 ## Frozen baseline
 
@@ -240,3 +242,178 @@ does not treat local compiler preflight as an SRS publication.
   ogbn-arxiv maximum-envelope chunk count was corrected from two to three.
 - `gatzk_run` now saves the exact canonical `proof.bin`; its byte length must
   equal `proof_size_bytes`, and `run_manifest.json` binds it with SHA-256.
+
+## 2026-07-26 continuation: model commitments and CUDA domain evaluation
+
+### Current-source baseline and host state
+
+Before the continuation changes, five fresh Release CPU processes were run
+with the same unit-security config, seed, SRS, `taskset -c 0-19`, and formal
+timing schema used for the final check. The medians were:
+
+| Metric | Current-source baseline median |
+| --- | ---: |
+| `commitment_time_ms` | 999.433 |
+| `prove_time_ms` | 1845.469 |
+| `verify_time_ms` | 76.099 |
+| Three-time sum | 2924.897 |
+| Wall time | 3.20 s |
+| Peak RSS | 808000 KiB |
+| `proof_size_bytes` | 250444 |
+
+All five proofs strict-parsed and verified. This is the continuation baseline,
+not the older 3897.541 ms baseline used to establish the retained 26.207%
+improvement.
+
+The locked implementation evidence is:
+
+- Git HEAD `18d92aa1f5c532f57f68b7ec173db8c06cec3d70`;
+- code/config tree SHA-256 (`CMakeLists.txt`, `include/`, `src/`, `tools/`,
+  `tests/`, `configs/`, and `scripts/`)
+  `475f913a32b209f8c82d67c6f5cd33fbeda1fcba53a9b892e8e13be5b29e1993`;
+- CPU `gatzk_run` SHA-256
+  `05d73247e704fc085646ade04559b1341cec66d8c6e9d1ed42f6bad8ebe651ed`;
+- CUDA `gatzk_run` SHA-256
+  `53580a10ab3f184b39f9729ab376e86cbea74ab63d3183be601d09e929eb7ddc`;
+- Release, native-architecture builds; CUDA is disabled/enabled respectively.
+
+The host is Linux 6.17 aarch64 with 10 Cortex-X925 plus 10 Cortex-A725 cores,
+one hardware thread per core, 121 GiB RAM, and an NVIDIA GB10 with driver
+580.142. CUDA zero-copy dispatch additionally requires both UVA and pageable
+host-memory access; otherwise the same production API uses its explicit-copy
+fallback.
+
+The continuation evidence can be reproduced without a separate protocol
+runner:
+
+```text
+for case in \
+  model_reblind_d16_batch3_full model_reblind_d16_sequential3_full \
+  model_reblind_cat128_batch8_full model_reblind_cat128_sequential8_full \
+  model_reblind_in2048_batch8_full model_reblind_in2048_sequential8_full \
+  model_reblind_edge4096_batch8_full model_reblind_edge4096_sequential8_full
+do
+  for repeat in 1 2 3
+  do
+    taskset -c 0-19 build/gatzk_kzg_opening_stage_bench "$case"
+  done
+done
+build_cuda/gatzk_cuda_hotspots_stage_bench
+```
+
+Both executables call the production KZG/evaluation functions directly. The
+CPU controlled proof command is the representative entry recorded at the top
+of this file.
+
+The clean comparable final CPU canary was neutral: commitment 1013.382 ms
+(+1.396%), prove 1839.767 ms (-0.309%), verify 79.591 ms (+4.589%), and total
+2921.514 ms (-0.116%). Wall remained 3.20 s and RSS changed from 808000 to
+807824 KiB. The unit model contains fewer than four same-domain reblind
+objects, so it deliberately remains on the original serial route and cannot
+measure the scale-gated model batch below. Later CPU samples were excluded
+because an unrelated `zkdl_cpu_cli` and two editor processes raised host load;
+they are not used to claim either a gain or a regression.
+
+### Retained CPU model-reblind batching
+
+Proof-local model reblinding previously committed every independent weight
+column serially even though all commitments in a same-domain model block exist
+before the transcript absorbs any of them. `trace.cpp` now prepares the same
+fresh blinders and canonical polynomials in original order and sends groups of
+at least four to the production `KZG::commit_batch`. Groups of one to three
+retain the old per-object order; this is a generic amortization threshold, not
+a dataset branch.
+
+The retained benchmark calls the same production `KZG::commit` and
+`KZG::commit_batch` functions over evaluation-basis objects backed by the
+installed SRS. Three-run medians were:
+
+| Same-domain model shape | Serial (ms) | Batch (ms) | Change |
+| --- | ---: | ---: | ---: |
+| 8 columns, domain 128 | 34.500 | 28.583 | -17.151% |
+| 8 columns, domain 2048 | 57.290 | 47.778 | -16.604% |
+| 8 columns, domain 4096 | 120.680 | 96.732 | -19.846% |
+| 3 columns, domain 16 | 1.679 | 1.766 | +5.182% |
+
+The last row is why small groups remain serial. Cora/Citeseer hidden weight
+blocks use the measured 8-column route; the size-based implementation is also
+common to Pubmed, PPI, and ogbn-arxiv and to larger output-class blocks. No
+commitment, blinder, polynomial, transcript order, or verifier equation was
+changed.
+
+### Retained CUDA single-point and multi-rotation routes
+
+On the NVIDIA GB10 unified-addressing device, production evaluation
+polynomials are already in the column layout consumed by the CUDA field
+kernel. The old padded route first materialized a full zero-padded/interleaved
+copy. The old rotated route additionally rebuilt the subset and performed a
+separate allocation, rotation, launch, reduction, and synchronization for
+each opening point.
+
+The retained route:
+
+- passes the canonical read-only columns and their true lengths directly;
+- makes the kernel apply zero tails and weight rotations by index;
+- evaluates all rotations in one 3-D launch and one deterministic per-output
+  reduction, preserving `[point][polynomial]` output order;
+- chunks only when partial-reduction storage would exceed 256 MiB;
+- fails on a CUDA error instead of silently falling back to CPU.
+
+Three real-device exact-match runs for domain 65536, 32 rows, and three
+rotations changed the production API median as follows:
+
+| Shape | Before (ms) | Final (ms) | Change |
+| --- | ---: | ---: | ---: |
+| Full columns, three rotations | 4.591 | 1.596 | -65.236% |
+| One half-length padded column, three rotations | 4.948 | 1.567 | -68.331% |
+| One half-length padded column, one point | 1.462 | 0.734 | -49.795% |
+
+The comparable fixed suite drops from 175 to 105 real kernel invocations
+because each three-point group now uses two kernels instead of eighteen; the
+final expanded suite reports 129 invocations because it adds four shape
+checks. Final padded three-point medians were 1.585 ms at `32768 x 64`,
+2.631 ms at `262144 x 8`, 3.242 ms at `1048576 x 2`, and 6.825 ms at
+`4194304 x 1`. Every CPU/CUDA result was exact. These cover dense-row,
+large-domain, and short-column shapes without selecting by dataset name.
+
+The controlled unit proof is below the formal CUDA dispatch threshold, while
+complete Cora and the five-dataset matrix are prohibited in this round.
+Therefore these are real-kernel production-function results, not a claimed
+CUDA end-to-end `commitment/prove/verify` result.
+
+### New candidates rejected in the continuation
+
+The following code was removed after measurement:
+
+- dynamic `t_edge` scheduling, temporary-buffer reuse, shifted-base/two-scalar
+  commitment forms, disabled commitment profiling, shared opening inverse
+  workspaces, LTO, `-mcpu=native`, and lower general commitment thresholds;
+- capacity-weighted pinned `t_edge` ranges, which changed the five-run median
+  from 962.378 to 963.139 ms and worsened total/long-tail behavior;
+- a 12-worker medium MSM policy: isolated 256-1024 scalar cases improved, but
+  five complete production-path runs raised the total median from 2924.897 to
+  2949.407 ms;
+- a 16-worker `t_edge` cap: five formal-shape local medians improved in
+  aggregate, but seven paired production proofs changed `t_edge` only
+  949.160 to 948.036 ms and worsened the total median from 2926.495 to
+  2936.719 ms.
+
+No candidate switch, failed implementation, or generated artifact remains.
+
+### Continuation closure and validation boundary
+
+The remaining CPU total is still dominated by `t_edge`, dynamic MSM, and
+curve-bound opening witnesses. Multiple evaluator layouts/schedulers,
+Pippenger/OpenMP/fixed-base routes, batch thresholds, FFT scratch reuse, and
+opening worker allocations have now been measured at both local and complete
+controlled-production levels; none gave a stable additional CPU total
+reduction. Paired/split NTT remains strongly beneficial at larger domains, and
+the tested code already uses it. Verifier pairings already use the retained
+mixed precomputation; algebraically batching independent accept/reject
+equations would permit cancellation and is not an allowed optimization.
+
+CUDA field-domain evaluation now has a large stable improvement and scale
+checks through a 4,194,304-point domain. Curve MSM, KZG witness MSM, and
+pairing remain CPU-bound because the installed dependency has no production
+GPU curve backend; that limits those specific stages, not the field-kernel
+work completed here.

@@ -33,6 +33,7 @@ struct CaseSpec {
     bool commit_only = false;
     std::size_t verify_bundle_fanout = 1;
     bool materialized_claims = false;
+    bool sequential_commit = false;
 };
 
 std::filesystem::path repo_root() {
@@ -148,7 +149,16 @@ void run_case(const CaseSpec& spec) {
     }
 
     const auto commit_start = std::chrono::steady_clock::now();
-    auto commitments = gatzk::crypto::KZG::commit_batch(named_polynomials, key);
+    std::vector<gatzk::crypto::Commitment> commitments;
+    if (spec.sequential_commit) {
+        commitments.reserve(named_polynomials.size());
+        for (const auto& [name, polynomial] : named_polynomials) {
+            commitments.push_back(gatzk::crypto::KZG::commit(
+                name, *polynomial, key));
+        }
+    } else {
+        commitments = gatzk::crypto::KZG::commit_batch(named_polynomials, key);
+    }
     const auto commit_ms = elapsed_ms(commit_start);
 
     for (std::size_t i = 0; i < polynomials.size(); ++i) {
@@ -350,6 +360,114 @@ int main(int argc, char** argv) {
                 1,
                 true,
                 false,
+            },
+            {
+                "model_reblind_d16_batch3_full",
+                "artifacts/srs/cora_formal_srs_v2",
+                "cora_formal_srs_v2",
+                "d",
+                16,
+                3,
+                1,
+                true,
+                false,
+                true,
+            },
+            {
+                "model_reblind_d16_sequential3_full",
+                "artifacts/srs/cora_formal_srs_v2",
+                "cora_formal_srs_v2",
+                "d",
+                16,
+                3,
+                1,
+                true,
+                false,
+                true,
+                1,
+                false,
+                true,
+            },
+            {
+                "model_reblind_cat128_batch8_full",
+                "artifacts/srs/cora_formal_srs_v2",
+                "cora_formal_srs_v2",
+                "cat",
+                128,
+                8,
+                1,
+                true,
+                false,
+                true,
+            },
+            {
+                "model_reblind_cat128_sequential8_full",
+                "artifacts/srs/cora_formal_srs_v2",
+                "cora_formal_srs_v2",
+                "cat",
+                128,
+                8,
+                1,
+                true,
+                false,
+                true,
+                1,
+                false,
+                true,
+            },
+            {
+                "model_reblind_in2048_batch8_full",
+                "artifacts/srs/cora_formal_srs_v2",
+                "cora_formal_srs_v2",
+                "in",
+                2048,
+                8,
+                1,
+                true,
+                false,
+                true,
+            },
+            {
+                "model_reblind_in2048_sequential8_full",
+                "artifacts/srs/cora_formal_srs_v2",
+                "cora_formal_srs_v2",
+                "in",
+                2048,
+                8,
+                1,
+                true,
+                false,
+                true,
+                1,
+                false,
+                true,
+            },
+            {
+                "model_reblind_edge4096_batch8_full",
+                "artifacts/srs/unit_security_srs_v1",
+                "unit_security_srs_v1",
+                "edge",
+                4096,
+                8,
+                1,
+                true,
+                false,
+                true,
+            },
+            {
+                "model_reblind_edge4096_sequential8_full",
+                "artifacts/srs/unit_security_srs_v1",
+                "unit_security_srs_v1",
+                "edge",
+                4096,
+                8,
+                1,
+                true,
+                false,
+                true,
+                1,
+                false,
+                true,
             },
             {
                 "unit_edge_commit_batch4_full",

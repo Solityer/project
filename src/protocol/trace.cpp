@@ -94,6 +94,35 @@ namespace gatzk::protocol
             return commitment;
         }
 
+        std::vector<crypto::Commitment> commit_proof_polynomial_batch(
+            const std::vector<std::pair<std::string, const Polynomial *>> &named_polynomials,
+            const crypto::KZGKeyPair &key,
+            RunMetrics *metrics)
+        {
+            constexpr std::size_t kMinAmortizedBatchObjects = 4;
+            if (named_polynomials.size() < kMinAmortizedBatchObjects)
+            {
+                std::vector<crypto::Commitment> commitments;
+                commitments.reserve(named_polynomials.size());
+                for (const auto &[name, polynomial] : named_polynomials)
+                {
+                    commitments.push_back(commit_proof_polynomial(
+                        name, *polynomial, key, metrics));
+                }
+                return commitments;
+            }
+            crypto::CommitBatchProfile profile;
+            auto commitments = crypto::KZG::commit_batch(
+                named_polynomials,
+                key,
+                metrics != nullptr ? &profile : nullptr);
+            if (metrics != nullptr)
+            {
+                metrics->derived_commitment_point_ms += profile.msm_ms;
+            }
+            return commitments;
+        }
+
         crypto::Commitment commit_shifted_proof_polynomial(
             const crypto::Commitment &source,
             const std::string &shifted_name,
@@ -4515,7 +4544,7 @@ namespace gatzk::protocol
                 return *it;
             };
 
-            auto append_model_reblind = [&]
+            auto append_single_model_reblind = [&]
             (
                 BindingSubproof &subproof,
                 const std::string &anchor_label,
@@ -4525,22 +4554,32 @@ namespace gatzk::protocol
                 if (anchor_it == context.static_commitments.end()
                     || anchor_it->second.opening_polynomial == nullptr)
                 {
-                    throw std::runtime_error("model anchor lacks canonical opening material: " + anchor_label);
+                    throw std::runtime_error(
+                        "model anchor lacks canonical opening material: "
+                        + anchor_label);
                 }
-                const auto &anchor_polynomial = *anchor_it->second.opening_polynomial;
-                if (anchor_polynomial.basis != algebra::PolynomialBasis::Evaluation
+                const auto &anchor_polynomial =
+                    *anchor_it->second.opening_polynomial;
+                if (anchor_polynomial.basis
+                        != algebra::PolynomialBasis::Evaluation
                     || anchor_polynomial.domain == nullptr
                     || anchor_polynomial.domain->name != domain->name)
                 {
-                    throw std::runtime_error("model anchor canonical domain mismatch: " + anchor_label);
+                    throw std::runtime_error(
+                        "model anchor canonical domain mismatch: "
+                        + anchor_label);
                 }
 
-                const auto proof_label = model_proof_local_label(anchor_label);
-                const auto witness_label = model_reblind_witness_label(anchor_label);
+                const auto proof_label =
+                    model_proof_local_label(anchor_label);
+                const auto witness_label =
+                    model_reblind_witness_label(anchor_label);
                 if (trace.commitments.contains(proof_label)
                     || trace.commitments.contains(witness_label))
                 {
-                    throw std::runtime_error("duplicate proof-local model object: " + anchor_label);
+                    throw std::runtime_error(
+                        "duplicate proof-local model object: "
+                        + anchor_label);
                 }
 
                 auto proof_polynomial = anchor_polynomial;
@@ -4552,27 +4591,151 @@ namespace gatzk::protocol
                     const auto blinder = sample_trace_blinder(
                         *context.compiler_artifact, proof_label);
                     proof_polynomial.set_zero_domain_blinder(blinder);
-                    witness_polynomial = Polynomial::from_coefficients(witness_label, blinder);
+                    witness_polynomial = Polynomial::from_coefficients(
+                        witness_label, blinder);
                     witness_commitment = commit_proof_polynomial(
-                        witness_label, witness_polynomial, context.kzg, metrics);
+                        witness_label,
+                        witness_polynomial,
+                        context.kzg,
+                        metrics);
                 }
                 while (witness_commitment.point == crypto::g1_zero());
                 auto proof_commitment = commit_proof_polynomial(
-                    proof_label, proof_polynomial, context.kzg, metrics);
+                    proof_label,
+                    proof_polynomial,
+                    context.kzg,
+                    metrics);
 
                 trace.polynomial_domains[proof_label] = domain->name;
                 trace.polynomial_domains[witness_label] = domain->name;
-                trace.polynomials.emplace(proof_label, proof_polynomial);
-                trace.polynomials.emplace(witness_label, witness_polynomial);
-                trace.commitments.emplace(proof_label, proof_commitment);
-                trace.commitments.emplace(witness_label, witness_commitment);
+                trace.polynomials.emplace(
+                    proof_label, proof_polynomial);
+                trace.polynomials.emplace(
+                    witness_label, witness_polynomial);
+                trace.commitments.emplace(
+                    proof_label, proof_commitment);
+                trace.commitments.emplace(
+                    witness_label, witness_commitment);
                 subproof.model_reblinds.push_back(ModelReblindProof{
                     .object_id = anchor_label,
                     .domain = domain->name,
                     .vk_model_anchor = MetadataReference{anchor_label},
-                    .proof_local_commitment = std::move(proof_commitment),
-                    .blinder_commitment = std::move(witness_commitment),
+                    .proof_local_commitment =
+                        std::move(proof_commitment),
+                    .blinder_commitment =
+                        std::move(witness_commitment),
                 });
+            };
+
+            auto append_model_reblinds = [&]
+            (
+                BindingSubproof &subproof,
+                const std::vector<std::string> &anchor_labels,
+                const std::shared_ptr<algebra::RootOfUnityDomain> &domain)
+            {
+                constexpr std::size_t kMinAmortizedBatchObjects = 4;
+                if (anchor_labels.size() < kMinAmortizedBatchObjects)
+                {
+                    for (const auto &anchor_label : anchor_labels)
+                    {
+                        append_single_model_reblind(
+                            subproof, anchor_label, domain);
+                    }
+                    return;
+                }
+
+                struct PendingModelReblind
+                {
+                    std::string anchor_label;
+                    std::string proof_label;
+                    std::string witness_label;
+                    Polynomial proof_polynomial;
+                    Polynomial witness_polynomial;
+                    crypto::Commitment witness_commitment;
+                };
+
+                std::vector<PendingModelReblind> pending;
+                pending.reserve(anchor_labels.size());
+                for (const auto &anchor_label : anchor_labels)
+                {
+                    const auto anchor_it = context.static_commitments.find(anchor_label);
+                    if (anchor_it == context.static_commitments.end()
+                        || anchor_it->second.opening_polynomial == nullptr)
+                    {
+                        throw std::runtime_error("model anchor lacks canonical opening material: " + anchor_label);
+                    }
+                    const auto &anchor_polynomial = *anchor_it->second.opening_polynomial;
+                    if (anchor_polynomial.basis != algebra::PolynomialBasis::Evaluation
+                        || anchor_polynomial.domain == nullptr
+                        || anchor_polynomial.domain->name != domain->name)
+                    {
+                        throw std::runtime_error("model anchor canonical domain mismatch: " + anchor_label);
+                    }
+
+                    const auto proof_label = model_proof_local_label(anchor_label);
+                    const auto witness_label = model_reblind_witness_label(anchor_label);
+                    if (trace.commitments.contains(proof_label)
+                        || trace.commitments.contains(witness_label))
+                    {
+                        throw std::runtime_error("duplicate proof-local model object: " + anchor_label);
+                    }
+
+                    auto proof_polynomial = anchor_polynomial;
+                    proof_polynomial.name = proof_label;
+                    crypto::Commitment witness_commitment;
+                    algebra::Polynomial witness_polynomial;
+                    do
+                    {
+                        const auto blinder = sample_trace_blinder(
+                            *context.compiler_artifact, proof_label);
+                        proof_polynomial.set_zero_domain_blinder(blinder);
+                        witness_polynomial = Polynomial::from_coefficients(witness_label, blinder);
+                        witness_commitment = commit_proof_polynomial(
+                            witness_label, witness_polynomial, context.kzg, metrics);
+                    }
+                    while (witness_commitment.point == crypto::g1_zero());
+
+                    pending.push_back(PendingModelReblind{
+                        .anchor_label = anchor_label,
+                        .proof_label = proof_label,
+                        .witness_label = witness_label,
+                        .proof_polynomial = std::move(proof_polynomial),
+                        .witness_polynomial = std::move(witness_polynomial),
+                        .witness_commitment = std::move(witness_commitment),
+                    });
+                }
+
+                std::vector<std::pair<std::string, const Polynomial *>> proof_polynomials;
+                proof_polynomials.reserve(pending.size());
+                for (const auto &entry : pending)
+                {
+                    proof_polynomials.push_back(
+                        {entry.proof_label, &entry.proof_polynomial});
+                }
+                auto proof_commitments = commit_proof_polynomial_batch(
+                    proof_polynomials, context.kzg, metrics);
+
+                for (std::size_t index = 0; index < pending.size(); ++index)
+                {
+                    auto &entry = pending[index];
+                    auto &proof_commitment = proof_commitments[index];
+                    trace.polynomial_domains[entry.proof_label] = domain->name;
+                    trace.polynomial_domains[entry.witness_label] = domain->name;
+                    trace.polynomials.emplace(
+                        entry.proof_label, std::move(entry.proof_polynomial));
+                    trace.polynomials.emplace(
+                        entry.witness_label, std::move(entry.witness_polynomial));
+                    trace.commitments.emplace(entry.proof_label, proof_commitment);
+                    trace.commitments.emplace(
+                        entry.witness_label, entry.witness_commitment);
+                    subproof.model_reblinds.push_back(ModelReblindProof{
+                        .object_id = entry.anchor_label,
+                        .domain = domain->name,
+                        .vk_model_anchor = MetadataReference{entry.anchor_label},
+                        .proof_local_commitment = std::move(proof_commitment),
+                        .blinder_commitment = std::move(entry.witness_commitment),
+                    });
+                }
             };
 
             // 每个隐藏头都独立展开一套 route / lookup / PSQ / binding 约束，
@@ -4629,17 +4792,22 @@ namespace gatzk::protocol
                 auto &binding_subproof = require_binding_subproof(
                     "bind:hidden:" + std::to_string(layer_index + 1) + ":"
                     + std::to_string(local_head_index));
+                std::vector<std::string> model_reblind_labels;
+                model_reblind_labels.reserve(head_dim + 2);
                 for (std::size_t column = 0; column < head_dim; ++column)
                 {
-                    append_model_reblind(
-                        binding_subproof,
-                        hidden_weight_column_label(head_index, column),
-                        domains.in);
+                    model_reblind_labels.push_back(
+                        hidden_weight_column_label(head_index, column));
                 }
-                append_model_reblind(
-                    binding_subproof, hidden_src_label(head_index), domains.d);
-                append_model_reblind(
-                    binding_subproof, hidden_dst_label(head_index), domains.d);
+                append_model_reblinds(
+                    binding_subproof, model_reblind_labels, domains.in);
+                append_model_reblinds(
+                    binding_subproof,
+                    {
+                        hidden_src_label(head_index),
+                        hidden_dst_label(head_index),
+                    },
+                    domains.d);
 
                 add_dynamic_commitment_batch(
                     trace,
@@ -5712,24 +5880,22 @@ namespace gatzk::protocol
                     const auto &out_inv_edge = quantized.inv_edge;
                     auto &binding_subproof = require_binding_subproof(
                         "bind:output:" + std::to_string(head_index));
+                    std::vector<std::string> model_reblind_labels;
+                    model_reblind_labels.reserve(n_classes + 3);
                     for (std::size_t column = 0; column < n_classes; ++column)
                     {
-                        append_model_reblind(
-                            binding_subproof,
-                            output_weight_column_label(head_index, column),
-                            domains.cat);
+                        model_reblind_labels.push_back(
+                            output_weight_column_label(head_index, column));
                     }
-                    append_model_reblind(
+                    append_model_reblinds(
+                        binding_subproof, model_reblind_labels, domains.cat);
+                    append_model_reblinds(
                         binding_subproof,
-                        output_src_label(head_index),
-                        domains.c);
-                    append_model_reblind(
-                        binding_subproof,
-                        output_dst_label(head_index),
-                        domains.c);
-                    append_model_reblind(
-                        binding_subproof,
-                        output_bias_label(head_index),
+                        {
+                            output_src_label(head_index),
+                            output_dst_label(head_index),
+                            output_bias_label(head_index),
+                        },
                         domains.c);
                     add_dynamic_commitment_batch(
                         trace,

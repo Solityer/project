@@ -24,6 +24,8 @@ namespace gatzk::algebra
     std::string configured_algebra_backend_name();
     bool cuda_backend_build_enabled();
     bool cuda_backend_available();
+    // True only when the active CUDA device has UVA and may coherently read
+    // pageable host buffers without explicit registration.
     bool cuda_backend_unified_addressing_available();
     std::string cuda_device_summary();
     std::size_t cuda_kernel_invocation_count();
@@ -68,7 +70,9 @@ namespace gatzk::algebra
         const uint64_t* const* column_ptrs,
         uint64_t* output_limbs,
         std::size_t domain_size,
-        std::size_t row_count);
+        std::size_t row_count,
+        const std::size_t* column_lengths = nullptr,
+        std::size_t weight_rotation = 0);
 
     // 多列共享一次权重上传，减少 prove / verify 热路径中的重复设备传输。
     bool weighted_poly_eval_gpu_multi(
@@ -76,7 +80,21 @@ namespace gatzk::algebra
         const uint64_t* const* column_value_ptrs,
         uint64_t* output_limbs,
         std::size_t domain_size,
-        std::size_t poly_count);
+        std::size_t poly_count,
+        const std::size_t* column_lengths = nullptr,
+        std::size_t weight_rotation = 0);
+
+    // 在统一地址空间设备上批量执行多个旋转点的同列求值，输出按
+    // `[rotation][polynomial]` 排列。
+    bool weighted_poly_eval_gpu_multi_rotations(
+        const uint64_t* weight_limbs,
+        const uint64_t* const* column_value_ptrs,
+        uint64_t* output_limbs,
+        std::size_t domain_size,
+        std::size_t poly_count,
+        const std::size_t* rotations,
+        std::size_t rotation_count,
+        const std::size_t* column_lengths = nullptr);
 
     // CPU 侧域元素点积，是小规模 fallback 和校验路径的通用原语。
     FieldElement dot_product(
