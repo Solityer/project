@@ -50,6 +50,17 @@ LogUpInverseColumns build_logup_inverse_columns(
     const std::vector<algebra::FieldElement>& q_query,
     const algebra::FieldElement& beta);
 
+// Reuse the exact inverse columns already materialized for the proof instead
+// of inverting the same LogUp denominators a second time for the accumulator.
+std::vector<algebra::FieldElement>
+build_logup_accumulator_from_inverse_columns_with_active_count(
+    const std::vector<algebra::FieldElement>& table_inverse,
+    const std::vector<algebra::FieldElement>& query_inverse,
+    const std::vector<algebra::FieldElement>& multiplicity,
+    const std::vector<algebra::FieldElement>& q_table,
+    const std::vector<algebra::FieldElement>& q_query,
+    std::size_t active_count);
+
 std::vector<algebra::FieldElement> build_selected_inverse_column(
     const std::vector<algebra::FieldElement>& values,
     const std::vector<algebra::FieldElement>& selector,

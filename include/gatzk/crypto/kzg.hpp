@@ -220,6 +220,18 @@ namespace gatzk::crypto
             const KZGKeyPair& key,
             CommitBatchProfile* profile = nullptr,
             EvaluationCommitmentCache* reuse_cache = nullptr);
+        // Execution-only helpers for exact linear relations between evaluation
+        // polynomials.  The component excludes a polynomial's independent
+        // zero-domain blinder; rebuilding a commitment always attaches the
+        // target polynomial's own blinder.
+        static G1Point evaluation_commitment_component(
+            const Commitment& commitment,
+            const KZGKeyPair& key);
+        static Commitment commit_evaluation_from_component(
+            const std::string& name,
+            const algebra::Polynomial& polynomial,
+            const G1Point& evaluation_component,
+            const KZGKeyPair& key);
         // 对刚物化出的多项式批量承诺并接管 opening 材料，避免为 quotient 等一次性对象再复制整列标量。
         static std::vector<Commitment> commit_owned_batch(
             std::vector<std::pair<std::string, algebra::Polynomial>>&& named_polynomials,

@@ -1117,6 +1117,19 @@ namespace gatzk::crypto
                     object_count,
                     std::max<std::size_t>(1, std::min<std::size_t>(3, cpu_count / 8)));
             }
+            // Route batches commonly contain two N-domain MSMs followed by
+            // two larger edge-domain MSMs.  Four outer workers cap every
+            // object at one quarter of the machine, then leave half the CPU
+            // idle once the N-domain work finishes.  Two outer workers keep
+            // both edge MSMs concurrent while allowing each to use half the
+            // machine; the smaller objects are picked up by the same workers.
+            if (object_count == 4
+                && max_scalar_count >= (1ULL << 13)
+                && max_scalar_count <= (1ULL << 15)
+                && total_scalar_count <= max_scalar_count * 3)
+            {
+                return std::min<std::size_t>(2, cpu_count / 2);
+            }
             if (object_count <= 20 && max_scalar_count <= (1ULL << 15))
             {
                 const auto by_cpu = std::max<std::size_t>(1, cpu_count / 3);
@@ -1358,6 +1371,66 @@ namespace gatzk::crypto
             return out;
         }
 
+        const std::vector<G1Point>* evaluation_srs_points(
+            const algebra::Polynomial& polynomial,
+            const KZGProverKey& pk)
+        {
+            if (polynomial.domain == nullptr)
+            {
+                throw std::runtime_error(
+                    "evaluation polynomial is missing its domain: "
+                    + polynomial.name);
+            }
+            const auto base_key =
+                srs_domain_name(polynomial.domain->name);
+            const auto exact_key =
+                srs_exact_domain_name(
+                    polynomial.domain->name,
+                    polynomial.domain->size);
+            auto it = pk.lagrange_srs_by_domain.find(exact_key);
+            if (it == pk.lagrange_srs_by_domain.end())
+            {
+                it = pk.lagrange_srs_by_domain.find(base_key);
+                if (it != pk.lagrange_srs_by_domain.end()
+                    && it->second != nullptr
+                    && it->second->size() != polynomial.domain->size)
+                {
+                    it = pk.lagrange_srs_by_domain.end();
+                }
+            }
+            if (it == pk.lagrange_srs_by_domain.end())
+            {
+                for (auto candidate =
+                         pk.lagrange_srs_by_domain.begin();
+                     candidate != pk.lagrange_srs_by_domain.end();
+                     ++candidate)
+                {
+                    if (candidate->second != nullptr
+                        && candidate->second->size()
+                            == polynomial.domain->size)
+                    {
+                        it = candidate;
+                        break;
+                    }
+                }
+            }
+            if (it == pk.lagrange_srs_by_domain.end())
+            {
+                throw std::runtime_error(
+                    "missing exact Lagrange SRS for domain: "
+                    + base_key
+                    + ":"
+                    + std::to_string(polynomial.domain->size));
+            }
+            if (it->second == nullptr)
+            {
+                throw std::runtime_error(
+                    "missing Lagrange proving SRS material for domain: "
+                    + exact_key);
+            }
+            return it->second.get();
+        }
+
         // KZG多项式承诺主函数
         G1Point commit_polynomial_point(
             const algebra::Polynomial& polynomial,
@@ -1368,6 +1441,19 @@ namespace gatzk::crypto
         {
             G1MSMProfile msm_profile;
             const auto msm_start = Clock::now();
+            const G1MSMExecutionOptions stable_msm_options{
+                .max_worker_count =
+                    msm_options != nullptr
+                        ? msm_options->max_worker_count
+                        : 0,
+                // Reusing mcl's GLV-expanded bases is profitable for the
+                // repeated small SRS slices.  On larger MSMs the scalar split
+                // and per-worker signed-point copies outweigh normalization,
+                // so retain mcl::G1::mulVec there.
+                .stable_srs_bases =
+                    estimated_commitment_msm_work(polynomial)
+                        <= (1ULL << 13),
+            };
             G1Point point;
             bool constant_tail_folding = false;
             bool semantic_commitment_reuse = false;
@@ -1387,54 +1473,14 @@ namespace gatzk::crypto
                     polynomial.values().data(),
                     polynomial.size(),
                     profile != nullptr ? &msm_profile : nullptr,
-                    msm_options);
+                    &stable_msm_options);
             }
             else
             {
-                if (polynomial.domain == nullptr)
-                {
-                    throw std::runtime_error("evaluation polynomial is missing its domain: " + polynomial.name);
-                }
                 // 评估多项式采用 拉格朗日SRS + MSM
-                const auto base_key = srs_domain_name(polynomial.domain->name);
-                const auto exact_key = srs_exact_domain_name(polynomial.domain->name, polynomial.domain->size);
-                auto it = pk.lagrange_srs_by_domain.find(exact_key);
-                if (it == pk.lagrange_srs_by_domain.end())
-                {
-                    it = pk.lagrange_srs_by_domain.find(base_key);
-                    if (it != pk.lagrange_srs_by_domain.end()
-                        && it->second != nullptr
-                        && it->second->size() != polynomial.domain->size)
-                    {
-                        it = pk.lagrange_srs_by_domain.end();
-                    }
-                }
-                if (it == pk.lagrange_srs_by_domain.end())
-                {
-                    for (auto candidate = pk.lagrange_srs_by_domain.begin();
-                         candidate != pk.lagrange_srs_by_domain.end();
-                         ++candidate)
-                    {
-                        if (candidate->second != nullptr && candidate->second->size() == polynomial.domain->size)
-                        {
-                            it = candidate;
-                            break;
-                        }
-                    }
-                }
-                if (it == pk.lagrange_srs_by_domain.end())
-                {
-                    throw std::runtime_error(
-                        "missing exact Lagrange SRS for domain: "
-                        + base_key
-                        + ":"
-                        + std::to_string(polynomial.domain->size));
-                }
-                if (it->second == nullptr)
-                {
-                    throw std::runtime_error("missing Lagrange proving SRS material for domain: " + exact_key);
-                }
-                if (polynomial.size() > it->second->size())
+                const auto* lagrange_srs =
+                    evaluation_srs_points(polynomial, pk);
+                if (polynomial.size() > lagrange_srs->size())
                 {
                     throw std::runtime_error("evaluation polynomial exceeds Lagrange SRS domain size: " + polynomial.name);
                 }
@@ -1443,7 +1489,7 @@ namespace gatzk::crypto
                     && polynomial.shared_data != nullptr
                     && reuse_cache->lookup_semantic(
                         polynomial.domain.get(),
-                        it->second.get(),
+                        lagrange_srs,
                         polynomial.shared_data,
                         &point))
                 {
@@ -1499,21 +1545,21 @@ namespace gatzk::crypto
                         {
                             const auto folded_prefix_commitment =
                                 tail_value.is_zero()
-                                ? g1_multi_scalar_mul_profiled(
-                                    it->second->data(),
+                                    ? g1_multi_scalar_mul_profiled(
+                                    lagrange_srs->data(),
                                     values.data(),
                                     tail_start,
                                     profile != nullptr
                                         ? &msm_profile : nullptr,
-                                    msm_options)
+                                    &stable_msm_options)
                                 : commit_lagrange_prefix_delta(
-                                    *it->second,
+                                    *lagrange_srs,
                                     values,
                                     tail_start,
                                     tail_value,
                                     profile != nullptr
                                         ? &msm_profile : nullptr,
-                                    msm_options);
+                                    &stable_msm_options);
                             if (profile != nullptr)
                             {
                                 msm_profile.input_count = polynomial.size();
@@ -1526,18 +1572,18 @@ namespace gatzk::crypto
                     else
                     {
                         point = g1_multi_scalar_mul_profiled(
-                            it->second->data(),
+                            lagrange_srs->data(),
                             values.data(),
                             polynomial.size(),
                             profile != nullptr ? &msm_profile : nullptr,
-                            msm_options);
+                            &stable_msm_options);
                     }
                     if (reuse_cache != nullptr
                         && polynomial.shared_data != nullptr)
                     {
                         reuse_cache->store_semantic(
                             polynomial.domain.get(),
-                            it->second.get(),
+                            lagrange_srs,
                             polynomial.shared_data,
                             point);
                     }
@@ -2382,8 +2428,21 @@ namespace gatzk::crypto
             G1Point point;
         };
 
+        struct ScaledEntry
+        {
+            const algebra::RootOfUnityDomain* domain = nullptr;
+            const std::vector<G1Point>* lagrange_srs = nullptr;
+            std::shared_ptr<const std::vector<algebra::FieldElement>> values;
+            std::size_t anchor_index = 0;
+            algebra::FieldElement anchor_inverse =
+                algebra::FieldElement::zero();
+            G1Point point;
+        };
+
         std::mutex mutex;
         std::unordered_map<std::uint64_t, std::vector<Entry>> entries;
+        std::unordered_map<std::uint64_t, std::vector<ScaledEntry>>
+            scaled_entries;
         std::unordered_map<PointerKey, G1Point, PointerKeyHash> pointer_entries;
         std::unordered_map<PointerKey, std::uint64_t, PointerKeyHash> pointer_hashes;
     };
@@ -2421,6 +2480,114 @@ namespace gatzk::crypto
                 }
             }
             return hash;
+        }
+
+        struct ScaledEvaluationFingerprint
+        {
+            std::uint64_t key = 0;
+            std::size_t anchor_index = 0;
+            algebra::FieldElement anchor_inverse =
+                algebra::FieldElement::zero();
+        };
+
+        std::optional<ScaledEvaluationFingerprint>
+        scaled_evaluation_fingerprint(
+            const algebra::RootOfUnityDomain* domain,
+            const std::vector<G1Point>* lagrange_srs,
+            const std::vector<algebra::FieldElement>& values)
+        {
+            constexpr std::size_t kMinScaledReuseLength = 8192;
+            constexpr std::size_t kMinScaledReuseSupport = 512;
+            if (values.size() < kMinScaledReuseLength)
+            {
+                return std::nullopt;
+            }
+
+            std::size_t first_nonzero = 0;
+            while (first_nonzero < values.size()
+                   && values[first_nonzero].is_zero())
+            {
+                ++first_nonzero;
+            }
+            if (first_nonzero == values.size())
+            {
+                return std::nullopt;
+            }
+            std::size_t last_nonzero = values.size() - 1;
+            while (last_nonzero > first_nonzero
+                   && values[last_nonzero].is_zero())
+            {
+                --last_nonzero;
+            }
+            const auto support_length =
+                last_nonzero - first_nonzero + 1;
+            if (support_length < kMinScaledReuseSupport
+                || support_length > values.size() - values.size() / 4)
+            {
+                return std::nullopt;
+            }
+
+            const auto normalizer = values[first_nonzero].inv();
+            std::uint64_t hash = 1469598103934665603ULL;
+            auto absorb = [&](std::uint64_t word)
+            {
+                hash ^= word;
+                hash *= 1099511628211ULL;
+            };
+            absorb(reinterpret_cast<std::uintptr_t>(domain));
+            absorb(reinterpret_cast<std::uintptr_t>(lagrange_srs));
+            absorb(values.size());
+            absorb(first_nonzero);
+            absorb(last_nonzero);
+            for (std::size_t i = first_nonzero;
+                 i <= last_nonzero; ++i)
+            {
+                if (values[i].is_zero())
+                {
+                    return std::nullopt;
+                }
+                const auto normalized = values[i] * normalizer;
+                const auto* units = normalized.native().getUnit();
+                for (std::size_t unit = 0;
+                     unit < mcl::Fr::getUnitSize(); ++unit)
+                {
+                    absorb(static_cast<std::uint64_t>(units[unit]));
+                }
+            }
+            return ScaledEvaluationFingerprint{
+                .key = hash,
+                .anchor_index = first_nonzero,
+                .anchor_inverse = normalizer,
+            };
+        }
+
+        bool scaled_evaluation_values_match(
+            const std::vector<algebra::FieldElement>& candidate,
+            const std::vector<algebra::FieldElement>& reference,
+            std::size_t anchor_index,
+            const algebra::FieldElement& reference_anchor_inverse,
+            algebra::FieldElement* scale)
+        {
+            if (candidate.size() != reference.size()
+                || anchor_index >= candidate.size()
+                || candidate[anchor_index].is_zero())
+            {
+                return false;
+            }
+            const auto candidate_scale =
+                candidate[anchor_index] * reference_anchor_inverse;
+            for (std::size_t i = 0; i < candidate.size(); ++i)
+            {
+                if (candidate[i] != reference[i] * candidate_scale)
+                {
+                    return false;
+                }
+            }
+            if (scale != nullptr)
+            {
+                *scale = candidate_scale;
+            }
+            return true;
         }
     }
 
@@ -2460,37 +2627,92 @@ namespace gatzk::crypto
         const auto key = cached_hash.has_value()
             ? *cached_hash
             : evaluation_commitment_cache_key(domain, lagrange_srs, *values);
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        impl_->pointer_hashes.try_emplace(pointer_key, key);
-        if (const auto it = impl_->pointer_entries.find(pointer_key);
-            it != impl_->pointer_entries.end())
         {
-            if (point != nullptr)
-            {
-                *point = it->second;
-            }
-            return true;
-        }
-        const auto bucket = impl_->entries.find(key);
-        if (bucket == impl_->entries.end())
-        {
-            return false;
-        }
-        for (const auto& entry : bucket->second)
-        {
-            if (entry.domain == domain
-                && entry.lagrange_srs == lagrange_srs
-                && *entry.values == *values)
+            std::lock_guard<std::mutex> lock(impl_->mutex);
+            impl_->pointer_hashes.try_emplace(pointer_key, key);
+            if (const auto it = impl_->pointer_entries.find(pointer_key);
+                it != impl_->pointer_entries.end())
             {
                 if (point != nullptr)
                 {
-                    *point = entry.point;
+                    *point = it->second;
                 }
-                impl_->pointer_entries.emplace(pointer_key, entry.point);
                 return true;
             }
+            const auto bucket = impl_->entries.find(key);
+            if (bucket != impl_->entries.end())
+            {
+                for (const auto& entry : bucket->second)
+                {
+                    if (entry.domain == domain
+                        && entry.lagrange_srs == lagrange_srs
+                        && *entry.values == *values)
+                    {
+                        if (point != nullptr)
+                        {
+                            *point = entry.point;
+                        }
+                        impl_->pointer_entries.emplace(
+                            pointer_key, entry.point);
+                        return true;
+                    }
+                }
+            }
         }
-        return false;
+
+        const auto scaled_fingerprint =
+            scaled_evaluation_fingerprint(domain, lagrange_srs, *values);
+        if (!scaled_fingerprint.has_value())
+        {
+            return false;
+        }
+        G1Point reference_point;
+        algebra::FieldElement scale = algebra::FieldElement::zero();
+        bool scaled_hit = false;
+        {
+            std::lock_guard<std::mutex> lock(impl_->mutex);
+            const auto bucket =
+                impl_->scaled_entries.find(scaled_fingerprint->key);
+            if (bucket != impl_->scaled_entries.end())
+            {
+                for (const auto& entry : bucket->second)
+                {
+                    if (entry.domain == domain
+                        && entry.lagrange_srs == lagrange_srs
+                        && scaled_evaluation_values_match(
+                            *values,
+                            *entry.values,
+                            entry.anchor_index,
+                            entry.anchor_inverse,
+                            &scale))
+                    {
+                        reference_point = entry.point;
+                        scaled_hit = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!scaled_hit)
+        {
+            return false;
+        }
+        const auto scaled_point = g1_mul(reference_point, scale);
+        {
+            std::lock_guard<std::mutex> lock(impl_->mutex);
+            impl_->entries[key].push_back(Impl::Entry{
+                .domain = domain,
+                .lagrange_srs = lagrange_srs,
+                .values = values,
+                .point = scaled_point,
+            });
+            impl_->pointer_entries.try_emplace(pointer_key, scaled_point);
+        }
+        if (point != nullptr)
+        {
+            *point = scaled_point;
+        }
+        return true;
     }
 
     void EvaluationCommitmentCache::store_semantic(
@@ -2524,6 +2746,8 @@ namespace gatzk::crypto
         const auto key = cached_hash.has_value()
             ? *cached_hash
             : evaluation_commitment_cache_key(domain, lagrange_srs, *values);
+        const auto scaled_fingerprint =
+            scaled_evaluation_fingerprint(domain, lagrange_srs, *values);
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->pointer_hashes.try_emplace(pointer_key, key);
         if (impl_->pointer_entries.contains(pointer_key))
@@ -2541,12 +2765,48 @@ namespace gatzk::crypto
                 return;
             }
         }
+        const auto retained_values = values;
         bucket.push_back(Impl::Entry{
             .domain = domain,
             .lagrange_srs = lagrange_srs,
-            .values = std::move(values),
+            .values = retained_values,
             .point = point,
         });
+        if (scaled_fingerprint.has_value())
+        {
+            auto& scaled_bucket =
+                impl_->scaled_entries[scaled_fingerprint->key];
+            bool has_scaled_entry = false;
+            for (const auto& entry : scaled_bucket)
+            {
+                algebra::FieldElement scale;
+                if (entry.domain == domain
+                    && entry.lagrange_srs == lagrange_srs
+                    && scaled_evaluation_values_match(
+                        *retained_values,
+                        *entry.values,
+                        entry.anchor_index,
+                        entry.anchor_inverse,
+                        &scale))
+                {
+                    has_scaled_entry = true;
+                    break;
+                }
+            }
+            if (!has_scaled_entry)
+            {
+                scaled_bucket.push_back(Impl::ScaledEntry{
+                    .domain = domain,
+                    .lagrange_srs = lagrange_srs,
+                    .values = retained_values,
+                    .anchor_index =
+                        scaled_fingerprint->anchor_index,
+                    .anchor_inverse =
+                        scaled_fingerprint->anchor_inverse,
+                    .point = point,
+                });
+            }
+        }
         impl_->pointer_entries.emplace(pointer_key, point);
     }
 
@@ -2934,6 +3194,7 @@ namespace gatzk::crypto
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
         std::size_t total_scalar_count = 0;
         std::size_t max_scalar_count = 0;
+        std::size_t uncached_msm_count = 0;
         for (const auto& [name, polynomial] : named_polynomials)
         {
             if (polynomial == nullptr)
@@ -2943,6 +3204,25 @@ namespace gatzk::crypto
             const auto estimated_work = estimated_commitment_msm_work(*polynomial);
             total_scalar_count += estimated_work;
             max_scalar_count = std::max(max_scalar_count, estimated_work);
+            bool cache_hit = false;
+            if (reuse_cache != nullptr
+                && polynomial->basis
+                    == algebra::PolynomialBasis::Evaluation
+                && polynomial->shared_data != nullptr)
+            {
+                const auto* lagrange_srs =
+                    evaluation_srs_points(*polynomial, key.pk);
+                G1Point cached_point;
+                cache_hit = reuse_cache->lookup_semantic(
+                    polynomial->domain.get(),
+                    lagrange_srs,
+                    polynomial->shared_data,
+                    &cached_point);
+            }
+            if (!cache_hit)
+            {
+                ++uncached_msm_count;
+            }
         }
         const auto outer_worker_count = commit_batch_outer_worker_count(
             named_polynomials.size(),
@@ -2951,7 +3231,14 @@ namespace gatzk::crypto
             cpu_count);
         const G1MSMExecutionOptions msm_options{
             .max_worker_count = outer_worker_count > 1
-                ? std::max<std::size_t>(1, cpu_count / outer_worker_count)
+                ? std::max<std::size_t>(
+                    1,
+                    cpu_count
+                        / std::max<std::size_t>(
+                            1,
+                            std::min(
+                                outer_worker_count,
+                                uncached_msm_count)))
                 : 0,
         };
         auto commit_one = [&](std::size_t index) {
@@ -3007,6 +3294,87 @@ namespace gatzk::crypto
             }
         }
         return out;
+    }
+
+    G1Point KZG::evaluation_commitment_component(
+        const Commitment& commitment,
+        const KZGKeyPair& key)
+    {
+        if (commitment.opening_polynomial == nullptr)
+        {
+            throw std::runtime_error(
+                "missing opening material for evaluation commitment component: "
+                + commitment.name);
+        }
+        const auto& polynomial = *commitment.opening_polynomial;
+        if (polynomial.basis != algebra::PolynomialBasis::Evaluation
+            || polynomial.domain == nullptr)
+        {
+            throw std::runtime_error(
+                "linear evaluation commitment dependency is not an evaluation polynomial: "
+                + commitment.name);
+        }
+        const auto* lagrange_srs =
+            evaluation_srs_points(polynomial, key.pk);
+        if (polynomial.size() > lagrange_srs->size())
+        {
+            throw std::runtime_error(
+                "linear evaluation commitment dependency exceeds its exact Lagrange SRS: "
+                + commitment.name);
+        }
+        if (!polynomial.is_zero_domain_blinded())
+        {
+            return commitment.point;
+        }
+        return g1_sub(
+            commitment.point,
+            commit_zero_domain_multiple_point(
+                polynomial.domain->size,
+                polynomial.zero_domain_blinder,
+                key.pk,
+                commitment.name));
+    }
+
+    Commitment KZG::commit_evaluation_from_component(
+        const std::string& name,
+        const algebra::Polynomial& polynomial,
+        const G1Point& evaluation_component,
+        const KZGKeyPair& key)
+    {
+        if (polynomial.basis != algebra::PolynomialBasis::Evaluation
+            || polynomial.domain == nullptr)
+        {
+            throw std::runtime_error(
+                "linear evaluation commitment target is not an evaluation polynomial: "
+                + name);
+        }
+        const auto* lagrange_srs =
+            evaluation_srs_points(polynomial, key.pk);
+        if (polynomial.size() > lagrange_srs->size())
+        {
+            throw std::runtime_error(
+                "linear evaluation commitment target exceeds its exact Lagrange SRS: "
+                + name);
+        }
+        auto point = evaluation_component;
+        if (polynomial.is_zero_domain_blinded())
+        {
+            point = g1_add(
+                point,
+                commit_zero_domain_multiple_point(
+                    polynomial.domain->size,
+                    polynomial.zero_domain_blinder,
+                    key.pk,
+                    name));
+        }
+        auto material =
+            std::make_shared<algebra::Polynomial>(polynomial);
+        material->name = name;
+        return Commitment{
+            .name = name,
+            .point = point,
+            .opening_polynomial = std::move(material),
+        };
     }
 
     std::vector<Commitment> KZG::commit_owned_batch(

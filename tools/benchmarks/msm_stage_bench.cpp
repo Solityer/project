@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -14,6 +15,7 @@
 #include <mcl/bn.hpp>
 
 #include "gatzk/algebra/field.hpp"
+#include "gatzk/algebra/polynomial.hpp"
 #include "gatzk/crypto/curve.hpp"
 #include "gatzk/crypto/kzg.hpp"
 
@@ -169,6 +171,366 @@ void run_case(
     }
 }
 
+void run_profiled_worker_sweep(
+    const std::string& label,
+    const std::vector<gatzk::crypto::G1Point>& points,
+    const std::vector<FieldElement>& scalars,
+    const std::vector<std::size_t>& worker_counts) {
+    if (points.size() < scalars.size()) {
+        throw std::runtime_error(label + " SRS has insufficient points");
+    }
+    const auto nz = nonzero_count(scalars);
+    std::optional<gatzk::crypto::G1Point> expected;
+    std::cout
+        << "worker_sweep_case,input_count,nonzero_count,max_workers,profiled_ms,"
+        << "profiled_multithreaded,profiled_sparse_compaction\n";
+    for (const auto worker_count : worker_counts) {
+        gatzk::crypto::G1MSMProfile profile;
+        const gatzk::crypto::G1MSMExecutionOptions options{
+            .max_worker_count = worker_count,
+        };
+        const auto start = std::chrono::steady_clock::now();
+        const auto result = gatzk::crypto::g1_multi_scalar_mul_profiled(
+            points.data(),
+            scalars.data(),
+            scalars.size(),
+            &profile,
+            &options);
+        const auto profiled_ms = elapsed_ms(start);
+        if (expected.has_value() && !(result == *expected)) {
+            throw std::runtime_error(
+                label + " worker-count sweep produced inconsistent MSM results");
+        }
+        expected = result;
+        std::cout
+            << label << ','
+            << scalars.size() << ','
+            << nz << ','
+            << worker_count << ','
+            << std::fixed << std::setprecision(3) << profiled_ms << ','
+            << (profile.multithreaded ? "true" : "false") << ','
+            << (profile.sparse_compaction ? "true" : "false") << '\n'
+            << std::flush;
+    }
+}
+
+void run_edge_logup_commit_batch(
+    const gatzk::crypto::KZGKeyPair& keys,
+    std::size_t edge_size,
+    std::size_t repeats) {
+    const auto domain =
+        gatzk::algebra::RootOfUnityDomain::create("edge", edge_size);
+    std::vector<gatzk::algebra::Polynomial> polynomials;
+    polynomials.reserve(3);
+    polynomials.push_back(gatzk::algebra::Polynomial::from_evaluations(
+        "J_tbl",
+        make_full_width_prefix_scalars(edge_size, std::min<std::size_t>(4096, edge_size)),
+        domain));
+    polynomials.push_back(gatzk::algebra::Polynomial::from_evaluations(
+        "J_qry",
+        make_full_width_prefix_scalars(edge_size, std::min<std::size_t>(21664, edge_size)),
+        domain));
+    polynomials.push_back(gatzk::algebra::Polynomial::from_evaluations(
+        "R",
+        make_full_width_prefix_scalars(edge_size, std::min<std::size_t>(21663, edge_size)),
+        domain));
+    std::vector<std::pair<std::string, const gatzk::algebra::Polynomial*>> named;
+    named.reserve(polynomials.size());
+    for (const auto& polynomial : polynomials) {
+        named.push_back({polynomial.name, &polynomial});
+    }
+
+    std::vector<gatzk::crypto::G1Point> expected;
+    expected.reserve(polynomials.size());
+    for (const auto& polynomial : polynomials) {
+        expected.push_back(
+            gatzk::crypto::KZG::commit(polynomial.name, polynomial, keys).point);
+    }
+
+    std::cout
+        << "commit_batch_case,repeat,wall_ms,profile_msm_ms,"
+        << "object_0_ms,object_1_ms,object_2_ms\n";
+    for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
+        gatzk::crypto::CommitBatchProfile profile;
+        const auto start = std::chrono::steady_clock::now();
+        const auto commitments =
+            gatzk::crypto::KZG::commit_batch(named, keys, &profile);
+        const auto wall_ms = elapsed_ms(start);
+        if (commitments.size() != expected.size()) {
+            throw std::runtime_error(
+                "edge LogUp batch commitment count mismatch");
+        }
+        for (std::size_t i = 0; i < commitments.size(); ++i) {
+            if (!(commitments[i].point == expected[i])) {
+                throw std::runtime_error(
+                    "edge LogUp batch differs from standalone production commitment");
+            }
+        }
+        std::cout
+            << "edge_logup_batch_full,"
+            << repeat << ','
+            << std::fixed << std::setprecision(3)
+            << wall_ms << ','
+            << profile.msm_ms;
+        for (std::size_t i = 0; i < 3; ++i) {
+            std::cout << ','
+                << (i < profile.objects.size() ? profile.objects[i].msm_ms : 0.0);
+        }
+        std::cout << '\n' << std::flush;
+    }
+}
+
+void run_cora_mixed_route_commit_batch(
+    const gatzk::crypto::KZGKeyPair& keys,
+    std::size_t node_size,
+    std::size_t edge_size,
+    std::size_t repeats) {
+    const auto node_domain =
+        gatzk::algebra::RootOfUnityDomain::create("N", node_size);
+    const auto edge_domain =
+        gatzk::algebra::RootOfUnityDomain::create("edge", edge_size);
+    std::vector<gatzk::algebra::Polynomial> polynomials;
+    polynomials.reserve(4);
+    polynomials.push_back(gatzk::algebra::Polynomial::from_evaluations(
+        "J_node",
+        make_full_width_prefix_scalars(
+            node_size, std::min<std::size_t>(2708, node_size)),
+        node_domain));
+    polynomials.push_back(gatzk::algebra::Polynomial::from_evaluations(
+        "J_edge",
+        make_full_width_prefix_scalars(
+            edge_size, std::min<std::size_t>(13264, edge_size)),
+        edge_domain));
+    polynomials.push_back(gatzk::algebra::Polynomial::from_evaluations(
+        "R_node",
+        make_full_width_prefix_scalars(
+            node_size, std::min<std::size_t>(4095, node_size)),
+        node_domain));
+    polynomials.push_back(gatzk::algebra::Polynomial::from_evaluations(
+        "R_edge",
+        make_full_width_prefix_scalars(
+            edge_size, std::min<std::size_t>(13264, edge_size)),
+        edge_domain));
+    for (std::size_t index = 0; index < polynomials.size(); ++index) {
+        polynomials[index].set_zero_domain_blinder(
+            {FieldElement(101 + index), FieldElement(211 + index)});
+    }
+
+    std::vector<std::pair<std::string, const gatzk::algebra::Polynomial*>> named;
+    named.reserve(polynomials.size());
+    for (const auto& polynomial : polynomials) {
+        named.push_back({polynomial.name, &polynomial});
+    }
+
+    std::vector<gatzk::crypto::G1Point> expected;
+    expected.reserve(polynomials.size());
+    for (const auto& polynomial : polynomials) {
+        expected.push_back(
+            gatzk::crypto::KZG::commit(
+                polynomial.name, polynomial, keys).point);
+    }
+
+    std::cout
+        << "mixed_route_batch_case,repeat,wall_ms,profile_msm_ms,"
+        << "node_j_ms,edge_j_ms,node_r_ms,edge_r_ms\n";
+    for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
+        gatzk::crypto::CommitBatchProfile profile;
+        const auto start = std::chrono::steady_clock::now();
+        const auto commitments =
+            gatzk::crypto::KZG::commit_batch(named, keys, &profile);
+        const auto wall_ms = elapsed_ms(start);
+        if (commitments.size() != expected.size()) {
+            throw std::runtime_error(
+                "mixed route batch commitment count mismatch");
+        }
+        for (std::size_t index = 0; index < commitments.size(); ++index) {
+            if (!(commitments[index].point == expected[index])) {
+                throw std::runtime_error(
+                    "mixed route batch differs from standalone production commitment");
+            }
+        }
+        std::cout
+            << "cora_mixed_route_batch,"
+            << repeat << ','
+            << std::fixed << std::setprecision(3)
+            << wall_ms << ','
+            << profile.msm_ms;
+        for (std::size_t index = 0; index < 4; ++index) {
+            std::cout << ','
+                << (index < profile.objects.size()
+                        ? profile.objects[index].msm_ms
+                        : 0.0);
+        }
+        std::cout << '\n' << std::flush;
+    }
+}
+
+void run_edge_scaled_evaluation_cache(
+    const gatzk::crypto::KZGKeyPair& keys,
+    std::size_t edge_size,
+    std::size_t repeats) {
+    const auto domain =
+        gatzk::algebra::RootOfUnityDomain::create("edge", edge_size);
+    const auto active_count = std::min<std::size_t>(21664, edge_size - 1);
+    std::vector<FieldElement> base(edge_size, FieldElement::zero());
+    for (std::size_t i = 1; i < active_count; ++i) {
+        base[i] = FieldElement(active_count - i);
+    }
+    gatzk::crypto::EvaluationCommitmentCache cache;
+    std::cout
+        << "scaled_cache_case,repeat,wall_ms,object_msm_ms,semantic_reuse\n";
+    for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
+        const auto scale = make_full_width_prefix_scalars(1, 1).front()
+            + FieldElement(repeat + 1);
+        auto values =
+            std::make_shared<std::vector<FieldElement>>(edge_size);
+        for (std::size_t i = 0; i < edge_size; ++i) {
+            (*values)[i] = base[i] * scale;
+        }
+        auto polynomial = gatzk::algebra::Polynomial::from_shared_evaluations(
+            "scaled_R",
+            values,
+            domain);
+        polynomial.set_zero_domain_blinder(
+            {FieldElement(101 + repeat), FieldElement(211 + repeat)});
+        gatzk::crypto::CommitBatchProfile batch_profile;
+        const auto start = std::chrono::steady_clock::now();
+        const auto cached = gatzk::crypto::KZG::commit_batch(
+            {{"scaled_R", &polynomial}},
+            keys,
+            &batch_profile,
+            &cache);
+        const auto wall_ms = elapsed_ms(start);
+        const auto expected =
+            gatzk::crypto::KZG::commit(
+                "scaled_R",
+                polynomial,
+                keys);
+        if (cached.size() != 1 || !(cached.front().point == expected.point)) {
+            throw std::runtime_error(
+                "scaled evaluation cache changed the blinded KZG commitment");
+        }
+        std::cout
+            << "edge_scaled_cache_full,"
+            << repeat << ','
+            << std::fixed << std::setprecision(3)
+            << wall_ms << ','
+            << (batch_profile.objects.empty()
+                    ? 0.0
+                    : batch_profile.objects.front().msm_ms)
+            << ','
+            << (!batch_profile.objects.empty()
+                    && batch_profile.objects.front().semantic_commitment_reuse
+                    ? "true"
+                    : "false")
+            << '\n' << std::flush;
+    }
+}
+
+void run_edge_logup_mixed_cache_batch(
+    const gatzk::crypto::KZGKeyPair& keys,
+    std::size_t edge_size,
+    std::size_t repeats) {
+    const auto domain =
+        gatzk::algebra::RootOfUnityDomain::create("edge", edge_size);
+    const auto query_count = std::min<std::size_t>(21664, edge_size - 1);
+    const auto j_table_base =
+        make_full_width_prefix_scalars(
+            edge_size,
+            std::min<std::size_t>(4096, edge_size));
+    const auto query_base =
+        make_full_width_prefix_scalars(edge_size, query_count);
+    std::vector<FieldElement> accumulator_base(
+        edge_size,
+        FieldElement::zero());
+    for (std::size_t i = 1; i < query_count; ++i) {
+        accumulator_base[i] = FieldElement(query_count - i);
+    }
+
+    gatzk::crypto::EvaluationCommitmentCache cache;
+    std::cout
+        << "mixed_cache_batch_case,repeat,wall_ms,profile_msm_ms,"
+        << "j_table_ms,j_query_ms,accumulator_ms,"
+        << "j_table_reuse,j_query_reuse,accumulator_reuse\n";
+    for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
+        const auto scale = make_full_width_prefix_scalars(1, 1).front()
+            + FieldElement(repeat + 1);
+        auto j_table =
+            std::make_shared<std::vector<FieldElement>>(j_table_base);
+        auto j_query =
+            std::make_shared<std::vector<FieldElement>>(edge_size);
+        auto accumulator =
+            std::make_shared<std::vector<FieldElement>>(edge_size);
+        for (std::size_t i = 0; i < j_table->size(); ++i) {
+            if (!(*j_table)[i].is_zero()) {
+                (*j_table)[i] +=
+                    FieldElement(repeat + 1) * FieldElement(i + 1);
+            }
+            (*j_query)[i] = query_base[i] * scale;
+            (*accumulator)[i] = accumulator_base[i] * scale;
+        }
+        std::vector<gatzk::algebra::Polynomial> polynomials;
+        polynomials.reserve(3);
+        polynomials.push_back(
+            gatzk::algebra::Polynomial::from_shared_evaluations(
+                "J_tbl", j_table, domain));
+        polynomials.push_back(
+            gatzk::algebra::Polynomial::from_shared_evaluations(
+                "J_qry", j_query, domain));
+        polynomials.push_back(
+            gatzk::algebra::Polynomial::from_shared_evaluations(
+                "R", accumulator, domain));
+        std::vector<std::pair<
+            std::string,
+            const gatzk::algebra::Polynomial*>> named;
+        for (auto& polynomial : polynomials) {
+            polynomial.set_zero_domain_blinder(
+                {FieldElement(101 + repeat), FieldElement(211 + repeat)});
+            named.push_back({polynomial.name, &polynomial});
+        }
+
+        gatzk::crypto::CommitBatchProfile profile;
+        const auto start = std::chrono::steady_clock::now();
+        const auto commitments =
+            gatzk::crypto::KZG::commit_batch(
+                named,
+                keys,
+                &profile,
+                &cache);
+        const auto wall_ms = elapsed_ms(start);
+        for (std::size_t i = 0; i < polynomials.size(); ++i) {
+            const auto expected = gatzk::crypto::KZG::commit(
+                polynomials[i].name,
+                polynomials[i],
+                keys);
+            if (!(commitments[i].point == expected.point)) {
+                throw std::runtime_error(
+                    "mixed-cache LogUp batch changed a blinded KZG commitment");
+            }
+        }
+        std::cout
+            << "edge_logup_mixed_cache_batch,"
+            << repeat << ','
+            << std::fixed << std::setprecision(3)
+            << wall_ms << ','
+            << profile.msm_ms;
+        for (std::size_t i = 0; i < 3; ++i) {
+            std::cout << ','
+                << (i < profile.objects.size()
+                        ? profile.objects[i].msm_ms
+                        : 0.0);
+        }
+        for (std::size_t i = 0; i < 3; ++i) {
+            std::cout << ','
+                << (i < profile.objects.size()
+                        && profile.objects[i].semantic_commitment_reuse
+                        ? "true"
+                        : "false");
+        }
+        std::cout << '\n' << std::flush;
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -202,6 +564,8 @@ int main(int argc, char** argv) {
         if (edge_it == keys.pk.lagrange_srs_by_domain.end() || edge_it->second == nullptr) {
             throw std::runtime_error("missing edge Lagrange SRS");
         }
+        const auto node_it = keys.pk.lagrange_srs_by_domain.find("N");
+        const auto fh_it = keys.pk.lagrange_srs_by_domain.find("FH");
         if (keys.pk.powers_g1 == nullptr) {
             throw std::runtime_error("missing coefficient SRS");
         }
@@ -238,6 +602,30 @@ int main(int argc, char** argv) {
                 max_worker_count);
             ran_case = true;
         }
+        if (should_run("edge_prefix_21664_full")) {
+            run_case(
+                "edge_current_prefix_21664_full",
+                *edge_it->second,
+                make_full_width_prefix_scalars(
+                    edge_it->second->size(),
+                    std::min<std::size_t>(21664, edge_it->second->size())),
+                repeats,
+                max_worker_count);
+            ran_case = true;
+        }
+        if (should_run("edge_prefix_21664_worker_sweep")) {
+            run_profiled_worker_sweep(
+                "edge_current_prefix_21664_full",
+                *edge_it->second,
+                make_full_width_prefix_scalars(
+                    edge_it->second->size(),
+                    std::min<std::size_t>(
+                        21664, edge_it->second->size())),
+                max_worker_count == 0
+                    ? std::vector<std::size_t>{4, 5, 6, 8, 10, 12, 16, 20}
+                    : std::vector<std::size_t>{max_worker_count});
+            ran_case = true;
+        }
         if (should_run("edge_prefix_4096_full")) {
             run_case(
                 "edge_current_prefix_4096_full",
@@ -245,6 +633,16 @@ int main(int argc, char** argv) {
                 make_full_width_prefix_scalars(edge_it->second->size(), 4096),
                 repeats,
                 max_worker_count);
+            ran_case = true;
+        }
+        if (should_run("edge_prefix_4096_worker_sweep")) {
+            run_profiled_worker_sweep(
+                "edge_current_prefix_4096_full",
+                *edge_it->second,
+                make_full_width_prefix_scalars(edge_it->second->size(), 4096),
+                max_worker_count == 0
+                    ? std::vector<std::size_t>{1, 2, 4, 6, 8, 10, 12, 16, 20}
+                    : std::vector<std::size_t>{max_worker_count});
             ran_case = true;
         }
         if (should_run("edge_prefix_1024_full")) {
@@ -292,6 +690,40 @@ int main(int argc, char** argv) {
                 max_worker_count);
             ran_case = true;
         }
+        if (should_run("edge_logup_batch_full")) {
+            run_edge_logup_commit_batch(
+                keys,
+                edge_it->second->size(),
+                repeats);
+            ran_case = true;
+        }
+        if (should_run("cora_mixed_route_batch")) {
+            if (node_it == keys.pk.lagrange_srs_by_domain.end()
+                || node_it->second == nullptr) {
+                throw std::runtime_error(
+                    "cora_mixed_route_batch requires the N Lagrange SRS");
+            }
+            run_cora_mixed_route_commit_batch(
+                keys,
+                node_it->second->size(),
+                edge_it->second->size(),
+                repeats);
+            ran_case = true;
+        }
+        if (should_run("edge_scaled_cache_full")) {
+            run_edge_scaled_evaluation_cache(
+                keys,
+                edge_it->second->size(),
+                repeats);
+            ran_case = true;
+        }
+        if (should_run("edge_logup_mixed_cache_batch")) {
+            run_edge_logup_mixed_cache_batch(
+                keys,
+                edge_it->second->size(),
+                repeats);
+            ran_case = true;
+        }
         if (should_run("coef_1048576_sparse3")) {
             run_case(
                 "coef_1048576_sparse3",
@@ -308,6 +740,36 @@ int main(int argc, char** argv) {
                 make_scalars(1048576, 1),
                 repeats,
                 max_worker_count);
+            ran_case = true;
+        }
+        if (should_run("coef_8388608_full")) {
+            if (keys.pk.powers_g1->size() < 8388608) {
+                throw std::runtime_error(
+                    "coef_8388608_full requires at least 8388608 coefficient points");
+            }
+            run_profiled_worker_sweep(
+                "coef_8388608_full",
+                *keys.pk.powers_g1,
+                make_full_width_prefix_scalars(8388608, 8388608),
+                max_worker_count == 0
+                    ? std::vector<std::size_t>{16, 15}
+                    : std::vector<std::size_t>{max_worker_count});
+            ran_case = true;
+        }
+        if (should_run("fh_cora_feature_prefix_full")) {
+            if (fh_it == keys.pk.lagrange_srs_by_domain.end()
+                || fh_it->second == nullptr
+                || fh_it->second->size() < 4194304) {
+                throw std::runtime_error(
+                    "fh_cora_feature_prefix_full requires the Cora FH Lagrange SRS");
+            }
+            run_profiled_worker_sweep(
+                "fh_cora_feature_prefix_full",
+                *fh_it->second,
+                make_full_width_prefix_scalars(4194304, 3880564),
+                max_worker_count == 0
+                    ? std::vector<std::size_t>{8, 12, 16, 20}
+                    : std::vector<std::size_t>{max_worker_count});
             ran_case = true;
         }
         if (!ran_case) {

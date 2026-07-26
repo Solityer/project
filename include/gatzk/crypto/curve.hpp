@@ -51,6 +51,9 @@ namespace gatzk::crypto
         // 0 keeps the backend default. Non-zero caps per-MSM worker fanout when
         // an outer batch scheduler is already using parallelism.
         std::size_t max_worker_count = 0;
+        // The point slice belongs to immutable SRS material and may reuse
+        // execution-only GLV base preparation across repeated MSMs.
+        bool stable_srs_bases = false;
     };
 
     // 返回当前正式主线使用的曲线后端名称。

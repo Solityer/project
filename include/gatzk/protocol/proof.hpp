@@ -486,6 +486,7 @@ struct RunMetrics {
     double lookup_query_pack_ms = 0.0;
     double lookup_key_build_ms = 0.0;
     double lookup_multiplicity_ms = 0.0;
+    double lookup_inverse_ms = 0.0;
     double lookup_accumulator_ms = 0.0;
     double lookup_state_machine_ms = 0.0;
     double lookup_selector_mask_ms = 0.0;

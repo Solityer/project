@@ -55,24 +55,7 @@ if(GATZK_VENDOR_MCL_FOUND)
     set(GATZK_MCL_LIBRARIES gatzk_mcl)
     message(STATUS "GAT-ZKML: using vendored mcl backend from third_party/mcl")
 else()
-    find_path(GATZK_SYSTEM_MCL_INCLUDE_DIR
-        NAMES mcl/bn.hpp
-        HINTS
-            /usr/local/include
-            /usr/include
-    )
-    find_library(GATZK_SYSTEM_MCL_LIBRARY
-        NAMES mclbn384_256 mclbn256 mcl
-        HINTS
-            /usr/local/lib
-            /usr/lib
-    )
-
-    if(GATZK_SYSTEM_MCL_INCLUDE_DIR AND GATZK_SYSTEM_MCL_LIBRARY)
-        set(GATZK_MCL_INCLUDE_DIRS "${GATZK_SYSTEM_MCL_INCLUDE_DIR}")
-        set(GATZK_MCL_LIBRARIES "${GATZK_SYSTEM_MCL_LIBRARY}")
-        message(STATUS "GAT-ZKML: using system mcl backend")
-    else()
-        message(FATAL_ERROR "GAT-ZKML: no vendored or system mcl installation was found")
-    endif()
+    message(FATAL_ERROR
+        "GAT-ZKML: canonical vendored mcl is missing from third_party/mcl; "
+        "system mcl fallback is forbidden")
 endif()

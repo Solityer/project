@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 3.16)
 
 project(gatzkml LANGUAGES CXX)
 
+if(POLICY CMP0104)
+    cmake_policy(SET CMP0104 NEW)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -29,6 +33,15 @@ endif()
 include(cmake/ConfigureMCL.cmake)
 
 if(GATZK_ENABLE_CUDA_BACKEND)
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+        if(CMAKE_VERSION VERSION_LESS 3.24)
+            message(FATAL_ERROR
+                "GAT-ZKML: CUDA builds require an explicit "
+                "-DCMAKE_CUDA_ARCHITECTURES=<architecture> with CMake < 3.24")
+        endif()
+        set(CMAKE_CUDA_ARCHITECTURES native CACHE STRING
+            "CUDA architectures for the canonical CUDA backend")
+    endif()
     enable_language(CUDA)
     find_package(CUDAToolkit REQUIRED)
     set(CMAKE_CUDA_STANDARD 17)
@@ -114,6 +127,22 @@ add_executable(gatzk_msm_stage_bench tools/benchmarks/msm_stage_bench.cpp)
 target_include_directories(gatzk_msm_stage_bench PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(gatzk_msm_stage_bench PRIVATE gatzkml)
 
+add_executable(
+    gatzk_taylor_shift_stage_bench
+    tools/benchmarks/taylor_shift_stage_bench.cpp)
+target_include_directories(
+    gatzk_taylor_shift_stage_bench
+    PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(gatzk_taylor_shift_stage_bench PRIVATE gatzkml)
+
+add_executable(
+    gatzk_logup_stage_bench
+    tools/benchmarks/logup_stage_bench.cpp)
+target_include_directories(
+    gatzk_logup_stage_bench
+    PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(gatzk_logup_stage_bench PRIVATE gatzkml)
+
 add_executable(gatzk_t_edge_eval_stage_bench tools/benchmarks/t_edge_eval_stage_bench.cpp)
 target_include_directories(gatzk_t_edge_eval_stage_bench PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(gatzk_t_edge_eval_stage_bench PRIVATE gatzkml)
@@ -140,6 +169,9 @@ if(GATZK_BUILD_TESTS)
     enable_testing()
     add_executable(gatzk_tests tests/test_main.cpp)
     target_link_libraries(gatzk_tests PRIVATE gatzkml)
+    target_compile_definitions(
+        gatzk_tests
+        PRIVATE GATZK_TEST_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}")
     add_test(NAME gatzk_tests COMMAND gatzk_tests)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)

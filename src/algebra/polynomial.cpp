@@ -686,6 +686,113 @@ namespace gatzk::algebra
         return out;
     }
 
+    namespace
+    {
+        struct TaylorShiftPrecompute
+        {
+            std::size_t convolution_domain_size = 0;
+            std::size_t wrapped_tail_length = 0;
+            std::vector<FieldElement> factorial;
+            std::vector<FieldElement> inverse_factorial;
+            std::vector<FieldElement> shifted_inverse_factorial;
+            std::vector<FieldElement> shifted_inverse_factorial_ntt;
+        };
+
+        std::shared_ptr<const TaylorShiftPrecompute>
+        cached_taylor_shift_precompute(
+            std::size_t configured_degree,
+            const FieldElement& delta)
+        {
+            static std::mutex cache_mutex;
+            static std::unordered_map<
+                std::string,
+                std::shared_ptr<const TaylorShiftPrecompute>> cache;
+            const auto cache_key =
+                std::to_string(configured_degree)
+                + ":" + delta.to_string();
+            {
+                std::lock_guard<std::mutex> lock(cache_mutex);
+                if (const auto it = cache.find(cache_key);
+                    it != cache.end())
+                {
+                    return it->second;
+                }
+            }
+
+            const auto configured_length = configured_degree + 1;
+            const auto full_convolution_length =
+                configured_degree * 2 + 1;
+            const auto cyclic_domain_size =
+                next_power_of_two(configured_length);
+            const auto wrapped_tail_length =
+                full_convolution_length > cyclic_domain_size
+                ? full_convolution_length - cyclic_domain_size
+                : 0;
+            constexpr std::size_t max_exact_wrapped_tail = 256;
+            auto prepared = std::make_shared<TaylorShiftPrecompute>();
+            if (wrapped_tail_length <= max_exact_wrapped_tail)
+            {
+                // A power-of-two cyclic convolution is exact after subtracting
+                // the short linear-convolution tail that wrapped to the first
+                // coefficients. This is especially important for compiler
+                // degrees just above a power of two (32769 => three terms).
+                prepared->convolution_domain_size =
+                    cyclic_domain_size;
+                prepared->wrapped_tail_length =
+                    wrapped_tail_length;
+            }
+            else
+            {
+                prepared->convolution_domain_size =
+                    next_power_of_two(full_convolution_length);
+            }
+            prepared->factorial.assign(
+                configured_length, FieldElement::one());
+            for (std::size_t i = 1; i < configured_length; ++i)
+            {
+                prepared->factorial[i] =
+                    prepared->factorial[i - 1]
+                    * FieldElement(static_cast<std::uint64_t>(i));
+            }
+            prepared->inverse_factorial.assign(
+                configured_length, FieldElement::one());
+            prepared->inverse_factorial.back() =
+                prepared->factorial.back().inv();
+            for (std::size_t i = configured_degree; i > 0; --i)
+            {
+                prepared->inverse_factorial[i - 1] =
+                    prepared->inverse_factorial[i]
+                    * FieldElement(static_cast<std::uint64_t>(i));
+            }
+
+            prepared->shifted_inverse_factorial.assign(
+                configured_length,
+                FieldElement::zero());
+            auto delta_power = FieldElement::one();
+            for (std::size_t i = 0; i < configured_length; ++i)
+            {
+                prepared->shifted_inverse_factorial[i] =
+                    delta_power * prepared->inverse_factorial[i];
+                delta_power *= delta;
+            }
+            prepared->shifted_inverse_factorial_ntt.assign(
+                prepared->convolution_domain_size,
+                FieldElement::zero());
+            std::copy(
+                prepared->shifted_inverse_factorial.begin(),
+                prepared->shifted_inverse_factorial.end(),
+                prepared->shifted_inverse_factorial_ntt.begin());
+            ntt_plan(prepared->convolution_domain_size)->ntt(
+                FieldElement::mutable_native_array_data(
+                    prepared->shifted_inverse_factorial_ntt.data()));
+
+            std::lock_guard<std::mutex> lock(cache_mutex);
+            const auto [it, _] =
+                cache.emplace(cache_key, prepared);
+            return it->second;
+        }
+    }
+
     std::vector<FieldElement> coefficient_taylor_shift(
         const std::vector<FieldElement>& coefficients,
         std::size_t configured_degree,
@@ -705,43 +812,66 @@ namespace gatzk::algebra
         {
             throw std::runtime_error("Taylor-shift convolution length overflow");
         }
-        const auto convolution_length = configured_degree * 2 + 1;
-        const auto n_shift = next_power_of_two(convolution_length);
-
-        std::vector<FieldElement> factorial(configured_length, FieldElement::one());
-        for (std::size_t i = 1; i < configured_length; ++i)
-        {
-            factorial[i] = factorial[i - 1] * FieldElement(static_cast<std::uint64_t>(i));
-        }
-        std::vector<FieldElement> inverse_factorial(configured_length, FieldElement::one());
-        inverse_factorial.back() = factorial.back().inv();
-        for (std::size_t i = configured_degree; i > 0; --i)
-        {
-            inverse_factorial[i - 1]
-                = inverse_factorial[i] * FieldElement(static_cast<std::uint64_t>(i));
-        }
-
-        std::vector<FieldElement> a_rev(n_shift, FieldElement::zero());
-        std::vector<FieldElement> b(n_shift, FieldElement::zero());
-        auto delta_power = FieldElement::one();
+        const auto prepared =
+            cached_taylor_shift_precompute(
+                configured_degree, delta);
+        std::vector<FieldElement> a_rev(
+            prepared->convolution_domain_size,
+            FieldElement::zero());
         for (std::size_t i = 0; i < configured_length; ++i)
         {
             const auto source_index = configured_degree - i;
-            a_rev[i] = coefficients[source_index] * factorial[source_index];
-            b[i] = delta_power * inverse_factorial[i];
-            delta_power *= delta;
+            a_rev[i] =
+                coefficients[source_index]
+                * prepared->factorial[source_index];
         }
 
-        const auto plan = ntt_plan(n_shift);
+        const auto plan =
+            ntt_plan(prepared->convolution_domain_size);
         plan->ntt(FieldElement::mutable_native_array_data(a_rev.data()));
-        plan->ntt(FieldElement::mutable_native_array_data(b.data()));
-        for (std::size_t i = 0; i < n_shift; ++i) a_rev[i] *= b[i];
+        for (std::size_t i = 0;
+             i < prepared->convolution_domain_size;
+             ++i)
+        {
+            a_rev[i] *=
+                prepared->shifted_inverse_factorial_ntt[i];
+        }
         plan->intt(FieldElement::mutable_native_array_data(a_rev.data()));
+
+        // With the short cyclic domain, coefficient r contains
+        // linear_conv[r] + linear_conv[N+r]. Remove the latter exactly.
+        // The configured coefficient vector is never trimmed and all field
+        // operations are identical to the full linear convolution.
+        for (std::size_t wrapped_index = 0;
+             wrapped_index < prepared->wrapped_tail_length;
+             ++wrapped_index)
+        {
+            const auto linear_index =
+                prepared->convolution_domain_size + wrapped_index;
+            const auto source_begin =
+                linear_index - configured_degree;
+            FieldElement wrapped = FieldElement::zero();
+            for (std::size_t source = source_begin;
+                 source <= configured_degree;
+                 ++source)
+            {
+                const auto source_coefficient =
+                    configured_degree - source;
+                wrapped +=
+                    coefficients[source_coefficient]
+                    * prepared->factorial[source_coefficient]
+                    * prepared->shifted_inverse_factorial[
+                        linear_index - source];
+            }
+            a_rev[wrapped_index] -= wrapped;
+        }
 
         std::vector<FieldElement> shifted(configured_length, FieldElement::zero());
         for (std::size_t k = 0; k < configured_length; ++k)
         {
-            shifted[k] = a_rev[configured_degree - k] * inverse_factorial[k];
+            shifted[k] =
+                a_rev[configured_degree - k]
+                * prepared->inverse_factorial[k];
         }
         return shifted;
     }

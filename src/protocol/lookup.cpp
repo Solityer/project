@@ -158,10 +158,10 @@ namespace gatzk::protocol
         LogUpInverseColumns out;
         out.table.assign(n, FieldElement::zero());
         out.query.assign(n, FieldElement::zero());
-        std::vector<mcl::Fr> denominators;
-        std::vector<std::pair<bool, std::size_t>> locations;
+        thread_local std::vector<mcl::Fr> denominators;
+        thread_local std::vector<mcl::Fr> inverses;
+        denominators.clear();
         denominators.reserve(n * 2);
-        locations.reserve(n * 2);
         for (std::size_t i = 0; i < n; ++i)
         {
             if (!q_table[i].is_zero())
@@ -169,24 +169,104 @@ namespace gatzk::protocol
                 mcl::Fr denominator;
                 mcl::Fr::add(denominator, table[i].native(), beta.native());
                 denominators.push_back(denominator);
-                locations.push_back({true, i});
             }
             if (!q_query[i].is_zero())
             {
                 mcl::Fr denominator;
                 mcl::Fr::add(denominator, query[i].native(), beta.native());
                 denominators.push_back(denominator);
-                locations.push_back({false, i});
             }
         }
-        std::vector<mcl::Fr> inverses;
         batch_inverse_native(denominators, inverses, "lookup inverse columns");
-        for (std::size_t i = 0; i < locations.size(); ++i)
+        std::size_t inverse_index = 0;
+        for (std::size_t i = 0; i < n; ++i)
         {
-            auto &target = locations[i].first ? out.table : out.query;
-            target[locations[i].second] = FieldElement::from_native(inverses[i]);
+            if (!q_table[i].is_zero())
+            {
+                out.table[i] =
+                    FieldElement::from_native(
+                        inverses[inverse_index++]);
+            }
+            if (!q_query[i].is_zero())
+            {
+                out.query[i] =
+                    FieldElement::from_native(
+                        inverses[inverse_index++]);
+            }
+        }
+        if (inverse_index != inverses.size())
+        {
+            throw std::runtime_error(
+                "lookup inverse column cursor mismatch");
         }
         return out;
+    }
+
+    std::vector<algebra::FieldElement>
+    build_logup_accumulator_from_inverse_columns_with_active_count(
+        const std::vector<algebra::FieldElement> &table_inverse,
+        const std::vector<algebra::FieldElement> &query_inverse,
+        const std::vector<algebra::FieldElement> &multiplicity,
+        const std::vector<algebra::FieldElement> &q_table,
+        const std::vector<algebra::FieldElement> &q_query,
+        std::size_t active_count)
+    {
+        const auto n = table_inverse.size();
+        if (query_inverse.size() != n
+            || multiplicity.size() != n
+            || q_table.size() != n
+            || q_query.size() != n)
+        {
+            throw std::runtime_error(
+                "lookup inverse accumulator input size mismatch");
+        }
+        std::vector<algebra::FieldElement> accumulator(
+            n, FieldElement::zero());
+        if (n <= 1)
+        {
+            return accumulator;
+        }
+        active_count = std::min(active_count, n - 1U);
+        mcl::Fr running;
+        running.clear();
+        const auto one = FieldElement::one();
+        for (std::size_t i = 0; i < active_count; ++i)
+        {
+            if (!(q_table[i].is_zero()
+                    || q_table[i] == one)
+                || !(q_query[i].is_zero()
+                    || q_query[i] == one))
+            {
+                throw std::runtime_error(
+                    "lookup accumulator selector is not boolean");
+            }
+            if (!q_table[i].is_zero())
+            {
+                mcl::Fr table_term;
+                mcl::Fr::mul(
+                    table_term,
+                    multiplicity[i].native(),
+                    table_inverse[i].native());
+                mcl::Fr::add(running, running, table_term);
+            }
+            if (!q_query[i].is_zero())
+            {
+                mcl::Fr::sub(
+                    running,
+                    running,
+                    query_inverse[i].native());
+            }
+            accumulator[i + 1] = FieldElement::from_native(running);
+        }
+        if (active_count + 1 < n)
+        {
+            std::fill(
+                accumulator.begin()
+                    + static_cast<std::ptrdiff_t>(active_count + 1),
+                accumulator.end(),
+                accumulator[active_count]);
+        }
+        return accumulator;
     }
 
     std::vector<algebra::FieldElement> build_selected_inverse_column(

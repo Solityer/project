@@ -414,7 +414,48 @@ int main(int argc, char **argv)
             progress(mode_label + ":trace:start");
             const auto trace_start = std::chrono::steady_clock::now();
             const auto trace = gatzk::protocol::build_trace(context, &metrics);
-            progress(mode_label + ":trace:done");
+            const auto trace_elapsed_ms =
+                std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - trace_start).count();
+            progress(
+                mode_label + ":trace:done:ms="
+                + format_ms(trace_elapsed_ms));
+            progress(
+                mode_label + ":trace:profile"
+                + ":commit_dynamic_ms=" + format_ms(metrics.commit_dynamic_ms)
+                + ":materialization_ms="
+                + format_ms(metrics.dynamic_polynomial_materialization_ms)
+                + ":msm_ms=" + format_ms(metrics.dynamic_commit_msm_ms)
+                + ":derived_point_ms="
+                + format_ms(metrics.derived_commitment_point_ms)
+                + ":trace_generation_ms="
+                + format_ms(metrics.trace_generation_ms)
+                + ":forward_ms=" + format_ms(metrics.forward_ms)
+                + ":lookup_inverse_ms="
+                + format_ms(metrics.lookup_inverse_ms)
+                + ":lookup_accumulator_ms="
+                + format_ms(metrics.lookup_accumulator_ms)
+                + ":lookup_pack_ms="
+                + format_ms(
+                    metrics.lookup_query_pack_ms
+                    + metrics.lookup_multiplicity_ms
+                    + metrics.lookup_key_build_ms)
+                + ":route_ms=" + format_ms(metrics.route_trace_ms)
+                + ":psq_ms=" + format_ms(metrics.psq_trace_ms)
+                + ":zkmap_ms=" + format_ms(metrics.zkmap_trace_ms)
+                + ":state_ms=" + format_ms(metrics.state_machine_trace_ms)
+                + ":witness_ms="
+                + format_ms(metrics.witness_materialization_ms)
+                + ":hidden_residual_ms="
+                + format_ms(metrics.hidden_head_trace_ms)
+                + ":output_residual_ms="
+                + format_ms(metrics.output_head_trace_ms)
+                + ":object_residual_ms="
+                + format_ms(metrics.hidden_output_object_residual_ms)
+                + ":field_convert_ms="
+                + format_ms(metrics.field_conversion_residual_ms)
+                + ":finalize_ms="
+                + format_ms(metrics.trace_finalize_ms));
             metrics.reference_forward_ms = metrics.forward_ms;
             progress(mode_label + ":prove:start");
             const auto proof = gatzk::protocol::prove(context, trace, &metrics);

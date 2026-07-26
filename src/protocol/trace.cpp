@@ -63,17 +63,39 @@ namespace gatzk::protocol
             return std::chrono::duration<double, std::milli>(end - start).count();
         }
 
+        bool progress_enabled()
+        {
+            const auto *value = std::getenv("GATZK_RUN_PROGRESS");
+            return value != nullptr && std::string_view(value) != "stage";
+        }
+
+        void progress_note(const std::string &label)
+        {
+            if (progress_enabled())
+            {
+                std::cerr << "[progress] " << label << '\n';
+            }
+        }
+
         template <typename Builder>
         crypto::G1Point timed_derived_commitment_point(
             RunMetrics *metrics,
-            Builder builder)
+            Builder builder,
+            std::string_view label = {})
         {
             const auto start = Clock::now();
             auto point = builder();
+            const auto duration_ms = elapsed_ms(start, Clock::now());
             if (metrics != nullptr)
             {
                 metrics->derived_commitment_point_ms +=
-                    elapsed_ms(start, Clock::now());
+                    duration_ms;
+            }
+            if (!label.empty())
+            {
+                progress_note(
+                    "trace:derived_point:" + std::string(label)
+                    + ":ms=" + std::to_string(duration_ms));
             }
             return point;
         }
@@ -91,36 +113,53 @@ namespace gatzk::protocol
             {
                 metrics->derived_commitment_point_ms += profile.msm_ms;
             }
+            progress_note(
+                "trace:proof_commit:" + name
+                + ":ms=" + std::to_string(profile.msm_ms));
             return commitment;
         }
 
-        std::vector<crypto::Commitment> commit_proof_polynomial_batch(
-            const std::vector<std::pair<std::string, const Polynomial *>> &named_polynomials,
+        crypto::Commitment commit_reblinded_evaluation_from_anchor(
+            const crypto::Commitment &anchor,
+            const std::string &name,
+            const Polynomial &polynomial,
             const crypto::KZGKeyPair &key,
             RunMetrics *metrics)
         {
-            constexpr std::size_t kMinAmortizedBatchObjects = 4;
-            if (named_polynomials.size() < kMinAmortizedBatchObjects)
+            if (anchor.opening_polynomial == nullptr
+                || anchor.opening_polynomial->basis
+                    != algebra::PolynomialBasis::Evaluation
+                || polynomial.basis
+                    != algebra::PolynomialBasis::Evaluation
+                || anchor.opening_polynomial->domain == nullptr
+                || polynomial.domain == nullptr
+                || anchor.opening_polynomial->domain->size
+                    != polynomial.domain->size
+                || !(anchor.opening_polynomial->domain->omega
+                    == polynomial.domain->omega)
+                || anchor.opening_polynomial->values()
+                    != polynomial.values())
             {
-                std::vector<crypto::Commitment> commitments;
-                commitments.reserve(named_polynomials.size());
-                for (const auto &[name, polynomial] : named_polynomials)
-                {
-                    commitments.push_back(commit_proof_polynomial(
-                        name, *polynomial, key, metrics));
-                }
-                return commitments;
+                throw std::runtime_error(
+                    "proof-local model polynomial differs from its canonical anchor: "
+                    + name);
             }
-            crypto::CommitBatchProfile profile;
-            auto commitments = crypto::KZG::commit_batch(
-                named_polynomials,
-                key,
-                metrics != nullptr ? &profile : nullptr);
+            const auto start = Clock::now();
+            const auto evaluation_component =
+                crypto::KZG::evaluation_commitment_component(anchor, key);
+            auto commitment =
+                crypto::KZG::commit_evaluation_from_component(
+                    name, polynomial, evaluation_component, key);
+            const auto duration_ms = elapsed_ms(start, Clock::now());
             if (metrics != nullptr)
             {
-                metrics->derived_commitment_point_ms += profile.msm_ms;
+                metrics->derived_commitment_point_ms +=
+                    duration_ms;
             }
-            return commitments;
+            progress_note(
+                "trace:model_reblind_derived:" + name
+                + ":ms=" + std::to_string(duration_ms));
+            return commitment;
         }
 
         crypto::Commitment commit_shifted_proof_polynomial(
@@ -143,20 +182,10 @@ namespace gatzk::protocol
             {
                 metrics->derived_commitment_point_ms += profile.msm_ms;
             }
+            progress_note(
+                "trace:taylor_shift_commit:" + shifted_name
+                + ":ms=" + std::to_string(profile.msm_ms));
             return commitment;
-        }
-
-        bool progress_enabled()
-        {
-            return std::getenv("GATZK_RUN_PROGRESS") != nullptr;
-        }
-
-        void progress_note(const std::string &label)
-        {
-            if (progress_enabled())
-            {
-                std::cerr << "[progress] " << label << '\n';
-            }
         }
 
         void progress_commit_batch_profile(
@@ -530,13 +559,13 @@ namespace gatzk::protocol
         }
 
         std::vector<FieldElement> build_route_node_accumulator(
-            const std::vector<FieldElement> &table,
+            const std::vector<FieldElement> &inverse,
             const std::vector<FieldElement> &multiplicity,
             std::size_t valid_length,
-            std::size_t domain_size,
-            const FieldElement &beta)
+            std::size_t domain_size)
         {
-            if (table.size() != domain_size || multiplicity.size() != domain_size)
+            if (inverse.size() != domain_size
+                || multiplicity.size() != domain_size)
             {
                 throw std::runtime_error("route node accumulator input size mismatch");
             }
@@ -546,19 +575,15 @@ namespace gatzk::protocol
                 return out;
             }
 
-            std::vector<FieldElement> denominators;
-            denominators.reserve(valid_length);
-            for (std::size_t i = 0; i < valid_length; ++i)
-            {
-                denominators.push_back(table[i] + beta);
-            }
-            const auto inverses = algebra::batch_invert(denominators);
             mcl::Fr running;
             running.clear();
             for (std::size_t i = 0; i < valid_length; ++i)
             {
                 mcl::Fr term;
-                mcl::Fr::mul(term, multiplicity[i].native(), inverses[i].native());
+                mcl::Fr::mul(
+                    term,
+                    multiplicity[i].native(),
+                    inverse[i].native());
                 mcl::Fr::add(running, running, term);
                 out[i + 1] = FieldElement::from_native(running);
             }
@@ -570,12 +595,11 @@ namespace gatzk::protocol
         }
 
         std::vector<FieldElement> build_route_edge_accumulator(
-            const std::vector<FieldElement> &query,
+            const std::vector<FieldElement> &inverse,
             std::size_t valid_length,
-            std::size_t domain_size,
-            const FieldElement &beta)
+            std::size_t domain_size)
         {
-            if (query.size() != domain_size)
+            if (inverse.size() != domain_size)
             {
                 throw std::runtime_error("route edge accumulator input size mismatch");
             }
@@ -585,18 +609,11 @@ namespace gatzk::protocol
                 return out;
             }
 
-            std::vector<FieldElement> denominators;
-            denominators.reserve(valid_length);
-            for (std::size_t i = 0; i < valid_length; ++i)
-            {
-                denominators.push_back(query[i] + beta);
-            }
-            const auto inverses = algebra::batch_invert(denominators);
             mcl::Fr running;
             running.clear();
             for (std::size_t i = 0; i < valid_length; ++i)
             {
-                mcl::Fr::add(running, running, inverses[i].native());
+                mcl::Fr::add(running, running, inverse[i].native());
                 out[i + 1] = FieldElement::from_native(running);
             }
             for (std::size_t i = valid_length + 1; i < domain_size; ++i)
@@ -615,6 +632,7 @@ namespace gatzk::protocol
         struct DynamicCommitmentLinearTerm
         {
             std::optional<crypto::G1Point> point;
+            const crypto::Commitment *commitment = nullptr;
             std::string label;
             FieldElement scale = FieldElement::zero();
         };
@@ -734,15 +752,59 @@ namespace gatzk::protocol
         {
             return DynamicCommitmentLinearTerm{
                 .point = std::nullopt,
+                .commitment = nullptr,
                 .label = std::move(label),
                 .scale = scale,
             };
         }
 
-        crypto::G1Point resolve_deferred_linear_commitment_point(
+        DynamicCommitmentLinearTerm linear_point_term(
+            const crypto::G1Point &point,
+            const FieldElement &scale)
+        {
+            return DynamicCommitmentLinearTerm{
+                .point = point,
+                .commitment = nullptr,
+                .label = {},
+                .scale = scale,
+            };
+        }
+
+        DynamicCommitmentLinearTerm linear_commitment_term(
+            const crypto::Commitment &commitment,
+            const FieldElement &scale)
+        {
+            return DynamicCommitmentLinearTerm{
+                .point = std::nullopt,
+                .commitment = &commitment,
+                .label = {},
+                .scale = scale,
+            };
+        }
+
+        const crypto::Commitment *find_linear_dependency_commitment(
+            const std::string &label,
+            const TraceArtifacts &trace,
+            const std::unordered_map<std::string, const crypto::Commitment *> &batch_commitments)
+        {
+            if (const auto batch_it = batch_commitments.find(label);
+                batch_it != batch_commitments.end())
+            {
+                return batch_it->second;
+            }
+            if (const auto trace_it = trace.commitments.find(label);
+                trace_it != trace.commitments.end())
+            {
+                return &trace_it->second;
+            }
+            return nullptr;
+        }
+
+        crypto::G1Point resolve_deferred_linear_evaluation_component(
             const std::vector<DynamicCommitmentLinearTerm> &terms,
             const TraceArtifacts &trace,
-            const std::unordered_map<std::string, crypto::G1Point> &batch_points,
+            const std::unordered_map<std::string, const crypto::Commitment *> &batch_commitments,
+            const crypto::KZGKeyPair &key,
             const std::string &name)
         {
             auto out = crypto::g1_zero();
@@ -753,24 +815,29 @@ namespace gatzk::protocol
                     continue;
                 }
                 const crypto::G1Point *base = nullptr;
+                crypto::G1Point dependency_component;
                 if (term.point.has_value())
                 {
                     base = &*term.point;
                 }
+                else if (term.commitment != nullptr)
+                {
+                    dependency_component =
+                        crypto::KZG::evaluation_commitment_component(
+                            *term.commitment, key);
+                    base = &dependency_component;
+                }
                 else
                 {
-                    const auto batch_it = batch_points.find(term.label);
-                    if (batch_it != batch_points.end())
+                    const auto *commitment =
+                        find_linear_dependency_commitment(
+                            term.label, trace, batch_commitments);
+                    if (commitment != nullptr)
                     {
-                        base = &batch_it->second;
-                    }
-                    else
-                    {
-                        const auto trace_it = trace.commitments.find(term.label);
-                        if (trace_it != trace.commitments.end())
-                        {
-                            base = &trace_it->second.point;
-                        }
+                        dependency_component =
+                            crypto::KZG::evaluation_commitment_component(
+                                *commitment, key);
+                        base = &dependency_component;
                     }
                 }
                 if (base == nullptr)
@@ -781,6 +848,94 @@ namespace gatzk::protocol
                 out = crypto::g1_add(out, crypto::g1_mul(*base, term.scale));
             }
             return out;
+        }
+
+        void validate_deferred_linear_evaluation_values(
+            const std::vector<DynamicCommitmentLinearTerm> &terms,
+            const Polynomial &target,
+            const TraceArtifacts &trace,
+            const std::unordered_map<std::string, const crypto::Commitment *> &batch_commitments,
+            const std::string &name)
+        {
+            if (target.basis != algebra::PolynomialBasis::Evaluation
+                || target.domain == nullptr)
+            {
+                throw std::runtime_error(
+                    "deferred linear target is not an evaluation polynomial: "
+                    + name);
+            }
+            for (const auto &term : terms)
+            {
+                // Explicit point terms have no opening material and therefore
+                // cannot participate in the element-wise source check.
+                if (term.point.has_value())
+                {
+                    return;
+                }
+            }
+
+            std::vector<const Polynomial *> dependencies;
+            dependencies.reserve(terms.size());
+            for (const auto &term : terms)
+            {
+                if (term.scale == FieldElement::zero())
+                {
+                    dependencies.push_back(nullptr);
+                    continue;
+                }
+                const auto *commitment = term.commitment != nullptr
+                    ? term.commitment
+                    : find_linear_dependency_commitment(
+                        term.label, trace, batch_commitments);
+                if (commitment == nullptr
+                    || commitment->opening_polynomial == nullptr)
+                {
+                    throw std::runtime_error(
+                        "missing polynomial dependency for deferred linear dynamic commitment "
+                        + name + ": " + term.label);
+                }
+                const auto *source = commitment->opening_polynomial.get();
+                if (source->basis != algebra::PolynomialBasis::Evaluation
+                    || source->domain == nullptr
+                    || source->size() > target.size()
+                    || source->domain->size != target.domain->size
+                    || !(source->domain->omega == target.domain->omega))
+                {
+                    throw std::runtime_error(
+                        "domain mismatch for deferred linear dynamic commitment "
+                        + name + ": " + term.label);
+                }
+                dependencies.push_back(source);
+            }
+
+            const auto &target_values = target.values();
+            for (std::size_t i = 0; i < target_values.size(); ++i)
+            {
+                auto expected = FieldElement::zero();
+                for (std::size_t term_index = 0;
+                     term_index < terms.size(); ++term_index)
+                {
+                    if (dependencies[term_index] == nullptr)
+                    {
+                        continue;
+                    }
+                    const auto &source_values =
+                        dependencies[term_index]->values();
+                    if (i >= source_values.size())
+                    {
+                        continue;
+                    }
+                    expected +=
+                        source_values[i]
+                        * terms[term_index].scale;
+                }
+                if (expected != target_values[i])
+                {
+                    throw std::runtime_error(
+                        "value mismatch for deferred linear dynamic commitment "
+                        + name + " at index " + std::to_string(i));
+                }
+            }
         }
 
         void trim_coefficients(std::vector<FieldElement> *coefficients)
@@ -963,6 +1118,18 @@ namespace gatzk::protocol
             std::vector<DynamicCommitmentLinearTerm> terms)
         {
             auto spec = column_spec(name, std::move(values), domain);
+            spec.deferred_linear_terms = std::move(terms);
+            spec.linear_commitment_derived = true;
+            return spec;
+        }
+
+        DynamicCommitmentSpec deferred_linear_column_spec(
+            const std::string &name,
+            const std::vector<FieldElement> &values,
+            const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
+            std::vector<DynamicCommitmentLinearTerm> terms)
+        {
+            auto spec = column_spec(name, values, domain);
             spec.deferred_linear_terms = std::move(terms);
             spec.linear_commitment_derived = true;
             return spec;
@@ -1307,9 +1474,6 @@ namespace gatzk::protocol
                     out.polynomial->set_zero_domain_blinder(
                         sample_trace_blinder(compiler_artifact, spec.name));
                     out.proof_local_blinded = true;
-                    out.deferred_linear_terms.clear();
-                    out.deferred_linear_commitment = false;
-                    out.linear_commitment_derived = false;
                 }
                 promote_evaluation_values_to_shared_backing(
                     &*out.polynomial);
@@ -1707,13 +1871,15 @@ namespace gatzk::protocol
             }
             if (!deferred_linear_indices.empty())
             {
-                std::unordered_map<std::string, crypto::G1Point> batch_points;
-                batch_points.reserve(prepared.size());
+                std::unordered_map<std::string, const crypto::Commitment *>
+                    batch_commitments;
+                batch_commitments.reserve(prepared.size());
                 for (const auto &item : prepared)
                 {
                     if (item.commitment_ready)
                     {
-                        batch_points.emplace(item.name, item.commitment.point);
+                        batch_commitments.emplace(
+                            item.name, &item.commitment);
                     }
                 }
                 for (const auto prepared_index : deferred_linear_indices)
@@ -1724,26 +1890,41 @@ namespace gatzk::protocol
                         throw std::runtime_error(
                             "deferred linear dynamic commitment is missing polynomial material: " + item.name);
                     }
-                    auto material = std::make_shared<Polynomial>(*item.polynomial);
-                    material->name = item.name;
-                    const auto point = timed_derived_commitment_point(
+                    const auto validation_start = Clock::now();
+                    validate_deferred_linear_evaluation_values(
+                        item.deferred_linear_terms,
+                        *item.polynomial,
+                        trace,
+                        batch_commitments,
+                        item.name);
+                    progress_note(
+                        "trace:linear_value_validation:" + item.name
+                        + ":ms="
+                        + std::to_string(
+                            elapsed_ms(validation_start, Clock::now())));
+                    const auto evaluation_component =
+                        timed_derived_commitment_point(
                         metrics,
                         [&]()
                         {
-                            return resolve_deferred_linear_commitment_point(
+                            return resolve_deferred_linear_evaluation_component(
                                 item.deferred_linear_terms,
                                 trace,
-                                batch_points,
+                                batch_commitments,
+                                key,
                                 item.name);
-                        });
-                    item.commitment = crypto::Commitment{
-                        .name = item.name,
-                        .point = point,
-                        .opening_polynomial = std::move(material),
-                    };
+                        },
+                        item.name);
+                    item.commitment =
+                        crypto::KZG::commit_evaluation_from_component(
+                            item.name,
+                            *item.polynomial,
+                            evaluation_component,
+                            key);
                     item.commitment_ready = true;
                     item.linear_commitment_derived = true;
-                    batch_points[item.name] = item.commitment.point;
+                    batch_commitments[item.name] =
+                        &item.commitment;
                 }
             }
             if (metrics != nullptr)
@@ -3520,8 +3701,15 @@ namespace gatzk::protocol
                 out.table, build_selector(real_node_count, node_domain->size), beta);
             out.edge_inverse = build_selected_inverse_column(
                 out.query, build_selector(real_edge_count, edge_domain->size), beta);
-            out.node_acc = build_route_node_accumulator(out.table, out.multiplicity, real_node_count, node_domain->size, beta);
-            out.edge_acc = build_route_edge_accumulator(out.query, real_edge_count, edge_domain->size, beta);
+            out.node_acc = build_route_node_accumulator(
+                out.node_inverse,
+                out.multiplicity,
+                real_node_count,
+                node_domain->size);
+            out.edge_acc = build_route_edge_accumulator(
+                out.edge_inverse,
+                real_edge_count,
+                edge_domain->size);
             out.total = out.node_acc[real_node_count];
             return out;
         }
@@ -3700,7 +3888,8 @@ namespace gatzk::protocol
             return multiplicity;
         }
 
-        const std::vector<FieldElement> &cached_single_lookup_table(
+        std::shared_ptr<const std::vector<FieldElement>>
+        cached_single_lookup_table_shared(
             const std::string &label,
             const std::vector<FieldElement> &values,
             std::size_t domain_size)
@@ -3713,7 +3902,7 @@ namespace gatzk::protocol
                 std::lock_guard<std::mutex> lock(cache_mutex);
                 if (const auto it = cache.find(cache_key); it != cache.end())
                 {
-                    return *it->second;
+                    return it->second;
                 }
             }
             auto packed = std::make_shared<std::vector<FieldElement>>(domain_size, FieldElement::zero());
@@ -3721,8 +3910,17 @@ namespace gatzk::protocol
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
                 const auto [it, _] = cache.emplace(cache_key, packed);
-                return *it->second;
+                return it->second;
             }
+        }
+
+        const std::vector<FieldElement> &cached_single_lookup_table(
+            const std::string &label,
+            const std::vector<FieldElement> &values,
+            std::size_t domain_size)
+        {
+            return *cached_single_lookup_table_shared(
+                label, values, domain_size);
         }
 
         const std::vector<FieldElement> &cached_pair_lookup_table(
@@ -3814,6 +4012,50 @@ namespace gatzk::protocol
             out.multiplicity = multiplicity_from_indices(indices, domain_size);
             add_metric(metrics != nullptr ? &metrics->lookup_multiplicity_ms : nullptr, stage_start);
             return out;
+        }
+
+        std::vector<FieldElement> build_single_lookup_multiplicity_for_packed_query(
+            const std::unordered_map<std::uint64_t, std::size_t> &index_by_value,
+            const std::vector<FieldElement> &query_values,
+            std::size_t domain_size,
+            std::size_t valid_count,
+            const std::string &label,
+            RunMetrics *metrics)
+        {
+            if (query_values.size() != domain_size || valid_count > domain_size)
+            {
+                throw std::runtime_error(
+                    "packed lookup query shape mismatch for " + label);
+            }
+            auto stage_start = Clock::now();
+            std::vector<std::size_t> indices(valid_count, 0);
+            for (std::size_t i = 0; i < valid_count; ++i)
+            {
+                const auto it = index_by_value.find(query_values[i].value());
+                if (it == index_by_value.end())
+                {
+                    throw std::runtime_error(
+                        "lookup query escaped static table for " + label
+                        + " value=" + query_values[i].to_string()
+                        + " table_size=" + std::to_string(index_by_value.size()));
+                }
+                indices[i] = it->second;
+            }
+            for (std::size_t i = valid_count; i < query_values.size(); ++i)
+            {
+                if (!query_values[i].is_zero())
+                {
+                    throw std::runtime_error(
+                        "packed lookup query has a nonzero inactive row for "
+                        + label);
+                }
+            }
+            add_metric(metrics != nullptr ? &metrics->lookup_query_pack_ms : nullptr, stage_start);
+            stage_start = Clock::now();
+            auto multiplicity =
+                multiplicity_from_indices(indices, domain_size);
+            add_metric(metrics != nullptr ? &metrics->lookup_multiplicity_ms : nullptr, stage_start);
+            return multiplicity;
         }
 
         struct PairLookupArtifacts
@@ -4053,6 +4295,47 @@ namespace gatzk::protocol
                 }
                 metrics->*member += std::max(0.0, total_ms - accounted_ms);
             };
+            auto profiled_logup_inverse = [&](
+                const std::vector<FieldElement> &table,
+                const std::vector<FieldElement> &query,
+                const std::vector<FieldElement> &q_table,
+                const std::vector<FieldElement> &q_query,
+                const FieldElement &beta)
+            {
+                const auto start = Clock::now();
+                auto out = build_logup_inverse_columns(
+                    table, query, q_table, q_query, beta);
+                add_metric(
+                    metrics != nullptr
+                        ? &metrics->lookup_inverse_ms
+                        : nullptr,
+                    start);
+                return out;
+            };
+            auto profiled_logup_accumulator = [&](
+                const std::vector<FieldElement> &table_inverse,
+                const std::vector<FieldElement> &query_inverse,
+                const std::vector<FieldElement> &multiplicity,
+                const std::vector<FieldElement> &q_table,
+                const std::vector<FieldElement> &q_query,
+                std::size_t active_count)
+            {
+                const auto start = Clock::now();
+                auto out =
+                    build_logup_accumulator_from_inverse_columns_with_active_count(
+                        table_inverse,
+                        query_inverse,
+                        multiplicity,
+                        q_table,
+                        q_query,
+                        active_count);
+                add_metric(
+                    metrics != nullptr
+                        ? &metrics->lookup_accumulator_ms
+                        : nullptr,
+                    start);
+                return out;
+            };
 
             auto stage_start = Clock::now();
             const auto cache_prefix = trace_cache_prefix(context);
@@ -4263,13 +4546,48 @@ namespace gatzk::protocol
                         add_metric(metrics != nullptr ? &metrics->fh_multiplicity_build_ms : nullptr, fh_stage_start);
 
                         const auto lookup_stage_start = Clock::now();
+                        std::vector<DynamicCommitmentSpec> feature_specs;
+                        feature_specs.reserve(3);
+                        feature_specs.push_back(deferred_linear_column_spec(
+                            "P_Table_feat",
+                            table_feat,
+                            domains.fh,
+                            {
+                                linear_point_term(
+                                    context.public_commitments.at(
+                                        "P_Row_feat_tbl").point,
+                                    FieldElement::one()),
+                                linear_point_term(
+                                    context.public_commitments.at(
+                                        "P_Col_feat_tbl").point,
+                                    eta_feature_index),
+                                linear_point_term(
+                                    context.public_commitments.at("P_T_H").point,
+                                    eta_feature_value),
+                            }));
+                        if (static_artifacts.full_feature_identity)
+                        {
+                            feature_specs.push_back(
+                                deferred_linear_column_spec(
+                                    "P_Query_feat",
+                                    query_feat,
+                                    domains.fh,
+                                    {
+                                        linear_label_term(
+                                            "P_Table_feat",
+                                            FieldElement::one()),
+                                    }));
+                        }
+                        else
+                        {
+                            feature_specs.push_back(column_spec(
+                                "P_Query_feat", query_feat, domains.fh));
+                        }
+                        feature_specs.push_back(column_spec(
+                            "P_m_feat", multiplicity_feat, domains.fh));
                         add_dynamic_commitment_batch(
                             trace,
-                            {
-                                column_spec("P_Table_feat", table_feat, domains.fh),
-                                column_spec("P_Query_feat", query_feat, domains.fh),
-                                column_spec("P_m_feat", multiplicity_feat, domains.fh),
-                            },
+                            std::move(feature_specs),
                             context.kzg,
                             keep_trace_payloads,
                             metrics);
@@ -4282,21 +4600,20 @@ namespace gatzk::protocol
                         trace.challenges["beta_feat"] = transcript.challenge("beta_feat");
 
                         const auto fh_accumulator_start = Clock::now();
-                        auto r_feat = build_logup_accumulator_cached_with_active_count(
-                            cache_prefix + ":fh_feat",
-                            table_feat,
-                            query_feat,
-                            multiplicity_feat,
-                            q_tbl_feat,
-                            q_qry_feat,
-                            trace.challenges.at("beta_feat"),
-                            lookup_active_transition_limit(context.dataset.num_nodes * d_in, n_nodes * d_in, domains.fh->size));
-                        auto j_feat = build_logup_inverse_columns(
+                        auto j_feat = profiled_logup_inverse(
                             table_feat,
                             query_feat,
                             q_tbl_feat,
                             q_qry_feat,
                             trace.challenges.at("beta_feat"));
+                        auto r_feat =
+                            profiled_logup_accumulator(
+                            j_feat.table,
+                            j_feat.query,
+                            multiplicity_feat,
+                            q_tbl_feat,
+                            q_qry_feat,
+                            lookup_active_transition_limit(context.dataset.num_nodes * d_in, n_nodes * d_in, domains.fh->size));
                         add_metric(metrics != nullptr ? &metrics->fh_accumulator_build_ms : nullptr, fh_accumulator_start);
                         add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, lookup_stage_start);
                         add_dynamic_commitment_batch(
@@ -4337,18 +4654,18 @@ namespace gatzk::protocol
                 add_dynamic_commitment_batch(
                     trace,
                     {
-                        column_spec(division_prefix + "Active", division.active, domains.edge),
-                        column_spec(division_prefix + "X", division.x, domains.edge),
-                        column_spec(division_prefix + "D", division.d, domains.edge),
-                        column_spec(division_prefix + "Y", division.y, domains.edge),
-                        column_spec(division_prefix + "Sigma", division.sigma, domains.edge),
-                        column_spec(division_prefix + "Zero", division.z, domains.edge),
-                        column_spec(division_prefix + "A", division.a, domains.edge),
-                        column_spec(division_prefix + "A_inv", division.a_inv, domains.edge),
-                        column_spec(division_prefix + "D_inv", division.d_inv, domains.edge),
-                        column_spec(division_prefix + "Q", division.q, domains.edge),
-                        column_spec(division_prefix + "R", division.r, domains.edge),
-                        column_spec(division_prefix + "Delta", division.delta, domains.edge),
+                        shared_column_spec(division_prefix + "Active", forward_artifacts, division.active, domains.edge),
+                        shared_column_spec(division_prefix + "X", forward_artifacts, division.x, domains.edge),
+                        shared_column_spec(division_prefix + "D", forward_artifacts, division.d, domains.edge),
+                        shared_column_spec(division_prefix + "Y", forward_artifacts, division.y, domains.edge),
+                        shared_column_spec(division_prefix + "Sigma", forward_artifacts, division.sigma, domains.edge),
+                        shared_column_spec(division_prefix + "Zero", forward_artifacts, division.z, domains.edge),
+                        shared_column_spec(division_prefix + "A", forward_artifacts, division.a, domains.edge),
+                        shared_column_spec(division_prefix + "A_inv", forward_artifacts, division.a_inv, domains.edge),
+                        shared_column_spec(division_prefix + "D_inv", forward_artifacts, division.d_inv, domains.edge),
+                        shared_column_spec(division_prefix + "Q", forward_artifacts, division.q, domains.edge),
+                        shared_column_spec(division_prefix + "R", forward_artifacts, division.r, domains.edge),
+                        shared_column_spec(division_prefix + "Delta", forward_artifacts, division.delta, domains.edge),
                     },
                     context.kzg,
                     keep_trace_payloads,
@@ -4364,7 +4681,7 @@ namespace gatzk::protocol
                 const auto &q_query = eval_data(context, selector_label);
                 const auto valid_count = static_cast<std::size_t>(std::count_if(
                     q_query.begin(), q_query.end(), [](const FieldElement &value) { return !value.is_zero(); }));
-                const auto table = cached_single_lookup_table(
+                const auto table = cached_single_lookup_table_shared(
                     "signed-div-range", context.tables.range, domains.edge->size);
                 const auto active_count = std::max(context.tables.range.size(), valid_count);
                 for (const auto *value_name : {"A", "DMinus1", "Q", "R", "Delta"})
@@ -4380,20 +4697,36 @@ namespace gatzk::protocol
                             division_prefix, value_name, limb, "Query");
                         const auto multiplicity_label = signed_division_range_label(
                             division_prefix, value_name, limb, "m");
-                        const auto artifacts = build_single_lookup_artifacts(
-                            *range_index,
-                            limb_columns[limb],
-                            domains.edge->size,
-                            valid_count,
-                            limb_label,
-                            metrics);
+                        const auto multiplicity =
+                            std::make_shared<const std::vector<FieldElement>>(
+                                build_single_lookup_multiplicity_for_packed_query(
+                                    *range_index,
+                                    limb_columns[limb],
+                                    domains.edge->size,
+                                    valid_count,
+                                    limb_label,
+                                    metrics));
                         add_dynamic_commitment_batch(
                             trace,
                             {
-                                column_spec(limb_label, limb_columns[limb], domains.edge),
-                                column_spec(table_label, table, domains.edge),
-                                column_spec(query_label, artifacts.query, domains.edge),
-                                column_spec(multiplicity_label, artifacts.multiplicity, domains.edge),
+                                shared_column_spec(
+                                    limb_label,
+                                    forward_artifacts,
+                                    limb_columns[limb],
+                                    domains.edge),
+                                column_spec(
+                                    table_label,
+                                    table,
+                                    domains.edge),
+                                shared_column_spec(
+                                    query_label,
+                                    forward_artifacts,
+                                    limb_columns[limb],
+                                    domains.edge),
+                                column_spec(
+                                    multiplicity_label,
+                                    multiplicity,
+                                    domains.edge),
                             },
                             context.kzg,
                             keep_trace_payloads,
@@ -4407,16 +4740,15 @@ namespace gatzk::protocol
                             division_prefix, value_name, limb);
                         const auto beta = transcript.challenge(beta_name);
                         trace.challenges[beta_name] = beta;
-                        auto inverses = build_logup_inverse_columns(
-                            table, artifacts.query, q_tbl_r, q_query, beta);
-                        auto accumulator = build_logup_accumulator_cached_with_active_count(
-                            limb_label,
-                            table,
-                            artifacts.query,
-                            artifacts.multiplicity,
+                        auto inverses = profiled_logup_inverse(
+                            *table, limb_columns[limb], q_tbl_r, q_query, beta);
+                        auto accumulator =
+                            profiled_logup_accumulator(
+                            inverses.table,
+                            inverses.query,
+                            *multiplicity,
                             q_tbl_r,
                             q_query,
-                            beta,
                             active_count);
                         const auto j_table_label = signed_division_range_label(
                             division_prefix, value_name, limb, "J_tbl");
@@ -4600,9 +4932,10 @@ namespace gatzk::protocol
                         metrics);
                 }
                 while (witness_commitment.point == crypto::g1_zero());
-                auto proof_commitment = commit_proof_polynomial(
-                    proof_label,
-                    proof_polynomial,
+                auto proof_commitment =
+                    commit_reblinded_evaluation_from_anchor(
+                    anchor_it->second,
+                    proof_label, proof_polynomial,
                     context.kzg,
                     metrics);
 
@@ -4651,6 +4984,7 @@ namespace gatzk::protocol
                     std::string witness_label;
                     Polynomial proof_polynomial;
                     Polynomial witness_polynomial;
+                    crypto::Commitment proof_commitment;
                     crypto::Commitment witness_commitment;
                 };
 
@@ -4694,6 +5028,11 @@ namespace gatzk::protocol
                             witness_label, witness_polynomial, context.kzg, metrics);
                     }
                     while (witness_commitment.point == crypto::g1_zero());
+                    auto proof_commitment =
+                        commit_reblinded_evaluation_from_anchor(
+                            anchor_it->second,
+                            proof_label, proof_polynomial,
+                            context.kzg, metrics);
 
                     pending.push_back(PendingModelReblind{
                         .anchor_label = anchor_label,
@@ -4701,24 +5040,15 @@ namespace gatzk::protocol
                         .witness_label = witness_label,
                         .proof_polynomial = std::move(proof_polynomial),
                         .witness_polynomial = std::move(witness_polynomial),
+                        .proof_commitment = std::move(proof_commitment),
                         .witness_commitment = std::move(witness_commitment),
                     });
                 }
 
-                std::vector<std::pair<std::string, const Polynomial *>> proof_polynomials;
-                proof_polynomials.reserve(pending.size());
-                for (const auto &entry : pending)
-                {
-                    proof_polynomials.push_back(
-                        {entry.proof_label, &entry.proof_polynomial});
-                }
-                auto proof_commitments = commit_proof_polynomial_batch(
-                    proof_polynomials, context.kzg, metrics);
-
                 for (std::size_t index = 0; index < pending.size(); ++index)
                 {
                     auto &entry = pending[index];
-                    auto &proof_commitment = proof_commitments[index];
+                    auto &proof_commitment = entry.proof_commitment;
                     trace.polynomial_domains[entry.proof_label] = domain->name;
                     trace.polynomial_domains[entry.witness_label] = domain->name;
                     trace.polynomials.emplace(
@@ -5042,8 +5372,36 @@ namespace gatzk::protocol
                 add_dynamic_commitment_batch(
                     trace,
                     {
-                        column_spec(prefix + "Table_src", padded_column(src_table, domains.n->size), domains.n),
-                        column_spec(prefix + "Query_src", padded_column(src_query, domains.edge->size), domains.edge),
+                        deferred_linear_column_spec(
+                            prefix + "Table_src",
+                            padded_column(src_table, domains.n->size),
+                            domains.n,
+                            {
+                                linear_commitment_term(
+                                    context.public_commitments.at("P_I"),
+                                    FieldElement::one()),
+                                linear_label_term(
+                                    prefix + "E_src",
+                                    eta_src_powers[1]),
+                                linear_label_term(
+                                    prefix + "H_star",
+                                    eta_src_powers[2]),
+                            }),
+                        deferred_linear_column_spec(
+                            prefix + "Query_src",
+                            padded_column(src_query, domains.edge->size),
+                            domains.edge,
+                            {
+                                linear_commitment_term(
+                                    context.public_commitments.at("P_src"),
+                                    FieldElement::one()),
+                                linear_label_term(
+                                    prefix + "E_src_edge",
+                                    eta_src_powers[1]),
+                                linear_label_term(
+                                    prefix + "H_src_star_edge",
+                                    eta_src_powers[2]),
+                            }),
                         column_spec(prefix + "m_src", padded_column(src_multiplicity_template, domains.n->size), domains.n),
                     },
                     context.kzg,
@@ -5107,8 +5465,32 @@ namespace gatzk::protocol
                 add_dynamic_commitment_batch(
                     trace,
                     {
-                        column_spec(prefix + "Table_L", table_l, domains.edge),
-                        column_spec(prefix + "Query_L", query_l, domains.edge),
+                        deferred_linear_column_spec(
+                            prefix + "Table_L",
+                            table_l,
+                            domains.edge,
+                            {
+                                linear_commitment_term(
+                                    context.public_commitments.at(
+                                        "P_T_L_x"),
+                                    FieldElement::one()),
+                                linear_commitment_term(
+                                    context.public_commitments.at(
+                                        "P_T_L_y"),
+                                    eta_l),
+                            }),
+                        deferred_linear_column_spec(
+                            prefix + "Query_L",
+                            query_l,
+                            domains.edge,
+                            {
+                                linear_label_term(
+                                    prefix + "S",
+                                    FieldElement::one()),
+                                linear_label_term(
+                                    prefix + "Z",
+                                    eta_l),
+                            }),
                         column_spec(prefix + "m_L", m_l, domains.edge),
                     },
                     context.kzg,
@@ -5121,15 +5503,14 @@ namespace gatzk::protocol
                 }
                 const auto beta_l = transcript.challenge("beta_L_h" + std::to_string(head_index));
                 trace.challenges["beta_L_h" + std::to_string(head_index)] = beta_l;
-                auto j_l = build_logup_inverse_columns(table_l, query_l, q_tbl_l, q_qry_l, beta_l);
-                auto r_l = build_logup_accumulator_cached_with_active_count(
-                    head_cache_prefix + ":lrelu",
-                    table_l,
-                    query_l,
-                    m_l,
+                auto j_l = profiled_logup_inverse(table_l, query_l, q_tbl_l, q_qry_l, beta_l);
+                auto r_l =
+                    profiled_logup_accumulator(
+                        j_l.table,
+                        j_l.query,
+                        m_l,
                     q_tbl_l,
                     q_qry_l,
-                    beta_l,
                     lookup_active_transition_limit(context.tables.lrelu.size(), n_edges, domains.edge->size));
                 add_dynamic_commitment_batch(
                     trace,
@@ -5179,15 +5560,14 @@ namespace gatzk::protocol
                 }
                 const auto beta_r = transcript.challenge("beta_R_h" + std::to_string(head_index));
                 trace.challenges["beta_R_h" + std::to_string(head_index)] = beta_r;
-                auto j_r = build_logup_inverse_columns(table_r, query_r, q_tbl_r, q_qry_r, beta_r);
-                auto r_r = build_logup_accumulator_cached_with_active_count(
-                    head_cache_prefix + ":range",
-                    table_r,
-                    query_r,
-                    m_r,
+                auto j_r = profiled_logup_inverse(table_r, query_r, q_tbl_r, q_qry_r, beta_r);
+                auto r_r =
+                    profiled_logup_accumulator(
+                        j_r.table,
+                        j_r.query,
+                        m_r,
                     q_tbl_r,
                     q_qry_r,
-                    beta_r,
                     lookup_active_transition_limit(context.tables.range.size(), n_edges, domains.edge->size));
                 add_dynamic_commitment_batch(
                     trace,
@@ -5225,8 +5605,32 @@ namespace gatzk::protocol
                 add_dynamic_commitment_batch(
                     trace,
                     {
-                        column_spec(prefix + "Table_exp", table_exp, domains.edge),
-                        column_spec(prefix + "Query_exp", query_exp, domains.edge),
+                        deferred_linear_column_spec(
+                            prefix + "Table_exp",
+                            table_exp,
+                            domains.edge,
+                            {
+                                linear_commitment_term(
+                                    context.public_commitments.at(
+                                        "P_T_exp_x"),
+                                    FieldElement::one()),
+                                linear_commitment_term(
+                                    context.public_commitments.at(
+                                        "P_T_exp_y"),
+                                    eta_exp),
+                            }),
+                        deferred_linear_column_spec(
+                            prefix + "Query_exp",
+                            query_exp,
+                            domains.edge,
+                            {
+                                linear_label_term(
+                                    prefix + "Delta",
+                                    FieldElement::one()),
+                                linear_label_term(
+                                    prefix + "U",
+                                    eta_exp),
+                            }),
                         column_spec(prefix + "m_exp", m_exp, domains.edge),
                     },
                     context.kzg,
@@ -5239,15 +5643,14 @@ namespace gatzk::protocol
                 }
                 const auto beta_exp = transcript.challenge("beta_exp_h" + std::to_string(head_index));
                 trace.challenges["beta_exp_h" + std::to_string(head_index)] = beta_exp;
-                auto j_exp = build_logup_inverse_columns(table_exp, query_exp, q_tbl_exp, q_qry_exp, beta_exp);
-                auto r_exp = build_logup_accumulator_cached_with_active_count(
-                    head_cache_prefix + ":exp",
-                    table_exp,
-                    query_exp,
-                    m_exp,
+                auto j_exp = profiled_logup_inverse(table_exp, query_exp, q_tbl_exp, q_qry_exp, beta_exp);
+                auto r_exp =
+                    profiled_logup_accumulator(
+                        j_exp.table,
+                        j_exp.query,
+                        m_exp,
                     q_tbl_exp,
                     q_qry_exp,
-                    beta_exp,
                     lookup_active_transition_limit(context.tables.exp.size(), n_edges, domains.edge->size));
                 add_dynamic_commitment_batch(
                     trace,
@@ -5380,8 +5783,30 @@ namespace gatzk::protocol
                 add_dynamic_commitment_batch(
                     trace,
                     {
-                        column_spec(prefix + "Table_t", padded_column(t_table, domains.n->size), domains.n),
-                        column_spec(prefix + "Query_t", padded_column(t_query, domains.edge->size), domains.edge),
+                        deferred_linear_column_spec(
+                            prefix + "Table_t",
+                            padded_column(t_table, domains.n->size),
+                            domains.n,
+                            {
+                                linear_commitment_term(
+                                    context.public_commitments.at("P_I"),
+                                    FieldElement::one()),
+                                linear_label_term(
+                                    prefix + "T_psq",
+                                    eta_t_powers[1]),
+                            }),
+                        deferred_linear_column_spec(
+                            prefix + "Query_t",
+                            padded_column(t_query, domains.edge->size),
+                            domains.edge,
+                            {
+                                linear_commitment_term(
+                                    context.public_commitments.at("P_dst"),
+                                    FieldElement::one()),
+                                linear_label_term(
+                                    prefix + "T_psq_edge",
+                                    eta_t_powers[1]),
+                            }),
                         column_spec(prefix + "m_t", padded_column(dst_multiplicity_template, domains.n->size), domains.n),
                     },
                     context.kzg,
@@ -5490,8 +5915,32 @@ namespace gatzk::protocol
                 add_dynamic_commitment_batch(
                     trace,
                     {
-                        column_spec(prefix + "Table_ELU", table_elu, domains.edge),
-                        column_spec(prefix + "Query_ELU", query_elu, domains.edge),
+                        deferred_linear_column_spec(
+                            prefix + "Table_ELU",
+                            table_elu,
+                            domains.edge,
+                            {
+                                linear_commitment_term(
+                                    context.public_commitments.at(
+                                        "P_T_ELU_x"),
+                                    FieldElement::one()),
+                                linear_commitment_term(
+                                    context.public_commitments.at(
+                                        "P_T_ELU_y"),
+                                    eta_elu),
+                            }),
+                        deferred_linear_column_spec(
+                            prefix + "Query_ELU",
+                            query_elu,
+                            domains.edge,
+                            {
+                                linear_label_term(
+                                    prefix + "H_ELU_in_flat",
+                                    FieldElement::one()),
+                                linear_label_term(
+                                    prefix + "H_agg_flat",
+                                    eta_elu),
+                            }),
                         column_spec(prefix + "m_ELU", m_elu, domains.edge),
                     },
                     context.kzg,
@@ -5504,15 +5953,14 @@ namespace gatzk::protocol
                 }
                 const auto beta_elu = transcript.challenge("beta_ELU_h" + std::to_string(head_index));
                 trace.challenges["beta_ELU_h" + std::to_string(head_index)] = beta_elu;
-                auto j_elu = build_logup_inverse_columns(table_elu, query_elu, q_tbl_elu, q_qry_elu, beta_elu);
-                auto r_elu = build_logup_accumulator_cached_with_active_count(
-                    head_cache_prefix + ":elu",
-                    table_elu,
-                    query_elu,
-                    m_elu,
+                auto j_elu = profiled_logup_inverse(table_elu, query_elu, q_tbl_elu, q_qry_elu, beta_elu);
+                auto r_elu =
+                    profiled_logup_accumulator(
+                        j_elu.table,
+                        j_elu.query,
+                        m_elu,
                     q_tbl_elu,
                     q_qry_elu,
-                    beta_elu,
                     lookup_active_transition_limit(context.tables.elu.size(), n_nodes * head_dim, domains.edge->size));
                 add_dynamic_commitment_batch(
                     trace,
@@ -5558,8 +6006,34 @@ namespace gatzk::protocol
                 add_dynamic_commitment_batch(
                     trace,
                     {
-                        column_spec(prefix + "Table_dst", padded_column(dst_table, domains.n->size), domains.n),
-                        column_spec(prefix + "Query_dst", padded_column(dst_query, domains.edge->size), domains.edge),
+                        deferred_linear_column_spec(
+                            prefix + "Table_dst",
+                            padded_column(dst_table, domains.n->size),
+                            domains.n,
+                            {
+                                linear_commitment_term(
+                                    context.public_commitments.at("P_I"),
+                                    FieldElement::one()),
+                                linear_label_term(prefix + "E_dst", eta_dst_powers[1]),
+                                linear_label_term(prefix + "M", eta_dst_powers[2]),
+                                linear_label_term(prefix + "Sum", eta_dst_powers[3]),
+                                linear_label_term(prefix + "inv", eta_dst_powers[4]),
+                                linear_label_term(prefix + "H_agg_star", eta_dst_powers[5]),
+                            }),
+                        deferred_linear_column_spec(
+                            prefix + "Query_dst",
+                            padded_column(dst_query, domains.edge->size),
+                            domains.edge,
+                            {
+                                linear_commitment_term(
+                                    context.public_commitments.at("P_dst"),
+                                    FieldElement::one()),
+                                linear_label_term(prefix + "E_dst_edge", eta_dst_powers[1]),
+                                linear_label_term(prefix + "M_edge", eta_dst_powers[2]),
+                                linear_label_term(prefix + "Sum_edge", eta_dst_powers[3]),
+                                linear_label_term(prefix + "inv_edge", eta_dst_powers[4]),
+                                linear_label_term(prefix + "H_agg_star_edge", eta_dst_powers[5]),
+                            }),
                         column_spec(prefix + "m_dst", padded_column(dst_multiplicity_template, domains.n->size), domains.n),
                     },
                     context.kzg,
@@ -6034,8 +6508,30 @@ namespace gatzk::protocol
                     add_dynamic_commitment_batch(
                         trace,
                         {
-                            column_spec(prefix + "Table_src", padded_column(out_src_table, domains.n->size), domains.n),
-                            column_spec(prefix + "Query_src", padded_column(out_src_query, domains.edge->size), domains.edge),
+                            deferred_linear_column_spec(
+                                prefix + "Table_src",
+                                padded_column(out_src_table, domains.n->size),
+                                domains.n,
+                                {
+                                    linear_commitment_term(
+                                        context.public_commitments.at("P_I"),
+                                        FieldElement::one()),
+                                    linear_label_term(
+                                        prefix + "E_src",
+                                        eta_src_out_powers[1]),
+                                }),
+                            deferred_linear_column_spec(
+                                prefix + "Query_src",
+                                padded_column(out_src_query, domains.edge->size),
+                                domains.edge,
+                                {
+                                    linear_commitment_term(
+                                        context.public_commitments.at("P_src"),
+                                        FieldElement::one()),
+                                    linear_label_term(
+                                        prefix + "E_src_edge",
+                                        eta_src_out_powers[1]),
+                                }),
                             column_spec(prefix + "m_src", padded_column(src_multiplicity_template, domains.n->size), domains.n),
                         },
                         context.kzg,
@@ -6088,13 +6584,35 @@ namespace gatzk::protocol
                         const std::vector<FieldElement> &multiplicity,
                         const std::vector<FieldElement> &q_table,
                         const std::vector<FieldElement> &q_query,
+                        std::vector<DynamicCommitmentLinearTerm> table_terms,
+                        std::vector<DynamicCommitmentLinearTerm> query_terms,
                         std::size_t active_count)
                     {
+                        auto table_spec = table_terms.empty()
+                            ? column_spec(
+                                prefix + "Table_" + suffix,
+                                table,
+                                domains.edge)
+                            : deferred_linear_column_spec(
+                                prefix + "Table_" + suffix,
+                                table,
+                                domains.edge,
+                                std::move(table_terms));
+                        auto query_spec = query_terms.empty()
+                            ? column_spec(
+                                prefix + "Query_" + suffix,
+                                query,
+                                domains.edge)
+                            : deferred_linear_column_spec(
+                                prefix + "Query_" + suffix,
+                                query,
+                                domains.edge,
+                                std::move(query_terms));
                         add_dynamic_commitment_batch(
                             trace,
                             {
-                                column_spec(prefix + "Table_" + suffix, table, domains.edge),
-                                column_spec(prefix + "Query_" + suffix, query, domains.edge),
+                                std::move(table_spec),
+                                std::move(query_spec),
                                 column_spec(prefix + "m_" + suffix, multiplicity, domains.edge),
                             },
                             context.kzg,
@@ -6107,15 +6625,14 @@ namespace gatzk::protocol
                         }
                         const auto beta = transcript.challenge(beta_name);
                         trace.challenges[beta_name] = beta;
-                        auto inverses = build_logup_inverse_columns(table, query, q_table, q_query, beta);
-                        auto accumulator = build_logup_accumulator_cached_with_active_count(
-                            head_cache_prefix + ":" + suffix,
-                            table,
-                            query,
-                            multiplicity,
+                        auto inverses = profiled_logup_inverse(table, query, q_table, q_query, beta);
+                        auto accumulator =
+                            profiled_logup_accumulator(
+                                inverses.table,
+                                inverses.query,
+                                multiplicity,
                             q_table,
                             q_query,
-                            beta,
                             active_count);
                         add_dynamic_commitment_batch(
                             trace,
@@ -6166,6 +6683,22 @@ namespace gatzk::protocol
                         out_l_artifacts->multiplicity,
                         q_tbl_l,
                         q_qry_l,
+                        {
+                            linear_commitment_term(
+                                context.public_commitments.at("P_T_L_x"),
+                                FieldElement::one()),
+                            linear_commitment_term(
+                                context.public_commitments.at("P_T_L_y"),
+                                eta_l_out),
+                        },
+                        {
+                            linear_label_term(
+                                prefix + "S",
+                                FieldElement::one()),
+                            linear_label_term(
+                                prefix + "Z",
+                                eta_l_out),
+                        },
                         lookup_active_transition_limit(context.tables.lrelu.size(), n_edges, domains.edge->size));
 
                     auto out_s_max = build_first_zero_group_selector(out_delta, edge_groups_by_dst, domains.edge->size);
@@ -6202,6 +6735,8 @@ namespace gatzk::protocol
                         out_r_artifacts->multiplicity,
                         q_tbl_r,
                         q_qry_r,
+                        {},
+                        {},
                         lookup_active_transition_limit(context.tables.range.size(), n_edges, domains.edge->size));
 
                     transcript.absorb_commitment(prefix + "Delta", trace.commitments.at(prefix + "Delta").point);
@@ -6235,6 +6770,22 @@ namespace gatzk::protocol
                         out_exp_artifacts->multiplicity,
                         q_tbl_exp,
                         q_qry_exp,
+                        {
+                            linear_commitment_term(
+                                context.public_commitments.at("P_T_exp_x"),
+                                FieldElement::one()),
+                            linear_commitment_term(
+                                context.public_commitments.at("P_T_exp_y"),
+                                eta_exp_out),
+                        },
+                        {
+                            linear_label_term(
+                                prefix + "Delta",
+                                FieldElement::one()),
+                            linear_label_term(
+                                prefix + "U",
+                                eta_exp_out),
+                        },
                         lookup_active_transition_limit(context.tables.exp.size(), n_edges, domains.edge->size));
 
                     const auto lambda_out = transcript.challenge(output_challenge_name("lambda_out", head_index));
@@ -6341,8 +6892,30 @@ namespace gatzk::protocol
                     add_dynamic_commitment_batch(
                         trace,
                         {
-                            column_spec(prefix + "Table_t", padded_column(out_t_table, domains.n->size), domains.n),
-                            column_spec(prefix + "Query_t", padded_column(out_t_query, domains.edge->size), domains.edge),
+                            deferred_linear_column_spec(
+                                prefix + "Table_t",
+                                padded_column(out_t_table, domains.n->size),
+                                domains.n,
+                                {
+                                    linear_commitment_term(
+                                        context.public_commitments.at("P_I"),
+                                        FieldElement::one()),
+                                    linear_label_term(
+                                        prefix + "T",
+                                        eta_t_out_powers[1]),
+                                }),
+                            deferred_linear_column_spec(
+                                prefix + "Query_t",
+                                padded_column(out_t_query, domains.edge->size),
+                                domains.edge,
+                                {
+                                    linear_commitment_term(
+                                        context.public_commitments.at("P_dst"),
+                                        FieldElement::one()),
+                                    linear_label_term(
+                                        prefix + "T_edge",
+                                        eta_t_out_powers[1]),
+                                }),
                             column_spec(prefix + "m_t", padded_column(dst_multiplicity_template, domains.n->size), domains.n),
                         },
                         context.kzg,
@@ -6488,8 +7061,34 @@ namespace gatzk::protocol
                     add_dynamic_commitment_batch(
                         trace,
                         {
-                            column_spec(prefix + "Table_dst", padded_column(out_dst_table, domains.n->size), domains.n),
-                            column_spec(prefix + "Query_dst", padded_column(out_dst_query, domains.edge->size), domains.edge),
+                            deferred_linear_column_spec(
+                                prefix + "Table_dst",
+                                padded_column(out_dst_table, domains.n->size),
+                                domains.n,
+                                {
+                                    linear_commitment_term(
+                                        context.public_commitments.at("P_I"),
+                                        FieldElement::one()),
+                                    linear_label_term(prefix + "E_dst", eta_dst_out_powers[1]),
+                                    linear_label_term(prefix + "M", eta_dst_out_powers[2]),
+                                    linear_label_term(prefix + "Sum", eta_dst_out_powers[3]),
+                                    linear_label_term(prefix + "inv", eta_dst_out_powers[4]),
+                                    linear_label_term(prefix + "Y_star", eta_dst_out_powers[5]),
+                                }),
+                            deferred_linear_column_spec(
+                                prefix + "Query_dst",
+                                padded_column(out_dst_query, domains.edge->size),
+                                domains.edge,
+                                {
+                                    linear_commitment_term(
+                                        context.public_commitments.at("P_dst"),
+                                        FieldElement::one()),
+                                    linear_label_term(prefix + "E_dst_edge", eta_dst_out_powers[1]),
+                                    linear_label_term(prefix + "M_edge", eta_dst_out_powers[2]),
+                                    linear_label_term(prefix + "Sum_edge", eta_dst_out_powers[3]),
+                                    linear_label_term(prefix + "inv_edge", eta_dst_out_powers[4]),
+                                    linear_label_term(prefix + "Y_star_edge", eta_dst_out_powers[5]),
+                                }),
                             column_spec(prefix + "m_dst", padded_column(dst_multiplicity_template, domains.n->size), domains.n),
                         },
                         context.kzg,

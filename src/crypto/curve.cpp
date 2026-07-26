@@ -16,6 +16,9 @@
 #include <vector>
 
 #include "gatzk/util/route2.hpp"
+#define GLV2 GATZK_UNUSED_GLV2
+#include "../../third_party/mcl/src/glv.hpp"
+#undef GLV2
 
 namespace gatzk::crypto
 {
@@ -199,6 +202,119 @@ namespace gatzk::crypto
             return pool;
         }
 
+        struct StableBaseSliceKey
+        {
+            const G1Point* points = nullptr;
+            std::size_t count = 0;
+
+            bool operator==(const StableBaseSliceKey& other) const
+            {
+                return points == other.points && count == other.count;
+            }
+        };
+
+        struct StableBaseSliceKeyHash
+        {
+            std::size_t operator()(const StableBaseSliceKey& key) const
+            {
+                auto hash = static_cast<std::size_t>(
+                    reinterpret_cast<std::uintptr_t>(key.points));
+                hash ^= key.count
+                    + 0x9e3779b9U + (hash << 6U) + (hash >> 2U);
+                return hash;
+            }
+        };
+
+        class StableBaseGLVCache
+        {
+        public:
+            std::shared_ptr<const std::vector<mcl::G1>> get_or_prepare(
+                const G1Point* points,
+                std::size_t count)
+            {
+                constexpr std::size_t kMinPreparedSlice = 128;
+                constexpr std::size_t kMaxPreparedSlice = 4096;
+                constexpr std::size_t kMaxExpandedPointCount = 1ULL << 20;
+                if (points == nullptr
+                    || count < kMinPreparedSlice
+                    || count > kMaxPreparedSlice)
+                {
+                    return nullptr;
+                }
+
+                const StableBaseSliceKey key{
+                    .points = points,
+                    .count = count,
+                };
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    auto [it, inserted] = entries_.try_emplace(key);
+                    if (inserted)
+                    {
+                        it->second.seen = true;
+                        return nullptr;
+                    }
+                    if (it->second.prepared != nullptr)
+                    {
+                        return it->second.prepared;
+                    }
+                    if (it->second.preparing
+                        || expanded_point_count_ + count * 2
+                            > kMaxExpandedPointCount)
+                    {
+                        return nullptr;
+                    }
+                    it->second.preparing = true;
+                }
+
+                auto prepared =
+                    std::make_shared<std::vector<mcl::G1>>(count * 2);
+                auto* native_points = const_cast<mcl::G1*>(
+                    reinterpret_cast<const mcl::G1*>(points));
+                mcl::G1::normalizeVec(
+                    prepared->data(),
+                    native_points,
+                    count);
+                for (std::size_t i = 0; i < count; ++i)
+                {
+                    mcl::GLV1::mulLambda(
+                        (*prepared)[count + i],
+                        (*prepared)[i]);
+                }
+
+                std::lock_guard<std::mutex> lock(mutex_);
+                auto& entry = entries_.at(key);
+                if (entry.prepared == nullptr)
+                {
+                    expanded_point_count_ += prepared->size();
+                    entry.prepared = std::move(prepared);
+                }
+                entry.preparing = false;
+                return entry.prepared;
+            }
+
+        private:
+            struct Entry
+            {
+                bool seen = false;
+                bool preparing = false;
+                std::shared_ptr<const std::vector<mcl::G1>> prepared;
+            };
+
+            std::mutex mutex_;
+            std::unordered_map<
+                StableBaseSliceKey,
+                Entry,
+                StableBaseSliceKeyHash> entries_;
+            std::size_t expanded_point_count_ = 0;
+        };
+
+        StableBaseGLVCache& stable_base_glv_cache()
+        {
+            static StableBaseGLVCache cache;
+            return cache;
+        }
+
         struct ScalarKeyHash
         {
             std::size_t operator()(const ScalarKey& key) const
@@ -364,7 +480,7 @@ namespace gatzk::crypto
         }
         else if (scalar_count >= (1ULL << 13))
         {
-            by_size = 4;
+            by_size = 16;
         }
         else if (scalar_count >= 256)
         {
@@ -377,123 +493,75 @@ namespace gatzk::crypto
         return std::max<std::size_t>(1, std::min(cpu_count, by_size));
     }
 
-    std::size_t pippenger_window_bits(std::size_t count)
-    {
-        if (count >= (1ULL << 20))
-        {
-            return 13;
-        }
-        if (count >= (1ULL << 18))
-        {
-            return 12;
-        }
-        if (count >= (1ULL << 16))
-        {
-            return 11;
-        }
-        if (count >= (1ULL << 14))
-        {
-            return 10;
-        }
-        if (count >= (1ULL << 12))
-        {
-            return 9;
-        }
-        if (count >= (1ULL << 10))
-        {
-            return 8;
-        }
-        return 7;
-    }
-
-    std::uint32_t scalar_window_digit(
-        const ScalarKey& key,
-        std::size_t bit_offset,
-        std::size_t window_bits)
-    {
-        std::uint64_t word = 0;
-        const auto byte_offset = bit_offset / 8;
-        const auto bit_shift = bit_offset % 8;
-        for (std::size_t i = 0; i < 8 && byte_offset + i < key.bytes.size(); ++i)
-        {
-            word |= static_cast<std::uint64_t>(key.bytes[byte_offset + i]) << (8U * i);
-        }
-        const auto mask = (std::uint64_t{1} << window_bits) - 1U;
-        return static_cast<std::uint32_t>((word >> bit_shift) & mask);
-    }
-
-    bool should_use_pippenger_msm(std::size_t count)
-    {
-        return util::route2_options().fast_msm && count >= (1ULL << 18);
-    }
-
-    void pippenger_msm_single(
-        mcl::G1& out,
-        const G1Point* points,
-        const algebra::FieldElement* scalars,
-        std::size_t count)
-    {
-        out.clear();
-        if (count == 0)
-        {
-            return;
-        }
-        const auto window_bits = pippenger_window_bits(count);
-        const auto bucket_count = std::size_t{1} << window_bits;
-        constexpr std::size_t kScalarBits = 256;
-        const auto window_count = (kScalarBits + window_bits - 1U) / window_bits;
-
-        std::vector<ScalarKey> scalar_keys;
-        scalar_keys.reserve(count);
-        for (std::size_t i = 0; i < count; ++i)
-        {
-            scalar_keys.push_back(scalar_key(scalars[i]));
-        }
-
-        std::vector<mcl::G1> buckets(bucket_count);
-        bool first_window = true;
-        for (std::size_t window = window_count; window-- > 0;)
-        {
-            if (!first_window)
-            {
-                for (std::size_t bit = 0; bit < window_bits; ++bit)
-                {
-                    mcl::G1::dbl(out, out);
-                }
-            }
-            first_window = false;
-
-            for (auto& bucket : buckets)
-            {
-                bucket.clear();
-            }
-            const auto bit_offset = window * window_bits;
-            for (std::size_t i = 0; i < count; ++i)
-            {
-                const auto digit = scalar_window_digit(scalar_keys[i], bit_offset, window_bits);
-                if (digit != 0)
-                {
-                    mcl::G1::add(buckets[digit], buckets[digit], points[i].value);
-                }
-            }
-
-            mcl::G1 running;
-            running.clear();
-            for (std::size_t digit = bucket_count; digit-- > 1;)
-            {
-                mcl::G1::add(running, running, buckets[digit]);
-                mcl::G1::add(out, out, running);
-            }
-        }
-    }
-
     void mcl_mul_vec(
         mcl::G1& out,
         const G1Point* points,
         const algebra::FieldElement* scalars,
-        std::size_t count)
+        std::size_t count,
+        bool stable_srs_bases)
     {
         static_assert(sizeof(G1Point) == sizeof(mcl::G1), "G1Point must wrap a single mcl::G1");
+        if (stable_srs_bases)
+        {
+            const auto prepared =
+                stable_base_glv_cache().get_or_prepare(points, count);
+            if (prepared != nullptr)
+            {
+                const auto split_count = count * mcl::GLV1::splitN;
+                const auto unit_count = mcl::Fr::getUnitSize();
+                thread_local std::vector<mcl::G1> signed_points;
+                thread_local std::vector<mcl::Unit> split_scalars;
+                signed_points.assign(
+                    prepared->begin(),
+                    prepared->end());
+                split_scalars.resize(split_count * unit_count);
+                mpz_class scalar;
+                mpz_class split[mcl::GLV1::splitN];
+                for (std::size_t i = 0; i < count; ++i)
+                {
+                    bool ok = false;
+                    scalars[i].native().getMpz(&ok, scalar);
+                    if (!ok)
+                    {
+                        throw std::runtime_error(
+                            "failed to export scalar for stable-base GLV MSM");
+                    }
+                    mcl::GLV1::split(split, scalar);
+                    for (std::size_t part = 0;
+                         part < mcl::GLV1::splitN; ++part)
+                    {
+                        const auto index = part * count + i;
+                        if (split[part] < 0)
+                        {
+                            split[part] = -split[part];
+                            mcl::G1::neg(
+                                signed_points[index],
+                                signed_points[index]);
+                        }
+                        mcl::gmp::getArray(
+                            &ok,
+                            split_scalars.data() + index * unit_count,
+                            unit_count,
+                            split[part]);
+                        if (!ok)
+                        {
+                            throw std::runtime_error(
+                                "failed to split scalar for stable-base GLV MSM");
+                        }
+                    }
+                }
+                mcl::ec::mulVecLong(
+                    out,
+                    signed_points.data(),
+                    split_scalars.data(),
+                    unit_count,
+                    unit_count,
+                    split_count,
+                    0,
+                    false);
+                return;
+            }
+        }
         auto* native_points = const_cast<mcl::G1*>(reinterpret_cast<const mcl::G1*>(points));
         const auto* native_scalars = algebra::FieldElement::native_array_data(scalars);
         mcl::G1::mulVec(out, native_points, native_scalars, count);
@@ -503,16 +571,15 @@ namespace gatzk::crypto
         mcl::G1& out,
         const G1Point* points,
         const algebra::FieldElement* scalars,
-        std::size_t count)
+        std::size_t count,
+        bool stable_srs_bases)
     {
-        if (should_use_pippenger_msm(count))
-        {
-            pippenger_msm_single(out, points, scalars, count);
-        }
-        else
-        {
-            mcl_mul_vec(out, points, scalars, count);
-        }
+        mcl_mul_vec(
+            out,
+            points,
+            scalars,
+            count,
+            stable_srs_bases);
     }
 
     void msm_execute_chunked(
@@ -520,14 +587,20 @@ namespace gatzk::crypto
         const G1Point* points,
         const algebra::FieldElement* scalars,
         std::size_t count,
-        std::size_t worker_count)
+        std::size_t worker_count,
+        bool stable_srs_bases)
     {
         if (worker_count <= 1 || count < 256)
         {
-            msm_execute_single(out, points, scalars, count);
+            msm_execute_single(
+                out,
+                points,
+                scalars,
+                count,
+                stable_srs_bases);
             return;
         }
-        const auto task_count = std::min<std::size_t>(worker_count * 2, count);
+        const auto task_count = std::min<std::size_t>(worker_count * 3, count);
         const auto base_chunk_size = count / task_count;
         const auto larger_chunk_count = count % task_count;
         std::vector<mcl::G1> partials(task_count);
@@ -543,7 +616,8 @@ namespace gatzk::crypto
                 partials[task],
                 points + begin,
                 scalars + begin,
-                end - begin);
+                end - begin,
+                stable_srs_bases);
         });
         for (const auto& partial : partials)
         {
@@ -805,11 +879,17 @@ namespace gatzk::crypto
                 grouped_points.data(),
                 grouped_scalars.data(),
                 grouped_scalars.size(),
-                worker_count);
+                worker_count,
+                false);
         }
         else
         {
-            msm_execute_single(out.value, grouped_points.data(), grouped_scalars.data(), grouped_scalars.size());
+            msm_execute_single(
+                out.value,
+                grouped_points.data(),
+                grouped_scalars.data(),
+                grouped_scalars.size(),
+                false);
         }
         if (profile != nullptr)
         {
@@ -851,6 +931,8 @@ namespace gatzk::crypto
             return out;
         }
         algebra::ensure_mcl_field_ready();
+        const bool stable_srs_bases =
+            options != nullptr && options->stable_srs_bases;
         const auto zero_scalar = algebra::FieldElement::zero();
         std::size_t nonzero_count = 0;
         std::size_t last_nonzero_exclusive = 0;
@@ -904,8 +986,7 @@ namespace gatzk::crypto
                 return out;
             }
             if (last_nonzero_exclusive < count
-                && last_nonzero_exclusive == nonzero_count
-                && nonzero_count * 4 < count * 3)
+                && last_nonzero_exclusive == nonzero_count)
             {
                 if (profile != nullptr)
                 {
@@ -925,11 +1006,22 @@ namespace gatzk::crypto
                     {
                         profile->multithreaded = true;
                     }
-                    msm_execute_chunked(out.value, points, scalars, nonzero_count, worker_count);
+                    msm_execute_chunked(
+                        out.value,
+                        points,
+                        scalars,
+                        nonzero_count,
+                        worker_count,
+                        stable_srs_bases);
                 }
                 else
                 {
-                    msm_execute_single(out.value, points, scalars, nonzero_count);
+                    msm_execute_single(
+                        out.value,
+                        points,
+                        scalars,
+                        nonzero_count,
+                        stable_srs_bases);
                 }
                 return out;
             }
@@ -973,11 +1065,17 @@ namespace gatzk::crypto
                         compact_points.data(),
                         compact_scalars.data(),
                         compact_scalars.size(),
-                        worker_count);
+                        worker_count,
+                        false);
                 }
                 else
                 {
-                    msm_execute_single(out.value, compact_points.data(), compact_scalars.data(), compact_scalars.size());
+                    msm_execute_single(
+                        out.value,
+                        compact_points.data(),
+                        compact_scalars.data(),
+                        compact_scalars.size(),
+                        false);
                 }
                 return out;
             }
@@ -994,11 +1092,22 @@ namespace gatzk::crypto
             {
                 profile->multithreaded = true;
             }
-            msm_execute_chunked(out.value, points, scalars, count, worker_count);
+            msm_execute_chunked(
+                out.value,
+                points,
+                scalars,
+                count,
+                worker_count,
+                stable_srs_bases);
         }
         else
         {
-            msm_execute_single(out.value, points, scalars, count);
+            msm_execute_single(
+                out.value,
+                points,
+                scalars,
+                count,
+                stable_srs_bases);
         }
         return out;
     }

@@ -72,6 +72,49 @@ void require(bool condition, const std::string& message) {
     }
 }
 
+void test_logup_inverse_accumulator_reuse_equivalence() {
+    constexpr std::size_t domain_size = 16;
+    constexpr std::size_t active_count = 9;
+    std::vector<FieldElement> table(domain_size, FieldElement::zero());
+    std::vector<FieldElement> query(domain_size, FieldElement::zero());
+    std::vector<FieldElement> multiplicity(domain_size, FieldElement::zero());
+    std::vector<FieldElement> q_table(domain_size, FieldElement::zero());
+    std::vector<FieldElement> q_query(domain_size, FieldElement::zero());
+    for (std::size_t i = 0; i < 5; ++i) {
+        table[i] = FieldElement(i + 2);
+        multiplicity[i] = FieldElement((i % 3) + 1);
+        q_table[i] = FieldElement::one();
+    }
+    for (std::size_t i = 0; i < active_count; ++i) {
+        query[i] = FieldElement((i * 3) % 5 + 2);
+        q_query[i] = FieldElement::one();
+    }
+    const FieldElement beta(29);
+    const auto inverses = gatzk::protocol::build_logup_inverse_columns(
+        table, query, q_table, q_query, beta);
+    const auto reference =
+        gatzk::protocol::build_logup_accumulator_with_active_count(
+            table,
+            query,
+            multiplicity,
+            q_table,
+            q_query,
+            beta,
+            active_count);
+    const auto reused =
+        gatzk::protocol::
+            build_logup_accumulator_from_inverse_columns_with_active_count(
+                inverses.table,
+                inverses.query,
+                multiplicity,
+                q_table,
+                q_query,
+                active_count);
+    require(
+        reused == reference,
+        "LogUp accumulator reuse must exactly match denominator recomputation");
+}
+
 struct TestPointGroupProof {
     std::vector<FieldElement> points;
     std::vector<gatzk::crypto::G1Point> witnesses;
@@ -327,7 +370,8 @@ void replace_json_string_field(
 }
 
 std::filesystem::path copy_test_srs(const std::string& suffix) {
-    const auto root = repo_root() / "build" / ("srs_tamper_" + suffix);
+    const auto root =
+        std::filesystem::path(GATZK_TEST_BINARY_DIR) / ("srs_tamper_" + suffix);
     std::filesystem::remove_all(root);
     std::filesystem::copy(
         test_srs_path(), root,
@@ -552,6 +596,24 @@ void test_kzg_opening_selftest() {
     require(
         !(unblinded_commitment.point == blinded_commitment.point),
         "zero-domain blinding must change the private commitment");
+    const auto private_evaluation_component =
+        gatzk::crypto::KZG::evaluation_commitment_component(
+            unblinded_commitment, keys);
+    const auto derived_blinded_commitment =
+        gatzk::crypto::KZG::commit_evaluation_from_component(
+            "P_private_blinded",
+            blinded_private,
+            private_evaluation_component,
+            keys);
+    require(
+        derived_blinded_commitment.point == blinded_commitment.point,
+        "evaluation-component reblinding must equal the direct KZG commitment");
+    const auto recovered_private_component =
+        gatzk::crypto::KZG::evaluation_commitment_component(
+            blinded_commitment, keys);
+    require(
+        recovered_private_component == private_evaluation_component,
+        "evaluation-component extraction must remove the independent blinder");
     const std::vector<FieldElement> private_points{
         private_point, private_point * private_domain->omega};
     const std::vector<std::vector<FieldElement>> private_claims{{
@@ -3328,6 +3390,8 @@ void test_tamper_rejection_suite() {
 
 int main() {
     try {
+        std::cerr << "running test_logup_inverse_accumulator_reuse_equivalence\n";
+        test_logup_inverse_accumulator_reuse_equivalence();
         std::cerr << "running test_parallel_split_intt_equivalence\n";
         test_parallel_split_intt_equivalence();
         const bool skip_srs_tests = std::getenv("GATZK_SKIP_SRS_TESTS") != nullptr;
