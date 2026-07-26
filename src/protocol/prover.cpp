@@ -6854,8 +6854,11 @@ namespace gatzk::protocol
 
         progress_note("context:srs:start");
         start = Clock::now();
+        // Every registered quotient is materialized on a 4|D| coset below.
+        // Check the complete coefficient resource here so an undersized SRS
+        // fails during context construction rather than midway through prove.
         const std::size_t required_coefficient_count = std::max<std::size_t>({
-            fh_size * 2,
+            fh_size * 4,
             edge_size * 4,
             in_size * 4,
             d_size * 4,

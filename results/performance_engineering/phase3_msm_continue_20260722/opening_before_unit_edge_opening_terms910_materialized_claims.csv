@@ -1,4 +1,0 @@
-case,srs_id,domain_name,domain_size,commitment_count,nonzero_stride,commit_setup_ms,claim_eval_ms,open_point_groups_ms,verify_ms,precompute_ms,denominator_inverse_ms,denominator_inverse_reuse_ms,denominator_inverse_cache_misses,denominator_inverse_reuse_hits,point_parallel_batches,point_parallel_workers,point_msm_worker_cap,proof_witness_count,serial_bundle_verify_ms,parallel_bundle_verify_ms,verify_bundle_fanout,verify_ok
-unit_edge_opening_terms910_materialized_claims,unit_security_srs_v1,edge,4096,910,7,205.354,2260.656,268.111,9.412,233.401,1.023,0.000,2,0,0,0,0,2,0.000,0.000,1,true
-unit_edge_opening_terms910_materialized_claims,unit_security_srs_v1,edge,4096,910,7,208.834,2194.623,211.136,10.743,180.928,0.978,0.000,2,0,0,0,0,2,0.000,0.000,1,true
-unit_edge_opening_terms910_materialized_claims,unit_security_srs_v1,edge,4096,910,7,212.178,2182.086,210.458,12.144,179.755,1.019,0.000,2,0,0,0,0,2,0.000,0.000,1,true

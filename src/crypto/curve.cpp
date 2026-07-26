@@ -528,11 +528,17 @@ namespace gatzk::crypto
             return;
         }
         const auto task_count = std::min<std::size_t>(worker_count * 2, count);
-        const auto chunk_size = (count + task_count - 1) / task_count;
+        const auto base_chunk_size = count / task_count;
+        const auto larger_chunk_count = count % task_count;
         std::vector<mcl::G1> partials(task_count);
         msm_worker_pool().parallel_for(task_count, [&](std::size_t task) {
-            const auto begin = task * chunk_size;
-            const auto end = std::min(count, begin + chunk_size);
+            const auto begin =
+                task * base_chunk_size
+                + std::min(task, larger_chunk_count);
+            const auto end =
+                begin
+                + base_chunk_size
+                + (task < larger_chunk_count ? 1 : 0);
             msm_execute_single(
                 partials[task],
                 points + begin,

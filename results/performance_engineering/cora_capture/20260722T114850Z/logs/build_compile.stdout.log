@@ -1,7 +1,0 @@
-$ cmake --build build --target gatzk_run gatzk_srs_setup -j 20
-[  3%] Built target gatzk_mcl_build
-[ 92%] Built target gatzkml
-[100%] Built target gatzk_run
-[  3%] Built target gatzk_mcl_build
-[ 92%] Built target gatzkml
-[100%] Built target gatzk_srs_setup

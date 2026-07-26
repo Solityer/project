@@ -1,2 +1,0 @@
-$ /home/pzh/project/build/gatzk_srs_setup ceremony /home/pzh/project/results/performance_engineering/cora_capture/20260722T081656Z/srs_preflight/cora_formal_srs_v2.staging /home/pzh/project/results/performance_engineering/cora_capture/20260722T081656Z/srs_preflight/current_protocol_compiler_artifact.txt cora_formal_srs_v2
-wrote SRS material for cora_formal_srs_v2 degree_bound=16777215

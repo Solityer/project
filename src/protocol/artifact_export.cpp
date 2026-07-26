@@ -25,6 +25,7 @@
 
 #include <mcl/ntt.hpp>
 #include <openssl/rand.h>
+#include <openssl/sha.h>
 
 #include "gatzk/algebra/domain_evaluation.hpp"
 #include "gatzk/algebra/eval_backend.hpp"
@@ -55,13 +56,6 @@ namespace gatzk::protocol
             return std::chrono::duration<double, std::milli>(end - start).count();
         }
 
-        std::string payload_kind_name(PayloadValueKind kind)
-        {
-            return kind == PayloadValueKind::PublicValue
-                       ? "PublicValue"
-                       : "MaskedPrivateValue";
-        }
-
         std::uint64_t fnv1a64(std::string_view text)
         {
             std::uint64_t hash = 1469598103934665603ULL;
@@ -87,109 +81,17 @@ namespace gatzk::protocol
             }
             return stable_hash(stream.str());
         }
-        std::string hash_proof_transport(const Proof &proof)
+        std::string sha256_hex(const std::vector<std::uint8_t> &bytes)
         {
-            std::ostringstream stream;
-            auto append_commitments = [&](std::string_view label, const std::vector<std::pair<std::string, crypto::Commitment>> &commitments)
+            std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+            SHA256(bytes.data(), bytes.size(), digest.data());
+            std::ostringstream out;
+            out << std::hex << std::setfill('0');
+            for (const auto byte : digest)
             {
-                stream << '[' << label << "]\n";
-                for (const auto &[name, commitment] : commitments)
-                {
-                    stream << name << '=' << commitment.point.to_string() << '\n';
-                }
-            };
-            auto append_field_pairs = [&](std::string_view label, const std::vector<std::pair<std::string, FieldElement>> &values)
-            {
-                stream << '[' << label << "]\n";
-                for (const auto &[name, value] : values)
-                {
-                    stream << name << '=' << value.to_string() << '\n';
-                }
-            };
-
-            stream << "[metadata]\n"
-                   << proof.public_metadata.protocol_name << '\n'
-                   << proof.public_metadata.proof_nonce << '\n'
-                   << proof.public_metadata.proof_task << '\n'
-                   << proof.public_metadata.srs_id << '\n'
-                   << proof.public_metadata.protocol_schema_id << '\n'
-                   << proof.public_metadata.instance_schema_hash << '\n'
-                   << proof.public_metadata.srs_type << '\n'
-                   << proof.public_metadata.srs_degree_bound << '\n'
-                   << proof.public_metadata.kzg_assumption_profile << '\n'
-                   << proof.public_metadata.privacy_policy << '\n'
-                   << proof.public_metadata.input_privacy << '\n'
-                   << proof.public_metadata.output_mode << '\n'
-                   << proof.public_metadata.opening_mode << '\n'
-                   << proof.public_metadata.binding_mode << '\n'
-                   << proof.public_metadata.model_arch << '\n'
-                   << proof.public_metadata.model_params << '\n'
-                   << proof.public_metadata.static_tables << '\n'
-                   << proof.public_metadata.quant_config << '\n'
-                   << proof.public_metadata.domain_cfg << '\n'
-                   << proof.public_metadata.dim_cfg << '\n'
-                   << proof.public_metadata.encoding << '\n'
-                   << proof.public_metadata.padding_rule << '\n'
-                   << proof.public_metadata.degree_bound << '\n'
-                   << proof.public_metadata.security_budget << '\n'
-                   << proof.public_metadata.public_output << '\n';
-            stream << "[block_order]\n";
-            for (const auto &block : proof.block_order)
-            {
-                stream << block << '\n';
+                out << std::setw(2) << static_cast<unsigned int>(byte);
             }
-            append_commitments("dynamic_commitments", proof.dynamic_commitments);
-            append_commitments("quotient_commitments", proof.quotient_commitments);
-            stream << "[domain_openings]\n";
-            for (const auto &[domain, bundle] : proof.domain_openings)
-            {
-                stream << domain << "|point_count=" << bundle.points.size() << '\n';
-                for (const auto &point : bundle.points)
-                {
-                    stream << "point=" << point.to_string() << '\n';
-                }
-                for (const auto &[name, values] : bundle.values)
-                {
-                    stream << "values=" << name;
-                    for (const auto &value : values)
-                    {
-                        stream << ':' << value.to_string();
-                    }
-                    stream << '\n';
-                }
-                for (const auto kind : bundle.value_kinds)
-                {
-                    stream << "value_kind=" << payload_kind_name(kind) << '\n';
-                }
-            }
-            append_field_pairs("external_evaluations", proof.external_evaluations);
-            stream << "[external_evaluation_kinds]\n";
-            for (const auto kind : proof.external_evaluation_kinds)
-            {
-                stream << payload_kind_name(kind) << '\n';
-            }
-            stream << "[route_references]\n";
-            for (const auto &reference : proof.route_references)
-                stream << reference.object_id << '\n';
-            stream << "[public_output]\n";
-            for (const auto &value : proof.public_logits)
-            {
-                stream << value.to_string() << '\n';
-            }
-            stream << "[opening_groups]\n";
-            for (const auto &group : proof.opening_groups)
-            {
-                stream << group.group_id << '|'
-                       << group.owner_block << '|'
-                       << group.point.to_string() << '|'
-                       << group.witness.to_string() << '\n';
-            }
-            stream << "[challenges]\n";
-            for (const auto &[name, challenge] : proof.challenges)
-            {
-                stream << name << '=' << challenge.to_string() << '\n';
-            }
-            return stable_hash(stream.str());
+            return out.str();
         }
         std::vector<std::string> vector_to_lines(const std::vector<FieldElement> &values)
         {
@@ -239,6 +141,26 @@ namespace gatzk::protocol
         const auto export_start = Clock::now();
         const auto export_root = (std::filesystem::path(context.config.project_root) / context.config.export_dir).string();
         util::ensure_directory(export_root);
+        const auto proof_bytes = serialize_proof(proof);
+        if (proof_bytes.size() != metrics.proof_size_bytes)
+        {
+            throw std::runtime_error(
+                "exported canonical proof size differs from measured proof size");
+        }
+        {
+            std::ofstream output(
+                std::filesystem::path(export_root) / "proof.bin",
+                std::ios::binary | std::ios::trunc);
+            if (!output
+                || (!proof_bytes.empty()
+                    && !output.write(
+                        reinterpret_cast<const char *>(proof_bytes.data()),
+                        static_cast<std::streamsize>(proof_bytes.size()))))
+            {
+                throw std::runtime_error(
+                    "failed to write canonical proof artifact");
+            }
+        }
 
         std::map<std::string, std::string> challenge_strings;
         for (const auto &[name, value] : proof.challenges)
@@ -391,7 +313,7 @@ namespace gatzk::protocol
         std::map<std::string, std::string> metadata;
         append_public_metadata(metadata);
         const auto public_metadata_hash = hash_key_values(metadata);
-        const auto proof_hash = hash_proof_transport(proof);
+        const auto proof_hash = sha256_hex(proof_bytes);
         util::write_key_values(export_root + "/metadata.txt", metadata);
         util::write_lines(export_root + "/proof_block_order.txt", proof.block_order);
 
@@ -516,7 +438,6 @@ namespace gatzk::protocol
             {"source_tree_hash", env_or_empty("GATZK_SOURCE_TREE_HASH")},
             {"binary_hash", env_or_empty("GATZK_BINARY_HASH")},
             {"build_identity", env_or_empty("GATZK_BUILD_IDENTITY")},
-            {"runner_hash", env_or_empty("GATZK_RUNNER_HASH")},
             {"run_started_at", env_or_empty("GATZK_RUN_STARTED_AT")},
             {"run_ended_at", env_or_empty("GATZK_RUN_ENDED_AT")},
             {"exit_code", env_or_empty("GATZK_RUN_EXIT_CODE")},
@@ -544,7 +465,6 @@ namespace gatzk::protocol
             {"tamper_tests_ms", format_double(metrics.tamper_tests_ms)},
             {"export_artifact_ms", format_double(metrics.export_artifact_ms)},
             {"export_manifest_validation_ms", format_double(metrics.export_manifest_validation_ms)},
-            {"runner_overhead_ms", format_double(metrics.runner_overhead_ms)},
             {"profile_logging_overhead_ms", format_double(metrics.profile_logging_overhead_ms)},
             {"context_build_ms", format_double(metrics.context_build_ms)},
             {"domain_opening_ms", format_double(metrics.domain_opening_ms)},

@@ -13,7 +13,7 @@ Proof prove(const ProtocolContext& context, const TraceArtifacts& trace, RunMetr
 // 统计 proof 序列化口径，是 README / manifests / tests 共用的 proof_size_bytes 真值来源。
 std::size_t proof_size_bytes(const Proof& proof);
 // 将一次正式运行导出为三层 artifact：
-// `metadata.txt` / `proof_block_order.txt` 等 formal 附件，
+// canonical `proof.bin`、`metadata.txt` / `proof_block_order.txt` 等 formal 附件，
 // `benchmark.txt` 的最小正式摘要，
 // 以及供 formal suite / artifact 校验复用的完整 `run_manifest.json`。
 void export_run_artifacts(

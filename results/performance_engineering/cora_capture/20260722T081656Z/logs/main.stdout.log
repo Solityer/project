@@ -1,1 +1,0 @@
-$ /home/pzh/project/build/gatzk_run --config configs/cora_secure.cfg --benchmark-mode warm --compute-backend cpu --fast-msm on --parallel-fft on --fft-backend-upgrade on --fft-kernel-upgrade on --trace-layout-upgrade on --fast-verify-pairing on --export-tag cora_capture/20260722T081656Z

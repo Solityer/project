@@ -1,6 +1,6 @@
 # Phase 3 Performance Optimization
 
-Last updated: 2026-07-22 (Asia/Shanghai)
+Last updated: 2026-07-26 (Asia/Shanghai)
 
 ## Status and measurement contract
 
@@ -113,8 +113,13 @@ driver; the formal outer scheduler is measured by the canary below.
 
 The existing production `t_edge` evaluator was also checked for 8192 complete
 relation points with 20 workers. Three-run medians were 273.606 ms (Cora),
-274.865 ms (Citeseer), 260.601 ms (Pubmed), 65.602 ms (PPI), and 71.795 ms
-(ogbn-arxiv). Repeated accumulators were identical for every shape.
+274.865 ms (Citeseer), 260.601 ms (Pubmed), and 65.602 ms (PPI). The former
+ogbn-arxiv case used a stale 1,048,576-row edge shape and is no longer evidence.
+The case is now corrected to the production 8,388,608-row edge domain; the
+2026-07-26 three-run diagnostic median was 79.101 ms for the same 8192 sampled
+points. An unrelated two-core workload was active, so this last value is a
+shape/correctness check rather than a clean performance baseline. Repeated
+accumulators were identical.
 
 ## Reverted or rejected schemes
 
@@ -138,6 +143,10 @@ All code for the following candidates was removed after measurement:
   removed.
 - Full-outer opening with inner-2 MSM had a roughly 2950.8 ms formal median and
   was removed.
+- A 32-task `t_edge` overdecomposition candidate reduced its isolated sampled
+  kernel, but three complete controlled production-path runs had formal sums
+  3004.489, 2949.553, and 3113.691 ms, with unstable external-opening tails.
+  It was removed; the final source retains the 20-worker policy.
 
 ## Final three-run result
 
@@ -165,8 +174,8 @@ plus external openings 401.395 ms (13.956%), and non-commit trace construction
 ## Validation
 
 - CPU Release and CUDA Release full builds passed.
-- CPU and CUDA `ctest` each passed `gatzk_tests`, `static_secure_scan`, and
-  `runner_semantics` (3/3).
+- CPU and CUDA `ctest` each passed `gatzk_tests` and `static_secure_scan`
+  (2/2) after removal of the obsolete matrix runner and its runner-only test.
 - `GATZK_RUN_UNIT_SECURITY_TESTS=1 build/gatzk_tests` passed, including KZG
   opening, external point grouping, schema/metadata gates, canonical digest,
   domain challenge exclusion, and tamper/security checks.
@@ -179,8 +188,10 @@ plus external openings 401.395 ms (13.956%), and non-commit trace construction
 - `git diff --check` passed after rejected code was removed.
 
 The proof schema, transcript, canonical codec/parser, verifier checks, SRS and
-KZG structures, and public/private boundary did not change. Existing SRS,
-compiler artifacts, and manifests therefore require no regeneration.
+KZG structures, and public/private boundary did not change. The existing Cora
+SRS compiler artifact therefore remains an exact byte-for-byte match. Missing
+dataset SRS artifacts still require independently trusted setup; this record
+does not treat local compiler preflight as an SRS publication.
 
 ## Remaining measured boundaries and full-run risks
 
@@ -207,3 +218,25 @@ compiler artifacts, and manifests therefore require no regeneration.
   observations.
 - Full-dataset behavior and the CPU/GPU ten-row matrix remain unmeasured and
   must be executed by the project owner.
+
+## 2026-07-26 source convergence addendum
+
+- The Cora `vector::reserve` failure was not an allocation-capacity problem.
+  A trailing MSM task could start past `count` when ceil-sized chunks did not
+  divide a non-divisible effective scalar count; `end - begin` then underflowed.
+  The common production curve layer now uses quotient/remainder balanced,
+  non-empty chunks, with exact 257- and 1009-scalar regression comparisons
+  against the single-thread MCL result.
+- Cora production context construction was stopped under a debugger only after
+  all public/static commitments, including every hidden/output weight column,
+  had completed. No trace or proof was run.
+- Three source-matched production-path diagnostics after the fix had formal
+  sums 3517.402, 2898.343, and 2953.748 ms. The first run coincided with the
+  unrelated host workload and is an interference outlier. These checks all
+  serialized, strict-parsed, and verified; they do not replace the stable
+  2026-07-22 baseline/final comparison above.
+- The SRS context preflight now requires `4|FH|` coefficient powers, matching
+  the quotient materializer instead of the old `2|FH|` under-check. The
+  ogbn-arxiv maximum-envelope chunk count was corrected from two to three.
+- `gatzk_run` now saves the exact canonical `proof.bin`; its byte length must
+  equal `proof_size_bytes`, and `run_manifest.json` binds it with SHA-256.

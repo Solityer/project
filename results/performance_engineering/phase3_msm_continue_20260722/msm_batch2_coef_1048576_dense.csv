@@ -1,4 +1,0 @@
-case,input_count,nonzero_count,max_workers,repeat,profiled_ms,raw_mulvec_ms,compact_raw_mulvec_ms,profiled_multithreaded,profiled_sparse_compaction
-coef_1048576_dense,1048576,1048576,0,0,835.371,1271.916,1309.685,true,false
-coef_1048576_dense,1048576,1048576,0,1,826.080,1250.660,1337.468,true,false
-coef_1048576_dense,1048576,1048576,0,2,858.474,1270.747,1340.862,true,false

@@ -136,10 +136,6 @@ if(GATZK_ENABLE_CUDA_BACKEND)
     target_link_libraries(gatzk_cuda_hotspots_stage_bench PRIVATE gatzkml)
 endif()
 
-add_executable(gatzk_lrelu_range_diag tools/benchmarks/lrelu_range_diag.cpp)
-target_include_directories(gatzk_lrelu_range_diag PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(gatzk_lrelu_range_diag PRIVATE gatzkml)
-
 if(GATZK_BUILD_TESTS)
     enable_testing()
     add_executable(gatzk_tests tests/test_main.cpp)
@@ -150,10 +146,5 @@ if(GATZK_BUILD_TESTS)
         add_test(
             NAME static_secure_scan
             COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/security/static_scan_no_tau.py)
-        add_test(
-            NAME runner_semantics
-            COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_runner_semantics.py)
-        set_tests_properties(runner_semantics PROPERTIES
-            ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     endif()
 endif()

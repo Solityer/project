@@ -1260,6 +1260,16 @@ void test_msm_chunked_equivalence_regression() {
     require_msm_matches_single_thread("edge_131072_dense", *edge_it->second, 131072, false);
 }
 
+void test_msm_non_divisible_chunk_regression() {
+    const auto keys = gatzk::crypto::KZG::load_keys(
+        test_srs_path().string(),
+        "trusted_srs",
+        test_srs_id());
+    require(keys.pk.powers_g1 != nullptr, "MSM chunk regression requires coefficient SRS");
+    require_msm_matches_single_thread("coef_257_dense", *keys.pk.powers_g1, 257, false);
+    require_msm_matches_single_thread("coef_1009_dense", *keys.pk.powers_g1, 1009, false);
+}
+
 void test_srs_mismatch_gate() {
     const auto srs_path = test_srs_path().string();
     const auto expected_srs_id = test_srs_id();
@@ -2273,8 +2283,9 @@ void test_domain_opening_challenge_exclusion_registry() {
 }
 
 void test_real_ppi_representative_batch_boundary() {
-    const auto config = gatzk::util::load_config(
-        (repo_root() / "configs/ppi_representative_secure.cfg").string());
+    auto config = gatzk::util::load_config(
+        (repo_root() / "configs/ppi_secure.cfg").string());
+    config.batch_graphs = 2;
     // Development validation uses two complete source graphs. No node or edge
     // inside either graph is cropped, and this is not a formal full-PPI run.
     const auto dataset = gatzk::data::load_dataset(config);
@@ -3339,6 +3350,8 @@ int main() {
         std::cerr << "running test_packed_backend_padded_tail_regression\n";
         test_packed_backend_padded_tail_regression();
         if (!skip_srs_tests) {
+            std::cerr << "running test_msm_non_divisible_chunk_regression\n";
+            test_msm_non_divisible_chunk_regression();
             const bool run_large_msm_tests =
                 std::getenv("GATZK_RUN_LARGE_MSM_TESTS") != nullptr
                 && std::getenv("GATZK_SKIP_LARGE_MSM_TESTS") == nullptr;

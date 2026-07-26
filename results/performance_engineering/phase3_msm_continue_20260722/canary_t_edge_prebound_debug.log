@@ -1,9 +1,0 @@
-[quotient-debug] edge max_blinder=4 labels=P_out0_BiasView_R_qry
-[quotient-debug] t_in coefficient_count=20 target_size=32
-[quotient-debug] t_d_h coefficient_count=12 target_size=16
-[quotient-debug] t_cat coefficient_count=12 target_size=16
-[quotient-debug] t_C coefficient_count=12 target_size=16
-[quotient-debug] t_N coefficient_count=20 target_size=32
-[quotient-debug] t_FH coefficient_count=51 target_size=64
-[quotient-debug] t_edge coefficient_count=12291 target_size=16384
-mode=generate timing_schema=exclusive_commit_prove_verify_v2 commitment_time_ms=968.152 prove_time_ms=2331.374 verify_time_ms=105.416 formal_time_sum_ms=3404.942 total_wall_clock_ms=3616.454 non_formal_overhead_ms=211.512 proof_parse_ms=32.845 point_group_registry_ms=21.107 dynamic_commit_msm_ms=735.998 duplicate_dynamic_commitments=9 duplicate_dynamic_commitment_ms=0.512 derived_commitment_point_ms=170.457 quotient_commitment_ms=61.697 prove_forward_ms=5.055 prove_trace_ms=278.684 prove_commit_preparation_ms=66.306 prove_quotient_noncommitment_ms=1367.158 quotient_t_fh_ms=20.702 quotient_t_edge_ms=1210.375 quotient_other_materialization_ms=3.896 prove_domain_opening_ms=315.388 prove_external_opening_ms=279.127 proof_serialization_ms=5.172 prove_residual_ms=14.485 verify_metadata_ms=3.633 verify_transcript_ms=23.748 verify_domain_opening_ms=6.275 verify_point_group_registry_ms=17.703 verify_quotient_ms=10.190 verify_external_opening_ms=7.917 private_plain_value_count=0 verifier_reads_witness=false proof_size_bytes=250440 verify_ok=true path=results/performance_engineering/phase3_msm_continue_20260722/canary_t_edge_prebound_debug.proof

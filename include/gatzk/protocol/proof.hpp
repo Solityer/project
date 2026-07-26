@@ -468,7 +468,6 @@ struct RunMetrics {
     double tamper_tests_ms = 0.0;
     double export_artifact_ms = 0.0;
     double export_manifest_validation_ms = 0.0;
-    double runner_overhead_ms = 0.0;
     double profile_logging_overhead_ms = 0.0;
     double forward_ms = 0.0;
     double feature_projection_ms = 0.0;

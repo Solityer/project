@@ -440,7 +440,7 @@ int main(int argc, char** argv) {
             {"citeseer_formal_shape", 32768, 8, 1, 6, 12},
             {"pubmed_formal_shape", 262144, 8, 1, 3, 12},
             {"ppi_formal_shape", 1048576, 1, 1, 121, 14},
-            {"ogbn-arxiv_formal_shape", 1048576, 1, 1, 40, 12},
+            {"ogbn-arxiv_formal_shape", 8388608, 1, 1, 40, 12},
         };
         std::cout
             << "dataset,edge_domain_size,quotient_coset_size,sample_points,sample_stride,hidden_head_count,"

@@ -461,8 +461,8 @@ int main(int argc, char** argv) {
             },
             {
                 "cora_edge_opening_terms96",
-                "artifacts/srs/cora_formal_srs_v1",
-                "cora_formal_srs_v1",
+                "artifacts/srs/cora_formal_srs_v2",
+                "cora_formal_srs_v2",
                 "edge",
                 32768,
                 96,
@@ -472,8 +472,8 @@ int main(int argc, char** argv) {
             },
             {
                 "cora_edge_commit_batch12_sparse7",
-                "artifacts/srs/cora_formal_srs_v1",
-                "cora_formal_srs_v1",
+                "artifacts/srs/cora_formal_srs_v2",
+                "cora_formal_srs_v2",
                 "edge",
                 32768,
                 12,

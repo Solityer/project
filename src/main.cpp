@@ -4,9 +4,11 @@
 #include <filesystem>
 #include <iostream>
 #include <iomanip>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include "gatzk/algebra/vector_ops.hpp"
@@ -141,49 +143,80 @@ int main(int argc, char **argv)
         std::string compute_backend = "cpu";
         std::string export_tag;
         gatzk::util::Route2Options route2;
+        std::set<std::string> cli_optimization_overrides;
+        auto require_option_value = [&](int &index, const std::string &option)
+        {
+            if (index + 1 >= argc)
+            {
+                throw std::runtime_error("missing value for " + option);
+            }
+            const std::string_view value(argv[index + 1]);
+            if (value.empty() || value.starts_with("--"))
+            {
+                throw std::runtime_error("missing value for " + option);
+            }
+            return std::string(argv[++index]);
+        };
         // 入口层只解析 formal 主线允许暴露的执行层开关，不在这里分叉协议语义。
         for (int i = 1; i < argc; ++i)
         {
             const std::string arg = argv[i];
-            if (arg == "--config" && i + 1 < argc)
+            if (arg == "--config")
             {
-                config_path = argv[++i];
+                config_path = require_option_value(i, arg);
             }
-            else if (arg == "--benchmark-mode" && i + 1 < argc)
+            else if (arg == "--benchmark-mode")
             {
-                benchmark_mode = argv[++i];
+                benchmark_mode = require_option_value(i, arg);
             }
-            else if (arg == "--compute-backend" && i + 1 < argc)
+            else if (arg == "--compute-backend")
             {
-                compute_backend = normalize_compute_backend(argv[++i]);
+                compute_backend = normalize_compute_backend(
+                    require_option_value(i, arg));
             }
-            else if (arg == "--fast-msm" && i + 1 < argc)
+            else if (arg == "--fast-msm")
             {
-                route2.fast_msm = parse_switch(argv[++i], "--fast-msm");
+                route2.fast_msm = parse_switch(
+                    require_option_value(i, arg), arg);
+                cli_optimization_overrides.insert("fast_msm");
             }
-            else if (arg == "--parallel-fft" && i + 1 < argc)
+            else if (arg == "--parallel-fft")
             {
-                route2.parallel_fft = parse_switch(argv[++i], "--parallel-fft");
+                route2.parallel_fft = parse_switch(
+                    require_option_value(i, arg), arg);
+                cli_optimization_overrides.insert("parallel_fft");
             }
-            else if (arg == "--fft-backend-upgrade" && i + 1 < argc)
+            else if (arg == "--fft-backend-upgrade")
             {
-                route2.fft_backend_upgrade = parse_switch(argv[++i], "--fft-backend-upgrade");
+                route2.fft_backend_upgrade = parse_switch(
+                    require_option_value(i, arg), arg);
+                cli_optimization_overrides.insert("fft_backend_upgrade");
             }
-            else if (arg == "--fft-kernel-upgrade" && i + 1 < argc)
+            else if (arg == "--fft-kernel-upgrade")
             {
-                route2.fft_kernel_upgrade = parse_switch(argv[++i], "--fft-kernel-upgrade");
+                route2.fft_kernel_upgrade = parse_switch(
+                    require_option_value(i, arg), arg);
+                cli_optimization_overrides.insert("fft_kernel_upgrade");
             }
-            else if (arg == "--trace-layout-upgrade" && i + 1 < argc)
+            else if (arg == "--trace-layout-upgrade")
             {
-                route2.trace_layout_upgrade = parse_switch(argv[++i], "--trace-layout-upgrade");
+                route2.trace_layout_upgrade = parse_switch(
+                    require_option_value(i, arg), arg);
+                cli_optimization_overrides.insert("trace_layout_upgrade");
             }
-            else if (arg == "--fast-verify-pairing" && i + 1 < argc)
+            else if (arg == "--fast-verify-pairing")
             {
-                route2.fast_verify_pairing = parse_switch(argv[++i], "--fast-verify-pairing");
+                route2.fast_verify_pairing = parse_switch(
+                    require_option_value(i, arg), arg);
+                cli_optimization_overrides.insert("fast_verify_pairing");
             }
-            else if (arg == "--export-tag" && i + 1 < argc)
+            else if (arg == "--export-tag")
             {
-                export_tag = argv[++i];
+                export_tag = require_option_value(i, arg);
+            }
+            else
+            {
+                throw std::runtime_error("unknown argument: " + arg);
             }
         }
         if (config_path.empty())
@@ -193,6 +226,27 @@ int main(int argc, char **argv)
         if (benchmark_mode != "warm")
         {
             throw std::runtime_error("formal mainline only supports --benchmark-mode warm");
+        }
+        if (!export_tag.empty())
+        {
+            const bool valid_export_tag =
+                export_tag.size() <= 96
+                && export_tag != "."
+                && export_tag != ".."
+                && std::all_of(
+                    export_tag.begin(), export_tag.end(),
+                    [](unsigned char value)
+                    {
+                        return (value >= 'a' && value <= 'z')
+                            || (value >= 'A' && value <= 'Z')
+                            || (value >= '0' && value <= '9')
+                            || value == '_' || value == '-' || value == '.';
+                    });
+            if (!valid_export_tag)
+            {
+                throw std::runtime_error(
+                    "invalid value for --export-tag: expected one safe path component");
+            }
         }
         compute_backend = normalize_compute_backend(compute_backend);
 
@@ -211,6 +265,57 @@ int main(int argc, char **argv)
                 throw std::runtime_error("compute backend cuda_hotspots requires an available CUDA runtime");
             }
         }
+        auto optimization_state_notes = [&]()
+        {
+            std::vector<std::string> entries;
+            auto append = [&](const std::string &name, bool enabled,
+                              bool applicable, const std::string &source)
+            {
+                entries.push_back(
+                    name + "_state="
+                    + (applicable ? (enabled ? "on" : "off") : "not_applicable")
+                    + "," + name + "_source=" + source
+                    + "," + name + "_applicability="
+                    + (applicable ? "applicable" : "not_applicable"));
+            };
+            auto source = [&](const std::string &name)
+            {
+                return cli_optimization_overrides.contains(name)
+                    ? std::string("cli_override")
+                    : std::string("compile_default");
+            };
+            append("fast_msm", route2.fast_msm, true, source("fast_msm"));
+            append("parallel_fft", route2.parallel_fft, true, source("parallel_fft"));
+            append(
+                "fft_backend_upgrade", route2.fft_backend_upgrade, true,
+                source("fft_backend_upgrade"));
+            append(
+                "fft_kernel_upgrade", route2.fft_kernel_upgrade, true,
+                source("fft_kernel_upgrade"));
+            append(
+                "trace_layout_upgrade", route2.trace_layout_upgrade, true,
+                source("trace_layout_upgrade"));
+            append(
+                "fast_verify_pairing", route2.fast_verify_pairing, true,
+                source("fast_verify_pairing"));
+            const bool cuda_applicable = compute_backend == "cuda_hotspots";
+            append(
+                "cuda_trace_hotspots", route2.cuda_trace_hotspots,
+                cuda_applicable, "backend_selection");
+            append(
+                "cuda_field_hotspots", route2.cuda_field_hotspots,
+                cuda_applicable, "backend_selection");
+            std::ostringstream out;
+            for (std::size_t index = 0; index < entries.size(); ++index)
+            {
+                if (index != 0)
+                {
+                    out << "; ";
+                }
+                out << entries[index];
+            }
+            return out.str();
+        };
 
         const auto loaded_config = gatzk::util::load_config(config_path);
         const auto absolute_config_path = std::filesystem::absolute(config_path).string();
@@ -225,6 +330,8 @@ int main(int argc, char **argv)
                             bool log_benchmark = true)
         {
             const auto row_start = std::chrono::steady_clock::now();
+            const auto cuda_kernel_count_at_start =
+                gatzk::algebra::cuda_kernel_invocation_count();
             gatzk::protocol::RunMetrics metrics;
             metrics.crypto_backend_name = gatzk::crypto::backend_name();
             metrics.algebra_backend_name = gatzk::algebra::configured_algebra_backend_name();
@@ -242,7 +349,7 @@ int main(int argc, char **argv)
             metrics.gpu_backend_requested = metrics.compute_backend_name == "cuda_hotspots";
             metrics.benchmark_mode = mode_label;
             metrics.route2_label = gatzk::util::route2_feature_label(route2);
-            metrics.optimization_flags = gatzk::util::route2_feature_notes(route2);
+            metrics.optimization_flags = optimization_state_notes();
             metrics.hardware_and_device =
                 "cpu_threads=" + std::to_string(std::max(1U, std::thread::hardware_concurrency())) + "; " + gatzk::algebra::cuda_device_summary();
             metrics.gpu_runtime_present = gatzk::algebra::cuda_backend_available();
@@ -284,7 +391,7 @@ int main(int argc, char **argv)
             {
                 append_note(metrics, "cuda_routing=size_aware");
             }
-            append_note(metrics, gatzk::util::route2_feature_notes(route2));
+            append_note(metrics, metrics.optimization_flags);
 
             // 正式主线从这里开始：先构静态上下文，再物化 trace、生成 proof，最后复验并导出产物。
             progress(mode_label + ":context:start");
@@ -425,17 +532,22 @@ int main(int argc, char **argv)
                 + metrics.verify_time_ms;
             metrics.non_formal_overhead_ms = clamp_non_negative(
                 metrics.total_wall_clock_ms - metrics.formal_time_sum_ms);
-            metrics.gpu_kernel_invocation_count = gatzk::algebra::cuda_kernel_invocation_count();
+            const auto cuda_kernel_count_at_end =
+                gatzk::algebra::cuda_kernel_invocation_count();
+            if (cuda_kernel_count_at_end < cuda_kernel_count_at_start)
+            {
+                throw std::runtime_error(
+                    "CUDA kernel invocation counter moved backwards");
+            }
+            metrics.gpu_kernel_invocation_count =
+                cuda_kernel_count_at_end - cuda_kernel_count_at_start;
             if (metrics.compute_backend_name == "cuda_hotspots")
             {
                 if (metrics.gpu_kernel_invocation_count == 0)
                 {
-                    metrics.gpu_used_for = "none_on_this_input";
-                    metrics.gpu_fallback_reason =
-                        "all eligible CUDA hotspots were below the size-aware dispatch thresholds on this input";
-                    metrics.gpu_acceleration_status =
-                        "requested_cuda_hotspots; kernels_executed=0; actual_execution=cpu_fallback_for_this_input";
-                    append_note(metrics, "cuda_kernel_execution=none_below_threshold");
+                    throw std::runtime_error(
+                        "compute backend cuda_hotspots executed zero CUDA kernels "
+                        "during the measured run; refusing to label CPU fallback as GPU");
                 }
                 else
                 {

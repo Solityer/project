@@ -1,5 +1,0 @@
-[  3%] Built target gatzk_mcl_build
-[ 92%] Built target gatzkml
-[ 96%] Building CXX object CMakeFiles/gatzk_t_edge_eval_stage_bench.dir/tools/benchmarks/t_edge_eval_stage_bench.cpp.o
-[100%] Linking CXX executable gatzk_t_edge_eval_stage_bench
-[100%] Built target gatzk_t_edge_eval_stage_bench

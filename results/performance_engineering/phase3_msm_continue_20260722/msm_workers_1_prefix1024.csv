@@ -1,4 +1,0 @@
-case,input_count,nonzero_count,max_workers,repeat,profiled_ms,raw_mulvec_ms,compact_raw_mulvec_ms,profiled_multithreaded,profiled_sparse_compaction
-edge_current_prefix_1024_full,4096,1024,1,0,20.249,22.861,20.028,false,false
-edge_current_prefix_1024_full,4096,1024,1,1,19.984,22.326,19.876,false,false
-edge_current_prefix_1024_full,4096,1024,1,2,19.886,22.180,19.877,false,false
