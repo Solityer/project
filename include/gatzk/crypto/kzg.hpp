@@ -43,7 +43,12 @@ namespace gatzk::crypto
         std::unordered_map<std::string, std::string> pk_lagrange_hashes;
         std::string vk_path;
         std::string vk_hash;
+        std::string vanishing_g2_hash;
+        std::string srs_audit_report_path;
+        std::string srs_audit_report_hash;
+        std::string srs_consistency_hash;
         std::string encoding;
+        std::string generator_id;
         std::string generator_version;
         std::string security_level;
         std::string kzg_assumption_profile_id;

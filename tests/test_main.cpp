@@ -755,7 +755,7 @@ void test_coefficient_taylor_shift_fixed_shape() {
         },
         "Taylor shift must reject witness-dependent coefficient trimming");
 
-    const auto domain = gatzk::algebra::RootOfUnityDomain::create("shift_test", 8);
+    const auto domain = gatzk::algebra::RootOfUnityDomain::create("N", 8);
     std::vector<FieldElement> values(8, FieldElement::zero());
     for (std::size_t i = 0; i < values.size(); ++i) values[i] = FieldElement(7 + i * 3);
     auto evaluation = gatzk::algebra::Polynomial::from_evaluations(
@@ -805,26 +805,26 @@ void test_coefficient_taylor_shift_fixed_shape() {
 void test_cross_domain_indexed_view_shift_relation() {
     const auto keys = gatzk::crypto::KZG::load_keys(
         test_srs_path().string(), "trusted_srs", test_srs_id());
-    const auto canonical_domain = gatzk::algebra::RootOfUnityDomain::create("C", 8);
-    const auto view_domain = gatzk::algebra::RootOfUnityDomain::create("N", 16);
-    constexpr std::size_t class_count = 4;
+    const auto canonical_domain = gatzk::algebra::RootOfUnityDomain::create("C", 4);
+    const auto view_domain = gatzk::algebra::RootOfUnityDomain::create("N", 8);
+    constexpr std::size_t class_count = 2;
     constexpr std::size_t row_count = 3;
-    std::vector<FieldElement> canonical_indices(8, FieldElement::zero());
-    std::vector<FieldElement> canonical_values(8, FieldElement::zero());
-    std::vector<FieldElement> canonical_selector(8, FieldElement::zero());
-    std::vector<FieldElement> canonical_multiplicity(8, FieldElement::zero());
+    std::vector<FieldElement> canonical_indices(4, FieldElement::zero());
+    std::vector<FieldElement> canonical_values(4, FieldElement::zero());
+    std::vector<FieldElement> canonical_selector(4, FieldElement::zero());
+    std::vector<FieldElement> canonical_multiplicity(4, FieldElement::zero());
     const std::array<FieldElement, class_count> bias{
-        FieldElement(5), FieldElement(11), FieldElement(17), FieldElement(23)};
+        FieldElement(5), FieldElement(11)};
     for (std::size_t column = 0; column < class_count; ++column) {
         canonical_indices[column] = FieldElement(column);
         canonical_values[column] = bias[column];
         canonical_selector[column] = FieldElement::one();
         canonical_multiplicity[column] = FieldElement(row_count);
     }
-    std::vector<FieldElement> view_indices(16, FieldElement::zero());
-    std::vector<FieldElement> view_values(16, FieldElement::zero());
-    std::vector<FieldElement> view_selector(16, FieldElement::zero());
-    std::vector<FieldElement> view_multiplicity(16, FieldElement::zero());
+    std::vector<FieldElement> view_indices(8, FieldElement::zero());
+    std::vector<FieldElement> view_values(8, FieldElement::zero());
+    std::vector<FieldElement> view_selector(8, FieldElement::zero());
+    std::vector<FieldElement> view_multiplicity(8, FieldElement::zero());
     for (std::size_t row = 0; row < row_count; ++row) {
         for (std::size_t column = 0; column < class_count; ++column) {
             const auto index = row * class_count + column;
@@ -863,7 +863,7 @@ void test_cross_domain_indexed_view_shift_relation() {
     const auto z_star = canonical_domain->point_at(class_count);
     const auto z_query = view_domain->point_at(row_count * class_count);
     const auto delta = z_query - z_star;
-    constexpr std::size_t shift_degree = 31;
+    constexpr std::size_t shift_degree = 15;
     const auto shifted_query = gatzk::crypto::KZG::commit_taylor_shifted(
         negative_view_commitment, "P_bias_R_qry_shifted",
         shift_degree, delta, keys);
@@ -955,9 +955,9 @@ void test_same_point_indexed_view_relation() {
     const auto keys = gatzk::crypto::KZG::load_keys(
         test_srs_path().string(), "trusted_srs", test_srs_id());
     const auto canonical_domain =
-        gatzk::algebra::RootOfUnityDomain::create("C", 8);
+        gatzk::algebra::RootOfUnityDomain::create("C", 4);
     const auto view_domain =
-        gatzk::algebra::RootOfUnityDomain::create("edge", 16);
+        gatzk::algebra::RootOfUnityDomain::create("N", 8);
     constexpr std::size_t class_count = 2;
     constexpr std::size_t row_count = 2;
     const auto z_c = canonical_domain->point_at(class_count);
@@ -965,20 +965,20 @@ void test_same_point_indexed_view_relation() {
     require(z_c == z_edge,
             "m=1 indexed-view fixture must collide after canonical point merging");
 
-    std::vector<FieldElement> canonical_indices(8, FieldElement::zero());
-    std::vector<FieldElement> canonical_values(8, FieldElement::zero());
-    std::vector<FieldElement> canonical_selector(8, FieldElement::zero());
-    std::vector<FieldElement> canonical_multiplicity(8, FieldElement::zero());
+    std::vector<FieldElement> canonical_indices(4, FieldElement::zero());
+    std::vector<FieldElement> canonical_values(4, FieldElement::zero());
+    std::vector<FieldElement> canonical_selector(4, FieldElement::zero());
+    std::vector<FieldElement> canonical_multiplicity(4, FieldElement::zero());
     for (std::size_t column = 0; column < class_count; ++column) {
         canonical_indices[column] = FieldElement(column);
         canonical_values[column] = FieldElement(7 + 6 * column);
         canonical_selector[column] = FieldElement::one();
         canonical_multiplicity[column] = FieldElement(row_count);
     }
-    std::vector<FieldElement> view_indices(16, FieldElement::zero());
-    std::vector<FieldElement> view_values(16, FieldElement::zero());
-    std::vector<FieldElement> view_selector(16, FieldElement::zero());
-    std::vector<FieldElement> view_multiplicity(16, FieldElement::zero());
+    std::vector<FieldElement> view_indices(8, FieldElement::zero());
+    std::vector<FieldElement> view_values(8, FieldElement::zero());
+    std::vector<FieldElement> view_selector(8, FieldElement::zero());
+    std::vector<FieldElement> view_multiplicity(8, FieldElement::zero());
     for (std::size_t row = 0; row < row_count; ++row) {
         for (std::size_t column = 0; column < class_count; ++column) {
             const auto index = row * class_count + column;
@@ -1007,7 +1007,7 @@ void test_same_point_indexed_view_relation() {
     const auto c_can = gatzk::crypto::KZG::commit("P_same_R_can", r_can, keys);
     const auto c_qry = gatzk::crypto::KZG::commit("P_same_R_qry", r_qry, keys);
 
-    constexpr std::size_t relation_degree = 31;
+    constexpr std::size_t relation_degree = 15;
     auto relation_coefficients =
         gatzk::algebra::materialize_blinded_coefficients(r_can, relation_degree);
     const auto query_coefficients =
@@ -1341,17 +1341,53 @@ void test_srs_mismatch_gate() {
     require_throws(
         [&] { (void)gatzk::crypto::KZG::load_keys(srs_path, "trusted_srs", "wrong_srs_id"); },
         "SRS id mismatch must hard fail");
+    const auto manifest_keys = gatzk::crypto::KZG::load_keys(
+        srs_path, "trusted_srs", expected_srs_id);
+    const auto canonical_d_size = manifest_keys.manifest.domain_sizes.at("d");
+    (void)gatzk::crypto::KZG::load_keys_for_domains(
+        srs_path,
+        "trusted_srs",
+        expected_srs_id,
+        {{"d", canonical_d_size}});
+    const auto sibling_size = manifest_keys.manifest.domain_sizes.at("N");
+    require(
+        sibling_size != manifest_keys.manifest.domain_sizes.at("C"),
+        "unit SRS must expose a same-size sibling mismatch regression");
+    require_throws(
+        [&] {
+            (void)gatzk::crypto::KZG::load_keys_for_domains(
+                srs_path,
+                "trusted_srs",
+                expected_srs_id,
+                {{"C", sibling_size}});
+        },
+        "SRS loader must not borrow a same-size sibling domain");
 
     const auto manifest_tamper = copy_test_srs("manifest");
     auto manifest = read_file(manifest_tamper / "srs_manifest.json");
-    const auto format = manifest.find("zkgat_srs_manifest_v7");
-    require(format != std::string::npos, "unit SRS must use the frozen v7 manifest");
+    const auto format = manifest.find("zkgat_srs_manifest_v8");
+    require(format != std::string::npos, "unit SRS must use the audited v8 manifest");
     manifest[format] = 'x';
     write_file(manifest_tamper / "srs_manifest.json", manifest);
     require_throws(
         [&] { (void)gatzk::crypto::KZG::load_keys(
             manifest_tamper.string(), "trusted_srs", expected_srs_id); },
         "manifest byte tamper must hard fail");
+
+    const auto audit_tamper = copy_test_srs("audit_report");
+    auto audit_report = read_file(
+        audit_tamper / "srs_audit_report.txt");
+    const auto audit_status = audit_report.find("status=passed");
+    require(
+        audit_status != std::string::npos,
+        "unit SRS must carry a passed canonical audit report");
+    audit_report[audit_status] = 'x';
+    write_file(
+        audit_tamper / "srs_audit_report.txt", audit_report);
+    require_throws(
+        [&] { (void)gatzk::crypto::KZG::load_keys(
+            audit_tamper.string(), "trusted_srs", expected_srs_id); },
+        "SRS consistency audit report tamper must hard fail");
 
     const auto domain_tamper = copy_test_srs("domain");
     manifest = read_file(domain_tamper / "srs_manifest.json");
@@ -1540,6 +1576,7 @@ void test_srs_mismatch_gate() {
         "coefficient SRS material tamper must hard fail");
     for (const auto& path : {
              manifest_tamper, domain_tamper, compiler_tamper,
+             audit_tamper,
              compiler_rehashed_tamper, compiler_registry_rehashed_tamper,
              envelope_rehashed_tamper,
              vk_tamper, pk_tamper}) {
@@ -1556,7 +1593,7 @@ void test_metadata_and_schema_gates() {
     require(config.opening_mode == "point_grouped_batch_opening", "config opening mode mismatch");
     require(config.binding_mode == "zk_subproof_for_crpc", "config binding mode mismatch");
     require(config.srs_type == "trusted_srs", "config SRS type mismatch");
-    require(config.srs_id == "cora_formal_srs_v2", "config SRS id mismatch");
+    require(config.srs_id == "cora_formal_srs", "config SRS id mismatch");
     require(
         gatzk::protocol::schema_accepts_evaluation(
             gatzk::protocol::PolynomialVisibility::PrivateWitness,

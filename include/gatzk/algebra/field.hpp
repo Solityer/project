@@ -283,6 +283,44 @@ namespace gatzk::algebra
         return out;
     }
 
+    // Invert a non-zero batch without keeping a second full-sized field
+    // vector.  The prefix products are still required, but the input storage
+    // can be overwritten during the reverse pass once its original element
+    // has been consumed.
+    inline void batch_invert_in_place(std::vector<FieldElement>* values)
+    {
+        if (values == nullptr || values->empty())
+        {
+            return;
+        }
+
+        std::vector<mcl::Fr> prefixes(values->size());
+        mcl::Fr accumulator = 1;
+        for (std::size_t i = 0; i < values->size(); ++i)
+        {
+            if ((*values)[i].is_zero())
+            {
+                throw std::runtime_error("batch_invert_in_place encountered zero");
+            }
+            prefixes[i] = accumulator;
+            mcl::Fr::mul(
+                accumulator,
+                accumulator,
+                (*values)[i].native());
+        }
+
+        mcl::Fr suffix_inverse;
+        mcl::Fr::inv(suffix_inverse, accumulator);
+        for (std::size_t i = values->size(); i-- > 0;)
+        {
+            const mcl::Fr original = (*values)[i].native();
+            mcl::Fr inverse;
+            mcl::Fr::mul(inverse, suffix_inverse, prefixes[i]);
+            (*values)[i] = FieldElement::from_native(inverse);
+            mcl::Fr::mul(suffix_inverse, suffix_inverse, original);
+        }
+    }
+
     // 工作域大小必须是 2 的幂，这个辅助函数服务 context 构建阶段的 domain 规划。
     inline std::size_t next_power_of_two(std::size_t value)
     {

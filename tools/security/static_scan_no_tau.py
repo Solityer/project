@@ -151,7 +151,16 @@ def main():
             expected_schema_id = schema_id
         elif schema_id != expected_schema_id:
             failures.append((manifest.relative_to(ROOT), 1, "protocol schema id mismatch"))
-        required_keys = ("pk_coef_path", "pk_coef_hash", "vk_path", "vk_hash")
+        required_keys = (
+            "pk_coef_path",
+            "pk_coef_hash",
+            "vk_path",
+            "vk_hash",
+            "vanishing_g2_hash",
+            "srs_audit_report_path",
+            "srs_audit_report_hash",
+            "srs_consistency_hash",
+        )
         for key in required_keys:
             if not data.get(key):
                 failures.append((manifest.relative_to(ROOT), 1, f"missing {key}"))
@@ -162,6 +171,7 @@ def main():
         for path_key, hash_key in (
             ("pk_coef_path", "pk_coef_hash"),
             ("vk_path", "vk_hash"),
+            ("srs_audit_report_path", "srs_audit_report_hash"),
         ):
             rel = data.get(path_key)
             expected = data.get(hash_key)

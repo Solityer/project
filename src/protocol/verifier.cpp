@@ -1013,10 +1013,21 @@ namespace gatzk::protocol
             const std::unordered_map<std::string, crypto::Commitment> &top_level_dynamic,
             std::unordered_map<std::string, crypto::Commitment> *combined)
         {
-            if (combined == nullptr) return false;
+            const bool debug_verify =
+                std::getenv("GATZK_DEBUG_VERIFY") != nullptr;
+            const auto reject = [&](const std::string &reason)
+            {
+                if (debug_verify)
+                {
+                    util::info("model_reblind_fail=" + reason);
+                }
+                return false;
+            };
+            if (combined == nullptr) return reject("missing_combined_map");
             *combined = top_level_dynamic;
             const auto expected_meta = build_binding_relation_metadata(context);
-            if (proof.pi_bind.subproofs.size() != expected_meta.size()) return false;
+            if (proof.pi_bind.subproofs.size() != expected_meta.size())
+                return reject("subproof_count");
 
             std::size_t global_hidden_head = 0;
             std::unordered_set<std::string> model_object_ids;
@@ -1026,7 +1037,8 @@ namespace gatzk::protocol
                 const auto &subproof = proof.pi_bind.subproofs[subproof_index];
                 if (!binding_relation_meta_matches(
                         subproof.relation_meta, expected_meta[subproof_index]))
-                    return false;
+                    return reject(
+                        "relation_meta:" + std::to_string(subproof_index));
                 std::vector<std::pair<std::string, std::string>> expected_models;
                 if (subproof.relation_meta.object_kind == "hidden")
                 {
@@ -1051,7 +1063,9 @@ namespace gatzk::protocol
                     expected_models.push_back({output_dst_label(head), context.domains.c->name});
                     expected_models.push_back({output_bias_label(head), context.domains.c->name});
                 }
-                if (subproof.model_reblinds.size() != expected_models.size()) return false;
+                if (subproof.model_reblinds.size() != expected_models.size())
+                    return reject(
+                        "model_count:" + std::to_string(subproof_index));
                 for (std::size_t model_index = 0;
                      model_index < expected_models.size(); ++model_index)
                 {
@@ -1063,23 +1077,54 @@ namespace gatzk::protocol
                         || entry.vk_model_anchor.object_id != expected_anchor
                         || entry.proof_local_commitment.name != model_proof_local_label(expected_anchor)
                         || entry.blinder_commitment.name != model_reblind_witness_label(expected_anchor)
-                        || anchor_it == context.static_commitments.end()
-                        || entry.blinder_commitment.point == crypto::g1_zero()
-                        || !model_object_ids.insert(expected_anchor).second
-                        || !crypto::KZG::verify_domain_divisibility(
+                        || anchor_it == context.static_commitments.end())
+                    {
+                        return reject(
+                            "identity:" + std::to_string(subproof_index)
+                            + ":" + std::to_string(model_index)
+                            + ":" + expected_anchor);
+                    }
+                    if (entry.blinder_commitment.point == crypto::g1_zero())
+                    {
+                        return reject(
+                            "zero_blinder:" + std::to_string(subproof_index)
+                            + ":" + expected_anchor);
+                    }
+                    if (!model_object_ids.insert(expected_anchor).second)
+                    {
+                        return reject(
+                            "duplicate_anchor:" + std::to_string(subproof_index)
+                            + ":" + expected_anchor);
+                    }
+                    if (!crypto::KZG::verify_domain_divisibility(
                             entry.proof_local_commitment,
                             anchor_it->second,
                             entry.blinder_commitment,
                             expected_domain,
-                            context.kzg.vk)
-                        || !combined->emplace(
+                            context.kzg.vk))
+                    {
+                        return reject(
+                            "domain_divisibility:"
+                            + std::to_string(subproof_index)
+                            + ":" + expected_anchor);
+                    }
+                    if (!combined->emplace(
                             entry.proof_local_commitment.name,
-                            entry.proof_local_commitment).second
-                        || !combined->emplace(
+                            entry.proof_local_commitment).second)
+                    {
+                        return reject(
+                            "duplicate_proof_local:"
+                            + std::to_string(subproof_index)
+                            + ":" + expected_anchor);
+                    }
+                    if (!combined->emplace(
                             entry.blinder_commitment.name,
                             entry.blinder_commitment).second)
                     {
-                        return false;
+                        return reject(
+                            "duplicate_blinder:"
+                            + std::to_string(subproof_index)
+                            + ":" + expected_anchor);
                     }
                 }
                 std::vector<std::string> expected_canonical_references;

@@ -281,6 +281,108 @@ namespace gatzk::crypto
             return sha256_hex(canonical.str());
         }
 
+        std::string read_text_file(const std::filesystem::path& path);
+
+        std::vector<std::string> ordered_domain_names(
+            const std::unordered_map<std::string, std::size_t>& domains)
+        {
+            std::vector<std::string> names;
+            names.reserve(domains.size());
+            for (const auto& [name, _] : domains)
+            {
+                (void)_;
+                names.push_back(name);
+            }
+            std::sort(names.begin(), names.end());
+            return names;
+        }
+
+        std::string canonical_vanishing_g2_catalog_hash(
+            const SRSManifest& manifest,
+            const std::unordered_map<std::string, G2Point>& domain_zero_g2)
+        {
+            std::ostringstream canonical;
+            canonical << "zkgat:vanishing-g2-catalog:v1";
+            for (const auto& name :
+                 ordered_domain_names(manifest.domain_sizes))
+            {
+                const auto point = domain_zero_g2.find(name);
+                if (point == domain_zero_g2.end())
+                    throw std::runtime_error(
+                        "missing vanishing G2 catalogue entry: " + name);
+                const auto bytes = serialize(point->second);
+                canonical << '|' << name << ':'
+                          << manifest.domain_sizes.at(name) << ':'
+                          << bytes_to_lower_hex(
+                                 bytes.data(), bytes.size());
+            }
+            return sha256_hex(canonical.str());
+        }
+
+        std::string canonical_srs_audit_report(
+            const SRSManifest& manifest)
+        {
+            std::ostringstream report;
+            report << "GATZK-SRS-CONSISTENCY-AUDIT-v1\n";
+            report << "status=passed\n";
+            report << "sampling=none\n";
+            report << "coefficient_relation_method=exact_full_tau_reconstruction\n";
+            report << "lagrange_relation_method=exact_full_tau_reconstruction\n";
+            report << "group_validation=canonical_decode,curve,subgroup,non_identity\n";
+            report << "coefficient_point_count="
+                   << manifest.degree_bound + 1U << '\n';
+            report << "coefficient_relation_count="
+                   << manifest.degree_bound << '\n';
+            report << "domain_size_catalog_hash="
+                   << canonical_domain_catalog_hash(
+                          manifest.domain_sizes) << '\n';
+            report << "domain_generator_catalog_hash="
+                   << canonical_domain_generator_catalog_hash(
+                          manifest.domain_sizes,
+                          manifest.domain_generators,
+                          manifest.root_derivation_id,
+                          manifest.row_order)
+                   << '\n';
+            report << "pk_coef_hash=" << manifest.pk_coef_hash << '\n';
+            report << "vk_hash=" << manifest.vk_hash << '\n';
+            report << "protocol_compiler_artifact_hash="
+                   << manifest.protocol_compiler_artifact_hash << '\n';
+            report << "vanishing_g2_hash="
+                   << manifest.vanishing_g2_hash << '\n';
+            for (const auto& name :
+                 ordered_domain_names(manifest.domain_sizes))
+            {
+                const auto hash =
+                    manifest.pk_lagrange_hashes.find(name);
+                if (hash == manifest.pk_lagrange_hashes.end())
+                    throw std::runtime_error(
+                        "SRS audit report lacks Lagrange hash: "
+                        + name);
+                report << "domain." << name << '='
+                       << manifest.domain_sizes.at(name) << ','
+                       << hash->second << ','
+                       << manifest.domain_sizes.at(name) << '\n';
+            }
+            return report.str();
+        }
+
+        void validate_srs_audit_report_material(
+            const std::filesystem::path& srs_root,
+            const SRSManifest& manifest)
+        {
+            const auto report = read_text_file(
+                srs_root / manifest.srs_audit_report_path);
+            const auto expected = canonical_srs_audit_report(manifest);
+            const auto actual_hash = sha256_hex(report);
+            if (report != expected
+                || actual_hash != manifest.srs_audit_report_hash
+                || actual_hash != manifest.srs_consistency_hash)
+            {
+                throw std::runtime_error(
+                    "SRS consistency audit report binding mismatch");
+            }
+        }
+
         std::string read_text_file(const std::filesystem::path& path)
         {
             std::ifstream input(path);
@@ -367,7 +469,16 @@ namespace gatzk::crypto
                 manifest_scalar(text, "security_budget_ledger_hash");
             manifest.vk_path = manifest_scalar(text, "vk_path");
             manifest.vk_hash = manifest_scalar(text, "vk_hash");
+            manifest.vanishing_g2_hash =
+                manifest_scalar(text, "vanishing_g2_hash");
+            manifest.srs_audit_report_path =
+                manifest_scalar(text, "srs_audit_report_path");
+            manifest.srs_audit_report_hash =
+                manifest_scalar(text, "srs_audit_report_hash");
+            manifest.srs_consistency_hash =
+                manifest_scalar(text, "srs_consistency_hash");
             manifest.encoding = manifest_scalar(text, "encoding");
+            manifest.generator_id = manifest_scalar(text, "generator_id");
             manifest.generator_version = manifest_scalar(text, "generator_version");
             manifest.security_level = manifest_scalar(text, "security_level");
             manifest.kzg_assumption_profile_id = manifest_scalar(text, "kzg_assumption_profile_id");
@@ -404,6 +515,10 @@ namespace gatzk::crypto
                 || manifest.srs_type.empty() || manifest.degree_bound == 0
                 || manifest.pk_coef_path.empty() || manifest.pk_lagrange_paths.empty()
                 || manifest.vk_path.empty()
+                || manifest.vanishing_g2_hash.empty()
+                || manifest.srs_audit_report_path.empty()
+                || manifest.srs_audit_report_hash.empty()
+                || manifest.srs_consistency_hash.empty()
                 || manifest.protocol_compiler_artifact_path.empty()
                 || manifest.protocol_compiler_artifact_hash.empty())
             {
@@ -626,7 +741,22 @@ namespace gatzk::crypto
             std::string* actual_hash,
             std::size_t max_points);
 
-        std::vector<G1Point> load_raw_g1_vector_file_prefix(
+        void validate_loaded_srs_g1(
+            const G1Point& point,
+            const std::filesystem::path& path,
+            std::size_t index)
+        {
+            if (point.value.isZero()
+                || !point.value.isValid()
+                || !mcl::bn::isValidOrderBLS12(point.value))
+            {
+                throw std::runtime_error(
+                    "invalid, non-subgroup, or identity SRS G1 point at index "
+                    + std::to_string(index) + ": " + path.string());
+            }
+        }
+
+        std::vector<G1Point> load_fixed_or_raw_g1_vector_file_prefix(
             const std::filesystem::path& path,
             std::streamoff file_size,
             std::size_t max_points,
@@ -651,7 +781,9 @@ namespace gatzk::crypto
             std::array<char, 8> magic{};
             read_hashed(magic.data(), magic.size(), "G1 magic");
             const std::array<char, 8> expected_raw_magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', 'R'}};
-            if (magic != expected_raw_magic)
+            const std::array<char, 8> expected_canonical_magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', 'C'}};
+            if (magic != expected_raw_magic
+                && magic != expected_canonical_magic)
             {
                 return load_g1_vector_file(path, actual_hash, 0);
             }
@@ -662,27 +794,132 @@ namespace gatzk::crypto
             {
                 throw std::runtime_error("SRS G1 material is too large for this platform");
             }
-            std::array<std::uint8_t, 8> raw_size_bytes{};
-            read_hashed(reinterpret_cast<char*>(raw_size_bytes.data()), raw_size_bytes.size(), "raw G1 point size");
-            const auto raw_size = parse_u64_le_bytes(raw_size_bytes);
-            if (raw_size != sizeof(mcl::G1))
+            std::array<std::uint8_t, 8> point_size_bytes{};
+            read_hashed(
+                reinterpret_cast<char*>(point_size_bytes.data()),
+                point_size_bytes.size(),
+                "G1 point size");
+            const auto point_size_u64 =
+                parse_u64_le_bytes(point_size_bytes);
+            if (point_size_u64 == 0
+                || point_size_u64
+                    > static_cast<std::uint64_t>(
+                        std::numeric_limits<std::size_t>::max()))
             {
-                throw std::runtime_error("raw SRS G1 material was generated for an incompatible mcl layout");
+                throw std::runtime_error(
+                    "invalid fixed SRS G1 point size");
             }
+            const auto point_size =
+                static_cast<std::size_t>(point_size_u64);
+            if (magic == expected_raw_magic
+                && point_size != sizeof(mcl::G1))
+                throw std::runtime_error(
+                    "raw SRS G1 material was generated for an incompatible mcl layout");
 
             const auto point_count = static_cast<std::size_t>(count);
             const auto header_size = static_cast<std::size_t>(24);
-            const auto expected_size = header_size + point_count * sizeof(mcl::G1);
+            if (point_count
+                    > (std::numeric_limits<std::size_t>::max()
+                        - header_size) / point_size)
+                throw std::runtime_error(
+                    "fixed SRS G1 material size overflows this platform");
+            const auto expected_size =
+                header_size + point_count * point_size;
             if (expected_size != static_cast<std::size_t>(file_size))
             {
-                throw std::runtime_error("raw SRS G1 material size mismatch: " + path.string());
+                throw std::runtime_error(
+                    "fixed SRS G1 material size mismatch: "
+                    + path.string());
             }
             const auto load_count = max_points == 0 ? point_count : std::min(point_count, max_points);
             std::vector<G1Point> out(load_count);
             if (load_count != 0)
             {
-                const auto load_bytes = load_count * sizeof(mcl::G1);
-                read_hashed(reinterpret_cast<char*>(&out.front().value), load_bytes, "raw G1 prefix");
+                const auto load_bytes = load_count * point_size;
+                if (magic == expected_raw_magic)
+                {
+                    read_hashed(
+                        reinterpret_cast<char*>(&out.front().value),
+                        load_bytes,
+                        "raw G1 prefix");
+                }
+                else
+                {
+                    std::vector<std::uint8_t> payload(load_bytes);
+                    read_hashed(
+                        reinterpret_cast<char*>(payload.data()),
+                        payload.size(),
+                        "canonical G1 prefix");
+                    const auto worker_count = std::min<std::size_t>(
+                        std::max<std::size_t>(
+                            1, std::thread::hardware_concurrency()),
+                        load_count);
+                    const auto chunk_size =
+                        (load_count + worker_count - 1) / worker_count;
+                    std::vector<std::future<void>> futures;
+                    futures.reserve(worker_count);
+                    for (std::size_t worker = 0;
+                         worker < worker_count;
+                         ++worker)
+                    {
+                        const auto begin = worker * chunk_size;
+                        const auto end =
+                            std::min(load_count, begin + chunk_size);
+                        if (begin >= end)
+                            break;
+                        futures.push_back(std::async(
+                            std::launch::async,
+                            [&, begin, end]() {
+                                for (std::size_t i = begin;
+                                     i < end;
+                                     ++i)
+                                {
+                                    const auto* point_begin =
+                                        payload.data() + i * point_size;
+                                    std::vector<std::uint8_t> bytes(
+                                        point_begin,
+                                        point_begin + point_size);
+                                    out[i] = deserialize_g1(bytes);
+                                    if (serialize(out[i]) != bytes)
+                                        throw std::runtime_error(
+                                            "non-canonical SRS G1 encoding at index "
+                                            + std::to_string(i)
+                                            + ": " + path.string());
+                                }
+                            }));
+                    }
+                    for (auto& future : futures)
+                        future.get();
+                }
+                const auto worker_count = std::min<std::size_t>(
+                    std::max<std::size_t>(
+                        1, std::thread::hardware_concurrency()),
+                    load_count);
+                const auto chunk_size =
+                    (load_count + worker_count - 1) / worker_count;
+                std::vector<std::future<void>> futures;
+                futures.reserve(worker_count);
+                for (std::size_t worker = 0;
+                     worker < worker_count;
+                     ++worker)
+                {
+                    const auto begin = worker * chunk_size;
+                    const auto end =
+                        std::min(load_count, begin + chunk_size);
+                    if (begin >= end)
+                        break;
+                    futures.push_back(std::async(
+                        std::launch::async,
+                        [&, begin, end]() {
+                            for (std::size_t i = begin;
+                                 i < end;
+                                 ++i)
+                                validate_loaded_srs_g1(
+                                    out[i], path, i);
+                        }));
+                }
+                for (auto& future : futures)
+                    future.get();
             }
             if (max_points != 0 && load_count < point_count)
             {
@@ -695,7 +932,8 @@ namespace gatzk::crypto
                 return out;
             }
             std::array<char, 1 << 20> buffer{};
-            std::size_t remaining_bytes = (point_count - load_count) * sizeof(mcl::G1);
+            std::size_t remaining_bytes =
+                (point_count - load_count) * point_size;
             while (remaining_bytes != 0)
             {
                 const auto chunk = std::min<std::size_t>(remaining_bytes, buffer.size());
@@ -734,9 +972,13 @@ namespace gatzk::crypto
                 throw std::runtime_error("truncated SRS G1 material header: " + path.string());
             }
             const std::array<char, 8> expected_raw_magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', 'R'}};
-            if (max_points != 0 || magic_probe == expected_raw_magic)
+            const std::array<char, 8> expected_canonical_magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', 'C'}};
+            if (max_points != 0
+                || magic_probe == expected_raw_magic
+                || magic_probe == expected_canonical_magic)
             {
-                return load_raw_g1_vector_file_prefix(path, file_size, max_points, actual_hash);
+                return load_fixed_or_raw_g1_vector_file_prefix(
+                    path, file_size, max_points, actual_hash);
             }
             input.seekg(0);
             std::vector<std::uint8_t> file_bytes(static_cast<std::size_t>(file_size));
@@ -783,6 +1025,8 @@ namespace gatzk::crypto
                         file_bytes.data() + offset,
                         point_count * sizeof(mcl::G1));
                 }
+                for (std::size_t i = 0; i < out.size(); ++i)
+                    validate_loaded_srs_g1(out[i], path, i);
                 return out;
             }
             std::vector<std::pair<std::size_t, std::size_t>> payloads;
@@ -813,7 +1057,7 @@ namespace gatzk::crypto
                 {
                     break;
                 }
-                futures.push_back(std::async(std::launch::async, [&file_bytes, &payloads, &out, begin, end]() {
+                futures.push_back(std::async(std::launch::async, [&file_bytes, &payloads, &out, &path, begin, end]() {
                     for (std::size_t i = begin; i < end; ++i)
                     {
                         const auto [payload_offset, payload_size] = payloads[i];
@@ -821,6 +1065,11 @@ namespace gatzk::crypto
                             file_bytes.begin() + static_cast<std::ptrdiff_t>(payload_offset),
                             file_bytes.begin() + static_cast<std::ptrdiff_t>(payload_offset + payload_size));
                         out[i] = deserialize_g1(point_bytes);
+                        if (serialize(out[i]) != point_bytes)
+                            throw std::runtime_error(
+                                "non-canonical SRS G1 encoding at index "
+                                + std::to_string(i));
+                        validate_loaded_srs_g1(out[i], path, i);
                     }
                 }));
             }
@@ -876,7 +1125,16 @@ namespace gatzk::crypto
                 {
                     throw std::runtime_error("truncated SRS G2 point payload");
                 }
-                return deserialize_g2(bytes);
+                auto point = deserialize_g2(bytes);
+                if (point.value.isZero()
+                    || !point.value.isValid()
+                    || !mcl::bn::isValidOrderBLS12(point.value)
+                    || serialize(point) != bytes)
+                {
+                    throw std::runtime_error(
+                        "invalid, non-canonical, non-subgroup, or identity SRS G2 point");
+                }
+                return point;
             };
             auto g2_one = read_g2();
             auto g2_tau = read_g2();
@@ -920,8 +1178,9 @@ namespace gatzk::crypto
             const std::string& expected_srs_type,
             const std::string& expected_srs_id)
         {
-            if (manifest.manifest_format != "zkgat_srs_manifest_v7"
-                || manifest.generator_version != "zkgat_srs_setup_tool_v7")
+            if (manifest.manifest_format != "zkgat_srs_manifest_v8"
+                || manifest.generator_id != "zkgat_srs_setup_tool_v8"
+                || manifest.generator_version != "zkgat_srs_setup_tool_v8")
             {
                 throw std::runtime_error("unsupported or legacy SRS manifest format");
             }
@@ -978,6 +1237,17 @@ namespace gatzk::crypto
             if (manifest.security_level != "120-bit")
                 throw std::runtime_error(
                     "SRS manifest security target does not match compiler target");
+            if (manifest.encoding
+                    != "canonical_mcl_bls12_381_fixed_v1"
+                || manifest.srs_audit_report_hash.empty()
+                || manifest.srs_consistency_hash.empty()
+                || manifest.srs_audit_report_hash
+                    != manifest.srs_consistency_hash
+                || manifest.vanishing_g2_hash.empty())
+            {
+                throw std::runtime_error(
+                    "SRS canonical encoding or consistency audit binding is missing");
+            }
             for (const auto& [domain_name, domain_size] : manifest.domain_sizes)
             {
                 if (domain_size == 0 || domain_size > manifest.degree_bound)
@@ -1058,7 +1328,11 @@ namespace gatzk::crypto
 
         std::string srs_domain_name(const std::string& domain_name)
         {
-            return domain_name == "d" ? "d_h" : domain_name;
+            // The manifest key is the authenticated entry_id.  Quotient and
+            // transcript labels use `d_h`, but the canonical SRS catalogue
+            // entry generated by the setup tool is `d`; never rewrite one
+            // entry_id into another or select material by size alone.
+            return domain_name;
         }
 
         std::string srs_exact_domain_name(const std::string& domain_name, std::size_t domain_size)
@@ -1396,22 +1670,6 @@ namespace gatzk::crypto
                     && it->second->size() != polynomial.domain->size)
                 {
                     it = pk.lagrange_srs_by_domain.end();
-                }
-            }
-            if (it == pk.lagrange_srs_by_domain.end())
-            {
-                for (auto candidate =
-                         pk.lagrange_srs_by_domain.begin();
-                     candidate != pk.lagrange_srs_by_domain.end();
-                     ++candidate)
-                {
-                    if (candidate->second != nullptr
-                        && candidate->second->size()
-                            == polynomial.domain->size)
-                    {
-                        it = candidate;
-                        break;
-                    }
                 }
             }
             if (it == pk.lagrange_srs_by_domain.end())
@@ -2094,50 +2352,15 @@ namespace gatzk::crypto
             return plan;
         }
 
-        struct EvaluationInverseDenominatorCacheEntry
-        {
-            std::shared_ptr<algebra::RootOfUnityDomain> domain;
-            FieldElement base_point;
-            std::vector<FieldElement> base_inverse_denominators;
-        };
-
-        std::optional<std::size_t> small_rotation_shift(
-            const algebra::RootOfUnityDomain& domain,
-            const FieldElement& from,
-            const FieldElement& to)
-        {
-            if (from == to)
-            {
-                return 0;
-            }
-            FieldElement value = from;
-            const auto limit = std::min<std::size_t>(domain.size, 8);
-            for (std::size_t shift = 1; shift < limit; ++shift)
-            {
-                value *= domain.omega;
-                if (value == to)
-                {
-                    return shift;
-                }
-            }
-            return std::nullopt;
-        }
-
         G1Point open_single_point_fold(
             const FoldedOpeningPlan& plan,
             std::size_t point_index,
             const FieldElement& point,
             const KZGProverKey& pk,
-            std::vector<EvaluationInverseDenominatorCacheEntry>* inverse_denominator_cache = nullptr,
             BatchOpeningProfile* profile = nullptr,
             std::size_t worker_cap = 0,
             const G1MSMExecutionOptions* msm_options = nullptr)
         {
-            std::vector<EvaluationInverseDenominatorCacheEntry> local_inverse_denominator_cache;
-            auto* inverse_cache = inverse_denominator_cache != nullptr
-                ? inverse_denominator_cache
-                : &local_inverse_denominator_cache;
-
             auto out = g1_zero();
             const auto& coefficient_scaled_claim_sum = plan.coefficient_scaled_claim_sums[point_index];
             if (!plan.coefficient_fold.empty() || !(coefficient_scaled_claim_sum == FieldElement::zero()))
@@ -2166,66 +2389,27 @@ namespace gatzk::crypto
             }
             for (const auto& group : plan.evaluation_groups)
             {
-                const std::vector<FieldElement>* inverse_denominators = nullptr;
-                std::size_t inverse_rotation_shift = 0;
-                FieldElement inverse_rotation_scale = FieldElement::one();
-                bool reused_inverse_denominators = false;
-
-                const auto inverse_lookup_start = Clock::now();
-                for (auto& entry : *inverse_cache)
-                {
-                    if (entry.domain.get() != group.domain.get())
+                const auto inverse_start = Clock::now();
+                std::vector<FieldElement> inverse_denominators(
+                    group.domain->size,
+                    FieldElement::zero());
+                parallel_for_chunks_capped(group.domain->size, 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end) {
+                    for (std::size_t row = begin; row < end; ++row)
                     {
-                        continue;
-                    }
-                    const auto shift = small_rotation_shift(*group.domain, entry.base_point, point);
-                    if (!shift.has_value())
-                    {
-                        continue;
-                    }
-                    inverse_denominators = &entry.base_inverse_denominators;
-                    inverse_rotation_shift = *shift;
-                    if (inverse_rotation_shift != 0)
-                    {
-                        inverse_rotation_scale = group.domain->omega.pow(
-                            static_cast<std::uint64_t>(group.domain->size - inverse_rotation_shift));
-                        reused_inverse_denominators = true;
-                    }
-                    break;
-                }
-                if (reused_inverse_denominators && profile != nullptr)
-                {
-                    profile->denominator_inverse_reuse_hits += 1;
-                    profile->denominator_inverse_reuse_ms += elapsed_ms(inverse_lookup_start, Clock::now());
-                }
-
-                if (inverse_denominators == nullptr)
-                {
-                    const auto inverse_start = Clock::now();
-                    std::vector<FieldElement> denominators(group.domain->size, FieldElement::zero());
-                    parallel_for_chunks_capped(group.domain->size, 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end) {
-                        for (std::size_t row = begin; row < end; ++row)
+                        const auto domain_point = group.domain->point_at(row);
+                        if (domain_point == point)
                         {
-                            const auto domain_point = group.domain->point_at(row);
-                            if (domain_point == point)
-                            {
-                                throw std::runtime_error("opening point overlaps evaluation domain; derivative witness path is not implemented");
-                            }
-                            denominators[row] = domain_point - point;
+                            throw std::runtime_error("opening point overlaps evaluation domain; derivative witness path is not implemented");
                         }
-                    });
-                    auto computed_inverse_denominators = algebra::batch_invert(denominators);
-                    if (profile != nullptr)
-                    {
-                        profile->denominator_inverse_ms += elapsed_ms(inverse_start, Clock::now());
-                        profile->denominator_inverse_cache_misses += 1;
+                        inverse_denominators[row] = domain_point - point;
                     }
-                    inverse_cache->push_back(EvaluationInverseDenominatorCacheEntry{
-                        .domain = group.domain,
-                        .base_point = point,
-                        .base_inverse_denominators = std::move(computed_inverse_denominators),
-                    });
-                    inverse_denominators = &inverse_cache->back().base_inverse_denominators;
+                });
+                algebra::batch_invert_in_place(&inverse_denominators);
+                if (profile != nullptr)
+                {
+                    profile->denominator_inverse_ms += elapsed_ms(
+                        inverse_start, Clock::now());
+                    profile->denominator_inverse_cache_misses += 1;
                 }
 
                 const auto quotient_assembly_start = Clock::now();
@@ -2235,8 +2419,6 @@ namespace gatzk::crypto
                 zero.clear();
                 mcl::Fr base_numerator;
                 mcl::Fr::sub(base_numerator, zero, group.scaled_claim_sums[point_index].native());
-                const bool has_rotation = inverse_rotation_shift != 0;
-                const mcl::Fr rotation_scale_native = inverse_rotation_scale.native();
                 const auto* folded_values_native =
                     FieldElement::native_array_data(group.folded_values.data());
                 parallel_for_chunks_capped(group.domain->size, 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end) {
@@ -2247,18 +2429,10 @@ namespace gatzk::crypto
                             native_numerator,
                             native_numerator,
                             folded_values_native[row]);
-                        const auto inverse_index =
-                            !has_rotation
-                            ? row
-                            : (row + group.domain->size - inverse_rotation_shift) & (group.domain->size - 1U);
                         mcl::Fr::mul(
                             quotient_values_native[row],
                             native_numerator,
-                            (*inverse_denominators)[inverse_index].native());
-                        if (has_rotation)
-                        {
-                            mcl::Fr::mul(quotient_values_native[row], quotient_values_native[row], rotation_scale_native);
-                        }
+                            inverse_denominators[row].native());
                     }
                 });
                 if (profile != nullptr)
@@ -2884,20 +3058,6 @@ namespace gatzk::crypto
                         continue;
                     }
                 }
-                std::vector<std::string> same_size_candidates;
-                for (const auto& [candidate, size] : manifest.domain_sizes)
-                {
-                    if (size == domain_size && manifest.pk_lagrange_paths.contains(candidate))
-                    {
-                        same_size_candidates.push_back(candidate);
-                    }
-                }
-                std::sort(same_size_candidates.begin(), same_size_candidates.end());
-                if (!same_size_candidates.empty())
-                {
-                    add_unique_domain(&selected, same_size_candidates.front());
-                    continue;
-                }
                 throw std::runtime_error(
                     "SRS manifest lacks Lagrange material for domain "
                     + domain_name
@@ -2947,11 +3107,16 @@ namespace gatzk::crypto
         validate_manifest(manifest, expected_srs_type, expected_srs_id);
         const auto srs_root = std::filesystem::path(srs_path);
         validate_protocol_compiler_artifact_material(srs_root, manifest);
+        validate_srs_audit_report_material(srs_root, manifest);
         const auto selected_lagrange_domains =
             select_lagrange_srs_domains(manifest, required_lagrange_domains);
 
         std::string pk_coef_hash;
         progress_note("kzg:srs:pk_coef:start");
+        validate_material_hash_value(
+            sha256_file_hex_cached(srs_root / manifest.pk_coef_path),
+            manifest.pk_coef_hash,
+            "pk_coef");
         auto powers_g1 = load_g1_vector_file(
             srs_root / manifest.pk_coef_path,
             &pk_coef_hash,
@@ -2982,6 +3147,10 @@ namespace gatzk::crypto
             {
                 throw std::runtime_error("missing Lagrange SRS hash for domain: " + domain);
             }
+            validate_material_hash_value(
+                sha256_file_hex_cached(srs_root / path_it->second),
+                hash_it->second,
+                "pk_lagrange_" + domain);
             std::string material_hash;
             auto material = load_g1_vector_file(srs_root / path_it->second, &material_hash);
             validate_material_hash_value(material_hash, hash_it->second, "pk_lagrange_" + domain);
@@ -3008,11 +3177,13 @@ namespace gatzk::crypto
         }
         std::sort(ceremony_domains.begin(), ceremony_domains.end());
         std::ostringstream public_transcript;
-        public_transcript << "gatzk:trusted-srs-public-transcript:v7|"
+        public_transcript << "gatzk:trusted-srs-public-transcript:v8|"
                           << manifest.srs_id << '|' << manifest.degree_bound << '|'
                           << manifest.pk_coef_hash << '|' << manifest.vk_hash << '|'
                           << canonical_domain_catalog_hash(manifest.domain_sizes) << '|'
-                          << manifest.protocol_compiler_artifact_hash;
+                          << manifest.protocol_compiler_artifact_hash << '|'
+                          << manifest.vanishing_g2_hash << '|'
+                          << manifest.srs_consistency_hash;
         for (const auto &domain : ceremony_domains)
         {
             const auto hash = manifest.pk_lagrange_hashes.find(domain);
@@ -3037,6 +3208,13 @@ namespace gatzk::crypto
             {
                 throw std::runtime_error("missing verifier-key zero-polynomial G2 commitment for domain: " + domain_name);
             }
+        }
+        if (canonical_vanishing_g2_catalog_hash(
+                manifest, loaded_vk.domain_zero_g2)
+            != manifest.vanishing_g2_hash)
+        {
+            throw std::runtime_error(
+                "SRS vanishing G2 catalogue hash mismatch");
         }
 
         // The manifest hashes authenticate bytes, but they do not prove that the
@@ -3618,15 +3796,12 @@ namespace gatzk::crypto
                 : 0;
         }
 
-        std::vector<EvaluationInverseDenominatorCacheEntry> inverse_denominator_cache;
-        inverse_denominator_cache.reserve(1);
         const auto witness_start = Clock::now();
         const auto witness = open_single_point_fold(
             folded_plan,
             0,
             point,
             key.pk,
-            &inverse_denominator_cache,
             profile,
             field_worker_cap,
             msm_options);

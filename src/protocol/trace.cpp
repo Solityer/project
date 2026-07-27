@@ -335,24 +335,25 @@ namespace gatzk::protocol
 
         void record_public_output_hashes(
             TraceArtifacts &trace,
-            const Matrix &quant_logits,
-            const model::FloatMatrix &reference_logits)
+            const Matrix &secure_trace_logits,
+            const Matrix &reference_quant_logits,
+            const model::FloatMatrix &reference_fp32_logits)
         {
-            Matrix reference_quantized(reference_logits.size());
-            for (std::size_t row = 0; row < reference_logits.size(); ++row)
-            {
-                reference_quantized[row].reserve(reference_logits[row].size());
-                for (const auto value : reference_logits[row])
-                {
-                    reference_quantized[row].push_back(quantize_float(value));
-                }
-            }
-            trace.public_logits = algebra::flatten_matrix_coefficients(quant_logits);
-            trace.public_logits_hash = hash_field_matrix(quant_logits);
-            trace.reference_quant_logits_hash = hash_field_matrix(reference_quantized);
-            trace.secure_trace_logits_hash = hash_field_matrix(quant_logits);
+            // The quantized reference is the canonical integer forward, not a
+            // one-shot rounding of the final FP32 logits.  Quantization happens
+            // at every registered projection, attention, lookup and
+            // SignedRoundDiv boundary, so rounding only the final floating-point
+            // result is a different computation.
+            trace.public_logits =
+                algebra::flatten_matrix_coefficients(secure_trace_logits);
+            trace.public_logits_hash = hash_field_matrix(secure_trace_logits);
+            trace.reference_quant_logits_hash =
+                hash_field_matrix(reference_quant_logits);
+            trace.secure_trace_logits_hash =
+                hash_field_matrix(secure_trace_logits);
             trace.proof_public_output_hash.clear();
-            trace.reference_fp32_logits_hash = hash_float_matrix(reference_logits);
+            trace.reference_fp32_logits_hash =
+                hash_float_matrix(reference_fp32_logits);
         }
 
 
@@ -4278,23 +4279,6 @@ namespace gatzk::protocol
             const std::size_t d_cat = model::max_hidden_concat_width(context.model);
             const std::size_t n_classes = local.num_classes;
             const bool enable_single_graph_selector_shortcut = local.graph_count == 1;
-            auto metric_value = [&](double RunMetrics::*member)
-            {
-                return metrics != nullptr ? metrics->*member : 0.0;
-            };
-            auto add_residual_metric = [&](double RunMetrics::*member, double total_ms, std::initializer_list<double> accounted)
-            {
-                if (metrics == nullptr)
-                {
-                    return;
-                }
-                double accounted_ms = 0.0;
-                for (const auto value : accounted)
-                {
-                    accounted_ms += value;
-                }
-                metrics->*member += std::max(0.0, total_ms - accounted_ms);
-            };
             auto profiled_logup_inverse = [&](
                 const std::vector<FieldElement> &table,
                 const std::vector<FieldElement> &query,
@@ -4378,6 +4362,7 @@ namespace gatzk::protocol
             }
             record_public_output_hashes(
                 trace,
+                forward_artifacts->output_y_average,
                 forward_artifacts->output_y_average,
                 forward_artifacts->reference_logits_fp32);
             trace.public_metadata = canonical_public_metadata(context);
@@ -6210,8 +6195,6 @@ namespace gatzk::protocol
                 const auto object_stage_start = Clock::now();
                 auto h_cat_star = compress_rows_with_challenge(h_cat_layer, trace.challenges.at(xi_name));
                 add_metric(metrics != nullptr ? &metrics->hidden_output_object_residual_ms : nullptr, object_stage_start);
-                add_metric(metrics != nullptr ? &metrics->witness_materialization_ms : nullptr, stage_start);
-                add_metric(metrics != nullptr ? &metrics->field_conversion_residual_ms : nullptr, stage_start);
                 add_dynamic_commitment_batch(
                     trace,
                     {compact_column_spec(concat_star_label, std::move(h_cat_star), domains.n)},
@@ -6262,11 +6245,8 @@ namespace gatzk::protocol
 
             stage_start = Clock::now();
             const auto hidden_stack_start = stage_start;
-            const auto hidden_stack_initial_zkmap_ms = metric_value(&RunMetrics::zkmap_trace_ms);
-            const auto hidden_stack_initial_padding_ms = metric_value(&RunMetrics::padding_selector_trace_ms);
-            const auto hidden_stack_initial_field_conversion_ms = metric_value(&RunMetrics::field_conversion_residual_ms);
-            const auto hidden_stack_initial_commit_dynamic_ms = metric_value(&RunMetrics::commit_dynamic_ms);
-            const auto hidden_stack_initial_object_ms = metric_value(&RunMetrics::hidden_output_object_residual_ms);
+            const auto hidden_stack_initial_commit_dynamic_ms =
+                metrics != nullptr ? metrics->commit_dynamic_ms : 0.0;
             std::size_t global_hidden_head_index = 0;
             for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
             {
@@ -6279,29 +6259,20 @@ namespace gatzk::protocol
                 commit_hidden_layer_concat(layer_index);
             }
             const auto &h_cat = hidden_layer_concat_quantized.back();
-            add_residual_metric(
-                &RunMetrics::hidden_head_trace_ms,
-                elapsed_ms(hidden_stack_start, Clock::now()) - (metric_value(&RunMetrics::commit_dynamic_ms) - hidden_stack_initial_commit_dynamic_ms),
-                {
-                    metric_value(&RunMetrics::zkmap_trace_ms) - hidden_stack_initial_zkmap_ms,
-                    metric_value(&RunMetrics::padding_selector_trace_ms) - hidden_stack_initial_padding_ms,
-                    metric_value(&RunMetrics::field_conversion_residual_ms) - hidden_stack_initial_field_conversion_ms,
-                    metric_value(&RunMetrics::hidden_output_object_residual_ms) - hidden_stack_initial_object_ms,
-                });
+            if (metrics != nullptr)
+            {
+                metrics->hidden_head_trace_ms += std::max(
+                    0.0,
+                    elapsed_ms(hidden_stack_start, Clock::now())
+                        - (metrics->commit_dynamic_ms
+                           - hidden_stack_initial_commit_dynamic_ms));
+            }
 
             stage_start = Clock::now();
             const auto output_trace_start = stage_start;
             const auto output_cache_prefix = cache_prefix + ":output";
-            const auto output_initial_lookup_ms = metric_value(&RunMetrics::lookup_trace_ms);
-            const auto output_initial_route_ms = metric_value(&RunMetrics::route_trace_ms);
-            const auto output_initial_psq_ms = metric_value(&RunMetrics::psq_trace_ms);
-            const auto output_initial_zkmap_ms = metric_value(&RunMetrics::zkmap_trace_ms);
-            const auto output_initial_state_machine_ms = metric_value(&RunMetrics::state_machine_trace_ms);
-            const auto output_initial_padding_ms = metric_value(&RunMetrics::padding_selector_trace_ms);
-            const auto output_initial_route_pack_ms = metric_value(&RunMetrics::route_pack_residual_ms);
-            const auto output_initial_field_conversion_ms = metric_value(&RunMetrics::field_conversion_residual_ms);
-            const auto output_initial_object_ms = metric_value(&RunMetrics::hidden_output_object_residual_ms);
-            const auto output_initial_commit_dynamic_ms = metric_value(&RunMetrics::commit_dynamic_ms);
+            const auto output_initial_commit_dynamic_ms =
+                metrics != nullptr ? metrics->commit_dynamic_ms : 0.0;
             // 输出层保持“每头先各算各的”，最后再单独物化平均关系和 bias 后关系。
                 std::vector<Matrix> per_head_y_lin_matrices;
                 std::vector<Matrix> per_head_y_matrices;
@@ -7239,8 +7210,22 @@ namespace gatzk::protocol
                     commit_output_head(head_index);
                 }
 
-                const auto &y_lin_average = forward_artifacts->output_y_lin_average;
-                const auto &y_average = forward_artifacts->output_y_average;
+                const auto &y_lin_average =
+                    forward_artifacts->output_y_lin_average;
+                const auto &average_div =
+                    forward_artifacts->output_average_div;
+                Matrix y_average(
+                    n_nodes,
+                    std::vector<FieldElement>(
+                        n_classes, FieldElement::zero()));
+                for (std::size_t row = 0; row < n_nodes; ++row)
+                {
+                    for (std::size_t column = 0; column < n_classes; ++column)
+                    {
+                        y_average[row][column] =
+                            average_div.y.at(row * n_classes + column);
+                    }
+                }
                 add_dynamic_commitment_batch(
                     trace,
                     {
@@ -7250,7 +7235,6 @@ namespace gatzk::protocol
                     context.kzg,
                     keep_trace_payloads,
                     metrics);
-                const auto &average_div = forward_artifacts->output_average_div;
                 commit_signed_division("P_avg_Div_", average_div, "P_Q_div_avg");
 
                 std::unordered_map<std::string, const Matrix *>
@@ -8568,23 +8552,19 @@ namespace gatzk::protocol
                 }
                 trace.external_evaluations["mu_Y_lin"] = matrix_row_major_evaluation(y_lin_average, trace.challenges.at("y_out"));
                 trace.external_evaluations["mu_out"] = matrix_row_major_evaluation(y_average, trace.challenges.at("y_out"));
-                record_public_output_hashes(trace, y_average, forward_artifacts->reference_logits_fp32);
-                add_residual_metric(
-                    &RunMetrics::output_head_trace_ms,
-                    elapsed_ms(output_trace_start, Clock::now())
-                        - (metric_value(&RunMetrics::commit_dynamic_ms)
-                           - output_initial_commit_dynamic_ms),
-                    {
-                        metric_value(&RunMetrics::lookup_trace_ms) - output_initial_lookup_ms,
-                        metric_value(&RunMetrics::route_trace_ms) - output_initial_route_ms,
-                        metric_value(&RunMetrics::psq_trace_ms) - output_initial_psq_ms,
-                        metric_value(&RunMetrics::zkmap_trace_ms) - output_initial_zkmap_ms,
-                        metric_value(&RunMetrics::state_machine_trace_ms) - output_initial_state_machine_ms,
-                        metric_value(&RunMetrics::padding_selector_trace_ms) - output_initial_padding_ms,
-                        metric_value(&RunMetrics::route_pack_residual_ms) - output_initial_route_pack_ms,
-                        metric_value(&RunMetrics::field_conversion_residual_ms) - output_initial_field_conversion_ms,
-                        metric_value(&RunMetrics::hidden_output_object_residual_ms) - output_initial_object_ms,
-                    });
+                record_public_output_hashes(
+                    trace,
+                    y_average,
+                    forward_artifacts->output_y_average,
+                    forward_artifacts->reference_logits_fp32);
+                if (metrics != nullptr)
+                {
+                    metrics->output_head_trace_ms += std::max(
+                        0.0,
+                        elapsed_ms(output_trace_start, Clock::now())
+                            - (metrics->commit_dynamic_ms
+                               - output_initial_commit_dynamic_ms));
+                }
 
             finalize_trace_registry(context, transcript, trace, metrics);
             if (metrics != nullptr)

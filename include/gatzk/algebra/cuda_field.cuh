@@ -8,9 +8,16 @@
 
 namespace gatzk { namespace algebra { namespace gpu {
 
-struct alignas(32) GpuFr {
+// Keep the device view compatible with canonical mcl::Fr arrays.  mcl::Fr
+// stores the same four 64-bit Montgomery limbs but does not promise 32-byte
+// alignment for std::vector elements.  Requiring alignas(32) here made CUDA
+// issue misaligned 32-byte host-page reads on otherwise valid canonical
+// buffers.  Eight-byte alignment is sufficient for every limb operation.
+struct GpuFr {
     uint64_t d[4]; // 小端 limb 布局，数值保持在 Montgomery 形式
 };
+static_assert(sizeof(GpuFr) == 4 * sizeof(uint64_t));
+static_assert(alignof(GpuFr) == alignof(uint64_t));
 
 // ===== 模数与常量 =====
 // BLS12-381 Fr 模数，按小端 4×64-bit limb 存放。

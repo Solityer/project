@@ -417,6 +417,21 @@ int main(int argc, char **argv)
             const auto trace_elapsed_ms =
                 std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - trace_start).count();
+            metrics.lookup_trace_ms =
+                metrics.lookup_table_pack_ms
+                + metrics.lookup_query_pack_ms
+                + metrics.lookup_key_build_ms
+                + metrics.lookup_multiplicity_ms
+                + metrics.lookup_inverse_ms
+                + metrics.lookup_accumulator_ms
+                + metrics.lookup_state_machine_ms
+                + metrics.lookup_selector_mask_ms
+                + metrics.lookup_public_helper_ms
+                + metrics.lookup_copy_convert_ms;
+            const auto trace_other_ms = clamp_non_negative(
+                metrics.trace_generation_ms
+                - metrics.hidden_head_trace_ms
+                - metrics.output_head_trace_ms);
             progress(
                 mode_label + ":trace:done:ms="
                 + format_ms(trace_elapsed_ms));
@@ -440,20 +455,14 @@ int main(int argc, char **argv)
                     metrics.lookup_query_pack_ms
                     + metrics.lookup_multiplicity_ms
                     + metrics.lookup_key_build_ms)
-                + ":route_ms=" + format_ms(metrics.route_trace_ms)
-                + ":psq_ms=" + format_ms(metrics.psq_trace_ms)
-                + ":zkmap_ms=" + format_ms(metrics.zkmap_trace_ms)
-                + ":state_ms=" + format_ms(metrics.state_machine_trace_ms)
-                + ":witness_ms="
-                + format_ms(metrics.witness_materialization_ms)
-                + ":hidden_residual_ms="
+                + ":lookup_nested_total_ms="
+                + format_ms(metrics.lookup_trace_ms)
+                + ":hidden_stage_ms="
                 + format_ms(metrics.hidden_head_trace_ms)
-                + ":output_residual_ms="
+                + ":output_stage_ms="
                 + format_ms(metrics.output_head_trace_ms)
-                + ":object_residual_ms="
-                + format_ms(metrics.hidden_output_object_residual_ms)
-                + ":field_convert_ms="
-                + format_ms(metrics.field_conversion_residual_ms)
+                + ":trace_other_ms="
+                + format_ms(trace_other_ms)
                 + ":finalize_ms="
                 + format_ms(metrics.trace_finalize_ms));
             metrics.reference_forward_ms = metrics.forward_ms;
@@ -466,9 +475,16 @@ int main(int argc, char **argv)
             const auto prover_pipeline_end = std::chrono::steady_clock::now();
             progress(mode_label + ":prove:done");
             metrics.lookup_trace_ms =
-                metrics.lookup_table_pack_ms + metrics.lookup_query_pack_ms + metrics.lookup_key_build_ms + metrics.lookup_multiplicity_ms + metrics.lookup_accumulator_ms + metrics.lookup_state_machine_ms + metrics.lookup_selector_mask_ms + metrics.lookup_public_helper_ms + metrics.lookup_copy_convert_ms;
-            metrics.hidden_head_trace_ms =
-                metrics.hidden_projection_trace_ms + metrics.hidden_src_attention_trace_ms + metrics.hidden_dst_attention_trace_ms + metrics.hidden_edge_score_trace_ms + metrics.hidden_softmax_chain_trace_ms + metrics.hidden_h_star_trace_ms + metrics.hidden_h_agg_pre_star_trace_ms + metrics.hidden_h_agg_star_trace_ms + metrics.hidden_route_trace_ms + metrics.hidden_copy_convert_ms;
+                metrics.lookup_table_pack_ms
+                + metrics.lookup_query_pack_ms
+                + metrics.lookup_key_build_ms
+                + metrics.lookup_multiplicity_ms
+                + metrics.lookup_inverse_ms
+                + metrics.lookup_accumulator_ms
+                + metrics.lookup_state_machine_ms
+                + metrics.lookup_selector_mask_ms
+                + metrics.lookup_public_helper_ms
+                + metrics.lookup_copy_convert_ms;
             metrics.trace_misc_ms =
                 metrics.route_pack_residual_ms + metrics.selector_padding_residual_ms + metrics.public_poly_residual_ms + metrics.hidden_output_object_residual_ms + metrics.shared_helper_build_ms + metrics.field_conversion_residual_ms + metrics.copy_move_residual_ms + metrics.trace_finalize_ms;
             // build_trace and prove interleave ordinary prover work with commitment

@@ -1,6 +1,7 @@
 #include <array>
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -20,10 +21,39 @@
 #include <mcl/bn.hpp>
 
 #include "gatzk/algebra/field.hpp"
+#include "gatzk/crypto/kzg.hpp"
 #include "gatzk/protocol/schema.hpp"
 
 namespace
 {
+    std::size_t srs_worker_count()
+    {
+        const auto hardware = std::max<std::size_t>(
+            1, std::thread::hardware_concurrency());
+        const auto *configured = std::getenv("GATZK_SRS_WORKERS");
+        if (configured == nullptr || *configured == '\0')
+        {
+            return hardware;
+        }
+        const std::string value(configured);
+        if (!std::all_of(
+                value.begin(), value.end(),
+                [](unsigned char ch) {
+                    return ch >= '0' && ch <= '9';
+                }))
+        {
+            throw std::runtime_error(
+                "GATZK_SRS_WORKERS must be a positive canonical integer");
+        }
+        const auto parsed =
+            static_cast<std::size_t>(std::stoull(value));
+        if (parsed == 0 || parsed > hardware)
+        {
+            throw std::runtime_error(
+                "GATZK_SRS_WORKERS must be between 1 and hardware concurrency");
+        }
+        return parsed;
+    }
 
     void write_u64_le(std::ostream &out, std::uint64_t value)
     {
@@ -65,10 +95,21 @@ namespace
             reinterpret_cast<const char *>(bytes.data()) + static_cast<std::ptrdiff_t>(bytes.size()));
     }
 
-    void append_raw_g1(std::string &out, const mcl::G1 &point)
+    void append_fixed_serialized_g1(
+        std::string &out,
+        const mcl::G1 &point,
+        std::size_t point_size)
     {
-        const auto *begin = reinterpret_cast<const char *>(&point);
-        out.append(begin, begin + static_cast<std::ptrdiff_t>(sizeof(mcl::G1)));
+        const auto bytes = serialize_g1(point);
+        if (bytes.size() != point_size)
+        {
+            throw std::runtime_error(
+                "G1 canonical serialization size changed within one SRS file");
+        }
+        out.append(
+            reinterpret_cast<const char *>(bytes.data()),
+            reinterpret_cast<const char *>(bytes.data())
+                + static_cast<std::ptrdiff_t>(bytes.size()));
     }
 
     std::vector<std::uint8_t> serialize_g2(const mcl::G2 &point)
@@ -125,20 +166,24 @@ namespace
     }
 
     template <typename ChunkFn>
-    void write_g1_chunks(const std::filesystem::path &path, std::uint64_t count, ChunkFn &&chunk_fn)
+    void write_g1_chunks(
+        const std::filesystem::path &path,
+        std::uint64_t count,
+        std::size_t point_size,
+        ChunkFn &&chunk_fn)
     {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         if (!out)
         {
             throw std::runtime_error("failed to open " + path.string());
         }
-        const std::array<char, 8> magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', 'R'}};
+        const std::array<char, 8> magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', 'C'}};
         out.write(magic.data(), static_cast<std::streamsize>(magic.size()));
         write_u64_le(out, count);
-        write_u64_le(out, sizeof(mcl::G1));
+        write_u64_le(out, point_size);
 
         const std::uint64_t chunk_size = 8192;
-        const std::size_t max_inflight = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+        const std::size_t max_inflight = srs_worker_count();
         std::vector<std::future<std::string>> inflight;
         inflight.reserve(max_inflight);
         std::uint64_t next = 0;
@@ -164,6 +209,175 @@ namespace
             {
                 launch_next();
             }
+        }
+    }
+
+    std::uint64_t read_u64_le(std::istream &input, std::string_view field)
+    {
+        std::array<std::uint8_t, 8> bytes{};
+        input.read(
+            reinterpret_cast<char *>(bytes.data()),
+            static_cast<std::streamsize>(bytes.size()));
+        if (input.gcount() != static_cast<std::streamsize>(bytes.size()))
+        {
+            throw std::runtime_error(
+                "truncated canonical SRS " + std::string(field));
+        }
+        std::uint64_t value = 0;
+        for (std::size_t i = 0; i < bytes.size(); ++i)
+        {
+            value |= static_cast<std::uint64_t>(bytes[i]) << (8U * i);
+        }
+        return value;
+    }
+
+    struct CanonicalG1File
+    {
+        std::uint64_t count = 0;
+        std::size_t point_size = 0;
+    };
+
+    CanonicalG1File inspect_canonical_g1_file(
+        const std::filesystem::path &path)
+    {
+        std::ifstream input(path, std::ios::binary);
+        if (!input)
+        {
+            throw std::runtime_error(
+                "failed to open canonical SRS material " + path.string());
+        }
+        std::array<char, 8> magic{};
+        input.read(magic.data(), static_cast<std::streamsize>(magic.size()));
+        const std::array<char, 8> expected{{
+            'G', 'A', 'T', 'Z', 'K', 'G', '1', 'C'}};
+        if (input.gcount() != static_cast<std::streamsize>(magic.size())
+            || magic != expected)
+        {
+            throw std::runtime_error(
+                "canonical SRS G1 header mismatch: " + path.string());
+        }
+        const auto count = read_u64_le(input, "G1 point count");
+        const auto point_size_u64 = read_u64_le(input, "G1 point size");
+        if (point_size_u64 == 0
+            || point_size_u64
+                > static_cast<std::uint64_t>(
+                    std::numeric_limits<std::size_t>::max()))
+        {
+            throw std::runtime_error(
+                "canonical SRS G1 point size is invalid: " + path.string());
+        }
+        const auto point_size = static_cast<std::size_t>(point_size_u64);
+        const auto file_size = std::filesystem::file_size(path);
+        if (count > (std::numeric_limits<std::uint64_t>::max() - 24U)
+                / point_size
+            || file_size != 24U + count * point_size)
+        {
+            throw std::runtime_error(
+                "canonical SRS G1 file size mismatch: " + path.string());
+        }
+        return {.count = count, .point_size = point_size};
+    }
+
+    mcl::G1 deserialize_and_validate_canonical_g1(
+        const std::vector<std::uint8_t> &bytes,
+        std::string_view material_name,
+        std::uint64_t index)
+    {
+        mcl::G1 point;
+        const auto consumed = point.deserialize(bytes.data(), bytes.size());
+        if (consumed != bytes.size()
+            || point.isZero()
+            || !point.isValid()
+            || !mcl::bn::isValidOrderBLS12(point)
+            || serialize_g1(point) != bytes)
+        {
+            throw std::runtime_error(
+                "canonical SRS point validation failed for "
+                + std::string(material_name)
+                + " at index " + std::to_string(index));
+        }
+        return point;
+    }
+
+    template <typename ExpectedChunkFn>
+    void audit_canonical_g1_file(
+        const std::filesystem::path &path,
+        std::uint64_t expected_count,
+        std::string_view material_name,
+        ExpectedChunkFn &&expected_chunk_fn)
+    {
+        const auto header = inspect_canonical_g1_file(path);
+        if (header.count != expected_count)
+        {
+            throw std::runtime_error(
+                "canonical SRS point count mismatch for "
+                + std::string(material_name));
+        }
+        const auto worker_count = std::min<std::uint64_t>(
+            srs_worker_count(),
+            std::max<std::uint64_t>(1, expected_count));
+        const auto chunk_size =
+            (expected_count + worker_count - 1U) / worker_count;
+        std::vector<std::future<void>> futures;
+        futures.reserve(static_cast<std::size_t>(worker_count));
+        for (std::uint64_t worker = 0; worker < worker_count; ++worker)
+        {
+            const auto begin = worker * chunk_size;
+            const auto end = std::min(expected_count, begin + chunk_size);
+            if (begin >= end)
+            {
+                break;
+            }
+            futures.push_back(std::async(
+                std::launch::async,
+                [&, begin, end]() {
+                    std::ifstream input(path, std::ios::binary);
+                    if (!input)
+                    {
+                        throw std::runtime_error(
+                            "failed to reopen canonical SRS material "
+                            + path.string());
+                    }
+                    input.seekg(
+                        static_cast<std::streamoff>(
+                            24U + begin * header.point_size));
+                    if (!input)
+                    {
+                        throw std::runtime_error(
+                            "failed to seek canonical SRS material "
+                            + path.string());
+                    }
+                    auto expected = expected_chunk_fn(begin);
+                    std::vector<std::uint8_t> bytes(header.point_size);
+                    for (auto index = begin; index < end; ++index)
+                    {
+                        input.read(
+                            reinterpret_cast<char *>(bytes.data()),
+                            static_cast<std::streamsize>(bytes.size()));
+                        if (input.gcount()
+                            != static_cast<std::streamsize>(bytes.size()))
+                        {
+                            throw std::runtime_error(
+                                "truncated canonical SRS point in "
+                                + path.string());
+                        }
+                        const auto actual =
+                            deserialize_and_validate_canonical_g1(
+                                bytes, material_name, index);
+                        const auto expected_point = expected(index);
+                        if (actual != expected_point)
+                        {
+                            throw std::runtime_error(
+                                "exact SRS consistency audit failed for "
+                                + std::string(material_name)
+                                + " at index " + std::to_string(index));
+                        }
+                    }
+                }));
+        }
+        for (auto &future : futures)
+        {
+            future.get();
         }
     }
 
@@ -272,6 +486,66 @@ namespace
                              gatzk::algebra::FieldElement::root_of_unity(domains.at(name)));
         }
         return sha256_hex(canonical.str());
+    }
+
+    std::string vanishing_g2_catalog_bytes(
+        const std::unordered_map<std::string, std::size_t> &domains,
+        const std::unordered_map<std::string, mcl::G2> &domain_zero_g2)
+    {
+        std::ostringstream canonical;
+        canonical << "zkgat:vanishing-g2-catalog:v1";
+        for (const auto &name : ordered_domain_names(domains))
+        {
+            const auto point = domain_zero_g2.find(name);
+            if (point == domain_zero_g2.end()
+                || point->second.isZero()
+                || !point->second.isValid()
+                || !mcl::bn::isValidOrderBLS12(point->second))
+            {
+                throw std::runtime_error(
+                    "invalid vanishing G2 catalogue entry: " + name);
+            }
+            const auto bytes = serialize_g2(point->second);
+            canonical << '|' << name << ':' << domains.at(name) << ':'
+                      << bytes_to_hex(bytes.data(), bytes.size());
+        }
+        return canonical.str();
+    }
+
+    std::string srs_audit_report_bytes(
+        std::size_t degree_bound,
+        const std::unordered_map<std::string, std::size_t> &domains,
+        const std::unordered_map<std::string, std::string> &lagrange_hashes,
+        const std::string &pk_coef_hash,
+        const std::string &vk_hash,
+        const std::string &compiler_artifact_hash,
+        const std::string &vanishing_g2_hash)
+    {
+        std::ostringstream report;
+        report << "GATZK-SRS-CONSISTENCY-AUDIT-v1\n";
+        report << "status=passed\n";
+        report << "sampling=none\n";
+        report << "coefficient_relation_method=exact_full_tau_reconstruction\n";
+        report << "lagrange_relation_method=exact_full_tau_reconstruction\n";
+        report << "group_validation=canonical_decode,curve,subgroup,non_identity\n";
+        report << "coefficient_point_count=" << degree_bound + 1U << '\n';
+        report << "coefficient_relation_count=" << degree_bound << '\n';
+        report << "domain_size_catalog_hash="
+               << domain_catalog_hash(domains) << '\n';
+        report << "domain_generator_catalog_hash="
+               << domain_generator_catalog_hash(domains) << '\n';
+        report << "pk_coef_hash=" << pk_coef_hash << '\n';
+        report << "vk_hash=" << vk_hash << '\n';
+        report << "protocol_compiler_artifact_hash="
+               << compiler_artifact_hash << '\n';
+        report << "vanishing_g2_hash=" << vanishing_g2_hash << '\n';
+        for (const auto &name : ordered_domain_names(domains))
+        {
+            report << "domain." << name << '=' << domains.at(name) << ','
+                   << lagrange_hashes.at(name) << ','
+                   << domains.at(name) << '\n';
+        }
+        return report.str();
     }
 
     void validate_compiler_inputs(
@@ -688,18 +962,22 @@ namespace
         std::size_t degree_bound,
         const std::unordered_map<std::string, std::size_t> &domains,
         const std::unordered_map<std::string, std::string> &lagrange_hashes,
-        const SRSCompilerArtifact &compiler_artifact)
+        const SRSCompilerArtifact &compiler_artifact,
+        const std::string &vanishing_g2_hash,
+        const std::string &srs_consistency_hash)
     {
         const auto pk_coef_hash = sha256_file_hex(out_dir / "pk_coef.bin");
         const auto vk_hash = sha256_file_hex(out_dir / "vk.bin");
         const auto compiler_artifact_hash = sha256_file_hex(
             out_dir / "protocol_compiler_artifact.txt");
         std::ostringstream public_transcript;
-        public_transcript << "gatzk:trusted-srs-public-transcript:v7|"
+        public_transcript << "gatzk:trusted-srs-public-transcript:v8|"
                           << srs_id << '|' << degree_bound << '|'
                           << pk_coef_hash << '|' << vk_hash << '|'
                           << domain_catalog_hash(domains) << '|'
-                          << compiler_artifact_hash;
+                          << compiler_artifact_hash << '|'
+                          << vanishing_g2_hash << '|'
+                          << srs_consistency_hash;
         for (const auto &name : ordered_domain_names(domains))
         {
             public_transcript << '|' << name << '=' << lagrange_hashes.at(name);
@@ -707,7 +985,7 @@ namespace
         const auto transcript_hash = sha256_hex(public_transcript.str());
         std::ostringstream manifest;
         manifest << "{\n";
-        manifest << "  \"manifest_format\": \"zkgat_srs_manifest_v7\",\n";
+        manifest << "  \"manifest_format\": \"zkgat_srs_manifest_v8\",\n";
         manifest << "  \"srs_id\": \"" << srs_id << "\",\n";
         manifest << "  \"curve_id\": \"bls12_381\",\n";
         manifest << "  \"field_modulus_id\": \"bls12_381_fr\",\n";
@@ -789,8 +1067,16 @@ namespace
         manifest << "  },\n";
         manifest << "  \"vk_path\": \"vk.bin\",\n";
         manifest << "  \"vk_hash\": \"" << vk_hash << "\",\n";
-        manifest << "  \"encoding\": \"raw_mcl_bls12_381_v1\",\n";
-        manifest << "  \"generator_version\": \"zkgat_srs_setup_tool_v7\",\n";
+        manifest << "  \"vanishing_g2_hash\": \""
+                 << vanishing_g2_hash << "\",\n";
+        manifest << "  \"srs_audit_report_path\": \"srs_audit_report.txt\",\n";
+        manifest << "  \"srs_audit_report_hash\": \""
+                 << srs_consistency_hash << "\",\n";
+        manifest << "  \"srs_consistency_hash\": \""
+                 << srs_consistency_hash << "\",\n";
+        manifest << "  \"encoding\": \"canonical_mcl_bls12_381_fixed_v1\",\n";
+        manifest << "  \"generator_id\": \"zkgat_srs_setup_tool_v8\",\n";
+        manifest << "  \"generator_version\": \"zkgat_srs_setup_tool_v8\",\n";
         manifest << "  \"security_level\": \"120-bit\",\n";
         manifest << "  \"kzg_assumption_profile_id\": \"shifted_kzg_divisibility_v1\",\n";
         manifest << "  \"kzg_assumption_degree_bound\": " << degree_bound << ",\n";
@@ -819,6 +1105,20 @@ int main(int argc, char **argv)
 {
     try
     {
+        if (argc == 4 && std::string_view(argv[1]) == "validate")
+        {
+            mcl::bn::initPairing(mcl::BLS12_381);
+            const auto keys = gatzk::crypto::KZG::load_keys(
+                argv[2], "trusted_srs", argv[3]);
+            std::cout << "validated SRS material for "
+                      << keys.manifest.srs_id
+                      << " degree_bound="
+                      << keys.manifest.degree_bound
+                      << " consistency_hash="
+                      << keys.manifest.srs_consistency_hash
+                      << "\n";
+            return 0;
+        }
         if (argc >= 2 && std::string_view(argv[1]) == "compile")
         {
             if (argc < 6)
@@ -842,7 +1142,9 @@ int main(int argc, char **argv)
         }
         if (argc != 5 || std::string_view(argv[1]) != "ceremony")
         {
-            std::cerr << "usage: generate_srs ceremony <output-dir> <compiler-artifact> <srs-id>\n";
+            std::cerr
+                << "usage: generate_srs validate <srs-dir> <srs-id>\n"
+                << "   or: generate_srs ceremony <output-dir> <compiler-artifact> <srs-id>\n";
             return 2;
         }
         const auto out_dir = std::filesystem::path(argv[2]);
@@ -860,6 +1162,7 @@ int main(int argc, char **argv)
         mcl::G2 g2;
         mcl::bn::hashAndMapToG1(g1, "gatzk:kzg:g1");
         mcl::bn::hashAndMapToG2(g2, "gatzk:kzg:g2");
+        const auto canonical_g1_size = serialize_g1(g1).size();
 
         // Complete the ceremony preflight before creating the output directory
         // or writing any key bytes.  A rejected sample must leave no partial
@@ -894,20 +1197,27 @@ int main(int argc, char **argv)
             out_dir / "protocol_compiler_artifact.txt",
             std::filesystem::copy_options::none);
 
-        write_g1_chunks(out_dir / "pk_coef.bin", degree_bound + 1, [&](std::uint64_t begin, std::uint64_t end)
+        std::cerr << "[srs] pk_coef:generate:start count="
+                  << degree_bound + 1U << "\n";
+        write_g1_chunks(
+            out_dir / "pk_coef.bin",
+            degree_bound + 1,
+            canonical_g1_size,
+            [&](std::uint64_t begin, std::uint64_t end)
                         {
             std::string bytes;
-            bytes.reserve(static_cast<std::size_t>(end - begin) * sizeof(mcl::G1));
+            bytes.reserve(static_cast<std::size_t>(end - begin) * canonical_g1_size);
             mcl::Fr power;
             mcl::Fr::pow(power, tau, begin);
             for (std::uint64_t i = begin; i < end; ++i) {
                 (void)i;
                 mcl::G1 point;
                 mcl::G1::mul(point, g1, power);
-                append_raw_g1(bytes, point);
+                append_fixed_serialized_g1(bytes, point, canonical_g1_size);
                 mcl::Fr::mul(power, power, tau);
             }
             return bytes; });
+        std::cerr << "[srs] pk_coef:generate:done\n";
 
         mcl::G2 g2_tau;
         mcl::G2::mul(g2_tau, g2, tau);
@@ -915,6 +1225,9 @@ int main(int argc, char **argv)
         std::unordered_map<std::string, mcl::G2> domain_zero_g2;
         for (const auto &[domain_name, domain_size] : domains)
         {
+            std::cerr << "[srs] lagrange:" << domain_name
+                      << ":generate:start count=" << domain_size
+                      << "\n";
             const auto omega = gatzk::algebra::FieldElement::root_of_unity(domain_size);
             const auto inv_size = gatzk::algebra::FieldElement(static_cast<std::uint64_t>(domain_size)).inv();
             const auto zero_at_tau = tau_field.pow(domain_size) - gatzk::algebra::FieldElement::one();
@@ -922,26 +1235,139 @@ int main(int argc, char **argv)
             mcl::G2::mul(zero_commitment, g2, zero_at_tau.native());
             domain_zero_g2.emplace(domain_name, zero_commitment);
             const auto path = out_dir / ("pk_lagrange_" + domain_name + ".bin");
-            write_g1_chunks(path, domain_size, [&](std::uint64_t begin, std::uint64_t end)
+            write_g1_chunks(
+                path,
+                domain_size,
+                canonical_g1_size,
+                [&](std::uint64_t begin, std::uint64_t end)
                             {
                 std::string bytes;
-                bytes.reserve(static_cast<std::size_t>(end - begin) * sizeof(mcl::G1));
+                bytes.reserve(static_cast<std::size_t>(end - begin) * canonical_g1_size);
                 auto domain_point = omega.pow(begin);
                 for (std::uint64_t i = begin; i < end; ++i) {
                     (void)i;
                     const auto scalar = zero_at_tau * domain_point * inv_size / (tau_field - domain_point);
                     mcl::G1 point;
                     mcl::G1::mul(point, g1, scalar.native());
-                    append_raw_g1(bytes, point);
+                    append_fixed_serialized_g1(bytes, point, canonical_g1_size);
                     domain_point *= omega;
                 }
                 return bytes; });
             lagrange_hashes.emplace(domain_name, sha256_file_hex(path));
+            std::cerr << "[srs] lagrange:" << domain_name
+                      << ":generate:done\n";
         }
         write_vk(out_dir / "vk.bin", g2, g2_tau, domain_zero_g2);
+
+        if (g2.isZero()
+            || g2_tau.isZero()
+            || !g2.isValid()
+            || !g2_tau.isValid()
+            || !mcl::bn::isValidOrderBLS12(g2)
+            || !mcl::bn::isValidOrderBLS12(g2_tau))
+        {
+            throw std::runtime_error(
+                "SRS verifier-key group validation failed");
+        }
+        mcl::G2 expected_g2_tau;
+        mcl::G2::mul(expected_g2_tau, g2, tau);
+        if (expected_g2_tau != g2_tau)
+        {
+            throw std::runtime_error(
+                "SRS coefficient/G2 tau consistency audit failed");
+        }
+
+        std::cerr << "[srs] pk_coef:audit:start\n";
+        audit_canonical_g1_file(
+            out_dir / "pk_coef.bin",
+            degree_bound + 1,
+            "pk_coef",
+            [&](std::uint64_t begin) {
+                mcl::Fr power;
+                mcl::Fr::pow(power, tau, begin);
+                return [&, power](std::uint64_t) mutable {
+                    mcl::G1 expected;
+                    mcl::G1::mul(expected, g1, power);
+                    mcl::Fr::mul(power, power, tau);
+                    return expected;
+                };
+            });
+        std::cerr << "[srs] pk_coef:audit:done\n";
+        for (const auto &[domain_name, domain_size] : domains)
+        {
+            std::cerr << "[srs] lagrange:" << domain_name
+                      << ":audit:start\n";
+            const auto omega =
+                gatzk::algebra::FieldElement::root_of_unity(domain_size);
+            const auto inv_size =
+                gatzk::algebra::FieldElement(
+                    static_cast<std::uint64_t>(domain_size)).inv();
+            const auto zero_at_tau =
+                tau_field.pow(domain_size)
+                - gatzk::algebra::FieldElement::one();
+            mcl::G2 expected_zero_g2;
+            mcl::G2::mul(
+                expected_zero_g2, g2, zero_at_tau.native());
+            if (domain_zero_g2.at(domain_name) != expected_zero_g2)
+            {
+                throw std::runtime_error(
+                    "SRS vanishing G2 consistency audit failed for domain: "
+                    + domain_name);
+            }
+            audit_canonical_g1_file(
+                out_dir / ("pk_lagrange_" + domain_name + ".bin"),
+                domain_size,
+                "pk_lagrange_" + domain_name,
+                [&](std::uint64_t begin) {
+                    auto domain_point = omega.pow(begin);
+                    return [&, domain_point](std::uint64_t) mutable {
+                        const auto scalar =
+                            zero_at_tau * domain_point * inv_size
+                            / (tau_field - domain_point);
+                        mcl::G1 expected;
+                        mcl::G1::mul(
+                            expected, g1, scalar.native());
+                        domain_point *= omega;
+                        return expected;
+                    };
+                });
+            std::cerr << "[srs] lagrange:" << domain_name
+                      << ":audit:done\n";
+        }
+
+        const auto vanishing_g2_hash = sha256_hex(
+            vanishing_g2_catalog_bytes(domains, domain_zero_g2));
+        const auto pk_coef_hash =
+            sha256_file_hex(out_dir / "pk_coef.bin");
+        const auto vk_hash = sha256_file_hex(out_dir / "vk.bin");
+        const auto compiler_artifact_hash = sha256_file_hex(
+            out_dir / "protocol_compiler_artifact.txt");
+        const auto audit_report = srs_audit_report_bytes(
+            degree_bound,
+            domains,
+            lagrange_hashes,
+            pk_coef_hash,
+            vk_hash,
+            compiler_artifact_hash,
+            vanishing_g2_hash);
+        {
+            std::ofstream report(
+                out_dir / "srs_audit_report.txt",
+                std::ios::binary | std::ios::trunc);
+            if (!report)
+            {
+                throw std::runtime_error(
+                    "failed to write SRS consistency audit report");
+            }
+            report << audit_report;
+        }
+        const auto srs_consistency_hash = sha256_hex(audit_report);
         write_manifest(
             out_dir, srs_id, degree_bound, domains, lagrange_hashes,
-            compiler_artifact);
+            compiler_artifact, vanishing_g2_hash,
+            srs_consistency_hash);
+        std::cerr << "[srs] manifest:published consistency_hash="
+                  << srs_consistency_hash << "\n";
 
         tau_field.clear_sensitive();
         tau.clear();

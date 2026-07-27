@@ -284,7 +284,22 @@ namespace gatzk::algebra
             {
                 return false;
             }
-            return unified != 0 && pageable_access != 0;
+            int host_page_tables = 0;
+            if (cudaDeviceGetAttribute(
+                    &host_page_tables,
+                    cudaDevAttrPageableMemoryAccessUsesHostPageTables,
+                    device) != cudaSuccess)
+            {
+                return false;
+            }
+            // UVA alone only gives a common address range.  Likewise,
+            // PageableMemoryAccess permits the runtime to migrate/copy ordinary
+            // host pages, but does not make an arbitrary std::vector pointer a
+            // valid kernel address.  Direct columnar kernels may consume those
+            // pointers only when the device actually walks the host page tables.
+            return unified != 0
+                && pageable_access != 0
+                && host_page_tables != 0;
         }();
         return available;
 #else
@@ -311,9 +326,21 @@ namespace gatzk::algebra
             return "cuda_build=true; cuda_runtime=true; cuda_device=unknown; cuda_device_count="
                 + std::to_string(device_count);
         }
+        int pageable_access = 0;
+        int host_page_tables = 0;
+        (void)cudaDeviceGetAttribute(
+            &pageable_access,
+            cudaDevAttrPageableMemoryAccess,
+            device);
+        (void)cudaDeviceGetAttribute(
+            &host_page_tables,
+            cudaDevAttrPageableMemoryAccessUsesHostPageTables,
+            device);
         return "cuda_build=true; cuda_runtime=true; cuda_device=" + std::string(props.name)
             + "; cuda_device_count=" + std::to_string(device_count)
-            + "; cuda_unified_addressing=" + std::string(props.unifiedAddressing ? "true" : "false");
+            + "; cuda_unified_addressing=" + std::string(props.unifiedAddressing ? "true" : "false")
+            + "; cuda_pageable_memory_access=" + std::string(pageable_access != 0 ? "true" : "false")
+            + "; cuda_pageable_host_page_tables=" + std::string(host_page_tables != 0 ? "true" : "false");
 #else
         return "cuda_build=false; cuda_runtime=false; cuda_device=unavailable";
 #endif
