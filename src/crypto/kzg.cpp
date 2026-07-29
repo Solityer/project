@@ -2797,7 +2797,7 @@ namespace gatzk::crypto
         {
             const algebra::RootOfUnityDomain* domain = nullptr;
             const std::vector<G1Point>* lagrange_srs = nullptr;
-            std::shared_ptr<const std::vector<algebra::FieldElement>> values;
+            std::weak_ptr<const std::vector<algebra::FieldElement>> values;
             G1Point point;
         };
 
@@ -2805,19 +2805,33 @@ namespace gatzk::crypto
         {
             const algebra::RootOfUnityDomain* domain = nullptr;
             const std::vector<G1Point>* lagrange_srs = nullptr;
-            std::shared_ptr<const std::vector<algebra::FieldElement>> values;
+            std::weak_ptr<const std::vector<algebra::FieldElement>> values;
             std::size_t anchor_index = 0;
             algebra::FieldElement anchor_inverse =
                 algebra::FieldElement::zero();
             G1Point point;
         };
 
+        struct PointerEntry
+        {
+            std::weak_ptr<const std::vector<algebra::FieldElement>> values;
+            G1Point point;
+        };
+
+        struct PointerHashEntry
+        {
+            std::weak_ptr<const std::vector<algebra::FieldElement>> values;
+            std::uint64_t hash = 0;
+        };
+
         std::mutex mutex;
         std::unordered_map<std::uint64_t, std::vector<Entry>> entries;
         std::unordered_map<std::uint64_t, std::vector<ScaledEntry>>
             scaled_entries;
-        std::unordered_map<PointerKey, G1Point, PointerKeyHash> pointer_entries;
-        std::unordered_map<PointerKey, std::uint64_t, PointerKeyHash> pointer_hashes;
+        std::unordered_map<PointerKey, PointerEntry, PointerKeyHash>
+            pointer_entries;
+        std::unordered_map<PointerKey, PointerHashEntry, PointerKeyHash>
+            pointer_hashes;
     };
 
     EvaluationCommitmentCache::EvaluationCommitmentCache()
@@ -2962,6 +2976,18 @@ namespace gatzk::crypto
             }
             return true;
         }
+
+        bool same_shared_owner(
+            const std::shared_ptr<const std::vector<algebra::FieldElement>>&
+                left,
+            const std::shared_ptr<const std::vector<algebra::FieldElement>>&
+                right)
+        {
+            return left != nullptr
+                && right != nullptr
+                && !left.owner_before(right)
+                && !right.owner_before(left);
+        }
     }
 
     bool EvaluationCommitmentCache::lookup_semantic(
@@ -2982,19 +3008,36 @@ namespace gatzk::crypto
         std::optional<std::uint64_t> cached_hash;
         {
             std::lock_guard<std::mutex> lock(impl_->mutex);
-            if (const auto it = impl_->pointer_entries.find(pointer_key);
+            if (auto it = impl_->pointer_entries.find(pointer_key);
                 it != impl_->pointer_entries.end())
             {
-                if (point != nullptr)
+                const auto retained = it->second.values.lock();
+                if (retained != nullptr
+                    && retained.get() == values.get()
+                    && same_shared_owner(retained, values))
                 {
-                    *point = it->second;
+                    if (point != nullptr)
+                    {
+                        *point = it->second.point;
+                    }
+                    return true;
                 }
-                return true;
+                impl_->pointer_entries.erase(it);
             }
-            if (const auto it = impl_->pointer_hashes.find(pointer_key);
+            if (auto it = impl_->pointer_hashes.find(pointer_key);
                 it != impl_->pointer_hashes.end())
             {
-                cached_hash = it->second;
+                const auto retained = it->second.values.lock();
+                if (retained != nullptr
+                    && retained.get() == values.get()
+                    && same_shared_owner(retained, values))
+                {
+                    cached_hash = it->second.hash;
+                }
+                else
+                {
+                    impl_->pointer_hashes.erase(it);
+                }
             }
         }
         const auto key = cached_hash.has_value()
@@ -3002,33 +3045,62 @@ namespace gatzk::crypto
             : evaluation_commitment_cache_key(domain, lagrange_srs, *values);
         {
             std::lock_guard<std::mutex> lock(impl_->mutex);
-            impl_->pointer_hashes.try_emplace(pointer_key, key);
-            if (const auto it = impl_->pointer_entries.find(pointer_key);
+            impl_->pointer_hashes.insert_or_assign(
+                pointer_key,
+                Impl::PointerHashEntry{
+                    .values = values,
+                    .hash = key,
+                });
+            if (auto it = impl_->pointer_entries.find(pointer_key);
                 it != impl_->pointer_entries.end())
             {
-                if (point != nullptr)
+                const auto retained = it->second.values.lock();
+                if (retained != nullptr
+                    && retained.get() == values.get()
+                    && same_shared_owner(retained, values))
                 {
-                    *point = it->second;
+                    if (point != nullptr)
+                    {
+                        *point = it->second.point;
+                    }
+                    return true;
                 }
-                return true;
+                impl_->pointer_entries.erase(it);
             }
-            const auto bucket = impl_->entries.find(key);
+            auto bucket = impl_->entries.find(key);
             if (bucket != impl_->entries.end())
             {
-                for (const auto& entry : bucket->second)
+                auto& candidates = bucket->second;
+                for (auto it = candidates.begin();
+                     it != candidates.end();)
                 {
-                    if (entry.domain == domain
-                        && entry.lagrange_srs == lagrange_srs
-                        && *entry.values == *values)
+                    const auto retained = it->values.lock();
+                    if (retained == nullptr)
+                    {
+                        it = candidates.erase(it);
+                        continue;
+                    }
+                    if (it->domain == domain
+                        && it->lagrange_srs == lagrange_srs
+                        && *retained == *values)
                     {
                         if (point != nullptr)
                         {
-                            *point = entry.point;
+                            *point = it->point;
                         }
-                        impl_->pointer_entries.emplace(
-                            pointer_key, entry.point);
+                        impl_->pointer_entries.insert_or_assign(
+                            pointer_key,
+                            Impl::PointerEntry{
+                                .values = values,
+                                .point = it->point,
+                            });
                         return true;
                     }
+                    ++it;
+                }
+                if (candidates.empty())
+                {
+                    impl_->entries.erase(bucket);
                 }
             }
         }
@@ -3044,25 +3116,38 @@ namespace gatzk::crypto
         bool scaled_hit = false;
         {
             std::lock_guard<std::mutex> lock(impl_->mutex);
-            const auto bucket =
+            auto bucket =
                 impl_->scaled_entries.find(scaled_fingerprint->key);
             if (bucket != impl_->scaled_entries.end())
             {
-                for (const auto& entry : bucket->second)
+                auto& candidates = bucket->second;
+                for (auto it = candidates.begin();
+                     it != candidates.end();)
                 {
-                    if (entry.domain == domain
-                        && entry.lagrange_srs == lagrange_srs
+                    const auto retained = it->values.lock();
+                    if (retained == nullptr)
+                    {
+                        it = candidates.erase(it);
+                        continue;
+                    }
+                    if (it->domain == domain
+                        && it->lagrange_srs == lagrange_srs
                         && scaled_evaluation_values_match(
                             *values,
-                            *entry.values,
-                            entry.anchor_index,
-                            entry.anchor_inverse,
+                            *retained,
+                            it->anchor_index,
+                            it->anchor_inverse,
                             &scale))
                     {
-                        reference_point = entry.point;
+                        reference_point = it->point;
                         scaled_hit = true;
                         break;
                     }
+                    ++it;
+                }
+                if (!scaled_hit && candidates.empty())
+                {
+                    impl_->scaled_entries.erase(bucket);
                 }
             }
         }
@@ -3079,7 +3164,12 @@ namespace gatzk::crypto
                 .values = values,
                 .point = scaled_point,
             });
-            impl_->pointer_entries.try_emplace(pointer_key, scaled_point);
+            impl_->pointer_entries.insert_or_assign(
+                pointer_key,
+                Impl::PointerEntry{
+                    .values = values,
+                    .point = scaled_point,
+                });
         }
         if (point != nullptr)
         {
@@ -3106,14 +3196,32 @@ namespace gatzk::crypto
         std::optional<std::uint64_t> cached_hash;
         {
             std::lock_guard<std::mutex> lock(impl_->mutex);
-            if (impl_->pointer_entries.contains(pointer_key))
+            if (auto it = impl_->pointer_entries.find(pointer_key);
+                it != impl_->pointer_entries.end())
             {
-                return;
+                const auto retained = it->second.values.lock();
+                if (retained != nullptr
+                    && retained.get() == values.get()
+                    && same_shared_owner(retained, values))
+                {
+                    return;
+                }
+                impl_->pointer_entries.erase(it);
             }
-            if (const auto it = impl_->pointer_hashes.find(pointer_key);
+            if (auto it = impl_->pointer_hashes.find(pointer_key);
                 it != impl_->pointer_hashes.end())
             {
-                cached_hash = it->second;
+                const auto retained = it->second.values.lock();
+                if (retained != nullptr
+                    && retained.get() == values.get()
+                    && same_shared_owner(retained, values))
+                {
+                    cached_hash = it->second.hash;
+                }
+                else
+                {
+                    impl_->pointer_hashes.erase(it);
+                }
             }
         }
         const auto key = cached_hash.has_value()
@@ -3122,27 +3230,51 @@ namespace gatzk::crypto
         const auto scaled_fingerprint =
             scaled_evaluation_fingerprint(domain, lagrange_srs, *values);
         std::lock_guard<std::mutex> lock(impl_->mutex);
-        impl_->pointer_hashes.try_emplace(pointer_key, key);
-        if (impl_->pointer_entries.contains(pointer_key))
+        impl_->pointer_hashes.insert_or_assign(
+            pointer_key,
+            Impl::PointerHashEntry{
+                .values = values,
+                .hash = key,
+            });
+        if (auto it = impl_->pointer_entries.find(pointer_key);
+            it != impl_->pointer_entries.end())
         {
-            return;
-        }
-        auto& bucket = impl_->entries[key];
-        for (const auto& entry : bucket)
-        {
-            if (entry.domain == domain
-                && entry.lagrange_srs == lagrange_srs
-                && *entry.values == *values)
+            const auto retained = it->second.values.lock();
+            if (retained != nullptr
+                && retained.get() == values.get()
+                && same_shared_owner(retained, values))
             {
-                impl_->pointer_entries.emplace(pointer_key, entry.point);
                 return;
             }
+            impl_->pointer_entries.erase(it);
         }
-        const auto retained_values = values;
+        auto& bucket = impl_->entries[key];
+        for (auto it = bucket.begin(); it != bucket.end();)
+        {
+            const auto retained = it->values.lock();
+            if (retained == nullptr)
+            {
+                it = bucket.erase(it);
+                continue;
+            }
+            if (it->domain == domain
+                && it->lagrange_srs == lagrange_srs
+                && *retained == *values)
+            {
+                impl_->pointer_entries.insert_or_assign(
+                    pointer_key,
+                    Impl::PointerEntry{
+                        .values = values,
+                        .point = it->point,
+                    });
+                return;
+            }
+            ++it;
+        }
         bucket.push_back(Impl::Entry{
             .domain = domain,
             .lagrange_srs = lagrange_srs,
-            .values = retained_values,
+            .values = values,
             .point = point,
         });
         if (scaled_fingerprint.has_value())
@@ -3150,28 +3282,36 @@ namespace gatzk::crypto
             auto& scaled_bucket =
                 impl_->scaled_entries[scaled_fingerprint->key];
             bool has_scaled_entry = false;
-            for (const auto& entry : scaled_bucket)
+            for (auto it = scaled_bucket.begin();
+                 it != scaled_bucket.end();)
             {
+                const auto retained = it->values.lock();
+                if (retained == nullptr)
+                {
+                    it = scaled_bucket.erase(it);
+                    continue;
+                }
                 algebra::FieldElement scale;
-                if (entry.domain == domain
-                    && entry.lagrange_srs == lagrange_srs
+                if (it->domain == domain
+                    && it->lagrange_srs == lagrange_srs
                     && scaled_evaluation_values_match(
-                        *retained_values,
-                        *entry.values,
-                        entry.anchor_index,
-                        entry.anchor_inverse,
+                        *values,
+                        *retained,
+                        it->anchor_index,
+                        it->anchor_inverse,
                         &scale))
                 {
                     has_scaled_entry = true;
                     break;
                 }
+                ++it;
             }
             if (!has_scaled_entry)
             {
                 scaled_bucket.push_back(Impl::ScaledEntry{
                     .domain = domain,
                     .lagrange_srs = lagrange_srs,
-                    .values = retained_values,
+                    .values = values,
                     .anchor_index =
                         scaled_fingerprint->anchor_index,
                     .anchor_inverse =
@@ -3180,7 +3320,12 @@ namespace gatzk::crypto
                 });
             }
         }
-        impl_->pointer_entries.emplace(pointer_key, point);
+        impl_->pointer_entries.insert_or_assign(
+            pointer_key,
+            Impl::PointerEntry{
+                .values = values,
+                .point = point,
+            });
     }
 
     std::size_t serialized_size(const Commitment& commitment)

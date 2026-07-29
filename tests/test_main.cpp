@@ -1164,6 +1164,213 @@ void test_compact_eval_kzg_regression() {
         "compact evaluation external opening must reject a tampered value");
 }
 
+void test_evaluation_commitment_cache_lifetime() {
+    const auto keys = gatzk::crypto::KZG::load_keys(
+        test_srs_path().string(),
+        "trusted_srs",
+        test_srs_id());
+    const auto domain_size = keys.manifest.domain_sizes.at("N");
+    auto domain =
+        gatzk::algebra::RootOfUnityDomain::create(
+            "N", domain_size);
+    gatzk::crypto::EvaluationCommitmentCache cache;
+
+    struct AggregateOwner {
+        std::vector<FieldElement> values;
+        std::vector<FieldElement> unrelated_large_member;
+    };
+    std::weak_ptr<AggregateOwner> aggregate_lifetime;
+    {
+        auto owner = std::make_shared<AggregateOwner>();
+        owner->values = {
+            FieldElement(2),
+            FieldElement(3),
+            FieldElement(5),
+            FieldElement(7),
+        };
+        owner->unrelated_large_member.assign(
+            4096, FieldElement(11));
+        aggregate_lifetime = owner;
+        auto aliased_values =
+            std::shared_ptr<const std::vector<FieldElement>>(
+                owner, &owner->values);
+        auto polynomial =
+            gatzk::algebra::Polynomial::from_shared_evaluations(
+                "P_cache_lifetime",
+                aliased_values,
+                domain);
+        const std::vector<std::pair<
+            std::string,
+            const gatzk::algebra::Polynomial *>> batch{
+            {"P_cache_lifetime", &polynomial},
+        };
+        auto commitments = gatzk::crypto::KZG::commit_batch(
+            batch, keys, nullptr, &cache);
+        commitments.front().opening_polynomial.reset();
+    }
+    require(
+        aggregate_lifetime.expired(),
+        "evaluation commitment cache must not retain an aggregate column owner");
+
+    auto live_values =
+        std::make_shared<const std::vector<FieldElement>>(
+            std::initializer_list<FieldElement>{
+                FieldElement(13),
+                FieldElement(17),
+                FieldElement(19),
+                FieldElement(23),
+            });
+    auto first =
+        gatzk::algebra::Polynomial::from_shared_evaluations(
+            "P_cache_live_first", live_values, domain);
+    const std::vector<std::pair<
+        std::string,
+        const gatzk::algebra::Polynomial *>> first_batch{
+        {"P_cache_live_first", &first},
+    };
+    (void)gatzk::crypto::KZG::commit_batch(
+        first_batch, keys, nullptr, &cache);
+
+    auto second =
+        gatzk::algebra::Polynomial::from_shared_evaluations(
+            "P_cache_live_second", live_values, domain);
+    const std::vector<std::pair<
+        std::string,
+        const gatzk::algebra::Polynomial *>> second_batch{
+        {"P_cache_live_second", &second},
+    };
+    gatzk::crypto::CommitBatchProfile profile;
+    const auto reused = gatzk::crypto::KZG::commit_batch(
+        second_batch, keys, &profile, &cache);
+    require(
+        profile.objects.size() == 1
+            && profile.objects.front().semantic_commitment_reuse,
+        "live shared evaluation values must retain semantic commitment reuse");
+    require(
+        reused.front().point
+            == gatzk::crypto::KZG::commit(
+                "P_cache_live_reference",
+                second,
+                keys).point,
+        "semantic commitment reuse must preserve the exact commitment point");
+}
+
+void test_file_backed_taylor_shift_source_resolution() {
+    const auto keys = gatzk::crypto::KZG::load_keys(
+        test_srs_path().string(),
+        "trusted_srs",
+        test_srs_id());
+    const auto domain_size = keys.manifest.domain_sizes.at("N");
+    auto domain = gatzk::algebra::RootOfUnityDomain::create(
+        "N", domain_size);
+    std::vector<FieldElement> values{
+        FieldElement(2),
+        FieldElement(3),
+        FieldElement(5),
+        FieldElement(7),
+        FieldElement(11),
+    };
+    auto polynomial = gatzk::algebra::Polynomial::from_evaluations(
+        "P_spilled_shift_source", values, domain);
+    polynomial.set_zero_domain_blinder(
+        {FieldElement(13), FieldElement(17)});
+    auto commitment = gatzk::crypto::KZG::commit(
+        polynomial.name, polynomial, keys);
+
+    gatzk::protocol::TraceArtifacts trace;
+    trace.commitments.emplace(polynomial.name, commitment);
+    trace.polynomial_domains[polynomial.name] = domain->name;
+    require(
+        gatzk::protocol::resolve_trace_opening_polynomial(
+            trace, polynomial.name, domain)
+            == commitment.opening_polynomial,
+        "resident trace opening resolution must preserve its registered material");
+
+    const auto spill_path =
+        std::filesystem::path(GATZK_TEST_BINARY_DIR)
+        / "trace_spilled_taylor_shift_source.bin";
+    struct SpillFixtureCleanup {
+        std::filesystem::path path;
+        ~SpillFixtureCleanup() {
+            std::error_code ignored;
+            std::filesystem::remove(path, ignored);
+        }
+    } cleanup{spill_path};
+    {
+        std::ofstream output(
+            spill_path, std::ios::binary | std::ios::trunc);
+        require(
+            static_cast<bool>(output),
+            "failed to create file-backed Taylor-shift fixture");
+        std::array<std::uint8_t, 32> bytes{};
+        for (const auto& value : values) {
+            value.write_little_endian(bytes.data(), bytes.size());
+            output.write(
+                reinterpret_cast<const char*>(bytes.data()),
+                static_cast<std::streamsize>(bytes.size()));
+        }
+        require(
+            static_cast<bool>(output),
+            "failed to write file-backed Taylor-shift fixture");
+    }
+
+    trace.commitments.at(polynomial.name).opening_polynomial.reset();
+    trace.spilled_polynomials.emplace(
+        polynomial.name,
+        gatzk::protocol::TraceArtifacts::SpilledEvaluationPolynomial{
+            .path = spill_path.string(),
+            .domain_name = domain->name,
+            .size = values.size(),
+            .zero_domain_blinder = polynomial.zero_domain_blinder,
+        });
+    const auto resolved =
+        gatzk::protocol::resolve_trace_opening_polynomial(
+            trace, polynomial.name, domain);
+    require(
+        resolved->basis == gatzk::algebra::PolynomialBasis::Evaluation
+            && resolved->domain != nullptr
+            && resolved->domain->name == domain->name
+            && resolved->values() == values
+            && resolved->zero_domain_blinder
+                == polynomial.zero_domain_blinder,
+        "file-backed Taylor-shift source must restore exact values, domain, and blinder");
+
+    auto restored_commitment = trace.commitments.at(polynomial.name);
+    restored_commitment.opening_polynomial = resolved;
+    const auto configured_degree =
+        domain->size + polynomial.zero_domain_blinder.size() - 1;
+    const FieldElement delta(19);
+    const auto restored_shift =
+        gatzk::crypto::KZG::commit_taylor_shifted(
+            restored_commitment,
+            "P_spilled_shift_restored",
+            configured_degree,
+            delta,
+            keys);
+    const auto direct_shift =
+        gatzk::crypto::KZG::commit_taylor_shifted(
+            commitment,
+            "P_spilled_shift_direct",
+            configured_degree,
+            delta,
+            keys);
+    require(
+        restored_shift.point == direct_shift.point
+            && restored_shift.opening_polynomial->data
+                == direct_shift.opening_polynomial->data,
+        "file-backed Taylor shift must equal the resident source path");
+
+    const auto wrong_domain =
+        gatzk::algebra::RootOfUnityDomain::create(
+            "edge", domain->size);
+    require_throws(
+        [&] {
+            (void)gatzk::protocol::resolve_trace_opening_polynomial(
+                trace, polynomial.name, wrong_domain);
+        },
+        "file-backed Taylor-shift source must reject a registered domain mismatch");
+}
+
 void test_external_point_grouping_regression() {
     const auto keys = gatzk::crypto::KZG::load_keys(
         test_srs_path().string(),
@@ -3629,6 +3836,10 @@ int main() {
             test_same_point_indexed_view_relation();
             std::cerr << "running test_compact_eval_kzg_regression\n";
             test_compact_eval_kzg_regression();
+            std::cerr << "running test_evaluation_commitment_cache_lifetime\n";
+            test_evaluation_commitment_cache_lifetime();
+            std::cerr << "running test_file_backed_taylor_shift_source_resolution\n";
+            test_file_backed_taylor_shift_source_resolution();
             std::cerr << "running test_external_point_grouping_regression\n";
             test_external_point_grouping_regression();
         } else {

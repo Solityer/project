@@ -949,6 +949,23 @@ namespace gatzk::protocol
                 spilled_it->second, label, domain);
         }
 
+        crypto::Commitment trace_commitment_with_opening_material(
+            const TraceArtifacts &trace,
+            const std::string &label,
+            const std::shared_ptr<algebra::RootOfUnityDomain> &domain)
+        {
+            const auto commitment_it = trace.commitments.find(label);
+            if (commitment_it == trace.commitments.end())
+            {
+                throw std::runtime_error(
+                    "trace opening source commitment is missing: " + label);
+            }
+            auto resolved = commitment_it->second;
+            resolved.opening_polynomial =
+                resolve_trace_opening_polynomial(trace, label, domain);
+            return resolved;
+        }
+
         FieldElement evaluate_trace_polynomial(
             const TraceArtifacts &trace,
             const std::string &name,
@@ -1862,6 +1879,76 @@ namespace gatzk::protocol
             return root;
         }
 
+        std::shared_ptr<const std::string> create_trace_spill_directory_lease()
+        {
+            const auto root = spill_root_directory();
+            for (std::size_t attempt = 0; attempt < 16; ++attempt)
+            {
+                std::array<std::uint8_t, 16> random_bytes{};
+                if (RAND_bytes(
+                        random_bytes.data(),
+                        static_cast<int>(random_bytes.size())) != 1)
+                {
+                    throw std::runtime_error(
+                        "CSPRNG failed while creating trace spill directory");
+                }
+                std::ostringstream suffix;
+                suffix << "proof-";
+                for (const auto byte : random_bytes)
+                {
+                    suffix << std::hex << std::setw(2)
+                           << std::setfill('0')
+                           << static_cast<unsigned>(byte);
+                }
+                const auto directory = root / suffix.str();
+                std::error_code create_error;
+                if (!std::filesystem::create_directory(
+                        directory, create_error))
+                {
+                    if (!create_error)
+                    {
+                        continue;
+                    }
+                    throw std::runtime_error(
+                        "failed to create trace spill directory: "
+                        + create_error.message());
+                }
+                auto *owned_path =
+                    new std::string(directory.string());
+                return std::shared_ptr<const std::string>(
+                    owned_path,
+                    [](const std::string *path)
+                    {
+                        std::error_code cleanup_error;
+                        std::filesystem::remove_all(
+                            std::filesystem::path(*path),
+                            cleanup_error);
+                        delete path;
+                    });
+            }
+            throw std::runtime_error(
+                "failed to allocate a unique trace spill directory");
+        }
+
+        const std::filesystem::path &ensure_trace_spill_directory(
+            TraceArtifacts &trace,
+            std::filesystem::path *storage)
+        {
+            if (storage == nullptr)
+            {
+                throw std::runtime_error(
+                    "trace spill directory storage is null");
+            }
+            if (trace.spill_directory_lease == nullptr)
+            {
+                trace.spill_directory_lease =
+                    create_trace_spill_directory_lease();
+            }
+            *storage = std::filesystem::path(
+                *trace.spill_directory_lease);
+            return *storage;
+        }
+
         std::string sanitize_spill_name(const std::string &name)
         {
             std::string out = name;
@@ -1876,10 +1963,13 @@ namespace gatzk::protocol
         }
 
         TraceArtifacts::SpilledEvaluationPolynomial spill_evaluation_polynomial(
+            TraceArtifacts &trace,
             const algebra::Polynomial &polynomial)
         {
             std::array<std::uint8_t, 32> bytes{};
-            const auto root = spill_root_directory();
+            std::filesystem::path root_storage;
+            const auto &root = ensure_trace_spill_directory(
+                trace, &root_storage);
             const auto unique =
                 sanitize_spill_name(polynomial.name) + "_" + std::to_string(std::hash<std::string>{}(polynomial.name + ":" + std::to_string(polynomial.size())));
             const auto path = root / (unique + ".bin");
@@ -1903,6 +1993,36 @@ namespace gatzk::protocol
                 .size = polynomial.size(),
                 .zero_domain_blinder = polynomial.zero_domain_blinder,
             };
+        }
+
+        void detach_retained_aggregate_column_owner(
+            PreparedDynamicCommitment &item)
+        {
+            if (!item.reused_shared
+                || !item.polynomial.has_value()
+                || item.polynomial->basis
+                    != algebra::PolynomialBasis::Evaluation
+                || item.polynomial->shared_data == nullptr)
+            {
+                return;
+            }
+            // `shared_column_spec` uses an aliasing shared_ptr so a member
+            // vector can be committed without a transient copy.  Retaining
+            // that alias after the batch would retain the entire aggregate
+            // owner (including unrelated edge-domain columns).  Give only
+            // the non-spilled polynomial its own backing before the aggregate
+            // owner leaves its natural scope.
+            auto detached_values =
+                std::make_shared<const std::vector<FieldElement>>(
+                    item.polynomial->values());
+            item.polynomial->shared_data =
+                std::move(detached_values);
+            item.polynomial->data.clear();
+            auto opening_material =
+                std::make_shared<Polynomial>(*item.polynomial);
+            opening_material->name = item.name;
+            item.commitment.opening_polynomial =
+                std::move(opening_material);
         }
 
         void add_dynamic_commitment_batch(
@@ -2325,11 +2445,15 @@ namespace gatzk::protocol
                     }
                     if (should_spill_dynamic_polynomial(item.name, *item.polynomial, keep_trace_payloads))
                     {
-                        trace.spilled_polynomials[item.name] = spill_evaluation_polynomial(*item.polynomial);
+                        trace.spilled_polynomials[item.name] =
+                            spill_evaluation_polynomial(
+                                trace, *item.polynomial);
                         item.commitment.opening_polynomial.reset();
                     }
                     else
                     {
+                        detach_retained_aggregate_column_owner(
+                            item);
                         trace.polynomials[item.name] = std::move(*item.polynomial);
                     }
                 }
@@ -7822,8 +7946,18 @@ namespace gatzk::protocol
                              &route.edge_accumulator_object})
                         append_aggregation_commitment(subproof, *object);
 
+                    const auto edge_accumulator =
+                        trace_commitment_with_opening_material(
+                            trace,
+                            route.edge_accumulator_object,
+                            domains.edge);
+                    const auto node_accumulator =
+                        resolve_trace_opening_polynomial(
+                            trace,
+                            route.node_accumulator_object,
+                            domains.n);
                     auto shifted = commit_shifted_proof_polynomial(
-                        trace.commitments.at(route.edge_accumulator_object),
+                        edge_accumulator,
                         route.shifted_accumulator_object,
                         route.configured_shift_degree,
                         route.terminal_delta,
@@ -7848,9 +7982,8 @@ namespace gatzk::protocol
                     trace.challenges[route.terminal_challenge_label] = y_rel;
                     const auto u_rel = shifted.opening_polynomial->evaluate(
                         y_rel);
-                    if (u_rel != trace.polynomials.at(
-                            route.edge_accumulator_object)
-                            .evaluate(y_rel + route.terminal_delta))
+                    if (u_rel != edge_accumulator.opening_polynomial->evaluate(
+                            y_rel + route.terminal_delta))
                         throw std::runtime_error(
                             "aggregation route Taylor shift value mismatch: "
                             + route.relation_id);
@@ -7868,8 +8001,7 @@ namespace gatzk::protocol
                         node_degree, route.configured_shift_degree);
                     auto relation_coefficients =
                         materialize_blinded_coefficients(
-                            trace.polynomials.at(
-                                route.node_accumulator_object),
+                            *node_accumulator,
                             relation_degree);
                     const auto shifted_coefficients =
                         materialize_blinded_coefficients(
@@ -7928,9 +8060,18 @@ namespace gatzk::protocol
                         throw std::runtime_error(
                             "route terminal relation domain mismatch: "
                             + relation.relation_id);
+                    const auto edge_accumulator =
+                        trace_commitment_with_opening_material(
+                            trace,
+                            relation.edge_accumulator_object,
+                            domains.edge);
+                    const auto node_accumulator =
+                        resolve_trace_opening_polynomial(
+                            trace,
+                            relation.node_accumulator_object,
+                            domains.n);
                     auto shifted = commit_shifted_proof_polynomial(
-                        trace.commitments.at(
-                            relation.edge_accumulator_object),
+                        edge_accumulator,
                         relation.shifted_accumulator_object,
                         relation.configured_shift_degree,
                         relation.terminal_delta,
@@ -7957,9 +8098,8 @@ namespace gatzk::protocol
                     trace.challenges[relation.challenge_label] = y_rel;
                     const auto u_rel = shifted.opening_polynomial->evaluate(
                         y_rel);
-                    if (u_rel != trace.polynomials.at(
-                            relation.edge_accumulator_object)
-                            .evaluate(y_rel + relation.terminal_delta))
+                    if (u_rel != edge_accumulator.opening_polynomial->evaluate(
+                            y_rel + relation.terminal_delta))
                         throw std::runtime_error(
                             "route terminal Taylor shift value mismatch: "
                             + relation.relation_id);
@@ -7978,8 +8118,7 @@ namespace gatzk::protocol
                         node_degree, relation.configured_shift_degree);
                     auto relation_coefficients =
                         materialize_blinded_coefficients(
-                            trace.polynomials.at(
-                                relation.node_accumulator_object),
+                            *node_accumulator,
                             relation_degree);
                     const auto shifted_coefficients =
                         materialize_blinded_coefficients(
@@ -8124,10 +8263,13 @@ namespace gatzk::protocol
                             domains.n->size, FieldElement::zero());
                         std::vector<FieldElement> product(
                             domains.edge->size, FieldElement::zero());
-                        const auto &alpha_polynomial =
-                            trace.polynomials.at(relation.alpha_object);
+                        const auto alpha_polynomial =
+                            resolve_trace_opening_polynomial(
+                                trace,
+                                relation.alpha_object,
+                                domains.edge);
                         for (std::size_t edge = 0; edge < n_edges; ++edge)
-                            product[edge] = alpha_polynomial.value_at(edge)
+                            product[edge] = alpha_polynomial->value_at(edge)
                                 * source_edge[edge];
                         auto psq = build_group_prefix_state(
                             product, q_new,
@@ -8523,8 +8665,13 @@ namespace gatzk::protocol
                         for (const auto &chunk : basis_meta.chunks)
                         {
                             const auto delta = chunk.terminal_point - gamma;
+                            const auto accumulator =
+                                trace_commitment_with_opening_material(
+                                    trace,
+                                    chunk.accumulator_object,
+                                    domains.edge);
                             auto shifted = commit_shifted_proof_polynomial(
-                                trace.commitments.at(chunk.accumulator_object),
+                                accumulator,
                                 chunk.shifted_accumulator_object,
                                 chunk.configured_shift_degree,
                                 delta,
@@ -8566,9 +8713,11 @@ namespace gatzk::protocol
                             const auto delta = chunk.terminal_point - gamma;
                             const auto u_rel = shifted_accumulators[index]
                                 .opening_polynomial->evaluate(y_rel);
-                            if (u_rel != trace.polynomials.at(
-                                    chunk.accumulator_object)
-                                    .evaluate(y_rel + delta))
+                            if (u_rel != evaluate_trace_polynomial(
+                                    trace,
+                                    chunk.accumulator_object,
+                                    y_rel + delta,
+                                    domains.edge))
                                 throw std::runtime_error(
                                     "output bias coefficient chunk Taylor shift value mismatch");
                             binding_subproof.evaluations.push_back(
@@ -8669,10 +8818,16 @@ namespace gatzk::protocol
                             domains.edge->size
                                 + registered_blinder_coefficient_count(
                                     context, r_qry_label) - 1);
+                        const auto r_can =
+                            resolve_trace_opening_polynomial(
+                                trace, r_can_label, domains.c);
+                        const auto r_qry =
+                            resolve_trace_opening_polynomial(
+                                trace, r_qry_label, domains.edge);
                         auto relation_coefficients = materialize_blinded_coefficients(
-                            trace.polynomials.at(r_can_label), relation_degree);
+                            *r_can, relation_degree);
                         const auto query_coefficients = materialize_blinded_coefficients(
-                            trace.polynomials.at(r_qry_label), relation_degree);
+                            *r_qry, relation_degree);
                         for (std::size_t i = 0; i < relation_coefficients.size(); ++i)
                             relation_coefficients[i] -= query_coefficients[i];
                         const auto relation_label = output_bias_view_label(
@@ -8734,11 +8889,16 @@ namespace gatzk::protocol
                         head_index, canonical_is_first ? "R_can" : "R_qry");
                     const auto second_label = output_bias_view_label(
                         head_index, canonical_is_first ? "R_qry" : "R_can");
-                    auto signed_source_commitment = [&](const std::string &source_label,
-                                                        bool negate,
-                                                        const std::string &virtual_label)
+                    auto signed_source_commitment = [&](
+                        const std::string &source_label,
+                        const std::shared_ptr<algebra::RootOfUnityDomain>
+                            &source_domain,
+                        bool negate,
+                        const std::string &virtual_label)
                     {
-                        const auto &source = trace.commitments.at(source_label);
+                        const auto source =
+                            trace_commitment_with_opening_material(
+                                trace, source_label, source_domain);
                         if (!negate)
                         {
                             return crypto::Commitment{
@@ -8772,9 +8932,15 @@ namespace gatzk::protocol
                         };
                     };
                     const auto first_source = signed_source_commitment(
-                        first_label, !canonical_is_first, prefix + "BiasView_F1");
+                        first_label,
+                        canonical_is_first ? domains.c : domains.edge,
+                        !canonical_is_first,
+                        prefix + "BiasView_F1");
                     const auto second_source = signed_source_commitment(
-                        second_label, canonical_is_first, prefix + "BiasView_F2");
+                        second_label,
+                        canonical_is_first ? domains.edge : domains.c,
+                        canonical_is_first,
+                        prefix + "BiasView_F2");
                     trace.commitments.emplace(first_source.name, first_source);
                     trace.commitments.emplace(second_source.name, second_source);
                     const auto shifted_label = output_bias_view_label(
@@ -8958,6 +9124,10 @@ namespace gatzk::protocol
                 }
 
             finalize_trace_registry(context, transcript, trace, metrics);
+            // Semantic commitment reuse is needed only while dynamic
+            // commitments are being produced.  Do not carry its pointer/hash
+            // registry into quotient and opening phases.
+            trace.evaluation_commitment_cache.reset();
             if (metrics != nullptr)
             {
                 const auto total_trace_ms = elapsed_ms(trace_start, Clock::now());
@@ -8969,6 +9139,67 @@ namespace gatzk::protocol
         }
 
     } // namespace
+
+    std::shared_ptr<const algebra::Polynomial>
+    resolve_trace_opening_polynomial(
+        const TraceArtifacts &trace,
+        const std::string &label,
+        const std::shared_ptr<algebra::RootOfUnityDomain> &expected_domain)
+    {
+        if (expected_domain == nullptr)
+        {
+            throw std::runtime_error(
+                "trace opening source has no expected domain: " + label);
+        }
+        const auto domain_it = trace.polynomial_domains.find(label);
+        if (domain_it == trace.polynomial_domains.end()
+            || domain_it->second != expected_domain->name)
+        {
+            throw std::runtime_error(
+                "trace opening source domain registration mismatch: " + label);
+        }
+        const auto commitment_it = trace.commitments.find(label);
+        if (commitment_it == trace.commitments.end())
+        {
+            throw std::runtime_error(
+                "trace opening source commitment is missing: " + label);
+        }
+
+        std::shared_ptr<const algebra::Polynomial> material =
+            commitment_it->second.opening_polynomial;
+        if (material == nullptr)
+        {
+            if (const auto polynomial_it = trace.polynomials.find(label);
+                polynomial_it != trace.polynomials.end())
+            {
+                material = std::make_shared<const algebra::Polynomial>(
+                    polynomial_it->second);
+            }
+            else if (const auto spilled_it =
+                         trace.spilled_polynomials.find(label);
+                     spilled_it != trace.spilled_polynomials.end())
+            {
+                material = load_spilled_evaluation_polynomial(
+                    spilled_it->second, label, expected_domain);
+            }
+        }
+        if (material == nullptr)
+        {
+            throw std::runtime_error(
+                "trace opening source material is missing: " + label);
+        }
+        if (material->basis != algebra::PolynomialBasis::Evaluation
+            || material->domain == nullptr
+            || material->domain->name != expected_domain->name
+            || material->domain->size != expected_domain->size
+            || !(material->domain->omega == expected_domain->omega)
+            || material->size() > expected_domain->size)
+        {
+            throw std::runtime_error(
+                "trace opening source polynomial/domain mismatch: " + label);
+        }
+        return material;
+    }
 
     // trace 总入口：根据模型形状在多头正式路径与单头兼容路径之间分派。
     TraceArtifacts build_trace(const ProtocolContext &context, RunMetrics *metrics)

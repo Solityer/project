@@ -1,5 +1,6 @@
 #include <cstdlib>
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <filesystem>
 #include <iostream>
@@ -9,7 +10,12 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
+
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
 
 #include "gatzk/algebra/vector_ops.hpp"
 #include "gatzk/crypto/curve.hpp"
@@ -23,6 +29,91 @@
 // 读取配置、选择 CPU / partial CUDA-hotspot 执行路线，并串联 context、trace、prove、verify 与 artifact 导出。
 // 对外只汇总三项正式时间与 canonical proof bytes 大小，不在入口层改写 proof contract。
 // 控制台正式输出必须收口为“每次运行一行”，避免把开发过程日志重新暴露到提交表面。
+
+namespace
+{
+    class ExclusiveFormalRunLock
+    {
+    public:
+        explicit ExclusiveFormalRunLock(
+            const std::filesystem::path &path)
+        {
+            std::filesystem::create_directories(
+                path.parent_path());
+            descriptor_ = ::open(
+                path.c_str(),
+                O_CREAT | O_CLOEXEC | O_RDWR,
+                0644);
+            if (descriptor_ < 0)
+            {
+                throw std::system_error(
+                    errno,
+                    std::generic_category(),
+                    "failed to open formal run lock");
+            }
+            if (::flock(
+                    descriptor_,
+                    LOCK_EX | LOCK_NB) != 0)
+            {
+                const auto lock_error = errno;
+                ::close(descriptor_);
+                descriptor_ = -1;
+                if (lock_error == EWOULDBLOCK
+                    || lock_error == EAGAIN)
+                {
+                    throw std::runtime_error(
+                        "another gatzk_run is active in this workspace; "
+                        "formal runs must execute sequentially");
+                }
+                throw std::system_error(
+                    lock_error,
+                    std::generic_category(),
+                    "failed to acquire formal run lock");
+            }
+            const auto owner =
+                "pid=" + std::to_string(::getpid()) + "\n";
+            const auto truncate_ok =
+                ::ftruncate(descriptor_, 0) == 0;
+            const auto written = truncate_ok
+                ? ::write(
+                      descriptor_,
+                      owner.data(),
+                      owner.size())
+                : static_cast<ssize_t>(-1);
+            if (!truncate_ok
+                || written
+                    != static_cast<ssize_t>(owner.size()))
+            {
+                const auto record_error =
+                    errno != 0 ? errno : EIO;
+                (void)::flock(descriptor_, LOCK_UN);
+                (void)::close(descriptor_);
+                descriptor_ = -1;
+                throw std::system_error(
+                    record_error,
+                    std::generic_category(),
+                    "failed to record formal run lock owner");
+            }
+        }
+
+        ExclusiveFormalRunLock(
+            const ExclusiveFormalRunLock &) = delete;
+        ExclusiveFormalRunLock &operator=(
+            const ExclusiveFormalRunLock &) = delete;
+
+        ~ExclusiveFormalRunLock()
+        {
+            if (descriptor_ >= 0)
+            {
+                (void)::flock(descriptor_, LOCK_UN);
+                (void)::close(descriptor_);
+            }
+        }
+
+    private:
+        int descriptor_ = -1;
+    };
+}
 
 int main(int argc, char **argv)
 {
@@ -318,6 +409,9 @@ int main(int argc, char **argv)
         };
 
         const auto loaded_config = gatzk::util::load_config(config_path);
+        const ExclusiveFormalRunLock formal_run_lock(
+            std::filesystem::current_path()
+            / "runs" / ".gatzk_run.lock");
         const auto absolute_config_path = std::filesystem::absolute(config_path).string();
         gatzk::util::set_route2_options(route2);
 

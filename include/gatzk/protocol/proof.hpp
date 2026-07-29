@@ -129,6 +129,9 @@ struct TraceArtifacts {
     // 多项式视图与可选落盘信息。
     std::unordered_map<std::string, algebra::Polynomial> polynomials;
     std::unordered_map<std::string, SpilledEvaluationPolynomial> spilled_polynomials;
+    // Owns the per-proof spill directory.  The custom lease deleter removes
+    // the directory after the last TraceArtifacts copy is released.
+    std::shared_ptr<const std::string> spill_directory_lease;
     std::unordered_map<std::string, std::string> polynomial_domains;
     // 动态承诺、正式承诺顺序以及挑战重放结果。
     std::unordered_map<std::string, crypto::Commitment> commitments;
