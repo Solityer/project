@@ -2,9 +2,17 @@
 // 本文件声明 trace 构建入口，
 // 负责把前向结果、lookup、route 与状态机对象物化为正式 witness 列。
 
+#include <cstddef>
+#include <string>
+#include <vector>
+
 #include "gatzk/protocol/proof.hpp"
 
 namespace gatzk::protocol {
+
+std::vector<std::size_t> stable_dynamic_commitment_chunk_order(
+    const std::vector<std::vector<std::string>>& produced_labels,
+    const std::vector<std::vector<std::string>>& required_labels);
 
 // 构建 proving 主链需要的全部动态 trace 对象。
 // 它会同时产出动态承诺顺序、opening 取值来源、外点值与 witness 标量，是 prove 的唯一上游。

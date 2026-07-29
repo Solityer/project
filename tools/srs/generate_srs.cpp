@@ -707,9 +707,15 @@ namespace
                 "max instance envelope security target must equal compiler target 120");
         if (out.max_total_nodes < out.max_nodes
             || out.max_concat_dim < out.max_hidden_head_dim
-            || out.max_range_bits >= 64)
+            || out.max_range_bits >= std::numeric_limits<std::size_t>::digits)
             throw std::runtime_error(
                 "max instance envelope has inconsistent semantic bounds");
+        const auto configured_range_size =
+            std::size_t{1} << out.max_range_bits;
+        if (domains.at("edge") < 3
+            || configured_range_size > (domains.at("edge") - 3) / 2)
+            throw std::runtime_error(
+                "max instance envelope ELU table exceeds edge capacity");
         const auto edge_chunk_capacity = domains.at("edge") - 1;
         if (out.max_coefficient_chunks
                 > std::numeric_limits<std::size_t>::max() / edge_chunk_capacity
@@ -719,6 +725,16 @@ namespace
                 "max instance envelope coefficient object exceeds fixed edge chunks");
         if (out.max_nodes > domains.at("N")
             || out.max_edges > domains.at("edge")
+            || out.max_nodes
+                > std::numeric_limits<std::size_t>::max()
+                    / out.max_hidden_head_dim
+            || out.max_nodes * out.max_hidden_head_dim
+                > domains.at("edge")
+            || out.max_nodes
+                > std::numeric_limits<std::size_t>::max()
+                    / out.max_classes
+            || out.max_nodes * out.max_classes
+                > domains.at("edge")
             || out.max_input_dim > domains.at("in")
             || out.max_hidden_head_dim > domains.at("d")
             || out.max_classes > domains.at("C")

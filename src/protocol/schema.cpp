@@ -3416,6 +3416,32 @@ namespace gatzk::protocol
         return out;
     }
 
+    std::size_t minimum_edge_trace_length(
+        std::size_t node_count,
+        std::size_t edge_count,
+        std::size_t hidden_width,
+        std::size_t class_count)
+    {
+        const auto checked_product = [node_count](
+            std::size_t width, std::string_view label)
+        {
+            if (width != 0
+                && node_count > std::numeric_limits<std::size_t>::max() / width)
+            {
+                throw std::runtime_error(
+                    "edge-domain flattened length overflows size_t: "
+                    + std::string(label));
+            }
+            return node_count * width;
+        };
+        return std::max({
+            node_count,
+            edge_count,
+            checked_product(hidden_width, "N*d_h"),
+            checked_product(class_count, "N*C"),
+        });
+    }
+
     CoefficientRegionLayout coefficient_region_layout(
         std::size_t low_degree_length,
         const std::vector<std::size_t> &semantic_positions,

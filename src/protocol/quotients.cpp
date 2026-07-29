@@ -1239,7 +1239,8 @@ namespace gatzk::protocol
                         : "P_Q_div_h" + index);
                 acc.add(q_div * (h_agg_num_flat_z - sum_flat_z * h_agg_pre_flat_z));
                 acc.add(q_div * (z_head("Div_X") - h_agg_num_flat_z));
-                acc.add(q_div * (z_head("Div_D") - sum_flat_z));
+                acc.add(q_div * (
+                    z_head("Div_D") - FieldElement(16) * sum_flat_z));
                 acc.add(q_div * (z_head("Div_Y") - h_elu_in_flat_z));
                 for (const auto &padding_value : {
                          sum_flat_z, h_agg_pre_flat_z, h_agg_num_flat_z,

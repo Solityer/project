@@ -2500,12 +2500,31 @@ namespace gatzk::protocol
                 for (std::size_t i = 0; i < labels.size(); ++i)
                 {
                     const auto polynomial_it = trace_.polynomials.find(labels[i]);
-                    if (polynomial_it == trace_.polynomials.end()
-                        || !polynomial_it->second.is_zero_domain_blinded())
+                    if (polynomial_it != trace_.polynomials.end()
+                        && polynomial_it->second.is_zero_domain_blinded())
+                    {
+                        out[i] += polynomial_it->second.domain
+                                      ->zero_polynomial_eval(point)
+                            * algebra::horner(
+                                polynomial_it->second
+                                    .zero_domain_blinder,
+                                point);
                         continue;
-                    out[i] += polynomial_it->second.domain->zero_polynomial_eval(point)
+                    }
+                    const auto spilled_it =
+                        trace_.spilled_polynomials.find(labels[i]);
+                    if (spilled_it
+                            == trace_.spilled_polynomials.end()
+                        || spilled_it->second.zero_domain_blinder.empty())
+                    {
+                        continue;
+                    }
+                    const auto domain = domain_from_name(
+                        spilled_it->second.domain_name);
+                    out[i] += domain->zero_polynomial_eval(point)
                         * algebra::horner(
-                            polynomial_it->second.zero_domain_blinder, point);
+                            spilled_it->second.zero_domain_blinder,
+                            point);
                 }
                 return out;
             }
@@ -3013,7 +3032,27 @@ namespace gatzk::protocol
                     return polynomial.evaluate(point);
                 }
                 // `parallel_fft` 只改变域权重的归约方式，opened value 本身必须保持不变。
-                auto value = algebra::dot_product_native_weights(values, weight_entry.native_weights);
+                if (values.size() > weight_entry.native_weights.size())
+                {
+                    throw std::runtime_error(
+                        "evaluation polynomial exceeds its domain weights");
+                }
+                auto value = FieldElement::zero();
+                if (values.size() == weight_entry.native_weights.size())
+                {
+                    value = algebra::dot_product_native_weights(
+                        values, weight_entry.native_weights);
+                }
+                else
+                {
+                    const std::vector<mcl::Fr> active_weights(
+                        weight_entry.native_weights.begin(),
+                        weight_entry.native_weights.begin()
+                            + static_cast<std::ptrdiff_t>(
+                                values.size()));
+                    value = algebra::dot_product_native_weights(
+                        values, active_weights);
+                }
                 if (polynomial.is_zero_domain_blinded())
                 {
                     value += polynomial.domain->zero_polynomial_eval(point)
@@ -3354,6 +3393,23 @@ namespace gatzk::protocol
             if (name == "N")
                 return context.domains.n;
             throw std::runtime_error("unknown quotient materialization domain: " + name);
+        }
+
+        std::shared_ptr<const algebra::Polynomial>
+        load_spilled_opening_polynomial(
+            const ProtocolContext &context,
+            const TraceArtifacts::SpilledEvaluationPolynomial &spilled,
+            const std::string &name)
+        {
+            auto polynomial = algebra::Polynomial::from_shared_evaluations(
+                name,
+                std::make_shared<const std::vector<FieldElement>>(
+                    load_spilled_values(spilled)),
+                context_domain_by_name(context, spilled.domain_name));
+            polynomial.set_zero_domain_blinder(
+                spilled.zero_domain_blinder);
+            return std::make_shared<const algebra::Polynomial>(
+                std::move(polynomial));
         }
 
         std::shared_ptr<algebra::RootOfUnityDomain> quotient_domain(
@@ -7382,6 +7438,11 @@ namespace gatzk::protocol
         const std::size_t max_in = context.model.has_real_multihead
                                        ? std::max<std::size_t>(context.local.num_features, model::max_hidden_input_dim(context.model))
                                        : context.local.num_features;
+        const auto minimum_edge_rows = minimum_edge_trace_length(
+            context.local.num_nodes,
+            context.local.edges.size(),
+            d_h,
+            context.local.num_classes);
         const bool large_whole_graph_gat =
             config.batching_rule == "whole_graph_single" && context.local.num_nodes == context.dataset.num_nodes && (context.local.edges.size() >= (1ULL << 18) || context.dataset.num_nodes * context.dataset.num_features >= (1ULL << 24));
         const std::size_t default_activation_table_bound = configured_range_size;
@@ -7412,9 +7473,7 @@ namespace gatzk::protocol
         const std::size_t exp_table_size = range_size;
         const std::size_t edge_size = algebra::next_power_of_two(
             std::max<std::size_t>({
-                context.local.num_nodes,
-                context.local.edges.size(),
-                context.local.num_nodes * d_h,
+                minimum_edge_rows,
                 lrelu_table_size,
                 elu_table_size,
                 exp_table_size,
@@ -9113,6 +9172,30 @@ namespace gatzk::protocol
             const auto& point_groups = opening_registry.groups();
             std::vector<PointGroupOpeningResult> opening_results(
                 point_groups.size());
+            const crypto::OpeningPolynomialResolver
+                file_backed_opening_resolver =
+                    [&](const Commitment &commitment)
+                    -> std::shared_ptr<const algebra::Polynomial>
+                    {
+                        if (commitment.opening_polynomial != nullptr)
+                        {
+                            return commitment.opening_polynomial;
+                        }
+                        const auto spilled_it =
+                            trace.spilled_polynomials.find(
+                                commitment.name);
+                        if (spilled_it
+                            == trace.spilled_polynomials.end())
+                        {
+                            throw std::runtime_error(
+                                "file-backed opening material is missing: "
+                                + commitment.name);
+                        }
+                        return load_spilled_opening_polynomial(
+                            context,
+                            spilled_it->second,
+                            commitment.name);
+                    };
             const auto open_group_indices = [&]
             (const std::vector<std::size_t>& indices)
             {
@@ -9129,6 +9212,14 @@ namespace gatzk::protocol
                             total += claim.commitment
                                 .opening_polynomial->size();
                         }
+                        else if (const auto spilled_it =
+                                     trace.spilled_polynomials.find(
+                                         claim.commitment.name);
+                                 spilled_it
+                                     != trace.spilled_polynomials.end())
+                        {
+                            total += spilled_it->second.size;
+                        }
                     }
                     return total;
                 };
@@ -9142,6 +9233,25 @@ namespace gatzk::protocol
                     1, std::thread::hardware_concurrency());
                 const bool external_phase =
                     point_groups[work_order.front()].owner_block == "W_ext";
+                const bool has_file_backed_openings =
+                    std::any_of(
+                        work_order.begin(),
+                        work_order.end(),
+                        [&](std::size_t index)
+                        {
+                            return std::any_of(
+                                point_groups[index].claims.begin(),
+                                point_groups[index].claims.end(),
+                                [&](const auto &claim)
+                                {
+                                    return claim.commitment
+                                                   .opening_polynomial
+                                               == nullptr
+                                        && trace.spilled_polynomials
+                                               .contains(
+                                                   claim.commitment.name);
+                                });
+                        });
                 const auto outer_worker_limit = external_phase
                     ? std::min<std::size_t>(
                         20, hardware_workers)
@@ -9150,7 +9260,9 @@ namespace gatzk::protocol
                             1, hardware_workers / 4));
                 const auto worker_count = std::min<std::size_t>(
                     work_order.size(),
-                    outer_worker_limit);
+                    has_file_backed_openings
+                        ? 1
+                        : outer_worker_limit);
                 const auto base_inner_worker_count = worker_count > 1
                     ? std::max<std::size_t>(
                         1, hardware_workers / worker_count)
@@ -9206,7 +9318,10 @@ namespace gatzk::protocol
                                         AlreadyComputedFromOpeningPolynomials,
                                     worker_count > 1
                                         ? &execution_options
-                                        : nullptr);
+                                        : nullptr,
+                                    trace.spilled_polynomials.empty()
+                                        ? nullptr
+                                        : &file_backed_opening_resolver);
                             opening_results[group_index].profile
                                 .point_parallel_batches = 1;
                             opening_results[group_index].profile

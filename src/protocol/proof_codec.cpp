@@ -116,6 +116,17 @@ namespace gatzk::protocol
                 return static_cast<std::size_t>(value);
             }
 
+            std::size_t size(const char* label)
+            {
+                const auto value = u64();
+                if (value > std::numeric_limits<std::size_t>::max())
+                {
+                    throw std::runtime_error(
+                        std::string("proof parser invalid size: ") + label);
+                }
+                return static_cast<std::size_t>(value);
+            }
+
             std::string string()
             {
                 const auto length = u64();
@@ -1574,9 +1585,9 @@ namespace gatzk::protocol
                 matrix.relation_id = pi_bind.string();
                 matrix.matrix_object = pi_bind.string();
                 matrix.canonical_domain = pi_bind.string();
-                matrix.row_count = pi_bind.count(
+                matrix.row_count = pi_bind.size(
                     "Pi_bind canonical matrix rows");
-                matrix.column_count = pi_bind.count(
+                matrix.column_count = pi_bind.size(
                     "Pi_bind canonical matrix columns");
                 matrix.column_objects = read_string_vector(
                     pi_bind, "Pi_bind canonical column objects");
@@ -1606,9 +1617,9 @@ namespace gatzk::protocol
                 route.node_terminal_point = pi_bind.scalar();
                 route.edge_terminal_point = pi_bind.scalar();
                 route.terminal_delta = pi_bind.scalar();
-                route.configured_shift_degree = pi_bind.count(
+                route.configured_shift_degree = pi_bind.size(
                     "Pi_bind aggregation route shift degree");
-                route.shift_domain_size = pi_bind.count(
+                route.shift_domain_size = pi_bind.size(
                     "Pi_bind aggregation route shift domain");
                 return route;
             };
@@ -1631,9 +1642,9 @@ namespace gatzk::protocol
                 relation.target_edge_object = pi_bind.string();
                 relation.product_object = pi_bind.string();
                 relation.psq_object = pi_bind.string();
-                relation.row_count = pi_bind.count(
+                relation.row_count = pi_bind.size(
                     "Pi_bind aggregation rows");
-                relation.column_count = pi_bind.count(
+                relation.column_count = pi_bind.size(
                     "Pi_bind aggregation columns");
                 relation.source_route = read_aggregation_route();
                 relation.target_route = read_aggregation_route();
@@ -1658,9 +1669,9 @@ namespace gatzk::protocol
                 relation.node_terminal_point = pi_bind.scalar();
                 relation.edge_terminal_point = pi_bind.scalar();
                 relation.terminal_delta = pi_bind.scalar();
-                relation.configured_shift_degree = pi_bind.count(
+                relation.configured_shift_degree = pi_bind.size(
                     "Pi_bind route terminal shift degree");
-                relation.shift_domain_size = pi_bind.count(
+                relation.shift_domain_size = pi_bind.size(
                     "Pi_bind route terminal shift domain");
                 meta.route_terminal_relations.push_back(std::move(relation));
             }
@@ -1674,8 +1685,8 @@ namespace gatzk::protocol
                 view.view_object = pi_bind.string();
                 view.canonical_domain = pi_bind.string();
                 view.view_domain = pi_bind.string();
-                view.canonical_length = pi_bind.count("Pi_bind indexed canonical length");
-                view.view_length = pi_bind.count("Pi_bind indexed view length");
+                view.canonical_length = pi_bind.size("Pi_bind indexed canonical length");
+                view.view_length = pi_bind.size("Pi_bind indexed view length");
                 view.index_map_id = pi_bind.string();
                 view.canonical_selector_id = pi_bind.string();
                 view.query_selector_id = pi_bind.string();
@@ -1696,11 +1707,11 @@ namespace gatzk::protocol
                 relation.canonical_object = pi_bind.string();
                 relation.coefficient_object = pi_bind.string();
                 relation.carrier_domain = pi_bind.string();
-                relation.low_degree_length = pi_bind.count(
+                relation.low_degree_length = pi_bind.size(
                     "Pi_bind coefficient basis low degree length");
-                relation.tail_length = pi_bind.count(
+                relation.tail_length = pi_bind.size(
                     "Pi_bind coefficient basis tail length");
-                relation.total_length = pi_bind.count(
+                relation.total_length = pi_bind.size(
                     "Pi_bind coefficient basis total length");
                 relation.semantic_positions = read_size_vector(
                     pi_bind, "Pi_bind coefficient basis semantic positions");
@@ -1713,16 +1724,16 @@ namespace gatzk::protocol
                         .object_id = pi_bind.string(),
                         .accumulator_object = pi_bind.string(),
                         .shifted_accumulator_object = pi_bind.string(),
-                        .chunk_index = pi_bind.count(
+                        .chunk_index = pi_bind.size(
                             "Pi_bind coefficient basis chunk index"),
-                        .offset = pi_bind.count(
+                        .offset = pi_bind.size(
                             "Pi_bind coefficient basis chunk offset"),
-                        .length = pi_bind.count(
+                        .length = pi_bind.size(
                             "Pi_bind coefficient basis chunk length"),
                         .terminal_point = pi_bind.scalar(),
-                        .configured_shift_degree = pi_bind.count(
+                        .configured_shift_degree = pi_bind.size(
                             "Pi_bind coefficient basis chunk shift degree"),
-                        .shift_domain_size = pi_bind.count(
+                        .shift_domain_size = pi_bind.size(
                             "Pi_bind coefficient basis chunk shift domain size"),
                     });
                 }
@@ -1757,8 +1768,8 @@ namespace gatzk::protocol
                 relation.source_value_kinds = read_string_vector(
                     pi_bind, "Pi_bind shift source kinds");
                 relation.challenge_label = pi_bind.string();
-                relation.exclusion_degree = pi_bind.count("Pi_bind shift exclusion degree");
-                relation.max_difference_degree = pi_bind.count("Pi_bind shift max degree");
+                relation.exclusion_degree = pi_bind.size("Pi_bind shift exclusion degree");
+                relation.max_difference_degree = pi_bind.size("Pi_bind shift max degree");
                 relation.configured_degrees = read_size_vector(
                     pi_bind, "Pi_bind shift configured degrees");
                 relation.shift_domain_sizes = read_size_vector(

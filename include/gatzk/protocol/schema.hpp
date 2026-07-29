@@ -167,6 +167,14 @@ bool instance_within_authenticated_max_envelope(
 std::vector<CoefficientChunkLayoutEntry> coefficient_chunk_layout(
     std::size_t total_coefficient_length,
     std::size_t edge_domain_size);
+
+// The edge work domain also carries row-major hidden/output quantization
+// traces, so topology edge count alone is not a sufficient lower bound.
+std::size_t minimum_edge_trace_length(
+    std::size_t node_count,
+    std::size_t edge_count,
+    std::size_t hidden_width,
+    std::size_t class_count);
 // Canonical public partition for a coefficient-tail object.  semantic
 // positions are strict increasing low-degree offsets; all remaining low
 // positions are gaps and the unique suffix is the random tail.

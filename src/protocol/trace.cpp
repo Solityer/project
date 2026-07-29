@@ -22,6 +22,7 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <openssl/rand.h>
 
@@ -48,6 +49,85 @@ namespace gatzk::protocol
         const std::vector<std::size_t> &indices,
         std::size_t domain_size);
 #endif
+
+    std::vector<std::size_t> stable_dynamic_commitment_chunk_order(
+        const std::vector<std::vector<std::string>> &produced_labels,
+        const std::vector<std::vector<std::string>> &required_labels)
+    {
+        if (produced_labels.size() != required_labels.size())
+        {
+            throw std::runtime_error(
+                "dynamic commitment chunk dependency shape mismatch");
+        }
+        std::unordered_map<std::string, std::size_t> producer;
+        for (std::size_t chunk = 0; chunk < produced_labels.size(); ++chunk)
+        {
+            for (const auto &label : produced_labels[chunk])
+            {
+                if (label.empty()
+                    || !producer.emplace(label, chunk).second)
+                {
+                    throw std::runtime_error(
+                        "duplicate or empty dynamic commitment chunk output: "
+                        + label);
+                }
+            }
+        }
+
+        std::vector<std::vector<std::size_t>> consumers(
+            produced_labels.size());
+        std::vector<std::size_t> indegree(
+            produced_labels.size(), 0);
+        for (std::size_t chunk = 0; chunk < required_labels.size(); ++chunk)
+        {
+            std::unordered_set<std::size_t> dependencies;
+            for (const auto &label : required_labels[chunk])
+            {
+                const auto producer_it = producer.find(label);
+                if (producer_it == producer.end()
+                    || producer_it->second == chunk
+                    || !dependencies.insert(producer_it->second).second)
+                {
+                    continue;
+                }
+                consumers[producer_it->second].push_back(chunk);
+                ++indegree[chunk];
+            }
+        }
+
+        std::vector<std::size_t> order;
+        order.reserve(produced_labels.size());
+        std::vector<bool> scheduled(produced_labels.size(), false);
+        while (order.size() != produced_labels.size())
+        {
+            std::size_t ready = produced_labels.size();
+            for (std::size_t chunk = 0; chunk < produced_labels.size(); ++chunk)
+            {
+                if (!scheduled[chunk] && indegree[chunk] == 0)
+                {
+                    ready = chunk;
+                    break;
+                }
+            }
+            if (ready == produced_labels.size())
+            {
+                throw std::runtime_error(
+                    "cyclic deferred dynamic commitment chunk dependencies");
+            }
+            scheduled[ready] = true;
+            order.push_back(ready);
+            for (const auto consumer : consumers[ready])
+            {
+                if (indegree[consumer] == 0)
+                {
+                    throw std::runtime_error(
+                        "dynamic commitment chunk dependency accounting underflow");
+                }
+                --indegree[consumer];
+            }
+        }
+        return order;
+    }
 
     namespace
     {
@@ -801,12 +881,105 @@ namespace gatzk::protocol
             return nullptr;
         }
 
+        std::shared_ptr<const Polynomial> load_spilled_evaluation_polynomial(
+            const TraceArtifacts::SpilledEvaluationPolynomial &spilled,
+            const std::string &name,
+            const std::shared_ptr<algebra::RootOfUnityDomain> &domain)
+        {
+            if (domain == nullptr
+                || spilled.domain_name != domain->name
+                || spilled.size > domain->size)
+            {
+                throw std::runtime_error(
+                    "spilled polynomial domain mismatch: " + name);
+            }
+            constexpr std::size_t kFieldBytes = 32;
+            std::ifstream stream(spilled.path, std::ios::binary);
+            if (!stream)
+            {
+                throw std::runtime_error(
+                    "failed to open spilled polynomial: " + spilled.path);
+            }
+            std::array<std::uint8_t, kFieldBytes> bytes{};
+            std::vector<FieldElement> values(
+                spilled.size, FieldElement::zero());
+            for (std::size_t i = 0; i < spilled.size; ++i)
+            {
+                stream.read(
+                    reinterpret_cast<char *>(bytes.data()),
+                    static_cast<std::streamsize>(bytes.size()));
+                if (!stream)
+                {
+                    throw std::runtime_error(
+                        "failed to read spilled polynomial: "
+                        + spilled.path);
+                }
+                values[i] = FieldElement::from_little_endian_mod(
+                    bytes.data(), bytes.size());
+            }
+            auto polynomial = Polynomial::from_shared_evaluations(
+                name,
+                std::make_shared<const std::vector<FieldElement>>(
+                    std::move(values)),
+                domain);
+            polynomial.set_zero_domain_blinder(
+                spilled.zero_domain_blinder);
+            return std::make_shared<const Polynomial>(
+                std::move(polynomial));
+        }
+
+        std::shared_ptr<const Polynomial> linear_dependency_opening_material(
+            const std::string &label,
+            const crypto::Commitment &commitment,
+            const TraceArtifacts &trace,
+            const std::shared_ptr<algebra::RootOfUnityDomain> &domain)
+        {
+            if (commitment.opening_polynomial != nullptr)
+            {
+                return commitment.opening_polynomial;
+            }
+            const auto spilled_it =
+                trace.spilled_polynomials.find(label);
+            if (spilled_it == trace.spilled_polynomials.end())
+            {
+                throw std::runtime_error(
+                    "missing polynomial dependency material: " + label);
+            }
+            return load_spilled_evaluation_polynomial(
+                spilled_it->second, label, domain);
+        }
+
+        FieldElement evaluate_trace_polynomial(
+            const TraceArtifacts &trace,
+            const std::string &name,
+            const FieldElement &point,
+            const std::shared_ptr<algebra::RootOfUnityDomain> &domain)
+        {
+            if (const auto polynomial_it =
+                    trace.polynomials.find(name);
+                polynomial_it != trace.polynomials.end())
+            {
+                return polynomial_it->second.evaluate(point);
+            }
+            const auto spilled_it =
+                trace.spilled_polynomials.find(name);
+            if (spilled_it == trace.spilled_polynomials.end())
+            {
+                throw std::runtime_error(
+                    "trace evaluation is missing polynomial: " + name);
+            }
+            return load_spilled_evaluation_polynomial(
+                       spilled_it->second, name, domain)
+                ->evaluate(point);
+        }
+
         crypto::G1Point resolve_deferred_linear_evaluation_component(
             const std::vector<DynamicCommitmentLinearTerm> &terms,
             const TraceArtifacts &trace,
             const std::unordered_map<std::string, const crypto::Commitment *> &batch_commitments,
             const crypto::KZGKeyPair &key,
-            const std::string &name)
+            const std::string &name,
+            const std::shared_ptr<algebra::RootOfUnityDomain> &target_domain)
         {
             auto out = crypto::g1_zero();
             for (const auto &term : terms)
@@ -823,6 +996,12 @@ namespace gatzk::protocol
                 }
                 else if (term.commitment != nullptr)
                 {
+                    if (term.commitment->opening_polynomial == nullptr)
+                    {
+                        throw std::runtime_error(
+                            "explicit deferred linear commitment is missing opening material: "
+                            + name);
+                    }
                     dependency_component =
                         crypto::KZG::evaluation_commitment_component(
                             *term.commitment, key);
@@ -835,9 +1014,18 @@ namespace gatzk::protocol
                             term.label, trace, batch_commitments);
                     if (commitment != nullptr)
                     {
+                        auto material =
+                            linear_dependency_opening_material(
+                                term.label,
+                                *commitment,
+                                trace,
+                                target_domain);
+                        auto resolved_commitment = *commitment;
+                        resolved_commitment.opening_polynomial =
+                            std::move(material);
                         dependency_component =
                             crypto::KZG::evaluation_commitment_component(
-                                *commitment, key);
+                                resolved_commitment, key);
                         base = &dependency_component;
                     }
                 }
@@ -876,26 +1064,52 @@ namespace gatzk::protocol
             }
 
             std::vector<const Polynomial *> dependencies;
+            std::vector<std::shared_ptr<const Polynomial>>
+                dependency_owners;
             dependencies.reserve(terms.size());
+            dependency_owners.reserve(terms.size());
             for (const auto &term : terms)
             {
                 if (term.scale == FieldElement::zero())
                 {
                     dependencies.push_back(nullptr);
+                    dependency_owners.push_back(nullptr);
                     continue;
                 }
                 const auto *commitment = term.commitment != nullptr
                     ? term.commitment
                     : find_linear_dependency_commitment(
                         term.label, trace, batch_commitments);
-                if (commitment == nullptr
-                    || commitment->opening_polynomial == nullptr)
+                if (commitment == nullptr)
                 {
                     throw std::runtime_error(
                         "missing polynomial dependency for deferred linear dynamic commitment "
                         + name + ": " + term.label);
                 }
-                const auto *source = commitment->opening_polynomial.get();
+                std::shared_ptr<const Polynomial> material;
+                try
+                {
+                    material = term.commitment != nullptr
+                        ? commitment->opening_polynomial
+                        : linear_dependency_opening_material(
+                            term.label,
+                            *commitment,
+                            trace,
+                            target.domain);
+                }
+                catch (const std::exception &)
+                {
+                    throw std::runtime_error(
+                        "missing polynomial dependency for deferred linear dynamic commitment "
+                        + name + ": " + term.label);
+                }
+                if (material == nullptr)
+                {
+                    throw std::runtime_error(
+                        "missing polynomial dependency for deferred linear dynamic commitment "
+                        + name + ": " + term.label);
+                }
+                const auto *source = material.get();
                 if (source->basis != algebra::PolynomialBasis::Evaluation
                     || source->domain == nullptr
                     || source->size() > target.size()
@@ -906,6 +1120,7 @@ namespace gatzk::protocol
                         "domain mismatch for deferred linear dynamic commitment "
                         + name + ": " + term.label);
                 }
+                dependency_owners.push_back(std::move(material));
                 dependencies.push_back(source);
             }
 
@@ -1625,15 +1840,19 @@ namespace gatzk::protocol
             const algebra::Polynomial &polynomial,
             bool keep_trace_payloads)
         {
-            // `edge` 与 `FH` 位于 proving 热路径上，若把 evaluation 多项式落盘，
-            // domain opening 时就会退化成逐项文件读取，远慢于并行 PackedEvaluationBackend 扫掠。
-            const bool keep_hotpath_in_memory =
-                !keep_trace_payloads && polynomial.basis == algebra::PolynomialBasis::Evaluation && polynomial.domain != nullptr && (polynomial.domain->name == "edge" || polynomial.domain->name == "FH") && polynomial.domain->size >= (1ULL << 20) && name.rfind("P_", 0) == 0;
-            if (keep_hotpath_in_memory)
-            {
-                return false;
-            }
-            return !keep_trace_payloads && polynomial.basis == algebra::PolynomialBasis::Evaluation && polynomial.domain != nullptr && polynomial.domain->size >= (1ULL << 20) && (name.rfind("P_", 0) == 0);
+            // A single 2^22 evaluation column is already 128 MiB. Retaining
+            // every edge/FH opening column makes whole-graph traces grow with
+            // the number of committed objects and can exceed host memory.
+            // File backing is execution-only: values, blinders, commitments,
+            // labels, and the canonical proof schema remain unchanged.
+            constexpr std::size_t kMinFileBackedValueCount = 1ULL << 22;
+            return !keep_trace_payloads
+                && polynomial.basis
+                    == algebra::PolynomialBasis::Evaluation
+                && polynomial.domain != nullptr
+                && polynomial.domain->size
+                    >= kMinFileBackedValueCount
+                && name.rfind("P_", 0) == 0;
         }
 
         std::filesystem::path spill_root_directory()
@@ -1734,16 +1953,22 @@ namespace gatzk::protocol
                 }
                 if (total_bytes > kMaxPreparedPayloadBytes)
                 {
+                    std::vector<std::string> canonical_names;
+                    canonical_names.reserve(specs.size());
+                    for (const auto &spec : specs)
+                    {
+                        canonical_names.push_back(spec.name);
+                    }
+                    std::vector<std::vector<DynamicCommitmentSpec>> chunks;
                     std::vector<DynamicCommitmentSpec> chunk;
-                    chunk.reserve(specs.size());
                     std::size_t chunk_bytes = 0;
                     for (auto &spec : specs)
                     {
                         const auto spec_bytes = estimated_dynamic_commitment_payload_bytes(spec);
                         if (!chunk.empty() && chunk_bytes + spec_bytes > kMaxPreparedPayloadBytes)
                         {
-                            add_dynamic_commitment_batch(trace, std::move(chunk), key, keep_trace_payloads, metrics);
-                            chunk.clear();
+                            chunks.push_back(std::move(chunk));
+                            chunk = {};
                             chunk_bytes = 0;
                         }
                         chunk_bytes += spec_bytes;
@@ -1751,8 +1976,60 @@ namespace gatzk::protocol
                     }
                     if (!chunk.empty())
                     {
-                        add_dynamic_commitment_batch(trace, std::move(chunk), key, keep_trace_payloads, metrics);
+                        chunks.push_back(std::move(chunk));
                     }
+
+                    std::vector<std::vector<std::string>> produced_labels(
+                        chunks.size());
+                    std::vector<std::vector<std::string>> required_labels(
+                        chunks.size());
+                    for (std::size_t chunk_index = 0;
+                         chunk_index < chunks.size(); ++chunk_index)
+                    {
+                        for (const auto &spec : chunks[chunk_index])
+                        {
+                            produced_labels[chunk_index].push_back(spec.name);
+                            for (const auto &term : spec.deferred_linear_terms)
+                            {
+                                if (!term.label.empty()
+                                    && term.scale != FieldElement::zero())
+                                {
+                                    required_labels[chunk_index].push_back(
+                                        term.label);
+                                }
+                            }
+                        }
+                    }
+                    const auto execution_order =
+                        stable_dynamic_commitment_chunk_order(
+                            produced_labels, required_labels);
+                    const auto commitment_order_start =
+                        trace.commitment_order.size();
+                    for (const auto chunk_index : execution_order)
+                    {
+                        add_dynamic_commitment_batch(
+                            trace,
+                            std::move(chunks[chunk_index]),
+                            key,
+                            keep_trace_payloads,
+                            metrics);
+                    }
+                    if (trace.commitment_order.size()
+                            != commitment_order_start
+                                + canonical_names.size())
+                    {
+                        throw std::runtime_error(
+                            "dynamic commitment chunk execution changed the canonical object count");
+                    }
+                    trace.commitment_order.erase(
+                        trace.commitment_order.begin()
+                            + static_cast<std::ptrdiff_t>(
+                                commitment_order_start),
+                        trace.commitment_order.end());
+                    trace.commitment_order.insert(
+                        trace.commitment_order.end(),
+                        canonical_names.begin(),
+                        canonical_names.end());
                     return;
                 }
             }
@@ -1883,8 +2160,32 @@ namespace gatzk::protocol
                             item.name, &item.commitment);
                     }
                 }
+                std::vector<std::vector<std::string>> produced_labels;
+                std::vector<std::vector<std::string>> required_labels;
+                produced_labels.reserve(deferred_linear_indices.size());
+                required_labels.reserve(deferred_linear_indices.size());
                 for (const auto prepared_index : deferred_linear_indices)
                 {
+                    const auto &item = prepared[prepared_index];
+                    produced_labels.push_back({item.name});
+                    required_labels.emplace_back();
+                    for (const auto &term : item.deferred_linear_terms)
+                    {
+                        if (!term.label.empty()
+                            && term.scale != FieldElement::zero())
+                        {
+                            required_labels.back().push_back(term.label);
+                        }
+                    }
+                }
+                const auto deferred_execution_order =
+                    stable_dynamic_commitment_chunk_order(
+                        produced_labels, required_labels);
+                for (const auto deferred_position :
+                     deferred_execution_order)
+                {
+                    const auto prepared_index =
+                        deferred_linear_indices[deferred_position];
                     auto &item = prepared[prepared_index];
                     if (!item.polynomial.has_value())
                     {
@@ -1913,7 +2214,8 @@ namespace gatzk::protocol
                                 trace,
                                 batch_commitments,
                                 key,
-                                item.name);
+                                item.name,
+                                item.polynomial->domain);
                         },
                         item.name);
                     item.commitment =
@@ -2024,6 +2326,7 @@ namespace gatzk::protocol
                     if (should_spill_dynamic_polynomial(item.name, *item.polynomial, keep_trace_payloads))
                     {
                         trace.spilled_polynomials[item.name] = spill_evaluation_polynomial(*item.polynomial);
+                        item.commitment.opening_polynomial.reset();
                     }
                     else
                     {
@@ -2615,6 +2918,13 @@ namespace gatzk::protocol
             HiddenQuantizedWitness out;
             const auto node_count = fp.H_prime.size();
             const auto d_h = node_count == 0 ? 0 : fp.H_prime.front().size();
+            const auto edge_count = edge_src_indices.size();
+            if (edge_count != edge_dst_indices.size()
+                || edge_count > edge_domain_size)
+            {
+                throw std::runtime_error(
+                    "hidden compact edge witness exceeds its registered domain");
+            }
             out.h_prime.assign(node_count, std::vector<FieldElement>(d_h, FieldElement::zero()));
             out.h_agg_pre.assign(node_count, std::vector<FieldElement>(d_h, FieldElement::zero()));
             out.h_agg_pre_lookup.assign(node_count, std::vector<FieldElement>(d_h, FieldElement::zero()));
@@ -2625,24 +2935,24 @@ namespace gatzk::protocol
             out.m.assign(fp.M.size(), FieldElement::zero());
             out.sum.assign(fp.Sum.size(), FieldElement::zero());
             out.inv.assign(fp.inv.size(), FieldElement::zero());
-            out.s.assign(edge_domain_size, FieldElement::zero());
-            out.z.assign(edge_domain_size, FieldElement::zero());
-            out.delta.assign(edge_domain_size, FieldElement::zero());
-            out.u.assign(edge_domain_size, FieldElement::zero());
-            out.alpha.assign(edge_domain_size, FieldElement::zero());
-            out.e_src_edge.assign(edge_domain_size, FieldElement::zero());
-            out.e_dst_edge.assign(edge_domain_size, FieldElement::zero());
-            out.m_edge.assign(edge_domain_size, FieldElement::zero());
-            out.sum_edge.assign(edge_domain_size, FieldElement::zero());
-            out.inv_edge.assign(edge_domain_size, FieldElement::zero());
+            out.s.assign(edge_count, FieldElement::zero());
+            out.z.assign(edge_count, FieldElement::zero());
+            out.delta.assign(edge_count, FieldElement::zero());
+            out.u.assign(edge_count, FieldElement::zero());
+            out.alpha.assign(edge_count, FieldElement::zero());
+            out.e_src_edge.assign(edge_count, FieldElement::zero());
+            out.e_dst_edge.assign(edge_count, FieldElement::zero());
+            out.m_edge.assign(edge_count, FieldElement::zero());
+            out.sum_edge.assign(edge_count, FieldElement::zero());
+            out.inv_edge.assign(edge_count, FieldElement::zero());
 
             std::vector<std::int64_t> e_src_raw(out.e_src.size(), 0);
             std::vector<std::int64_t> e_dst_raw(out.e_dst.size(), 0);
             std::vector<std::int64_t> m_raw(out.m.size(), std::numeric_limits<std::int64_t>::min());
             std::vector<std::uint8_t> m_seen(out.m.size(), 0);
-            std::vector<std::int64_t> s_raw(edge_domain_size, 0);
-            std::vector<std::int64_t> z_raw(edge_domain_size, 0);
-            std::vector<std::int64_t> u_raw(edge_domain_size, 0);
+            std::vector<std::int64_t> s_raw(edge_count, 0);
+            std::vector<std::int64_t> z_raw(edge_count, 0);
+            std::vector<std::int64_t> u_raw(edge_count, 0);
             std::vector<std::int64_t> sum_raw(node_count, 0);
             RawMatrix h_prime_raw(node_count, std::vector<std::int64_t>(d_h, 0));
 
@@ -2760,10 +3070,12 @@ namespace gatzk::protocol
                     aggregate_numerators[flat_index] = checked_raw_value(
                         aggregate_numerator,
                         "hidden aggregate numerator");
-                    aggregate_denominators[flat_index] = sum_raw[row];
+                    aggregate_denominators[flat_index] = checked_raw_value(
+                        static_cast<__int128>(sum_raw[row]) * 16,
+                        "hidden aggregate denominator");
                     const auto elu_input_raw = signed_round_div_nearest(
                         aggregate_numerator,
-                        sum_raw[row],
+                        static_cast<__int128>(sum_raw[row]) * 16,
                         "hidden aggregate ELU input");
                     out.h_agg_pre_lookup[row][column] = FieldElement::from_signed(elu_input_raw);
                     const auto it = elu_output_by_input.find(out.h_agg_pre_lookup[row][column].to_string());
@@ -2783,7 +3095,7 @@ namespace gatzk::protocol
             out.aggregate_div = build_signed_round_div_witness(
                 aggregate_numerators,
                 aggregate_denominators,
-                edge_domain_size,
+                aggregate_numerators.size(),
                 range_bits,
                 "hidden aggregate ELU input");
             return out;
@@ -2803,6 +3115,13 @@ namespace gatzk::protocol
             OutputQuantizedWitness out;
             const auto node_count = fp.H_prime.size();
             const auto output_dim = node_count == 0 ? 0 : fp.H_prime.front().size();
+            const auto edge_count = edge_src_indices.size();
+            if (edge_count != edge_dst_indices.size()
+                || edge_count > edge_domain_size)
+            {
+                throw std::runtime_error(
+                    "output compact edge witness exceeds its registered domain");
+            }
             out.y_prime.assign(node_count, std::vector<FieldElement>(output_dim, FieldElement::zero()));
             out.y_lin.assign(node_count, std::vector<FieldElement>(output_dim, FieldElement::zero()));
             out.y.assign(node_count, std::vector<FieldElement>(output_dim, FieldElement::zero()));
@@ -2813,24 +3132,24 @@ namespace gatzk::protocol
             out.m.assign(fp.M.size(), FieldElement::zero());
             out.sum.assign(fp.Sum.size(), FieldElement::zero());
             out.inv.assign(fp.inv.size(), FieldElement::zero());
-            out.s.assign(edge_domain_size, FieldElement::zero());
-            out.z.assign(edge_domain_size, FieldElement::zero());
-            out.delta.assign(edge_domain_size, FieldElement::zero());
-            out.u.assign(edge_domain_size, FieldElement::zero());
-            out.alpha.assign(edge_domain_size, FieldElement::zero());
-            out.e_src_edge.assign(edge_domain_size, FieldElement::zero());
-            out.e_dst_edge.assign(edge_domain_size, FieldElement::zero());
-            out.m_edge.assign(edge_domain_size, FieldElement::zero());
-            out.sum_edge.assign(edge_domain_size, FieldElement::zero());
-            out.inv_edge.assign(edge_domain_size, FieldElement::zero());
+            out.s.assign(edge_count, FieldElement::zero());
+            out.z.assign(edge_count, FieldElement::zero());
+            out.delta.assign(edge_count, FieldElement::zero());
+            out.u.assign(edge_count, FieldElement::zero());
+            out.alpha.assign(edge_count, FieldElement::zero());
+            out.e_src_edge.assign(edge_count, FieldElement::zero());
+            out.e_dst_edge.assign(edge_count, FieldElement::zero());
+            out.m_edge.assign(edge_count, FieldElement::zero());
+            out.sum_edge.assign(edge_count, FieldElement::zero());
+            out.inv_edge.assign(edge_count, FieldElement::zero());
 
             std::vector<std::int64_t> e_src_raw(out.e_src.size(), 0);
             std::vector<std::int64_t> e_dst_raw(out.e_dst.size(), 0);
             std::vector<std::int64_t> m_raw(out.m.size(), std::numeric_limits<std::int64_t>::min());
             std::vector<std::uint8_t> m_seen(out.m.size(), 0);
-            std::vector<std::int64_t> s_raw(edge_domain_size, 0);
-            std::vector<std::int64_t> z_raw(edge_domain_size, 0);
-            std::vector<std::int64_t> u_raw(edge_domain_size, 0);
+            std::vector<std::int64_t> s_raw(edge_count, 0);
+            std::vector<std::int64_t> z_raw(edge_count, 0);
+            std::vector<std::int64_t> u_raw(edge_count, 0);
             std::vector<std::int64_t> sum_raw(node_count, 0);
 
             const auto quantized_bias = quantize_vector(output_bias_fp);
@@ -2970,12 +3289,14 @@ namespace gatzk::protocol
             out.aggregate_div = build_signed_round_div_witness(
                 aggregate_numerators,
                 aggregate_denominators,
-                edge_domain_size,
+                aggregate_numerators.size(),
                 range_bits,
                 "output aggregate");
             out.y_pre_flat = out.aggregate_div.y;
-            out.bias_flat.assign(edge_domain_size, FieldElement::zero());
-            out.y_flat.assign(edge_domain_size, FieldElement::zero());
+            out.bias_flat.assign(
+                node_count * output_dim, FieldElement::zero());
+            out.y_flat.assign(
+                node_count * output_dim, FieldElement::zero());
             for (std::size_t row = 0; row < node_count; ++row)
             {
                 for (std::size_t column = 0; column < output_dim; ++column)
@@ -3153,7 +3474,7 @@ namespace gatzk::protocol
                 artifacts->output_average_div = build_signed_round_div_witness(
                     sum_values,
                     denominators,
-                    edge_domain_size,
+                    sum_values.size(),
                     context.config.range_bits,
                     "final output head average");
             }
@@ -3200,7 +3521,16 @@ namespace gatzk::protocol
             bool use_src,
             std::size_t domain_size)
         {
-            std::vector<FieldElement> out(domain_size, FieldElement::zero());
+            if (edges.size() > domain_size)
+            {
+                throw std::runtime_error(
+                    "broadcast edge view exceeds its registered domain");
+            }
+            // Rows after the real edge block are canonical zeros. Store only
+            // the non-padding prefix; evaluation-basis KZG and every opening
+            // path interpret the omitted suffix as zero on the same domain.
+            std::vector<FieldElement> out(
+                edges.size(), FieldElement::zero());
             parallel_for_ranges(
                 edges.size(),
                 256,
@@ -4682,11 +5012,14 @@ namespace gatzk::protocol
                             division_prefix, value_name, limb, "Query");
                         const auto multiplicity_label = signed_division_range_label(
                             division_prefix, value_name, limb, "m");
+                        const auto padded_limb_query = padded_column(
+                            limb_columns[limb],
+                            domains.edge->size);
                         const auto multiplicity =
                             std::make_shared<const std::vector<FieldElement>>(
                                 build_single_lookup_multiplicity_for_packed_query(
                                     *range_index,
-                                    limb_columns[limb],
+                                    padded_limb_query,
                                     domains.edge->size,
                                     valid_count,
                                     limb_label,
@@ -4726,7 +5059,11 @@ namespace gatzk::protocol
                         const auto beta = transcript.challenge(beta_name);
                         trace.challenges[beta_name] = beta;
                         auto inverses = profiled_logup_inverse(
-                            *table, limb_columns[limb], q_tbl_r, q_query, beta);
+                            *table,
+                            padded_limb_query,
+                            q_tbl_r,
+                            q_query,
+                            beta);
                         auto accumulator =
                             profiled_logup_accumulator(
                             inverses.table,
@@ -6143,33 +6480,58 @@ namespace gatzk::protocol
                 trace.external_evaluations["mu_h" + std::to_string(head_index) + "_proj"] =
                     matrix_row_major_evaluation(h_prime, trace.challenges.at("y_proj_h" + std::to_string(head_index)));
                 trace.external_evaluations["mu_h" + std::to_string(head_index) + "_src"] =
-                    trace.polynomials.at(prefix + "E_src").evaluate(trace.challenges.at("y_src_h" + std::to_string(head_index)));
+                    evaluate_trace_polynomial(
+                        trace, prefix + "E_src",
+                        trace.challenges.at("y_src_h" + std::to_string(head_index)),
+                        domains.edge);
                 trace.external_evaluations[hidden_score_mask_eval_name(head_index, "src")] =
-                    trace.polynomials.at(hidden_score_mask_label(head_index, "src"))
-                        .evaluate(trace.challenges.at("y_src_h" + std::to_string(head_index)));
+                    evaluate_trace_polynomial(
+                        trace, hidden_score_mask_label(head_index, "src"),
+                        trace.challenges.at("y_src_h" + std::to_string(head_index)),
+                        domains.edge);
                 trace.external_evaluations["mu_h" + std::to_string(head_index) + "_dst"] =
-                    trace.polynomials.at(prefix + "E_dst").evaluate(trace.challenges.at("y_dst_h" + std::to_string(head_index)));
+                    evaluate_trace_polynomial(
+                        trace, prefix + "E_dst",
+                        trace.challenges.at("y_dst_h" + std::to_string(head_index)),
+                        domains.edge);
                 trace.external_evaluations[hidden_score_mask_eval_name(head_index, "dst")] =
-                    trace.polynomials.at(hidden_score_mask_label(head_index, "dst"))
-                        .evaluate(trace.challenges.at("y_dst_h" + std::to_string(head_index)));
+                    evaluate_trace_polynomial(
+                        trace, hidden_score_mask_label(head_index, "dst"),
+                        trace.challenges.at("y_dst_h" + std::to_string(head_index)),
+                        domains.edge);
                 trace.external_evaluations["mu_h" + std::to_string(head_index) + "_star"] =
-                    trace.polynomials.at(prefix + "H_star").evaluate(trace.challenges.at("y_star_h" + std::to_string(head_index)));
+                    evaluate_trace_polynomial(
+                        trace, prefix + "H_star",
+                        trace.challenges.at("y_star_h" + std::to_string(head_index)),
+                        domains.n);
                 trace.external_evaluations[external_mask_eval_name(
                     "mu_h" + std::to_string(head_index) + "_star")] =
-                    trace.polynomials.at(external_mask_label(prefix + "H_star"))
-                        .evaluate(trace.challenges.at("y_star_h" + std::to_string(head_index)));
+                    evaluate_trace_polynomial(
+                        trace, external_mask_label(prefix + "H_star"),
+                        trace.challenges.at("y_star_h" + std::to_string(head_index)),
+                        domains.n);
                 trace.external_evaluations["mu_h" + std::to_string(head_index) + "_agg_pre"] =
-                    trace.polynomials.at(prefix + "H_agg_pre_star").evaluate(trace.challenges.at("y_agg_pre_h" + std::to_string(head_index)));
+                    evaluate_trace_polynomial(
+                        trace, prefix + "H_agg_pre_star",
+                        trace.challenges.at("y_agg_pre_h" + std::to_string(head_index)),
+                        domains.n);
                 trace.external_evaluations[external_mask_eval_name(
                     "mu_h" + std::to_string(head_index) + "_agg_pre")] =
-                    trace.polynomials.at(external_mask_label(prefix + "H_agg_pre_star"))
-                        .evaluate(trace.challenges.at("y_agg_pre_h" + std::to_string(head_index)));
+                    evaluate_trace_polynomial(
+                        trace, external_mask_label(prefix + "H_agg_pre_star"),
+                        trace.challenges.at("y_agg_pre_h" + std::to_string(head_index)),
+                        domains.n);
                 trace.external_evaluations["mu_h" + std::to_string(head_index) + "_agg"] =
-                    trace.polynomials.at(prefix + "H_agg_star").evaluate(trace.challenges.at("y_agg_h" + std::to_string(head_index)));
+                    evaluate_trace_polynomial(
+                        trace, prefix + "H_agg_star",
+                        trace.challenges.at("y_agg_h" + std::to_string(head_index)),
+                        domains.n);
                 trace.external_evaluations[external_mask_eval_name(
                     "mu_h" + std::to_string(head_index) + "_agg")] =
-                    trace.polynomials.at(external_mask_label(prefix + "H_agg_star"))
-                        .evaluate(trace.challenges.at("y_agg_h" + std::to_string(head_index)));
+                    evaluate_trace_polynomial(
+                        trace, external_mask_label(prefix + "H_agg_star"),
+                        trace.challenges.at("y_agg_h" + std::to_string(head_index)),
+                        domains.n);
             };
 
             auto commit_hidden_layer_concat = [&](std::size_t layer_index)
@@ -6237,10 +6599,13 @@ namespace gatzk::protocol
                     is_final_layer ? std::string("mu_cat")
                                    : "mu_cat_l" + std::to_string(layer_index);
                 trace.external_evaluations[concat_eval_name] =
-                    trace.polynomials.at(concat_star_label).evaluate(trace.challenges.at(y_name));
+                    evaluate_trace_polynomial(
+                        trace, concat_star_label,
+                        trace.challenges.at(y_name), domains.n);
                 trace.external_evaluations[external_mask_eval_name(concat_eval_name)] =
-                    trace.polynomials.at(external_mask_label(concat_star_label))
-                        .evaluate(trace.challenges.at(y_name));
+                    evaluate_trace_polynomial(
+                        trace, external_mask_label(concat_star_label),
+                        trace.challenges.at(y_name), domains.n);
             };
 
             stage_start = Clock::now();
@@ -7188,21 +7553,36 @@ namespace gatzk::protocol
                     trace.external_evaluations[output_external_eval_name("proj", head_index)] =
                         matrix_row_major_evaluation(y_prime, trace.challenges.at(output_challenge_name("y_proj_out", head_index)));
                     trace.external_evaluations[output_external_eval_name("src", head_index)] =
-                        trace.polynomials.at(prefix + "E_src").evaluate(trace.challenges.at(output_challenge_name("y_src_out", head_index)));
+                        evaluate_trace_polynomial(
+                            trace, prefix + "E_src",
+                            trace.challenges.at(output_challenge_name("y_src_out", head_index)),
+                            domains.edge);
                     trace.external_evaluations[output_score_mask_eval_name(head_index, "src")] =
-                        trace.polynomials.at(output_score_mask_label(head_index, "src"))
-                            .evaluate(trace.challenges.at(output_challenge_name("y_src_out", head_index)));
+                        evaluate_trace_polynomial(
+                            trace, output_score_mask_label(head_index, "src"),
+                            trace.challenges.at(output_challenge_name("y_src_out", head_index)),
+                            domains.edge);
                     trace.external_evaluations[output_external_eval_name("dst", head_index)] =
-                        trace.polynomials.at(prefix + "E_dst").evaluate(trace.challenges.at(output_challenge_name("y_dst_out", head_index)));
+                        evaluate_trace_polynomial(
+                            trace, prefix + "E_dst",
+                            trace.challenges.at(output_challenge_name("y_dst_out", head_index)),
+                            domains.edge);
                     trace.external_evaluations[output_score_mask_eval_name(head_index, "dst")] =
-                        trace.polynomials.at(output_score_mask_label(head_index, "dst"))
-                            .evaluate(trace.challenges.at(output_challenge_name("y_dst_out", head_index)));
+                        evaluate_trace_polynomial(
+                            trace, output_score_mask_label(head_index, "dst"),
+                            trace.challenges.at(output_challenge_name("y_dst_out", head_index)),
+                            domains.edge);
                     trace.external_evaluations[output_external_eval_name("star", head_index)] =
-                        trace.polynomials.at(prefix + "Y_star").evaluate(trace.challenges.at(output_challenge_name("y_out_star", head_index)));
+                        evaluate_trace_polynomial(
+                            trace, prefix + "Y_star",
+                            trace.challenges.at(output_challenge_name("y_out_star", head_index)),
+                            domains.n);
                     trace.external_evaluations[external_mask_eval_name(
                         output_external_eval_name("star", head_index))] =
-                        trace.polynomials.at(external_mask_label(prefix + "Y_star"))
-                            .evaluate(trace.challenges.at(output_challenge_name("y_out_star", head_index)));
+                        evaluate_trace_polynomial(
+                            trace, external_mask_label(prefix + "Y_star"),
+                            trace.challenges.at(output_challenge_name("y_out_star", head_index)),
+                            domains.n);
                 };
 
                 for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
@@ -7882,12 +8262,23 @@ namespace gatzk::protocol
                         domains.edge->size, FieldElement::zero());
                     const auto &bias_flat_values =
                         forward_artifacts->output_head_quantized[head_index].bias_flat;
-                    if (bias_flat_values.size() != domains.edge->size)
+                    const auto view_length = n_nodes * n_classes;
+                    if (bias_flat_values.size() < view_length
+                        || bias_flat_values.size() > domains.edge->size)
                     {
                         throw std::runtime_error(
-                            "output bias view does not cover the fixed edge domain");
+                            "output bias view does not cover its registered active rows");
                     }
-                    const auto view_length = n_nodes * n_classes;
+                    if (std::any_of(
+                            bias_flat_values.begin()
+                                + static_cast<std::ptrdiff_t>(view_length),
+                            bias_flat_values.end(),
+                            [](const FieldElement &value)
+                            { return !value.is_zero(); }))
+                    {
+                        throw std::runtime_error(
+                            "output bias view has a nonzero padding row");
+                    }
                     for (std::size_t index = 0; index < view_length; ++index)
                     {
                         query_indices[index] = FieldElement(index % n_classes);

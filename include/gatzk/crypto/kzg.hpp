@@ -1,6 +1,7 @@
 #pragma once
 // KZG承诺实现，负责承诺、批量opening与验证侧的批量检查
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -104,6 +105,9 @@ namespace gatzk::crypto
         G1Point point;
         std::shared_ptr<const algebra::Polynomial> opening_polynomial;
     };
+
+    using OpeningPolynomialResolver = std::function<
+        std::shared_ptr<const algebra::Polynomial>(const Commitment&)>;
 
     // 批量opening的执行，供正式 benchmark 细分 `domain_opening_ms`。
     struct BatchOpeningProfile
@@ -279,7 +283,8 @@ namespace gatzk::crypto
             BatchOpeningClaimValidation claim_validation =
                 BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials,
             const PointGroupOpeningExecutionOptions* execution_options =
-                nullptr);
+                nullptr,
+            const OpeningPolynomialResolver* opening_resolver = nullptr);
 
         // Verify exactly one canonical point group and its single witness.
         static bool verify_point_group(

@@ -527,6 +527,53 @@ void test_kzg_opening_selftest() {
             FieldElement(13), proof, keys.vk),
         "KZG verifier-key-only opening must verify without prover polynomial material");
 
+    const auto streamed_domain =
+        gatzk::algebra::RootOfUnityDomain::create("N", 8);
+    auto streamed_polynomial =
+        gatzk::algebra::Polynomial::from_evaluations(
+            "P_streamed_opening",
+            {FieldElement(2), FieldElement(3), FieldElement(5),
+             FieldElement(7), FieldElement(11), FieldElement(13),
+             FieldElement(17), FieldElement(19)},
+            streamed_domain);
+    streamed_polynomial.set_zero_domain_blinder(
+        {FieldElement(23), FieldElement(29)});
+    auto streamed_commitment = gatzk::crypto::KZG::commit(
+        "P_streamed_opening", streamed_polynomial, keys);
+    const auto streamed_material =
+        streamed_commitment.opening_polynomial;
+    const FieldElement streamed_point(31);
+    const auto streamed_value =
+        streamed_polynomial.evaluate(streamed_point);
+    streamed_commitment.opening_polynomial.reset();
+    const gatzk::crypto::OpeningPolynomialResolver resolver =
+        [&](const gatzk::crypto::Commitment& requested) {
+            require(requested.name == "P_streamed_opening",
+                    "streamed opening resolver received the wrong object");
+            return streamed_material;
+        };
+    const auto streamed_witness =
+        gatzk::crypto::KZG::open_point_group(
+            {streamed_commitment},
+            streamed_point,
+            {streamed_value},
+            FieldElement(37),
+            keys,
+            nullptr,
+            gatzk::crypto::BatchOpeningClaimValidation::
+                AlreadyComputedFromOpeningPolynomials,
+            nullptr,
+            &resolver);
+    require(
+        gatzk::crypto::KZG::verify_point_group(
+            {streamed_commitment},
+            streamed_point,
+            {streamed_value},
+            FieldElement(37),
+            streamed_witness,
+            keys.vk),
+        "file-backed streamed evaluation opening must verify");
+
     require(
         keys.vk.domain_zero_g2.size() == keys.manifest.domain_sizes.size(),
         "verifier key must carry the complete zero-polynomial G2 catalogue");
@@ -1073,9 +1120,30 @@ void test_compact_eval_kzg_regression() {
         "P_compact_eval",
         {FieldElement(3), FieldElement(5), FieldElement(7), FieldElement(11), FieldElement(13)},
         domain);
+    polynomial.set_zero_domain_blinder(
+        {FieldElement(17), FieldElement(19)});
+    std::vector<FieldElement> padded_values(
+        domain->size, FieldElement::zero());
+    std::copy(
+        polynomial.values().begin(),
+        polynomial.values().end(),
+        padded_values.begin());
+    auto padded_polynomial =
+        gatzk::algebra::Polynomial::from_evaluations(
+            "P_compact_eval_padded",
+            std::move(padded_values),
+            domain);
+    padded_polynomial.set_zero_domain_blinder(
+        polynomial.zero_domain_blinder);
     const auto point = choose_non_domain_point(*domain);
     const auto value = polynomial.evaluate(point);
     const auto commitment = gatzk::crypto::KZG::commit("P_compact_eval", polynomial, keys);
+    const auto padded_commitment = gatzk::crypto::KZG::commit(
+        "P_compact_eval_padded", padded_polynomial, keys);
+    require(
+        commitment.point == padded_commitment.point
+            && value == padded_polynomial.evaluate(point),
+        "compact evaluation storage must equal its explicit zero-padded polynomial");
     const std::vector<std::pair<gatzk::crypto::Commitment, FieldElement>> openings{
         {commitment, value},
     };
@@ -2419,6 +2487,124 @@ void test_real_ppi_representative_batch_boundary() {
     }
 }
 
+void test_formal_shape_and_activation_boundaries() {
+    const auto ppi_rows = gatzk::protocol::minimum_edge_trace_length(
+        56944, 875660, 8, 121);
+    require(
+        ppi_rows == 6890224,
+        "PPI edge trace lower bound must include the complete N*C output view");
+    require(
+        gatzk::algebra::next_power_of_two(ppi_rows + 2) == 8388608,
+        "PPI output view requires the 2^23 edge work domain");
+    require_throws(
+        [] {
+            (void)gatzk::protocol::minimum_edge_trace_length(
+                std::numeric_limits<std::size_t>::max(), 1, 2, 1);
+        },
+        "flattened edge trace length overflow must reject");
+
+    const auto ogbn = gatzk::util::load_config(
+        (repo_root() / "configs/ogbn_arxiv_secure.cfg").string());
+    constexpr std::size_t observed_ogbn_hidden_projection_bound = 1069433;
+    require(
+        observed_ogbn_hidden_projection_bound > (1ULL << 20),
+        "ogbn-arxiv regression must cross the former heuristic ELU bound");
+    require(
+        observed_ogbn_hidden_projection_bound <= (1ULL << ogbn.range_bits),
+        "ogbn-arxiv registered ELU range must cover its signed hidden projection");
+    require(
+        ogbn.range_bits == 21,
+        "ogbn-arxiv must use the minimum power-of-two range covering the formal input/checkpoint boundary");
+    require(
+        2 * (1ULL << ogbn.range_bits) + 3 <= (1ULL << 23),
+        "ogbn-arxiv ELU table and terminal padding must fit its registered edge domain");
+    constexpr std::size_t ogbn_nodes = 169343;
+    constexpr std::size_t ogbn_edges = 1335586;
+    constexpr std::size_t ogbn_hidden_dim = 8;
+    constexpr std::size_t ogbn_classes = 40;
+    constexpr std::size_t ogbn_edge_domain = 1ULL << 23;
+    require(
+        ogbn_edges < ogbn_edge_domain
+            && ogbn_nodes * ogbn_hidden_dim < ogbn_edge_domain
+            && ogbn_nodes * ogbn_classes < ogbn_edge_domain,
+        "ogbn-arxiv compact active prefixes must fit the registered edge domain");
+    require(
+        ogbn_nodes * ogbn_classes == 6773720,
+        "ogbn-arxiv output active-prefix boundary changed unexpectedly");
+}
+
+void test_ppi_deferred_commitment_chunk_dependency_order() {
+    constexpr std::size_t ppi_edge_domain = 1ULL << 23;
+    constexpr std::size_t commitment_payload_limit =
+        96ULL * 1024ULL * 1024ULL;
+    require(
+        ppi_edge_domain * sizeof(FieldElement)
+            > commitment_payload_limit,
+        "PPI regression must force each edge polynomial into its own commitment chunk");
+    const std::vector<std::vector<std::string>> produced = {
+        {"P_out0_s_max"},
+        {"P_out0_C_max"},
+        {"P_out0_widehat_y_star"},
+        {"P_out0_w"},
+        {"P_out0_T"},
+        {"P_out0_T_edge"},
+        {"P_out0_PSQ"},
+        {"P_out0_Y_star"},
+        {"P_out0_Y_star_edge"},
+    };
+    const std::vector<std::vector<std::string>> required = {
+        {}, {}, {},
+        {"P_out0_U", "P_out0_widehat_y_star"},
+        {"P_out0_Sum", "P_out0_Y_star"},
+        {"P_out0_Sum_edge", "P_out0_Y_star_edge"},
+        {}, {}, {},
+    };
+    const auto order =
+        gatzk::protocol::stable_dynamic_commitment_chunk_order(
+            produced, required);
+    require(order.size() == produced.size(),
+            "PPI dynamic commitment scheduler must retain every chunk");
+    std::vector<std::size_t> position(order.size(), 0);
+    for (std::size_t index = 0; index < order.size(); ++index) {
+        position.at(order[index]) = index;
+    }
+    require(position[7] < position[4],
+            "P_out0_Y_star must execute before dependent P_out0_T");
+    require(position[8] < position[5],
+            "P_out0_Y_star_edge must execute before dependent P_out0_T_edge");
+    require(position[2] < position[3],
+            "already ordered deferred dependencies must remain ordered");
+}
+
+void test_large_degree_pi_bind_codec_boundary() {
+    const auto& context = unit_security_fixture().context;
+    auto proof = unit_security_fixture().proof;
+    constexpr std::size_t formal_large_degree = 67108863;
+    bool changed = false;
+    for (auto& subproof : proof.pi_bind.subproofs) {
+        for (auto& relation : subproof.relation_meta.shift_relations) {
+            if (relation.max_difference_degree != 0) {
+                relation.max_difference_degree = formal_large_degree;
+                changed = true;
+            }
+        }
+    }
+    require(changed, "unit fixture must contain a nontrivial Pi_bind shift relation");
+    const auto wire = gatzk::protocol::serialize_proof(proof);
+    try {
+        (void)gatzk::protocol::parse_proof(context, wire);
+        throw std::runtime_error(
+            "mismatched formal degree must not pass the instance-schema check");
+    } catch (const std::runtime_error& error) {
+        const std::string message = error.what();
+        require(
+            message.find("Pi_bind RelationMeta does not match instance schema")
+                != std::string::npos,
+            "large formal degree must decode as numeric metadata before strict schema comparison: "
+                + message);
+    }
+}
+
 void test_full_metadata_and_schema_gates() {
     const auto& fixture = cora_secure_fixture();
     const auto metadata = gatzk::protocol::canonical_public_metadata(fixture.context);
@@ -3473,6 +3659,10 @@ int main() {
         test_canonical_output_digest_contract();
         std::cerr << "running test_multi_graph_public_boundary_validation\n";
         test_multi_graph_public_boundary_validation();
+        std::cerr << "running test_formal_shape_and_activation_boundaries\n";
+        test_formal_shape_and_activation_boundaries();
+        std::cerr << "running test_ppi_deferred_commitment_chunk_dependency_order\n";
+        test_ppi_deferred_commitment_chunk_dependency_order();
         std::cerr << "running test_compiler_observation_certificate_gate\n";
         test_compiler_observation_certificate_gate();
         std::cerr << "running test_domain_opening_challenge_exclusion_registry\n";
@@ -3480,6 +3670,8 @@ int main() {
         if (std::getenv("GATZK_RUN_UNIT_SECURITY_TESTS") != nullptr) {
             std::cerr << "running test_unit_coefficient_basis_closure\n";
             test_unit_coefficient_basis_closure();
+            std::cerr << "running test_large_degree_pi_bind_codec_boundary\n";
+            test_large_degree_pi_bind_codec_boundary();
         } else {
             std::cerr << "skipping unit coefficient-basis closure regression; set GATZK_RUN_UNIT_SECURITY_TESTS=1 to run it\n";
         }

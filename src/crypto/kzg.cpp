@@ -632,6 +632,18 @@ namespace gatzk::crypto
                 || envelope_sizes.at("security_target_bits") != 120
                 || envelope_sizes.at("max_nodes") > manifest.domain_sizes.at("N")
                 || envelope_sizes.at("max_edges") > manifest.domain_sizes.at("edge")
+                || envelope_sizes.at("max_nodes")
+                    > std::numeric_limits<std::size_t>::max()
+                        / envelope_sizes.at("max_hidden_head_dim")
+                || envelope_sizes.at("max_nodes")
+                        * envelope_sizes.at("max_hidden_head_dim")
+                    > manifest.domain_sizes.at("edge")
+                || envelope_sizes.at("max_nodes")
+                    > std::numeric_limits<std::size_t>::max()
+                        / envelope_sizes.at("max_classes")
+                || envelope_sizes.at("max_nodes")
+                        * envelope_sizes.at("max_classes")
+                    > manifest.domain_sizes.at("edge")
                 || envelope_sizes.at("max_input_dim") > manifest.domain_sizes.at("in")
                 || envelope_sizes.at("max_hidden_head_dim") > manifest.domain_sizes.at("d")
                 || envelope_sizes.at("max_classes") > manifest.domain_sizes.at("C")
@@ -641,7 +653,12 @@ namespace gatzk::crypto
                     < envelope_sizes.at("max_nodes")
                 || envelope_sizes.at("max_concat_dim")
                     < envelope_sizes.at("max_hidden_head_dim")
-                || envelope_sizes.at("max_range_bits") >= 64
+                || envelope_sizes.at("max_range_bits")
+                    >= std::numeric_limits<std::size_t>::digits
+                || manifest.domain_sizes.at("edge") < 3
+                || (std::size_t{1}
+                        << envelope_sizes.at("max_range_bits"))
+                    > (manifest.domain_sizes.at("edge") - 3) / 2
                 || envelope_sizes.at("max_coefficient_chunks")
                     > std::numeric_limits<std::size_t>::max()
                         / (manifest.domain_sizes.at("edge") - 1)
@@ -2052,6 +2069,7 @@ namespace gatzk::crypto
             std::shared_ptr<algebra::RootOfUnityDomain> domain;
             std::vector<FoldedEvaluationTerm> terms;
             std::vector<FieldElement> folded_values;
+            std::vector<FieldElement> folded_zero_domain_blinder;
             std::vector<FieldElement> scaled_claim_sums;
         };
 
@@ -2352,6 +2370,176 @@ namespace gatzk::crypto
             return plan;
         }
 
+        FoldedOpeningPlan build_streamed_folded_opening_plan(
+            const std::vector<Commitment>& commitments,
+            const std::vector<std::vector<FieldElement>>& claimed_values,
+            const std::vector<FieldElement>& powers,
+            const std::vector<FieldElement>& points,
+            std::size_t worker_cap,
+            bool validate_claims,
+            const OpeningPolynomialResolver& opening_resolver)
+        {
+            if (commitments.size() != claimed_values.size()
+                || commitments.size() != powers.size())
+            {
+                throw std::runtime_error(
+                    "streamed folded opening input shape mismatch");
+            }
+            FoldedOpeningPlan plan;
+            plan.coefficient_scaled_claim_sums.assign(
+                points.size(), FieldElement::zero());
+            algebra::DomainEvaluationWeightCache claim_weight_cache;
+
+            for (std::size_t i = 0; i < commitments.size(); ++i)
+            {
+                auto material = commitments[i].opening_polynomial;
+                if (material == nullptr)
+                {
+                    material = opening_resolver(commitments[i]);
+                }
+                if (material == nullptr)
+                {
+                    throw std::runtime_error(
+                        "commitment is missing prover-side opening polynomial: "
+                        + commitments[i].name);
+                }
+                if (claimed_values[i].size() != points.size())
+                {
+                    throw std::runtime_error(
+                        "streamed folded opening claim shape mismatch: "
+                        + commitments[i].name);
+                }
+                if (validate_claims)
+                {
+                    for (std::size_t point_index = 0;
+                         point_index < points.size(); ++point_index)
+                    {
+                        FieldElement expected = FieldElement::zero();
+                        if (material->basis
+                            == algebra::PolynomialBasis::Coefficient)
+                        {
+                            expected = material->evaluate(
+                                points[point_index]);
+                        }
+                        else
+                        {
+                            if (material->domain == nullptr)
+                            {
+                                throw std::runtime_error(
+                                    "evaluation polynomial is missing its domain: "
+                                    + commitments[i].name);
+                            }
+                            expected = evaluate_with_shared_domain_weights(
+                                *material,
+                                points[point_index],
+                                claim_weight_cache.get(
+                                    material->domain,
+                                    points[point_index]));
+                        }
+                        if (expected != claimed_values[i][point_index])
+                        {
+                            throw std::runtime_error(
+                                "streamed opening claim mismatch for "
+                                + commitments[i].name + " at point index "
+                                + std::to_string(point_index));
+                        }
+                    }
+                }
+
+                const auto& scale = powers[i];
+                if (material->basis
+                    == algebra::PolynomialBasis::Coefficient)
+                {
+                    if (!scale.is_zero())
+                    {
+                        accumulate_scaled_coefficients(
+                            &plan.coefficient_fold,
+                            material->values(),
+                            scale,
+                            worker_cap);
+                    }
+                    for (std::size_t point_index = 0;
+                         point_index < points.size(); ++point_index)
+                    {
+                        plan.coefficient_scaled_claim_sums[point_index]
+                            += claimed_values[i][point_index] * scale;
+                    }
+                    continue;
+                }
+                if (material->domain == nullptr)
+                {
+                    throw std::runtime_error(
+                        "evaluation polynomial is missing its domain: "
+                        + commitments[i].name);
+                }
+                auto& group = folded_evaluation_group(
+                    &plan, material->domain, points.size());
+                if (group.folded_values.empty())
+                {
+                    group.folded_values.assign(
+                        group.domain->size, FieldElement::zero());
+                }
+                const auto& source_values = material->values();
+                if (source_values.size() > group.folded_values.size())
+                {
+                    throw std::runtime_error(
+                        "streamed evaluation polynomial exceeds its domain: "
+                        + commitments[i].name);
+                }
+                if (!scale.is_zero())
+                {
+                    auto* folded_native =
+                        FieldElement::mutable_native_array_data(
+                            group.folded_values.data());
+                    const auto* source_native =
+                        FieldElement::native_array_data(
+                            source_values.data());
+                    const auto scale_native = scale.native();
+                    parallel_for_chunks_capped(
+                        source_values.size(),
+                        1ULL << 15,
+                        worker_cap,
+                        [&](std::size_t begin, std::size_t end)
+                        {
+                            for (std::size_t row = begin;
+                                 row < end; ++row)
+                            {
+                                mcl::Fr product;
+                                mcl::Fr::mul(
+                                    product,
+                                    source_native[row],
+                                    scale_native);
+                                mcl::Fr::add(
+                                    folded_native[row],
+                                    folded_native[row],
+                                    product);
+                            }
+                        });
+                    if (material->is_zero_domain_blinded())
+                    {
+                        accumulate_scaled_coefficients(
+                            &group.folded_zero_domain_blinder,
+                            material->zero_domain_blinder,
+                            scale,
+                            worker_cap);
+                    }
+                }
+                for (std::size_t point_index = 0;
+                     point_index < points.size(); ++point_index)
+                {
+                    group.scaled_claim_sums[point_index]
+                        += claimed_values[i][point_index] * scale;
+                }
+            }
+            trim_zero_coefficients(&plan.coefficient_fold);
+            for (auto& group : plan.evaluation_groups)
+            {
+                trim_zero_coefficients(
+                    &group.folded_zero_domain_blinder);
+            }
+            return plan;
+        }
+
         G1Point open_single_point_fold(
             const FoldedOpeningPlan& plan,
             std::size_t point_index,
@@ -2464,7 +2652,18 @@ namespace gatzk::crypto
                 // small coefficient polynomial (R(X)-R(z))/(X-z).
                 const auto blinder_witness_start = Clock::now();
                 std::vector<FieldElement> blinder_quotient_fold;
-                for (const auto &term : group.terms)
+                if (!group.folded_zero_domain_blinder.empty())
+                {
+                    const auto blinder_value = algebra::horner(
+                        group.folded_zero_domain_blinder,
+                        point);
+                    (void)coefficient_single_point_quotient_coefficients(
+                        &blinder_quotient_fold,
+                        group.folded_zero_domain_blinder,
+                        point,
+                        blinder_value);
+                }
+                else for (const auto &term : group.terms)
                 {
                     if (term.zero_domain_blinder == nullptr
                         || term.zero_domain_blinder->empty()
@@ -3753,7 +3952,8 @@ namespace gatzk::crypto
         const KZGKeyPair& key,
         BatchOpeningProfile* profile,
         BatchOpeningClaimValidation claim_validation,
-        const PointGroupOpeningExecutionOptions* execution_options)
+        const PointGroupOpeningExecutionOptions* execution_options,
+        const OpeningPolynomialResolver* opening_resolver)
     {
         if (commitments.empty() || commitments.size() != claimed_values.size())
         {
@@ -3779,14 +3979,24 @@ namespace gatzk::crypto
         }
         const auto precompute_start = Clock::now();
         const auto powers = folding_powers(folding_challenge, commitments.size());
-        const auto folded_plan = build_folded_opening_plan(
-            commitments,
-            value_columns,
-            powers,
-            std::vector<FieldElement>{point},
-            field_worker_cap,
-            claim_validation
-                == BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials);
+        const auto folded_plan = opening_resolver == nullptr
+            ? build_folded_opening_plan(
+                commitments,
+                value_columns,
+                powers,
+                std::vector<FieldElement>{point},
+                field_worker_cap,
+                claim_validation
+                    == BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials)
+            : build_streamed_folded_opening_plan(
+                commitments,
+                value_columns,
+                powers,
+                std::vector<FieldElement>{point},
+                field_worker_cap,
+                claim_validation
+                    == BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials,
+                *opening_resolver);
         if (profile != nullptr)
         {
             profile->precompute_ms += elapsed_ms(precompute_start, Clock::now());
