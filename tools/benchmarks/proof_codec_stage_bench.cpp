@@ -97,7 +97,9 @@ int main(int argc, char** argv) {
         gatzk::protocol::RunMetrics generation_metrics;
         const auto context = gatzk::protocol::build_context(
             config, mode == "generate" ? &generation_metrics : nullptr);
-        require_small_benchmark_config(context);
+        if (mode == "generate") {
+            require_small_benchmark_config(context);
+        }
 
         if (mode == "generate") {
             const auto prover_pipeline_start = Clock::now();

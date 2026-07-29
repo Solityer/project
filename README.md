@@ -5,11 +5,13 @@
 小规模回归、阶段 benchmark 与正式数据共用 `src/` 中同一套 Context、Trace、Prover、
 Verifier、KZG、canonical serializer 和 strict parser。
 
-当前代码修复、CPU/CUDA 构建、受控正式路径回归和工件预检已完成；没有运行任何五个
-正式数据集的完整证明，也没有运行 CPU/GPU 十组矩阵。Cora 的正式 SRS 已存在；其余
-四个正式 SRS 尚未发布，因此 Citeseer、Pubmed、PPI 和 ogbn-arxiv 目前会在加载 SRS
-时 fail closed。详情见 `MAIN_EXPERIMENT_FINAL_REPORT.md` 与
-`PHASE3_PERFORMANCE_OPTIMIZATION.md`。
+第三阶段生产实现已经收敛，CPU/CUDA 构建、完整安全回归、生产 stage benchmark 和
+当前源码 Cora CPU 完整证明均已通过；Cora 结果为 `VERIFY_OK`。五套配置所引用的正式
+SRS 当前均存在，并已通过严格静态绑定扫描。Citeseer、Pubmed 的既有完整
+`VERIFY_OK` 结果属于优化前源码；PPI、ogbn-arxiv 的共同 file-backed opening
+material 生命周期错误已局部验证修复，但两者仍必须标记为“冻结版本最终全量待验证”。
+本轮没有运行 CPU/GPU 十组矩阵。精确证据和受共享主机负载污染的计时边界见
+`MAIN_EXPERIMENT_FINAL_REPORT.md` 与 `PHASE3_PERFORMANCE_OPTIMIZATION.md`。
 
 ## 构建
 
@@ -170,53 +172,27 @@ python3 scripts/export_benchmark_table.py \
 
 ## 正式工件状态与 SRS
 
-五个数据集的 cache 和 checkpoint bundle 均已由生产加载器成功读取；五套最大包络也
-已由当前 `gatzk_srs_setup compile` 验证。正式 SRS 状态如下：
+五个数据集的 cache、checkpoint bundle 和配置引用的正式 SRS 均已由当前生产路径
+读取；五套最大包络已由当前 `gatzk_srs_setup compile` 验证。正式状态如下：
 
 | 数据集 | 配置 | data/cache | checkpoint | compiler artifact | trusted SRS |
 | --- | --- | --- | --- | --- | --- |
-| Cora | `configs/cora_secure.cfg` | 就绪 | 就绪 | 与已发布 SRS 精确匹配 | 就绪 |
-| Citeseer | `configs/citeseer_secure.cfg` | 就绪 | 就绪 | 就绪 | 缺失 |
-| Pubmed | `configs/pubmed_secure.cfg` | 就绪 | 就绪 | 就绪 | 缺失 |
-| PPI | `configs/ppi_secure.cfg` | 就绪 | 就绪 | 就绪 | 缺失 |
-| ogbn-arxiv | `configs/ogbn_arxiv_secure.cfg` | 就绪 | 就绪 | 就绪 | 缺失 |
+| Cora | `configs/cora_secure.cfg` | 就绪 | 就绪 | 匹配 | 就绪 |
+| Citeseer | `configs/citeseer_secure.cfg` | 就绪 | 就绪 | 匹配 | 就绪 |
+| Pubmed | `configs/pubmed_secure.cfg` | 就绪 | 就绪 | 匹配 | 就绪 |
+| PPI | `configs/ppi_secure.cfg` | 就绪 | 就绪 | 匹配 | 就绪 |
+| ogbn-arxiv | `configs/ogbn_arxiv_secure.cfg` | 就绪 | 就绪 | 匹配 | 就绪 |
 
-四份待发布 compiler artifact 位于 `artifacts/srs/compiler_artifacts/`。正式 SRS 必须在
-与 prover/verifier 分离的可信 setup 环境生成，完成规范要求的一致性审计并销毁 setup
-secret 后，才可放入以下精确路径。仓库工具不实现完整多方仪式；不要把当前证明主机上
-临时生成、未获可信发布的材料当作正式 SRS。
-
-在独立可信 setup 环境中，对已审计 compiler artifact 执行：
-
-```bash
-build/gatzk_srs_setup ceremony \
-  artifacts/srs/citeseer_formal_srs_v2 \
-  artifacts/srs/compiler_artifacts/citeseer_formal_srs_v2.txt \
-  citeseer_formal_srs_v2
-
-build/gatzk_srs_setup ceremony \
-  artifacts/srs/pubmed_formal_srs_v2 \
-  artifacts/srs/compiler_artifacts/pubmed_formal_srs_v2.txt \
-  pubmed_formal_srs_v2
-
-build/gatzk_srs_setup ceremony \
-  artifacts/srs/ppi_formal_srs_v2 \
-  artifacts/srs/compiler_artifacts/ppi_formal_srs_v2.txt \
-  ppi_formal_srs_v2
-
-build/gatzk_srs_setup ceremony \
-  artifacts/srs/ogbn_arxiv_formal_srs_v2 \
-  artifacts/srs/compiler_artifacts/ogbn_arxiv_formal_srs_v2.txt \
-  ogbn_arxiv_formal_srs_v2
-```
-
-工具拒绝覆盖已有目录。安装全部正式 SRS 后执行：
+正式运行前执行：
 
 ```bash
 python3 tools/security/static_scan_no_tau.py --require-all-configured-srs
 ```
 
-该扫描只检查静态安全禁项和工件绑定，不等价于完整数据集证明通过。
+该扫描已在 2026-07-30 当前工作区通过。它检查静态安全禁项和工件绑定，不等价于
+完整数据集证明通过，也不能把 PPI/ogbn-arxiv 写成已经 `VERIFY_OK`。旧命名 SRS
+目录具有不同 manifest/ceremony provenance，未作为缓存删除；当前正式配置只引用
+`artifacts/srs/<dataset>_formal_srs`。
 
 ## 测试与 benchmark
 
@@ -250,16 +226,25 @@ strict parser 和 Verifier，只限制输入规模；`gatzk_msm_stage_bench`、
 
 ## 性能证据边界
 
-稳定、同输入、同硬件的既有三次受控生产路径证据为：
+优化前完整 CPU 基线为：
 
-| 指标 | 冻结基线中位数 | 保留实现中位数 | 变化 |
-| --- | ---: | ---: | ---: |
-| commitment | 1682.144 ms | 976.702 ms | -41.937% |
-| prove | 2143.149 ms | 1823.338 ms | -14.922% |
-| verify | 76.633 ms | 78.102 ms | +1.917% |
-| 三项合计 | 3897.541 ms | 2876.125 ms | -26.207% |
-| wall | 4110.572 ms | 3088.730 ms | -24.859% |
+| 数据集 | commitment | prove | verify | 状态 |
+| --- | ---: | ---: | ---: | --- |
+| Cora | 34.849 s | 159.022 s | 1.199 s | `VERIFY_OK` |
+| Citeseer | 78.635 s | 429.439 s | 3.373 s | `VERIFY_OK` |
+| Pubmed | 113.707 s | 1020.030 s | 12.653 s | `VERIFY_OK` |
 
-verify 的 1.469 ms 增幅远小于 commitment/prove 的 1025.253 ms 合计收益，三项总和净降
-1021.416 ms；验证语义、parser、接受条件和计时边界未改变。该表是受控小规模生产路径
-结果，不是任何完整正式数据集结果。当前剩余最大热点与本轮回滚候选见性能记录。
+这些结果属于优化前源码，对当前源码是 `stale-for-current-source`。当前源码 Cora
+完整 CPU 路径也已 `VERIFY_OK`：43.858/152.137/0.713 s，canonical proof 为
+1,462,616 bytes。该次运行与两个训练任务和一个 CPU 测试任务重叠，因此正确性与工件
+有效，时间不能当作受控冻结上限。
+
+同源 production profiling 显示 Cora quotient build 从 126.253 s 降至 102.171 s
+（-19.08%），t_edge/t_FH 分别下降 25.56%/17.46%；当前 verifier 对既有 Cora
+canonical proof 的三次直接验证中位为 512.707 ms（均通过）。完整安全形态峰值 RSS
+从 25,899,732 KiB 降至 17,250,228 KiB（-33.40%），t_edge 临时 coset 从
+9,521,070,080 bytes 降至 7,088,373,760 bytes（-25.55%）。
+
+commitment 没有可接受的新整链降幅；当前完整运行中的表面回退与明显外部负载长尾同时
+出现，不作为代码结论。保留/回滚候选、各阶段原始值、PPI/ogbn-arxiv 边界和冻结后
+十行最终验证命令见两份报告。

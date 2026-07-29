@@ -783,7 +783,8 @@ namespace gatzk::protocol
         const std::map<std::string, FieldElement> &challenges,
         const EvalFn &eval,
         const FieldElement &z,
-        FHQuotientProfile *profile)
+        FHQuotientProfile *profile,
+        const QuotientBoundaryValues *boundary_values)
     {
         const auto total_start = Clock::now();
         const auto dependency_before = profile != nullptr ? profile->dependency_eval_ms : 0.0;
@@ -799,7 +800,9 @@ namespace gatzk::protocol
         };
         const auto eta_feat = challenges.at("eta_feat");
         const auto omega_z = z * context.domains.fh->omega;
-        const auto boundary = boundary_lagrange_values(*context.domains.fh, z);
+        const auto boundary = boundary_values != nullptr
+            ? *boundary_values
+            : boundary_lagrange_values(*context.domains.fh, z);
         const auto l0 = boundary.first;
         const auto l_last = boundary.last;
         const auto not_last = FieldElement::one() - l_last;

@@ -12,7 +12,6 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
-#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -1352,22 +1351,6 @@ namespace gatzk::protocol
             return key;
         }
 
-        std::string quotient_build_cache_key(const ProtocolContext &context, const TraceArtifacts &trace)
-        {
-            std::ostringstream stream;
-            stream << context_cache_key(context.config) << "|quotients";
-            for (const auto &label : trace.commitment_order)
-            {
-                const auto it = trace.commitments.find(label);
-                if (it == trace.commitments.end())
-                {
-                    continue;
-                }
-                stream << '|' << label << '=' << it->second.point.to_string();
-            }
-            return stream.str();
-        }
-
 
         class SharedPublicEvaluationCache
         {
@@ -1468,37 +1451,6 @@ namespace gatzk::protocol
 
             std::unordered_map<std::string, algebra::PackedEvaluationBackend> backends_;
         };
-
-        class SharedProofEvaluationBackendRegistryCache
-        {
-        public:
-            std::shared_ptr<const ProofEvaluationBackendRegistry> get_or_build(
-                const std::string &key,
-                const std::function<std::shared_ptr<const ProofEvaluationBackendRegistry>()> &build)
-            {
-                {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    if (const auto it = entries_.find(key); it != entries_.end())
-                    {
-                        return it->second;
-                    }
-                }
-                auto registry = build();
-                std::lock_guard<std::mutex> lock(mutex_);
-                const auto [it, _] = entries_.emplace(key, std::move(registry));
-                return it->second;
-            }
-
-        private:
-            std::mutex mutex_;
-            std::unordered_map<std::string, std::shared_ptr<const ProofEvaluationBackendRegistry>> entries_;
-        };
-
-        SharedProofEvaluationBackendRegistryCache &shared_proof_backend_registry_cache()
-        {
-            static SharedProofEvaluationBackendRegistryCache cache;
-            return cache;
-        }
 
         FieldElement evaluate_spilled_evaluation_polynomial(
             const TraceArtifacts::SpilledEvaluationPolynomial &spilled,
@@ -1613,6 +1565,22 @@ namespace gatzk::protocol
                         value += polynomial_it->second.domain->zero_polynomial_eval(point)
                             * algebra::horner(
                                 polynomial_it->second.zero_domain_blinder,
+                                point);
+                    }
+                    else if (const auto spilled_it =
+                                 trace_.spilled_polynomials.find(name);
+                             spilled_it
+                                 != trace_.spilled_polynomials.end()
+                             && !spilled_it->second
+                                     .zero_domain_blinder.empty())
+                    {
+                        const auto domain =
+                            domain_from_name(
+                                spilled_it->second.domain_name);
+                        value += domain->zero_polynomial_eval(point)
+                            * algebra::horner(
+                                spilled_it->second
+                                    .zero_domain_blinder,
                                 point);
                     }
                 }
@@ -3759,63 +3727,6 @@ namespace gatzk::protocol
             return values;
         }
 
-        std::string fh_selector_boolean_quotient_coset_key(std::string_view selector_name)
-        {
-            return std::string(selector_name) + ":boolean_quotient_coset";
-        }
-
-        std::shared_ptr<const std::vector<FieldElement>> build_fh_selector_boolean_quotient_coset_material(
-            const ProtocolContext &context,
-            const std::string &selector_name)
-        {
-            if (context.domains.fh == nullptr)
-            {
-                throw std::runtime_error("missing FH domain for selector quotient coset material: " + selector_name);
-            }
-            const auto material_it = context.public_fh_coefficient_materials.find(selector_name);
-            if (material_it == context.public_fh_coefficient_materials.end() || material_it->second == nullptr)
-            {
-                throw std::runtime_error("missing public FH selector coefficient material: " + selector_name);
-            }
-            const auto &domain = context.domains.fh;
-            const auto target_size = domain->size * quotient_coset_multiplier("t_FH");
-            const auto shift = quotient_coset_shift(*domain);
-            auto q_coset = coset_evaluate_polynomial(*material_it->second, target_size, shift, selector_name);
-            if (q_coset.size() != target_size)
-            {
-                throw std::runtime_error("FH selector quotient coset material size mismatch: " + selector_name);
-            }
-
-            const auto root = FieldElement::root_of_unity(target_size);
-            const auto zero_cycle = target_size / domain->size;
-            if (zero_cycle == 0 || target_size % domain->size != 0)
-            {
-                throw std::runtime_error("invalid FH selector quotient coset cycle: " + selector_name);
-            }
-            std::vector<mcl::Fr> inverse_zero(zero_cycle);
-            auto zero_value = shift.pow(domain->size);
-            const auto zero_step = root.pow(domain->size);
-            const auto one = FieldElement::one();
-            for (std::size_t i = 0; i < zero_cycle; ++i)
-            {
-                inverse_zero[i] = (zero_value - one).inv().native();
-                zero_value *= zero_step;
-            }
-
-            auto *q_native = FieldElement::mutable_native_array_data(q_coset.data());
-            const auto &one_native = one.native();
-            parallel_for_chunks_static(q_coset.size(), 1ULL << 15, 0, [&](std::size_t begin, std::size_t end)
-                                       {
-                mcl::Fr one_minus_q;
-                mcl::Fr q_boolean;
-                for (std::size_t i = begin; i < end; ++i) {
-                    mcl::Fr::sub(one_minus_q, one_native, q_native[i]);
-                    mcl::Fr::mul(q_boolean, q_native[i], one_minus_q);
-                    mcl::Fr::mul(q_native[i], q_boolean, inverse_zero[i % zero_cycle]);
-                } });
-            return std::make_shared<const std::vector<FieldElement>>(std::move(q_coset));
-        }
-
         std::vector<std::string> quotient_dependency_labels(
             const ProtocolContext &context,
             const std::string &quotient_name);
@@ -3926,22 +3837,6 @@ namespace gatzk::protocol
                     values.begin(),
                     values.end(),
                     static_cast<FieldElement *>(mapping_));
-                constexpr std::size_t
-                    kSynchronousSpillThresholdBytes =
-                        std::size_t{64} << 20;
-                if (byte_count
-                        >= kSynchronousSpillThresholdBytes
-                    && ::msync(mapping_, byte_count, MS_SYNC) != 0)
-                {
-                    const auto error = errno;
-                    ::munmap(mapping_, byte_count);
-                    mapping_ = nullptr;
-                    ::close(fd_);
-                    fd_ = -1;
-                    throw std::runtime_error(
-                        "failed to flush large quotient coset spill for "
-                        + label + ": " + std::strerror(error));
-                }
                 if (::mprotect(mapping_, byte_count, PROT_READ) != 0)
                 {
                     const auto error = errno;
@@ -3953,10 +3848,16 @@ namespace gatzk::protocol
                         "failed to seal quotient coset spill for "
                         + label + ": " + std::strerror(error));
                 }
+                // Keep freshly produced pages eligible for the kernel's
+                // adaptive file-cache policy.  A synchronous flush followed
+                // by MADV_DONTNEED forced every quotient dependency through
+                // storage even when the complete working set fit in RAM.
+                // Large instances remain bounded because these are unlinked
+                // MAP_SHARED pages: the kernel can write back and reclaim
+                // them under pressure, and the point loop explicitly drops
+                // each consumed prefix.
                 (void)::madvise(
                     mapping_, byte_count, MADV_SEQUENTIAL);
-                (void)::madvise(
-                    mapping_, byte_count, MADV_DONTNEED);
                 std::vector<FieldElement>().swap(values);
             }
 
@@ -4239,7 +4140,13 @@ namespace gatzk::protocol
 
                     if (label_ == "t_FH")
                     {
-                        return evaluate_t_fh(context_, challenges_, eval, z);
+                        return evaluate_t_fh(
+                            context_,
+                            challenges_,
+                            eval,
+                            z,
+                            nullptr,
+                            boundary_values);
                     }
                     else if (label_ == "t_edge")
                     {
@@ -4489,6 +4396,10 @@ namespace gatzk::protocol
                 {
                     progress_note("prove:quotient:t_edge:evaluate:start");
                 }
+                else if (label_ == "t_FH")
+                {
+                    progress_note("prove:quotient:t_FH:evaluate:start");
+                }
                 else if (label_ == "t_N")
                 {
                     progress_note("prove:quotient:t_N:evaluate:start");
@@ -4575,7 +4486,8 @@ namespace gatzk::protocol
                                 [&, begin, end]()
                                 {
                                     auto z = shift_ * root.pow(static_cast<std::uint64_t>(begin));
-                                    if (label_ == "t_edge")
+                                    if (label_ == "t_edge"
+                                        || label_ == "t_FH")
                                     {
                                         const auto one = FieldElement::one();
                                         const auto last_point =
@@ -4687,6 +4599,15 @@ namespace gatzk::protocol
                             point_evaluation_start, Clock::now())));
                     progress_note("prove:quotient:t_edge:coefficients:start");
                 }
+                else if (label_ == "t_FH")
+                {
+                    progress_note(
+                        "prove:quotient:t_FH:evaluate:done:ms="
+                        + std::to_string(elapsed_ms(
+                            point_evaluation_start, Clock::now())));
+                    progress_note(
+                        "prove:quotient:t_FH:coefficients:start");
+                }
                 else if (label_ == "t_N")
                 {
                     progress_note(
@@ -4710,6 +4631,13 @@ namespace gatzk::protocol
                 {
                     progress_note(
                         "prove:quotient:t_edge:coefficients:done:ms="
+                        + std::to_string(elapsed_ms(
+                            coefficient_start, Clock::now())));
+                }
+                else if (label_ == "t_FH")
+                {
+                    progress_note(
+                        "prove:quotient:t_FH:coefficients:done:ms="
                         + std::to_string(elapsed_ms(
                             coefficient_start, Clock::now())));
                 }
@@ -4799,99 +4727,6 @@ namespace gatzk::protocol
                 }
             }
 
-            algebra::Polynomial materialize_full_identity_fh()
-            {
-                const auto eta = challenges_.at("eta_feat");
-                const auto eta_sq = eta * eta;
-                const std::vector<FieldElement> *selector_quotient = nullptr;
-                const QuotientCosetValues *q = nullptr;
-                if (const auto selector_it = context_.public_fh_coset_materials.find(
-                        fh_selector_boolean_quotient_coset_key("P_Q_tbl_feat"));
-                    selector_it != context_.public_fh_coset_materials.end() && selector_it->second != nullptr)
-                {
-                    selector_quotient = selector_it->second.get();
-                    progress_note("prove:quotient:t_FH:identity:selector_quotient_coset:cache_hit");
-                }
-                else
-                {
-                    progress_note("prove:quotient:t_FH:identity:coset:P_Q_tbl_feat:start");
-                    q = &coset_values("P_Q_tbl_feat");
-                    progress_note("prove:quotient:t_FH:identity:coset:P_Q_tbl_feat:done");
-                }
-                progress_note("prove:quotient:t_FH:identity:coset:P_Table_feat_fused:start");
-                const auto table_values = fused_feature_table_coset_values(eta, eta_sq);
-                progress_note("prove:quotient:t_FH:identity:cosets:done");
-                if ((selector_quotient != nullptr && selector_quotient->size() != target_size_)
-                    || (q != nullptr && q->size() != target_size_)
-                    || table_values->size() != target_size_)
-                {
-                    throw std::runtime_error("full-identity FH quotient coset value size mismatch");
-                }
-
-                const auto beta = challenges_.at("beta_feat");
-                const auto alpha = challenges_.at("alpha_quot");
-                const auto one = FieldElement::one();
-                const auto &beta_native = beta.native();
-                const auto &alpha_native = alpha.native();
-                const auto &one_native = one.native();
-                std::vector<mcl::Fr> inverse_zero;
-                std::size_t zero_cycle = 0;
-                if (selector_quotient == nullptr)
-                {
-                    const auto root = FieldElement::root_of_unity(target_size_);
-                    zero_cycle = target_size_ / domain_->size;
-                    if (zero_cycle == 0 || target_size_ % domain_->size != 0)
-                    {
-                        throw std::runtime_error("invalid full-identity FH quotient coset cycle");
-                    }
-                    inverse_zero.resize(zero_cycle);
-                    auto zero_value = shift_.pow(domain_->size);
-                    const auto zero_step = root.pow(domain_->size);
-                    for (std::size_t i = 0; i < zero_cycle; ++i)
-                    {
-                        inverse_zero[i] = (zero_value - one).inv().native();
-                        zero_value *= zero_step;
-                    }
-                }
-
-                std::vector<FieldElement> quotient_values(target_size_, FieldElement::zero());
-                auto *quotient_native = FieldElement::mutable_native_array_data(quotient_values.data());
-                const auto *q_native = q != nullptr ? FieldElement::native_array_data(q->data()) : nullptr;
-                const auto *selector_quotient_native =
-                    selector_quotient != nullptr ? FieldElement::native_array_data(selector_quotient->data()) : nullptr;
-                const auto *table_native = FieldElement::native_array_data(table_values->data());
-                progress_note("prove:quotient:t_FH:identity:assemble:start");
-                const auto fill_range = [&](std::size_t begin, std::size_t end)
-                {
-                    mcl::Fr one_minus_q;
-                    mcl::Fr q_boolean;
-                    mcl::Fr table_plus_beta;
-                    mcl::Fr value;
-                    for (std::size_t i = begin; i < end; ++i)
-                    {
-                        mcl::Fr::add(table_plus_beta, table_native[i], beta_native);
-                        if (selector_quotient_native != nullptr)
-                        {
-                            mcl::Fr::mul(value, selector_quotient_native[i], table_plus_beta);
-                        }
-                        else
-                        {
-                            mcl::Fr::sub(one_minus_q, one_native, q_native[i]);
-                            mcl::Fr::mul(q_boolean, q_native[i], one_minus_q);
-                            mcl::Fr::mul(value, q_boolean, table_plus_beta);
-                            mcl::Fr::mul(value, value, inverse_zero[i % zero_cycle]);
-                        }
-                        mcl::Fr::mul(quotient_native[i], alpha_native, value);
-                    }
-                };
-                parallel_for_chunks(target_size_, 1ULL << 15, 0, fill_range);
-                progress_note("prove:quotient:t_FH:identity:assemble:done");
-                progress_note("prove:quotient:t_FH:identity:coefficients:start");
-                auto coefficients = coefficients_from_coset_evaluations_in_place(std::move(quotient_values), shift_);
-                progress_note("prove:quotient:t_FH:identity:coefficients:done");
-                return algebra::Polynomial::from_coefficients(label_, std::move(coefficients));
-            }
-
             template <class Fn>
             void parallel_for_chunks(
                 std::size_t count,
@@ -4928,74 +4763,6 @@ namespace gatzk::protocol
                 {
                     future.get();
                 }
-            }
-
-            QuotientCosetValuesPtr fused_feature_table_coset_values(
-                const FieldElement &eta,
-                const FieldElement &eta_sq)
-            {
-                if (label_ != "t_FH" || !full_graph_feature_identity_enabled(context_))
-                {
-                    throw std::runtime_error("fused FH feature table coset requested outside full identity");
-                }
-                if (const auto it = trace_.commitments.find("P_Table_feat");
-                    it != trace_.commitments.end() && it->second.opening_polynomial != nullptr)
-                {
-                    progress_note("prove:quotient:t_FH:identity:coset:P_Table_feat:direct_eval:start");
-                    auto values = retain_coset_values(
-                        coset_evaluate_polynomial(
-                            *it->second.opening_polynomial,
-                            target_size_,
-                            shift_,
-                            "P_Table_feat",
-                            &shift_powers()),
-                        "P_Table_feat");
-                    progress_note("prove:quotient:t_FH:identity:coset:P_Table_feat:direct_eval:done");
-                    return values;
-                }
-                const auto *row_poly = lookup_polynomial("P_Row_feat_tbl");
-                const auto *col_poly = lookup_polynomial("P_Col_feat_tbl");
-                const auto *feature_poly = lookup_polynomial("P_T_H");
-                if (row_poly == nullptr || col_poly == nullptr || feature_poly == nullptr)
-                {
-                    throw std::runtime_error("missing FH public columns for fused table coset");
-                }
-                if (row_poly->basis != algebra::PolynomialBasis::Evaluation || col_poly->basis != algebra::PolynomialBasis::Evaluation || feature_poly->basis != algebra::PolynomialBasis::Evaluation || row_poly->domain.get() != domain_.get() || col_poly->domain.get() != domain_.get() || feature_poly->domain.get() != domain_.get())
-                {
-                    throw std::runtime_error("fused FH table coset requires FH evaluation-basis public columns");
-                }
-
-                const auto &rows = row_poly->values();
-                const auto &cols = col_poly->values();
-                const auto &features = feature_poly->values();
-                if (rows.size() > domain_->size || cols.size() > domain_->size || features.size() > domain_->size)
-                {
-                    throw std::runtime_error("fused FH table dependency exceeds FH domain");
-                }
-
-                std::vector<FieldElement> table(domain_->size, FieldElement::zero());
-                parallel_for_chunks(domain_->size, 1ULL << 16, 4, [&](std::size_t begin, std::size_t end)
-                                    {
-            for (std::size_t i = begin; i < end; ++i) {
-                const auto row_value = i < rows.size() ? rows[i] : FieldElement::zero();
-                const auto col_value = i < cols.size() ? cols[i] : FieldElement::zero();
-                const auto feature_value = i < features.size() ? features[i] : FieldElement::zero();
-                table[i] = row_value + eta * col_value + eta_sq * feature_value;
-            } });
-
-                auto table_poly = algebra::Polynomial::from_evaluations(
-                    "P_Table_feat_fused",
-                    std::move(table),
-                    domain_);
-                auto values = retain_coset_values(
-                    coset_evaluate_polynomial(
-                        table_poly,
-                        target_size_,
-                        shift_,
-                        "P_Table_feat_fused",
-                        &shift_powers()),
-                    "P_Table_feat_fused");
-                return values;
             }
 
             const QuotientCosetValues &coset_values(const std::string &requested_name)
@@ -5483,7 +5250,8 @@ namespace gatzk::protocol
                 if (progress_enabled())
                 {
                     progress_note(
-                        "prove:quotient:t_edge:coset_prewarm:semantic_objects="
+                        "prove:quotient:" + label_
+                        + ":coset_prewarm:semantic_objects="
                         + std::to_string(semantic_objects)
                         + ":semantic_unique="
                         + std::to_string(semantic_unique)
@@ -5536,6 +5304,10 @@ namespace gatzk::protocol
                             group->base_values.reset();
                         }
                     }
+                }
+                if (!polynomial.is_zero_domain_blinded())
+                {
+                    return base_values;
                 }
                 return retain_blinded_coset_view(
                     std::move(base_values), polynomial);
@@ -5711,6 +5483,20 @@ namespace gatzk::protocol
                 filtered.reserve(labels->size());
                 for (const auto &label : *labels)
                 {
+                    const auto *polynomial = lookup_polynomial(label);
+                    // A shared evaluation buffer does not imply a shared
+                    // formal polynomial: private trace objects carry
+                    // independently sampled Z_domain blinders.  Keep those
+                    // labels in the materialization wave so semantic coset
+                    // reuse can share only the canonical evaluations and add
+                    // each registered blinder lazily.  Direct aliases are
+                    // valid only for unblinded columns.
+                    if (polynomial != nullptr
+                        && polynomial->is_zero_domain_blinded())
+                    {
+                        filtered.push_back(label);
+                        continue;
+                    }
                     const auto source_key = coset_source_key(label);
                     if (source_key.empty())
                     {
@@ -6232,6 +6018,188 @@ namespace gatzk::protocol
                 return values;
             }
 
+            std::vector<FieldElement> feature_table_semantic_coset_values()
+            {
+                const auto eta_feat = challenges_.at("eta_feat");
+                const auto eta_feat_sq = eta_feat * eta_feat;
+                const auto &rows =
+                    coset_values("P_Row_feat_tbl");
+                const auto &cols =
+                    coset_values("P_Col_feat_tbl");
+                const auto &features =
+                    coset_values("P_T_H");
+                std::vector<FieldElement> out(
+                    target_size_, FieldElement::zero());
+                parallel_for_chunks(
+                    target_size_,
+                    std::size_t{1} << 15,
+                    0,
+                    [&](std::size_t begin, std::size_t end)
+                    {
+                        for (std::size_t i = begin; i < end; ++i)
+                        {
+                            out[i] = rows[i] + eta_feat * cols[i]
+                                + eta_feat_sq * features[i];
+                        }
+                    });
+                return out;
+            }
+
+            std::vector<FieldElement> blinder_difference(
+                const std::vector<FieldElement> &left,
+                const std::vector<FieldElement> &right) const
+            {
+                const auto size = std::max(left.size(), right.size());
+                std::vector<FieldElement> difference(
+                    size, FieldElement::zero());
+                for (std::size_t i = 0; i < size; ++i)
+                {
+                    const auto left_value =
+                        i < left.size()
+                            ? left[i]
+                            : FieldElement::zero();
+                    const auto right_value =
+                        i < right.size()
+                            ? right[i]
+                            : FieldElement::zero();
+                    difference[i] = left_value - right_value;
+                }
+                trim_field_coefficients(&difference);
+                if (difference.size() == 1
+                    && difference.front().is_zero())
+                {
+                    difference.clear();
+                }
+                return difference;
+            }
+
+            QuotientCosetValuesPtr retain_coset_with_blinder_correction(
+                QuotientCosetValuesPtr base_values,
+                std::vector<FieldElement> semantic_values,
+                const std::vector<FieldElement> &blinder_correction,
+                const std::string &label)
+            {
+                if (semantic_values.empty())
+                {
+                    if (base_values != nullptr
+                        && blinder_correction.empty())
+                    {
+                        return base_values;
+                    }
+                    semantic_values.resize(
+                        target_size_, FieldElement::zero());
+                }
+                if (semantic_values.size() != target_size_
+                    || (base_values != nullptr
+                        && base_values->size() != target_size_))
+                {
+                    throw std::runtime_error(
+                        "lazy spilled FH semantic coset size mismatch: "
+                        + label);
+                }
+
+                const auto root =
+                    FieldElement::root_of_unity(target_size_);
+                const auto zero_step =
+                    root.pow(domain_->size);
+                const auto shifted_zero =
+                    shift_.pow(domain_->size);
+                const auto one = FieldElement::one();
+                parallel_for_chunks(
+                    target_size_,
+                    std::size_t{1} << 15,
+                    0,
+                    [&](std::size_t begin, std::size_t end)
+                    {
+                        auto point = shift_
+                            * root.pow(
+                                static_cast<std::uint64_t>(begin));
+                        auto zero_power = shifted_zero
+                            * zero_step.pow(
+                                static_cast<std::uint64_t>(begin));
+                        for (std::size_t i = begin; i < end; ++i)
+                        {
+                            auto value = base_values != nullptr
+                                ? (*base_values)[i]
+                                : semantic_values[i];
+                            if (!blinder_correction.empty())
+                            {
+                                value += (zero_power - one)
+                                    * algebra::horner(
+                                        blinder_correction,
+                                        point);
+                            }
+                            semantic_values[i] = value;
+                            point *= root;
+                            zero_power *= zero_step;
+                        }
+                    });
+                return retain_coset_values(
+                    std::move(semantic_values), label);
+            }
+
+            QuotientCosetValuesPtr
+            materialize_spilled_lazy_feature_coset(
+                const std::string &requested_name,
+                const TraceArtifacts::SpilledEvaluationPolynomial
+                    &spilled)
+            {
+                if (!lazy_full_feature_lookup_trace_enabled(context_)
+                    || !is_lazy_full_feature_lookup_trace_label(
+                        requested_name))
+                {
+                    return nullptr;
+                }
+                progress_note(
+                    "prove:quotient:t_FH:spilled_lazy:"
+                    + requested_name + ":start");
+                QuotientCosetValuesPtr base_values;
+                std::vector<FieldElement> semantic_values;
+                auto correction = spilled.zero_domain_blinder;
+                if (requested_name == "P_Table_feat")
+                {
+                    semantic_values =
+                        feature_table_semantic_coset_values();
+                }
+                else if (requested_name == "P_Query_feat")
+                {
+                    base_values =
+                        coset_values_ptr("P_Table_feat");
+                    const auto table_it =
+                        trace_.spilled_polynomials.find(
+                            "P_Table_feat");
+                    if (table_it
+                        == trace_.spilled_polynomials.end())
+                    {
+                        throw std::runtime_error(
+                            "spilled FH query is missing its "
+                            "full-identity table source");
+                    }
+                    correction = blinder_difference(
+                        spilled.zero_domain_blinder,
+                        table_it->second.zero_domain_blinder);
+                }
+                else if (requested_name == "P_m_feat")
+                {
+                    base_values =
+                        coset_values_ptr("P_Q_tbl_feat");
+                }
+                else if (requested_name != "P_R_feat")
+                {
+                    return nullptr;
+                }
+                auto values =
+                    retain_coset_with_blinder_correction(
+                        std::move(base_values),
+                        std::move(semantic_values),
+                        correction,
+                        requested_name);
+                progress_note(
+                    "prove:quotient:t_FH:spilled_lazy:"
+                    + requested_name + ":done");
+                return values;
+            }
+
             QuotientCosetValuesPtr coset_values_ptr(const std::string &requested_name)
             {
                 std::string alias_owner;
@@ -6246,26 +6214,88 @@ namespace gatzk::protocol
                         alias_owner = alias_it->second;
                     }
                 }
-                if (const auto *private_polynomial = lookup_polynomial(requested_name);
-                    private_polynomial != nullptr && private_polynomial->is_zero_domain_blinded())
+                if (const auto *polynomial =
+                        lookup_polynomial(requested_name);
+                    polynomial != nullptr)
                 {
-                    auto direct_values = reused_semantic_coset_values(
-                        requested_name, *private_polynomial);
-                    if (direct_values == nullptr)
+                    auto direct_values =
+                        reused_semantic_coset_values(
+                            requested_name, *polynomial);
+                    if (direct_values == nullptr
+                        && polynomial->is_zero_domain_blinded())
                     {
                         direct_values =
                             retain_coset_values(
                                 coset_evaluate_polynomial(
-                                    *private_polynomial,
+                                    *polynomial,
                                     target_size_,
                                     shift_,
                                     requested_name,
                                     &shift_powers()),
                                 requested_name);
                     }
-                    std::lock_guard<std::mutex> lock(coset_cache_mutex_);
-                    const auto [it, inserted] = coset_cache_.emplace(requested_name, direct_values);
-                    return inserted ? direct_values : it->second;
+                    if (direct_values != nullptr)
+                    {
+                        std::lock_guard<std::mutex> lock(
+                            coset_cache_mutex_);
+                        const auto [it, inserted] =
+                            coset_cache_.emplace(
+                                requested_name, direct_values);
+                        return inserted ? direct_values : it->second;
+                    }
+                }
+                // A spilled trace object is still the committed private
+                // polynomial, including its independently sampled
+                // Z_domain blinder.  Resolve it before public/lazy semantic
+                // aliases: those aliases reproduce only the canonical
+                // evaluation column and would silently drop the registered
+                // blinding tail after the object becomes file-backed.
+                if (const auto spilled_it =
+                        trace_.spilled_polynomials.find(requested_name);
+                    spilled_it != trace_.spilled_polynomials.end())
+                {
+                    if (auto lazy_values =
+                            materialize_spilled_lazy_feature_coset(
+                                requested_name,
+                                spilled_it->second);
+                        lazy_values != nullptr)
+                    {
+                        std::lock_guard<std::mutex> lock(
+                            coset_cache_mutex_);
+                        const auto [it, inserted] =
+                            coset_cache_.emplace(
+                                requested_name,
+                                lazy_values);
+                        return inserted
+                            ? lazy_values
+                            : it->second;
+                    }
+                    auto polynomial =
+                        algebra::Polynomial::from_evaluations(
+                            requested_name,
+                            load_spilled_values(spilled_it->second),
+                            context_domain_by_name(
+                                context_,
+                                spilled_it->second.domain_name));
+                    if (!spilled_it->second.zero_domain_blinder.empty())
+                    {
+                        polynomial.set_zero_domain_blinder(
+                            spilled_it->second.zero_domain_blinder);
+                    }
+                    auto values = retain_coset_values(
+                        coset_evaluate_polynomial(
+                            polynomial,
+                            target_size_,
+                            shift_,
+                            requested_name,
+                            &shift_powers()),
+                        requested_name);
+                    std::lock_guard<std::mutex> lock(
+                        coset_cache_mutex_);
+                    const auto [it, inserted] =
+                        coset_cache_.emplace(
+                            requested_name, values);
+                    return inserted ? values : it->second;
                 }
                 if (!alias_owner.empty() && alias_owner != requested_name)
                 {
@@ -6321,25 +6351,6 @@ namespace gatzk::protocol
                     values = retain_coset_values(
                         coset_evaluate_polynomial(
                             *polynomial,
-                            target_size_,
-                            shift_,
-                            requested_name,
-                            &shift_powers()),
-                        requested_name);
-                }
-                else if (const auto it = trace_.spilled_polynomials.find(requested_name); it != trace_.spilled_polynomials.end())
-                {
-                    auto polynomial = algebra::Polynomial::from_evaluations(
-                        requested_name,
-                        load_spilled_values(it->second),
-                        context_domain_by_name(context_, it->second.domain_name));
-                    if (!it->second.zero_domain_blinder.empty())
-                    {
-                        polynomial.set_zero_domain_blinder(it->second.zero_domain_blinder);
-                    }
-                    values = retain_coset_values(
-                        coset_evaluate_polynomial(
-                            polynomial,
                             target_size_,
                             shift_,
                             requested_name,
@@ -7983,10 +7994,6 @@ namespace gatzk::protocol
             rebind_public_fh_opening_material(context, "P_I_feat_qry", "P_Row_feat_tbl");
             rebind_public_fh_opening_material(context, "P_Col_feat_tbl", "P_Col_feat_tbl");
             rebind_public_fh_opening_material(context, "P_Col_feat_qry", "P_Col_feat_tbl");
-            progress_note("context:public_fh_coset:P_Q_tbl_feat:boolean_quotient:start");
-            context.public_fh_coset_materials[fh_selector_boolean_quotient_coset_key("P_Q_tbl_feat")] =
-                build_fh_selector_boolean_quotient_coset_material(context, "P_Q_tbl_feat");
-            progress_note("context:public_fh_coset:P_Q_tbl_feat:boolean_quotient:done");
         }
 
         std::vector<FieldElement> l_x(edge_size, FieldElement::zero());
@@ -8161,6 +8168,8 @@ namespace gatzk::protocol
             const auto pre_quotient_challenges = replay_challenges(context, trace.commitments, {}, &trace.public_metadata);
             const auto check_fh_domain_constraints = [&]()
             {
+                std::unordered_map<std::string, std::vector<FieldElement>>
+                    spilled_fh_values;
                 const auto fh_value = [&](const std::string &name, std::size_t row)
                     -> FieldElement
                 {
@@ -8171,6 +8180,19 @@ namespace gatzk::protocol
                     if (const auto it = trace.polynomials.find(name);
                         it != trace.polynomials.end())
                         return it->second.values().at(row);
+                    if (const auto spilled_it =
+                            trace.spilled_polynomials.find(name);
+                        spilled_it != trace.spilled_polynomials.end())
+                    {
+                        auto [cached_it, inserted] =
+                            spilled_fh_values.try_emplace(name);
+                        if (inserted)
+                        {
+                            cached_it->second =
+                                load_spilled_values(spilled_it->second);
+                        }
+                        return cached_it->second.at(row);
+                    }
                     if (const auto it = context.public_polynomials.find(name);
                         it != context.public_polynomials.end())
                         return it->second.values().at(row);
@@ -8365,16 +8387,16 @@ namespace gatzk::protocol
                     }
                 }
             }
-            const auto quotient_cache_key = quotient_build_cache_key(context, trace);
             std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry;
             if (route2.fft_backend_upgrade)
             {
-                backend_registry = shared_proof_backend_registry_cache().get_or_build(
-                    quotient_cache_key + "|backend_registry",
-                    [&]()
-                    {
-                        return std::make_shared<ProofEvaluationBackendRegistry>(context, trace);
-                    });
+                // Packed backends retain non-owning polynomial pointers.
+                // Keep this registry proof-local so those pointers never
+                // outlive the current context or trace.  Construction only
+                // indexes labels; subset materialization remains lazy.
+                backend_registry =
+                    std::make_shared<ProofEvaluationBackendRegistry>(
+                        context, trace);
             }
             auto proof_domain_weight_cache = shared_proof_domain_weight_cache();
             const std::vector<std::string> quotient_labels = {"t_FH", "t_edge", "t_in", "t_d_h", "t_cat", "t_C", "t_N"};

@@ -93,7 +93,6 @@ struct ProtocolContext {
     // Prover-side opening material for public FH polynomials. This does not change public
     // polynomial semantics or transcript-visible commitments.
     std::unordered_map<std::string, std::shared_ptr<const algebra::Polynomial>> public_fh_coefficient_materials;
-    std::unordered_map<std::string, std::shared_ptr<const std::vector<algebra::FieldElement>>> public_fh_coset_materials;
     std::unordered_map<std::string, crypto::Commitment> static_commitments;
     std::shared_ptr<const ProtocolCompilerArtifact> compiler_artifact;
     // Exact immutable artifact object that passed the full setup-time

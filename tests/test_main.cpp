@@ -30,6 +30,7 @@
 #include "gatzk/protocol/opening_registry.hpp"
 #include "gatzk/protocol/prover.hpp"
 #include "gatzk/protocol/proof_codec.hpp"
+#include "gatzk/protocol/quotients.hpp"
 #include "gatzk/protocol/schema.hpp"
 #include "gatzk/protocol/trace.hpp"
 #include "gatzk/protocol/verifier.hpp"
@@ -70,6 +71,66 @@ void require(bool condition, const std::string& message) {
     if (!condition) {
         throw std::runtime_error(message);
     }
+}
+
+void test_fh_precomputed_boundary_equivalence() {
+    gatzk::protocol::ProtocolContext context;
+    context.domains.fh =
+        gatzk::algebra::RootOfUnityDomain::create("FH", 16);
+    const auto z = FieldElement(37);
+    const auto one = FieldElement::one();
+    const auto last_point =
+        context.domains.fh->point_at(
+            context.domains.fh->size - 1);
+    const auto zero =
+        context.domains.fh->zero_polynomial_eval(z);
+    const auto first_denominator = z - one;
+    const auto last_denominator = z - last_point;
+    const auto inverse_product =
+        (first_denominator * last_denominator).inv();
+    const auto zero_scaled =
+        zero * context.domains.fh->inv_size;
+    const gatzk::protocol::QuotientBoundaryValues boundary{
+        .first = zero_scaled * last_denominator
+            * inverse_product,
+        .last = zero_scaled * last_point
+            * first_denominator * inverse_product,
+        .zero = zero,
+    };
+    require(
+        boundary.first
+                == context.domains.fh->lagrange_basis_eval(
+                    0, z)
+            && boundary.last
+                == context.domains.fh->lagrange_basis_eval(
+                    context.domains.fh->size - 1, z),
+        "precomputed FH boundary differs from canonical "
+        "Lagrange values");
+
+    const std::map<std::string, FieldElement> challenges{
+        {"alpha_quot", FieldElement(3)},
+        {"beta_feat", FieldElement(5)},
+        {"eta_feat", FieldElement(7)},
+    };
+    const gatzk::protocol::EvalFn eval =
+        [](const std::string& label,
+           const FieldElement& point) {
+            std::uint64_t seed = 17;
+            for (const auto ch : label) {
+                seed = seed * 131
+                    + static_cast<unsigned char>(ch);
+            }
+            return FieldElement(1 + seed % 65521)
+                + point * FieldElement(3 + seed % 257);
+        };
+    const auto direct = gatzk::protocol::evaluate_t_fh(
+        context, challenges, eval, z);
+    const auto precomputed =
+        gatzk::protocol::evaluate_t_fh(
+            context, challenges, eval, z, nullptr, &boundary);
+    require(
+        direct == precomputed,
+        "precomputed FH boundary changed the quotient equation");
 }
 
 void test_logup_inverse_accumulator_reuse_equivalence() {
@@ -3820,6 +3881,9 @@ void test_tamper_rejection_suite() {
 
 int main() {
     try {
+        std::cerr
+            << "running test_fh_precomputed_boundary_equivalence\n";
+        test_fh_precomputed_boundary_equivalence();
         std::cerr << "running test_logup_inverse_accumulator_reuse_equivalence\n";
         test_logup_inverse_accumulator_reuse_equivalence();
         std::cerr << "running test_parallel_split_intt_equivalence\n";

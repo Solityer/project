@@ -8,7 +8,6 @@
 #include <mutex>
 #include <optional>
 #include <limits>
-#include <sstream>
 #include <stdexcept>
 #include <thread>
 #include <tuple>
@@ -95,48 +94,6 @@ namespace gatzk::protocol
         double elapsed_ms(const Clock::time_point &start, const Clock::time_point &end)
         {
             return std::chrono::duration<double, std::milli>(end - start).count();
-        }
-
-        std::string verifier_context_cache_key(const util::AppConfig &config)
-        {
-            std::ostringstream stream;
-            stream << config.project_root << '|'
-                   << config.dataset << '|'
-                   << config.data_root << '|'
-                   << config.cache_root << '|'
-                   << config.checkpoint_bundle << '|'
-                   << config.hidden_dim << '|'
-                   << config.num_classes << '|'
-                   << config.range_bits << '|'
-                   << config.seed << '|'
-                   << config.layer_count << '|'
-                   << config.K_out << '|'
-                   << config.batch_graphs << '|'
-                   << config.task_type << '|'
-                   << config.report_unit << '|'
-                   << config.batching_rule << '|'
-                   << config.subgraph_rule << '|'
-                   << config.self_loop_rule << '|'
-                   << config.edge_sort_rule << '|'
-                   << config.chunking_rule << '|'
-                   << config.srs_id << '|'
-                   << config.srs_type << '|'
-                   << config.privacy_policy << '|'
-                   << config.input_privacy << '|'
-                   << config.output_mode << '|'
-                   << config.opening_mode << '|'
-                   << config.binding_mode << '|'
-                   << config.proof_task << '|'
-                   << (config.allow_synthetic_model ? "synthetic" : "formal");
-            for (const auto input_dim : config.d_in_profile)
-            {
-                stream << "|din=" << input_dim;
-            }
-            for (const auto &layer : config.hidden_profile)
-            {
-                stream << "|hid=" << layer.head_count << 'x' << layer.head_dim;
-            }
-            return stream.str();
         }
 
         bool full_graph_feature_identity_enabled(const ProtocolContext &context)
@@ -368,37 +325,6 @@ namespace gatzk::protocol
             std::unordered_map<std::string, std::vector<std::string>> labels_;
             std::unordered_map<const algebra::RootOfUnityDomain *, std::string> domain_keys_;
         };
-
-        class SharedVerifierBackendRegistryCache
-        {
-        public:
-            std::shared_ptr<const PublicEvaluationBackendRegistry> get_or_build(
-                const std::string &key,
-                const std::function<std::shared_ptr<const PublicEvaluationBackendRegistry>()> &build)
-            {
-                {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    if (const auto it = entries_.find(key); it != entries_.end())
-                    {
-                        return it->second;
-                    }
-                }
-                auto registry = build();
-                std::lock_guard<std::mutex> lock(mutex_);
-                const auto [it, _] = entries_.emplace(key, std::move(registry));
-                return it->second;
-            }
-
-        private:
-            std::mutex mutex_;
-            std::unordered_map<std::string, std::shared_ptr<const PublicEvaluationBackendRegistry>> entries_;
-        };
-
-        SharedVerifierBackendRegistryCache &shared_verifier_backend_registry_cache()
-        {
-            static SharedVerifierBackendRegistryCache cache;
-            return cache;
-        }
 
         struct OpenedValueView
         {
@@ -2386,12 +2312,11 @@ namespace gatzk::protocol
                         });
                 }
             }
-            auto public_backend_registry = shared_verifier_backend_registry_cache().get_or_build(
-                verifier_context_cache_key(context.config),
-                [&]()
-                {
-                    return std::make_shared<PublicEvaluationBackendRegistry>(context);
-                });
+            // The lazy packed backend reads canonical public columns through
+            // non-owning pointers, so its lifetime must remain within this
+            // verification context.
+            auto public_backend_registry =
+                std::make_shared<PublicEvaluationBackendRegistry>(context);
             VerifierEvaluationMemoization eval_memo(context, opened_values, public_backend_registry, metrics);
             std::unordered_map<std::string, FieldElement> verifier_local_power_columns;
             for (const auto &binding_meta : build_binding_relation_metadata(context))

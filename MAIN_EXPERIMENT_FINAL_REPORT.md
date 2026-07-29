@@ -1,291 +1,249 @@
-# 主实验修复、性能与收敛报告
+# 主实验第三阶段性能优化与收敛报告
 
-日期：2026-07-26（Asia/Shanghai）
+日期：2026-07-30（Asia/Shanghai）
 
-## 结论边界
+## 结论
 
-本轮完成了 Cora 启动异常的真实根因修复、公共 SRS 资源预检修复、ogbn-arxiv 包络
-修复、正式 CLI fail-closed、canonical proof 工件保存、阶段性能候选取舍、CPU/CUDA
-构建与受控回归、五套配置启动预检和仓库清理。
+本轮已在唯一生产路径 `gatzk_run` 上完成代码分析、成组修改、CPU/CUDA Release
+构建、定向测试、完整安全回归、生产 stage benchmark、quotient profiling 和一次
+当前源码的 Cora CPU 完整证明。该 Cora 证明生成 canonical `proof.bin` 并
+`VERIFY_OK`。
 
-本轮没有运行 Cora、Citeseer、Pubmed、PPI 或 ogbn-arxiv 的完整正式 proof，也没有运行
-五数据集乘 CPU/GPU 的十组矩阵。Citeseer、Pubmed、PPI 和 ogbn-arxiv 的 independently
-trusted SRS 尚未发布，因此当前不能声称这四个正式行已具备完整运行条件。
+第三阶段的代码优化已经收敛：当前没有已识别、具有协议等价实现依据、在现有
+MCL/CUDA 能力下可能带来显著稳定整链收益而尚未处理的候选；主实验也已经确认只剩
+一套 Context、Trace、Prover、Verifier、KZG、codec/parser 实现和一个正式入口。
+五数据集冻结版本的最终 CPU/CUDA 验收矩阵仍需按文末命令执行，因此“优化实现完成”
+不等于“十行正式矩阵已经验收”。
 
-## `vector::reserve` 根因与修复
+两份最高规范 `GAT-ZKML-多层多头.md` 和
+`PROJECT_CONTEXT_AND_EXECUTION_CONSTRAINTS.md` 未被修改、重命名、移动或删除。
+模型语义、PPI 多图边界、量化与 SignedRoundDiv、证明关系、KZG/SRS、proof schema、
+Fiat–Shamir transcript、canonical serialization、strict parser、公开/私有定义和
+Verifier 接受逻辑均未改变。
 
-观测位置是：
+## 本轮识别并闭环的主要问题
+
+| 问题 | 根因 | 正式修改与位置 | 结论 |
+| --- | --- | --- | --- |
+| file-backed FH 对象丢失 blinding tail | 私有 FH 多项式移入 `spilled_polynomials` 后，quotient materializer 先命中公开 lazy identity 分支，只重建语义列，绕过已注册的独立 `Z_FH` blinder | `src/protocol/prover.cpp` 的 spilled 对象优先解析、`materialize_spilled_lazy_feature_coset`、point-eval memoization 和 debug self-check spill 读取 | 修复共同生命周期错误；exact quotient self-check 和完整安全回归通过。PPI/ogbn-arxiv 原 `P_h0_R_src` opening material 错误所涉及的正式机制已局部闭环 |
+| FH lazy 对象直接全量重载会放大 I/O/FFT | 正确性直修会为 table/query/m/R 各自重载整列并做大 coset 变换 | 从真实公开依赖只构造一次 canonical semantic coset，再为每个私有对象加入其独立 blinder；Query 使用两对象 blinder 差值 | 正确性不变，t_FH prewarm 从直修的 53.904 s 降至 34.139–38.049 s |
+| quotient 文件映射产生同步写回和重复冷读 | 临时、已 unlink 的 coset 文件仍执行同步 `msync(MS_SYNC)`，并在消费前整段 `MADV_DONTNEED` | `src/protocol/prover.cpp` 保留 `MAP_SHARED`、顺序访问和消费后前缀回收，删除同步写回和首次整段丢页 | exact self-check 通过；不再把临时 quotient 数据强制写回后立即重读 |
+| `t_FH`/`t_edge` 每点重复求边界分母逆 | 每个 quotient 点分别计算 Lagrange 边界逆元，规模随 coset 点数放大 | `include/gatzk/protocol/quotients.hpp`、`src/protocol/quotients.cpp` 和 `src/protocol/prover.cpp`：8192 点块内批量求逆并向生产 evaluator 传入预计算边界 | 新增直接公式/完整 `evaluate_t_fh` 等价回归；exact self-check 通过 |
+| 相同语义 coset 被独立物化 | 多个关系对象具有相同 canonical evaluation，但独立 blinding 使它们不能直接 alias | `src/protocol/prover.cpp`：共享 canonical coset，只对每个对象追加自己的 lazy blinder；未 blinding 对象才允许直接 alias | 完整安全形态的 t_edge 临时文件由 2270 个/9,521,070,080 bytes 降至 1690 个/7,088,373,760 bytes |
+| public evaluation backend 启动即复制全部列 | Prover/Verifier registry 构造时把所有公开多项式完整复制成全局 interleaved buffer；大域上造成高峰内存、复制和缓存压力 | `include/gatzk/algebra/eval_backend.hpp`、`src/algebra/eval_backend.cpp`：只索引 canonical 列，实际命中的小 subset 才惰性交织；CPU/CUDA fallback 直接读 canonical 值 | 完整安全回归峰值 RSS 从 25,899,732 KiB 降至 17,250,228 KiB，下降 33.40% |
+| lazy backend 的静态 registry 持有悬空非 owning 指针 | backend 改为读 canonical 列后，跨 proof 的静态 cache 可能越过 Context/Trace 生命周期 | `src/protocol/prover.cpp`、`src/protocol/verifier.cpp`：registry 改为 proof/verification-local；构造只建索引 | 消除生命周期风险；直接正式 proof verifier 仍通过 |
+| 正式 proof 的 verifier-only benchmark 被 unit 限制误拦截 | `proof_codec_stage_bench` 对 generate/parse/verify 都要求小配置 | `tools/benchmarks/proof_codec_stage_bench.cpp`：只在 generate 限制小配置，parse/verify 直接使用生产 parser/verifier | 可对既有正式 canonical proof 做独立当前源码验证，不形成第二条 runner |
+
+此前已经保留且本轮继续保护的公共生产优化包括：
+
+- `KZG::commit_batch`、持久 bounded MSM workers、proof-local semantic cache；
+- point-group opening、单点 folded witness、mixed pairing；
+- fixed-length Taylor shift 与精确 cyclic-tail correction；
+- LogUp denominator 合并批量求逆与 accumulator reuse；
+- CUDA canonical 列、多 rotation 单次 launch 的 field-domain 路径。
+
+## 性能结果
+
+### 冻结前完整 CPU 基线
+
+这些是用户给定且目录中 canonical 工件可核对的完整结果。它们属于优化前源码；对于
+当前源码应标记为 `stale-for-current-source`，但仍是本轮前后比较基线。
+
+| 数据集 | commitment | prove | verify | proof bytes | 状态 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Cora | 34.849 s | 159.022 s | 1.199 s | 1,462,631 | `VERIFY_OK` |
+| Citeseer | 78.635 s | 429.439 s | 3.373 s | 1,493,238 | `VERIFY_OK` |
+| Pubmed | 113.707 s | 1020.030 s | 12.653 s | 2,743,639 | `VERIFY_OK` |
+| PPI | — | — | — | — | 旧二进制失败；不是 `VERIFY_OK` |
+| ogbn-arxiv | — | — | — | — | 旧二进制失败；不是 `VERIFY_OK` |
+
+### 当前源码 Cora 完整 CPU 结果
+
+命令：
 
 ```text
-[progress] context:static:V_h0_W_col0:start
-fatal: vector::reserve
+GATZK_RUN_PROGRESS=1 build/gatzk_run \
+  --config configs/cora_secure.cfg --compute-backend cpu \
+  --export-tag phase3_final_optimized_20260730
 ```
 
-调试器在 `std::__throw_length_error` 处捕获的公共正式调用链是：
+产物：
+`runs/cora_secure/phase3_final_optimized_20260730/warm/`
 
-```text
-gatzk_run
-  -> protocol::build_context
-  -> add_static_commitment
-  -> crypto::KZG::commit
-  -> make_commitment
-  -> commit_polynomial_point
-  -> g1_multi_scalar_mul_profiled
-  -> msm_execute_chunked
-  -> msm_execute_single / MCL MSM
-  -> std::vector::reserve
-```
+| 指标 | 优化前 | 当前源码完整运行 | 表面变化 |
+| --- | ---: | ---: | ---: |
+| commitment | 34.849 s | 43.858 s | +25.85% |
+| prove | 159.022 s | 152.137 s | -4.33% |
+| verify | 1.199 s | 0.713 s | -40.56% |
+| 三项合计 | 195.070 s | 196.708 s | +0.84% |
+| `proof_size_bytes` | 1,462,631 | 1,462,616 | 仅记录 |
 
-旧实现先计算：
+状态为 `VERIFY_OK`，计时口径仍是 `exclusive_commit_prove_verify_v2`。
 
-```text
-task_count = min(worker_count * 2, count)
-chunk_size = ceil(count / task_count)
-begin = task * chunk_size
-end = min(count, begin + chunk_size)
-count_for_task = end - begin
-```
+该运行期间主机同时存在三个不属于本项目的重负载：两个训练任务分别长期占用约一个
+CPU 核和 2.2/8.3 GiB RSS，其中一个占用 GPU；另有一个 CPU 测试任务。系统已有约
+2.1 GiB swap。当前进程自身没有发生 swap，但 commitment 的 FH 部分由 3.600 s
+升至 8.650 s、dynamic finalize 由 0.007 s 升至 1.694 s，opening/trace 也出现
+明显长尾。因此这次运行可以冻结正确性和工件，不能作为受控性能上限；报告不使用
+模型估算值替代正式结果，也不把 commitment 的表面回退归因于保留代码。
 
-当有效 scalar 数不能被 ceil-sized chunk 整除时，尾部 task 可出现 `begin >= count`。
-此时无符号 `end - begin` 下溢为巨大 `size_t`，MCL/Pippenger 把它当作输入长度并在
-`reserve` 抛出 `length_error`。所以异常不是 Cora 内存不足、SRS 文件太小、配置要求裁剪
-或模型维度过大。
+### 同源 stage/profiling 证据
 
-`src/crypto/curve.cpp` 已改为 quotient/remainder 平衡分块：
+| 生产阶段 | 旧同形态证据 | 当前源码证据 | 变化 |
+| --- | ---: | ---: | ---: |
+| 完整安全形态 t_edge prewarm + evaluate | 44.339 s | 29.075 s | -34.43% |
+| t_FH prewarm | 42.758 s | 38.049 s | -11.01% |
+| Cora `quotient_build_ms` | 126.253 s | 102.171 s | -19.08% |
+| Cora `quotient_t_edge_ms` | 55.326 s | 41.185 s | -25.56% |
+| Cora `quotient_t_fh_ms` | 57.545 s | 47.497 s | -17.46% |
 
-```text
-base = count / task_count
-larger = count % task_count
-begin = task * base + min(task, larger)
-end = begin + base + (task < larger)
-```
+当前完整安全回归中的 t_FH 分解为 prewarm 38.049 s、evaluate 6.109 s、
+coefficients 5.493 s；exact hidden-coefficient self-check 通过。Taylor shift
+在 degree 32769 的稳定 warm 时间为 40.753–41.592 ms；LogUp steady 为
+3.010–3.037 ms。
 
-由于 `task_count <= count`，每个 task 都是非空合法区间。`tests/test_main.cpp` 新增 257
-和 1009 个 dense scalar 的非整除回归，逐点与单线程 MCL 结果比较。标准测试通过。
+当前 verifier 对优化前 Cora canonical proof 的独立三次生产验证中位数为
+512.707 ms，均 `verify_ok=true`；相对原完整运行的 1,199.368 ms 下降 57.25%。
+其中 metadata 14.888 ms、transcript 101.482 ms、domain opening 8.452 ms、
+registry 42.889 ms、quotient 313.063 ms、external opening 28.428 ms。
 
-修复后的 Cora 正式 Context 在调试器中完成全部 public/static commitment，包括 h0 至 h7
-的所有 W 列、attention 参数、输出 W/bias，并到达
-`build_protocol_compiler_artifact` 断点。该检查在 trace/prove 前停止，不是完整 Cora
-实验。
+commitment 本轮没有可接受的新整链降幅。现有 3610 个动态 commitment 已使用公共
+batch、semantic reuse、sparse/tail MSM 和 bounded workers；跨 transcript barrier
+合并对象会改变协议，已测 custom Pippenger、OpenMP outer split、fixed-base table、
+更低 batch threshold 和不同 worker caps 均无稳定净收益。现有 CUDA/MCL 依赖也没有
+可审计的生产 G1 MSM/KZG witness/pairing backend，因此不把“新写一套 GPU 曲线密码
+实现”列作本阶段可保留候选。
 
-已排除的假设：
+## 内存、临时磁盘和 CPU/CUDA
 
-- 不是通过捕获异常继续；
-- 不是通过裁剪数据或缩小维度；
-- 不是 Cora 专用分支；
-- 不是 SRS 重生或增大内存后“掩盖”；
-- 不是静态承诺内容、顺序或 KZG 方程改变。
+- 完整安全形态峰值 RSS：25,899,732 KiB → 17,250,228 KiB，下降 33.40%。
+- 同形态 t_edge file-backed coset：9,521,070,080 → 7,088,373,760 bytes，
+  下降 25.55%；当前还通过 lazy blinder view 避免 5,146,411,008 bytes 物化。
+- t_FH 当前保持 9 个 file-backed coset、4,831,838,208 bytes。临时文件创建后
+  立即 unlink，并在消费后按前缀 `MADV_DONTNEED`，正常或异常退出不留下正式依赖。
+- 清理了 402 个旧顶层 trace spill 和 3 个中断 proof spill，共
+  73,488,179,904 bytes（68.44 GiB）。这些是可重建临时数据，不是 proof、SRS、
+  数据、模型或正式基线。
+- CPU 路径仍承担 G1 MSM、KZG witness、pairing、NTT/IFFT、quotient
+  materialization；CUDA 路径仍只加速既有 Fr/domain 热点，没有静默 CPU
+  fallback。CUDA Release 构建和安全回归通过；因 GPU 被其他任务占用，本轮 CUDA
+  stage 数字不作为性能证据，也没有运行完整 CUDA 数据集。
 
-## 正式资源与工件修复
+## 保留、回滚和清理
 
-`src/protocol/prover.cpp` 的 quotient materializer 对七域都使用 `4|D|` coset，但旧 Context
-预检只要求 `2|FH|` coefficient powers。该检查已改为 `4|FH|`，使次数不足在 Context
-加载期 fail closed，而不是进入证明后才失败。
+本轮保留：
 
-ogbn-arxiv 的最大 coefficient object 长度是 21,675,904，固定 edge domain 是
-8,388,608，每个 chunk 可用 8,388,607 个位置，因此需要 3 个 chunk。包络中的旧值 2
-已修为 3，并由当前 SRS compiler 通过。
+- spilled private FH 优先解析和独立 blinder correction；
+- semantic coset reuse、lazy blinder view 和消费后页回收；
+- t_FH/t_edge 批量边界求逆；
+- canonical-column lazy evaluation backend；
+- proof-local Prover/Verifier backend registry；
+- FH boundary 等价回归，以及允许既有正式 proof 直接走生产 verifier 的 stage
+  benchmark 修正。
 
-五套精确域和 `D_max` 的 compiler preflight 均成功：
+本轮测量后回滚或删除：
 
-| 数据集 | `D_max` | `FH` | `edge` | `in,d,cat,C,N` |
-| --- | ---: | ---: | ---: | --- |
-| Cora | 16,777,215 | 4,194,304 | 32,768 | 2048,16,128,8,4096 |
-| Citeseer | 67,108,863 | 16,777,216 | 32,768 | 4096,16,128,8,4096 |
-| Pubmed | 67,108,863 | 16,777,216 | 262,144 | 512,16,128,8,32768 |
-| PPI | 16,777,215 | 4,194,304 | 1,048,576 | 64,16,16,128,65536 |
-| ogbn-arxiv | 134,217,727 | 33,554,432 | 8,388,608 | 256,16,16,64,262144 |
+- 泛化的 t_FH 全标签 prewarm 分组：没有稳定收益；
+- 直接为每个 spilled lazy FH 对象全量重载/FFT：正确但 prewarm 达 53.904 s，
+  被 semantic+blinder 实现替代；
+- 已删除的完整 identity materializer、fused feature-table 旧 helper、
+  selector boolean quotient coset context cache；
+- 静态 Prover/Verifier backend registry；
+- 已确认倒退的 8 GiB opening worker-budget scheduler、32-task t_edge、
+  custom Pippenger、OpenMP MSM split、fixed-base table、coset scratch reuse
+  等历史方案没有重新引入。
 
-Cora 新编译 artifact 与已发布 SRS 内 artifact 字节级相同。其余 compiler artifact
-内部 canonical `artifact_hash`：
+旧 SRS 命名目录没有删除：它们包含不同 manifest/ceremony provenance，属于潜在有效
+基线而不是可证明无用的缓存；当前五套配置只引用无后缀的正式目录。未修改、生成或替换
+任何正式 SRS。
 
-- Citeseer: `f88a76d5de4b237e9ad622358801baf888f30519e68ac304168f33c0e85bf93b`
-- Pubmed: `18434a28e2e08aaf000c79e7251ecb2a843e73b85519b109646e22a672a9e6b6`
-- PPI: `ff30d1e15b3d76fa9685ea20adb5bc8de245e419c311f3f68278b986b358cae1`
-- ogbn-arxiv: `115aaa7c9f00ffbdd87bfae25abb9bb622503dec85b9cbd98b6ada99ac619bde`
-
-四份 artifact 保存在 `artifacts/srs/compiler_artifacts/`。它们是 setup 输入，不是 SRS。
-
-## 唯一生产路径与正式 CLI
-
-`gatzk_run` 仍是唯一正式入口。unit/controlled benchmark 调用同一生产 Context、Trace、
-Prover、KZG、serializer、parser 和 Verifier；阶段 benchmark 直接调用生产函数，没有
-复制协议算法。
-
-本轮入口修复：
-
-- 未知参数直接失败；
-- 所有带值选项的缺失值直接失败；
-- `on/off` 非法值直接失败；
-- CPU/CUDA 每项优化记录实际状态、来源和适用性；
-- CPU 中 CUDA 项记录 `not_applicable`；
-- CUDA kernel 计数只覆盖 measured run，不混入 warmup；
-- 请求 CUDA 但 measured run 为零 kernel 时直接失败；
-- `proof.bin` 保存真实 canonical bytes，长度必须等于 `proof_size_bytes`；
-- manifest 的 `proof_hash` 改为 `proof.bin` 的 SHA-256。
-
-受控 CPU 直跑产生 `VERIFY_OK`，`proof.bin` 为 250,448 bytes，文件 SHA-256 与 manifest
-均为 `689d460bc6ba629bbe3b31f72b2c3c46355cce16f7798035602f7724e8725f4a`。
-该值只属于本次随机化 unit proof，不是正式数据集 proof size。
-
-## 性能结果与权衡
-
-稳定冻结的三次受控生产路径证据：
-
-| 指标 | 基线中位数 | 保留实现中位数 | 绝对变化 | 比例 |
-| --- | ---: | ---: | ---: | ---: |
-| commitment | 1682.144 ms | 976.702 ms | -705.442 ms | -41.937% |
-| prove | 2143.149 ms | 1823.338 ms | -319.811 ms | -14.922% |
-| verify | 76.633 ms | 78.102 ms | +1.469 ms | +1.917% |
-| 三项合计 | 3897.541 ms | 2876.125 ms | -1021.416 ms | -26.207% |
-| wall | 4110.572 ms | 3088.730 ms | -1021.842 ms | -24.859% |
-
-接受 verify 小幅增加的原因是：增加仅 1.469 ms，远小于 commitment/prove 的
-1025.253 ms 下降；三项合计净降 26.207%；parser、verifier 语义、接受条件和计时边界
-均未改变；未把大规模 prover 工作转移给 verifier。
-
-本轮当前源码的三次生产路径诊断三项总和为 3517.402、2898.343、2953.748 ms，全部
-完成 canonical serialization、strict parse 和 verify。主机同时存在无关两核持续负载，
-第一组是明显干扰离群值，因此这些数字只证明当前源码没有丢失既有效果，不替代上表的
-稳定基线。
-
-当前主要热点：
-
-- dynamic commitments：稳定记录约 749.159 ms / 26.048%；
-- quotient non-commitment：约 1048.971 ms / 36.472%；
-- 其中 `t_edge`：约 940.858 ms / 32.713%，仍是最大单核；
-- domain + external openings：约 401.395 ms / 13.956%；
-- non-commit trace：约 279.192 ms / 9.707%。
-
-保留项包括持久 MSM worker pools、2x 大任务分块、动态 commitment batching、严格的
-proof-local pointer/semantic cache、point-group opening 索引与自适应调度、mixed
-pairing 和受限内部 claim reuse。
-
-本轮测量后回滚的 32-task `t_edge` overdecomposition：局部样本有收益，但三次完整受控
-生产路径三项总和为 3004.489、2949.553、3113.691 ms，external opening 出现明显长尾，
-没有稳定净收益，源码已恢复 20-worker 策略。此前 custom Pippenger、OpenMP outer split、
-fixed-base table、多种 opening scheduler、t_edge prebound/compiled-expression 方案和
-coset scratch reuse 仍保持删除，没有无证据重试。一次 CUDA `native` 架构构建候选虽能
-编译，但 weighted-evaluation 内核运行失败，已完整回滚；恢复的 CUDA 构建重新通过
-90-kernel 精确比对。
-
-CPU 端到端受控证据满足稳定比较；CUDA 正式热点 benchmark 在 NVIDIA GB10 上执行
-90 个 kernel，所有 CPU/CUDA 输出精确一致。unit 输入低于 size-aware 阈值，CUDA
-`gatzk_run` 因 measured run 零 kernel 按设计失败，因此本轮没有可接受的 CUDA
-端到端受控时间，不能用 CPU 数字代替。四个代表性正式 SRS 缺失且完整 Cora GPU 被本轮
-禁止运行，这是未闭合限制。
-
-### 第三阶段续轮新增结果
-
-本续轮先用当前源码重新冻结五次 CPU 基线，中位数为 commitment 999.433 ms、
-prove 1845.469 ms、verify 76.099 ms、三项合计 2924.897 ms。此前 26.207% 不计入
-本续轮新增成果。
-
-锁定证据：HEAD `18d92aa1f5c532f57f68b7ec173db8c06cec3d70`，代码/配置树
-（`CMakeLists.txt`、`include/`、`src/`、`tools/`、`tests/`、`configs/`、
-`scripts/`）SHA-256
-`475f913a32b209f8c82d67c6f5cd33fbeda1fcba53a9b892e8e13be5b29e1993`，
-CPU/CUDA `gatzk_run` SHA-256 分别为
-`05d73247e704fc085646ade04559b1341cec66d8c6e9d1ed42f6bad8ebe651ed` 和
-`53580a10ab3f184b39f9729ab376e86cbea74ab63d3183be601d09e929eb7ddc`。
-硬件为 10 Cortex-X925 + 10 Cortex-A725、121 GiB RAM、NVIDIA GB10/driver
-580.142；两套均为 Release + native-architecture 构建。
-
-保留两组公共生产改动：
-
-1. 同域 proof-local model reblind 在对象数不少于 4 时调用正式
-   `KZG::commit_batch`；1 至 3 个对象严格保留原逐对象顺序。8 列、domain
-   128/2048/4096 的 commitment stage 中位分别从 34.500/57.290/120.680 ms
-   降至 28.583/47.778/96.732 ms，即 -17.151%/-16.604%/-19.846%。3 列、
-   domain 16 的 batch 反而 +5.182%，因此没有让小组进入默认 batch。
-2. CUDA 的单点、补零列和多旋转 domain evaluation 直接读取 canonical 列及真实
-   长度；rotation 由 kernel 索引完成，多点合为一次 3-D launch 和一次归约，并以
-   256 MiB 限制 partial storage。domain 65536、32 列、3 点的 full/padded
-   中位从 4.591/4.948 ms 降至 1.596/1.567 ms，即 -65.236%/-68.331%；
-   单点 padded 从 1.462 降至 0.734 ms，即 -49.795%。
-
-CUDA 最终扩展 shape 回归在 NVIDIA GB10 上真实执行 129 个 kernel，所有结果 exact
-match。padded 三点在 `32768 x 64`、`262144 x 8`、`1048576 x 2` 和
-`4194304 x 1` 的中位分别是 1.585、2.631、3.242、6.825 ms，未出现随 domain
-增长的异常放大。固定可比子集的 kernel 数由 175 降为 105；扩展套件额外 24 个
-kernel 来自四种 shape 检查。
-
-续轮 clean CPU canary 的 commitment/prove/verify/合计中位为
-1013.382/1839.767/79.591/2921.514 ms，相对新基线分别
-+1.396%/-0.309%/+4.589%/-0.116%，wall 仍为 3.20 s。unit 模型的同域 reblind
-组少于 4，因此该 canary 按设计不触发新增 batch；它证明未转移计时和整链无显著回退，
-不能冒充正式规模 CPU 总收益。之后另一用户 `zkdl_cpu_cli` 与编辑器进程提高主机负载的
-样本已排除，没有用来制造正负结论。
-
-本续轮还测量并完整删除了 dynamic `t_edge` scheduling/temp reuse、shifted-base、
-共享 opening inverse workspace、LTO、`-mcpu=native`、降低 commitment threshold、
-capacity-weighted pinned range、12-worker medium MSM 和 16-worker `t_edge` cap。
-其中 16-worker 在五种局部正式形态汇总有收益，但七组完整受控 proof 中 `t_edge`
-仅从 949.160 降至 948.036 ms，三项合计反而从 2926.495 升至 2936.719 ms，故回滚。
-
-当前 CPU 大头 `t_edge`、dynamic MSM、opening witness、FFT/coset、内存与线程调度均
-已通过局部和整链候选闭环；未保留只在极小输入变快或把长尾/内存转移到其他阶段的方案。
-CUDA field-domain 路径取得新的稳定大幅下降；curve MSM、KZG witness 和 pairing 因
-现有依赖没有 production GPU curve backend 而仍在 CPU，这只限制这些具体阶段。
-由于 unit 低于 CUDA dispatch threshold、完整 Cora 被禁止，本报告仍不声称 CUDA
-端到端 commitment/prove/verify 已测量。
-
-## 仓库收敛清理
-
-已删除：
-
-- 五个重复旧正式配置；
-- 独立 PPI representative secure 配置/SRS 包络；其两图边界测试现在直接加载
-  `ppi_secure.cfg` 后只缩小 `batch_graphs`，继续调用生产 loader/normalizer；
-- 过度复杂且设置固定 timeout 的历史矩阵 runner、runner-only test 和耦合导出器；
-- 一次性 LReLU range 诊断程序及 CMake target；
-- Cora v1 SRS 副本，并把保留 KZG benchmark 更新到 v2；
-- 460 个历史 build log、失败候选、raw proof、profiling、旧审计与重复性能文件；
-- 历史运行日志、旧 GPU 非正式输出和 Python cache。
-
-保留：
-
-- 两份最高只读规范；
-- 唯一生产代码、五套 secure 配置和 unit security fixture；
-- 五套正式数据 cache/checkpoint；
-- Cora v2 SRS、unit SRS 和四份待 setup compiler artifact；
-- 安全回归、strict parser/verifier 测试和直接调用生产函数的阶段 benchmark；
-- 数据/cache/checkpoint/SRS 可复现生成工具和可选结果整理脚本；
-- 本报告与压缩后的 Phase 3 性能记录。
-
-## 构建与验证
+## 已通过的验证
 
 - CPU Release 全构建：通过；
 - CUDA Release 全构建：通过；
-- CPU `ctest`：2/2 通过；
-- CUDA `ctest`：2/2 通过；
-- `GATZK_RUN_UNIT_SECURITY_TESTS=1 GATZK_RUN_PPI_BOUNDARY_TESTS=1
+- CPU：
+  `GATZK_RUN_UNIT_SECURITY_TESTS=1 GATZK_RUN_PPI_BOUNDARY_TESTS=1
   build/gatzk_tests`：通过；
-- 257/1009 非整除 MSM 回归：通过；
-- CPU direct unit `gatzk_run`：`VERIFY_OK`；
-- CUDA production hotspot benchmark：扩展套件 129 kernels，全部 exact match；
-- CPU build 请求 CUDA：fail closed；
-- CUDA unit measured run 零 kernel：fail closed；
-- unknown/missing/invalid CLI negative checks：全部按预期失败；
-- `--export-tag` 非单一安全路径分量：fail closed；
-- 五套 SRS compiler preflight：通过；
-- Cora正式 Context 到 compiler artifact：通过，未进入 trace/prove；
-- Citeseer/Pubmed/PPI/ogbn-arxiv：data、model、config、domain 均完成生产加载，随后在缺失
-  SRS manifest 处按预期失败；
-- `git diff --check`：通过；
-- 两份只读规范 SHA-256 未变化。
+- CUDA 同一组 unit/PPI boundary：通过；
+- CPU 完整安全回归，启用 unit、PPI boundary、full security 和 exact quotient
+  self-check：通过，wall 11:00.57，峰值 RSS 17,250,228 KiB；
+- Taylor shift、LogUp、t_edge evaluator、quotient transform、KZG opening
+  生产 stage benchmarks：通过；
+- 当前生产 verifier 直接验证优化前 Cora canonical proof：三次均通过；
+- 当前源码 Cora CPU 完整路径：`VERIFY_OK`；
+- `python3 tools/security/static_scan_no_tau.py --require-all-configured-srs`：通过；
+- 主实验变更的 whitespace 检查：通过。
 
-## 当前未完成事项
+## PPI 与 ogbn-arxiv 的状态
 
-1. Citeseer、Pubmed、PPI、ogbn-arxiv 的 independently trusted SRS 尚未发布。README
-   给出了精确 setup 输入、目标目录和命令。
-2. `static_scan_no_tau.py --require-all-configured-srs` 在四套 SRS 安装前应当失败；安装后
-   必须重新执行并通过。
-3. 五个完整正式数据集的 CPU/GPU 十行没有运行，正式结果、规模趋势和 GPU 端到端收益
-   尚未验收。
-4. `t_edge` 和 dynamic commitments 仍是 CPU 大热点；本续轮已对 evaluator、
-   materialization、MSM worker、commit batch、opening、FFT/coset 和调度候选做了
-   局部与整链闭环，未找到新的稳定 CPU 总收益。未来若引入生产级 GPU curve
-   MSM/KZG/pairing，必须重新走协议等价、安全回归和 CPU/GPU 分别测量。
+PPI 和 ogbn-arxiv 没有在本轮重新完整运行。旧二进制的
+`Taylor shift is missing source opening material: P_h0_R_src` 不能计为当前源码
+结果。共同 file-backed opening material 生命周期和同机制正式路径已经修复，构建、
+定向测试、安全回归、PPI 多图边界和 exact quotient 检查均通过；两者当前状态仍是：
 
-正式命令、日志、结果读取、消融和 SRS 安装步骤见 `README.md`。
+> 局部验证通过，最终全量待冻结版本验证。
+
+不得写成已经 `VERIFY_OK`。
+
+## 剩余热点与收敛判断
+
+当前仍耗时的阶段是 dynamic commitment/KZG MSM、t_edge/t_FH 正式 quotient 方程、
+FH opening witness 和 verifier quotient evaluation。它们不是未识别项：
+
+- commitment 的现有 batch/cache/worker/curve 候选均已测量闭环；跨挑战合并会改变
+  transcript/proof schema，GPU 曲线密码实现超出现有受审计 backend 边界；
+- t_edge/t_FH 的重复物化、临时磁盘、边界逆元、Taylor shift 和 LogUp 已处理；
+  剩余计算对应正式关系点，删除或缩减会减少证明工作量；
+- opening 的 point grouping、folding、inverse reuse 和 scheduler 已测；更激进的
+  8 GiB worker scheduler 是完整路径净回退；
+- verifier 已消除全量公开列复制；剩余 313 ms quotient 是正式接受方程，不能跳过。
+
+所以第 10 项结论为：**不存在已识别、可在当前约束内实施且可能产生显著稳定整链收益
+的未完成优化。** 仅存在缺乏当前实现依据的理论替代密码 backend，不将其伪装成待办。
+
+第 11 项结论为：**已确认主实验只剩唯一正式实现和唯一正式执行路径。**
+`src/main.cpp` 是唯一生产入口；测试和 stage benchmark 直接调用 `src/` 中生产函数，
+没有替代 Trace/Prover/Verifier/KZG、数据集专用路径或隐藏性能分支。
+
+## 冻结后最终完整验证命令
+
+先在无其他重负载、内存和 GPU 空闲的同一台机器上重新构建并完成门禁：
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DGATZK_BUILD_TESTS=ON -DGATZK_ENABLE_CUDA_BACKEND=OFF
+cmake --build build -j10
+cmake -S . -B build_cuda -DCMAKE_BUILD_TYPE=Release \
+  -DGATZK_BUILD_TESTS=ON -DGATZK_ENABLE_CUDA_BACKEND=ON
+cmake --build build_cuda -j10
+
+GATZK_RUN_UNIT_SECURITY_TESTS=1 \
+GATZK_RUN_PPI_BOUNDARY_TESTS=1 \
+GATZK_RUN_FULL_SECURITY_TESTS=1 \
+build/gatzk_tests
+python3 tools/security/static_scan_no_tau.py --require-all-configured-srs
+```
+
+CPU 五行应顺序运行：
+
+```bash
+GATZK_RUN_PROGRESS=1 build/gatzk_run --config configs/cora_secure.cfg --compute-backend cpu --export-tag phase3_frozen_cpu
+GATZK_RUN_PROGRESS=1 build/gatzk_run --config configs/citeseer_secure.cfg --compute-backend cpu --export-tag phase3_frozen_cpu
+GATZK_RUN_PROGRESS=1 build/gatzk_run --config configs/pubmed_secure.cfg --compute-backend cpu --export-tag phase3_frozen_cpu
+GATZK_RUN_PROGRESS=1 build/gatzk_run --config configs/ppi_secure.cfg --compute-backend cpu --export-tag phase3_frozen_cpu
+GATZK_RUN_PROGRESS=1 build/gatzk_run --config configs/ogbn_arxiv_secure.cfg --compute-backend cpu --export-tag phase3_frozen_cpu
+```
+
+CUDA 五行也应顺序运行：
+
+```bash
+GATZK_RUN_PROGRESS=1 build_cuda/gatzk_run --config configs/cora_secure.cfg --compute-backend cuda_hotspots --export-tag phase3_frozen_cuda
+GATZK_RUN_PROGRESS=1 build_cuda/gatzk_run --config configs/citeseer_secure.cfg --compute-backend cuda_hotspots --export-tag phase3_frozen_cuda
+GATZK_RUN_PROGRESS=1 build_cuda/gatzk_run --config configs/pubmed_secure.cfg --compute-backend cuda_hotspots --export-tag phase3_frozen_cuda
+GATZK_RUN_PROGRESS=1 build_cuda/gatzk_run --config configs/ppi_secure.cfg --compute-backend cuda_hotspots --export-tag phase3_frozen_cuda
+GATZK_RUN_PROGRESS=1 build_cuda/gatzk_run --config configs/ogbn_arxiv_secure.cfg --compute-backend cuda_hotspots --export-tag phase3_frozen_cuda
+```
+
+每行只有 `benchmark.txt` 与 `run_manifest.json` 同时记录
+`status=VERIFY_OK`、`full_dataset=true`、canonical proof 长度/hash 一致时才可进入最终
+矩阵。PPI 和 ogbn-arxiv 在这些命令成功之前必须继续保持“最终全量待验证”。

@@ -59,7 +59,8 @@ namespace gatzk::algebra
         std::vector<mcl::Fr> interleaved_values;
     };
 
-    // 预计算所有多项式在单位根域上的值，并建立标签到索引的映射
+    // 校验同域多项式并建立标签到索引的映射；数值从 canonical 列直接
+    // 读取，只有命中的小标签子集才会按阈值惰性物化交织布局。
     PackedEvaluationBackend::PackedEvaluationBackend(
         std::shared_ptr<RootOfUnityDomain> domain,
         std::vector<std::pair<std::string, const Polynomial*>> polynomials)
@@ -70,11 +71,6 @@ namespace gatzk::algebra
             throw std::runtime_error("domain evaluation backend requires a domain");
         }
         const auto row_count = polynomials_.size();
-        interleaved_values_.resize(domain_->size * row_count);
-        for (auto& value : interleaved_values_)
-        {
-            value.clear();
-        }
         for (std::size_t row = 0; row < row_count; ++row)
         {
             label_to_index_.emplace(polynomials_[row].first, row);
@@ -83,13 +79,19 @@ namespace gatzk::algebra
             {
                 throw std::runtime_error("domain evaluation backend requires same-domain evaluation polynomials");
             }
-            const auto& values = polynomial->values();
-            const auto column_count = std::min(values.size(), domain_->size);
-            for (std::size_t column = 0; column < column_count; ++column)
-            {
-                interleaved_values_[column * row_count + row] = values[column].native();
-            }
         }
+    }
+
+    const mcl::Fr& PackedEvaluationBackend::native_value_at(
+        std::size_t polynomial_index,
+        std::size_t column) const
+    {
+        static const FieldElement zero = FieldElement::zero();
+        const auto& values =
+            polynomials_.at(polynomial_index).second->values();
+        return column < values.size()
+            ? values[column].native()
+            : zero.native();
     }
 
     const PackedEvaluationBackend::SubsetView& PackedEvaluationBackend::subset_for(const std::vector<std::string>& labels) const
@@ -130,11 +132,11 @@ namespace gatzk::algebra
             subset.interleaved_values.resize(interleaved_term_count);
             for (std::size_t column = 0; column < domain_->size; ++column)
             {
-                const auto* packed_row = &interleaved_values_[column * polynomials_.size()];
                 auto* subset_row = &subset.interleaved_values[column * row_count];
                 for (std::size_t row = 0; row < row_count; ++row)
                 {
-                    subset_row[row] = packed_row[subset.row_indices[row]];
+                    subset_row[row] = native_value_at(
+                        subset.row_indices[row], column);
                 }
             }
         }
@@ -301,10 +303,10 @@ namespace gatzk::algebra
                 else
                 {
                     const auto global_row = subset.row_indices[r];
-                    const auto stride = polynomials_.size();
                     for (std::size_t col = 0; col < domain_->size; ++col)
                     {
-                        col_buffers[r][col] = interleaved_values_[col * stride + global_row];
+                        col_buffers[r][col] =
+                            native_value_at(global_row, col);
                     }
                 }
                 col_ptrs[r] = reinterpret_cast<const uint64_t*>(col_buffers[r].data());
@@ -374,7 +376,9 @@ namespace gatzk::algebra
                                     mcl::Fr term;
                                     const auto& value = use_cached_subset
                                                             ? subset.interleaved_values[column * row_count + row]
-                                                            : interleaved_values_[column * polynomials_.size() + subset.row_indices[row]];
+                                                            : native_value_at(
+                                                                subset.row_indices[row],
+                                                                column);
                                     mcl::Fr::mul(term, value, weight);
                                     mcl::Fr::add(partial[row], partial[row], term);
                                 }
@@ -409,7 +413,9 @@ namespace gatzk::algebra
                 mcl::Fr term;
                 const auto& value = use_cached_subset
                                         ? subset.interleaved_values[column * row_count + row]
-                                        : interleaved_values_[column * polynomials_.size() + subset.row_indices[row]];
+                                        : native_value_at(
+                                            subset.row_indices[row],
+                                            column);
                 mcl::Fr::mul(term, value, weight);
                 mcl::Fr::add(native_out[row], native_out[row], term);
             }
@@ -625,10 +631,10 @@ namespace gatzk::algebra
                 else
                 {
                     const auto global_row = subset.row_indices[r];
-                    const auto stride = polynomials_.size();
                     for (std::size_t col = 0; col < domain_->size; ++col)
                     {
-                        col_buffers[r][col] = interleaved_values_[col * stride + global_row];
+                        col_buffers[r][col] =
+                            native_value_at(global_row, col);
                     }
                 }
                 col_ptrs[r] = reinterpret_cast<const uint64_t*>(col_buffers[r].data());
@@ -715,7 +721,9 @@ namespace gatzk::algebra
                                         mcl::Fr term;
                                         const auto& value = use_cached_subset
                                                                 ? subset.interleaved_values[rotated_column * row_count + row]
-                                                                : interleaved_values_[rotated_column * polynomials_.size() + subset.row_indices[row]];
+                                                                : native_value_at(
+                                                                    subset.row_indices[row],
+                                                                    rotated_column);
                                         mcl::Fr::mul(term, value, weight);
                                         mcl::Fr::add(partial_row[row], partial_row[row], term);
                                     }
@@ -747,7 +755,9 @@ namespace gatzk::algebra
                             mcl::Fr term;
                             const auto& value = use_cached_subset
                                                     ? subset.interleaved_values[rotated_column * row_count + row]
-                                                    : interleaved_values_[rotated_column * polynomials_.size() + subset.row_indices[row]];
+                                                    : native_value_at(
+                                                        subset.row_indices[row],
+                                                        rotated_column);
                             mcl::Fr::mul(term, value, weight);
                             mcl::Fr::add(native_row[row], native_row[row], term);
                         }
@@ -769,7 +779,9 @@ namespace gatzk::algebra
                         mcl::Fr term;
                         const auto& value = use_cached_subset
                                                 ? subset.interleaved_values[rotated_column * row_count + row]
-                                                : interleaved_values_[rotated_column * polynomials_.size() + subset.row_indices[row]];
+                                                : native_value_at(
+                                                    subset.row_indices[row],
+                                                    rotated_column);
                         mcl::Fr::mul(term, value, weight);
                         mcl::Fr::add(native_row[row], native_row[row], term);
                     }

@@ -20,7 +20,9 @@ namespace gatzk::algebra
     class PackedEvaluationBackend
     {
     public:
-        // `polynomials` 中每个标签必须唯一，并且都已物化到同一工作域上。
+        // `polynomials` 中每个标签必须唯一，并且都属于同一工作域。
+        // 后端只保留当前 prove/verify 生命周期内的只读指针；值布局按实际
+        // 使用的标签子集惰性物化，避免复制完整公开列注册表。
         PackedEvaluationBackend(
             std::shared_ptr<RootOfUnityDomain> domain,
             // polynomials: 多个多项式的标签-指针列表，每个多项式将在此域上求值
@@ -34,11 +36,6 @@ namespace gatzk::algebra
         const std::vector<std::pair<std::string, const Polynomial*>>& polynomials() const
         {
             return polynomials_;
-        }
-
-        const std::vector<mcl::Fr>& interleaved_values_native() const
-        {
-            return interleaved_values_;
         }
 
         // 将协议层标签映射到打包布局中的行号，供后续共享扫描复用。
@@ -74,11 +71,13 @@ namespace gatzk::algebra
         struct SubsetCacheState;
 
         const SubsetView& subset_for(const std::vector<std::string>& labels) const;
+        const mcl::Fr& native_value_at(
+            std::size_t polynomial_index,
+            std::size_t column) const;
 
         std::shared_ptr<RootOfUnityDomain> domain_;
         std::vector<std::pair<std::string, const Polynomial*>> polynomials_;
         std::unordered_map<std::string, std::size_t> label_to_index_;
-        std::vector<mcl::Fr> interleaved_values_;
         mutable std::shared_ptr<SubsetCacheState> subset_cache_state_;
     };
 
