@@ -5,9 +5,11 @@
 小规模回归、阶段 benchmark 与正式数据共用 `src/` 中同一套 Context、Trace、Prover、
 Verifier、KZG、canonical serializer 和 strict parser。
 
-第三阶段生产实现已经收敛，CPU/CUDA 构建、完整安全回归、生产 stage benchmark 和
-当前源码 Cora CPU 完整证明均已通过；Cora 结果为 `VERIFY_OK`。五套配置所引用的正式
-SRS 当前均存在，并已通过严格静态绑定扫描。Citeseer、Pubmed 的既有完整
+第三阶段尚未收敛。部分正确性、file-backed 生命周期、内存、quotient 和 verify
+优化已经完成并保留，但 commitment 尚无可信下降，当前完整 Cora prove 仅下降
+4.33%，三项合计没有显著净收益；commitment、prove 和总体时间的大幅优化仍在进行。
+当前源码 Cora CPU 完整证明为 `VERIFY_OK`。五套配置所引用的正式 SRS 当前均存在，
+并已通过严格静态绑定扫描。Citeseer、Pubmed 的既有完整
 `VERIFY_OK` 结果属于优化前源码；PPI、ogbn-arxiv 的共同 file-backed opening
 material 生命周期错误已局部验证修复，但两者仍必须标记为“冻结版本最终全量待验证”。
 本轮没有运行 CPU/GPU 十组矩阵。精确证据和受共享主机负载污染的计时边界见

@@ -121,7 +121,8 @@ void run_case(
     const std::vector<gatzk::crypto::G1Point>& points,
     const std::vector<FieldElement>& scalars,
     std::size_t repeats,
-    std::size_t max_worker_count) {
+    std::size_t max_worker_count,
+    bool stable_srs_bases = false) {
     const auto count = scalars.size();
     if (points.size() < count) {
         throw std::runtime_error(label + " SRS has insufficient points");
@@ -132,6 +133,7 @@ void run_case(
         gatzk::crypto::G1MSMProfile profiled_profile;
         const gatzk::crypto::G1MSMExecutionOptions options{
             .max_worker_count = max_worker_count,
+            .stable_srs_bases = stable_srs_bases,
         };
         const auto profiled_start = std::chrono::steady_clock::now();
         const auto profiled = gatzk::crypto::g1_multi_scalar_mul_profiled(
@@ -139,7 +141,9 @@ void run_case(
             scalars.data(),
             count,
             &profiled_profile,
-            max_worker_count == 0 ? nullptr : &options);
+            max_worker_count == 0 && !stable_srs_bases
+                ? nullptr
+                : &options);
         const auto profiled_ms = elapsed_ms(profiled_start);
 
         const auto raw_start = std::chrono::steady_clock::now();
@@ -546,22 +550,44 @@ int main(int argc, char** argv) {
         const auto should_run = [&](const std::string& label) {
             return selected_case == "all" || selected_case == label;
         };
-        if (argc > 7) {
+        if (argc > 8) {
             throw std::runtime_error(
                 "usage: gatzk_msm_stage_bench [repeats] [case|all] [max_workers|0] "
-                "[srs_path] [srs_type] [srs_id]");
+                "[srs_path] [srs_type] [srs_id] [edge_domain_size]");
         }
         const auto srs_path = argc > 4
             ? std::filesystem::path(argv[4])
             : repo_root() / "artifacts/srs/unit_security_srs_v1";
         const std::string srs_type = argc > 5 ? argv[5] : "trusted_srs";
         const std::string srs_id = argc > 6 ? argv[6] : "unit_security_srs_v1";
-        const auto keys = gatzk::crypto::KZG::load_keys(
-            srs_path.string(),
-            srs_type,
-            srs_id);
+        const std::size_t selected_edge_domain_size =
+            argc > 7
+                ? static_cast<std::size_t>(std::stoull(argv[7]))
+                : 0;
+        const bool fh_only =
+            selected_case == "fh_cora_feature_prefix_full";
+        const auto keys = fh_only
+            ? gatzk::crypto::KZG::load_keys_for_domains(
+                  srs_path.string(),
+                  srs_type,
+                  srs_id,
+                  {{"FH", 4194304}},
+                  4194305)
+            : (selected_edge_domain_size == 0
+                ? gatzk::crypto::KZG::load_keys(
+                      srs_path.string(),
+                      srs_type,
+                      srs_id)
+                : gatzk::crypto::KZG::load_keys_for_domains(
+                      srs_path.string(),
+                      srs_type,
+                      srs_id,
+                      {{"edge", selected_edge_domain_size}},
+                      selected_edge_domain_size + 1));
         const auto edge_it = keys.pk.lagrange_srs_by_domain.find("edge");
-        if (edge_it == keys.pk.lagrange_srs_by_domain.end() || edge_it->second == nullptr) {
+        if (!fh_only
+            && (edge_it == keys.pk.lagrange_srs_by_domain.end()
+                || edge_it->second == nullptr)) {
             throw std::runtime_error("missing edge Lagrange SRS");
         }
         const auto node_it = keys.pk.lagrange_srs_by_domain.find("N");
@@ -611,6 +637,18 @@ int main(int argc, char** argv) {
                     std::min<std::size_t>(21664, edge_it->second->size())),
                 repeats,
                 max_worker_count);
+            ran_case = true;
+        }
+        if (should_run("edge_prefix_21664_stable_full")) {
+            run_case(
+                "edge_current_prefix_21664_stable",
+                *edge_it->second,
+                make_full_width_prefix_scalars(
+                    edge_it->second->size(),
+                    std::min<std::size_t>(21664, edge_it->second->size())),
+                repeats,
+                max_worker_count,
+                true);
             ran_case = true;
         }
         if (should_run("edge_prefix_21664_worker_sweep")) {

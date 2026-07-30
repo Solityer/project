@@ -3731,27 +3731,20 @@ namespace gatzk::protocol
             const ProtocolContext &context,
             const std::string &quotient_name);
 
-        class QuotientCosetValues
+        std::vector<std::string> quotient_materialization_dependency_labels(
+            const ProtocolContext &context,
+            const std::string &quotient_name);
+
+        class QuotientCosetSpillArena
         {
         public:
-            QuotientCosetValues(
-                std::vector<FieldElement> values,
-                bool file_backed,
-                const std::string &label)
-                : size_(values.size())
+            struct Allocation
             {
-                static_assert(
-                    std::is_standard_layout_v<FieldElement>,
-                    "file-backed quotient cosets require standard-layout field elements");
-                static_assert(
-                    std::is_trivially_destructible_v<FieldElement>,
-                    "file-backed quotient cosets require trivially destructible field elements");
-                if (!file_backed || values.empty())
-                {
-                    memory_ = std::move(values);
-                    return;
-                }
+                FieldElement *data = nullptr;
+            };
 
+            QuotientCosetSpillArena()
+            {
                 const auto root =
                     std::filesystem::current_path()
                     / "runs" / ".quotient_coset_spill";
@@ -3763,7 +3756,7 @@ namespace gatzk::protocol
                         + std::string(std::strerror(errno)));
                 }
                 auto template_path =
-                    (root / "coset_XXXXXX").string();
+                    (root / "arena_XXXXXX").string();
                 std::vector<char> path(
                     template_path.begin(), template_path.end());
                 path.push_back('\0');
@@ -3771,8 +3764,8 @@ namespace gatzk::protocol
                 if (fd_ < 0)
                 {
                     throw std::runtime_error(
-                        "failed to create quotient coset spill for "
-                        + label + ": " + std::strerror(errno));
+                        "failed to create quotient coset spill arena: "
+                        + std::string(std::strerror(errno)));
                 }
                 if (::fchmod(fd_, S_IRUSR | S_IWUSR) != 0)
                 {
@@ -3781,8 +3774,8 @@ namespace gatzk::protocol
                     fd_ = -1;
                     ::unlink(path.data());
                     throw std::runtime_error(
-                        "failed to secure quotient coset spill for "
-                        + label + ": " + std::strerror(error));
+                        "failed to secure quotient coset spill arena: "
+                        + std::string(std::strerror(error)));
                 }
                 if (::unlink(path.data()) != 0)
                 {
@@ -3790,64 +3783,179 @@ namespace gatzk::protocol
                     ::close(fd_);
                     fd_ = -1;
                     throw std::runtime_error(
-                        "failed to unlink private quotient coset spill for "
-                        + label + ": " + std::strerror(error));
+                        "failed to unlink quotient coset spill arena: "
+                        + std::string(std::strerror(error)));
                 }
-
-                const auto byte_count = size_ * sizeof(FieldElement);
-                if (byte_count
-                    > static_cast<std::size_t>(
-                        std::numeric_limits<off_t>::max()))
+                const auto page_size_raw = ::sysconf(_SC_PAGESIZE);
+                if (page_size_raw <= 0)
                 {
                     ::close(fd_);
                     fd_ = -1;
                     throw std::runtime_error(
-                        "quotient coset spill size exceeds off_t for "
+                        "failed to determine quotient spill page size");
+                }
+                page_size_ = static_cast<std::size_t>(page_size_raw);
+            }
+
+            QuotientCosetSpillArena(
+                const QuotientCosetSpillArena &) = delete;
+            QuotientCosetSpillArena &operator=(
+                const QuotientCosetSpillArena &) = delete;
+
+            ~QuotientCosetSpillArena()
+            {
+                for (const auto &chunk : chunks_)
+                {
+                    if (chunk.mapping != nullptr)
+                    {
+                        ::munmap(chunk.mapping, chunk.capacity);
+                    }
+                }
+                if (fd_ >= 0)
+                {
+                    ::close(fd_);
+                }
+            }
+
+            Allocation allocate(
+                std::size_t byte_count,
+                const std::string &label)
+            {
+                if (byte_count == 0)
+                {
+                    return {};
+                }
+                std::lock_guard<std::mutex> lock(mutex_);
+                const auto aligned_bytes = align_up(byte_count);
+                if (chunks_.empty()
+                    || align_up(chunks_.back().used) + aligned_bytes
+                        > chunks_.back().capacity)
+                {
+                    add_chunk(aligned_bytes, label);
+                }
+                auto &chunk = chunks_.back();
+                const auto begin = align_up(chunk.used);
+                chunk.used = begin + aligned_bytes;
+                return {
+                    .data = reinterpret_cast<FieldElement *>(
+                        static_cast<std::uint8_t *>(chunk.mapping)
+                        + begin),
+                };
+            }
+
+        private:
+            struct Chunk
+            {
+                void *mapping = nullptr;
+                std::size_t capacity = 0;
+                std::size_t used = 0;
+            };
+
+            std::size_t align_up(std::size_t value) const
+            {
+                if (value
+                    > std::numeric_limits<std::size_t>::max()
+                        - (page_size_ - 1))
+                {
+                    throw std::runtime_error(
+                        "quotient coset spill allocation overflow");
+                }
+                return (value + page_size_ - 1)
+                    / page_size_ * page_size_;
+            }
+
+            void add_chunk(
+                std::size_t minimum_capacity,
+                const std::string &label)
+            {
+                constexpr std::size_t kChunkBytes =
+                    std::size_t{256} << 20;
+                const auto capacity =
+                    align_up(std::max(kChunkBytes, minimum_capacity));
+                const auto offset = file_size_;
+                if (capacity
+                        > static_cast<std::size_t>(
+                            std::numeric_limits<off_t>::max())
+                    || offset
+                        > static_cast<std::size_t>(
+                            std::numeric_limits<off_t>::max())
+                            - capacity)
+                {
+                    throw std::runtime_error(
+                        "quotient coset spill arena exceeds off_t for "
                         + label);
                 }
                 const auto allocation_error = ::posix_fallocate(
-                    fd_, 0, static_cast<off_t>(byte_count));
+                    fd_,
+                    static_cast<off_t>(offset),
+                    static_cast<off_t>(capacity));
                 if (allocation_error != 0)
                 {
-                    ::close(fd_);
-                    fd_ = -1;
                     throw std::runtime_error(
-                        "insufficient file-backed quotient coset resource for "
+                        "insufficient quotient coset spill arena resource for "
                         + label + ": "
-                        + std::strerror(allocation_error));
+                        + std::string(std::strerror(allocation_error)));
                 }
-                mapping_ = ::mmap(
+                auto *mapping = ::mmap(
                     nullptr,
-                    byte_count,
+                    capacity,
                     PROT_READ | PROT_WRITE,
                     MAP_SHARED,
                     fd_,
-                    0);
-                if (mapping_ == MAP_FAILED)
+                    static_cast<off_t>(offset));
+                if (mapping == MAP_FAILED)
                 {
-                    mapping_ = nullptr;
                     const auto error = errno;
-                    ::close(fd_);
-                    fd_ = -1;
                     throw std::runtime_error(
-                        "failed to map quotient coset spill for "
-                        + label + ": " + std::strerror(error));
+                        "failed to map quotient coset spill arena for "
+                        + label + ": "
+                        + std::string(std::strerror(error)));
                 }
+                (void)::madvise(mapping, capacity, MADV_SEQUENTIAL);
+                chunks_.push_back(Chunk{
+                    .mapping = mapping,
+                    .capacity = capacity,
+                    .used = 0,
+                });
+                file_size_ += capacity;
+            }
+
+            std::mutex mutex_;
+            std::vector<Chunk> chunks_;
+            int fd_ = -1;
+            std::size_t page_size_ = 0;
+            std::size_t file_size_ = 0;
+        };
+
+        class QuotientCosetValues
+        {
+        public:
+            QuotientCosetValues(
+                std::vector<FieldElement> values,
+                std::shared_ptr<QuotientCosetSpillArena> spill_arena,
+                const std::string &label)
+                : spill_arena_(std::move(spill_arena)),
+                  size_(values.size())
+            {
+                static_assert(
+                    std::is_standard_layout_v<FieldElement>,
+                    "file-backed quotient cosets require standard-layout field elements");
+                static_assert(
+                    std::is_trivially_destructible_v<FieldElement>,
+                    "file-backed quotient cosets require trivially destructible field elements");
+                if (spill_arena_ == nullptr || values.empty())
+                {
+                    memory_ = std::move(values);
+                    return;
+                }
+
+                const auto byte_count = size_ * sizeof(FieldElement);
+                mapping_ = spill_arena_->allocate(
+                    byte_count, label).data;
                 std::uninitialized_copy(
                     values.begin(),
                     values.end(),
                     static_cast<FieldElement *>(mapping_));
-                if (::mprotect(mapping_, byte_count, PROT_READ) != 0)
-                {
-                    const auto error = errno;
-                    ::munmap(mapping_, byte_count);
-                    mapping_ = nullptr;
-                    ::close(fd_);
-                    fd_ = -1;
-                    throw std::runtime_error(
-                        "failed to seal quotient coset spill for "
-                        + label + ": " + std::strerror(error));
-                }
                 // Keep freshly produced pages eligible for the kernel's
                 // adaptive file-cache policy.  A synchronous flush followed
                 // by MADV_DONTNEED forced every quotient dependency through
@@ -3897,17 +4005,7 @@ namespace gatzk::protocol
                 const QuotientCosetValues &) = delete;
 
             ~QuotientCosetValues()
-            {
-                if (mapping_ != nullptr)
-                {
-                    ::munmap(
-                        mapping_, size_ * sizeof(FieldElement));
-                }
-                if (fd_ >= 0)
-                {
-                    ::close(fd_);
-                }
-            }
+                = default;
 
             std::size_t size() const
             {
@@ -4040,6 +4138,7 @@ namespace gatzk::protocol
 
         private:
             std::vector<FieldElement> memory_;
+            std::shared_ptr<QuotientCosetSpillArena> spill_arena_;
             std::shared_ptr<const QuotientCosetValues>
                 semantic_values_;
             std::vector<FieldElement> zero_domain_blinder_;
@@ -4047,7 +4146,6 @@ namespace gatzk::protocol
                 coset_points_;
             std::vector<FieldElement> zero_cycle_;
             void *mapping_ = nullptr;
-            int fd_ = -1;
             std::size_t size_ = 0;
             mutable std::size_t discarded_bytes_ = 0;
         };
@@ -4108,6 +4206,30 @@ namespace gatzk::protocol
                     edge_evaluation_plan_ = build_t_edge_evaluation_plan(
                         context_, challenges_);
                 }
+                if (use_file_backed_coset_storage())
+                {
+                    const auto physical_pages =
+                        ::sysconf(_SC_PHYS_PAGES);
+                    const auto page_size =
+                        ::sysconf(_SC_PAGESIZE);
+                    constexpr std::size_t kMaximumMemoryCosetBytes =
+                        std::size_t{8} << 30;
+                    if (physical_pages > 0 && page_size > 0)
+                    {
+                        const auto physical_bytes =
+                            static_cast<unsigned long long>(
+                                physical_pages)
+                            * static_cast<unsigned long long>(
+                                page_size);
+                        in_memory_coset_budget_bytes_ =
+                            static_cast<std::size_t>(
+                                std::min<unsigned long long>(
+                                    kMaximumMemoryCosetBytes,
+                                    physical_bytes / 8));
+                    }
+                    spill_arena_ =
+                        std::make_shared<QuotientCosetSpillArena>();
+                }
             }
 
             algebra::Polynomial materialize(const crypto::KZGKeyPair &key)
@@ -4125,8 +4247,90 @@ namespace gatzk::protocol
                 {
                     const auto omega_z = z * domain_->omega;
                     const auto rotated_index = (i + rotation_step_) & (target_size_ - 1U);
+                    std::size_t edge_access_cursor = 0;
                     const auto eval = [&](const std::string &name, const FieldElement &point) -> FieldElement
                     {
+                        if (label_ == "t_edge")
+                        {
+                            if (record_edge_access_sequence_)
+                            {
+                                const auto direct_it =
+                                    fast_coset_lookup_.find(name);
+                                const auto rotated = point == omega_z;
+                                if (!rotated && point != z)
+                                {
+                                    throw std::runtime_error(
+                                        "t_edge quotient access-plan received "
+                                        "an unsupported evaluation point for "
+                                        + name);
+                                }
+                                const auto access_index =
+                                    rotated ? rotated_index : i;
+                                if (direct_it
+                                    != fast_coset_lookup_.end())
+                                {
+                                    edge_access_sequence_.push_back(
+                                        TEdgeCosetAccess{
+                                            .name = name,
+                                            .values = direct_it->second,
+                                            .rotated = rotated,
+                                        });
+                                    return (*direct_it->second)[
+                                        access_index];
+                                }
+                                if (const auto derived =
+                                        t_edge_derived_value_at(
+                                            name, access_index);
+                                    derived.has_value())
+                                {
+                                    edge_access_sequence_.push_back(
+                                        TEdgeCosetAccess{
+                                            .name = name,
+                                            .values = nullptr,
+                                            .rotated = rotated,
+                                        });
+                                    return *derived;
+                                }
+                                const auto &resolved =
+                                    fast_coset_values(name);
+                                edge_access_sequence_.push_back(
+                                    TEdgeCosetAccess{
+                                        .name = name,
+                                        .values = &resolved,
+                                        .rotated = rotated,
+                                    });
+                                return resolved[access_index];
+                            }
+                            if (!edge_access_sequence_.empty())
+                            {
+                                if (edge_access_cursor
+                                    >= edge_access_sequence_.size())
+                                {
+                                    throw std::runtime_error(
+                                        "t_edge quotient access-plan overflow");
+                                }
+                                const auto &access =
+                                    edge_access_sequence_[
+                                        edge_access_cursor++];
+                                const auto access_index =
+                                    access.rotated ? rotated_index : i;
+                                if (access.values != nullptr)
+                                {
+                                    return (*access.values)[access_index];
+                                }
+                                const auto derived =
+                                    t_edge_derived_value_at(
+                                        access.name, access_index);
+                                if (!derived.has_value())
+                                {
+                                    throw std::runtime_error(
+                                        "t_edge quotient access-plan lost "
+                                        "derived dependency "
+                                        + access.name);
+                                }
+                                return *derived;
+                            }
+                        }
                         if (point == z)
                         {
                             return coset_value_at(name, i);
@@ -4146,11 +4350,12 @@ namespace gatzk::protocol
                             eval,
                             z,
                             nullptr,
-                            boundary_values);
+                            boundary_values,
+                            full_graph_feature_identity_enabled(context_));
                     }
                     else if (label_ == "t_edge")
                     {
-                        return evaluate_t_edge(
+                        const auto value = evaluate_t_edge(
                             context_,
                             challenges_,
                             trace_.external_evaluations,
@@ -4164,6 +4369,15 @@ namespace gatzk::protocol
                                 : &quotient_alpha_powers_,
                             edge_evaluation_plan_.get(),
                             boundary_values);
+                        if (!record_edge_access_sequence_
+                            && !edge_access_sequence_.empty()
+                            && edge_access_cursor
+                                != edge_access_sequence_.size())
+                        {
+                            throw std::runtime_error(
+                                "t_edge quotient access-plan underflow");
+                        }
+                        return value;
                     }
                     else if (label_ == "t_N")
                     {
@@ -4211,6 +4425,24 @@ namespace gatzk::protocol
                     progress_note("prove:quotient:t_edge:coset_prewarm:start");
                     prewarm_coset_values(prewarm_labels);
                     seed_fast_coset_lookup(prewarm_labels);
+                    edge_access_sequence_.clear();
+                    record_edge_access_sequence_ = true;
+                    try
+                    {
+                        (void)evaluate_at_index(0, shift_);
+                    }
+                    catch (...)
+                    {
+                        record_edge_access_sequence_ = false;
+                        edge_access_sequence_.clear();
+                        throw;
+                    }
+                    record_edge_access_sequence_ = false;
+                    if (edge_access_sequence_.empty())
+                    {
+                        throw std::runtime_error(
+                            "t_edge quotient access-plan is empty");
+                    }
                     progress_note(
                         "prove:quotient:t_edge:coset_prewarm:done:ms="
                         + std::to_string(elapsed_ms(prewarm_start, Clock::now())));
@@ -4233,7 +4465,8 @@ namespace gatzk::protocol
                     // read-only cache consumers.
                     const auto prewarm_start = Clock::now();
                     const auto dependency_labels =
-                        quotient_dependency_labels(context_, label_);
+                        quotient_materialization_dependency_labels(
+                            context_, label_);
                     progress_note("prove:quotient:t_FH:coset_prewarm:start");
                     for (const auto &dependency_label : dependency_labels)
                     {
@@ -4298,7 +4531,8 @@ namespace gatzk::protocol
                             sample_indices.begin(),
                             sample_indices.end()),
                         sample_indices.end());
-                    for (const auto &name : quotient_dependency_labels(
+                    for (const auto &name :
+                         quotient_materialization_dependency_labels(
                              context_, label_))
                     {
                         const auto *polynomial = lookup_polynomial(name);
@@ -4416,11 +4650,18 @@ namespace gatzk::protocol
                         bounded_file_backed_evaluation
                             ? std::size_t{1} << 15
                             : target_size_;
-                    if (bounded_file_backed_evaluation)
+                    if (use_file_backed_coset_storage())
                     {
                         progress_note(
                             "prove:quotient:" + label_
-                            + ":coset_storage:file_backed_unlinked"
+                            + ":coset_storage:tiered"
+                            + ":memory_bytes="
+                            + std::to_string(
+                                in_memory_coset_bytes_.load(
+                                    std::memory_order_relaxed))
+                            + ":memory_budget="
+                            + std::to_string(
+                                in_memory_coset_budget_bytes_)
                             + ":files="
                             + std::to_string(
                                 file_backed_coset_count_.load(
@@ -4656,6 +4897,13 @@ namespace gatzk::protocol
             }
 
         private:
+            struct TEdgeCosetAccess
+            {
+                std::string name;
+                const QuotientCosetValues *values = nullptr;
+                bool rotated = false;
+            };
+
             bool use_file_backed_coset_storage() const
             {
                 return (label_ == "t_edge" || label_ == "t_FH")
@@ -4666,13 +4914,37 @@ namespace gatzk::protocol
                 std::vector<FieldElement> values,
                 const std::string &label)
             {
-                const auto file_backed =
-                    use_file_backed_coset_storage();
                 const auto byte_count =
                     values.size() * sizeof(FieldElement);
+                bool retain_in_memory = false;
+                if (use_file_backed_coset_storage()
+                    && byte_count <= in_memory_coset_budget_bytes_)
+                {
+                    auto retained_bytes =
+                        in_memory_coset_bytes_.load(
+                            std::memory_order_relaxed);
+                    while (retained_bytes
+                               <= in_memory_coset_budget_bytes_
+                                   - byte_count)
+                    {
+                        if (in_memory_coset_bytes_.compare_exchange_weak(
+                                retained_bytes,
+                                retained_bytes + byte_count,
+                                std::memory_order_relaxed))
+                        {
+                            retain_in_memory = true;
+                            break;
+                        }
+                    }
+                }
+                const auto file_backed =
+                    use_file_backed_coset_storage()
+                    && !retain_in_memory;
                 auto retained =
                     std::make_shared<const QuotientCosetValues>(
-                        std::move(values), file_backed, label);
+                        std::move(values),
+                        file_backed ? spill_arena_ : nullptr,
+                        label);
                 if (file_backed)
                 {
                     file_backed_coset_count_.fetch_add(
@@ -6018,33 +6290,6 @@ namespace gatzk::protocol
                 return values;
             }
 
-            std::vector<FieldElement> feature_table_semantic_coset_values()
-            {
-                const auto eta_feat = challenges_.at("eta_feat");
-                const auto eta_feat_sq = eta_feat * eta_feat;
-                const auto &rows =
-                    coset_values("P_Row_feat_tbl");
-                const auto &cols =
-                    coset_values("P_Col_feat_tbl");
-                const auto &features =
-                    coset_values("P_T_H");
-                std::vector<FieldElement> out(
-                    target_size_, FieldElement::zero());
-                parallel_for_chunks(
-                    target_size_,
-                    std::size_t{1} << 15,
-                    0,
-                    [&](std::size_t begin, std::size_t end)
-                    {
-                        for (std::size_t i = begin; i < end; ++i)
-                        {
-                            out[i] = rows[i] + eta_feat * cols[i]
-                                + eta_feat_sq * features[i];
-                        }
-                    });
-                return out;
-            }
-
             std::vector<FieldElement> blinder_difference(
                 const std::vector<FieldElement> &left,
                 const std::vector<FieldElement> &right) const
@@ -6144,9 +6389,24 @@ namespace gatzk::protocol
                 const TraceArtifacts::SpilledEvaluationPolynomial
                     &spilled)
             {
-                if (!lazy_full_feature_lookup_trace_enabled(context_)
-                    || !is_lazy_full_feature_lookup_trace_label(
-                        requested_name))
+                const bool full_feature_identity =
+                    lazy_full_feature_lookup_trace_enabled(context_);
+                const bool identical_feature_inverse =
+                    requested_name == "P_J_tbl_feat"
+                    || requested_name == "P_J_qry_feat";
+                if (!full_feature_identity
+                    || (!is_lazy_full_feature_lookup_trace_label(
+                            requested_name)
+                        && !identical_feature_inverse))
+                {
+                    return nullptr;
+                }
+                // Table is already the authenticated evaluation column written
+                // by the trace.  Transform it once directly.  Reconstructing
+                // it from Row/Col/T_H performed three full 4x-FH transforms
+                // merely to recover the same committed polynomial.
+                if (requested_name == "P_Table_feat"
+                    || requested_name == "P_J_tbl_feat")
                 {
                     return nullptr;
                 }
@@ -6156,12 +6416,7 @@ namespace gatzk::protocol
                 QuotientCosetValuesPtr base_values;
                 std::vector<FieldElement> semantic_values;
                 auto correction = spilled.zero_domain_blinder;
-                if (requested_name == "P_Table_feat")
-                {
-                    semantic_values =
-                        feature_table_semantic_coset_values();
-                }
-                else if (requested_name == "P_Query_feat")
+                if (requested_name == "P_Query_feat")
                 {
                     base_values =
                         coset_values_ptr("P_Table_feat");
@@ -6178,6 +6433,24 @@ namespace gatzk::protocol
                     correction = blinder_difference(
                         spilled.zero_domain_blinder,
                         table_it->second.zero_domain_blinder);
+                }
+                else if (requested_name == "P_J_qry_feat")
+                {
+                    base_values =
+                        coset_values_ptr("P_J_tbl_feat");
+                    const auto table_inverse_it =
+                        trace_.spilled_polynomials.find(
+                            "P_J_tbl_feat");
+                    if (table_inverse_it
+                        == trace_.spilled_polynomials.end())
+                    {
+                        throw std::runtime_error(
+                            "spilled FH query inverse is missing its "
+                            "identical table inverse source");
+                    }
+                    correction = blinder_difference(
+                        spilled.zero_domain_blinder,
+                        table_inverse_it->second.zero_domain_blinder);
                 }
                 else if (requested_name == "P_m_feat")
                 {
@@ -6455,6 +6728,9 @@ namespace gatzk::protocol
             FieldElement shift_;
             std::vector<mcl::Fr> shift_powers_;
             std::shared_ptr<const TEdgeEvaluationPlan> edge_evaluation_plan_;
+            std::shared_ptr<QuotientCosetSpillArena> spill_arena_;
+            std::vector<TEdgeCosetAccess> edge_access_sequence_;
+            bool record_edge_access_sequence_ = false;
             std::mutex coset_cache_mutex_;
             std::unordered_map<std::string, QuotientCosetValuesPtr> coset_cache_;
             std::unordered_map<std::string, std::string> coset_aliases_;
@@ -6465,6 +6741,8 @@ namespace gatzk::protocol
             std::shared_ptr<const std::vector<FieldElement>>
                 semantic_coset_points_;
             std::vector<FieldElement> semantic_coset_zero_cycle_;
+            std::size_t in_memory_coset_budget_bytes_ = 0;
+            std::atomic<std::size_t> in_memory_coset_bytes_{0};
             std::atomic<std::size_t> file_backed_coset_count_{0};
             std::atomic<std::size_t> file_backed_coset_bytes_{0};
             std::atomic<std::size_t> lazy_blinder_coset_count_{0};
@@ -7195,6 +7473,40 @@ namespace gatzk::protocol
             if (quotient_name == "t_N")
                 return multihead_n_dependencies(context);
             return {};
+        }
+
+        std::vector<std::string> quotient_materialization_dependency_labels(
+            const ProtocolContext &context,
+            const std::string &quotient_name)
+        {
+            auto labels =
+                quotient_dependency_labels(context, quotient_name);
+            if (quotient_name != "t_FH"
+                || !full_graph_feature_identity_enabled(context))
+            {
+                return labels;
+            }
+            static const std::array<std::string_view, 7>
+                identically_cancelled_dependencies = {
+                    "P_H",
+                    "P_T_H",
+                    "P_Row_feat_tbl",
+                    "P_Col_feat_tbl",
+                    "P_Row_feat_qry",
+                    "P_Col_feat_qry",
+                    "P_I_feat_qry",
+                };
+            std::erase_if(
+                labels,
+                [&](const std::string &label)
+                {
+                    return std::find(
+                               identically_cancelled_dependencies.begin(),
+                               identically_cancelled_dependencies.end(),
+                               label)
+                        != identically_cancelled_dependencies.end();
+                });
+            return labels;
         }
 
         DomainOpeningBundle make_bundle(
@@ -9194,6 +9506,13 @@ namespace gatzk::protocol
             const auto& point_groups = opening_registry.groups();
             std::vector<PointGroupOpeningResult> opening_results(
                 point_groups.size());
+            std::mutex file_backed_opening_cache_mutex;
+            std::unordered_map<
+                std::string,
+                std::shared_ptr<const algebra::Polynomial>>
+                file_backed_opening_cache;
+            file_backed_opening_cache.reserve(
+                trace.spilled_polynomials.size());
             const crypto::OpeningPolynomialResolver
                 file_backed_opening_resolver =
                     [&](const Commitment &commitment)
@@ -9213,10 +9532,28 @@ namespace gatzk::protocol
                                 "file-backed opening material is missing: "
                                 + commitment.name);
                         }
-                        return load_spilled_opening_polynomial(
+                        // A standard domain has two independently folded point
+                        // groups.  Resolve each spilled source once for the
+                        // proof-local opening phase instead of reading and
+                        // decoding the same authenticated column twice.  The
+                        // cache is scoped to this proof and is destroyed before
+                        // returning it.
+                        std::lock_guard<std::mutex> lock(
+                            file_backed_opening_cache_mutex);
+                        if (const auto cached =
+                                file_backed_opening_cache.find(
+                                    commitment.name);
+                            cached != file_backed_opening_cache.end())
+                        {
+                            return cached->second;
+                        }
+                        auto material = load_spilled_opening_polynomial(
                             context,
                             spilled_it->second,
                             commitment.name);
+                        file_backed_opening_cache.emplace(
+                            commitment.name, material);
+                        return material;
                     };
             const auto open_group_indices = [&]
             (const std::vector<std::size_t>& indices)
@@ -9283,7 +9620,8 @@ namespace gatzk::protocol
                 const auto worker_count = std::min<std::size_t>(
                     work_order.size(),
                     has_file_backed_openings
-                        ? 1
+                        ? std::min<std::size_t>(
+                            2, outer_worker_limit)
                         : outer_worker_limit);
                 const auto base_inner_worker_count = worker_count > 1
                     ? std::max<std::size_t>(

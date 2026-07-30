@@ -131,6 +131,45 @@ void test_fh_precomputed_boundary_equivalence() {
     require(
         direct == precomputed,
         "precomputed FH boundary changed the quotient equation");
+
+    const gatzk::protocol::EvalFn identity_eval =
+        [&](const std::string& label,
+            const FieldElement& point) {
+            const auto row = eval("P_Row_feat_tbl", point);
+            const auto col = eval("P_Col_feat_tbl", point);
+            const auto feature = eval("P_T_H", point);
+            if (label == "P_Table_feat"
+                || label == "P_Query_feat") {
+                return row + challenges.at("eta_feat") * col
+                    + challenges.at("eta_feat").pow(2) * feature;
+            }
+            if (label == "P_H") {
+                return feature;
+            }
+            if (label == "P_Row_feat_qry"
+                || label == "P_I_feat_qry") {
+                return row;
+            }
+            if (label == "P_Col_feat_qry") {
+                return col;
+            }
+            return eval(label, point);
+        };
+    const auto generic_identity =
+        gatzk::protocol::evaluate_t_fh(
+            context, challenges, identity_eval, z, nullptr, &boundary);
+    const auto derived_identity =
+        gatzk::protocol::evaluate_t_fh(
+            context,
+            challenges,
+            identity_eval,
+            z,
+            nullptr,
+            &boundary,
+            true);
+    require(
+        generic_identity == derived_identity,
+        "derived full-identity FH encoding terms changed the quotient equation");
 }
 
 void test_logup_inverse_accumulator_reuse_equivalence() {

@@ -5059,7 +5059,20 @@ namespace gatzk::protocol
                             trace,
                             {
                                 column_spec("P_J_tbl_feat", std::move(j_feat.table), domains.fh),
-                                column_spec("P_J_qry_feat", std::move(j_feat.query), domains.fh),
+                                static_artifacts.full_feature_identity
+                                    ? deferred_linear_column_spec(
+                                          "P_J_qry_feat",
+                                          std::move(j_feat.query),
+                                          domains.fh,
+                                          {
+                                              linear_label_term(
+                                                  "P_J_tbl_feat",
+                                                  FieldElement::one()),
+                                          })
+                                    : column_spec(
+                                          "P_J_qry_feat",
+                                          std::move(j_feat.query),
+                                          domains.fh),
                                 column_spec("P_R_feat", std::move(r_feat), domains.fh),
                             },
                             context.kzg,

@@ -784,7 +784,8 @@ namespace gatzk::protocol
         const EvalFn &eval,
         const FieldElement &z,
         FHQuotientProfile *profile,
-        const QuotientBoundaryValues *boundary_values)
+        const QuotientBoundaryValues *boundary_values,
+        bool feature_encoding_terms_are_identically_zero)
     {
         const auto total_start = Clock::now();
         const auto dependency_before = profile != nullptr ? profile->dependency_eval_ms : 0.0;
@@ -798,7 +799,6 @@ namespace gatzk::protocol
             }
             return value;
         };
-        const auto eta_feat = challenges.at("eta_feat");
         const auto omega_z = z * context.domains.fh->omega;
         const auto boundary = boundary_values != nullptr
             ? *boundary_values
@@ -829,10 +829,31 @@ namespace gatzk::protocol
         acc.add((one - q_table) * j_table);
         acc.add(q_query * ((query + beta) * j_query - one));
         acc.add((one - q_query) * j_query);
-        acc.add(
-            table - (profiled_eval("P_Row_feat_tbl", z) + eta_feat * profiled_eval("P_Col_feat_tbl", z) + eta_feat.pow(2) * profiled_eval("P_T_H", z)));
-        acc.add(
-            query - (profiled_eval("P_I_feat_qry", z) + eta_feat * profiled_eval("P_Col_feat_qry", z) + eta_feat.pow(2) * profiled_eval("P_H", z)));
+        if (feature_encoding_terms_are_identically_zero)
+        {
+            // The formal full-identity trace constructs P_Table_feat as the
+            // exact evaluation-basis linear combination
+            // Row + eta*Col + eta^2*T_H, and P_Query_feat from that same
+            // evaluation component.  Preserve both alpha slots while avoiding
+            // six 4x-FH coset materializations for two identically-zero
+            // polynomials.  The verifier deliberately uses the generic branch
+            // and therefore continues to check both equations from openings.
+            acc.add(FieldElement::zero());
+            acc.add(FieldElement::zero());
+        }
+        else
+        {
+            const auto eta_feat = challenges.at("eta_feat");
+            const auto eta_feat_squared = eta_feat * eta_feat;
+            acc.add(
+                table - (profiled_eval("P_Row_feat_tbl", z)
+                         + eta_feat * profiled_eval("P_Col_feat_tbl", z)
+                         + eta_feat_squared * profiled_eval("P_T_H", z)));
+            acc.add(
+                query - (profiled_eval("P_I_feat_qry", z)
+                         + eta_feat * profiled_eval("P_Col_feat_qry", z)
+                         + eta_feat_squared * profiled_eval("P_H", z)));
+        }
         const auto result = acc.value() / zero_eval;
         if (profile != nullptr)
         {

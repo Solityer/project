@@ -1,19 +1,18 @@
-# 主实验第三阶段性能优化与收敛报告
+# 主实验第三阶段性能优化进展报告
 
 日期：2026-07-30（Asia/Shanghai）
 
-## 结论
+## 当前状态
 
 本轮已在唯一生产路径 `gatzk_run` 上完成代码分析、成组修改、CPU/CUDA Release
 构建、定向测试、完整安全回归、生产 stage benchmark、quotient profiling 和一次
 当前源码的 Cora CPU 完整证明。该 Cora 证明生成 canonical `proof.bin` 并
 `VERIFY_OK`。
 
-第三阶段的代码优化已经收敛：当前没有已识别、具有协议等价实现依据、在现有
-MCL/CUDA 能力下可能带来显著稳定整链收益而尚未处理的候选；主实验也已经确认只剩
-一套 Context、Trace、Prover、Verifier、KZG、codec/parser 实现和一个正式入口。
-五数据集冻结版本的最终 CPU/CUDA 验收矩阵仍需按文末命令执行，因此“优化实现完成”
-不等于“十行正式矩阵已经验收”。
+第三阶段尚未收敛。已经完成并必须保留的是部分正确性、file-backed 生命周期、内存、
+quotient 和 verify 优化；commitment 尚无可信下降，当前完整 Cora prove 仅下降
+4.33%，三项合计没有显著净收益。commitment、prove 和总体时间的大幅优化目标仍未
+完成，当前不得标记第三阶段完成。
 
 两份最高规范 `GAT-ZKML-多层多头.md` 和
 `PROJECT_CONTEXT_AND_EXECUTION_CONSTRAINTS.md` 未被修改、重命名、移动或删除。
@@ -185,23 +184,21 @@ PPI 和 ogbn-arxiv 没有在本轮重新完整运行。旧二进制的
 
 不得写成已经 `VERIFY_OK`。
 
-## 剩余热点与收敛判断
+## 尚未完成的主要热点
 
 当前仍耗时的阶段是 dynamic commitment/KZG MSM、t_edge/t_FH 正式 quotient 方程、
-FH opening witness 和 verifier quotient evaluation。它们不是未识别项：
+FH opening witness 和 verifier quotient evaluation。需要继续对以下生产路径做
+架构级优化：
 
-- commitment 的现有 batch/cache/worker/curve 候选均已测量闭环；跨挑战合并会改变
-  transcript/proof schema，GPU 曲线密码实现超出现有受审计 backend 边界；
-- t_edge/t_FH 的重复物化、临时磁盘、边界逆元、Taylor shift 和 LogUp 已处理；
-  剩余计算对应正式关系点，删除或缩减会减少证明工作量；
-- opening 的 point grouping、folding、inverse reuse 和 scheduler 已测；更激进的
-  8 GiB worker scheduler 是完整路径净回退；
-- verifier 已消除全量公开列复制；剩余 313 ms quotient 是正式接受方程，不能跳过。
+- commitment 的对象组织、同基 MSM、跨对象 base reuse、批处理和 CPU/CUDA 分工；
+- t_edge/t_FH 的 coset 表示、重复 NTT/IFFT、跨关系公共子表达式和流水执行；
+- FH opening witness 的折叠、系数生命周期、MSM 输入组织和并行流水；
+- 当前完整结果中的 trace/opening 长尾及总体资源竞争。
 
-所以第 10 项结论为：**不存在已识别、可在当前约束内实施且可能产生显著稳定整链收益
-的未完成优化。** 仅存在缺乏当前实现依据的理论替代密码 backend，不将其伪装成待办。
+第 10 项当前结论为：**仍存在可实施且可能产生显著整链收益的架构级方向，第三阶段
+不得结束。**
 
-第 11 项结论为：**已确认主实验只剩唯一正式实现和唯一正式执行路径。**
+第 11 项当前结论为：**主实验保持唯一正式实现和唯一正式执行路径。**
 `src/main.cpp` 是唯一生产入口；测试和 stage benchmark 直接调用 `src/` 中生产函数，
 没有替代 Trace/Prover/Verifier/KZG、数据集专用路径或隐藏性能分支。
 

@@ -4,7 +4,10 @@ Last updated: 2026-07-30 (Asia/Shanghai)
 
 ## Status and measurement contract
 
-Phase 3 production implementation is converged. The only formal entry remains
+Phase 3 is not converged. Correctness, file-backed lifetime, memory, quotient,
+and verifier improvements are retained, but commitment has no trustworthy
+decrease, current full-Cora prove improved only 4.33%, and the three-time sum
+has no significant net reduction. The only formal entry remains
 `gatzk_run`; tests and stage benchmarks call the same Context, Trace, Prover,
 Verifier, KZG, quotient, codec, and parser functions. There is no dataset
 branch, alternate runner, reduced proof workload, hidden fast path, or second
@@ -231,22 +234,19 @@ The full-security process used 17,250,228 KiB peak RSS, did not swap, and
 finished in 11:00.57. Its performance stages were also affected by shared-host
 load, but its correctness evidence is valid.
 
-## Closure
+## Open major production work
 
-The remaining large work units are protocol-required dynamic commitments,
-t_edge/t_FH relations, FH opening witnesses, and verifier quotient equations.
-Their implemented candidates have been measured; skipping, merging across
-challenge barriers, or reducing them changes the protocol or proof workload.
-A new production GPU curve/KZG/pairing implementation is outside the current
-audited dependency boundary and is not an unimplemented patch-sized candidate.
+The remaining large work units are dynamic commitment/KZG MSM, t_edge/t_FH
+quotient construction, FH opening witnesses, repeated NTT/IFFT and
+materialization, and CPU/CUDA scheduling. They require continued architectural
+work inside the single production implementation. Prior rejected local
+candidates do not establish an implementation ceiling.
 
-Therefore:
+Current status:
 
-- no identified, feasible, protocol-equivalent candidate with likely
-  significant stable end-to-end gain remains open;
-- the main experiment has one formal entry and one implementation;
+- large commitment, prove, and total-time reductions are not yet demonstrated;
+- implementable architecture-level candidates remain open, so Phase 3 must
+  continue;
+- the main experiment still has one formal entry and one implementation;
 - PPI and ogbn-arxiv remain “local validation passed; frozen full validation
-  pending” until the final commands in `MAIN_EXPERIMENT_FINAL_REPORT.md`
-  complete;
-- the ten-row CPU/CUDA acceptance matrix remains a post-freeze execution task,
-  not a claimed result.
+  pending.”

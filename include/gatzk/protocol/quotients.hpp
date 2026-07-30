@@ -58,7 +58,8 @@ algebra::FieldElement evaluate_t_fh(
     const EvalFn& eval,
     const algebra::FieldElement& z,
     FHQuotientProfile* profile = nullptr,
-    const QuotientBoundaryValues* boundary_values = nullptr);
+    const QuotientBoundaryValues* boundary_values = nullptr,
+    bool feature_encoding_terms_are_identically_zero = false);
 
 // 下面这些函数分别对应 edge / N / in / d / cat / C 等工作域的 quotient 组合关系。
 // 它们只允许更换实现细节，不允许改动 formal note 定下的等式结构。
