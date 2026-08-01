@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -20,6 +21,7 @@
 
 #include "gatzk/algebra/domain_evaluation.hpp"
 #include "gatzk/algebra/eval_backend.hpp"
+#include "gatzk/algebra/field_io.hpp"
 #include "gatzk/algebra/polynomial.hpp"
 #include "gatzk/algebra/vector_ops.hpp"
 #include "gatzk/crypto/curve.hpp"
@@ -673,6 +675,86 @@ void test_kzg_opening_selftest() {
             streamed_witness,
             keys.vk),
         "file-backed streamed evaluation opening must verify");
+
+    // The production file-backed resolver depends on the streamed fold
+    // releasing each decoded source before it asks for the next one.  Keep
+    // this as an explicit resource-lifetime contract: an opening group may
+    // contain hundreds of 2^23 evaluation columns on the large datasets.
+    std::vector<std::vector<FieldElement>> bounded_values{
+        {FieldElement(2), FieldElement(3), FieldElement(5), FieldElement(7),
+         FieldElement(11), FieldElement(13), FieldElement(17), FieldElement(19)},
+        {FieldElement(23), FieldElement(29), FieldElement(31), FieldElement(37),
+         FieldElement(41), FieldElement(43), FieldElement(47), FieldElement(53)},
+        {FieldElement(59), FieldElement(61), FieldElement(67), FieldElement(71),
+         FieldElement(73), FieldElement(79), FieldElement(83), FieldElement(89)},
+    };
+    std::vector<gatzk::crypto::Commitment> bounded_commitments;
+    std::vector<FieldElement> bounded_claims;
+    const FieldElement bounded_point(97);
+    for (std::size_t i = 0; i < bounded_values.size(); ++i) {
+        const auto name = "P_streamed_lifetime_" + std::to_string(i);
+        const auto polynomial =
+            gatzk::algebra::Polynomial::from_evaluations(
+                name, bounded_values[i], streamed_domain);
+        bounded_claims.push_back(polynomial.evaluate(bounded_point));
+        auto commitment = gatzk::crypto::KZG::commit(
+            name, polynomial, keys);
+        commitment.opening_polynomial.reset();
+        bounded_commitments.push_back(std::move(commitment));
+    }
+    std::size_t live_resolved_materials = 0;
+    std::size_t peak_resolved_materials = 0;
+    std::size_t resolution_count = 0;
+    const gatzk::crypto::OpeningPolynomialResolver bounded_resolver =
+        [&](const gatzk::crypto::Commitment& requested)
+        -> std::shared_ptr<const gatzk::algebra::Polynomial> {
+            const auto prefix = std::string("P_streamed_lifetime_");
+            require(requested.name.rfind(prefix, 0) == 0,
+                    "bounded streamed resolver received the wrong object");
+            const auto index = static_cast<std::size_t>(
+                std::stoull(requested.name.substr(prefix.size())));
+            require(index < bounded_values.size(),
+                    "bounded streamed resolver index is out of range");
+            auto* material = new gatzk::algebra::Polynomial(
+                gatzk::algebra::Polynomial::from_evaluations(
+                    requested.name,
+                    bounded_values[index],
+                    streamed_domain));
+            ++live_resolved_materials;
+            ++resolution_count;
+            peak_resolved_materials = std::max(
+                peak_resolved_materials, live_resolved_materials);
+            return std::shared_ptr<const gatzk::algebra::Polynomial>(
+                material,
+                [&](const gatzk::algebra::Polynomial* released) {
+                    delete released;
+                    --live_resolved_materials;
+                });
+        };
+    const auto bounded_witness = gatzk::crypto::KZG::open_point_group(
+        bounded_commitments,
+        bounded_point,
+        bounded_claims,
+        FieldElement(101),
+        keys,
+        nullptr,
+        gatzk::crypto::BatchOpeningClaimValidation::
+            AlreadyComputedFromOpeningPolynomials,
+        nullptr,
+        &bounded_resolver);
+    require(resolution_count == bounded_commitments.size()
+            && peak_resolved_materials == 1
+            && live_resolved_materials == 0,
+            "streamed opening must release each resolved source after folding");
+    require(
+        gatzk::crypto::KZG::verify_point_group(
+            bounded_commitments,
+            bounded_point,
+            bounded_claims,
+            FieldElement(101),
+            bounded_witness,
+            keys.vk),
+        "bounded-lifetime streamed evaluation opening must verify");
 
     require(
         keys.vk.domain_zero_g2.size() == keys.manifest.domain_sizes.size(),
@@ -2883,6 +2965,182 @@ void test_ppi_deferred_commitment_chunk_dependency_order() {
             "already ordered deferred dependencies must remain ordered");
 }
 
+void test_weighted_edge_aggregate_raw_by_destination() {
+    const std::vector<std::vector<std::int64_t>> source_rows{
+        {2, -3, 5},
+        {7, 11, -13},
+        {-17, 19, 23},
+        {29, -31, 37},
+    };
+    const std::vector<std::size_t> edge_src{0, 1, 2, 1, 3, 0};
+    const std::vector<std::size_t> edge_dst{0, 0, 1, 1, 1, 3};
+    const std::vector<std::int64_t> weights{3, -2, 5, 7, -11, 13};
+    const std::vector<std::pair<std::size_t, std::size_t>> groups{
+        {0, 2}, {2, 5}, {5, 6}};
+    const auto actual =
+        gatzk::protocol::weighted_edge_aggregate_raw_by_destination(
+            weights,
+            source_rows,
+            edge_src,
+            edge_dst,
+            groups,
+            4,
+            "unit grouped attention");
+    std::vector<std::int64_t> expected(4 * 3, 0);
+    for (std::size_t destination = 0; destination < 4; ++destination) {
+        for (std::size_t column = 0; column < 3; ++column) {
+            __int128 sum = 0;
+            for (std::size_t edge = 0; edge < edge_src.size(); ++edge) {
+                if (edge_dst[edge] == destination) {
+                    sum += static_cast<__int128>(weights[edge])
+                        * source_rows[edge_src[edge]][column];
+                }
+            }
+            expected[destination * 3 + column] =
+                static_cast<std::int64_t>(sum);
+        }
+    }
+    require(actual == expected,
+            "grouped weighted edge aggregation must equal canonical edge-order sums");
+    require_throws(
+        [&] {
+            (void)gatzk::protocol::weighted_edge_aggregate_raw_by_destination(
+                weights,
+                source_rows,
+                edge_src,
+                edge_dst,
+                {{0, 2}, {3, 6}},
+                4,
+                "malformed grouped attention");
+        },
+        "grouped weighted edge aggregation must reject a coverage gap");
+
+    if (std::getenv("GATZK_RUN_TRACE_AGGREGATION_STAGE_TESTS") == nullptr) {
+        return;
+    }
+    constexpr std::size_t node_count = 2048;
+    constexpr std::size_t edges_per_node = 8;
+    constexpr std::size_t width = 8;
+    std::vector<std::vector<std::int64_t>> stage_rows(
+        node_count,
+        std::vector<std::int64_t>(width, 0));
+    for (std::size_t row = 0; row < node_count; ++row) {
+        for (std::size_t column = 0; column < width; ++column) {
+            stage_rows[row][column] =
+                static_cast<std::int64_t>(
+                    (row * 17 + column * 31) % 101)
+                - 50;
+        }
+    }
+    std::vector<std::size_t> stage_src;
+    std::vector<std::size_t> stage_dst;
+    std::vector<std::int64_t> stage_weights;
+    std::vector<std::pair<std::size_t, std::size_t>> stage_groups;
+    stage_src.reserve(node_count * edges_per_node);
+    stage_dst.reserve(node_count * edges_per_node);
+    stage_weights.reserve(node_count * edges_per_node);
+    stage_groups.reserve(node_count);
+    for (std::size_t destination = 0;
+         destination < node_count; ++destination) {
+        const auto begin = stage_src.size();
+        for (std::size_t offset = 0; offset < edges_per_node; ++offset) {
+            stage_src.push_back(
+                (destination * 13 + offset * 97) % node_count);
+            stage_dst.push_back(destination);
+            stage_weights.push_back(static_cast<std::int64_t>(offset + 1));
+        }
+        stage_groups.emplace_back(begin, stage_src.size());
+    }
+    const auto stage_start = std::chrono::steady_clock::now();
+    const auto stage_result =
+        gatzk::protocol::weighted_edge_aggregate_raw_by_destination(
+            stage_weights,
+            stage_rows,
+            stage_src,
+            stage_dst,
+            stage_groups,
+            node_count,
+            "stage grouped attention");
+    const auto stage_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - stage_start).count();
+    require(stage_result.size() == node_count * width,
+            "trace aggregation stage result shape changed");
+    std::uint64_t checksum = 0;
+    for (const auto value : stage_result) {
+        checksum = checksum * 1315423911ULL
+            + static_cast<std::uint64_t>(value);
+    }
+    std::cout << "trace_aggregation_stage_ms=" << std::fixed
+              << std::setprecision(3) << stage_ms
+              << " checksum=" << checksum << '\n';
+}
+
+void test_field_element_spill_io() {
+    const std::vector<FieldElement> values{
+        FieldElement::zero(),
+        FieldElement::one(),
+        FieldElement(17),
+        -FieldElement(29),
+    };
+    std::stringstream stream(
+        std::ios::in | std::ios::out | std::ios::binary);
+    gatzk::algebra::write_field_elements_binary(stream, values);
+    stream.seekg(0);
+    require(
+        gatzk::algebra::read_field_elements_binary(stream, values.size())
+            == values,
+        "field spill I/O must preserve canonical field values");
+
+    if (std::getenv("GATZK_RUN_FIELD_IO_STAGE_TESTS") == nullptr) {
+        return;
+    }
+    constexpr std::size_t value_count = 1ULL << 20;
+    std::vector<FieldElement> stage_values(value_count, FieldElement::zero());
+    for (std::size_t i = 0; i < stage_values.size(); ++i) {
+        stage_values[i] = FieldElement(
+            static_cast<std::uint64_t>(i * 1315423911ULL + 17));
+    }
+    const auto stage_path =
+        std::filesystem::path(GATZK_TEST_BINARY_DIR)
+        / "field_io_stage.bin";
+    struct StageCleanup {
+        std::filesystem::path path;
+        ~StageCleanup() {
+            std::error_code ignored;
+            std::filesystem::remove(path, ignored);
+        }
+    } cleanup{stage_path};
+
+    const auto write_start = std::chrono::steady_clock::now();
+    {
+        std::ofstream output(
+            stage_path, std::ios::binary | std::ios::trunc);
+        require(static_cast<bool>(output),
+                "failed to create field I/O stage file");
+        gatzk::algebra::write_field_elements_binary(
+            output, stage_values);
+    }
+    const auto write_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - write_start).count();
+    const auto read_start = std::chrono::steady_clock::now();
+    std::vector<FieldElement> restored;
+    {
+        std::ifstream input(stage_path, std::ios::binary);
+        require(static_cast<bool>(input),
+                "failed to open field I/O stage file");
+        restored = gatzk::algebra::read_field_elements_binary(
+            input, stage_values.size());
+    }
+    const auto read_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - read_start).count();
+    require(restored == stage_values,
+            "field I/O stage roundtrip changed a canonical value");
+    std::cout << "field_io_stage_write_ms=" << std::fixed
+              << std::setprecision(3) << write_ms
+              << " field_io_stage_read_ms=" << read_ms
+              << " bytes=" << value_count * 32 << '\n';
+}
+
 void test_large_degree_pi_bind_codec_boundary() {
     const auto& context = unit_security_fixture().context;
     auto proof = unit_security_fixture().proof;
@@ -3975,6 +4233,10 @@ int main() {
         test_multi_graph_public_boundary_validation();
         std::cerr << "running test_formal_shape_and_activation_boundaries\n";
         test_formal_shape_and_activation_boundaries();
+        std::cerr << "running test_weighted_edge_aggregate_raw_by_destination\n";
+        test_weighted_edge_aggregate_raw_by_destination();
+        std::cerr << "running test_field_element_spill_io\n";
+        test_field_element_spill_io();
         std::cerr << "running test_ppi_deferred_commitment_chunk_dependency_order\n";
         test_ppi_deferred_commitment_chunk_dependency_order();
         std::cerr << "running test_compiler_observation_certificate_gate\n";

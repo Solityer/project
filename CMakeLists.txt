@@ -50,6 +50,7 @@ endif()
 
 set(GATZK_SOURCES
     src/algebra/eval_backend.cpp
+    src/algebra/field_io.cpp
     src/algebra/polynomial.cpp
     src/algebra/vector_ops.cpp
     src/crypto/curve.cpp

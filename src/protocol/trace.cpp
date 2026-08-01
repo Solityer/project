@@ -26,6 +26,7 @@
 
 #include <openssl/rand.h>
 
+#include "gatzk/algebra/field_io.hpp"
 #include "gatzk/algebra/polynomial.hpp"
 #include "gatzk/algebra/vector_ops.hpp"
 #include "gatzk/crypto/kzg.hpp"
@@ -893,29 +894,23 @@ namespace gatzk::protocol
                 throw std::runtime_error(
                     "spilled polynomial domain mismatch: " + name);
             }
-            constexpr std::size_t kFieldBytes = 32;
             std::ifstream stream(spilled.path, std::ios::binary);
             if (!stream)
             {
                 throw std::runtime_error(
                     "failed to open spilled polynomial: " + spilled.path);
             }
-            std::array<std::uint8_t, kFieldBytes> bytes{};
-            std::vector<FieldElement> values(
-                spilled.size, FieldElement::zero());
-            for (std::size_t i = 0; i < spilled.size; ++i)
+            std::vector<FieldElement> values;
+            try
             {
-                stream.read(
-                    reinterpret_cast<char *>(bytes.data()),
-                    static_cast<std::streamsize>(bytes.size()));
-                if (!stream)
-                {
-                    throw std::runtime_error(
-                        "failed to read spilled polynomial: "
-                        + spilled.path);
-                }
-                values[i] = FieldElement::from_little_endian_mod(
-                    bytes.data(), bytes.size());
+                values = algebra::read_field_elements_binary(
+                    stream, spilled.size);
+            }
+            catch (const std::exception& error)
+            {
+                throw std::runtime_error(
+                    "failed to read spilled polynomial: "
+                    + spilled.path + ": " + error.what());
             }
             auto polynomial = Polynomial::from_shared_evaluations(
                 name,
@@ -1964,9 +1959,9 @@ namespace gatzk::protocol
 
         TraceArtifacts::SpilledEvaluationPolynomial spill_evaluation_polynomial(
             TraceArtifacts &trace,
-            const algebra::Polynomial &polynomial)
+            const algebra::Polynomial &polynomial,
+            std::uintptr_t semantic_source_id)
         {
-            std::array<std::uint8_t, 32> bytes{};
             std::filesystem::path root_storage;
             const auto &root = ensure_trace_spill_directory(
                 trace, &root_storage);
@@ -1978,19 +1973,22 @@ namespace gatzk::protocol
             {
                 throw std::runtime_error("failed to open spill file for polynomial " + polynomial.name);
             }
-            for (const auto &value : polynomial.values())
+            try
             {
-                value.write_little_endian(bytes.data(), bytes.size());
-                stream.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+                algebra::write_field_elements_binary(
+                    stream, polynomial.values());
             }
-            if (!stream)
+            catch (const std::exception& error)
             {
-                throw std::runtime_error("failed to write spill file for polynomial " + polynomial.name);
+                throw std::runtime_error(
+                    "failed to write spill file for polynomial "
+                    + polynomial.name + ": " + error.what());
             }
             return TraceArtifacts::SpilledEvaluationPolynomial{
                 .path = path.string(),
                 .domain_name = polynomial.domain != nullptr ? polynomial.domain->name : std::string(),
                 .size = polynomial.size(),
+                .semantic_source_id = semantic_source_id,
                 .zero_domain_blinder = polynomial.zero_domain_blinder,
             };
         }
@@ -2447,7 +2445,9 @@ namespace gatzk::protocol
                     {
                         trace.spilled_polynomials[item.name] =
                             spill_evaluation_polynomial(
-                                trace, *item.polynomial);
+                                trace,
+                                *item.polynomial,
+                                item.source_identity);
                         item.commitment.opening_polynomial.reset();
                     }
                     else
@@ -3032,6 +3032,8 @@ namespace gatzk::protocol
             const model::HeadForwardTrace &fp,
             const std::vector<std::size_t> &edge_src_indices,
             const std::vector<std::size_t> &edge_dst_indices,
+            const std::vector<std::pair<std::size_t, std::size_t>>
+                &destination_groups,
             std::size_t edge_domain_size,
             std::size_t range_bits,
             const std::unordered_map<std::string, FieldElement> &elu_output_by_input,
@@ -3175,25 +3177,24 @@ namespace gatzk::protocol
                     out.h_agg_pre[dst][column] += out.alpha[edge_index] * out.h_prime[src][column];
                 }
             }
-            std::vector<std::int64_t> aggregate_numerators(node_count * d_h, 0);
+            const auto aggregate_numerators =
+                weighted_edge_aggregate_raw_by_destination(
+                    u_raw,
+                    h_prime_raw,
+                    edge_src_indices,
+                    edge_dst_indices,
+                    destination_groups,
+                    node_count,
+                    "hidden aggregate numerator");
             std::vector<std::int64_t> aggregate_denominators(node_count * d_h, 0);
             for (std::size_t row = 0; row < node_count; ++row)
             {
                 for (std::size_t column = 0; column < d_h; ++column)
                 {
-                    __int128 aggregate_numerator = 0;
-                    for (std::size_t edge_index = 0; edge_index < edge_src_indices.size(); ++edge_index)
-                    {
-                        if (edge_dst_indices[edge_index] == row)
-                        {
-                            aggregate_numerator += static_cast<__int128>(u_raw[edge_index])
-                                * static_cast<__int128>(h_prime_raw[edge_src_indices[edge_index]][column]);
-                        }
-                    }
                     const auto flat_index = row * d_h + column;
-                    aggregate_numerators[flat_index] = checked_raw_value(
-                        aggregate_numerator,
-                        "hidden aggregate numerator");
+                    const auto aggregate_numerator =
+                        static_cast<__int128>(
+                            aggregate_numerators[flat_index]);
                     aggregate_denominators[flat_index] = checked_raw_value(
                         static_cast<__int128>(sum_raw[row]) * 16,
                         "hidden aggregate denominator");
@@ -3230,6 +3231,8 @@ namespace gatzk::protocol
             const std::vector<double> &output_bias_fp,
             const std::vector<std::size_t> &edge_src_indices,
             const std::vector<std::size_t> &edge_dst_indices,
+            const std::vector<std::pair<std::size_t, std::size_t>>
+                &destination_groups,
             std::size_t edge_domain_size,
             std::size_t range_bits,
             const RawMatrix *y_prime_raw_override = nullptr,
@@ -3373,26 +3376,30 @@ namespace gatzk::protocol
                     out.y_lin[dst][column] += out.alpha[edge_index] * out.y_prime[src][column];
                 }
             }
-            std::vector<std::int64_t> aggregate_numerators(node_count * output_dim, 0);
+            if (y_prime_raw_override == nullptr)
+            {
+                throw std::runtime_error(
+                    "output integer aggregation is missing projected rows");
+            }
+            const auto aggregate_numerators =
+                weighted_edge_aggregate_raw_by_destination(
+                    u_raw,
+                    *y_prime_raw_override,
+                    edge_src_indices,
+                    edge_dst_indices,
+                    destination_groups,
+                    node_count,
+                    "output aggregate numerator");
             std::vector<std::int64_t> aggregate_denominators(node_count * output_dim, 0);
             const auto quantized_bias_raw = quantize_vector_raw(output_bias_fp);
             for (std::size_t row = 0; row < node_count; ++row)
             {
                 for (std::size_t column = 0; column < output_dim; ++column)
                 {
-                    __int128 aggregate_numerator = 0;
-                    for (std::size_t edge_index = 0; edge_index < edge_src_indices.size(); ++edge_index)
-                    {
-                        if (edge_dst_indices[edge_index] == row)
-                        {
-                            aggregate_numerator += static_cast<__int128>(u_raw[edge_index])
-                                * static_cast<__int128>(y_prime_raw_override->at(edge_src_indices[edge_index]).at(column));
-                        }
-                    }
                     const auto flat_index = row * output_dim + column;
-                    aggregate_numerators[flat_index] = checked_raw_value(
-                        aggregate_numerator,
-                        "output aggregate numerator");
+                    const auto aggregate_numerator =
+                        static_cast<__int128>(
+                            aggregate_numerators[flat_index]);
                     aggregate_denominators[flat_index] = checked_raw_value(
                         static_cast<__int128>(sum_raw[row]) * 16,
                         "output aggregate denominator");
@@ -3440,6 +3447,8 @@ namespace gatzk::protocol
             const std::vector<Edge> &edges,
             const std::vector<std::size_t> &edge_src_indices,
             const std::vector<std::size_t> &edge_dst_indices,
+            const std::vector<std::pair<std::size_t, std::size_t>>
+                &destination_groups,
             std::size_t edge_domain_size)
         {
             static std::mutex cache_mutex;
@@ -3511,6 +3520,7 @@ namespace gatzk::protocol
                         head_trace,
                         edge_src_indices,
                         edge_dst_indices,
+                        destination_groups,
                         edge_domain_size,
                         context.config.range_bits,
                         elu_output_by_input,
@@ -3556,6 +3566,7 @@ namespace gatzk::protocol
                     context.model.output_layer.heads[head_index].output_bias_fp,
                     edge_src_indices,
                     edge_dst_indices,
+                    destination_groups,
                     edge_domain_size,
                     context.config.range_bits,
                     &y_prime_raw,
@@ -4800,6 +4811,7 @@ namespace gatzk::protocol
                 edges,
                 edge_src_indices,
                 edge_dst_indices,
+                edge_groups_by_dst,
                 domains.edge->size);
             if (metrics != nullptr)
             {
@@ -9152,6 +9164,117 @@ namespace gatzk::protocol
         }
 
     } // namespace
+
+    std::vector<std::int64_t> weighted_edge_aggregate_raw_by_destination(
+        const std::vector<std::int64_t>& edge_weights,
+        const std::vector<std::vector<std::int64_t>>& source_rows,
+        const std::vector<std::size_t>& edge_src_indices,
+        const std::vector<std::size_t>& edge_dst_indices,
+        const std::vector<std::pair<std::size_t, std::size_t>>&
+            destination_groups,
+        std::size_t node_count,
+        std::string_view label)
+    {
+        if (edge_weights.size() != edge_src_indices.size()
+            || edge_weights.size() != edge_dst_indices.size())
+        {
+            throw std::runtime_error(
+                "weighted edge aggregation shape mismatch: "
+                + std::string(label));
+        }
+        const auto width = source_rows.empty()
+            ? 0
+            : source_rows.front().size();
+        for (const auto& row : source_rows)
+        {
+            if (row.size() != width)
+            {
+                throw std::runtime_error(
+                    "weighted edge aggregation source width mismatch: "
+                    + std::string(label));
+            }
+        }
+        std::vector<std::uint8_t> destination_seen(node_count, 0);
+        std::size_t next_edge = 0;
+        for (const auto& [begin, end] : destination_groups)
+        {
+            if (begin != next_edge || begin >= end
+                || end > edge_weights.size())
+            {
+                throw std::runtime_error(
+                    "weighted edge aggregation group layout mismatch: "
+                    + std::string(label));
+            }
+            const auto destination = edge_dst_indices[begin];
+            if (destination >= node_count)
+            {
+                throw std::runtime_error(
+                    "weighted edge aggregation destination is out of range: "
+                    + std::string(label));
+            }
+            if (destination_seen[destination] != 0)
+            {
+                throw std::runtime_error(
+                    "weighted edge aggregation has duplicate destination groups: "
+                    + std::string(label));
+            }
+            destination_seen[destination] = 1;
+            for (std::size_t edge = begin; edge < end; ++edge)
+            {
+                if (edge_dst_indices[edge] != destination
+                    || edge_src_indices[edge] >= source_rows.size())
+                {
+                    throw std::runtime_error(
+                        "weighted edge aggregation group content mismatch: "
+                        + std::string(label));
+                }
+            }
+            next_edge = end;
+        }
+        if (next_edge != edge_weights.size())
+        {
+            throw std::runtime_error(
+                "weighted edge aggregation groups do not cover every edge: "
+                + std::string(label));
+        }
+
+        std::vector<std::int64_t> out(node_count * width, 0);
+        parallel_for_ranges(
+            destination_groups.size(),
+            256,
+            [&](std::size_t group_begin, std::size_t group_end)
+            {
+                std::vector<__int128> sums(width, 0);
+                for (std::size_t group_index = group_begin;
+                     group_index < group_end; ++group_index)
+                {
+                    std::fill(sums.begin(), sums.end(), 0);
+                    const auto [begin, end] =
+                        destination_groups[group_index];
+                    const auto destination = edge_dst_indices[begin];
+                    for (std::size_t edge = begin; edge < end; ++edge)
+                    {
+                        const auto& source =
+                            source_rows[edge_src_indices[edge]];
+                        const auto weight =
+                            static_cast<__int128>(edge_weights[edge]);
+                        for (std::size_t column = 0;
+                             column < width; ++column)
+                        {
+                            sums[column] += weight
+                                * static_cast<__int128>(source[column]);
+                        }
+                    }
+                    for (std::size_t column = 0;
+                         column < width; ++column)
+                    {
+                        out[destination * width + column] =
+                            checked_raw_value(sums[column], label);
+                    }
+                }
+            });
+        return out;
+    }
 
     std::shared_ptr<const algebra::Polynomial>
     resolve_trace_opening_polynomial(

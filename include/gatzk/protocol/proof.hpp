@@ -5,6 +5,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -119,6 +120,10 @@ struct TraceArtifacts {
         std::string path;
         std::string domain_name;
         std::size_t size = 0;
+        // Exact per-proof identity of an immutable shared evaluation buffer.
+        // Execution-only: it is used to share semantic cosets across
+        // independently blinded columns and is never serialized.
+        std::uintptr_t semantic_source_id = 0;
         std::vector<algebra::FieldElement> zero_domain_blinder;
     };
 
