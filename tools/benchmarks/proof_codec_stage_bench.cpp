@@ -17,6 +17,7 @@
 #include "gatzk/protocol/trace.hpp"
 #include "gatzk/protocol/verifier.hpp"
 #include "gatzk/util/config.hpp"
+#include "gatzk/util/route2.hpp"
 
 namespace {
 
@@ -86,6 +87,12 @@ int main(int argc, char** argv) {
                 "<config> <proof.bin> [repeats]");
         }
         const std::string mode = argv[1];
+        if (std::getenv("GATZK_STAGE_CUDA") != nullptr) {
+            auto route = gatzk::util::route2_options();
+            route.cuda_trace_hotspots = true;
+            route.cuda_field_hotspots = true;
+            gatzk::util::set_route2_options(route);
+        }
         const auto config = gatzk::util::load_config(argv[2]);
         const std::filesystem::path proof_path = argv[3];
         const auto repeats = argc == 5 ? static_cast<std::size_t>(std::stoull(argv[4])) : 5;

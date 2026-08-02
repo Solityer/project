@@ -1921,7 +1921,8 @@ namespace gatzk::crypto
             std::vector<FieldElement>* quotient,
             const std::vector<FieldElement>& coefficients,
             const FieldElement& point,
-            const FieldElement& value);
+            const FieldElement& value,
+            std::size_t worker_cap = 0);
 
 
 
@@ -1929,7 +1930,8 @@ namespace gatzk::crypto
             std::vector<FieldElement>* quotient,
             const std::vector<FieldElement>& coefficients,
             const FieldElement& point,
-            const FieldElement& value)
+            const FieldElement& value,
+            std::size_t worker_cap)
         {
             quotient->clear();
             if (coefficients.empty())
@@ -1957,12 +1959,108 @@ namespace gatzk::crypto
             const auto* coefficients_native = FieldElement::native_array_data(coefficients.data());
             auto* quotient_native = FieldElement::mutable_native_array_data(quotient->data());
             const auto& point_native = point.native();
-            quotient_native[coefficient_count - 2] = coefficients_native[coefficient_count - 1];
-            for (std::size_t i = coefficient_count - 1; i-- > 1;)
+            const auto quotient_size = coefficient_count - 1;
+            const auto available_workers = worker_cap == 0
+                ? std::max<std::size_t>(1, std::thread::hardware_concurrency())
+                : std::min<std::size_t>(
+                    std::max<std::size_t>(1, std::thread::hardware_concurrency()),
+                    worker_cap);
+            constexpr std::size_t kParallelThreshold = 1ULL << 18;
+            if (quotient_size < kParallelThreshold || available_workers <= 1)
             {
-                mcl::Fr product;
-                mcl::Fr::mul(product, point_native, quotient_native[i]);
-                mcl::Fr::add(quotient_native[i - 1], coefficients_native[i], product);
+                quotient_native[quotient_size - 1] =
+                    coefficients_native[coefficient_count - 1];
+                for (std::size_t i = quotient_size - 1; i-- > 0;)
+                {
+                    mcl::Fr product;
+                    mcl::Fr::mul(product, point_native, quotient_native[i + 1]);
+                    mcl::Fr::add(
+                        quotient_native[i], coefficients_native[i + 1], product);
+                }
+            }
+            else
+            {
+                const auto requested_task_count = std::min<std::size_t>(
+                    available_workers,
+                    std::max<std::size_t>(
+                        2, quotient_size / (1ULL << 17)));
+                const auto block_size =
+                    (quotient_size + requested_task_count - 1)
+                    / requested_task_count;
+                const auto task_count =
+                    (quotient_size + block_size - 1) / block_size;
+                std::vector<mcl::Fr> block_constants(task_count);
+                std::vector<mcl::Fr> block_multipliers(task_count);
+                std::vector<std::future<void>> futures;
+                futures.reserve(task_count);
+                for (std::size_t task = 0; task < task_count; ++task)
+                {
+                    const auto begin = task * block_size;
+                    const auto end = std::min(quotient_size, begin + block_size);
+                    futures.push_back(std::async(
+                        std::launch::async,
+                        [&, task, begin, end]
+                        {
+                            mcl::Fr accumulated;
+                            accumulated.clear();
+                            for (std::size_t index = end; index-- > begin;)
+                            {
+                                mcl::Fr product;
+                                mcl::Fr::mul(product, point_native, accumulated);
+                                mcl::Fr::add(
+                                    accumulated,
+                                    coefficients_native[index + 1],
+                                    product);
+                            }
+                            block_constants[task] = accumulated;
+                            block_multipliers[task] = point.pow(
+                                static_cast<std::uint64_t>(end - begin)).native();
+                        }));
+                }
+                for (auto& future : futures)
+                {
+                    future.get();
+                }
+
+                std::vector<mcl::Fr> block_incoming(task_count);
+                mcl::Fr boundary;
+                boundary.clear();
+                for (std::size_t task = task_count; task-- > 0;)
+                {
+                    block_incoming[task] = boundary;
+                    mcl::Fr product;
+                    mcl::Fr::mul(
+                        product, block_multipliers[task], boundary);
+                    mcl::Fr::add(boundary, block_constants[task], product);
+                }
+
+                futures.clear();
+                futures.reserve(task_count);
+                for (std::size_t task = 0; task < task_count; ++task)
+                {
+                    const auto begin = task * block_size;
+                    const auto end = std::min(quotient_size, begin + block_size);
+                    futures.push_back(std::async(
+                        std::launch::async,
+                        [&, task, begin, end]
+                        {
+                            auto accumulated = block_incoming[task];
+                            for (std::size_t index = end; index-- > begin;)
+                            {
+                                mcl::Fr product;
+                                mcl::Fr::mul(product, point_native, accumulated);
+                                mcl::Fr::add(
+                                    accumulated,
+                                    coefficients_native[index + 1],
+                                    product);
+                                quotient_native[index] = accumulated;
+                            }
+                        }));
+                }
+                for (auto& future : futures)
+                {
+                    future.get();
+                }
             }
             mcl::Fr remainder;
             mcl::Fr product;
@@ -1981,6 +2079,7 @@ namespace gatzk::crypto
             const FieldElement& point,
             const FieldElement& value,
             const KZGProverKey& pk,
+            std::size_t worker_cap,
             const G1MSMExecutionOptions* msm_options = nullptr)
         {
             if (pk.powers_g1 == nullptr)
@@ -1988,7 +2087,8 @@ namespace gatzk::crypto
                 throw std::runtime_error("missing coefficient proving SRS");
             }
             thread_local std::vector<FieldElement> quotient;
-            if (!coefficient_single_point_quotient_coefficients(&quotient, coefficients, point, value))
+            if (!coefficient_single_point_quotient_coefficients(
+                    &quotient, coefficients, point, value, worker_cap))
             {
                 return g1_zero();
             }
@@ -2563,6 +2663,7 @@ namespace gatzk::crypto
                             point,
                             coefficient_scaled_claim_sum,
                             pk,
+                            worker_cap,
                             msm_options));
                 }
                 catch (const std::exception& ex)
@@ -2629,6 +2730,7 @@ namespace gatzk::crypto
                         quotient_assembly_start, Clock::now());
                 }
                 const auto witness_msm_start = Clock::now();
+                CommitObjectProfile witness_commit_profile;
                 out = g1_add(
                     out,
                     commit_polynomial_point(
@@ -2637,8 +2739,36 @@ namespace gatzk::crypto
                             std::move(quotient_values),
                             group.domain),
                         pk,
-                        nullptr,
+                        profile != nullptr
+                            ? &witness_commit_profile
+                            : nullptr,
                         msm_options));
+                if (profile != nullptr && progress_enabled())
+                {
+                    progress_note(
+                        "kzg:opening_witness_msm:domain="
+                        + group.domain->name
+                        + ":input="
+                        + std::to_string(
+                            witness_commit_profile.vector_length)
+                        + ":nonzero="
+                        + std::to_string(
+                            witness_commit_profile.nonzero_scalar_count)
+                        + ":effective="
+                        + std::to_string(
+                            witness_commit_profile.effective_scalar_count)
+                        + ":sparse="
+                        + std::string(
+                            witness_commit_profile.sparse_compaction
+                                ? "true" : "false")
+                        + ":tail="
+                        + std::string(
+                            witness_commit_profile.constant_tail_folding
+                                ? "true" : "false")
+                        + ":ms="
+                        + std::to_string(
+                            witness_commit_profile.msm_ms));
+                }
                 if (profile != nullptr)
                 {
                     profile->witness_msm_ms += elapsed_ms(

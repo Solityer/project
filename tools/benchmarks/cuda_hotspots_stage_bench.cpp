@@ -330,9 +330,14 @@ void bench_histogram(
             throw std::runtime_error("CUDA histogram result mismatch");
         }
     }
+    const auto use_cuda = gatzk::algebra::should_use_cuda_lookup_histogram(
+        index_count, bucket_count);
     std::cout << "case=lookup_histogram index_count=" << index_count
               << " buckets=" << bucket_count << " cpu_median_ms=" << median(cpu_samples)
               << " gpu_median_ms=" << median(samples)
+              << " selected_route=" << (use_cuda ? "cuda" : "cpu")
+              << " selected_median_ms="
+              << (use_cuda ? median(samples) : median(cpu_samples))
               << " exact_match=true\n";
 }
 
@@ -374,8 +379,12 @@ int main(int argc, char** argv) {
         cuda_route.cuda_trace_hotspots = true;
         cuda_route.cuda_field_hotspots = true;
         gatzk::util::set_route2_options(cuda_route);
-        if (gatzk::algebra::should_use_cuda_lookup_histogram(1ULL << 12, 1ULL << 10)
-            || !gatzk::algebra::should_use_cuda_lookup_histogram(1ULL << 14, 1ULL << 10)) {
+        if (gatzk::algebra::should_use_cuda_lookup_histogram(
+                1ULL << 16, 1ULL << 12)
+            || !gatzk::algebra::should_use_cuda_lookup_histogram(
+                1ULL << 20, 1ULL << 12)
+            || !gatzk::algebra::should_use_cuda_lookup_histogram(
+                1ULL << 22, 1ULL << 16)) {
             throw std::runtime_error("CUDA histogram dispatch thresholds are inconsistent");
         }
         bench_histogram(1ULL << 12, 1ULL << 10, kRepeats);

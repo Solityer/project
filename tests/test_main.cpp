@@ -75,6 +75,34 @@ void require(bool condition, const std::string& message) {
     }
 }
 
+FieldElement choose_non_domain_point(
+    const gatzk::algebra::RootOfUnityDomain& domain);
+
+void test_rotation_shift_subgroup_rejection_equivalence() {
+    const auto domain =
+        gatzk::algebra::RootOfUnityDomain::create(
+            "rotation_shift_regression", 64);
+    const FieldElement from(7);
+    auto point = from;
+    for (std::size_t shift = 0; shift < domain->size; ++shift) {
+        require(
+            domain->rotation_shift(from, point)
+                == std::optional<std::size_t>(shift),
+            "rotation subgroup membership check changed an in-domain shift");
+        point *= domain->omega;
+    }
+    const auto outside = choose_non_domain_point(*domain);
+    require(
+        !domain->rotation_shift(FieldElement::one(), outside).has_value(),
+        "rotation subgroup membership check accepted an out-of-domain point");
+    require(
+        domain->rotation_shift(FieldElement::zero(), FieldElement::zero())
+            == std::optional<std::size_t>(0)
+            && !domain->rotation_shift(
+                    FieldElement::zero(), FieldElement::one()).has_value(),
+        "rotation subgroup membership check changed zero-point handling");
+}
+
 void test_fh_precomputed_boundary_equivalence() {
     gatzk::protocol::ProtocolContext context;
     context.domains.fh =
@@ -98,6 +126,7 @@ void test_fh_precomputed_boundary_equivalence() {
         .last = zero_scaled * last_point
             * first_denominator * inverse_product,
         .zero = zero,
+        .zero_inverse = std::nullopt,
     };
     require(
         boundary.first
@@ -133,6 +162,19 @@ void test_fh_precomputed_boundary_equivalence() {
     require(
         direct == precomputed,
         "precomputed FH boundary changed the quotient equation");
+    auto inverse_cached_boundary = boundary;
+    inverse_cached_boundary.zero_inverse = zero.inv();
+    const auto inverse_cached =
+        gatzk::protocol::evaluate_t_fh(
+            context,
+            challenges,
+            eval,
+            z,
+            nullptr,
+            &inverse_cached_boundary);
+    require(
+        direct == inverse_cached,
+        "cached FH zero-polynomial inverse changed the quotient equation");
 
     const gatzk::protocol::EvalFn identity_eval =
         [&](const std::string& label,
@@ -4178,6 +4220,9 @@ void test_tamper_rejection_suite() {
 
 int main() {
     try {
+        std::cerr
+            << "running test_rotation_shift_subgroup_rejection_equivalence\n";
+        test_rotation_shift_subgroup_rejection_equivalence();
         std::cerr
             << "running test_fh_precomputed_boundary_equivalence\n";
         test_fh_precomputed_boundary_equivalence();

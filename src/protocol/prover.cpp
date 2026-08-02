@@ -3109,14 +3109,8 @@ namespace gatzk::protocol
             if (size != 0)
             {
                 const auto inv_shift = shift.inv();
-                const auto inv_shift_native = inv_shift.native();
-                parallel_for_chunks_static(size, 1ULL << 12, 0, [&](std::size_t begin, std::size_t end)
-                                           {
-                    auto power = inv_shift.pow(static_cast<std::uint64_t>(begin)).native();
-                    for (std::size_t i = begin; i < end; ++i) {
-                        (*powers)[i] = power;
-                        mcl::Fr::mul(power, power, inv_shift_native);
-                    } });
+                algebra::geometric_powers_native(
+                    powers->data(), powers->size(), inv_shift);
             }
 
             std::lock_guard<std::mutex> lock(mutex);
@@ -3474,14 +3468,13 @@ namespace gatzk::protocol
             return work;
         }
 
-        template <class CoefficientAt>
         std::vector<FieldElement> coset_evaluate_coefficients_impl(
+            const mcl::Fr *coefficients,
             std::size_t coefficient_count,
             std::size_t target_size,
             const FieldElement &shift,
             const std::string &label,
-            const std::vector<mcl::Fr> *shift_powers,
-            CoefficientAt &&coefficient_at)
+            const std::vector<mcl::Fr> *shift_powers)
         {
             if (coefficient_count > target_size)
             {
@@ -3491,6 +3484,12 @@ namespace gatzk::protocol
             if (coefficient_count == 0)
             {
                 return out;
+            }
+            if (coefficients == nullptr)
+            {
+                throw std::runtime_error(
+                    "quotient coset evaluation received null coefficients: "
+                    + label);
             }
             if (shift_powers != nullptr && shift_powers->size() < coefficient_count)
             {
@@ -3505,17 +3504,13 @@ namespace gatzk::protocol
                 if (shift_powers != nullptr)
                 {
                     const auto root = FieldElement::root_of_unity(target_size);
-                    const auto root_native = root.native();
-                    mcl::Fr root_power;
-                    root_power = 1;
-                    for (std::size_t i = 0; i < coefficient_count; ++i)
-                    {
-                        mcl::Fr::mul(even_work[i], coefficient_at(i), (*shift_powers)[i]);
-                        mcl::Fr odd_shift_power;
-                        mcl::Fr::mul(odd_shift_power, (*shift_powers)[i], root_power);
-                        mcl::Fr::mul(odd_work[i], coefficient_at(i), odd_shift_power);
-                        mcl::Fr::mul(root_power, root_power, root_native);
-                    }
+                    algebra::split_coset_coefficients_native(
+                        coefficients,
+                        shift_powers->data(),
+                        coefficient_count,
+                        root,
+                        even_work.data(),
+                        odd_work.data());
                 }
                 else
                 {
@@ -3528,8 +3523,8 @@ namespace gatzk::protocol
                     const auto odd_shift_native = (shift * root).native();
                     for (std::size_t i = 0; i < coefficient_count; ++i)
                     {
-                        mcl::Fr::mul(even_work[i], coefficient_at(i), even_shift_power);
-                        mcl::Fr::mul(odd_work[i], coefficient_at(i), odd_shift_power);
+                        mcl::Fr::mul(even_work[i], coefficients[i], even_shift_power);
+                        mcl::Fr::mul(odd_work[i], coefficients[i], odd_shift_power);
                         mcl::Fr::mul(even_shift_power, even_shift_power, even_shift_native);
                         mcl::Fr::mul(odd_shift_power, odd_shift_power, odd_shift_native);
                     }
@@ -3542,11 +3537,8 @@ namespace gatzk::protocol
                 algebra::ntt_pair_in_place(
                     even_work.data(), odd_work.data(), half_size);
                 auto *out_native = FieldElement::mutable_native_array_data(out.data());
-                for (std::size_t i = 0; i < half_size; ++i)
-                {
-                    out_native[2 * i] = even_work[i];
-                    out_native[2 * i + 1] = odd_work[i];
-                }
+                algebra::interleave_native_lanes(
+                    even_work.data(), odd_work.data(), half_size, out_native);
                 return out;
             }
 
@@ -3555,7 +3547,7 @@ namespace gatzk::protocol
             {
                 for (std::size_t i = 0; i < coefficient_count; ++i)
                 {
-                    mcl::Fr::mul(work[i], coefficient_at(i), (*shift_powers)[i]);
+                    mcl::Fr::mul(work[i], coefficients[i], (*shift_powers)[i]);
                 }
             }
             else
@@ -3565,7 +3557,7 @@ namespace gatzk::protocol
                 const auto shift_native = shift.native();
                 for (std::size_t i = 0; i < coefficient_count; ++i)
                 {
-                    mcl::Fr::mul(work[i], coefficient_at(i), shift_power);
+                    mcl::Fr::mul(work[i], coefficients[i], shift_power);
                     mcl::Fr::mul(shift_power, shift_power, shift_native);
                 }
             }
@@ -3581,15 +3573,12 @@ namespace gatzk::protocol
             const std::vector<mcl::Fr> *shift_powers = nullptr)
         {
             return coset_evaluate_coefficients_impl(
+                coefficients.data(),
                 coefficients.size(),
                 target_size,
                 shift,
                 label,
-                shift_powers,
-                [&](std::size_t index) -> const mcl::Fr &
-                {
-                    return coefficients[index];
-                });
+                shift_powers);
         }
 
         std::vector<FieldElement> coset_evaluate_polynomial(
@@ -3625,15 +3614,12 @@ namespace gatzk::protocol
                     throw std::runtime_error("polynomial degree exceeds quotient coset size: " + label);
                 }
                 return coset_evaluate_coefficients_impl(
+                    FieldElement::native_array_data(coefficients.data()),
                     coefficient_count,
                     target_size,
                     shift,
                     label,
-                    shift_powers,
-                    [&](std::size_t index) -> const mcl::Fr &
-                    {
-                        return coefficients[index].native();
-                    });
+                    shift_powers);
             }
             else
             {
@@ -3683,15 +3669,12 @@ namespace gatzk::protocol
                     throw std::runtime_error("polynomial degree exceeds quotient coset size: " + label);
                 }
                 return coset_evaluate_coefficients_impl(
+                    coefficient_work.data(),
                     coefficient_count,
                     target_size,
                     shift,
                     label,
-                    shift_powers,
-                    [&](std::size_t index) -> const mcl::Fr &
-                    {
-                        return coefficient_work[index];
-                    });
+                    shift_powers);
             }
         }
 
@@ -4747,6 +4730,28 @@ namespace gatzk::protocol
                     progress_note("prove:quotient:t_N:evaluate:start");
                 }
                 const auto point_evaluation_start = Clock::now();
+                std::vector<FieldElement> quotient_zero_inverses;
+                if (label_ == "t_edge" || label_ == "t_FH")
+                {
+                    if (target_size_ % domain_->size != 0)
+                    {
+                        throw std::runtime_error(
+                            "quotient coset size is not a domain multiple: "
+                            + label_);
+                    }
+                    const auto zero_cycle_size =
+                        target_size_ / domain_->size;
+                    quotient_zero_inverses.reserve(zero_cycle_size);
+                    const auto zero_step = root.pow(domain_->size);
+                    auto zero_power = shift_.pow(domain_->size);
+                    for (std::size_t residue = 0;
+                         residue < zero_cycle_size; ++residue)
+                    {
+                        quotient_zero_inverses.push_back(
+                            (zero_power - FieldElement::one()).inv());
+                        zero_power *= zero_step;
+                    }
+                }
                 const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
                 const bool run_parallel = cpu_count > 1 && target_size_ >= 4096;
                 if (run_parallel)
@@ -4900,6 +4905,9 @@ namespace gatzk::protocol
                                                         * first_denominator
                                                         * inverse_product,
                                                     .zero = zero,
+                                                    .zero_inverse =
+                                                        quotient_zero_inverses[
+                                                            i % quotient_zero_inverses.size()],
                                                 };
                                                 quotient_values[i] =
                                                     evaluate_at_index(
@@ -6904,12 +6912,8 @@ namespace gatzk::protocol
                 {
                     return shift_powers_;
                 }
-                shift_powers_[0] = 1;
-                const auto shift_native = shift_.native();
-                for (std::size_t i = 1; i < shift_powers_.size(); ++i)
-                {
-                    mcl::Fr::mul(shift_powers_[i], shift_powers_[i - 1], shift_native);
-                }
+                algebra::geometric_powers_native(
+                    shift_powers_.data(), shift_powers_.size(), shift_);
                 return shift_powers_;
             }
 
@@ -8931,12 +8935,16 @@ namespace gatzk::protocol
                 context,
                 std::move(named_quotient_polynomials));
             progress_note("prove:quotient:commit_batch:start");
+            const auto quotient_commit_batch_start = Clock::now();
             crypto::CommitBatchProfile quotient_commit_profile;
             auto quotient_commitments = batch_quotient_commitments(
                 std::move(named_quotient_polynomials),
                 context.kzg,
                 metrics != nullptr ? &quotient_commit_profile : nullptr);
-            progress_note("prove:quotient:commit_batch:done");
+            progress_note(
+                "prove:quotient:commit_batch:done:ms="
+                + std::to_string(elapsed_ms(
+                    quotient_commit_batch_start, Clock::now())));
             if (metrics != nullptr)
             {
                 metrics->quotient_commitment_ms +=
@@ -9087,12 +9095,16 @@ namespace gatzk::protocol
                     local_metrics.fh_open_gather_ms =
                         std::max(0.0, local_metrics.fh_open_gather_ms - nested_ms);
                 }
-                progress_note(progress_prefix + ":done");
+                const auto total_ms = elapsed_ms(local_start, Clock::now());
+                progress_note(
+                    progress_prefix + ":done:gather_ms="
+                    + std::to_string(gather_ms)
+                    + ":total_ms=" + std::to_string(total_ms));
                 return {
                     spec.bundle_name,
                     std::move(bundle),
                     gather_ms,
-                    elapsed_ms(local_start, Clock::now()),
+                    total_ms,
                     std::move(local_metrics),
                 };
             };
@@ -9174,11 +9186,15 @@ namespace gatzk::protocol
                     }
                 }
             }
+            const auto domain_bundle_wall_ms =
+                elapsed_ms(stage_start, Clock::now());
             if (metrics != nullptr)
             {
-                metrics->domain_opening_ms += elapsed_ms(stage_start, Clock::now());
+                metrics->domain_opening_ms += domain_bundle_wall_ms;
             }
-            progress_note("prove:domain_opening:done");
+            progress_note(
+                "prove:domain_opening:done:ms="
+                + std::to_string(domain_bundle_wall_ms));
 
             // Eval_bind owns every Pi_bind claim value.  The same claims remain
             // inside the in-memory domain bundle solely so Open_dom can fold one
@@ -9868,7 +9884,7 @@ namespace gatzk::protocol
                                 && estimated_work(group_index)
                                     >= (1ULL << 18)
                                 ? std::min<std::size_t>(
-                                    8, hardware_workers)
+                                    16, hardware_workers)
                                 : base_inner_worker_count;
                             const crypto::PointGroupOpeningExecutionOptions
                                 execution_options{
@@ -9920,6 +9936,34 @@ namespace gatzk::protocol
                 stage_start, Clock::now());
             const auto domain_witness_wall_ms = open_group_indices(
                 domain_group_indices);
+            for (const auto group_index : domain_group_indices)
+            {
+                const auto& group = point_groups[group_index];
+                const auto& profile = opening_results[group_index].profile;
+                progress_note(
+                    "prove:domain_witness:group:"
+                    + group.owner_block
+                    + ":ms="
+                    + std::to_string(
+                        opening_results[group_index].elapsed_ms)
+                    + ":precompute_ms="
+                    + std::to_string(profile.precompute_ms)
+                    + ":inverse_ms="
+                    + std::to_string(profile.denominator_inverse_ms)
+                    + ":assembly_ms="
+                    + std::to_string(profile.quotient_assembly_ms)
+                    + ":witness_msm_ms="
+                    + std::to_string(profile.witness_msm_ms)
+                    + ":blinder_ms="
+                    + std::to_string(profile.blinder_witness_ms)
+                    + ":workers="
+                    + std::to_string(profile.point_msm_worker_cap)
+                    + ":outer_workers="
+                    + std::to_string(profile.point_parallel_workers));
+            }
+            progress_note(
+                "prove:domain_witness:done:ms="
+                + std::to_string(domain_witness_wall_ms));
             const auto external_witness_wall_ms = open_group_indices(
                 external_group_indices);
 

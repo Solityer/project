@@ -2340,6 +2340,8 @@ namespace gatzk::protocol
                         *context.domains.edge, it->second, point);
                 return eval_memo.eval_named(name, point);
             };
+            const auto edge_evaluation_plan =
+                build_t_edge_evaluation_plan(context, challenges);
             std::string bundle_failure_reason;
             const auto bundle_fail = [&](const BundleSpec &spec, const std::string &reason)
             {
@@ -2430,7 +2432,17 @@ namespace gatzk::protocol
                 }
                 else if (spec.quotient_name == "t_edge")
                 {
-                    expected_t = evaluate_t_edge(context, challenges, external_evaluations, eval, challenges.at(spec.z_name));
+                    expected_t = evaluate_t_edge(
+                        context,
+                        challenges,
+                        external_evaluations,
+                        eval,
+                        challenges.at(spec.z_name),
+                        false,
+                        nullptr,
+                        nullptr,
+                        nullptr,
+                        edge_evaluation_plan.get());
                 }
                 else if (spec.quotient_name == "t_in")
                 {

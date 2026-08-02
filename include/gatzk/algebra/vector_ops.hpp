@@ -104,6 +104,32 @@ namespace gatzk::algebra
     // 共享 NTT plan 缓存，供 quotient materialization 与可复用 prover-side material 转换使用。
     std::shared_ptr<const mcl::Ntt<mcl::Fr>> ntt_plan(std::size_t size);
 
+    // Fill [1, base, base^2, ...] with exact chunk-local starting powers.
+    // Large quotient coset transforms reuse this execution helper for their
+    // forward and inverse shift scalings.
+    void geometric_powers_native(
+        mcl::Fr* output,
+        std::size_t size,
+        const FieldElement& base);
+
+    // Prepare the two half-size NTT lanes used to evaluate a coefficient
+    // polynomial on the even and odd points of a doubled quotient coset.
+    void split_coset_coefficients_native(
+        const mcl::Fr* coefficients,
+        const mcl::Fr* shift_powers,
+        std::size_t coefficient_count,
+        const FieldElement& odd_root,
+        mcl::Fr* even_output,
+        mcl::Fr* odd_output);
+
+    // Restore canonical [even_0, odd_0, ...] point order after the paired
+    // quotient-coset transforms.
+    void interleave_native_lanes(
+        const mcl::Fr* even_values,
+        const mcl::Fr* odd_values,
+        std::size_t lane_size,
+        mcl::Fr* output);
+
     // 大型逆变换按偶/奇频点拆成两个独立半长 INTT；结果与标准
     // `ntt_plan(size)->intt` 逐元素一致，小规模保持标准实现。
     void intt_in_place(mcl::Fr* values, std::size_t size);

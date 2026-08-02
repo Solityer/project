@@ -158,6 +158,404 @@ namespace gatzk::algebra
         return it->second;
     }
 
+    void geometric_powers_native(
+        mcl::Fr* output,
+        std::size_t size,
+        const FieldElement& base)
+    {
+        if (size == 0)
+        {
+            return;
+        }
+        if (output == nullptr)
+        {
+            throw std::runtime_error(
+                "geometric powers require a non-null output");
+        }
+        constexpr std::size_t kMinRowsPerTask = 1ULL << 12;
+        const auto available_workers = std::max<std::size_t>(
+            1, std::thread::hardware_concurrency());
+        const auto task_count = size < kMinRowsPerTask
+            ? std::size_t{1}
+            : std::min<std::size_t>(
+                available_workers,
+                std::max<std::size_t>(2, size / kMinRowsPerTask));
+        const auto chunk_size = (size + task_count - 1) / task_count;
+        const auto base_native = base.native();
+        std::vector<std::future<void>> futures;
+        futures.reserve(task_count);
+        for (std::size_t task = 0; task < task_count; ++task)
+        {
+            const auto begin = task * chunk_size;
+            const auto end = std::min(size, begin + chunk_size);
+            if (begin >= end)
+            {
+                break;
+            }
+            futures.push_back(std::async(
+                std::launch::async,
+                [=]
+                {
+                    auto power = base.pow(
+                        static_cast<std::uint64_t>(begin)).native();
+                    for (std::size_t index = begin; index < end; ++index)
+                    {
+                        output[index] = power;
+                        mcl::Fr::mul(power, power, base_native);
+                    }
+                }));
+        }
+        for (auto& future : futures)
+        {
+            future.get();
+        }
+    }
+
+    void split_coset_coefficients_native(
+        const mcl::Fr* coefficients,
+        const mcl::Fr* shift_powers,
+        std::size_t coefficient_count,
+        const FieldElement& odd_root,
+        mcl::Fr* even_output,
+        mcl::Fr* odd_output)
+    {
+        if (coefficient_count == 0)
+        {
+            return;
+        }
+        if (coefficients == nullptr || shift_powers == nullptr
+            || even_output == nullptr || odd_output == nullptr)
+        {
+            throw std::runtime_error(
+                "coset split scaling requires non-null buffers");
+        }
+        constexpr std::size_t kMinRowsPerTask = 1ULL << 18;
+        const auto worker_count = std::min<std::size_t>({
+            8,
+            std::max<std::size_t>(
+                1, std::thread::hardware_concurrency()),
+            std::max<std::size_t>(
+                1,
+                (coefficient_count + kMinRowsPerTask - 1)
+                    / kMinRowsPerTask),
+        });
+        const auto chunk_size =
+            (coefficient_count + worker_count - 1) / worker_count;
+        const auto root_native = odd_root.native();
+        std::vector<std::future<void>> futures;
+        futures.reserve(worker_count);
+        for (std::size_t worker = 0; worker < worker_count; ++worker)
+        {
+            const auto begin = worker * chunk_size;
+            const auto end = std::min(
+                coefficient_count, begin + chunk_size);
+            if (begin >= end)
+            {
+                break;
+            }
+            futures.push_back(std::async(
+                std::launch::async,
+                [=]
+                {
+                    auto root_power = odd_root.pow(begin).native();
+                    for (std::size_t index = begin; index < end; ++index)
+                    {
+                        mcl::Fr::mul(
+                            even_output[index],
+                            coefficients[index],
+                            shift_powers[index]);
+                        mcl::Fr odd_shift_power;
+                        mcl::Fr::mul(
+                            odd_shift_power,
+                            shift_powers[index],
+                            root_power);
+                        mcl::Fr::mul(
+                            odd_output[index],
+                            coefficients[index],
+                            odd_shift_power);
+                        mcl::Fr::mul(
+                            root_power, root_power, root_native);
+                    }
+                }));
+        }
+        for (auto& future : futures)
+        {
+            future.get();
+        }
+    }
+
+    void interleave_native_lanes(
+        const mcl::Fr* even_values,
+        const mcl::Fr* odd_values,
+        std::size_t lane_size,
+        mcl::Fr* output)
+    {
+        if (lane_size == 0)
+        {
+            return;
+        }
+        if (even_values == nullptr || odd_values == nullptr
+            || output == nullptr)
+        {
+            throw std::runtime_error(
+                "native lane interleave requires non-null buffers");
+        }
+        constexpr std::size_t kMinRowsPerTask = 1ULL << 18;
+        const auto worker_count = std::min<std::size_t>({
+            8,
+            std::max<std::size_t>(
+                1, std::thread::hardware_concurrency()),
+            std::max<std::size_t>(
+                1,
+                (lane_size + kMinRowsPerTask - 1)
+                    / kMinRowsPerTask),
+        });
+        const auto chunk_size =
+            (lane_size + worker_count - 1) / worker_count;
+        std::vector<std::future<void>> futures;
+        futures.reserve(worker_count);
+        for (std::size_t worker = 0; worker < worker_count; ++worker)
+        {
+            const auto begin = worker * chunk_size;
+            const auto end = std::min(lane_size, begin + chunk_size);
+            if (begin >= end)
+            {
+                break;
+            }
+            futures.push_back(std::async(
+                std::launch::async,
+                [=]
+                {
+                    for (std::size_t index = begin; index < end; ++index)
+                    {
+                        output[2 * index] = even_values[index];
+                        output[2 * index + 1] = odd_values[index];
+                    }
+                }));
+        }
+        for (auto& future : futures)
+        {
+            future.get();
+        }
+    }
+
+    namespace
+    {
+        void ntt_out_of_place_parallel_impl(
+            mcl::Fr* source,
+            mcl::Fr* output,
+            std::size_t size,
+            std::size_t transform_workers)
+        {
+            constexpr std::size_t kParallelSplitThreshold = 1ULL << 18;
+            if (size < kParallelSplitThreshold || transform_workers < 2)
+            {
+                std::copy(source, source + size, output);
+                ntt_plan(size)->ntt(output);
+                return;
+            }
+
+            const auto half_size = size / 2;
+            const auto hardware_workers = std::max<std::size_t>(
+                1, std::thread::hardware_concurrency());
+            const auto lane_worker_count = std::min<std::size_t>({
+                8,
+                hardware_workers,
+                std::max<std::size_t>(
+                    1, (half_size + (1ULL << 18) - 1) / (1ULL << 18)),
+            });
+            const auto parallel_half_ranges =
+                [&](const auto& range_fn)
+                {
+                    if (lane_worker_count <= 1)
+                    {
+                        range_fn(0, half_size);
+                        return;
+                    }
+                    const auto chunk_size =
+                        (half_size + lane_worker_count - 1) / lane_worker_count;
+                    std::vector<std::future<void>> futures;
+                    futures.reserve(lane_worker_count);
+                    for (std::size_t worker = 0;
+                         worker < lane_worker_count; ++worker)
+                    {
+                        const auto begin = worker * chunk_size;
+                        const auto end = std::min(
+                            half_size, begin + chunk_size);
+                        if (begin >= end)
+                        {
+                            break;
+                        }
+                        futures.push_back(std::async(
+                            std::launch::async,
+                            [&, begin, end]
+                            {
+                                range_fn(begin, end);
+                            }));
+                    }
+                    for (auto& future : futures)
+                    {
+                        future.get();
+                    }
+                };
+
+            parallel_half_ranges([&](std::size_t begin, std::size_t end)
+            {
+                for (std::size_t index = begin; index < end; ++index)
+                {
+                    output[index] = source[2 * index];
+                    output[index + half_size] = source[2 * index + 1];
+                }
+            });
+
+            const auto even_workers = transform_workers / 2;
+            const auto odd_workers = transform_workers - even_workers;
+            auto even_task = std::async(
+                std::launch::async,
+                [&]
+                {
+                    ntt_out_of_place_parallel_impl(
+                        output,
+                        source,
+                        half_size,
+                        even_workers);
+                });
+            ntt_out_of_place_parallel_impl(
+                output + half_size,
+                source + half_size,
+                half_size,
+                odd_workers);
+            even_task.get();
+
+            const auto omega = FieldElement::root_of_unity(size).native();
+            const auto omega_field = FieldElement::from_native(omega);
+            parallel_half_ranges([&](std::size_t begin, std::size_t end)
+            {
+                auto omega_power = omega_field.pow(begin).native();
+                for (std::size_t index = begin; index < end; ++index)
+                {
+                    mcl::Fr odd_scaled;
+                    mcl::Fr::mul(
+                        odd_scaled,
+                        source[index + half_size],
+                        omega_power);
+                    mcl::Fr::add(
+                        output[index], source[index], odd_scaled);
+                    mcl::Fr::sub(
+                        output[index + half_size],
+                        source[index],
+                        odd_scaled);
+                    mcl::Fr::mul(
+                        omega_power, omega_power, omega);
+                }
+            });
+        }
+
+        void intt_in_place_parallel_impl(
+            mcl::Fr* values,
+            std::size_t size,
+            std::size_t transform_workers)
+        {
+            constexpr std::size_t kParallelSplitThreshold = 1ULL << 15;
+            if (size < kParallelSplitThreshold || transform_workers < 2)
+            {
+                ntt_plan(size)->intt(values);
+                return;
+            }
+
+            const auto half_size = size / 2;
+            std::vector<mcl::Fr> even(half_size);
+            std::vector<mcl::Fr> odd(half_size);
+            const auto hardware_workers = std::max<std::size_t>(
+                1, std::thread::hardware_concurrency());
+            const auto lane_worker_count = std::min<std::size_t>({
+                8,
+                hardware_workers,
+                std::max<std::size_t>(
+                    1, (half_size + (1ULL << 18) - 1) / (1ULL << 18)),
+            });
+            const auto parallel_half_ranges =
+                [&](const auto& range_fn)
+                {
+                    if (lane_worker_count <= 1)
+                    {
+                        range_fn(0, half_size);
+                        return;
+                    }
+                    const auto chunk_size =
+                        (half_size + lane_worker_count - 1) / lane_worker_count;
+                    std::vector<std::future<void>> futures;
+                    futures.reserve(lane_worker_count);
+                    for (std::size_t worker = 0;
+                         worker < lane_worker_count; ++worker)
+                    {
+                        const auto begin = worker * chunk_size;
+                        const auto end = std::min(
+                            half_size, begin + chunk_size);
+                        if (begin >= end)
+                        {
+                            break;
+                        }
+                        futures.push_back(std::async(
+                            std::launch::async,
+                            [&, begin, end]
+                            {
+                                range_fn(begin, end);
+                            }));
+                    }
+                    for (auto& future : futures)
+                    {
+                        future.get();
+                    }
+                };
+            parallel_half_ranges([&](std::size_t begin, std::size_t end)
+            {
+                for (std::size_t i = begin; i < end; ++i)
+                {
+                    even[i] = values[2 * i];
+                    odd[i] = values[2 * i + 1];
+                }
+            });
+
+            const auto even_workers = transform_workers / 2;
+            const auto odd_workers = transform_workers - even_workers;
+            auto even_task = std::async(
+                std::launch::async,
+                [&]
+                {
+                    intt_in_place_parallel_impl(
+                        even.data(), half_size, even_workers);
+                });
+            intt_in_place_parallel_impl(
+                odd.data(), half_size, odd_workers);
+            even_task.get();
+
+            const auto omega_inverse =
+                FieldElement::root_of_unity(size).inv().native();
+            const auto omega_inverse_field =
+                FieldElement::from_native(omega_inverse);
+            const auto inverse_two = FieldElement(2).inv().native();
+            parallel_half_ranges([&](std::size_t begin, std::size_t end)
+            {
+                auto omega_power = omega_inverse_field.pow(begin).native();
+                for (std::size_t i = begin; i < end; ++i)
+                {
+                    mcl::Fr odd_scaled;
+                    mcl::Fr sum;
+                    mcl::Fr difference;
+                    mcl::Fr::mul(odd_scaled, odd[i], omega_power);
+                    mcl::Fr::add(sum, even[i], odd_scaled);
+                    mcl::Fr::sub(difference, even[i], odd_scaled);
+                    mcl::Fr::mul(values[i], sum, inverse_two);
+                    mcl::Fr::mul(
+                        values[i + half_size], difference, inverse_two);
+                    mcl::Fr::mul(
+                        omega_power, omega_power, omega_inverse);
+                }
+            });
+        }
+    }
+
     void intt_in_place(mcl::Fr* values, std::size_t size)
     {
         if (values == nullptr || size == 0
@@ -166,45 +564,11 @@ namespace gatzk::algebra
             throw std::runtime_error(
                 "INTT requires a non-null power-of-two field vector");
         }
-        constexpr std::size_t kParallelSplitThreshold = 1ULL << 15;
-        if (size < kParallelSplitThreshold
-            || std::thread::hardware_concurrency() < 2)
-        {
-            ntt_plan(size)->intt(values);
-            return;
-        }
-
-        const auto half_size = size / 2;
-        std::vector<mcl::Fr> even(half_size);
-        std::vector<mcl::Fr> odd(half_size);
-        for (std::size_t i = 0; i < half_size; ++i)
-        {
-            even[i] = values[2 * i];
-            odd[i] = values[2 * i + 1];
-        }
-        const auto half_plan = ntt_plan(half_size);
-        auto even_task = std::async(std::launch::async, [&]
-                                    { half_plan->intt(even.data()); });
-        half_plan->intt(odd.data());
-        even_task.get();
-
-        const auto omega_inverse =
-            FieldElement::root_of_unity(size).inv().native();
-        const auto inverse_two = FieldElement(2).inv().native();
-        mcl::Fr omega_power;
-        omega_power = 1;
-        for (std::size_t i = 0; i < half_size; ++i)
-        {
-            mcl::Fr odd_scaled;
-            mcl::Fr sum;
-            mcl::Fr difference;
-            mcl::Fr::mul(odd_scaled, odd[i], omega_power);
-            mcl::Fr::add(sum, even[i], odd_scaled);
-            mcl::Fr::sub(difference, even[i], odd_scaled);
-            mcl::Fr::mul(values[i], sum, inverse_two);
-            mcl::Fr::mul(values[i + half_size], difference, inverse_two);
-            mcl::Fr::mul(omega_power, omega_power, omega_inverse);
-        }
+        const auto transform_workers = std::min<std::size_t>(
+            32,
+            std::max<std::size_t>(
+                1, std::thread::hardware_concurrency()));
+        intt_in_place_parallel_impl(values, size, transform_workers);
     }
 
     void ntt_pair_in_place(mcl::Fr* first, mcl::Fr* second, std::size_t size)
@@ -215,17 +579,52 @@ namespace gatzk::algebra
             throw std::runtime_error(
                 "paired NTT requires two distinct non-null power-of-two vectors");
         }
-        const auto plan = ntt_plan(size);
         constexpr std::size_t kParallelPairThreshold = 1ULL << 15;
+        constexpr std::size_t kRecursiveParallelThreshold = 1ULL << 18;
+        constexpr std::size_t kRecursiveParallelMaximum = 1ULL << 24;
         if (size < kParallelPairThreshold
             || std::thread::hardware_concurrency() < 2)
         {
+            const auto plan = ntt_plan(size);
             plan->ntt(first);
             plan->ntt(second);
             return;
         }
-        auto first_task = std::async(std::launch::async, [=]
-                                     { plan->ntt(first); });
+        const auto hardware_workers = std::max<std::size_t>(
+            1, std::thread::hardware_concurrency());
+        if (size >= kRecursiveParallelThreshold
+            && size <= kRecursiveParallelMaximum
+            && hardware_workers >= 4)
+        {
+            const auto per_transform_workers = std::min<std::size_t>(
+                16, hardware_workers / 2);
+            auto run_transform = [=](mcl::Fr* values)
+            {
+                std::vector<mcl::Fr> scratch(size);
+                ntt_out_of_place_parallel_impl(
+                    values,
+                    scratch.data(),
+                    size,
+                    per_transform_workers);
+                std::copy(scratch.begin(), scratch.end(), values);
+            };
+            auto first_task = std::async(
+                std::launch::async,
+                [=]
+                {
+                    run_transform(first);
+                });
+            run_transform(second);
+            first_task.get();
+            return;
+        }
+        const auto plan = ntt_plan(size);
+        auto first_task = std::async(
+            std::launch::async,
+            [=]
+            {
+                plan->ntt(first);
+            });
         plan->ntt(second);
         first_task.get();
     }
@@ -415,9 +814,10 @@ namespace gatzk::algebra
         }
 
         const bool unified = cuda_backend_unified_addressing_available();
-        const auto min_index_count = 16384ULL;
+        const auto min_index_count = unified ? (1ULL << 20) : (1ULL << 22);
         const auto min_bucket_count = unified ? 1024ULL : 4096ULL;
-        return index_count >= min_index_count && bucket_count >= min_bucket_count;
+        return index_count >= min_index_count
+            && bucket_count >= min_bucket_count;
     }
 
 #if !GATZK_ENABLE_CUDA_BACKEND

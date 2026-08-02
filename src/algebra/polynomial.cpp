@@ -130,21 +130,9 @@ namespace gatzk::algebra
         {
             throw std::out_of_range("Lagrange basis index exceeds domain size");
         }
-        if (points_precomputed)
-        {
-            for (std::size_t point_index = 0; point_index < points.size(); ++point_index)
-            {
-                if (points[point_index] == x)
-                {
-                    return point_index == index
-                        ? FieldElement::one()
-                        : FieldElement::zero();
-                }
-            }
-        }
-        else if (const auto point_index = rotation_shift(
-                     FieldElement::one(), x);
-                 point_index.has_value())
+        if (const auto point_index = rotation_shift(
+                FieldElement::one(), x);
+            point_index.has_value())
         {
             return *point_index == index
                 ? FieldElement::one()
@@ -392,6 +380,15 @@ namespace gatzk::algebra
 
         // 比例 ratio = to / from，寻找shift使得 omega^shift == ratio
         const auto ratio = to / from;
+        // The domain is exactly the size-th roots of unity.  Fiat--Shamir
+        // challenge points are almost always outside that subgroup; reject
+        // those in O(log size) before attempting the exact discrete-log scan.
+        // In-domain rotations still use the canonical scan below, preserving
+        // the returned shift for every accepted ratio.
+        if (ratio.pow(size) != FieldElement::one())
+        {
+            return std::nullopt;
+        }
         FieldElement power = FieldElement::one();
         for (std::size_t shift = 0; shift < size; ++shift)
         {
@@ -483,17 +480,9 @@ namespace gatzk::algebra
         const auto& values_ref = values();
 
         // 如果 x 恰好是域上的一个已知点，直接返回对应值
-        if (domain->points_precomputed)
-        {
-            for (std::size_t i = 0; i < domain->points.size(); ++i)
-            {
-                if (domain->points[i] == x)
-                {
-                    return i < values_ref.size() ? values_ref[i] : FieldElement::zero();
-                }
-            }
-        }
-        else if (const auto shift = domain->rotation_shift(FieldElement::one(), x); shift.has_value())
+        if (const auto shift = domain->rotation_shift(
+                FieldElement::one(), x);
+            shift.has_value())
         {
             if (*shift < values_ref.size())
             {

@@ -7,6 +7,7 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -49,6 +50,72 @@ std::filesystem::path repo_root() {
 
 double elapsed_ms(std::chrono::steady_clock::time_point start) {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+}
+
+std::vector<FieldElement> make_values(
+    std::size_t size,
+    std::size_t case_seed,
+    std::size_t commitment_index,
+    std::size_t nonzero_stride,
+    bool full_width_values);
+
+void run_large_coefficient_worker_sweep() {
+    constexpr std::size_t coefficient_count = 1ULL << 24;
+    const auto key = gatzk::crypto::KZG::load_keys(
+        (repo_root() / "artifacts/srs/cora_formal_srs").string(),
+        "trusted_srs",
+        "cora_formal_srs");
+    auto polynomial = Polynomial::from_coefficients(
+        "bench_cora_large_coefficient_opening_worker_sweep",
+        make_values(coefficient_count, coefficient_count, 0, 1, true));
+    const auto commitment = gatzk::crypto::KZG::commit(
+        polynomial.name, polynomial, key);
+    const FieldElement point(7);
+    const auto claimed_value = polynomial.evaluate(point);
+    std::optional<gatzk::crypto::G1Point> expected_witness;
+    std::cout
+        << "coefficient_case,coefficient_count,field_workers,msm_workers,"
+           "open_ms,witness_profile_ms,verify_ok\n";
+    for (const auto field_workers :
+         std::vector<std::size_t>{10, 12, 16, 10, 12, 16}) {
+        const gatzk::crypto::PointGroupOpeningExecutionOptions options{
+            .max_field_worker_count = field_workers,
+            .msm = {.max_worker_count = field_workers},
+        };
+        gatzk::crypto::BatchOpeningProfile profile;
+        const auto start = std::chrono::steady_clock::now();
+        const auto witness = gatzk::crypto::KZG::open_point_group(
+            {commitment},
+            point,
+            {claimed_value},
+            FieldElement(19),
+            key,
+            &profile,
+            gatzk::crypto::BatchOpeningClaimValidation::
+                AlreadyComputedFromOpeningPolynomials,
+            &options);
+        const auto open_ms = elapsed_ms(start);
+        const auto verify_ok = gatzk::crypto::KZG::verify_point_group(
+            {commitment},
+            point,
+            {claimed_value},
+            FieldElement(19),
+            witness,
+            key.vk);
+        if (expected_witness.has_value()
+            && !(witness == *expected_witness)) {
+            throw std::runtime_error(
+                "large coefficient worker sweep changed the opening witness");
+        }
+        expected_witness = witness;
+        std::cout
+            << "cora_large_coefficient_opening_worker_sweep,"
+            << coefficient_count << ',' << field_workers << ','
+            << field_workers << ','
+            << std::fixed << std::setprecision(3)
+            << open_ms << ',' << profile.witness_msm_ms << ','
+            << (verify_ok ? "true" : "false") << '\n' << std::flush;
+    }
 }
 
 std::vector<FieldElement> make_values(
@@ -324,6 +391,12 @@ void run_case(const CaseSpec& spec) {
 
 int main(int argc, char** argv) {
     try {
+        if (argc == 2
+            && std::string(argv[1])
+                == "cora_large_coefficient_opening_worker_sweep") {
+            run_large_coefficient_worker_sweep();
+            return 0;
+        }
         const std::vector<CaseSpec> cases = {
             {
                 "unit_edge_opening_terms910",

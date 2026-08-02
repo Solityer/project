@@ -31,6 +31,7 @@ struct QuotientBoundaryValues {
     algebra::FieldElement first;
     algebra::FieldElement last;
     algebra::FieldElement zero;
+    std::optional<algebra::FieldElement> zero_inverse;
 };
 
 std::shared_ptr<const TEdgeEvaluationPlan> build_t_edge_evaluation_plan(

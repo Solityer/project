@@ -51,18 +51,9 @@ namespace gatzk::algebra
         }
 
         DomainEvaluationWeights entry;
-        if (domain->points_precomputed)
-        {
-            for (std::size_t i = 0; i < domain->points.size(); ++i)
-            {
-                if (domain->points[i] == point)
-                {
-                    entry.direct_index = i;
-                    break;
-                }
-            }
-        }
-        else if (const auto shift = domain->rotation_shift(FieldElement::one(), point); shift.has_value())
+        if (const auto shift = domain->rotation_shift(
+                FieldElement::one(), point);
+            shift.has_value())
         {
             entry.direct_index = *shift;
         }

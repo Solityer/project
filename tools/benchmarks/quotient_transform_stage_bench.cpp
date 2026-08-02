@@ -1,15 +1,23 @@
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <future>
 #include <iomanip>
 #include <iostream>
+#include <map>
+#include <optional>
 #include <stdexcept>
+#include <string>
+#include <thread>
 #include <vector>
 
 #include "gatzk/algebra/field.hpp"
+#include "gatzk/algebra/polynomial.hpp"
 #include "gatzk/algebra/vector_ops.hpp"
+#include "gatzk/protocol/proof.hpp"
+#include "gatzk/protocol/quotients.hpp"
 
 namespace {
 
@@ -66,6 +74,59 @@ std::vector<mcl::Fr> split_intt_serial(
     return output;
 }
 
+std::vector<FieldElement> run_fh_zero_division_stage(
+    const gatzk::protocol::ProtocolContext& context,
+    const std::map<std::string, FieldElement>& challenges,
+    std::size_t point_count,
+    bool use_cached_inverse) {
+    const std::array<FieldElement, 4> zeros = {
+        FieldElement(7), FieldElement(11),
+        FieldElement(13), FieldElement(17)};
+    const std::array<FieldElement, 4> inverses = {
+        zeros[0].inv(), zeros[1].inv(), zeros[2].inv(), zeros[3].inv()};
+    std::vector<FieldElement> output(point_count);
+    const auto workers = std::min<std::size_t>(
+        32, std::max<std::size_t>(1, std::thread::hardware_concurrency()));
+    const auto chunk = (point_count + workers - 1) / workers;
+    std::vector<std::future<void>> futures;
+    futures.reserve(workers);
+    for (std::size_t worker = 0; worker < workers; ++worker) {
+        const auto begin = worker * chunk;
+        const auto end = std::min(point_count, begin + chunk);
+        if (begin >= end) {
+            break;
+        }
+        futures.push_back(std::async(std::launch::async, [&, begin, end] {
+            for (std::size_t index = begin; index < end; ++index) {
+                const auto residue = index & 3U;
+                const auto z = FieldElement(101 + index);
+                const gatzk::protocol::QuotientBoundaryValues boundary{
+                    .first = FieldElement(19),
+                    .last = FieldElement(23),
+                    .zero = zeros[residue],
+                    .zero_inverse = use_cached_inverse
+                        ? std::optional<FieldElement>(inverses[residue])
+                        : std::nullopt,
+                };
+                output[index] = gatzk::protocol::evaluate_t_fh(
+                    context,
+                    challenges,
+                    [](const std::string& name, const FieldElement& point) {
+                        return point * FieldElement(name.size() + 3);
+                    },
+                    z,
+                    nullptr,
+                    &boundary,
+                    true);
+            }
+        }));
+    }
+    for (auto& future : futures) {
+        future.get();
+    }
+    return output;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -103,11 +164,41 @@ int main(int argc, char** argv) {
         std::vector<double> forward_pair_parallel_samples;
         std::vector<double> split_serial_samples;
         std::vector<double> split_parallel_samples;
+        std::vector<double> power_serial_samples;
+        std::vector<double> power_parallel_samples;
+        std::vector<double> rotation_miss_samples;
+        std::vector<double> rotation_hit_samples;
+        std::vector<double> coset_split_serial_samples;
+        std::vector<double> coset_split_parallel_samples;
+        std::vector<double> interleave_serial_samples;
+        std::vector<double> interleave_parallel_samples;
+        std::vector<double> fh_division_samples;
+        std::vector<double> fh_inverse_multiply_samples;
         serial_samples.reserve(repeats);
         forward_pair_serial_samples.reserve(repeats);
         forward_pair_parallel_samples.reserve(repeats);
         split_serial_samples.reserve(repeats);
         split_parallel_samples.reserve(repeats);
+        power_serial_samples.reserve(repeats);
+        power_parallel_samples.reserve(repeats);
+        rotation_miss_samples.reserve(repeats);
+        rotation_hit_samples.reserve(repeats);
+        coset_split_serial_samples.reserve(repeats);
+        coset_split_parallel_samples.reserve(repeats);
+        interleave_serial_samples.reserve(repeats);
+        interleave_parallel_samples.reserve(repeats);
+        fh_division_samples.reserve(repeats);
+        fh_inverse_multiply_samples.reserve(repeats);
+        const auto rotation_domain =
+            gatzk::algebra::RootOfUnityDomain::create(
+                "rotation_stage", size);
+        gatzk::protocol::ProtocolContext fh_context;
+        fh_context.domains.fh = gatzk::algebra::RootOfUnityDomain::create(
+            "fh_division_stage", 64);
+        const std::map<std::string, FieldElement> fh_challenges = {
+            {"alpha_quot", FieldElement(29)},
+            {"beta_feat", FieldElement(31)},
+        };
         bool exact = true;
         std::vector<double> batch_samples;
         batch_samples.reserve(repeats);
@@ -142,6 +233,99 @@ int main(int argc, char** argv) {
             split_parallel_samples.push_back(elapsed_ms(start));
             exact = exact && serial == split_serial
                 && serial == split_parallel;
+
+            const FieldElement shift(7);
+            std::vector<mcl::Fr> serial_powers(size);
+            start = Clock::now();
+            serial_powers.front() = 1;
+            const auto shift_native = shift.native();
+            for (std::size_t index = 1; index < size; ++index) {
+                mcl::Fr::mul(
+                    serial_powers[index],
+                    serial_powers[index - 1],
+                    shift_native);
+            }
+            power_serial_samples.push_back(elapsed_ms(start));
+            std::vector<mcl::Fr> parallel_powers(size);
+            start = Clock::now();
+            gatzk::algebra::geometric_powers_native(
+                parallel_powers.data(), parallel_powers.size(), shift);
+            power_parallel_samples.push_back(elapsed_ms(start));
+            exact = exact && serial_powers == parallel_powers;
+
+            start = Clock::now();
+            const auto rotation_miss = rotation_domain->rotation_shift(
+                FieldElement::one(), shift);
+            rotation_miss_samples.push_back(elapsed_ms(start));
+            start = Clock::now();
+            const auto rotation_hit = rotation_domain->rotation_shift(
+                shift, shift * rotation_domain->omega);
+            rotation_hit_samples.push_back(elapsed_ms(start));
+            exact = exact && !rotation_miss.has_value()
+                && rotation_hit == std::optional<std::size_t>(1);
+
+            const auto odd_root = FieldElement::root_of_unity(size * 2);
+            const auto odd_root_native = odd_root.native();
+            std::vector<mcl::Fr> serial_even(size);
+            std::vector<mcl::Fr> serial_odd(size);
+            start = Clock::now();
+            mcl::Fr odd_root_power;
+            odd_root_power = 1;
+            for (std::size_t index = 0; index < size; ++index) {
+                mcl::Fr::mul(
+                    serial_even[index], input[index], parallel_powers[index]);
+                mcl::Fr odd_shift_power;
+                mcl::Fr::mul(
+                    odd_shift_power,
+                    parallel_powers[index],
+                    odd_root_power);
+                mcl::Fr::mul(
+                    serial_odd[index], input[index], odd_shift_power);
+                mcl::Fr::mul(
+                    odd_root_power, odd_root_power, odd_root_native);
+            }
+            coset_split_serial_samples.push_back(elapsed_ms(start));
+            std::vector<mcl::Fr> parallel_even(size);
+            std::vector<mcl::Fr> parallel_odd(size);
+            start = Clock::now();
+            gatzk::algebra::split_coset_coefficients_native(
+                input.data(),
+                parallel_powers.data(),
+                size,
+                odd_root,
+                parallel_even.data(),
+                parallel_odd.data());
+            coset_split_parallel_samples.push_back(elapsed_ms(start));
+            exact = exact && serial_even == parallel_even
+                && serial_odd == parallel_odd;
+
+            std::vector<mcl::Fr> serial_interleaved(size * 2);
+            start = Clock::now();
+            for (std::size_t index = 0; index < size; ++index) {
+                serial_interleaved[2 * index] = serial_even[index];
+                serial_interleaved[2 * index + 1] = serial_odd[index];
+            }
+            interleave_serial_samples.push_back(elapsed_ms(start));
+            std::vector<mcl::Fr> parallel_interleaved(size * 2);
+            start = Clock::now();
+            gatzk::algebra::interleave_native_lanes(
+                parallel_even.data(),
+                parallel_odd.data(),
+                size,
+                parallel_interleaved.data());
+            interleave_parallel_samples.push_back(elapsed_ms(start));
+            exact = exact && serial_interleaved == parallel_interleaved;
+
+            constexpr std::size_t kFhDivisionStagePoints = 1ULL << 20;
+            start = Clock::now();
+            const auto fh_division = run_fh_zero_division_stage(
+                fh_context, fh_challenges, kFhDivisionStagePoints, false);
+            fh_division_samples.push_back(elapsed_ms(start));
+            start = Clock::now();
+            const auto fh_inverse_multiply = run_fh_zero_division_stage(
+                fh_context, fh_challenges, kFhDivisionStagePoints, true);
+            fh_inverse_multiply_samples.push_back(elapsed_ms(start));
+            exact = exact && fh_division == fh_inverse_multiply;
 
             if (batch_objects != 0) {
                 std::vector<FieldElement> batch_outputs(
@@ -219,6 +403,22 @@ int main(int argc, char** argv) {
                   << median(forward_pair_parallel_samples)
                   << " split_serial_median_ms=" << median(split_serial_samples)
                   << " split_parallel_median_ms=" << median(split_parallel_samples)
+                  << " power_serial_median_ms=" << median(power_serial_samples)
+                  << " power_parallel_median_ms=" << median(power_parallel_samples)
+                  << " rotation_miss_median_ms=" << median(rotation_miss_samples)
+                  << " rotation_hit_median_ms=" << median(rotation_hit_samples)
+                  << " coset_split_serial_median_ms="
+                  << median(coset_split_serial_samples)
+                  << " coset_split_parallel_median_ms="
+                  << median(coset_split_parallel_samples)
+                  << " interleave_serial_median_ms="
+                  << median(interleave_serial_samples)
+                  << " interleave_parallel_median_ms="
+                  << median(interleave_parallel_samples)
+                  << " fh_division_median_ms="
+                  << median(fh_division_samples)
+                  << " fh_inverse_multiply_median_ms="
+                  << median(fh_inverse_multiply_samples)
                   << " batch_objects=" << batch_objects
                   << " batch_workers=" << batch_workers
                   << " batch_mode=" << batch_mode;

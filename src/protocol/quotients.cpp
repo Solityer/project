@@ -132,6 +132,7 @@ namespace gatzk::protocol
                     .first = z == one ? one : FieldElement::zero(),
                     .last = z == last_point ? one : FieldElement::zero(),
                     .zero = zero,
+                    .zero_inverse = std::nullopt,
                 };
             }
 
@@ -146,6 +147,7 @@ namespace gatzk::protocol
                 .last = zero_scaled * last_point * first_denominator
                     * denominator_product_inverse,
                 .zero = zero,
+                .zero_inverse = std::nullopt,
             };
         }
 
@@ -854,7 +856,10 @@ namespace gatzk::protocol
                          + eta_feat * profiled_eval("P_Col_feat_qry", z)
                          + eta_feat_squared * profiled_eval("P_H", z)));
         }
-        const auto result = acc.value() / zero_eval;
+        const auto numerator = acc.value();
+        const auto result = boundary.zero_inverse.has_value()
+            ? numerator * *boundary.zero_inverse
+            : numerator / zero_eval;
         if (profile != nullptr)
         {
             const auto total_ms = elapsed_ms(total_start, Clock::now());
@@ -1697,7 +1702,14 @@ namespace gatzk::protocol
                 if (first_nonzero_value != nullptr)
                     *first_nonzero_value = acc.first_nonzero_value();
             }
-            return return_numerator ? acc.value() : acc.value() / zero_eval;
+            const auto numerator = acc.value();
+            if (return_numerator)
+            {
+                return numerator;
+            }
+            return boundary.zero_inverse.has_value()
+                ? numerator * *boundary.zero_inverse
+                : numerator / zero_eval;
         }
 
         throw std::runtime_error(
