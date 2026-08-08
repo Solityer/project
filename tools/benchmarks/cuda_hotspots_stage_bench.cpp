@@ -285,6 +285,23 @@ void bench_formal_weighted_rotations(
             throw std::runtime_error("formal CUDA rotated weighted route mismatch");
         }
     }
+    const auto cpu_policy_kernels_before =
+        gatzk::algebra::cuda_kernel_invocation_count();
+    const auto explicit_cpu = backend.evaluate_with_native_weight_rotations(
+        labels,
+        weights,
+        rotations,
+        gatzk::algebra::EvaluationExecutionPolicy::CpuOnly);
+    const auto cpu_policy_kernels_after =
+        gatzk::algebra::cuda_kernel_invocation_count();
+    if (explicit_cpu != expected) {
+        throw std::runtime_error(
+            "explicit CPU rotated weighted route mismatch");
+    }
+    if (cpu_policy_kernels_after != cpu_policy_kernels_before) {
+        throw std::runtime_error(
+            "explicit CPU rotated weighted route launched a CUDA kernel");
+    }
     std::cout << "case="
               << (padded_tail
                       ? "formal_weighted_padded_rotations"
@@ -294,7 +311,8 @@ void bench_formal_weighted_rotations(
               << " points=" << rotations.size()
               << " cpu_median_ms=" << median(cpu_samples)
               << " gpu_median_ms=" << median(gpu_samples)
-              << " exact_match=true\n";
+              << " exact_match=true"
+              << " explicit_cpu_policy_match=true\n";
 }
 
 void bench_histogram(

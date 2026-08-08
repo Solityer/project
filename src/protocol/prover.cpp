@@ -1453,16 +1453,49 @@ namespace gatzk::protocol
             std::unordered_map<std::string, algebra::PackedEvaluationBackend> backends_;
         };
 
-        FieldElement evaluate_spilled_evaluation_polynomial(
+        std::vector<FieldElement> evaluate_spilled_evaluation_polynomial_points_impl(
             const TraceArtifacts::SpilledEvaluationPolynomial &spilled,
             const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
-            const FieldElement &point,
-            const algebra::DomainEvaluationWeights &weight_entry)
+            const std::vector<FieldElement> &points,
+            const std::vector<const algebra::DomainEvaluationWeights *> &weights,
+            SpilledEvaluationProfile *profile)
         {
             if (domain == nullptr)
             {
                 throw std::runtime_error("spilled polynomial is missing its domain");
             }
+            if (points.size() != weights.size())
+            {
+                throw std::runtime_error("spilled polynomial point/weight count mismatch");
+            }
+            std::vector<FieldElement> values(points.size(), FieldElement::zero());
+            if (points.empty())
+            {
+                return values;
+            }
+
+            std::vector<std::size_t> interpolation_indices;
+            std::vector<std::size_t> direct_indices;
+            interpolation_indices.reserve(points.size());
+            direct_indices.reserve(points.size());
+            for (std::size_t point_index = 0; point_index < points.size(); ++point_index)
+            {
+                if (weights[point_index] == nullptr)
+                {
+                    throw std::runtime_error("spilled polynomial received null domain weights");
+                }
+                if (weights[point_index]->direct_index.has_value())
+                {
+                    direct_indices.push_back(point_index);
+                    continue;
+                }
+                if (weights[point_index]->native_weights.size() < spilled.size)
+                {
+                    throw std::runtime_error("spilled polynomial exceeds its domain weights");
+                }
+                interpolation_indices.push_back(point_index);
+            }
+
             constexpr std::size_t kFieldBytes = 32;
             std::array<std::uint8_t, kFieldBytes> bytes{};
             std::ifstream stream(spilled.path, std::ios::binary);
@@ -1470,24 +1503,45 @@ namespace gatzk::protocol
             {
                 throw std::runtime_error("failed to open spilled polynomial file: " + spilled.path);
             }
-            if (weight_entry.direct_index.has_value())
+            if (profile != nullptr)
             {
-                if (*weight_entry.direct_index >= spilled.size)
-                {
-                    return FieldElement::zero();
-                }
-                const auto offset = static_cast<std::streamoff>(*weight_entry.direct_index * kFieldBytes);
-                stream.seekg(offset);
-                stream.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-                if (!stream)
-                {
-                    throw std::runtime_error("failed to read direct spilled polynomial entry: " + spilled.path);
-                }
-                return FieldElement::from_little_endian_mod(bytes.data(), bytes.size());
+                ++profile->file_open_count;
             }
 
-            mcl::Fr native_sum;
-            native_sum.clear();
+            if (interpolation_indices.empty())
+            {
+                for (const auto point_index : direct_indices)
+                {
+                    const auto direct_index = *weights[point_index]->direct_index;
+                    if (direct_index >= spilled.size)
+                    {
+                        continue;
+                    }
+                    const auto offset = static_cast<std::streamoff>(direct_index * kFieldBytes);
+                    stream.seekg(offset);
+                    stream.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+                    if (!stream)
+                    {
+                        throw std::runtime_error("failed to read direct spilled polynomial entry: " + spilled.path);
+                    }
+                    values[point_index] = FieldElement::from_little_endian_mod(bytes.data(), bytes.size());
+                    if (profile != nullptr)
+                    {
+                        ++profile->direct_values_resolved;
+                    }
+                }
+                return values;
+            }
+
+            if (profile != nullptr)
+            {
+                ++profile->sequential_pass_count;
+            }
+            std::vector<mcl::Fr> native_sums(points.size());
+            for (auto &sum : native_sums)
+            {
+                sum.clear();
+            }
             for (std::size_t index = 0; index < spilled.size; ++index)
             {
                 stream.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
@@ -1496,17 +1550,38 @@ namespace gatzk::protocol
                     throw std::runtime_error("failed to stream spilled polynomial: " + spilled.path);
                 }
                 const auto value = FieldElement::from_little_endian_mod(bytes.data(), bytes.size());
-                mcl::Fr term;
-                mcl::Fr::mul(term, value.native(), weight_entry.native_weights[index]);
-                mcl::Fr::add(native_sum, native_sum, term);
+                for (const auto point_index : interpolation_indices)
+                {
+                    mcl::Fr term;
+                    mcl::Fr::mul(term, value.native(), weights[point_index]->native_weights[index]);
+                    mcl::Fr::add(native_sums[point_index], native_sums[point_index], term);
+                }
+                for (const auto point_index : direct_indices)
+                {
+                    if (*weights[point_index]->direct_index == index)
+                    {
+                        values[point_index] = value;
+                        if (profile != nullptr)
+                        {
+                            ++profile->direct_values_resolved;
+                        }
+                    }
+                }
             }
-            auto value = FieldElement::from_native(native_sum);
-            if (!spilled.zero_domain_blinder.empty())
+            if (profile != nullptr)
             {
-                value += domain->zero_polynomial_eval(point)
-                    * algebra::horner(spilled.zero_domain_blinder, point);
+                profile->field_elements_streamed += spilled.size;
             }
-            return value;
+            for (const auto point_index : interpolation_indices)
+            {
+                values[point_index] = FieldElement::from_native(native_sums[point_index]);
+                if (!spilled.zero_domain_blinder.empty())
+                {
+                    values[point_index] += domain->zero_polynomial_eval(points[point_index])
+                        * algebra::horner(spilled.zero_domain_blinder, points[point_index]);
+                }
+            }
+            return values;
         }
 
         // proof 级 memoization 只缓存“当前 trace + 当前 Fiat-Shamir 挑战”派生出的值。
@@ -2709,6 +2784,82 @@ namespace gatzk::protocol
                                 point,
                                 evaluate_lazy_full_feature_lookup_trace_group(lazy_trace_labels, point));
                         }
+                    }
+                }
+
+                // Spilled evaluation polynomials are not registered in the
+                // packed in-memory backend. Seed their ordinary label@point
+                // entries with one file pass per label instead of letting
+                // eval_named rescan the file independently for every point.
+                std::vector<SpilledEvaluationRequest> spilled_requests;
+                std::vector<std::vector<std::string>> spilled_cache_keys;
+                std::vector<std::string> scheduled_spilled_labels;
+                spilled_requests.reserve(labels.size());
+                spilled_cache_keys.reserve(labels.size());
+                scheduled_spilled_labels.reserve(labels.size());
+                for (const auto &label : labels)
+                {
+                    const auto spilled_it = trace_.spilled_polynomials.find(label);
+                    if (spilled_it == trace_.spilled_polynomials.end()
+                        || trace_.polynomials.contains(label)
+                        || std::find(
+                               scheduled_spilled_labels.begin(),
+                               scheduled_spilled_labels.end(),
+                               label)
+                            != scheduled_spilled_labels.end())
+                    {
+                        continue;
+                    }
+                    std::vector<FieldElement> missing_points;
+                    std::vector<const algebra::DomainEvaluationWeights *> missing_weights;
+                    std::vector<std::string> missing_cache_keys;
+                    missing_points.reserve(points.size());
+                    missing_weights.reserve(points.size());
+                    missing_cache_keys.reserve(points.size());
+                    const auto domain = domain_from_name(spilled_it->second.domain_name);
+                    for (const auto &point : points)
+                    {
+                        const auto cache_key = label + "@" + algebra::point_cache_key(point);
+                        if (value_cache_.contains(cache_key)
+                            || std::find(
+                                   missing_cache_keys.begin(),
+                                   missing_cache_keys.end(),
+                                   cache_key)
+                                != missing_cache_keys.end())
+                        {
+                            continue;
+                        }
+                        missing_points.push_back(point);
+                        missing_weights.push_back(&domain_weights(domain, point));
+                        missing_cache_keys.push_back(cache_key);
+                    }
+                    if (missing_points.empty())
+                    {
+                        continue;
+                    }
+                    scheduled_spilled_labels.push_back(label);
+                    spilled_requests.push_back(SpilledEvaluationRequest{
+                        .spilled = &spilled_it->second,
+                        .domain = domain,
+                        .points = std::move(missing_points),
+                        .weights = std::move(missing_weights),
+                    });
+                    spilled_cache_keys.push_back(std::move(missing_cache_keys));
+                }
+                const auto spilled_values =
+                    evaluate_spilled_evaluation_requests(
+                        spilled_requests, 4, nullptr);
+                for (std::size_t job_index = 0;
+                     job_index < spilled_requests.size();
+                     ++job_index)
+                {
+                    for (std::size_t point_index = 0;
+                         point_index < spilled_requests[job_index].points.size();
+                         ++point_index)
+                    {
+                        value_cache_.emplace(
+                            std::move(spilled_cache_keys[job_index][point_index]),
+                            spilled_values[job_index][point_index]);
                     }
                 }
 
@@ -7842,6 +7993,164 @@ namespace gatzk::protocol
         }
 
     } // namespace
+
+    std::vector<algebra::FieldElement>
+    evaluate_spilled_evaluation_polynomial_points(
+        const TraceArtifacts::SpilledEvaluationPolynomial &spilled,
+        const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
+        const std::vector<algebra::FieldElement> &points,
+        const std::vector<const algebra::DomainEvaluationWeights *> &weights,
+        SpilledEvaluationProfile *profile)
+    {
+        return evaluate_spilled_evaluation_polynomial_points_impl(
+            spilled, domain, points, weights, profile);
+    }
+
+    algebra::FieldElement evaluate_spilled_evaluation_polynomial(
+        const TraceArtifacts::SpilledEvaluationPolynomial &spilled,
+        const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
+        const algebra::FieldElement &point,
+        const algebra::DomainEvaluationWeights &weights,
+        SpilledEvaluationProfile *profile)
+    {
+        return evaluate_spilled_evaluation_polynomial_points_impl(
+            spilled,
+            domain,
+            std::vector<algebra::FieldElement>{point},
+            std::vector<const algebra::DomainEvaluationWeights *>{&weights},
+            profile).front();
+    }
+
+    std::vector<std::vector<algebra::FieldElement>>
+    evaluate_spilled_evaluation_requests(
+        const std::vector<SpilledEvaluationRequest> &requests,
+        std::size_t max_workers,
+        SpilledEvaluationBatchProfile *profile)
+    {
+        constexpr std::size_t kWorkerCeiling = 4;
+        constexpr std::size_t kMinParallelFieldElements = 1U << 18U;
+
+        std::vector<std::vector<algebra::FieldElement>> results(requests.size());
+        if (profile != nullptr)
+        {
+            *profile = SpilledEvaluationBatchProfile{};
+            profile->jobs.resize(requests.size());
+        }
+        if (requests.empty())
+        {
+            return results;
+        }
+
+        std::size_t bounded_work = 0;
+        std::size_t sequential_job_count = 0;
+        for (const auto &request : requests)
+        {
+            if (request.spilled == nullptr)
+            {
+                throw std::runtime_error("spilled evaluation batch received null request");
+            }
+            if (request.domain == nullptr
+                || request.points.size() != request.weights.size())
+            {
+                throw std::runtime_error("spilled evaluation batch received invalid point weights");
+            }
+            bool requires_sequential_scan = false;
+            for (const auto *weights : request.weights)
+            {
+                if (weights == nullptr)
+                {
+                    throw std::runtime_error("spilled evaluation batch received null point weights");
+                }
+                requires_sequential_scan = requires_sequential_scan
+                    || !weights->direct_index.has_value();
+            }
+            if (!requires_sequential_scan)
+            {
+                continue;
+            }
+            ++sequential_job_count;
+            const auto remaining = kMinParallelFieldElements - bounded_work;
+            bounded_work += std::min(request.spilled->size, remaining);
+        }
+        const auto available_workers = std::max<std::size_t>(
+            1, std::thread::hardware_concurrency());
+        const bool use_parallel = sequential_job_count >= 2
+            && bounded_work >= kMinParallelFieldElements
+            && max_workers >= 2
+            && available_workers >= 2;
+        const auto worker_count = use_parallel
+            ? std::min({
+                  kWorkerCeiling,
+                  max_workers,
+                  available_workers,
+                  requests.size()})
+            : std::size_t{1};
+        if (profile != nullptr)
+        {
+            profile->worker_count = worker_count;
+        }
+
+        auto run_job = [&](std::size_t job_index)
+        {
+            const auto &request = requests[job_index];
+            results[job_index] =
+                evaluate_spilled_evaluation_polynomial_points_impl(
+                    *request.spilled,
+                    request.domain,
+                    request.points,
+                    request.weights,
+                    profile != nullptr ? &profile->jobs[job_index] : nullptr);
+        };
+        if (worker_count == 1)
+        {
+            for (std::size_t job_index = 0;
+                 job_index < requests.size();
+                 ++job_index)
+            {
+                run_job(job_index);
+            }
+            return results;
+        }
+
+        std::atomic<std::size_t> next_job{0};
+        std::vector<std::future<void>> workers;
+        workers.reserve(worker_count);
+        for (std::size_t worker = 0; worker < worker_count; ++worker)
+        {
+            workers.push_back(std::async(std::launch::async, [&]()
+            {
+                while (true)
+                {
+                    const auto job_index = next_job.fetch_add(1);
+                    if (job_index >= requests.size())
+                    {
+                        return;
+                    }
+                    run_job(job_index);
+                }
+            }));
+        }
+        std::exception_ptr first_error;
+        for (auto &worker : workers)
+        {
+            try
+            {
+                worker.get();
+            }
+            catch (...)
+            {
+                if (first_error == nullptr)
+                {
+                    first_error = std::current_exception();
+                }
+            }
+        }
+        if (first_error != nullptr)
+        {
+            std::rethrow_exception(first_error);
+        }
+        return results;
+    }
 
     // 构建一次 formal run 的静态上下文，产出数据集、模型、工作域、公开列与静态承诺。
     // 这里禁止注入任何依赖单次 proof 的 witness 或挑战状态。

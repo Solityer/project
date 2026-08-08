@@ -15,6 +15,14 @@
 // 为多个多项式在单位根域上的求值提供高效计算
 namespace gatzk::algebra
 {
+    // Controls only where a packed evaluation is executed. Both policies
+    // preserve the same field operations and formal polynomial semantics.
+    enum class EvaluationExecutionPolicy
+    {
+        Automatic,
+        CpuOnly,
+    };
+
     // 将同域多项式打包为共享求值后端，避免 prove / verify 热路径
     // 对同一组列逐列重复做域点访问与权重乘法。
     class PackedEvaluationBackend
@@ -60,7 +68,9 @@ namespace gatzk::algebra
         std::vector<std::vector<FieldElement>> evaluate_with_native_weight_rotations(
             const std::vector<std::string>& labels,
             const std::vector<mcl::Fr>& representative_weights,
-            const std::vector<std::size_t>& rotations) const;
+            const std::vector<std::size_t>& rotations,
+            EvaluationExecutionPolicy execution_policy =
+                EvaluationExecutionPolicy::Automatic) const;
 
         // 为重复出现的标签子集建立缓存视图，减少 proving 热路径中的子集重建。
         const std::vector<std::size_t>& subset_row_indices(const std::vector<std::string>& labels) const;

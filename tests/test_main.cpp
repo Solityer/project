@@ -103,6 +103,153 @@ void test_rotation_shift_subgroup_rejection_equivalence() {
         "rotation subgroup membership check changed zero-point handling");
 }
 
+void test_spilled_multi_point_evaluation_equivalence() {
+    const auto domain =
+        gatzk::algebra::RootOfUnityDomain::create(
+            "spilled_multi_point_regression", 128);
+    std::vector<FieldElement> values(domain->size, FieldElement::zero());
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        values[index] = FieldElement(
+            static_cast<std::uint64_t>(index * index + 7 * index + 13));
+    }
+    auto polynomial = gatzk::algebra::Polynomial::from_evaluations(
+        "P_spilled_multi_point", values, domain);
+    polynomial.set_zero_domain_blinder(
+        {FieldElement(17), FieldElement(19), FieldElement(23)});
+
+    const auto spill_path =
+        std::filesystem::path(GATZK_TEST_BINARY_DIR)
+        / "spilled_multi_point_regression.bin";
+    struct SpillCleanup {
+        std::filesystem::path path;
+        ~SpillCleanup() {
+            std::error_code ignored;
+            std::filesystem::remove(path, ignored);
+        }
+    } cleanup{spill_path};
+    {
+        std::ofstream output(
+            spill_path, std::ios::binary | std::ios::trunc);
+        require(
+            static_cast<bool>(output),
+            "failed to create multi-point spill regression fixture");
+        std::array<std::uint8_t, 32> bytes{};
+        for (const auto& value : values) {
+            value.write_little_endian(bytes.data(), bytes.size());
+            output.write(
+                reinterpret_cast<const char*>(bytes.data()),
+                static_cast<std::streamsize>(bytes.size()));
+        }
+        require(
+            static_cast<bool>(output),
+            "failed to write multi-point spill regression fixture");
+    }
+
+    const gatzk::protocol::TraceArtifacts::SpilledEvaluationPolynomial spilled{
+        .path = spill_path.string(),
+        .domain_name = domain->name,
+        .size = values.size(),
+        .zero_domain_blinder = polynomial.zero_domain_blinder,
+    };
+    const auto point = choose_non_domain_point(*domain);
+    const std::vector<FieldElement> points{
+        point,
+        point * domain->omega,
+    };
+    gatzk::algebra::DomainEvaluationWeightCache weight_cache;
+    std::vector<const gatzk::algebra::DomainEvaluationWeights*> weights;
+    weights.reserve(points.size());
+    for (const auto& current_point : points) {
+        weights.push_back(&weight_cache.get(domain, current_point));
+    }
+
+    gatzk::protocol::SpilledEvaluationProfile grouped_profile;
+    const auto grouped =
+        gatzk::protocol::evaluate_spilled_evaluation_polynomial_points(
+            spilled, domain, points, weights, &grouped_profile);
+    gatzk::protocol::SpilledEvaluationProfile single_profile;
+    for (std::size_t point_index = 0;
+         point_index < points.size();
+         ++point_index) {
+        const auto single =
+            gatzk::protocol::evaluate_spilled_evaluation_polynomial(
+                spilled,
+                domain,
+                points[point_index],
+                *weights[point_index],
+                &single_profile);
+        require(
+            grouped[point_index] == single
+                && grouped[point_index]
+                    == polynomial.evaluate(points[point_index]),
+            "grouped spilled evaluation changed a rotated-point value or zero-domain blinder");
+    }
+    require(
+        grouped_profile.file_open_count == 1
+            && grouped_profile.sequential_pass_count == 1
+            && grouped_profile.field_elements_streamed == values.size(),
+        "grouped spilled evaluation must use exactly one sequential file pass");
+    require(
+        single_profile.file_open_count == points.size()
+            && single_profile.sequential_pass_count == points.size()
+            && single_profile.field_elements_streamed
+                == points.size() * values.size(),
+        "single-point spill evaluator instrumentation changed unexpectedly");
+
+    const std::vector<FieldElement> direct_points{
+        domain->point_at(3),
+        domain->point_at(97),
+    };
+    std::vector<const gatzk::algebra::DomainEvaluationWeights*> direct_weights;
+    direct_weights.reserve(direct_points.size());
+    for (const auto& direct_point : direct_points) {
+        direct_weights.push_back(&weight_cache.get(domain, direct_point));
+    }
+    gatzk::protocol::SpilledEvaluationProfile direct_profile;
+    const auto direct_values =
+        gatzk::protocol::evaluate_spilled_evaluation_polynomial_points(
+            spilled,
+            domain,
+            direct_points,
+            direct_weights,
+            &direct_profile);
+    require(
+        direct_values[0] == values[3]
+            && direct_values[1] == values[97]
+            && direct_profile.file_open_count == 1
+            && direct_profile.sequential_pass_count == 0
+            && direct_profile.direct_values_resolved == 2,
+        "grouped spilled evaluation changed direct-index semantics");
+
+    const std::vector<gatzk::protocol::SpilledEvaluationRequest> requests{
+        {
+            .spilled = &spilled,
+            .domain = domain,
+            .points = points,
+            .weights = weights,
+        },
+        {
+            .spilled = &spilled,
+            .domain = domain,
+            .points = {points[1], points[0]},
+            .weights = {weights[1], weights[0]},
+        },
+    };
+    gatzk::protocol::SpilledEvaluationBatchProfile batch_profile;
+    const auto batch_values =
+        gatzk::protocol::evaluate_spilled_evaluation_requests(
+            requests, 4, &batch_profile);
+    require(
+        batch_profile.worker_count == 1
+            && batch_profile.jobs.size() == requests.size()
+            && batch_profile.jobs[0].sequential_pass_count == 1
+            && batch_profile.jobs[1].sequential_pass_count == 1
+            && batch_values[0] == grouped
+            && batch_values[1][0] == grouped[1]
+            && batch_values[1][1] == grouped[0],
+        "small spill batches must remain serial and preserve request order");
+}
+
 void test_fh_precomputed_boundary_equivalence() {
     gatzk::protocol::ProtocolContext context;
     context.domains.fh =
@@ -4223,6 +4370,9 @@ int main() {
         std::cerr
             << "running test_rotation_shift_subgroup_rejection_equivalence\n";
         test_rotation_shift_subgroup_rejection_equivalence();
+        std::cerr
+            << "running test_spilled_multi_point_evaluation_equivalence\n";
+        test_spilled_multi_point_evaluation_equivalence();
         std::cerr
             << "running test_fh_precomputed_boundary_equivalence\n";
         test_fh_precomputed_boundary_equivalence();

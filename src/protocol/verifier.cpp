@@ -395,10 +395,35 @@ namespace gatzk::protocol
                     const auto &weight_entry = domain_weight_cache_.get(domain, points.front());
                     if (!weight_entry.direct_index.has_value())
                     {
+                        // The largest full-graph FH working set also drives
+                        // verifier prefetches for its large edge domain.
+                        // Scanning those pageable public columns on CPU avoids
+                        // the unified-memory CUDA zero-copy penalty while
+                        // leaving every other backend caller on automatic
+                        // placement.
+                        const bool cpu_large_fh_working_set =
+                            lazy_large_fh_public_enabled(context_)
+                            && context_.local.num_nodes >= (1ULL << 16)
+                            && domain->size >= (1ULL << 20);
                         const auto rotated_values = backend->evaluate_with_native_weight_rotations(
                             *labels,
                             weight_entry.native_weights,
-                            rotations);
+                            rotations,
+                            cpu_large_fh_working_set
+                                ? algebra::EvaluationExecutionPolicy::CpuOnly
+                                : algebra::EvaluationExecutionPolicy::Automatic);
+                        if (cpu_large_fh_working_set
+                            && metrics_ != nullptr
+                            && !cpu_large_fh_route_noted_)
+                        {
+                            if (!metrics_->notes.empty())
+                            {
+                                metrics_->notes += "; ";
+                            }
+                            metrics_->notes +=
+                                "verifier_public_eval_route=cpu_large_fh_working_set";
+                            cpu_large_fh_route_noted_ = true;
+                        }
                         for (std::size_t point_index = 0; point_index < points.size(); ++point_index)
                         {
                             const auto point_key = algebra::point_cache_key(points[point_index]);
@@ -734,6 +759,7 @@ namespace gatzk::protocol
             std::unordered_set<std::string> precomputed_domain_points_;
             std::unordered_set<std::string> lazy_fh_batch_done_;
             RunMetrics *metrics_ = nullptr;
+            bool cpu_large_fh_route_noted_ = false;
         };
 
 

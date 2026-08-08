@@ -448,7 +448,8 @@ namespace gatzk::algebra
     std::vector<std::vector<FieldElement>> PackedEvaluationBackend::evaluate_with_native_weight_rotations(
         const std::vector<std::string>& labels,
         const std::vector<mcl::Fr>& representative_weights,
-        const std::vector<std::size_t>& rotations) const
+        const std::vector<std::size_t>& rotations,
+        EvaluationExecutionPolicy execution_policy) const
     {
         if (representative_weights.size() != domain_->size)
         {
@@ -469,7 +470,10 @@ namespace gatzk::algebra
         }
 
         const auto& route2 = util::route2_options();
-        const bool try_gpu = should_use_cuda_weighted_evaluation(domain_->size, row_count, point_count);
+        const bool try_gpu =
+            execution_policy == EvaluationExecutionPolicy::Automatic
+            && should_use_cuda_weighted_evaluation(
+                domain_->size, row_count, point_count);
 
         // Unified-memory CUDA uses the canonical evaluation columns directly.
         // This avoids materializing an interleaved subset (or copying it back
