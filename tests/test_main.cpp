@@ -355,8 +355,16 @@ void test_fh_precomputed_boundary_equivalence() {
             fh_values,
             boundary,
             &fh_feature_encoding_values);
+    const auto fixed_slot_generic_power_reference =
+        gatzk::protocol::
+            evaluate_t_fh_from_values_power_accumulator_for_stage_benchmark(
+                fh_parameters,
+                fh_values,
+                boundary,
+                &fh_feature_encoding_values);
     require(
-        direct == fixed_slot_generic,
+        direct == fixed_slot_generic
+            && fixed_slot_generic == fixed_slot_generic_power_reference,
         "fixed-slot FH core differs from generic named evaluation");
 
     const gatzk::protocol::EvalFn identity_eval =
@@ -412,8 +420,14 @@ void test_fh_precomputed_boundary_equivalence() {
     const auto fixed_slot_identity =
         gatzk::protocol::evaluate_t_fh_from_values(
             fh_parameters, identity_values, boundary);
+    const auto fixed_slot_identity_power_reference =
+        gatzk::protocol::
+            evaluate_t_fh_from_values_power_accumulator_for_stage_benchmark(
+                fh_parameters, identity_values, boundary);
     require(
-        derived_identity == fixed_slot_identity,
+        derived_identity == fixed_slot_identity
+            && fixed_slot_identity
+                == fixed_slot_identity_power_reference,
         "fixed-slot FH identity core differs from generic source of truth");
 }
 
@@ -458,6 +472,74 @@ void test_logup_inverse_accumulator_reuse_equivalence() {
     require(
         reused == reference,
         "LogUp accumulator reuse must exactly match denominator recomputation");
+
+    const auto inactive = gatzk::protocol::
+        build_logup_accumulator_from_inverse_columns_with_active_count(
+            inverses.table,
+            inverses.query,
+            multiplicity,
+            q_table,
+            q_query,
+            0);
+    require(
+        std::all_of(
+            inactive.begin(), inactive.end(),
+            [](const FieldElement& value) { return value.is_zero(); }),
+        "zero-active LogUp accumulator must remain zero through padding");
+
+    constexpr std::size_t parallel_active_count = std::size_t{1} << 18;
+    constexpr std::size_t parallel_domain_size = parallel_active_count + 1;
+    std::vector<FieldElement> parallel_table_inverse(
+        parallel_domain_size, FieldElement::one());
+    std::vector<FieldElement> parallel_query_inverse(
+        parallel_domain_size, FieldElement::zero());
+    std::vector<FieldElement> parallel_multiplicity(
+        parallel_domain_size, FieldElement(3));
+    std::vector<FieldElement> parallel_q_table(
+        parallel_domain_size, FieldElement::zero());
+    std::vector<FieldElement> parallel_q_query(
+        parallel_domain_size, FieldElement::zero());
+    std::fill_n(
+        parallel_q_table.begin(), parallel_active_count,
+        FieldElement::one());
+    const auto parallel_reference = gatzk::protocol::
+        build_logup_accumulator_from_inverse_columns_with_active_count_serial_for_stage_benchmark(
+            parallel_table_inverse,
+            parallel_query_inverse,
+            parallel_multiplicity,
+            parallel_q_table,
+            parallel_q_query,
+            parallel_active_count);
+    const auto parallel_reused = gatzk::protocol::
+        build_logup_accumulator_from_inverse_columns_with_active_count(
+            parallel_table_inverse,
+            parallel_query_inverse,
+            parallel_multiplicity,
+            parallel_q_table,
+            parallel_q_query,
+            parallel_active_count);
+    require(
+        parallel_reused == parallel_reference
+            && parallel_reused.back()
+                == parallel_reused[parallel_active_count],
+        "threshold-parallel LogUp accumulator must preserve terminal hold-last");
+    parallel_q_table[parallel_active_count / 2] = FieldElement(2);
+    bool rejected_non_boolean_selector = false;
+    try {
+        (void)gatzk::protocol::
+            build_logup_accumulator_from_inverse_columns_with_active_count(
+                parallel_table_inverse,
+                parallel_query_inverse,
+                parallel_multiplicity,
+                parallel_q_table,
+                parallel_q_query,
+                parallel_active_count);
+    } catch (const std::exception&) {
+        rejected_non_boolean_selector = true;
+    }
+    require(
+        rejected_non_boolean_selector,
+        "parallel LogUp accumulator must reject a non-boolean selector");
 }
 
 struct TestPointGroupProof {
@@ -1314,6 +1396,24 @@ void test_cross_domain_indexed_view_shift_relation() {
     const auto view_side = gatzk::protocol::build_indexed_view_side(
         view_indices, view_values, view_selector,
         view_multiplicity, eta, beta);
+    const auto canonical_prefix =
+        gatzk::protocol::build_indexed_view_active_prefix_witness(
+            canonical_side.tuples,
+            class_count,
+            FieldElement(row_count),
+            beta);
+    const auto view_prefix =
+        gatzk::protocol::build_indexed_view_active_prefix_witness(
+            view_side.tuples,
+            row_count * class_count,
+            FieldElement::one(),
+            beta);
+    require(
+        canonical_prefix.inverses == canonical_side.inverses
+            && canonical_prefix.accumulator == canonical_side.accumulator
+            && view_prefix.inverses == view_side.inverses
+            && view_prefix.accumulator == view_side.accumulator,
+        "active-prefix indexed-view witness must match selector route");
     require(
         canonical_side.accumulator[class_count]
             == view_side.accumulator[row_count * class_count],
@@ -1332,6 +1432,31 @@ void test_cross_domain_indexed_view_shift_relation() {
         "P_bias_R_can", canonical_accumulator, keys);
     const auto negative_view_commitment = gatzk::crypto::KZG::commit(
         "P_bias_R_qry_neg", negative_view_accumulator, keys);
+    auto canonical_prefix_accumulator =
+        gatzk::algebra::Polynomial::from_evaluations(
+            "P_bias_R_can", canonical_prefix.accumulator, canonical_domain);
+    canonical_prefix_accumulator.set_zero_domain_blinder(
+        {FieldElement(41), FieldElement(43)});
+    std::vector<FieldElement> negative_prefix_view_values(
+        view_prefix.accumulator.size());
+    for (std::size_t i = 0; i < negative_prefix_view_values.size(); ++i)
+        negative_prefix_view_values[i] = -view_prefix.accumulator[i];
+    auto negative_prefix_view_accumulator =
+        gatzk::algebra::Polynomial::from_evaluations(
+            "P_bias_R_qry_neg",
+            std::move(negative_prefix_view_values),
+            view_domain);
+    negative_prefix_view_accumulator.set_zero_domain_blinder(
+        {FieldElement(47), FieldElement(53)});
+    require(
+        gatzk::crypto::KZG::commit(
+            "P_bias_R_can", canonical_prefix_accumulator, keys).point
+                == canonical_commitment.point
+            && gatzk::crypto::KZG::commit(
+                "P_bias_R_qry_neg",
+                negative_prefix_view_accumulator,
+                keys).point == negative_view_commitment.point,
+        "active-prefix indexed-view accumulator commitments must match selector route");
     const auto z_star = canonical_domain->point_at(class_count);
     const auto z_query = view_domain->point_at(row_count * class_count);
     const auto delta = z_query - z_star;

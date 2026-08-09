@@ -130,7 +130,8 @@ std::vector<FieldElement> run_fh_zero_division_stage(
 std::vector<FieldElement> run_fh_fixed_slot_stage(
     const gatzk::protocol::ProtocolContext& context,
     const std::map<std::string, FieldElement>& challenges,
-    std::size_t point_count) {
+    std::size_t point_count,
+    bool horner = true) {
     const std::array<FieldElement, 4> zeros = {
         FieldElement(7), FieldElement(11),
         FieldElement(13), FieldElement(17)};
@@ -189,9 +190,12 @@ std::vector<FieldElement> run_fh_fixed_slot_stage(
                         sizeof("P_R_feat") - 1,
                         z * context.domains.fh->omega),
                 };
-                output[index] =
-                    gatzk::protocol::evaluate_t_fh_from_values(
-                        parameters, values, boundary);
+                output[index] = horner
+                    ? gatzk::protocol::evaluate_t_fh_from_values(
+                        parameters, values, boundary)
+                    : gatzk::protocol::
+                        evaluate_t_fh_from_values_power_accumulator_for_stage_benchmark(
+                            parameters, values, boundary);
             }
         }));
     }
@@ -219,7 +223,8 @@ std::vector<FieldElement> run_fh_slot_dispatch_stage(
     const gatzk::protocol::ProtocolContext& context,
     const std::map<std::string, FieldElement>& challenges,
     const FHSlotInputs& inputs,
-    bool fixed_slots) {
+    bool fixed_slots,
+    bool horner = true) {
     const auto point_count = inputs.front().size();
     const auto rotation_step = point_count / context.domains.fh->size;
     const std::array<FieldElement, 4> zeros = {
@@ -296,9 +301,12 @@ std::vector<FieldElement> run_fh_slot_dispatch_stage(
                     .accumulator = inputs[7][index],
                     .accumulator_next = inputs[7][rotated_index],
                 };
-                output[index] =
-                    gatzk::protocol::evaluate_t_fh_from_values(
-                        parameters, values, boundary);
+                output[index] = horner
+                    ? gatzk::protocol::evaluate_t_fh_from_values(
+                        parameters, values, boundary)
+                    : gatzk::protocol::
+                        evaluate_t_fh_from_values_power_accumulator_for_stage_benchmark(
+                            parameters, values, boundary);
             }
         }));
     }
@@ -356,8 +364,10 @@ int main(int argc, char** argv) {
         std::vector<double> fh_division_samples;
         std::vector<double> fh_inverse_multiply_samples;
         std::vector<double> fh_fixed_slot_samples;
+        std::vector<double> fh_power_accumulator_samples;
         std::vector<double> fh_named_slot_samples;
         std::vector<double> fh_pointer_slot_samples;
+        std::vector<double> fh_pointer_slot_power_samples;
         serial_samples.reserve(repeats);
         forward_pair_serial_samples.reserve(repeats);
         forward_pair_parallel_samples.reserve(repeats);
@@ -374,8 +384,10 @@ int main(int argc, char** argv) {
         fh_division_samples.reserve(repeats);
         fh_inverse_multiply_samples.reserve(repeats);
         fh_fixed_slot_samples.reserve(repeats);
+        fh_power_accumulator_samples.reserve(repeats);
         fh_named_slot_samples.reserve(repeats);
         fh_pointer_slot_samples.reserve(repeats);
+        fh_pointer_slot_power_samples.reserve(repeats);
         const auto rotation_domain =
             gatzk::algebra::RootOfUnityDomain::create(
                 "rotation_stage", size);
@@ -515,22 +527,60 @@ int main(int argc, char** argv) {
             const auto fh_inverse_multiply = run_fh_zero_division_stage(
                 fh_context, fh_challenges, kFhDivisionStagePoints, true);
             fh_inverse_multiply_samples.push_back(elapsed_ms(start));
-            start = Clock::now();
-            const auto fh_fixed_slot = run_fh_fixed_slot_stage(
-                fh_context, fh_challenges, kFhDivisionStagePoints);
-            fh_fixed_slot_samples.push_back(elapsed_ms(start));
+            std::vector<FieldElement> fh_power_accumulator;
+            std::vector<FieldElement> fh_fixed_slot;
+            const auto run_fh_power_accumulator = [&]() {
+                start = Clock::now();
+                fh_power_accumulator = run_fh_fixed_slot_stage(
+                    fh_context, fh_challenges,
+                    kFhDivisionStagePoints, false);
+                fh_power_accumulator_samples.push_back(elapsed_ms(start));
+            };
+            const auto run_fh_horner = [&]() {
+                start = Clock::now();
+                fh_fixed_slot = run_fh_fixed_slot_stage(
+                    fh_context, fh_challenges,
+                    kFhDivisionStagePoints, true);
+                fh_fixed_slot_samples.push_back(elapsed_ms(start));
+            };
+            if ((repeat & 1U) == 0U) {
+                run_fh_power_accumulator();
+                run_fh_horner();
+            } else {
+                run_fh_horner();
+                run_fh_power_accumulator();
+            }
             exact = exact && fh_division == fh_inverse_multiply
-                && fh_inverse_multiply == fh_fixed_slot;
+                && fh_inverse_multiply == fh_fixed_slot
+                && fh_fixed_slot == fh_power_accumulator;
 
             start = Clock::now();
             const auto fh_named_slot = run_fh_slot_dispatch_stage(
                 fh_context, fh_challenges, fh_slot_inputs, false);
             fh_named_slot_samples.push_back(elapsed_ms(start));
-            start = Clock::now();
-            const auto fh_pointer_slot = run_fh_slot_dispatch_stage(
-                fh_context, fh_challenges, fh_slot_inputs, true);
-            fh_pointer_slot_samples.push_back(elapsed_ms(start));
-            exact = exact && fh_named_slot == fh_pointer_slot;
+            std::vector<FieldElement> fh_pointer_slot_power;
+            std::vector<FieldElement> fh_pointer_slot;
+            const auto run_fh_pointer_power = [&]() {
+                start = Clock::now();
+                fh_pointer_slot_power = run_fh_slot_dispatch_stage(
+                    fh_context, fh_challenges, fh_slot_inputs, true, false);
+                fh_pointer_slot_power_samples.push_back(elapsed_ms(start));
+            };
+            const auto run_fh_pointer_horner = [&]() {
+                start = Clock::now();
+                fh_pointer_slot = run_fh_slot_dispatch_stage(
+                    fh_context, fh_challenges, fh_slot_inputs, true, true);
+                fh_pointer_slot_samples.push_back(elapsed_ms(start));
+            };
+            if ((repeat & 1U) == 0U) {
+                run_fh_pointer_power();
+                run_fh_pointer_horner();
+            } else {
+                run_fh_pointer_horner();
+                run_fh_pointer_power();
+            }
+            exact = exact && fh_named_slot == fh_pointer_slot
+                && fh_pointer_slot == fh_pointer_slot_power;
 
             if (batch_objects != 0) {
                 std::vector<FieldElement> batch_outputs(
@@ -626,10 +676,14 @@ int main(int argc, char** argv) {
                   << median(fh_inverse_multiply_samples)
                   << " fh_fixed_slot_median_ms="
                   << median(fh_fixed_slot_samples)
+                  << " fh_power_accumulator_median_ms="
+                  << median(fh_power_accumulator_samples)
                   << " fh_named_slot_median_ms="
                   << median(fh_named_slot_samples)
                   << " fh_pointer_slot_median_ms="
                   << median(fh_pointer_slot_samples)
+                  << " fh_pointer_slot_power_median_ms="
+                  << median(fh_pointer_slot_power_samples)
                   << " batch_objects=" << batch_objects
                   << " batch_workers=" << batch_workers
                   << " batch_mode=" << batch_mode;

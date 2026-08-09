@@ -165,6 +165,56 @@ target_include_directories(gatzk_quotient_transform_stage_bench PRIVATE ${PROJEC
 target_link_libraries(gatzk_quotient_transform_stage_bench PRIVATE gatzkml)
 
 add_executable(
+    gatzk_signed_round_div_inverse_stage_bench
+    tools/benchmarks/signed_round_div_inverse_stage_bench.cpp)
+target_include_directories(
+    gatzk_signed_round_div_inverse_stage_bench
+    PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(
+    gatzk_signed_round_div_inverse_stage_bench
+    PRIVATE gatzkml)
+
+add_executable(
+    gatzk_output_hash_stage_bench
+    tools/benchmarks/output_hash_stage_bench.cpp)
+target_include_directories(
+    gatzk_output_hash_stage_bench
+    PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(
+    gatzk_output_hash_stage_bench
+    PRIVATE gatzkml)
+
+add_executable(
+    gatzk_taylor_shift_self_check_stage_bench
+    tools/benchmarks/taylor_shift_self_check_stage_bench.cpp)
+target_include_directories(
+    gatzk_taylor_shift_self_check_stage_bench
+    PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(
+    gatzk_taylor_shift_self_check_stage_bench
+    PRIVATE gatzkml)
+
+add_executable(
+    gatzk_route_construction_stage_bench
+    tools/benchmarks/route_construction_stage_bench.cpp)
+target_include_directories(
+    gatzk_route_construction_stage_bench
+    PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(
+    gatzk_route_construction_stage_bench
+    PRIVATE gatzkml)
+
+add_executable(
+    gatzk_indexed_view_prefix_stage_bench
+    tools/benchmarks/indexed_view_prefix_stage_bench.cpp)
+target_include_directories(
+    gatzk_indexed_view_prefix_stage_bench
+    PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(
+    gatzk_indexed_view_prefix_stage_bench
+    PRIVATE gatzkml)
+
+add_executable(
     gatzk_spilled_evaluation_stage_bench
     tools/benchmarks/spilled_evaluation_stage_bench.cpp)
 target_include_directories(

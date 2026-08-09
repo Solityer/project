@@ -29,6 +29,73 @@ std::vector<std::int64_t> weighted_edge_aggregate_raw_by_destination(
     std::size_t node_count,
     std::string_view label);
 
+struct SignedRoundDivInverseStageProfile {
+    std::size_t active_count = 0;
+    std::size_t column_size = 0;
+    std::size_t zero_magnitude_count = 0;
+    std::size_t positive_numerator_count = 0;
+    std::size_t negative_numerator_count = 0;
+    std::vector<double> scalar_inverse_ms;
+    std::vector<double> batch_inverse_ms;
+};
+
+// Same-binary execution benchmark for the exact inverse-column core used by
+// the formal SignedRoundDiv witness builder. It checks complete output columns,
+// including signed/zero numerators, heterogeneous positive denominators, and
+// inactive zero padding.
+SignedRoundDivInverseStageProfile
+benchmark_signed_round_div_inverse_stage(
+    std::size_t active_count,
+    std::size_t repeats);
+
+struct TaylorShiftSelfCheckStageProfile {
+    std::size_t polynomial_size = 0;
+    std::vector<double> full_self_check_ms;
+    std::vector<double> default_path_ms;
+    algebra::FieldElement retained_u_rel = algebra::FieldElement::zero();
+};
+
+// Same-binary execution benchmark for the optional prover-side Taylor-shift
+// closure checks. Both arms retain the proof-visible shifted evaluation; only
+// the debug arm repeats the source and terminal-relation evaluations.
+TaylorShiftSelfCheckStageProfile
+benchmark_taylor_shift_self_check_stage(
+    std::size_t polynomial_size,
+    std::size_t repeats);
+
+struct RouteConstructionStageProfile {
+    std::size_t node_domain_size = 0;
+    std::size_t node_active_count = 0;
+    std::size_t edge_domain_size = 0;
+    std::size_t edge_active_count = 0;
+    std::vector<double> legacy_route_ms;
+    std::vector<double> from_padded_route_ms;
+};
+
+// Same-binary execution benchmark for the formal route construction core.
+// The legacy arm pads twice and materializes selectors/locations; the formal
+// candidate retains the committed padding and uses active-prefix inverses.
+RouteConstructionStageProfile benchmark_route_construction_stage(
+    std::size_t node_domain_size,
+    std::size_t node_active_count,
+    std::size_t edge_domain_size,
+    std::size_t edge_active_count,
+    std::size_t repeats);
+
+struct OutputHashStageProfile {
+    std::size_t element_count = 0;
+    std::vector<double> buffered_three_pass_ms;
+    std::vector<double> streamed_reuse_ms;
+};
+
+// Same-binary comparison of the former three buffered textual field-matrix
+// hashes and the formal streaming/reuse route. Both arms must produce the
+// exact same public/reference/secure hash triplet.
+OutputHashStageProfile benchmark_output_hash_stage(
+    std::size_t row_count,
+    std::size_t column_count,
+    std::size_t repeats);
+
 // Resolve the exact prover-side evaluation polynomial registered for a trace
 // commitment. Large columns may be file-backed after commitment, so consumers
 // must use this registry-aware path instead of assuming the commitment keeps a

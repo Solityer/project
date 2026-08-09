@@ -33,6 +33,11 @@ struct IndexedViewSideTrace {
     std::vector<algebra::FieldElement> accumulator;
 };
 
+struct IndexedViewActivePrefixWitness {
+    std::vector<algebra::FieldElement> inverses;
+    std::vector<algebra::FieldElement> accumulator;
+};
+
 // Build one native-domain side of an indexed-view LogUp. Invalid rows are
 // selector-gated to zero; multiplicity is public and supplied explicitly.
 IndexedViewSideTrace build_indexed_view_side(
@@ -43,7 +48,25 @@ IndexedViewSideTrace build_indexed_view_side(
     const algebra::FieldElement& eta,
     const algebra::FieldElement& beta);
 
+// Build the private inverse/accumulator columns when the committed tuple
+// column is already available and its selector and multiplicity are constant
+// on one active prefix. This is the formal output-bias shape.
+IndexedViewActivePrefixWitness build_indexed_view_active_prefix_witness(
+    const std::vector<algebra::FieldElement>& tuples,
+    std::size_t active_length,
+    const algebra::FieldElement& active_multiplicity,
+    const algebra::FieldElement& beta);
+
 LogUpInverseColumns build_logup_inverse_columns(
+    const std::vector<algebra::FieldElement>& table,
+    const std::vector<algebra::FieldElement>& query,
+    const std::vector<algebra::FieldElement>& q_table,
+    const std::vector<algebra::FieldElement>& q_query,
+    const algebra::FieldElement& beta);
+
+// Execution-only baseline retained for exact, same-binary stage A/B. Formal
+// trace construction always calls build_logup_inverse_columns above.
+LogUpInverseColumns build_logup_inverse_columns_serial_for_stage_benchmark(
     const std::vector<algebra::FieldElement>& table,
     const std::vector<algebra::FieldElement>& query,
     const std::vector<algebra::FieldElement>& q_table,
@@ -61,9 +84,29 @@ build_logup_accumulator_from_inverse_columns_with_active_count(
     const std::vector<algebra::FieldElement>& q_query,
     std::size_t active_count);
 
+// Execution-only serial reference used for source-matched A/B of the formal
+// inverse-column accumulator. Formal trace construction calls the parallel
+// entry above.
+std::vector<algebra::FieldElement>
+build_logup_accumulator_from_inverse_columns_with_active_count_serial_for_stage_benchmark(
+    const std::vector<algebra::FieldElement>& table_inverse,
+    const std::vector<algebra::FieldElement>& query_inverse,
+    const std::vector<algebra::FieldElement>& multiplicity,
+    const std::vector<algebra::FieldElement>& q_table,
+    const std::vector<algebra::FieldElement>& q_query,
+    std::size_t active_count);
+
 std::vector<algebra::FieldElement> build_selected_inverse_column(
     const std::vector<algebra::FieldElement>& values,
     const std::vector<algebra::FieldElement>& selector,
+    const algebra::FieldElement& beta);
+
+// Specialized form for a selector that is exactly one on
+// [0, active_length) and zero afterwards. It avoids materializing and
+// scanning a full-domain selector and location list.
+std::vector<algebra::FieldElement> build_active_prefix_inverse_column(
+    const std::vector<algebra::FieldElement>& values,
+    std::size_t active_length,
     const algebra::FieldElement& beta);
 
 // 生成有效区选择器，控制 table / query 在工作域中的填充边界。

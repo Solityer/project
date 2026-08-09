@@ -790,57 +790,98 @@ namespace gatzk::protocol
         return labels;
     }
 
+    namespace
+    {
+        std::array<FieldElement, 9> t_fh_terms(
+            const FHQuotientParameters &parameters,
+            const FHQuotientValues &values,
+            const QuotientBoundaryValues &boundary,
+            const FHFeatureEncodingValues *feature_encoding_values)
+        {
+            const auto one = FieldElement::one();
+            const auto not_last = one - boundary.last;
+            std::array<FieldElement, 9> terms;
+            terms[0] = boundary.first * values.accumulator;
+            terms[1] = not_last * (
+                values.accumulator_next - values.accumulator
+                - values.q_table * values.multiplicity * values.j_table
+                + values.q_query * values.j_query);
+            terms[2] = boundary.last * values.accumulator;
+            terms[3] = values.q_table * (
+                (values.table + parameters.beta_feat) * values.j_table - one);
+            terms[4] = (one - values.q_table) * values.j_table;
+            terms[5] = values.q_query * (
+                (values.query + parameters.beta_feat) * values.j_query - one);
+            terms[6] = (one - values.q_query) * values.j_query;
+            if (feature_encoding_values != nullptr)
+            {
+                const auto eta_feat_squared =
+                    parameters.eta_feat * parameters.eta_feat;
+                terms[7] =
+                    values.table
+                    - (feature_encoding_values->table_row
+                       + parameters.eta_feat
+                           * feature_encoding_values->table_column
+                       + eta_feat_squared
+                           * feature_encoding_values->table_feature);
+                terms[8] =
+                    values.query
+                    - (feature_encoding_values->query_row
+                       + parameters.eta_feat
+                           * feature_encoding_values->query_column
+                       + eta_feat_squared
+                           * feature_encoding_values->query_feature);
+            }
+            return terms;
+        }
+
+        FieldElement finish_t_fh_quotient(
+            const FieldElement &numerator,
+            const QuotientBoundaryValues &boundary)
+        {
+            return boundary.zero_inverse.has_value()
+                ? numerator * *boundary.zero_inverse
+                : numerator / boundary.zero;
+        }
+    }
+
     FieldElement evaluate_t_fh_from_values(
         const FHQuotientParameters &parameters,
         const FHQuotientValues &values,
         const QuotientBoundaryValues &boundary,
         const FHFeatureEncodingValues *feature_encoding_values)
     {
-        const auto one = FieldElement::one();
-        const auto not_last = one - boundary.last;
+        const auto terms = t_fh_terms(
+            parameters, values, boundary, feature_encoding_values);
+        // The quotient alpha slots form one fixed polynomial in alpha.  Horner
+        // evaluation removes the per-point alpha-power stream and its second
+        // multiplication per term.  In the full-identity production route the
+        // last two terms are certified zero, so they need not be traversed.
+        const auto term_count = feature_encoding_values == nullptr
+            ? std::size_t{7}
+            : terms.size();
+        auto numerator = terms[term_count - 1];
+        for (std::size_t index = term_count - 1; index-- > 0;)
+        {
+            numerator = terms[index] + parameters.alpha_quot * numerator;
+        }
+        return finish_t_fh_quotient(numerator, boundary);
+    }
+
+    FieldElement evaluate_t_fh_from_values_power_accumulator_for_stage_benchmark(
+        const FHQuotientParameters &parameters,
+        const FHQuotientValues &values,
+        const QuotientBoundaryValues &boundary,
+        const FHFeatureEncodingValues *feature_encoding_values)
+    {
+        const auto terms = t_fh_terms(
+            parameters, values, boundary, feature_encoding_values);
         QuotientAccumulator acc(parameters.alpha_quot);
-        acc.add(boundary.first * values.accumulator);
-        acc.add(not_last * (
-            values.accumulator_next - values.accumulator
-            - values.q_table * values.multiplicity * values.j_table
-            + values.q_query * values.j_query));
-        acc.add(boundary.last * values.accumulator);
-        acc.add(values.q_table * (
-            (values.table + parameters.beta_feat) * values.j_table - one));
-        acc.add((one - values.q_table) * values.j_table);
-        acc.add(values.q_query * (
-            (values.query + parameters.beta_feat) * values.j_query - one));
-        acc.add((one - values.q_query) * values.j_query);
-        if (feature_encoding_values == nullptr)
+        for (const auto &term : terms)
         {
-            // Preserve the two feature-encoding alpha slots even when the
-            // full-identity construction makes both terms identically zero.
-            acc.add(FieldElement::zero());
-            acc.add(FieldElement::zero());
+            acc.add(term);
         }
-        else
-        {
-            const auto eta_feat_squared =
-                parameters.eta_feat * parameters.eta_feat;
-            acc.add(
-                values.table
-                - (feature_encoding_values->table_row
-                   + parameters.eta_feat
-                       * feature_encoding_values->table_column
-                   + eta_feat_squared
-                       * feature_encoding_values->table_feature));
-            acc.add(
-                values.query
-                - (feature_encoding_values->query_row
-                   + parameters.eta_feat
-                       * feature_encoding_values->query_column
-                   + eta_feat_squared
-                       * feature_encoding_values->query_feature));
-        }
-        const auto numerator = acc.value();
-        return boundary.zero_inverse.has_value()
-            ? numerator * *boundary.zero_inverse
-            : numerator / boundary.zero;
+        return finish_t_fh_quotient(acc.value(), boundary);
     }
 
     FieldElement evaluate_t_fh(
