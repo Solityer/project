@@ -34,6 +34,46 @@ struct QuotientBoundaryValues {
     std::optional<algebra::FieldElement> zero_inverse;
 };
 
+// `t_FH` point evaluation is intentionally split into named-value collection
+// and one equation core.  The verifier collects these values through `EvalFn`;
+// the quotient materializer can bind its already-authenticated coset vectors
+// once and feed the same core without per-point string/function dispatch.
+struct FHQuotientParameters {
+    algebra::FieldElement alpha_quot;
+    algebra::FieldElement beta_feat;
+    algebra::FieldElement eta_feat;
+};
+
+struct FHQuotientValues {
+    algebra::FieldElement q_table;
+    algebra::FieldElement q_query;
+    algebra::FieldElement table;
+    algebra::FieldElement query;
+    algebra::FieldElement multiplicity;
+    algebra::FieldElement j_table;
+    algebra::FieldElement j_query;
+    algebra::FieldElement accumulator;
+    algebra::FieldElement accumulator_next;
+};
+
+struct FHFeatureEncodingValues {
+    algebra::FieldElement table_row;
+    algebra::FieldElement table_column;
+    algebra::FieldElement table_feature;
+    algebra::FieldElement query_row;
+    algebra::FieldElement query_column;
+    algebra::FieldElement query_feature;
+};
+
+// Evaluate the exact formal `t_FH` alpha-slot sequence from already resolved
+// point values.  A null `feature_encoding_values` represents the production
+// full-identity optimization and still consumes the two zero alpha slots.
+algebra::FieldElement evaluate_t_fh_from_values(
+    const FHQuotientParameters& parameters,
+    const FHQuotientValues& values,
+    const QuotientBoundaryValues& boundary_values,
+    const FHFeatureEncodingValues* feature_encoding_values = nullptr);
+
 std::shared_ptr<const TEdgeEvaluationPlan> build_t_edge_evaluation_plan(
     const ProtocolContext& context,
     const std::map<std::string, algebra::FieldElement>& challenges);

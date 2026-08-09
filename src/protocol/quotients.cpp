@@ -18,6 +18,7 @@ namespace gatzk::protocol
         std::string prefix;
         std::string division_prefix;
         std::string division_selector;
+        std::string elu_query_selector;
         algebra::FieldElement beta_src;
         algebra::FieldElement beta_dst;
         algebra::FieldElement eta_src;
@@ -544,6 +545,15 @@ namespace gatzk::protocol
             constants.prefix = "P_h" + index + "_";
             constants.division_prefix = constants.prefix + "Div_";
             constants.division_selector = "P_Q_div_h" + index;
+            const auto head_dim = context.model.hidden_heads[head_index]
+                                      .seq_kernel_fp.empty()
+                ? std::size_t{0}
+                : context.model.hidden_heads[head_index]
+                      .seq_kernel_fp.front().size();
+            constants.elu_query_selector =
+                head_dim == model::max_hidden_head_dim(context.model)
+                    ? "P_Q_qry_ELU"
+                    : constants.division_selector;
             constants.beta_src = challenges.at("beta_src_h" + index);
             constants.beta_dst = challenges.at("beta_dst_h" + index);
             constants.eta_src = challenges.at("eta_src_h" + index);
@@ -780,6 +790,59 @@ namespace gatzk::protocol
         return labels;
     }
 
+    FieldElement evaluate_t_fh_from_values(
+        const FHQuotientParameters &parameters,
+        const FHQuotientValues &values,
+        const QuotientBoundaryValues &boundary,
+        const FHFeatureEncodingValues *feature_encoding_values)
+    {
+        const auto one = FieldElement::one();
+        const auto not_last = one - boundary.last;
+        QuotientAccumulator acc(parameters.alpha_quot);
+        acc.add(boundary.first * values.accumulator);
+        acc.add(not_last * (
+            values.accumulator_next - values.accumulator
+            - values.q_table * values.multiplicity * values.j_table
+            + values.q_query * values.j_query));
+        acc.add(boundary.last * values.accumulator);
+        acc.add(values.q_table * (
+            (values.table + parameters.beta_feat) * values.j_table - one));
+        acc.add((one - values.q_table) * values.j_table);
+        acc.add(values.q_query * (
+            (values.query + parameters.beta_feat) * values.j_query - one));
+        acc.add((one - values.q_query) * values.j_query);
+        if (feature_encoding_values == nullptr)
+        {
+            // Preserve the two feature-encoding alpha slots even when the
+            // full-identity construction makes both terms identically zero.
+            acc.add(FieldElement::zero());
+            acc.add(FieldElement::zero());
+        }
+        else
+        {
+            const auto eta_feat_squared =
+                parameters.eta_feat * parameters.eta_feat;
+            acc.add(
+                values.table
+                - (feature_encoding_values->table_row
+                   + parameters.eta_feat
+                       * feature_encoding_values->table_column
+                   + eta_feat_squared
+                       * feature_encoding_values->table_feature));
+            acc.add(
+                values.query
+                - (feature_encoding_values->query_row
+                   + parameters.eta_feat
+                       * feature_encoding_values->query_column
+                   + eta_feat_squared
+                       * feature_encoding_values->query_feature));
+        }
+        const auto numerator = acc.value();
+        return boundary.zero_inverse.has_value()
+            ? numerator * *boundary.zero_inverse
+            : numerator / boundary.zero;
+    }
+
     FieldElement evaluate_t_fh(
         const ProtocolContext &context,
         const std::map<std::string, FieldElement> &challenges,
@@ -805,61 +868,43 @@ namespace gatzk::protocol
         const auto boundary = boundary_values != nullptr
             ? *boundary_values
             : boundary_lagrange_values(*context.domains.fh, z);
-        const auto l0 = boundary.first;
-        const auto l_last = boundary.last;
-        const auto not_last = FieldElement::one() - l_last;
-        const auto zero_eval = boundary.zero;
-        const auto q_table = profiled_eval("P_Q_tbl_feat", z);
-        const auto q_query = profiled_eval("P_Q_qry_feat", z);
-        const auto table = profiled_eval("P_Table_feat", z);
-        const auto query = profiled_eval("P_Query_feat", z);
-        const auto multiplicity = profiled_eval("P_m_feat", z);
-        const auto j_table = profiled_eval("P_J_tbl_feat", z);
-        const auto j_query = profiled_eval("P_J_qry_feat", z);
-        const auto accumulator = profiled_eval("P_R_feat", z);
-        const auto accumulator_next = profiled_eval("P_R_feat", omega_z);
-        const auto beta = challenges.at("beta_feat");
-        const auto one = FieldElement::one();
-        QuotientAccumulator acc(challenges.at("alpha_quot"));
-        acc.add(l0 * accumulator);
-        acc.add(not_last * (
-            accumulator_next - accumulator
-            - q_table * multiplicity * j_table
-            + q_query * j_query));
-        acc.add(l_last * accumulator);
-        acc.add(q_table * ((table + beta) * j_table - one));
-        acc.add((one - q_table) * j_table);
-        acc.add(q_query * ((query + beta) * j_query - one));
-        acc.add((one - q_query) * j_query);
-        if (feature_encoding_terms_are_identically_zero)
+        const FHQuotientParameters parameters{
+            .alpha_quot = challenges.at("alpha_quot"),
+            .beta_feat = challenges.at("beta_feat"),
+            .eta_feat = feature_encoding_terms_are_identically_zero
+                ? FieldElement::zero()
+                : challenges.at("eta_feat"),
+        };
+        const FHQuotientValues values{
+            .q_table = profiled_eval("P_Q_tbl_feat", z),
+            .q_query = profiled_eval("P_Q_qry_feat", z),
+            .table = profiled_eval("P_Table_feat", z),
+            .query = profiled_eval("P_Query_feat", z),
+            .multiplicity = profiled_eval("P_m_feat", z),
+            .j_table = profiled_eval("P_J_tbl_feat", z),
+            .j_query = profiled_eval("P_J_qry_feat", z),
+            .accumulator = profiled_eval("P_R_feat", z),
+            .accumulator_next = profiled_eval("P_R_feat", omega_z),
+        };
+        std::optional<FHFeatureEncodingValues> feature_encoding_values;
+        if (!feature_encoding_terms_are_identically_zero)
         {
-            // The formal full-identity trace constructs P_Table_feat as the
-            // exact evaluation-basis linear combination
-            // Row + eta*Col + eta^2*T_H, and P_Query_feat from that same
-            // evaluation component.  Preserve both alpha slots while avoiding
-            // six 4x-FH coset materializations for two identically-zero
-            // polynomials.  The verifier deliberately uses the generic branch
-            // and therefore continues to check both equations from openings.
-            acc.add(FieldElement::zero());
-            acc.add(FieldElement::zero());
+            feature_encoding_values.emplace(FHFeatureEncodingValues{
+                .table_row = profiled_eval("P_Row_feat_tbl", z),
+                .table_column = profiled_eval("P_Col_feat_tbl", z),
+                .table_feature = profiled_eval("P_T_H", z),
+                .query_row = profiled_eval("P_I_feat_qry", z),
+                .query_column = profiled_eval("P_Col_feat_qry", z),
+                .query_feature = profiled_eval("P_H", z),
+            });
         }
-        else
-        {
-            const auto eta_feat = challenges.at("eta_feat");
-            const auto eta_feat_squared = eta_feat * eta_feat;
-            acc.add(
-                table - (profiled_eval("P_Row_feat_tbl", z)
-                         + eta_feat * profiled_eval("P_Col_feat_tbl", z)
-                         + eta_feat_squared * profiled_eval("P_T_H", z)));
-            acc.add(
-                query - (profiled_eval("P_I_feat_qry", z)
-                         + eta_feat * profiled_eval("P_Col_feat_qry", z)
-                         + eta_feat_squared * profiled_eval("P_H", z)));
-        }
-        const auto numerator = acc.value();
-        const auto result = boundary.zero_inverse.has_value()
-            ? numerator * *boundary.zero_inverse
-            : numerator / zero_eval;
+        const auto result = evaluate_t_fh_from_values(
+            parameters,
+            values,
+            boundary,
+            feature_encoding_values.has_value()
+                ? &*feature_encoding_values
+                : nullptr);
         if (profile != nullptr)
         {
             const auto total_ms = elapsed_ms(total_start, Clock::now());
@@ -920,7 +965,6 @@ namespace gatzk::protocol
             const auto q_tbl_exp_z = eval_z("P_Q_tbl_exp");
             const auto q_qry_exp_z = eval_z("P_Q_qry_exp");
             const auto q_tbl_elu_z = eval_z("P_Q_tbl_ELU");
-            const auto q_qry_elu_z = eval_z("P_Q_qry_ELU");
             const auto t_l_x_z = eval_z("P_T_L_x");
             const auto t_l_y_z = eval_z("P_T_L_y");
             const auto t_range_z = eval_z("P_T_range");
@@ -1132,6 +1176,17 @@ namespace gatzk::protocol
                 const auto eta_elu = planned != nullptr
                     ? planned->eta_elu
                     : challenges.at("eta_ELU_h" + index);
+                const auto q_qry_elu_z = eval_z(
+                    planned != nullptr
+                        ? planned->elu_query_selector
+                        : (context.model.hidden_heads[head_index]
+                                       .seq_kernel_fp.empty()
+                                   || context.model.hidden_heads[head_index]
+                                              .seq_kernel_fp.front().size()
+                                          == model::max_hidden_head_dim(
+                                              context.model)
+                               ? "P_Q_qry_ELU"
+                               : "P_Q_div_h" + index));
                 const auto beta_t = planned != nullptr
                     ? planned->beta_t
                     : challenges.at("beta_t_h" + index);

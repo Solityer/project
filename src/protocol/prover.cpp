@@ -4448,6 +4448,16 @@ namespace gatzk::protocol
                     edge_evaluation_plan_ = build_t_edge_evaluation_plan(
                         context_, challenges_);
                 }
+                if (label_ == "t_FH")
+                {
+                    fh_parameters_.emplace(FHQuotientParameters{
+                        .alpha_quot = challenges_.at("alpha_quot"),
+                        .beta_feat = challenges_.at("beta_feat"),
+                        .eta_feat = challenges_.at("eta_feat"),
+                    });
+                    fh_feature_encoding_terms_are_identically_zero_ =
+                        full_graph_feature_identity_enabled(context_);
+                }
                 if (use_file_backed_coset_storage())
                 {
                     const auto physical_pages =
@@ -4496,8 +4506,6 @@ namespace gatzk::protocol
                         {
                             if (record_edge_access_sequence_)
                             {
-                                const auto direct_it =
-                                    fast_coset_lookup_.find(name);
                                 const auto rotated = point == omega_z;
                                 if (!rotated && point != z)
                                 {
@@ -4508,40 +4516,15 @@ namespace gatzk::protocol
                                 }
                                 const auto access_index =
                                     rotated ? rotated_index : i;
-                                if (direct_it
-                                    != fast_coset_lookup_.end())
-                                {
-                                    edge_access_sequence_.push_back(
-                                        TEdgeCosetAccess{
-                                            .name = name,
-                                            .values = direct_it->second,
-                                            .rotated = rotated,
-                                        });
-                                    return (*direct_it->second)[
-                                        access_index];
-                                }
-                                if (const auto derived =
-                                        t_edge_derived_value_at(
-                                            name, access_index);
-                                    derived.has_value())
-                                {
-                                    edge_access_sequence_.push_back(
-                                        TEdgeCosetAccess{
-                                            .name = name,
-                                            .values = nullptr,
-                                            .rotated = rotated,
-                                        });
-                                    return *derived;
-                                }
-                                const auto &resolved =
-                                    fast_coset_values(name);
+                                const auto *direct_values =
+                                    bind_t_edge_fast_coset(name);
                                 edge_access_sequence_.push_back(
                                     TEdgeCosetAccess{
                                         .name = name,
-                                        .values = &resolved,
+                                        .values = direct_values,
                                         .rotated = rotated,
                                     });
-                                return resolved[access_index];
+                                return (*direct_values)[access_index];
                             }
                             if (!edge_access_sequence_.empty())
                             {
@@ -4556,21 +4539,15 @@ namespace gatzk::protocol
                                         edge_access_cursor++];
                                 const auto access_index =
                                     access.rotated ? rotated_index : i;
-                                if (access.values != nullptr)
-                                {
-                                    return (*access.values)[access_index];
-                                }
-                                const auto derived =
-                                    t_edge_derived_value_at(
-                                        access.name, access_index);
-                                if (!derived.has_value())
+                                if (access.values == nullptr
+                                    || access.values->size()
+                                        != target_size_)
                                 {
                                     throw std::runtime_error(
-                                        "t_edge quotient access-plan lost "
-                                        "derived dependency "
+                                        "t_edge quotient access-plan contains an invalid bound dependency: "
                                         + access.name);
                                 }
-                                return *derived;
+                                return (*access.values)[access_index];
                             }
                         }
                         if (point == z)
@@ -4586,6 +4563,58 @@ namespace gatzk::protocol
 
                     if (label_ == "t_FH")
                     {
+                        if (fh_coset_slots_.ready())
+                        {
+                            const auto boundary = boundary_values != nullptr
+                                ? *boundary_values
+                                : fh_boundary_values(z);
+                            const FHQuotientValues values{
+                                .q_table =
+                                    (*fh_coset_slots_.q_table)[i],
+                                .q_query =
+                                    (*fh_coset_slots_.q_query)[i],
+                                .table = (*fh_coset_slots_.table)[i],
+                                .query = (*fh_coset_slots_.query)[i],
+                                .multiplicity =
+                                    (*fh_coset_slots_.multiplicity)[i],
+                                .j_table =
+                                    (*fh_coset_slots_.j_table)[i],
+                                .j_query =
+                                    (*fh_coset_slots_.j_query)[i],
+                                .accumulator =
+                                    (*fh_coset_slots_.accumulator)[i],
+                                .accumulator_next =
+                                    (*fh_coset_slots_.accumulator)[
+                                        rotated_index],
+                            };
+                            std::optional<FHFeatureEncodingValues>
+                                feature_encoding_values;
+                            if (!fh_feature_encoding_terms_are_identically_zero_)
+                            {
+                                feature_encoding_values.emplace(
+                                    FHFeatureEncodingValues{
+                                        .table_row =
+                                            (*fh_coset_slots_.table_row)[i],
+                                        .table_column =
+                                            (*fh_coset_slots_.table_column)[i],
+                                        .table_feature =
+                                            (*fh_coset_slots_.table_feature)[i],
+                                        .query_row =
+                                            (*fh_coset_slots_.query_row)[i],
+                                        .query_column =
+                                            (*fh_coset_slots_.query_column)[i],
+                                        .query_feature =
+                                            (*fh_coset_slots_.query_feature)[i],
+                                    });
+                            }
+                            return evaluate_t_fh_from_values(
+                                *fh_parameters_,
+                                values,
+                                boundary,
+                                feature_encoding_values.has_value()
+                                    ? &*feature_encoding_values
+                                    : nullptr);
+                        }
                         return evaluate_t_fh(
                             context_,
                             challenges_,
@@ -4666,8 +4695,16 @@ namespace gatzk::protocol
                     }
                     progress_note("prove:quotient:t_edge:coset_prewarm:start");
                     prewarm_coset_values(prewarm_labels);
-                    seed_fast_coset_lookup(prewarm_labels);
+                    // Bind the evaluator's original dependency names after
+                    // their source columns are warm.  Derived edge names
+                    // resolve here to the same lazy, blinder-corrected coset
+                    // views used by the generic resolver, so the point loop
+                    // can follow direct pointers instead of reparsing
+                    // layer/head suffixes and challenge names at every point.
+                    seed_fast_coset_lookup(dependency_labels);
+                    require_t_edge_fast_coset_lookup(dependency_labels);
                     edge_access_sequence_.clear();
+                    edge_access_plan_late_bind_count_ = 0;
                     record_edge_access_sequence_ = true;
                     try
                     {
@@ -4685,6 +4722,26 @@ namespace gatzk::protocol
                         throw std::runtime_error(
                             "t_edge quotient access-plan is empty");
                     }
+                    const auto null_access_count = static_cast<std::size_t>(
+                        std::count_if(
+                            edge_access_sequence_.begin(),
+                            edge_access_sequence_.end(),
+                            [](const TEdgeCosetAccess &access)
+                            { return access.values == nullptr; }));
+                    if (null_access_count != 0)
+                    {
+                        throw std::runtime_error(
+                            "t_edge quotient access-plan retained null derived fallbacks: "
+                            + std::to_string(null_access_count));
+                    }
+                    progress_note(
+                        "prove:quotient:t_edge:access_plan:entries="
+                        + std::to_string(edge_access_sequence_.size())
+                        + ":bound="
+                        + std::to_string(edge_access_sequence_.size())
+                        + ":late_bound="
+                        + std::to_string(edge_access_plan_late_bind_count_)
+                        + ":null_derived_fallback=0");
                     progress_note(
                         "prove:quotient:t_edge:coset_prewarm:done:ms="
                         + std::to_string(elapsed_ms(prewarm_start, Clock::now())));
@@ -4715,6 +4772,7 @@ namespace gatzk::protocol
                         (void)coset_values_ptr(dependency_label);
                     }
                     seed_fast_coset_lookup(dependency_labels);
+                    bind_fh_coset_slots();
                     progress_note(
                         "prove:quotient:t_FH:coset_prewarm:done:ms="
                         + std::to_string(
@@ -4810,6 +4868,49 @@ namespace gatzk::protocol
                             }
                         }
                     }
+                    for (const auto index : sample_indices)
+                    {
+                        const auto point = shift_ * root.pow(
+                            static_cast<std::uint64_t>(index));
+                        const auto omega_point = point * domain_->omega;
+                        const auto rotated_index =
+                            (index + rotation_step_)
+                            & (target_size_ - 1U);
+                        const auto boundary = fh_boundary_values(point);
+                        const auto generic = evaluate_t_fh(
+                            context_,
+                            challenges_,
+                            [&](const std::string &name,
+                                const FieldElement &requested_point)
+                            {
+                                if (requested_point == point)
+                                {
+                                    return coset_value_at(name, index);
+                                }
+                                if (requested_point == omega_point)
+                                {
+                                    return coset_value_at(
+                                        name, rotated_index);
+                                }
+                                throw std::runtime_error(
+                                    "FH quotient self-check received an unsupported point for "
+                                    + name);
+                            },
+                            point,
+                            nullptr,
+                            &boundary,
+                            fh_feature_encoding_terms_are_identically_zero_);
+                        const auto fixed = evaluate_at_index(
+                            index, point, &boundary);
+                        if (fixed != generic)
+                        {
+                            throw std::runtime_error(
+                                "FH fixed-slot quotient mismatch: index="
+                                + std::to_string(index)
+                                + " fixed=" + fixed.to_string()
+                                + " generic=" + generic.to_string());
+                        }
+                    }
                     progress_note(
                         "prove:quotient:t_FH:self_check:samples="
                         + std::to_string(sample_indices.size())
@@ -4820,8 +4921,19 @@ namespace gatzk::protocol
                 {
                     EvaluationMemoization direct_memo(
                         context_, trace_, challenges_);
-                    const auto dependencies = quotient_dependency_labels(
+                    auto dependencies = quotient_dependency_labels(
                         context_, label_);
+                    for (const auto &access : edge_access_sequence_)
+                    {
+                        if (std::find(
+                                dependencies.begin(),
+                                dependencies.end(),
+                                access.name)
+                            == dependencies.end())
+                        {
+                            dependencies.push_back(access.name);
+                        }
+                    }
                     direct_memo.precompute_named(
                         dependencies,
                         {shift_, shift_ * domain_->omega});
@@ -4867,6 +4979,10 @@ namespace gatzk::protocol
                             "materialized=" + materialized.to_string()
                             + " direct=" + direct.to_string());
                     }
+                    progress_note(
+                        "prove:quotient:t_edge:self_check:dependencies="
+                        + std::to_string(dependencies.size())
+                        + ":points=2:quotient_points=1:ok");
                 }
                 if (label_ == "t_edge")
                 {
@@ -5163,7 +5279,36 @@ namespace gatzk::protocol
                 return algebra::Polynomial::from_coefficients(label_, std::move(coefficients));
             }
 
+            TEdgeAccessPlanStageProfile benchmark_t_edge_access_plan_stage(
+                std::size_t repeats);
+
         private:
+            struct FHQuotientCosetSlots
+            {
+                const QuotientCosetValues *q_table = nullptr;
+                const QuotientCosetValues *q_query = nullptr;
+                const QuotientCosetValues *table = nullptr;
+                const QuotientCosetValues *query = nullptr;
+                const QuotientCosetValues *multiplicity = nullptr;
+                const QuotientCosetValues *j_table = nullptr;
+                const QuotientCosetValues *j_query = nullptr;
+                const QuotientCosetValues *accumulator = nullptr;
+                const QuotientCosetValues *table_row = nullptr;
+                const QuotientCosetValues *table_column = nullptr;
+                const QuotientCosetValues *table_feature = nullptr;
+                const QuotientCosetValues *query_row = nullptr;
+                const QuotientCosetValues *query_column = nullptr;
+                const QuotientCosetValues *query_feature = nullptr;
+
+                bool ready() const
+                {
+                    return q_table != nullptr && q_query != nullptr
+                        && table != nullptr && query != nullptr
+                        && multiplicity != nullptr && j_table != nullptr
+                        && j_query != nullptr && accumulator != nullptr;
+                }
+            };
+
             struct TEdgeCosetAccess
             {
                 std::string name;
@@ -5331,6 +5476,151 @@ namespace gatzk::protocol
                     const auto values = coset_values_ptr(label);
                     fast_coset_lookup_.emplace(label, values.get());
                 }
+            }
+
+            void require_t_edge_fast_coset_lookup(
+                const std::vector<std::string> &labels) const
+            {
+                if (label_ != "t_edge")
+                {
+                    throw std::runtime_error(
+                        "t_edge fast lookup validation requested for "
+                        + label_);
+                }
+                std::size_t derived_count = 0;
+                for (const auto &name : labels)
+                {
+                    const auto it = fast_coset_lookup_.find(name);
+                    if (it == fast_coset_lookup_.end()
+                        || it->second == nullptr
+                        || it->second->size() != target_size_)
+                    {
+                        throw std::runtime_error(
+                            "t_edge quotient fast lookup failed to bind dependency: "
+                            + name);
+                    }
+                    if (is_edge_derived_coset_request(name))
+                    {
+                        ++derived_count;
+                    }
+                }
+                progress_note(
+                    "prove:quotient:t_edge:fast_lookup:dependencies="
+                    + std::to_string(labels.size())
+                    + ":derived_views=" + std::to_string(derived_count)
+                    + ":missing_or_null=0");
+            }
+
+            const QuotientCosetValues *bind_t_edge_fast_coset(
+                const std::string &name)
+            {
+                if (label_ != "t_edge")
+                {
+                    throw std::runtime_error(
+                        "t_edge fast lookup binding requested for "
+                        + label_);
+                }
+                auto it = fast_coset_lookup_.find(name);
+                if (it == fast_coset_lookup_.end())
+                {
+                    // The dependency registry is intentionally a prewarm
+                    // hint, not an alternate protocol equation.  Bind any
+                    // evaluator-discovered name once through the generic
+                    // resolver while recording the access plan.  The formal
+                    // point loop below remains a pointer-only replay path.
+                    const auto values = coset_values_ptr(name);
+                    it = fast_coset_lookup_.emplace(name, values.get()).first;
+                    ++edge_access_plan_late_bind_count_;
+                }
+                if (it->second == nullptr
+                    || it->second->size() != target_size_)
+                {
+                    throw std::runtime_error(
+                        "t_edge quotient access-plan dependency is not bound to a full coset view: "
+                        + name);
+                }
+                return it->second;
+            }
+
+            void bind_fh_coset_slots()
+            {
+                if (label_ != "t_FH")
+                {
+                    throw std::runtime_error(
+                        "FH coset slots requested for non-FH quotient");
+                }
+                const auto bind = [&](const char *name)
+                    -> const QuotientCosetValues *
+                {
+                    const auto it = fast_coset_lookup_.find(name);
+                    if (it == fast_coset_lookup_.end()
+                        || it->second == nullptr
+                        || it->second->size() != target_size_)
+                    {
+                        throw std::runtime_error(
+                            "FH fixed coset slot is missing or has the wrong size: "
+                            + std::string(name));
+                    }
+                    return it->second;
+                };
+                fh_coset_slots_.q_table = bind("P_Q_tbl_feat");
+                fh_coset_slots_.q_query = bind("P_Q_qry_feat");
+                fh_coset_slots_.table = bind("P_Table_feat");
+                fh_coset_slots_.query = bind("P_Query_feat");
+                fh_coset_slots_.multiplicity = bind("P_m_feat");
+                fh_coset_slots_.j_table = bind("P_J_tbl_feat");
+                fh_coset_slots_.j_query = bind("P_J_qry_feat");
+                fh_coset_slots_.accumulator = bind("P_R_feat");
+                if (!fh_feature_encoding_terms_are_identically_zero_)
+                {
+                    fh_coset_slots_.table_row = bind("P_Row_feat_tbl");
+                    fh_coset_slots_.table_column = bind("P_Col_feat_tbl");
+                    fh_coset_slots_.table_feature = bind("P_T_H");
+                    fh_coset_slots_.query_row = bind("P_I_feat_qry");
+                    fh_coset_slots_.query_column = bind("P_Col_feat_qry");
+                    fh_coset_slots_.query_feature = bind("P_H");
+                }
+                if (!fh_coset_slots_.ready())
+                {
+                    throw std::runtime_error(
+                        "FH fixed coset slots were not fully initialized");
+                }
+            }
+
+            QuotientBoundaryValues fh_boundary_values(
+                const FieldElement &z) const
+            {
+                const auto one = FieldElement::one();
+                const auto last_point =
+                    domain_->point_at(domain_->size - 1);
+                const auto zero = domain_->zero_polynomial_eval(z);
+                if (zero.is_zero())
+                {
+                    return QuotientBoundaryValues{
+                        .first = z == one
+                            ? one
+                            : FieldElement::zero(),
+                        .last = z == last_point
+                            ? one
+                            : FieldElement::zero(),
+                        .zero = zero,
+                        .zero_inverse = std::nullopt,
+                    };
+                }
+                const auto first_denominator = z - one;
+                const auto last_denominator = z - last_point;
+                const auto denominator_product_inverse =
+                    (first_denominator * last_denominator).inv();
+                const auto zero_scaled = zero * domain_->inv_size;
+                return QuotientBoundaryValues{
+                    .first = zero_scaled * last_denominator
+                        * denominator_product_inverse,
+                    .last = zero_scaled * last_point
+                        * first_denominator
+                        * denominator_product_inverse,
+                    .zero = zero,
+                    .zero_inverse = std::nullopt,
+                };
             }
 
             const QuotientCosetValues &fast_coset_values(const std::string &requested_name)
@@ -7091,9 +7381,13 @@ namespace gatzk::protocol
             FieldElement shift_;
             std::vector<mcl::Fr> shift_powers_;
             std::shared_ptr<const TEdgeEvaluationPlan> edge_evaluation_plan_;
+            std::optional<FHQuotientParameters> fh_parameters_;
+            FHQuotientCosetSlots fh_coset_slots_;
+            bool fh_feature_encoding_terms_are_identically_zero_ = false;
             std::shared_ptr<QuotientCosetSpillArena> spill_arena_;
             std::vector<TEdgeCosetAccess> edge_access_sequence_;
             bool record_edge_access_sequence_ = false;
+            std::size_t edge_access_plan_late_bind_count_ = 0;
             std::mutex coset_cache_mutex_;
             std::unordered_map<std::string, QuotientCosetValuesPtr> coset_cache_;
             std::unordered_map<std::string, std::string> coset_aliases_;
@@ -7112,6 +7406,214 @@ namespace gatzk::protocol
             std::atomic<std::size_t>
                 lazy_blinder_coset_bytes_avoided_{0};
         };
+
+        TEdgeAccessPlanStageProfile
+        QuotientPolynomialMaterializer::benchmark_t_edge_access_plan_stage(
+            std::size_t repeats)
+        {
+            if (label_ != "t_edge" || repeats == 0)
+            {
+                throw std::runtime_error(
+                    "t_edge access-plan stage benchmark requires t_edge and positive repeats");
+            }
+
+            const auto dependency_labels =
+                quotient_dependency_labels(context_, label_);
+            std::vector<std::string> prewarm_labels;
+            prewarm_labels.reserve(dependency_labels.size());
+            for (const auto &dependency_label : dependency_labels)
+            {
+                if (append_t_edge_materializer_dependency(
+                        &prewarm_labels, dependency_label))
+                {
+                    continue;
+                }
+                prewarm_labels.push_back(dependency_label);
+            }
+            // Both arms consume the same already-materialized coset data. The
+            // timed region is only evaluate_t_edge plus its dependency
+            // dispatch callback.
+            prewarm_coset_values(prewarm_labels);
+
+            const auto root = FieldElement::root_of_unity(target_size_);
+            const auto evaluate_at_index = [&] (
+                std::size_t i,
+                const FieldElement &z) -> FieldElement
+            {
+                const auto omega_z = z * domain_->omega;
+                const auto rotated_index =
+                    (i + rotation_step_) & (target_size_ - 1U);
+                std::size_t edge_access_cursor = 0;
+                const auto eval = [&] (
+                    const std::string &name,
+                    const FieldElement &point) -> FieldElement
+                {
+                    const auto rotated = point == omega_z;
+                    if (!rotated && point != z)
+                    {
+                        throw std::runtime_error(
+                            "t_edge stage benchmark received an unsupported evaluation point for "
+                            + name);
+                    }
+                    const auto access_index =
+                        rotated ? rotated_index : i;
+                    if (record_edge_access_sequence_)
+                    {
+                        const auto *values = bind_t_edge_fast_coset(name);
+                        edge_access_sequence_.push_back(
+                            TEdgeCosetAccess{
+                                .name = name,
+                                .values = values,
+                                .rotated = rotated,
+                            });
+                        return (*values)[access_index];
+                    }
+                    if (!edge_access_sequence_.empty())
+                    {
+                        if (edge_access_cursor
+                            >= edge_access_sequence_.size())
+                        {
+                            throw std::runtime_error(
+                                "t_edge stage benchmark access-plan overflow");
+                        }
+                        const auto &access =
+                            edge_access_sequence_[edge_access_cursor++];
+                        if (access.values == nullptr
+                            || access.values->size() != target_size_)
+                        {
+                            throw std::runtime_error(
+                                "t_edge stage benchmark encountered an invalid bound dependency: "
+                                + access.name);
+                        }
+                        return (*access.values)[access_index];
+                    }
+                    // This is the exact pre-optimization production dispatch:
+                    // fast prewarmed bases, then t_edge_derived_value_at's
+                    // layer/head/challenge parsing, then the generic resolver.
+                    return coset_value_at(name, access_index);
+                };
+                const auto value = evaluate_t_edge(
+                    context_,
+                    challenges_,
+                    trace_.external_evaluations,
+                    eval,
+                    z,
+                    false,
+                    nullptr,
+                    nullptr,
+                    quotient_alpha_powers_.empty()
+                        ? nullptr
+                        : &quotient_alpha_powers_,
+                    edge_evaluation_plan_.get());
+                if (!record_edge_access_sequence_
+                    && !edge_access_sequence_.empty()
+                    && edge_access_cursor != edge_access_sequence_.size())
+                {
+                    throw std::runtime_error(
+                        "t_edge stage benchmark access-plan underflow");
+                }
+                return value;
+            };
+
+            seed_fast_coset_lookup(dependency_labels);
+            require_t_edge_fast_coset_lookup(dependency_labels);
+            edge_access_sequence_.clear();
+            edge_access_plan_late_bind_count_ = 0;
+            record_edge_access_sequence_ = true;
+            try
+            {
+                (void)evaluate_at_index(0, shift_);
+            }
+            catch (...)
+            {
+                record_edge_access_sequence_ = false;
+                edge_access_sequence_.clear();
+                throw;
+            }
+            record_edge_access_sequence_ = false;
+            if (edge_access_sequence_.empty()
+                || std::any_of(
+                    edge_access_sequence_.begin(),
+                    edge_access_sequence_.end(),
+                    [&](const TEdgeCosetAccess &access)
+                    {
+                        return access.values == nullptr
+                            || access.values->size() != target_size_;
+                    }))
+            {
+                throw std::runtime_error(
+                    "t_edge stage benchmark failed to build a complete access plan");
+            }
+
+            TEdgeAccessPlanStageProfile profile;
+            profile.quotient_points = target_size_;
+            profile.access_plan_entries = edge_access_sequence_.size();
+            profile.late_bound_dependencies =
+                edge_access_plan_late_bind_count_;
+            profile.legacy_resolver_ms.reserve(repeats);
+            profile.bound_access_plan_ms.reserve(repeats);
+
+            const auto run_arm = [&] (bool bound)
+            {
+                if (bound)
+                {
+                    seed_fast_coset_lookup(dependency_labels);
+                }
+                else
+                {
+                    seed_fast_coset_lookup(prewarm_labels);
+                }
+                std::vector<FieldElement> values(
+                    target_size_, FieldElement::zero());
+                auto z = shift_;
+                const auto start = Clock::now();
+                if (!bound)
+                {
+                    auto saved_plan = std::move(edge_access_sequence_);
+                    for (std::size_t i = 0; i < target_size_; ++i)
+                    {
+                        values[i] = evaluate_at_index(i, z);
+                        z *= root;
+                    }
+                    edge_access_sequence_ = std::move(saved_plan);
+                }
+                else
+                {
+                    for (std::size_t i = 0; i < target_size_; ++i)
+                    {
+                        values[i] = evaluate_at_index(i, z);
+                        z *= root;
+                    }
+                }
+                return std::pair{
+                    elapsed_ms(start, Clock::now()),
+                    std::move(values)};
+            };
+
+            for (std::size_t repeat = 0; repeat < repeats; ++repeat)
+            {
+                std::pair<double, std::vector<FieldElement>> legacy;
+                std::pair<double, std::vector<FieldElement>> bound;
+                if ((repeat & 1U) == 0)
+                {
+                    legacy = run_arm(false);
+                    bound = run_arm(true);
+                }
+                else
+                {
+                    bound = run_arm(true);
+                    legacy = run_arm(false);
+                }
+                if (legacy.second != bound.second)
+                {
+                    throw std::runtime_error(
+                        "t_edge stage benchmark legacy/bound outputs differ");
+                }
+                profile.legacy_resolver_ms.push_back(legacy.first);
+                profile.bound_access_plan_ms.push_back(bound.first);
+            }
+            return profile;
+        }
 
         std::vector<std::pair<std::string, algebra::Polynomial>> materialize_quotient_polynomials(
             const ProtocolContext &context,
@@ -7993,6 +8495,17 @@ namespace gatzk::protocol
         }
 
     } // namespace
+
+    TEdgeAccessPlanStageProfile benchmark_t_edge_access_plan_stage(
+        const ProtocolContext &context,
+        const TraceArtifacts &trace,
+        const std::map<std::string, algebra::FieldElement> &challenges,
+        std::size_t repeats)
+    {
+        QuotientPolynomialMaterializer materializer(
+            context, trace, challenges, "t_edge");
+        return materializer.benchmark_t_edge_access_plan_stage(repeats);
+    }
 
     std::vector<algebra::FieldElement>
     evaluate_spilled_evaluation_polynomial_points(

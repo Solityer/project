@@ -40,7 +40,7 @@ namespace gatzk::model
             return static_cast<std::size_t>(std::stoull(match[1].str()));
         }
 
-        std::vector<std::size_t> parse_optional_size_array(
+        std::vector<std::size_t> parse_required_size_array(
             const std::string& text,
             const std::string& key)
         {
@@ -48,9 +48,16 @@ namespace gatzk::model
             std::smatch match;
             if (!std::regex_search(text, match, pattern))
             {
-                return {};
+                throw std::runtime_error(
+                    "missing array key in checkpoint manifest: " + key);
             }
             std::string body = match[1].str();
+            if (body.find_first_not_of("0123456789, \t\r\n")
+                != std::string::npos)
+            {
+                throw std::runtime_error(
+                    "malformed numeric array in checkpoint manifest: " + key);
+            }
             std::replace(body.begin(), body.end(), ',', ' ');
             std::vector<std::size_t> out;
             std::istringstream input(body);
@@ -58,6 +65,11 @@ namespace gatzk::model
             while (input >> value)
             {
                 out.push_back(value);
+            }
+            if (out.empty())
+            {
+                throw std::runtime_error(
+                    "empty array in checkpoint manifest: " + key);
             }
             return out;
         }
@@ -151,6 +163,14 @@ namespace gatzk::model
             out.shape.head_count = parse_required_size_t(entry, "head_count");
             out.shape.head_dim = parse_required_size_t(entry, "head_dim");
             return out;
+        }
+
+        HiddenLayerShape parse_checkpoint_layer_shape(const std::string& entry)
+        {
+            return HiddenLayerShape{
+                .head_count = parse_required_size_t(entry, "head_count"),
+                .head_dim = parse_required_size_t(entry, "head_dim"),
+            };
         }
 
         // 解析隐藏头张量名
@@ -801,13 +821,16 @@ namespace gatzk::model
         info.layer_count = parse_required_size_t(manifest, "L");
         info.output_head_count = parse_required_size_t(manifest, "K_out");
         info.class_count = parse_required_size_t(manifest, "C");
-        info.d_in_profile = parse_optional_size_array(manifest, "d_in_profile");
+        info.d_in_profile = parse_required_size_array(manifest, "d_in_profile");
         
         // 每层的形状摘要
         for (const auto& entry : parse_object_array_entries(manifest, "hidden_layers"))
         {
             info.hidden_layers.push_back(parse_checkpoint_layer_info(entry));
-            info.hidden_profile.push_back(info.hidden_layers.back().shape);
+        }
+        for (const auto& entry : parse_object_array_entries(manifest, "hidden_profile"))
+        {
+            info.hidden_profile.push_back(parse_checkpoint_layer_shape(entry));
         }
         // 每个头对应的张量名字
         for (const auto& entry : parse_object_array_entries(manifest, "hidden_head_specs"))
@@ -850,6 +873,21 @@ namespace gatzk::model
             failures.push_back(
                 "hidden_profile size=" + std::to_string(info.hidden_profile.size()) + " but the checkpoint manifest must expose a non-empty hidden_profile");
         }
+        if (info.layer_count != info.hidden_layers.size() + 1)
+        {
+            failures.push_back(
+                "L=" + std::to_string(info.layer_count)
+                + " conflicts with hidden_layers size="
+                + std::to_string(info.hidden_layers.size()));
+        }
+        if (info.hidden_profile.size() != info.hidden_layers.size())
+        {
+            failures.push_back(
+                "hidden_profile size="
+                + std::to_string(info.hidden_profile.size())
+                + " conflicts with hidden_layers size="
+                + std::to_string(info.hidden_layers.size()));
+        }
         if (info.output_head_count == 0)
         {
             failures.push_back(
@@ -860,7 +898,7 @@ namespace gatzk::model
             failures.push_back(
                 "output_head_specs size=" + std::to_string(info.output_head_specs.size()) + " conflicts with K_out=" + std::to_string(info.output_head_count));
         }
-        if (!info.d_in_profile.empty() && info.d_in_profile.size() != info.hidden_profile.size())
+        if (info.d_in_profile.size() != info.hidden_profile.size())
         {
             failures.push_back(
                 "d_in_profile size=" + std::to_string(info.d_in_profile.size()) + " conflicts with hidden_profile size=" + std::to_string(info.hidden_profile.size()));
@@ -878,6 +916,7 @@ namespace gatzk::model
             failures.push_back("checkpoint manifest must expose non-empty quant_cfg_id");
         }
         std::size_t flattened_hidden_heads = 0;
+        std::size_t expected_global_head_index = 0;
         for (std::size_t layer_index = 0; layer_index < info.hidden_layers.size(); ++layer_index)
         {
             const auto& layer = info.hidden_layers[layer_index];
@@ -886,22 +925,80 @@ namespace gatzk::model
                 failures.push_back("hidden_layers must use contiguous layer_index values");
                 break;
             }
-            if (!info.d_in_profile.empty() && info.d_in_profile[layer_index] != layer.input_dim)
+            if (layer.input_dim == 0 || layer.shape.head_count == 0
+                || layer.shape.head_dim == 0)
+            {
+                failures.push_back(
+                    "hidden_layers[" + std::to_string(layer_index)
+                    + "] dimensions must be non-zero");
+            }
+            if (layer_index < info.d_in_profile.size()
+                && info.d_in_profile[layer_index] != layer.input_dim)
             {
                 failures.push_back(
                     "hidden_layers[" + std::to_string(layer_index) + "].input_dim conflicts with d_in_profile");
             }
-            if (info.hidden_profile[layer_index].head_count != layer.shape.head_count || info.hidden_profile[layer_index].head_dim != layer.shape.head_dim)
+            if (layer_index < info.hidden_profile.size()
+                && (info.hidden_profile[layer_index].head_count
+                        != layer.shape.head_count
+                    || info.hidden_profile[layer_index].head_dim
+                        != layer.shape.head_dim))
             {
                 failures.push_back(
                     "hidden_layers[" + std::to_string(layer_index) + "] conflicts with hidden_profile");
             }
+            if (layer_index != 0)
+            {
+                const auto& previous = info.hidden_layers[layer_index - 1];
+                const auto expected_input =
+                    previous.shape.head_count * previous.shape.head_dim;
+                if (layer.input_dim != expected_input)
+                {
+                    failures.push_back(
+                        "hidden_layers[" + std::to_string(layer_index)
+                        + "].input_dim conflicts with previous concat width");
+                }
+            }
             flattened_hidden_heads += layer.shape.head_count;
+
+            std::size_t local_head_index = 0;
+            for (const auto& head : info.hidden_head_specs)
+            {
+                if (head.layer_index != layer_index)
+                {
+                    continue;
+                }
+                if (head.local_head_index != local_head_index
+                    || head.global_head_index != expected_global_head_index)
+                {
+                    failures.push_back(
+                        "hidden_head_specs must use contiguous layer-local and global indices");
+                    break;
+                }
+                ++local_head_index;
+                ++expected_global_head_index;
+            }
+            if (local_head_index != layer.shape.head_count)
+            {
+                failures.push_back(
+                    "hidden_head_specs layer-local count conflicts with hidden_layers["
+                    + std::to_string(layer_index) + "].head_count");
+            }
         }
         if (flattened_hidden_heads != info.hidden_head_specs.size())
         {
             failures.push_back(
                 "hidden_head_specs size=" + std::to_string(info.hidden_head_specs.size()) + " conflicts with hidden_layers head counts=" + std::to_string(flattened_hidden_heads));
+        }
+        for (std::size_t head_index = 0;
+             head_index < info.output_head_specs.size(); ++head_index)
+        {
+            if (info.output_head_specs[head_index].head_index != head_index)
+            {
+                failures.push_back(
+                    "output_head_specs must use contiguous head_index values");
+                break;
+            }
         }
         if (failures.empty())
         {
@@ -1014,21 +1111,6 @@ namespace gatzk::model
             throw std::runtime_error("checkpoint bundle does not contain output attention heads");
         }
 
-        // 如果清单里没写全，就从实际读到的层参数补回去
-        if (out.d_in_profile.empty())
-        {
-            for (const auto& layer : out.hidden_layers)
-            {
-                out.d_in_profile.push_back(layer.input_dim);
-            }
-        }
-        if (out.hidden_profile.empty())
-        {
-            for (const auto& layer : out.hidden_layers)
-            {
-                out.hidden_profile.push_back(layer.shape);
-            }
-        }
         out.C = manifest_info.class_count;
         out.output_layer.input_dim = out.hidden_layers.back().shape.head_count * out.hidden_layers.back().shape.head_dim;
         out.output_layer.output_dim = attention_head_output_width(out.output_layer.heads.front());
@@ -1209,11 +1291,9 @@ namespace gatzk::model
                 }
                 hidden_outputs.push_back(head_trace.H_agg);
                 layer_trace.head_traces.push_back(head_trace);
-                // 只把第0层隐藏头的轨迹额外摊平保存
-                if (layer.layer_index == 0)
-                {
-                    trace.hidden_head_traces.push_back(std::move(head_trace));
-                }
+                // 兼容视图按层序、头序摊平全部隐藏头。不能只保存
+                // layer0，否则 L>2 时该视图与 hidden_layer_traces 不一致。
+                trace.hidden_head_traces.push_back(std::move(head_trace));
             }
             // 1.2 把本层所有头的输出拼成一个大矩阵
             if (profile != nullptr)

@@ -4850,7 +4850,6 @@ namespace gatzk::protocol
             const auto q_tbl_exp = eval_data(context, "P_Q_tbl_exp");
             const auto q_qry_exp = eval_data(context, "P_Q_qry_exp");
             const auto q_tbl_elu = eval_data(context, "P_Q_tbl_ELU");
-            const auto q_qry_elu = eval_data(context, "P_Q_qry_ELU");
             add_metric(metrics != nullptr ? &metrics->public_poly_residual_ms : nullptr, stage_start);
 
             if (static_artifacts.full_feature_identity)
@@ -5558,6 +5557,11 @@ namespace gatzk::protocol
                 const auto &input_matrix = hidden_layer_inputs_quantized.at(layer_index);
                 const auto input_dim = layer.input_dim;
                 const auto head_dim = layer.shape.head_dim;
+                const auto q_qry_elu = eval_data(
+                    context,
+                    head_dim == d_h
+                        ? "P_Q_qry_ELU"
+                        : "P_Q_div_h" + std::to_string(head_index));
                 const auto input_commitment_label =
                     layer_index == 0
                         ? std::string("P_H")

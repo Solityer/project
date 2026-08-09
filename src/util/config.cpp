@@ -145,6 +145,17 @@ void validate_supported_keys(const std::unordered_map<std::string, std::string>&
     }
 }
 
+void require_explicit_family_shape_fields(
+    const std::unordered_map<std::string, std::string>& entries) {
+    for (const auto* key : {"L", "hidden_profile", "d_in_profile", "K_out"}) {
+        if (!entries.contains(key)) {
+            throw std::runtime_error(
+                "formal config must set family shape field explicitly: "
+                + std::string(key));
+        }
+    }
+}
+
 void validate_config(const AppConfig& config) {
     if (config.subgraph_rule != "whole_graph") {
         throw std::runtime_error("formal mainline only supports subgraph_rule=whole_graph");
@@ -160,12 +171,17 @@ void validate_config(const AppConfig& config) {
             "L=" + std::to_string(config.layer_count)
             + " conflicts with hidden_profile size=" + std::to_string(config.hidden_profile.size()));
     }
-    if (!config.d_in_profile.empty() && config.d_in_profile.size() != config.hidden_profile.size()) {
+    if (config.d_in_profile.empty()) {
+        throw std::runtime_error("d_in_profile must be set explicitly");
+    }
+    if (config.d_in_profile.size() != config.hidden_profile.size()) {
         throw std::runtime_error(
             "d_in_profile size=" + std::to_string(config.d_in_profile.size())
             + " conflicts with hidden_profile size=" + std::to_string(config.hidden_profile.size()));
     }
-    if (!config.d_in_profile.empty() && config.d_in_profile.front() == 0) {
+    if (std::any_of(
+            config.d_in_profile.begin(), config.d_in_profile.end(),
+            [](std::size_t value) { return value == 0; })) {
         throw std::runtime_error("d_in_profile entries must be non-zero");
     }
     if (config.K_out == 0) {
@@ -200,7 +216,7 @@ void validate_config(const AppConfig& config) {
         if (layer.head_count == 0 || layer.head_dim == 0) {
             throw std::runtime_error("hidden_profile entries must have non-zero head_count and head_dim");
         }
-        if (layer_index + 1 < config.hidden_profile.size() && !config.d_in_profile.empty()) {
+        if (layer_index + 1 < config.hidden_profile.size()) {
             const auto expected = layer.head_count * layer.head_dim;
             const auto actual = config.d_in_profile[layer_index + 1];
             if (expected != actual) {
@@ -241,12 +257,15 @@ AppConfig load_config(const std::string& path) {
         }
         const auto key = trim(line.substr(0, eq));
         const auto value = trim(line.substr(eq + 1));
-        entries[key] = value;
+        if (!entries.emplace(key, value).second) {
+            throw std::runtime_error("duplicate config field: " + key);
+        }
     }
 
     AppConfig config;
     fail_if_present(entries, {"hidden_heads", "checkpoint_dir"});
     validate_supported_keys(entries);
+    require_explicit_family_shape_fields(entries);
     const auto absolute = std::filesystem::absolute(path);
     config.config_dir = absolute.parent_path().string();
     config.project_root = absolute.parent_path().parent_path().string();
@@ -291,12 +310,6 @@ AppConfig load_config(const std::string& path) {
     if (entries.contains("deduplicate_edges")) config.deduplicate_edges = parse_bool(entries["deduplicate_edges"]);
     if (entries.contains("hidden_profile")) config.hidden_profile = parse_hidden_profile(entries["hidden_profile"]);
     if (entries.contains("d_in_profile")) config.d_in_profile = parse_size_list(entries["d_in_profile"]);
-    if (config.hidden_profile.empty() && config.hidden_dim != 0) {
-        config.hidden_profile = {{1, config.hidden_dim}};
-    }
-    if (config.layer_count == 0 && !config.hidden_profile.empty()) {
-        config.layer_count = config.hidden_profile.size() + 1;
-    }
     if (config.quant_cfg_id.empty()) {
         config.quant_cfg_id = "range_bits=" + std::to_string(config.range_bits);
     }

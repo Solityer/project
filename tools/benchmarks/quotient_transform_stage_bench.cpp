@@ -127,6 +127,187 @@ std::vector<FieldElement> run_fh_zero_division_stage(
     return output;
 }
 
+std::vector<FieldElement> run_fh_fixed_slot_stage(
+    const gatzk::protocol::ProtocolContext& context,
+    const std::map<std::string, FieldElement>& challenges,
+    std::size_t point_count) {
+    const std::array<FieldElement, 4> zeros = {
+        FieldElement(7), FieldElement(11),
+        FieldElement(13), FieldElement(17)};
+    const std::array<FieldElement, 4> inverses = {
+        zeros[0].inv(), zeros[1].inv(), zeros[2].inv(), zeros[3].inv()};
+    const gatzk::protocol::FHQuotientParameters parameters{
+        .alpha_quot = challenges.at("alpha_quot"),
+        .beta_feat = challenges.at("beta_feat"),
+        .eta_feat = FieldElement::zero(),
+    };
+    std::vector<FieldElement> output(point_count);
+    const auto workers = std::min<std::size_t>(
+        32, std::max<std::size_t>(1, std::thread::hardware_concurrency()));
+    const auto chunk = (point_count + workers - 1) / workers;
+    std::vector<std::future<void>> futures;
+    futures.reserve(workers);
+    for (std::size_t worker = 0; worker < workers; ++worker) {
+        const auto begin = worker * chunk;
+        const auto end = std::min(point_count, begin + chunk);
+        if (begin >= end) {
+            break;
+        }
+        futures.push_back(std::async(std::launch::async, [&, begin, end] {
+            const auto value_for_name_length = [](
+                const std::size_t name_length,
+                const FieldElement& point) {
+                return point * FieldElement(name_length + 3);
+            };
+            for (std::size_t index = begin; index < end; ++index) {
+                const auto residue = index & 3U;
+                const auto z = FieldElement(101 + index);
+                const gatzk::protocol::QuotientBoundaryValues boundary{
+                    .first = FieldElement(19),
+                    .last = FieldElement(23),
+                    .zero = zeros[residue],
+                    .zero_inverse = inverses[residue],
+                };
+                const gatzk::protocol::FHQuotientValues values{
+                    .q_table = value_for_name_length(
+                        sizeof("P_Q_tbl_feat") - 1, z),
+                    .q_query = value_for_name_length(
+                        sizeof("P_Q_qry_feat") - 1, z),
+                    .table = value_for_name_length(
+                        sizeof("P_Table_feat") - 1, z),
+                    .query = value_for_name_length(
+                        sizeof("P_Query_feat") - 1, z),
+                    .multiplicity = value_for_name_length(
+                        sizeof("P_m_feat") - 1, z),
+                    .j_table = value_for_name_length(
+                        sizeof("P_J_tbl_feat") - 1, z),
+                    .j_query = value_for_name_length(
+                        sizeof("P_J_qry_feat") - 1, z),
+                    .accumulator = value_for_name_length(
+                        sizeof("P_R_feat") - 1, z),
+                    .accumulator_next = value_for_name_length(
+                        sizeof("P_R_feat") - 1,
+                        z * context.domains.fh->omega),
+                };
+                output[index] =
+                    gatzk::protocol::evaluate_t_fh_from_values(
+                        parameters, values, boundary);
+            }
+        }));
+    }
+    for (auto& future : futures) {
+        future.get();
+    }
+    return output;
+}
+
+using FHSlotInputs = std::array<std::vector<FieldElement>, 8>;
+
+FHSlotInputs make_fh_slot_inputs(std::size_t point_count) {
+    FHSlotInputs inputs;
+    for (std::size_t slot = 0; slot < inputs.size(); ++slot) {
+        inputs[slot].resize(point_count);
+        for (std::size_t index = 0; index < point_count; ++index) {
+            inputs[slot][index] = FieldElement(
+                37 + slot * 17 + (index % 65521));
+        }
+    }
+    return inputs;
+}
+
+std::vector<FieldElement> run_fh_slot_dispatch_stage(
+    const gatzk::protocol::ProtocolContext& context,
+    const std::map<std::string, FieldElement>& challenges,
+    const FHSlotInputs& inputs,
+    bool fixed_slots) {
+    const auto point_count = inputs.front().size();
+    const auto rotation_step = point_count / context.domains.fh->size;
+    const std::array<FieldElement, 4> zeros = {
+        FieldElement(7), FieldElement(11),
+        FieldElement(13), FieldElement(17)};
+    const std::array<FieldElement, 4> inverses = {
+        zeros[0].inv(), zeros[1].inv(), zeros[2].inv(), zeros[3].inv()};
+    const gatzk::protocol::FHQuotientParameters parameters{
+        .alpha_quot = challenges.at("alpha_quot"),
+        .beta_feat = challenges.at("beta_feat"),
+        .eta_feat = FieldElement::zero(),
+    };
+    const std::map<std::string, const std::vector<FieldElement>*>
+        named_slots{
+            {"P_Q_tbl_feat", &inputs[0]},
+            {"P_Q_qry_feat", &inputs[1]},
+            {"P_Table_feat", &inputs[2]},
+            {"P_Query_feat", &inputs[3]},
+            {"P_m_feat", &inputs[4]},
+            {"P_J_tbl_feat", &inputs[5]},
+            {"P_J_qry_feat", &inputs[6]},
+            {"P_R_feat", &inputs[7]},
+        };
+    std::vector<FieldElement> output(point_count);
+    const auto workers = std::min<std::size_t>(
+        32, std::max<std::size_t>(1, std::thread::hardware_concurrency()));
+    const auto chunk = (point_count + workers - 1) / workers;
+    std::vector<std::future<void>> futures;
+    futures.reserve(workers);
+    for (std::size_t worker = 0; worker < workers; ++worker) {
+        const auto begin = worker * chunk;
+        const auto end = std::min(point_count, begin + chunk);
+        if (begin >= end) {
+            break;
+        }
+        futures.push_back(std::async(std::launch::async, [&, begin, end] {
+            for (std::size_t index = begin; index < end; ++index) {
+                const auto rotated_index =
+                    (index + rotation_step) & (point_count - 1U);
+                const auto z = FieldElement(101 + index);
+                const auto omega_z = z * context.domains.fh->omega;
+                const gatzk::protocol::QuotientBoundaryValues boundary{
+                    .first = FieldElement(19),
+                    .last = FieldElement(23),
+                    .zero = zeros[index & 3U],
+                    .zero_inverse = inverses[index & 3U],
+                };
+                if (!fixed_slots) {
+                    output[index] = gatzk::protocol::evaluate_t_fh(
+                        context,
+                        challenges,
+                        [&](const std::string& name,
+                            const FieldElement& point) {
+                            const auto slot = named_slots.at(name);
+                            return (*slot)[
+                                name == "P_R_feat" && point == omega_z
+                                    ? rotated_index
+                                    : index];
+                        },
+                        z,
+                        nullptr,
+                        &boundary,
+                        true);
+                    continue;
+                }
+                const gatzk::protocol::FHQuotientValues values{
+                    .q_table = inputs[0][index],
+                    .q_query = inputs[1][index],
+                    .table = inputs[2][index],
+                    .query = inputs[3][index],
+                    .multiplicity = inputs[4][index],
+                    .j_table = inputs[5][index],
+                    .j_query = inputs[6][index],
+                    .accumulator = inputs[7][index],
+                    .accumulator_next = inputs[7][rotated_index],
+                };
+                output[index] =
+                    gatzk::protocol::evaluate_t_fh_from_values(
+                        parameters, values, boundary);
+            }
+        }));
+    }
+    for (auto& future : futures) {
+        future.get();
+    }
+    return output;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -174,6 +355,9 @@ int main(int argc, char** argv) {
         std::vector<double> interleave_parallel_samples;
         std::vector<double> fh_division_samples;
         std::vector<double> fh_inverse_multiply_samples;
+        std::vector<double> fh_fixed_slot_samples;
+        std::vector<double> fh_named_slot_samples;
+        std::vector<double> fh_pointer_slot_samples;
         serial_samples.reserve(repeats);
         forward_pair_serial_samples.reserve(repeats);
         forward_pair_parallel_samples.reserve(repeats);
@@ -189,6 +373,9 @@ int main(int argc, char** argv) {
         interleave_parallel_samples.reserve(repeats);
         fh_division_samples.reserve(repeats);
         fh_inverse_multiply_samples.reserve(repeats);
+        fh_fixed_slot_samples.reserve(repeats);
+        fh_named_slot_samples.reserve(repeats);
+        fh_pointer_slot_samples.reserve(repeats);
         const auto rotation_domain =
             gatzk::algebra::RootOfUnityDomain::create(
                 "rotation_stage", size);
@@ -199,6 +386,9 @@ int main(int argc, char** argv) {
             {"alpha_quot", FieldElement(29)},
             {"beta_feat", FieldElement(31)},
         };
+        constexpr std::size_t kFhSlotStagePoints = 1ULL << 18;
+        const auto fh_slot_inputs = make_fh_slot_inputs(
+            kFhSlotStagePoints);
         bool exact = true;
         std::vector<double> batch_samples;
         batch_samples.reserve(repeats);
@@ -325,7 +515,22 @@ int main(int argc, char** argv) {
             const auto fh_inverse_multiply = run_fh_zero_division_stage(
                 fh_context, fh_challenges, kFhDivisionStagePoints, true);
             fh_inverse_multiply_samples.push_back(elapsed_ms(start));
-            exact = exact && fh_division == fh_inverse_multiply;
+            start = Clock::now();
+            const auto fh_fixed_slot = run_fh_fixed_slot_stage(
+                fh_context, fh_challenges, kFhDivisionStagePoints);
+            fh_fixed_slot_samples.push_back(elapsed_ms(start));
+            exact = exact && fh_division == fh_inverse_multiply
+                && fh_inverse_multiply == fh_fixed_slot;
+
+            start = Clock::now();
+            const auto fh_named_slot = run_fh_slot_dispatch_stage(
+                fh_context, fh_challenges, fh_slot_inputs, false);
+            fh_named_slot_samples.push_back(elapsed_ms(start));
+            start = Clock::now();
+            const auto fh_pointer_slot = run_fh_slot_dispatch_stage(
+                fh_context, fh_challenges, fh_slot_inputs, true);
+            fh_pointer_slot_samples.push_back(elapsed_ms(start));
+            exact = exact && fh_named_slot == fh_pointer_slot;
 
             if (batch_objects != 0) {
                 std::vector<FieldElement> batch_outputs(
@@ -419,6 +624,12 @@ int main(int argc, char** argv) {
                   << median(fh_division_samples)
                   << " fh_inverse_multiply_median_ms="
                   << median(fh_inverse_multiply_samples)
+                  << " fh_fixed_slot_median_ms="
+                  << median(fh_fixed_slot_samples)
+                  << " fh_named_slot_median_ms="
+                  << median(fh_named_slot_samples)
+                  << " fh_pointer_slot_median_ms="
+                  << median(fh_pointer_slot_samples)
                   << " batch_objects=" << batch_objects
                   << " batch_workers=" << batch_workers
                   << " batch_mode=" << batch_mode;

@@ -48,6 +48,23 @@ struct SpilledEvaluationBatchProfile {
     std::vector<SpilledEvaluationProfile> jobs;
 };
 
+// Focused execution-only comparison of the former t_edge name-resolving
+// callback and the bound access-plan callback. Context/trace construction and
+// coset materialization are deliberately outside these timings.
+struct TEdgeAccessPlanStageProfile {
+    std::vector<double> legacy_resolver_ms;
+    std::vector<double> bound_access_plan_ms;
+    std::size_t quotient_points = 0;
+    std::size_t access_plan_entries = 0;
+    std::size_t late_bound_dependencies = 0;
+};
+
+TEdgeAccessPlanStageProfile benchmark_t_edge_access_plan_stage(
+    const ProtocolContext& context,
+    const TraceArtifacts& trace,
+    const std::map<std::string, algebra::FieldElement>& challenges,
+    std::size_t repeats);
+
 // Run independent spill-file scans with a hard four-worker ceiling. Small or
 // single-job batches remain serial so this does not create nested fine-grained
 // parallelism in ordinary opening paths.

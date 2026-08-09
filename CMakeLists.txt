@@ -148,6 +148,10 @@ add_executable(gatzk_t_edge_eval_stage_bench tools/benchmarks/t_edge_eval_stage_
 target_include_directories(gatzk_t_edge_eval_stage_bench PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(gatzk_t_edge_eval_stage_bench PRIVATE gatzkml)
 
+add_executable(gatzk_t_edge_access_plan_stage_bench tools/benchmarks/t_edge_access_plan_stage_bench.cpp)
+target_include_directories(gatzk_t_edge_access_plan_stage_bench PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(gatzk_t_edge_access_plan_stage_bench PRIVATE gatzkml)
+
 add_executable(gatzk_kzg_opening_stage_bench tools/benchmarks/kzg_opening_stage_bench.cpp)
 target_include_directories(gatzk_kzg_opening_stage_bench PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(gatzk_kzg_opening_stage_bench PRIVATE gatzkml)
@@ -182,6 +186,14 @@ if(GATZK_BUILD_TESTS)
         gatzk_tests
         PRIVATE GATZK_TEST_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}")
     add_test(NAME gatzk_tests COMMAND gatzk_tests)
+    add_executable(gatzk_family_scaling_tests tests/test_family_scaling.cpp)
+    target_link_libraries(gatzk_family_scaling_tests PRIVATE gatzkml)
+    target_compile_definitions(
+        gatzk_family_scaling_tests
+        PRIVATE
+            GATZK_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+            GATZK_TEST_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME gatzk_family_scaling_tests COMMAND gatzk_family_scaling_tests)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
         add_test(

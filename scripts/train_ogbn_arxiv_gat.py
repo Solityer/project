@@ -14,7 +14,9 @@ import torch
 from ogbn_arxiv_utils import build_sorted_edge_index, ensure_cache, load_raw_arrays, row_normalize_dense
 from train_planetoid_gat import (
     PlanetoidGAT,
+    add_training_cli,
     build_optimizer,
+    checkpoint_metadata,
     cfg_bool,
     cfg_float,
     cfg_int,
@@ -35,7 +37,7 @@ def masked_loss(logits: torch.Tensor, labels: torch.Tensor, indices: torch.Tenso
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", required=True)
+    add_training_cli(parser)
     args = parser.parse_args()
 
     cfg_path = pathlib.Path(args.config).resolve()
@@ -46,7 +48,23 @@ def main() -> None:
 
     project_root = cfg_path.parent.parent.resolve()
     data_root = (project_root / cfg.get("data_root", "data")).resolve()
-    output_dir = (project_root / cfg.get("checkpoint_dir", "artifacts/checkpoints/ogbn_arxiv_gat")).resolve()
+    output_dir = (
+        pathlib.Path(args.output_dir).expanduser().resolve()
+        if args.output_dir is not None
+        else (
+            project_root
+            / cfg.get(
+                "checkpoint_dir",
+                "artifacts/checkpoints/ogbn_arxiv_gat",
+            )
+        ).resolve()
+    )
+    checkpoint_path = output_dir / "best_model.pt"
+    if checkpoint_path.exists() and not args.overwrite:
+        raise FileExistsError(
+            f"refusing to overwrite {checkpoint_path}; pass a fresh --output-dir "
+            "or explicitly use --overwrite"
+        )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     ensure_cache(project_root, data_root)
@@ -55,22 +73,47 @@ def main() -> None:
     if "hidden_profile" not in cfg:
         raise ValueError("training config must expose hidden_profile")
     hidden_profile = parse_hidden_profile_expr(cfg["hidden_profile"])
-    if len(hidden_profile) != 1:
-        raise ValueError("train_ogbn_arxiv_gat currently supports one hidden layer only")
-    hidden_heads = int(hidden_profile[0]["head_count"])
-    hidden_dim = int(hidden_profile[0]["head_dim"])
     k_out = cfg_int(cfg, "K_out", 1)
-    if k_out != 1:
-        raise ValueError("train_ogbn_arxiv_gat currently supports K_out=1 only")
-    epochs = cfg_int(cfg, "epochs", 1)
-    patience = cfg_int(cfg, "patience", 1)
-    lr = cfg_float(cfg, "learning_rate", 0.005)
-    weight_decay = cfg_float(cfg, "weight_decay", 0.0005)
-    dropout = cfg_float(cfg, "dropout", 0.6)
-    use_cuda = cfg_bool(cfg, "use_cuda", False)
+    if k_out <= 0:
+        raise ValueError("K_out must be positive")
+    seed = args.seed if args.seed is not None else seed
+    epochs = args.epochs if args.epochs is not None else cfg_int(cfg, "epochs", 1)
+    patience = (
+        args.patience
+        if args.patience is not None
+        else cfg_int(cfg, "patience", 1)
+    )
+    lr = (
+        args.learning_rate
+        if args.learning_rate is not None
+        else cfg_float(cfg, "learning_rate", 0.005)
+    )
+    weight_decay = (
+        args.weight_decay
+        if args.weight_decay is not None
+        else cfg_float(cfg, "weight_decay", 0.0005)
+    )
+    dropout = (
+        args.dropout
+        if args.dropout is not None
+        else cfg_float(cfg, "dropout", 0.6)
+    )
+    use_cuda = (
+        args.use_cuda
+        if args.use_cuda is not None
+        else cfg_bool(cfg, "use_cuda", False)
+    )
+    if epochs <= 0 or patience <= 0:
+        raise ValueError("epochs and patience must be positive")
+    if not 0.0 <= dropout < 1.0:
+        raise ValueError("dropout must be in [0, 1)")
+    if use_cuda and not torch.cuda.is_available():
+        raise RuntimeError(
+            "CUDA training was requested but torch.cuda.is_available() is false"
+        )
     symmetrize = cfg_bool(cfg, "symmetrize_edges", False)
 
-    device = torch.device("cuda" if use_cuda and torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if use_cuda else "cpu")
     set_seed(seed)
 
     arrays = load_raw_arrays(data_root)
@@ -90,8 +133,32 @@ def main() -> None:
     edge_src_tensor = torch.tensor(edge_src, dtype=torch.long, device=device)
     edge_dst_tensor = torch.tensor(edge_dst, dtype=torch.long, device=device)
 
-    model = PlanetoidGAT(features.shape[1], hidden_dim, int(labels.max().item()) + 1, hidden_heads=hidden_heads).to(device)
+    num_classes = int(labels.max().item()) + 1
+    model = PlanetoidGAT(
+        int(features.shape[1]),
+        num_classes=num_classes,
+        hidden_profile=hidden_profile,
+        k_out=k_out,
+    ).to(device)
     optimizer = build_optimizer(model, lr, weight_decay)
+    metadata = checkpoint_metadata(
+        dataset="ogbn-arxiv",
+        in_dim=int(features.shape[1]),
+        hidden_profile=hidden_profile,
+        k_out=k_out,
+        num_classes=num_classes,
+        seed=seed,
+        dropout=dropout,
+        learning_rate=lr,
+        weight_decay=weight_decay,
+        model_param_id=f"ogbn_arxiv_seed{seed}",
+        extra={
+            "batching_rule": "whole_graph_single",
+            "subgraph_rule": "whole_graph",
+            "self_loop_rule": "per_node",
+            "edge_sort_rule": "edge_gid_then_dst_stable",
+        },
+    )
 
     best_state = None
     best_metrics = None
@@ -159,35 +226,10 @@ def main() -> None:
             }
             torch.save(
                 {
-                    "bundle": {
-                        "dataset": "ogbn-arxiv",
-                        "L": 2,
-                        "d_in_profile": [int(features.shape[1])],
-                        "hidden_profile": hidden_profile,
-                        "K_out": k_out,
-                        "C": int(labels.max().item()) + 1,
-                        "num_features": int(features.shape[1]),
-                        "num_classes": int(labels.max().item()) + 1,
-                        "seed": seed,
-                        "dropout": dropout,
-                        "learning_rate": lr,
-                        "weight_decay": weight_decay,
-                        "task_type": "transductive_node_classification",
-                        "report_unit": "node",
-                        "batching_rule": "whole_graph_single",
-                        "subgraph_rule": "whole_graph",
-                        "self_loop_rule": "per_node",
-                        "edge_sort_rule": "edge_gid_then_dst_stable",
-                        "model_arch_id": f"gat_family_L2_hid{hidden_heads}x{hidden_dim}_kout1_c{int(labels.max().item()) + 1}",
-                        "model_param_id": f"ogbn_arxiv_seed{seed}",
-                        "quant_cfg_id": "fp32_torch_checkpoint",
-                        "static_table_id": "tables:lrelu+elu+exp+range",
-                        "degree_bound_id": "auto",
-                        "output_average_rule": "per_head_bias_then_arithmetic_mean",
-                    },
+                    "bundle": metadata,
                     "state_dict": best_state,
                 },
-                output_dir / "best_model.pt",
+                checkpoint_path,
             )
             bad_epochs = 0
         else:
@@ -219,6 +261,7 @@ def main() -> None:
                 "wall_time_sec": time.perf_counter() - start,
                 "best_metrics": best_metrics,
                 "history_tail": history[-10:],
+                "checkpoint_metadata": metadata,
             },
             indent=2,
             sort_keys=True,

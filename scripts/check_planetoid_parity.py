@@ -13,10 +13,20 @@ from train_planetoid_gat import run_trace_from_bundle, run_trace_from_checkpoint
 
 
 def compare_arrays(name: str, expected: np.ndarray, actual: np.ndarray) -> Dict[str, object]:
+    if expected.shape != actual.shape:
+        return {
+            "name": name,
+            "shape": list(expected.shape),
+            "actual_shape": list(actual.shape),
+            "max_abs_error": None,
+            "mean_abs_error": None,
+            "passed": False,
+        }
     diff = np.abs(expected.astype(np.float64) - actual.astype(np.float64))
     return {
         "name": name,
         "shape": list(expected.shape),
+        "actual_shape": list(actual.shape),
         "max_abs_error": float(diff.max(initial=0.0)),
         "mean_abs_error": float(diff.mean() if diff.size else 0.0),
         "passed": bool(np.allclose(expected, actual, atol=1e-5, rtol=1e-5)),
@@ -41,17 +51,67 @@ def main() -> None:
     training_trace = run_trace_from_checkpoint(checkpoint_path, data_root, args.dataset, torch.device("cpu"))
     bundle_trace = run_trace_from_bundle(bundle_dir, data_root, args.dataset, torch.device("cpu"))
 
-    comparisons = []
-    comparisons.append(compare_arrays("hidden_concat", training_trace["hidden_concat"], bundle_trace["hidden_concat"]))
-    comparisons.append(compare_arrays("output/Y_lin", training_trace["output"]["H_prime"], bundle_trace["output"]["H_prime"]))
-    comparisons.append(compare_arrays("output/Y", training_trace["logits"], bundle_trace["logits"]))
+    comparisons = [
+        compare_arrays(
+            "output/Y", training_trace["logits"], bundle_trace["logits"]
+        )
+    ]
+    training_layers = training_trace["hidden_layers"]
+    bundle_layers = bundle_trace["hidden_layers"]
+    if len(training_layers) != len(bundle_layers):
+        raise ValueError("checkpoint and bundle hidden-layer counts differ")
+    trace_keys = [
+        "H_prime", "E_src", "E_dst", "S", "Z", "M", "Delta",
+        "U", "Sum", "inv", "alpha", "H_agg_pre_bias", "H_agg",
+    ]
+    for layer_index, (training_layer, bundle_layer) in enumerate(
+        zip(training_layers, bundle_layers)
+    ):
+        comparisons.append(
+            compare_arrays(
+                f"hidden_layer_{layer_index}/concat",
+                training_layer["concat"],
+                bundle_layer["concat"],
+            )
+        )
+        if len(training_layer["heads"]) != len(bundle_layer["heads"]):
+            raise ValueError(
+                f"checkpoint and bundle head counts differ at layer {layer_index}"
+            )
+        for head_index, (training_head, bundle_head) in enumerate(
+            zip(training_layer["heads"], bundle_layer["heads"])
+        ):
+            for key in trace_keys:
+                comparisons.append(
+                    compare_arrays(
+                        f"hidden_layer_{layer_index}/head_{head_index}/{key}",
+                        training_head[key],
+                        bundle_head[key],
+                    )
+                )
 
-    hidden_pairs = min(len(training_trace["hidden_heads"]), len(bundle_trace["hidden_heads"]))
-    for head_index in range(hidden_pairs):
-        training_head = training_trace["hidden_heads"][head_index]
-        bundle_head = bundle_trace["hidden_heads"][head_index]
-        for key in ["H_prime", "E_src", "E_dst", "S", "Z", "M", "Delta", "U", "Sum", "inv", "alpha", "H_agg_pre_bias", "H_agg"]:
-            comparisons.append(compare_arrays(f"hidden_head_{head_index}/{key}", training_head[key], bundle_head[key]))
+    training_outputs = training_trace["output_heads"]
+    bundle_outputs = bundle_trace["output_heads"]
+    if len(training_outputs) != len(bundle_outputs):
+        raise ValueError("checkpoint and bundle K_out differ")
+    for head_index, (training_head, bundle_head) in enumerate(
+        zip(training_outputs, bundle_outputs)
+    ):
+        for key in trace_keys:
+            comparisons.append(
+                compare_arrays(
+                    f"output/head_{head_index}/{key}",
+                    training_head[key],
+                    bundle_head[key],
+                )
+            )
+        comparisons.append(
+            compare_arrays(
+                f"output/head_{head_index}/biased_value",
+                training_trace["output_head_values"][head_index],
+                bundle_trace["output_head_values"][head_index],
+            )
+        )
 
     summary = {
         "dataset": args.dataset,
@@ -60,6 +120,10 @@ def main() -> None:
         "comparisons": comparisons,
     }
     output_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+    if not summary["passed"]:
+        raise RuntimeError(
+            f"checkpoint/bundle parity failed; see {output_path}"
+        )
 
 
 if __name__ == "__main__":

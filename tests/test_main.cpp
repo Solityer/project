@@ -323,6 +323,42 @@ void test_fh_precomputed_boundary_equivalence() {
         direct == inverse_cached,
         "cached FH zero-polynomial inverse changed the quotient equation");
 
+    const gatzk::protocol::FHQuotientParameters fh_parameters{
+        .alpha_quot = challenges.at("alpha_quot"),
+        .beta_feat = challenges.at("beta_feat"),
+        .eta_feat = challenges.at("eta_feat"),
+    };
+    const gatzk::protocol::FHQuotientValues fh_values{
+        .q_table = eval("P_Q_tbl_feat", z),
+        .q_query = eval("P_Q_qry_feat", z),
+        .table = eval("P_Table_feat", z),
+        .query = eval("P_Query_feat", z),
+        .multiplicity = eval("P_m_feat", z),
+        .j_table = eval("P_J_tbl_feat", z),
+        .j_query = eval("P_J_qry_feat", z),
+        .accumulator = eval("P_R_feat", z),
+        .accumulator_next = eval(
+            "P_R_feat", z * context.domains.fh->omega),
+    };
+    const gatzk::protocol::FHFeatureEncodingValues
+        fh_feature_encoding_values{
+            .table_row = eval("P_Row_feat_tbl", z),
+            .table_column = eval("P_Col_feat_tbl", z),
+            .table_feature = eval("P_T_H", z),
+            .query_row = eval("P_I_feat_qry", z),
+            .query_column = eval("P_Col_feat_qry", z),
+            .query_feature = eval("P_H", z),
+        };
+    const auto fixed_slot_generic =
+        gatzk::protocol::evaluate_t_fh_from_values(
+            fh_parameters,
+            fh_values,
+            boundary,
+            &fh_feature_encoding_values);
+    require(
+        direct == fixed_slot_generic,
+        "fixed-slot FH core differs from generic named evaluation");
+
     const gatzk::protocol::EvalFn identity_eval =
         [&](const std::string& label,
             const FieldElement& point) {
@@ -361,6 +397,24 @@ void test_fh_precomputed_boundary_equivalence() {
     require(
         generic_identity == derived_identity,
         "derived full-identity FH encoding terms changed the quotient equation");
+    const gatzk::protocol::FHQuotientValues identity_values{
+        .q_table = identity_eval("P_Q_tbl_feat", z),
+        .q_query = identity_eval("P_Q_qry_feat", z),
+        .table = identity_eval("P_Table_feat", z),
+        .query = identity_eval("P_Query_feat", z),
+        .multiplicity = identity_eval("P_m_feat", z),
+        .j_table = identity_eval("P_J_tbl_feat", z),
+        .j_query = identity_eval("P_J_qry_feat", z),
+        .accumulator = identity_eval("P_R_feat", z),
+        .accumulator_next = identity_eval(
+            "P_R_feat", z * context.domains.fh->omega),
+    };
+    const auto fixed_slot_identity =
+        gatzk::protocol::evaluate_t_fh_from_values(
+            fh_parameters, identity_values, boundary);
+    require(
+        derived_identity == fixed_slot_identity,
+        "fixed-slot FH identity core differs from generic source of truth");
 }
 
 void test_logup_inverse_accumulator_reuse_equivalence() {
