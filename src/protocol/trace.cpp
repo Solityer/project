@@ -2036,11 +2036,71 @@ namespace gatzk::protocol
             return out;
         }
 
+        bool is_signed_division_compact_zero_scan_candidate(
+            const std::string &name)
+        {
+            return name.find("_Div_Limb_") != std::string::npos
+                || (name.find("_Div_Range_") != std::string::npos
+                    && name.ends_with("_Query"));
+        }
+
         TraceArtifacts::SpilledEvaluationPolynomial spill_evaluation_polynomial(
             TraceArtifacts &trace,
             const algebra::Polynomial &polynomial,
             std::uintptr_t semantic_source_id)
         {
+            bool compact_semantic_source_all_zero = false;
+            if (semantic_source_id != 0
+                && is_signed_division_compact_zero_scan_candidate(
+                    polynomial.name))
+            {
+                if (polynomial.domain == nullptr
+                    || polynomial.size() > polynomial.domain->size)
+                {
+                    throw std::runtime_error(
+                        "signed-division compact semantic source domain mismatch: "
+                        + polynomial.name);
+                }
+                if (polynomial.size() < polynomial.domain->size)
+                {
+                    if (polynomial.size() == 0)
+                    {
+                        throw std::runtime_error(
+                            "signed-division compact semantic source is empty: "
+                            + polynomial.name);
+                    }
+                    const auto domain_name = polynomial.domain->name;
+                    const auto [cache_it, inserted] =
+                        trace.compact_semantic_source_zero_cache.emplace(
+                            semantic_source_id,
+                            TraceArtifacts::CompactSemanticSourceZeroCacheEntry{
+                                .domain_name = domain_name,
+                                .size = polynomial.size(),
+                                .all_zero = false,
+                            });
+                    if (!inserted
+                        && (cache_it->second.domain_name != domain_name
+                            || cache_it->second.size
+                                != polynomial.size()))
+                    {
+                        throw std::runtime_error(
+                            "signed-division compact semantic source identity mismatch: "
+                            + polynomial.name);
+                    }
+                    if (inserted)
+                    {
+                        cache_it->second.all_zero = std::all_of(
+                            polynomial.values().begin(),
+                            polynomial.values().end(),
+                            [](const FieldElement &value)
+                            {
+                                return value.is_zero();
+                            });
+                    }
+                    compact_semantic_source_all_zero =
+                        cache_it->second.all_zero;
+                }
+            }
             std::filesystem::path root_storage;
             const auto &root = ensure_trace_spill_directory(
                 trace, &root_storage);
@@ -2068,6 +2128,8 @@ namespace gatzk::protocol
                 .domain_name = polynomial.domain != nullptr ? polynomial.domain->name : std::string(),
                 .size = polynomial.size(),
                 .semantic_source_id = semantic_source_id,
+                .compact_semantic_source_all_zero =
+                    compact_semantic_source_all_zero,
                 .zero_domain_blinder = polynomial.zero_domain_blinder,
             };
         }

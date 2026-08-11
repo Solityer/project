@@ -4063,6 +4063,10 @@ namespace gatzk::protocol
         class QuotientCosetValues
         {
         public:
+            struct PureZeroSemanticTag
+            {
+            };
+
             QuotientCosetValues(
                 std::vector<FieldElement> values,
                 std::shared_ptr<QuotientCosetSpillArena> spill_arena,
@@ -4133,6 +4137,34 @@ namespace gatzk::protocol
             }
 
             QuotientCosetValues(
+                PureZeroSemanticTag,
+                std::size_t size,
+                std::vector<FieldElement> zero_domain_blinder,
+                std::shared_ptr<const std::vector<FieldElement>> coset_points,
+                std::vector<FieldElement> zero_cycle)
+                : pure_zero_semantic_(true),
+                  zero_domain_blinder_(
+                      std::move(zero_domain_blinder)),
+                  coset_points_(std::move(coset_points)),
+                  zero_cycle_(std::move(zero_cycle)),
+                  size_(size)
+            {
+                if (size_ == 0 || zero_cycle_.empty()
+                    || size_ % zero_cycle_.size() != 0)
+                {
+                    throw std::runtime_error(
+                        "invalid pure-zero lazy quotient blinder view");
+                }
+                if (zero_domain_blinder_.size() > 1
+                    && (coset_points_ == nullptr
+                        || coset_points_->size() != size_))
+                {
+                    throw std::runtime_error(
+                        "pure-zero lazy quotient blinder view is missing coset points");
+                }
+            }
+
+            QuotientCosetValues(
                 std::vector<std::pair<
                     std::shared_ptr<const QuotientCosetValues>,
                     FieldElement>> linear_terms,
@@ -4197,7 +4229,9 @@ namespace gatzk::protocol
 
             const FieldElement *data() const
             {
-                if (semantic_values_ != nullptr || !linear_terms_.empty())
+                if (pure_zero_semantic_
+                    || semantic_values_ != nullptr
+                    || !linear_terms_.empty())
                 {
                     throw std::runtime_error(
                         "lazy quotient coset view has no contiguous data");
@@ -4210,7 +4244,9 @@ namespace gatzk::protocol
             FieldElement operator[](
                 std::size_t index) const
             {
-                if (semantic_values_ == nullptr && linear_terms_.empty())
+                if (!pure_zero_semantic_
+                    && semantic_values_ == nullptr
+                    && linear_terms_.empty())
                 {
                     return data()[index];
                 }
@@ -4219,7 +4255,7 @@ namespace gatzk::protocol
                 {
                     value = (*semantic_values_)[index];
                 }
-                else
+                else if (!pure_zero_semantic_)
                 {
                     mcl::Fr acc;
                     acc.clear();
@@ -4295,7 +4331,9 @@ namespace gatzk::protocol
 
             std::vector<FieldElement> copy_values() const
             {
-                if (semantic_values_ == nullptr && linear_terms_.empty())
+                if (!pure_zero_semantic_
+                    && semantic_values_ == nullptr
+                    && linear_terms_.empty())
                 {
                     return std::vector<FieldElement>(
                         data(), data() + size_);
@@ -4312,6 +4350,10 @@ namespace gatzk::protocol
 
             bool file_backed() const
             {
+                if (pure_zero_semantic_)
+                {
+                    return false;
+                }
                 if (mapping_ != nullptr
                     || (semantic_values_ != nullptr
                         && semantic_values_->file_backed()))
@@ -4330,6 +4372,10 @@ namespace gatzk::protocol
             void discard_prefix(
                 std::size_t end_index) const
             {
+                if (pure_zero_semantic_)
+                {
+                    return;
+                }
                 if (semantic_values_ != nullptr)
                 {
                     semantic_values_->discard_prefix(end_index);
@@ -4377,6 +4423,7 @@ namespace gatzk::protocol
         private:
             std::vector<FieldElement> memory_;
             std::shared_ptr<QuotientCosetSpillArena> spill_arena_;
+            bool pure_zero_semantic_ = false;
             std::shared_ptr<const QuotientCosetValues>
                 semantic_values_;
             std::vector<std::pair<
@@ -6052,8 +6099,17 @@ namespace gatzk::protocol
                             == trace_.spilled_polynomials.end()
                         || spilled_it->second.semantic_source_id == 0
                         || spilled_it->second.domain_name
-                            != domain_->name
-                        || spilled_it->second.size != domain_->size)
+                            != domain_->name)
+                    {
+                        continue;
+                    }
+                    if (spilled_it->second.size > domain_->size)
+                    {
+                        throw std::runtime_error(
+                            "spilled semantic coset source exceeds domain: "
+                            + item_label);
+                    }
+                    if (spilled_it->second.size == 0)
                     {
                         continue;
                     }
@@ -7013,6 +7069,89 @@ namespace gatzk::protocol
                     std::move(semantic_values), label);
             }
 
+            QuotientCosetValuesPtr retain_lazy_coset_with_blinder_correction(
+                QuotientCosetValuesPtr base_values,
+                const std::vector<FieldElement> &blinder_correction,
+                const std::string &label)
+            {
+                seed_lazy_blinder_geometry();
+                if (semantic_coset_points_ == nullptr
+                    || semantic_coset_points_->size() != target_size_
+                    || semantic_coset_zero_cycle_.empty()
+                    || semantic_coset_zero_cycle_.size()
+                        != rotation_step_
+                    || target_size_
+                        % semantic_coset_zero_cycle_.size() != 0)
+                {
+                    throw std::runtime_error(
+                        "lazy spilled quotient blinder geometry mismatch: "
+                        + label);
+                }
+                if (base_values != nullptr)
+                {
+                    if (base_values->size() != target_size_)
+                    {
+                        throw std::runtime_error(
+                            "lazy spilled quotient semantic coset size mismatch: "
+                            + label);
+                    }
+                    if (blinder_correction.empty())
+                    {
+                        return base_values;
+                    }
+                    return retain_blinded_coset_view(
+                        std::move(base_values),
+                        blinder_correction);
+                }
+                auto retained =
+                    std::make_shared<const QuotientCosetValues>(
+                        QuotientCosetValues::PureZeroSemanticTag{},
+                        target_size_,
+                        blinder_correction,
+                        semantic_coset_points_,
+                        semantic_coset_zero_cycle_);
+                lazy_blinder_coset_count_.fetch_add(
+                    1, std::memory_order_relaxed);
+                lazy_blinder_coset_bytes_avoided_.fetch_add(
+                    target_size_ * sizeof(FieldElement),
+                    std::memory_order_relaxed);
+                return retained;
+            }
+
+            QuotientCosetValuesPtr
+            spilled_pure_zero_semantic_coset(
+                const std::string &requested_name,
+                const TraceArtifacts::SpilledEvaluationPolynomial
+                    &spilled)
+            {
+                if (!spilled.compact_semantic_source_all_zero)
+                {
+                    return nullptr;
+                }
+                const bool signed_division_compact_source =
+                    requested_name.find("_Div_Limb_")
+                            != std::string::npos
+                    || (requested_name.find("_Div_Range_")
+                            != std::string::npos
+                        && requested_name.ends_with("_Query"));
+                if (label_ != "t_edge"
+                    || !signed_division_compact_source
+                    || spilled.semantic_source_id == 0
+                    || spilled.domain_name != domain_->name
+                    || spilled.size == 0
+                    || spilled.size >= domain_->size
+                    || spilled.zero_domain_blinder.empty())
+                {
+                    throw std::runtime_error(
+                        "invalid pure-zero compact spilled quotient metadata: "
+                        + requested_name);
+                }
+                return retain_lazy_coset_with_blinder_correction(
+                    nullptr,
+                    spilled.zero_domain_blinder,
+                    requested_name);
+            }
+
             QuotientCosetValuesPtr
             materialize_spilled_lazy_feature_coset(
                 const std::string &requested_name,
@@ -7091,12 +7230,19 @@ namespace gatzk::protocol
                 {
                     return nullptr;
                 }
-                auto values =
-                    retain_coset_with_blinder_correction(
-                        std::move(base_values),
-                        std::move(semantic_values),
-                        correction,
-                        requested_name);
+                const bool use_lazy_blinder_view =
+                    label_ == "t_FH"
+                    && target_size_ >= (std::size_t{1} << 26);
+                auto values = use_lazy_blinder_view
+                    ? retain_lazy_coset_with_blinder_correction(
+                          std::move(base_values),
+                          correction,
+                          requested_name)
+                    : retain_coset_with_blinder_correction(
+                          std::move(base_values),
+                          std::move(semantic_values),
+                          correction,
+                          requested_name);
                 progress_note(
                     "prove:quotient:t_FH:spilled_lazy:"
                     + requested_name + ":done");
@@ -7176,6 +7322,22 @@ namespace gatzk::protocol
                         trace_.spilled_polynomials.find(requested_name);
                     spilled_it != trace_.spilled_polynomials.end())
                 {
+                    if (auto zero_values =
+                            spilled_pure_zero_semantic_coset(
+                                requested_name,
+                                spilled_it->second);
+                        zero_values != nullptr)
+                    {
+                        std::lock_guard<std::mutex> lock(
+                            coset_cache_mutex_);
+                        const auto [it, inserted] =
+                            coset_cache_.emplace(
+                                requested_name,
+                                zero_values);
+                        return inserted
+                            ? zero_values
+                            : it->second;
+                    }
                     if (auto shared_values =
                             reused_spilled_semantic_coset_values(
                                 requested_name,

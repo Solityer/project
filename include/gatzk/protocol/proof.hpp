@@ -124,7 +124,16 @@ struct TraceArtifacts {
         // Execution-only: it is used to share semantic cosets across
         // independently blinded columns and is never serialized.
         std::uintptr_t semantic_source_id = 0;
+        // Execution-only result of a proof-local scan of the compact shared
+        // semantic source.  This metadata is never serialized into proof.
+        bool compact_semantic_source_all_zero = false;
         std::vector<algebra::FieldElement> zero_domain_blinder;
+    };
+
+    struct CompactSemanticSourceZeroCacheEntry {
+        std::string domain_name;
+        std::size_t size = 0;
+        bool all_zero = false;
     };
 
     // 原始列与矩阵，主要服务 artifact 导出与后续按标签取值。
@@ -133,6 +142,13 @@ struct TraceArtifacts {
     // 多项式视图与可选落盘信息。
     std::unordered_map<std::string, algebra::Polynomial> polynomials;
     std::unordered_map<std::string, SpilledEvaluationPolynomial> spilled_polynomials;
+    // Proof-local execution cache keyed by exact shared-buffer identity.
+    // It prevents Limb/Query aliases from rescanning the same compact source
+    // and is never serialized.
+    std::unordered_map<
+        std::uintptr_t,
+        CompactSemanticSourceZeroCacheEntry>
+        compact_semantic_source_zero_cache;
     // Owns the per-proof spill directory.  The custom lease deleter removes
     // the directory after the last TraceArtifacts copy is released.
     std::shared_ptr<const std::string> spill_directory_lease;
