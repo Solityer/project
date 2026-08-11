@@ -134,6 +134,8 @@ void run_case(
         const gatzk::crypto::G1MSMExecutionOptions options{
             .max_worker_count = max_worker_count,
             .stable_srs_bases = stable_srs_bases,
+            .stable_srs_capacity =
+                stable_srs_bases ? points.size() : 0,
         };
         const auto profiled_start = std::chrono::steady_clock::now();
         const auto profiled = gatzk::crypto::g1_multi_scalar_mul_profiled(

@@ -2,16 +2,19 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "gatzk/algebra/cuda_field.cuh"
 #include "gatzk/algebra/vector_ops.hpp"
 
-// 实现三个GPU加速组件，均为工程优化:
+// 实现四个GPU加速组件，均为工程优化:
 //   1. 重心权重构造 (barycentric_weights_gpu)
 //   2. 批量加权多项式求值 (weighted_poly_eval_gpu*)
 //   3. Lookup 直方图统计 (lookup_histogram_indices_cuda)
+//   4. 超大 opening evaluation source 的 scaled accumulate
 
 namespace gatzk::algebra
 {
@@ -21,6 +24,106 @@ namespace gatzk::algebra
         int device_count = 0;
         const auto status = cudaGetDeviceCount(&device_count);
         return status == cudaSuccess && device_count > 0;
+    }
+
+    namespace
+    {
+        __global__ void scaled_accumulate_kernel(
+            gpu::GpuFr* target,
+            const gpu::GpuFr* source,
+            gpu::GpuFr scale,
+            std::size_t element_count)
+        {
+            const auto index =
+                static_cast<std::size_t>(blockIdx.x) * blockDim.x
+                + threadIdx.x;
+            if (index >= element_count)
+            {
+                return;
+            }
+            target[index] = gpu::fr_add(
+                target[index], gpu::fr_mul(source[index], scale));
+        }
+
+        [[noreturn]] void throw_scaled_accumulate_cuda_error(
+            const char* operation,
+            cudaError_t status)
+        {
+            throw std::runtime_error(
+                std::string("CUDA scaled accumulate ") + operation
+                + " failed: " + cudaGetErrorString(status));
+        }
+    }
+
+    void scaled_accumulate_cuda(
+        uint64_t* target_limbs,
+        const uint64_t* source_limbs,
+        const uint64_t scale_limbs[4],
+        std::size_t element_count)
+    {
+        if (element_count == 0)
+        {
+            return;
+        }
+        if (target_limbs == nullptr || source_limbs == nullptr
+            || scale_limbs == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA scaled accumulate received a null limb buffer");
+        }
+        static_assert(
+            sizeof(gpu::GpuFr) == 4 * sizeof(uint64_t),
+            "CUDA scaled accumulate requires four-limb GpuFr storage");
+
+        gpu::GpuFr scale{};
+        std::memcpy(scale.d, scale_limbs, sizeof(scale.d));
+
+        // A private non-blocking stream makes independent opening groups safe
+        // to invoke concurrently when their target buffers differ.  The
+        // source remains read-only and the call synchronizes before returning.
+        cudaStream_t stream = nullptr;
+        auto status = cudaStreamCreateWithFlags(
+            &stream, cudaStreamNonBlocking);
+        if (status != cudaSuccess)
+        {
+            throw_scaled_accumulate_cuda_error("stream creation", status);
+        }
+
+        constexpr unsigned kBlockSize = 256;
+        const auto block_count_size =
+            (element_count + kBlockSize - 1) / kBlockSize;
+        if (block_count_size > std::numeric_limits<unsigned>::max())
+        {
+            (void)cudaStreamDestroy(stream);
+            throw std::runtime_error(
+                "CUDA scaled accumulate grid exceeds CUDA launch limits");
+        }
+        const auto block_count = static_cast<unsigned>(block_count_size);
+        scaled_accumulate_kernel<<<
+            block_count, kBlockSize, 0, stream>>>(
+                reinterpret_cast<gpu::GpuFr*>(target_limbs),
+                reinterpret_cast<const gpu::GpuFr*>(source_limbs),
+                scale,
+                element_count);
+        status = cudaGetLastError();
+        if (status != cudaSuccess)
+        {
+            (void)cudaStreamDestroy(stream);
+            throw_scaled_accumulate_cuda_error("kernel launch", status);
+        }
+        status = cudaStreamSynchronize(stream);
+        if (status != cudaSuccess)
+        {
+            (void)cudaStreamDestroy(stream);
+            throw_scaled_accumulate_cuda_error(
+                "kernel synchronization", status);
+        }
+        status = cudaStreamDestroy(stream);
+        if (status != cudaSuccess)
+        {
+            throw_scaled_accumulate_cuda_error("stream destruction", status);
+        }
+        record_cuda_kernel_invocations(1);
     }
 
     // 重心插值权重计算(用于在单个挑战点x上快速评估多项式)

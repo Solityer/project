@@ -54,6 +54,10 @@ namespace gatzk::crypto
         // The point slice belongs to immutable SRS material and may reuse
         // execution-only GLV base preparation across repeated MSMs.
         bool stable_srs_bases = false;
+        // Full accessible size of the immutable backing SRS storage.  CUDA
+        // uses this with canonical anchors to validate storage identity while
+        // sharing one uploaded maximum prefix across smaller MSM prefixes.
+        std::size_t stable_srs_capacity = 0;
     };
 
     // 返回当前正式主线使用的曲线后端名称。

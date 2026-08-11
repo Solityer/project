@@ -26,6 +26,11 @@ namespace gatzk::algebra
 #if GATZK_ENABLE_CUDA_BACKEND
     bool cuda_backend_runtime_available();
     bool cuda_field_hotspots_available();
+    void scaled_accumulate_cuda(
+        uint64_t* target_limbs,
+        const uint64_t* source_limbs,
+        const uint64_t scale_limbs[4],
+        std::size_t element_count);
 #endif
 
     namespace
@@ -818,6 +823,45 @@ namespace gatzk::algebra
         const auto min_bucket_count = unified ? 1024ULL : 4096ULL;
         return index_count >= min_index_count
             && bucket_count >= min_bucket_count;
+    }
+
+    bool try_cuda_scaled_accumulate_native(
+        mcl::Fr* target,
+        const mcl::Fr* source,
+        const mcl::Fr& scale,
+        std::size_t element_count)
+    {
+        // Direct kernel access to std::vector storage is valid only when the
+        // device walks the process host page tables.  Keep smaller vectors on
+        // the existing CPU path so kernel launch and page-fault costs cannot
+        // dominate the opening fold.
+        constexpr std::size_t kMinCudaElements = 1ULL << 20;
+        if (element_count < kMinCudaElements
+            || !cuda_field_route_enabled()
+            || !cuda_backend_unified_addressing_available())
+        {
+            return false;
+        }
+        if (target == nullptr || source == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA scaled accumulate received a null native buffer");
+        }
+#if GATZK_ENABLE_CUDA_BACKEND
+        static_assert(
+            sizeof(mcl::Fr) == 4 * sizeof(uint64_t),
+            "CUDA scaled accumulate requires four-limb mcl::Fr storage");
+        scaled_accumulate_cuda(
+            reinterpret_cast<uint64_t*>(target),
+            reinterpret_cast<const uint64_t*>(source),
+            reinterpret_cast<const uint64_t*>(&scale),
+            element_count);
+        return true;
+#else
+        // cuda_field_route_enabled() is false in non-CUDA builds.
+        (void)scale;
+        return false;
+#endif
     }
 
 #if !GATZK_ENABLE_CUDA_BACKEND

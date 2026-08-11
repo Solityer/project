@@ -54,6 +54,7 @@ set(GATZK_SOURCES
     src/algebra/polynomial.cpp
     src/algebra/vector_ops.cpp
     src/crypto/curve.cpp
+    src/crypto/cuda_msm_stub.cpp
     src/crypto/kzg.cpp
     src/crypto/transcript.cpp
     src/data/loader.cpp
@@ -79,7 +80,39 @@ set(GATZK_SOURCES
 if(GATZK_ENABLE_CUDA_BACKEND)
     list(APPEND GATZK_SOURCES
         src/algebra/cuda_backend.cu
+        src/crypto/cuda_msm.cu
     )
+    list(REMOVE_ITEM GATZK_SOURCES src/crypto/cuda_msm_stub.cpp)
+
+    set(GATZK_ICICLE_ROOT "${PROJECT_SOURCE_DIR}/third_party/icicle")
+    if(NOT EXISTS "${GATZK_ICICLE_ROOT}/LICENSE"
+       OR NOT EXISTS "${GATZK_ICICLE_ROOT}/icicle/src/msm/extern.cu")
+        message(FATAL_ERROR
+            "GAT-ZKML: CUDA MSM requires ICICLE v2.8.0 at the pinned "
+            "aacec3f72f14f53dd96d835698d2c87cde3a68b8 gitlink; "
+            "run 'git submodule update --init third_party/icicle'")
+    endif()
+    add_library(
+        gatzk_icicle_bls12_381_msm STATIC
+        "${GATZK_ICICLE_ROOT}/icicle/src/msm/extern.cu")
+    target_include_directories(
+        gatzk_icicle_bls12_381_msm
+        PUBLIC "${GATZK_ICICLE_ROOT}/icicle/include")
+    target_compile_definitions(
+        gatzk_icicle_bls12_381_msm
+        PRIVATE CURVE=bls12_381 CURVE_ID=2 FIELD_ID=2)
+    target_compile_options(
+        gatzk_icicle_bls12_381_msm
+        PRIVATE
+            $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+            $<$<COMPILE_LANGUAGE:CUDA>:-include=cstdint>)
+    target_link_libraries(
+        gatzk_icicle_bls12_381_msm PRIVATE CUDA::cudart)
+    set_target_properties(
+        gatzk_icicle_bls12_381_msm
+        PROPERTIES
+            CUDA_SEPARABLE_COMPILATION ON
+            POSITION_INDEPENDENT_CODE ON)
 endif()
 
 add_library(gatzkml STATIC ${GATZK_SOURCES})
@@ -113,7 +146,10 @@ endif()
 target_link_libraries(gatzkml PUBLIC Threads::Threads OpenSSL::Crypto)
 
 if(GATZK_ENABLE_CUDA_BACKEND)
-    target_link_libraries(gatzkml PUBLIC CUDA::cudart)
+    target_link_libraries(
+        gatzkml
+        PUBLIC CUDA::cudart
+        PRIVATE gatzk_icicle_bls12_381_msm)
     set_target_properties(gatzkml PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 endif()
 

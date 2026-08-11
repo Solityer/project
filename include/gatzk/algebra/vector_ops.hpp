@@ -47,6 +47,16 @@ namespace gatzk::algebra
         std::size_t index_count,
         std::size_t bucket_count);
 
+    // Exact Montgomery-limb update `target[i] += source[i] * scale`.  Returns
+    // true only when the active route executed the update on CUDA; false means
+    // that the caller must retain its canonical CPU path.  Once CUDA is
+    // selected, launch/synchronization errors are reported fail-closed.
+    bool try_cuda_scaled_accumulate_native(
+        mcl::Fr* target,
+        const mcl::Fr* source,
+        const mcl::Fr& scale,
+        std::size_t element_count);
+
     // 在 GPU 上构造重心权重，供 domain opening 与大列求值热点复用。
     bool barycentric_weights_gpu(
         const uint64_t omega_limbs[4],

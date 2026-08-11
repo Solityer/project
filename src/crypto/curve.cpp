@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "gatzk/crypto/cuda_msm.hpp"
 #include "gatzk/util/route2.hpp"
 #define GLV2 GATZK_UNUSED_GLV2
 #include "../../third_party/mcl/src/glv.hpp"
@@ -933,6 +934,8 @@ namespace gatzk::crypto
         algebra::ensure_mcl_field_ready();
         const bool stable_srs_bases =
             options != nullptr && options->stable_srs_bases;
+        const auto stable_srs_capacity =
+            options != nullptr ? options->stable_srs_capacity : 0;
         const auto zero_scalar = algebra::FieldElement::zero();
         std::size_t nonzero_count = 0;
         std::size_t last_nonzero_exclusive = 0;
@@ -993,6 +996,16 @@ namespace gatzk::crypto
                     profile->zero_scalar_skipping = true;
                     profile->sparse_compaction = false;
                     profile->effective_scalar_count = nonzero_count;
+                }
+                if (try_cuda_g1_msm(
+                        &out,
+                        points,
+                        scalars,
+                        nonzero_count,
+                        stable_srs_bases,
+                        stable_srs_capacity))
+                {
+                    return out;
                 }
                 const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
                 auto worker_count = msm_worker_count(nonzero_count, cpu_count);
@@ -1079,6 +1092,16 @@ namespace gatzk::crypto
                 }
                 return out;
             }
+        }
+        if (try_cuda_g1_msm(
+                &out,
+                points,
+                scalars,
+                count,
+                stable_srs_bases,
+                stable_srs_capacity))
+        {
+            return out;
         }
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
         auto worker_count = msm_worker_count(count, cpu_count);

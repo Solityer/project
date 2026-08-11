@@ -449,16 +449,16 @@ int main(int argc, char **argv)
             metrics.gpu_runtime_present = gatzk::algebra::cuda_backend_available();
             metrics.gpu_device = gatzk::algebra::cuda_device_summary();
             metrics.gpu_used_for = metrics.compute_backend_name == "cuda_hotspots"
-                                       ? "barycentric_weights,packed_weighted_evaluation,lookup_histogram_size_aware"
+                                       ? "barycentric_weights,packed_weighted_evaluation,lookup_histogram_size_aware,opening_witness_field_fold_size_aware,KZG_G1_MSM_size_aware,opening_witness_MSM_size_aware"
                                        : "none";
             metrics.gpu_fallback_stages = metrics.compute_backend_name == "cuda_hotspots"
-                                              ? "KZG_MSM,pairing,NTT_IFFT,quotient_materialization,opening_witness,small_domains"
+                                              ? "pairing,NTT_IFFT,quotient_materialization,small_or_sparse_KZG_MSM,small_opening_folds,small_domains"
                                               : "not_requested";
             metrics.gpu_fallback_reason = metrics.compute_backend_name == "cuda_hotspots"
-                                              ? "current CUDA backend covers Fr algebra hotspots only; KZG curve and quotient kernels remain CPU"
+                                              ? "CUDA G1 MSM covers dense immutable-SRS slices size-aware; pairing, transforms, sparse MSM, and small work remain CPU"
                                               : "cpu backend run";
             metrics.gpu_acceleration_status = metrics.compute_backend_name == "cuda_hotspots"
-                                                  ? std::string("enabled_cuda_hotspots; accelerated_stages=barycentric_weights,packed_weighted_evaluation,lookup_histogram_size_aware; cpu_fallback=KZG_MSM,pairing,small_domains; runtime_present=") + std::string(metrics.gpu_runtime_present ? "true" : "false")
+                                                  ? std::string("enabled_cuda_hotspots; accelerated_stages=barycentric_weights,packed_weighted_evaluation,lookup_histogram_size_aware,opening_witness_field_fold_size_aware,KZG_G1_MSM_size_aware,opening_witness_MSM_size_aware; cpu_fallback=pairing,small_or_sparse_KZG_MSM,small_opening_folds,small_domains; runtime_present=") + std::string(metrics.gpu_runtime_present ? "true" : "false")
                                                   : std::string("not_requested_cpu_run");
             if (route2.fft_backend_upgrade && route2.fft_kernel_upgrade)
             {
@@ -708,7 +708,9 @@ int main(int argc, char **argv)
                     metrics.gpu_acceleration_status =
                         "partial_cuda_hotspots_executed; kernels_executed="
                         + std::to_string(metrics.gpu_kernel_invocation_count)
-                        + "; cpu_fallback=KZG_MSM,pairing,NTT_IFFT,quotient_materialization,opening_witness,small_domains";
+                        + "; gpu_field_fold=opening_witness_size_aware"
+                          "; gpu_g1_msm=dense_immutable_srs_size_aware"
+                          "; cpu_fallback=pairing,NTT_IFFT,quotient_materialization,small_or_sparse_KZG_MSM,small_opening_folds,small_domains";
                     append_note(metrics, "cuda_kernel_execution=partial_hotspots_only");
                 }
             }

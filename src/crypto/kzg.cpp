@@ -1615,12 +1615,22 @@ namespace gatzk::crypto
             }
 
             G1MSMProfile compact_profile;
+            const G1MSMExecutionOptions compact_msm_options{
+                .max_worker_count =
+                    msm_options != nullptr
+                        ? msm_options->max_worker_count
+                        : 0,
+                // The compact point vector is temporary material, not the
+                // immutable Lagrange SRS storage named by the caller.
+                .stable_srs_bases = false,
+                .stable_srs_capacity = 0,
+            };
             auto out = g1_multi_scalar_mul_profiled(
                 compact_points.data(),
                 compact_scalars.data(),
                 compact_scalars.size(),
                 profile != nullptr ? &compact_profile : nullptr,
-                msm_options);
+                &compact_msm_options);
             if (profile != nullptr)
             {
                 profile->input_count = prefix_size;
@@ -1716,18 +1726,16 @@ namespace gatzk::crypto
         {
             G1MSMProfile msm_profile;
             const auto msm_start = Clock::now();
-            const G1MSMExecutionOptions stable_msm_options{
+            G1MSMExecutionOptions stable_msm_options{
                 .max_worker_count =
                     msm_options != nullptr
                         ? msm_options->max_worker_count
                         : 0,
-                // Reusing mcl's GLV-expanded bases is profitable for the
-                // repeated small SRS slices.  On larger MSMs the scalar split
-                // and per-worker signed-point copies outweigh normalization,
-                // so retain mcl::G1::mulVec there.
-                .stable_srs_bases =
-                    estimated_commitment_msm_work(polynomial)
-                        <= (1ULL << 13),
+                // Both coefficient and Lagrange commitment bases below are
+                // immutable proving-key SRS storage.  Individual backends
+                // retain their own size-aware preparation/cache thresholds.
+                .stable_srs_bases = true,
+                .stable_srs_capacity = 0,
             };
             G1Point point;
             bool constant_tail_folding = false;
@@ -1743,6 +1751,8 @@ namespace gatzk::crypto
                 {
                     throw std::runtime_error("coefficient polynomial exceeds SRS degree bound: " + polynomial.name);
                 }
+                stable_msm_options.stable_srs_capacity =
+                    pk.powers_g1->size();
                 point = g1_multi_scalar_mul_profiled(
                     pk.powers_g1->data(),
                     polynomial.values().data(),
@@ -1755,6 +1765,8 @@ namespace gatzk::crypto
                 // 评估多项式采用 拉格朗日SRS + MSM
                 const auto* lagrange_srs =
                     evaluation_srs_points(polynomial, pk);
+                stable_msm_options.stable_srs_capacity =
+                    lagrange_srs->size();
                 if (polynomial.size() > lagrange_srs->size())
                 {
                     throw std::runtime_error("evaluation polynomial exceeds Lagrange SRS domain size: " + polynomial.name);
@@ -2096,12 +2108,20 @@ namespace gatzk::crypto
             {
                 throw std::runtime_error("coefficient witness quotient exceeds SRS degree bound");
             }
+            const G1MSMExecutionOptions stable_msm_options{
+                .max_worker_count =
+                    msm_options != nullptr
+                        ? msm_options->max_worker_count
+                        : 0,
+                .stable_srs_bases = true,
+                .stable_srs_capacity = pk.powers_g1->size(),
+            };
             return g1_multi_scalar_mul_profiled(
                 pk.powers_g1->data(),
                 quotient.data(),
                 quotient.size(),
                 nullptr,
-                msm_options);
+                &stable_msm_options);
         }
 
 
@@ -2595,26 +2615,33 @@ namespace gatzk::crypto
                         FieldElement::native_array_data(
                             source_values.data());
                     const auto scale_native = scale.native();
-                    parallel_for_chunks_capped(
-                        source_values.size(),
-                        1ULL << 15,
-                        worker_cap,
-                        [&](std::size_t begin, std::size_t end)
-                        {
-                            for (std::size_t row = begin;
-                                 row < end; ++row)
+                    if (!algebra::try_cuda_scaled_accumulate_native(
+                            folded_native,
+                            source_native,
+                            scale_native,
+                            source_values.size()))
+                    {
+                        parallel_for_chunks_capped(
+                            source_values.size(),
+                            1ULL << 15,
+                            worker_cap,
+                            [&](std::size_t begin, std::size_t end)
                             {
-                                mcl::Fr product;
-                                mcl::Fr::mul(
-                                    product,
-                                    source_native[row],
-                                    scale_native);
-                                mcl::Fr::add(
-                                    folded_native[row],
-                                    folded_native[row],
-                                    product);
-                            }
-                        });
+                                for (std::size_t row = begin;
+                                     row < end; ++row)
+                                {
+                                    mcl::Fr product;
+                                    mcl::Fr::mul(
+                                        product,
+                                        source_native[row],
+                                        scale_native);
+                                    mcl::Fr::add(
+                                        folded_native[row],
+                                        folded_native[row],
+                                        product);
+                                }
+                            });
+                    }
                     if (material->is_zero_domain_blinded())
                     {
                         accumulate_scaled_coefficients(
