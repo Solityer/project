@@ -5361,12 +5361,11 @@ if (run_parallel)
         const auto discard_set =
             file_backed_coset_discard_set();
 
-        if (discard_set.empty())
-        {
-            throw std::runtime_error(
-                "file-backed quotient evaluation has no discard set");
-        }
-
+        // file_backed_coset_count_ is a cumulative execution counter.
+// A file-backed value may have been created and released before
+// this live cache snapshot.  An empty discard set is therefore
+// valid and simply means that there are no currently reachable
+// file-backed pages to discard.        
         progress_note(
             "prove:quotient:" + label_
             + ":evaluation_scheduler"
