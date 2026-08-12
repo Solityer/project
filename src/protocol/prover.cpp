@@ -26,6 +26,8 @@
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
+#include <barrier>
+#include <exception>
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -5088,224 +5090,543 @@ private:
                     progress_note("prove:quotient:t_N:evaluate:start");
                 }
                 const auto point_evaluation_start = Clock::now();
+                
                 std::vector<FieldElement> quotient_zero_inverses;
-                if (label_ == "t_edge" || label_ == "t_FH")
+
+const auto boundary_one =
+    FieldElement::one();
+
+const auto boundary_last_point =
+    domain_->point_at(domain_->size - 1);
+
+const auto boundary_zero_step =
+    root.pow(domain_->size);
+
+const auto boundary_shifted_zero =
+    shift_.pow(domain_->size);
+
+if (label_ == "t_edge" || label_ == "t_FH")
+{
+    if (target_size_ % domain_->size != 0)
+    {
+        throw std::runtime_error(
+            "quotient coset size is not a domain multiple: "
+            + label_);
+    }
+
+    const auto zero_cycle_size =
+        target_size_ / domain_->size;
+
+    quotient_zero_inverses.reserve(
+        zero_cycle_size);
+
+    auto zero_power =
+        boundary_shifted_zero;
+
+    for (std::size_t residue = 0;
+         residue < zero_cycle_size;
+         ++residue)
+    {
+        quotient_zero_inverses.push_back(
+            (zero_power - boundary_one).inv());
+
+        zero_power *= boundary_zero_step;
+    }
+}
+
+constexpr std::size_t kInverseBlockSize = 8192;
+
+const auto evaluate_range =
+    [&](std::size_t begin,
+        std::size_t end,
+        std::vector<mcl::Fr> *denominator_products)
+    {
+        if (begin >= end)
+        {
+            return;
+        }
+
+        auto z =
+            shift_
+            * root.pow(
+                static_cast<std::uint64_t>(
+                    begin));
+
+        if (label_ == "t_edge"
+            || label_ == "t_FH")
+        {
+            if (denominator_products == nullptr)
+            {
+                throw std::runtime_error(
+                    "quotient evaluation is missing inverse scratch");
+            }
+
+            auto zero_power =
+                boundary_shifted_zero
+                * boundary_zero_step.pow(
+                    static_cast<std::uint64_t>(
+                        begin));
+
+            for (std::size_t block_begin = begin;
+                 block_begin < end;
+                 block_begin += kInverseBlockSize)
+            {
+                const auto block_end =
+                    std::min(
+                        end,
+                        block_begin
+                            + kInverseBlockSize);
+
+                denominator_products->resize(
+                    block_end - block_begin);
+
+                auto denominator_z = z;
+
+                for (std::size_t i = block_begin;
+                     i < block_end;
+                     ++i)
                 {
-                    if (target_size_ % domain_->size != 0)
-                    {
-                        throw std::runtime_error(
-                            "quotient coset size is not a domain multiple: "
-                            + label_);
-                    }
-                    const auto zero_cycle_size =
-                        target_size_ / domain_->size;
-                    quotient_zero_inverses.reserve(zero_cycle_size);
-                    const auto zero_step = root.pow(domain_->size);
-                    auto zero_power = shift_.pow(domain_->size);
-                    for (std::size_t residue = 0;
-                         residue < zero_cycle_size; ++residue)
-                    {
-                        quotient_zero_inverses.push_back(
-                            (zero_power - FieldElement::one()).inv());
-                        zero_power *= zero_step;
-                    }
+                    mcl::Fr first_denominator;
+                    mcl::Fr last_denominator;
+
+                    mcl::Fr::sub(
+                        first_denominator,
+                        denominator_z.native(),
+                        boundary_one.native());
+
+                    mcl::Fr::sub(
+                        last_denominator,
+                        denominator_z.native(),
+                        boundary_last_point.native());
+
+                    mcl::Fr::mul(
+                        (*denominator_products)[
+                            i - block_begin],
+                        first_denominator,
+                        last_denominator);
+
+                    denominator_z *= root;
                 }
-                const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-                const bool run_parallel = cpu_count > 1 && target_size_ >= 4096;
-                if (run_parallel)
+
+                batch_invert_native_in_place(
+                    denominator_products);
+
+                for (std::size_t i = block_begin;
+                     i < block_end;
+                     ++i)
                 {
-                    const bool bounded_file_backed_evaluation =
-                        file_backed_coset_count_.load(
-                            std::memory_order_relaxed) != 0;
-                    const auto evaluation_block_size =
-                        bounded_file_backed_evaluation
-                            ? std::size_t{1} << 15
-                            : target_size_;
-                    if (use_file_backed_coset_storage())
+                    const auto first_denominator =
+                        z - boundary_one;
+
+                    const auto last_denominator =
+                        z - boundary_last_point;
+
+                    const auto inverse_product =
+                        FieldElement::from_native(
+                            (*denominator_products)[
+                                i - block_begin]);
+
+                    const auto zero =
+                        zero_power - boundary_one;
+
+                    const auto zero_scaled =
+                        zero * domain_->inv_size;
+
+                    const QuotientBoundaryValues boundary{
+                        .first =
+                            zero_scaled
+                            * last_denominator
+                            * inverse_product,
+
+                        .last =
+                            zero_scaled
+                            * boundary_last_point
+                            * first_denominator
+                            * inverse_product,
+
+                        .zero = zero,
+
+                        .zero_inverse =
+                            quotient_zero_inverses[
+                                i
+                                % quotient_zero_inverses
+                                      .size()],
+                    };
+
+                    quotient_values[i] =
+                        evaluate_at_index(
+                            i,
+                            z,
+                            &boundary);
+
+                    z *= root;
+                    zero_power *=
+                        boundary_zero_step;
+                }
+            }
+
+            return;
+        }
+
+        for (std::size_t i = begin;
+             i < end;
+             ++i)
+        {
+            quotient_values[i] =
+                evaluate_at_index(i, z);
+
+            z *= root;
+        }
+    };
+
+const auto cpu_count =
+    std::max<std::size_t>(
+        1,
+        std::thread::hardware_concurrency());
+
+const bool run_parallel =
+    cpu_count > 1
+    && target_size_ >= 4096;
+
+if (run_parallel)
+{
+    const bool bounded_file_backed_evaluation =
+        file_backed_coset_count_.load(
+            std::memory_order_relaxed) != 0;
+
+    const auto evaluation_block_size =
+        bounded_file_backed_evaluation
+            ? std::size_t{1} << 15
+            : target_size_;
+
+    if (use_file_backed_coset_storage())
+    {
+        progress_note(
+            "prove:quotient:" + label_
+            + ":coset_storage:tiered"
+            + ":memory_bytes="
+            + std::to_string(
+                in_memory_coset_bytes_.load(
+                    std::memory_order_relaxed))
+            + ":memory_budget="
+            + std::to_string(
+                in_memory_coset_budget_bytes_)
+            + ":files="
+            + std::to_string(
+                file_backed_coset_count_.load(
+                    std::memory_order_relaxed))
+            + ":bytes="
+            + std::to_string(
+                file_backed_coset_bytes_.load(
+                    std::memory_order_relaxed))
+            + ":lazy_blinder_views="
+            + std::to_string(
+                lazy_blinder_coset_count_.load(
+                    std::memory_order_relaxed))
+            + ":lazy_blinder_bytes_avoided="
+            + std::to_string(
+                lazy_blinder_coset_bytes_avoided_.load(
+                    std::memory_order_relaxed))
+            + ":evaluation_block="
+            + std::to_string(
+                evaluation_block_size));
+    }
+
+    const auto min_points_per_task =
+        bounded_file_backed_evaluation
+            ? (label_ == "t_edge"
+                   ? std::size_t{1024}
+                   : std::size_t{2048})
+            : (label_ == "t_edge"
+                   ? std::size_t{1024}
+                   : std::size_t{32768});
+
+    if (bounded_file_backed_evaluation)
+    {
+        const auto persistent_worker_count =
+            std::min<std::size_t>(
+                std::min<std::size_t>(
+                    cpu_count,
+                    32),
+                std::max<std::size_t>(
+                    1,
+                    evaluation_block_size
+                        / min_points_per_task));
+
+        const auto evaluation_block_count =
+            (target_size_
+             + evaluation_block_size - 1)
+            / evaluation_block_size;
+
+        const auto discard_set =
+            file_backed_coset_discard_set();
+
+        if (discard_set.empty())
+        {
+            throw std::runtime_error(
+                "file-backed quotient evaluation has no discard set");
+        }
+
+        progress_note(
+            "prove:quotient:" + label_
+            + ":evaluation_scheduler"
+            + ":mode=persistent_block_team"
+            + ":workers="
+            + std::to_string(
+                persistent_worker_count)
+            + ":blocks="
+            + std::to_string(
+                evaluation_block_count)
+            + ":discard_views="
+            + std::to_string(
+                discard_set.size()));
+
+        std::barrier<> block_barrier(
+            static_cast<std::ptrdiff_t>(
+                persistent_worker_count));
+
+        std::atomic<int> start_state{0};
+        std::atomic<bool> worker_failed{false};
+
+        std::mutex worker_error_mutex;
+        std::exception_ptr worker_error;
+
+        std::vector<std::thread> workers;
+        workers.reserve(
+            persistent_worker_count);
+
+        try
+        {
+            for (std::size_t worker = 0;
+                 worker < persistent_worker_count;
+                 ++worker)
+            {
+                workers.emplace_back(
+                    [&, worker]()
                     {
-                        progress_note(
-                            "prove:quotient:" + label_
-                            + ":coset_storage:tiered"
-                            + ":memory_bytes="
-                            + std::to_string(
-                                in_memory_coset_bytes_.load(
-                                    std::memory_order_relaxed))
-                            + ":memory_budget="
-                            + std::to_string(
-                                in_memory_coset_budget_bytes_)
-                            + ":files="
-                            + std::to_string(
-                                file_backed_coset_count_.load(
-                                    std::memory_order_relaxed))
-                            + ":bytes="
-                            + std::to_string(
-                                file_backed_coset_bytes_.load(
-                                    std::memory_order_relaxed))
-                            + ":lazy_blinder_views="
-                            + std::to_string(
-                                lazy_blinder_coset_count_.load(
-                                    std::memory_order_relaxed))
-                            + ":lazy_blinder_bytes_avoided="
-                            + std::to_string(
-                                lazy_blinder_coset_bytes_avoided_.load(
-                                    std::memory_order_relaxed))
-                            + ":evaluation_block="
-                            + std::to_string(evaluation_block_size));
-                    }
-                    for (std::size_t evaluation_begin = 0;
-                         evaluation_begin < target_size_;
-                         evaluation_begin += evaluation_block_size)
-                    {
-                        const auto evaluation_end = std::min(
-                            target_size_,
-                            evaluation_begin + evaluation_block_size);
-                        const auto evaluation_count =
-                            evaluation_end - evaluation_begin;
-                        const auto min_points_per_task =
-                            bounded_file_backed_evaluation
-                                ? (label_ == "t_edge"
-                                       ? std::size_t{1024}
-                                       : std::size_t{2048})
-                                : (label_ == "t_edge"
-                                       ? std::size_t{1024}
-                                       : std::size_t{32768});
-                        const auto task_count = std::min<std::size_t>(
-                            std::min<std::size_t>(cpu_count, 32),
-                            std::max<std::size_t>(
-                                1,
-                                evaluation_count
-                                    / min_points_per_task));
-                        const auto chunk_size =
-                            (evaluation_count + task_count - 1)
-                            / task_count;
-                        std::vector<std::future<void>> futures;
-                        futures.reserve(task_count);
-                        for (std::size_t task = 0;
-                             task < task_count;
-                             ++task)
+                        while (start_state.load(
+                                   std::memory_order_acquire)
+                               == 0)
                         {
+                            std::this_thread::yield();
+                        }
+
+                        if (start_state.load(
+                                std::memory_order_acquire)
+                            < 0)
+                        {
+                            return;
+                        }
+
+                        std::vector<mcl::Fr>
+                            denominator_products;
+
+                        for (std::size_t evaluation_begin = 0;
+                             evaluation_begin < target_size_;
+                             evaluation_begin +=
+                                 evaluation_block_size)
+                        {
+                            const auto evaluation_end =
+                                std::min(
+                                    target_size_,
+                                    evaluation_begin
+                                        + evaluation_block_size);
+
+                            const auto evaluation_count =
+                                evaluation_end
+                                - evaluation_begin;
+
+                            const auto chunk_size =
+                                (evaluation_count
+                                 + persistent_worker_count
+                                 - 1)
+                                / persistent_worker_count;
+
                             const auto begin =
-                                evaluation_begin + task * chunk_size;
-                            const auto end = std::min(
-                                evaluation_end,
-                                begin + chunk_size);
-                            if (begin >= end)
+                                evaluation_begin
+                                + worker * chunk_size;
+
+                            const auto end =
+                                std::min(
+                                    evaluation_end,
+                                    begin + chunk_size);
+
+                            if (!worker_failed.load(
+                                    std::memory_order_acquire)
+                                && begin < end)
+                            {
+                                try
+                                {
+                                    evaluate_range(
+                                        begin,
+                                        end,
+                                        &denominator_products);
+                                }
+                                catch (...)
+                                {
+                                    {
+                                        std::lock_guard<std::mutex>
+                                            lock(
+                                                worker_error_mutex);
+
+                                        if (worker_error
+                                            == nullptr)
+                                        {
+                                            worker_error =
+                                                std::current_exception();
+                                        }
+                                    }
+
+                                    worker_failed.store(
+                                        true,
+                                        std::memory_order_release);
+                                }
+                            }
+
+                            block_barrier.arrive_and_wait();
+
+                            if (worker == 0
+                                && !worker_failed.load(
+                                    std::memory_order_acquire))
+                            {
+                                discard_consumed_coset_pages(
+                                    discard_set,
+                                    evaluation_end);
+                            }
+
+                            block_barrier.arrive_and_wait();
+
+                            if (worker_failed.load(
+                                    std::memory_order_acquire))
                             {
                                 break;
                             }
-                            futures.push_back(std::async(
-                                std::launch::async,
-                                [&, begin, end]()
-                                {
-                                    auto z = shift_ * root.pow(static_cast<std::uint64_t>(begin));
-                                    if (label_ == "t_edge"
-                                        || label_ == "t_FH")
-                                    {
-                                        const auto one = FieldElement::one();
-                                        const auto last_point =
-                                            domain_->point_at(domain_->size - 1);
-                                        const auto zero_step = root.pow(domain_->size);
-                                        auto zero_power = shift_.pow(domain_->size)
-                                            * zero_step.pow(
-                                                static_cast<std::uint64_t>(begin));
-                                        constexpr std::size_t kInverseBlockSize = 8192;
-                                        for (std::size_t block_begin = begin;
-                                             block_begin < end;
-                                             block_begin += kInverseBlockSize)
-                                        {
-                                            const auto block_end = std::min(
-                                                end, block_begin + kInverseBlockSize);
-                                            std::vector<mcl::Fr> denominator_products(
-                                                block_end - block_begin);
-                                            auto denominator_z = z;
-                                            for (std::size_t i = block_begin;
-                                                 i < block_end; ++i)
-                                            {
-                                                mcl::Fr first_denominator;
-                                                mcl::Fr last_denominator;
-                                                mcl::Fr::sub(
-                                                    first_denominator,
-                                                    denominator_z.native(),
-                                                    one.native());
-                                                mcl::Fr::sub(
-                                                    last_denominator,
-                                                    denominator_z.native(),
-                                                    last_point.native());
-                                                mcl::Fr::mul(
-                                                    denominator_products[
-                                                        i - block_begin],
-                                                    first_denominator,
-                                                    last_denominator);
-                                                denominator_z *= root;
-                                            }
-                                            batch_invert_native_in_place(
-                                                &denominator_products);
-                                            for (std::size_t i = block_begin;
-                                                 i < block_end; ++i)
-                                            {
-                                                const auto first_denominator =
-                                                    z - one;
-                                                const auto last_denominator =
-                                                    z - last_point;
-                                                const auto inverse_product =
-                                                    FieldElement::from_native(
-                                                        denominator_products[
-                                                            i - block_begin]);
-                                                const auto zero = zero_power - one;
-                                                const auto zero_scaled =
-                                                    zero * domain_->inv_size;
-                                                const QuotientBoundaryValues boundary{
-                                                    .first = zero_scaled
-                                                        * last_denominator
-                                                        * inverse_product,
-                                                    .last = zero_scaled
-                                                        * last_point
-                                                        * first_denominator
-                                                        * inverse_product,
-                                                    .zero = zero,
-                                                    .zero_inverse =
-                                                        quotient_zero_inverses[
-                                                            i % quotient_zero_inverses.size()],
-                                                };
-                                                quotient_values[i] =
-                                                    evaluate_at_index(
-                                                        i, z, &boundary);
-                                                z *= root;
-                                                zero_power *= zero_step;
-                                            }
-                                        }
-                                        return;
-                                    }
-                                    for (std::size_t i = begin;
-                                         i < end;
-                                         ++i)
-                                    {
-                                        quotient_values[i] =
-                                            evaluate_at_index(i, z);
-                                        z *= root;
-                                    }
-                                }));
                         }
-                        for (auto &future : futures)
-                        {
-                            future.get();
-                        }
-                        if (bounded_file_backed_evaluation)
-                        {
-                            discard_consumed_coset_pages(
-                                evaluation_end);
-                        }
-                    }
-                }
-                else
+                    });
+            }
+        }
+        catch (...)
+        {
+            start_state.store(
+                -1,
+                std::memory_order_release);
+
+            for (auto &worker : workers)
+            {
+                if (worker.joinable())
                 {
-                    auto z = shift_;
-                    for (std::size_t i = 0; i < target_size_; ++i)
-                    {
-                        quotient_values[i] = evaluate_at_index(i, z);
-                        z *= root;
-                    }
+                    worker.join();
                 }
+            }
+
+            throw;
+        }
+
+        start_state.store(
+            1,
+            std::memory_order_release);
+
+        for (auto &worker : workers)
+        {
+            worker.join();
+        }
+
+        if (worker_error != nullptr)
+        {
+            std::rethrow_exception(
+                worker_error);
+        }
+    }
+    else
+    {
+        for (std::size_t evaluation_begin = 0;
+             evaluation_begin < target_size_;
+             evaluation_begin +=
+                 evaluation_block_size)
+        {
+            const auto evaluation_end =
+                std::min(
+                    target_size_,
+                    evaluation_begin
+                        + evaluation_block_size);
+
+            const auto evaluation_count =
+                evaluation_end
+                - evaluation_begin;
+
+            const auto task_count =
+                std::min<std::size_t>(
+                    std::min<std::size_t>(
+                        cpu_count,
+                        32),
+                    std::max<std::size_t>(
+                        1,
+                        evaluation_count
+                            / min_points_per_task));
+
+            const auto chunk_size =
+                (evaluation_count
+                 + task_count - 1)
+                / task_count;
+
+            std::vector<std::future<void>> futures;
+            futures.reserve(task_count);
+
+            for (std::size_t task = 0;
+                 task < task_count;
+                 ++task)
+            {
+                const auto begin =
+                    evaluation_begin
+                    + task * chunk_size;
+
+                const auto end =
+                    std::min(
+                        evaluation_end,
+                        begin + chunk_size);
+
+                if (begin >= end)
+                {
+                    break;
+                }
+
+                futures.push_back(
+                    std::async(
+                        std::launch::async,
+                        [&, begin, end]()
+                        {
+                            std::vector<mcl::Fr>
+                                denominator_products;
+
+                            evaluate_range(
+                                begin,
+                                end,
+                                &denominator_products);
+                        }));
+            }
+
+            for (auto &future : futures)
+            {
+                future.get();
+            }
+        }
+    }
+}
+else
+{
+    auto z = shift_;
+
+    for (std::size_t i = 0;
+         i < target_size_;
+         ++i)
+    {
+        quotient_values[i] =
+            evaluate_at_index(i, z);
+
+        z *= root;
+    }
+}
+
                 if (label_ == "t_edge")
                 {
                     progress_note(
@@ -5485,31 +5806,56 @@ private:
                     polynomial.zero_domain_blinder);
             }
 
-            void discard_consumed_coset_pages(
-                std::size_t end_index)
+            std::vector<QuotientCosetValuesPtr>
+file_backed_coset_discard_set()
+{
+    std::unordered_map<
+        const QuotientCosetValues *,
+        QuotientCosetValuesPtr> unique;
+
+    {
+        std::lock_guard<std::mutex> lock(
+            coset_cache_mutex_);
+
+        unique.reserve(coset_cache_.size());
+
+        for (const auto &[_, values] :
+             coset_cache_)
+        {
+            if (values != nullptr
+                && values->file_backed())
             {
-                std::unordered_map<
-                    const QuotientCosetValues *,
-                    QuotientCosetValuesPtr> unique;
-                {
-                    std::lock_guard<std::mutex> lock(
-                        coset_cache_mutex_);
-                    unique.reserve(coset_cache_.size());
-                    for (const auto &[_, values] : coset_cache_)
-                    {
-                        if (values != nullptr
-                            && values->file_backed())
-                        {
-                            unique.emplace(
-                                values.get(), values);
-                        }
-                    }
-                }
-                for (const auto &[_, values] : unique)
-                {
-                    values->discard_prefix(end_index);
-                }
+                unique.emplace(
+                    values.get(),
+                    values);
             }
+        }
+    }
+
+    std::vector<QuotientCosetValuesPtr> out;
+    out.reserve(unique.size());
+
+    for (const auto &[_, values] : unique)
+    {
+        out.push_back(values);
+    }
+
+    return out;
+}
+
+void discard_consumed_coset_pages(
+    const std::vector<
+        QuotientCosetValuesPtr>& discard_set,
+    std::size_t end_index) const
+{
+    for (const auto &values : discard_set)
+    {
+        if (values != nullptr)
+        {
+            values->discard_prefix(end_index);
+        }
+    }
+}
 
             template <class Fn>
             void parallel_for_chunks(
