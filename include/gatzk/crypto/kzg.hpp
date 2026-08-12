@@ -109,6 +109,20 @@ namespace gatzk::crypto
     using OpeningPolynomialResolver = std::function<
         std::shared_ptr<const algebra::Polynomial>(const Commitment&)>;
 
+    // Execution-only metadata for several independently blinded evaluation
+// polynomials that share one immutable semantic evaluation source.
+// This metadata is prover-local and is never serialized into the proof.
+struct OpeningSemanticSourceInfo
+{
+    std::string key;
+    std::shared_ptr<algebra::RootOfUnityDomain> domain;
+    std::size_t value_count = 0;
+    std::vector<algebra::FieldElement> zero_domain_blinder;
+};
+
+using OpeningSemanticSourceResolver = std::function<
+    std::optional<OpeningSemanticSourceInfo>(const Commitment&)>;
+
     // 批量opening的执行，供正式 benchmark 细分 `domain_opening_ms`。
     struct BatchOpeningProfile
     {
@@ -274,17 +288,19 @@ namespace gatzk::crypto
         // Open exactly one canonical point group.  Every distinct evaluation
         // point has an independently derived, non-zero folding challenge.
         static G1Point open_point_group(
-            const std::vector<Commitment>& commitments,
-            const algebra::FieldElement& point,
-            const std::vector<algebra::FieldElement>& claimed_values,
-            const algebra::FieldElement& folding_challenge,
-            const KZGKeyPair& key,
-            BatchOpeningProfile* profile = nullptr,
-            BatchOpeningClaimValidation claim_validation =
-                BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials,
-            const PointGroupOpeningExecutionOptions* execution_options =
-                nullptr,
-            const OpeningPolynomialResolver* opening_resolver = nullptr);
+    const std::vector<Commitment>& commitments,
+    const algebra::FieldElement& point,
+    const std::vector<algebra::FieldElement>& claimed_values,
+    const algebra::FieldElement& folding_challenge,
+    const KZGKeyPair& key,
+    BatchOpeningProfile* profile = nullptr,
+    BatchOpeningClaimValidation claim_validation =
+        BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials,
+    const PointGroupOpeningExecutionOptions* execution_options =
+        nullptr,
+    const OpeningPolynomialResolver* opening_resolver = nullptr,
+    const OpeningSemanticSourceResolver* semantic_source_resolver =
+        nullptr);
 
         // Verify exactly one canonical point group and its single witness.
         static bool verify_point_group(

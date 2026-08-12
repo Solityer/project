@@ -10856,6 +10856,67 @@ const auto transform_worker_cap =
                             std::weak_ptr<const algebra::Polynomial>(material));
                         return material;
                     };
+            
+            const crypto::OpeningSemanticSourceResolver
+    file_backed_opening_semantic_source_resolver =
+        [&](const Commitment& commitment)
+        -> std::optional<
+            crypto::OpeningSemanticSourceInfo>
+        {
+            if (commitment.opening_polynomial
+                != nullptr)
+            {
+                return std::nullopt;
+            }
+
+            const auto spilled_it =
+                trace.spilled_polynomials.find(
+                    commitment.name);
+
+            if (spilled_it
+                == trace.spilled_polynomials.end())
+            {
+                return std::nullopt;
+            }
+
+            const auto& spilled =
+                spilled_it->second;
+
+            if (spilled.semantic_source_id == 0)
+            {
+                return std::nullopt;
+            }
+
+            const auto domain =
+                context_domain_by_name(
+                    context,
+                    spilled.domain_name);
+
+            if (domain == nullptr)
+            {
+                throw std::runtime_error(
+                    "file-backed opening semantic source has unknown domain: "
+                    + commitment.name);
+            }
+
+            return crypto::OpeningSemanticSourceInfo{
+                .key =
+                    spilled.domain_name
+                    + ":"
+                    + std::to_string(
+                        spilled.size)
+                    + ":"
+                    + std::to_string(
+                        spilled
+                            .semantic_source_id),
+                .domain = domain,
+                .value_count = spilled.size,
+                .zero_domain_blinder =
+                    spilled
+                        .zero_domain_blinder,
+            };
+        };
+
             const auto open_group_indices = [&]
             (const std::vector<std::size_t>& indices)
             {
@@ -10978,11 +11039,14 @@ const auto transform_worker_cap =
                                     crypto::BatchOpeningClaimValidation::
                                         AlreadyComputedFromOpeningPolynomials,
                                     worker_count > 1
-                                        ? &execution_options
-                                        : nullptr,
-                                    trace.spilled_polynomials.empty()
-                                        ? nullptr
-                                        : &file_backed_opening_resolver);
+    ? &execution_options
+    : nullptr,
+trace.spilled_polynomials.empty()
+    ? nullptr
+    : &file_backed_opening_resolver,
+trace.spilled_polynomials.empty()
+    ? nullptr
+    : &file_backed_opening_semantic_source_resolver);
                             opening_results[group_index].profile
                                 .point_parallel_batches = 1;
                             opening_results[group_index].profile

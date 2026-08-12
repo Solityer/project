@@ -2491,181 +2491,618 @@ namespace gatzk::crypto
         }
 
         FoldedOpeningPlan build_streamed_folded_opening_plan(
-            const std::vector<Commitment>& commitments,
-            const std::vector<std::vector<FieldElement>>& claimed_values,
-            const std::vector<FieldElement>& powers,
-            const std::vector<FieldElement>& points,
-            std::size_t worker_cap,
-            bool validate_claims,
-            const OpeningPolynomialResolver& opening_resolver)
+    const std::vector<Commitment>& commitments,
+    const std::vector<std::vector<FieldElement>>& claimed_values,
+    const std::vector<FieldElement>& powers,
+    const std::vector<FieldElement>& points,
+    std::size_t worker_cap,
+    bool validate_claims,
+    const OpeningPolynomialResolver& opening_resolver,
+    const OpeningSemanticSourceResolver* semantic_source_resolver)
+{
+    if (commitments.size() != claimed_values.size()
+        || commitments.size() != powers.size())
+    {
+        throw std::runtime_error(
+            "streamed folded opening input shape mismatch");
+    }
+
+    FoldedOpeningPlan plan;
+    plan.coefficient_scaled_claim_sums.assign(
+        points.size(), FieldElement::zero());
+
+    algebra::DomainEvaluationWeightCache claim_weight_cache;
+
+    struct SemanticFold
+    {
+        OpeningSemanticSourceInfo info;
+        std::size_t representative_index = 0;
+        FieldElement source_scale = FieldElement::zero();
+        std::vector<FieldElement> folded_zero_domain_blinder;
+        std::vector<FieldElement> scaled_claim_sums;
+        std::vector<std::size_t> members;
+    };
+
+    std::vector<std::optional<std::size_t>>
+        semantic_fold_for_commitment(commitments.size());
+
+    std::vector<SemanticFold> semantic_folds;
+    std::unordered_map<std::string, std::size_t>
+        semantic_fold_index;
+
+    // Production opening claims have already been computed from the exact
+    // formal opening polynomials.  In that mode we may combine several
+    // independently blinded evaluation polynomials that share one immutable
+    // semantic source:
+    //
+    //   sum_i a_i (S + Z_D R_i)
+    //     = (sum_i a_i) S + Z_D (sum_i a_i R_i).
+    //
+    // VerifyAgainstOpeningPolynomials deliberately retains the former
+    // per-polynomial path so focused claim-validation tests remain unchanged.
+    if (!validate_claims
+        && semantic_source_resolver != nullptr)
+    {
+        semantic_folds.reserve(commitments.size());
+
+        for (std::size_t i = 0;
+             i < commitments.size();
+             ++i)
         {
-            if (commitments.size() != claimed_values.size()
-                || commitments.size() != powers.size())
+            if (claimed_values[i].size() != points.size())
             {
                 throw std::runtime_error(
-                    "streamed folded opening input shape mismatch");
+                    "streamed folded opening claim shape mismatch: "
+                    + commitments[i].name);
             }
-            FoldedOpeningPlan plan;
-            plan.coefficient_scaled_claim_sums.assign(
-                points.size(), FieldElement::zero());
-            algebra::DomainEvaluationWeightCache claim_weight_cache;
 
-            for (std::size_t i = 0; i < commitments.size(); ++i)
+            // In-memory opening material retains the existing path.  This
+            // optimization is intentionally limited to file-backed evaluation
+            // material carrying explicit semantic-source metadata.
+            if (commitments[i].opening_polynomial != nullptr)
             {
-                auto material = commitments[i].opening_polynomial;
-                if (material == nullptr)
+                continue;
+            }
+
+            const auto semantic_info =
+                (*semantic_source_resolver)(
+                    commitments[i]);
+
+            if (!semantic_info.has_value())
+            {
+                continue;
+            }
+
+            if (semantic_info->key.empty()
+                || semantic_info->domain == nullptr
+                || semantic_info->value_count
+                    > semantic_info->domain->size)
+            {
+                throw std::runtime_error(
+                    "invalid streamed opening semantic source metadata: "
+                    + commitments[i].name);
+            }
+
+            const auto [existing, inserted] =
+                semantic_fold_index.emplace(
+                    semantic_info->key,
+                    semantic_folds.size());
+
+            std::size_t fold_index = 0;
+
+            if (inserted)
+            {
+                fold_index = semantic_folds.size();
+
+                SemanticFold fold;
+                fold.info = *semantic_info;
+                fold.representative_index = i;
+                fold.scaled_claim_sums.assign(
+                    points.size(),
+                    FieldElement::zero());
+
+                semantic_folds.push_back(
+                    std::move(fold));
+            }
+            else
+            {
+                fold_index = existing->second;
+
+                const auto& existing_info =
+                    semantic_folds[fold_index].info;
+
+                if (existing_info.domain == nullptr
+                    || existing_info.domain->name
+                        != semantic_info->domain->name
+                    || existing_info.domain->size
+                        != semantic_info->domain->size
+                    || !(existing_info.domain->omega
+                         == semantic_info->domain->omega)
+                    || existing_info.value_count
+                        != semantic_info->value_count)
                 {
-                    material = opening_resolver(commitments[i]);
+                    throw std::runtime_error(
+                        "conflicting streamed opening semantic source metadata: "
+                        + commitments[i].name);
                 }
+            }
+
+            semantic_fold_for_commitment[i] =
+                fold_index;
+
+            auto& fold =
+                semantic_folds[fold_index];
+
+            fold.members.push_back(i);
+            fold.source_scale += powers[i];
+
+            if (!semantic_info
+                     ->zero_domain_blinder.empty())
+            {
+                if (fold.folded_zero_domain_blinder.size()
+                    < semantic_info
+                          ->zero_domain_blinder.size())
+                {
+                    fold.folded_zero_domain_blinder.resize(
+                        semantic_info
+                            ->zero_domain_blinder.size(),
+                        FieldElement::zero());
+                }
+
+                for (std::size_t coefficient = 0;
+                     coefficient
+                         < semantic_info
+                               ->zero_domain_blinder.size();
+                     ++coefficient)
+                {
+                    fold.folded_zero_domain_blinder[
+                        coefficient]
+                        += semantic_info
+                               ->zero_domain_blinder[
+                                   coefficient]
+                           * powers[i];
+                }
+            }
+
+            for (std::size_t point_index = 0;
+                 point_index < points.size();
+                 ++point_index)
+            {
+                fold.scaled_claim_sums[point_index]
+                    += claimed_values[i][point_index]
+                       * powers[i];
+            }
+        }
+
+        // A singleton source has nothing to deduplicate.  Keep it on the
+        // original streamed path so this optimization changes execution only
+        // where an actual shared semantic source exists.
+        std::size_t shared_source_count = 0;
+        std::size_t shared_member_count = 0;
+
+        for (std::size_t fold_index = 0;
+             fold_index < semantic_folds.size();
+             ++fold_index)
+        {
+            auto& fold =
+                semantic_folds[fold_index];
+
+            if (fold.members.size() < 2)
+            {
+                for (const auto member :
+                     fold.members)
+                {
+                    semantic_fold_for_commitment[
+                        member] = std::nullopt;
+                }
+
+                continue;
+            }
+
+            ++shared_source_count;
+            shared_member_count +=
+                fold.members.size();
+        }
+
+        if (shared_source_count != 0)
+        {
+            progress_note(
+                "kzg:opening:semantic_fold:"
+                "sources="
+                + std::to_string(
+                    shared_source_count)
+                + ":members="
+                + std::to_string(
+                    shared_member_count));
+        }
+    }
+
+    const auto accumulate_evaluation_source =
+        [&](auto& group,
+            const std::vector<FieldElement>& source_values,
+            const FieldElement& scale,
+            const std::string& label)
+        {
+            if (source_values.size()
+                > group.folded_values.size())
+            {
+                throw std::runtime_error(
+                    "streamed evaluation polynomial exceeds its domain: "
+                    + label);
+            }
+
+            if (scale.is_zero())
+            {
+                return;
+            }
+
+            auto* folded_native =
+                FieldElement::mutable_native_array_data(
+                    group.folded_values.data());
+
+            const auto* source_native =
+                FieldElement::native_array_data(
+                    source_values.data());
+
+            const auto scale_native =
+                scale.native();
+
+            if (!algebra::try_cuda_scaled_accumulate_native(
+                    folded_native,
+                    source_native,
+                    scale_native,
+                    source_values.size()))
+            {
+                parallel_for_chunks_capped(
+                    source_values.size(),
+                    1ULL << 15,
+                    worker_cap,
+                    [&](std::size_t begin,
+                        std::size_t end)
+                    {
+                        for (std::size_t row = begin;
+                             row < end;
+                             ++row)
+                        {
+                            mcl::Fr product;
+
+                            mcl::Fr::mul(
+                                product,
+                                source_native[row],
+                                scale_native);
+
+                            mcl::Fr::add(
+                                folded_native[row],
+                                folded_native[row],
+                                product);
+                        }
+                    });
+            }
+        };
+
+    for (std::size_t i = 0;
+         i < commitments.size();
+         ++i)
+    {
+        if (claimed_values[i].size()
+            != points.size())
+        {
+            throw std::runtime_error(
+                "streamed folded opening claim shape mismatch: "
+                + commitments[i].name);
+        }
+
+        if (semantic_fold_for_commitment[i]
+                .has_value())
+        {
+            auto& semantic_fold =
+                semantic_folds[
+                    *semantic_fold_for_commitment[i]];
+
+            if (semantic_fold.representative_index
+                != i)
+            {
+                continue;
+            }
+
+            auto& group =
+                folded_evaluation_group(
+                    &plan,
+                    semantic_fold.info.domain,
+                    points.size());
+
+            if (group.folded_values.empty())
+            {
+                group.folded_values.assign(
+                    group.domain->size,
+                    FieldElement::zero());
+            }
+
+            if (semantic_fold.info.value_count
+                > group.folded_values.size())
+            {
+                throw std::runtime_error(
+                    "streamed semantic evaluation source exceeds its domain: "
+                    + commitments[i].name);
+            }
+
+            if (!semantic_fold.source_scale
+                     .is_zero())
+            {
+                auto material =
+                    opening_resolver(
+                        commitments[i]);
+
                 if (material == nullptr)
                 {
                     throw std::runtime_error(
                         "commitment is missing prover-side opening polynomial: "
                         + commitments[i].name);
                 }
-                if (claimed_values[i].size() != points.size())
+
+                if (material->basis
+                    != algebra::PolynomialBasis::Evaluation
+                    || material->domain == nullptr)
                 {
                     throw std::runtime_error(
-                        "streamed folded opening claim shape mismatch: "
+                        "streamed semantic opening source is not an evaluation polynomial: "
                         + commitments[i].name);
                 }
-                if (validate_claims)
+
+                if (material->domain->name
+                        != semantic_fold
+                               .info.domain->name
+                    || material->domain->size
+                        != semantic_fold
+                               .info.domain->size
+                    || !(material->domain->omega
+                         == semantic_fold
+                                .info.domain->omega))
                 {
-                    for (std::size_t point_index = 0;
-                         point_index < points.size(); ++point_index)
-                    {
-                        FieldElement expected = FieldElement::zero();
-                        if (material->basis
-                            == algebra::PolynomialBasis::Coefficient)
-                        {
-                            expected = material->evaluate(
-                                points[point_index]);
-                        }
-                        else
-                        {
-                            if (material->domain == nullptr)
-                            {
-                                throw std::runtime_error(
-                                    "evaluation polynomial is missing its domain: "
-                                    + commitments[i].name);
-                            }
-                            expected = evaluate_with_shared_domain_weights(
-                                *material,
-                                points[point_index],
-                                claim_weight_cache.get(
-                                    material->domain,
-                                    points[point_index]));
-                        }
-                        if (expected != claimed_values[i][point_index])
-                        {
-                            throw std::runtime_error(
-                                "streamed opening claim mismatch for "
-                                + commitments[i].name + " at point index "
-                                + std::to_string(point_index));
-                        }
-                    }
+                    throw std::runtime_error(
+                        "streamed semantic opening source domain mismatch: "
+                        + commitments[i].name);
                 }
 
-                const auto& scale = powers[i];
+                const auto& source_values =
+                    material->values();
+
+                if (source_values.size()
+                    != semantic_fold
+                           .info.value_count)
+                {
+                    throw std::runtime_error(
+                        "streamed semantic opening source size mismatch: "
+                        + commitments[i].name);
+                }
+
+                if (material
+                        ->zero_domain_blinder
+                    != semantic_fold
+                           .info.zero_domain_blinder)
+                {
+                    throw std::runtime_error(
+                        "streamed semantic opening representative blinder mismatch: "
+                        + commitments[i].name);
+                }
+
+                accumulate_evaluation_source(
+                    group,
+                    source_values,
+                    semantic_fold.source_scale,
+                    commitments[i].name);
+            }
+
+            if (!semantic_fold
+                     .folded_zero_domain_blinder
+                     .empty())
+            {
+                if (group
+                        .folded_zero_domain_blinder
+                        .size()
+                    < semantic_fold
+                          .folded_zero_domain_blinder
+                          .size())
+                {
+                    group
+                        .folded_zero_domain_blinder
+                        .resize(
+                            semantic_fold
+                                .folded_zero_domain_blinder
+                                .size(),
+                            FieldElement::zero());
+                }
+
+                for (std::size_t coefficient = 0;
+                     coefficient
+                         < semantic_fold
+                               .folded_zero_domain_blinder
+                               .size();
+                     ++coefficient)
+                {
+                    group.folded_zero_domain_blinder[
+                        coefficient]
+                        += semantic_fold
+                               .folded_zero_domain_blinder[
+                                   coefficient];
+                }
+            }
+
+            for (std::size_t point_index = 0;
+                 point_index < points.size();
+                 ++point_index)
+            {
+                group.scaled_claim_sums[
+                    point_index]
+                    += semantic_fold
+                           .scaled_claim_sums[
+                               point_index];
+            }
+
+            continue;
+        }
+
+        auto material =
+            commitments[i].opening_polynomial;
+
+        if (material == nullptr)
+        {
+            material =
+                opening_resolver(
+                    commitments[i]);
+        }
+
+        if (material == nullptr)
+        {
+            throw std::runtime_error(
+                "commitment is missing prover-side opening polynomial: "
+                + commitments[i].name);
+        }
+
+        if (validate_claims)
+        {
+            for (std::size_t point_index = 0;
+                 point_index < points.size();
+                 ++point_index)
+            {
+                FieldElement expected =
+                    FieldElement::zero();
+
                 if (material->basis
                     == algebra::PolynomialBasis::Coefficient)
                 {
-                    if (!scale.is_zero())
-                    {
-                        accumulate_scaled_coefficients(
-                            &plan.coefficient_fold,
-                            material->values(),
-                            scale,
-                            worker_cap);
-                    }
-                    for (std::size_t point_index = 0;
-                         point_index < points.size(); ++point_index)
-                    {
-                        plan.coefficient_scaled_claim_sums[point_index]
-                            += claimed_values[i][point_index] * scale;
-                    }
-                    continue;
+                    expected =
+                        material->evaluate(
+                            points[point_index]);
                 }
-                if (material->domain == nullptr)
+                else
+                {
+                    if (material->domain == nullptr)
+                    {
+                        throw std::runtime_error(
+                            "evaluation polynomial is missing its domain: "
+                            + commitments[i].name);
+                    }
+
+                    expected =
+                        evaluate_with_shared_domain_weights(
+                            *material,
+                            points[point_index],
+                            claim_weight_cache.get(
+                                material->domain,
+                                points[point_index]));
+                }
+
+                if (expected
+                    != claimed_values[i][
+                        point_index])
                 {
                     throw std::runtime_error(
-                        "evaluation polynomial is missing its domain: "
-                        + commitments[i].name);
-                }
-                auto& group = folded_evaluation_group(
-                    &plan, material->domain, points.size());
-                if (group.folded_values.empty())
-                {
-                    group.folded_values.assign(
-                        group.domain->size, FieldElement::zero());
-                }
-                const auto& source_values = material->values();
-                if (source_values.size() > group.folded_values.size())
-                {
-                    throw std::runtime_error(
-                        "streamed evaluation polynomial exceeds its domain: "
-                        + commitments[i].name);
-                }
-                if (!scale.is_zero())
-                {
-                    auto* folded_native =
-                        FieldElement::mutable_native_array_data(
-                            group.folded_values.data());
-                    const auto* source_native =
-                        FieldElement::native_array_data(
-                            source_values.data());
-                    const auto scale_native = scale.native();
-                    if (!algebra::try_cuda_scaled_accumulate_native(
-                            folded_native,
-                            source_native,
-                            scale_native,
-                            source_values.size()))
-                    {
-                        parallel_for_chunks_capped(
-                            source_values.size(),
-                            1ULL << 15,
-                            worker_cap,
-                            [&](std::size_t begin, std::size_t end)
-                            {
-                                for (std::size_t row = begin;
-                                     row < end; ++row)
-                                {
-                                    mcl::Fr product;
-                                    mcl::Fr::mul(
-                                        product,
-                                        source_native[row],
-                                        scale_native);
-                                    mcl::Fr::add(
-                                        folded_native[row],
-                                        folded_native[row],
-                                        product);
-                                }
-                            });
-                    }
-                    if (material->is_zero_domain_blinded())
-                    {
-                        accumulate_scaled_coefficients(
-                            &group.folded_zero_domain_blinder,
-                            material->zero_domain_blinder,
-                            scale,
-                            worker_cap);
-                    }
-                }
-                for (std::size_t point_index = 0;
-                     point_index < points.size(); ++point_index)
-                {
-                    group.scaled_claim_sums[point_index]
-                        += claimed_values[i][point_index] * scale;
+                        "streamed opening claim mismatch for "
+                        + commitments[i].name
+                        + " at point index "
+                        + std::to_string(
+                            point_index));
                 }
             }
-            trim_zero_coefficients(&plan.coefficient_fold);
-            for (auto& group : plan.evaluation_groups)
-            {
-                trim_zero_coefficients(
-                    &group.folded_zero_domain_blinder);
-            }
-            return plan;
         }
+
+        const auto& scale =
+            powers[i];
+
+        if (material->basis
+            == algebra::PolynomialBasis::Coefficient)
+        {
+            if (!scale.is_zero())
+            {
+                accumulate_scaled_coefficients(
+                    &plan.coefficient_fold,
+                    material->values(),
+                    scale,
+                    worker_cap);
+            }
+
+            for (std::size_t point_index = 0;
+                 point_index < points.size();
+                 ++point_index)
+            {
+                plan.coefficient_scaled_claim_sums[
+                    point_index]
+                    += claimed_values[i][
+                           point_index]
+                       * scale;
+            }
+
+            continue;
+        }
+
+        if (material->domain == nullptr)
+        {
+            throw std::runtime_error(
+                "evaluation polynomial is missing its domain: "
+                + commitments[i].name);
+        }
+
+        auto& group =
+            folded_evaluation_group(
+                &plan,
+                material->domain,
+                points.size());
+
+        if (group.folded_values.empty())
+        {
+            group.folded_values.assign(
+                group.domain->size,
+                FieldElement::zero());
+        }
+
+        const auto& source_values =
+            material->values();
+
+        accumulate_evaluation_source(
+            group,
+            source_values,
+            scale,
+            commitments[i].name);
+
+        if (!scale.is_zero()
+            && material
+                   ->is_zero_domain_blinded())
+        {
+            accumulate_scaled_coefficients(
+                &group
+                     .folded_zero_domain_blinder,
+                material
+                    ->zero_domain_blinder,
+                scale,
+                worker_cap);
+        }
+
+        for (std::size_t point_index = 0;
+             point_index < points.size();
+             ++point_index)
+        {
+            group.scaled_claim_sums[
+                point_index]
+                += claimed_values[i][
+                       point_index]
+                   * scale;
+        }
+    }
+
+    trim_zero_coefficients(
+        &plan.coefficient_fold);
+
+    for (auto& group :
+         plan.evaluation_groups)
+    {
+        trim_zero_coefficients(
+            &group
+                 .folded_zero_domain_blinder);
+    }
+
+    return plan;
+}
 
         G1Point open_single_point_fold(
             const FoldedOpeningPlan& plan,
@@ -4255,7 +4692,8 @@ namespace gatzk::crypto
         BatchOpeningProfile* profile,
         BatchOpeningClaimValidation claim_validation,
         const PointGroupOpeningExecutionOptions* execution_options,
-        const OpeningPolynomialResolver* opening_resolver)
+        const OpeningPolynomialResolver* opening_resolver,
+        const OpeningSemanticSourceResolver* semantic_source_resolver)
     {
         if (commitments.empty() || commitments.size() != claimed_values.size())
         {
@@ -4291,14 +4729,15 @@ namespace gatzk::crypto
                 claim_validation
                     == BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials)
             : build_streamed_folded_opening_plan(
-                commitments,
-                value_columns,
-                powers,
-                std::vector<FieldElement>{point},
-                field_worker_cap,
-                claim_validation
-                    == BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials,
-                *opening_resolver);
+    commitments,
+    value_columns,
+    powers,
+    std::vector<FieldElement>{point},
+    field_worker_cap,
+    claim_validation
+        == BatchOpeningClaimValidation::VerifyAgainstOpeningPolynomials,
+    *opening_resolver,
+    semantic_source_resolver);
         if (profile != nullptr)
         {
             profile->precompute_ms += elapsed_ms(precompute_start, Clock::now());
