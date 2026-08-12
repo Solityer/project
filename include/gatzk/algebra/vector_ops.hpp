@@ -123,30 +123,39 @@ namespace gatzk::algebra
         const FieldElement& base);
 
     // Prepare the two half-size NTT lanes used to evaluate a coefficient
-    // polynomial on the even and odd points of a doubled quotient coset.
-    void split_coset_coefficients_native(
-        const mcl::Fr* coefficients,
-        const mcl::Fr* shift_powers,
-        std::size_t coefficient_count,
-        const FieldElement& odd_root,
-        mcl::Fr* even_output,
-        mcl::Fr* odd_output);
+// polynomial on the even and odd points of a doubled quotient coset.
+void split_coset_coefficients_native(
+    const mcl::Fr* coefficients,
+    const mcl::Fr* shift_powers,
+    std::size_t coefficient_count,
+    const FieldElement& odd_root,
+    mcl::Fr* even_output,
+    mcl::Fr* odd_output,
+    std::size_t max_worker_count = 0);
 
-    // Restore canonical [even_0, odd_0, ...] point order after the paired
-    // quotient-coset transforms.
-    void interleave_native_lanes(
-        const mcl::Fr* even_values,
-        const mcl::Fr* odd_values,
-        std::size_t lane_size,
-        mcl::Fr* output);
+// Restore canonical [even_0, odd_0, ...] point order after the paired
+// quotient-coset transforms.
+void interleave_native_lanes(
+    const mcl::Fr* even_values,
+    const mcl::Fr* odd_values,
+    std::size_t lane_size,
+    mcl::Fr* output,
+    std::size_t max_worker_count = 0);
 
-    // 大型逆变换按偶/奇频点拆成两个独立半长 INTT；结果与标准
-    // `ntt_plan(size)->intt` 逐元素一致，小规模保持标准实现。
-    void intt_in_place(mcl::Fr* values, std::size_t size);
+// 大型逆变换按偶/奇频点拆成两个独立半长 INTT；结果与标准
+// `ntt_plan(size)->intt` 逐元素一致，小规模保持标准实现。
+void intt_in_place(
+    mcl::Fr* values,
+    std::size_t size,
+    std::size_t max_worker_count = 0);
 
-    // Execute two independent same-size forward NTTs concurrently at formal
-    // transform sizes.  Small inputs retain the canonical serial plan calls.
-    void ntt_pair_in_place(mcl::Fr* first, mcl::Fr* second, std::size_t size);
+// Execute two independent same-size forward NTTs concurrently at formal
+// transform sizes.  Small inputs retain the canonical serial plan calls.
+void ntt_pair_in_place(
+    mcl::Fr* first,
+    mcl::Fr* second,
+    std::size_t size,
+    std::size_t max_worker_count = 0);
 
     // 直接消费原生权重，避免 barycentric 热路径中反复包装 `FieldElement`。
     FieldElement dot_product_native_weights(

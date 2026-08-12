@@ -57,9 +57,45 @@ namespace gatzk::protocol
     namespace
     {
         using algebra::FieldElement;
-        using algebra::Polynomial;
-        using crypto::Commitment;
-        using Clock = std::chrono::steady_clock;
+using algebra::Polynomial;
+using crypto::Commitment;
+using Clock = std::chrono::steady_clock;
+
+thread_local std::size_t
+    quotient_transform_worker_cap = 0;
+
+class ScopedQuotientTransformWorkerCap
+{
+public:
+    explicit ScopedQuotientTransformWorkerCap(
+        std::size_t worker_cap)
+        : previous_(
+            quotient_transform_worker_cap)
+    {
+        quotient_transform_worker_cap =
+            worker_cap;
+    }
+
+    ~ScopedQuotientTransformWorkerCap()
+    {
+        quotient_transform_worker_cap =
+            previous_;
+    }
+
+    ScopedQuotientTransformWorkerCap(
+        const ScopedQuotientTransformWorkerCap&)
+        = delete;
+
+    ScopedQuotientTransformWorkerCap&
+    operator=(
+        const ScopedQuotientTransformWorkerCap&)
+        = delete;
+
+private:
+    std::size_t previous_ = 0;
+};
+
+double elapsed_ms(
 
         double elapsed_ms(const Clock::time_point &start, const Clock::time_point &end)
         {
@@ -3656,12 +3692,13 @@ namespace gatzk::protocol
                 {
                     const auto root = FieldElement::root_of_unity(target_size);
                     algebra::split_coset_coefficients_native(
-                        coefficients,
-                        shift_powers->data(),
-                        coefficient_count,
-                        root,
-                        even_work.data(),
-                        odd_work.data());
+    coefficients,
+    shift_powers->data(),
+    coefficient_count,
+    root,
+    even_work.data(),
+    odd_work.data(),
+    quotient_transform_worker_cap);
                 }
                 else
                 {
@@ -3686,10 +3723,17 @@ namespace gatzk::protocol
                     odd_work[i].clear();
                 }
                 algebra::ntt_pair_in_place(
-                    even_work.data(), odd_work.data(), half_size);
+    even_work.data(),
+    odd_work.data(),
+    half_size,
+    quotient_transform_worker_cap);
                 auto *out_native = FieldElement::mutable_native_array_data(out.data());
                 algebra::interleave_native_lanes(
-                    even_work.data(), odd_work.data(), half_size, out_native);
+    even_work.data(),
+    odd_work.data(),
+    half_size,
+    out_native,
+    quotient_transform_worker_cap);
                 return out;
             }
 
@@ -3781,7 +3825,9 @@ namespace gatzk::protocol
                 const auto &values = polynomial.values();
                 copy_evaluation_values_to_native_domain(values, polynomial.domain->size, &coefficient_work, polynomial.name);
                 algebra::intt_in_place(
-                    coefficient_work.data(), coefficient_work.size());
+    coefficient_work.data(),
+    coefficient_work.size(),
+    quotient_transform_worker_cap);
 
                 if (polynomial.is_zero_domain_blinded())
                 {
@@ -6377,9 +6423,21 @@ namespace gatzk::protocol
                             24,
                             std::max<std::size_t>(8, cpu_count));
                     }
-                    const auto worker_count = std::min<std::size_t>(
-                        std::min<std::size_t>(cpu_count, worker_cap),
-                        wave.size());
+                    const auto worker_count =
+    std::min<std::size_t>(
+        std::min<std::size_t>(
+            cpu_count,
+            worker_cap),
+        wave.size());
+
+const auto transform_worker_cap =
+    std::max<std::size_t>(
+        1,
+        cpu_count
+            / std::max<std::size_t>(
+                1,
+                worker_count));
+
                     const bool log_items =
                         !(label_ == "t_edge"
                           && wave_name == std::string_view("base")
@@ -6390,27 +6448,58 @@ namespace gatzk::protocol
                     std::atomic<std::size_t> next{0};
                     std::vector<std::future<void>> futures;
                     futures.reserve(worker_count);
-                    for (std::size_t worker = 0; worker < worker_count; ++worker)
+                    for (std::size_t worker = 0;
+     worker < worker_count;
+     ++worker)
+{
+    futures.push_back(
+        std::async(
+            std::launch::async,
+            [&, wave_name]()
+            {
+                const ScopedQuotientTransformWorkerCap
+                    transform_worker_scope(
+                        transform_worker_cap);
+
+                while (true)
+                {
+                    const auto index =
+                        next.fetch_add(1);
+
+                    if (index >= wave.size())
                     {
-                        futures.push_back(std::async(std::launch::async, [&, wave_name]()
-                                                     {
-                    while (true) {
-                        const auto index = next.fetch_add(1);
-                        if (index >= wave.size()) {
-                            break;
-                        }
-                        if (log_items) {
-                            progress_note(
-                                "prove:quotient:" + label_ + ":coset_prewarm:"
-                                + std::string(wave_name) + ":" + wave[index] + ":start");
-                        }
-                        coset_values_ptr(wave[index]);
-                        if (log_items) {
-                            progress_note(
-                                "prove:quotient:" + label_ + ":coset_prewarm:"
-                                + std::string(wave_name) + ":" + wave[index] + ":done");
-                        }
-                    } }));
+                        break;
+                    }
+
+                    if (log_items)
+                    {
+                        progress_note(
+                            "prove:quotient:"
+                            + label_
+                            + ":coset_prewarm:"
+                            + std::string(wave_name)
+                            + ":"
+                            + wave[index]
+                            + ":start");
+                    }
+
+                    coset_values_ptr(
+                        wave[index]);
+
+                    if (log_items)
+                    {
+                        progress_note(
+                            "prove:quotient:"
+                            + label_
+                            + ":coset_prewarm:"
+                            + std::string(wave_name)
+                            + ":"
+                            + wave[index]
+                            + ":done");
+                    }
+                }
+            }));
+}
                     }
                     for (auto &future : futures)
                     {

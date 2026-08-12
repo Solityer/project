@@ -55,9 +55,30 @@ namespace gatzk::algebra
         }
 
         unsigned __int128 multiply_u128(std::size_t lhs, std::size_t rhs)
-        {
-            return static_cast<unsigned __int128>(lhs) * static_cast<unsigned __int128>(rhs);
-        }
+{
+    return static_cast<unsigned __int128>(lhs)
+        * static_cast<unsigned __int128>(rhs);
+}
+
+std::size_t bounded_worker_count(
+    std::size_t max_worker_count)
+{
+    const auto hardware_workers =
+        std::max<std::size_t>(
+            1,
+            std::thread::hardware_concurrency());
+
+    if (max_worker_count == 0)
+    {
+        return hardware_workers;
+    }
+
+    return std::max<std::size_t>(
+        1,
+        std::min<std::size_t>(
+            hardware_workers,
+            max_worker_count));
+}
 
         AlgebraBackend parse_backend_env()
         {
@@ -217,132 +238,195 @@ namespace gatzk::algebra
     }
 
     void split_coset_coefficients_native(
-        const mcl::Fr* coefficients,
-        const mcl::Fr* shift_powers,
-        std::size_t coefficient_count,
-        const FieldElement& odd_root,
-        mcl::Fr* even_output,
-        mcl::Fr* odd_output)
+    const mcl::Fr* coefficients,
+    const mcl::Fr* shift_powers,
+    std::size_t coefficient_count,
+    const FieldElement& odd_root,
+    mcl::Fr* even_output,
+    mcl::Fr* odd_output,
+    std::size_t max_worker_count)
+{
+    if (coefficient_count == 0)
     {
-        if (coefficient_count == 0)
-        {
-            return;
-        }
-        if (coefficients == nullptr || shift_powers == nullptr
-            || even_output == nullptr || odd_output == nullptr)
-        {
-            throw std::runtime_error(
-                "coset split scaling requires non-null buffers");
-        }
-        constexpr std::size_t kMinRowsPerTask = 1ULL << 18;
-        const auto worker_count = std::min<std::size_t>({
+        return;
+    }
+
+    if (coefficients == nullptr
+        || shift_powers == nullptr
+        || even_output == nullptr
+        || odd_output == nullptr)
+    {
+        throw std::runtime_error(
+            "coset split scaling requires non-null buffers");
+    }
+
+    constexpr std::size_t kMinRowsPerTask =
+        1ULL << 18;
+
+    const auto available_workers =
+        bounded_worker_count(max_worker_count);
+
+    const auto worker_count =
+        std::min<std::size_t>({
             8,
-            std::max<std::size_t>(
-                1, std::thread::hardware_concurrency()),
+            available_workers,
             std::max<std::size_t>(
                 1,
-                (coefficient_count + kMinRowsPerTask - 1)
+                (coefficient_count
+                    + kMinRowsPerTask - 1)
                     / kMinRowsPerTask),
         });
-        const auto chunk_size =
-            (coefficient_count + worker_count - 1) / worker_count;
-        const auto root_native = odd_root.native();
-        std::vector<std::future<void>> futures;
-        futures.reserve(worker_count);
-        for (std::size_t worker = 0; worker < worker_count; ++worker)
+
+    const auto chunk_size =
+        (coefficient_count + worker_count - 1)
+        / worker_count;
+
+    const auto root_native =
+        odd_root.native();
+
+    std::vector<std::future<void>> futures;
+    futures.reserve(worker_count);
+
+    for (std::size_t worker = 0;
+         worker < worker_count;
+         ++worker)
+    {
+        const auto begin =
+            worker * chunk_size;
+        const auto end =
+            std::min(
+                coefficient_count,
+                begin + chunk_size);
+
+        if (begin >= end)
         {
-            const auto begin = worker * chunk_size;
-            const auto end = std::min(
-                coefficient_count, begin + chunk_size);
-            if (begin >= end)
-            {
-                break;
-            }
-            futures.push_back(std::async(
+            break;
+        }
+
+        futures.push_back(
+            std::async(
                 std::launch::async,
                 [=]
                 {
-                    auto root_power = odd_root.pow(begin).native();
-                    for (std::size_t index = begin; index < end; ++index)
+                    auto root_power =
+                        odd_root.pow(begin).native();
+
+                    for (std::size_t index = begin;
+                         index < end;
+                         ++index)
                     {
                         mcl::Fr::mul(
                             even_output[index],
                             coefficients[index],
                             shift_powers[index]);
+
                         mcl::Fr odd_shift_power;
                         mcl::Fr::mul(
                             odd_shift_power,
                             shift_powers[index],
                             root_power);
+
                         mcl::Fr::mul(
                             odd_output[index],
                             coefficients[index],
                             odd_shift_power);
+
                         mcl::Fr::mul(
-                            root_power, root_power, root_native);
+                            root_power,
+                            root_power,
+                            root_native);
                     }
                 }));
-        }
-        for (auto& future : futures)
-        {
-            future.get();
-        }
     }
 
-    void interleave_native_lanes(
-        const mcl::Fr* even_values,
-        const mcl::Fr* odd_values,
-        std::size_t lane_size,
-        mcl::Fr* output)
+    for (auto& future : futures)
     {
-        if (lane_size == 0)
-        {
-            return;
-        }
-        if (even_values == nullptr || odd_values == nullptr
-            || output == nullptr)
-        {
-            throw std::runtime_error(
-                "native lane interleave requires non-null buffers");
-        }
-        constexpr std::size_t kMinRowsPerTask = 1ULL << 18;
-        const auto worker_count = std::min<std::size_t>({
+        future.get();
+    }
+}
+
+    void interleave_native_lanes(
+    const mcl::Fr* even_values,
+    const mcl::Fr* odd_values,
+    std::size_t lane_size,
+    mcl::Fr* output,
+    std::size_t max_worker_count)
+{
+    if (lane_size == 0)
+    {
+        return;
+    }
+
+    if (even_values == nullptr
+        || odd_values == nullptr
+        || output == nullptr)
+    {
+        throw std::runtime_error(
+            "native lane interleave requires non-null buffers");
+    }
+
+    constexpr std::size_t kMinRowsPerTask =
+        1ULL << 18;
+
+    const auto available_workers =
+        bounded_worker_count(max_worker_count);
+
+    const auto worker_count =
+        std::min<std::size_t>({
             8,
-            std::max<std::size_t>(
-                1, std::thread::hardware_concurrency()),
+            available_workers,
             std::max<std::size_t>(
                 1,
-                (lane_size + kMinRowsPerTask - 1)
+                (lane_size
+                    + kMinRowsPerTask - 1)
                     / kMinRowsPerTask),
         });
-        const auto chunk_size =
-            (lane_size + worker_count - 1) / worker_count;
-        std::vector<std::future<void>> futures;
-        futures.reserve(worker_count);
-        for (std::size_t worker = 0; worker < worker_count; ++worker)
+
+    const auto chunk_size =
+        (lane_size + worker_count - 1)
+        / worker_count;
+
+    std::vector<std::future<void>> futures;
+    futures.reserve(worker_count);
+
+    for (std::size_t worker = 0;
+         worker < worker_count;
+         ++worker)
+    {
+        const auto begin =
+            worker * chunk_size;
+        const auto end =
+            std::min(
+                lane_size,
+                begin + chunk_size);
+
+        if (begin >= end)
         {
-            const auto begin = worker * chunk_size;
-            const auto end = std::min(lane_size, begin + chunk_size);
-            if (begin >= end)
-            {
-                break;
-            }
-            futures.push_back(std::async(
+            break;
+        }
+
+        futures.push_back(
+            std::async(
                 std::launch::async,
                 [=]
                 {
-                    for (std::size_t index = begin; index < end; ++index)
+                    for (std::size_t index = begin;
+                         index < end;
+                         ++index)
                     {
-                        output[2 * index] = even_values[index];
-                        output[2 * index + 1] = odd_values[index];
+                        output[2 * index] =
+                            even_values[index];
+                        output[2 * index + 1] =
+                            odd_values[index];
                     }
                 }));
-        }
-        for (auto& future : futures)
-        {
-            future.get();
-        }
     }
+
+    for (auto& future : futures)
+    {
+        future.get();
+    }
+}
 
     namespace
     {
@@ -361,14 +445,19 @@ namespace gatzk::algebra
             }
 
             const auto half_size = size / 2;
-            const auto hardware_workers = std::max<std::size_t>(
-                1, std::thread::hardware_concurrency());
-            const auto lane_worker_count = std::min<std::size_t>({
-                8,
-                hardware_workers,
-                std::max<std::size_t>(
-                    1, (half_size + (1ULL << 18) - 1) / (1ULL << 18)),
-            });
+const auto lane_worker_count =
+    std::min<std::size_t>({
+        8,
+        std::max<std::size_t>(
+            1,
+            transform_workers),
+        std::max<std::size_t>(
+            1,
+            (half_size
+                + (1ULL << 18) - 1)
+                / (1ULL << 18)),
+    });
+
             const auto parallel_half_ranges =
                 [&](const auto& range_fn)
                 {
@@ -469,16 +558,21 @@ namespace gatzk::algebra
             }
 
             const auto half_size = size / 2;
-            std::vector<mcl::Fr> even(half_size);
-            std::vector<mcl::Fr> odd(half_size);
-            const auto hardware_workers = std::max<std::size_t>(
-                1, std::thread::hardware_concurrency());
-            const auto lane_worker_count = std::min<std::size_t>({
-                8,
-                hardware_workers,
-                std::max<std::size_t>(
-                    1, (half_size + (1ULL << 18) - 1) / (1ULL << 18)),
-            });
+std::vector<mcl::Fr> even(half_size);
+std::vector<mcl::Fr> odd(half_size);
+
+const auto lane_worker_count =
+    std::min<std::size_t>({
+        8,
+        std::max<std::size_t>(
+            1,
+            transform_workers),
+        std::max<std::size_t>(
+            1,
+            (half_size
+                + (1ULL << 18) - 1)
+                / (1ULL << 18)),
+    });
             const auto parallel_half_ranges =
                 [&](const auto& range_fn)
                 {
@@ -561,78 +655,121 @@ namespace gatzk::algebra
         }
     }
 
-    void intt_in_place(mcl::Fr* values, std::size_t size)
+    void intt_in_place(
+    mcl::Fr* values,
+    std::size_t size,
+    std::size_t max_worker_count)
+{
+    if (values == nullptr
+        || size == 0
+        || (size & (size - 1U)) != 0U)
     {
-        if (values == nullptr || size == 0
-            || (size & (size - 1U)) != 0U)
-        {
-            throw std::runtime_error(
-                "INTT requires a non-null power-of-two field vector");
-        }
-        const auto transform_workers = std::min<std::size_t>(
-            32,
-            std::max<std::size_t>(
-                1, std::thread::hardware_concurrency()));
-        intt_in_place_parallel_impl(values, size, transform_workers);
+        throw std::runtime_error(
+            "INTT requires a non-null power-of-two field vector");
     }
 
-    void ntt_pair_in_place(mcl::Fr* first, mcl::Fr* second, std::size_t size)
+    const auto transform_workers =
+        std::min<std::size_t>(
+            32,
+            bounded_worker_count(
+                max_worker_count));
+
+    intt_in_place_parallel_impl(
+        values,
+        size,
+        transform_workers);
+}
+
+    void ntt_pair_in_place(
+    mcl::Fr* first,
+    mcl::Fr* second,
+    std::size_t size,
+    std::size_t max_worker_count)
+{
+    if (first == nullptr
+        || second == nullptr
+        || first == second
+        || size == 0
+        || (size & (size - 1U)) != 0U)
     {
-        if (first == nullptr || second == nullptr || first == second
-            || size == 0 || (size & (size - 1U)) != 0U)
-        {
-            throw std::runtime_error(
-                "paired NTT requires two distinct non-null power-of-two vectors");
-        }
-        constexpr std::size_t kParallelPairThreshold = 1ULL << 15;
-        constexpr std::size_t kRecursiveParallelThreshold = 1ULL << 18;
-        constexpr std::size_t kRecursiveParallelMaximum = 1ULL << 24;
-        if (size < kParallelPairThreshold
-            || std::thread::hardware_concurrency() < 2)
-        {
-            const auto plan = ntt_plan(size);
-            plan->ntt(first);
-            plan->ntt(second);
-            return;
-        }
-        const auto hardware_workers = std::max<std::size_t>(
-            1, std::thread::hardware_concurrency());
-        if (size >= kRecursiveParallelThreshold
-            && size <= kRecursiveParallelMaximum
-            && hardware_workers >= 4)
-        {
-            const auto per_transform_workers = std::min<std::size_t>(
-                16, hardware_workers / 2);
-            auto run_transform = [=](mcl::Fr* values)
+        throw std::runtime_error(
+            "paired NTT requires two distinct non-null power-of-two vectors");
+    }
+
+    constexpr std::size_t kParallelPairThreshold =
+        1ULL << 15;
+    constexpr std::size_t kRecursiveParallelThreshold =
+        1ULL << 18;
+    constexpr std::size_t kRecursiveParallelMaximum =
+        1ULL << 24;
+
+    const auto available_workers =
+        bounded_worker_count(
+            max_worker_count);
+
+    if (size < kParallelPairThreshold
+        || available_workers < 2)
+    {
+        const auto plan = ntt_plan(size);
+        plan->ntt(first);
+        plan->ntt(second);
+        return;
+    }
+
+    if (size >= kRecursiveParallelThreshold
+        && size <= kRecursiveParallelMaximum
+        && available_workers >= 4)
+    {
+        const auto per_transform_workers =
+            std::max<std::size_t>(
+                1,
+                std::min<std::size_t>(
+                    16,
+                    available_workers / 2));
+
+        auto run_transform =
+            [=](mcl::Fr* values)
             {
                 std::vector<mcl::Fr> scratch(size);
+
                 ntt_out_of_place_parallel_impl(
                     values,
                     scratch.data(),
                     size,
                     per_transform_workers);
-                std::copy(scratch.begin(), scratch.end(), values);
+
+                std::copy(
+                    scratch.begin(),
+                    scratch.end(),
+                    values);
             };
-            auto first_task = std::async(
+
+        auto first_task =
+            std::async(
                 std::launch::async,
                 [=]
                 {
                     run_transform(first);
                 });
-            run_transform(second);
-            first_task.get();
-            return;
-        }
-        const auto plan = ntt_plan(size);
-        auto first_task = std::async(
+
+        run_transform(second);
+        first_task.get();
+        return;
+    }
+
+    const auto plan = ntt_plan(size);
+
+    auto first_task =
+        std::async(
             std::launch::async,
             [=]
             {
                 plan->ntt(first);
             });
-        plan->ntt(second);
-        first_task.get();
-    }
+
+    plan->ntt(second);
+    first_task.get();
+}
 
     std::size_t cuda_kernel_invocation_count()
     {
