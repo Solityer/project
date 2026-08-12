@@ -18,6 +18,7 @@
 #include "gatzk/algebra/polynomial.hpp"
 #include "gatzk/crypto/curve.hpp"
 #include "gatzk/crypto/kzg.hpp"
+#include "gatzk/util/route2.hpp"
 
 namespace {
 
@@ -541,6 +542,13 @@ void run_edge_logup_mixed_cache_batch(
 
 int main(int argc, char** argv) {
     try {
+        if (const char* cuda_msm = std::getenv("GATZK_MSM_BENCH_CUDA");
+            cuda_msm != nullptr && std::string(cuda_msm) == "1") {
+            auto route = gatzk::util::route2_options();
+            route.cuda_field_hotspots = true;
+            gatzk::util::set_route2_options(route);
+        }
+
         std::size_t repeats = 3;
         if (argc > 1) {
             repeats = static_cast<std::size_t>(std::stoull(argv[1]));
