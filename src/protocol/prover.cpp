@@ -6498,7 +6498,6 @@ const auto transform_worker_cap =
                 }
             }));
 }
-                    }
                     for (auto &future : futures)
                     {
                         future.get();
