@@ -847,7 +847,7 @@ void execute_streamed_cuda_msm(
     {
         if (chunk_size <= minimum_chunk)
         {
-            throw std::runtime_error(
+            throw CudaMsmResourcePressure(
                 "CUDA G1 MSM cannot establish the minimum "
                 "streamed GPU working set");
         }
@@ -911,28 +911,38 @@ void execute_streamed_cuda_msm(
                 &result);
 
         if (status == cudaErrorMemoryAllocation)
+{
+    (void)cudaGetLastError();
+
+    while (true)
+    {
+        if (chunk_size <= minimum_chunk)
         {
-            (void)cudaGetLastError();
-
-            if (chunk_size <= minimum_chunk)
-            {
-                throw std::runtime_error(
-                    "CUDA G1 MSM minimum streamed chunk "
-                    "still exceeds available GPU resources");
-            }
-
-            chunk_size =
-                std::max(
-                    minimum_chunk,
-                    chunk_size / 2);
-
-            if (!buffers.prepare(chunk_size))
-            {
-                continue;
-            }
-
-            continue;
+            throw CudaMsmResourcePressure(
+                "CUDA G1 MSM minimum streamed chunk "
+                "still exceeds available GPU resources");
         }
+
+        chunk_size =
+            std::max(
+                minimum_chunk,
+                chunk_size / 2);
+
+        if (buffers.prepare(chunk_size))
+        {
+            break;
+        }
+    }
+
+    util::info(
+        "cuda_msm route=streamed_retry count="
+        + std::to_string(count)
+        + " chunk="
+        + std::to_string(chunk_size));
+
+    // Retry the same mathematical range using the smaller valid buffer.
+    continue;
+}
 
         if (status != cudaSuccess)
         {
@@ -1044,9 +1054,26 @@ void execute_streamed_cuda_msm(
         }
     }
 
-    // Do not retain a multi-GiB resident SRS while entering the bounded
-    // streamed path.
+    // First try bounded streaming while preserving useful resident SRS
+// material.  Only genuine resource pressure is allowed to evict the
+// resident cache and retry the same CUDA MSM.
+try
+{
+    execute_streamed_cuda_msm(
+        output,
+        points,
+        scalars,
+        count);
+
+    return true;
+}
+catch (const CudaMsmResourcePressure&)
+{
     cache.clear();
+
+    util::info(
+        "cuda_msm streamed resource pressure: "
+        "cleared resident base cache and retrying");
 
     execute_streamed_cuda_msm(
         output,
