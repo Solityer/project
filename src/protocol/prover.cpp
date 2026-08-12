@@ -95,8 +95,6 @@ private:
     std::size_t previous_ = 0;
 };
 
-double elapsed_ms(
-
         double elapsed_ms(const Clock::time_point &start, const Clock::time_point &end)
         {
             return std::chrono::duration<double, std::milli>(end - start).count();
