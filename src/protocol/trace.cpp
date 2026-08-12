@@ -2202,34 +2202,7 @@ namespace gatzk::protocol
             }();
             progress_note(batch_progress_label + ":start");
 
-            constexpr std::size_t kMaxPreparedPayloadBytes =
-    96ULL * 1024ULL * 1024ULL;
-
-// Large owned evaluation columns already exist before entering this
-// function. Their materialization path moves the FieldElement storage
-// into Polynomial/shared backing instead of copying the full column.
-//
-// Permit only the narrow CPU case that directly recovers the common
-// three-object LogUp batch (J_tbl, J_qry, R).  Keep CUDA, trace-dump,
-// borrowed/shared inputs, matrices, and larger batches on the existing
-// conservative payload chunking path.
-const bool allow_large_owned_cpu_batch =
-    specs.size() == 3
-    && !keep_trace_payloads
-    && util::route2_options().fast_msm
-    && !util::route2_options().cuda_field_hotspots
-    && std::thread::hardware_concurrency() >= 16
-    && std::all_of(
-        specs.begin(),
-        specs.end(),
-        [](const DynamicCommitmentSpec &spec)
-        {
-            return spec.kind
-                       == DynamicCommitmentKind::Column
-                && spec.shared_column_values == nullptr
-                && spec.borrowed_column_values == nullptr;
-        });
-
+            constexpr std::size_t kMaxPreparedPayloadBytes = 96ULL * 1024ULL * 1024ULL;
             if (specs.size() > 1)
             {
                 std::size_t total_bytes = 0;
@@ -2237,16 +2210,7 @@ const bool allow_large_owned_cpu_batch =
                 {
                     total_bytes += estimated_dynamic_commitment_payload_bytes(spec);
                 }
-                if (total_bytes > kMaxPreparedPayloadBytes && allow_large_owned_cpu_batch)
-{
-    progress_note(
-        batch_progress_label
-        + ":large_owned_cpu_batch=1"
-        + ":logical_bytes="
-        + std::to_string(total_bytes));
-}
-
-                if (total_bytes > kMaxPreparedPayloadBytes && !allow_large_owned_cpu_batch)
+                if (total_bytes > kMaxPreparedPayloadBytes)
                 {
                     std::vector<std::string> canonical_names;
                     canonical_names.reserve(specs.size());
@@ -2330,32 +2294,9 @@ const bool allow_large_owned_cpu_batch =
             }
 
             const auto input_start = Clock::now();
-
-const auto prepared_payload_bytes =
-    std::accumulate(
-        specs.begin(),
-        specs.end(),
-        std::size_t{0},
-        [](std::size_t acc,
-           const DynamicCommitmentSpec &spec)
-        {
-            return acc
-                + estimated_dynamic_commitment_payload_bytes(
-                    spec);
-        });
-
-const bool run_parallel =
-    specs.size() > 1
-    && std::thread::hardware_concurrency() > 1
-    && (prepared_payload_bytes
-            <= kMaxPreparedPayloadBytes
-        || allow_large_owned_cpu_batch);
-
-add_metric(
-    metrics != nullptr
-        ? &metrics->dynamic_commit_input_ms
-        : nullptr,
-    input_start);
+            const bool run_parallel = specs.size() > 1 && std::thread::hardware_concurrency() > 1 && std::accumulate(specs.begin(), specs.end(), std::size_t{0}, [](std::size_t acc, const DynamicCommitmentSpec &spec)
+                                                                                                                     { return acc + estimated_dynamic_commitment_payload_bytes(spec); }) <= kMaxPreparedPayloadBytes;
+            add_metric(metrics != nullptr ? &metrics->dynamic_commit_input_ms : nullptr, input_start);
 
             std::vector<PreparedDynamicCommitment> prepared;
             prepared.reserve(specs.size());
