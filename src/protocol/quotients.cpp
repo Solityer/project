@@ -13,13 +13,20 @@
 
 namespace gatzk::protocol
 {
+
+    struct SignedDivisionEvaluationConstants
+{
+    std::array<std::vector<algebra::FieldElement>, 5> betas;
+};
+
     struct HiddenHeadEvaluationConstants
     {
         std::string prefix;
         std::string division_prefix;
         std::string division_selector;
         std::string elu_query_selector;
-        algebra::FieldElement beta_src;
+SignedDivisionEvaluationConstants division;
+algebra::FieldElement beta_src;
         algebra::FieldElement beta_dst;
         algebra::FieldElement eta_src;
         algebra::FieldElement eta_src_sq;
@@ -59,6 +66,7 @@ namespace gatzk::protocol
         std::string external_y_name;
         std::string view_prefix;
         std::string power_label;
+        SignedDivisionEvaluationConstants division;
         algebra::FieldElement beta_src;
         algebra::FieldElement beta_dst;
         algebra::FieldElement eta_src;
@@ -81,11 +89,15 @@ namespace gatzk::protocol
     };
 
     struct TEdgeEvaluationPlan
-    {
-        std::vector<BindingRelationMeta> binding_metadata;
-        std::vector<HiddenHeadEvaluationConstants> hidden_heads;
-        std::vector<OutputHeadEvaluationConstants> output_heads;
-    };
+{
+    algebra::FieldElement alpha_quot;
+    algebra::FieldElement y_out;
+    SignedDivisionEvaluationConstants average_division;
+
+    std::vector<BindingRelationMeta> binding_metadata;
+    std::vector<HiddenHeadEvaluationConstants> hidden_heads;
+    std::vector<OutputHeadEvaluationConstants> output_heads;
+};
 
     // 实现各工作域 quotient 恒等式的求值逻辑，
     // prove 会在hidden_point或挑战点上构造相应承诺，verify 会按同一公式重算并检查 opening。
@@ -528,14 +540,56 @@ namespace gatzk::protocol
             return cache.back();
         }
 
+        SignedDivisionEvaluationConstants
+bind_signed_division_challenges(
+    const std::string &prefix,
+    std::size_t range_bits,
+    const std::map<std::string, FieldElement> &challenges)
+{
+    const auto &labels =
+        signed_division_label_plan(
+            prefix,
+            range_bits);
+
+    SignedDivisionEvaluationConstants out;
+
+    for (std::size_t value_index = 0;
+         value_index < labels.decompositions.size();
+         ++value_index)
+    {
+        const auto &limbs =
+            labels.decompositions[value_index];
+
+        auto &betas = out.betas[value_index];
+        betas.reserve(limbs.size());
+
+        for (const auto &limb : limbs)
+        {
+            betas.push_back(
+                challenges.at(limb.beta));
+        }
     }
 
-    std::shared_ptr<const TEdgeEvaluationPlan> build_t_edge_evaluation_plan(
-        const ProtocolContext &context,
-        const std::map<std::string, FieldElement> &challenges)
-    {
-        auto plan = std::make_shared<TEdgeEvaluationPlan>();
-        plan->binding_metadata = build_binding_relation_metadata(context);
+    return out;
+}
+
+    }
+
+    std::shared_ptr<const TEdgeEvaluationPlan>
+build_t_edge_evaluation_plan(
+    const ProtocolContext &context,
+    const std::map<std::string, FieldElement> &challenges)
+{
+    auto plan = std::make_shared<TEdgeEvaluationPlan>();
+
+    plan->alpha_quot =
+        challenges.at("alpha_quot");
+
+    plan->y_out =
+        challenges.at("y_out");
+
+    plan->binding_metadata =
+        build_binding_relation_metadata(context);
         plan->hidden_heads.reserve(context.model.hidden_heads.size());
         for (std::size_t head_index = 0;
              head_index < context.model.hidden_heads.size(); ++head_index)
@@ -545,6 +599,13 @@ namespace gatzk::protocol
             constants.prefix = "P_h" + index + "_";
             constants.division_prefix = constants.prefix + "Div_";
             constants.division_selector = "P_Q_div_h" + index;
+
+            constants.division =
+    bind_signed_division_challenges(
+        constants.division_prefix,
+        context.config.range_bits,
+        challenges);
+
             const auto head_dim = context.model.hidden_heads[head_index]
                                       .seq_kernel_fp.empty()
                 ? std::size_t{0}
@@ -579,11 +640,24 @@ namespace gatzk::protocol
              head_index < context.model.output_layer.heads.size(); ++head_index)
         {
             OutputHeadEvaluationConstants constants;
-            constants.prefix = output_head_prefix(head_index) + "_";
-            constants.division_prefix = constants.prefix + "Div_";
-            constants.division_selector =
-                "P_Q_div_out" + std::to_string(head_index);
-            constants.binding_prefix = constants.prefix + "Bind_";
+            constants.prefix =
+    output_head_prefix(head_index) + "_";
+
+constants.division_prefix =
+    constants.prefix + "Div_";
+
+constants.division_selector =
+    "P_Q_div_out"
+    + std::to_string(head_index);
+
+constants.division =
+    bind_signed_division_challenges(
+        constants.division_prefix,
+        context.config.range_bits,
+        challenges);
+
+constants.binding_prefix =
+    constants.prefix + "Bind_";
             constants.y_flat_label = constants.prefix + "Y_flat";
             constants.external_y_name =
                 output_external_eval_name("y", head_index);
@@ -651,9 +725,17 @@ namespace gatzk::protocol
                         head_index, chunk.chunk_index);
                 constants.basis_chunks.push_back(std::move(labels));
             }
-            plan->output_heads.push_back(std::move(constants));
-        }
-        return plan;
+            plan->output_heads.push_back(
+    std::move(constants));
+}
+
+plan->average_division =
+    bind_signed_division_challenges(
+        "P_avg_Div_",
+        context.config.range_bits,
+        challenges);
+
+return plan;
     }
 
     std::optional<std::string> dynamic_commitment_domain_name(
@@ -981,6 +1063,15 @@ namespace gatzk::protocol
             const auto zero_eval = boundary.zero;
             const auto one = FieldElement::one();
             const auto two = FieldElement(2);
+            const auto alpha_quot =
+    evaluation_plan != nullptr
+        ? evaluation_plan->alpha_quot
+        : challenges.at("alpha_quot");
+
+const auto y_out =
+    evaluation_plan != nullptr
+        ? evaluation_plan->y_out
+        : challenges.at("y_out");
             (void)signed_division_limb_count(context.config.range_bits);
             const auto signed_division_limb_base =
                 FieldElement(std::uint64_t{1} << context.config.range_bits);
@@ -1014,12 +1105,14 @@ namespace gatzk::protocol
             const auto t_elu_x_z = eval_z("P_T_ELU_x");
             const auto t_elu_y_z = eval_z("P_T_ELU_y");
             BasicQuotientAccumulator<UsePrecomputedAlphaPowers> acc(
-                challenges.at("alpha_quot"),
-                return_numerator,
-                precomputed_alpha_powers);
+    alpha_quot,
+    return_numerator,
+    precomputed_alpha_powers);
             auto add_signed_division_constraints = [&](
-                const std::string &prefix,
-                const std::string &public_selector_label)
+    const std::string &prefix,
+    const std::string &public_selector_label,
+    const SignedDivisionEvaluationConstants
+        *planned_constants)
             {
                 const auto selector = eval_z(public_selector_label);
                 const auto &labels = signed_division_label_plan(
@@ -1069,9 +1162,13 @@ namespace gatzk::protocol
                         : delta;
                     auto reconstructed = FieldElement::zero();
                     auto place = FieldElement::one();
-                    for (const auto &limb_labels :
-                         labels.decompositions[value_index])
-                    {
+                    for (std::size_t limb_index = 0;
+     limb_index
+         < labels.decompositions[value_index].size();
+     ++limb_index)
+{
+    const auto &limb_labels =
+        labels.decompositions[value_index][limb_index];
                         const auto limb_value = eval_z(limb_labels.limb);
                         reconstructed += place * limb_value;
                         place *= signed_division_limb_base;
@@ -1083,7 +1180,11 @@ namespace gatzk::protocol
                         const auto j_query = eval_z(limb_labels.range[4]);
                         const auto accumulator = eval_z(limb_labels.range[5]);
                         const auto accumulator_next = eval_omega(limb_labels.range[5]);
-                        const auto beta = challenges.at(limb_labels.beta);
+                        const auto beta =
+    planned_constants != nullptr
+        ? planned_constants
+              ->betas[value_index][limb_index]
+        : challenges.at(limb_labels.beta);
                         acc.add(first * accumulator);
                         acc.add(not_last * (
                             accumulator_next - accumulator
@@ -1146,7 +1247,7 @@ namespace gatzk::protocol
                 acc.add(first * current);
                 acc.add(first * (b - one));
                 acc.add(not_last * selector_next
-                    * (b_next - challenges.at("y_out") * b));
+    * (b_next - y_out * b));
                 acc.add(not_last * selector * (next - current - a * b));
                 acc.add(not_last * (one - selector) * (next - current));
                 acc.add(selector * (a - source));
@@ -1352,12 +1453,16 @@ namespace gatzk::protocol
                 acc.add(query_dst_z - (dst_z + eta_dst * e_dst_edge_z + eta_dst_sq * m_edge_z + eta_dst_cu * sum_edge_z + eta_dst_4 * inv_edge_z + eta_dst_5 * h_agg_star_edge_z));
                 acc.add(zero_on_unselected(q_edge, query_dst_z));
                 add_signed_division_constraints(
-                    planned != nullptr
-                        ? planned->division_prefix
-                        : prefix + "Div_",
-                    planned != nullptr
-                        ? planned->division_selector
-                        : "P_Q_div_h" + index);
+    planned != nullptr
+        ? planned->division_prefix
+        : prefix + "Div_",
+    planned != nullptr
+        ? planned->division_selector
+        : "P_Q_div_h"
+            + std::to_string(head_index),
+    planned != nullptr
+        ? &planned->division
+        : nullptr);
                 const auto q_div = eval_z(
                     planned != nullptr
                         ? planned->division_selector
@@ -1544,12 +1649,16 @@ namespace gatzk::protocol
                 acc.add(query_dst_z - (dst_z + eta_dst_out * e_dst_edge_z + eta_dst_out_sq * m_edge_z + eta_dst_out_cu * sum_edge_z + eta_dst_out_4 * inv_edge_z + eta_dst_out_5 * y_star_edge_z));
                 acc.add(zero_on_unselected(q_edge, query_dst_z));
                 add_signed_division_constraints(
-                    planned != nullptr
-                        ? planned->division_prefix
-                        : prefix + "Div_",
-                    planned != nullptr
-                        ? planned->division_selector
-                        : "P_Q_div_out" + std::to_string(head_index));
+    planned != nullptr
+        ? planned->division_prefix
+        : prefix + "Div_",
+    planned != nullptr
+        ? planned->division_selector
+        : "P_Q_div_out"
+            + std::to_string(head_index),
+    planned != nullptr
+        ? &planned->division
+        : nullptr);
                 const auto q_div = eval_z(
                     planned != nullptr
                         ? planned->division_selector
@@ -1771,7 +1880,12 @@ namespace gatzk::protocol
                 }
             }
 
-            add_signed_division_constraints("P_avg_Div_", "P_Q_div_avg");
+            add_signed_division_constraints(
+    "P_avg_Div_",
+    "P_Q_div_avg",
+    evaluation_plan != nullptr
+        ? &evaluation_plan->average_division
+        : nullptr);
             {
                 const auto q_avg = eval_z("P_Q_div_avg");
                 auto summed_heads = FieldElement::zero();

@@ -236,13 +236,15 @@ void run_case(
             ++challenge_seed);
     }
     std::map<std::string, FieldElement> external_evaluations;
-    const auto evaluation_plan =
-        gatzk::protocol::build_t_edge_evaluation_plan(context, challenges);
     add_signed_division_challenges(
-        challenges,
-        "P_avg_Div_",
-        context.config.range_bits,
-        challenge_seed);
+    challenges,
+    "P_avg_Div_",
+    context.config.range_bits,
+    challenge_seed);
+
+const auto evaluation_plan =
+    gatzk::protocol::build_t_edge_evaluation_plan(
+        context, challenges);
     set_field(external_evaluations, "mu_out", ++challenge_seed);
     for (std::size_t head = 0; head < spec.output_head_count; ++head) {
         set_field(
