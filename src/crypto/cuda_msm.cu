@@ -6,8 +6,11 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <limits>
 #include <mutex>
+#include <new>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -16,6 +19,7 @@
 
 #include "gatzk/algebra/vector_ops.hpp"
 #include "gatzk/crypto/curve.hpp"
+#include "gatzk/util/logging.hpp"
 #include "gatzk/util/route2.hpp"
 
 #include "curves/params/bls12_381.cuh"
@@ -32,12 +36,24 @@ namespace gatzk::crypto
 {
     namespace
     {
-        constexpr std::size_t kMinCudaMsmSize = 1ULL << 13;
         constexpr std::size_t kBaseConversionChunkSize = 1ULL << 20;
-        // The largest formal coefficient slice is 2^27 BLS12-381 affine
-        // points (12 GiB).  Keep the cache bounded while allowing that slice
-        // plus common FH/edge material on the unified-memory target.
-        constexpr std::size_t kDeviceBaseCacheLimitBytes = 24ULL << 30;
+
+// Existing resident CUDA MSM remains the preferred fast path when the
+// complete MSM fits safely in the current resource envelope.
+constexpr std::size_t kMaxResidentCudaMsmCount = 1ULL << 25;
+
+// Oversized or memory-constrained MSMs remain on CUDA and are decomposed
+// into bounded independent MSM chunks.
+constexpr std::size_t kPreferredStreamMsmChunkSize = 1ULL << 20;
+constexpr std::size_t kMinimumStreamMsmChunkSize = 1ULL << 16;
+
+// Preserve the existing resident SRS cache capacity.
+constexpr std::size_t kDeviceBaseCacheLimitBytes = 24ULL << 30;
+
+// Leave headroom for ICICLE workspace, CUDA runtime allocations and the
+// simultaneously-live prover working set.
+constexpr std::size_t kCudaSafetyReserveBytes = 8ULL << 30;
+constexpr std::size_t kHostSafetyReserveBytes = 8ULL << 30;
 
         [[noreturn]] void throw_cuda_error(
             const char* operation,
@@ -47,6 +63,99 @@ namespace gatzk::crypto
                 std::string("CUDA G1 MSM ") + operation + " failed: "
                 + cudaGetErrorString(status));
         }
+
+        class CudaMsmResourcePressure : public std::runtime_error
+{
+public:
+    using std::runtime_error::runtime_error;
+};
+
+struct HostMemoryInfo
+{
+    std::size_t total_bytes = 0;
+    std::size_t available_bytes =
+        std::numeric_limits<std::size_t>::max();
+};
+
+HostMemoryInfo read_host_memory_info()
+{
+    HostMemoryInfo info;
+
+    std::ifstream input("/proc/meminfo");
+    if (!input)
+    {
+        return info;
+    }
+
+    std::string line;
+    while (std::getline(input, line))
+    {
+        std::istringstream row(line);
+
+        std::string key;
+        unsigned long long value_kib = 0;
+        std::string unit;
+
+        if (!(row >> key >> value_kib))
+        {
+            continue;
+        }
+
+        row >> unit;
+
+        const auto max_bytes =
+            std::numeric_limits<std::size_t>::max();
+
+        const std::size_t bytes =
+            value_kib > max_bytes / 1024ULL
+                ? max_bytes
+                : static_cast<std::size_t>(value_kib * 1024ULL);
+
+        if (key == "MemTotal:")
+        {
+            info.total_bytes = bytes;
+        }
+        else if (key == "MemAvailable:")
+        {
+            info.available_bytes = bytes;
+        }
+    }
+
+    return info;
+}
+
+std::size_t checked_byte_count(
+    std::size_t count,
+    std::size_t element_size,
+    const char* label)
+{
+    if (count >
+        std::numeric_limits<std::size_t>::max() / element_size)
+    {
+        throw std::runtime_error(
+            std::string("CUDA G1 MSM byte-size overflow for ")
+            + label);
+    }
+
+    return count * element_size;
+}
+
+std::size_t checked_add(
+    std::size_t lhs,
+    std::size_t rhs,
+    const char* label)
+{
+    if (lhs >
+        std::numeric_limits<std::size_t>::max() - rhs)
+    {
+        throw std::runtime_error(
+            std::string("CUDA G1 MSM byte-size overflow for ")
+            + label);
+    }
+
+    return lhs + rhs;
+}
+
 
         template <class IcicleField, class MclField>
         IcicleField to_icicle_field(const MclField& input)
@@ -138,10 +247,43 @@ namespace gatzk::crypto
             DeviceBaseCache& operator=(const DeviceBaseCache&) = delete;
 
             static DeviceBaseCache& instance()
-            {
-                static DeviceBaseCache cache;
-                return cache;
-            }
+{
+    static DeviceBaseCache cache;
+    return cache;
+}
+
+bool contains_usable_prefix(
+    const G1Point* points,
+    std::size_t count,
+    std::size_t storage_capacity)
+{
+    const auto found = entries_.find(points);
+
+    if (found == entries_.end())
+    {
+        return false;
+    }
+
+    if (!(found->second.fingerprint
+            == fingerprint_storage(
+                points,
+                storage_capacity)))
+    {
+        return false;
+    }
+
+    return found->second.uploaded_count >= count;
+}
+
+void clear()
+{
+    while (!entries_.empty())
+    {
+        erase_entry(
+            entries_.begin(),
+            "base-cache clear");
+    }
+}
 
             // The caller holds the single CUDA-MSM execution lock, so lookup,
             // preparation, eviction, and use cannot race with another MSM.
@@ -177,29 +319,42 @@ namespace gatzk::crypto
                     }
                 }
 
-                if (count > std::numeric_limits<std::size_t>::max()
-                        / sizeof(bls12_381::affine_t))
-                {
-                    throw std::runtime_error(
-                        "CUDA G1 MSM base-cache size overflow");
-                }
                 const auto byte_count =
-                    count * sizeof(bls12_381::affine_t);
-                if (byte_count > kDeviceBaseCacheLimitBytes)
-                {
-                    throw std::runtime_error(
-                        "CUDA G1 MSM immutable SRS slice exceeds the bounded "
-                        "device base cache");
-                }
-                evict_to_fit(byte_count);
+    checked_byte_count(
+        count,
+        sizeof(bls12_381::affine_t),
+        "resident base cache");
 
-                bls12_381::affine_t* device_points = nullptr;
-                auto status = cudaMalloc(
-                    reinterpret_cast<void**>(&device_points), byte_count);
-                if (status != cudaSuccess)
-                {
-                    throw_cuda_error("base allocation", status);
-                }
+if (byte_count > kDeviceBaseCacheLimitBytes)
+{
+    throw CudaMsmResourcePressure(
+        "CUDA G1 MSM immutable SRS slice exceeds "
+        "the resident device base cache");
+}
+
+evict_to_fit(byte_count);
+
+bls12_381::affine_t* device_points = nullptr;
+
+auto status = cudaMalloc(
+    reinterpret_cast<void**>(&device_points),
+    byte_count);
+
+if (status == cudaErrorMemoryAllocation)
+{
+    (void)cudaGetLastError();
+
+    throw CudaMsmResourcePressure(
+        "CUDA G1 MSM resident base allocation "
+        "exhausted available memory");
+}
+
+if (status != cudaSuccess)
+{
+    throw_cuda_error(
+        "base allocation",
+        status);
+}
 
                 try
                 {
@@ -348,73 +503,557 @@ namespace gatzk::crypto
             }
             return output;
         }
+
+        bool resident_cuda_msm_is_safe(
+    DeviceBaseCache& cache,
+    const G1Point* points,
+    std::size_t count,
+    std::size_t stable_srs_capacity)
+{
+    if (count > kMaxResidentCudaMsmCount)
+    {
+        return false;
     }
 
-    bool try_cuda_g1_msm(
-        G1Point* output,
-        const G1Point* points,
-        const algebra::FieldElement* scalars,
-        std::size_t count,
-        bool stable_srs_bases,
-        std::size_t stable_srs_capacity)
+    const auto base_bytes =
+        checked_byte_count(
+            count,
+            sizeof(bls12_381::affine_t),
+            "resident bases");
+
+    const auto scalar_bytes =
+        checked_byte_count(
+            count,
+            sizeof(bls12_381::scalar_t),
+            "resident scalars");
+
+    const bool already_resident =
+        cache.contains_usable_prefix(
+            points,
+            count,
+            stable_srs_capacity);
+
+    std::size_t cuda_free = 0;
+    std::size_t cuda_total = 0;
+
+    const auto status =
+        cudaMemGetInfo(
+            &cuda_free,
+            &cuda_total);
+
+    if (status != cudaSuccess)
     {
-        const bool policy_size_supported =
-            count <= kDeviceBaseCacheLimitBytes
-                / sizeof(bls12_381::affine_t);
-        if (!stable_srs_bases
-            || stable_srs_capacity < count
-            || count < kMinCudaMsmSize
-            || !policy_size_supported
-            || !util::route2_options().cuda_field_hotspots
-            || !algebra::cuda_backend_available())
+        throw_cuda_error(
+            "memory query",
+            status);
+    }
+
+    const auto new_base_bytes =
+        already_resident
+            ? std::size_t{0}
+            : base_bytes;
+
+    auto required_cuda =
+        checked_add(
+            new_base_bytes,
+            scalar_bytes,
+            "resident CUDA requirement");
+
+    required_cuda =
+        checked_add(
+            required_cuda,
+            std::max<std::size_t>(
+                kCudaSafetyReserveBytes,
+                cuda_total / 8),
+            "resident CUDA reserve");
+
+    if (cuda_free < required_cuda)
+    {
+        return false;
+    }
+
+    const auto host =
+        read_host_memory_info();
+
+    if (host.available_bytes
+        != std::numeric_limits<std::size_t>::max())
+    {
+        auto required_host =
+            checked_add(
+                scalar_bytes,
+                std::max<std::size_t>(
+                    kHostSafetyReserveBytes,
+                    host.total_bytes == 0
+                        ? kHostSafetyReserveBytes
+                        : host.total_bytes / 8),
+                "resident host reserve");
+
+        if (host.available_bytes < required_host)
         {
             return false;
         }
-        if (output == nullptr || points == nullptr || scalars == nullptr)
-        {
-            throw std::runtime_error(
-                "CUDA G1 MSM selected with a null input");
-        }
-        if (count > static_cast<std::size_t>(
-                        std::numeric_limits<int>::max()))
-        {
-            throw std::runtime_error(
-                "CUDA G1 MSM input exceeds the ICICLE size limit");
-        }
+    }
 
-        std::lock_guard<std::mutex> execution_lock(
-            cuda_msm_execution_mutex());
-        auto* device_points =
-            DeviceBaseCache::instance().get_or_prepare(
-                points, count, stable_srs_capacity);
+    return true;
+}
 
-        std::vector<bls12_381::scalar_t> converted_scalars(count);
-        for (std::size_t index = 0; index < count; ++index)
-        {
-            converted_scalars[index] =
-                to_icicle_field<bls12_381::scalar_t>(
-                    scalars[index].native());
-        }
+void execute_resident_cuda_msm(
+    G1Point* output,
+    const G1Point* points,
+    const algebra::FieldElement* scalars,
+    std::size_t count,
+    std::size_t stable_srs_capacity,
+    DeviceBaseCache& cache)
+{
+    auto* device_points =
+        cache.get_or_prepare(
+            points,
+            count,
+            stable_srs_capacity);
 
-        auto config = msm::default_msm_config();
-        config.are_points_on_device = true;
-        config.are_points_montgomery_form = false;
-        config.are_scalars_on_device = false;
-        config.are_scalars_montgomery_form = false;
-        config.are_results_on_device = false;
-        bls12_381::projective_t result;
-        const auto status = bls12_381_msm_cuda(
+    std::vector<bls12_381::scalar_t> converted_scalars;
+
+    try
+    {
+        converted_scalars.resize(count);
+    }
+    catch (const std::bad_alloc&)
+    {
+        throw CudaMsmResourcePressure(
+            "CUDA G1 MSM resident scalar conversion "
+            "exhausted host memory");
+    }
+
+    for (std::size_t index = 0;
+         index < count;
+         ++index)
+    {
+        converted_scalars[index] =
+            to_icicle_field<bls12_381::scalar_t>(
+                scalars[index].native());
+    }
+
+    auto config = msm::default_msm_config();
+
+    config.are_points_on_device = true;
+    config.are_points_montgomery_form = false;
+
+    config.are_scalars_on_device = false;
+    config.are_scalars_montgomery_form = false;
+
+    config.are_results_on_device = false;
+
+    bls12_381::projective_t result;
+
+    const auto status =
+        bls12_381_msm_cuda(
             converted_scalars.data(),
             device_points,
             static_cast<int>(count),
             config,
             &result);
+
+    if (status == cudaErrorMemoryAllocation)
+    {
+        (void)cudaGetLastError();
+
+        throw CudaMsmResourcePressure(
+            "CUDA G1 MSM resident ICICLE execution "
+            "exhausted available memory");
+    }
+
+    if (status != cudaSuccess)
+    {
+        throw_cuda_error(
+            "ICICLE execution",
+            status);
+    }
+
+    *output = to_mcl_point(result);
+
+    algebra::record_cuda_kernel_invocations(1);
+}
+
+struct StreamMsmBuffers
+{
+    bls12_381::affine_t* device_points = nullptr;
+
+    std::vector<mcl::G1> normalized_points;
+    std::vector<bls12_381::affine_t> converted_points;
+    std::vector<bls12_381::scalar_t> converted_scalars;
+
+    ~StreamMsmBuffers()
+    {
+        if (device_points != nullptr)
+        {
+            (void)cudaFree(device_points);
+        }
+    }
+
+    void release()
+    {
+        if (device_points != nullptr)
+        {
+            const auto status =
+                cudaFree(device_points);
+
+            device_points = nullptr;
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_error(
+                    "stream base release",
+                    status);
+            }
+        }
+
+        std::vector<mcl::G1>().swap(
+            normalized_points);
+
+        std::vector<bls12_381::affine_t>().swap(
+            converted_points);
+
+        std::vector<bls12_381::scalar_t>().swap(
+            converted_scalars);
+    }
+
+    bool prepare(
+        std::size_t chunk_size)
+    {
+        release();
+
+        try
+        {
+            normalized_points.resize(chunk_size);
+            converted_points.resize(chunk_size);
+            converted_scalars.resize(chunk_size);
+        }
+        catch (const std::bad_alloc&)
+        {
+            release();
+            return false;
+        }
+
+        const auto base_bytes =
+            checked_byte_count(
+                chunk_size,
+                sizeof(bls12_381::affine_t),
+                "stream bases");
+
+        const auto status =
+            cudaMalloc(
+                reinterpret_cast<void**>(&device_points),
+                base_bytes);
+
+        if (status == cudaErrorMemoryAllocation)
+        {
+            (void)cudaGetLastError();
+
+            release();
+            return false;
+        }
+
         if (status != cudaSuccess)
         {
-            throw_cuda_error("ICICLE execution", status);
+            throw_cuda_error(
+                "stream base allocation",
+                status);
         }
-        *output = to_mcl_point(result);
-        algebra::record_cuda_kernel_invocations(1);
+
         return true;
     }
+};
+
+void upload_stream_msm_points(
+    StreamMsmBuffers& buffers,
+    const G1Point* points,
+    std::size_t count)
+{
+    static_assert(
+        sizeof(G1Point) == sizeof(mcl::G1),
+        "G1Point must wrap exactly one mcl::G1");
+
+    auto* native_points =
+        const_cast<mcl::G1*>(
+            reinterpret_cast<const mcl::G1*>(
+                points));
+
+    mcl::G1::normalizeVec(
+        buffers.normalized_points.data(),
+        native_points,
+        count);
+
+    for (std::size_t index = 0;
+         index < count;
+         ++index)
+    {
+        if (buffers.normalized_points[index].isZero())
+        {
+            buffers.converted_points[index] =
+                bls12_381::affine_t::zero();
+
+            continue;
+        }
+
+        buffers.converted_points[index] = {
+            to_icicle_field<bls12_381::point_field_t>(
+                buffers.normalized_points[index].x),
+
+            to_icicle_field<bls12_381::point_field_t>(
+                buffers.normalized_points[index].y),
+        };
+    }
+
+    const auto status =
+        cudaMemcpy(
+            buffers.device_points,
+            buffers.converted_points.data(),
+            count * sizeof(bls12_381::affine_t),
+            cudaMemcpyHostToDevice);
+
+    if (status != cudaSuccess)
+    {
+        throw_cuda_error(
+            "stream base upload",
+            status);
+    }
+}
+
+void execute_streamed_cuda_msm(
+    G1Point* output,
+    const G1Point* points,
+    const algebra::FieldElement* scalars,
+    std::size_t count)
+{
+    if (count == 0)
+    {
+        *output = g1_zero();
+        return;
+    }
+
+    const auto minimum_chunk =
+        std::min(
+            count,
+            kMinimumStreamMsmChunkSize);
+
+    auto chunk_size =
+        std::min(
+            count,
+            kPreferredStreamMsmChunkSize);
+
+    StreamMsmBuffers buffers;
+
+    while (!buffers.prepare(chunk_size))
+    {
+        if (chunk_size <= minimum_chunk)
+        {
+            throw std::runtime_error(
+                "CUDA G1 MSM cannot establish the minimum "
+                "streamed GPU working set");
+        }
+
+        chunk_size =
+            std::max(
+                minimum_chunk,
+                chunk_size / 2);
+    }
+
+    util::info(
+        "cuda_msm route=streamed count="
+        + std::to_string(count)
+        + " chunk="
+        + std::to_string(chunk_size));
+
+    G1Point total = g1_zero();
+
+    std::size_t offset = 0;
+
+    while (offset < count)
+    {
+        const auto current_count =
+            std::min(
+                chunk_size,
+                count - offset);
+
+        upload_stream_msm_points(
+            buffers,
+            points + offset,
+            current_count);
+
+        for (std::size_t index = 0;
+             index < current_count;
+             ++index)
+        {
+            buffers.converted_scalars[index] =
+                to_icicle_field<bls12_381::scalar_t>(
+                    scalars[offset + index].native());
+        }
+
+        auto config =
+            msm::default_msm_config();
+
+        config.are_points_on_device = true;
+        config.are_points_montgomery_form = false;
+
+        config.are_scalars_on_device = false;
+        config.are_scalars_montgomery_form = false;
+
+        config.are_results_on_device = false;
+
+        bls12_381::projective_t result;
+
+        const auto status =
+            bls12_381_msm_cuda(
+                buffers.converted_scalars.data(),
+                buffers.device_points,
+                static_cast<int>(current_count),
+                config,
+                &result);
+
+        if (status == cudaErrorMemoryAllocation)
+        {
+            (void)cudaGetLastError();
+
+            if (chunk_size <= minimum_chunk)
+            {
+                throw std::runtime_error(
+                    "CUDA G1 MSM minimum streamed chunk "
+                    "still exceeds available GPU resources");
+            }
+
+            chunk_size =
+                std::max(
+                    minimum_chunk,
+                    chunk_size / 2);
+
+            if (!buffers.prepare(chunk_size))
+            {
+                continue;
+            }
+
+            continue;
+        }
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_error(
+                "streamed ICICLE execution",
+                status);
+        }
+
+        const auto partial =
+            to_mcl_point(result);
+
+        mcl::G1::add(
+            total.value,
+            total.value,
+            partial.value);
+
+        algebra::record_cuda_kernel_invocations(1);
+
+        offset += current_count;
+    }
+
+    *output = total;
+}
+    }
+
+    bool try_cuda_g1_msm(
+    G1Point* output,
+    const G1Point* points,
+    const algebra::FieldElement* scalars,
+    std::size_t count,
+    bool stable_srs_bases,
+    std::size_t stable_srs_capacity)
+{
+    // CPU backend retains the existing canonical CPU MSM.
+    if (!util::route2_options().cuda_field_hotspots)
+    {
+        return false;
+    }
+
+    // In cuda_hotspots mode a genuine MSM is GPU-required.
+    if (!algebra::cuda_backend_available())
+    {
+        throw std::runtime_error(
+            "CUDA G1 MSM requested but CUDA runtime "
+            "is unavailable");
+    }
+
+    if (output == nullptr
+        || (count != 0
+            && (points == nullptr || scalars == nullptr)))
+    {
+        throw std::runtime_error(
+            "CUDA G1 MSM selected with null input");
+    }
+
+    if (count == 0)
+    {
+        *output = g1_zero();
+        return true;
+    }
+
+    if (stable_srs_bases
+        && stable_srs_capacity < count)
+    {
+        throw std::runtime_error(
+            "CUDA G1 MSM immutable SRS capacity "
+            "is smaller than MSM size");
+    }
+
+    std::lock_guard<std::mutex> execution_lock(
+        cuda_msm_execution_mutex());
+
+    auto& cache =
+        DeviceBaseCache::instance();
+
+    if (stable_srs_bases
+        && resident_cuda_msm_is_safe(
+            cache,
+            points,
+            count,
+            stable_srs_capacity))
+    {
+        try
+        {
+            execute_resident_cuda_msm(
+                output,
+                points,
+                scalars,
+                count,
+                stable_srs_capacity,
+                cache);
+
+            if (count >= (1ULL << 20))
+            {
+                util::info(
+                    "cuda_msm route=resident count="
+                    + std::to_string(count));
+            }
+
+            return true;
+        }
+        catch (const CudaMsmResourcePressure&)
+        {
+            cache.clear();
+        }
+        catch (const std::bad_alloc&)
+        {
+            cache.clear();
+        }
+    }
+
+    // Do not retain a multi-GiB resident SRS while entering the bounded
+    // streamed path.
+    cache.clear();
+
+    execute_streamed_cuda_msm(
+        output,
+        points,
+        scalars,
+        count);
+
+    return true;
+}
 }

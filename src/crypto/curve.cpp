@@ -796,6 +796,35 @@ namespace gatzk::crypto
         return true;
     }
 
+    bool execute_cuda_msm_when_requested(
+    G1Point* output,
+    const G1Point* points,
+    const algebra::FieldElement* scalars,
+    std::size_t count,
+    bool stable_srs_bases,
+    std::size_t stable_srs_capacity)
+{
+    if (!util::route2_options().cuda_field_hotspots)
+    {
+        return false;
+    }
+
+    if (!try_cuda_g1_msm(
+            output,
+            points,
+            scalars,
+            count,
+            stable_srs_bases,
+            stable_srs_capacity))
+    {
+        throw std::runtime_error(
+            "cuda_hotspots mode attempted a G1 MSM "
+            "CPU fallback");
+    }
+
+    return true;
+}
+
     bool try_grouped_scalar_msm(
         G1Point& out,
         const G1Point* points,
@@ -858,12 +887,35 @@ namespace gatzk::crypto
         grouped_points.reserve(groups.size());
         grouped_scalars.reserve(groups.size());
         for (auto& group : groups)
-        {
-            grouped_points.push_back(group.point_sum);
-            grouped_scalars.push_back(group.scalar);
-        }
+{
+    grouped_points.push_back(group.point_sum);
+    grouped_scalars.push_back(group.scalar);
+}
 
-        const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+if (execute_cuda_msm_when_requested(
+        &out,
+        grouped_points.data(),
+        grouped_scalars.data(),
+        grouped_scalars.size(),
+        false,
+        0))
+{
+    if (profile != nullptr)
+    {
+        profile->zero_scalar_skipping =
+            nonzero_count != count;
+
+        profile->sparse_compaction = true;
+
+        profile->effective_scalar_count =
+            grouped_scalars.size();
+    }
+
+    return true;
+}
+
+const auto cpu_count =
+    std::max<std::size_t>(1, std::thread::hardware_concurrency());
         auto worker_count = msm_worker_count(grouped_scalars.size(), cpu_count);
         if (options != nullptr && options->max_worker_count != 0)
         {
@@ -997,16 +1049,16 @@ namespace gatzk::crypto
                     profile->sparse_compaction = false;
                     profile->effective_scalar_count = nonzero_count;
                 }
-                if (try_cuda_g1_msm(
-                        &out,
-                        points,
-                        scalars,
-                        nonzero_count,
-                        stable_srs_bases,
-                        stable_srs_capacity))
-                {
-                    return out;
-                }
+                if (execute_cuda_msm_when_requested(
+        &out,
+        points,
+        scalars,
+        nonzero_count,
+        stable_srs_bases,
+        stable_srs_capacity))
+{
+    return out;
+}
                 const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
                 auto worker_count = msm_worker_count(nonzero_count, cpu_count);
                 if (options != nullptr && options->max_worker_count != 0)
@@ -1054,14 +1106,27 @@ namespace gatzk::crypto
                 compact_scalars.reserve(nonzero_count);
                 static_assert(sizeof(G1Point) == sizeof(mcl::G1), "G1Point must wrap a single mcl::G1");
                 for (std::size_t i = 0; i < count; ++i)
-                {
-                    if (!(scalars[i] == zero_scalar))
-                    {
-                        compact_points.push_back(points[i]);
-                        compact_scalars.push_back(scalars[i]);
-                    }
-                }
-                const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+{
+    if (!(scalars[i] == zero_scalar))
+    {
+        compact_points.push_back(points[i]);
+        compact_scalars.push_back(scalars[i]);
+    }
+}
+
+if (execute_cuda_msm_when_requested(
+        &out,
+        compact_points.data(),
+        compact_scalars.data(),
+        compact_scalars.size(),
+        false,
+        0))
+{
+    return out;
+}
+
+const auto cpu_count =
+    std::max<std::size_t>(1, std::thread::hardware_concurrency());
                 auto worker_count = msm_worker_count(compact_scalars.size(), cpu_count);
                 if (options != nullptr && options->max_worker_count != 0)
                 {
@@ -1093,16 +1158,18 @@ namespace gatzk::crypto
                 return out;
             }
         }
-        if (try_cuda_g1_msm(
-                &out,
-                points,
-                scalars,
-                count,
-                stable_srs_bases,
-                stable_srs_capacity))
-        {
-            return out;
-        }
+
+        if (execute_cuda_msm_when_requested(
+        &out,
+        points,
+        scalars,
+        count,
+        stable_srs_bases,
+        stable_srs_capacity))
+{
+    return out;
+}
+
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
         auto worker_count = msm_worker_count(count, cpu_count);
         if (options != nullptr && options->max_worker_count != 0)

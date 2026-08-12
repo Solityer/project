@@ -11,10 +11,16 @@ namespace gatzk::crypto
 {
     struct G1Point;
 
-    // Executes a dense G1 MSM on CUDA only when the active route selected the
-    // CUDA field backend and `points` names immutable SRS storage.  A false
-    // result means that the caller must retain the canonical CPU path.  Once
-    // selected, conversion, upload, launch, and validation errors fail closed.
+    // Executes G1 MSM on CUDA when cuda_hotspots is active.
+//
+// Immutable SRS inputs retain the resident/cache fast path whenever the
+// complete MSM fits the current resource envelope.  Oversized,
+// memory-constrained, and temporary compacted inputs use bounded streamed
+// CUDA execution.
+//
+// Returning false means CUDA MSM was not requested because the CPU backend
+// is active.  Once cuda_hotspots selects MSM execution, the MSM stays on
+// CUDA or fails closed; it does not silently fall back to a CPU MSM.
     bool try_cuda_g1_msm(
         G1Point* output,
         const G1Point* points,
