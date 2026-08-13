@@ -938,16 +938,7 @@ namespace gatzk::crypto
                 for (auto& future : futures)
                     future.get();
             }
-            if (max_points != 0 && load_count < point_count)
-            {
-                unsigned char digest[SHA256_DIGEST_LENGTH];
-                SHA256_Final(digest, &ctx);
-                if (actual_hash != nullptr)
-                {
-                    *actual_hash = "prefix:" + std::to_string(load_count) + ":" + bytes_to_hex(digest, sizeof(digest));
-                }
-                return out;
-            }
+        
             std::array<char, 1 << 20> buffer{};
             std::size_t remaining_bytes =
                 (point_count - load_count) * point_size;
@@ -4049,28 +4040,28 @@ namespace gatzk::crypto
         const auto selected_lagrange_domains =
             select_lagrange_srs_domains(manifest, required_lagrange_domains);
 
-        std::string pk_coef_hash;
+                std::string pk_coef_hash;
+
+        const auto pk_coef_load_start = Clock::now();
+
         progress_note("kzg:srs:pk_coef:start");
-        validate_material_hash_value(
-            sha256_file_hex_cached(srs_root / manifest.pk_coef_path),
-            manifest.pk_coef_hash,
-            "pk_coef");
+
         auto powers_g1 = load_g1_vector_file(
             srs_root / manifest.pk_coef_path,
             &pk_coef_hash,
             required_coefficient_count);
-        if (pk_coef_hash.rfind("prefix:", 0) == 0)
-        {
-            validate_material_hash_value(
-                sha256_file_hex_cached(srs_root / manifest.pk_coef_path),
-                manifest.pk_coef_hash,
-                "pk_coef");
-        }
-        else
-        {
-            validate_material_hash_value(pk_coef_hash, manifest.pk_coef_hash, "pk_coef");
-        }
-        progress_note("kzg:srs:pk_coef:done");
+
+        validate_material_hash_value(
+            pk_coef_hash,
+            manifest.pk_coef_hash,
+            "pk_coef");
+
+        progress_note(
+            "kzg:srs:pk_coef:done:ms="
+            + std::to_string(
+                elapsed_ms(
+                    pk_coef_load_start,
+                    Clock::now())));
         std::unordered_map<std::string, std::shared_ptr<const std::vector<G1Point>>> lagrange_srs;
         for (const auto& domain : selected_lagrange_domains)
         {

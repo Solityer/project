@@ -59,43 +59,41 @@ namespace gatzk::protocol
     namespace
     {
         using algebra::FieldElement;
-using algebra::Polynomial;
-using crypto::Commitment;
-using Clock = std::chrono::steady_clock;
+        using algebra::Polynomial;
+        using crypto::Commitment;
+        using Clock = std::chrono::steady_clock;
 
-thread_local std::size_t
-    quotient_transform_worker_cap = 0;
+        thread_local std::size_t
+            quotient_transform_worker_cap = 0;
 
-class ScopedQuotientTransformWorkerCap
-{
-public:
-    explicit ScopedQuotientTransformWorkerCap(
-        std::size_t worker_cap)
-        : previous_(
-            quotient_transform_worker_cap)
-    {
-        quotient_transform_worker_cap =
-            worker_cap;
-    }
+        class ScopedQuotientTransformWorkerCap
+        {
+        public:
+            explicit ScopedQuotientTransformWorkerCap(
+                std::size_t worker_cap)
+                : previous_(
+                      quotient_transform_worker_cap)
+            {
+                quotient_transform_worker_cap =
+                    worker_cap;
+            }
 
-    ~ScopedQuotientTransformWorkerCap()
-    {
-        quotient_transform_worker_cap =
-            previous_;
-    }
+            ~ScopedQuotientTransformWorkerCap()
+            {
+                quotient_transform_worker_cap =
+                    previous_;
+            }
 
-    ScopedQuotientTransformWorkerCap(
-        const ScopedQuotientTransformWorkerCap&)
-        = delete;
+            ScopedQuotientTransformWorkerCap(
+                const ScopedQuotientTransformWorkerCap &) = delete;
 
-    ScopedQuotientTransformWorkerCap&
-    operator=(
-        const ScopedQuotientTransformWorkerCap&)
-        = delete;
+            ScopedQuotientTransformWorkerCap &
+            operator=(
+                const ScopedQuotientTransformWorkerCap &) = delete;
 
-private:
-    std::size_t previous_ = 0;
-};
+        private:
+            std::size_t previous_ = 0;
+        };
 
         double elapsed_ms(const Clock::time_point &start, const Clock::time_point &end)
         {
@@ -195,7 +193,6 @@ private:
             }
         }
 
-
         Polynomial make_eval_poly(
             const std::string &name,
             std::vector<FieldElement> values,
@@ -247,9 +244,7 @@ private:
 
         bool same_polynomial_material(const Polynomial &lhs, const Polynomial &rhs)
         {
-            return lhs.basis == rhs.basis
-                && same_polynomial_domain(lhs.domain, rhs.domain)
-                && lhs.values() == rhs.values();
+            return lhs.basis == rhs.basis && same_polynomial_domain(lhs.domain, rhs.domain) && lhs.values() == rhs.values();
         }
 
         void add_public_poly_alias_from_source_checked(
@@ -278,11 +273,7 @@ private:
             const auto &source_polynomial = polynomial_it->second;
             const auto &source_material = *commitment_it->second.opening_polynomial;
             const bool same_shared_material =
-                source_polynomial.shared_data != nullptr
-                && source_material.shared_data != nullptr
-                && source_polynomial.shared_data.get() == source_material.shared_data.get()
-                && source_polynomial.basis == source_material.basis
-                && same_polynomial_domain(source_polynomial.domain, source_material.domain);
+                source_polynomial.shared_data != nullptr && source_material.shared_data != nullptr && source_polynomial.shared_data.get() == source_material.shared_data.get() && source_polynomial.basis == source_material.basis && same_polynomial_domain(source_polynomial.domain, source_material.domain);
             if (!same_shared_material && !same_polynomial_material(source_material, source_polynomial))
             {
                 throw std::runtime_error("public commitment alias opening material mismatch: " + name + " -> " + source_name);
@@ -319,11 +310,7 @@ private:
             {
                 return std::make_shared<Polynomial>(polynomial);
             }
-            if (polynomial.domain == nullptr
-                || context.domains.fh == nullptr
-                || polynomial.domain->size != context.domains.fh->size
-                || !(polynomial.domain->omega == context.domains.fh->omega)
-                || polynomial.values().size() != context.domains.fh->size)
+            if (polynomial.domain == nullptr || context.domains.fh == nullptr || polynomial.domain->size != context.domains.fh->size || !(polynomial.domain->omega == context.domains.fh->omega) || polynomial.values().size() != context.domains.fh->size)
             {
                 throw std::runtime_error("public FH coefficient material domain mismatch: " + name);
             }
@@ -874,9 +861,7 @@ private:
             std::vector<FieldElement> out(graph_boundary.size(), FieldElement::zero());
             for (std::size_t i = 0; i < out.size(); ++i)
             {
-                out[i] = FieldElement::one()
-                    - (FieldElement::one() - graph_boundary[i])
-                        * (FieldElement::one() - destination_boundary[i]);
+                out[i] = FieldElement::one() - (FieldElement::one() - graph_boundary[i]) * (FieldElement::one() - destination_boundary[i]);
             }
             return out;
         }
@@ -1028,7 +1013,6 @@ private:
             return out;
         }
 
-
         void append_note(RunMetrics *metrics, const std::string &note)
         {
             if (metrics == nullptr || note.empty())
@@ -1103,7 +1087,6 @@ private:
             return config.hidden_dim;
         }
 
-
         struct ExternalEvalSpec
         {
             std::string proof_name;
@@ -1121,30 +1104,25 @@ private:
                 const auto prefix = "P_h" + std::to_string(head_index) + "_";
                 specs.push_back({"mu_" + suffix + "_proj", prefix + "H_prime", "y_proj_h" + std::to_string(head_index)});
                 specs.push_back({"mu_" + suffix + "_src", prefix + "E_src", "y_src_h" + std::to_string(head_index)});
-                specs.push_back({
-                    hidden_score_mask_eval_name(head_index, "src"),
-                    hidden_score_mask_label(head_index, "src"),
-                    "y_src_h" + std::to_string(head_index)});
+                specs.push_back({hidden_score_mask_eval_name(head_index, "src"),
+                                 hidden_score_mask_label(head_index, "src"),
+                                 "y_src_h" + std::to_string(head_index)});
                 specs.push_back({"mu_" + suffix + "_dst", prefix + "E_dst", "y_dst_h" + std::to_string(head_index)});
-                specs.push_back({
-                    hidden_score_mask_eval_name(head_index, "dst"),
-                    hidden_score_mask_label(head_index, "dst"),
-                    "y_dst_h" + std::to_string(head_index)});
+                specs.push_back({hidden_score_mask_eval_name(head_index, "dst"),
+                                 hidden_score_mask_label(head_index, "dst"),
+                                 "y_dst_h" + std::to_string(head_index)});
                 specs.push_back({"mu_" + suffix + "_star", prefix + "H_star", "y_star_h" + std::to_string(head_index)});
-                specs.push_back({
-                    external_mask_eval_name("mu_" + suffix + "_star"),
-                    external_mask_label(prefix + "H_star"),
-                    "y_star_h" + std::to_string(head_index)});
+                specs.push_back({external_mask_eval_name("mu_" + suffix + "_star"),
+                                 external_mask_label(prefix + "H_star"),
+                                 "y_star_h" + std::to_string(head_index)});
                 specs.push_back({"mu_" + suffix + "_agg_pre", prefix + "H_agg_pre_star", "y_agg_pre_h" + std::to_string(head_index)});
-                specs.push_back({
-                    external_mask_eval_name("mu_" + suffix + "_agg_pre"),
-                    external_mask_label(prefix + "H_agg_pre_star"),
-                    "y_agg_pre_h" + std::to_string(head_index)});
+                specs.push_back({external_mask_eval_name("mu_" + suffix + "_agg_pre"),
+                                 external_mask_label(prefix + "H_agg_pre_star"),
+                                 "y_agg_pre_h" + std::to_string(head_index)});
                 specs.push_back({"mu_" + suffix + "_agg", prefix + "H_agg_star", "y_agg_h" + std::to_string(head_index)});
-                specs.push_back({
-                    external_mask_eval_name("mu_" + suffix + "_agg"),
-                    external_mask_label(prefix + "H_agg_star"),
-                    "y_agg_h" + std::to_string(head_index)});
+                specs.push_back({external_mask_eval_name("mu_" + suffix + "_agg"),
+                                 external_mask_label(prefix + "H_agg_star"),
+                                 "y_agg_h" + std::to_string(head_index)});
             }
             for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
             {
@@ -1388,7 +1366,6 @@ private:
             return key;
         }
 
-
         class SharedPublicEvaluationCache
         {
         public:
@@ -1613,8 +1590,7 @@ private:
                 values[point_index] = FieldElement::from_native(native_sums[point_index]);
                 if (!spilled.zero_domain_blinder.empty())
                 {
-                    values[point_index] += domain->zero_polynomial_eval(points[point_index])
-                        * algebra::horner(spilled.zero_domain_blinder, points[point_index]);
+                    values[point_index] += domain->zero_polynomial_eval(points[point_index]) * algebra::horner(spilled.zero_domain_blinder, points[point_index]);
                 }
             }
             return values;
@@ -1671,29 +1647,24 @@ private:
                 {
                     value = evaluate_lazy_full_feature_lookup_trace_poly(context_, challenges_, name, point);
                     if (const auto polynomial_it = trace_.polynomials.find(name);
-                        polynomial_it != trace_.polynomials.end()
-                        && polynomial_it->second.is_zero_domain_blinded())
+                        polynomial_it != trace_.polynomials.end() && polynomial_it->second.is_zero_domain_blinded())
                     {
-                        value += polynomial_it->second.domain->zero_polynomial_eval(point)
-                            * algebra::horner(
-                                polynomial_it->second.zero_domain_blinder,
-                                point);
+                        value += polynomial_it->second.domain->zero_polynomial_eval(point) * algebra::horner(
+                                                                                                 polynomial_it->second.zero_domain_blinder,
+                                                                                                 point);
                     }
                     else if (const auto spilled_it =
                                  trace_.spilled_polynomials.find(name);
-                             spilled_it
-                                 != trace_.spilled_polynomials.end()
-                             && !spilled_it->second
-                                     .zero_domain_blinder.empty())
+                             spilled_it != trace_.spilled_polynomials.end() && !spilled_it->second
+                                                                                    .zero_domain_blinder.empty())
                     {
                         const auto domain =
                             domain_from_name(
                                 spilled_it->second.domain_name);
-                        value += domain->zero_polynomial_eval(point)
-                            * algebra::horner(
-                                spilled_it->second
-                                    .zero_domain_blinder,
-                                point);
+                        value += domain->zero_polynomial_eval(point) * algebra::horner(
+                                                                           spilled_it->second
+                                                                               .zero_domain_blinder,
+                                                                           point);
                     }
                 }
                 else if (trace_.polynomials.contains(name))
@@ -2580,31 +2551,27 @@ private:
                 for (std::size_t i = 0; i < labels.size(); ++i)
                 {
                     const auto polynomial_it = trace_.polynomials.find(labels[i]);
-                    if (polynomial_it != trace_.polynomials.end()
-                        && polynomial_it->second.is_zero_domain_blinded())
+                    if (polynomial_it != trace_.polynomials.end() && polynomial_it->second.is_zero_domain_blinded())
                     {
                         out[i] += polynomial_it->second.domain
-                                      ->zero_polynomial_eval(point)
-                            * algebra::horner(
-                                polynomial_it->second
-                                    .zero_domain_blinder,
-                                point);
+                                      ->zero_polynomial_eval(point) *
+                                  algebra::horner(
+                                      polynomial_it->second
+                                          .zero_domain_blinder,
+                                      point);
                         continue;
                     }
                     const auto spilled_it =
                         trace_.spilled_polynomials.find(labels[i]);
-                    if (spilled_it
-                            == trace_.spilled_polynomials.end()
-                        || spilled_it->second.zero_domain_blinder.empty())
+                    if (spilled_it == trace_.spilled_polynomials.end() || spilled_it->second.zero_domain_blinder.empty())
                     {
                         continue;
                     }
                     const auto domain = domain_from_name(
                         spilled_it->second.domain_name);
-                    out[i] += domain->zero_polynomial_eval(point)
-                        * algebra::horner(
-                            spilled_it->second.zero_domain_blinder,
-                            point);
+                    out[i] += domain->zero_polynomial_eval(point) * algebra::horner(
+                                                                        spilled_it->second.zero_domain_blinder,
+                                                                        point);
                 }
                 return out;
             }
@@ -2836,13 +2803,7 @@ private:
                 for (const auto &label : labels)
                 {
                     const auto spilled_it = trace_.spilled_polynomials.find(label);
-                    if (spilled_it == trace_.spilled_polynomials.end()
-                        || trace_.polynomials.contains(label)
-                        || std::find(
-                               scheduled_spilled_labels.begin(),
-                               scheduled_spilled_labels.end(),
-                               label)
-                            != scheduled_spilled_labels.end())
+                    if (spilled_it == trace_.spilled_polynomials.end() || trace_.polynomials.contains(label) || std::find(scheduled_spilled_labels.begin(), scheduled_spilled_labels.end(), label) != scheduled_spilled_labels.end())
                     {
                         continue;
                     }
@@ -2856,12 +2817,10 @@ private:
                     for (const auto &point : points)
                     {
                         const auto cache_key = label + "@" + algebra::point_cache_key(point);
-                        if (value_cache_.contains(cache_key)
-                            || std::find(
-                                   missing_cache_keys.begin(),
-                                   missing_cache_keys.end(),
-                                   cache_key)
-                                != missing_cache_keys.end())
+                        if (value_cache_.contains(cache_key) || std::find(
+                                                                    missing_cache_keys.begin(),
+                                                                    missing_cache_keys.end(),
+                                                                    cache_key) != missing_cache_keys.end())
                         {
                             continue;
                         }
@@ -3005,8 +2964,7 @@ private:
                             const auto *polynomial = lookup_polynomial(group_labels[i]);
                             if (polynomial != nullptr && polynomial->is_zero_domain_blinded())
                             {
-                                proof_values[i] += polynomial->domain->zero_polynomial_eval(point)
-                                    * algebra::horner(polynomial->zero_domain_blinder, point);
+                                proof_values[i] += polynomial->domain->zero_polynomial_eval(point) * algebra::horner(polynomial->zero_domain_blinder, point);
                             }
                         }
                         cache_group_values(group_labels, point, proof_values);
@@ -3203,16 +3161,14 @@ private:
                 {
                     const std::vector<mcl::Fr> active_weights(
                         weight_entry.native_weights.begin(),
-                        weight_entry.native_weights.begin()
-                            + static_cast<std::ptrdiff_t>(
-                                values.size()));
+                        weight_entry.native_weights.begin() + static_cast<std::ptrdiff_t>(
+                                                                  values.size()));
                     value = algebra::dot_product_native_weights(
                         values, active_weights);
                 }
                 if (polynomial.is_zero_domain_blinded())
                 {
-                    value += polynomial.domain->zero_polynomial_eval(point)
-                        * algebra::horner(polynomial.zero_domain_blinder, point);
+                    value += polynomial.domain->zero_polynomial_eval(point) * algebra::horner(polynomial.zero_domain_blinder, point);
                 }
                 return value;
             }
@@ -3514,11 +3470,10 @@ private:
                 return algebra::read_field_elements_binary(
                     stream, spilled.size);
             }
-            catch (const std::exception& error)
+            catch (const std::exception &error)
             {
                 throw std::runtime_error(
-                    "failed to read spilled quotient dependency: "
-                    + spilled.path + ": " + error.what());
+                    "failed to read spilled quotient dependency: " + spilled.path + ": " + error.what());
             }
         }
 
@@ -3675,8 +3630,7 @@ private:
             if (coefficients == nullptr)
             {
                 throw std::runtime_error(
-                    "quotient coset evaluation received null coefficients: "
-                    + label);
+                    "quotient coset evaluation received null coefficients: " + label);
             }
             if (shift_powers != nullptr && shift_powers->size() < coefficient_count)
             {
@@ -3692,13 +3646,13 @@ private:
                 {
                     const auto root = FieldElement::root_of_unity(target_size);
                     algebra::split_coset_coefficients_native(
-    coefficients,
-    shift_powers->data(),
-    coefficient_count,
-    root,
-    even_work.data(),
-    odd_work.data(),
-    quotient_transform_worker_cap);
+                        coefficients,
+                        shift_powers->data(),
+                        coefficient_count,
+                        root,
+                        even_work.data(),
+                        odd_work.data(),
+                        quotient_transform_worker_cap);
                 }
                 else
                 {
@@ -3723,17 +3677,17 @@ private:
                     odd_work[i].clear();
                 }
                 algebra::ntt_pair_in_place(
-    even_work.data(),
-    odd_work.data(),
-    half_size,
-    quotient_transform_worker_cap);
+                    even_work.data(),
+                    odd_work.data(),
+                    half_size,
+                    quotient_transform_worker_cap);
                 auto *out_native = FieldElement::mutable_native_array_data(out.data());
                 algebra::interleave_native_lanes(
-    even_work.data(),
-    odd_work.data(),
-    half_size,
-    out_native,
-    quotient_transform_worker_cap);
+                    even_work.data(),
+                    odd_work.data(),
+                    half_size,
+                    out_native,
+                    quotient_transform_worker_cap);
                 return out;
             }
 
@@ -3825,9 +3779,9 @@ private:
                 const auto &values = polynomial.values();
                 copy_evaluation_values_to_native_domain(values, polynomial.domain->size, &coefficient_work, polynomial.name);
                 algebra::intt_in_place(
-    coefficient_work.data(),
-    coefficient_work.size(),
-    quotient_transform_worker_cap);
+                    coefficient_work.data(),
+                    coefficient_work.size(),
+                    quotient_transform_worker_cap);
 
                 if (polynomial.is_zero_domain_blinded())
                 {
@@ -3925,14 +3879,12 @@ private:
             QuotientCosetSpillArena()
             {
                 const auto root =
-                    std::filesystem::current_path()
-                    / "runs" / ".quotient_coset_spill";
+                    std::filesystem::current_path() / "runs" / ".quotient_coset_spill";
                 std::filesystem::create_directories(root);
                 if (::chmod(root.c_str(), S_IRWXU) != 0)
                 {
                     throw std::runtime_error(
-                        "failed to secure quotient coset spill directory: "
-                        + std::string(std::strerror(errno)));
+                        "failed to secure quotient coset spill directory: " + std::string(std::strerror(errno)));
                 }
                 auto template_path =
                     (root / "arena_XXXXXX").string();
@@ -3943,8 +3895,7 @@ private:
                 if (fd_ < 0)
                 {
                     throw std::runtime_error(
-                        "failed to create quotient coset spill arena: "
-                        + std::string(std::strerror(errno)));
+                        "failed to create quotient coset spill arena: " + std::string(std::strerror(errno)));
                 }
                 if (::fchmod(fd_, S_IRUSR | S_IWUSR) != 0)
                 {
@@ -3953,8 +3904,7 @@ private:
                     fd_ = -1;
                     ::unlink(path.data());
                     throw std::runtime_error(
-                        "failed to secure quotient coset spill arena: "
-                        + std::string(std::strerror(error)));
+                        "failed to secure quotient coset spill arena: " + std::string(std::strerror(error)));
                 }
                 if (::unlink(path.data()) != 0)
                 {
@@ -3962,8 +3912,7 @@ private:
                     ::close(fd_);
                     fd_ = -1;
                     throw std::runtime_error(
-                        "failed to unlink quotient coset spill arena: "
-                        + std::string(std::strerror(error)));
+                        "failed to unlink quotient coset spill arena: " + std::string(std::strerror(error)));
                 }
                 const auto page_size_raw = ::sysconf(_SC_PAGESIZE);
                 if (page_size_raw <= 0)
@@ -4006,9 +3955,7 @@ private:
                 }
                 std::lock_guard<std::mutex> lock(mutex_);
                 const auto aligned_bytes = align_up(byte_count);
-                if (chunks_.empty()
-                    || align_up(chunks_.back().used) + aligned_bytes
-                        > chunks_.back().capacity)
+                if (chunks_.empty() || align_up(chunks_.back().used) + aligned_bytes > chunks_.back().capacity)
                 {
                     add_chunk(aligned_bytes, label);
                 }
@@ -4017,8 +3964,7 @@ private:
                 chunk.used = begin + aligned_bytes;
                 return {
                     .data = reinterpret_cast<FieldElement *>(
-                        static_cast<std::uint8_t *>(chunk.mapping)
-                        + begin),
+                        static_cast<std::uint8_t *>(chunk.mapping) + begin),
                 };
             }
 
@@ -4032,15 +3978,12 @@ private:
 
             std::size_t align_up(std::size_t value) const
             {
-                if (value
-                    > std::numeric_limits<std::size_t>::max()
-                        - (page_size_ - 1))
+                if (value > std::numeric_limits<std::size_t>::max() - (page_size_ - 1))
                 {
                     throw std::runtime_error(
                         "quotient coset spill allocation overflow");
                 }
-                return (value + page_size_ - 1)
-                    / page_size_ * page_size_;
+                return (value + page_size_ - 1) / page_size_ * page_size_;
             }
 
             void add_chunk(
@@ -4052,17 +3995,14 @@ private:
                 const auto capacity =
                     align_up(std::max(kChunkBytes, minimum_capacity));
                 const auto offset = file_size_;
-                if (capacity
-                        > static_cast<std::size_t>(
-                            std::numeric_limits<off_t>::max())
-                    || offset
-                        > static_cast<std::size_t>(
-                            std::numeric_limits<off_t>::max())
-                            - capacity)
+                if (capacity > static_cast<std::size_t>(
+                                   std::numeric_limits<off_t>::max()) ||
+                    offset > static_cast<std::size_t>(
+                                 std::numeric_limits<off_t>::max()) -
+                                 capacity)
                 {
                     throw std::runtime_error(
-                        "quotient coset spill arena exceeds off_t for "
-                        + label);
+                        "quotient coset spill arena exceeds off_t for " + label);
                 }
                 const auto allocation_error = ::posix_fallocate(
                     fd_,
@@ -4071,9 +4011,7 @@ private:
                 if (allocation_error != 0)
                 {
                     throw std::runtime_error(
-                        "insufficient quotient coset spill arena resource for "
-                        + label + ": "
-                        + std::string(std::strerror(allocation_error)));
+                        "insufficient quotient coset spill arena resource for " + label + ": " + std::string(std::strerror(allocation_error)));
                 }
                 auto *mapping = ::mmap(
                     nullptr,
@@ -4086,9 +4024,7 @@ private:
                 {
                     const auto error = errno;
                     throw std::runtime_error(
-                        "failed to map quotient coset spill arena for "
-                        + label + ": "
-                        + std::string(std::strerror(error)));
+                        "failed to map quotient coset spill arena for " + label + ": " + std::string(std::strerror(error)));
                 }
                 (void)::madvise(mapping, capacity, MADV_SEQUENTIAL);
                 chunks_.push_back(Chunk{
@@ -4134,7 +4070,8 @@ private:
 
                 const auto byte_count = size_ * sizeof(FieldElement);
                 mapping_ = spill_arena_->allocate(
-                    byte_count, label).data;
+                                           byte_count, label)
+                               .data;
                 std::uninitialized_copy(
                     values.begin(),
                     values.end(),
@@ -4166,16 +4103,12 @@ private:
                             ? semantic_values_->size()
                             : 0)
             {
-                if (semantic_values_ == nullptr
-                    || zero_domain_blinder_.empty()
-                    || zero_cycle_.empty())
+                if (semantic_values_ == nullptr || zero_domain_blinder_.empty() || zero_cycle_.empty())
                 {
                     throw std::runtime_error(
                         "invalid lazy quotient blinder view");
                 }
-                if (zero_domain_blinder_.size() > 1
-                    && (coset_points_ == nullptr
-                        || coset_points_->size() != size_))
+                if (zero_domain_blinder_.size() > 1 && (coset_points_ == nullptr || coset_points_->size() != size_))
                 {
                     throw std::runtime_error(
                         "lazy quotient blinder view is missing coset points");
@@ -4195,15 +4128,12 @@ private:
                   zero_cycle_(std::move(zero_cycle)),
                   size_(size)
             {
-                if (size_ == 0 || zero_cycle_.empty()
-                    || size_ % zero_cycle_.size() != 0)
+                if (size_ == 0 || zero_cycle_.empty() || size_ % zero_cycle_.size() != 0)
                 {
                     throw std::runtime_error(
                         "invalid pure-zero lazy quotient blinder view");
                 }
-                if (zero_domain_blinder_.size() > 1
-                    && (coset_points_ == nullptr
-                        || coset_points_->size() != size_))
+                if (zero_domain_blinder_.size() > 1 && (coset_points_ == nullptr || coset_points_->size() != size_))
                 {
                     throw std::runtime_error(
                         "pure-zero lazy quotient blinder view is missing coset points");
@@ -4213,7 +4143,8 @@ private:
             QuotientCosetValues(
                 std::vector<std::pair<
                     std::shared_ptr<const QuotientCosetValues>,
-                    FieldElement>> linear_terms,
+                    FieldElement>>
+                    linear_terms,
                 std::vector<FieldElement> zero_domain_blinder_correction,
                 std::shared_ptr<const std::vector<FieldElement>> coset_points,
                 std::vector<FieldElement> zero_cycle)
@@ -4245,15 +4176,12 @@ private:
                     linear_scale_is_one_.push_back(
                         scale == FieldElement::one());
                 }
-                if (!zero_domain_blinder_.empty()
-                    && zero_cycle_.empty())
+                if (!zero_domain_blinder_.empty() && zero_cycle_.empty())
                 {
                     throw std::runtime_error(
                         "lazy linear quotient coset is missing zero cycle");
                 }
-                if (zero_domain_blinder_.size() > 1
-                    && (coset_points_ == nullptr
-                        || coset_points_->size() != size_))
+                if (zero_domain_blinder_.size() > 1 && (coset_points_ == nullptr || coset_points_->size() != size_))
                 {
                     throw std::runtime_error(
                         "lazy linear quotient coset is missing coset points");
@@ -4265,8 +4193,7 @@ private:
             QuotientCosetValues &operator=(
                 const QuotientCosetValues &) = delete;
 
-            ~QuotientCosetValues()
-                = default;
+            ~QuotientCosetValues() = default;
 
             std::size_t size() const
             {
@@ -4275,24 +4202,20 @@ private:
 
             const FieldElement *data() const
             {
-                if (pure_zero_semantic_
-                    || semantic_values_ != nullptr
-                    || !linear_terms_.empty())
+                if (pure_zero_semantic_ || semantic_values_ != nullptr || !linear_terms_.empty())
                 {
                     throw std::runtime_error(
                         "lazy quotient coset view has no contiguous data");
                 }
                 return mapping_ != nullptr
-                    ? static_cast<const FieldElement *>(mapping_)
-                    : memory_.data();
+                           ? static_cast<const FieldElement *>(mapping_)
+                           : memory_.data();
             }
 
             FieldElement operator[](
                 std::size_t index) const
             {
-                if (!pure_zero_semantic_
-                    && semantic_values_ == nullptr
-                    && linear_terms_.empty())
+                if (!pure_zero_semantic_ && semantic_values_ == nullptr && linear_terms_.empty())
                 {
                     return data()[index];
                 }
@@ -4377,9 +4300,7 @@ private:
 
             std::vector<FieldElement> copy_values() const
             {
-                if (!pure_zero_semantic_
-                    && semantic_values_ == nullptr
-                    && linear_terms_.empty())
+                if (!pure_zero_semantic_ && semantic_values_ == nullptr && linear_terms_.empty())
                 {
                     return std::vector<FieldElement>(
                         data(), data() + size_);
@@ -4400,9 +4321,7 @@ private:
                 {
                     return false;
                 }
-                if (mapping_ != nullptr
-                    || (semantic_values_ != nullptr
-                        && semantic_values_->file_backed()))
+                if (mapping_ != nullptr || (semantic_values_ != nullptr && semantic_values_->file_backed()))
                 {
                     return true;
                 }
@@ -4448,8 +4367,7 @@ private:
                 const auto page_size =
                     static_cast<std::size_t>(page_size_raw);
                 const auto end_bytes =
-                    std::min(end_index, size_)
-                    * sizeof(FieldElement);
+                    std::min(end_index, size_) * sizeof(FieldElement);
                 const auto aligned_end =
                     end_bytes - (end_bytes % page_size);
                 if (aligned_end <= discarded_bytes_)
@@ -4457,8 +4375,7 @@ private:
                     return;
                 }
                 auto *begin =
-                    static_cast<std::uint8_t *>(mapping_)
-                    + discarded_bytes_;
+                    static_cast<std::uint8_t *>(mapping_) + discarded_bytes_;
                 (void)::madvise(
                     begin,
                     aligned_end - discarded_bytes_,
@@ -4474,7 +4391,8 @@ private:
                 semantic_values_;
             std::vector<std::pair<
                 std::shared_ptr<const QuotientCosetValues>,
-                FieldElement>> linear_terms_;
+                FieldElement>>
+                linear_terms_;
             std::vector<bool> linear_scale_is_one_;
             std::vector<FieldElement> zero_domain_blinder_;
             std::shared_ptr<const std::vector<FieldElement>>
@@ -4517,16 +4435,12 @@ private:
                     degree_bound.has_value() && *degree_bound >= target_size_)
                 {
                     throw std::runtime_error(
-                        "quotient coset is too small for derived degree bound: " + label_
-                        + " degree_bound=" + std::to_string(*degree_bound)
-                        + " target_size=" + std::to_string(target_size_));
+                        "quotient coset is too small for derived degree bound: " + label_ + " degree_bound=" + std::to_string(*degree_bound) + " target_size=" + std::to_string(target_size_));
                 }
-                const auto edge_head_count = context_.model.hidden_heads.size()
-                    + context_.model.output_layer.heads.size();
+                const auto edge_head_count = context_.model.hidden_heads.size() + context_.model.output_layer.heads.size();
                 if (label_ == "t_edge" && edge_head_count >= 2)
                 {
-                    const auto power_count = std::size_t{2048}
-                        + std::size_t{1024} * edge_head_count;
+                    const auto power_count = std::size_t{2048} + std::size_t{1024} * edge_head_count;
                     quotient_alpha_powers_.reserve(power_count);
                     auto power = FieldElement::one();
                     const auto alpha = challenges_.at("alpha_quot");
@@ -4563,8 +4477,8 @@ private:
                     {
                         const auto physical_bytes =
                             static_cast<unsigned long long>(
-                                physical_pages)
-                            * static_cast<unsigned long long>(
+                                physical_pages) *
+                            static_cast<unsigned long long>(
                                 page_size);
                         in_memory_coset_budget_bytes_ =
                             static_cast<std::size_t>(
@@ -4585,10 +4499,10 @@ private:
                         "SRS degree bound is too small for quotient polynomial " + label_ + ": need coefficients=" + std::to_string(target_size_) + " but degree_bound+1=" + std::to_string(key.pk.degree_bound + 1));
                 }
                 const auto root = FieldElement::root_of_unity(target_size_);
-                auto evaluate_at_index = [&] (
-                    std::size_t i,
-                    const FieldElement &z,
-                    const QuotientBoundaryValues *boundary_values = nullptr)
+                auto evaluate_at_index = [&](
+                                             std::size_t i,
+                                             const FieldElement &z,
+                                             const QuotientBoundaryValues *boundary_values = nullptr)
                 {
                     const auto omega_z = z * domain_->omega;
                     const auto rotated_index = (i + rotation_step_) & (target_size_ - 1U);
@@ -4604,8 +4518,8 @@ private:
                                 {
                                     throw std::runtime_error(
                                         "t_edge quotient access-plan received "
-                                        "an unsupported evaluation point for "
-                                        + name);
+                                        "an unsupported evaluation point for " +
+                                        name);
                                 }
                                 const auto access_index =
                                     rotated ? rotated_index : i;
@@ -4621,24 +4535,19 @@ private:
                             }
                             if (!edge_access_sequence_.empty())
                             {
-                                if (edge_access_cursor
-                                    >= edge_access_sequence_.size())
+                                if (edge_access_cursor >= edge_access_sequence_.size())
                                 {
                                     throw std::runtime_error(
                                         "t_edge quotient access-plan overflow");
                                 }
                                 const auto &access =
-                                    edge_access_sequence_[
-                                        edge_access_cursor++];
+                                    edge_access_sequence_[edge_access_cursor++];
                                 const auto access_index =
                                     access.rotated ? rotated_index : i;
-                                if (access.values == nullptr
-                                    || access.values->size()
-                                        != target_size_)
+                                if (access.values == nullptr || access.values->size() != target_size_)
                                 {
                                     throw std::runtime_error(
-                                        "t_edge quotient access-plan contains an invalid bound dependency: "
-                                        + access.name);
+                                        "t_edge quotient access-plan contains an invalid bound dependency: " + access.name);
                                 }
                                 return (*access.values)[access_index];
                             }
@@ -4659,8 +4568,8 @@ private:
                         if (fh_coset_slots_.ready())
                         {
                             const auto boundary = boundary_values != nullptr
-                                ? *boundary_values
-                                : fh_boundary_values(z);
+                                                      ? *boundary_values
+                                                      : fh_boundary_values(z);
                             const FHQuotientValues values{
                                 .q_table =
                                     (*fh_coset_slots_.q_table)[i],
@@ -4677,8 +4586,7 @@ private:
                                 .accumulator =
                                     (*fh_coset_slots_.accumulator)[i],
                                 .accumulator_next =
-                                    (*fh_coset_slots_.accumulator)[
-                                        rotated_index],
+                                    (*fh_coset_slots_.accumulator)[rotated_index],
                             };
                             std::optional<FHFeatureEncodingValues>
                                 feature_encoding_values;
@@ -4733,10 +4641,7 @@ private:
                                 : &quotient_alpha_powers_,
                             edge_evaluation_plan_.get(),
                             boundary_values);
-                        if (!record_edge_access_sequence_
-                            && !edge_access_sequence_.empty()
-                            && edge_access_cursor
-                                != edge_access_sequence_.size())
+                        if (!record_edge_access_sequence_ && !edge_access_sequence_.empty() && edge_access_cursor != edge_access_sequence_.size())
                         {
                             throw std::runtime_error(
                                 "t_edge quotient access-plan underflow");
@@ -4824,20 +4729,12 @@ private:
                     if (null_access_count != 0)
                     {
                         throw std::runtime_error(
-                            "t_edge quotient access-plan retained null derived fallbacks: "
-                            + std::to_string(null_access_count));
+                            "t_edge quotient access-plan retained null derived fallbacks: " + std::to_string(null_access_count));
                     }
                     progress_note(
-                        "prove:quotient:t_edge:access_plan:entries="
-                        + std::to_string(edge_access_sequence_.size())
-                        + ":bound="
-                        + std::to_string(edge_access_sequence_.size())
-                        + ":late_bound="
-                        + std::to_string(edge_access_plan_late_bind_count_)
-                        + ":null_derived_fallback=0");
+                        "prove:quotient:t_edge:access_plan:entries=" + std::to_string(edge_access_sequence_.size()) + ":bound=" + std::to_string(edge_access_sequence_.size()) + ":late_bound=" + std::to_string(edge_access_plan_late_bind_count_) + ":null_derived_fallback=0");
                     progress_note(
-                        "prove:quotient:t_edge:coset_prewarm:done:ms="
-                        + std::to_string(elapsed_ms(prewarm_start, Clock::now())));
+                        "prove:quotient:t_edge:coset_prewarm:done:ms=" + std::to_string(elapsed_ms(prewarm_start, Clock::now())));
                     // The generic evaluator is the protocol source of truth.  The
                     // former hand-unrolled route did not reproduce evaluate_t_edge
                     // after the formal integer-scale constraints changed, producing
@@ -4867,9 +4764,8 @@ private:
                     seed_fast_coset_lookup(dependency_labels);
                     bind_fh_coset_slots();
                     progress_note(
-                        "prove:quotient:t_FH:coset_prewarm:done:ms="
-                        + std::to_string(
-                            elapsed_ms(prewarm_start, Clock::now())));
+                        "prove:quotient:t_FH:coset_prewarm:done:ms=" + std::to_string(
+                                                                           elapsed_ms(prewarm_start, Clock::now())));
                 }
                 else
                 {
@@ -4894,16 +4790,13 @@ private:
                     if (label_ == "t_N")
                     {
                         progress_note(
-                            "prove:quotient:t_N:coset_prewarm:done:ms="
-                            + std::to_string(elapsed_ms(
-                                prewarm_start, Clock::now())));
+                            "prove:quotient:t_N:coset_prewarm:done:ms=" + std::to_string(elapsed_ms(
+                                                                              prewarm_start, Clock::now())));
                     }
                 }
-                if (label_ == "t_FH"
-                    && std::getenv("GATZK_DEBUG_QUOTIENT_SELF_CHECK") != nullptr)
+                if (label_ == "t_FH" && std::getenv("GATZK_DEBUG_QUOTIENT_SELF_CHECK") != nullptr)
                 {
-                    if (root.pow(static_cast<std::uint64_t>(rotation_step_))
-                        != domain_->omega)
+                    if (root.pow(static_cast<std::uint64_t>(rotation_step_)) != domain_->omega)
                     {
                         throw std::runtime_error(
                             "FH quotient coset rotation is incompatible with domain omega");
@@ -4929,18 +4822,16 @@ private:
                              context_, label_))
                     {
                         const auto *polynomial = lookup_polynomial(name);
-                        if (polynomial == nullptr && name == "P_H"
-                            && lazy_full_feature_lookup_trace_enabled(context_))
+                        if (polynomial == nullptr && name == "P_H" && lazy_full_feature_lookup_trace_enabled(context_))
                             polynomial = lookup_polynomial("P_T_H");
                         if (polynomial == nullptr)
                             continue;
                         if (const auto coefficient_it =
                                 context_.public_fh_coefficient_materials.find(
                                     name);
-                            coefficient_it
-                                != context_
-                                       .public_fh_coefficient_materials.end()
-                            && coefficient_it->second != nullptr)
+                            coefficient_it != context_
+                                                  .public_fh_coefficient_materials.end() &&
+                            coefficient_it->second != nullptr)
                         {
                             polynomial = coefficient_it->second.get();
                         }
@@ -4948,27 +4839,22 @@ private:
                         for (const auto index : sample_indices)
                         {
                             const auto point = shift_ * root.pow(
-                                static_cast<std::uint64_t>(index));
+                                                            static_cast<std::uint64_t>(index));
                             const auto direct = polynomial->evaluate(point);
                             if (materialized_values->at(index) != direct)
                             {
                                 throw std::runtime_error(
-                                    "FH quotient coset dependency mismatch: "
-                                    + name + " index=" + std::to_string(index)
-                                    + " materialized="
-                                    + materialized_values->at(index).to_string()
-                                    + " direct=" + direct.to_string());
+                                    "FH quotient coset dependency mismatch: " + name + " index=" + std::to_string(index) + " materialized=" + materialized_values->at(index).to_string() + " direct=" + direct.to_string());
                             }
                         }
                     }
                     for (const auto index : sample_indices)
                     {
                         const auto point = shift_ * root.pow(
-                            static_cast<std::uint64_t>(index));
+                                                        static_cast<std::uint64_t>(index));
                         const auto omega_point = point * domain_->omega;
                         const auto rotated_index =
-                            (index + rotation_step_)
-                            & (target_size_ - 1U);
+                            (index + rotation_step_) & (target_size_ - 1U);
                         const auto boundary = fh_boundary_values(point);
                         const auto generic = evaluate_t_fh(
                             context_,
@@ -4986,8 +4872,7 @@ private:
                                         name, rotated_index);
                                 }
                                 throw std::runtime_error(
-                                    "FH quotient self-check received an unsupported point for "
-                                    + name);
+                                    "FH quotient self-check received an unsupported point for " + name);
                             },
                             point,
                             nullptr,
@@ -4998,19 +4883,13 @@ private:
                         if (fixed != generic)
                         {
                             throw std::runtime_error(
-                                "FH fixed-slot quotient mismatch: index="
-                                + std::to_string(index)
-                                + " fixed=" + fixed.to_string()
-                                + " generic=" + generic.to_string());
+                                "FH fixed-slot quotient mismatch: index=" + std::to_string(index) + " fixed=" + fixed.to_string() + " generic=" + generic.to_string());
                         }
                     }
                     progress_note(
-                        "prove:quotient:t_FH:self_check:samples="
-                        + std::to_string(sample_indices.size())
-                        + ":ok");
+                        "prove:quotient:t_FH:self_check:samples=" + std::to_string(sample_indices.size()) + ":ok");
                 }
-                if (label_ == "t_edge"
-                    && std::getenv("GATZK_DEBUG_QUOTIENT_SELF_CHECK") != nullptr)
+                if (label_ == "t_edge" && std::getenv("GATZK_DEBUG_QUOTIENT_SELF_CHECK") != nullptr)
                 {
                     EvaluationMemoization direct_memo(
                         context_, trace_, challenges_);
@@ -5021,8 +4900,7 @@ private:
                         if (std::find(
                                 dependencies.begin(),
                                 dependencies.end(),
-                                access.name)
-                            == dependencies.end())
+                                access.name) == dependencies.end())
                         {
                             dependencies.push_back(access.name);
                         }
@@ -5047,11 +4925,7 @@ private:
                             if (materialized_dependency != direct_dependency)
                             {
                                 throw std::runtime_error(
-                                    "edge quotient coset dependency mismatch: "
-                                    + name + " index=" + std::to_string(index)
-                                    + " materialized="
-                                    + materialized_dependency.to_string()
-                                    + " direct=" + direct_dependency.to_string());
+                                    "edge quotient coset dependency mismatch: " + name + " index=" + std::to_string(index) + " materialized=" + materialized_dependency.to_string() + " direct=" + direct_dependency.to_string());
                             }
                         }
                     }
@@ -5069,13 +4943,11 @@ private:
                     {
                         throw std::runtime_error(
                             "edge quotient coset evaluator mismatch at index 0: "
-                            "materialized=" + materialized.to_string()
-                            + " direct=" + direct.to_string());
+                            "materialized=" +
+                            materialized.to_string() + " direct=" + direct.to_string());
                     }
                     progress_note(
-                        "prove:quotient:t_edge:self_check:dependencies="
-                        + std::to_string(dependencies.size())
-                        + ":points=2:quotient_points=1:ok");
+                        "prove:quotient:t_edge:self_check:dependencies=" + std::to_string(dependencies.size()) + ":points=2:quotient_points=1:ok");
                 }
                 if (label_ == "t_edge")
                 {
@@ -5090,565 +4962,490 @@ private:
                     progress_note("prove:quotient:t_N:evaluate:start");
                 }
                 const auto point_evaluation_start = Clock::now();
-                
+
                 std::vector<FieldElement> quotient_zero_inverses;
 
-const auto boundary_one =
-    FieldElement::one();
+                const auto boundary_one =
+                    FieldElement::one();
 
-const auto boundary_last_point =
-    domain_->point_at(domain_->size - 1);
+                const auto boundary_last_point =
+                    domain_->point_at(domain_->size - 1);
 
-const auto boundary_zero_step =
-    root.pow(domain_->size);
+                const auto boundary_zero_step =
+                    root.pow(domain_->size);
 
-const auto boundary_shifted_zero =
-    shift_.pow(domain_->size);
+                const auto boundary_shifted_zero =
+                    shift_.pow(domain_->size);
 
-if (label_ == "t_edge" || label_ == "t_FH")
-{
-    if (target_size_ % domain_->size != 0)
-    {
-        throw std::runtime_error(
-            "quotient coset size is not a domain multiple: "
-            + label_);
-    }
-
-    const auto zero_cycle_size =
-        target_size_ / domain_->size;
-
-    quotient_zero_inverses.reserve(
-        zero_cycle_size);
-
-    auto zero_power =
-        boundary_shifted_zero;
-
-    for (std::size_t residue = 0;
-         residue < zero_cycle_size;
-         ++residue)
-    {
-        quotient_zero_inverses.push_back(
-            (zero_power - boundary_one).inv());
-
-        zero_power *= boundary_zero_step;
-    }
-}
-
-constexpr std::size_t kInverseBlockSize = 8192;
-
-const auto evaluate_range =
-    [&](std::size_t begin,
-        std::size_t end,
-        std::vector<mcl::Fr> *denominator_products)
-    {
-        if (begin >= end)
-        {
-            return;
-        }
-
-        auto z =
-            shift_
-            * root.pow(
-                static_cast<std::uint64_t>(
-                    begin));
-
-        if (label_ == "t_edge"
-            || label_ == "t_FH")
-        {
-            if (denominator_products == nullptr)
-            {
-                throw std::runtime_error(
-                    "quotient evaluation is missing inverse scratch");
-            }
-
-            auto zero_power =
-                boundary_shifted_zero
-                * boundary_zero_step.pow(
-                    static_cast<std::uint64_t>(
-                        begin));
-
-            for (std::size_t block_begin = begin;
-                 block_begin < end;
-                 block_begin += kInverseBlockSize)
-            {
-                const auto block_end =
-                    std::min(
-                        end,
-                        block_begin
-                            + kInverseBlockSize);
-
-                denominator_products->resize(
-                    block_end - block_begin);
-
-                auto denominator_z = z;
-
-                for (std::size_t i = block_begin;
-                     i < block_end;
-                     ++i)
+                if (label_ == "t_edge" || label_ == "t_FH")
                 {
-                    mcl::Fr first_denominator;
-                    mcl::Fr last_denominator;
-
-                    mcl::Fr::sub(
-                        first_denominator,
-                        denominator_z.native(),
-                        boundary_one.native());
-
-                    mcl::Fr::sub(
-                        last_denominator,
-                        denominator_z.native(),
-                        boundary_last_point.native());
-
-                    mcl::Fr::mul(
-                        (*denominator_products)[
-                            i - block_begin],
-                        first_denominator,
-                        last_denominator);
-
-                    denominator_z *= root;
-                }
-
-                batch_invert_native_in_place(
-                    denominator_products);
-
-                for (std::size_t i = block_begin;
-                     i < block_end;
-                     ++i)
-                {
-                    const auto first_denominator =
-                        z - boundary_one;
-
-                    const auto last_denominator =
-                        z - boundary_last_point;
-
-                    const auto inverse_product =
-                        FieldElement::from_native(
-                            (*denominator_products)[
-                                i - block_begin]);
-
-                    const auto zero =
-                        zero_power - boundary_one;
-
-                    const auto zero_scaled =
-                        zero * domain_->inv_size;
-
-                    const QuotientBoundaryValues boundary{
-                        .first =
-                            zero_scaled
-                            * last_denominator
-                            * inverse_product,
-
-                        .last =
-                            zero_scaled
-                            * boundary_last_point
-                            * first_denominator
-                            * inverse_product,
-
-                        .zero = zero,
-
-                        .zero_inverse =
-                            quotient_zero_inverses[
-                                i
-                                % quotient_zero_inverses
-                                      .size()],
-                    };
-
-                    quotient_values[i] =
-                        evaluate_at_index(
-                            i,
-                            z,
-                            &boundary);
-
-                    z *= root;
-                    zero_power *=
-                        boundary_zero_step;
-                }
-            }
-
-            return;
-        }
-
-        for (std::size_t i = begin;
-             i < end;
-             ++i)
-        {
-            quotient_values[i] =
-                evaluate_at_index(i, z);
-
-            z *= root;
-        }
-    };
-
-const auto cpu_count =
-    std::max<std::size_t>(
-        1,
-        std::thread::hardware_concurrency());
-
-const bool run_parallel =
-    cpu_count > 1
-    && target_size_ >= 4096;
-
-if (run_parallel)
-{
-    const bool bounded_file_backed_evaluation =
-        file_backed_coset_count_.load(
-            std::memory_order_relaxed) != 0;
-
-    const auto evaluation_block_size =
-        bounded_file_backed_evaluation
-            ? std::size_t{1} << 15
-            : target_size_;
-
-    if (use_file_backed_coset_storage())
-    {
-        progress_note(
-            "prove:quotient:" + label_
-            + ":coset_storage:tiered"
-            + ":memory_bytes="
-            + std::to_string(
-                in_memory_coset_bytes_.load(
-                    std::memory_order_relaxed))
-            + ":memory_budget="
-            + std::to_string(
-                in_memory_coset_budget_bytes_)
-            + ":files="
-            + std::to_string(
-                file_backed_coset_count_.load(
-                    std::memory_order_relaxed))
-            + ":bytes="
-            + std::to_string(
-                file_backed_coset_bytes_.load(
-                    std::memory_order_relaxed))
-            + ":lazy_blinder_views="
-            + std::to_string(
-                lazy_blinder_coset_count_.load(
-                    std::memory_order_relaxed))
-            + ":lazy_blinder_bytes_avoided="
-            + std::to_string(
-                lazy_blinder_coset_bytes_avoided_.load(
-                    std::memory_order_relaxed))
-            + ":evaluation_block="
-            + std::to_string(
-                evaluation_block_size));
-    }
-
-    const auto min_points_per_task =
-        bounded_file_backed_evaluation
-            ? (label_ == "t_edge"
-                   ? std::size_t{1024}
-                   : std::size_t{2048})
-            : (label_ == "t_edge"
-                   ? std::size_t{1024}
-                   : std::size_t{32768});
-
-    if (bounded_file_backed_evaluation)
-    {
-        const auto persistent_worker_count =
-            std::min<std::size_t>(
-                std::min<std::size_t>(
-                    cpu_count,
-                    32),
-                std::max<std::size_t>(
-                    1,
-                    evaluation_block_size
-                        / min_points_per_task));
-
-        const auto evaluation_block_count =
-            (target_size_
-             + evaluation_block_size - 1)
-            / evaluation_block_size;
-
-        const auto discard_set =
-            file_backed_coset_discard_set();
-
-        // file_backed_coset_count_ is a cumulative execution counter.
-// A file-backed value may have been created and released before
-// this live cache snapshot.  An empty discard set is therefore
-// valid and simply means that there are no currently reachable
-// file-backed pages to discard.        
-        progress_note(
-            "prove:quotient:" + label_
-            + ":evaluation_scheduler"
-            + ":mode=persistent_block_team"
-            + ":workers="
-            + std::to_string(
-                persistent_worker_count)
-            + ":blocks="
-            + std::to_string(
-                evaluation_block_count)
-            + ":discard_views="
-            + std::to_string(
-                discard_set.size()));
-
-        std::barrier<> block_barrier(
-            static_cast<std::ptrdiff_t>(
-                persistent_worker_count));
-
-        std::atomic<int> start_state{0};
-        std::atomic<bool> worker_failed{false};
-
-        std::mutex worker_error_mutex;
-        std::exception_ptr worker_error;
-
-        std::vector<std::thread> workers;
-        workers.reserve(
-            persistent_worker_count);
-
-        try
-        {
-            for (std::size_t worker = 0;
-                 worker < persistent_worker_count;
-                 ++worker)
-            {
-                workers.emplace_back(
-                    [&, worker]()
+                    if (target_size_ % domain_->size != 0)
                     {
-                        while (start_state.load(
-                                   std::memory_order_acquire)
-                               == 0)
+                        throw std::runtime_error(
+                            "quotient coset size is not a domain multiple: " + label_);
+                    }
+
+                    const auto zero_cycle_size =
+                        target_size_ / domain_->size;
+
+                    quotient_zero_inverses.reserve(
+                        zero_cycle_size);
+
+                    auto zero_power =
+                        boundary_shifted_zero;
+
+                    for (std::size_t residue = 0;
+                         residue < zero_cycle_size;
+                         ++residue)
+                    {
+                        quotient_zero_inverses.push_back(
+                            (zero_power - boundary_one).inv());
+
+                        zero_power *= boundary_zero_step;
+                    }
+                }
+
+                constexpr std::size_t kInverseBlockSize = 8192;
+
+                const auto evaluate_range =
+                    [&](std::size_t begin,
+                        std::size_t end,
+                        std::vector<mcl::Fr> *denominator_products)
+                {
+                    if (begin >= end)
+                    {
+                        return;
+                    }
+
+                    auto z =
+                        shift_ * root.pow(
+                                     static_cast<std::uint64_t>(
+                                         begin));
+
+                    if (label_ == "t_edge" || label_ == "t_FH")
+                    {
+                        if (denominator_products == nullptr)
                         {
-                            std::this_thread::yield();
+                            throw std::runtime_error(
+                                "quotient evaluation is missing inverse scratch");
                         }
 
-                        if (start_state.load(
-                                std::memory_order_acquire)
-                            < 0)
+                        auto zero_power =
+                            boundary_shifted_zero * boundary_zero_step.pow(
+                                                        static_cast<std::uint64_t>(
+                                                            begin));
+
+                        for (std::size_t block_begin = begin;
+                             block_begin < end;
+                             block_begin += kInverseBlockSize)
                         {
-                            return;
+                            const auto block_end =
+                                std::min(
+                                    end,
+                                    block_begin + kInverseBlockSize);
+
+                            denominator_products->resize(
+                                block_end - block_begin);
+
+                            auto denominator_z = z;
+
+                            for (std::size_t i = block_begin;
+                                 i < block_end;
+                                 ++i)
+                            {
+                                mcl::Fr first_denominator;
+                                mcl::Fr last_denominator;
+
+                                mcl::Fr::sub(
+                                    first_denominator,
+                                    denominator_z.native(),
+                                    boundary_one.native());
+
+                                mcl::Fr::sub(
+                                    last_denominator,
+                                    denominator_z.native(),
+                                    boundary_last_point.native());
+
+                                mcl::Fr::mul(
+                                    (*denominator_products)[i - block_begin],
+                                    first_denominator,
+                                    last_denominator);
+
+                                denominator_z *= root;
+                            }
+
+                            batch_invert_native_in_place(
+                                denominator_products);
+
+                            for (std::size_t i = block_begin;
+                                 i < block_end;
+                                 ++i)
+                            {
+                                const auto first_denominator =
+                                    z - boundary_one;
+
+                                const auto last_denominator =
+                                    z - boundary_last_point;
+
+                                const auto inverse_product =
+                                    FieldElement::from_native(
+                                        (*denominator_products)[i - block_begin]);
+
+                                const auto zero =
+                                    zero_power - boundary_one;
+
+                                const auto zero_scaled =
+                                    zero * domain_->inv_size;
+
+                                const QuotientBoundaryValues boundary{
+                                    .first =
+                                        zero_scaled * last_denominator * inverse_product,
+
+                                    .last =
+                                        zero_scaled * boundary_last_point * first_denominator * inverse_product,
+
+                                    .zero = zero,
+
+                                    .zero_inverse =
+                                        quotient_zero_inverses[i % quotient_zero_inverses
+                                                                       .size()],
+                                };
+
+                                quotient_values[i] =
+                                    evaluate_at_index(
+                                        i,
+                                        z,
+                                        &boundary);
+
+                                z *= root;
+                                zero_power *=
+                                    boundary_zero_step;
+                            }
                         }
 
-                        std::vector<mcl::Fr>
-                            denominator_products;
+                        return;
+                    }
 
+                    for (std::size_t i = begin;
+                         i < end;
+                         ++i)
+                    {
+                        quotient_values[i] =
+                            evaluate_at_index(i, z);
+
+                        z *= root;
+                    }
+                };
+
+                const auto cpu_count =
+                    std::max<std::size_t>(
+                        1,
+                        std::thread::hardware_concurrency());
+
+                const bool run_parallel =
+                    cpu_count > 1 && target_size_ >= 4096;
+
+                if (run_parallel)
+                {
+                    const bool bounded_file_backed_evaluation =
+                        file_backed_coset_count_.load(
+                            std::memory_order_relaxed) != 0;
+
+                    const auto evaluation_block_size =
+                        bounded_file_backed_evaluation
+                            ? std::size_t{1} << 15
+                            : target_size_;
+
+                    if (use_file_backed_coset_storage())
+                    {
+                        progress_note(
+                            "prove:quotient:" + label_ + ":coset_storage:tiered" + ":memory_bytes=" + std::to_string(in_memory_coset_bytes_.load(std::memory_order_relaxed)) + ":memory_budget=" + std::to_string(in_memory_coset_budget_bytes_) + ":files=" + std::to_string(file_backed_coset_count_.load(std::memory_order_relaxed)) + ":bytes=" + std::to_string(file_backed_coset_bytes_.load(std::memory_order_relaxed)) + ":lazy_blinder_views=" + std::to_string(lazy_blinder_coset_count_.load(std::memory_order_relaxed)) + ":lazy_blinder_bytes_avoided=" + std::to_string(lazy_blinder_coset_bytes_avoided_.load(std::memory_order_relaxed)) + ":evaluation_block=" + std::to_string(evaluation_block_size));
+                    }
+
+                    const auto min_points_per_task =
+                        bounded_file_backed_evaluation
+                            ? (label_ == "t_edge"
+                                   ? std::size_t{1024}
+                                   : std::size_t{2048})
+                            : (label_ == "t_edge"
+                                   ? std::size_t{1024}
+                                   : std::size_t{32768});
+
+                    if (bounded_file_backed_evaluation)
+                    {
+                        const auto persistent_worker_count =
+                            std::min<std::size_t>(
+                                std::min<std::size_t>(
+                                    cpu_count,
+                                    32),
+                                std::max<std::size_t>(
+                                    1,
+                                    evaluation_block_size / min_points_per_task));
+
+                        const auto evaluation_block_count =
+                            (target_size_ + evaluation_block_size - 1) / evaluation_block_size;
+
+                        const auto discard_set =
+                            file_backed_coset_discard_set();
+
+                        // file_backed_coset_count_ is a cumulative execution counter.
+                        // A file-backed value may have been created and released before
+                        // this live cache snapshot.  An empty discard set is therefore
+                        // valid and simply means that there are no currently reachable
+                        // file-backed pages to discard.
+                        progress_note(
+                            "prove:quotient:" + label_ + ":evaluation_scheduler" + ":mode=persistent_block_team" + ":workers=" + std::to_string(persistent_worker_count) + ":blocks=" + std::to_string(evaluation_block_count) + ":discard_views=" + std::to_string(discard_set.size()));
+
+                        std::barrier<> block_barrier(
+                            static_cast<std::ptrdiff_t>(
+                                persistent_worker_count));
+
+                        std::atomic<int> start_state{0};
+                        std::atomic<bool> worker_failed{false};
+
+                        std::mutex worker_error_mutex;
+                        std::exception_ptr worker_error;
+
+                        std::vector<std::thread> workers;
+                        workers.reserve(
+                            persistent_worker_count);
+
+                        try
+                        {
+                            for (std::size_t worker = 0;
+                                 worker < persistent_worker_count;
+                                 ++worker)
+                            {
+                                workers.emplace_back(
+                                    [&, worker]()
+                                    {
+                                        while (start_state.load(
+                                                   std::memory_order_acquire) == 0)
+                                        {
+                                            std::this_thread::yield();
+                                        }
+
+                                        if (start_state.load(
+                                                std::memory_order_acquire) < 0)
+                                        {
+                                            return;
+                                        }
+
+                                        std::vector<mcl::Fr>
+                                            denominator_products;
+
+                                        for (std::size_t evaluation_begin = 0;
+                                             evaluation_begin < target_size_;
+                                             evaluation_begin +=
+                                             evaluation_block_size)
+                                        {
+                                            const auto evaluation_end =
+                                                std::min(
+                                                    target_size_,
+                                                    evaluation_begin + evaluation_block_size);
+
+                                            const auto evaluation_count =
+                                                evaluation_end - evaluation_begin;
+
+                                            const auto chunk_size =
+                                                (evaluation_count + persistent_worker_count - 1) / persistent_worker_count;
+
+                                            const auto begin =
+                                                evaluation_begin + worker * chunk_size;
+
+                                            const auto end =
+                                                std::min(
+                                                    evaluation_end,
+                                                    begin + chunk_size);
+
+                                            if (!worker_failed.load(
+                                                    std::memory_order_acquire) &&
+                                                begin < end)
+                                            {
+                                                try
+                                                {
+                                                    evaluate_range(
+                                                        begin,
+                                                        end,
+                                                        &denominator_products);
+                                                }
+                                                catch (...)
+                                                {
+                                                    {
+                                                        std::lock_guard<std::mutex>
+                                                            lock(
+                                                                worker_error_mutex);
+
+                                                        if (worker_error == nullptr)
+                                                        {
+                                                            worker_error =
+                                                                std::current_exception();
+                                                        }
+                                                    }
+
+                                                    worker_failed.store(
+                                                        true,
+                                                        std::memory_order_release);
+                                                }
+                                            }
+
+                                            block_barrier.arrive_and_wait();
+
+                                            if (worker == 0 && !worker_failed.load(
+                                                                   std::memory_order_acquire))
+                                            {
+                                                discard_consumed_coset_pages(
+                                                    discard_set,
+                                                    evaluation_end);
+                                            }
+
+                                            block_barrier.arrive_and_wait();
+
+                                            if (worker_failed.load(
+                                                    std::memory_order_acquire))
+                                            {
+                                                break;
+                                            }
+                                        }
+                                    });
+                            }
+                        }
+                        catch (...)
+                        {
+                            start_state.store(
+                                -1,
+                                std::memory_order_release);
+
+                            for (auto &worker : workers)
+                            {
+                                if (worker.joinable())
+                                {
+                                    worker.join();
+                                }
+                            }
+
+                            throw;
+                        }
+
+                        start_state.store(
+                            1,
+                            std::memory_order_release);
+
+                        for (auto &worker : workers)
+                        {
+                            worker.join();
+                        }
+
+                        if (worker_error != nullptr)
+                        {
+                            std::rethrow_exception(
+                                worker_error);
+                        }
+                    }
+                    else
+                    {
                         for (std::size_t evaluation_begin = 0;
                              evaluation_begin < target_size_;
                              evaluation_begin +=
-                                 evaluation_block_size)
+                             evaluation_block_size)
                         {
                             const auto evaluation_end =
                                 std::min(
                                     target_size_,
-                                    evaluation_begin
-                                        + evaluation_block_size);
+                                    evaluation_begin + evaluation_block_size);
 
                             const auto evaluation_count =
-                                evaluation_end
-                                - evaluation_begin;
+                                evaluation_end - evaluation_begin;
+
+                            const auto task_count =
+                                std::min<std::size_t>(
+                                    std::min<std::size_t>(
+                                        cpu_count,
+                                        32),
+                                    std::max<std::size_t>(
+                                        1,
+                                        evaluation_count / min_points_per_task));
 
                             const auto chunk_size =
-                                (evaluation_count
-                                 + persistent_worker_count
-                                 - 1)
-                                / persistent_worker_count;
+                                (evaluation_count + task_count - 1) / task_count;
 
-                            const auto begin =
-                                evaluation_begin
-                                + worker * chunk_size;
+                            std::vector<std::future<void>> futures;
+                            futures.reserve(task_count);
 
-                            const auto end =
-                                std::min(
-                                    evaluation_end,
-                                    begin + chunk_size);
-
-                            if (!worker_failed.load(
-                                    std::memory_order_acquire)
-                                && begin < end)
+                            for (std::size_t task = 0;
+                                 task < task_count;
+                                 ++task)
                             {
-                                try
-                                {
-                                    evaluate_range(
-                                        begin,
-                                        end,
-                                        &denominator_products);
-                                }
-                                catch (...)
-                                {
-                                    {
-                                        std::lock_guard<std::mutex>
-                                            lock(
-                                                worker_error_mutex);
+                                const auto begin =
+                                    evaluation_begin + task * chunk_size;
 
-                                        if (worker_error
-                                            == nullptr)
+                                const auto end =
+                                    std::min(
+                                        evaluation_end,
+                                        begin + chunk_size);
+
+                                if (begin >= end)
+                                {
+                                    break;
+                                }
+
+                                futures.push_back(
+                                    std::async(
+                                        std::launch::async,
+                                        [&, begin, end]()
                                         {
-                                            worker_error =
-                                                std::current_exception();
-                                        }
-                                    }
+                                            std::vector<mcl::Fr>
+                                                denominator_products;
 
-                                    worker_failed.store(
-                                        true,
-                                        std::memory_order_release);
-                                }
+                                            evaluate_range(
+                                                begin,
+                                                end,
+                                                &denominator_products);
+                                        }));
                             }
 
-                            block_barrier.arrive_and_wait();
-
-                            if (worker == 0
-                                && !worker_failed.load(
-                                    std::memory_order_acquire))
+                            for (auto &future : futures)
                             {
-                                discard_consumed_coset_pages(
-                                    discard_set,
-                                    evaluation_end);
-                            }
-
-                            block_barrier.arrive_and_wait();
-
-                            if (worker_failed.load(
-                                    std::memory_order_acquire))
-                            {
-                                break;
+                                future.get();
                             }
                         }
-                    });
-            }
-        }
-        catch (...)
-        {
-            start_state.store(
-                -1,
-                std::memory_order_release);
-
-            for (auto &worker : workers)
-            {
-                if (worker.joinable())
-                {
-                    worker.join();
+                    }
                 }
-            }
-
-            throw;
-        }
-
-        start_state.store(
-            1,
-            std::memory_order_release);
-
-        for (auto &worker : workers)
-        {
-            worker.join();
-        }
-
-        if (worker_error != nullptr)
-        {
-            std::rethrow_exception(
-                worker_error);
-        }
-    }
-    else
-    {
-        for (std::size_t evaluation_begin = 0;
-             evaluation_begin < target_size_;
-             evaluation_begin +=
-                 evaluation_block_size)
-        {
-            const auto evaluation_end =
-                std::min(
-                    target_size_,
-                    evaluation_begin
-                        + evaluation_block_size);
-
-            const auto evaluation_count =
-                evaluation_end
-                - evaluation_begin;
-
-            const auto task_count =
-                std::min<std::size_t>(
-                    std::min<std::size_t>(
-                        cpu_count,
-                        32),
-                    std::max<std::size_t>(
-                        1,
-                        evaluation_count
-                            / min_points_per_task));
-
-            const auto chunk_size =
-                (evaluation_count
-                 + task_count - 1)
-                / task_count;
-
-            std::vector<std::future<void>> futures;
-            futures.reserve(task_count);
-
-            for (std::size_t task = 0;
-                 task < task_count;
-                 ++task)
-            {
-                const auto begin =
-                    evaluation_begin
-                    + task * chunk_size;
-
-                const auto end =
-                    std::min(
-                        evaluation_end,
-                        begin + chunk_size);
-
-                if (begin >= end)
+                else
                 {
-                    break;
+                    auto z = shift_;
+
+                    for (std::size_t i = 0;
+                         i < target_size_;
+                         ++i)
+                    {
+                        quotient_values[i] =
+                            evaluate_at_index(i, z);
+
+                        z *= root;
+                    }
                 }
-
-                futures.push_back(
-                    std::async(
-                        std::launch::async,
-                        [&, begin, end]()
-                        {
-                            std::vector<mcl::Fr>
-                                denominator_products;
-
-                            evaluate_range(
-                                begin,
-                                end,
-                                &denominator_products);
-                        }));
-            }
-
-            for (auto &future : futures)
-            {
-                future.get();
-            }
-        }
-    }
-}
-else
-{
-    auto z = shift_;
-
-    for (std::size_t i = 0;
-         i < target_size_;
-         ++i)
-    {
-        quotient_values[i] =
-            evaluate_at_index(i, z);
-
-        z *= root;
-    }
-}
 
                 if (label_ == "t_edge")
                 {
                     progress_note(
-                        "prove:quotient:t_edge:evaluate:done:ms="
-                        + std::to_string(elapsed_ms(
-                            point_evaluation_start, Clock::now())));
+                        "prove:quotient:t_edge:evaluate:done:ms=" + std::to_string(elapsed_ms(
+                                                                        point_evaluation_start, Clock::now())));
                     progress_note("prove:quotient:t_edge:coefficients:start");
                 }
                 else if (label_ == "t_FH")
                 {
                     progress_note(
-                        "prove:quotient:t_FH:evaluate:done:ms="
-                        + std::to_string(elapsed_ms(
-                            point_evaluation_start, Clock::now())));
+                        "prove:quotient:t_FH:evaluate:done:ms=" + std::to_string(elapsed_ms(
+                                                                      point_evaluation_start, Clock::now())));
                     progress_note(
                         "prove:quotient:t_FH:coefficients:start");
                 }
                 else if (label_ == "t_N")
                 {
                     progress_note(
-                        "prove:quotient:t_N:evaluate:done:ms="
-                        + std::to_string(elapsed_ms(
-                            point_evaluation_start, Clock::now())));
+                        "prove:quotient:t_N:evaluate:done:ms=" + std::to_string(elapsed_ms(
+                                                                     point_evaluation_start, Clock::now())));
                     progress_note("prove:quotient:t_N:coefficients:start");
                 }
 
@@ -5665,23 +5462,20 @@ else
                 if (label_ == "t_edge")
                 {
                     progress_note(
-                        "prove:quotient:t_edge:coefficients:done:ms="
-                        + std::to_string(elapsed_ms(
-                            coefficient_start, Clock::now())));
+                        "prove:quotient:t_edge:coefficients:done:ms=" + std::to_string(elapsed_ms(
+                                                                            coefficient_start, Clock::now())));
                 }
                 else if (label_ == "t_FH")
                 {
                     progress_note(
-                        "prove:quotient:t_FH:coefficients:done:ms="
-                        + std::to_string(elapsed_ms(
-                            coefficient_start, Clock::now())));
+                        "prove:quotient:t_FH:coefficients:done:ms=" + std::to_string(elapsed_ms(
+                                                                          coefficient_start, Clock::now())));
                 }
                 else if (label_ == "t_N")
                 {
                     progress_note(
-                        "prove:quotient:t_N:coefficients:done:ms="
-                        + std::to_string(elapsed_ms(
-                            coefficient_start, Clock::now())));
+                        "prove:quotient:t_N:coefficients:done:ms=" + std::to_string(elapsed_ms(
+                                                                         coefficient_start, Clock::now())));
                 }
                 if (coefficients.size() > key.pk.degree_bound + 1)
                 {
@@ -5713,10 +5507,7 @@ else
 
                 bool ready() const
                 {
-                    return q_table != nullptr && q_query != nullptr
-                        && table != nullptr && query != nullptr
-                        && multiplicity != nullptr && j_table != nullptr
-                        && j_query != nullptr && accumulator != nullptr;
+                    return q_table != nullptr && q_query != nullptr && table != nullptr && query != nullptr && multiplicity != nullptr && j_table != nullptr && j_query != nullptr && accumulator != nullptr;
                 }
             };
 
@@ -5729,8 +5520,7 @@ else
 
             bool use_file_backed_coset_storage() const
             {
-                return (label_ == "t_edge" || label_ == "t_FH")
-                    && target_size_ >= (1ULL << 17);
+                return (label_ == "t_edge" || label_ == "t_FH") && target_size_ >= (1ULL << 17);
             }
 
             QuotientCosetValuesPtr retain_coset_values(
@@ -5740,15 +5530,12 @@ else
                 const auto byte_count =
                     values.size() * sizeof(FieldElement);
                 bool retain_in_memory = false;
-                if (use_file_backed_coset_storage()
-                    && byte_count <= in_memory_coset_budget_bytes_)
+                if (use_file_backed_coset_storage() && byte_count <= in_memory_coset_budget_bytes_)
                 {
                     auto retained_bytes =
                         in_memory_coset_bytes_.load(
                             std::memory_order_relaxed);
-                    while (retained_bytes
-                               <= in_memory_coset_budget_bytes_
-                                   - byte_count)
+                    while (retained_bytes <= in_memory_coset_budget_bytes_ - byte_count)
                     {
                         if (in_memory_coset_bytes_.compare_exchange_weak(
                                 retained_bytes,
@@ -5761,8 +5548,7 @@ else
                     }
                 }
                 const auto file_backed =
-                    use_file_backed_coset_storage()
-                    && !retain_in_memory;
+                    use_file_backed_coset_storage() && !retain_in_memory;
                 auto retained =
                     std::make_shared<const QuotientCosetValues>(
                         std::move(values),
@@ -5780,7 +5566,7 @@ else
 
             QuotientCosetValuesPtr retain_blinded_coset_view(
                 QuotientCosetValuesPtr semantic_values,
-                const std::vector<FieldElement>& zero_domain_blinder)
+                const std::vector<FieldElement> &zero_domain_blinder)
             {
                 auto retained =
                     std::make_shared<const QuotientCosetValues>(
@@ -5806,55 +5592,55 @@ else
             }
 
             std::vector<QuotientCosetValuesPtr>
-file_backed_coset_discard_set()
-{
-    std::unordered_map<
-        const QuotientCosetValues *,
-        QuotientCosetValuesPtr> unique;
-
-    {
-        std::lock_guard<std::mutex> lock(
-            coset_cache_mutex_);
-
-        unique.reserve(coset_cache_.size());
-
-        for (const auto &[_, values] :
-             coset_cache_)
-        {
-            if (values != nullptr
-                && values->file_backed())
+            file_backed_coset_discard_set()
             {
-                unique.emplace(
-                    values.get(),
-                    values);
+                std::unordered_map<
+                    const QuotientCosetValues *,
+                    QuotientCosetValuesPtr>
+                    unique;
+
+                {
+                    std::lock_guard<std::mutex> lock(
+                        coset_cache_mutex_);
+
+                    unique.reserve(coset_cache_.size());
+
+                    for (const auto &[_, values] :
+                         coset_cache_)
+                    {
+                        if (values != nullptr && values->file_backed())
+                        {
+                            unique.emplace(
+                                values.get(),
+                                values);
+                        }
+                    }
+                }
+
+                std::vector<QuotientCosetValuesPtr> out;
+                out.reserve(unique.size());
+
+                for (const auto &[_, values] : unique)
+                {
+                    out.push_back(values);
+                }
+
+                return out;
             }
-        }
-    }
 
-    std::vector<QuotientCosetValuesPtr> out;
-    out.reserve(unique.size());
-
-    for (const auto &[_, values] : unique)
-    {
-        out.push_back(values);
-    }
-
-    return out;
-}
-
-void discard_consumed_coset_pages(
-    const std::vector<
-        QuotientCosetValuesPtr>& discard_set,
-    std::size_t end_index) const
-{
-    for (const auto &values : discard_set)
-    {
-        if (values != nullptr)
-        {
-            values->discard_prefix(end_index);
-        }
-    }
-}
+            void discard_consumed_coset_pages(
+                const std::vector<
+                    QuotientCosetValuesPtr> &discard_set,
+                std::size_t end_index) const
+            {
+                for (const auto &values : discard_set)
+                {
+                    if (values != nullptr)
+                    {
+                        values->discard_prefix(end_index);
+                    }
+                }
+            }
 
             template <class Fn>
             void parallel_for_chunks(
@@ -5920,20 +5706,16 @@ void discard_consumed_coset_pages(
                 if (label_ != "t_edge")
                 {
                     throw std::runtime_error(
-                        "t_edge fast lookup validation requested for "
-                        + label_);
+                        "t_edge fast lookup validation requested for " + label_);
                 }
                 std::size_t derived_count = 0;
                 for (const auto &name : labels)
                 {
                     const auto it = fast_coset_lookup_.find(name);
-                    if (it == fast_coset_lookup_.end()
-                        || it->second == nullptr
-                        || it->second->size() != target_size_)
+                    if (it == fast_coset_lookup_.end() || it->second == nullptr || it->second->size() != target_size_)
                     {
                         throw std::runtime_error(
-                            "t_edge quotient fast lookup failed to bind dependency: "
-                            + name);
+                            "t_edge quotient fast lookup failed to bind dependency: " + name);
                     }
                     if (is_edge_derived_coset_request(name))
                     {
@@ -5941,10 +5723,7 @@ void discard_consumed_coset_pages(
                     }
                 }
                 progress_note(
-                    "prove:quotient:t_edge:fast_lookup:dependencies="
-                    + std::to_string(labels.size())
-                    + ":derived_views=" + std::to_string(derived_count)
-                    + ":missing_or_null=0");
+                    "prove:quotient:t_edge:fast_lookup:dependencies=" + std::to_string(labels.size()) + ":derived_views=" + std::to_string(derived_count) + ":missing_or_null=0");
             }
 
             const QuotientCosetValues *bind_t_edge_fast_coset(
@@ -5953,8 +5732,7 @@ void discard_consumed_coset_pages(
                 if (label_ != "t_edge")
                 {
                     throw std::runtime_error(
-                        "t_edge fast lookup binding requested for "
-                        + label_);
+                        "t_edge fast lookup binding requested for " + label_);
                 }
                 auto it = fast_coset_lookup_.find(name);
                 if (it == fast_coset_lookup_.end())
@@ -5968,12 +5746,10 @@ void discard_consumed_coset_pages(
                     it = fast_coset_lookup_.emplace(name, values.get()).first;
                     ++edge_access_plan_late_bind_count_;
                 }
-                if (it->second == nullptr
-                    || it->second->size() != target_size_)
+                if (it->second == nullptr || it->second->size() != target_size_)
                 {
                     throw std::runtime_error(
-                        "t_edge quotient access-plan dependency is not bound to a full coset view: "
-                        + name);
+                        "t_edge quotient access-plan dependency is not bound to a full coset view: " + name);
                 }
                 return it->second;
             }
@@ -5989,13 +5765,10 @@ void discard_consumed_coset_pages(
                     -> const QuotientCosetValues *
                 {
                     const auto it = fast_coset_lookup_.find(name);
-                    if (it == fast_coset_lookup_.end()
-                        || it->second == nullptr
-                        || it->second->size() != target_size_)
+                    if (it == fast_coset_lookup_.end() || it->second == nullptr || it->second->size() != target_size_)
                     {
                         throw std::runtime_error(
-                            "FH fixed coset slot is missing or has the wrong size: "
-                            + std::string(name));
+                            "FH fixed coset slot is missing or has the wrong size: " + std::string(name));
                     }
                     return it->second;
                 };
@@ -6034,11 +5807,11 @@ void discard_consumed_coset_pages(
                 {
                     return QuotientBoundaryValues{
                         .first = z == one
-                            ? one
-                            : FieldElement::zero(),
+                                     ? one
+                                     : FieldElement::zero(),
                         .last = z == last_point
-                            ? one
-                            : FieldElement::zero(),
+                                    ? one
+                                    : FieldElement::zero(),
                         .zero = zero,
                         .zero_inverse = std::nullopt,
                     };
@@ -6049,11 +5822,8 @@ void discard_consumed_coset_pages(
                     (first_denominator * last_denominator).inv();
                 const auto zero_scaled = zero * domain_->inv_size;
                 return QuotientBoundaryValues{
-                    .first = zero_scaled * last_denominator
-                        * denominator_product_inverse,
-                    .last = zero_scaled * last_point
-                        * first_denominator
-                        * denominator_product_inverse,
+                    .first = zero_scaled * last_denominator * denominator_product_inverse,
+                    .last = zero_scaled * last_point * first_denominator * denominator_product_inverse,
                     .zero = zero,
                     .zero_inverse = std::nullopt,
                 };
@@ -6109,8 +5879,7 @@ void discard_consumed_coset_pages(
                 // A committed column carries its own registered Z_edge*R
                 // blinder.  Its semantic expression is equal only on the
                 // edge domain and cannot replace that polynomial on a coset.
-                if (lookup_polynomial(name) != nullptr
-                    || trace_.spilled_polynomials.contains(name))
+                if (lookup_polynomial(name) != nullptr || trace_.spilled_polynomials.contains(name))
                 {
                     return false;
                 }
@@ -6195,8 +5964,7 @@ void discard_consumed_coset_pages(
                 {
                     return std::nullopt;
                 }
-                if (lookup_polynomial(name) != nullptr
-                    || trace_.spilled_polynomials.contains(name))
+                if (lookup_polynomial(name) != nullptr || trace_.spilled_polynomials.contains(name))
                 {
                     return std::nullopt;
                 }
@@ -6257,8 +6025,7 @@ void discard_consumed_coset_pages(
                     }
                     if (suffix == "Query_ELU")
                     {
-                        return head_value("H_ELU_in_flat")
-                            + eta_elu * head_value("H_agg_flat");
+                        return head_value("H_ELU_in_flat") + eta_elu * head_value("H_agg_flat");
                     }
                     const auto eta_src = challenges_.at("eta_src_h" + std::to_string(head_index));
                     if (suffix == "Query_src")
@@ -6296,12 +6063,7 @@ void discard_consumed_coset_pages(
                         const auto eta_dst_cu = eta_dst_sq * eta_dst;
                         const auto eta_dst_4 = eta_dst_cu * eta_dst;
                         const auto eta_dst_5 = eta_dst_4 * eta_dst;
-                        return value("P_dst")
-                               + eta_dst * head_value("E_dst_edge")
-                               + eta_dst_sq * head_value("M_edge")
-                               + eta_dst_cu * head_value("Sum_edge")
-                               + eta_dst_4 * head_value("inv_edge")
-                               + eta_dst_5 * head_value("H_agg_star_edge");
+                        return value("P_dst") + eta_dst * head_value("E_dst_edge") + eta_dst_sq * head_value("M_edge") + eta_dst_cu * head_value("Sum_edge") + eta_dst_4 * head_value("inv_edge") + eta_dst_5 * head_value("H_agg_star_edge");
                     }
                     return std::nullopt;
                 }
@@ -6387,12 +6149,7 @@ void discard_consumed_coset_pages(
                         const auto eta_dst_cu = eta_dst_sq * eta_dst;
                         const auto eta_dst_4 = eta_dst_cu * eta_dst;
                         const auto eta_dst_5 = eta_dst_4 * eta_dst;
-                        return value("P_dst")
-                               + eta_dst * head_value("E_dst_edge")
-                               + eta_dst_sq * head_value("M_edge")
-                               + eta_dst_cu * head_value("Sum_edge")
-                               + eta_dst_4 * head_value("inv_edge")
-                               + eta_dst_5 * head_value("Y_star_edge");
+                        return value("P_dst") + eta_dst * head_value("E_dst_edge") + eta_dst_sq * head_value("M_edge") + eta_dst_cu * head_value("Sum_edge") + eta_dst_4 * head_value("inv_edge") + eta_dst_5 * head_value("Y_star_edge");
                     }
                     return std::nullopt;
                 }
@@ -6403,8 +6160,8 @@ void discard_consumed_coset_pages(
 
             struct SemanticCosetGroup
             {
-                const algebra::Polynomial* owner = nullptr;
-                const TraceArtifacts::SpilledEvaluationPolynomial*
+                const algebra::Polynomial *owner = nullptr;
+                const TraceArtifacts::SpilledEvaluationPolynomial *
                     spilled_owner = nullptr;
                 std::string owner_label;
                 std::vector<std::string> labels;
@@ -6414,12 +6171,12 @@ void discard_consumed_coset_pages(
             };
 
             std::uint64_t semantic_values_hash(
-                const std::vector<FieldElement>& values) const
+                const std::vector<FieldElement> &values) const
             {
                 std::uint64_t hash = 1469598103934665603ULL;
-                for (const auto& value : values)
+                for (const auto &value : values)
                 {
-                    const auto* units = value.native().getUnit();
+                    const auto *units = value.native().getUnit();
                     for (std::size_t unit = 0;
                          unit < mcl::Fr::getUnitSize(); ++unit)
                     {
@@ -6433,7 +6190,7 @@ void discard_consumed_coset_pages(
             }
 
             void seed_semantic_coset_groups(
-                const std::vector<std::string>& wave)
+                const std::vector<std::string> &wave)
             {
                 semantic_coset_group_by_label_.clear();
                 semantic_coset_groups_.clear();
@@ -6446,25 +6203,20 @@ void discard_consumed_coset_pages(
                     std::shared_ptr<SemanticCosetGroup>>
                     spilled_groups_by_source;
                 std::size_t semantic_objects = 0;
-                for (const auto& item_label : wave)
+                for (const auto &item_label : wave)
                 {
-                    const auto* polynomial = lookup_polynomial(item_label);
-                    if (polynomial != nullptr
-                        && polynomial->basis
-                            == algebra::PolynomialBasis::Evaluation
-                        && polynomial->domain.get() == domain_.get())
+                    const auto *polynomial = lookup_polynomial(item_label);
+                    if (polynomial != nullptr && polynomial->basis == algebra::PolynomialBasis::Evaluation && polynomial->domain.get() == domain_.get())
                     {
                         ++semantic_objects;
-                        const auto& values = polynomial->values();
-                        auto& candidates = groups_by_hash[
-                            semantic_values_hash(values)];
+                        const auto &values = polynomial->values();
+                        auto &candidates = groups_by_hash[semantic_values_hash(values)];
                         auto group = std::find_if(
                             candidates.begin(),
                             candidates.end(),
-                            [&](const auto& candidate)
+                            [&](const auto &candidate)
                             {
-                                return candidate->owner->values()
-                                    == values;
+                                return candidate->owner->values() == values;
                             });
                         if (group == candidates.end())
                         {
@@ -6484,19 +6236,14 @@ void discard_consumed_coset_pages(
 
                     const auto spilled_it =
                         trace_.spilled_polynomials.find(item_label);
-                    if (spilled_it
-                            == trace_.spilled_polynomials.end()
-                        || spilled_it->second.semantic_source_id == 0
-                        || spilled_it->second.domain_name
-                            != domain_->name)
+                    if (spilled_it == trace_.spilled_polynomials.end() || spilled_it->second.semantic_source_id == 0 || spilled_it->second.domain_name != domain_->name)
                     {
                         continue;
                     }
                     if (spilled_it->second.size > domain_->size)
                     {
                         throw std::runtime_error(
-                            "spilled semantic coset source exceeds domain: "
-                            + item_label);
+                            "spilled semantic coset source exceeds domain: " + item_label);
                     }
                     if (spilled_it->second.size == 0)
                     {
@@ -6504,10 +6251,7 @@ void discard_consumed_coset_pages(
                     }
                     ++semantic_objects;
                     const auto source_key =
-                        spilled_it->second.domain_name + ":"
-                        + std::to_string(spilled_it->second.size) + ":"
-                        + std::to_string(
-                            spilled_it->second.semantic_source_id);
+                        spilled_it->second.domain_name + ":" + std::to_string(spilled_it->second.size) + ":" + std::to_string(spilled_it->second.semantic_source_id);
                     const auto [group_it, inserted] =
                         spilled_groups_by_source.emplace(
                             source_key, nullptr);
@@ -6527,7 +6271,7 @@ void discard_consumed_coset_pages(
                 }
 
                 std::size_t semantic_unique = 0;
-                const auto register_group = [&](const auto& group)
+                const auto register_group = [&](const auto &group)
                 {
                     if (group->labels.size() <= 1)
                     {
@@ -6535,22 +6279,22 @@ void discard_consumed_coset_pages(
                     }
                     group->remaining = group->labels.size();
                     semantic_coset_groups_.push_back(group);
-                    for (const auto& item_label : group->labels)
+                    for (const auto &item_label : group->labels)
                     {
                         semantic_coset_group_by_label_.emplace(
                             item_label, group);
                     }
                 };
-                for (auto& [_, candidates] : groups_by_hash)
+                for (auto &[_, candidates] : groups_by_hash)
                 {
                     semantic_unique += candidates.size();
-                    for (auto& group : candidates)
+                    for (auto &group : candidates)
                     {
                         register_group(group);
                     }
                 }
                 semantic_unique += spilled_groups_by_source.size();
-                for (auto& [_, group] : spilled_groups_by_source)
+                for (auto &[_, group] : spilled_groups_by_source)
                 {
                     register_group(group);
                 }
@@ -6563,15 +6307,7 @@ void discard_consumed_coset_pages(
                 if (progress_enabled())
                 {
                     progress_note(
-                        "prove:quotient:" + label_
-                        + ":coset_prewarm:semantic_objects="
-                        + std::to_string(semantic_objects)
-                        + ":semantic_unique="
-                        + std::to_string(semantic_unique)
-                        + ":semantic_duplicates="
-                        + std::to_string(semantic_objects - semantic_unique)
-                        + ":semantic_reuse_groups="
-                        + std::to_string(semantic_coset_groups_.size()));
+                        "prove:quotient:" + label_ + ":coset_prewarm:semantic_objects=" + std::to_string(semantic_objects) + ":semantic_unique=" + std::to_string(semantic_unique) + ":semantic_duplicates=" + std::to_string(semantic_objects - semantic_unique) + ":semantic_reuse_groups=" + std::to_string(semantic_coset_groups_.size()));
                 }
             }
 
@@ -6608,8 +6344,8 @@ void discard_consumed_coset_pages(
 
             QuotientCosetValuesPtr
             reused_semantic_coset_group_values(
-                const std::string& requested_name,
-                const std::vector<FieldElement>& zero_domain_blinder)
+                const std::string &requested_name,
+                const std::vector<FieldElement> &zero_domain_blinder)
             {
                 const auto group_it = semantic_coset_group_by_label_.find(
                     requested_name);
@@ -6617,7 +6353,7 @@ void discard_consumed_coset_pages(
                 {
                     return nullptr;
                 }
-                const auto& group = group_it->second;
+                const auto &group = group_it->second;
                 QuotientCosetValuesPtr base_values;
                 {
                     std::lock_guard<std::mutex> lock(group->mutex);
@@ -6643,8 +6379,7 @@ void discard_consumed_coset_pages(
                         else
                         {
                             throw std::runtime_error(
-                                "semantic coset group has no owner: "
-                                + requested_name);
+                                "semantic coset group has no owner: " + requested_name);
                         }
                         semantic_polynomial.zero_domain_blinder.clear();
                         group->base_values =
@@ -6681,8 +6416,8 @@ void discard_consumed_coset_pages(
 
             QuotientCosetValuesPtr
             reused_semantic_coset_values(
-                const std::string& requested_name,
-                const algebra::Polynomial& polynomial)
+                const std::string &requested_name,
+                const algebra::Polynomial &polynomial)
             {
                 return reused_semantic_coset_group_values(
                     requested_name,
@@ -6691,8 +6426,8 @@ void discard_consumed_coset_pages(
 
             QuotientCosetValuesPtr
             reused_spilled_semantic_coset_values(
-                const std::string& requested_name,
-                const TraceArtifacts::SpilledEvaluationPolynomial& spilled)
+                const std::string &requested_name,
+                const TraceArtifacts::SpilledEvaluationPolynomial &spilled)
             {
                 return reused_semantic_coset_group_values(
                     requested_name,
@@ -6767,82 +6502,66 @@ void discard_consumed_coset_pages(
                             std::max<std::size_t>(8, cpu_count));
                     }
                     const auto worker_count =
-    std::min<std::size_t>(
-        std::min<std::size_t>(
-            cpu_count,
-            worker_cap),
-        wave.size());
+                        std::min<std::size_t>(
+                            std::min<std::size_t>(
+                                cpu_count,
+                                worker_cap),
+                            wave.size());
 
-const auto transform_worker_cap =
-    std::max<std::size_t>(
-        1,
-        cpu_count
-            / std::max<std::size_t>(
-                1,
-                worker_count));
+                    const auto transform_worker_cap =
+                        std::max<std::size_t>(
+                            1,
+                            cpu_count / std::max<std::size_t>(
+                                            1,
+                                            worker_count));
 
                     const bool log_items =
-                        !(label_ == "t_edge"
-                          && wave_name == std::string_view("base")
-                          && wave.size() > 64
-                          && std::getenv("GATZK_VERBOSE_T_EDGE_PREWARM") == nullptr);
+                        !(label_ == "t_edge" && wave_name == std::string_view("base") && wave.size() > 64 && std::getenv("GATZK_VERBOSE_T_EDGE_PREWARM") == nullptr);
                     progress_note(
                         "prove:quotient:" + label_ + ":coset_prewarm:" + std::string(wave_name) + ":workers=" + std::to_string(worker_count));
                     std::atomic<std::size_t> next{0};
                     std::vector<std::future<void>> futures;
                     futures.reserve(worker_count);
                     for (std::size_t worker = 0;
-     worker < worker_count;
-     ++worker)
-{
-    futures.push_back(
-        std::async(
-            std::launch::async,
-            [&, wave_name]()
-            {
-                const ScopedQuotientTransformWorkerCap
-                    transform_worker_scope(
-                        transform_worker_cap);
-
-                while (true)
-                {
-                    const auto index =
-                        next.fetch_add(1);
-
-                    if (index >= wave.size())
+                         worker < worker_count;
+                         ++worker)
                     {
-                        break;
-                    }
+                        futures.push_back(
+                            std::async(
+                                std::launch::async,
+                                [&, wave_name]()
+                                {
+                                    const ScopedQuotientTransformWorkerCap
+                                        transform_worker_scope(
+                                            transform_worker_cap);
 
-                    if (log_items)
-                    {
-                        progress_note(
-                            "prove:quotient:"
-                            + label_
-                            + ":coset_prewarm:"
-                            + std::string(wave_name)
-                            + ":"
-                            + wave[index]
-                            + ":start");
-                    }
+                                    while (true)
+                                    {
+                                        const auto index =
+                                            next.fetch_add(1);
 
-                    coset_values_ptr(
-                        wave[index]);
+                                        if (index >= wave.size())
+                                        {
+                                            break;
+                                        }
 
-                    if (log_items)
-                    {
-                        progress_note(
-                            "prove:quotient:"
-                            + label_
-                            + ":coset_prewarm:"
-                            + std::string(wave_name)
-                            + ":"
-                            + wave[index]
-                            + ":done");
+                                        if (log_items)
+                                        {
+                                            progress_note(
+                                                "prove:quotient:" + label_ + ":coset_prewarm:" + std::string(wave_name) + ":" + wave[index] + ":start");
+                                        }
+
+                                        coset_values_ptr(
+                                            wave[index]);
+
+                                        if (log_items)
+                                        {
+                                            progress_note(
+                                                "prove:quotient:" + label_ + ":coset_prewarm:" + std::string(wave_name) + ":" + wave[index] + ":done");
+                                        }
+                                    }
+                                }));
                     }
-                }
-            }));
-}
                     for (auto &future : futures)
                     {
                         future.get();
@@ -6894,16 +6613,11 @@ const auto transform_worker_cap =
             std::string coset_source_key(const std::string &label) const
             {
                 const auto *polynomial = lookup_polynomial(label);
-                if (polynomial == nullptr
-                    || polynomial->basis != algebra::PolynomialBasis::Evaluation
-                    || polynomial->domain == nullptr
-                    || polynomial->shared_data == nullptr)
+                if (polynomial == nullptr || polynomial->basis != algebra::PolynomialBasis::Evaluation || polynomial->domain == nullptr || polynomial->shared_data == nullptr)
                 {
                     return {};
                 }
-                return polynomial->domain->name
-                       + ":" + std::to_string(polynomial->domain->size)
-                       + ":" + std::to_string(reinterpret_cast<std::uintptr_t>(polynomial->shared_data.get()));
+                return polynomial->domain->name + ":" + std::to_string(polynomial->domain->size) + ":" + std::to_string(reinterpret_cast<std::uintptr_t>(polynomial->shared_data.get()));
             }
 
             void seed_shared_source_coset_aliases(std::vector<std::string> *labels)
@@ -6928,8 +6642,7 @@ const auto transform_worker_cap =
                     // reuse can share only the canonical evaluations and add
                     // each registered blinder lazily.  Direct aliases are
                     // valid only for unblinded columns.
-                    if (polynomial != nullptr
-                        && polynomial->is_zero_domain_blinded())
+                    if (polynomial != nullptr && polynomial->is_zero_domain_blinded())
                     {
                         filtered.push_back(label);
                         continue;
@@ -6965,8 +6678,7 @@ const auto transform_worker_cap =
                 if (label_ == "t_edge")
                 {
                     progress_note(
-                        "prove:quotient:t_edge:coset_prewarm:shared_source_aliases="
-                        + std::to_string(aliases.size()));
+                        "prove:quotient:t_edge:coset_prewarm:shared_source_aliases=" + std::to_string(aliases.size()));
                 }
             }
 
@@ -7031,7 +6743,8 @@ const auto transform_worker_cap =
             {
                 std::vector<std::pair<
                     QuotientCosetValuesPtr,
-                    FieldElement>> resolved_terms;
+                    FieldElement>>
+                    resolved_terms;
                 resolved_terms.reserve(terms.size());
                 auto correction =
                     registered_blinder_for_label(derived_label);
@@ -7064,30 +6777,23 @@ const auto transform_worker_cap =
                     }
                 }
                 trim_field_coefficients(&correction);
-                if (correction.size() == 1
-                    && correction.front().is_zero())
+                if (correction.size() == 1 && correction.front().is_zero())
                 {
                     correction.clear();
                 }
                 if (resolved_terms.empty())
                 {
                     throw std::runtime_error(
-                        "derived t_edge linear view has no terms: "
-                        + derived_label);
+                        "derived t_edge linear view has no terms: " + derived_label);
                 }
-                if (resolved_terms.size() == 1
-                    && resolved_terms.front().second
-                        == FieldElement::one()
-                    && correction.empty())
+                if (resolved_terms.size() == 1 && resolved_terms.front().second == FieldElement::one() && correction.empty())
                 {
                     return resolved_terms.front().first;
                 }
-                if (!correction.empty()
-                    && semantic_coset_zero_cycle_.empty())
+                if (!correction.empty() && semantic_coset_zero_cycle_.empty())
                 {
                     throw std::runtime_error(
-                        "derived t_edge linear view is missing blinder geometry: "
-                        + derived_label);
+                        "derived t_edge linear view is missing blinder geometry: " + derived_label);
                 }
                 auto retained =
                     std::make_shared<const QuotientCosetValues>(
@@ -7183,10 +6889,10 @@ const auto transform_worker_cap =
                     {
                         const auto eta_src_sq = eta_src * eta_src;
                         return scaled_coset_sum(name, {
-                            {"P_src", FieldElement::one()},
-                            {prefix + "E_src_edge", eta_src},
-                            {prefix + "H_src_star_edge", eta_src_sq},
-                        });
+                                                          {"P_src", FieldElement::one()},
+                                                          {prefix + "E_src_edge", eta_src},
+                                                          {prefix + "H_src_star_edge", eta_src_sq},
+                                                      });
                     }
                     if (suffix == "Query_t")
                     {
@@ -7199,13 +6905,13 @@ const auto transform_worker_cap =
                         const auto eta_dst_4 = eta_dst_cu * eta_dst;
                         const auto eta_dst_5 = eta_dst_4 * eta_dst;
                         return scaled_coset_sum(name, {
-                            {"P_dst", FieldElement::one()},
-                            {prefix + "E_dst_edge", eta_dst},
-                            {prefix + "M_edge", eta_dst_sq},
-                            {prefix + "Sum_edge", eta_dst_cu},
-                            {prefix + "inv_edge", eta_dst_4},
-                            {prefix + "H_agg_star_edge", eta_dst_5},
-                        });
+                                                          {"P_dst", FieldElement::one()},
+                                                          {prefix + "E_dst_edge", eta_dst},
+                                                          {prefix + "M_edge", eta_dst_sq},
+                                                          {prefix + "Sum_edge", eta_dst_cu},
+                                                          {prefix + "inv_edge", eta_dst_4},
+                                                          {prefix + "H_agg_star_edge", eta_dst_5},
+                                                      });
                     }
                     return nullptr;
                 }
@@ -7292,13 +6998,13 @@ const auto transform_worker_cap =
                         const auto eta_dst_4 = eta_dst_cu * eta_dst;
                         const auto eta_dst_5 = eta_dst_4 * eta_dst;
                         return scaled_coset_sum(name, {
-                            {"P_dst", FieldElement::one()},
-                            {prefix + "E_dst_edge", eta_dst},
-                            {prefix + "M_edge", eta_dst_sq},
-                            {prefix + "Sum_edge", eta_dst_cu},
-                            {prefix + "inv_edge", eta_dst_4},
-                            {prefix + "Y_star_edge", eta_dst_5},
-                        });
+                                                          {"P_dst", FieldElement::one()},
+                                                          {prefix + "E_dst_edge", eta_dst},
+                                                          {prefix + "M_edge", eta_dst_sq},
+                                                          {prefix + "Sum_edge", eta_dst_cu},
+                                                          {prefix + "inv_edge", eta_dst_4},
+                                                          {prefix + "Y_star_edge", eta_dst_5},
+                                                      });
                     }
                     return nullptr;
                 }
@@ -7307,12 +7013,7 @@ const auto transform_worker_cap =
 
             std::string canonical_coset_label(const std::string &name) const
             {
-                if (label_ == "t_edge"
-                    && (name == "P_Q_qry_src"
-                        || name == "P_Q_qry_dst"
-                        || name == "P_Q_qry_L"
-                        || name == "P_Q_qry_R"
-                        || name == "P_Q_qry_exp"))
+                if (label_ == "t_edge" && (name == "P_Q_qry_src" || name == "P_Q_qry_dst" || name == "P_Q_qry_L" || name == "P_Q_qry_R" || name == "P_Q_qry_exp"))
                 {
                     return "P_Q_edge_valid";
                 }
@@ -7334,11 +7035,7 @@ const auto transform_worker_cap =
                 {
                     return nullptr;
                 }
-                if (polynomial->basis != algebra::PolynomialBasis::Evaluation
-                    || polynomial->domain == nullptr
-                    || polynomial->domain->size != domain_->size
-                    || !(polynomial->domain->omega == domain_->omega)
-                    || polynomial->values().size() != domain_->size)
+                if (polynomial->basis != algebra::PolynomialBasis::Evaluation || polynomial->domain == nullptr || polynomial->domain->size != domain_->size || !(polynomial->domain->omega == domain_->omega) || polynomial->values().size() != domain_->size)
                 {
                     throw std::runtime_error("FH selector fast path domain mismatch: " + requested_name);
                 }
@@ -7427,8 +7124,7 @@ const auto transform_worker_cap =
                     difference[i] = left_value - right_value;
                 }
                 trim_field_coefficients(&difference);
-                if (difference.size() == 1
-                    && difference.front().is_zero())
+                if (difference.size() == 1 && difference.front().is_zero())
                 {
                     difference.clear();
                 }
@@ -7443,21 +7139,17 @@ const auto transform_worker_cap =
             {
                 if (semantic_values.empty())
                 {
-                    if (base_values != nullptr
-                        && blinder_correction.empty())
+                    if (base_values != nullptr && blinder_correction.empty())
                     {
                         return base_values;
                     }
                     semantic_values.resize(
                         target_size_, FieldElement::zero());
                 }
-                if (semantic_values.size() != target_size_
-                    || (base_values != nullptr
-                        && base_values->size() != target_size_))
+                if (semantic_values.size() != target_size_ || (base_values != nullptr && base_values->size() != target_size_))
                 {
                     throw std::runtime_error(
-                        "lazy spilled FH semantic coset size mismatch: "
-                        + label);
+                        "lazy spilled FH semantic coset size mismatch: " + label);
                 }
 
                 const auto root =
@@ -7473,23 +7165,20 @@ const auto transform_worker_cap =
                     0,
                     [&](std::size_t begin, std::size_t end)
                     {
-                        auto point = shift_
-                            * root.pow(
-                                static_cast<std::uint64_t>(begin));
-                        auto zero_power = shifted_zero
-                            * zero_step.pow(
-                                static_cast<std::uint64_t>(begin));
+                        auto point = shift_ * root.pow(
+                                                  static_cast<std::uint64_t>(begin));
+                        auto zero_power = shifted_zero * zero_step.pow(
+                                                             static_cast<std::uint64_t>(begin));
                         for (std::size_t i = begin; i < end; ++i)
                         {
                             auto value = base_values != nullptr
-                                ? (*base_values)[i]
-                                : semantic_values[i];
+                                             ? (*base_values)[i]
+                                             : semantic_values[i];
                             if (!blinder_correction.empty())
                             {
-                                value += (zero_power - one)
-                                    * algebra::horner(
-                                        blinder_correction,
-                                        point);
+                                value += (zero_power - one) * algebra::horner(
+                                                                  blinder_correction,
+                                                                  point);
                             }
                             semantic_values[i] = value;
                             point *= root;
@@ -7506,25 +7195,17 @@ const auto transform_worker_cap =
                 const std::string &label)
             {
                 seed_lazy_blinder_geometry();
-                if (semantic_coset_points_ == nullptr
-                    || semantic_coset_points_->size() != target_size_
-                    || semantic_coset_zero_cycle_.empty()
-                    || semantic_coset_zero_cycle_.size()
-                        != rotation_step_
-                    || target_size_
-                        % semantic_coset_zero_cycle_.size() != 0)
+                if (semantic_coset_points_ == nullptr || semantic_coset_points_->size() != target_size_ || semantic_coset_zero_cycle_.empty() || semantic_coset_zero_cycle_.size() != rotation_step_ || target_size_ % semantic_coset_zero_cycle_.size() != 0)
                 {
                     throw std::runtime_error(
-                        "lazy spilled quotient blinder geometry mismatch: "
-                        + label);
+                        "lazy spilled quotient blinder geometry mismatch: " + label);
                 }
                 if (base_values != nullptr)
                 {
                     if (base_values->size() != target_size_)
                     {
                         throw std::runtime_error(
-                            "lazy spilled quotient semantic coset size mismatch: "
-                            + label);
+                            "lazy spilled quotient semantic coset size mismatch: " + label);
                     }
                     if (blinder_correction.empty())
                     {
@@ -7560,22 +7241,11 @@ const auto transform_worker_cap =
                     return nullptr;
                 }
                 const bool signed_division_compact_source =
-                    requested_name.find("_Div_Limb_")
-                            != std::string::npos
-                    || (requested_name.find("_Div_Range_")
-                            != std::string::npos
-                        && requested_name.ends_with("_Query"));
-                if (label_ != "t_edge"
-                    || !signed_division_compact_source
-                    || spilled.semantic_source_id == 0
-                    || spilled.domain_name != domain_->name
-                    || spilled.size == 0
-                    || spilled.size >= domain_->size
-                    || spilled.zero_domain_blinder.empty())
+                    requested_name.find("_Div_Limb_") != std::string::npos || (requested_name.find("_Div_Range_") != std::string::npos && requested_name.ends_with("_Query"));
+                if (label_ != "t_edge" || !signed_division_compact_source || spilled.semantic_source_id == 0 || spilled.domain_name != domain_->name || spilled.size == 0 || spilled.size >= domain_->size || spilled.zero_domain_blinder.empty())
                 {
                     throw std::runtime_error(
-                        "invalid pure-zero compact spilled quotient metadata: "
-                        + requested_name);
+                        "invalid pure-zero compact spilled quotient metadata: " + requested_name);
                 }
                 return retain_lazy_coset_with_blinder_correction(
                     nullptr,
@@ -7592,12 +7262,10 @@ const auto transform_worker_cap =
                 const bool full_feature_identity =
                     lazy_full_feature_lookup_trace_enabled(context_);
                 const bool identical_feature_inverse =
-                    requested_name == "P_J_tbl_feat"
-                    || requested_name == "P_J_qry_feat";
-                if (!full_feature_identity
-                    || (!is_lazy_full_feature_lookup_trace_label(
-                            requested_name)
-                        && !identical_feature_inverse))
+                    requested_name == "P_J_tbl_feat" || requested_name == "P_J_qry_feat";
+                if (!full_feature_identity || (!is_lazy_full_feature_lookup_trace_label(
+                                                   requested_name) &&
+                                               !identical_feature_inverse))
                 {
                     return nullptr;
                 }
@@ -7605,14 +7273,12 @@ const auto transform_worker_cap =
                 // by the trace.  Transform it once directly.  Reconstructing
                 // it from Row/Col/T_H performed three full 4x-FH transforms
                 // merely to recover the same committed polynomial.
-                if (requested_name == "P_Table_feat"
-                    || requested_name == "P_J_tbl_feat")
+                if (requested_name == "P_Table_feat" || requested_name == "P_J_tbl_feat")
                 {
                     return nullptr;
                 }
                 progress_note(
-                    "prove:quotient:t_FH:spilled_lazy:"
-                    + requested_name + ":start");
+                    "prove:quotient:t_FH:spilled_lazy:" + requested_name + ":start");
                 QuotientCosetValuesPtr base_values;
                 std::vector<FieldElement> semantic_values;
                 auto correction = spilled.zero_domain_blinder;
@@ -7623,8 +7289,7 @@ const auto transform_worker_cap =
                     const auto table_it =
                         trace_.spilled_polynomials.find(
                             "P_Table_feat");
-                    if (table_it
-                        == trace_.spilled_polynomials.end())
+                    if (table_it == trace_.spilled_polynomials.end())
                     {
                         throw std::runtime_error(
                             "spilled FH query is missing its "
@@ -7641,8 +7306,7 @@ const auto transform_worker_cap =
                     const auto table_inverse_it =
                         trace_.spilled_polynomials.find(
                             "P_J_tbl_feat");
-                    if (table_inverse_it
-                        == trace_.spilled_polynomials.end())
+                    if (table_inverse_it == trace_.spilled_polynomials.end())
                     {
                         throw std::runtime_error(
                             "spilled FH query inverse is missing its "
@@ -7662,21 +7326,19 @@ const auto transform_worker_cap =
                     return nullptr;
                 }
                 const bool use_lazy_blinder_view =
-                    label_ == "t_FH"
-                    && target_size_ >= (std::size_t{1} << 26);
+                    label_ == "t_FH" && target_size_ >= (std::size_t{1} << 26);
                 auto values = use_lazy_blinder_view
-                    ? retain_lazy_coset_with_blinder_correction(
-                          std::move(base_values),
-                          correction,
-                          requested_name)
-                    : retain_coset_with_blinder_correction(
-                          std::move(base_values),
-                          std::move(semantic_values),
-                          correction,
-                          requested_name);
+                                  ? retain_lazy_coset_with_blinder_correction(
+                                        std::move(base_values),
+                                        correction,
+                                        requested_name)
+                                  : retain_coset_with_blinder_correction(
+                                        std::move(base_values),
+                                        std::move(semantic_values),
+                                        correction,
+                                        requested_name);
                 progress_note(
-                    "prove:quotient:t_FH:spilled_lazy:"
-                    + requested_name + ":done");
+                    "prove:quotient:t_FH:spilled_lazy:" + requested_name + ":done");
                 return values;
             }
 
@@ -7720,8 +7382,7 @@ const auto transform_worker_cap =
                     auto direct_values =
                         reused_semantic_coset_values(
                             requested_name, *polynomial);
-                    if (direct_values == nullptr
-                        && polynomial->is_zero_domain_blinded())
+                    if (direct_values == nullptr && polynomial->is_zero_domain_blinded())
                     {
                         direct_values =
                             retain_coset_values(
@@ -7766,8 +7427,8 @@ const auto transform_worker_cap =
                                 requested_name,
                                 zero_values);
                         return inserted
-                            ? zero_values
-                            : it->second;
+                                   ? zero_values
+                                   : it->second;
                     }
                     if (auto shared_values =
                             reused_spilled_semantic_coset_values(
@@ -7782,8 +7443,8 @@ const auto transform_worker_cap =
                                 requested_name,
                                 shared_values);
                         return inserted
-                            ? shared_values
-                            : it->second;
+                                   ? shared_values
+                                   : it->second;
                     }
                     if (auto lazy_values =
                             materialize_spilled_lazy_feature_coset(
@@ -7798,8 +7459,8 @@ const auto transform_worker_cap =
                                 requested_name,
                                 lazy_values);
                         return inserted
-                            ? lazy_values
-                            : it->second;
+                                   ? lazy_values
+                                   : it->second;
                     }
                     auto polynomial =
                         algebra::Polynomial::from_evaluations(
@@ -7920,8 +7581,7 @@ const auto transform_worker_cap =
                     target_size_, FieldElement::zero());
                 for (std::size_t i = 0; i < target_size_; ++i)
                 {
-                    out[i] = rows[i] + eta_feat * cols[i]
-                        + eta_feat_sq * features[i];
+                    out[i] = rows[i] + eta_feat * cols[i] + eta_feat_sq * features[i];
                 }
                 return retain_coset_values(
                     std::move(out), name);
@@ -8029,24 +7689,23 @@ const auto transform_worker_cap =
             prewarm_coset_values(prewarm_labels);
 
             const auto root = FieldElement::root_of_unity(target_size_);
-            const auto evaluate_at_index = [&] (
-                std::size_t i,
-                const FieldElement &z) -> FieldElement
+            const auto evaluate_at_index = [&](
+                                               std::size_t i,
+                                               const FieldElement &z) -> FieldElement
             {
                 const auto omega_z = z * domain_->omega;
                 const auto rotated_index =
                     (i + rotation_step_) & (target_size_ - 1U);
                 std::size_t edge_access_cursor = 0;
-                const auto eval = [&] (
-                    const std::string &name,
-                    const FieldElement &point) -> FieldElement
+                const auto eval = [&](
+                                      const std::string &name,
+                                      const FieldElement &point) -> FieldElement
                 {
                     const auto rotated = point == omega_z;
                     if (!rotated && point != z)
                     {
                         throw std::runtime_error(
-                            "t_edge stage benchmark received an unsupported evaluation point for "
-                            + name);
+                            "t_edge stage benchmark received an unsupported evaluation point for " + name);
                     }
                     const auto access_index =
                         rotated ? rotated_index : i;
@@ -8063,20 +7722,17 @@ const auto transform_worker_cap =
                     }
                     if (!edge_access_sequence_.empty())
                     {
-                        if (edge_access_cursor
-                            >= edge_access_sequence_.size())
+                        if (edge_access_cursor >= edge_access_sequence_.size())
                         {
                             throw std::runtime_error(
                                 "t_edge stage benchmark access-plan overflow");
                         }
                         const auto &access =
                             edge_access_sequence_[edge_access_cursor++];
-                        if (access.values == nullptr
-                            || access.values->size() != target_size_)
+                        if (access.values == nullptr || access.values->size() != target_size_)
                         {
                             throw std::runtime_error(
-                                "t_edge stage benchmark encountered an invalid bound dependency: "
-                                + access.name);
+                                "t_edge stage benchmark encountered an invalid bound dependency: " + access.name);
                         }
                         return (*access.values)[access_index];
                     }
@@ -8098,9 +7754,7 @@ const auto transform_worker_cap =
                         ? nullptr
                         : &quotient_alpha_powers_,
                     edge_evaluation_plan_.get());
-                if (!record_edge_access_sequence_
-                    && !edge_access_sequence_.empty()
-                    && edge_access_cursor != edge_access_sequence_.size())
+                if (!record_edge_access_sequence_ && !edge_access_sequence_.empty() && edge_access_cursor != edge_access_sequence_.size())
                 {
                     throw std::runtime_error(
                         "t_edge stage benchmark access-plan underflow");
@@ -8124,15 +7778,13 @@ const auto transform_worker_cap =
                 throw;
             }
             record_edge_access_sequence_ = false;
-            if (edge_access_sequence_.empty()
-                || std::any_of(
-                    edge_access_sequence_.begin(),
-                    edge_access_sequence_.end(),
-                    [&](const TEdgeCosetAccess &access)
-                    {
-                        return access.values == nullptr
-                            || access.values->size() != target_size_;
-                    }))
+            if (edge_access_sequence_.empty() || std::any_of(
+                                                     edge_access_sequence_.begin(),
+                                                     edge_access_sequence_.end(),
+                                                     [&](const TEdgeCosetAccess &access)
+                                                     {
+                                                         return access.values == nullptr || access.values->size() != target_size_;
+                                                     }))
             {
                 throw std::runtime_error(
                     "t_edge stage benchmark failed to build a complete access plan");
@@ -8146,7 +7798,7 @@ const auto transform_worker_cap =
             profile.legacy_resolver_ms.reserve(repeats);
             profile.bound_access_plan_ms.reserve(repeats);
 
-            const auto run_arm = [&] (bool bound)
+            const auto run_arm = [&](bool bound)
             {
                 if (bound)
                 {
@@ -8259,10 +7911,7 @@ const auto transform_worker_cap =
             const auto worker_count = worker_count_for_labels();
             const auto t_edge_it = std::find(labels.begin(), labels.end(), "t_edge");
             const auto edge_size = context.domains.edge != nullptr ? context.domains.edge->size : 0;
-            if (worker_count > 1
-                && context.model.has_real_multihead
-                && t_edge_it != labels.end()
-                && edge_size >= (1ULL << 15))
+            if (worker_count > 1 && context.model.has_real_multihead && t_edge_it != labels.end() && edge_size >= (1ULL << 15))
             {
                 append_note(metrics, "quotient_materialization_t_edge_priority=1");
                 std::vector<std::optional<std::pair<std::string, algebra::Polynomial>>> results(labels.size());
@@ -8379,7 +8028,7 @@ const auto transform_worker_cap =
                 coefficient = FieldElement::from_little_endian_mod(bytes.data(), bytes.size());
             }
             while (std::all_of(mask.begin(), mask.end(), [](const FieldElement &value)
-                   { return value.is_zero(); }))
+                               { return value.is_zero(); }))
             {
                 if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
                 {
@@ -8394,13 +8043,20 @@ const auto transform_worker_cap =
             const ProtocolContext &context,
             const std::string &label)
         {
-            if (label == "t_FH") return context.domains.fh->size;
-            if (label == "t_edge") return context.domains.edge->size;
-            if (label == "t_in") return context.domains.in->size;
-            if (label == "t_d" || label == "t_d_h") return context.domains.d->size;
-            if (label == "t_cat") return context.domains.cat->size;
-            if (label == "t_C") return context.domains.c->size;
-            if (label == "t_N") return context.domains.n->size;
+            if (label == "t_FH")
+                return context.domains.fh->size;
+            if (label == "t_edge")
+                return context.domains.edge->size;
+            if (label == "t_in")
+                return context.domains.in->size;
+            if (label == "t_d" || label == "t_d_h")
+                return context.domains.d->size;
+            if (label == "t_cat")
+                return context.domains.cat->size;
+            if (label == "t_C")
+                return context.domains.c->size;
+            if (label == "t_N")
+                return context.domains.n->size;
             throw std::runtime_error("unknown quotient domain: " + label);
         }
 
@@ -8683,8 +8339,18 @@ const auto transform_worker_cap =
                 "H_agg_star_edge",
             };
             const std::vector<std::string> division_suffixes = {
-                "Div_Active", "Div_X", "Div_D", "Div_Y", "Div_Sigma", "Div_Zero",
-                "Div_A", "Div_A_inv", "Div_D_inv", "Div_Q", "Div_R", "Div_Delta",
+                "Div_Active",
+                "Div_X",
+                "Div_D",
+                "Div_Y",
+                "Div_Sigma",
+                "Div_Zero",
+                "Div_A",
+                "Div_A_inv",
+                "Div_D_inv",
+                "Div_Q",
+                "Div_R",
+                "Div_Delta",
             };
             auto append_division_range_dependencies = [&](const std::string &division_prefix)
             {
@@ -8768,8 +8434,7 @@ const auto transform_worker_cap =
                     metadata.begin(), metadata.end(),
                     [&](const BindingRelationMeta &candidate)
                     { return candidate.relation_id == relation_id; });
-                if (relation == metadata.end()
-                    || relation->coefficient_basis_relations.size() != 1)
+                if (relation == metadata.end() || relation->coefficient_basis_relations.size() != 1)
                     throw std::runtime_error(
                         "edge quotient dependency registry is missing coefficient basis metadata");
                 const auto &basis =
@@ -8939,8 +8604,7 @@ const auto transform_worker_cap =
         {
             auto labels =
                 quotient_dependency_labels(context, quotient_name);
-            if (quotient_name != "t_FH"
-                || !full_graph_feature_identity_enabled(context))
+            if (quotient_name != "t_FH" || !full_graph_feature_identity_enabled(context))
             {
                 return labels;
             }
@@ -8961,8 +8625,7 @@ const auto transform_worker_cap =
                     return std::find(
                                identically_cancelled_dependencies.begin(),
                                identically_cancelled_dependencies.end(),
-                               label)
-                        != identically_cancelled_dependencies.end();
+                               label) != identically_cancelled_dependencies.end();
                 });
             return labels;
         }
@@ -9120,11 +8783,12 @@ const auto transform_worker_cap =
         SpilledEvaluationProfile *profile)
     {
         return evaluate_spilled_evaluation_polynomial_points_impl(
-            spilled,
-            domain,
-            std::vector<algebra::FieldElement>{point},
-            std::vector<const algebra::DomainEvaluationWeights *>{&weights},
-            profile).front();
+                   spilled,
+                   domain,
+                   std::vector<algebra::FieldElement>{point},
+                   std::vector<const algebra::DomainEvaluationWeights *>{&weights},
+                   profile)
+            .front();
     }
 
     std::vector<std::vector<algebra::FieldElement>>
@@ -9155,8 +8819,7 @@ const auto transform_worker_cap =
             {
                 throw std::runtime_error("spilled evaluation batch received null request");
             }
-            if (request.domain == nullptr
-                || request.points.size() != request.weights.size())
+            if (request.domain == nullptr || request.points.size() != request.weights.size())
             {
                 throw std::runtime_error("spilled evaluation batch received invalid point weights");
             }
@@ -9167,8 +8830,7 @@ const auto transform_worker_cap =
                 {
                     throw std::runtime_error("spilled evaluation batch received null point weights");
                 }
-                requires_sequential_scan = requires_sequential_scan
-                    || !weights->direct_index.has_value();
+                requires_sequential_scan = requires_sequential_scan || !weights->direct_index.has_value();
             }
             if (!requires_sequential_scan)
             {
@@ -9180,17 +8842,13 @@ const auto transform_worker_cap =
         }
         const auto available_workers = std::max<std::size_t>(
             1, std::thread::hardware_concurrency());
-        const bool use_parallel = sequential_job_count >= 2
-            && bounded_work >= kMinParallelFieldElements
-            && max_workers >= 2
-            && available_workers >= 2;
+        const bool use_parallel = sequential_job_count >= 2 && bounded_work >= kMinParallelFieldElements && max_workers >= 2 && available_workers >= 2;
         const auto worker_count = use_parallel
-            ? std::min({
-                  kWorkerCeiling,
-                  max_workers,
-                  available_workers,
-                  requests.size()})
-            : std::size_t{1};
+                                      ? std::min({kWorkerCeiling,
+                                                  max_workers,
+                                                  available_workers,
+                                                  requests.size()})
+                                      : std::size_t{1};
         if (profile != nullptr)
         {
             profile->worker_count = worker_count;
@@ -9224,7 +8882,7 @@ const auto transform_worker_cap =
         for (std::size_t worker = 0; worker < worker_count; ++worker)
         {
             workers.push_back(std::async(std::launch::async, [&]()
-            {
+                                         {
                 while (true)
                 {
                     const auto job_index = next_job.fetch_add(1);
@@ -9233,8 +8891,7 @@ const auto transform_worker_cap =
                         return;
                     }
                     run_job(job_index);
-                }
-            }));
+                } }));
         }
         std::exception_ptr first_error;
         for (auto &worker : workers)
@@ -9619,8 +9276,7 @@ const auto transform_worker_cap =
             n_size, FieldElement::zero());
         for (const auto &edge : context.local.edges)
         {
-            if (edge.src >= context.local.num_nodes
-                || edge.dst >= context.local.num_nodes)
+            if (edge.src >= context.local.num_nodes || edge.dst >= context.local.num_nodes)
                 throw std::runtime_error(
                     "aggregation multiplicity edge escapes local node range");
             aggregation_src_multiplicity[edge.src] += FieldElement::one();
@@ -9719,7 +9375,7 @@ const auto transform_worker_cap =
                 }
                 for (const auto &[region, values] :
                      std::vector<std::pair<std::string,
-                         std::vector<FieldElement>>>{
+                                           std::vector<FieldElement>>>{
                          {"active", std::move(active)},
                          {"semantic", std::move(semantic)},
                          {"gap", std::move(gap)},
@@ -9990,7 +9646,8 @@ const auto transform_worker_cap =
                 for (std::size_t column = 0; column < column_count; ++column)
                 {
                     std::vector<FieldElement> values(context.domains.in->size, FieldElement::zero());
-                    for (std::size_t row = 0; row < weight.size(); ++row) values[row] = weight[row][column];
+                    for (std::size_t row = 0; row < weight.size(); ++row)
+                        values[row] = weight[row][column];
                     const auto label = hidden_weight_column_label(head_index, column);
                     add_static_commitment(context, label, make_eval_poly(label, values, context.domains.in));
                 }
@@ -10017,7 +9674,8 @@ const auto transform_worker_cap =
                 for (std::size_t column = 0; column < column_count; ++column)
                 {
                     std::vector<FieldElement> values(context.domains.cat->size, FieldElement::zero());
-                    for (std::size_t row = 0; row < weight.size(); ++row) values[row] = weight[row][column];
+                    for (std::size_t row = 0; row < weight.size(); ++row)
+                        values[row] = weight[row][column];
                     const auto label = output_weight_column_label(head_index, column);
                     add_static_commitment(context, label, make_eval_poly(label, values, context.domains.cat));
                 }
@@ -10060,8 +9718,7 @@ const auto transform_worker_cap =
                 context, *compiler_artifact, &compiler_artifact_reason))
         {
             throw std::runtime_error(
-                "instance ProtocolCompilerArtifact validation failed: "
-                + compiler_artifact_reason);
+                "instance ProtocolCompilerArtifact validation failed: " + compiler_artifact_reason);
         }
         context.compiler_artifact = std::move(compiler_artifact);
         context.validated_compiler_artifact_identity =
@@ -10112,10 +9769,10 @@ const auto transform_worker_cap =
                 const auto fh_value = [&](const std::string &name, std::size_t row)
                     -> FieldElement
                 {
-                    if (name == "P_H"
-                        && lazy_full_feature_lookup_trace_enabled(context))
+                    if (name == "P_H" && lazy_full_feature_lookup_trace_enabled(context))
                         return context.public_polynomials.at("P_T_H")
-                            .values().at(row);
+                            .values()
+                            .at(row);
                     if (const auto it = trace.polynomials.find(name);
                         it != trace.polynomials.end())
                         return it->second.values().at(row);
@@ -10155,37 +9812,27 @@ const auto transform_worker_cap =
                     const auto accumulator = fh_value("P_R_feat", row);
                     const std::vector<std::pair<std::string, FieldElement>> terms = {
                         {"first_accumulator", row == 0
-                            ? accumulator : FieldElement::zero()},
+                                                  ? accumulator
+                                                  : FieldElement::zero()},
                         {"recurrence", row + 1 < context.domains.fh->size
-                            ? fh_value("P_R_feat", next) - accumulator
-                                - q_table * multiplicity * j_table
-                                + q_query * j_query
-                            : FieldElement::zero()},
+                                           ? fh_value("P_R_feat", next) - accumulator - q_table * multiplicity * j_table + q_query * j_query
+                                           : FieldElement::zero()},
                         {"last_accumulator", row + 1 == context.domains.fh->size
-                            ? accumulator : FieldElement::zero()},
-                        {"table_inverse", q_table
-                            * ((table + beta) * j_table - one)},
+                                                 ? accumulator
+                                                 : FieldElement::zero()},
+                        {"table_inverse", q_table * ((table + beta) * j_table - one)},
                         {"table_padding", (one - q_table) * j_table},
-                        {"query_inverse", q_query
-                            * ((query + beta) * j_query - one)},
+                        {"query_inverse", q_query * ((query + beta) * j_query - one)},
                         {"query_padding", (one - q_query) * j_query},
-                        {"table_encoding", table
-                            - (fh_value("P_Row_feat_tbl", row)
-                                + eta * fh_value("P_Col_feat_tbl", row)
-                                + eta_squared * fh_value("P_T_H", row))},
-                        {"query_encoding", query
-                            - (fh_value("P_I_feat_qry", row)
-                                + eta * fh_value("P_Col_feat_qry", row)
-                                + eta_squared * fh_value("P_H", row))},
+                        {"table_encoding", table - (fh_value("P_Row_feat_tbl", row) + eta * fh_value("P_Col_feat_tbl", row) + eta_squared * fh_value("P_T_H", row))},
+                        {"query_encoding", query - (fh_value("P_I_feat_qry", row) + eta * fh_value("P_Col_feat_qry", row) + eta_squared * fh_value("P_H", row))},
                     };
                     for (const auto &[term_name, term] : terms)
                     {
                         if (!term.is_zero())
                         {
                             throw std::runtime_error(
-                                "FH domain constraint violation: row="
-                                + std::to_string(row) + " term=" + term_name
-                                + " value=" + term.to_string());
+                                "FH domain constraint violation: row=" + std::to_string(row) + " term=" + term_name + " value=" + term.to_string());
                         }
                     }
                 }
@@ -10214,15 +9861,26 @@ const auto transform_worker_cap =
                           << max_edge_blinder << " labels=";
                 for (std::size_t i = 0;
                      i < std::min<std::size_t>(
-                         max_edge_blinder_labels.size(), 8); ++i)
+                             max_edge_blinder_labels.size(), 8);
+                     ++i)
                 {
-                    if (i != 0) std::cerr << ',';
+                    if (i != 0)
+                        std::cerr << ',';
                     std::cerr << max_edge_blinder_labels[i];
                 }
                 std::cerr << '\n';
 
                 std::vector<std::size_t> sample_rows = {
-                    0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+                    0,
+                    1,
+                    2,
+                    3,
+                    4,
+                    5,
+                    6,
+                    7,
+                    8,
+                    9,
                     context.local.edges.size(),
                     context.local.num_nodes * context.local.num_classes,
                     context.tables.range.size(),
@@ -10273,13 +9931,7 @@ const auto transform_worker_cap =
                     if (!numerator.is_zero())
                     {
                         throw std::runtime_error(
-                            "edge domain constraint violation: row="
-                            + std::to_string(row)
-                            + " first_term="
-                            + std::to_string(first_nonzero_term)
-                            + " first_value="
-                            + first_nonzero_value.to_string()
-                            + " numerator=" + numerator.to_string());
+                            "edge domain constraint violation: row=" + std::to_string(row) + " first_term=" + std::to_string(first_nonzero_term) + " first_value=" + first_nonzero_value.to_string() + " numerator=" + numerator.to_string());
                     }
                 }
 
@@ -10316,13 +9968,7 @@ const auto transform_worker_cap =
                     if (!numerator.is_zero())
                     {
                         throw std::runtime_error(
-                            "d_h domain constraint violation: row="
-                            + std::to_string(row)
-                            + " first_term="
-                            + std::to_string(first_nonzero_term)
-                            + " first_value="
-                            + first_nonzero_value.to_string()
-                            + " numerator=" + numerator.to_string());
+                            "d_h domain constraint violation: row=" + std::to_string(row) + " first_term=" + std::to_string(first_nonzero_term) + " first_value=" + first_nonzero_value.to_string() + " numerator=" + numerator.to_string());
                     }
                 }
             }
@@ -10357,9 +10003,8 @@ const auto transform_worker_cap =
                 context.kzg,
                 metrics != nullptr ? &quotient_commit_profile : nullptr);
             progress_note(
-                "prove:quotient:commit_batch:done:ms="
-                + std::to_string(elapsed_ms(
-                    quotient_commit_batch_start, Clock::now())));
+                "prove:quotient:commit_batch:done:ms=" + std::to_string(elapsed_ms(
+                                                             quotient_commit_batch_start, Clock::now())));
             if (metrics != nullptr)
             {
                 metrics->quotient_commitment_ms +=
@@ -10392,10 +10037,7 @@ const auto transform_worker_cap =
                 const auto quotient_it = quotient_commitments.find("t_FH");
                 const auto mask_it = quotient_commitments.find(
                     quotient_mask_label("t_FH"));
-                if (quotient_it == quotient_commitments.end()
-                    || mask_it == quotient_commitments.end()
-                    || quotient_it->second.opening_polynomial == nullptr
-                    || mask_it->second.opening_polynomial == nullptr)
+                if (quotient_it == quotient_commitments.end() || mask_it == quotient_commitments.end() || quotient_it->second.opening_polynomial == nullptr || mask_it->second.opening_polynomial == nullptr)
                 {
                     throw std::runtime_error(
                         "FH quotient self-check is missing opening material");
@@ -10404,15 +10046,11 @@ const auto transform_worker_cap =
                     quotient_it->second.opening_polynomial->evaluate(z);
                 const auto mask =
                     mask_it->second.opening_polynomial->evaluate(z);
-                const auto expected_masked = expected
-                    + context.domains.fh->zero_polynomial_eval(z) * mask;
+                const auto expected_masked = expected + context.domains.fh->zero_polynomial_eval(z) * mask;
                 if (opened != expected_masked)
                 {
                     throw std::runtime_error(
-                        "FH quotient prover self-check mismatch: opened="
-                        + opened.to_string() + " expected=" + expected.to_string()
-                        + " mask=" + mask.to_string()
-                        + " expected_masked=" + expected_masked.to_string());
+                        "FH quotient prover self-check mismatch: opened=" + opened.to_string() + " expected=" + expected.to_string() + " mask=" + mask.to_string() + " expected_masked=" + expected_masked.to_string());
                 }
                 progress_note("prove:quotient:t_FH:self_check:ok");
             }
@@ -10512,9 +10150,7 @@ const auto transform_worker_cap =
                 }
                 const auto total_ms = elapsed_ms(local_start, Clock::now());
                 progress_note(
-                    progress_prefix + ":done:gather_ms="
-                    + std::to_string(gather_ms)
-                    + ":total_ms=" + std::to_string(total_ms));
+                    progress_prefix + ":done:gather_ms=" + std::to_string(gather_ms) + ":total_ms=" + std::to_string(total_ms));
                 return {
                     spec.bundle_name,
                     std::move(bundle),
@@ -10608,8 +10244,7 @@ const auto transform_worker_cap =
                 metrics->domain_opening_ms += domain_bundle_wall_ms;
             }
             progress_note(
-                "prove:domain_opening:done:ms="
-                + std::to_string(domain_bundle_wall_ms));
+                "prove:domain_opening:done:ms=" + std::to_string(domain_bundle_wall_ms));
 
             // Eval_bind owns every Pi_bind claim value.  The same claims remain
             // inside the in-memory domain bundle solely so Open_dom can fold one
@@ -10635,8 +10270,7 @@ const auto transform_worker_cap =
                         { return entry.first == expected_bundle_name; });
                     if (bundle_it == proof.domain_openings.end())
                         throw std::runtime_error(
-                            "missing Pi_bind global opening bundle: "
-                            + std::string(expected_bundle_name));
+                            "missing Pi_bind global opening bundle: " + std::string(expected_bundle_name));
                     const auto &bundle_name = bundle_it->first;
                     const auto &bundle = bundle_it->second;
                     const bool is_c = bundle_name == "C";
@@ -10663,7 +10297,7 @@ const auto transform_worker_cap =
                             throw std::runtime_error(
                                 "missing output coefficient basis Eval_bind metadata");
                         const auto &basis = subproof_it->relation_meta
-                            .coefficient_basis_relations.front();
+                                                .coefficient_basis_relations.front();
                         for (const auto &chunk : basis.chunks)
                         {
                             owned_labels.push_back(chunk.object_id);
@@ -10674,7 +10308,8 @@ const auto transform_worker_cap =
                     {
                         const auto value_it = std::find_if(
                             bundle.values.begin(), bundle.values.end(),
-                            [&](const auto &entry) { return entry.first == label; });
+                            [&](const auto &entry)
+                            { return entry.first == label; });
                         if (value_it == bundle.values.end())
                             throw std::runtime_error(
                                 "Pi_bind domain value missing from global opening: " + label);
@@ -10683,8 +10318,8 @@ const auto transform_worker_cap =
                             .object_id = label,
                             .values = value_it->second,
                             .kind = label.ends_with("_BiasView_m_can")
-                                ? PayloadValueKind::PublicValue
-                                : PayloadValueKind::MaskedPrivateValue,
+                                        ? PayloadValueKind::PublicValue
+                                        : PayloadValueKind::MaskedPrivateValue,
                         });
                     }
                     for (const auto &point : bundle.points)
@@ -10702,7 +10337,8 @@ const auto transform_worker_cap =
             }
             const auto n_bundle_it = std::find_if(
                 proof.domain_openings.begin(), proof.domain_openings.end(),
-                [](const auto &entry) { return entry.first == "N"; });
+                [](const auto &entry)
+                { return entry.first == "N"; });
             if (n_bundle_it == proof.domain_openings.end())
                 throw std::runtime_error(
                     "missing canonical matrix N-domain opening bundle");
@@ -10724,8 +10360,7 @@ const auto transform_worker_cap =
                             { return entry.first == column; });
                         if (value_it == n_bundle_it->second.values.end())
                             throw std::runtime_error(
-                                "canonical matrix value missing from N opening: "
-                                + column);
+                                "canonical matrix value missing from N opening: " + column);
                         subproof.evaluations.push_back(BindingEvaluation{
                             .domain = "N",
                             .object_id = column,
@@ -10746,11 +10381,10 @@ const auto transform_worker_cap =
                         subproof.opening_references.push_back({group_id});
                 }
             }
-            const auto append_binding_domain_values = [&]
-            (
-                BindingSubproof &subproof,
-                const std::string &bundle_name,
-                const std::vector<std::string> &objects)
+            const auto append_binding_domain_values = [&](
+                                                          BindingSubproof &subproof,
+                                                          const std::string &bundle_name,
+                                                          const std::vector<std::string> &objects)
             {
                 const auto bundle_it = std::find_if(
                     proof.domain_openings.begin(),
@@ -10759,8 +10393,7 @@ const auto transform_worker_cap =
                     { return entry.first == bundle_name; });
                 if (bundle_it == proof.domain_openings.end())
                     throw std::runtime_error(
-                        "aggregation binding opening bundle missing: "
-                        + bundle_name);
+                        "aggregation binding opening bundle missing: " + bundle_name);
                 for (const auto &object : objects)
                 {
                     const auto value_it = std::find_if(
@@ -10770,8 +10403,7 @@ const auto transform_worker_cap =
                         { return entry.first == object; });
                     if (value_it == bundle_it->second.values.end())
                         throw std::runtime_error(
-                            "aggregation binding domain value missing: "
-                            + object);
+                            "aggregation binding domain value missing: " + object);
                     subproof.evaluations.push_back(BindingEvaluation{
                         .domain = bundle_name,
                         .object_id = object,
@@ -10781,8 +10413,7 @@ const auto transform_worker_cap =
                 }
                 for (const auto &point : bundle_it->second.points)
                 {
-                    const auto group_id = "Open_dom:" + bundle_name + ":"
-                        + point.to_string();
+                    const auto group_id = "Open_dom:" + bundle_name + ":" + point.to_string();
                     if (std::none_of(
                             subproof.opening_references.begin(),
                             subproof.opening_references.end(),
@@ -10828,18 +10459,17 @@ const auto transform_worker_cap =
 
             const auto point_group_registry_start = Clock::now();
             StandardPointGroupRegistry opening_registry;
-            for (const auto& spec : bundle_specs)
+            for (const auto &spec : bundle_specs)
             {
                 const auto bundle_it = std::find_if(
                     proof.domain_openings.begin(),
                     proof.domain_openings.end(),
-                    [&](const auto& entry)
+                    [&](const auto &entry)
                     { return entry.first == spec.bundle_name; });
                 if (bundle_it == proof.domain_openings.end())
                 {
                     throw std::runtime_error(
-                        "missing domain bundle while building global point groups: "
-                        + spec.bundle_name);
+                        "missing domain bundle while building global point groups: " + spec.bundle_name);
                 }
                 auto labels = domain_opening_labels(
                     context, spec.trace_domain_name);
@@ -10863,9 +10493,8 @@ const auto transform_worker_cap =
                 const auto value = trace.external_evaluations.at(spec.proof_name);
                 proof.external_evaluations.push_back({spec.proof_name, value});
                 proof.external_evaluation_kinds.push_back(payload_kind_for_label(context, spec.label));
-                external_commitments.push_back({
-                    spec.static_commitment ? context.static_commitments.at(spec.label) : trace.commitments.at(spec.label),
-                    value});
+                external_commitments.push_back({spec.static_commitment ? context.static_commitments.at(spec.label) : trace.commitments.at(spec.label),
+                                                value});
                 external_points.push_back(challenges.at(spec.challenge_name));
             }
             for (const auto &subproof : proof.pi_bind.subproofs)
@@ -10880,30 +10509,23 @@ const auto transform_worker_cap =
                         subproof.evaluations.end(),
                         [&](const BindingEvaluation &candidate)
                         { return candidate.object_id == evaluation_id; });
-                    if (evaluation == subproof.evaluations.end()
-                        || evaluation->values.size() != 1
-                        || evaluation->kind
-                            != PayloadValueKind::MaskedPrivateValue)
+                    if (evaluation == subproof.evaluations.end() || evaluation->values.size() != 1 || evaluation->kind != PayloadValueKind::MaskedPrivateValue)
                         throw std::runtime_error(
-                            "missing route terminal shift value: "
-                            + relation.relation_id);
+                            "missing route terminal shift value: " + relation.relation_id);
                     const auto y_rel = challenges.at(
                         relation.challenge_label);
-                    external_commitments.push_back({
-                        trace.commitments.at(
-                            relation.shifted_accumulator_object),
-                        evaluation->values.front()});
+                    external_commitments.push_back({trace.commitments.at(
+                                                        relation.shifted_accumulator_object),
+                                                    evaluation->values.front()});
                     external_points.push_back(y_rel);
-                    external_commitments.push_back({
-                        trace.commitments.at(
-                            relation.edge_accumulator_object),
-                        evaluation->values.front()});
+                    external_commitments.push_back({trace.commitments.at(
+                                                        relation.edge_accumulator_object),
+                                                    evaluation->values.front()});
                     external_points.push_back(
                         y_rel + relation.terminal_delta);
-                    external_commitments.push_back({
-                        trace.commitments.at(
-                            relation.relation_virtual_object),
-                        FieldElement::zero()});
+                    external_commitments.push_back({trace.commitments.at(
+                                                        relation.relation_virtual_object),
+                                                    FieldElement::zero()});
                     external_points.push_back(
                         relation.node_terminal_point);
                 }
@@ -10921,30 +10543,23 @@ const auto transform_worker_cap =
                             subproof.evaluations.end(),
                             [&](const BindingEvaluation &candidate)
                             { return candidate.object_id == evaluation_id; });
-                        if (evaluation == subproof.evaluations.end()
-                            || evaluation->values.size() != 1
-                            || evaluation->kind
-                                != PayloadValueKind::MaskedPrivateValue)
+                        if (evaluation == subproof.evaluations.end() || evaluation->values.size() != 1 || evaluation->kind != PayloadValueKind::MaskedPrivateValue)
                             throw std::runtime_error(
-                                "missing aggregation terminal shift value: "
-                                + route->relation_id);
+                                "missing aggregation terminal shift value: " + route->relation_id);
                         const auto y_rel = challenges.at(
                             route->terminal_challenge_label);
-                        external_commitments.push_back({
-                            trace.commitments.at(
-                                route->shifted_accumulator_object),
-                            evaluation->values.front()});
+                        external_commitments.push_back({trace.commitments.at(
+                                                            route->shifted_accumulator_object),
+                                                        evaluation->values.front()});
                         external_points.push_back(y_rel);
-                        external_commitments.push_back({
-                            trace.commitments.at(
-                                route->edge_accumulator_object),
-                            evaluation->values.front()});
+                        external_commitments.push_back({trace.commitments.at(
+                                                            route->edge_accumulator_object),
+                                                        evaluation->values.front()});
                         external_points.push_back(
                             y_rel + route->terminal_delta);
-                        external_commitments.push_back({
-                            trace.commitments.at(
-                                route->relation_virtual_object),
-                            FieldElement::zero()});
+                        external_commitments.push_back({trace.commitments.at(
+                                                            route->relation_virtual_object),
+                                                        FieldElement::zero()});
                         external_points.push_back(
                             route->node_terminal_point);
                     }
@@ -10971,27 +10586,24 @@ const auto transform_worker_cap =
                 if (relation.configured_degrees.empty())
                 {
                     const auto y_public = challenges.at(relation.challenge_label);
-                    external_commitments.push_back({
-                        trace.commitments.at(output_bias_view_label(
-                            head_index, "terminal_relation_virtual")),
-                        FieldElement::zero()});
+                    external_commitments.push_back({trace.commitments.at(output_bias_view_label(
+                                                        head_index, "terminal_relation_virtual")),
+                                                    FieldElement::zero()});
                     external_points.push_back(relation.canonical_points.front());
                     const auto public_m_id = output_bias_view_label(
-                        head_index, "m_can") + ":public_bind";
+                                                 head_index, "m_can") +
+                                             ":public_bind";
                     const auto public_m_it = std::find_if(
                         subproof_it->evaluations.begin(),
                         subproof_it->evaluations.end(),
                         [&](const BindingEvaluation &evaluation)
                         { return evaluation.object_id == public_m_id; });
-                    if (public_m_it == subproof_it->evaluations.end()
-                        || public_m_it->values.size() != 1
-                        || public_m_it->kind != PayloadValueKind::PublicValue)
+                    if (public_m_it == subproof_it->evaluations.end() || public_m_it->values.size() != 1 || public_m_it->kind != PayloadValueKind::PublicValue)
                         throw std::runtime_error(
                             "missing same-point public bias multiplicity binding");
-                    external_commitments.push_back({
-                        trace.commitments.at(output_bias_view_label(
-                            head_index, "m_can")),
-                        public_m_it->values.front()});
+                    external_commitments.push_back({trace.commitments.at(output_bias_view_label(
+                                                        head_index, "m_can")),
+                                                    public_m_it->values.front()});
                     external_points.push_back(y_public);
                     continue;
                 }
@@ -11002,8 +10614,7 @@ const auto transform_worker_cap =
                     subproof_it->evaluations.begin(), subproof_it->evaluations.end(),
                     [&](const BindingEvaluation &evaluation)
                     { return evaluation.object_id == u_id; });
-                if (u_it == subproof_it->evaluations.end()
-                    || u_it->values.size() != 1)
+                if (u_it == subproof_it->evaluations.end() || u_it->values.size() != 1)
                     throw std::runtime_error("missing output bias shift check value");
                 const auto y_rel = challenges.at(relation.challenge_label);
                 external_commitments.push_back(
@@ -11014,10 +10625,9 @@ const auto transform_worker_cap =
                 external_commitments.push_back(
                     {trace.commitments.at(virtual_prefix + "F2"), u_it->values.front()});
                 external_points.push_back(y_rel + relation.deltas.at(1));
-                external_commitments.push_back({
-                    trace.commitments.at(output_bias_view_label(
-                        head_index, "terminal_relation_virtual")),
-                    FieldElement::zero()});
+                external_commitments.push_back({trace.commitments.at(output_bias_view_label(
+                                                    head_index, "terminal_relation_virtual")),
+                                                FieldElement::zero()});
                 external_points.push_back(relation.canonical_points.at(0));
 
                 const auto public_m_id =
@@ -11026,13 +10636,10 @@ const auto transform_worker_cap =
                     subproof_it->evaluations.begin(), subproof_it->evaluations.end(),
                     [&](const BindingEvaluation &evaluation)
                     { return evaluation.object_id == public_m_id; });
-                if (public_m_it == subproof_it->evaluations.end()
-                    || public_m_it->values.size() != 1
-                    || public_m_it->kind != PayloadValueKind::PublicValue)
+                if (public_m_it == subproof_it->evaluations.end() || public_m_it->values.size() != 1 || public_m_it->kind != PayloadValueKind::PublicValue)
                     throw std::runtime_error("missing public bias multiplicity binding");
-                external_commitments.push_back({
-                    trace.commitments.at(output_bias_view_label(head_index, "m_can")),
-                    public_m_it->values.front()});
+                external_commitments.push_back({trace.commitments.at(output_bias_view_label(head_index, "m_can")),
+                                                public_m_it->values.front()});
                 external_points.push_back(y_rel);
             }
             for (std::size_t head_index = 0;
@@ -11046,47 +10653,39 @@ const auto transform_worker_cap =
                     proof.pi_bind.subproofs.end(),
                     [&](const BindingSubproof &subproof)
                     { return subproof.relation_meta.relation_id == relation_id; });
-                if (subproof_it == proof.pi_bind.subproofs.end()
-                    || subproof_it->relation_meta
-                           .coefficient_basis_relations.size() != 1)
+                if (subproof_it == proof.pi_bind.subproofs.end() || subproof_it->relation_meta
+                                                                            .coefficient_basis_relations.size() != 1)
                     throw std::runtime_error(
                         "missing output coefficient basis external proof");
                 const auto &basis = subproof_it->relation_meta
-                    .coefficient_basis_relations.front();
+                                        .coefficient_basis_relations.front();
                 const auto gamma = challenges.at(
                     basis.gamma_challenge_label);
                 const auto y_rel = challenges.at(
                     basis.relation_challenge_label);
                 for (const auto &chunk : basis.chunks)
                 {
-                    const auto u_id = chunk.shifted_accumulator_object
-                        + ":u_rel";
+                    const auto u_id = chunk.shifted_accumulator_object + ":u_rel";
                     const auto u_it = std::find_if(
                         subproof_it->evaluations.begin(),
                         subproof_it->evaluations.end(),
                         [&](const BindingEvaluation &evaluation)
                         { return evaluation.object_id == u_id; });
-                    if (u_it == subproof_it->evaluations.end()
-                        || u_it->values.size() != 1
-                        || u_it->kind
-                            != PayloadValueKind::MaskedPrivateValue)
+                    if (u_it == subproof_it->evaluations.end() || u_it->values.size() != 1 || u_it->kind != PayloadValueKind::MaskedPrivateValue)
                         throw std::runtime_error(
                             "missing output coefficient chunk shift value");
-                    external_commitments.push_back({
-                        trace.commitments.at(
-                            chunk.shifted_accumulator_object),
-                        u_it->values.front()});
+                    external_commitments.push_back({trace.commitments.at(
+                                                        chunk.shifted_accumulator_object),
+                                                    u_it->values.front()});
                     external_points.push_back(y_rel);
-                    external_commitments.push_back({
-                        trace.commitments.at(chunk.accumulator_object),
-                        u_it->values.front()});
+                    external_commitments.push_back({trace.commitments.at(chunk.accumulator_object),
+                                                    u_it->values.front()});
                     external_points.push_back(
                         y_rel + chunk.terminal_point - gamma);
                 }
-                external_commitments.push_back({
-                    trace.commitments.at(output_bias_basis_label(
-                        head_index, "relation_virtual")),
-                    FieldElement::zero()});
+                external_commitments.push_back({trace.commitments.at(output_bias_basis_label(
+                                                    head_index, "relation_virtual")),
+                                                FieldElement::zero()});
                 external_points.push_back(gamma);
             }
             const auto output_binding = derive_public_output_challenges(
@@ -11095,9 +10694,8 @@ const auto transform_worker_cap =
                 proof.public_logits,
                 context.local.num_nodes,
                 context.local.num_classes);
-            external_commitments.push_back({
-                trace.commitments.at("P_Y"),
-                evaluate_coefficient_vector(proof.public_logits, output_binding.point)});
+            external_commitments.push_back({trace.commitments.at("P_Y"),
+                                            evaluate_coefficient_vector(proof.public_logits, output_binding.point)});
             external_points.push_back(output_binding.point);
             add_external_claims(
                 opening_registry,
@@ -11110,16 +10708,15 @@ const auto transform_worker_cap =
                 metrics->point_group_registry_ms += elapsed_ms(
                     point_group_registry_start, Clock::now());
             }
-            for (auto& subproof : proof.pi_bind.subproofs)
+            for (auto &subproof : proof.pi_bind.subproofs)
             {
                 std::vector<MetadataReference> normalized;
                 normalized.reserve(subproof.opening_references.size());
                 for (auto reference : subproof.opening_references)
                 {
-                    for (const auto& group : opening_registry.groups())
+                    for (const auto &group : opening_registry.groups())
                     {
-                        if (reference.object_id
-                            == "W_ext:" + group.point.to_string())
+                        if (reference.object_id == "W_ext:" + group.point.to_string())
                         {
                             reference.object_id = group.group_id;
                             break;
@@ -11127,7 +10724,7 @@ const auto transform_worker_cap =
                     }
                     if (std::none_of(
                             normalized.begin(), normalized.end(),
-                            [&](const MetadataReference& existing)
+                            [&](const MetadataReference &existing)
                             { return existing == reference; }))
                     {
                         normalized.push_back(std::move(reference));
@@ -11142,7 +10739,7 @@ const auto transform_worker_cap =
                 crypto::BatchOpeningProfile profile;
                 double elapsed_ms = 0.0;
             };
-            const auto& point_groups = opening_registry.groups();
+            const auto &point_groups = opening_registry.groups();
             std::vector<PointGroupOpeningResult> opening_results(
                 point_groups.size());
             std::mutex file_backed_opening_cache_mutex;
@@ -11150,122 +10747,120 @@ const auto transform_worker_cap =
                 std::string,
                 std::weak_ptr<const algebra::Polynomial>>
                 file_backed_opening_cache;
+
+            // CPU opening for a very large file-backed evaluation domain has a much
+            // larger transient host-memory footprint than the corresponding CUDA MSM
+            // route. Keep ordinary/PPI-sized file-backed point groups parallel, but
+            // prevent two 2^25-or-larger CPU point groups from constructing their
+            // folded values, quotient buffers and MSM working sets simultaneously.
+            std::mutex large_cpu_file_backed_opening_mutex;
+            constexpr std::size_t kLargeCpuFileBackedOpeningValueCount =
+                1ULL << 25;
+
             file_backed_opening_cache.reserve(
                 trace.spilled_polynomials.size());
             const crypto::OpeningPolynomialResolver
                 file_backed_opening_resolver =
                     [&](const Commitment &commitment)
-                    -> std::shared_ptr<const algebra::Polynomial>
-                    {
-                        if (commitment.opening_polynomial != nullptr)
-                        {
-                            return commitment.opening_polynomial;
-                        }
-                        const auto spilled_it =
-                            trace.spilled_polynomials.find(
-                                commitment.name);
-                        if (spilled_it
-                            == trace.spilled_polynomials.end())
-                        {
-                            throw std::runtime_error(
-                                "file-backed opening material is missing: "
-                                + commitment.name);
-                        }
-                        // A standard domain has two independently folded point
-                        // groups.  Let concurrent groups share the same decoded
-                        // source, but do not keep every large source alive for
-                        // the rest of the proof.  build_streamed_folded_opening_plan
-                        // consumes one source at a time, so a weak cache releases
-                        // it as soon as the active folds advance.  A strong cache
-                        // grows with every spilled edge-domain polynomial and can
-                        // exhaust memory before external openings complete.
-                        std::lock_guard<std::mutex> lock(
-                            file_backed_opening_cache_mutex);
-                        if (const auto cached =
-                                file_backed_opening_cache.find(
-                                    commitment.name);
-                            cached != file_backed_opening_cache.end())
-                        {
-                            if (auto material = cached->second.lock();
-                                material != nullptr)
-                            {
-                                return material;
-                            }
-                        }
-                        auto material = load_spilled_opening_polynomial(
-                            context,
-                            spilled_it->second,
+                -> std::shared_ptr<const algebra::Polynomial>
+            {
+                if (commitment.opening_polynomial != nullptr)
+                {
+                    return commitment.opening_polynomial;
+                }
+                const auto spilled_it =
+                    trace.spilled_polynomials.find(
+                        commitment.name);
+                if (spilled_it == trace.spilled_polynomials.end())
+                {
+                    throw std::runtime_error(
+                        "file-backed opening material is missing: " + commitment.name);
+                }
+                // A standard domain has two independently folded point
+                // groups.  Let concurrent groups share the same decoded
+                // source, but do not keep every large source alive for
+                // the rest of the proof.  build_streamed_folded_opening_plan
+                // consumes one source at a time, so a weak cache releases
+                // it as soon as the active folds advance.  A strong cache
+                // grows with every spilled edge-domain polynomial and can
+                // exhaust memory before external openings complete.
+                std::lock_guard<std::mutex> lock(
+                    file_backed_opening_cache_mutex);
+                if (const auto cached =
+                        file_backed_opening_cache.find(
                             commitment.name);
-                        file_backed_opening_cache.insert_or_assign(
-                            commitment.name,
-                            std::weak_ptr<const algebra::Polynomial>(material));
+                    cached != file_backed_opening_cache.end())
+                {
+                    if (auto material = cached->second.lock();
+                        material != nullptr)
+                    {
                         return material;
-                    };
-            
-            const crypto::OpeningSemanticSourceResolver
-    file_backed_opening_semantic_source_resolver =
-        [&](const Commitment& commitment)
-        -> std::optional<
-            crypto::OpeningSemanticSourceInfo>
-        {
-            if (commitment.opening_polynomial
-                != nullptr)
-            {
-                return std::nullopt;
-            }
-
-            const auto spilled_it =
-                trace.spilled_polynomials.find(
-                    commitment.name);
-
-            if (spilled_it
-                == trace.spilled_polynomials.end())
-            {
-                return std::nullopt;
-            }
-
-            const auto& spilled =
-                spilled_it->second;
-
-            if (spilled.semantic_source_id == 0)
-            {
-                return std::nullopt;
-            }
-
-            const auto domain =
-                context_domain_by_name(
+                    }
+                }
+                auto material = load_spilled_opening_polynomial(
                     context,
-                    spilled.domain_name);
-
-            if (domain == nullptr)
-            {
-                throw std::runtime_error(
-                    "file-backed opening semantic source has unknown domain: "
-                    + commitment.name);
-            }
-
-            return crypto::OpeningSemanticSourceInfo{
-                .key =
-                    spilled.domain_name
-                    + ":"
-                    + std::to_string(
-                        spilled.size)
-                    + ":"
-                    + std::to_string(
-                        spilled
-                            .semantic_source_id),
-                .domain = domain,
-                .value_count = spilled.size,
-                .zero_domain_blinder =
-                    spilled
-                        .zero_domain_blinder,
+                    spilled_it->second,
+                    commitment.name);
+                file_backed_opening_cache.insert_or_assign(
+                    commitment.name,
+                    std::weak_ptr<const algebra::Polynomial>(material));
+                return material;
             };
-        };
 
-            const auto open_group_indices = [&]
-            (const std::vector<std::size_t>& indices)
+            const crypto::OpeningSemanticSourceResolver
+                file_backed_opening_semantic_source_resolver =
+                    [&](const Commitment &commitment)
+                -> std::optional<
+                    crypto::OpeningSemanticSourceInfo>
             {
-                if (indices.empty()) return 0.0;
+                if (commitment.opening_polynomial != nullptr)
+                {
+                    return std::nullopt;
+                }
+
+                const auto spilled_it =
+                    trace.spilled_polynomials.find(
+                        commitment.name);
+
+                if (spilled_it == trace.spilled_polynomials.end())
+                {
+                    return std::nullopt;
+                }
+
+                const auto &spilled =
+                    spilled_it->second;
+
+                if (spilled.semantic_source_id == 0)
+                {
+                    return std::nullopt;
+                }
+
+                const auto domain =
+                    context_domain_by_name(
+                        context,
+                        spilled.domain_name);
+
+                if (domain == nullptr)
+                {
+                    throw std::runtime_error(
+                        "file-backed opening semantic source has unknown domain: " + commitment.name);
+                }
+
+                return crypto::OpeningSemanticSourceInfo{
+                    .key =
+                        spilled.domain_name + ":" + std::to_string(spilled.size) + ":" + std::to_string(spilled.semantic_source_id),
+                    .domain = domain,
+                    .value_count = spilled.size,
+                    .zero_domain_blinder =
+                        spilled
+                            .zero_domain_blinder,
+                };
+            };
+
+            const auto open_group_indices = [&](const std::vector<std::size_t> &indices)
+            {
+                if (indices.empty())
+                    return 0.0;
                 const auto phase_start = Clock::now();
                 auto work_order = indices;
                 const auto estimated_work = [&](std::size_t index)
@@ -11276,18 +10871,43 @@ const auto transform_worker_cap =
                         if (claim.commitment.opening_polynomial != nullptr)
                         {
                             total += claim.commitment
-                                .opening_polynomial->size();
+                                         .opening_polynomial->size();
                         }
                         else if (const auto spilled_it =
                                      trace.spilled_polynomials.find(
                                          claim.commitment.name);
-                                 spilled_it
-                                     != trace.spilled_polynomials.end())
+                                 spilled_it != trace.spilled_polynomials.end())
                         {
                             total += spilled_it->second.size;
                         }
                     }
                     return total;
+                };
+                const auto largest_file_backed_value_count =
+                    [&](std::size_t index)
+                {
+                    std::size_t largest = 0;
+
+                    for (const auto &claim :
+                         point_groups[index].claims)
+                    {
+                        if (claim.commitment.opening_polynomial != nullptr)
+                        {
+                            continue;
+                        }
+
+                        if (const auto spilled_it =
+                                trace.spilled_polynomials.find(
+                                    claim.commitment.name);
+                            spilled_it != trace.spilled_polynomials.end())
+                        {
+                            largest = std::max(
+                                largest,
+                                spilled_it->second.size);
+                        }
+                    }
+
+                    return largest;
                 };
                 std::stable_sort(
                     work_order.begin(), work_order.end(),
@@ -11311,29 +10931,28 @@ const auto transform_worker_cap =
                                 [&](const auto &claim)
                                 {
                                     return claim.commitment
-                                                   .opening_polynomial
-                                               == nullptr
-                                        && trace.spilled_polynomials
+                                                   .opening_polynomial == nullptr &&
+                                           trace.spilled_polynomials
                                                .contains(
                                                    claim.commitment.name);
                                 });
                         });
                 const auto outer_worker_limit = external_phase
-                    ? std::min<std::size_t>(
-                        20, hardware_workers)
-                    : std::min<std::size_t>(
-                        8, std::max<unsigned>(
-                            1, hardware_workers / 4));
+                                                    ? std::min<std::size_t>(
+                                                          20, hardware_workers)
+                                                    : std::min<std::size_t>(
+                                                          8, std::max<unsigned>(
+                                                                 1, hardware_workers / 4));
                 const auto worker_count = std::min<std::size_t>(
                     work_order.size(),
                     has_file_backed_openings
                         ? std::min<std::size_t>(
-                            2, outer_worker_limit)
+                              2, outer_worker_limit)
                         : outer_worker_limit);
                 const auto base_inner_worker_count = worker_count > 1
-                    ? std::max<std::size_t>(
-                        1, hardware_workers / worker_count)
-                    : 0;
+                                                         ? std::max<std::size_t>(
+                                                               1, hardware_workers / worker_count)
+                                                         : 0;
                 std::atomic<std::size_t> next{0};
                 crypto::g1_parallel_msm_batch_workers(
                     worker_count,
@@ -11342,26 +10961,24 @@ const auto transform_worker_cap =
                         while (true)
                         {
                             const auto position = next.fetch_add(1);
-                            if (position >= work_order.size()) break;
+                            if (position >= work_order.size())
+                                break;
                             const auto group_index = work_order[position];
-                            const auto& group = point_groups[group_index];
+                            const auto &group = point_groups[group_index];
                             std::vector<Commitment> commitments;
                             std::vector<FieldElement> values;
                             commitments.reserve(group.claims.size());
                             values.reserve(group.claims.size());
-                            for (const auto& claim : group.claims)
+                            for (const auto &claim : group.claims)
                             {
                                 commitments.push_back(claim.commitment);
                                 values.push_back(claim.value);
                             }
                             const auto inner_worker_count =
-                                worker_count > 1
-                                && !external_phase
-                                && estimated_work(group_index)
-                                    >= (1ULL << 18)
-                                ? std::min<std::size_t>(
-                                    16, hardware_workers)
-                                : base_inner_worker_count;
+                                worker_count > 1 && !external_phase && estimated_work(group_index) >= (1ULL << 18)
+                                    ? std::min<std::size_t>(
+                                          16, hardware_workers)
+                                    : base_inner_worker_count;
                             const crypto::PointGroupOpeningExecutionOptions
                                 execution_options{
                                     .max_field_worker_count =
@@ -11371,6 +10988,31 @@ const auto transform_worker_cap =
                                             inner_worker_count,
                                     },
                                 };
+                            const auto largest_file_backed_count =
+                                largest_file_backed_value_count(
+                                    group_index);
+
+                            const bool
+                                serialize_large_cpu_file_backed_opening =
+                                    !util::route2_options()
+                                         .cuda_field_hotspots &&
+                                    largest_file_backed_count >= kLargeCpuFileBackedOpeningValueCount;
+
+                            std::unique_lock<std::mutex>
+                                large_cpu_file_backed_opening_guard;
+
+                            if (serialize_large_cpu_file_backed_opening)
+                            {
+                                large_cpu_file_backed_opening_guard =
+                                    std::unique_lock<std::mutex>(
+                                        large_cpu_file_backed_opening_mutex);
+
+                                progress_note(
+                                    "prove:opening:"
+                                    "large_cpu_file_backed_serial:" +
+                                    group.owner_block + ":values=" + std::to_string(largest_file_backed_count));
+                            }
+
                             const auto local_start = Clock::now();
                             opening_results[group_index].witness =
                                 crypto::KZG::open_point_group(
@@ -11384,18 +11026,19 @@ const auto transform_worker_cap =
                                     crypto::BatchOpeningClaimValidation::
                                         AlreadyComputedFromOpeningPolynomials,
                                     worker_count > 1
-    ? &execution_options
-    : nullptr,
-trace.spilled_polynomials.empty()
-    ? nullptr
-    : &file_backed_opening_resolver,
-trace.spilled_polynomials.empty()
-    ? nullptr
-    : &file_backed_opening_semantic_source_resolver);
-                            opening_results[group_index].profile
-                                .point_parallel_batches = 1;
-                            opening_results[group_index].profile
-                                .point_parallel_workers = worker_count;
+                                        ? &execution_options
+                                        : nullptr,
+                                    trace.spilled_polynomials.empty()
+                                        ? nullptr
+                                        : &file_backed_opening_resolver,
+                                    trace.spilled_polynomials.empty()
+                                        ? nullptr
+                                        : &file_backed_opening_semantic_source_resolver);
+                            opening_results[group_index].profile.point_parallel_batches = 1;
+                            opening_results[group_index].profile.point_parallel_workers =
+                                serialize_large_cpu_file_backed_opening
+                                    ? 1
+                                    : worker_count;
                             opening_results[group_index].elapsed_ms =
                                 elapsed_ms(local_start, Clock::now());
                         }
@@ -11408,8 +11051,9 @@ trace.spilled_polynomials.empty()
             for (std::size_t i = 0; i < point_groups.size(); ++i)
             {
                 (point_groups[i].owner_block == "W_ext"
-                    ? external_group_indices
-                    : domain_group_indices).push_back(i);
+                     ? external_group_indices
+                     : domain_group_indices)
+                    .push_back(i);
             }
             const auto external_claim_assembly_ms = elapsed_ms(
                 stage_start, Clock::now());
@@ -11417,32 +11061,13 @@ trace.spilled_polynomials.empty()
                 domain_group_indices);
             for (const auto group_index : domain_group_indices)
             {
-                const auto& group = point_groups[group_index];
-                const auto& profile = opening_results[group_index].profile;
+                const auto &group = point_groups[group_index];
+                const auto &profile = opening_results[group_index].profile;
                 progress_note(
-                    "prove:domain_witness:group:"
-                    + group.owner_block
-                    + ":ms="
-                    + std::to_string(
-                        opening_results[group_index].elapsed_ms)
-                    + ":precompute_ms="
-                    + std::to_string(profile.precompute_ms)
-                    + ":inverse_ms="
-                    + std::to_string(profile.denominator_inverse_ms)
-                    + ":assembly_ms="
-                    + std::to_string(profile.quotient_assembly_ms)
-                    + ":witness_msm_ms="
-                    + std::to_string(profile.witness_msm_ms)
-                    + ":blinder_ms="
-                    + std::to_string(profile.blinder_witness_ms)
-                    + ":workers="
-                    + std::to_string(profile.point_msm_worker_cap)
-                    + ":outer_workers="
-                    + std::to_string(profile.point_parallel_workers));
+                    "prove:domain_witness:group:" + group.owner_block + ":ms=" + std::to_string(opening_results[group_index].elapsed_ms) + ":precompute_ms=" + std::to_string(profile.precompute_ms) + ":inverse_ms=" + std::to_string(profile.denominator_inverse_ms) + ":assembly_ms=" + std::to_string(profile.quotient_assembly_ms) + ":witness_msm_ms=" + std::to_string(profile.witness_msm_ms) + ":blinder_ms=" + std::to_string(profile.blinder_witness_ms) + ":workers=" + std::to_string(profile.point_msm_worker_cap) + ":outer_workers=" + std::to_string(profile.point_parallel_workers));
             }
             progress_note(
-                "prove:domain_witness:done:ms="
-                + std::to_string(domain_witness_wall_ms));
+                "prove:domain_witness:done:ms=" + std::to_string(domain_witness_wall_ms));
             const auto external_witness_wall_ms = open_group_indices(
                 external_group_indices);
 
@@ -11455,8 +11080,9 @@ trace.spilled_polynomials.empty()
                     .point = point_groups[i].point,
                     .witness = opening_results[i].witness,
                 });
-                if (metrics == nullptr) continue;
-                const auto& profile = opening_results[i].profile;
+                if (metrics == nullptr)
+                    continue;
+                const auto &profile = opening_results[i].profile;
                 metrics->domain_open_denominator_inverse_ms +=
                     profile.denominator_inverse_ms;
                 metrics->domain_open_denominator_inverse_reuse_ms +=
@@ -11471,7 +11097,7 @@ trace.spilled_polynomials.empty()
                     const auto domain = point_groups[i].owner_block.substr(9);
                     metrics->domain_open_witness_ms +=
                         opening_results[i].elapsed_ms;
-                    if (auto* metric = domain_open_metric(metrics, domain);
+                    if (auto *metric = domain_open_metric(metrics, domain);
                         metric != nullptr)
                     {
                         *metric += opening_results[i].elapsed_ms;
@@ -11482,8 +11108,7 @@ trace.spilled_polynomials.empty()
                         metrics->fh_fold_prep_ms += profile.precompute_ms;
                         metrics->fh_open_witness_ms += std::max(
                             0.0,
-                            opening_results[i].elapsed_ms
-                                - profile.precompute_ms);
+                            opening_results[i].elapsed_ms - profile.precompute_ms);
                     }
                 }
             }
