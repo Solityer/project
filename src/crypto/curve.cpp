@@ -1357,21 +1357,67 @@ const auto cpu_count =
         return serialize_impl(point.value);
     }
 
+    std::size_t serialize(
+        const G1Point &point,
+        std::uint8_t *output,
+        std::size_t capacity)
+    {
+        if (output == nullptr && capacity != 0)
+        {
+            throw std::runtime_error(
+                "G1 serialization received null output");
+        }
+
+        algebra::ensure_mcl_field_ready();
+
+        const auto written =
+            point.value.serialize(output, capacity);
+
+        if (written == 0)
+        {
+            throw std::runtime_error(
+                "failed to serialize mcl G1 point");
+        }
+
+        return written;
+    }
+
     std::vector<std::uint8_t> serialize(const G2Point& point)
     {
         return serialize_impl(point.value);
     }
 
-    G1Point deserialize_g1(const std::vector<std::uint8_t>& bytes)
+    G1Point deserialize_g1(
+        const std::uint8_t *bytes,
+        std::size_t size)
     {
+        if (bytes == nullptr && size != 0)
+        {
+            throw std::runtime_error(
+                "G1 deserialization received null input");
+        }
+
         G1Point out;
         algebra::ensure_mcl_field_ready();
-        const auto read = out.value.deserialize(bytes.data(), bytes.size());
-        if (read != bytes.size())
+
+        const auto read =
+            out.value.deserialize(bytes, size);
+
+        if (read != size)
         {
-            throw std::runtime_error("failed to deserialize G1 point");
+            throw std::runtime_error(
+                "failed to deserialize G1 point");
         }
+
         return out;
+    }
+
+    G1Point deserialize_g1(
+        const std::vector<std::uint8_t> &bytes)
+    {
+        return deserialize_g1(
+            bytes.data(),
+            bytes.size());
     }
 
     G2Point deserialize_g2(const std::vector<std::uint8_t>& bytes)

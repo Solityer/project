@@ -89,13 +89,26 @@ namespace gatzk::crypto
     G2Point g2_mul(const G2Point& point, const algebra::FieldElement& scalar);
     bool operator==(const G1Point& lhs, const G1Point& rhs);
     bool operator==(const G2Point& lhs, const G2Point& rhs);
-    std::vector<std::uint8_t> serialize(const G1Point& point);
-    std::vector<std::uint8_t> serialize(const G2Point& point);
-    G1Point deserialize_g1(const std::vector<std::uint8_t>& bytes);
-    G2Point deserialize_g2(const std::vector<std::uint8_t>& bytes);
-    std::size_t serialized_size(const G1Point& point);
-    std::size_t serialized_size(const G2Point& point);
-    PreparedG2 prepare_g2(const G2Point& point);
+    std::vector<std::uint8_t> serialize(const G1Point &point);
+    std::vector<std::uint8_t> serialize(const G2Point &point);
+
+    std::size_t serialize(
+        const G1Point &point,
+        std::uint8_t *output,
+        std::size_t capacity);
+
+    G1Point deserialize_g1(
+        const std::uint8_t *bytes,
+        std::size_t size);
+
+    G1Point deserialize_g1(
+        const std::vector<std::uint8_t> &bytes);
+
+    G2Point deserialize_g2(
+        const std::vector<std::uint8_t> &bytes);
+    std::size_t serialized_size(const G1Point &point);
+    std::size_t serialized_size(const G2Point &point);
+    PreparedG2 prepare_g2(const G2Point &point);
 
     // 检查两项 pairing 是否相等，是 KZG batch verification 的基础原语。
     bool pairing_equal(

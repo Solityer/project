@@ -65,47 +65,6 @@ namespace gatzk::crypto
             return bytes_to_hex(digest, sizeof(digest));
         }
 
-        std::string sha256_file_hex_cached(const std::filesystem::path& path)
-        {
-            static std::mutex cache_mutex;
-            static std::unordered_map<std::string, std::string> cache;
-            const auto size = std::filesystem::file_size(path);
-            const auto mtime = std::filesystem::last_write_time(path).time_since_epoch().count();
-            const auto key = path.string() + "|" + std::to_string(size) + "|" + std::to_string(mtime);
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                if (const auto it = cache.find(key); it != cache.end())
-                {
-                    return it->second;
-                }
-            }
-            std::ifstream input(path, std::ios::binary);
-            if (!input)
-            {
-                throw std::runtime_error("failed to hash SRS material: " + path.string());
-            }
-            SHA256_CTX ctx;
-            SHA256_Init(&ctx);
-            std::vector<char> buffer(1U << 20);
-            while (input)
-            {
-                input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-                const auto count = input.gcount();
-                if (count > 0)
-                {
-                    SHA256_Update(&ctx, buffer.data(), static_cast<std::size_t>(count));
-                }
-            }
-            unsigned char digest[SHA256_DIGEST_LENGTH];
-            SHA256_Final(digest, &ctx);
-            auto hash = bytes_to_hex(digest, sizeof(digest));
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                cache.emplace(key, hash);
-            }
-            return hash;
-        }
-
         std::string trim(std::string value)
         {
             const auto begin = value.find_first_not_of(" \t\r\n\"");
@@ -852,93 +811,179 @@ namespace gatzk::crypto
             std::vector<G1Point> out(load_count);
             if (load_count != 0)
             {
-                const auto load_bytes = load_count * point_size;
+                const auto load_bytes =
+                    load_count * point_size;
+
                 if (magic == expected_raw_magic)
                 {
                     read_hashed(
-                        reinterpret_cast<char*>(&out.front().value),
+                        reinterpret_cast<char *>(
+                            &out.front().value),
                         load_bytes,
                         "raw G1 prefix");
-                }
-                else
-                {
-                    std::vector<std::uint8_t> payload(load_bytes);
-                    read_hashed(
-                        reinterpret_cast<char*>(payload.data()),
-                        payload.size(),
-                        "canonical G1 prefix");
-                    const auto worker_count = std::min<std::size_t>(
-                        std::max<std::size_t>(
-                            1, std::thread::hardware_concurrency()),
-                        load_count);
+
+                    const auto worker_count =
+                        std::min<std::size_t>(
+                            std::max<std::size_t>(
+                                1,
+                                std::thread::
+                                    hardware_concurrency()),
+                            load_count);
+
                     const auto chunk_size =
                         (load_count + worker_count - 1) / worker_count;
-                    std::vector<std::future<void>> futures;
+
+                    std::vector<std::future<void>>
+                        futures;
+
                     futures.reserve(worker_count);
+
                     for (std::size_t worker = 0;
                          worker < worker_count;
                          ++worker)
                     {
-                        const auto begin = worker * chunk_size;
+                        const auto begin =
+                            worker * chunk_size;
+
                         const auto end =
-                            std::min(load_count, begin + chunk_size);
+                            std::min(
+                                load_count,
+                                begin + chunk_size);
+
                         if (begin >= end)
+                        {
                             break;
-                        futures.push_back(std::async(
-                            std::launch::async,
-                            [&, begin, end]() {
-                                for (std::size_t i = begin;
-                                     i < end;
-                                     ++i)
+                        }
+
+                        futures.push_back(
+                            std::async(
+                                std::launch::async,
+                                [&, begin, end]()
                                 {
-                                    const auto* point_begin =
-                                        payload.data() + i * point_size;
-                                    std::vector<std::uint8_t> bytes(
-                                        point_begin,
-                                        point_begin + point_size);
-                                    out[i] = deserialize_g1(bytes);
-                                    if (serialize(out[i]) != bytes)
-                                        throw std::runtime_error(
-                                            "non-canonical SRS G1 encoding at index "
-                                            + std::to_string(i)
-                                            + ": " + path.string());
-                                }
-                            }));
+                                    for (std::size_t i =
+                                             begin;
+                                         i < end;
+                                         ++i)
+                                    {
+                                        validate_loaded_srs_g1(
+                                            out[i],
+                                            path,
+                                            i);
+                                    }
+                                }));
                     }
-                    for (auto& future : futures)
+
+                    for (auto &future : futures)
+                    {
                         future.get();
+                    }
                 }
-                const auto worker_count = std::min<std::size_t>(
-                    std::max<std::size_t>(
-                        1, std::thread::hardware_concurrency()),
-                    load_count);
-                const auto chunk_size =
-                    (load_count + worker_count - 1) / worker_count;
-                std::vector<std::future<void>> futures;
-                futures.reserve(worker_count);
-                for (std::size_t worker = 0;
-                     worker < worker_count;
-                     ++worker)
+                else
                 {
-                    const auto begin = worker * chunk_size;
-                    const auto end =
-                        std::min(load_count, begin + chunk_size);
-                    if (begin >= end)
-                        break;
-                    futures.push_back(std::async(
-                        std::launch::async,
-                        [&, begin, end]() {
-                            for (std::size_t i = begin;
-                                 i < end;
-                                 ++i)
-                                validate_loaded_srs_g1(
-                                    out[i], path, i);
-                        }));
+                    std::vector<std::uint8_t>
+                        payload(load_bytes);
+
+                    read_hashed(
+                        reinterpret_cast<char *>(
+                            payload.data()),
+                        payload.size(),
+                        "canonical G1 prefix");
+
+                    const auto worker_count =
+                        std::min<std::size_t>(
+                            std::max<std::size_t>(
+                                1,
+                                std::thread::
+                                    hardware_concurrency()),
+                            load_count);
+
+                    const auto chunk_size =
+                        (load_count + worker_count - 1) / worker_count;
+
+                    std::vector<std::future<void>>
+                        futures;
+
+                    futures.reserve(worker_count);
+
+                    for (std::size_t worker = 0;
+                         worker < worker_count;
+                         ++worker)
+                    {
+                        const auto begin =
+                            worker * chunk_size;
+
+                        const auto end =
+                            std::min(
+                                load_count,
+                                begin + chunk_size);
+
+                        if (begin >= end)
+                        {
+                            break;
+                        }
+
+                        futures.push_back(
+                            std::async(
+                                std::launch::async,
+                                [&, begin, end]()
+                                {
+                                    // One reusable canonical
+                                    // serialization buffer per
+                                    // worker instead of two heap
+                                    // allocations per SRS point.
+                                    std::vector<std::uint8_t>
+                                        canonical_bytes(
+                                            point_size);
+
+                                    for (std::size_t i =
+                                             begin;
+                                         i < end;
+                                         ++i)
+                                    {
+                                        const auto *
+                                            point_begin =
+                                                payload.data() + i * point_size;
+
+                                        out[i] =
+                                            deserialize_g1(
+                                                point_begin,
+                                                point_size);
+
+                                        const auto written =
+                                            serialize(
+                                                out[i],
+                                                canonical_bytes
+                                                    .data(),
+                                                canonical_bytes
+                                                    .size());
+
+                                        if (written != point_size || std::memcmp(
+                                                                         canonical_bytes
+                                                                             .data(),
+                                                                         point_begin,
+                                                                         point_size) != 0)
+                                        {
+                                            throw std::runtime_error(
+                                                "non-canonical SRS G1 encoding "
+                                                "at index " +
+                                                std::to_string(i) + ": " + path.string());
+                                        }
+
+                                        validate_loaded_srs_g1(
+                                            out[i],
+                                            path,
+                                            i);
+                                    }
+                                }));
+                    }
+
+                    for (auto &future : futures)
+                    {
+                        future.get();
+                    }
                 }
-                for (auto& future : futures)
-                    future.get();
             }
-        
+
             std::array<char, 1 << 20> buffer{};
             std::size_t remaining_bytes =
                 (point_count - load_count) * point_size;
@@ -4031,6 +4076,7 @@ namespace gatzk::crypto
                 return it->second;
             }
         }
+        const auto srs_load_start = Clock::now();
 
         const auto manifest = load_manifest_file(srs_path);
         validate_manifest(manifest, expected_srs_type, expected_srs_id);
@@ -4040,32 +4086,12 @@ namespace gatzk::crypto
         const auto selected_lagrange_domains =
             select_lagrange_srs_domains(manifest, required_lagrange_domains);
 
-                std::string pk_coef_hash;
-
-        const auto pk_coef_load_start = Clock::now();
-
-        progress_note("kzg:srs:pk_coef:start");
-
-        auto powers_g1 = load_g1_vector_file(
-            srs_root / manifest.pk_coef_path,
-            &pk_coef_hash,
-            required_coefficient_count);
-
-        validate_material_hash_value(
-            pk_coef_hash,
-            manifest.pk_coef_hash,
-            "pk_coef");
-
-        progress_note(
-            "kzg:srs:pk_coef:done:ms="
-            + std::to_string(
-                elapsed_ms(
-                    pk_coef_load_start,
-                    Clock::now())));
+        
         std::unordered_map<std::string, std::shared_ptr<const std::vector<G1Point>>> lagrange_srs;
         for (const auto& domain : selected_lagrange_domains)
         {
             progress_note("kzg:srs:lagrange:" + domain + ":start");
+            const auto lagrange_load_start = Clock::now();
             const auto path_it = manifest.pk_lagrange_paths.find(domain);
             if (path_it == manifest.pk_lagrange_paths.end())
             {
@@ -4076,10 +4102,6 @@ namespace gatzk::crypto
             {
                 throw std::runtime_error("missing Lagrange SRS hash for domain: " + domain);
             }
-            validate_material_hash_value(
-                sha256_file_hex_cached(srs_root / path_it->second),
-                hash_it->second,
-                "pk_lagrange_" + domain);
             std::string material_hash;
             auto material = load_g1_vector_file(srs_root / path_it->second, &material_hash);
             validate_material_hash_value(material_hash, hash_it->second, "pk_lagrange_" + domain);
@@ -4089,7 +4111,8 @@ namespace gatzk::crypto
                 throw std::runtime_error("Lagrange SRS domain size mismatch: " + domain);
             }
             lagrange_srs.emplace(domain, std::make_shared<const std::vector<G1Point>>(std::move(material)));
-            progress_note("kzg:srs:lagrange:" + domain + ":done");
+            progress_note(
+                "kzg:srs:lagrange:" + domain + ":done:ms=" + std::to_string(elapsed_ms(lagrange_load_start, Clock::now())));
         }
         std::string vk_hash;
         progress_note("kzg:srs:vk:start");
@@ -4219,7 +4242,11 @@ namespace gatzk::crypto
             std::lock_guard<std::mutex> lock(cache_mutex);
             cache.emplace(cache_key, key);
         }
-        progress_note("kzg:srs:done");
+        progress_note(
+            "kzg:srs:done:ms=" + std::to_string(
+                                     elapsed_ms(
+                                         srs_load_start,
+                                         Clock::now())));
         return key;
     }
 
