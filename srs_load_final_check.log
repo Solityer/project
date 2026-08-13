@@ -1,0 +1,11 @@
+[progress] light-warmup:context:start
+[progress] context:load_static:start
+[progress] context:load_static:done
+[progress] context:domains:start
+[progress] context:domains:done
+[progress] context:srs:start
+[progress] kzg:srs:pk_coef:start
+[progress] kzg:srs:pk_coef:done:ms=2527705.102059
+[progress] kzg:srs:lagrange:C:start
+[progress] kzg:srs:lagrange:C:done:ms=2.732553
+[progress] kzg:srs:lagrange:FH:start

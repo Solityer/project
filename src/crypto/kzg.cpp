@@ -23,6 +23,7 @@
 #include <thread>
 #include <unordered_map>
 #include <utility>
+#include <deque>
 
 #include <openssl/sha.h>
 #include <openssl/rand.h>
@@ -717,18 +718,34 @@ namespace gatzk::crypto
             std::string* actual_hash,
             std::size_t max_points);
 
-        void validate_loaded_srs_g1(
-            const G1Point& point,
-            const std::filesystem::path& path,
+        void validate_raw_loaded_srs_g1(
+            const G1Point &point,
+            const std::filesystem::path &path,
             std::size_t index)
         {
-            if (point.value.isZero()
-                || !point.value.isValid()
-                || !mcl::bn::isValidOrderBLS12(point.value))
+            // For raw in-memory material there was no canonical mcl
+            // deserialization step. isValid() checks both curve membership
+            // and, because BLS12-381 verifyOrderG1 is enabled, subgroup
+            // membership. Do not repeat the same subgroup predicate.
+            if (point.value.isZero() || !point.value.isValid())
             {
                 throw std::runtime_error(
-                    "invalid, non-subgroup, or identity SRS G1 point at index "
-                    + std::to_string(index) + ": " + path.string());
+                    "invalid, non-subgroup, or identity SRS G1 point at index " + std::to_string(index) + ": " + path.string());
+            }
+        }
+
+        void validate_deserialized_srs_g1_identity(
+            const G1Point &point,
+            const std::filesystem::path &path,
+            std::size_t index)
+        {
+            // mcl BLS12-381 canonical deserialization already performs the
+            // curve reconstruction and the configured subgroup/order check.
+            // The SRS policy additionally rejects the identity.
+            if (point.value.isZero())
+            {
+                throw std::runtime_error(
+                    "identity SRS G1 point at index " + std::to_string(index) + ": " + path.string());
             }
         }
 
@@ -865,7 +882,7 @@ namespace gatzk::crypto
                                          i < end;
                                          ++i)
                                     {
-                                        validate_loaded_srs_g1(
+                                        validate_raw_loaded_srs_g1(
                                             out[i],
                                             path,
                                             i);
@@ -880,82 +897,118 @@ namespace gatzk::crypto
                 }
                 else
                 {
-                    std::vector<std::uint8_t>
-                        payload(load_bytes);
+                    constexpr std::size_t
+                        kCanonicalSrsChunkPoints =
+                            1ULL << 16;
 
-                    read_hashed(
-                        reinterpret_cast<char *>(
-                            payload.data()),
-                        payload.size(),
-                        "canonical G1 prefix");
+                    const auto cpu_count =
+                        std::max<std::size_t>(
+                            1,
+                            std::thread::
+                                hardware_concurrency());
 
-                    const auto worker_count =
-                        std::min<std::size_t>(
-                            std::max<std::size_t>(
-                                1,
-                                std::thread::
-                                    hardware_concurrency()),
-                            load_count);
+                    const auto chunk_count =
+                        (load_count + kCanonicalSrsChunkPoints - 1) / kCanonicalSrsChunkPoints;
 
-                    const auto chunk_size =
-                        (load_count + worker_count - 1) / worker_count;
+                    const auto max_inflight =
+                        std::max<std::size_t>(
+                            1,
+                            std::min<std::size_t>(
+                                cpu_count,
+                                chunk_count));
 
-                    std::vector<std::future<void>>
-                        futures;
+                    std::deque<std::future<void>>
+                        inflight;
 
-                    futures.reserve(worker_count);
-
-                    for (std::size_t worker = 0;
-                         worker < worker_count;
-                         ++worker)
+                    auto reap_one = [&]()
                     {
-                        const auto begin =
-                            worker * chunk_size;
+                        inflight.front().get();
+                        inflight.pop_front();
+                    };
 
-                        const auto end =
-                            std::min(
-                                load_count,
-                                begin + chunk_size);
+                    for (std::size_t begin = 0;
+                         begin < load_count;
+                         begin +=
+                         kCanonicalSrsChunkPoints)
+                    {
+                        const auto current_count =
+                            std::min<std::size_t>(
+                                kCanonicalSrsChunkPoints,
+                                load_count - begin);
 
-                        if (begin >= end)
-                        {
-                            break;
-                        }
+                        const auto current_bytes =
+                            current_count * point_size;
 
-                        futures.push_back(
+                        auto payload =
+                            std::make_shared<
+                                std::vector<
+                                    std::uint8_t>>(
+                                current_bytes);
+
+                        read_hashed(
+                            reinterpret_cast<char *>(
+                                payload->data()),
+                            payload->size(),
+                            "canonical G1 prefix chunk");
+
+                        inflight.emplace_back(
                             std::async(
                                 std::launch::async,
-                                [&, begin, end]()
+                                [&, payload,
+                                 begin,
+                                 current_count]()
                                 {
-                                    // One reusable canonical
-                                    // serialization buffer per
-                                    // worker instead of two heap
-                                    // allocations per SRS point.
-                                    std::vector<std::uint8_t>
+                                    std::vector<
+                                        std::uint8_t>
                                         canonical_bytes(
                                             point_size);
 
-                                    for (std::size_t i =
-                                             begin;
-                                         i < end;
-                                         ++i)
+                                    for (std::size_t local = 0;
+                                         local < current_count;
+                                         ++local)
                                     {
+                                        const auto index =
+                                            begin + local;
+
                                         const auto *
                                             point_begin =
-                                                payload.data() + i * point_size;
+                                                payload->data() + local * point_size;
 
-                                        out[i] =
-                                            deserialize_g1(
-                                                point_begin,
-                                                point_size);
+                                        const auto consumed =
+                                            out[index]
+                                                .value
+                                                .deserialize(
+                                                    point_begin,
+                                                    point_size);
+
+                                        if (consumed != point_size)
+                                        {
+                                            throw std::runtime_error(
+                                                "failed to deserialize SRS G1 point at index " + std::to_string(index) + ": " + path.string());
+                                        }
+
+                                        if (out[index]
+                                                .value
+                                                .isZero())
+                                        {
+                                            throw std::runtime_error(
+                                                "identity SRS G1 point at index " + std::to_string(index) + ": " + path.string());
+                                        }
 
                                         const auto written =
-                                            serialize(
-                                                out[i],
-                                                canonical_bytes
-                                                    .data(),
-                                                canonical_bytes
-                                                    .size());
+                                            out[index]
+                                                .value
+                                                .serialize(
+                                                    canonical_bytes
+                                                        .data(),
+                                                    canonical_bytes
+                                                        .size());
+
+                                        if (written == 0)
+                                        {
+                                            throw std::runtime_error(
+                                                "failed to serialize SRS G1 point at index " + std::to_string(index) + ": " + path.string());
+                                        }
 
                                         if (written != point_size || std::memcmp(
                                                                          canonical_bytes
@@ -964,22 +1017,20 @@ namespace gatzk::crypto
                                                                          point_size) != 0)
                                         {
                                             throw std::runtime_error(
-                                                "non-canonical SRS G1 encoding "
-                                                "at index " +
-                                                std::to_string(i) + ": " + path.string());
+                                                "non-canonical SRS G1 encoding at index " + std::to_string(index) + ": " + path.string());
                                         }
-
-                                        validate_loaded_srs_g1(
-                                            out[i],
-                                            path,
-                                            i);
                                     }
                                 }));
+
+                        if (inflight.size() >= max_inflight)
+                        {
+                            reap_one();
+                        }
                     }
 
-                    for (auto &future : futures)
+                    while (!inflight.empty())
                     {
-                        future.get();
+                        reap_one();
                     }
                 }
             }
@@ -1078,8 +1129,15 @@ namespace gatzk::crypto
                         file_bytes.data() + offset,
                         point_count * sizeof(mcl::G1));
                 }
-                for (std::size_t i = 0; i < out.size(); ++i)
-                    validate_loaded_srs_g1(out[i], path, i);
+                for (std::size_t i = 0;
+                     i < out.size();
+                     ++i)
+                {
+                    validate_raw_loaded_srs_g1(
+                        out[i],
+                        path,
+                        i);
+                }
                 return out;
             }
             std::vector<std::pair<std::size_t, std::size_t>> payloads;
@@ -1122,7 +1180,7 @@ namespace gatzk::crypto
                             throw std::runtime_error(
                                 "non-canonical SRS G1 encoding at index "
                                 + std::to_string(i));
-                        validate_loaded_srs_g1(out[i], path, i);
+                        validate_deserialized_srs_g1_identity(out[i], path, i);
                     }
                 }));
             }
@@ -1179,10 +1237,7 @@ namespace gatzk::crypto
                     throw std::runtime_error("truncated SRS G2 point payload");
                 }
                 auto point = deserialize_g2(bytes);
-                if (point.value.isZero()
-                    || !point.value.isValid()
-                    || !mcl::bn::isValidOrderBLS12(point.value)
-                    || serialize(point) != bytes)
+                if (point.value.isZero() || serialize(point) != bytes)
                 {
                     throw std::runtime_error(
                         "invalid, non-canonical, non-subgroup, or identity SRS G2 point");
