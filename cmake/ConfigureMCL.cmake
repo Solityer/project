@@ -19,9 +19,9 @@ function(gatzk_configure_vendored_mcl)
         OUTPUT "${GATZK_VENDOR_MCL_LIBRARY}"
         COMMAND "${GATZK_HOST_MAKE}" -C "${GATZK_VENDOR_MCL_SOURCE_DIR}"
         lib/libmcl.a
-        MCL_USE_LLVM=0
+        LLVM_VER=-18
+        MCL_USE_LLVM=1
         MCL_BINT_ASM=1
-        MCL_BINT_ASM_X64=1
         MCL_MSM=0
         "CFLAGS_USER=-O3 -DNDEBUG"
         -j4
