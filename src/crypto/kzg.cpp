@@ -4085,8 +4085,31 @@ namespace gatzk::crypto
         validate_srs_audit_report_material(srs_root, manifest);
         const auto selected_lagrange_domains =
             select_lagrange_srs_domains(manifest, required_lagrange_domains);
+        std::string pk_coef_hash;
 
-        
+        const auto pk_coef_load_start =
+            Clock::now();
+
+        progress_note(
+            "kzg:srs:pk_coef:start");
+
+        auto powers_g1 =
+            load_g1_vector_file(
+                srs_root / manifest.pk_coef_path,
+                &pk_coef_hash,
+                required_coefficient_count);
+
+        validate_material_hash_value(
+            pk_coef_hash,
+            manifest.pk_coef_hash,
+            "pk_coef");
+
+        progress_note(
+            "kzg:srs:pk_coef:done:ms=" + std::to_string(
+                                             elapsed_ms(
+                                                 pk_coef_load_start,
+                                                 Clock::now())));
+
         std::unordered_map<std::string, std::shared_ptr<const std::vector<G1Point>>> lagrange_srs;
         for (const auto& domain : selected_lagrange_domains)
         {
