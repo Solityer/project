@@ -177,6 +177,42 @@ std::size_t checked_add(
             return output;
         }
 
+        void copy_mcl_montgomery_scalars_to_icicle(
+            bls12_381::scalar_t *output,
+            const algebra::FieldElement *input,
+            std::size_t count)
+        {
+            static_assert(
+                sizeof(bls12_381::scalar_t) == sizeof(mcl::Fr),
+                "ICICLE BLS12-381 scalar and mcl::Fr must have identical width");
+
+            static_assert(
+                sizeof(mcl::Fr) == 4 * sizeof(std::uint64_t),
+                "mcl::Fr must use four 64-bit limbs");
+
+            if (count == 0)
+            {
+                return;
+            }
+
+            if (output == nullptr || input == nullptr)
+            {
+                throw std::runtime_error(
+                    "CUDA G1 MSM Montgomery scalar staging received a null buffer");
+            }
+
+            const auto *native =
+                algebra::FieldElement::native_array_data(input);
+
+            std::memcpy(
+                output,
+                native,
+                checked_byte_count(
+                    count,
+                    sizeof(mcl::Fr),
+                    "Montgomery scalar staging"));
+        }
+
         template <class MclField, class IcicleField>
         MclField to_mcl_field(const IcicleField& input)
         {
@@ -624,19 +660,15 @@ void execute_resident_cuda_msm(
             "exhausted host memory");
     }
 
-    for (std::size_t index = 0;
-         index < count;
-         ++index)
-    {
-        converted_scalars[index] =
-            to_icicle_field<bls12_381::scalar_t>(
-                scalars[index].native());
-    }
+    copy_mcl_montgomery_scalars_to_icicle(
+        converted_scalars.data(),
+        scalars,
+        count);
 
     auto config = msm::default_msm_config();
 
     config.are_points_on_device = true;
-    config.are_points_montgomery_form = false;
+    config.are_points_montgomery_form = true;
 
     config.are_scalars_on_device = false;
     config.are_scalars_montgomery_form = false;
@@ -880,14 +912,10 @@ void execute_streamed_cuda_msm(
             points + offset,
             current_count);
 
-        for (std::size_t index = 0;
-             index < current_count;
-             ++index)
-        {
-            buffers.converted_scalars[index] =
-                to_icicle_field<bls12_381::scalar_t>(
-                    scalars[offset + index].native());
-        }
+        copy_mcl_montgomery_scalars_to_icicle(
+            buffers.converted_scalars.data(),
+            scalars + offset,
+            current_count);
 
         auto config =
             msm::default_msm_config();
@@ -896,7 +924,7 @@ void execute_streamed_cuda_msm(
         config.are_points_montgomery_form = false;
 
         config.are_scalars_on_device = false;
-        config.are_scalars_montgomery_form = false;
+        config.are_scalars_montgomery_form = true;
 
         config.are_results_on_device = false;
 
