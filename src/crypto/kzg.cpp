@@ -755,6 +755,7 @@ namespace gatzk::crypto
             std::size_t max_points,
             std::string* actual_hash)
         {
+            algebra::ensure_mcl_field_ready();
             std::ifstream input(path, std::ios::binary);
             if (!input)
             {
