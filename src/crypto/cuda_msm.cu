@@ -668,10 +668,10 @@ void execute_resident_cuda_msm(
     auto config = msm::default_msm_config();
 
     config.are_points_on_device = true;
-    config.are_points_montgomery_form = flase;
+    config.are_points_montgomery_form = false;
 
     config.are_scalars_on_device = false;
-    config.are_scalars_montgomery_form = false;
+    config.are_scalars_montgomery_form = true;
 
     config.are_results_on_device = false;
 
@@ -924,7 +924,7 @@ void execute_streamed_cuda_msm(
         config.are_points_montgomery_form = false;
 
         config.are_scalars_on_device = false;
-        config.are_scalars_montgomery_form = false;
+        config.are_scalars_montgomery_form = true;
 
         config.are_results_on_device = false;
 
