@@ -694,10 +694,33 @@ namespace gatzk::algebra
                 "paired NTT requires two distinct non-null power-of-two vectors");
         }
 
+        constexpr std::size_t kCudaPairMinimumSize =
+            std::size_t{1} << 23;
+
+        constexpr std::size_t kCudaPairMaximumSize =
+            std::size_t{1} << 24;
+
+        if (util::route2_options().cuda_field_hotspots && size >= kCudaPairMinimumSize && size <= kCudaPairMaximumSize)
+        {
+            if (!try_cuda_ntt_pair_in_place(
+                    first,
+                    second,
+                    size))
+            {
+                throw std::runtime_error(
+                    "CUDA production paired NTT route "
+                    "was selected but not admitted");
+            }
+
+            return;
+        }
+
         constexpr std::size_t kParallelPairThreshold =
             1ULL << 15;
+
         constexpr std::size_t kRecursiveParallelThreshold =
             1ULL << 18;
+
         constexpr std::size_t kRecursiveParallelMaximum =
             1ULL << 24;
 
@@ -707,9 +730,12 @@ namespace gatzk::algebra
 
         if (size < kParallelPairThreshold || available_workers < 2)
         {
-            const auto plan = ntt_plan(size);
+            const auto plan =
+                ntt_plan(size);
+
             plan->ntt(first);
             plan->ntt(second);
+
             return;
         }
 
@@ -749,10 +775,12 @@ namespace gatzk::algebra
 
             run_transform(second);
             first_task.get();
+
             return;
         }
 
-        const auto plan = ntt_plan(size);
+        const auto plan =
+            ntt_plan(size);
 
         auto first_task =
             std::async(
