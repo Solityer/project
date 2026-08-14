@@ -117,8 +117,9 @@ if(GATZK_ENABLE_CUDA_BACKEND)
             CUDA_SEPARABLE_COMPILATION ON
             POSITION_INDEPENDENT_CODE ON)
     add_library(
-    gatzk_icicle_bls12_381_ntt STATIC
-    "${GATZK_ICICLE_ROOT}/icicle/src/ntt/extern.cu")
+        gatzk_icicle_bls12_381_ntt STATIC
+        "${GATZK_ICICLE_ROOT}/icicle/src/ntt/extern.cu"
+        "${GATZK_ICICLE_ROOT}/icicle/src/ntt/kernel_ntt.cu")
 
     target_include_directories(
         gatzk_icicle_bls12_381_ntt
