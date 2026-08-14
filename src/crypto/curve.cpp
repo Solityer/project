@@ -32,7 +32,7 @@ namespace gatzk::crypto
         {
             std::array<std::uint8_t, 32> bytes{};
 
-            bool operator==(const ScalarKey& other) const
+            bool operator==(const ScalarKey &other) const
             {
                 return bytes == other.bytes;
             }
@@ -48,7 +48,8 @@ namespace gatzk::crypto
                      worker < background_worker_count;
                      ++worker)
                 {
-                    workers_.emplace_back([this]() { worker_loop(); });
+                    workers_.emplace_back([this]()
+                                          { worker_loop(); });
                 }
             }
 
@@ -59,17 +60,17 @@ namespace gatzk::crypto
                     stopping_ = true;
                 }
                 ready_.notify_all();
-                for (auto& worker : workers_)
+                for (auto &worker : workers_)
                 {
                     worker.join();
                 }
             }
 
-            MsmWorkerPool(const MsmWorkerPool&) = delete;
-            MsmWorkerPool& operator=(const MsmWorkerPool&) = delete;
+            MsmWorkerPool(const MsmWorkerPool &) = delete;
+            MsmWorkerPool &operator=(const MsmWorkerPool &) = delete;
 
             template <class Fn>
-            void parallel_for(std::size_t task_count, Fn&& fn)
+            void parallel_for(std::size_t task_count, Fn &&fn)
             {
                 if (task_count <= 1 || workers_.empty())
                 {
@@ -105,7 +106,8 @@ namespace gatzk::crypto
                     void wait()
                     {
                         std::unique_lock<std::mutex> lock(mutex);
-                        finished.wait(lock, [&]() { return remaining == 0; });
+                        finished.wait(lock, [&]()
+                                      { return remaining == 0; });
                     }
 
                     std::mutex mutex;
@@ -120,7 +122,8 @@ namespace gatzk::crypto
                     std::forward<Fn>(fn));
                 for (std::size_t task = 0; task < queued_task_count; ++task)
                 {
-                    enqueue([group, operation, task]() {
+                    enqueue([group, operation, task]()
+                            {
                         try
                         {
                             (*operation)(task);
@@ -129,8 +132,7 @@ namespace gatzk::crypto
                         {
                             group->record_failure(std::current_exception());
                         }
-                        group->finish_one();
-                    });
+                        group->finish_one(); });
                 }
 
                 try
@@ -165,9 +167,8 @@ namespace gatzk::crypto
                     std::function<void()> task;
                     {
                         std::unique_lock<std::mutex> lock(mutex_);
-                        ready_.wait(lock, [&]() {
-                            return stopping_ || !tasks_.empty();
-                        });
+                        ready_.wait(lock, [&]()
+                                    { return stopping_ || !tasks_.empty(); });
                         if (stopping_ && tasks_.empty())
                         {
                             return;
@@ -186,7 +187,7 @@ namespace gatzk::crypto
             bool stopping_ = false;
         };
 
-        MsmWorkerPool& msm_worker_pool()
+        MsmWorkerPool &msm_worker_pool()
         {
             const auto cpu_count = std::max<std::size_t>(
                 1, std::thread::hardware_concurrency());
@@ -194,7 +195,7 @@ namespace gatzk::crypto
             return pool;
         }
 
-        MsmWorkerPool& msm_batch_worker_pool()
+        MsmWorkerPool &msm_batch_worker_pool()
         {
             const auto cpu_count = std::max<std::size_t>(
                 1, std::thread::hardware_concurrency());
@@ -205,10 +206,10 @@ namespace gatzk::crypto
 
         struct StableBaseSliceKey
         {
-            const G1Point* points = nullptr;
+            const G1Point *points = nullptr;
             std::size_t count = 0;
 
-            bool operator==(const StableBaseSliceKey& other) const
+            bool operator==(const StableBaseSliceKey &other) const
             {
                 return points == other.points && count == other.count;
             }
@@ -216,12 +217,11 @@ namespace gatzk::crypto
 
         struct StableBaseSliceKeyHash
         {
-            std::size_t operator()(const StableBaseSliceKey& key) const
+            std::size_t operator()(const StableBaseSliceKey &key) const
             {
                 auto hash = static_cast<std::size_t>(
                     reinterpret_cast<std::uintptr_t>(key.points));
-                hash ^= key.count
-                    + 0x9e3779b9U + (hash << 6U) + (hash >> 2U);
+                hash ^= key.count + 0x9e3779b9U + (hash << 6U) + (hash >> 2U);
                 return hash;
             }
         };
@@ -230,15 +230,13 @@ namespace gatzk::crypto
         {
         public:
             std::shared_ptr<const std::vector<mcl::G1>> get_or_prepare(
-                const G1Point* points,
+                const G1Point *points,
                 std::size_t count)
             {
                 constexpr std::size_t kMinPreparedSlice = 128;
                 constexpr std::size_t kMaxPreparedSlice = 4096;
                 constexpr std::size_t kMaxExpandedPointCount = 1ULL << 20;
-                if (points == nullptr
-                    || count < kMinPreparedSlice
-                    || count > kMaxPreparedSlice)
+                if (points == nullptr || count < kMinPreparedSlice || count > kMaxPreparedSlice)
                 {
                     return nullptr;
                 }
@@ -259,9 +257,7 @@ namespace gatzk::crypto
                     {
                         return it->second.prepared;
                     }
-                    if (it->second.preparing
-                        || expanded_point_count_ + count * 2
-                            > kMaxExpandedPointCount)
+                    if (it->second.preparing || expanded_point_count_ + count * 2 > kMaxExpandedPointCount)
                     {
                         return nullptr;
                     }
@@ -270,8 +266,8 @@ namespace gatzk::crypto
 
                 auto prepared =
                     std::make_shared<std::vector<mcl::G1>>(count * 2);
-                auto* native_points = const_cast<mcl::G1*>(
-                    reinterpret_cast<const mcl::G1*>(points));
+                auto *native_points = const_cast<mcl::G1 *>(
+                    reinterpret_cast<const mcl::G1 *>(points));
                 mcl::G1::normalizeVec(
                     prepared->data(),
                     native_points,
@@ -284,7 +280,7 @@ namespace gatzk::crypto
                 }
 
                 std::lock_guard<std::mutex> lock(mutex_);
-                auto& entry = entries_.at(key);
+                auto &entry = entries_.at(key);
                 if (entry.prepared == nullptr)
                 {
                     expanded_point_count_ += prepared->size();
@@ -306,11 +302,12 @@ namespace gatzk::crypto
             std::unordered_map<
                 StableBaseSliceKey,
                 Entry,
-                StableBaseSliceKeyHash> entries_;
+                StableBaseSliceKeyHash>
+                entries_;
             std::size_t expanded_point_count_ = 0;
         };
 
-        StableBaseGLVCache& stable_base_glv_cache()
+        StableBaseGLVCache &stable_base_glv_cache()
         {
             static StableBaseGLVCache cache;
             return cache;
@@ -318,7 +315,7 @@ namespace gatzk::crypto
 
         struct ScalarKeyHash
         {
-            std::size_t operator()(const ScalarKey& key) const
+            std::size_t operator()(const ScalarKey &key) const
             {
                 std::uint64_t hash = 1469598103934665603ULL;
                 for (const auto byte : key.bytes)
@@ -330,7 +327,7 @@ namespace gatzk::crypto
             }
         };
 
-        ScalarKey scalar_key(const algebra::FieldElement& scalar)
+        ScalarKey scalar_key(const algebra::FieldElement &scalar)
         {
             ScalarKey key;
             scalar.write_little_endian(key.bytes.data(), key.bytes.size());
@@ -338,7 +335,7 @@ namespace gatzk::crypto
         }
 
         // 同基点批量乘法会反复命中相同 `(base, scalar)`，这里用字符串键复用结果。
-        std::string same_base_cache_key(const G1Point& point, const algebra::FieldElement& scalar)
+        std::string same_base_cache_key(const G1Point &point, const algebra::FieldElement &scalar)
         {
             return point.to_string() + "|" + scalar.to_string();
         }
@@ -347,7 +344,7 @@ namespace gatzk::crypto
         class SameBaseMulCache
         {
         public:
-            bool lookup(const G1Point& point, const algebra::FieldElement& scalar, G1Point* out)
+            bool lookup(const G1Point &point, const algebra::FieldElement &scalar, G1Point *out)
             {
                 const auto key = same_base_cache_key(point, scalar);
                 std::lock_guard<std::mutex> lock(mutex_);
@@ -362,7 +359,7 @@ namespace gatzk::crypto
                 return false;
             }
 
-            void store(const G1Point& point, const algebra::FieldElement& scalar, const G1Point& value)
+            void store(const G1Point &point, const algebra::FieldElement &scalar, const G1Point &value)
             {
                 const auto key = same_base_cache_key(point, scalar);
                 std::lock_guard<std::mutex> lock(mutex_);
@@ -375,7 +372,7 @@ namespace gatzk::crypto
         };
 
         // 进程级单例缓存，供 MSM / 承诺等热点复用。
-        SameBaseMulCache& same_base_mul_cache()
+        SameBaseMulCache &same_base_mul_cache()
         {
             static SameBaseMulCache cache;
             return cache;
@@ -383,7 +380,7 @@ namespace gatzk::crypto
 
         // 序列化接口同时服务 transcript 吸收与 artifact 导出。
         template <class Point>
-        std::vector<std::uint8_t> serialize_impl(const Point& point)
+        std::vector<std::uint8_t> serialize_impl(const Point &point)
         {
             algebra::ensure_mcl_field_ready();
             std::array<std::uint8_t, 256> buffer{};
@@ -432,7 +429,7 @@ namespace gatzk::crypto
         return out;
     }
 
-    G1Point g1_add(const G1Point& lhs, const G1Point& rhs)
+    G1Point g1_add(const G1Point &lhs, const G1Point &rhs)
     {
         G1Point out;
         algebra::ensure_mcl_field_ready();
@@ -440,7 +437,7 @@ namespace gatzk::crypto
         return out;
     }
 
-    G1Point g1_sub(const G1Point& lhs, const G1Point& rhs)
+    G1Point g1_sub(const G1Point &lhs, const G1Point &rhs)
     {
         G1Point out;
         algebra::ensure_mcl_field_ready();
@@ -448,7 +445,7 @@ namespace gatzk::crypto
         return out;
     }
 
-    G1Point g1_neg(const G1Point& point)
+    G1Point g1_neg(const G1Point &point)
     {
         G1Point out;
         algebra::ensure_mcl_field_ready();
@@ -456,7 +453,7 @@ namespace gatzk::crypto
         return out;
     }
 
-    G1Point g1_mul(const G1Point& point, const algebra::FieldElement& scalar)
+    G1Point g1_mul(const G1Point &point, const algebra::FieldElement &scalar)
     {
         G1Point out;
         algebra::ensure_mcl_field_ready();
@@ -495,9 +492,9 @@ namespace gatzk::crypto
     }
 
     void mcl_mul_vec(
-        mcl::G1& out,
-        const G1Point* points,
-        const algebra::FieldElement* scalars,
+        mcl::G1 &out,
+        const G1Point *points,
+        const algebra::FieldElement *scalars,
         std::size_t count,
         bool stable_srs_bases)
     {
@@ -563,15 +560,15 @@ namespace gatzk::crypto
                 return;
             }
         }
-        auto* native_points = const_cast<mcl::G1*>(reinterpret_cast<const mcl::G1*>(points));
-        const auto* native_scalars = algebra::FieldElement::native_array_data(scalars);
+        auto *native_points = const_cast<mcl::G1 *>(reinterpret_cast<const mcl::G1 *>(points));
+        const auto *native_scalars = algebra::FieldElement::native_array_data(scalars);
         mcl::G1::mulVec(out, native_points, native_scalars, count);
     }
 
     void msm_execute_single(
-        mcl::G1& out,
-        const G1Point* points,
-        const algebra::FieldElement* scalars,
+        mcl::G1 &out,
+        const G1Point *points,
+        const algebra::FieldElement *scalars,
         std::size_t count,
         bool stable_srs_bases)
     {
@@ -584,9 +581,9 @@ namespace gatzk::crypto
     }
 
     void msm_execute_chunked(
-        mcl::G1& out,
-        const G1Point* points,
-        const algebra::FieldElement* scalars,
+        mcl::G1 &out,
+        const G1Point *points,
+        const algebra::FieldElement *scalars,
         std::size_t count,
         std::size_t worker_count,
         bool stable_srs_bases)
@@ -605,7 +602,8 @@ namespace gatzk::crypto
         const auto base_chunk_size = count / task_count;
         const auto larger_chunk_count = count % task_count;
         std::vector<mcl::G1> partials(task_count);
-        msm_worker_pool().parallel_for(task_count, [&](std::size_t task) {
+        msm_worker_pool().parallel_for(task_count, [&](std::size_t task)
+                                       {
             const auto begin =
                 task * base_chunk_size
                 + std::min(task, larger_chunk_count);
@@ -618,18 +616,17 @@ namespace gatzk::crypto
                 points + begin,
                 scalars + begin,
                 end - begin,
-                stable_srs_bases);
-        });
-        for (const auto& partial : partials)
+                stable_srs_bases); });
+        for (const auto &partial : partials)
         {
             mcl::G1::add(out, out, partial);
         }
     }
 
     bool should_try_grouped_scalar_msm(
-        const algebra::FieldElement* scalars,
+        const algebra::FieldElement *scalars,
         std::size_t count,
-        const algebra::FieldElement& zero_scalar,
+        const algebra::FieldElement &zero_scalar,
         std::size_t nonzero_count)
     {
         if (!util::route2_options().fast_msm || count < 4096 || nonzero_count < 512)
@@ -658,11 +655,11 @@ namespace gatzk::crypto
     }
 
     bool sample_single_nonzero_scalar(
-        const algebra::FieldElement* scalars,
+        const algebra::FieldElement *scalars,
         std::size_t count,
-        const algebra::FieldElement& zero_scalar,
+        const algebra::FieldElement &zero_scalar,
         std::size_t nonzero_count,
-        algebra::FieldElement* representative)
+        algebra::FieldElement *representative)
     {
         if (!util::route2_options().fast_msm || count < 4096 || nonzero_count < 512 || representative == nullptr)
         {
@@ -700,14 +697,14 @@ namespace gatzk::crypto
     }
 
     bool try_single_nonzero_scalar_msm(
-        G1Point& out,
-        const G1Point* points,
-        const algebra::FieldElement* scalars,
+        G1Point &out,
+        const G1Point *points,
+        const algebra::FieldElement *scalars,
         std::size_t count,
-        const algebra::FieldElement& zero_scalar,
+        const algebra::FieldElement &zero_scalar,
         std::size_t nonzero_count,
-        G1MSMProfile* profile,
-        const G1MSMExecutionOptions* options)
+        G1MSMProfile *profile,
+        const G1MSMExecutionOptions *options)
     {
         algebra::FieldElement representative = zero_scalar;
         if (!sample_single_nonzero_scalar(
@@ -734,7 +731,8 @@ namespace gatzk::crypto
             mcl::G1 sum;
         };
 
-        auto accumulate_range = [&](std::size_t begin, std::size_t end) {
+        auto accumulate_range = [&](std::size_t begin, std::size_t end)
+        {
             PartialSum partial;
             partial.sum.clear();
             for (std::size_t i = begin; i < end; ++i)
@@ -767,12 +765,12 @@ namespace gatzk::crypto
             const auto task_count = std::min<std::size_t>(worker_count, count);
             const auto chunk_size = (count + task_count - 1) / task_count;
             std::vector<PartialSum> partials(task_count);
-            msm_worker_pool().parallel_for(task_count, [&](std::size_t task) {
+            msm_worker_pool().parallel_for(task_count, [&](std::size_t task)
+                                           {
                 const auto begin = task * chunk_size;
                 const auto end = std::min(count, begin + chunk_size);
-                partials[task] = accumulate_range(begin, end);
-            });
-            for (const auto& partial : partials)
+                partials[task] = accumulate_range(begin, end); });
+            for (const auto &partial : partials)
             {
                 if (!partial.ok)
                 {
@@ -796,44 +794,426 @@ namespace gatzk::crypto
         return true;
     }
 
+    struct PendingCudaMsmRequest
+    {
+        G1Point *output = nullptr;
+        const G1Point *points = nullptr;
+        const algebra::FieldElement *scalars = nullptr;
+        std::size_t count = 0;
+        std::size_t stable_srs_capacity = 0;
+        bool done = false;
+        std::string error;
+    };
+
+    class CudaMsmBatchWindow
+    {
+    public:
+        explicit CudaMsmBatchWindow(
+            std::size_t active_workers)
+            : active_workers_(
+                  active_workers)
+        {
+        }
+
+        void submit(
+            G1Point *output,
+            const G1Point *points,
+            const algebra::FieldElement *scalars,
+            std::size_t count,
+            std::size_t stable_srs_capacity)
+        {
+            PendingCudaMsmRequest request{
+                .output = output,
+                .points = points,
+                .scalars = scalars,
+                .count = count,
+                .stable_srs_capacity =
+                    stable_srs_capacity,
+            };
+
+            std::unique_lock<std::mutex>
+                lock(mutex_);
+
+            pending_.push_back(
+                &request);
+
+            ready_.notify_all();
+
+            while (!request.done)
+            {
+                drain_if_ready(lock);
+
+                if (!request.done)
+                {
+                    ready_.wait(lock);
+                }
+            }
+
+            if (!request.error.empty())
+            {
+                throw std::runtime_error(
+                    request.error);
+            }
+        }
+
+        void worker_finished()
+        {
+            std::unique_lock<std::mutex>
+                lock(mutex_);
+
+            if (active_workers_ == 0)
+            {
+                return;
+            }
+
+            --active_workers_;
+
+            drain_if_ready(lock);
+
+            ready_.notify_all();
+        }
+
+    private:
+        struct CompatibleGroup
+        {
+            const G1Point *points = nullptr;
+            std::size_t count = 0;
+            std::size_t stable_srs_capacity = 0;
+
+            std::vector<
+                PendingCudaMsmRequest *>
+                requests;
+        };
+
+        static void set_request_error(
+            PendingCudaMsmRequest *request,
+            const std::string &message)
+        {
+            if (request != nullptr &&
+                request->error.empty())
+            {
+                request->error =
+                    message;
+            }
+        }
+
+        void execute_requests(
+            std::vector<
+                PendingCudaMsmRequest *> &requests)
+        {
+            std::vector<CompatibleGroup>
+                groups;
+
+            groups.reserve(
+                requests.size());
+
+            for (auto *request :
+                 requests)
+            {
+                auto group =
+                    std::find_if(
+                        groups.begin(),
+                        groups.end(),
+                        [&](const CompatibleGroup &candidate)
+                        {
+                            return candidate.points ==
+                                       request->points &&
+                                   candidate.count ==
+                                       request->count &&
+                                   candidate.stable_srs_capacity ==
+                                       request->stable_srs_capacity;
+                        });
+
+                if (group == groups.end())
+                {
+                    CompatibleGroup created;
+                    created.points =
+                        request->points;
+                    created.count =
+                        request->count;
+                    created.stable_srs_capacity =
+                        request->stable_srs_capacity;
+                    created.requests.push_back(
+                        request);
+
+                    groups.push_back(
+                        std::move(created));
+                }
+                else
+                {
+                    group->requests.push_back(
+                        request);
+                }
+            }
+
+            constexpr std::size_t
+                kMaximumBatchSize = 8;
+
+            for (auto &group :
+                 groups)
+            {
+                for (std::size_t offset = 0;
+                     offset <
+                     group.requests.size();
+                     offset +=
+                     kMaximumBatchSize)
+                {
+                    const auto current_batch =
+                        std::min<std::size_t>(
+                            kMaximumBatchSize,
+                            group.requests.size() - offset);
+
+                    try
+                    {
+                        if (current_batch == 1)
+                        {
+                            auto *request =
+                                group.requests[offset];
+
+                            if (!try_cuda_g1_msm(
+                                    request->output,
+                                    request->points,
+                                    request->scalars,
+                                    request->count,
+                                    true,
+                                    request
+                                        ->stable_srs_capacity))
+                            {
+                                throw std::runtime_error(
+                                    "CUDA MSM batch window "
+                                    "attempted a CPU fallback");
+                            }
+
+                            continue;
+                        }
+
+                        std::vector<G1Point *>
+                            outputs(current_batch);
+
+                        std::vector<
+                            const algebra::FieldElement *>
+                            scalar_vectors(
+                                current_batch);
+
+                        for (std::size_t batch = 0;
+                             batch < current_batch;
+                             ++batch)
+                        {
+                            auto *request =
+                                group.requests[offset + batch];
+
+                            outputs[batch] =
+                                request->output;
+
+                            scalar_vectors[batch] =
+                                request->scalars;
+                        }
+
+                        if (!try_cuda_g1_msm_same_bases_batch(
+                                outputs.data(),
+                                group.points,
+                                scalar_vectors.data(),
+                                group.count,
+                                current_batch,
+                                group.stable_srs_capacity))
+                        {
+                            throw std::runtime_error(
+                                "CUDA same-SRS batch "
+                                "attempted a CPU fallback");
+                        }
+                    }
+                    catch (const std::exception &error)
+                    {
+                        for (std::size_t batch = 0;
+                             batch < current_batch;
+                             ++batch)
+                        {
+                            set_request_error(
+                                group.requests[offset + batch],
+                                error.what());
+                        }
+                    }
+                    catch (...)
+                    {
+                        for (std::size_t batch = 0;
+                             batch < current_batch;
+                             ++batch)
+                        {
+                            set_request_error(
+                                group.requests[offset + batch],
+                                "unknown CUDA same-SRS "
+                                "batch failure");
+                        }
+                    }
+                }
+            }
+        }
+
+        void drain_if_ready(
+            std::unique_lock<std::mutex> &lock)
+        {
+            if (draining_ ||
+                pending_.empty() ||
+                pending_.size() <
+                    active_workers_)
+            {
+                return;
+            }
+
+            auto requests =
+                std::move(pending_);
+
+            pending_.clear();
+            draining_ = true;
+
+            lock.unlock();
+
+            try
+            {
+                execute_requests(
+                    requests);
+            }
+            catch (const std::exception &error)
+            {
+                for (auto *request :
+                     requests)
+                {
+                    set_request_error(
+                        request,
+                        error.what());
+                }
+            }
+            catch (...)
+            {
+                for (auto *request :
+                     requests)
+                {
+                    set_request_error(
+                        request,
+                        "unknown CUDA MSM batch "
+                        "coordinator failure");
+                }
+            }
+
+            lock.lock();
+
+            for (auto *request :
+                 requests)
+            {
+                request->done = true;
+            }
+
+            draining_ = false;
+
+            ready_.notify_all();
+        }
+
+        std::mutex mutex_;
+        std::condition_variable ready_;
+
+        std::size_t active_workers_ = 0;
+
+        bool draining_ = false;
+
+        std::vector<
+            PendingCudaMsmRequest *>
+            pending_;
+    };
+
+    CudaMsmBatchWindow *&
+    current_cuda_msm_batch_window()
+    {
+        thread_local CudaMsmBatchWindow *window =
+            nullptr;
+
+        return window;
+    }
+
+    class ScopedCudaMsmBatchWindow
+    {
+    public:
+        explicit ScopedCudaMsmBatchWindow(
+            CudaMsmBatchWindow *window)
+            : previous_(
+                  current_cuda_msm_batch_window())
+        {
+            current_cuda_msm_batch_window() =
+                window;
+        }
+
+        ~ScopedCudaMsmBatchWindow()
+        {
+            current_cuda_msm_batch_window() =
+                previous_;
+        }
+
+    private:
+        CudaMsmBatchWindow *previous_ =
+            nullptr;
+    };
+
     bool execute_cuda_msm_when_requested(
-    G1Point* output,
-    const G1Point* points,
-    const algebra::FieldElement* scalars,
-    std::size_t count,
-    bool stable_srs_bases,
-    std::size_t stable_srs_capacity)
-{
-    if (!util::route2_options().cuda_field_hotspots)
+        G1Point *output,
+        const G1Point *points,
+        const algebra::FieldElement *scalars,
+        std::size_t count,
+        bool stable_srs_bases,
+        std::size_t stable_srs_capacity)
     {
-        return false;
-    }
+        if (!util::route2_options()
+                 .cuda_field_hotspots)
+        {
+            return false;
+        }
 
-    if (!try_cuda_g1_msm(
-            output,
-            points,
-            scalars,
-            count,
-            stable_srs_bases,
-            stable_srs_capacity))
-    {
-        throw std::runtime_error(
-            "cuda_hotspots mode attempted a G1 MSM "
-            "CPU fallback");
-    }
+        constexpr std::size_t
+            kMinimumCoalescedMsmCount =
+                1ULL << 12;
 
-    return true;
-}
+        if (stable_srs_bases &&
+            count >=
+                kMinimumCoalescedMsmCount)
+        {
+            if (auto *batch_window =
+                    current_cuda_msm_batch_window();
+                batch_window != nullptr)
+            {
+                batch_window->submit(
+                    output,
+                    points,
+                    scalars,
+                    count,
+                    stable_srs_capacity);
+
+                return true;
+            }
+        }
+
+        if (!try_cuda_g1_msm(
+                output,
+                points,
+                scalars,
+                count,
+                stable_srs_bases,
+                stable_srs_capacity))
+        {
+            throw std::runtime_error(
+                "cuda_hotspots mode attempted a G1 MSM "
+                "CPU fallback");
+        }
+
+        return true;
+    }
 
     bool try_grouped_scalar_msm(
-        G1Point& out,
-        const G1Point* points,
-        const algebra::FieldElement* scalars,
+        G1Point &out,
+        const G1Point *points,
+        const algebra::FieldElement *scalars,
         std::size_t count,
-        const algebra::FieldElement& zero_scalar,
+        const algebra::FieldElement &zero_scalar,
         std::size_t nonzero_count,
-        G1MSMProfile* profile,
-        const G1MSMExecutionOptions* options)
+        G1MSMProfile *profile,
+        const G1MSMExecutionOptions *options)
     {
         struct Group
         {
@@ -868,7 +1248,7 @@ namespace gatzk::crypto
             }
             else
             {
-                auto& point_sum = groups[it->second].point_sum.value;
+                auto &point_sum = groups[it->second].point_sum.value;
                 mcl::G1::add(point_sum, point_sum, points[i].value);
             }
         }
@@ -886,36 +1266,36 @@ namespace gatzk::crypto
         std::vector<algebra::FieldElement> grouped_scalars;
         grouped_points.reserve(groups.size());
         grouped_scalars.reserve(groups.size());
-        for (auto& group : groups)
-{
-    grouped_points.push_back(group.point_sum);
-    grouped_scalars.push_back(group.scalar);
-}
+        for (auto &group : groups)
+        {
+            grouped_points.push_back(group.point_sum);
+            grouped_scalars.push_back(group.scalar);
+        }
 
-if (execute_cuda_msm_when_requested(
-        &out,
-        grouped_points.data(),
-        grouped_scalars.data(),
-        grouped_scalars.size(),
-        false,
-        0))
-{
-    if (profile != nullptr)
-    {
-        profile->zero_scalar_skipping =
-            nonzero_count != count;
+        if (execute_cuda_msm_when_requested(
+                &out,
+                grouped_points.data(),
+                grouped_scalars.data(),
+                grouped_scalars.size(),
+                false,
+                0))
+        {
+            if (profile != nullptr)
+            {
+                profile->zero_scalar_skipping =
+                    nonzero_count != count;
 
-        profile->sparse_compaction = true;
+                profile->sparse_compaction = true;
 
-        profile->effective_scalar_count =
-            grouped_scalars.size();
-    }
+                profile->effective_scalar_count =
+                    grouped_scalars.size();
+            }
 
-    return true;
-}
+            return true;
+        }
 
-const auto cpu_count =
-    std::max<std::size_t>(1, std::thread::hardware_concurrency());
+        const auto cpu_count =
+            std::max<std::size_t>(1, std::thread::hardware_concurrency());
         auto worker_count = msm_worker_count(grouped_scalars.size(), cpu_count);
         if (options != nullptr && options->max_worker_count != 0)
         {
@@ -954,11 +1334,11 @@ const auto cpu_count =
     }
 
     G1Point g1_multi_scalar_mul_profiled(
-        const G1Point* points,
-        const algebra::FieldElement* scalars,
+        const G1Point *points,
+        const algebra::FieldElement *scalars,
         std::size_t count,
-        G1MSMProfile* profile,
-        const G1MSMExecutionOptions* options)
+        G1MSMProfile *profile,
+        const G1MSMExecutionOptions *options)
     {
         if ((points == nullptr || scalars == nullptr) && count != 0)
         {
@@ -1027,21 +1407,19 @@ const auto cpu_count =
             {
                 return out;
             }
-            if (should_try_grouped_scalar_msm(scalars, count, zero_scalar, nonzero_count)
-                && try_grouped_scalar_msm(
-                    out,
-                    points,
-                    scalars,
-                    count,
-                    zero_scalar,
-                    nonzero_count,
-                    profile,
-                    options))
+            if (should_try_grouped_scalar_msm(scalars, count, zero_scalar, nonzero_count) && try_grouped_scalar_msm(
+                                                                                                 out,
+                                                                                                 points,
+                                                                                                 scalars,
+                                                                                                 count,
+                                                                                                 zero_scalar,
+                                                                                                 nonzero_count,
+                                                                                                 profile,
+                                                                                                 options))
             {
                 return out;
             }
-            if (last_nonzero_exclusive < count
-                && last_nonzero_exclusive == nonzero_count)
+            if (last_nonzero_exclusive < count && last_nonzero_exclusive == nonzero_count)
             {
                 if (profile != nullptr)
                 {
@@ -1050,15 +1428,15 @@ const auto cpu_count =
                     profile->effective_scalar_count = nonzero_count;
                 }
                 if (execute_cuda_msm_when_requested(
-        &out,
-        points,
-        scalars,
-        nonzero_count,
-        stable_srs_bases,
-        stable_srs_capacity))
-{
-    return out;
-}
+                        &out,
+                        points,
+                        scalars,
+                        nonzero_count,
+                        stable_srs_bases,
+                        stable_srs_capacity))
+                {
+                    return out;
+                }
                 const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
                 auto worker_count = msm_worker_count(nonzero_count, cpu_count);
                 if (options != nullptr && options->max_worker_count != 0)
@@ -1106,27 +1484,27 @@ const auto cpu_count =
                 compact_scalars.reserve(nonzero_count);
                 static_assert(sizeof(G1Point) == sizeof(mcl::G1), "G1Point must wrap a single mcl::G1");
                 for (std::size_t i = 0; i < count; ++i)
-{
-    if (!(scalars[i] == zero_scalar))
-    {
-        compact_points.push_back(points[i]);
-        compact_scalars.push_back(scalars[i]);
-    }
-}
+                {
+                    if (!(scalars[i] == zero_scalar))
+                    {
+                        compact_points.push_back(points[i]);
+                        compact_scalars.push_back(scalars[i]);
+                    }
+                }
 
-if (execute_cuda_msm_when_requested(
-        &out,
-        compact_points.data(),
-        compact_scalars.data(),
-        compact_scalars.size(),
-        false,
-        0))
-{
-    return out;
-}
+                if (execute_cuda_msm_when_requested(
+                        &out,
+                        compact_points.data(),
+                        compact_scalars.data(),
+                        compact_scalars.size(),
+                        false,
+                        0))
+                {
+                    return out;
+                }
 
-const auto cpu_count =
-    std::max<std::size_t>(1, std::thread::hardware_concurrency());
+                const auto cpu_count =
+                    std::max<std::size_t>(1, std::thread::hardware_concurrency());
                 auto worker_count = msm_worker_count(compact_scalars.size(), cpu_count);
                 if (options != nullptr && options->max_worker_count != 0)
                 {
@@ -1160,15 +1538,15 @@ const auto cpu_count =
         }
 
         if (execute_cuda_msm_when_requested(
-        &out,
-        points,
-        scalars,
-        count,
-        stable_srs_bases,
-        stable_srs_capacity))
-{
-    return out;
-}
+                &out,
+                points,
+                scalars,
+                count,
+                stable_srs_bases,
+                stable_srs_capacity))
+        {
+            return out;
+        }
 
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
         auto worker_count = msm_worker_count(count, cpu_count);
@@ -1202,12 +1580,12 @@ const auto cpu_count =
         return out;
     }
 
-    G1Point g1_multi_scalar_mul(const G1Point* points, const algebra::FieldElement* scalars, std::size_t count)
+    G1Point g1_multi_scalar_mul(const G1Point *points, const algebra::FieldElement *scalars, std::size_t count)
     {
         return g1_multi_scalar_mul_profiled(points, scalars, count, nullptr);
     }
 
-    G1Point g1_multi_scalar_mul(const std::vector<G1Point>& points, const std::vector<algebra::FieldElement>& scalars)
+    G1Point g1_multi_scalar_mul(const std::vector<G1Point> &points, const std::vector<algebra::FieldElement> &scalars)
     {
         if (points.size() != scalars.size())
         {
@@ -1218,17 +1596,68 @@ const auto cpu_count =
 
     void g1_parallel_msm_batch_workers(
         std::size_t worker_count,
-        const std::function<void(std::size_t)>& worker)
+        const std::function<void(std::size_t)> &worker)
     {
         if (worker_count == 0)
         {
             return;
         }
-        msm_batch_worker_pool().parallel_for(worker_count, worker);
+
+        const auto hardware_workers =
+            std::max<std::size_t>(
+                1,
+                std::thread::hardware_concurrency());
+
+        // CPU execution, single-worker execution, and nested batch schedulers
+        // preserve the existing path exactly.
+        if (!util::route2_options()
+                 .cuda_field_hotspots ||
+            worker_count <= 1 ||
+            hardware_workers <= 1 ||
+            current_cuda_msm_batch_window() != nullptr)
+        {
+            msm_batch_worker_pool()
+                .parallel_for(
+                    worker_count,
+                    worker);
+
+            return;
+        }
+
+        auto batch_window =
+            std::make_shared<
+                CudaMsmBatchWindow>(
+                worker_count);
+
+        msm_batch_worker_pool()
+            .parallel_for(
+                worker_count,
+                [&](std::size_t worker_index)
+                {
+                    ScopedCudaMsmBatchWindow
+                        batch_scope(
+                            batch_window.get());
+
+                    try
+                    {
+                        worker(
+                            worker_index);
+                    }
+                    catch (...)
+                    {
+                        batch_window
+                            ->worker_finished();
+
+                        throw;
+                    }
+
+                    batch_window
+                        ->worker_finished();
+                });
     }
 
     // 同基点批量乘法是 KZG 承诺与 witness 构造的典型热点。（--fast-msm on）
-    std::vector<G1Point> g1_mul_same_base_batch(const G1Point& point, const std::vector<algebra::FieldElement>& scalars)
+    std::vector<G1Point> g1_mul_same_base_batch(const G1Point &point, const std::vector<algebra::FieldElement> &scalars)
     {
         algebra::ensure_mcl_field_ready();
         std::vector<G1Point> out(scalars.size());
@@ -1271,7 +1700,7 @@ const auto cpu_count =
         std::vector<mcl::G1> points(miss_scalars.size(), point.value);
         std::vector<mcl::Fr> native_scalars;
         native_scalars.reserve(miss_scalars.size());
-        for (const auto& scalar : miss_scalars)
+        for (const auto &scalar : miss_scalars)
         {
             native_scalars.push_back(scalar.native());
         }
@@ -1284,14 +1713,14 @@ const auto cpu_count =
             if (task_count > 1)
             {
                 const auto chunk_size = (miss_scalars.size() + task_count - 1) / task_count;
-                msm_worker_pool().parallel_for(task_count, [&](std::size_t task) {
+                msm_worker_pool().parallel_for(task_count, [&](std::size_t task)
+                                               {
                     const auto begin = task * chunk_size;
                     const auto end = std::min<std::size_t>(miss_scalars.size(), begin + chunk_size);
                     mcl::G1::mulEach(
                         points.data() + begin,
                         native_scalars.data() + begin,
-                        end - begin);
-                });
+                        end - begin); });
                 for (std::size_t i = 0; i < points.size(); ++i)
                 {
                     G1Point value;
@@ -1315,7 +1744,7 @@ const auto cpu_count =
         return out;
     }
 
-    G2Point g2_add(const G2Point& lhs, const G2Point& rhs)
+    G2Point g2_add(const G2Point &lhs, const G2Point &rhs)
     {
         G2Point out;
         algebra::ensure_mcl_field_ready();
@@ -1323,7 +1752,7 @@ const auto cpu_count =
         return out;
     }
 
-    G2Point g2_sub(const G2Point& lhs, const G2Point& rhs)
+    G2Point g2_sub(const G2Point &lhs, const G2Point &rhs)
     {
         G2Point out;
         algebra::ensure_mcl_field_ready();
@@ -1331,7 +1760,7 @@ const auto cpu_count =
         return out;
     }
 
-    G2Point g2_mul(const G2Point& point, const algebra::FieldElement& scalar)
+    G2Point g2_mul(const G2Point &point, const algebra::FieldElement &scalar)
     {
         G2Point out;
         algebra::ensure_mcl_field_ready();
@@ -1339,20 +1768,20 @@ const auto cpu_count =
         return out;
     }
 
-    bool operator==(const G1Point& lhs, const G1Point& rhs)
+    bool operator==(const G1Point &lhs, const G1Point &rhs)
     {
         algebra::ensure_mcl_field_ready();
         return lhs.value == rhs.value;
     }
 
-    bool operator==(const G2Point& lhs, const G2Point& rhs)
+    bool operator==(const G2Point &lhs, const G2Point &rhs)
     {
         algebra::ensure_mcl_field_ready();
         return lhs.value == rhs.value;
     }
 
     // 序列化G1点为字节向量
-    std::vector<std::uint8_t> serialize(const G1Point& point)
+    std::vector<std::uint8_t> serialize(const G1Point &point)
     {
         return serialize_impl(point.value);
     }
@@ -1382,7 +1811,7 @@ const auto cpu_count =
         return written;
     }
 
-    std::vector<std::uint8_t> serialize(const G2Point& point)
+    std::vector<std::uint8_t> serialize(const G2Point &point)
     {
         return serialize_impl(point.value);
     }
@@ -1420,7 +1849,7 @@ const auto cpu_count =
             bytes.size());
     }
 
-    G2Point deserialize_g2(const std::vector<std::uint8_t>& bytes)
+    G2Point deserialize_g2(const std::vector<std::uint8_t> &bytes)
     {
         G2Point out;
         algebra::ensure_mcl_field_ready();
@@ -1432,19 +1861,19 @@ const auto cpu_count =
         return out;
     }
 
-    std::size_t serialized_size(const G1Point& point)
+    std::size_t serialized_size(const G1Point &point)
     {
         return serialize(point).size();
     }
 
     // 返回 G1 点序列化后的字节长度
-    std::size_t serialized_size(const G2Point& point)
+    std::size_t serialized_size(const G2Point &point)
     {
         return serialize(point).size();
     }
 
     // 预计算G2点的配对系数，用于加速多次配对运算
-    PreparedG2 prepare_g2(const G2Point& point)
+    PreparedG2 prepare_g2(const G2Point &point)
     {
         algebra::ensure_mcl_field_ready();
         PreparedG2 prepared;
@@ -1453,10 +1882,10 @@ const auto cpu_count =
     }
 
     bool pairing_equal(
-        const G1Point& lhs_a,
-        const G2Point& rhs_a,
-        const G1Point& lhs_b,
-        const G2Point& rhs_b)
+        const G1Point &lhs_a,
+        const G2Point &rhs_a,
+        const G1Point &lhs_b,
+        const G2Point &rhs_b)
     {
         algebra::ensure_mcl_field_ready();
         mcl::GT eval_a;
@@ -1467,10 +1896,10 @@ const auto cpu_count =
     }
 
     bool pairing_equal_with_prepared_rhs_a(
-        const G1Point& lhs_a,
-        const PreparedG2& rhs_a_prepared,
-        const G1Point& lhs_b,
-        const G2Point& rhs_b)
+        const G1Point &lhs_a,
+        const PreparedG2 &rhs_a_prepared,
+        const G1Point &lhs_b,
+        const G2Point &rhs_b)
     {
         algebra::ensure_mcl_field_ready();
         mcl::G1 neg_lhs_b;
@@ -1488,10 +1917,10 @@ const auto cpu_count =
 
     // 判断动态点对与预计算点对的配对乘积是否为 1
     bool pairing_product_is_one_mixed_prepared(
-        const G1Point& lhs_dynamic,
-        const G2Point& rhs_dynamic,
-        const G1Point& lhs_prepared,
-        const PreparedG2& rhs_prepared)
+        const G1Point &lhs_dynamic,
+        const G2Point &rhs_dynamic,
+        const G1Point &lhs_prepared,
+        const PreparedG2 &rhs_prepared)
     {
         algebra::ensure_mcl_field_ready();
         mcl::Fp12 miller_product;
