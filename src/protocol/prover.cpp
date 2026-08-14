@@ -3610,41 +3610,68 @@ namespace gatzk::protocol
             return work;
         }
 
-        std::vector<FieldElement> coset_evaluate_coefficients_impl(
+        void coset_evaluate_coefficients_into(
             const mcl::Fr *coefficients,
             std::size_t coefficient_count,
             std::size_t target_size,
             const FieldElement &shift,
             const std::string &label,
-            const std::vector<mcl::Fr> *shift_powers)
+            const std::vector<mcl::Fr> *shift_powers,
+            FieldElement *output)
         {
             if (coefficient_count > target_size)
             {
-                throw std::runtime_error("polynomial degree exceeds quotient coset size: " + label);
+                throw std::runtime_error(
+                    "polynomial degree exceeds quotient coset size: " + label);
             }
-            std::vector<FieldElement> out(target_size);
+
+            if (target_size == 0)
+            {
+                return;
+            }
+
+            if (output == nullptr)
+            {
+                throw std::runtime_error(
+                    "quotient coset evaluation received null output: " + label);
+            }
+
+            auto *work =
+                FieldElement::mutable_native_array_data(output);
+
             if (coefficient_count == 0)
             {
-                return out;
+                for (std::size_t i = 0; i < target_size; ++i)
+                {
+                    work[i].clear();
+                }
+                return;
             }
+
             if (coefficients == nullptr)
             {
                 throw std::runtime_error(
                     "quotient coset evaluation received null coefficients: " + label);
             }
+
             if (shift_powers != nullptr && shift_powers->size() < coefficient_count)
             {
-                throw std::runtime_error("insufficient quotient coset shift powers for " + label);
+                throw std::runtime_error(
+                    "insufficient quotient coset shift powers for " + label);
             }
 
             if (target_size >= 2 && coefficient_count <= target_size / 2)
             {
                 const auto half_size = target_size / 2;
+
                 std::vector<mcl::Fr> even_work(half_size);
                 std::vector<mcl::Fr> odd_work(half_size);
+
                 if (shift_powers != nullptr)
                 {
-                    const auto root = FieldElement::root_of_unity(target_size);
+                    const auto root =
+                        FieldElement::root_of_unity(target_size);
+
                     algebra::split_coset_coefficients_native(
                         coefficients,
                         shift_powers->data(),
@@ -3658,175 +3685,258 @@ namespace gatzk::protocol
                 {
                     mcl::Fr even_shift_power;
                     even_shift_power = 1;
+
                     mcl::Fr odd_shift_power;
                     odd_shift_power = 1;
-                    const auto root = FieldElement::root_of_unity(target_size);
-                    const auto even_shift_native = shift.native();
-                    const auto odd_shift_native = (shift * root).native();
-                    for (std::size_t i = 0; i < coefficient_count; ++i)
+
+                    const auto root =
+                        FieldElement::root_of_unity(target_size);
+
+                    const auto even_shift_native =
+                        shift.native();
+
+                    const auto odd_shift_native =
+                        (shift * root).native();
+
+                    for (std::size_t i = 0;
+                         i < coefficient_count;
+                         ++i)
                     {
-                        mcl::Fr::mul(even_work[i], coefficients[i], even_shift_power);
-                        mcl::Fr::mul(odd_work[i], coefficients[i], odd_shift_power);
-                        mcl::Fr::mul(even_shift_power, even_shift_power, even_shift_native);
-                        mcl::Fr::mul(odd_shift_power, odd_shift_power, odd_shift_native);
+                        mcl::Fr::mul(
+                            even_work[i],
+                            coefficients[i],
+                            even_shift_power);
+
+                        mcl::Fr::mul(
+                            odd_work[i],
+                            coefficients[i],
+                            odd_shift_power);
+
+                        mcl::Fr::mul(
+                            even_shift_power,
+                            even_shift_power,
+                            even_shift_native);
+
+                        mcl::Fr::mul(
+                            odd_shift_power,
+                            odd_shift_power,
+                            odd_shift_native);
                     }
                 }
-                for (std::size_t i = coefficient_count; i < half_size; ++i)
+
+                for (std::size_t i = coefficient_count;
+                     i < half_size;
+                     ++i)
                 {
                     even_work[i].clear();
                     odd_work[i].clear();
                 }
+
                 algebra::ntt_pair_in_place(
                     even_work.data(),
                     odd_work.data(),
                     half_size,
                     quotient_transform_worker_cap);
-                auto *out_native = FieldElement::mutable_native_array_data(out.data());
+
                 algebra::interleave_native_lanes(
                     even_work.data(),
                     odd_work.data(),
                     half_size,
-                    out_native,
+                    work,
                     quotient_transform_worker_cap);
-                return out;
+
+                return;
             }
 
-            auto *work = FieldElement::mutable_native_array_data(out.data());
             if (shift_powers != nullptr)
             {
-                for (std::size_t i = 0; i < coefficient_count; ++i)
+                for (std::size_t i = 0;
+                     i < coefficient_count;
+                     ++i)
                 {
-                    mcl::Fr::mul(work[i], coefficients[i], (*shift_powers)[i]);
+                    mcl::Fr::mul(
+                        work[i],
+                        coefficients[i],
+                        (*shift_powers)[i]);
                 }
             }
             else
             {
                 mcl::Fr shift_power;
                 shift_power = 1;
-                const auto shift_native = shift.native();
-                for (std::size_t i = 0; i < coefficient_count; ++i)
+
+                const auto shift_native =
+                    shift.native();
+
+                for (std::size_t i = 0;
+                     i < coefficient_count;
+                     ++i)
                 {
-                    mcl::Fr::mul(work[i], coefficients[i], shift_power);
-                    mcl::Fr::mul(shift_power, shift_power, shift_native);
+                    mcl::Fr::mul(
+                        work[i],
+                        coefficients[i],
+                        shift_power);
+
+                    mcl::Fr::mul(
+                        shift_power,
+                        shift_power,
+                        shift_native);
                 }
             }
+
+            for (std::size_t i = coefficient_count;
+                 i < target_size;
+                 ++i)
+            {
+                work[i].clear();
+            }
+
             ntt_plan(target_size)->ntt(work);
-            return out;
         }
 
-        std::vector<FieldElement> coset_evaluate_coefficients(
-            const std::vector<mcl::Fr> &coefficients,
-            std::size_t target_size,
-            const FieldElement &shift,
-            const std::string &label,
-            const std::vector<mcl::Fr> *shift_powers = nullptr)
-        {
-            return coset_evaluate_coefficients_impl(
-                coefficients.data(),
-                coefficients.size(),
-                target_size,
-                shift,
-                label,
-                shift_powers);
-        }
-
-        std::vector<FieldElement> coset_evaluate_polynomial(
+        void coset_evaluate_polynomial_into(
             const algebra::Polynomial &polynomial,
             std::size_t target_size,
             const FieldElement &shift,
             const std::string &label,
-            const std::vector<mcl::Fr> *shift_powers = nullptr)
+            const std::vector<mcl::Fr> *shift_powers,
+            FieldElement *output)
         {
-            thread_local std::vector<mcl::Fr> coefficient_work;
+            thread_local std::vector<mcl::Fr>
+                coefficient_work;
 
-            auto active_coefficient_size = [](const std::vector<mcl::Fr> &values)
+            auto active_coefficient_size =
+                [](const std::vector<mcl::Fr> &values)
             {
                 std::size_t active = values.size();
+
                 while (active > 1 && values[active - 1].isZero())
                 {
                     --active;
                 }
+
                 return active;
             };
 
             std::size_t coefficient_count = 0;
+
             if (polynomial.basis == algebra::PolynomialBasis::Coefficient)
             {
-                const auto &coefficients = polynomial.values();
-                coefficient_count = coefficients.size();
-                while (coefficient_count > 1 && coefficients[coefficient_count - 1].is_zero())
+                const auto &coefficients =
+                    polynomial.values();
+
+                coefficient_count =
+                    coefficients.size();
+
+                while (coefficient_count > 1 && coefficients[coefficient_count - 1]
+                                                    .is_zero())
                 {
                     --coefficient_count;
                 }
+
                 if (coefficient_count > target_size)
                 {
-                    throw std::runtime_error("polynomial degree exceeds quotient coset size: " + label);
+                    throw std::runtime_error(
+                        "polynomial degree exceeds quotient coset size: " + label);
                 }
-                return coset_evaluate_coefficients_impl(
-                    FieldElement::native_array_data(coefficients.data()),
+
+                coset_evaluate_coefficients_into(
+                    FieldElement::native_array_data(
+                        coefficients.data()),
                     coefficient_count,
                     target_size,
                     shift,
                     label,
-                    shift_powers);
+                    shift_powers,
+                    output);
+
+                return;
             }
-            else
+
+            if (polynomial.domain == nullptr)
             {
-                if (polynomial.domain == nullptr)
-                {
-                    throw std::runtime_error("evaluation polynomial is missing its domain: " + polynomial.name);
-                }
-                const auto &values = polynomial.values();
-                copy_evaluation_values_to_native_domain(values, polynomial.domain->size, &coefficient_work, polynomial.name);
-                algebra::intt_in_place(
-                    coefficient_work.data(),
-                    coefficient_work.size(),
-                    quotient_transform_worker_cap);
-
-                if (polynomial.is_zero_domain_blinded())
-                {
-                    const auto domain_size = polynomial.domain->size;
-                    const auto required_size = domain_size + polynomial.zero_domain_blinder.size();
-                    if (required_size > target_size)
-                    {
-                        throw std::runtime_error(
-                            "zero-domain-blinded polynomial exceeds quotient coset size: " + label);
-                    }
-                    coefficient_work.resize(required_size);
-                    // `mcl::Fr` default construction does not establish a
-                    // canonical zero value.  These are new high-degree
-                    // coefficient slots, so they must be cleared before the
-                    // Z_D*R tail is accumulated into them.
-                    for (std::size_t i = domain_size; i < required_size; ++i)
-                    {
-                        coefficient_work[i].clear();
-                    }
-                    for (std::size_t i = 0; i < polynomial.zero_domain_blinder.size(); ++i)
-                    {
-                        mcl::Fr::sub(
-                            coefficient_work[i],
-                            coefficient_work[i],
-                            polynomial.zero_domain_blinder[i].native());
-                        mcl::Fr::add(
-                            coefficient_work[domain_size + i],
-                            coefficient_work[domain_size + i],
-                            polynomial.zero_domain_blinder[i].native());
-                    }
-                }
-
-                coefficient_count = active_coefficient_size(coefficient_work);
-                if (coefficient_count > target_size)
-                {
-                    throw std::runtime_error("polynomial degree exceeds quotient coset size: " + label);
-                }
-                return coset_evaluate_coefficients_impl(
-                    coefficient_work.data(),
-                    coefficient_count,
-                    target_size,
-                    shift,
-                    label,
-                    shift_powers);
+                throw std::runtime_error(
+                    "evaluation polynomial is missing its domain: " + polynomial.name);
             }
+
+            const auto &values =
+                polynomial.values();
+
+            copy_evaluation_values_to_native_domain(
+                values,
+                polynomial.domain->size,
+                &coefficient_work,
+                polynomial.name);
+
+            algebra::intt_in_place(
+                coefficient_work.data(),
+                coefficient_work.size(),
+                quotient_transform_worker_cap);
+
+            if (polynomial.is_zero_domain_blinded())
+            {
+                const auto domain_size =
+                    polynomial.domain->size;
+
+                const auto required_size =
+                    domain_size + polynomial.zero_domain_blinder.size();
+
+                if (required_size > target_size)
+                {
+                    throw std::runtime_error(
+                        "zero-domain-blinded polynomial exceeds "
+                        "quotient coset size: " +
+                        label);
+                }
+
+                coefficient_work.resize(
+                    required_size);
+
+                for (std::size_t i = domain_size;
+                     i < required_size;
+                     ++i)
+                {
+                    coefficient_work[i].clear();
+                }
+
+                for (std::size_t i = 0;
+                     i < polynomial.zero_domain_blinder.size();
+                     ++i)
+                {
+                    mcl::Fr::sub(
+                        coefficient_work[i],
+                        coefficient_work[i],
+                        polynomial
+                            .zero_domain_blinder[i]
+                            .native());
+
+                    mcl::Fr::add(
+                        coefficient_work[domain_size + i],
+                        coefficient_work[domain_size + i],
+                        polynomial
+                            .zero_domain_blinder[i]
+                            .native());
+                }
+            }
+
+            coefficient_count =
+                active_coefficient_size(
+                    coefficient_work);
+
+            if (coefficient_count > target_size)
+            {
+                throw std::runtime_error(
+                    "polynomial degree exceeds quotient coset size: " + label);
+            }
+
+            coset_evaluate_coefficients_into(
+                coefficient_work.data(),
+                coefficient_count,
+                target_size,
+                shift,
+                label,
+                shift_powers,
+                output);
         }
 
         std::vector<FieldElement> coefficients_from_coset_evaluations_in_place(
@@ -3863,6 +3973,156 @@ namespace gatzk::protocol
         std::vector<std::string> quotient_dependency_labels(
             const ProtocolContext &context,
             const std::string &quotient_name);
+
+        struct QuotientCosetMemoryBudget
+        {
+            std::size_t total_bytes = 0;
+            std::size_t available_bytes = 0;
+            std::size_t reserve_bytes = 0;
+            std::size_t budget_bytes = 0;
+        };
+
+        QuotientCosetMemoryBudget
+        quotient_coset_memory_budget()
+        {
+            constexpr std::size_t
+                kFallbackMaximumMemoryCosetBytes =
+                    std::size_t{8} << 30;
+
+            constexpr std::size_t
+                kMaximumMemoryCosetBytes =
+                    std::size_t{24} << 30;
+
+            constexpr std::size_t
+                kMinimumHostReserveBytes =
+                    std::size_t{16} << 30;
+
+            QuotientCosetMemoryBudget result;
+
+            const auto kib_to_bytes =
+                [](unsigned long long value_kib)
+                -> std::size_t
+            {
+                const auto maximum =
+                    std::numeric_limits<
+                        std::size_t>::max();
+
+                if (value_kib > static_cast<unsigned long long>(
+                                    maximum / 1024ULL))
+                {
+                    return maximum;
+                }
+
+                return static_cast<std::size_t>(
+                    value_kib * 1024ULL);
+            };
+
+            std::ifstream input("/proc/meminfo");
+
+            if (input)
+            {
+                std::string line;
+
+                while (std::getline(input, line))
+                {
+                    std::istringstream row(line);
+
+                    std::string key;
+                    unsigned long long value_kib = 0;
+                    std::string unit;
+
+                    if (!(row >> key >> value_kib))
+                    {
+                        continue;
+                    }
+
+                    row >> unit;
+
+                    if (!unit.empty() && unit != "kB")
+                    {
+                        continue;
+                    }
+
+                    if (key == "MemTotal:")
+                    {
+                        result.total_bytes =
+                            kib_to_bytes(value_kib);
+                    }
+                    else if (key == "MemAvailable:")
+                    {
+                        result.available_bytes =
+                            kib_to_bytes(value_kib);
+                    }
+                }
+            }
+
+            if (result.total_bytes == 0)
+            {
+                const auto physical_pages =
+                    ::sysconf(_SC_PHYS_PAGES);
+
+                const auto page_size =
+                    ::sysconf(_SC_PAGESIZE);
+
+                if (physical_pages > 0 && page_size > 0)
+                {
+                    const auto pages =
+                        static_cast<unsigned long long>(
+                            physical_pages);
+
+                    const auto bytes_per_page =
+                        static_cast<unsigned long long>(
+                            page_size);
+
+                    const auto maximum =
+                        static_cast<unsigned long long>(
+                            std::numeric_limits<
+                                std::size_t>::max());
+
+                    result.total_bytes =
+                        pages > maximum / bytes_per_page
+                            ? std::numeric_limits<
+                                  std::size_t>::max()
+                            : static_cast<std::size_t>(
+                                  pages * bytes_per_page);
+                }
+            }
+
+            if (result.available_bytes == 0)
+            {
+                if (result.total_bytes != 0)
+                {
+                    result.budget_bytes =
+                        std::min(
+                            kFallbackMaximumMemoryCosetBytes,
+                            result.total_bytes / 8);
+                }
+
+                return result;
+            }
+
+            result.reserve_bytes =
+                std::max(
+                    kMinimumHostReserveBytes,
+                    result.total_bytes == 0
+                        ? kMinimumHostReserveBytes
+                        : result.total_bytes / 4);
+
+            if (result.available_bytes <= result.reserve_bytes)
+            {
+                return result;
+            }
+
+            const auto safely_usable_bytes =
+                result.available_bytes - result.reserve_bytes;
+
+            result.budget_bytes =
+                std::min(
+                    kMaximumMemoryCosetBytes,
+                    safely_usable_bytes / 2);
+
+            return result;
+        }
 
         std::vector<std::string> quotient_materialization_dependency_labels(
             const ProtocolContext &context,
@@ -3991,7 +4251,7 @@ namespace gatzk::protocol
                 const std::string &label)
             {
                 constexpr std::size_t kChunkBytes =
-                    std::size_t{256} << 20;
+                    std::size_t{1} << 30;
                 const auto capacity =
                     align_up(std::max(kChunkBytes, minimum_capacity));
                 const auto offset = file_size_;
@@ -4087,6 +4347,63 @@ namespace gatzk::protocol
                 (void)::madvise(
                     mapping_, byte_count, MADV_SEQUENTIAL);
                 std::vector<FieldElement>().swap(values);
+            }
+
+            QuotientCosetValues(
+                std::size_t size,
+                std::shared_ptr<
+                    QuotientCosetSpillArena>
+                    spill_arena,
+                const std::string &label)
+                : spill_arena_(
+                      std::move(spill_arena)),
+                  size_(size)
+            {
+                static_assert(
+                    std::is_standard_layout_v<
+                        FieldElement>,
+                    "file-backed quotient cosets "
+                    "require standard-layout field elements");
+
+                static_assert(
+                    std::is_trivially_destructible_v<
+                        FieldElement>,
+                    "file-backed quotient cosets "
+                    "require trivially destructible "
+                    "field elements");
+
+                if (size_ == 0)
+                {
+                    return;
+                }
+
+                if (spill_arena_ == nullptr)
+                {
+                    memory_.resize(size_);
+                    return;
+                }
+
+                const auto byte_count =
+                    size_ * sizeof(FieldElement);
+
+                mapping_ =
+                    spill_arena_->allocate(
+                                    byte_count,
+                                    label)
+                        .data;
+
+                auto *elements =
+                    static_cast<FieldElement *>(
+                        mapping_);
+
+                std::uninitialized_default_construct_n(
+                    elements,
+                    size_);
+
+                (void)::madvise(
+                    mapping_,
+                    byte_count,
+                    MADV_SEQUENTIAL);
             }
 
             QuotientCosetValues(
@@ -4198,6 +4515,21 @@ namespace gatzk::protocol
             std::size_t size() const
             {
                 return size_;
+            }
+
+            FieldElement *mutable_data()
+            {
+                if (pure_zero_semantic_ || semantic_values_ != nullptr || !linear_terms_.empty())
+                {
+                    throw std::runtime_error(
+                        "lazy quotient coset view "
+                        "has no mutable contiguous data");
+                }
+
+                return mapping_ != nullptr
+                           ? static_cast<FieldElement *>(
+                                 mapping_)
+                           : memory_.data();
             }
 
             const FieldElement *data() const
@@ -4467,27 +4799,24 @@ namespace gatzk::protocol
                 }
                 if (use_file_backed_coset_storage())
                 {
-                    const auto physical_pages =
-                        ::sysconf(_SC_PHYS_PAGES);
-                    const auto page_size =
-                        ::sysconf(_SC_PAGESIZE);
-                    constexpr std::size_t kMaximumMemoryCosetBytes =
-                        std::size_t{8} << 30;
-                    if (physical_pages > 0 && page_size > 0)
-                    {
-                        const auto physical_bytes =
-                            static_cast<unsigned long long>(
-                                physical_pages) *
-                            static_cast<unsigned long long>(
-                                page_size);
-                        in_memory_coset_budget_bytes_ =
-                            static_cast<std::size_t>(
-                                std::min<unsigned long long>(
-                                    kMaximumMemoryCosetBytes,
-                                    physical_bytes / 8));
-                    }
+                    const auto memory_budget =
+                        quotient_coset_memory_budget();
+
+                    coset_host_total_bytes_ =
+                        memory_budget.total_bytes;
+
+                    coset_host_available_at_start_bytes_ =
+                        memory_budget.available_bytes;
+
+                    coset_host_reserve_bytes_ =
+                        memory_budget.reserve_bytes;
+
+                    in_memory_coset_budget_bytes_ =
+                        memory_budget.budget_bytes;
+
                     spill_arena_ =
-                        std::make_shared<QuotientCosetSpillArena>();
+                        std::make_shared<
+                            QuotientCosetSpillArena>();
                 }
             }
 
@@ -5159,7 +5488,7 @@ namespace gatzk::protocol
                     if (use_file_backed_coset_storage())
                     {
                         progress_note(
-                            "prove:quotient:" + label_ + ":coset_storage:tiered" + ":memory_bytes=" + std::to_string(in_memory_coset_bytes_.load(std::memory_order_relaxed)) + ":memory_budget=" + std::to_string(in_memory_coset_budget_bytes_) + ":files=" + std::to_string(file_backed_coset_count_.load(std::memory_order_relaxed)) + ":bytes=" + std::to_string(file_backed_coset_bytes_.load(std::memory_order_relaxed)) + ":lazy_blinder_views=" + std::to_string(lazy_blinder_coset_count_.load(std::memory_order_relaxed)) + ":lazy_blinder_bytes_avoided=" + std::to_string(lazy_blinder_coset_bytes_avoided_.load(std::memory_order_relaxed)) + ":evaluation_block=" + std::to_string(evaluation_block_size));
+                            "prove:quotient:" + label_ + ":coset_storage:tiered" + ":memory_bytes=" + std::to_string(in_memory_coset_bytes_.load(std::memory_order_relaxed)) + ":memory_budget=" + std::to_string(in_memory_coset_budget_bytes_) + ":host_total_at_start=" + std::to_string(coset_host_total_bytes_) + ":host_available_at_start=" + std::to_string(coset_host_available_at_start_bytes_) + ":host_reserve=" + std::to_string(coset_host_reserve_bytes_) + ":files=" + std::to_string(file_backed_coset_count_.load(std::memory_order_relaxed)) + ":bytes=" + std::to_string(file_backed_coset_bytes_.load(std::memory_order_relaxed)) + ":lazy_blinder_views=" + std::to_string(lazy_blinder_coset_count_.load(std::memory_order_relaxed)) + ":lazy_blinder_bytes_avoided=" + std::to_string(lazy_blinder_coset_bytes_avoided_.load(std::memory_order_relaxed)) + ":evaluation_block=" + std::to_string(evaluation_block_size));
                     }
 
                     const auto min_points_per_task =
@@ -5523,45 +5852,184 @@ namespace gatzk::protocol
                 return (label_ == "t_edge" || label_ == "t_FH") && target_size_ >= (1ULL << 17);
             }
 
+            std::size_t coset_byte_count(
+                std::size_t element_count,
+                const std::string &label) const
+            {
+                if (element_count > std::numeric_limits<
+                                        std::size_t>::max() /
+                                        sizeof(FieldElement))
+                {
+                    throw std::runtime_error(
+                        "quotient coset byte-size "
+                        "overflow: " +
+                        label);
+                }
+
+                return element_count * sizeof(FieldElement);
+            }
+
+            bool try_reserve_in_memory_coset_bytes(
+                std::size_t byte_count)
+            {
+                if (byte_count > in_memory_coset_budget_bytes_)
+                {
+                    return false;
+                }
+
+                auto retained_bytes =
+                    in_memory_coset_bytes_.load(
+                        std::memory_order_relaxed);
+
+                while (true)
+                {
+                    if (retained_bytes > in_memory_coset_budget_bytes_ || byte_count > in_memory_coset_budget_bytes_ - retained_bytes)
+                    {
+                        return false;
+                    }
+
+                    if (in_memory_coset_bytes_
+                            .compare_exchange_weak(
+                                retained_bytes,
+                                retained_bytes + byte_count,
+                                std::memory_order_relaxed))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            bool new_coset_is_file_backed(
+                std::size_t byte_count)
+            {
+                if (!use_file_backed_coset_storage())
+                {
+                    return false;
+                }
+
+                return !try_reserve_in_memory_coset_bytes(
+                    byte_count);
+            }
+
+            void record_file_backed_coset(
+                std::size_t byte_count)
+            {
+                file_backed_coset_count_.fetch_add(
+                    1,
+                    std::memory_order_relaxed);
+
+                file_backed_coset_bytes_.fetch_add(
+                    byte_count,
+                    std::memory_order_relaxed);
+            }
+
             QuotientCosetValuesPtr retain_coset_values(
                 std::vector<FieldElement> values,
                 const std::string &label)
             {
                 const auto byte_count =
-                    values.size() * sizeof(FieldElement);
-                bool retain_in_memory = false;
-                if (use_file_backed_coset_storage() && byte_count <= in_memory_coset_budget_bytes_)
-                {
-                    auto retained_bytes =
-                        in_memory_coset_bytes_.load(
-                            std::memory_order_relaxed);
-                    while (retained_bytes <= in_memory_coset_budget_bytes_ - byte_count)
-                    {
-                        if (in_memory_coset_bytes_.compare_exchange_weak(
-                                retained_bytes,
-                                retained_bytes + byte_count,
-                                std::memory_order_relaxed))
-                        {
-                            retain_in_memory = true;
-                            break;
-                        }
-                    }
-                }
-                const auto file_backed =
-                    use_file_backed_coset_storage() && !retain_in_memory;
-                auto retained =
-                    std::make_shared<const QuotientCosetValues>(
-                        std::move(values),
-                        file_backed ? spill_arena_ : nullptr,
+                    coset_byte_count(
+                        values.size(),
                         label);
+
+                const bool file_backed =
+                    new_coset_is_file_backed(
+                        byte_count);
+
+                auto retained =
+                    std::make_shared<
+                        const QuotientCosetValues>(
+                        std::move(values),
+                        file_backed
+                            ? spill_arena_
+                            : nullptr,
+                        label);
+
                 if (file_backed)
                 {
-                    file_backed_coset_count_.fetch_add(
-                        1, std::memory_order_relaxed);
-                    file_backed_coset_bytes_.fetch_add(
-                        byte_count, std::memory_order_relaxed);
+                    record_file_backed_coset(
+                        byte_count);
                 }
+
                 return retained;
+            }
+
+            template <typename FillFn>
+            QuotientCosetValuesPtr
+            materialize_coset_values(
+                std::size_t element_count,
+                const std::string &label,
+                FillFn &&fill)
+            {
+                const auto byte_count =
+                    coset_byte_count(
+                        element_count,
+                        label);
+
+                const bool file_backed =
+                    new_coset_is_file_backed(
+                        byte_count);
+
+                auto retained =
+                    std::make_shared<
+                        QuotientCosetValues>(
+                        element_count,
+                        file_backed
+                            ? spill_arena_
+                            : nullptr,
+                        label);
+
+                fill(retained->mutable_data());
+
+                if (file_backed)
+                {
+                    record_file_backed_coset(
+                        byte_count);
+                }
+
+                return retained;
+            }
+
+            QuotientCosetValuesPtr
+            materialize_polynomial_coset(
+                const algebra::Polynomial &polynomial,
+                const std::string &label)
+            {
+                return materialize_coset_values(
+                    target_size_,
+                    label,
+                    [&](FieldElement *output)
+                    {
+                        coset_evaluate_polynomial_into(
+                            polynomial,
+                            target_size_,
+                            shift_,
+                            label,
+                            &shift_powers(),
+                            output);
+                    });
+            }
+
+            QuotientCosetValuesPtr
+            materialize_coefficient_coset(
+                const std::vector<mcl::Fr>
+                    &coefficients,
+                const std::string &label)
+            {
+                return materialize_coset_values(
+                    target_size_,
+                    label,
+                    [&](FieldElement *output)
+                    {
+                        coset_evaluate_coefficients_into(
+                            coefficients.data(),
+                            coefficients.size(),
+                            target_size_,
+                            shift_,
+                            label,
+                            &shift_powers(),
+                            output);
+                    });
             }
 
             QuotientCosetValuesPtr retain_blinded_coset_view(
@@ -6383,13 +6851,8 @@ namespace gatzk::protocol
                         }
                         semantic_polynomial.zero_domain_blinder.clear();
                         group->base_values =
-                            retain_coset_values(
-                                coset_evaluate_polynomial(
-                                    semantic_polynomial,
-                                    target_size_,
-                                    shift_,
-                                    group->owner_label,
-                                    &shift_powers()),
+                            materialize_polynomial_coset(
+                                semantic_polynomial,
                                 group->owner_label);
                     }
                     base_values = group->base_values;
@@ -6501,12 +6964,47 @@ namespace gatzk::protocol
                             24,
                             std::max<std::size_t>(8, cpu_count));
                     }
-                    const auto worker_count =
+                    auto worker_count =
                         std::min<std::size_t>(
                             std::min<std::size_t>(
                                 cpu_count,
                                 worker_cap),
                             wave.size());
+
+                    if (use_file_backed_coset_storage() && coset_host_available_at_start_bytes_ != 0)
+                    {
+                        const auto coset_bytes =
+                            coset_byte_count(
+                                target_size_,
+                                label_);
+
+                        const auto maximum =
+                            std::numeric_limits<
+                                std::size_t>::max();
+
+                        const auto estimated_worker_bytes =
+                            coset_bytes > maximum / 3
+                                ? maximum
+                                : coset_bytes * 3;
+
+                        const auto safe_available =
+                            coset_host_available_at_start_bytes_ > coset_host_reserve_bytes_
+                                ? coset_host_available_at_start_bytes_ - coset_host_reserve_bytes_
+                                : std::size_t{0};
+
+                        if (estimated_worker_bytes != 0)
+                        {
+                            const auto memory_workers =
+                                std::max<std::size_t>(
+                                    1,
+                                    safe_available / estimated_worker_bytes);
+
+                            worker_count =
+                                std::min(
+                                    worker_count,
+                                    memory_workers);
+                        }
+                    }
 
                     const auto transform_worker_cap =
                         std::max<std::size_t>(
@@ -7068,14 +7566,10 @@ namespace gatzk::protocol
                 auto coefficients = prefix_selector_coefficients_native(*domain_, valid_count, requested_name);
                 progress_note("prove:quotient:t_FH:selector:" + requested_name + ":coefficients:done");
                 progress_note("prove:quotient:t_FH:selector:" + requested_name + ":coset:start");
-                auto values = retain_coset_values(
-                    coset_evaluate_coefficients(
+                auto values =
+                    materialize_coefficient_coset(
                         coefficients,
-                        target_size_,
-                        shift_,
-                        requested_name,
-                        &shift_powers()),
-                    requested_name);
+                        requested_name);
                 progress_note("prove:quotient:t_FH:selector:" + requested_name + ":coset:done");
                 return values;
             }
@@ -7092,14 +7586,10 @@ namespace gatzk::protocol
                     return nullptr;
                 }
                 progress_note("prove:quotient:t_FH:public_coeff:" + requested_name + ":coset:start");
-                auto values = retain_coset_values(
-                    coset_evaluate_polynomial(
+                auto values =
+                    materialize_polynomial_coset(
                         *it->second,
-                        target_size_,
-                        shift_,
-                        requested_name,
-                        &shift_powers()),
-                    requested_name);
+                        requested_name);
                 progress_note("prove:quotient:t_FH:public_coeff:" + requested_name + ":coset:done");
                 return values;
             }
@@ -7382,16 +7872,12 @@ namespace gatzk::protocol
                     auto direct_values =
                         reused_semantic_coset_values(
                             requested_name, *polynomial);
-                    if (direct_values == nullptr && polynomial->is_zero_domain_blinded())
+                    if (direct_values == nullptr && polynomial
+                                                        ->is_zero_domain_blinded())
                     {
                         direct_values =
-                            retain_coset_values(
-                                coset_evaluate_polynomial(
-                                    *polynomial,
-                                    target_size_,
-                                    shift_,
-                                    requested_name,
-                                    &shift_powers()),
+                            materialize_polynomial_coset(
+                                *polynomial,
                                 requested_name);
                     }
                     if (direct_values != nullptr)
@@ -7474,14 +7960,10 @@ namespace gatzk::protocol
                         polynomial.set_zero_domain_blinder(
                             spilled_it->second.zero_domain_blinder);
                     }
-                    auto values = retain_coset_values(
-                        coset_evaluate_polynomial(
+                    auto values =
+                        materialize_polynomial_coset(
                             polynomial,
-                            target_size_,
-                            shift_,
-                            requested_name,
-                            &shift_powers()),
-                        requested_name);
+                            requested_name);
                     std::lock_guard<std::mutex> lock(
                         coset_cache_mutex_);
                     const auto [it, inserted] =
@@ -7530,16 +8012,15 @@ namespace gatzk::protocol
                 {
                     values = std::move(selector);
                 }
-                else if (const auto *polynomial = lookup_polynomial(requested_name); polynomial != nullptr)
+                else if (const auto *polynomial =
+                             lookup_polynomial(
+                                 requested_name);
+                         polynomial != nullptr)
                 {
-                    values = retain_coset_values(
-                        coset_evaluate_polynomial(
+                    values =
+                        materialize_polynomial_coset(
                             *polynomial,
-                            target_size_,
-                            shift_,
-                            requested_name,
-                            &shift_powers()),
-                        requested_name);
+                            requested_name);
                 }
                 else
                 {
@@ -7552,39 +8033,77 @@ namespace gatzk::protocol
                 }
             }
 
-            QuotientCosetValuesPtr materialize_lazy_feature_lookup_trace(const std::string &name)
+            QuotientCosetValuesPtr
+            materialize_lazy_feature_lookup_trace(
+                const std::string &name)
             {
                 if (name == "P_R_feat")
                 {
-                    return retain_coset_values(
-                        std::vector<FieldElement>(
-                            target_size_, FieldElement::zero()),
-                        name);
-                }
-                if (name == "P_m_feat")
-                {
-                    return full_graph_feature_identity_enabled(context_)
-                               ? coset_values_ptr("P_Q_tbl_feat")
-                               : coset_values_ptr("P_Q_qry_feat");
-                }
-                if (name == "P_Query_feat" && full_graph_feature_identity_enabled(context_))
-                {
-                    return coset_values_ptr("P_Table_feat");
+                    return materialize_coset_values(
+                        target_size_,
+                        name,
+                        [](FieldElement *) {});
                 }
 
-                const auto eta_feat = challenges_.at("eta_feat");
-                const auto eta_feat_sq = eta_feat * eta_feat;
-                const auto &rows = coset_values(name == "P_Table_feat" ? "P_Row_feat_tbl" : "P_Row_feat_qry");
-                const auto &cols = coset_values(name == "P_Table_feat" ? "P_Col_feat_tbl" : "P_Col_feat_qry");
-                const auto &features = coset_values("P_T_H");
-                std::vector<FieldElement> out(
-                    target_size_, FieldElement::zero());
-                for (std::size_t i = 0; i < target_size_; ++i)
+                if (name == "P_m_feat")
                 {
-                    out[i] = rows[i] + eta_feat * cols[i] + eta_feat_sq * features[i];
+                    return full_graph_feature_identity_enabled(
+                               context_)
+                               ? coset_values_ptr(
+                                     "P_Q_tbl_feat")
+                               : coset_values_ptr(
+                                     "P_Q_qry_feat");
                 }
-                return retain_coset_values(
-                    std::move(out), name);
+
+                if (name == "P_Query_feat" && full_graph_feature_identity_enabled(
+                                                  context_))
+                {
+                    return coset_values_ptr(
+                        "P_Table_feat");
+                }
+
+                const auto eta_feat =
+                    challenges_.at("eta_feat");
+
+                const auto eta_feat_sq =
+                    eta_feat * eta_feat;
+
+                const auto &rows =
+                    coset_values(
+                        name == "P_Table_feat"
+                            ? "P_Row_feat_tbl"
+                            : "P_Row_feat_qry");
+
+                const auto &cols =
+                    coset_values(
+                        name == "P_Table_feat"
+                            ? "P_Col_feat_tbl"
+                            : "P_Col_feat_qry");
+
+                const auto &features =
+                    coset_values("P_T_H");
+
+                return materialize_coset_values(
+                    target_size_,
+                    name,
+                    [&](FieldElement *output)
+                    {
+                        parallel_for_chunks_static(
+                            target_size_,
+                            std::size_t{1} << 15,
+                            0,
+                            [&](std::size_t begin,
+                                std::size_t end)
+                            {
+                                for (std::size_t i = begin;
+                                     i < end;
+                                     ++i)
+                                {
+                                    output[i] =
+                                        rows[i] + eta_feat * cols[i] + eta_feat_sq * features[i];
+                                }
+                            });
+                    });
             }
 
             std::vector<mcl::Fr> dependency_coefficients(
@@ -7597,17 +8116,24 @@ namespace gatzk::protocol
 
             const std::vector<mcl::Fr> &shift_powers()
             {
-                if (!shift_powers_.empty())
-                {
-                    return shift_powers_;
-                }
-                shift_powers_.resize(target_size_);
-                if (target_size_ == 0)
-                {
-                    return shift_powers_;
-                }
-                algebra::geometric_powers_native(
-                    shift_powers_.data(), shift_powers_.size(), shift_);
+                std::call_once(
+                    shift_powers_once_,
+                    [&]()
+                    {
+                        shift_powers_.resize(
+                            target_size_);
+
+                        if (target_size_ == 0)
+                        {
+                            return;
+                        }
+
+                        algebra::geometric_powers_native(
+                            shift_powers_.data(),
+                            shift_powers_.size(),
+                            shift_);
+                    });
+
                 return shift_powers_;
             }
 
@@ -7632,6 +8158,7 @@ namespace gatzk::protocol
             std::size_t target_size_ = 0;
             std::size_t rotation_step_ = 0;
             FieldElement shift_;
+            std::once_flag shift_powers_once_;
             std::vector<mcl::Fr> shift_powers_;
             std::shared_ptr<const TEdgeEvaluationPlan> edge_evaluation_plan_;
             std::optional<FHQuotientParameters> fh_parameters_;
@@ -7651,6 +8178,10 @@ namespace gatzk::protocol
             std::shared_ptr<const std::vector<FieldElement>>
                 semantic_coset_points_;
             std::vector<FieldElement> semantic_coset_zero_cycle_;
+            std::size_t coset_host_total_bytes_ = 0;
+            std::size_t
+                coset_host_available_at_start_bytes_ = 0;
+            std::size_t coset_host_reserve_bytes_ = 0;
             std::size_t in_memory_coset_budget_bytes_ = 0;
             std::atomic<std::size_t> in_memory_coset_bytes_{0};
             std::atomic<std::size_t> file_backed_coset_count_{0};
