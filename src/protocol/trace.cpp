@@ -1362,8 +1362,8 @@ namespace gatzk::protocol
                     // as simultaneously prepared trace commitment payload.
                     // 128 GiB therefore admits the 2 GiB ceiling, while
                     // smaller machines automatically retain smaller windows.
-                    const auto adaptive_budget =
-                        total_bytes / 64ULL;
+                    const std::size_t adaptive_budget =
+                        total_bytes / std::size_t{64};
 
                     return std::clamp(
                         adaptive_budget,
