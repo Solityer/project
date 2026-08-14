@@ -27,11 +27,11 @@ namespace gatzk::algebra
     bool cuda_backend_runtime_available();
     bool cuda_field_hotspots_available();
     void scaled_accumulate_cuda(
-        uint64_t* target_limbs,
-        const uint64_t* source_limbs,
+        uint64_t *target_limbs,
+        const uint64_t *source_limbs,
         const uint64_t scale_limbs[4],
         std::size_t element_count);
-        
+
     bool cuda_intt_in_place_exact(
         mcl::Fr *values,
         std::size_t size);
@@ -44,7 +44,7 @@ namespace gatzk::algebra
 
     namespace
     {
-        std::atomic<std::size_t>& cuda_kernel_counter()
+        std::atomic<std::size_t> &cuda_kernel_counter()
         {
             static std::atomic<std::size_t> counter{0};
             return counter;
@@ -52,46 +52,42 @@ namespace gatzk::algebra
 
         bool cuda_field_route_enabled()
         {
-            return util::route2_options().cuda_field_hotspots
-                && cuda_field_hotspots_build_enabled()
-                && cuda_field_hotspots_available();
+            return util::route2_options().cuda_field_hotspots && cuda_field_hotspots_build_enabled() && cuda_field_hotspots_available();
         }
 
         bool cuda_trace_route_enabled()
         {
-            return util::route2_options().cuda_trace_hotspots
-                && cuda_backend_available();
+            return util::route2_options().cuda_trace_hotspots && cuda_backend_available();
         }
 
         unsigned __int128 multiply_u128(std::size_t lhs, std::size_t rhs)
-{
-    return static_cast<unsigned __int128>(lhs)
-        * static_cast<unsigned __int128>(rhs);
-}
+        {
+            return static_cast<unsigned __int128>(lhs) * static_cast<unsigned __int128>(rhs);
+        }
 
-std::size_t bounded_worker_count(
-    std::size_t max_worker_count)
-{
-    const auto hardware_workers =
-        std::max<std::size_t>(
-            1,
-            std::thread::hardware_concurrency());
+        std::size_t bounded_worker_count(
+            std::size_t max_worker_count)
+        {
+            const auto hardware_workers =
+                std::max<std::size_t>(
+                    1,
+                    std::thread::hardware_concurrency());
 
-    if (max_worker_count == 0)
-    {
-        return hardware_workers;
-    }
+            if (max_worker_count == 0)
+            {
+                return hardware_workers;
+            }
 
-    return std::max<std::size_t>(
-        1,
-        std::min<std::size_t>(
-            hardware_workers,
-            max_worker_count));
-}
+            return std::max<std::size_t>(
+                1,
+                std::min<std::size_t>(
+                    hardware_workers,
+                    max_worker_count));
+        }
 
         AlgebraBackend parse_backend_env()
         {
-            const char* value = std::getenv("GATZK_ALGEBRA_BACKEND");
+            const char *value = std::getenv("GATZK_ALGEBRA_BACKEND");
             if (value == nullptr)
             {
                 // 默认正式后端仍是 CPU；GPU 只能经由 compute-backend/route2 显式启用。
@@ -113,8 +109,8 @@ std::size_t bounded_worker_count(
 
         // 串行计算两个域元素向量在区间[begin, end)上的点积（--parallel-fft on）
         FieldElement dot_product_range(
-            const std::vector<FieldElement>& lhs,
-            const std::vector<FieldElement>& rhs,
+            const std::vector<FieldElement> &lhs,
+            const std::vector<FieldElement> &rhs,
             std::size_t begin,
             std::size_t end)
         {
@@ -131,8 +127,8 @@ std::size_t bounded_worker_count(
 
         // 串行计算域元素向量与mcl::Fr向量在区间[begin, end)上的点积
         FieldElement dot_product_native_range(
-            const std::vector<FieldElement>& lhs,
-            const std::vector<mcl::Fr>& rhs,
+            const std::vector<FieldElement> &lhs,
+            const std::vector<mcl::Fr> &rhs,
             std::size_t begin,
             std::size_t end)
         {
@@ -194,9 +190,9 @@ std::size_t bounded_worker_count(
     }
 
     void geometric_powers_native(
-        mcl::Fr* output,
+        mcl::Fr *output,
         std::size_t size,
-        const FieldElement& base)
+        const FieldElement &base)
     {
         if (size == 0)
         {
@@ -211,10 +207,10 @@ std::size_t bounded_worker_count(
         const auto available_workers = std::max<std::size_t>(
             1, std::thread::hardware_concurrency());
         const auto task_count = size < kMinRowsPerTask
-            ? std::size_t{1}
-            : std::min<std::size_t>(
-                available_workers,
-                std::max<std::size_t>(2, size / kMinRowsPerTask));
+                                    ? std::size_t{1}
+                                    : std::min<std::size_t>(
+                                          available_workers,
+                                          std::max<std::size_t>(2, size / kMinRowsPerTask));
         const auto chunk_size = (size + task_count - 1) / task_count;
         const auto base_native = base.native();
         std::vector<std::future<void>> futures;
@@ -232,7 +228,8 @@ std::size_t bounded_worker_count(
                 [=]
                 {
                     auto power = base.pow(
-                        static_cast<std::uint64_t>(begin)).native();
+                                         static_cast<std::uint64_t>(begin))
+                                     .native();
                     for (std::size_t index = begin; index < end; ++index)
                     {
                         output[index] = power;
@@ -240,208 +237,197 @@ std::size_t bounded_worker_count(
                     }
                 }));
         }
-        for (auto& future : futures)
+        for (auto &future : futures)
         {
             future.get();
         }
     }
 
     void split_coset_coefficients_native(
-    const mcl::Fr* coefficients,
-    const mcl::Fr* shift_powers,
-    std::size_t coefficient_count,
-    const FieldElement& odd_root,
-    mcl::Fr* even_output,
-    mcl::Fr* odd_output,
-    std::size_t max_worker_count)
-{
-    if (coefficient_count == 0)
+        const mcl::Fr *coefficients,
+        const mcl::Fr *shift_powers,
+        std::size_t coefficient_count,
+        const FieldElement &odd_root,
+        mcl::Fr *even_output,
+        mcl::Fr *odd_output,
+        std::size_t max_worker_count)
     {
-        return;
-    }
-
-    if (coefficients == nullptr
-        || shift_powers == nullptr
-        || even_output == nullptr
-        || odd_output == nullptr)
-    {
-        throw std::runtime_error(
-            "coset split scaling requires non-null buffers");
-    }
-
-    constexpr std::size_t kMinRowsPerTask =
-        1ULL << 18;
-
-    const auto available_workers =
-        bounded_worker_count(max_worker_count);
-
-    const auto worker_count =
-        std::min<std::size_t>({
-            8,
-            available_workers,
-            std::max<std::size_t>(
-                1,
-                (coefficient_count
-                    + kMinRowsPerTask - 1)
-                    / kMinRowsPerTask),
-        });
-
-    const auto chunk_size =
-        (coefficient_count + worker_count - 1)
-        / worker_count;
-
-    const auto root_native =
-        odd_root.native();
-
-    std::vector<std::future<void>> futures;
-    futures.reserve(worker_count);
-
-    for (std::size_t worker = 0;
-         worker < worker_count;
-         ++worker)
-    {
-        const auto begin =
-            worker * chunk_size;
-        const auto end =
-            std::min(
-                coefficient_count,
-                begin + chunk_size);
-
-        if (begin >= end)
+        if (coefficient_count == 0)
         {
-            break;
+            return;
         }
 
-        futures.push_back(
-            std::async(
-                std::launch::async,
-                [=]
-                {
-                    auto root_power =
-                        odd_root.pow(begin).native();
+        if (coefficients == nullptr || shift_powers == nullptr || even_output == nullptr || odd_output == nullptr)
+        {
+            throw std::runtime_error(
+                "coset split scaling requires non-null buffers");
+        }
 
-                    for (std::size_t index = begin;
-                         index < end;
-                         ++index)
+        constexpr std::size_t kMinRowsPerTask =
+            1ULL << 18;
+
+        const auto available_workers =
+            bounded_worker_count(max_worker_count);
+
+        const auto worker_count =
+            std::min<std::size_t>({
+                8,
+                available_workers,
+                std::max<std::size_t>(
+                    1,
+                    (coefficient_count + kMinRowsPerTask - 1) / kMinRowsPerTask),
+            });
+
+        const auto chunk_size =
+            (coefficient_count + worker_count - 1) / worker_count;
+
+        const auto root_native =
+            odd_root.native();
+
+        std::vector<std::future<void>> futures;
+        futures.reserve(worker_count);
+
+        for (std::size_t worker = 0;
+             worker < worker_count;
+             ++worker)
+        {
+            const auto begin =
+                worker * chunk_size;
+            const auto end =
+                std::min(
+                    coefficient_count,
+                    begin + chunk_size);
+
+            if (begin >= end)
+            {
+                break;
+            }
+
+            futures.push_back(
+                std::async(
+                    std::launch::async,
+                    [=]
                     {
-                        mcl::Fr::mul(
-                            even_output[index],
-                            coefficients[index],
-                            shift_powers[index]);
+                        auto root_power =
+                            odd_root.pow(begin).native();
 
-                        mcl::Fr odd_shift_power;
-                        mcl::Fr::mul(
-                            odd_shift_power,
-                            shift_powers[index],
-                            root_power);
+                        for (std::size_t index = begin;
+                             index < end;
+                             ++index)
+                        {
+                            mcl::Fr::mul(
+                                even_output[index],
+                                coefficients[index],
+                                shift_powers[index]);
 
-                        mcl::Fr::mul(
-                            odd_output[index],
-                            coefficients[index],
-                            odd_shift_power);
+                            mcl::Fr odd_shift_power;
+                            mcl::Fr::mul(
+                                odd_shift_power,
+                                shift_powers[index],
+                                root_power);
 
-                        mcl::Fr::mul(
-                            root_power,
-                            root_power,
-                            root_native);
-                    }
-                }));
+                            mcl::Fr::mul(
+                                odd_output[index],
+                                coefficients[index],
+                                odd_shift_power);
+
+                            mcl::Fr::mul(
+                                root_power,
+                                root_power,
+                                root_native);
+                        }
+                    }));
+        }
+
+        for (auto &future : futures)
+        {
+            future.get();
+        }
     }
-
-    for (auto& future : futures)
-    {
-        future.get();
-    }
-}
 
     void interleave_native_lanes(
-    const mcl::Fr* even_values,
-    const mcl::Fr* odd_values,
-    std::size_t lane_size,
-    mcl::Fr* output,
-    std::size_t max_worker_count)
-{
-    if (lane_size == 0)
+        const mcl::Fr *even_values,
+        const mcl::Fr *odd_values,
+        std::size_t lane_size,
+        mcl::Fr *output,
+        std::size_t max_worker_count)
     {
-        return;
-    }
-
-    if (even_values == nullptr
-        || odd_values == nullptr
-        || output == nullptr)
-    {
-        throw std::runtime_error(
-            "native lane interleave requires non-null buffers");
-    }
-
-    constexpr std::size_t kMinRowsPerTask =
-        1ULL << 18;
-
-    const auto available_workers =
-        bounded_worker_count(max_worker_count);
-
-    const auto worker_count =
-        std::min<std::size_t>({
-            8,
-            available_workers,
-            std::max<std::size_t>(
-                1,
-                (lane_size
-                    + kMinRowsPerTask - 1)
-                    / kMinRowsPerTask),
-        });
-
-    const auto chunk_size =
-        (lane_size + worker_count - 1)
-        / worker_count;
-
-    std::vector<std::future<void>> futures;
-    futures.reserve(worker_count);
-
-    for (std::size_t worker = 0;
-         worker < worker_count;
-         ++worker)
-    {
-        const auto begin =
-            worker * chunk_size;
-        const auto end =
-            std::min(
-                lane_size,
-                begin + chunk_size);
-
-        if (begin >= end)
+        if (lane_size == 0)
         {
-            break;
+            return;
         }
 
-        futures.push_back(
-            std::async(
-                std::launch::async,
-                [=]
-                {
-                    for (std::size_t index = begin;
-                         index < end;
-                         ++index)
-                    {
-                        output[2 * index] =
-                            even_values[index];
-                        output[2 * index + 1] =
-                            odd_values[index];
-                    }
-                }));
-    }
+        if (even_values == nullptr || odd_values == nullptr || output == nullptr)
+        {
+            throw std::runtime_error(
+                "native lane interleave requires non-null buffers");
+        }
 
-    for (auto& future : futures)
-    {
-        future.get();
+        constexpr std::size_t kMinRowsPerTask =
+            1ULL << 18;
+
+        const auto available_workers =
+            bounded_worker_count(max_worker_count);
+
+        const auto worker_count =
+            std::min<std::size_t>({
+                8,
+                available_workers,
+                std::max<std::size_t>(
+                    1,
+                    (lane_size + kMinRowsPerTask - 1) / kMinRowsPerTask),
+            });
+
+        const auto chunk_size =
+            (lane_size + worker_count - 1) / worker_count;
+
+        std::vector<std::future<void>> futures;
+        futures.reserve(worker_count);
+
+        for (std::size_t worker = 0;
+             worker < worker_count;
+             ++worker)
+        {
+            const auto begin =
+                worker * chunk_size;
+            const auto end =
+                std::min(
+                    lane_size,
+                    begin + chunk_size);
+
+            if (begin >= end)
+            {
+                break;
+            }
+
+            futures.push_back(
+                std::async(
+                    std::launch::async,
+                    [=]
+                    {
+                        for (std::size_t index = begin;
+                             index < end;
+                             ++index)
+                        {
+                            output[2 * index] =
+                                even_values[index];
+                            output[2 * index + 1] =
+                                odd_values[index];
+                        }
+                    }));
+        }
+
+        for (auto &future : futures)
+        {
+            future.get();
+        }
     }
-}
 
     namespace
     {
         void ntt_out_of_place_parallel_impl(
-            mcl::Fr* source,
-            mcl::Fr* output,
+            mcl::Fr *source,
+            mcl::Fr *output,
             std::size_t size,
             std::size_t transform_workers)
         {
@@ -454,62 +440,59 @@ std::size_t bounded_worker_count(
             }
 
             const auto half_size = size / 2;
-const auto lane_worker_count =
-    std::min<std::size_t>({
-        8,
-        std::max<std::size_t>(
-            1,
-            transform_workers),
-        std::max<std::size_t>(
-            1,
-            (half_size
-                + (1ULL << 18) - 1)
-                / (1ULL << 18)),
-    });
+            const auto lane_worker_count =
+                std::min<std::size_t>({
+                    8,
+                    std::max<std::size_t>(
+                        1,
+                        transform_workers),
+                    std::max<std::size_t>(
+                        1,
+                        (half_size + (1ULL << 18) - 1) / (1ULL << 18)),
+                });
 
             const auto parallel_half_ranges =
-                [&](const auto& range_fn)
+                [&](const auto &range_fn)
+            {
+                if (lane_worker_count <= 1)
                 {
-                    if (lane_worker_count <= 1)
+                    range_fn(0, half_size);
+                    return;
+                }
+                const auto chunk_size =
+                    (half_size + lane_worker_count - 1) / lane_worker_count;
+                std::vector<std::future<void>> futures;
+                futures.reserve(lane_worker_count);
+                for (std::size_t worker = 0;
+                     worker < lane_worker_count; ++worker)
+                {
+                    const auto begin = worker * chunk_size;
+                    const auto end = std::min(
+                        half_size, begin + chunk_size);
+                    if (begin >= end)
                     {
-                        range_fn(0, half_size);
-                        return;
+                        break;
                     }
-                    const auto chunk_size =
-                        (half_size + lane_worker_count - 1) / lane_worker_count;
-                    std::vector<std::future<void>> futures;
-                    futures.reserve(lane_worker_count);
-                    for (std::size_t worker = 0;
-                         worker < lane_worker_count; ++worker)
-                    {
-                        const auto begin = worker * chunk_size;
-                        const auto end = std::min(
-                            half_size, begin + chunk_size);
-                        if (begin >= end)
+                    futures.push_back(std::async(
+                        std::launch::async,
+                        [&, begin, end]
                         {
-                            break;
-                        }
-                        futures.push_back(std::async(
-                            std::launch::async,
-                            [&, begin, end]
-                            {
-                                range_fn(begin, end);
-                            }));
-                    }
-                    for (auto& future : futures)
-                    {
-                        future.get();
-                    }
-                };
+                            range_fn(begin, end);
+                        }));
+                }
+                for (auto &future : futures)
+                {
+                    future.get();
+                }
+            };
 
             parallel_half_ranges([&](std::size_t begin, std::size_t end)
-            {
+                                 {
                 for (std::size_t index = begin; index < end; ++index)
                 {
                     output[index] = source[2 * index];
                     output[index + half_size] = source[2 * index + 1];
-                }
-            });
+                } });
 
             const auto even_workers = transform_workers / 2;
             const auto odd_workers = transform_workers - even_workers;
@@ -533,7 +516,7 @@ const auto lane_worker_count =
             const auto omega = FieldElement::root_of_unity(size).native();
             const auto omega_field = FieldElement::from_native(omega);
             parallel_half_ranges([&](std::size_t begin, std::size_t end)
-            {
+                                 {
                 auto omega_power = omega_field.pow(begin).native();
                 for (std::size_t index = begin; index < end; ++index)
                 {
@@ -550,12 +533,11 @@ const auto lane_worker_count =
                         odd_scaled);
                     mcl::Fr::mul(
                         omega_power, omega_power, omega);
-                }
-            });
+                } });
         }
 
         void intt_in_place_parallel_impl(
-            mcl::Fr* values,
+            mcl::Fr *values,
             std::size_t size,
             std::size_t transform_workers)
         {
@@ -567,63 +549,60 @@ const auto lane_worker_count =
             }
 
             const auto half_size = size / 2;
-std::vector<mcl::Fr> even(half_size);
-std::vector<mcl::Fr> odd(half_size);
+            std::vector<mcl::Fr> even(half_size);
+            std::vector<mcl::Fr> odd(half_size);
 
-const auto lane_worker_count =
-    std::min<std::size_t>({
-        8,
-        std::max<std::size_t>(
-            1,
-            transform_workers),
-        std::max<std::size_t>(
-            1,
-            (half_size
-                + (1ULL << 18) - 1)
-                / (1ULL << 18)),
-    });
+            const auto lane_worker_count =
+                std::min<std::size_t>({
+                    8,
+                    std::max<std::size_t>(
+                        1,
+                        transform_workers),
+                    std::max<std::size_t>(
+                        1,
+                        (half_size + (1ULL << 18) - 1) / (1ULL << 18)),
+                });
             const auto parallel_half_ranges =
-                [&](const auto& range_fn)
-                {
-                    if (lane_worker_count <= 1)
-                    {
-                        range_fn(0, half_size);
-                        return;
-                    }
-                    const auto chunk_size =
-                        (half_size + lane_worker_count - 1) / lane_worker_count;
-                    std::vector<std::future<void>> futures;
-                    futures.reserve(lane_worker_count);
-                    for (std::size_t worker = 0;
-                         worker < lane_worker_count; ++worker)
-                    {
-                        const auto begin = worker * chunk_size;
-                        const auto end = std::min(
-                            half_size, begin + chunk_size);
-                        if (begin >= end)
-                        {
-                            break;
-                        }
-                        futures.push_back(std::async(
-                            std::launch::async,
-                            [&, begin, end]
-                            {
-                                range_fn(begin, end);
-                            }));
-                    }
-                    for (auto& future : futures)
-                    {
-                        future.get();
-                    }
-                };
-            parallel_half_ranges([&](std::size_t begin, std::size_t end)
+                [&](const auto &range_fn)
             {
+                if (lane_worker_count <= 1)
+                {
+                    range_fn(0, half_size);
+                    return;
+                }
+                const auto chunk_size =
+                    (half_size + lane_worker_count - 1) / lane_worker_count;
+                std::vector<std::future<void>> futures;
+                futures.reserve(lane_worker_count);
+                for (std::size_t worker = 0;
+                     worker < lane_worker_count; ++worker)
+                {
+                    const auto begin = worker * chunk_size;
+                    const auto end = std::min(
+                        half_size, begin + chunk_size);
+                    if (begin >= end)
+                    {
+                        break;
+                    }
+                    futures.push_back(std::async(
+                        std::launch::async,
+                        [&, begin, end]
+                        {
+                            range_fn(begin, end);
+                        }));
+                }
+                for (auto &future : futures)
+                {
+                    future.get();
+                }
+            };
+            parallel_half_ranges([&](std::size_t begin, std::size_t end)
+                                 {
                 for (std::size_t i = begin; i < end; ++i)
                 {
                     even[i] = values[2 * i];
                     odd[i] = values[2 * i + 1];
-                }
-            });
+                } });
 
             const auto even_workers = transform_workers / 2;
             const auto odd_workers = transform_workers - even_workers;
@@ -644,7 +623,7 @@ const auto lane_worker_count =
                 FieldElement::from_native(omega_inverse);
             const auto inverse_two = FieldElement(2).inv().native();
             parallel_half_ranges([&](std::size_t begin, std::size_t end)
-            {
+                                 {
                 auto omega_power = omega_inverse_field.pow(begin).native();
                 for (std::size_t i = begin; i < end; ++i)
                 {
@@ -659,85 +638,92 @@ const auto lane_worker_count =
                         values[i + half_size], difference, inverse_two);
                     mcl::Fr::mul(
                         omega_power, omega_power, omega_inverse);
-                }
-            });
+                } });
         }
     }
 
     void intt_in_place(
-    mcl::Fr* values,
-    std::size_t size,
-    std::size_t max_worker_count)
-{
-    if (values == nullptr
-        || size == 0
-        || (size & (size - 1U)) != 0U)
+        mcl::Fr *values,
+        std::size_t size,
+        std::size_t max_worker_count)
     {
-        throw std::runtime_error(
-            "INTT requires a non-null power-of-two field vector");
+        if (values == nullptr || size == 0 || (size & (size - 1U)) != 0U)
+        {
+            throw std::runtime_error(
+                "INTT requires a non-null power-of-two field vector");
+        }
+
+        constexpr std::size_t kCudaInttSize =
+            std::size_t{1} << 23;
+
+        if (util::route2_options().cuda_field_hotspots && size == kCudaInttSize)
+        {
+            if (!try_cuda_intt_in_place(
+                    values,
+                    size))
+            {
+                throw std::runtime_error(
+                    "CUDA production INTT route "
+                    "was selected but not admitted");
+            }
+
+            return;
+        }
+
+        const auto transform_workers =
+            std::min<std::size_t>(
+                32,
+                bounded_worker_count(
+                    max_worker_count));
+
+        intt_in_place_parallel_impl(
+            values,
+            size,
+            transform_workers);
     }
-
-    const auto transform_workers =
-        std::min<std::size_t>(
-            32,
-            bounded_worker_count(
-                max_worker_count));
-
-    intt_in_place_parallel_impl(
-        values,
-        size,
-        transform_workers);
-}
 
     void ntt_pair_in_place(
-    mcl::Fr* first,
-    mcl::Fr* second,
-    std::size_t size,
-    std::size_t max_worker_count)
-{
-    if (first == nullptr
-        || second == nullptr
-        || first == second
-        || size == 0
-        || (size & (size - 1U)) != 0U)
+        mcl::Fr *first,
+        mcl::Fr *second,
+        std::size_t size,
+        std::size_t max_worker_count)
     {
-        throw std::runtime_error(
-            "paired NTT requires two distinct non-null power-of-two vectors");
-    }
+        if (first == nullptr || second == nullptr || first == second || size == 0 || (size & (size - 1U)) != 0U)
+        {
+            throw std::runtime_error(
+                "paired NTT requires two distinct non-null power-of-two vectors");
+        }
 
-    constexpr std::size_t kParallelPairThreshold =
-        1ULL << 15;
-    constexpr std::size_t kRecursiveParallelThreshold =
-        1ULL << 18;
-    constexpr std::size_t kRecursiveParallelMaximum =
-        1ULL << 24;
+        constexpr std::size_t kParallelPairThreshold =
+            1ULL << 15;
+        constexpr std::size_t kRecursiveParallelThreshold =
+            1ULL << 18;
+        constexpr std::size_t kRecursiveParallelMaximum =
+            1ULL << 24;
 
-    const auto available_workers =
-        bounded_worker_count(
-            max_worker_count);
+        const auto available_workers =
+            bounded_worker_count(
+                max_worker_count);
 
-    if (size < kParallelPairThreshold
-        || available_workers < 2)
-    {
-        const auto plan = ntt_plan(size);
-        plan->ntt(first);
-        plan->ntt(second);
-        return;
-    }
+        if (size < kParallelPairThreshold || available_workers < 2)
+        {
+            const auto plan = ntt_plan(size);
+            plan->ntt(first);
+            plan->ntt(second);
+            return;
+        }
 
-    if (size >= kRecursiveParallelThreshold
-        && size <= kRecursiveParallelMaximum
-        && available_workers >= 4)
-    {
-        const auto per_transform_workers =
-            std::max<std::size_t>(
-                1,
-                std::min<std::size_t>(
-                    16,
-                    available_workers / 2));
+        if (size >= kRecursiveParallelThreshold && size <= kRecursiveParallelMaximum && available_workers >= 4)
+        {
+            const auto per_transform_workers =
+                std::max<std::size_t>(
+                    1,
+                    std::min<std::size_t>(
+                        16,
+                        available_workers / 2));
 
-        auto run_transform =
-            [=](mcl::Fr* values)
+            auto run_transform =
+                [=](mcl::Fr *values)
             {
                 std::vector<mcl::Fr> scratch(size);
 
@@ -753,38 +739,38 @@ const auto lane_worker_count =
                     values);
             };
 
+            auto first_task =
+                std::async(
+                    std::launch::async,
+                    [=]
+                    {
+                        run_transform(first);
+                    });
+
+            run_transform(second);
+            first_task.get();
+            return;
+        }
+
+        const auto plan = ntt_plan(size);
+
         auto first_task =
             std::async(
                 std::launch::async,
                 [=]
                 {
-                    run_transform(first);
+                    plan->ntt(first);
                 });
 
-        run_transform(second);
+        plan->ntt(second);
         first_task.get();
-        return;
     }
-
-    const auto plan = ntt_plan(size);
-
-    auto first_task =
-        std::async(
-            std::launch::async,
-            [=]
-            {
-                plan->ntt(first);
-            });
-
-    plan->ntt(second);
-    first_task.get();
-}
 
     bool try_cuda_intt_in_place(
         mcl::Fr *values,
         std::size_t size)
     {
-    #if GATZK_ENABLE_CUDA_BACKEND
+#if GATZK_ENABLE_CUDA_BACKEND
         if (!cuda_field_hotspots_available())
         {
             return false;
@@ -793,11 +779,11 @@ const auto lane_worker_count =
         return cuda_intt_in_place_exact(
             values,
             size);
-    #else
+#else
         (void)values;
         (void)size;
         return false;
-    #endif
+#endif
     }
 
     bool try_cuda_ntt_pair_in_place(
@@ -805,7 +791,7 @@ const auto lane_worker_count =
         mcl::Fr *second,
         std::size_t size)
     {
-    #if GATZK_ENABLE_CUDA_BACKEND
+#if GATZK_ENABLE_CUDA_BACKEND
         if (!cuda_field_hotspots_available())
         {
             return false;
@@ -815,26 +801,26 @@ const auto lane_worker_count =
             first,
             second,
             size);
-    #else
+#else
         (void)first;
         (void)second;
         (void)size;
         return false;
-    #endif
+#endif
     }
 
-std::size_t cuda_kernel_invocation_count()
-{
-    return cuda_kernel_counter().load(std::memory_order_relaxed);
-}
+    std::size_t cuda_kernel_invocation_count()
+    {
+        return cuda_kernel_counter().load(std::memory_order_relaxed);
+    }
 
-void record_cuda_kernel_invocations(std::size_t count)
-{
-    cuda_kernel_counter().fetch_add(count, std::memory_order_relaxed);
-}
+    void record_cuda_kernel_invocations(std::size_t count)
+    {
+        cuda_kernel_counter().fetch_add(count, std::memory_order_relaxed);
+    }
 
-bool cuda_backend_build_enabled()
-{
+    bool cuda_backend_build_enabled()
+    {
 #if GATZK_ENABLE_CUDA_BACKEND
         return true;
 #else
@@ -854,7 +840,8 @@ bool cuda_backend_build_enabled()
     bool cuda_backend_unified_addressing_available()
     {
 #if GATZK_ENABLE_CUDA_BACKEND
-        static const bool available = []() {
+        static const bool available = []()
+        {
             if (!cuda_backend_runtime_available())
             {
                 return false;
@@ -890,9 +877,7 @@ bool cuda_backend_build_enabled()
             // host pages, but does not make an arbitrary std::vector pointer a
             // valid kernel address.  Direct columnar kernels may consume those
             // pointers only when the device actually walks the host page tables.
-            return unified != 0
-                && pageable_access != 0
-                && host_page_tables != 0;
+            return unified != 0 && pageable_access != 0 && host_page_tables != 0;
         }();
         return available;
 #else
@@ -916,8 +901,7 @@ bool cuda_backend_build_enabled()
         cudaDeviceProp props{};
         if (cudaGetDeviceProperties(&props, device) != cudaSuccess)
         {
-            return "cuda_build=true; cuda_runtime=true; cuda_device=unknown; cuda_device_count="
-                + std::to_string(device_count);
+            return "cuda_build=true; cuda_runtime=true; cuda_device=unknown; cuda_device_count=" + std::to_string(device_count);
         }
         int pageable_access = 0;
         int host_page_tables = 0;
@@ -929,11 +913,7 @@ bool cuda_backend_build_enabled()
             &host_page_tables,
             cudaDevAttrPageableMemoryAccessUsesHostPageTables,
             device);
-        return "cuda_build=true; cuda_runtime=true; cuda_device=" + std::string(props.name)
-            + "; cuda_device_count=" + std::to_string(device_count)
-            + "; cuda_unified_addressing=" + std::string(props.unifiedAddressing ? "true" : "false")
-            + "; cuda_pageable_memory_access=" + std::string(pageable_access != 0 ? "true" : "false")
-            + "; cuda_pageable_host_page_tables=" + std::string(host_page_tables != 0 ? "true" : "false");
+        return "cuda_build=true; cuda_runtime=true; cuda_device=" + std::string(props.name) + "; cuda_device_count=" + std::to_string(device_count) + "; cuda_unified_addressing=" + std::string(props.unifiedAddressing ? "true" : "false") + "; cuda_pageable_memory_access=" + std::string(pageable_access != 0 ? "true" : "false") + "; cuda_pageable_host_page_tables=" + std::string(host_page_tables != 0 ? "true" : "false");
 #else
         return "cuda_build=false; cuda_runtime=false; cuda_device=unavailable";
 #endif
@@ -968,8 +948,8 @@ bool cuda_backend_build_enabled()
 
         const auto min_domain_size =
             cuda_backend_unified_addressing_available()
-            ? (1ULL << 16)
-            : (1ULL << 18);
+                ? (1ULL << 16)
+                : (1ULL << 18);
         return domain_size >= min_domain_size;
     }
 
@@ -990,12 +970,10 @@ bool cuda_backend_build_enabled()
         const auto total_terms = multiply_u128(domain_size, vector_count) * static_cast<unsigned __int128>(point_count);
         const auto min_total_terms =
             unified
-            ? (static_cast<unsigned __int128>(1) << 21)
-            : (static_cast<unsigned __int128>(1) << 24);
+                ? (static_cast<unsigned __int128>(1) << 21)
+                : (static_cast<unsigned __int128>(1) << 24);
 
-        return domain_size >= min_domain_size
-            && work_items >= static_cast<unsigned __int128>(min_work_items)
-            && total_terms >= min_total_terms;
+        return domain_size >= min_domain_size && work_items >= static_cast<unsigned __int128>(min_work_items) && total_terms >= min_total_terms;
     }
 
     bool should_use_cuda_lookup_histogram(
@@ -1010,14 +988,13 @@ bool cuda_backend_build_enabled()
         const bool unified = cuda_backend_unified_addressing_available();
         const auto min_index_count = unified ? (1ULL << 20) : (1ULL << 22);
         const auto min_bucket_count = unified ? 1024ULL : 4096ULL;
-        return index_count >= min_index_count
-            && bucket_count >= min_bucket_count;
+        return index_count >= min_index_count && bucket_count >= min_bucket_count;
     }
 
     bool try_cuda_scaled_accumulate_native(
-        mcl::Fr* target,
-        const mcl::Fr* source,
-        const mcl::Fr& scale,
+        mcl::Fr *target,
+        const mcl::Fr *source,
+        const mcl::Fr &scale,
         std::size_t element_count)
     {
         // Direct kernel access to std::vector storage is valid only when the
@@ -1025,9 +1002,7 @@ bool cuda_backend_build_enabled()
         // the existing CPU path so kernel launch and page-fault costs cannot
         // dominate the opening fold.
         constexpr std::size_t kMinCudaElements = 1ULL << 20;
-        if (element_count < kMinCudaElements
-            || !cuda_field_route_enabled()
-            || !cuda_backend_unified_addressing_available())
+        if (element_count < kMinCudaElements || !cuda_field_route_enabled() || !cuda_backend_unified_addressing_available())
         {
             return false;
         }
@@ -1041,9 +1016,9 @@ bool cuda_backend_build_enabled()
             sizeof(mcl::Fr) == 4 * sizeof(uint64_t),
             "CUDA scaled accumulate requires four-limb mcl::Fr storage");
         scaled_accumulate_cuda(
-            reinterpret_cast<uint64_t*>(target),
-            reinterpret_cast<const uint64_t*>(source),
-            reinterpret_cast<const uint64_t*>(&scale),
+            reinterpret_cast<uint64_t *>(target),
+            reinterpret_cast<const uint64_t *>(source),
+            reinterpret_cast<const uint64_t *>(&scale),
             element_count);
         return true;
 #else
@@ -1057,27 +1032,27 @@ bool cuda_backend_build_enabled()
     // 非 CUDA 构建下保留同签名桩函数，让上层统一走回退逻辑。
     bool barycentric_weights_gpu(
         const uint64_t[4], const uint64_t[4], const uint64_t[4], const uint64_t[4],
-        uint64_t*, std::size_t) { return false; }
+        uint64_t *, std::size_t) { return false; }
     bool weighted_poly_eval_gpu(
-        const uint64_t*, const uint64_t*, uint64_t*,
+        const uint64_t *, const uint64_t *, uint64_t *,
         std::size_t, std::size_t) { return false; }
     bool weighted_poly_eval_gpu_columnar(
-        const uint64_t*, const uint64_t* const*, uint64_t*,
-        std::size_t, std::size_t, const std::size_t*, std::size_t) { return false; }
+        const uint64_t *, const uint64_t *const *, uint64_t *,
+        std::size_t, std::size_t, const std::size_t *, std::size_t) { return false; }
     bool weighted_poly_eval_gpu_multi(
-        const uint64_t*, const uint64_t* const*, uint64_t*,
-        std::size_t, std::size_t, const std::size_t*, std::size_t) { return false; }
+        const uint64_t *, const uint64_t *const *, uint64_t *,
+        std::size_t, std::size_t, const std::size_t *, std::size_t) { return false; }
     bool weighted_poly_eval_gpu_multi_rotations(
-        const uint64_t*, const uint64_t* const*, uint64_t*,
-        std::size_t, std::size_t, const std::size_t*, std::size_t,
-        const std::size_t*) { return false; }
+        const uint64_t *, const uint64_t *const *, uint64_t *,
+        std::size_t, std::size_t, const std::size_t *, std::size_t,
+        const std::size_t *) { return false; }
 #endif
 
     // 点积是 polynomial / KZG / verifier 会反复调用的基础热路径。
     // 这里根据规模决定串行、并行或 CUDA 执行，但返回值必须完全一致。
     FieldElement dot_product(
-        const std::vector<FieldElement>& lhs,
-        const std::vector<FieldElement>& rhs)
+        const std::vector<FieldElement> &lhs,
+        const std::vector<FieldElement> &rhs)
     {
         if (lhs.size() != rhs.size())
         {
@@ -1088,7 +1063,7 @@ bool cuda_backend_build_enabled()
             return FieldElement::zero();
         }
 
-        const auto& route2 = util::route2_options();
+        const auto &route2 = util::route2_options();
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
         if (!route2.parallel_fft || lhs.size() < 1024 || cpu_count == 1)
         {
@@ -1115,13 +1090,14 @@ bool cuda_backend_build_enabled()
             }
             futures.push_back(std::async(
                 std::launch::async,
-                [&lhs, &rhs, begin, end]() {
+                [&lhs, &rhs, begin, end]()
+                {
                     return dot_product_range(lhs, rhs, begin, end);
                 }));
         }
 
         FieldElement sum = FieldElement::zero();
-        for (auto& future : futures)
+        for (auto &future : futures)
         {
             sum += future.get();
         }
@@ -1130,8 +1106,8 @@ bool cuda_backend_build_enabled()
 
     // 计算左向量（FieldElement）与右向量（mcl::Fr 原生权重）的点积（--parallel-fft on）
     FieldElement dot_product_native_weights(
-        const std::vector<FieldElement>& lhs,
-        const std::vector<mcl::Fr>& rhs)
+        const std::vector<FieldElement> &lhs,
+        const std::vector<mcl::Fr> &rhs)
     {
         if (lhs.size() != rhs.size())
         {
@@ -1143,7 +1119,7 @@ bool cuda_backend_build_enabled()
         }
 
         // CPU 路径：按 native 权重做同样的归约
-        const auto& route2 = util::route2_options();
+        const auto &route2 = util::route2_options();
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
         if (!route2.parallel_fft || lhs.size() < 1024 || cpu_count == 1)
         {
@@ -1169,13 +1145,14 @@ bool cuda_backend_build_enabled()
             }
             futures.push_back(std::async(
                 std::launch::async,
-                [&lhs, &rhs, begin, end]() {
+                [&lhs, &rhs, begin, end]()
+                {
                     return dot_product_native_range(lhs, rhs, begin, end);
                 }));
         }
 
         FieldElement sum = FieldElement::zero();
-        for (auto& future : futures)
+        for (auto &future : futures)
         {
             sum += future.get();
         }
