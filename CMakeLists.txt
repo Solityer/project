@@ -80,13 +80,15 @@ set(GATZK_SOURCES
 if(GATZK_ENABLE_CUDA_BACKEND)
     list(APPEND GATZK_SOURCES
         src/algebra/cuda_backend.cu
+        src/algebra/cuda_ntt.cu
         src/crypto/cuda_msm.cu
     )
     list(REMOVE_ITEM GATZK_SOURCES src/crypto/cuda_msm_stub.cpp)
 
     set(GATZK_ICICLE_ROOT "${PROJECT_SOURCE_DIR}/third_party/icicle")
     if(NOT EXISTS "${GATZK_ICICLE_ROOT}/LICENSE"
-       OR NOT EXISTS "${GATZK_ICICLE_ROOT}/icicle/src/msm/extern.cu")
+        OR NOT EXISTS "${GATZK_ICICLE_ROOT}/icicle/src/msm/extern.cu"
+        OR NOT EXISTS "${GATZK_ICICLE_ROOT}/icicle/src/ntt/extern.cu")
         message(FATAL_ERROR
             "GAT-ZKML: CUDA MSM requires ICICLE v2.8.0 at the pinned "
             "aacec3f72f14f53dd96d835698d2c87cde3a68b8 gitlink; "
@@ -110,6 +112,35 @@ if(GATZK_ENABLE_CUDA_BACKEND)
         gatzk_icicle_bls12_381_msm PRIVATE CUDA::cudart)
     set_target_properties(
         gatzk_icicle_bls12_381_msm
+        PROPERTIES
+            CUDA_SEPARABLE_COMPILATION ON
+            POSITION_INDEPENDENT_CODE ON)
+    add_library(
+    gatzk_icicle_bls12_381_ntt STATIC
+    "${GATZK_ICICLE_ROOT}/icicle/src/ntt/extern.cu")
+
+    target_include_directories(
+        gatzk_icicle_bls12_381_ntt
+        PUBLIC "${GATZK_ICICLE_ROOT}/icicle/include")
+
+    target_compile_definitions(
+        gatzk_icicle_bls12_381_ntt
+        PRIVATE
+            FIELD=bls12_381
+            FIELD_ID=2)
+
+    target_compile_options(
+        gatzk_icicle_bls12_381_ntt
+        PRIVATE
+            $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+            $<$<COMPILE_LANGUAGE:CUDA>:-include=cstdint>)
+
+    target_link_libraries(
+        gatzk_icicle_bls12_381_ntt
+        PRIVATE CUDA::cudart)
+
+    set_target_properties(
+        gatzk_icicle_bls12_381_ntt
         PROPERTIES
             CUDA_SEPARABLE_COMPILATION ON
             POSITION_INDEPENDENT_CODE ON)
@@ -149,7 +180,9 @@ if(GATZK_ENABLE_CUDA_BACKEND)
     target_link_libraries(
         gatzkml
         PUBLIC CUDA::cudart
-        PRIVATE gatzk_icicle_bls12_381_msm)
+        PRIVATE
+            gatzk_icicle_bls12_381_msm
+            gatzk_icicle_bls12_381_ntt)
     set_target_properties(gatzkml PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 endif()
 
@@ -199,7 +232,17 @@ target_link_libraries(gatzk_proof_codec_stage_bench PRIVATE gatzkml)
 add_executable(gatzk_quotient_transform_stage_bench tools/benchmarks/quotient_transform_stage_bench.cpp)
 target_include_directories(gatzk_quotient_transform_stage_bench PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(gatzk_quotient_transform_stage_bench PRIVATE gatzkml)
+add_executable(
+    gatzk_cuda_ntt_stage_bench
+    tools/benchmarks/cuda_ntt_stage_bench.cpp)
 
+target_include_directories(
+    gatzk_cuda_ntt_stage_bench
+    PRIVATE ${PROJECT_SOURCE_DIR}/include)
+
+target_link_libraries(
+    gatzk_cuda_ntt_stage_bench
+    PRIVATE gatzkml)
 add_executable(
     gatzk_signed_round_div_inverse_stage_bench
     tools/benchmarks/signed_round_div_inverse_stage_bench.cpp)

@@ -31,6 +31,15 @@ namespace gatzk::algebra
         const uint64_t* source_limbs,
         const uint64_t scale_limbs[4],
         std::size_t element_count);
+        
+    bool cuda_intt_in_place_exact(
+        mcl::Fr *values,
+        std::size_t size);
+
+    bool cuda_ntt_pair_in_place_exact(
+        mcl::Fr *first,
+        mcl::Fr *second,
+        std::size_t size);
 #endif
 
     namespace
@@ -771,18 +780,61 @@ const auto lane_worker_count =
     first_task.get();
 }
 
-    std::size_t cuda_kernel_invocation_count()
+    bool try_cuda_intt_in_place(
+        mcl::Fr *values,
+        std::size_t size)
     {
-        return cuda_kernel_counter().load(std::memory_order_relaxed);
+    #if GATZK_ENABLE_CUDA_BACKEND
+        if (!cuda_field_hotspots_available())
+        {
+            return false;
+        }
+
+        return cuda_intt_in_place_exact(
+            values,
+            size);
+    #else
+        (void)values;
+        (void)size;
+        return false;
+    #endif
     }
 
-    void record_cuda_kernel_invocations(std::size_t count)
+    bool try_cuda_ntt_pair_in_place(
+        mcl::Fr *first,
+        mcl::Fr *second,
+        std::size_t size)
     {
-        cuda_kernel_counter().fetch_add(count, std::memory_order_relaxed);
+    #if GATZK_ENABLE_CUDA_BACKEND
+        if (!cuda_field_hotspots_available())
+        {
+            return false;
+        }
+
+        return cuda_ntt_pair_in_place_exact(
+            first,
+            second,
+            size);
+    #else
+        (void)first;
+        (void)second;
+        (void)size;
+        return false;
+    #endif
     }
 
-    bool cuda_backend_build_enabled()
-    {
+std::size_t cuda_kernel_invocation_count()
+{
+    return cuda_kernel_counter().load(std::memory_order_relaxed);
+}
+
+void record_cuda_kernel_invocations(std::size_t count)
+{
+    cuda_kernel_counter().fetch_add(count, std::memory_order_relaxed);
+}
+
+bool cuda_backend_build_enabled()
+{
 #if GATZK_ENABLE_CUDA_BACKEND
         return true;
 #else

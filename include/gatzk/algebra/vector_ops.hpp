@@ -157,8 +157,27 @@ void ntt_pair_in_place(
     std::size_t size,
     std::size_t max_worker_count = 0);
 
-    // 直接消费原生权重，避免 barycentric 热路径中反复包装 `FieldElement`。
-    FieldElement dot_product_native_weights(
-        const std::vector<FieldElement>& lhs,
-        const std::vector<mcl::Fr>& rhs);
+// Explicit CUDA quotient-transform probes.
+//
+// These functions do not change production routing by themselves.  They are
+// used first by the exact NTT benchmark; production intt_in_place /
+// ntt_pair_in_place remain on their existing CPU implementation until the
+// CUDA backend has passed exact-equivalence and production-size benchmarks.
+//
+// false means that the CUDA route is unavailable or cannot be admitted under
+// the current resource envelope.  Once CUDA execution starts, CUDA/ICICLE
+// failures are reported fail-closed by exception.
+bool try_cuda_intt_in_place(
+    mcl::Fr *values,
+    std::size_t size);
+
+bool try_cuda_ntt_pair_in_place(
+    mcl::Fr *first,
+    mcl::Fr *second,
+    std::size_t size);
+
+// 直接消费原生权重，避免 barycentric 热路径中反复包装 `FieldElement`。
+FieldElement dot_product_native_weights(
+    const std::vector<FieldElement> &lhs,
+    const std::vector<mcl::Fr> &rhs);
 }
