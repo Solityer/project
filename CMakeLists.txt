@@ -200,6 +200,16 @@ target_include_directories(gatzk_msm_stage_bench PRIVATE ${PROJECT_SOURCE_DIR}/i
 target_link_libraries(gatzk_msm_stage_bench PRIVATE gatzkml)
 
 add_executable(
+    gatzk_forward_stage_bench
+    tools/benchmarks/forward_stage_bench.cpp)
+target_include_directories(
+    gatzk_forward_stage_bench
+    PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(
+    gatzk_forward_stage_bench
+    PRIVATE gatzkml)
+
+add_executable(
     gatzk_taylor_shift_stage_bench
     tools/benchmarks/taylor_shift_stage_bench.cpp)
 target_include_directories(

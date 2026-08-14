@@ -18,7 +18,7 @@ namespace gatzk::model
     namespace
     {
         // 读取和解析普通文本文件，清单文件和张量文件
-        std::string load_text_file(const std::filesystem::path& path)
+        std::string load_text_file(const std::filesystem::path &path)
         {
             std::ifstream input(path);
             if (!input)
@@ -29,7 +29,7 @@ namespace gatzk::model
             stream << input.rdbuf();
             return stream.str();
         }
-        std::size_t parse_required_size_t(const std::string& text, const std::string& key)
+        std::size_t parse_required_size_t(const std::string &text, const std::string &key)
         {
             const std::regex pattern("\"" + key + "\"\\s*:\\s*([0-9]+)");
             std::smatch match;
@@ -41,8 +41,8 @@ namespace gatzk::model
         }
 
         std::vector<std::size_t> parse_required_size_array(
-            const std::string& text,
-            const std::string& key)
+            const std::string &text,
+            const std::string &key)
         {
             const std::regex pattern("\"" + key + "\"\\s*:\\s*\\[([^\\]]*)\\]");
             std::smatch match;
@@ -52,8 +52,7 @@ namespace gatzk::model
                     "missing array key in checkpoint manifest: " + key);
             }
             std::string body = match[1].str();
-            if (body.find_first_not_of("0123456789, \t\r\n")
-                != std::string::npos)
+            if (body.find_first_not_of("0123456789, \t\r\n") != std::string::npos)
             {
                 throw std::runtime_error(
                     "malformed numeric array in checkpoint manifest: " + key);
@@ -74,7 +73,7 @@ namespace gatzk::model
             return out;
         }
 
-        std::string parse_required_string(const std::string& text, const std::string& key)
+        std::string parse_required_string(const std::string &text, const std::string &key)
         {
             const std::regex pattern("\"" + key + "\"\\s*:\\s*\"([^\"]+)\"");
             std::smatch match;
@@ -85,7 +84,7 @@ namespace gatzk::model
             return match[1].str();
         }
 
-        std::string extract_array_body(const std::string& text, const std::string& key)
+        std::string extract_array_body(const std::string &text, const std::string &key)
         {
             const auto key_pos = text.find("\"" + key + "\"");
             if (key_pos == std::string::npos)
@@ -117,7 +116,7 @@ namespace gatzk::model
         }
 
         // 把一个对象数组拆成多个片段
-        std::vector<std::string> parse_object_array_entries(const std::string& text, const std::string& key)
+        std::vector<std::string> parse_object_array_entries(const std::string &text, const std::string &key)
         {
             const auto body = extract_array_body(text, key);
             std::vector<std::string> entries;
@@ -155,7 +154,7 @@ namespace gatzk::model
         }
 
         // 解析每层隐藏层的形状信息
-        CheckpointLayerInfo parse_checkpoint_layer_info(const std::string& entry)
+        CheckpointLayerInfo parse_checkpoint_layer_info(const std::string &entry)
         {
             CheckpointLayerInfo out;
             out.layer_index = parse_required_size_t(entry, "layer_index");
@@ -165,7 +164,7 @@ namespace gatzk::model
             return out;
         }
 
-        HiddenLayerShape parse_checkpoint_layer_shape(const std::string& entry)
+        HiddenLayerShape parse_checkpoint_layer_shape(const std::string &entry)
         {
             return HiddenLayerShape{
                 .head_count = parse_required_size_t(entry, "head_count"),
@@ -174,7 +173,7 @@ namespace gatzk::model
         }
 
         // 解析隐藏头张量名
-        CheckpointHeadSpec parse_checkpoint_head_spec(const std::string& entry)
+        CheckpointHeadSpec parse_checkpoint_head_spec(const std::string &entry)
         {
             CheckpointHeadSpec out;
             out.layer_index = parse_required_size_t(entry, "layer_index");
@@ -190,7 +189,7 @@ namespace gatzk::model
         }
 
         // 解析隐藏层每个注意力头的张量名映射
-        CheckpointOutputHeadSpec parse_checkpoint_output_head_spec(const std::string& entry)
+        CheckpointOutputHeadSpec parse_checkpoint_output_head_spec(const std::string &entry)
         {
             CheckpointOutputHeadSpec out;
             out.head_index = parse_required_size_t(entry, "head_index");
@@ -204,7 +203,7 @@ namespace gatzk::model
         }
 
         // 把各个维度乘起来
-        std::size_t shape_product(const std::vector<std::size_t>& shape)
+        std::size_t shape_product(const std::vector<std::size_t> &shape)
         {
             std::size_t out = 1;
             for (const auto dim : shape)
@@ -215,7 +214,7 @@ namespace gatzk::model
         }
 
         // 读取张量文件，并把每一段张量记录整理成一个稠密张量
-        std::unordered_map<std::string, DenseTensor> load_text_tensors(const std::filesystem::path& path)
+        std::unordered_map<std::string, DenseTensor> load_text_tensors(const std::filesystem::path &path)
         {
             std::ifstream input(path);
             if (!input)
@@ -257,9 +256,9 @@ namespace gatzk::model
         }
 
         // 取一个必须存在的张量，没找到就直接报错
-        const DenseTensor& require_tensor(
-            const std::unordered_map<std::string, DenseTensor>& tensors,
-            const std::string& name)
+        const DenseTensor &require_tensor(
+            const std::unordered_map<std::string, DenseTensor> &tensors,
+            const std::string &name)
         {
             const auto it = tensors.find(name);
             if (it == tensors.end())
@@ -270,7 +269,7 @@ namespace gatzk::model
         }
 
         // 将 [1, in, out] 的 seq kernel 张量 reshape 成二维矩阵
-        FloatMatrix reshape_seq_kernel(const DenseTensor& tensor)
+        FloatMatrix reshape_seq_kernel(const DenseTensor &tensor)
         {
             if (tensor.shape.size() != 3 || tensor.shape[0] != 1)
             {
@@ -290,7 +289,7 @@ namespace gatzk::model
         }
 
         // 将 [1, width, 1] 的注意力 kernel 张量展平成向量
-        std::vector<double> reshape_attention_kernel(const DenseTensor& tensor)
+        std::vector<double> reshape_attention_kernel(const DenseTensor &tensor)
         {
             if (tensor.shape.size() != 3 || tensor.shape[0] != 1 || tensor.shape[2] != 1)
             {
@@ -299,7 +298,7 @@ namespace gatzk::model
             return tensor.values;
         }
 
-        double reshape_scalar_bias(const DenseTensor& tensor)
+        double reshape_scalar_bias(const DenseTensor &tensor)
         {
             if (tensor.shape.size() != 1 || tensor.shape[0] != 1 || tensor.values.size() != 1)
             {
@@ -308,7 +307,7 @@ namespace gatzk::model
             return tensor.values.front();
         }
 
-        std::vector<double> reshape_output_bias(const DenseTensor& tensor)
+        std::vector<double> reshape_output_bias(const DenseTensor &tensor)
         {
             if (tensor.shape.size() != 1)
             {
@@ -319,13 +318,13 @@ namespace gatzk::model
 
         // 按张量名字把一个注意力头需要的浮点参数封装起来
         AttentionHeadParameters load_head_parameters(
-            const std::unordered_map<std::string, DenseTensor>& tensors,
-            const std::string& seq_kernel_name,
-            const std::string& attn_dst_kernel_name,
-            const std::string& attn_dst_bias_name,
-            const std::string& attn_src_kernel_name,
-            const std::string& attn_src_bias_name,
-            const std::string& output_bias_name)
+            const std::unordered_map<std::string, DenseTensor> &tensors,
+            const std::string &seq_kernel_name,
+            const std::string &attn_dst_kernel_name,
+            const std::string &attn_dst_bias_name,
+            const std::string &attn_src_kernel_name,
+            const std::string &attn_src_bias_name,
+            const std::string &output_bias_name)
         {
             AttentionHeadParameters out;
             out.seq_kernel_fp = reshape_seq_kernel(require_tensor(tensors, seq_kernel_name));
@@ -390,263 +389,1064 @@ namespace gatzk::model
             return value >= 0.0 ? value : std::expm1(value);
         }
 
-        // 浮点数矩阵乘法
-        FloatMatrix matmul(const FloatMatrix& left, const FloatMatrix& right)
+        constexpr std::size_t kMaxForwardWorkerCount = 32;
+
+        std::size_t forward_worker_budget(
+            std::size_t requested_worker_count = 0)
+        {
+            const auto hardware_workers =
+                std::max<std::size_t>(
+                    1,
+                    std::thread::hardware_concurrency());
+
+            const auto requested =
+                requested_worker_count == 0
+                    ? hardware_workers
+                    : std::min(
+                          requested_worker_count,
+                          hardware_workers);
+
+            return std::max<std::size_t>(
+                1,
+                std::min<std::size_t>(
+                    kMaxForwardWorkerCount,
+                    requested));
+        }
+
+        template <typename Fn>
+        void parallel_for_forward_ranges(
+            std::size_t item_count,
+            std::size_t min_items_per_worker,
+            std::size_t max_worker_count,
+            Fn &&fn)
+        {
+            if (item_count == 0)
+            {
+                return;
+            }
+
+            const auto worker_budget =
+                forward_worker_budget(max_worker_count);
+
+            const auto safe_min_items =
+                std::max<std::size_t>(
+                    1,
+                    min_items_per_worker);
+
+            const auto workers_by_work =
+                (item_count + safe_min_items - 1) / safe_min_items;
+
+            const auto worker_count =
+                std::max<std::size_t>(
+                    1,
+                    std::min({
+                        worker_budget,
+                        item_count,
+                        workers_by_work,
+                    }));
+
+            if (worker_count <= 1)
+            {
+                fn(0, item_count);
+                return;
+            }
+
+            const auto chunk_size =
+                (item_count + worker_count - 1) / worker_count;
+
+            std::vector<std::future<void>> futures;
+            futures.reserve(worker_count);
+
+            for (std::size_t worker = 0;
+                 worker < worker_count;
+                 ++worker)
+            {
+                const auto begin =
+                    worker * chunk_size;
+
+                const auto end =
+                    std::min(
+                        item_count,
+                        begin + chunk_size);
+
+                if (begin >= end)
+                {
+                    break;
+                }
+
+                futures.push_back(
+                    std::async(
+                        std::launch::async,
+                        [&fn, begin, end]()
+                        {
+                            fn(begin, end);
+                        }));
+            }
+
+            for (auto &future : futures)
+            {
+                future.get();
+            }
+        }
+
+        struct ForwardGraphLayout
+        {
+            std::vector<std::size_t> incoming_offsets;
+            std::vector<std::size_t> incoming_sources;
+
+            // Maps every real edge to its position in incoming_sources.
+            // Synthetic self loops are present only in incoming_sources.
+            std::vector<std::size_t> edge_incoming_positions;
+        };
+
+        ForwardGraphLayout build_forward_graph_layout(
+            std::size_t node_count,
+            const std::vector<data::Edge> &edges)
+        {
+            ForwardGraphLayout layout;
+
+            layout.incoming_offsets.assign(
+                node_count + 1,
+                0);
+
+            layout.edge_incoming_positions.resize(
+                edges.size());
+
+            std::vector<std::size_t>
+                incoming_count(
+                    node_count,
+                    0);
+
+            std::vector<unsigned char>
+                has_self_loop(
+                    node_count,
+                    0);
+
+            // First pass validates the graph and computes exact CSR sizes.
+            for (const auto &edge : edges)
+            {
+                if (edge.src >= node_count || edge.dst >= node_count)
+                {
+                    throw std::runtime_error(
+                        "edge out of bounds while running attention head forward");
+                }
+
+                ++incoming_count[edge.dst];
+
+                if (edge.src == edge.dst)
+                {
+                    has_self_loop[edge.dst] = 1;
+                }
+            }
+
+            for (std::size_t dst = 0;
+                 dst < node_count;
+                 ++dst)
+            {
+                const auto synthetic_self =
+                    has_self_loop[dst] == 0
+                        ? std::size_t{1}
+                        : std::size_t{0};
+
+                layout.incoming_offsets[dst + 1] =
+                    layout.incoming_offsets[dst] + incoming_count[dst] + synthetic_self;
+            }
+
+            layout.incoming_sources.resize(
+                layout.incoming_offsets.back());
+
+            auto cursor =
+                layout.incoming_offsets;
+
+            // Preserve the original edge order inside every destination
+            // group exactly.
+            for (std::size_t edge_index = 0;
+                 edge_index < edges.size();
+                 ++edge_index)
+            {
+                const auto &edge =
+                    edges[edge_index];
+
+                const auto position =
+                    cursor[edge.dst]++;
+
+                layout.incoming_sources[position] =
+                    edge.src;
+
+                layout.edge_incoming_positions[edge_index] =
+                    position;
+            }
+
+            // The former implementation appended a missing self loop after
+            // all real incoming edges. Preserve that exact ordering.
+            for (std::size_t dst = 0;
+                 dst < node_count;
+                 ++dst)
+            {
+                if (has_self_loop[dst] == 0)
+                {
+                    layout.incoming_sources[cursor[dst]++] =
+                        dst;
+                }
+
+                if (cursor[dst] != layout.incoming_offsets[dst + 1])
+                {
+                    throw std::runtime_error(
+                        "forward incoming-edge layout construction mismatch");
+                }
+            }
+
+            return layout;
+        }
+
+        struct ForwardHeadExecutionPlan
+        {
+            std::size_t outer_head_workers = 1;
+            std::size_t inner_workers = 1;
+        };
+
+        ForwardHeadExecutionPlan
+        forward_head_execution_plan(
+            std::size_t head_count)
+        {
+            const auto hardware_workers =
+                forward_worker_budget();
+
+            // Workload-class scheduling only:
+            //
+            // Many independent heads:
+            //   parallelize heads and keep each head internally serial.
+            //
+            // One/few heads:
+            //   keep heads serial and parallelize independent rows/edges
+            //   inside the head.
+            //
+            // This avoids nested oversubscription while covering both the
+            // multi-head and huge-single-head production shapes.
+            if (head_count >= 4 && hardware_workers >= 4)
+            {
+                return ForwardHeadExecutionPlan{
+                    .outer_head_workers =
+                        std::min(
+                            head_count,
+                            hardware_workers),
+                    .inner_workers = 1,
+                };
+            }
+
+            return ForwardHeadExecutionPlan{
+                .outer_head_workers = 1,
+                .inner_workers =
+                    hardware_workers,
+            };
+        }
+
+        // Floating-point matrix multiplication.
+        //
+        // Parallelism is only across independent output rows. The k/j
+        // accumulation order of every output scalar is unchanged.
+        FloatMatrix matmul(
+            const FloatMatrix &left,
+            const FloatMatrix &right,
+            std::size_t max_worker_count = 1)
         {
             if (left.empty() || right.empty())
             {
                 return {};
             }
-            const auto shared = left.front().size();
+
+            const auto shared =
+                left.front().size();
+
             if (right.size() != shared)
             {
-                throw std::runtime_error("float matrix multiply dimension mismatch");
+                throw std::runtime_error(
+                    "float matrix multiply dimension mismatch");
             }
-            const auto rows = left.size();
-            const auto cols = right.front().size();
-            FloatMatrix out(rows, std::vector<double>(cols, 0.0));
-            for (std::size_t i = 0; i < rows; ++i)
-            {
-                for (std::size_t k = 0; k < shared; ++k)
+
+            const auto rows =
+                left.size();
+
+            const auto cols =
+                right.front().size();
+
+            FloatMatrix out(
+                rows,
+                std::vector<double>(
+                    cols,
+                    0.0));
+
+            parallel_for_forward_ranges(
+                rows,
+                64,
+                max_worker_count,
+                [&](std::size_t begin,
+                    std::size_t end)
                 {
-                    const auto lhs = left[i][k];
-                    for (std::size_t j = 0; j < cols; ++j)
+                    for (std::size_t i = begin;
+                         i < end;
+                         ++i)
                     {
-                        out[i][j] += lhs * right[k][j];
+                        for (std::size_t k = 0;
+                             k < shared;
+                             ++k)
+                        {
+                            const auto lhs =
+                                left[i][k];
+
+                            for (std::size_t j = 0;
+                                 j < cols;
+                                 ++j)
+                            {
+                                out[i][j] +=
+                                    lhs * right[k][j];
+                            }
+                        }
                     }
-                }
-            }
+                });
+
             return out;
         }
 
-        // 矩阵乘以向量，再加上偏置
-        std::vector<double> matvec(const FloatMatrix& matrix, const std::vector<double>& vector, double bias)
+        // Kept for the reference-style path and small standalone callers.
+        std::vector<double> matvec(
+            const FloatMatrix &matrix,
+            const std::vector<double> &vector,
+            double bias)
         {
-            std::vector<double> out(matrix.size(), bias);
-            for (std::size_t row = 0; row < matrix.size(); ++row)
+            std::vector<double> out(
+                matrix.size(),
+                bias);
+
+            for (std::size_t row = 0;
+                 row < matrix.size();
+                 ++row)
             {
-                for (std::size_t col = 0; col < vector.size(); ++col)
+                for (std::size_t col = 0;
+                     col < vector.size();
+                     ++col)
                 {
-                    out[row] += matrix[row][col] * vector[col];
+                    out[row] +=
+                        matrix[row][col] * vector[col];
                 }
             }
+
             return out;
         }
 
-        // 按列拼接多个矩阵，行数必须相同（对应隐藏层的多头拼接）
-        FloatMatrix concatenate_columns(const std::vector<FloatMatrix>& matrices)
+        // Reference-style helper. Its serial behavior is retained so the
+        // reference forward remains an independent comparison path.
+        FloatMatrix concatenate_columns(
+            const std::vector<FloatMatrix> &matrices)
         {
             if (matrices.empty())
             {
                 return {};
             }
-            const auto rows = matrices.front().size();
+
+            const auto rows =
+                matrices.front().size();
+
             std::size_t cols = 0;
-            for (const auto& matrix : matrices)
+
+            for (const auto &matrix : matrices)
             {
                 if (matrix.size() != rows)
                 {
-                    throw std::runtime_error("cannot concatenate matrices with different row counts");
+                    throw std::runtime_error(
+                        "cannot concatenate matrices with different row counts");
                 }
-                cols += matrix.empty() ? 0 : matrix.front().size();
+
+                cols +=
+                    matrix.empty()
+                        ? 0
+                        : matrix.front().size();
             }
 
-            FloatMatrix out(rows, std::vector<double>(cols, 0.0));
+            FloatMatrix out(
+                rows,
+                std::vector<double>(
+                    cols,
+                    0.0));
+
             std::size_t offset = 0;
-            for (const auto& matrix : matrices)
+
+            for (const auto &matrix : matrices)
             {
-                const auto width = matrix.empty() ? 0 : matrix.front().size();
-                for (std::size_t row = 0; row < rows; ++row)
+                const auto width =
+                    matrix.empty()
+                        ? 0
+                        : matrix.front().size();
+
+                for (std::size_t row = 0;
+                     row < rows;
+                     ++row)
                 {
-                    std::copy(matrix[row].begin(), matrix[row].end(), out[row].begin() + static_cast<std::ptrdiff_t>(offset));
+                    std::copy(
+                        matrix[row].begin(),
+                        matrix[row].end(),
+                        out[row].begin() + static_cast<
+                                               std::ptrdiff_t>(
+                                               offset));
                 }
+
                 offset += width;
             }
+
             return out;
         }
 
-        // 多个矩阵求平均（形状必须相同）
-        FloatMatrix average_matrices(const std::vector<FloatMatrix>& matrices)
+        // Reference-style helper.
+        FloatMatrix average_matrices(
+            const std::vector<FloatMatrix> &matrices)
         {
             if (matrices.empty())
             {
                 return {};
             }
-            auto out = matrices.front();
-            for (std::size_t matrix_index = 1; matrix_index < matrices.size(); ++matrix_index)
+
+            auto out =
+                matrices.front();
+
+            for (std::size_t matrix_index = 1;
+                 matrix_index < matrices.size();
+                 ++matrix_index)
             {
-                if (matrices[matrix_index].size() != out.size() || (!out.empty() && matrices[matrix_index].front().size() != out.front().size()))
+                if (matrices[matrix_index].size() != out.size() || (!out.empty() && matrices[matrix_index]
+                                                                                            .front()
+                                                                                            .size() != out.front().size()))
                 {
-                    throw std::runtime_error("cannot average matrices with different shapes");
+                    throw std::runtime_error(
+                        "cannot average matrices with different shapes");
                 }
-                for (std::size_t row = 0; row < out.size(); ++row)
+
+                for (std::size_t row = 0;
+                     row < out.size();
+                     ++row)
                 {
-                    for (std::size_t col = 0; col < out[row].size(); ++col)
+                    for (std::size_t col = 0;
+                         col < out[row].size();
+                         ++col)
                     {
-                        out[row][col] += matrices[matrix_index][row][col];
+                        out[row][col] +=
+                            matrices[matrix_index]
+                                    [row][col];
                     }
                 }
             }
-            const auto scale = 1.0 / static_cast<double>(matrices.size());
-            for (auto& row : out)
+
+            const auto scale =
+                1.0 / static_cast<double>(
+                          matrices.size());
+
+            for (auto &row : out)
             {
-                for (auto& value : row)
+                for (auto &value : row)
                 {
                     value *= scale;
                 }
             }
+
             return out;
         }
 
-        // 注意力头前向实现（单个注意力头的完整前向）
+        FloatMatrix concatenate_head_outputs(
+            const std::vector<HeadForwardTrace> &heads,
+            std::size_t max_worker_count)
+        {
+            if (heads.empty())
+            {
+                return {};
+            }
+
+            const auto rows =
+                heads.front().H_agg.size();
+
+            std::vector<std::size_t>
+                offsets(
+                    heads.size() + 1,
+                    0);
+
+            for (std::size_t head = 0;
+                 head < heads.size();
+                 ++head)
+            {
+                if (heads[head].H_agg.size() != rows)
+                {
+                    throw std::runtime_error(
+                        "cannot concatenate head outputs with different row counts");
+                }
+
+                const auto width =
+                    heads[head].H_agg.empty()
+                        ? 0
+                        : heads[head]
+                              .H_agg.front()
+                              .size();
+
+                offsets[head + 1] =
+                    offsets[head] + width;
+            }
+
+            FloatMatrix out(
+                rows,
+                std::vector<double>(
+                    offsets.back(),
+                    0.0));
+
+            parallel_for_forward_ranges(
+                rows,
+                128,
+                max_worker_count,
+                [&](std::size_t begin,
+                    std::size_t end)
+                {
+                    for (std::size_t row = begin;
+                         row < end;
+                         ++row)
+                    {
+                        for (std::size_t head = 0;
+                             head < heads.size();
+                             ++head)
+                        {
+                            const auto &source =
+                                heads[head]
+                                    .H_agg[row];
+
+                            const auto expected_width =
+                                offsets[head + 1] - offsets[head];
+
+                            if (source.size() != expected_width)
+                            {
+                                throw std::runtime_error(
+                                    "head output row width mismatch");
+                            }
+
+                            std::copy(
+                                source.begin(),
+                                source.end(),
+                                out[row].begin() + static_cast<
+                                                       std::ptrdiff_t>(
+                                                       offsets[head]));
+                        }
+                    }
+                });
+
+            return out;
+        }
+
+        FloatMatrix average_head_outputs(
+            const std::vector<HeadForwardTrace> &heads,
+            bool pre_bias,
+            std::size_t max_worker_count)
+        {
+            if (heads.empty())
+            {
+                return {};
+            }
+
+            const auto &first =
+                pre_bias
+                    ? heads.front()
+                          .H_agg_pre_bias
+                    : heads.front().H_agg;
+
+            const auto rows =
+                first.size();
+
+            const auto cols =
+                first.empty()
+                    ? 0
+                    : first.front().size();
+
+            for (const auto &head : heads)
+            {
+                const auto &matrix =
+                    pre_bias
+                        ? head.H_agg_pre_bias
+                        : head.H_agg;
+
+                if (matrix.size() != rows || (!matrix.empty() && matrix.front().size() != cols))
+                {
+                    throw std::runtime_error(
+                        "cannot average head outputs with different shapes");
+                }
+            }
+
+            FloatMatrix out(
+                rows,
+                std::vector<double>(
+                    cols,
+                    0.0));
+
+            const auto scale =
+                1.0 / static_cast<double>(
+                          heads.size());
+
+            parallel_for_forward_ranges(
+                rows,
+                128,
+                max_worker_count,
+                [&](std::size_t begin,
+                    std::size_t end)
+                {
+                    for (std::size_t row = begin;
+                         row < end;
+                         ++row)
+                    {
+                        for (std::size_t col = 0;
+                             col < cols;
+                             ++col)
+                        {
+                            const auto &first_matrix =
+                                pre_bias
+                                    ? heads.front()
+                                          .H_agg_pre_bias
+                                    : heads.front()
+                                          .H_agg;
+
+                            double value =
+                                first_matrix[row][col];
+
+                            for (std::size_t head = 1;
+                                 head < heads.size();
+                                 ++head)
+                            {
+                                const auto &matrix =
+                                    pre_bias
+                                        ? heads[head]
+                                              .H_agg_pre_bias
+                                        : heads[head]
+                                              .H_agg;
+
+                                value +=
+                                    matrix[row][col];
+                            }
+
+                            out[row][col] =
+                                value * scale;
+                        }
+                    }
+                });
+
+            return out;
+        }
+
+        // Full attention-head forward.
+        //
+        // The prepared graph layout and worker placement are execution-only.
+        // Every scalar keeps the same arithmetic/reduction ordering as the
+        // previous implementation.
         HeadForwardTrace attention_head_forward_impl(
-            const FloatMatrix& features,
-            const std::vector<data::Edge>& edges,
-            const AttentionHeadParameters& parameters,
+            const FloatMatrix &features,
+            const std::vector<data::Edge> &edges,
+            const AttentionHeadParameters &parameters,
             bool apply_output_bias,
             bool apply_activation,
-            HeadForwardProfile* profile)
+            HeadForwardProfile *profile,
+            const ForwardGraphLayout *prepared_graph = nullptr,
+            std::size_t max_worker_count = 1)
         {
-            using Clock = std::chrono::steady_clock;
-            auto stage_start = Clock::now();
+            using Clock =
+                std::chrono::steady_clock;
+
+            auto stage_start =
+                Clock::now();
+
             if (features.empty())
             {
                 return {};
             }
-            const auto node_count = features.size();
-            const auto width = attention_head_output_width(parameters);
-            for (const auto& edge : edges)
+
+            const auto node_count =
+                features.size();
+
+            const auto width =
+                attention_head_output_width(
+                    parameters);
+
+            ForwardGraphLayout local_graph;
+
+            const ForwardGraphLayout *graph =
+                prepared_graph;
+
+            if (graph == nullptr)
             {
-                if (edge.src >= node_count || edge.dst >= node_count)
-                {
-                    throw std::runtime_error("edge out of bounds while running attention head forward");
-                }
+                local_graph =
+                    build_forward_graph_layout(
+                        node_count,
+                        edges);
+
+                graph = &local_graph;
+            }
+            else if (
+                graph->incoming_offsets.size() != node_count + 1 || graph
+                                                                            ->edge_incoming_positions
+                                                                            .size() != edges.size())
+            {
+                throw std::runtime_error(
+                    "prepared forward graph layout shape mismatch");
             }
 
             HeadForwardTrace trace;
 
-            // 1、特征投影 H' = H * W_seq
-            trace.H_prime = matmul(features, parameters.seq_kernel_fp);
+            // 1. H' = H * W_seq.
+            trace.H_prime =
+                matmul(
+                    features,
+                    parameters.seq_kernel_fp,
+                    max_worker_count);
+
             if (profile != nullptr)
             {
-                profile->projection_ms += std::chrono::duration<double, std::milli>(Clock::now() - stage_start).count();
+                profile->projection_ms +=
+                    std::chrono::duration<
+                        double,
+                        std::milli>(
+                        Clock::now() - stage_start)
+                        .count();
             }
 
-            stage_start = Clock::now();
+            stage_start =
+                Clock::now();
 
-            // 2、源节点和目标节点的注意力系数向量
-            trace.E_dst = matvec(trace.H_prime, parameters.attn_dst_kernel_fp, parameters.attn_dst_bias_fp);
-            trace.E_src = matvec(trace.H_prime, parameters.attn_src_kernel_fp, parameters.attn_src_bias_fp);
-            // 约束中间量
-            trace.S.assign(edges.size(), 0.0);
-            trace.Z.assign(edges.size(), 0.0);
-            trace.M.assign(node_count, 0.0);
-            trace.Delta.assign(edges.size(), 0.0);
-            trace.U.assign(edges.size(), 0.0);
-            trace.Sum.assign(node_count, 0.0);
-            trace.inv.assign(node_count, 0.0);
-            trace.alpha.assign(edges.size(), 0.0);
-            trace.H_agg_pre_bias.assign(node_count, std::vector<double>(width, 0.0));
-            trace.H_agg.assign(node_count, std::vector<double>(width, 0.0));
+            // 2. E_dst / E_src.
+            //
+            // Both vectors scan the same H' row. Their individual summation
+            // order remains identical to the former two matvec calls.
+            trace.E_dst.assign(
+                node_count,
+                parameters.attn_dst_bias_fp);
 
-            // 为每个目标节点收集入边源节点（包含自环）
-            std::vector<std::vector<std::size_t>> incoming_sources(node_count);
-            for (const auto& edge : edges)
-            {
-                incoming_sources[edge.dst].push_back(edge.src);
-            }
-            for (std::size_t dst = 0; dst < node_count; ++dst)
-            {
-                const auto has_self = std::find(
-                                          incoming_sources[dst].begin(),
-                                          incoming_sources[dst].end(),
-                                          dst) != incoming_sources[dst].end();
-                if (!has_self)
+            trace.E_src.assign(
+                node_count,
+                parameters.attn_src_bias_fp);
+
+            parallel_for_forward_ranges(
+                node_count,
+                256,
+                max_worker_count,
+                [&](std::size_t begin,
+                    std::size_t end)
                 {
-                    incoming_sources[dst].push_back(dst);
-                }
-            }
-
-            // 3、计算softmax所需的稳定化最大值
-            for (std::size_t dst = 0; dst < node_count; ++dst)
-            {
-                trace.M[dst] = -std::numeric_limits<double>::infinity();
-            }
-            for (std::size_t dst = 0; dst < node_count; ++dst)
-            {
-                for (const auto src : incoming_sources[dst])
-                {
-                    trace.M[dst] = std::max(trace.M[dst], leaky_relu(trace.E_dst[dst] + trace.E_src[src]));
-                }
-            }
-
-            // 4、计算分母总和（每一项减去最大值后再取指数再求和）
-            for (std::size_t dst = 0; dst < node_count; ++dst)
-            {
-                for (const auto src : incoming_sources[dst])
-                {
-                    trace.Sum[dst] += std::exp(leaky_relu(trace.E_dst[dst] + trace.E_src[src]) - trace.M[dst]);
-                }
-            }
-
-            // 5、计算分母的倒数
-            for (std::size_t dst = 0; dst < node_count; ++dst)
-            {
-                trace.inv[dst] = 1.0 / trace.Sum[dst];
-            }
-
-            // 6、邻居聚合
-            for (std::size_t dst = 0; dst < node_count; ++dst)
-            {
-                for (const auto src : incoming_sources[dst])
-                {
-                    const auto alpha = std::exp(leaky_relu(trace.E_dst[dst] + trace.E_src[src]) - trace.M[dst]) * trace.inv[dst];
-                    for (std::size_t col = 0; col < width; ++col)
+                    for (std::size_t row = begin;
+                         row < end;
+                         ++row)
                     {
-                        trace.H_agg_pre_bias[dst][col] += alpha * trace.H_prime[src][col];
+                        for (std::size_t col = 0;
+                             col < parameters
+                                       .attn_dst_kernel_fp
+                                       .size();
+                             ++col)
+                        {
+                            trace.E_dst[row] +=
+                                trace.H_prime[row][col] * parameters
+                                                              .attn_dst_kernel_fp[col];
+                        }
+
+                        for (std::size_t col = 0;
+                             col < parameters
+                                       .attn_src_kernel_fp
+                                       .size();
+                             ++col)
+                        {
+                            trace.E_src[row] +=
+                                trace.H_prime[row][col] * parameters
+                                                              .attn_src_kernel_fp[col];
+                        }
                     }
-                }
-            }
+                });
 
-            // 同时计算每条边的中间值
-            for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index)
-            {
-                const auto& edge = edges[edge_index];
-                trace.S[edge_index] = trace.E_dst[edge.dst] + trace.E_src[edge.src];
-                trace.Z[edge_index] = leaky_relu(trace.S[edge_index]);
-                trace.Delta[edge_index] = trace.M[edge.dst] - trace.Z[edge_index];
-                trace.U[edge_index] = std::exp(trace.Z[edge_index] - trace.M[edge.dst]);
-                trace.alpha[edge_index] = trace.U[edge_index] * trace.inv[edge.dst];
-            }
-            if (profile != nullptr)
-            {
-                profile->attention_ms += std::chrono::duration<double, std::milli>(Clock::now() - stage_start).count();
-            }
+            trace.S.assign(
+                edges.size(),
+                0.0);
 
-            stage_start = Clock::now();
+            trace.Z.assign(
+                edges.size(),
+                0.0);
 
-            // 7、添加输出偏置并应用ELU激活函数
-            // 隐藏层不加这偏置，但要激活
-            // 输出层要加偏置，但不激活
-            for (std::size_t dst = 0; dst < node_count; ++dst)
-            {
-                for (std::size_t col = 0; col < width; ++col)
+            trace.M.assign(
+                node_count,
+                0.0);
+
+            trace.Delta.assign(
+                edges.size(),
+                0.0);
+
+            trace.U.assign(
+                edges.size(),
+                0.0);
+
+            trace.Sum.assign(
+                node_count,
+                0.0);
+
+            trace.inv.assign(
+                node_count,
+                0.0);
+
+            trace.alpha.assign(
+                edges.size(),
+                0.0);
+
+            trace.H_agg_pre_bias.assign(
+                node_count,
+                std::vector<double>(
+                    width,
+                    0.0));
+
+            trace.H_agg.assign(
+                node_count,
+                std::vector<double>(
+                    width,
+                    0.0));
+
+            // One temporary value per real-or-synthetic incoming edge.
+            // The previous implementation evaluated this identical exp()
+            // repeatedly in Sum, aggregation and edge materialization.
+            std::vector<double>
+                incoming_exp(
+                    graph->incoming_sources.size(),
+                    0.0);
+
+            // 3. Stable softmax maximum.
+            parallel_for_forward_ranges(
+                node_count,
+                256,
+                max_worker_count,
+                [&](std::size_t begin,
+                    std::size_t end)
                 {
-                    auto value = trace.H_agg_pre_bias[dst][col];
-                    if (apply_output_bias && col < parameters.output_bias_fp.size())
+                    for (std::size_t dst = begin;
+                         dst < end;
+                         ++dst)
                     {
-                        value += parameters.output_bias_fp[col];
+                        auto maximum =
+                            -std::numeric_limits<
+                                double>::infinity();
+
+                        const auto incoming_begin =
+                            graph->incoming_offsets[dst];
+
+                        const auto incoming_end =
+                            graph->incoming_offsets[dst + 1];
+
+                        for (std::size_t position =
+                                 incoming_begin;
+                             position < incoming_end;
+                             ++position)
+                        {
+                            const auto src =
+                                graph->incoming_sources[position];
+
+                            maximum =
+                                std::max(
+                                    maximum,
+                                    leaky_relu(
+                                        trace.E_dst[dst] + trace.E_src[src]));
+                        }
+
+                        trace.M[dst] =
+                            maximum;
                     }
-                    trace.H_agg[dst][col] = apply_activation ? elu(value) : value;
-                }
-            }
+                });
+
+            // 4/5. Evaluate every softmax numerator once, accumulate the
+            // denominator in the original incoming-edge order, then invert.
+            parallel_for_forward_ranges(
+                node_count,
+                256,
+                max_worker_count,
+                [&](std::size_t begin,
+                    std::size_t end)
+                {
+                    for (std::size_t dst = begin;
+                         dst < end;
+                         ++dst)
+                    {
+                        double sum = 0.0;
+
+                        const auto incoming_begin =
+                            graph->incoming_offsets[dst];
+
+                        const auto incoming_end =
+                            graph->incoming_offsets[dst + 1];
+
+                        for (std::size_t position =
+                                 incoming_begin;
+                             position < incoming_end;
+                             ++position)
+                        {
+                            const auto src =
+                                graph->incoming_sources[position];
+
+                            const auto value =
+                                std::exp(
+                                    leaky_relu(
+                                        trace.E_dst[dst] + trace.E_src[src]) -
+                                    trace.M[dst]);
+
+                            incoming_exp[position] =
+                                value;
+
+                            sum += value;
+                        }
+
+                        trace.Sum[dst] =
+                            sum;
+
+                        trace.inv[dst] =
+                            1.0 / sum;
+                    }
+                });
+
+            // 6. Neighbor aggregation. Each destination row is independent;
+            // source order and per-column accumulation order are unchanged.
+            parallel_for_forward_ranges(
+                node_count,
+                128,
+                max_worker_count,
+                [&](std::size_t begin,
+                    std::size_t end)
+                {
+                    for (std::size_t dst = begin;
+                         dst < end;
+                         ++dst)
+                    {
+                        const auto incoming_begin =
+                            graph->incoming_offsets[dst];
+
+                        const auto incoming_end =
+                            graph->incoming_offsets[dst + 1];
+
+                        for (std::size_t position =
+                                 incoming_begin;
+                             position < incoming_end;
+                             ++position)
+                        {
+                            const auto src =
+                                graph->incoming_sources[position];
+
+                            const auto alpha =
+                                incoming_exp[position] * trace.inv[dst];
+
+                            for (std::size_t col = 0;
+                                 col < width;
+                                 ++col)
+                            {
+                                trace
+                                    .H_agg_pre_bias
+                                        [dst][col] += alpha * trace
+                                                                  .H_prime
+                                                                      [src][col];
+                            }
+                        }
+                    }
+                });
+
+            // Materialize the protocol-visible real-edge intermediates.
+            // U and alpha reuse the already-computed identical exp value.
+            parallel_for_forward_ranges(
+                edges.size(),
+                4096,
+                max_worker_count,
+                [&](std::size_t begin,
+                    std::size_t end)
+                {
+                    for (std::size_t edge_index =
+                             begin;
+                         edge_index < end;
+                         ++edge_index)
+                    {
+                        const auto &edge =
+                            edges[edge_index];
+
+                        trace.S[edge_index] =
+                            trace.E_dst[edge.dst] + trace.E_src[edge.src];
+
+                        trace.Z[edge_index] =
+                            leaky_relu(
+                                trace.S[edge_index]);
+
+                        trace.Delta[edge_index] =
+                            trace.M[edge.dst] - trace.Z[edge_index];
+
+                        const auto incoming_position =
+                            graph
+                                ->edge_incoming_positions[edge_index];
+
+                        trace.U[edge_index] =
+                            incoming_exp[incoming_position];
+
+                        trace.alpha[edge_index] =
+                            trace.U[edge_index] * trace.inv[edge.dst];
+                    }
+                });
+
             if (profile != nullptr)
             {
-                profile->activation_ms += std::chrono::duration<double, std::milli>(Clock::now() - stage_start).count();
+                profile->attention_ms +=
+                    std::chrono::duration<
+                        double,
+                        std::milli>(
+                        Clock::now() - stage_start)
+                        .count();
+            }
+
+            stage_start =
+                Clock::now();
+
+            // 7. Bias + ELU. Rows are independent.
+            parallel_for_forward_ranges(
+                node_count,
+                256,
+                max_worker_count,
+                [&](std::size_t begin,
+                    std::size_t end)
+                {
+                    for (std::size_t dst = begin;
+                         dst < end;
+                         ++dst)
+                    {
+                        for (std::size_t col = 0;
+                             col < width;
+                             ++col)
+                        {
+                            auto value =
+                                trace
+                                    .H_agg_pre_bias
+                                        [dst][col];
+
+                            if (apply_output_bias && col < parameters
+                                                               .output_bias_fp
+                                                               .size())
+                            {
+                                value +=
+                                    parameters
+                                        .output_bias_fp[col];
+                            }
+
+                            trace.H_agg[dst][col] =
+                                apply_activation
+                                    ? elu(value)
+                                    : value;
+                        }
+                    }
+                });
+
+            if (profile != nullptr)
+            {
+                profile->activation_ms +=
+                    std::chrono::duration<
+                        double,
+                        std::milli>(
+                        Clock::now() - stage_start)
+                        .count();
             }
 
             return trace;
         }
+
     }
 
     // 单层测试参数，只用于测试
@@ -719,8 +1519,8 @@ namespace gatzk::model
 
     // 构造多层多头的测试模型，主要用来覆盖形状检查
     ModelParameters build_family_model_parameters(
-        const std::vector<std::size_t>& d_in_profile,
-        const std::vector<HiddenLayerShape>& hidden_profile,
+        const std::vector<std::size_t> &d_in_profile,
+        const std::vector<HiddenLayerShape> &hidden_profile,
         std::size_t k_out,
         std::size_t num_classes,
         std::uint64_t seed)
@@ -751,7 +1551,7 @@ namespace gatzk::model
         // 逐层构造隐藏头参数
         for (std::size_t layer_index = 0; layer_index < hidden_profile.size(); ++layer_index)
         {
-            const auto& shape = hidden_profile[layer_index];
+            const auto &shape = hidden_profile[layer_index];
             HiddenLayerParameters layer;
             layer.layer_index = layer_index;
             layer.input_dim = d_in_profile[layer_index];
@@ -771,7 +1571,7 @@ namespace gatzk::model
 
         // 维护一份展开后的隐藏头视图，方便别处按全局编号访问
         out.hidden_heads.reserve(global_hidden_head_index);
-        for (const auto& layer : out.hidden_layers)
+        for (const auto &layer : out.hidden_layers)
         {
             out.hidden_heads.insert(out.hidden_heads.end(), layer.heads.begin(), layer.heads.end());
         }
@@ -795,7 +1595,7 @@ namespace gatzk::model
     }
 
     // 只读取 manifest 元数据，不触碰权重张量本体
-    CheckpointBundleInfo inspect_checkpoint_bundle(const std::string& bundle_root)
+    CheckpointBundleInfo inspect_checkpoint_bundle(const std::string &bundle_root)
     {
         const auto bundle_path = std::filesystem::path(bundle_root);
         if (!std::filesystem::exists(bundle_path))
@@ -822,22 +1622,22 @@ namespace gatzk::model
         info.output_head_count = parse_required_size_t(manifest, "K_out");
         info.class_count = parse_required_size_t(manifest, "C");
         info.d_in_profile = parse_required_size_array(manifest, "d_in_profile");
-        
+
         // 每层的形状摘要
-        for (const auto& entry : parse_object_array_entries(manifest, "hidden_layers"))
+        for (const auto &entry : parse_object_array_entries(manifest, "hidden_layers"))
         {
             info.hidden_layers.push_back(parse_checkpoint_layer_info(entry));
         }
-        for (const auto& entry : parse_object_array_entries(manifest, "hidden_profile"))
+        for (const auto &entry : parse_object_array_entries(manifest, "hidden_profile"))
         {
             info.hidden_profile.push_back(parse_checkpoint_layer_shape(entry));
         }
         // 每个头对应的张量名字
-        for (const auto& entry : parse_object_array_entries(manifest, "hidden_head_specs"))
+        for (const auto &entry : parse_object_array_entries(manifest, "hidden_head_specs"))
         {
             info.hidden_head_specs.push_back(parse_checkpoint_head_spec(entry));
         }
-        for (const auto& entry : parse_object_array_entries(manifest, "output_head_specs"))
+        for (const auto &entry : parse_object_array_entries(manifest, "output_head_specs"))
         {
             info.output_head_specs.push_back(parse_checkpoint_output_head_spec(entry));
         }
@@ -847,8 +1647,8 @@ namespace gatzk::model
 
     // 这里检查的只是 formal 主线真正依赖的结构约束
     bool checkpoint_bundle_matches_formal_proof_shape(
-        const CheckpointBundleInfo& info,
-        std::string* reason)
+        const CheckpointBundleInfo &info,
+        std::string *reason)
     {
         std::vector<std::string> failures;
         if (info.layer_count < 2)
@@ -876,17 +1676,12 @@ namespace gatzk::model
         if (info.layer_count != info.hidden_layers.size() + 1)
         {
             failures.push_back(
-                "L=" + std::to_string(info.layer_count)
-                + " conflicts with hidden_layers size="
-                + std::to_string(info.hidden_layers.size()));
+                "L=" + std::to_string(info.layer_count) + " conflicts with hidden_layers size=" + std::to_string(info.hidden_layers.size()));
         }
         if (info.hidden_profile.size() != info.hidden_layers.size())
         {
             failures.push_back(
-                "hidden_profile size="
-                + std::to_string(info.hidden_profile.size())
-                + " conflicts with hidden_layers size="
-                + std::to_string(info.hidden_layers.size()));
+                "hidden_profile size=" + std::to_string(info.hidden_profile.size()) + " conflicts with hidden_layers size=" + std::to_string(info.hidden_layers.size()));
         }
         if (info.output_head_count == 0)
         {
@@ -919,57 +1714,48 @@ namespace gatzk::model
         std::size_t expected_global_head_index = 0;
         for (std::size_t layer_index = 0; layer_index < info.hidden_layers.size(); ++layer_index)
         {
-            const auto& layer = info.hidden_layers[layer_index];
+            const auto &layer = info.hidden_layers[layer_index];
             if (layer.layer_index != layer_index)
             {
                 failures.push_back("hidden_layers must use contiguous layer_index values");
                 break;
             }
-            if (layer.input_dim == 0 || layer.shape.head_count == 0
-                || layer.shape.head_dim == 0)
+            if (layer.input_dim == 0 || layer.shape.head_count == 0 || layer.shape.head_dim == 0)
             {
                 failures.push_back(
-                    "hidden_layers[" + std::to_string(layer_index)
-                    + "] dimensions must be non-zero");
+                    "hidden_layers[" + std::to_string(layer_index) + "] dimensions must be non-zero");
             }
-            if (layer_index < info.d_in_profile.size()
-                && info.d_in_profile[layer_index] != layer.input_dim)
+            if (layer_index < info.d_in_profile.size() && info.d_in_profile[layer_index] != layer.input_dim)
             {
                 failures.push_back(
                     "hidden_layers[" + std::to_string(layer_index) + "].input_dim conflicts with d_in_profile");
             }
-            if (layer_index < info.hidden_profile.size()
-                && (info.hidden_profile[layer_index].head_count
-                        != layer.shape.head_count
-                    || info.hidden_profile[layer_index].head_dim
-                        != layer.shape.head_dim))
+            if (layer_index < info.hidden_profile.size() && (info.hidden_profile[layer_index].head_count != layer.shape.head_count || info.hidden_profile[layer_index].head_dim != layer.shape.head_dim))
             {
                 failures.push_back(
                     "hidden_layers[" + std::to_string(layer_index) + "] conflicts with hidden_profile");
             }
             if (layer_index != 0)
             {
-                const auto& previous = info.hidden_layers[layer_index - 1];
+                const auto &previous = info.hidden_layers[layer_index - 1];
                 const auto expected_input =
                     previous.shape.head_count * previous.shape.head_dim;
                 if (layer.input_dim != expected_input)
                 {
                     failures.push_back(
-                        "hidden_layers[" + std::to_string(layer_index)
-                        + "].input_dim conflicts with previous concat width");
+                        "hidden_layers[" + std::to_string(layer_index) + "].input_dim conflicts with previous concat width");
                 }
             }
             flattened_hidden_heads += layer.shape.head_count;
 
             std::size_t local_head_index = 0;
-            for (const auto& head : info.hidden_head_specs)
+            for (const auto &head : info.hidden_head_specs)
             {
                 if (head.layer_index != layer_index)
                 {
                     continue;
                 }
-                if (head.local_head_index != local_head_index
-                    || head.global_head_index != expected_global_head_index)
+                if (head.local_head_index != local_head_index || head.global_head_index != expected_global_head_index)
                 {
                     failures.push_back(
                         "hidden_head_specs must use contiguous layer-local and global indices");
@@ -981,8 +1767,7 @@ namespace gatzk::model
             if (local_head_index != layer.shape.head_count)
             {
                 failures.push_back(
-                    "hidden_head_specs layer-local count conflicts with hidden_layers["
-                    + std::to_string(layer_index) + "].head_count");
+                    "hidden_head_specs layer-local count conflicts with hidden_layers[" + std::to_string(layer_index) + "].head_count");
             }
         }
         if (flattened_hidden_heads != info.hidden_head_specs.size())
@@ -1021,7 +1806,7 @@ namespace gatzk::model
     }
 
     // 正式 proving 主线的真实模型入口：manifest 校验通过后再加载权重。
-    ModelParameters load_checkpoint_bundle_parameters(const std::string& bundle_root)
+    ModelParameters load_checkpoint_bundle_parameters(const std::string &bundle_root)
     {
         const auto manifest_info = inspect_checkpoint_bundle(bundle_root);
         std::string manifest_reason;
@@ -1047,14 +1832,14 @@ namespace gatzk::model
         std::size_t expected_global_head_index = 0;
 
         // 按清单里写好的顺序，把隐藏层各个头封装进来
-        for (const auto& layer_info : manifest_info.hidden_layers)
+        for (const auto &layer_info : manifest_info.hidden_layers)
         {
             HiddenLayerParameters layer;
             layer.layer_index = layer_info.layer_index;
             layer.input_dim = layer_info.input_dim;
             layer.shape = layer_info.shape;
             layer.heads.reserve(layer.shape.head_count);
-            for (const auto& head_spec : manifest_info.hidden_head_specs)
+            for (const auto &head_spec : manifest_info.hidden_head_specs)
             {
                 if (head_spec.layer_index != layer.layer_index)
                 {
@@ -1087,7 +1872,7 @@ namespace gatzk::model
         // 输出层同样要求索引连续读取，避免顺序混乱
         out.output_layer.head_count = manifest_info.output_head_count;
         out.output_layer.heads.reserve(manifest_info.output_head_specs.size());
-        for (const auto& head_spec : manifest_info.output_head_specs)
+        for (const auto &head_spec : manifest_info.output_head_specs)
         {
             if (head_spec.head_index != out.output_layer.heads.size())
             {
@@ -1127,7 +1912,7 @@ namespace gatzk::model
     }
 
     // 返回注意力头输出宽度
-    std::size_t attention_head_output_width(const AttentionHeadParameters& parameters)
+    std::size_t attention_head_output_width(const AttentionHeadParameters &parameters)
     {
         if (!parameters.seq_kernel_fp.empty())
         {
@@ -1138,14 +1923,14 @@ namespace gatzk::model
 
     // 构建注意力偏置矩阵
     // 有边和自环的位置记0，没有边的位置给一个很小的负数
-    FloatMatrix build_attention_bias_matrix(std::size_t num_nodes, const std::vector<data::Edge>& edges)
+    FloatMatrix build_attention_bias_matrix(std::size_t num_nodes, const std::vector<data::Edge> &edges)
     {
         FloatMatrix bias(num_nodes, std::vector<double>(num_nodes, -1e9));
         for (std::size_t node = 0; node < num_nodes; ++node)
         {
             bias[node][node] = 0.0;
         }
-        for (const auto& edge : edges)
+        for (const auto &edge : edges)
         {
             if (edge.src >= num_nodes || edge.dst >= num_nodes)
             {
@@ -1159,20 +1944,20 @@ namespace gatzk::model
     // 单头前向的公开入口
     // 默认是加输出偏置，并对结果做指数线性单元
     HeadForwardTrace attention_head_forward(
-        const FloatMatrix& features,
-        const std::vector<data::Edge>& edges,
-        const AttentionHeadParameters& parameters,
-        HeadForwardProfile* profile)
+        const FloatMatrix &features,
+        const std::vector<data::Edge> &edges,
+        const AttentionHeadParameters &parameters,
+        HeadForwardProfile *profile)
     {
         return attention_head_forward_impl(features, edges, parameters, true, true, profile);
     }
 
     // 这是参考写法的前向，主要拿来做对照和测试
     MultiHeadForwardTrace forward_reference_style(
-        const FloatMatrix& features,
-        const std::vector<data::Edge>& edges,
-        const ModelParameters& parameters,
-        ForwardProfile* profile)
+        const FloatMatrix &features,
+        const std::vector<data::Edge> &edges,
+        const ModelParameters &parameters,
+        ForwardProfile *profile)
     {
         if (!parameters.has_real_multihead)
         {
@@ -1184,7 +1969,7 @@ namespace gatzk::model
         auto layer_input = features;
 
         // 先遍历所有隐藏层
-        for (const auto& layer : parameters.hidden_layers)
+        for (const auto &layer : parameters.hidden_layers)
         {
             HiddenLayerForwardTrace layer_trace;
             layer_trace.input = layer_input;
@@ -1192,7 +1977,7 @@ namespace gatzk::model
             hidden_outputs.reserve(layer.heads.size());
             layer_trace.head_traces.reserve(layer.heads.size());
             // 这一层里的每个头，都单独跑一次单头前向
-            for (const auto& head : layer.heads)
+            for (const auto &head : layer.heads)
             {
                 HeadForwardProfile head_profile;
                 auto head_trace = attention_head_forward_impl(layer_input, edges, head, false, true, &head_profile);
@@ -1229,7 +2014,7 @@ namespace gatzk::model
         std::vector<FloatMatrix> output_values;
         output_values.reserve(parameters.output_layer.heads.size());
         trace.output_head_traces.reserve(parameters.output_layer.heads.size());
-        for (const auto& head : parameters.output_layer.heads)
+        for (const auto &head : parameters.output_layer.heads)
         {
             HeadForwardProfile output_profile;
             auto head_trace = attention_head_forward_impl(layer_input, edges, head, true, false, &output_profile);
@@ -1253,111 +2038,293 @@ namespace gatzk::model
 
     // 真正的主线前向实现
     MultiHeadForwardTrace forward_note_style(
-        const FloatMatrix& features,
-        const std::vector<data::Edge>& edges,
-        const ModelParameters& parameters,
-        ForwardProfile* profile)
+        const FloatMatrix &features,
+        const std::vector<data::Edge> &edges,
+        const ModelParameters &parameters,
+        ForwardProfile *profile)
     {
         if (!parameters.has_real_multihead)
         {
-            throw std::runtime_error("forward_note_style requires real multi-head checkpoint parameters");
+            throw std::runtime_error(
+                "forward_note_style requires real multi-head checkpoint parameters");
         }
 
         MultiHeadForwardTrace trace;
 
-        // 初始输入 H 就是原始特征
+        // H is part of the retained compatibility trace.
         trace.H = features;
-        auto layer_input = features;
 
-        // 1、隐藏层：每层都是 多头前向 -> 按列拼接 -> 进入下一层
-        for (const auto& layer : parameters.hidden_layers)
+        ForwardGraphLayout graph_layout;
+
+        if (!features.empty())
         {
-            HiddenLayerForwardTrace layer_trace;
-            layer_trace.input = layer_input;
-            std::vector<FloatMatrix> hidden_outputs;
-            hidden_outputs.reserve(layer.heads.size());
-            layer_trace.head_traces.reserve(layer.heads.size());
-            // 1.1 本层每个隐藏头都单独跑一次单头前向函数
-            for (const auto& head : layer.heads)
-            {
-                HeadForwardProfile head_profile;
-                // 隐藏层不加输出偏置，但要激活
-                auto head_trace = attention_head_forward_impl(layer_input, edges, head, false, true, &head_profile);
-                if (profile != nullptr)
+            // The graph is identical for every hidden/output head. Build its
+            // destination-grouped execution layout exactly once.
+            graph_layout =
+                build_forward_graph_layout(
+                    features.size(),
+                    edges);
+        }
+
+        trace.hidden_layer_traces.reserve(
+            parameters.hidden_layers.size());
+
+        trace.hidden_head_traces.reserve(
+            flattened_hidden_head_count(
+                parameters));
+
+        const FloatMatrix *layer_input =
+            &trace.H;
+
+        // 1. Hidden layers.
+        for (const auto &layer :
+             parameters.hidden_layers)
+        {
+            HiddenLayerForwardTrace
+                layer_trace;
+
+            // This retained copy is required by MultiHeadForwardTrace.
+            // Use it directly for all heads instead of creating an additional
+            // transient layer_input matrix.
+            layer_trace.input =
+                *layer_input;
+
+            layer_trace.head_traces.resize(
+                layer.heads.size());
+
+            std::vector<HeadForwardProfile>
+                head_profiles(
+                    layer.heads.size());
+
+            const auto execution_plan =
+                forward_head_execution_plan(
+                    layer.heads.size());
+
+            parallel_for_forward_ranges(
+                layer.heads.size(),
+                1,
+                execution_plan
+                    .outer_head_workers,
+                [&](std::size_t begin,
+                    std::size_t end)
                 {
-                    profile->hidden_projection_ms += head_profile.projection_ms;
-                    profile->hidden_attention_ms += head_profile.attention_ms;
-                    profile->hidden_activation_ms += head_profile.activation_ms;
-                }
-                hidden_outputs.push_back(head_trace.H_agg);
-                layer_trace.head_traces.push_back(head_trace);
-                // 兼容视图按层序、头序摊平全部隐藏头。不能只保存
-                // layer0，否则 L>2 时该视图与 hidden_layer_traces 不一致。
-                trace.hidden_head_traces.push_back(std::move(head_trace));
-            }
-            // 1.2 把本层所有头的输出拼成一个大矩阵
+                    for (std::size_t head_index =
+                             begin;
+                         head_index < end;
+                         ++head_index)
+                    {
+                        layer_trace
+                            .head_traces[head_index] =
+                            attention_head_forward_impl(
+                                layer_trace.input,
+                                edges,
+                                layer.heads[head_index],
+                                false,
+                                true,
+                                &head_profiles[head_index],
+                                &graph_layout,
+                                execution_plan
+                                    .inner_workers);
+                    }
+                });
+
             if (profile != nullptr)
             {
-                const auto concat_start = std::chrono::steady_clock::now();
-                layer_trace.concat = concatenate_columns(hidden_outputs);
-                profile->hidden_concat_ms += std::chrono::duration<double, std::milli>(
-                                                 std::chrono::steady_clock::now() - concat_start)
-                                                 .count();
+                for (const auto &head_profile :
+                     head_profiles)
+                {
+                    profile
+                        ->hidden_projection_ms +=
+                        head_profile
+                            .projection_ms;
+
+                    profile
+                        ->hidden_attention_ms +=
+                        head_profile
+                            .attention_ms;
+
+                    profile
+                        ->hidden_activation_ms +=
+                        head_profile
+                            .activation_ms;
+                }
+            }
+
+            // Preserve the flattened compatibility view in canonical
+            // layer/head order. No protocol consumer sees the execution order.
+            for (const auto &head_trace :
+                 layer_trace.head_traces)
+            {
+                trace.hidden_head_traces
+                    .push_back(
+                        head_trace);
+            }
+
+            if (profile != nullptr)
+            {
+                const auto concat_start =
+                    std::chrono::
+                        steady_clock::now();
+
+                layer_trace.concat =
+                    concatenate_head_outputs(
+                        layer_trace
+                            .head_traces,
+                        forward_worker_budget());
+
+                profile->hidden_concat_ms +=
+                    std::chrono::duration<
+                        double,
+                        std::milli>(
+                        std::chrono::
+                            steady_clock::now() -
+                        concat_start)
+                        .count();
             }
             else
             {
-                layer_trace.concat = concatenate_columns(hidden_outputs);
+                layer_trace.concat =
+                    concatenate_head_outputs(
+                        layer_trace
+                            .head_traces,
+                        forward_worker_budget());
             }
 
-            // 1.3 拼接后的结果就是下一层输入
-            layer_input = layer_trace.concat;
-            trace.hidden_concat = layer_trace.concat;
-            trace.hidden_layer_traces.push_back(std::move(layer_trace));
+            trace.hidden_layer_traces
+                .push_back(
+                    std::move(
+                        layer_trace));
+
+            // hidden_layer_traces was reserved to its final size above, so
+            // the stored concat address remains stable for the next layer.
+            layer_input =
+                &trace
+                     .hidden_layer_traces
+                     .back()
+                     .concat;
         }
 
-        // 2、输出层：每个输出头独立前向，然后做平均
-        std::vector<FloatMatrix> output_pre_bias;
-        std::vector<FloatMatrix> output_values;
-        output_pre_bias.reserve(parameters.output_layer.heads.size());
-        output_values.reserve(parameters.output_layer.heads.size());
-        trace.output_head_traces.reserve(parameters.output_layer.heads.size());
-        for (const auto& head : parameters.output_layer.heads)
+        if (!trace.hidden_layer_traces.empty())
         {
-            HeadForwardProfile output_profile;
-
-            // 输出层加输出偏置，但不激活
-            auto head_trace = attention_head_forward_impl(layer_input, edges, head, true, false, &output_profile);
-            if (profile != nullptr)
-            {
-                profile->output_projection_ms += output_profile.projection_ms;
-                profile->output_attention_ms += output_profile.attention_ms;
-                profile->output_activation_ms += output_profile.activation_ms;
-            }
-
-            // 这里同时保留加偏置前和加偏置后的两个版本，因为后面要检查平均前后的对应关系
-            output_pre_bias.push_back(head_trace.H_agg_pre_bias);
-            output_values.push_back(head_trace.H_agg);
-            trace.output_head_traces.push_back(head_trace);
+            // Compatibility field stores only the final hidden concat. The old
+            // implementation copied every intermediate concat into this field
+            // and immediately overwrote it on the next layer.
+            trace.hidden_concat =
+                trace
+                    .hidden_layer_traces
+                    .back()
+                    .concat;
         }
 
-        // 3、最后做输出层多头平均。
-        // 这里保留 bias 前和 bias 后两个平均版本，正好对应笔记里的“输出整理”和 bias 关系检查。
-        // 这一项表示加偏置前的平均。Y表示加偏置后的平均。
-        trace.output_head_trace = trace.output_head_traces.front();
-        trace.output_head_values = output_values;
-        trace.Y_lin = average_matrices(output_pre_bias);
-        trace.Y = average_matrices(output_values);
+        // 2. Output heads.
+        trace.output_head_traces.resize(
+            parameters.output_layer
+                .heads.size());
+
+        std::vector<HeadForwardProfile>
+            output_profiles(
+                parameters.output_layer
+                    .heads.size());
+
+        const auto output_execution_plan =
+            forward_head_execution_plan(
+                parameters.output_layer
+                    .heads.size());
+
+        parallel_for_forward_ranges(
+            parameters.output_layer
+                .heads.size(),
+            1,
+            output_execution_plan
+                .outer_head_workers,
+            [&](std::size_t begin,
+                std::size_t end)
+            {
+                for (std::size_t head_index =
+                         begin;
+                     head_index < end;
+                     ++head_index)
+                {
+                    trace.output_head_traces[head_index] =
+                        attention_head_forward_impl(
+                            *layer_input,
+                            edges,
+                            parameters
+                                .output_layer
+                                .heads[head_index],
+                            true,
+                            false,
+                            &output_profiles[head_index],
+                            &graph_layout,
+                            output_execution_plan
+                                .inner_workers);
+                }
+            });
+
+        if (profile != nullptr)
+        {
+            for (const auto &output_profile :
+                 output_profiles)
+            {
+                profile
+                    ->output_projection_ms +=
+                    output_profile
+                        .projection_ms;
+
+                profile
+                    ->output_attention_ms +=
+                    output_profile
+                        .attention_ms;
+
+                profile
+                    ->output_activation_ms +=
+                    output_profile
+                        .activation_ms;
+            }
+        }
+
+        // Preserve existing public compatibility views, but populate them
+        // directly from the retained output-head traces. The former path first
+        // copied every matrix into temporary output_pre_bias/output_values and
+        // then copied output_values again into this field.
+        trace.output_head_values.reserve(
+            trace.output_head_traces.size());
+
+        for (const auto &head_trace :
+             trace.output_head_traces)
+        {
+            trace.output_head_values
+                .push_back(
+                    head_trace.H_agg);
+        }
+
+        trace.output_head_trace =
+            trace.output_head_traces.front();
+
+        // Same head order and same per-element arithmetic as before.
+        trace.Y_lin =
+            average_head_outputs(
+                trace.output_head_traces,
+                true,
+                forward_worker_budget());
+
+        trace.Y =
+            average_head_outputs(
+                trace.output_head_traces,
+                false,
+                forward_worker_budget());
+
         return trace;
     }
 
-    bool supports_current_formal_proof_shape(const ModelParameters& parameters)
+    bool supports_current_formal_proof_shape(const ModelParameters &parameters)
     {
         std::string reason;
         return parameters.has_real_multihead && hidden_family_dimension_chain_is_valid(parameters, &reason);
     }
 
     // 检查多层多头的维度链是不是前后对得上
-    bool hidden_family_dimension_chain_is_valid(const ModelParameters& parameters, std::string* reason)
+    bool hidden_family_dimension_chain_is_valid(const ModelParameters &parameters, std::string *reason)
     {
         std::vector<std::string> failures;
         if (!parameters.has_real_multihead)
@@ -1383,7 +2350,7 @@ namespace gatzk::model
         std::size_t expected_input_dim = 0;
         for (std::size_t layer_index = 0; layer_index < parameters.hidden_layers.size(); ++layer_index)
         {
-            const auto& layer = parameters.hidden_layers[layer_index];
+            const auto &layer = parameters.hidden_layers[layer_index];
             if (layer.layer_index != layer_index)
             {
                 failures.push_back("hidden_layers must use contiguous layer_index values");
@@ -1418,7 +2385,7 @@ namespace gatzk::model
             }
 
             // 每个头的参数宽度需要和这一层的输入输出对齐
-            for (const auto& head : layer.heads)
+            for (const auto &head : layer.heads)
             {
                 if (head.seq_kernel_fp.size() != layer.input_dim)
                 {
@@ -1454,7 +2421,7 @@ namespace gatzk::model
             failures.push_back(
                 "output_layer input_dim=" + std::to_string(parameters.output_layer.input_dim) + " conflicts with final hidden concat width=" + std::to_string(expected_input_dim));
         }
-        for (const auto& head : parameters.output_layer.heads)
+        for (const auto &head : parameters.output_layer.heads)
         {
             if (head.seq_kernel_fp.size() != parameters.output_layer.input_dim)
             {
@@ -1496,10 +2463,10 @@ namespace gatzk::model
     }
 
     // 把所有层的隐藏头数量加起来
-    std::size_t flattened_hidden_head_count(const ModelParameters& parameters)
+    std::size_t flattened_hidden_head_count(const ModelParameters &parameters)
     {
         std::size_t count = 0;
-        for (const auto& layer : parameters.hidden_layers)
+        for (const auto &layer : parameters.hidden_layers)
         {
             count += layer.heads.size();
         }
@@ -1507,10 +2474,10 @@ namespace gatzk::model
     }
 
     // 所有隐藏层里，最大的输入宽度
-    std::size_t max_hidden_input_dim(const ModelParameters& parameters)
+    std::size_t max_hidden_input_dim(const ModelParameters &parameters)
     {
         std::size_t value = 0;
-        for (const auto& layer : parameters.hidden_layers)
+        for (const auto &layer : parameters.hidden_layers)
         {
             value = std::max(value, layer.input_dim);
         }
@@ -1518,10 +2485,10 @@ namespace gatzk::model
     }
 
     // 所有隐藏层里，单个头最大的输出宽度
-    std::size_t max_hidden_head_dim(const ModelParameters& parameters)
+    std::size_t max_hidden_head_dim(const ModelParameters &parameters)
     {
         std::size_t value = 0;
-        for (const auto& layer : parameters.hidden_layers)
+        for (const auto &layer : parameters.hidden_layers)
         {
             value = std::max(value, layer.shape.head_dim);
         }
@@ -1529,10 +2496,10 @@ namespace gatzk::model
     }
 
     // 所有隐藏层里，拼接后的最大总宽度
-    std::size_t max_hidden_concat_width(const ModelParameters& parameters)
+    std::size_t max_hidden_concat_width(const ModelParameters &parameters)
     {
         std::size_t value = 0;
-        for (const auto& layer : parameters.hidden_layers)
+        for (const auto &layer : parameters.hidden_layers)
         {
             value = std::max(value, layer.shape.head_count * layer.shape.head_dim);
         }
@@ -1541,7 +2508,7 @@ namespace gatzk::model
 
     // 域元素版的矩阵乘法。
     // 前向过程量化以后，后面离散计算的规则
-    Matrix project_features(const Matrix& left, const Matrix& right)
+    Matrix project_features(const Matrix &left, const Matrix &right)
     {
         if (left.empty() || right.empty())
         {
@@ -1569,7 +2536,8 @@ namespace gatzk::model
             {
                 break;
             }
-            futures.push_back(std::async(std::launch::async, [&, begin, end]() {
+            futures.push_back(std::async(std::launch::async, [&, begin, end]()
+                                         {
                 for (std::size_t i = begin; i < end; ++i)
                 {
                     std::vector<mcl::Fr> native_row(cols);
@@ -1591,10 +2559,9 @@ namespace gatzk::model
                     {
                         out[i][j] = algebra::FieldElement::from_native(native_row[j]);
                     }
-                }
-            }));
+                } }));
         }
-        for (auto& future : futures)
+        for (auto &future : futures)
         {
             future.get();
         }
@@ -1602,7 +2569,7 @@ namespace gatzk::model
     }
 
     // 域元素版矩阵乘向量
-    std::vector<algebra::FieldElement> matvec_projection(const Matrix& matrix, const std::vector<algebra::FieldElement>& vector)
+    std::vector<algebra::FieldElement> matvec_projection(const Matrix &matrix, const std::vector<algebra::FieldElement> &vector)
     {
         std::vector<algebra::FieldElement> out(matrix.size(), algebra::FieldElement::zero());
         for (std::size_t i = 0; i < matrix.size(); ++i)
@@ -1621,7 +2588,7 @@ namespace gatzk::model
     }
 
     // 用一个随机挑战把每一行压成一个域元素，后续会进入route / zkMaP约束
-    std::vector<algebra::FieldElement> compress_rows(const Matrix& matrix, const algebra::FieldElement& challenge)
+    std::vector<algebra::FieldElement> compress_rows(const Matrix &matrix, const algebra::FieldElement &challenge)
     {
         std::vector<algebra::FieldElement> out(matrix.size(), algebra::FieldElement::zero());
         for (std::size_t i = 0; i < matrix.size(); ++i)
@@ -1629,7 +2596,7 @@ namespace gatzk::model
             mcl::Fr power = 1;
             mcl::Fr sum;
             sum.clear();
-            for (const auto& value : matrix[i])
+            for (const auto &value : matrix[i])
             {
                 mcl::Fr term;
                 mcl::Fr::mul(term, value.native(), power);
@@ -1643,24 +2610,24 @@ namespace gatzk::model
 
     // 域元素版的边聚合
     Matrix aggregate_by_edges(
-        const Matrix& h_prime,
-        const std::vector<algebra::FieldElement>& alpha,
-        const std::vector<data::Edge>& edges,
+        const Matrix &h_prime,
+        const std::vector<algebra::FieldElement> &alpha,
+        const std::vector<data::Edge> &edges,
         std::size_t num_nodes)
     {
         const std::size_t width = h_prime.front().size();
         Matrix out(num_nodes, std::vector<algebra::FieldElement>(width, algebra::FieldElement::zero()));
         std::vector<std::vector<mcl::Fr>> native_out(num_nodes, std::vector<mcl::Fr>(width));
-        for (auto& row : native_out)
+        for (auto &row : native_out)
         {
-            for (auto& value : row)
+            for (auto &value : row)
             {
                 value.clear();
             }
         }
         for (std::size_t k = 0; k < edges.size(); ++k)
         {
-            const auto& alpha_k = alpha[k].native();
+            const auto &alpha_k = alpha[k].native();
             for (std::size_t j = 0; j < width; ++j)
             {
                 mcl::Fr term;
@@ -1680,14 +2647,14 @@ namespace gatzk::model
 
     // 输出层的线性投影：先乘输出矩阵，再按列加偏置
     Matrix output_projection(
-        const Matrix& h_agg,
-        const Matrix& w_out,
-        const std::vector<algebra::FieldElement>& bias,
-        Matrix* linear_part)
+        const Matrix &h_agg,
+        const Matrix &w_out,
+        const std::vector<algebra::FieldElement> &bias,
+        Matrix *linear_part)
     {
         auto linear = project_features(h_agg, w_out);
         Matrix out = linear;
-        for (auto& row : out)
+        for (auto &row : out)
         {
             for (std::size_t j = 0; j < bias.size(); ++j)
             {
