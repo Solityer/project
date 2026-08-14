@@ -257,36 +257,113 @@ namespace
                 size,
                 batch_size);
 
-        std::size_t free_bytes = 0;
-        std::size_t total_device_bytes = 0;
+        int integrated_device = 0;
 
-        status = cudaMemGetInfo(
-            &free_bytes,
-            &total_device_bytes);
+        status = cudaDeviceGetAttribute(
+            &integrated_device,
+            cudaDevAttrIntegrated,
+            device);
 
         if (status != cudaSuccess)
         {
             throw_cuda_ntt_error(
-                "memory query",
+                "integrated-memory capability query",
                 status);
         }
 
-        (void)total_device_bytes;
-
-        if (total_bytes >
-            (std::numeric_limits<std::size_t>::max()
-                - kCudaNttReserveBytes) / 2)
+        // On discrete GPUs, cudaMemGetInfo() describes the dedicated device-memory
+        // pool closely enough for conservative admission.
+        //
+        // DGX Spark / GB10 is an integrated UMA platform.  NVIDIA documents that
+        // cudaMemGetInfo() does not include DRAM that the CPU can reclaim from page
+        // cache / swap, so treating it as a hard allocation ceiling can reject valid
+        // allocations.  On UMA, let the actual CUDA allocations below be the
+        // authoritative fail-closed resource check.
+        if (integrated_device == 0)
         {
-            return false;
+            std::size_t free_bytes = 0;
+            std::size_t total_device_bytes = 0;
+
+            status = cudaMemGetInfo(
+                &free_bytes,
+                &total_device_bytes);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "memory query",
+                    status);
+            }
+
+            (void)total_device_bytes;
+
+            if (total_bytes >
+                (std::numeric_limits<std::size_t>::max() - kCudaNttReserveBytes) / 2)
+            {
+                return false;
+            }
+
+            const auto required_free_bytes =
+                2 * total_bytes + kCudaNttReserveBytes;
+
+            if (free_bytes < required_free_bytes)
+            {
+                return false;
+            }
+        }
+        int integrated_device = 0;
+
+        status = cudaDeviceGetAttribute(
+            &integrated_device,
+            cudaDevAttrIntegrated,
+            device);
+
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "integrated-memory capability query",
+                status);
         }
 
-        const auto required_free_bytes =
-            2 * total_bytes
-            + kCudaNttReserveBytes;
-
-        if (free_bytes < required_free_bytes)
+        // On discrete GPUs, cudaMemGetInfo() describes the dedicated device-memory
+        // pool closely enough for conservative admission.
+        //
+        // DGX Spark / GB10 is an integrated UMA platform.  NVIDIA documents that
+        // cudaMemGetInfo() does not include DRAM that the CPU can reclaim from page
+        // cache / swap, so treating it as a hard allocation ceiling can reject valid
+        // allocations.  On UMA, let the actual CUDA allocations below be the
+        // authoritative fail-closed resource check.
+        if (integrated_device == 0)
         {
-            return false;
+            std::size_t free_bytes = 0;
+            std::size_t total_device_bytes = 0;
+
+            status = cudaMemGetInfo(
+                &free_bytes,
+                &total_device_bytes);
+
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "memory query",
+                    status);
+            }
+
+            (void)total_device_bytes;
+
+            if (total_bytes >
+                (std::numeric_limits<std::size_t>::max() - kCudaNttReserveBytes) / 2)
+            {
+                return false;
+            }
+
+            const auto required_free_bytes =
+                2 * total_bytes + kCudaNttReserveBytes;
+
+            if (free_bytes < required_free_bytes)
+            {
+                return false;
+            }
         }
 
         IcicleScalar* device_input = nullptr;
