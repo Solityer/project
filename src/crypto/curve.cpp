@@ -829,6 +829,8 @@ namespace gatzk::crypto
                 .count = count,
                 .stable_srs_capacity =
                     stable_srs_capacity,
+                .done = false,
+                .error = {},
             };
 
             std::unique_lock<std::mutex>

@@ -208,35 +208,6 @@ namespace gatzk::crypto
             return integrated != 0;
         }
 
-        const bls12_381::scalar_t *
-        icicle_montgomery_scalar_view(
-            const algebra::FieldElement *scalars,
-            std::size_t count)
-        {
-            if (count == 0)
-            {
-                return nullptr;
-            }
-
-            if (scalars == nullptr)
-            {
-                throw std::runtime_error(
-                    "CUDA G1 MSM scalar view received a null buffer");
-            }
-
-            static_assert(
-                sizeof(bls12_381::scalar_t) == sizeof(mcl::Fr),
-                "ICICLE BLS12-381 scalar and mcl::Fr must have identical width");
-
-            static_assert(
-                alignof(bls12_381::scalar_t) <= alignof(mcl::Fr),
-                "mcl::Fr storage must satisfy ICICLE scalar alignment");
-
-            return reinterpret_cast<const bls12_381::scalar_t *>(
-                algebra::FieldElement::native_array_data(
-                    scalars));
-        }
-
         template <class IcicleField, class MclField>
         IcicleField to_icicle_field(const MclField &input)
         {
@@ -810,10 +781,24 @@ namespace gatzk::crypto
                     count,
                     stable_srs_capacity);
 
-            const auto *icicle_scalars =
-                icicle_montgomery_scalar_view(
-                    scalars,
-                    count);
+            std::vector<bls12_381::scalar_t>
+                converted_scalars;
+
+            try
+            {
+                converted_scalars.resize(count);
+            }
+            catch (const std::bad_alloc &)
+            {
+                throw CudaMsmResourcePressure(
+                    "CUDA G1 MSM resident scalar staging "
+                    "exhausted host memory");
+            }
+
+            copy_mcl_montgomery_scalars_to_icicle(
+                converted_scalars.data(),
+                scalars,
+                count);
 
             auto config =
                 msm::default_msm_config();
@@ -830,7 +815,7 @@ namespace gatzk::crypto
 
             const auto status =
                 bls12_381_msm_cuda(
-                    icicle_scalars,
+                    converted_scalars.data(),
                     device_points,
                     static_cast<int>(count),
                     config,
@@ -972,8 +957,12 @@ namespace gatzk::crypto
             bls12_381::affine_t *device_points = nullptr;
 
             std::vector<mcl::G1> normalized_points;
+
             std::vector<bls12_381::affine_t>
                 converted_points;
+
+            std::vector<bls12_381::scalar_t>
+                converted_scalars;
 
             ~StreamMsmBuffers()
             {
@@ -1007,6 +996,11 @@ namespace gatzk::crypto
                     bls12_381::affine_t>()
                     .swap(
                         converted_points);
+
+                std::vector<
+                    bls12_381::scalar_t>()
+                    .swap(
+                        converted_scalars);
             }
 
             bool prepare(
@@ -1020,6 +1014,9 @@ namespace gatzk::crypto
                         chunk_size);
 
                     converted_points.resize(
+                        chunk_size);
+
+                    converted_scalars.resize(
                         chunk_size);
                 }
                 catch (const std::bad_alloc &)
@@ -1173,10 +1170,10 @@ namespace gatzk::crypto
                     points + offset,
                     current_count);
 
-                const auto *current_scalars =
-                    icicle_montgomery_scalar_view(
-                        scalars + offset,
-                        current_count);
+                copy_mcl_montgomery_scalars_to_icicle(
+                    buffers.converted_scalars.data(),
+                    scalars + offset,
+                    current_count);
 
                 auto config =
                     msm::default_msm_config();
@@ -1190,10 +1187,9 @@ namespace gatzk::crypto
                 config.are_results_on_device = false;
 
                 bls12_381::projective_t result;
-
                 const auto status =
                     bls12_381_msm_cuda(
-                        current_scalars,
+                        buffers.converted_scalars.data(),
                         buffers.device_points,
                         static_cast<int>(current_count),
                         config,
