@@ -1084,6 +1084,21 @@ namespace gatzk::crypto
                         reap_one();
                     }
                 }
+
+                const auto recorded_failure =
+                    static_cast<G1LoadWorkerFailure>(
+                        worker_failure_kind.load(
+                            std::memory_order_acquire));
+
+                if (recorded_failure != G1LoadWorkerFailure::None)
+                {
+                    worker_failure.kind =
+                        recorded_failure;
+
+                    worker_failure.index =
+                        worker_failure_index.load(
+                            std::memory_order_acquire);
+                }
             }
 
             constexpr std::size_t
@@ -1109,15 +1124,6 @@ namespace gatzk::crypto
                     chunk,
                     "raw G1 suffix");
 
-                remaining_bytes -= chunk;
-            }
-
-            std::size_t remaining_bytes =
-                (point_count - load_count) * point_size;
-            while (remaining_bytes != 0)
-            {
-                const auto chunk = std::min<std::size_t>(remaining_bytes, buffer.size());
-                read_hashed(buffer.data(), chunk, "raw G1 suffix");
                 remaining_bytes -= chunk;
             }
             unsigned char digest[SHA256_DIGEST_LENGTH];
