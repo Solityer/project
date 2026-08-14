@@ -644,12 +644,72 @@ namespace gatzk::crypto
             }
         }
 
+        enum class G1LoadWorkerFailure : unsigned
+        {
+            None = 0,
+            RawValidation,
+            CanonicalDeserialize,
+            CanonicalIdentity,
+            CanonicalSerialize,
+            CanonicalEncoding,
+            UnexpectedCanonical,
+        };
+
+        struct G1LoadWorkerFailureInfo
+        {
+            G1LoadWorkerFailure kind =
+                G1LoadWorkerFailure::None;
+
+            std::size_t index =
+                std::numeric_limits<std::size_t>::max();
+        };
+
+        std::string g1_load_worker_failure_message(
+            const G1LoadWorkerFailureInfo &failure,
+            const std::filesystem::path &path)
+        {
+            switch (failure.kind)
+            {
+            case G1LoadWorkerFailure::RawValidation:
+                return "invalid, non-subgroup, or identity "
+                       "SRS G1 point at index " +
+                       std::to_string(failure.index) + ": " + path.string();
+
+            case G1LoadWorkerFailure::CanonicalDeserialize:
+                return "failed to deserialize SRS G1 point "
+                       "at index " +
+                       std::to_string(failure.index) + ": " + path.string();
+
+            case G1LoadWorkerFailure::CanonicalIdentity:
+                return "identity SRS G1 point at index " + std::to_string(failure.index) + ": " + path.string();
+
+            case G1LoadWorkerFailure::CanonicalSerialize:
+                return "failed to serialize SRS G1 point "
+                       "at index " +
+                       std::to_string(failure.index) + ": " + path.string();
+
+            case G1LoadWorkerFailure::CanonicalEncoding:
+                return "non-canonical SRS G1 encoding at index " + std::to_string(failure.index) + ": " + path.string();
+
+            case G1LoadWorkerFailure::UnexpectedCanonical:
+                return "unexpected exception while validating "
+                       "canonical SRS G1 point near index " +
+                       std::to_string(failure.index) + ": " + path.string();
+
+            case G1LoadWorkerFailure::None:
+                return {};
+            }
+
+            return "unknown parallel SRS G1 validation failure: " + path.string();
+        }
         std::vector<G1Point> load_fixed_or_raw_g1_vector_file_prefix(
             const std::filesystem::path &path,
             std::streamoff file_size,
             std::size_t max_points,
-            std::string *actual_hash)
+            std::string *actual_hash,
+            G1LoadWorkerFailureInfo &worker_failure)
         {
+            worker_failure = {};
             algebra::ensure_mcl_field_ready();
             std::ifstream input(path, std::ios::binary);
             if (!input)
@@ -724,17 +784,6 @@ namespace gatzk::crypto
 
             if (load_count != 0)
             {
-                enum class G1LoadWorkerFailure : unsigned
-                {
-                    None = 0,
-                    RawValidation,
-                    CanonicalDeserialize,
-                    CanonicalIdentity,
-                    CanonicalSerialize,
-                    CanonicalEncoding,
-                    UnexpectedCanonical,
-                };
-
                 std::atomic<unsigned>
                     worker_failure_kind{
                         static_cast<unsigned>(
@@ -773,83 +822,6 @@ namespace gatzk::crypto
                     return worker_failure_kind.load(
                                std::memory_order_acquire) != static_cast<unsigned>(G1LoadWorkerFailure::
                                                                                        None);
-                };
-
-                auto throw_worker_failure =
-                    [&]()
-                {
-                    const auto raw_kind =
-                        worker_failure_kind.load(
-                            std::memory_order_acquire);
-
-                    const auto kind =
-                        static_cast<
-                            G1LoadWorkerFailure>(
-                            raw_kind);
-
-                    if (kind == G1LoadWorkerFailure::None)
-                    {
-                        return;
-                    }
-
-                    const auto index =
-                        worker_failure_index.load(
-                            std::memory_order_acquire);
-
-                    switch (kind)
-                    {
-                    case G1LoadWorkerFailure::
-                        RawValidation:
-                        throw std::runtime_error(
-                            "invalid, non-subgroup, or "
-                            "identity SRS G1 point at "
-                            "index " +
-                            std::to_string(index) + ": " + path.string());
-
-                    case G1LoadWorkerFailure::
-                        CanonicalDeserialize:
-                        throw std::runtime_error(
-                            "failed to deserialize SRS "
-                            "G1 point at index " +
-                            std::to_string(index) + ": " + path.string());
-
-                    case G1LoadWorkerFailure::
-                        CanonicalIdentity:
-                        throw std::runtime_error(
-                            "identity SRS G1 point at "
-                            "index " +
-                            std::to_string(index) + ": " + path.string());
-
-                    case G1LoadWorkerFailure::
-                        CanonicalSerialize:
-                        throw std::runtime_error(
-                            "failed to serialize SRS G1 "
-                            "point at index " +
-                            std::to_string(index) + ": " + path.string());
-
-                    case G1LoadWorkerFailure::
-                        CanonicalEncoding:
-                        throw std::runtime_error(
-                            "non-canonical SRS G1 "
-                            "encoding at index " +
-                            std::to_string(index) + ": " + path.string());
-
-                    case G1LoadWorkerFailure::
-                        UnexpectedCanonical:
-                        throw std::runtime_error(
-                            "unexpected exception while "
-                            "validating canonical SRS G1 "
-                            "point near index " +
-                            std::to_string(index) + ": " + path.string());
-
-                    case G1LoadWorkerFailure::None:
-                        break;
-                    }
-
-                    throw std::runtime_error(
-                        "unknown parallel SRS G1 "
-                        "validation failure: " +
-                        path.string());
                 };
 
                 const auto load_bytes =
@@ -939,8 +911,6 @@ namespace gatzk::crypto
                     {
                         future.wait();
                     }
-
-                    throw_worker_failure();
                 }
                 else
                 {
@@ -1113,12 +1083,35 @@ namespace gatzk::crypto
                     {
                         reap_one();
                     }
-
-                    throw_worker_failure();
                 }
             }
 
-            std::array<char, 1 << 20> buffer{};
+            constexpr std::size_t
+                kSrsHashBufferSize =
+                    1ULL << 20;
+
+            auto buffer =
+                std::make_unique<char[]>(
+                    kSrsHashBufferSize);
+
+            std::size_t remaining_bytes =
+                (point_count - load_count) * point_size;
+
+            while (remaining_bytes != 0)
+            {
+                const auto chunk =
+                    std::min<std::size_t>(
+                        remaining_bytes,
+                        kSrsHashBufferSize);
+
+                read_hashed(
+                    buffer.get(),
+                    chunk,
+                    "raw G1 suffix");
+
+                remaining_bytes -= chunk;
+            }
+
             std::size_t remaining_bytes =
                 (point_count - load_count) * point_size;
             while (remaining_bytes != 0)
@@ -1162,8 +1155,26 @@ namespace gatzk::crypto
             const std::array<char, 8> expected_canonical_magic{{'G', 'A', 'T', 'Z', 'K', 'G', '1', 'C'}};
             if (max_points != 0 || magic_probe == expected_raw_magic || magic_probe == expected_canonical_magic)
             {
-                return load_fixed_or_raw_g1_vector_file_prefix(
-                    path, file_size, max_points, actual_hash);
+                G1LoadWorkerFailureInfo
+                    worker_failure;
+
+                auto points =
+                    load_fixed_or_raw_g1_vector_file_prefix(
+                        path,
+                        file_size,
+                        max_points,
+                        actual_hash,
+                        worker_failure);
+
+                if (worker_failure.kind != G1LoadWorkerFailure::None)
+                {
+                    throw std::runtime_error(
+                        g1_load_worker_failure_message(
+                            worker_failure,
+                            path));
+                }
+
+                return points;
             }
             input.seekg(0);
             std::vector<std::uint8_t> file_bytes(static_cast<std::size_t>(file_size));
