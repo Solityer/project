@@ -88,9 +88,10 @@ if(GATZK_ENABLE_CUDA_BACKEND)
     set(GATZK_ICICLE_ROOT "${PROJECT_SOURCE_DIR}/third_party/icicle")
     if(NOT EXISTS "${GATZK_ICICLE_ROOT}/LICENSE"
         OR NOT EXISTS "${GATZK_ICICLE_ROOT}/icicle/src/msm/extern.cu"
-        OR NOT EXISTS "${GATZK_ICICLE_ROOT}/icicle/src/ntt/extern.cu")
+        OR NOT EXISTS "${GATZK_ICICLE_ROOT}/icicle/src/ntt/extern.cu"
+        OR NOT EXISTS "${GATZK_ICICLE_ROOT}/icicle/src/ntt/kernel_ntt.cu")
         message(FATAL_ERROR
-            "GAT-ZKML: CUDA MSM requires ICICLE v2.8.0 at the pinned "
+            "GAT-ZKML: CUDA MSM/NTT requires ICICLE v2.8.0 at the pinned "
             "aacec3f72f14f53dd96d835698d2c87cde3a68b8 gitlink; "
             "run 'git submodule update --init third_party/icicle'")
     endif()
