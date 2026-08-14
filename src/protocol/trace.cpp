@@ -1304,17 +1304,17 @@ namespace gatzk::protocol
 
         std::size_t dynamic_commitment_prepared_budget_bytes()
         {
-            constexpr std::size_t kMinimumBudgetBytes =
+            static constexpr std::size_t kMinimumBudgetBytes =
                 96ULL * 1024ULL * 1024ULL;
 
-            constexpr std::size_t kMaximumBudgetBytes =
+            static constexpr std::size_t kMaximumBudgetBytes =
                 2ULL * 1024ULL * 1024ULL * 1024ULL;
 
             // The old fixed 96 MiB window fragments large same-SRS
             // commitment families before they can reach KZG::commit_batch.
             //
             // Size the execution window from the host/unified-memory class,
-            // while keeping a conservative hard ceiling.  This changes only
+            // while keeping a conservative hard ceiling. This changes only
             // how many already-required commitment objects are prepared
             // together; it does not change their values, labels or order.
             static const std::size_t budget = []()
